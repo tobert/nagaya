@@ -2,7 +2,7 @@
 
 A *nagaya* (長屋（ながや）) is a row house: one building, several households, each with its own door. This nagaya is
 the one process on each machine that owns the GPUs. Engines live in it as tenants. An engine is a model's code and
-weights: mk's Qwen engine (`libmkengine`), mkviolet's Gemma 4 engine, and later lfm2d, gmk's instruments, image
+weights: mk's Qwen engine (`libmkengine`), mkviolet's Gemma 4 engine, and later lfm, gmk's instruments, image
 models, and training loops. The nagaya multiplexes the machine: device memory, host memory, NVMe, and time on each
 device. Each engine keeps its own abstractions: its key/value layout, its recurrent state, its kernels.
 
@@ -48,6 +48,10 @@ The first pass keeps three doors open:
 A model spread across machines over Ethernet means pipeline stages per machine. mkviolet already splits Gemma 4 by
 layers across its two cards and hands the residual between them on the host (`gemma4.rs` `pipeline_stage`), so a
 stage boundary is a residual at a layer, which `docs/engine-abi.md` names as a contract.
+
+lfm (Amy, 2026-10-17): "we'd add lfm over time and likely deprecate lfm2d". lfm2d is candle-based on a fork of
+candle; it may stay as a second council API implementation. A new lfm engine (perhaps LFM 2.5 on one Intel card)
+comes when we're ready for another model or need one to validate against.
 
 Other later items: a model router (lfm or council decisions), rented burst machines (`~/src/rented-gpu`) joining as
 leases, streams (home video, audio for the cochlea, beat tracking).

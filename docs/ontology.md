@@ -8,7 +8,7 @@ The nouns fall into four groups: places (where things are), things (what is held
 
 Revised 2026-10-17 after a kaibo review (deepseek cast) checked the first draft against copies of both engines'
 source. Its main corrections: cell storage differs by engine, sliding layers are rings, seal and park are different
-steps, and a snapshot id must carry the slot geometry.
+steps, and slot geometry changes what a snapshot holds (since resolved as coverage, D3).
 
 ## Places
 
@@ -41,7 +41,9 @@ sealed arena per engine; another engine attaches to it read-only after a full ch
 (`capi.hip:12-27`, `mk_arena_check`). mkviolet has one DMA-BUF slab per layer per card, 60 in all, kept through
 `systemctl restart` by systemd's file-descriptor store (`gemma4.rs:143-146`, `slab_fd_name`; `hot_handoff.rs`
 `store_fd`); its check, `verify_stored_slab`, compares only the first and last 64 bytes of each tensor
-(`gemma4.rs:284-287`). An arena records how strong its check is. mkviolet's `memfd` host arena (`HotDdr5Arena`,
+(`gemma4.rs:284-287`). An arena records how strong its check is. Weights are a state object made of fixed parts
+with no inputs (decided 2026-10-17, Amy: "state object"); the arena is how that state object is held in memory. An
+inference engine opens it read-only; a training engine writes it. mkviolet's `memfd` host arena (`HotDdr5Arena`,
 `hot_handoff.rs:130-201`) holds host-tier state and a header, not weights, so it is not an arena in this sense.
 
 **State object.** Everything a pass continues from, made of parts. Two kinds:
@@ -79,10 +81,16 @@ are boundaries. Boundaries are part of a snapshot's id.
 **Park.** Moving a state object to another tier, bit for bit. Parking never seals. Sealing happens only at boundaries
 the chain declares, so parking a context because the scheduler needs its slot leaves no trace in later results.
 
-**Snapshot id.** A hash of the engine identity, the inputs, the boundaries along the chain, and the engine's
-geometry for that state (`docs/engine-abi.md` D3). Geometry matters: mkviolet's rows depend on the slot size, and the
-same chain joins for one slot size and fails for another (`gemma4.rs:1692-1693`). mkviolet's current id hashes the
-identity, the tokens and the cuts only (`held.rs:312-325`).
+**Snapshot id.** A content id: a hash of the snapshot's sealed bytes and its parent's content id
+(`docs/engine-abi.md` D3). Each stored snapshot records its **coverage**, the positions it holds per part, because
+the same chain stored from different slots holds different rows: mkviolet's sliding layers keep a ring's worth in a
+large slot and every row in a small one (`gemma4.rs:44-63`). Whether a snapshot fits a slot is a check on coverage,
+not part of the id.
+
+**Recipe.** What a snapshot was made from: a hash of the engine identity, the inputs, and the boundaries along the
+chain (plus layout, for an engine whose bits depend on it). The store maps a recipe to the content ids made from it,
+so the nagaya can ask "do we already have this?" before building. mkviolet's current `snapshot_id` is a recipe
+(`held.rs:312-325`).
 
 **Slot.** Device memory an engine reserves for one live context. mkviolet fixes its slots and their sizes at load
 (`new_slots`, `gemma4.rs:445-475`) and has no stored token count: the position is the caller's `pos0`, and `kv_high`
@@ -151,7 +159,5 @@ in `pins.json` beside the snapshots so they outlive a restart (`held.rs` `PinSet
 
 ## Open questions
 
-1. Is a weight arena a state object (fixed parts only, no inputs), or its own thing? A training engine writes its
-   weights, so for training the answer may be "state object".
-2. Does an engine that spans devices expose its stages to the nagaya, or schedule them itself? `docs/engine-abi.md` D1.
-3. Who supplies the geometry in a snapshot id: the engine as a key the nagaya hashes, or the whole id? D3.
+None open. Decided 2026-10-17: weights are a state object (see Arena); an engine that spans devices schedules its
+own stages for now (D1); snapshot ids are content ids, with recipes for lookup and coverage for fit (D3).

@@ -14,7 +14,7 @@ ABI is the second one, not the third."
 |---|---|---|
 | 1 | mk reads cells whole (no range), so an mk snapshot is about 316 MB at n = 3584, not "fixed + new rows" | ontology: storage per engine; ABI: `cells_read(from, n)` |
 | 2 | Parking by sealing changes mk's bits; `fused` and `MK_FAST_QMM` change bits too | ontology: seal vs park, six conditions for identical bits; ABI D7; bit settings in identity |
-| 3 | mkviolet's id omits slot geometry; the same chain joins for one slot size and fails for another (checked: `held.rs:312-325`, `gemma4.rs:1692-1693`) | D3: `geometry_key` in the id |
+| 3 | mkviolet's id omits slot geometry; the same chain joins for one slot size and fails for another (checked: `held.rs:312-325`, `gemma4.rs:1692-1693`) | D3: `geometry_key` in the id; later corrected: geometry changes coverage, not bits, and ids became content ids |
 | 4 | The call list was mk's `Context`; mkviolet has slots, no fork, no seal | ABI split into core and declared capabilities |
 | 5 | `stage_pass` lacks positions, meta, logit rows, snapshot, slot | D1: mkviolet starts with (a) |
 | 6 | Sliding layers are rings, not append-only | fourth part kind: ring |

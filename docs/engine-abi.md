@@ -51,7 +51,8 @@ slots        slot_load(slot, snapshot parts) / slot_high(slot)
 parts        part_read(state, part) / part_write(state, part, bytes)
              cells_read(state, part, from, n) / cells_write(state, part, n, bytes) / set_n(state, n)
 seal         seal(state)                 the engine's boundary rule
-geometry     geometry_key(state) -> bytes   what besides inputs and boundaries decides the state's bits
+geometry     geometry_key(state) -> bytes   layout that changes bits, added to the recipe
+coverage     coverage(part bytes) -> positions held; fits(coverage, slot) -> ok | why
 poison       poisoned(state) -> bool
 admission    pass_problem(segments) -> ok | why
 stages       stage_pass(stage, segments, residual_in) -> residual_out | outputs
@@ -81,7 +82,7 @@ telemetry    stage_times(), dispatches(), ...
 | arena | 60 DMA-BUF slabs (`slab_fd_name(l, card)`), `verify_stored_slab` | spot check: first and last 64 bytes per tensor |
 | slots | `set_slot`, `load_kv`, `load_kv_layer`; `kv_high` | no contexts, no stored token count, no fork |
 | parts | `save_kv_layer_from` (a range read), `load_kv_layer` | KV only: cells on global layers, ring on sliding layers |
-| geometry | slot size, ring rows (`kv_ring`, `kv_keep_from`) | not in today's id (`held.rs:312-325`) |
+| coverage | slot size, ring rows (`kv_ring`, `kv_keep_from`); `KvSnapshot::join` is the fit check | changes rows held, not bits, so no `geometry_key`; today's id is a recipe (`held.rs:312-325`) |
 | pass | `run_card0` then `run_card1`; `pipeline_stage` for jobs in flight on both cards | two stages |
 | segments | `PipeJob`; `branch_block` with per-token `meta` | a branch block is atomic and is not a snapshot |
 | inputs | `write_embeddings` puts rows into `Buf::X` | rows today, made from tokens on the host |
@@ -94,17 +95,34 @@ or (b) the engine declares stages and exports `stage_pass`, and the nagaya sched
 (b) lets the scheduler fill an idle card, as mkviolet's low-priority path does today, and the same residual boundary
 is what a model split across machines needs later. But (b) needs the full segment shape (positions, meta, logit rows,
 a snapshot to restore, the slot) and must stop another job writing the slot between a block's two stages.
-Proposed: mkviolet starts with (a); (b) comes once the segment shape is settled, and first for splits across
-machines.
+Decided 2026-10-17 (Amy: "yeah that sound reasonable"): mkviolet starts with (a); (b) comes once the segment shape
+is settled, and first for splits across machines. Amy may stop running one Gemma 4 across both B70 cards and use
+them independently instead, "since they're the fastest memory we have at home", which would make mkviolet two
+one-stage engines and D1 moot for it.
 
 **D2. Inputs.** An engine declares tokens, rows, or both. mk needs token ids even when given rows, because its
 per-layer embeddings (PLE) hash them and its PLE history is a fixed part (`engine.h:75`, `ple_rows`). gmk's audio rows
 and diffusion latents have no tokens. Proposed: `inputs = tokens | rows | tokens+rows`, declared per engine.
 
-**D3. Snapshot ids.** Proposed: the nagaya hashes the identity (bit settings included), the inputs, the boundaries,
-and the engine's `geometry_key`. An engine without the geometry capability promises its bits do not depend on
-geometry. The alternative, hashing the sealed bytes, gives exact ids but needs the bytes before the id, so a store
-could never answer "do we already have this?" before building it.
+**D3. Snapshot ids are content ids.** Decided 2026-10-17 (Amy: "yeah, 1, cas is awesome"). Two keys:
+
+- The **content id** names a snapshot: a BLAKE3 hash of its sealed bytes and its parent's content id. A stored piece
+  of a chain (mkviolet holds only the rows after its parent) is named exactly. Dedup, integrity, pins, and moving
+  snapshots between machines all use it.
+- The **recipe** is a hash the nagaya computes, with the engine unloaded if need be, from the identity (bit settings
+  included), the inputs and the boundaries, plus `geometry_key` for an engine whose bits depend on layout. The store
+  maps a recipe to one or more content ids, which answers "do we already have this?" before a build, and prefix
+  lookups are hashing.
+
+One recipe can have several content ids because coverage differs. In mkviolet, slot size decides which rows a
+snapshot *holds*, not what their bits *are*: `kv_ring` and `kv_keep_from` choose the positions a slot keeps, and a
+ring row holds the same K and V for its position as a full plane does (`gemma4.rs:44-63`). `join` fails on missing
+rows, not on different bits. Each stored snapshot therefore records its coverage (positions held, per part), and
+fit is a separate check (`coverage` capability). This corrects review finding 3, which put geometry in the id.
+
+Two content ids under one recipe that cover the same positions mean the engine did not reproduce its bits, or the
+recipe misses an input. The nagaya refuses to serve that recipe and reports it; it never picks one. Hashing an mk
+snapshot whole (about 316 MB) costs tens of milliseconds at BLAKE3 speeds, small next to a pass.
 
 **D4. Cost before a pass.** Neither engine estimates; both report time after. Proposed: no estimate call in v0; the
 nagaya fits a cost model per engine from pass times and segment sizes.
@@ -121,7 +139,7 @@ the others.
 
 ## Not covered yet
 
-- Training: weights the engine writes (an arena that is not read-only), backward passes, optimizer state as fixed
+- Training: weights the engine writes (an arena that is not read-only; weights are a state object, ontology), backward passes, optimizer state as fixed
   parts (full size at every snapshot unless stored another way), micro-batch quanta that filler work is preempted
   between.
 - Image engines: a diffusion latent is a fixed part replaced at each step; there is no `n` to extend, and the outputs
