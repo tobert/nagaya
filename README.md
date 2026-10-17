@@ -42,6 +42,14 @@ and strix halo for 128GB bigger models where we maybe don't care about speed as 
 certain tasks." Today's Gemma 4 needs both B70 cards; one card would take a smaller Gemma, "or probably a qwen and
 lfm".
 
+Between machines (Amy, 2026-10-17): "gigabit rn, could be 10g with a little work ... so not dma, would need to be
+mostly control traffic or final product movement. so the moe idea probably isn't right. probably whole model on the
+gpu and we look more at how to combine different models to achieve more, like the kaijutsu bump". A model stays on
+one machine. What crosses the network is jobs, their answers, and now and then a snapshot by content id. Splitting
+one MoE's experts across machines would move about 123 MB per 256-token pass over 48 round trips (10 KB per token per
+layer); a pipeline split would move about 5 MB once per pass. Both are out of reach at gigabit and not worth it
+while gfx1151host and sm121host each hold 128 GB.
+
 The first pass keeps three doors open:
 
 1. Engines load and unload while the nagaya runs. Weight arenas are exportable file descriptors (mk's arena,

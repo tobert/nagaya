@@ -13,10 +13,11 @@ steps, and slot geometry changes what a snapshot holds (since resolved as covera
 ## Places
 
 **Machine.** One computer. It runs exactly one nagaya process, which owns all of the machine's GPUs.
-Today: gfx1151host (Strix Halo, one gfx1151 GPU, 128 GB unified memory), the B70 box (two Intel Arc Pro B70, 64 GB GDDR6
-total, Ryzen 9 9950X, 128 GB DDR5, 4 TB NVMe), a DGX Spark (one Blackwell GPU, 128 GB unified memory), and rented
-machines (`~/src/rented-gpu`). The B70 cards are the fastest memory we have; the two 128 GB machines hold bigger
-models, for tasks where capability matters more than speed.
+Today: gfx1151host (Strix Halo, one gfx1151 GPU, 128 GB unified memory), b70host (two Intel Arc Pro B70, 64 GB GDDR6
+total, Ryzen 9 9950X, 128 GB DDR5, 4 TB NVMe), sm121host (DGX Spark, one Blackwell GPU, 128 GB unified memory), and
+rented machines (`~/src/rented-gpu`). The B70 cards are the fastest memory we have; the two 128 GB machines hold
+bigger models, for tasks where capability matters more than speed. The machines are wired: gigabit today, 10 GbE
+with a little work, more on b70host (it has a BlueField-2), 5 GbE possible on gfx1151host.
 
 **Device.** One thing that runs quanta: a GPU, or the CPU when an engine runs work there (mkviolet's AVX-512 lens,
 mkviolet `docs/03-distributed-state-architecture.md` 2.5). mkviolet keeps one Level Zero context per card
@@ -26,7 +27,7 @@ move into it.
 
 **Tier.** A place a state object can be: device memory, host memory, NVMe, or another machine. Tiers are a graph
 with measured bandwidths per machine, not a fixed list. On gfx1151host and the DGX Spark, device memory and host memory
-are the same LPDDR5X; on the B70 box they are separate (608 GB/s GDDR6 per card, about 90 GB/s DDR5, about 14.8 GB/s
+are the same LPDDR5X; on b70host they are separate (608 GB/s GDDR6 per card, about 90 GB/s DDR5, about 14.8 GB/s
 NVMe, mkviolet `docs/03`).
 
 ## Things
