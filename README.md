@@ -27,7 +27,8 @@ tempted to come up with a new name and port all the code into a fresh repo and c
 ## Documents
 
 - `docs/ontology.md`: the nouns, defined once, with where each one already exists in mk and mkviolet.
-- `docs/engine-abi.md`: the draft engine ABI v0, how mk and mkviolet map onto it, and the decisions it needs.
+- `docs/engine-abi.md`: the draft engine ABI v0, how mk and mkviolet map onto it, and its decisions.
+- `docs/reviews.md`: reviews of these documents and what we did with each finding.
 
 ## Later (doors to keep open, nothing to build in the first pass)
 
@@ -36,18 +37,24 @@ focus on some task that fits on all 3 machines in the lab in a particular way, b
 when we're coding and interacting more? ... would need more orchestration and cluster membership than I want to
 build in the first pass."
 
+Machines (Amy, 2026-10-17): the B70 cards are "the fastest memory we have at home"; "We have the dgx spark for 128GB
+and strix halo for 128GB bigger models where we maybe don't care about speed as much as overall capability for
+certain tasks." Today's Gemma 4 needs both B70 cards; one card would take a smaller Gemma, "or probably a qwen and
+lfm".
+
 The first pass keeps three doors open:
 
 1. Engines load and unload while the nagaya runs. Weight arenas are exportable file descriptors (mk's arena,
    mkviolet's DMA-BUF slabs), so a staged arena in host memory or on NVMe makes a swap a copy between tiers.
 2. Placement is data. Which engine runs where is a declared profile (day: several models; night: one job across
    machines). A small controller can reconcile toward it later; the first inventory is a static file.
-3. State objects are bytes with content ids, so they can cross the network between machines that run the same
-   engine identity.
+3. State objects (weights, contexts, snapshots) are bytes with content ids, so they can cross the network between
+   machines that run the same engine identity.
 
 A model spread across machines over Ethernet means pipeline stages per machine. mkviolet already splits Gemma 4 by
 layers across its two cards and hands the residual between them on the host (`gemma4.rs` `pipeline_stage`), so a
-stage boundary is a residual at a layer, which `docs/engine-abi.md` names as a contract.
+stage boundary is a residual at a layer. `docs/engine-abi.md` D1 defers exposing stages until a split across
+machines needs it.
 
 lfm (Amy, 2026-10-17): "we'd add lfm over time and likely deprecate lfm2d". lfm2d is candle-based on a fork of
 candle; it may stay as a second council API implementation. A new lfm engine (perhaps LFM 2.5 on one Intel card)

@@ -31,3 +31,20 @@ ABI is the second one, not the third."
 
 Unverified by the review (files outside the copies): the 256-token target, `YieldHook`, mkviolet `docs/03`
 bandwidths, `council_v2.rs`, `stage.h`, `test_segments.py`, `docs/painter.md`.
+
+## 2026-10-17: consistency pass (Claude, after D1 and D3)
+
+Amy asked for a read of every file for consistency and use of the ontology.
+
+- mk's "stage" (`stage.h`, "A stage is one op with its arguments") is our op. Noted in Op; ABI telemetry is
+  `op_times()`.
+- Weights became a state object, but State object listed two kinds. Now three: weights, context, snapshot; the
+  identity's weights hash is the weights' content id.
+- Leftovers from geometry-in-the-id: Boundary said boundaries are in the id (now the recipe); quantum condition 4
+  said "same slot geometry" (now: a slot the coverage fits); "layout" and "geometry" named one thing (now geometry).
+- Content id: the parent's id is hashed only for a piece of a chain; mk's whole snapshots have no parent.
+- D1 said per-card use makes mkviolet two engines; Gemma 4 does not fit on one card, so per-card means smaller
+  engines. D2 deferred to the first port. Decision status listed: D4-D7 not yet reviewed with Amy.
+- Machines: the third lab machine is the DGX Spark; gfx1151host and the Spark are 128 GB unified LPDDR5X.
+- References into other repos named their repo (mkviolet `docs/03`, `council_v2.rs`; mk `docs/painter.md`).
+- README said the ABI "names as a contract" the residual boundary; it does not, D1 defers it.
