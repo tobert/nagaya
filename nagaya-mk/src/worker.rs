@@ -423,7 +423,21 @@ fn fast_qmm_from(value: Option<&str>) -> Result<bool, MkError> {
     }
 }
 
-/// Refuse a load that cannot fit in the free memory. mk allocates the weight arena in full.
+/// The host safety floor. mk keeps 12 GiB of MemAvailable free (spec 4.7; mk `service/contexts.py`, `FLOOR_BYTES`).
+const MEMORY_FLOOR: u64 = 12 << 30;
+
+/// Refuse a load that leaves less than the floor free.
+fn memory_problem(available: u64, needed: u64) -> Result<(), String> {
+    if available < needed.saturating_add(MEMORY_FLOOR) {
+        return Err(format!(
+            "the shards take {needed} bytes and mk loads them into memory; \
+             {available} bytes are available and the floor is {MEMORY_FLOOR}"
+        ));
+    }
+    Ok(())
+}
+
+/// Refuse a load that cannot fit in the free memory. mk allocates the weight arena in full, and the floor stays free.
 fn check_memory(needed: u64) -> Result<(), MkError> {
     let text =
         std::fs::read_to_string("/proc/meminfo").map_err(|error| MkError::new(format!("/proc/meminfo: {error}")))?;
@@ -434,13 +448,7 @@ fn check_memory(needed: u64) -> Result<(), MkError> {
         .and_then(|value| value.parse::<u64>().ok())
         .map(|kilobytes| kilobytes * 1024)
         .ok_or_else(|| MkError::new("/proc/meminfo has no MemAvailable"))?;
-    let margin = 4 << 30;
-    if available < needed.saturating_add(margin) {
-        return Err(MkError::new(format!(
-            "the shards take {needed} bytes and mk loads them into memory; {available} bytes are available"
-        )));
-    }
-    Ok(())
+    memory_problem(available, needed).map_err(MkError::new)
 }
 
 /// The SHA-256 of a file, as lowercase hex.
@@ -948,7 +956,17 @@ mod tests {
     use std::os::unix::ffi::OsStrExt;
     use std::path::PathBuf;
 
-    use super::{fast_qmm_from, parse_shards, rounds_to_finite};
+    use super::{fast_qmm_from, memory_problem, parse_shards, rounds_to_finite};
+
+    #[test]
+    fn a_load_that_leaves_less_than_the_floor_is_refused() {
+        // spec 4.7: mk keeps 12 GiB of MemAvailable free (mk service/contexts.py, FLOOR_BYTES).
+        let floor: u64 = 12 << 30;
+        assert_eq!(memory_problem(floor, 0), Ok(()));
+        assert!(memory_problem(floor - 1, 0).is_err());
+        assert!(memory_problem(floor, 1).is_err());
+        assert_eq!(memory_problem(floor + 1, 1), Ok(()));
+    }
 
     #[test]
     fn a_bf16_round_of_a_finite_value_can_be_infinite() {
