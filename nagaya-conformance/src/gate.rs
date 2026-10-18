@@ -209,13 +209,71 @@ fn fill_from_a_pass<E: Engine + ?Sized>(
     let segment = token_segment(state, 0, &[1]);
     run_pass(engine, &segment, gate)?;
     let after = read_fixed(engine, state, limits, gate)?;
-    if !before.is_empty() && !any_part_differs(&before, &after) {
+    if before.is_empty() {
+        // The engine has no fixed part to change. Compare its two read paths instead: a constant `part_read` cannot
+        // agree with the rows that `cells_read` returns.
+        compare_part_and_rows(engine, state, limits, gate)?;
+    } else if !any_part_differs(&before, &after) {
         return Err(Failure::new(
             gate,
             "the pass changed no fixed part, so the gate cannot tell a fill from a constant read",
         ));
     }
     read_filled(engine, state, limits, gate)
+}
+
+/// Check that `part_read` and `cells_read` agree on one row of every stored row part.
+///
+/// The gate needs this check when the engine has no fixed part. A read that does not agree with the engine's own
+/// range read cannot show what the pass wrote.
+fn compare_part_and_rows<E: Engine + ?Sized>(
+    engine: &mut E,
+    state: State,
+    limits: &Limits,
+    gate: &'static str,
+) -> Result<(), Failure> {
+    let mut compared = 0;
+    for (id, part) in limits.parts.iter().enumerate() {
+        if !part.is_row() {
+            continue;
+        }
+        let row = shape_bytes(part) as usize;
+        if row == 0 {
+            return Err(Failure::new(gate, format!("part {} has a zero row", part.name)));
+        }
+        let mut whole = vec![0u8; row];
+        if let Err(error) = engine.parts().unwrap().part_read(state, id, &mut whole) {
+            return Err(Failure::new(
+                gate,
+                format!("the engine refused to read part {}: {error:?}", part.name),
+            ));
+        }
+        let mut range = vec![0u8; row];
+        if let Err(error) = engine.parts().unwrap().cells_read(state, id, 0, 1, &mut range) {
+            return Err(Failure::new(
+                gate,
+                format!(
+                    "the engine refused a range read of part {}: {error:?}; the gate cannot tell a fill from a \
+                     constant read",
+                    part.name
+                ),
+            ));
+        }
+        if whole != range {
+            return Err(Failure::new(
+                gate,
+                format!("part {} gives other bytes by part_read than by cells_read", part.name),
+            ));
+        }
+        compared += 1;
+    }
+    if compared == 0 {
+        return Err(Failure::new(
+            gate,
+            "the engine has no fixed part and no row part, so the gate cannot tell a fill from a constant read",
+        ));
+    }
+    Ok(())
 }
 
 /// True when at least one part's bytes differ between two reads.
