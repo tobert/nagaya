@@ -2,7 +2,9 @@
 
 use std::fmt;
 
-use nagaya_abi::{ChainLimits, Determinism, Engine, Inputs, Lifetime, Limits, MandatoryTerm, MemoryLimits, Tier};
+use nagaya_abi::{
+    ChainLimits, Determinism, ElasticTerm, Engine, Inputs, Lifetime, Limits, MandatoryTerm, MemoryLimits, Tier,
+};
 use nagaya_ledger::{Budget, EnginePlan, Ledger, Profile};
 
 use crate::gate::{
@@ -56,7 +58,6 @@ impl fmt::Display for Suite {
 
 /// Run every gate of spec 8.3 on fresh engines from `make`.
 pub fn run_all<E: Engine>(make: &mut dyn FnMut() -> E) -> Suite {
-    let (fitting, refused) = refusal_profiles();
     let gates = vec![
         GateResult {
             name: "park_and_restore",
@@ -84,7 +85,7 @@ pub fn run_all<E: Engine>(make: &mut dyn FnMut() -> E) -> Suite {
         },
         GateResult {
             name: "admission_refusal_changes_nothing",
-            outcome: admission_refusal_changes_nothing(&mut Ledger::new(), &fitting, &refused),
+            outcome: admission_gate(),
         },
     ];
     Suite { gates }
@@ -140,4 +141,47 @@ fn gate_profile(budget_bytes: u64, mandatory_bytes: u64) -> Profile {
 /// One profile that fits 16 bytes, and one that needs 1 byte in a 0-byte budget.
 fn refusal_profiles() -> (Profile, Profile) {
     (gate_profile(16, 1), gate_profile(0, 1))
+}
+
+fn elastic_limits() -> Limits {
+    let mut limits = gate_limits(0);
+    limits.memory.elastic = vec![ElasticTerm {
+        name: "gate-cache".to_owned(),
+        tier: Tier::Host,
+        unit_bytes: 8,
+        minimum: 2,
+        maximum: 4,
+        kinds: Vec::new(),
+    }];
+    limits
+}
+
+fn elastic_profile(budget_bytes: u64) -> Profile {
+    Profile {
+        budgets: vec![Budget {
+            tiers: vec![Tier::Host],
+            bytes: budget_bytes,
+        }],
+        engines: vec![EnginePlan {
+            name: "gate".to_owned(),
+            limits: elastic_limits(),
+            share: 1,
+        }],
+    }
+}
+
+/// Two 8-byte units fit 16 bytes and do not fit 8 bytes.
+fn elastic_refusal_profiles() -> (Profile, Profile) {
+    (elastic_profile(16), elastic_profile(8))
+}
+
+/// Run the admission gate on the mandatory path first, then on the elastic path.
+fn admission_gate() -> Outcome {
+    let (fitting, refused) = refusal_profiles();
+    let outcome = admission_refusal_changes_nothing(&mut Ledger::new(), &fitting, &refused);
+    if outcome.failed() {
+        return outcome;
+    }
+    let (fitting, refused) = elastic_refusal_profiles();
+    admission_refusal_changes_nothing(&mut Ledger::new(), &fitting, &refused)
 }

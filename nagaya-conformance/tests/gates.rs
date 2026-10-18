@@ -4,9 +4,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use nagaya_abi::fake::{FakeAlways, FakeBroken};
 use nagaya_abi::{
-    ChainLimits, Coverage, CoverageSpan, Determinism, Engine, Identity, Inputs, Lifetime, Limits, MandatoryTerm,
-    MemoryLimits, PartError, PartId, PartKind, Parts, PassError, PassOut, Segment, SlotLimit, Slots, State, Tap, Tier,
-    WriteResult,
+    ChainLimits, Coverage, CoverageSpan, Determinism, ElasticTerm, Engine, Identity, Inputs, Lifetime, Limits,
+    MandatoryTerm, MemoryLimits, PartError, PartId, PartKind, Parts, PassError, PassOut, Segment, SlotLimit, Slots,
+    State, Tap, Tier, WriteResult,
 };
 use nagaya_conformance::{
     Admit, Outcome, admission_refusal_changes_nothing, park_and_restore, quantum_identity, quantum_isolation,
@@ -559,6 +559,43 @@ fn profile(budget_bytes: u64, mandatory_bytes: u64) -> Profile {
             share: 1,
         }],
     }
+}
+
+fn elastic_limits() -> Limits {
+    let mut limits = limits_with(0);
+    limits.memory.elastic = vec![ElasticTerm {
+        name: "gate-cache".to_owned(),
+        tier: Tier::Host,
+        unit_bytes: 8,
+        minimum: 2,
+        maximum: 4,
+        kinds: Vec::new(),
+    }];
+    limits
+}
+
+fn elastic_profile(budget_bytes: u64) -> Profile {
+    Profile {
+        budgets: vec![Budget {
+            tiers: vec![Tier::Host],
+            bytes: budget_bytes,
+        }],
+        engines: vec![EnginePlan {
+            name: "gate".to_owned(),
+            limits: elastic_limits(),
+            share: 1,
+        }],
+    }
+}
+
+#[test]
+fn an_elastic_shortfall_passes_the_admission_gate() {
+    let fitting = elastic_profile(16);
+    let refused = elastic_profile(8);
+    assert_pass(
+        admission_refusal_changes_nothing(&mut Ledger::new(), &fitting, &refused),
+        "elastic admission",
+    );
 }
 
 #[test]
