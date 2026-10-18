@@ -82,9 +82,12 @@ impl MkEngine {
         self.worker.owns_kv(id)
     }
 
-    /// mk's byte count for one part and token count.
-    pub fn part_bytes(&self, part: u32, n: u32) -> u64 {
-        self.worker.part_bytes(part, n)
+    /// mk's byte count for one stored part and token count.
+    pub fn part_bytes(&self, part: u32, n: u32) -> Result<u64, MkError> {
+        spec::stored_part(part)?;
+        self.worker
+            .part_bytes(part, n)
+            .ok_or_else(|| MkError::new("the mk worker stopped"))
     }
 
     /// Record one failed call and return its error.

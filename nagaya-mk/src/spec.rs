@@ -112,6 +112,17 @@ pub fn parts() -> Vec<PartLimits> {
     ]
 }
 
+/// The part index, when mk stores that part. mk's `state_bytes` dies on part 6 (derived) and on any part past 5.
+pub fn stored_part(part: u32) -> Result<u32, String> {
+    if part < 6 {
+        Ok(part)
+    } else {
+        Err(format!(
+            "mk has no stored part {part}; parts 0-5 are stored and part 6 is derived"
+        ))
+    }
+}
+
 /// The limits of the engine for the fixed context pool.
 pub fn limits(arena_bytes: u64) -> Limits {
     Limits {
@@ -227,6 +238,16 @@ pub fn model_name(path: Option<&Path>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_part_bytes_ask_refuses_a_part_that_mk_does_not_store() {
+        for part in 0..=5 {
+            assert_eq!(stored_part(part), Ok(part), "part {part}");
+        }
+        // mk's state_bytes dies on part 6, which is derived, and on a part past 5. The binding must not call it.
+        assert!(stored_part(6).is_err());
+        assert!(stored_part(99).is_err());
+    }
 
     #[test]
     fn the_declared_part_shapes_use_the_mk_sizes() {

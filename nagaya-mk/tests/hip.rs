@@ -66,12 +66,14 @@ fn the_binding_opens_mk_and_declares_its_parts() {
     assert_eq!(context.bytes, 132_587_520);
 
     // mk's own byte counts agree with the declared shapes.
-    assert_eq!(engine.part_bytes(0, 0), 113_246_208);
-    assert_eq!(engine.part_bytes(1, 0), 4_423_680);
-    assert_eq!(engine.part_bytes(2, 0), 368_640);
-    assert_eq!(engine.part_bytes(3, 5), 5 * 49_152);
-    assert_eq!(engine.part_bytes(4, 5), 5 * 6_144);
-    assert_eq!(engine.part_bytes(5, 0), 8);
+    assert_eq!(engine.part_bytes(0, 0).expect("part 0"), 113_246_208);
+    assert_eq!(engine.part_bytes(1, 0).expect("part 1"), 4_423_680);
+    assert_eq!(engine.part_bytes(2, 0).expect("part 2"), 368_640);
+    assert_eq!(engine.part_bytes(3, 5).expect("part 3"), 5 * 49_152);
+    assert_eq!(engine.part_bytes(4, 5).expect("part 4"), 5 * 6_144);
+    assert_eq!(engine.part_bytes(5, 0).expect("part 5"), 8);
+    // Part 6 is derived: mk_ctx_part_bytes would stop the program, so the binding refuses it first.
+    assert!(engine.part_bytes(6, 0).is_err());
 
     let identity = engine.identity();
     assert_eq!(identity.model, "Qwen3.8-Flash-Next-UD-IQ4_XS");

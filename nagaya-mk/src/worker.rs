@@ -365,9 +365,9 @@ impl Worker {
         })
     }
 
-    /// mk's byte count for one part and token count.
-    pub fn part_bytes(&self, part: u32, n: u32) -> u64 {
-        self.ask(|reply| Command::PartBytes { part, n, reply }).unwrap_or(0)
+    /// mk's byte count for one part and token count, or `None` when the worker stopped.
+    pub fn part_bytes(&self, part: u32, n: u32) -> Option<u64> {
+        self.ask(|reply| Command::PartBytes { part, n, reply })
     }
 }
 
