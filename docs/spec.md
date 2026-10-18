@@ -379,8 +379,10 @@ its tip. The store keeps only the chains that fit the slot (coverage) and the se
 The store picks the deepest exact chain. The deepest chain is the one whose furthest covered position is highest in
 every part. The store gives an approximate chain only to a served model whose tolerance names that method.
 
-**Proposed** by deepseek-flash, 2026-10-18. Two chains can be incomparable under the deepest rule: each is
-higher in a different part. The store refuses the lookup with an error. It does not pick one by a tie-break.
+**The lookup refuses incomparable chains.** Two chains can be incomparable under the deepest rule: each is higher in
+a different part. The store refuses the lookup with an error that names both chains. It does not pick one by a
+tie-break. The process treats that refusal as a miss and recomputes. Decided 2026-10-18.
+
 Reason: a silent choice would not be the deepest in every part.
 
 **Proposed** by deepseek-flash, 2026-10-18. Two chains can be equal: the same furthest covered position in every
