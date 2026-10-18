@@ -332,3 +332,58 @@ fn the_next_quantum_has_the_jobs_kind() {
     let (_, next) = step(state(jobs), Event::Tick { now_ms: 0 });
     assert_eq!(next, quantum(Class::Batch, Kind::Decode, &[1]));
 }
+
+#[test]
+fn owed_balances_stay_zero_sum() {
+    let jobs = vec![
+        job(1, Class::Interactive, 0, 0, 0, &[Kind::Prefill; 20]),
+        job(2, Class::Interactive, 0, 1, 0, &[Kind::Prefill; 20]),
+        job(3, Class::Interactive, 0, 2, 0, &[Kind::Prefill; 20]),
+    ];
+    let scheduler = state(jobs);
+    let (mut scheduler, mut next) = step(scheduler, Event::Tick { now_ms: 0 });
+    for duration in [1, 2, 5, 7, 3, 11, 4, 9, 6, 8] {
+        assert!(next.is_some());
+        let (next_state, next_quantum) = step(
+            scheduler,
+            Event::Complete {
+                now_ms: 0,
+                duration_ms: duration,
+                outcome: Completion::Done,
+            },
+        );
+        scheduler = next_state;
+        next = next_quantum;
+    }
+    let total: i64 = scheduler.jobs.iter().map(|job| job.balance_ms).sum();
+    assert_eq!(total, 0);
+}
+
+#[test]
+fn the_owed_remainder_goes_to_the_earliest() {
+    let mut running_job = job(1, Class::Interactive, 1, 1, 0, &[Kind::Prefill, Kind::Prefill]);
+    running_job.state = JobState::Running;
+    running_job.quanta.pop_front();
+    let earliest = job(2, Class::Interactive, 0, 0, 0, &[Kind::Prefill]);
+    let latest = job(3, Class::Interactive, 0, 2, 0, &[Kind::Prefill]);
+    let scheduler = Scheduler {
+        jobs: vec![running_job, earliest, latest],
+        running: Some(Quantum {
+            engine: 0,
+            class: Class::Interactive,
+            kind: Kind::Prefill,
+            segments: vec![1],
+        }),
+    };
+    let (scheduler, _) = step(
+        scheduler,
+        Event::Complete {
+            now_ms: 2,
+            duration_ms: 2,
+            outcome: Completion::Done,
+        },
+    );
+    assert_eq!(scheduler.jobs[0].balance_ms, -1);
+    assert_eq!(scheduler.jobs[1].balance_ms, 1);
+    assert_eq!(scheduler.jobs[2].balance_ms, 0);
+}

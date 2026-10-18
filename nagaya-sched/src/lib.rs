@@ -207,25 +207,36 @@ pub fn step(mut state: Scheduler, event: Event) -> (Scheduler, Option<Quantum>) 
 impl Scheduler {
     fn complete(&mut self, running: Quantum, duration_ms: u64, outcome: Completion) {
         if running.class == Class::Interactive {
-            let present: Vec<JobId> = self
+            let present: Vec<(JobId, u64)> = self
                 .jobs
                 .iter()
                 .filter(|job| job.class == Class::Interactive && !job.state.is_terminal())
-                .map(|job| job.id)
+                .map(|job| (job.id, job.arrival_ms))
                 .collect();
             let count = present.len() as u128;
             if count > 0 {
                 let duration = duration_ms as u128;
-                for job in &mut self.jobs {
-                    if job.class != Class::Interactive || job.state.is_terminal() {
-                        continue;
-                    }
-                    let delta = if running.segments.contains(&job.id) {
+                let mut deltas: Vec<(JobId, i64)> = Vec::new();
+                for (id, _) in &present {
+                    let delta = if running.segments.contains(id) {
                         -((duration * (count - 1)).checked_div(count).unwrap_or(0) as i64)
                     } else {
                         duration.checked_div(count).unwrap_or(0) as i64
                     };
-                    job.balance_ms = (job.balance_ms + delta).clamp(-30_000, 30_000);
+                    deltas.push((*id, delta));
+                }
+                let total: i64 = deltas.iter().map(|(_, delta)| *delta).sum();
+                if total != 0 {
+                    if let Some((earliest, _)) = present.iter().min_by_key(|(id, arrival)| (*arrival, *id)) {
+                        if let Some((_, delta)) = deltas.iter_mut().find(|(id, _)| id == earliest) {
+                            *delta -= total;
+                        }
+                    }
+                }
+                for (id, delta) in deltas {
+                    if let Some(job) = self.jobs.iter_mut().find(|job| job.id == id) {
+                        job.balance_ms = (job.balance_ms + delta).clamp(-30_000, 30_000);
+                    }
                 }
             }
         }
