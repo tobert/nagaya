@@ -255,8 +255,10 @@ that fits the ABI.
   `weight_hash` does. The digest starts with `spot-sha256:`.
 - **`tokenizer_hash` is `none`.** mk loads no tokenizer file. The nagaya's family library tokenizes text (spec 11.3).
 - **`canary_hash` is empty.** This binding does not run mk's canary. The process adds it in a later milestone.
-- **The identity carries `MK_FAST_QMM` and `fused`.** Both are `Approx` bit settings. mk reads `MK_FAST_QMM` at each
-  pass build (`engine.h:27-32`).
+- **The identity carries `MK_FAST_QMM`, `MK_TILES` and `fused`.** They are `Approx`, `ReferenceDefining` and
+  `Approx`. mk reads `MK_FAST_QMM` at each pass build (`engine.h:27-32`). `MK_TILES` chooses the tiled or the GGUF
+  layout at load (`engine.h:139-146`). The binding has not measured whether the two give equal bits. A change after
+  open refuses the pass, as for `MK_FAST_QMM`.
 
 Reason for all: the code must not guess. Amy can change each choice.
 
