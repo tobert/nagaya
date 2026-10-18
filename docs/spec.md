@@ -231,6 +231,11 @@ while interactive is more cooperative multitasking"):
   present jobs in `interactive`, clamped to ±30 s. A job that leaves takes only its own balance (ds4-recipe
   `11-multi-session-serving.md` section 6).
 
+**Proposed** by deepseek-flash, 2026-10-18: a larger integer priority is higher priority. The scheduler picks
+the higher priority first, then the higher owed balance, then the earlier arrival. On a quantum of d ms for
+job j among n present interactive jobs, j's balance falls by d*(n-1)/n. Each other job's balance rises by
+d/n. Round down, and clamp the balance to ±30 s. A job that leaves removes its own balance.
+
 **5.5 Filler.** A filler job declares a checkpoint interval: the time between its checkpoints. It must be resumable:
 its state parks when it gives way (Ai2's "unallocated" time). It runs only when no interactive or batch quantum is
 ready on its device group.
