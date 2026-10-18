@@ -365,6 +365,10 @@ is a later one.
 The store cannot compute the recipe hash again, because it does not have the tokens. Reason: 6.5 says a delta's
 recipe follows its parent's. The caller holds the inputs that prove it.
 
+**Proposed** by deepseek-flash, 2026-10-18. `max_depth` counts deltas, not entries. A chain with a base and one
+delta has depth 1. A store with `max_depth: 0` refuses every delta. Reason: 6.5 gives ds4-recipe depth 1 with one
+delta. Amy decides.
+
 **6.6 Lookup.** A lookup is by recipe. It returns the chain of entries that covers the request, from its base to
 its tip. The store keeps only the chains that fit the slot (coverage) and the served model's tolerance (ontology).
 
@@ -375,9 +379,21 @@ every part. The store gives an approximate chain only to a served model whose to
 higher in a different part. The store refuses the lookup with an error. It does not pick one by a tie-break.
 Reason: a silent choice would not be the deepest in every part.
 
+**Proposed** by deepseek-flash, 2026-10-18. Two chains can be equal: the same furthest covered position in every
+part. A tie is not an incomparable pair. The store serves the newest entry by `created_ms`. If two entries have the
+same `created_ms`, the store serves the smaller content id.
+
+Reason: senpai leans to a fixed tie-break. A put that the store allowed should not fail at lookup. Amy decides.
+Note: D3 says a per-process engine refuses only within one process, and 6.7 lists only `always` and `pinned`. A
+per-process store can hold two equal-coverage entries under one recipe.
+
 **6.7 The tripwire.** Some engines declare `always` or `pinned` (D3). For those engines, two content ids under one
 recipe with the same coverage are a defect. The store quarantines both entries, refuses that recipe, and reports
 it. A person clears the refusal after the cause is known.
+
+**Proposed** by deepseek-flash, 2026-10-18. Clearing a tripwire refusal removes the recipe's quarantined entries
+and their blobs. It does not clear a content-id quarantine; `clear_entry` does that. Reason: a tripwire entry is
+never served, eviction sees only live entries, and a person has named the cause. Amy decides.
 
 For other engines, the audit job (8.4) does the check.
 
