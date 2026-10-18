@@ -12,6 +12,15 @@ pub type JobId = u64;
 /// One device group.
 pub type EngineId = u32;
 
+/// One engine's scheduling facts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Engine {
+    /// The device group.
+    pub id: EngineId,
+    /// True when the engine allows segments in one pass.
+    pub segments_exact: bool,
+}
+
 /// How urgently a job's quanta run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Class {
@@ -97,10 +106,17 @@ pub struct Quantum {
 }
 
 /// The scheduler state.
+///
+/// One scheduler serves one device group in the process (spec 3.2, D1:
+/// one thread per device group). A test state may carry more than one
+/// engine to check that a pass never mixes engines; the gate is per
+/// scheduler.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Scheduler {
     /// The jobs.
     pub jobs: Vec<Job>,
+    /// The engines and their segment rules.
+    pub engines: Vec<Engine>,
     /// The quantum that runs, when one does.
     pub running: Option<Quantum>,
 }
@@ -327,9 +343,15 @@ impl Scheduler {
             }
             let best = candidates.first().copied()?;
             let engine = best.engine;
+            let engine_exact = self
+                .engines
+                .iter()
+                .find(|info| info.id == engine)
+                .map(|info| info.segments_exact)
+                .unwrap_or(false);
             let kind = *best.quanta.front()?;
             let mut segments = vec![best.id];
-            if best.segments_exact {
+            if engine_exact {
                 for candidate in &candidates[1..] {
                     if candidate.engine == engine {
                         segments.push(candidate.id);
