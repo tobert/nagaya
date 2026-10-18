@@ -223,9 +223,9 @@ pub fn pass_scratch_bytes() -> u64 {
 /// setup for the first pass, which the engine also keeps for its life. The ledger holds the larger number, so it
 /// never under-declares the pool.
 ///
-/// Measured on 2026-10-18 on gfx1151, by `cargo run -p nagaya-mk --example pass_scratch --features hip` in three
-/// fresh engines: 323 731 456, 323 731 456 and 323 735 552 bytes (the last with MK_STAGE_TIMING). Spread: 4 096
-/// bytes. The declared value is the largest of the three.
+/// Measured on 2026-10-18 on gfx1151, by `cargo run -p nagaya-mk --example pass_scratch --features hip`, in five
+/// fresh engines: 323 731 456 bytes three times and 323 735 552 bytes twice (one with MK_STAGE_TIMING). Spread:
+/// 4 096 bytes. The declared value is the largest of the five.
 pub const PASS_SCRATCH_BYTES: u64 = 323_735_552;
 
 /// The reason that a measured pass scratch is past the declared constant, or `Ok` when it fits.
