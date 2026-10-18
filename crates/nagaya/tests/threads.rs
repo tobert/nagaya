@@ -340,6 +340,6 @@ fn a_stalled_group_reaches_the_caller() {
             devices: vec![0],
         }
     );
-    assert_eq!(event.exit_code(), Some(1));
+    assert_eq!(event.exit_code(), Some(nagaya::exit::ExitCode::Crash));
     drop(guard);
 }

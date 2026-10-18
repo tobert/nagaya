@@ -10,6 +10,7 @@ use nagaya_abi::{DeviceId, Engine, Limits};
 use nagaya_ledger::Ledger;
 
 use crate::admission::{AdmitError, Admitted, Factory, Registry, admit};
+use crate::exit::ExitCode;
 use crate::inventory::Inventory;
 use crate::placement::{self, DeviceGroup};
 use crate::profile::{EnginePlacement, PlacementProfile};
@@ -19,9 +20,6 @@ pub const DEFAULT_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The default heartbeat. A group beats six times in the default timeout.
 pub const DEFAULT_HEARTBEAT: Duration = Duration::from_secs(5);
-
-/// The exit code for a failed engine (spec 10.4, 8.5).
-pub const FAILED_ENGINE_EXIT_CODE: i32 = 1;
 
 /// A ledger that one thread owns. A write from another thread panics (spec 3.2, 8.5).
 pub struct OwnedLedger {
@@ -100,14 +98,23 @@ pub enum Event {
         /// The devices of the group.
         devices: Vec<DeviceId>,
     },
+    /// A worker thread panicked. The process stops (spec 8.5).
+    Panicked {
+        /// The worker: `group`, `ledger` or `watchdog`.
+        thread: &'static str,
+        /// The panic message.
+        message: String,
+    },
 }
 
 impl Event {
     /// The process exit code, when this event stops the process.
-    pub fn exit_code(&self) -> Option<i32> {
+    pub fn exit_code(&self) -> Option<ExitCode> {
         match self {
-            Event::Stalled { .. } => Some(FAILED_ENGINE_EXIT_CODE),
-            Event::Opened { .. } | Event::OpenFailed { .. } => None,
+            Event::Stalled { .. } => Some(ExitCode::Crash),
+            Event::OpenFailed { .. } => Some(ExitCode::RefusedStart),
+            Event::Panicked { .. } => Some(ExitCode::Crash),
+            Event::Opened { .. } => None,
         }
     }
 }
