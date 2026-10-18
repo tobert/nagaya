@@ -293,6 +293,11 @@ Thus a prefix lookup hashes only the tokens since the last boundary. The identit
 the fields of `identity()` (12.1). The inputs are tokens, not text: the tokenizer and template are in the identity.
 Decided 2026-10-18.
 
+**Proposed** by deepseek-flash, 2026-10-18. The tags are: 1 identity digest, 2 geometry key, 3 approximation
+tags, 4 lab state; 5 previous recipe, 6 tokens, 7 boundary position. The approximation item holds a `u64`
+count, then each tag as a `u64` length and its bytes. The caller gives the identity digest; the identity hash
+is spec 12.1. Reason: 6.2 fixes the item shape, but it does not give the tag numbers.
+
 mk's `context_id` and mkviolet's `snap:<sha256>` are the input part of a recipe. They do not include the engine
 identity. mk's id is a SHA-256 of the tokens and boundaries with `|gdn-bf16-v1|`.
 
