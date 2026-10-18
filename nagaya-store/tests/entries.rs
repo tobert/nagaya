@@ -380,6 +380,29 @@ fn a_pin_on_a_child_protects_its_parent() {
 }
 
 #[test]
+fn a_cross_tier_child_keeps_the_parent() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open_with_limits(dir.path(), 5_000, 5_000, u64::MAX, open_chain()).unwrap();
+    let root_recipe = recipe(162);
+    let root = put(&mut store, &base_snapshot(1), root_recipe, 1);
+    let child_recipe = next_recipe(root_recipe, 2);
+    let child = try_put(
+        &mut store,
+        &delta_at(root, 2),
+        child_recipe,
+        Some(root_recipe),
+        1,
+        Tier::Nvme,
+        10,
+    )
+    .unwrap();
+    let error = try_put(&mut store, &base_snapshot(3), recipe(163), None, 1, Tier::Host, 10).unwrap_err();
+    assert!(matches!(error, StoreError::NoSpace));
+    assert!(store.entries().contains_key(&root));
+    assert!(store.entries().contains_key(&child));
+}
+
+#[test]
 fn another_owners_child_keeps_the_parent() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(dir.path()).unwrap();

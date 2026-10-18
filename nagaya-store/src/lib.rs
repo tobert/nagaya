@@ -1355,7 +1355,10 @@ impl Store {
                 let Some(child_entry) = self.index.entries.get(&child) else {
                     continue;
                 };
-                if child_entry.owner != owner || self.pin_protects(child_entry, now_ms) {
+                if child_entry.owner != owner
+                    || self.pin_protects(child_entry, now_ms)
+                    || tier.is_some_and(|tier| child_entry.tier != tier)
+                {
                     evictable = false;
                     break;
                 }
