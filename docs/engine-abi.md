@@ -138,6 +138,38 @@ results (spec 6.8):
 `arena_id` is the content id of the packed bytes that the engine runs. The identity carries the checkpoint digest
 instead, so a new packing does not change the identity.
 
+## Proposed: v0 Rust shapes
+
+**Proposed** by deepseek-flash, 2026-10-18. The ABI text names the calls and the fields, but it does not fix
+the Rust types. The first code needs concrete types. This section gives the simplest shapes that fit the
+decisions. Amy can change them later.
+
+- `State` is `Slot(u32)` in v0. A context handle arrives with the `contexts` capability.
+- `PartLimits` holds one `shape` vector. A fixed or derived part uses the whole shape. A cells or ring part
+  uses its row shape.
+- `SlotLimit` is `{bytes, count}`. The fake engine declares two sizes: 64 bytes and 256 bytes.
+- `Capability` is an enum. `Limits::capabilities` is a `Vec<Capability>`. The fake engine declares `Parts`,
+  `Coverage` and `Seal`.
+- A write returns `WriteResult`: `Ok`, `Refused` or `Failed`. A read returns `Result<(), PartError>`.
+- `Coverage` is one `{start, end}` position range for one part. A ring keeps the last rows that fit.
+- `Seal::seal` returns `Result<(), SealError>` and changes bits in place.
+- The first code defines the core, `Parts`, `Coverage`, `Seal` and `Slots`. Each other capability trait
+  arrives with the milestone that uses it.
+- The `fake` feature is off by default. Run the fake tests with `--features fake`.
+
+### Fake engines
+
+`FakeAlways` is deterministic (`always`). Its parts are:
+
+- `state`, fixed, `U8`, shape [16];
+- `cells`, cells, `U8`, row shape [8];
+- `ring`, ring, `U8`, row shape [8], window 4 rows;
+- `pooled`, derived, `U8`, row shape [8].
+
+Its slots are 64 bytes and 256 bytes, one each. Its seal flips the low bit of the first `state` byte.
+`FakeBroken` is the same, but `part_read` flips the low bit of byte 0. Thus a park and restore loses a bit,
+and gate 8.3 (park and restore) must fail it.
+
 ## How mk maps
 
 | ABI | mk (`capi.hip`) | Notes |
