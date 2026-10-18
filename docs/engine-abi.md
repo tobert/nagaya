@@ -26,6 +26,34 @@ thread.
 An engine that spans devices runs its own work for each device inside the pass. mk already works this way,
 with a group of one device. mkviolet's group is both B70 cards; its `pipeline_stage` threads stay inside its pass.
 
+### Rust shape
+
+Decided 2026-10-18 (Amy chose it in an interview). The `Engine` trait holds the core calls. Each capability is its
+own trait. `Engine` has one accessor for each capability, and the accessor returns `None` when the engine does not
+have it. Thus an engine has no stub methods, and `limits().capabilities` comes from the accessors.
+
+```rust
+trait Engine {
+    fn identity(&self) -> Identity;
+    fn limits(&self) -> Limits;
+    fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError>;
+    fn last_error(&self) -> Option<String>;
+    fn parts(&mut self) -> Option<&mut dyn Parts> { None }
+    fn slots(&mut self) -> Option<&mut dyn Slots> { None }
+    fn seal(&mut self) -> Option<&mut dyn Seal> { None }
+    // ... one accessor for each capability below
+}
+
+trait EngineFactory {
+    fn plan(config: &toml::Table) -> Result<Limits, PlanError>;
+    fn open(config: &toml::Table) -> Result<Box<dyn Engine>, OpenError>;
+    fn attach(config: &toml::Table, arena_set: ArenaSet) -> Result<Box<dyn Engine>, OpenError>;
+}
+```
+
+The config is a TOML table from the placement profile. The engine parses it and refuses a field that it does not
+know. Thus the nagaya holds every engine as `Box<dyn Engine>`.
+
 ## Core (every engine)
 
 ```
@@ -40,16 +68,17 @@ identity() -> {
 }
 limits() -> {
     capabilities: [...],         which optional calls below this engine has
-    parts: [{name, kind: fixed|cells|ring|derived, dtype, shape(n)}],
+    parts: [{name, kind: fixed|cells|ring|derived, dtype, shape}],
+                                 fixed: the whole shape; cells and ring: row_shape, one row per position
     inputs: tokens | rows | tokens+rows, row width and dtype,
     devices: [...],              the device group
     stages: [{device, layers, head: bool}],
     max_segments, max_pass_inputs, max_logit_rows, slots per device and their sizes,
     max_quantum_ms,              the longest a quantum may hold its device group (D8)
     memory: {                    the engine's ledger terms (spec 4.2), keyed by kind of quantum
-        mandatory: [{name, bytes, lifetime: engine | context | loan, kinds}],
-        elastic: [{name, unit_bytes, minimum, max_units}],
-    },
+        mandatory: [{name, tier, bytes, lifetime: engine | context | loan, kinds}],
+        elastic: [{name, tier, unit_bytes, minimum, maximum, kinds}],
+    },                           tier: device(i) | host; i is an index into the device group
     chain: {max_depth, delta_fraction},   how the store may chain this engine's snapshots (spec 6.5)
     segments_exact: bool,        segments that share a pass get the bits of a pass alone (spec 5.7)
     determinism: always | pinned | per-process,   and bit_dependence: [residency, ...] (D3)
@@ -58,7 +87,6 @@ limits() -> {
 pass(segments, taps) -> status, ms, outputs
     segment = {state, inputs, positions, meta, outputs wanted}
 last_error() -> why
-close()
 ```
 
 `limits()` after `open` must equal the result of `plan` for the same config. A difference is a defect, and the
@@ -77,6 +105,7 @@ allocate, and the ledger admits each one before it runs: `open`, `attach`, `ctx_
 ```
 arena        arena_export() -> {name: fd, arena_id, check: full | spot}
              arena_check(config, arena_set) -> ok | why, check: full | spot
+             check strength is one enum for arenas and store entries: full | spot | none
 contexts     ctx_new(max) / ctx_fork / ctx_copy / ctx_free / ctx_n
 slots        slot_high(slot) / slot_clear(slot)
 parts        part_read(state, part) / part_write(state, part, bytes)
@@ -87,13 +116,17 @@ coverage     coverage(part bytes) -> positions held; fits(coverage, slot) -> ok 
              without it, a snapshot holds every position, 0 to n
 resize       resize(term, units) -> ok | why   an elastic term, only between quanta (spec 4.5)
 poison       poisoned(state) -> bool
-admission    pass_problem(segments) -> ok | why
+pass_check   pass_problem(segments) -> ok | why   the engine's own check of a pass; not the ledger's admission
 stages       stage_pass(stage, segments, residual_in) -> residual_out | outputs
 io           io_submit(IO requests [(file, offset, len, dest)], class) -> ticket; io_wait(ticket, prefix | all)
              dest is a device-buffer handle that the engine gives; the nagaya's IO service does the reads
 telemetry    op_times(), dispatches(), ...; pass(…, trace_context) so engine spans nest under the quantum span
 train        train_pass(segments) -> status, ms, loss     a forward, a backward and an optimizer step
+close        close()                     frees the engine in the process
 ```
+
+An engine without `close` stays open until the process exits. The nagaya changes such an engine only through a
+planned restart (spec 3.3, exit code 4). Its `Drop` does not free it, and a comment says why. Decided 2026-10-18.
 
 `parts` works on any `state` (a context handle or a slot index). `part_write` and `cells_write` return one of three
 results (spec 6.8):
@@ -117,7 +150,10 @@ instead, so a new packing does not change the identity.
 | parts | `mk_ctx_state_read`, `mk_ctx_state_write`, `mk_ctx_cells_write`, `mk_ctx_set_n` | parts 0-2 and 5 fixed, 3-4 cells; `idx_pooled` derived. No `cells_read` range yet: snapshots are stored whole (about 316 MB at n = 3584, ontology "Part") |
 | seal | `mk_ctx_round_gdn_bf16` | changes bits in place |
 | poison / last_error | `mk_ctx_poisoned`, `mk_last_error` | |
-| admission / pass | `mk_segments_problem`, `mk_pass_segments` | tokens only (PLE needs token ids); outputs are logits and hidden per segment |
+| part writes | `mk_ctx_state_write`, `mk_ctx_cells_write`, `mk_ctx_set_n` | return nothing and abort on input they refuse; the wrapper checks every precondition first (part index, bytes, an empty context that owns its K/V for parts 3-5, n within `max`, not poisoned) and returns refused; after the call, `mk_ctx_poisoned` gives failed (decided 2026-10-18) |
+| close | none | `mk_engine_close` exists, but HIP teardown segfaults in the process; mk does not declare `close` |
+| attach path | `mk_engine_attach(…, path)` | the path is `/proc/self/fd/<n>` for an fd from systemd's store |
+| pass_check / pass | `mk_segments_problem`, `mk_pass_segments` | tokens only (PLE needs token ids); outputs are logits and hidden per segment; `mk_pass_segments` aborts the process on bad segments (`MK_DIE`), so the wrapper calls `mk_segments_problem` first |
 | taps | `mk_pass` (layers, routes), `mk_pass_gdn_ab` (gates) | unfused, one segment; logits go straight to the caller's buffer, the other taps are copied |
 | telemetry | `mk_stage_times`, `mk_stage_detail`, `mk_dispatches`, `mk_host_stats` | mk's stages are ops (`stage.h`), so these are op times |
 | determinism | `always` | `stage.h`: "every op's output bits depend only on its work items"; top-k ties break by index; bit settings in the identity |
@@ -180,7 +216,8 @@ Settled the same day: an engine never takes text. The family library in the naga
   snapshots between machines all use the content id.
 - The **recipe** is a hash that the nagaya computes, also when the engine is not loaded. It covers the identity
   (bit settings included), the inputs and the boundaries. For an engine whose bits depend on slot geometry, it also
-  covers `geometry_key`. The store maps a recipe to one or more content ids. Thus the store can answer "do we
+  covers `geometry_key`. Spec 6.2 holds the full list of items and the encoding. The store maps a recipe to one or
+  more content ids. Thus the store can answer "do we
   already have this?" before a build, and a prefix lookup is only hashing.
 
 One recipe can have several content ids, because coverage differs. In mkviolet, slot size decides which rows a
@@ -204,7 +241,7 @@ That refusal is a tripwire. It has a meaning only when the engine promises the s
 |---|---|---|---|
 | `always` | the same identity and inputs give the same bits in any process | on: a mismatch is a bug | exact |
 | `pinned` | the same, because every free evaluation choice comes from the engine's plan table (ontology) | on | exact while the plan table's lineage holds |
-| `per-process` | the same bits within one process only | within one process only | exact within the process; across processes only for a request that accepts it (tolerance, ontology) |
+| `per-process` | the same bits within one process only | within one process only | exact within the process; across processes only for a served model whose tolerance accepts it (ontology) |
 
 Some engines have a history that changes their bits (ds4-recipe's routing reads which experts are cached). Such an
 engine also declares `bit_dependence: residency`. Then these rules apply:
@@ -266,15 +303,23 @@ weights and state at rest use one format. These rules apply:
 2. **Coverage sets the shape.** A cells or ring part holds the rows of its coverage, in position order. A ring is
    unrolled into position order. Slot capacity never sets a shape. Thus equal coverage gives equal bytes, from any
    slot size.
-3. **A canonical header.** Keys are sorted, the JSON has no extra whitespace, and the tensors are in a fixed order.
-   `__metadata__` holds only facts about the bytes: the part kinds, the coverage, the parent's content id, and each
-   block format. It never holds times, hit counts or owners (spec 6.3).
+3. **A canonical header.** Keys are sorted. The JSON has no whitespace except the padding at its end (rule 5).
+   The tensors are in bytewise order of their names, in the header and in the data. A derived part is never
+   stored. `__metadata__` holds only facts about the bytes: the part kinds, the coverage, the parent's content id,
+   and each block format. It never holds times, hit counts or owners (spec 6.3).
 4. **Dtypes.** Use a native dtype where one exists: F32, F16, BF16, the integer types, and F8 (E4M3, E5M2). A block
    format that safetensors does not have (IQ4_NL, MXFP4, FP4 KV) is `U8`, and `__metadata__` names the format.
-5. **Alignment.** Safetensors permits no gaps between tensors. Pad the header to 4 KiB. Where a tensor must start
-   on a 4 KiB boundary for direct IO, put an explicit `U8` padding tensor before it.
+5. **Alignment.** Pad the JSON header with spaces (0x20), so that the 8-byte length and the header end on a 4 KiB
+   boundary. Thus the data starts on a 4 KiB boundary. v0 puts no padding between tensors.
 6. **Chains.** A delta is a safetensors file. For each cells and ring part, it holds the rows after its parent's
    end. It holds each fixed part whole. Its metadata names its parent's content id and the rows that it covers.
+7. **Shapes.** A fixed part has the shape that `limits().parts` declares. A cells or ring part has the shape
+   `[rows held, ...row_shape]`.
+
+Coverage is in `__metadata__`, so it is in the content id. The same rows at other positions are a different state,
+because a position changes the bits that later passes read (RoPE). Fit to a slot is not in the content id.
+
+Decided 2026-10-18: name order, 4 KiB data start, shapes, and coverage in the id.
 
 The content id is the BLAKE3 hash of this canonical file. Each engine converts between its layout and the canonical
 form on the way into and out of the store. For mk, that is close to the copy it already does: its copy re-strides

@@ -102,3 +102,36 @@ Amy's answers:
 
 The checker gap that kaibo found: `tools/ste_check.py` applies 25 words to every sentence. CLAUDE.md says 20 for an
 instruction. The checker cannot yet tell an instruction from a description.
+
+## 2026-10-18: kaibo consult on the agent brief (`AGENTS.md`)
+
+Cast `deepseek` (explorer and synth `deepseek-flash`), 253k tokens in, 46k out. We asked kaibo to read the docs as
+the deepseek-flash agent that writes the first code. It could not reach mk, so Claude checked the mk claims in
+`capi.hip`. They hold, and `mk_engine_attach` takes a `/proc/<pid>/fd/<n>` path.
+
+kaibo listed 24 findings. We corrected these in `AGENTS.md`:
+
+- the fake engine's parts, slots, seal and determinism class; a broken fake engine for the gates;
+- a `nagaya-conformance` crate, and milestones for store entries and conformance;
+- the scheduler as a state machine, not a pure order function;
+- mk through `libloading` and `MK_ENGINE_LIB`, its shards in `MK_SHARDS`, and no mk build by the agent;
+- the ledger as an owned type with no lock;
+- a commit prefix for changes to more than one crate, and `.gitignore` for weights;
+- a rule for gaps: the agent writes a **Proposed** choice into the doc and commits it alone.
+
+Amy decided the nine design gaps in an interview on the same day:
+
+| Gap | Decision | Where |
+|---|---|---|
+| trait shape | a core trait, one trait per capability, accessors that return `Option`; config is a TOML table | ABI "Rust shape" |
+| memory terms | each term has a tier (`device(i)` or `host`) and kinds | spec 4.2 |
+| byte rules | tensors in name order, data from a 4 KiB boundary, no padding between tensors | ABI D10 |
+| recipe | BLAKE3 derive-key, tagged fields, chained at boundaries, tokens not text | spec 6.2 |
+| join windows | 0 ms in v0, in the bootstrap config | spec 5.7 |
+| shares | per engine, then by each term's minimum bytes; round down; report the rest | spec 4.4 |
+| coverage | in the content id; fit is not | ABI D10, ontology |
+| `close()` | a capability; mk does not declare it | ABI "Capabilities" |
+| mk writes | the wrapper checks preconditions first, then reads poison | ABI "How mk maps" |
+
+Claude also renamed the `admission` capability to `pass_check`, so "admission" names only the ledger's check. Check
+strength is one enum: `full`, `spot` or `none`.

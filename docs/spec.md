@@ -10,7 +10,7 @@ English (`AGENTS.md`).
 When this spec and another doc do not agree, correct one of them. Neither one wins without a decision.
 
 Status: draft, 2026-10-18. The sources are the design conversations with Amy and inventories of mk
-(`~/src/megakernel-qwen38-flashnext-strixhalo`) and mkviolet (`~/src/mkviolet`). There is no code yet. Each open
+(`~/src/megakernel-qwen38-flashnext-strixhalo`) and mkviolet (`~/src/mkviolet`). The code follows `AGENTS.md`. Each open
 question has the mark **Open**, and section 15 lists all of them.
 
 ## 1. Scope
@@ -38,7 +38,8 @@ Goals for v0:
 Not in v0:
 
 - One model split across machines. The links are gigabit today (README, "Between machines").
-- Engines that load and unload while the process runs (3.3).
+- Engines that load and unload in place while the process runs. In v0, a change of engines restarts the process
+  (3.3).
 - Cooperative yields inside a pass (D8).
 - Tensor transfer between engines (13.3).
 
@@ -76,7 +77,8 @@ state:
 - `profile:active`: the placement profile that it currently runs;
 - `profile:desired:<host>`: a target profile for `<host>` with a version, set when a client posts a profile to any
   machine;
-- `engine:<name>`: the engine's `identity()`, its state (`loading`, `ready`, `fatal`), and its HTTP address.
+- `engine:<name>`: the engine's `identity()`, its served models, its state (`loading`, `ready`, `draining`,
+  `unloaded`, `fatal`), and its HTTP address.
 
 Pins and snapshot entries never go in gossip.
 
@@ -116,9 +118,10 @@ thread priorities:
   memory work during a GPU pass to protect GPU memory bandwidth.
 
 **3.3 Engine lifecycle and profile swaps.** The nagaya opens each engine at start, from the profile. mk cannot close
-inside a process today: "the HIP runtime's own teardown segfaults" (mk `service/__main__.py`). When an engine's
-`close()` is safe, it loads and unloads in place (README door 1). Otherwise, when `PUT /nagaya/v1/profile` changes
-the engines, the nagaya persists the profile, drains running work (10.3), and restarts with `FDSTORE=1`.
+inside a process today: "the HIP runtime's own teardown segfaults" (mk `service/__main__.py`). Thus in v0, when
+`PUT /nagaya/v1/profile` changes the engines, the nagaya persists the profile and stops as in 10.3. It keeps its
+arenas in the file-descriptor store (10.2) and exits with code 4, and systemd starts it again. Later, an engine whose
+`close()` is safe loads and unloads in place (README door 1).
 
 **Open:** Do the GPU queues of an idle engine slow the other engines on its device? mk has a note that its idle
 queues slow another process, but we did not find the source. A measurement answers the question.
@@ -138,9 +141,11 @@ measurement of free memory.
 **4.2 Terms.** Each engine declares its terms in `limits().memory`. `plan(config)` gives the same terms before
 `open` (2.4).
 
-- Mandatory terms `{name, bytes, lifetime}`. The lifetime is per engine, per context, or loaned (one holder at a
-  time).
-- Elastic terms `{name, unit_bytes, minimum, maximum}`. The minimum and maximum are counts of units.
+- Mandatory terms `{name, tier, bytes, lifetime, kinds}`. The lifetime is per engine, per context, or loaned (one
+  holder at a time).
+- Elastic terms `{name, tier, unit_bytes, minimum, maximum, kinds}`. The minimum and maximum are counts of units.
+- A term's tier is `device(i)` or `host`, where `i` is an index into the engine's device group. The ledger maps each
+  tier to a budget (4.1). On gfx1151host and sm121host, `device(0)` and `host` map to one pool. NVMe belongs to the store.
 - Each term has a key by kind of quantum, where the bytes change by kind. A prefill's scratch is not a decode's
   scratch.
 
@@ -153,12 +158,18 @@ refusal charges nothing and changes nothing.
 
 `pass` never allocates. Its scratch for each kind is a mandatory term, which the ledger charges at `open`.
 
-When the ledger refuses a quantum's call, the quantum waits in the scheduler and keeps its place. The client gets
-507 only when a request can never fit, even with all reclaim done (4.6).
+When the ledger refuses a quantum's call, the quantum waits in the scheduler and keeps its place. A request that can
+never fit, even with all reclaim done (4.6), gets 413 `too_large`. Its `param` names the limit in identity.
 
-**4.4 Spare memory.** The ledger first charges all mandatory terms. It then divides what remains among the elastic
-terms by the profile's shares (D9). Each term gets at least its minimum. If what remains is less than the sum of the
-minimums, the nagaya refuses the profile (2.4). Counts come from this arithmetic, never from free memory.
+**4.4 Spare memory.** The ledger first charges all mandatory terms and the minimum of each elastic term. If they do
+not fit, the nagaya refuses the profile (2.4). The ledger then divides what remains in each budget like this:
+
+1. Give each engine a part of the spare bytes in proportion to its share (D9).
+2. Inside an engine, split its part among its elastic terms in proportion to each term's minimum bytes.
+3. Round each term down to whole units, and cap it at its maximum.
+4. Leave the bytes that remain unassigned, and report them.
+
+Counts come from this arithmetic, never from free memory. Decided 2026-10-18.
 
 Some engines have bits that depend on the size of a cache. Such an engine declares that cache as a mandatory term,
 not an elastic one. Thus reclaim and resize cannot change its bits, and each start gives it the same size.
@@ -195,9 +206,11 @@ service, and that split moves into mk's engine wrapper.) The watchdog reports ea
 **5.2 Kinds.** Each quantum has a kind: `read`, `prefill`, `decode`, `embed`, `copy`, `step` (an image step), or
 `train` (a micro-batch). Metrics and the cost model use kinds. A kind does not set urgency (mk `mk.gpu.kind`).
 
-**5.3 Classes.** The classes are `interactive`, `batch` and `filler`. Between quanta, the scheduler always runs a
-ready quantum of a higher class first. A quantum is ready when its job has no quantum that runs and its inputs are
-present.
+**5.3 Classes.** The classes are `interactive`, `batch` and `filler`. A client sends `interactive` or `batch` in
+council v2's `class` field (gogi). Only jobs that the nagaya or a profile starts, such as training and the audit, are
+`filler`. Between quanta, the scheduler always runs a
+ready quantum of a higher class first. A quantum is ready when its job has no quantum that runs, its inputs are
+present, and the ledger admitted it (4.3).
 
 A council decision is interactive. A job's class starts to apply at its first quantum, not when the job arrives.
 mkviolet's `lazy_high` takes the card at the council's first GPU step. That change cut decisions beside a prefill
@@ -225,13 +238,15 @@ moves a continuation off the context that holds it. The job holds that context w
 only when the engine declares `segments_exact` (`docs/prior-art.md` 1). Only segments of one class share a pass, and
 the quantum takes that class.
 
-Each class has a join window. The scheduler waits that long for jobs that are ready, and never for jobs that are not
-ready.
+Each class has a join window: the time that the scheduler waits to add more ready segments to a pass. It never
+waits for jobs that are not ready. In v0 each window is 0 ms, so a pass takes only the segments that are ready when
+the scheduler chooses. The windows are in the bootstrap config (2.1), so a measurement can change them. Decided
+2026-10-18.
 
-**5.8 Deadlines.** A job can have a deadline (council v1 `timeout_ms`). The scheduler checks it between quanta. A
+**5.8 Deadlines.** A job can have a deadline (council v2 `timeout_ms`). The scheduler checks it between quanta. A
 job after its deadline goes to the terminal state "expired", and its segments do not run again. On a status code,
-an expired job is a 503. On a stream that already sent its first event, the nagaya sends a terminal error event
-that names the state "expired".
+an expired job is a 504 `timeout`. On a stream that already sent its first event, the nagaya sends a terminal
+`error` event of type `timeout` (gogi).
 
 **5.9 Cancellation.** A client cancels one job. The scheduler drops the job's next segments, and the quantum that
 runs goes to its end. Cancellation is not failure: a cancelled job keeps its source snapshots. (ds4-recipe: the
@@ -264,7 +279,19 @@ chain, the hash includes its parent's content id. A snapshot's recipe is a hash 
 - the logical inputs: the rendered text or the bytes;
 - the boundaries;
 - the engine's `geometry_key`, if the engine declares one (D3);
-- the tags of each approximation.
+- the tags of each approximation;
+- lab state that changes bits (6.12).
+
+The recipe is BLAKE3 in derive-key mode, with the context string `nagaya recipe v1`. Each item is a `u16` tag, a
+`u64` length and its bytes, all little-endian, in a fixed tag order. Tokens are `u32` little-endian. Recipes chain at
+boundaries:
+
+- The root recipe covers the identity digest, the `geometry_key`, the approximation tags, and the lab state.
+- The recipe at boundary k covers the recipe at boundary k-1, the tokens since that boundary, and the position k.
+
+Thus a prefix lookup hashes only the tokens since the last boundary. The identity digest is the same tagged hash over
+the fields of `identity()` (12.1). The inputs are tokens, not text: the tokenizer and template are in the identity.
+Decided 2026-10-18.
 
 mk's `context_id` and mkviolet's `snap:<sha256>` are the input part of a recipe. They do not include the engine
 identity. mk's id is a SHA-256 of the tokens and boundaries with `|gdn-bf16-v1|`.
@@ -284,17 +311,17 @@ that they are the same state.
 - the times of creation and last use;
 - the reason for the store: anchor, interval, prefill done, evict, reclaim, or shutdown;
 - the provenance of an approximate entry;
-- the strength of the store's last check of the entry: full (every byte hashed) or none yet.
+- the strength of the store's last check of the entry: `full` (every byte hashed) or `none` yet.
 
 **6.5 Chains.** Each engine declares a maximum chain depth and a size fraction. (ds4-recipe: depth 1, and a delta
 only when it is at most a quarter of a full snapshot.) A delta holds, for each cells part and ring part, the rows
 after its parent's end. It holds each fixed part whole. The store never evicts a base while a delta needs it.
 
 **6.6 Lookup.** A lookup is by recipe. It returns the chain of entries that covers the request, from its base to
-its tip. The store keeps only the chains that fit the slot (coverage) and the request's tolerance (ontology).
+its tip. The store keeps only the chains that fit the slot (coverage) and the served model's tolerance (ontology).
 
 The store picks the deepest exact chain. The deepest chain is the one whose furthest covered position is highest in
-every part. The store gives an approximate chain only to a request whose tolerance names that method.
+every part. The store gives an approximate chain only to a served model whose tolerance names that method.
 
 **6.7 The tripwire.** Some engines declare `always` or `pinned` (D3). For those engines, two content ids under one
 recipe with the same coverage are a defect. The store quarantines both entries, refuses that recipe, and reports
@@ -436,7 +463,7 @@ never attributes.
 | `nagaya.store.evictions` | {entry} | tier, reason |
 | `nagaya.io.bytes` | By | edge, path (direct, staged), class |
 | `nagaya.arena.handoff` | {handoff} | engine, status (hot, cold) |
-| `nagaya.engine.state` | 1 | engine, state (loading, ready, fatal) |
+| `nagaya.engine.state` | 1 | engine, state (loading, ready, draining, unloaded, fatal) |
 | `http.server.request.duration` | s | http.route, status |
 
 Each GPU vendor has a sensor provider: amdgpu (the SMU `gpu_metrics` table and KFD counters), Intel Xe, and NVIDIA
@@ -449,7 +476,7 @@ NVML. Each provider maps its values onto shared names:
 | `nagaya.device.temperature` | Cel | device, sensor |
 | `nagaya.device.activity` | % | device |
 | `nagaya.device.memory.used` | By | device, domain |
-| `nagaya.device.throttle` | counter | device, reason |
+| `nagaya.device.throttle` | {event} | device, reason |
 | `nagaya.device.evicted` | ms | device (amdgpu KFD only) |
 
 mk's `mk.gpu.*` names and mkviolet's `mkviolet.*` names map onto these names. Council decision metrics (count,
@@ -510,14 +537,17 @@ to canonical safetensors (D10) is not yet measured, so we do not know how many c
 | 0 | a clean stop | no restart |
 | 1 | a crash | restart |
 | 3 | a refusal to start: a canary mismatch at start, an identity mismatch, or a profile that does not fit | `RestartPreventExitStatus=3` |
+| 4 | a planned restart: a profile changed the engines (3.3) | `RestartForceExitStatus=4` |
 
 The restart policy follows mk's unit: `Restart=on-failure`, `RestartSec=30`, and at most 3 starts in 600 s.
+systemd counts each start against that limit, also a start after code 4. Thus a fourth profile swap in 600 s fails.
 
 ## 11. Client API
 
-**11.1 Council and coordinator routing.** The nagaya serves council v2 for all engines in the cluster, and v1 while
-clients still use it. The contract is gogi (`~/src/gogi`): `docs/council-api-v2.md`, the types in `gogi-proto`, and
-the suite in `gogi-conformance`.
+**11.1 Council and coordinator routing.** The nagaya serves council v2 for all engines in the cluster. It does not
+serve v1: no client speaks v1 (gogi `docs/council-api.md`). The contract is gogi (`~/src/gogi`):
+`docs/council-api-v2.md`, the types in `gogi-proto`, and the suite in `gogi-conformance`. mkviolet and kaijutsu move
+to the same gogi before the nagaya serves them (Amy, 2026-10-18).
 
 Any machine can receive any request and act as its coordinator (Cassandra style). Clients prefer a coordinator with
 separate host memory (`b70host` or a CPU rig) to save unified memory bandwidth on `gfx1151host` and `sm121host` (3.2). The
@@ -526,12 +556,16 @@ the coordinator has the family libraries (11.3) and the engine's `identity()` fr
 and compute the recipe locally. It then schedules the job locally or forwards the work to the machine that holds the
 engine.
 
-The API has contexts, specs, decisions, snapshots, pins, reads, and generations with riding decisions (mkviolet
-`council_v2.rs`). In council v2 responses, a snapshot `id` is its BLAKE3 content id (`blake3:<hex>`), and the store
-looks up prefixes by recipe (6.6). The request kind sets the job's class: a decision or a read is interactive, and a
-generation is interactive unless the request asks for batch. An optional request field sets the priority (5.4). A
-request can also carry a tolerance (6.6). **Open:** coordinate `model`, `class`, `priority`, and `tolerance` with
-gogi.
+The API has contexts, specs, decisions, snapshots, pins, reads, and generations with riding decisions. In council v2
+responses, a snapshot `id` is its BLAKE3 content id (`blake3:<hex>`), and the store looks up prefixes by recipe
+(6.6). gogi sets these request rules:
+
+- Each request names a served model (ontology) in `model`. A request without it is a 400.
+- `identity.models` lists every served model in the cluster, with its status from gossip (2.3).
+- The statuses are `ready`, `loading`, `draining` and `unloaded`. A fatal engine's served models report `unloaded`.
+- A served model that is not `ready` gets 503 `model_unavailable`.
+- `class` is `interactive` (the default) or `batch` (5.3). `priority` is an `i32`, 0 by default (5.4).
+- A request carries no tolerance. Its served model sets the tolerance (6.6).
 
 Pooling and the decision numbers come from `gogi_proto::math`, which all engines share. The council
 `identity.engine` covers two things: the engine identity, and the nagaya code that turns logits into decisions.
@@ -569,19 +603,16 @@ part of identity (gogi `docs/council-api-v2.md`, "Terms").
 - `embeddings`: served by the engine through a pass with a hidden-state output;
 - `status` (9.7) and `traces` (13.1).
 
-**11.5 Errors.** All routes use one error shape:
+**11.5 Errors.** All routes use gogi's error body, `{"error": {"type", "message", "param"?}, "request_id"}`, and the
+`request-id` header. Council routes use only gogi's error table (gogi `docs/council-api-v2.md`, "Errors"). The
+`/nagaya/v1` routes add two codes:
 
-| Code | Meaning |
-|---|---|
-| 400 | a bad request; a field that the schema does not know is a 400 |
-| 404 | not found |
-| 409 | a conflict |
-| 413 | too large |
-| 429 | busy, with `Retry-After` |
-| 503 | unavailable: the engine is fatal, or the job expired (5.8) |
-| 507 | not enough memory: the request can never fit (4.3) |
+| Code | `error.type` | When |
+|---|---|---|
+| 409 | `conflict` | a profile `PUT` with an old version (2.3) |
+| 507 | `no_memory` | a profile that does not fit its budgets (2.4) |
 
-An unexpected failure is a 500, and the process stops (8.5).
+An unexpected failure is a 500 `internal`, and the process stops (8.5).
 
 **11.6 Binding.** The HTTP and gossip listen addresses and seed peers are in the bootstrap config (2.1). (mkviolet
 has a tailnet address in its code.)
@@ -658,5 +689,4 @@ The inventories found these items. We correct each one when its code moves. We d
 
 1. Do an idle engine's GPU queues slow the other engines on its device (3.3)? A measurement answers this.
 2. What makes `close()` safe for mk, so that engines can load and unload at runtime (3.3)?
-3. How do `model`, `class`, `priority`, and `tolerance` land in gogi (`docs/council-api-v2.md`, 11.1)?
-4. How long does the conversion to canonical safetensors take on mk and mkviolet (10.3, D10)?
+3. How long does the conversion to canonical safetensors take on mk and mkviolet (10.3, D10)?

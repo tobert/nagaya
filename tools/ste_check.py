@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Check Markdown files against the STE limits in AGENTS.md.
 
-A description sentence has at most 25 words. A paragraph has at most 6 sentences. Code blocks, tables, headings
-quoted text, and a bold label at the start of a paragraph are not checked. A code span counts as one word. The exit status is 1 when a file breaks a limit.
+A description sentence has at most 25 words. A paragraph has at most 6 sentences. Code blocks, tables, headings,
+quoted text, and a bold label at the start of a paragraph are not checked. A code span counts as one word. The exit
+status is 1 when a file breaks a limit. With no files, it checks nothing and says so.
 """
 import re
 import sys
@@ -16,7 +17,8 @@ QUOTE = re.compile(r"\"[^\"]*\"|“[^”]*”")
 LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 ITEM = re.compile(r"^\s*(?:[-*]|\d+\.)\s+")
 LABEL = re.compile(r"^\*\*[^*]+\*\*\s*")
-# A sentence ends at . ? or ! (or one of them and a closing parenthesis) before a space and a letter, a digit, a code span, or the end of the block.
+# A sentence ends at . ? or ! (or one of them and a closing parenthesis) before a space and a letter, a digit, a
+# code span, or the end of the block.
 END = re.compile(r"(?:(?<=[.?!])|(?<=[.?!]\)))\s+(?=[A-Za-z0-9`(*])")
 
 
@@ -73,6 +75,9 @@ def check(path):
 
 
 def main(paths):
+    if not paths:
+        print("no files to check: give the Markdown files as arguments", file=sys.stderr)
+        return 2
     problems = [p for path in paths for p in check(path)]
     for p in problems:
         print(p)

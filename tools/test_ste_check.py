@@ -46,6 +46,9 @@ class SteCheck(unittest.TestCase):
         text = "".join(f"- Item {i}. It is short.\n" for i in range(5))
         self.assertEqual(problems(text), [])
 
+    def test_no_files_is_an_error(self):
+        self.assertEqual(ste_check.main([]), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

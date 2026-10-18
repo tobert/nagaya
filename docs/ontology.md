@@ -36,7 +36,8 @@ holds the model, the checkpoint digest of its weights, and its tokenizer and tem
 every setting that changes bits (`docs/spec.md` 12.1). Two runs with different identities are not expected to match.
 
 An engine is **fatal** after a canary mismatch or a fourth timeout in 600 s at runtime. The nagaya refuses its
-later jobs, and the other engines continue (`docs/spec.md` 8.2).
+later jobs, and the other engines continue (`docs/spec.md` 8.2). Its served models report the council status
+`unloaded` (`docs/spec.md` 11.1).
 
 **Family.** The text rules that a set of models share. They are a tokenizer, a chat template, the escapes for
 special tokens, and the parsers for tool calls and thinking. Qwen, Gemma and LFM are families. The nagaya holds one
@@ -83,17 +84,21 @@ context to free its slot, later results do not change (`docs/engine-abi.md` D7).
 
 **Content id.** The name of a stored snapshot: the BLAKE3 hash of its canonical safetensors file. For a piece of a
 chain, the hash also covers the parent's content id (`docs/engine-abi.md` D3, D10). Each stored snapshot also
-records its **coverage**: the positions that it holds in each part. Whether a snapshot fits a slot is a check on
-coverage, not part of the id.
+records its **coverage**: the positions that it holds in each part. Coverage is in the canonical file, so it is in
+the content id. Whether a snapshot fits a slot is a check on coverage, not part of the id.
 
 **Recipe.** What a snapshot was made from: a hash of the engine identity, the inputs and the boundaries. For an
 engine that declares a geometry key, the recipe holds that key too. The store maps a recipe to the content ids made
 from it, so the nagaya can ask "do we already have this?" before it builds. mkviolet's `snapshot_id` is the input
 part of a recipe (`held.rs:312-325`).
 
-**Tolerance.** What a request accepts in place of exact bits: `exact`, or named approximations. Each approximation
-has a quality budget that its approver measured once. A snapshot made by an approximation has its own recipe,
-tagged with the method. A lookup returns only snapshots in the request's tolerance.
+**Tolerance.** What a served model accepts in place of exact bits: `exact`, or named approximations. Each
+approximation has a quality budget that its approver measured once. A snapshot made by an approximation has its own
+recipe, tagged with the method. A lookup returns only snapshots in the served model's tolerance.
+
+A **served model** is one name that clients send in council v2's `model` field (gogi). It names an engine and a
+tolerance. A request never carries a tolerance. An approximation is a served model of its own, with its own name
+(gogi `docs/council-api-v2.md`, "Served models").
 
 **Store.** The one content-addressed store on each machine. It holds the snapshots of every engine in host memory
 and on NVMe, with budgets from the ledger (`docs/spec.md` section 6).
@@ -149,8 +154,9 @@ branches in one slot, and the next forward overwrites the branch rows (`branch_b
 A generation is prefill, then one decode quantum per token. An image is encode, steps, decode. Training is
 micro-batch quanta.
 
-A job is **ready** when the inputs of its next quantum exist and the ledger admitted that quantum. The scheduler
-chooses only among ready jobs. A filler job declares a **checkpoint interval**: the time between its checkpoints.
+A job is **ready** when no quantum of it runs, the inputs of its next quantum exist, and the ledger admitted that
+quantum. The scheduler chooses only among ready jobs. A filler job declares a **checkpoint interval**: the time between
+its checkpoints.
 
 **Class.** How urgently a job's quanta run: `interactive`, `batch`, or `filler`. Filler runs only when no other work
 is ready on its device. mkviolet has two classes today: a council decision goes before a generation's next stage

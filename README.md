@@ -15,16 +15,17 @@ Clients speak council v2 to the nagaya. The contract is gogi (`~/src/gogi`). The
 the engine ABI (`docs/engine-abi.md`) to its engines.
 
 Status: design only. Written 2026-10-17 from a conversation with Amy that began with renting a GPU for a weekend and
-ended with a common host for our megakernels. No code yet.
+ended with a common host for our megakernels. The code starts on gfx1151host, with mk's engine first (2026-10-18).
+`AGENTS.md` gives the milestones.
 
 ## Why a new repo
 
 Amy, 2026-10-17: "tempted to expand mkviolet but it was made to be just for those cards for us to learn, I am
 tempted to come up with a new name and port all the code into a fresh repo and clean as we go."
 
-- mkviolet (`~/src/mkviolet`) is the seed. It is Rust, and one process owns both B70 cards. It serves council v1
-  and v2. It keeps weights alive across restarts through systemd's file-descriptor store. Its code moves here
-  engine by engine, and we clean it as it moves.
+- mkviolet (`~/src/mkviolet`) is the seed. It is Rust, and one process owns both B70 cards. It serves council v2.
+  It keeps weights alive across restarts through systemd's file-descriptor store. Its code moves here engine by
+  engine, and we clean it as it moves.
 - mk (`~/src/megakernel-qwen38-flashnext-strixhalo`) joins through its existing C ABI (`src/engine/capi.hip`). The
   HIP code stays in mk.
 - One nagaya process per machine (Amy: "we'd do 1 process per host that owns the gpus").
