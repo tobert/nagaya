@@ -1,12 +1,15 @@
 //! The process threads: the ledger, the watchdog, and one thread per device group (spec 3.2).
 
+use std::any::Any;
 use std::collections::BTreeMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 
-use nagaya_abi::{DeviceId, Engine, Limits};
+use nagaya_abi::{DeviceId, Dtype, Engine, Limits, PartLimits, State};
 use nagaya_ledger::Ledger;
 
 use crate::admission::{AdmitError, Admitted, Factory, Registry, admit};
@@ -14,12 +17,86 @@ use crate::exit::ExitCode;
 use crate::inventory::Inventory;
 use crate::placement::{self, DeviceGroup};
 use crate::profile::{EnginePlacement, PlacementProfile};
+use crate::signal::SignalFlag;
 
 /// The default watchdog timeout. Three times the longest declared quantum bound (mk: 10 s).
 pub const DEFAULT_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The default heartbeat. A group beats six times in the default timeout.
 pub const DEFAULT_HEARTBEAT: Duration = Duration::from_secs(5);
+
+/// How often the stop path reads the signal counter (spec 10.3).
+pub const STOP_POLL: Duration = Duration::from_millis(10);
+
+/// What one group parked: the counts, and each part that it could not read.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ParkReport {
+    /// The engines that the group parked.
+    pub engines: usize,
+    /// The states that the group parked.
+    pub states: usize,
+    /// The parts that the group read.
+    pub parts: usize,
+    /// The bytes that the group read.
+    pub bytes: u64,
+    /// The row parts that the group read with no row count, because the engine has no `Slots` capability.
+    pub unmeasured_row_parts: usize,
+    /// The parts that the group could not read, one message for each.
+    pub failures: Vec<String>,
+}
+
+impl ParkReport {
+    /// Add the counts of another report.
+    pub fn merge(&mut self, other: ParkReport) {
+        self.engines += other.engines;
+        self.states += other.states;
+        self.parts += other.parts;
+        self.bytes += other.bytes;
+        self.unmeasured_row_parts += other.unmeasured_row_parts;
+        self.failures.extend(other.failures);
+    }
+}
+
+/// What the stop did (spec 10.3).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StopReport {
+    /// The park of every group.
+    pub parked: ParkReport,
+    /// True when every group answered inside the budget.
+    pub complete: bool,
+    /// True when a second signal stopped the park at once.
+    pub interrupted: bool,
+}
+
+impl StopReport {
+    /// The exit code of the stop. A park failure is a crash (spec 8.5).
+    pub fn exit_code(&self) -> ExitCode {
+        if self.parked.failures.is_empty() {
+            ExitCode::Clean
+        } else {
+            ExitCode::Crash
+        }
+    }
+}
+
+/// Run one worker body. A panic becomes an event for the main thread (spec 8.5).
+fn guard(thread: &'static str, events: &Sender<Event>, body: impl FnOnce()) {
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(body)) {
+        let message = panic_message(payload.as_ref());
+        let _ = events.send(Event::Panicked { thread, message });
+    }
+}
+
+/// The text of a panic payload.
+fn panic_message(payload: &(dyn Any + Send)) -> String {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        (*text).to_owned()
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text.clone()
+    } else {
+        "a worker thread panicked".to_owned()
+    }
+}
 
 /// A ledger that one thread owns. A write from another thread panics (spec 3.2, 8.5).
 pub struct OwnedLedger {
@@ -208,22 +285,30 @@ impl Start {
         // The ledger thread. It is the only writer of the ledger (spec 3.2).
         let ledger_registry = Arc::clone(&registry);
         let ledger_inventory = Arc::clone(&inventory);
+        let ledger_events = events_tx.clone();
         let ledger_thread = thread::spawn(move || {
-            let mut ledger = OwnedLedger::new();
-            while let Ok(message) = ledger_rx.recv() {
-                match message {
-                    LedgerMessage::Admit(profile, reply) => {
-                        let result = ledger.admit(&profile, &ledger_registry, &ledger_inventory);
-                        let _ = reply.send(result);
+            guard("ledger", &ledger_events, || {
+                let mut ledger = OwnedLedger::new();
+                while let Ok(message) = ledger_rx.recv() {
+                    match message {
+                        LedgerMessage::Admit(profile, reply) => {
+                            let result = ledger.admit(&profile, &ledger_registry, &ledger_inventory);
+                            let _ = reply.send(result);
+                        }
+                        LedgerMessage::Stop => break,
                     }
-                    LedgerMessage::Stop => break,
                 }
-            }
+            });
         });
 
         // The watchdog thread. It watches the group threads from outside (spec 3.2, 7.4).
         let watchdog_events = events_tx.clone();
-        let watchdog_thread = thread::spawn(move || watchdog(watch_rx, watchdog_events, timeout));
+        let watchdog_body = watchdog_events.clone();
+        let watchdog_thread = thread::spawn(move || {
+            guard("watchdog", &watchdog_events, || {
+                watchdog(watch_rx, watchdog_body, timeout);
+            });
+        });
 
         // Admission goes through the ledger thread, before any engine opens (spec 2.4).
         let (reply_tx, reply_rx) = mpsc::channel();
@@ -253,9 +338,12 @@ impl Start {
             });
             let (stop_tx, stop_rx) = mpsc::channel();
             let group_events = events_tx.clone();
+            let group_guard = group_events.clone();
             let group_watch = watch_tx.clone();
             let handle = thread::spawn(move || {
-                group_thread(index, jobs, group_events, group_watch, stop_rx, heartbeat);
+                guard("group", &group_guard, || {
+                    group_thread(index, jobs, group_events, group_watch, stop_rx, heartbeat);
+                });
             });
             group_threads.push(handle);
             group_stops.push(stop_tx);
@@ -270,6 +358,8 @@ impl Start {
             group_stops,
             events,
             group_count: groups.len(),
+            accepting: AtomicBool::new(true),
+            stopped: false,
         })
     }
 }
@@ -310,7 +400,7 @@ fn group_thread(
     jobs: Vec<GroupJob>,
     events: Sender<Event>,
     heartbeats: Sender<WatchMessage>,
-    stop: Receiver<()>,
+    stop: Receiver<GroupMessage>,
     interval: Duration,
 ) {
     let _ = heartbeats.send(WatchMessage::Beat {
@@ -348,7 +438,12 @@ fn group_thread(
     let _ = events.send(Event::Opened { group, engines: opened });
     loop {
         match stop.recv_timeout(interval) {
-            Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
+            Ok(GroupMessage::Park(reply)) => {
+                let report = park_group(&mut engines);
+                let _ = reply.send(report);
+                break;
+            }
+            Ok(GroupMessage::Stop) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => {
                 let beat = WatchMessage::Beat {
                     group,
@@ -361,6 +456,84 @@ fn group_thread(
         }
     }
     drop(engines);
+}
+
+/// Park every engine of one group. A part that the engine cannot read is a failure, not a stop.
+fn park_group(engines: &mut [Box<dyn Engine>]) -> ParkReport {
+    let mut report = ParkReport::default();
+    for engine in engines.iter_mut() {
+        report.engines += 1;
+        if let Err(message) = park_engine(engine.as_mut(), &mut report) {
+            report.failures.push(message);
+        }
+    }
+    report
+}
+
+/// Park one engine: read every stored part of every slot state (ABI D7).
+///
+/// The process has no contexts in milestone 10, so the park reads the slot states. A row part needs a row count
+/// from `Slots::slot_high`. An engine without that capability gives no row count, and its row parts read empty.
+fn park_engine(engine: &mut dyn Engine, report: &mut ParkReport) -> Result<(), String> {
+    let limits = engine.limits();
+    if engine.parts().is_none() {
+        return Ok(());
+    }
+    let slots: u32 = limits.slots.iter().map(|slot| slot.count).sum();
+    for id in 0..slots {
+        let state = State::Slot(id);
+        let rows = engine.slots().map(|slots| slots.slot_high(id));
+        let mut states = false;
+        for (part_id, part) in limits.parts.iter().enumerate() {
+            if !part.is_stored() {
+                continue;
+            }
+            states = true;
+            let row_bytes = shape_bytes(part);
+            let size = if part.is_row() {
+                match rows {
+                    Some(rows) => rows * row_bytes,
+                    None => {
+                        report.unmeasured_row_parts += 1;
+                        0
+                    }
+                }
+            } else {
+                row_bytes
+            };
+            let mut out = vec![0u8; size as usize];
+            engine
+                .parts()
+                .expect("the engine has the parts capability")
+                .part_read(state, part_id, &mut out)
+                .map_err(|error| {
+                    format!(
+                        "engine parked state {id} part {} but the read failed: {error:?}",
+                        part.name
+                    )
+                })?;
+            report.parts += 1;
+            report.bytes += out.len() as u64;
+        }
+        if states {
+            report.states += 1;
+        }
+    }
+    Ok(())
+}
+
+/// The bytes of one shape, with the element size of the part's dtype.
+fn shape_bytes(part: &PartLimits) -> u64 {
+    part.shape.iter().product::<u64>() * element_bytes(part.dtype)
+}
+
+/// The bytes of one element of a dtype (ABI "Core").
+fn element_bytes(dtype: Dtype) -> u64 {
+    match dtype {
+        Dtype::F32 | Dtype::U32 => 4,
+        Dtype::F16 | Dtype::BF16 => 2,
+        Dtype::U8 => 1,
+    }
 }
 
 fn watchdog(messages: Receiver<WatchMessage>, events: Sender<Event>, timeout: Duration) {
@@ -418,6 +591,14 @@ enum LedgerMessage {
     Stop,
 }
 
+/// A request to one group thread.
+enum GroupMessage {
+    /// Park every engine, then stop the thread (spec 10.3).
+    Park(Sender<ParkReport>),
+    /// Stop the thread without a park. `Process::drop` uses it.
+    Stop,
+}
+
 /// The started process threads.
 pub struct Process {
     ledger: Sender<LedgerMessage>,
@@ -425,14 +606,21 @@ pub struct Process {
     watchdog_stop: Option<Sender<WatchMessage>>,
     watchdog_thread: Option<JoinHandle<()>>,
     groups: Vec<JoinHandle<()>>,
-    group_stops: Vec<Sender<()>>,
+    group_stops: Vec<Sender<GroupMessage>>,
     events: Receiver<Event>,
     group_count: usize,
+    accepting: AtomicBool,
+    stopped: bool,
 }
 
 impl Process {
     /// Send an admission request to the ledger thread and wait for its answer.
+    ///
+    /// A stop refuses every later request (spec 10.3 step 1).
     pub fn admit(&self, profile: PlacementProfile) -> Result<Admitted, AdmitError> {
+        if !self.accepting.load(Ordering::SeqCst) {
+            return Err(AdmitError::Stopping);
+        }
         let (reply_tx, reply_rx) = mpsc::channel();
         self.ledger
             .send(LedgerMessage::Admit(profile, reply_tx))
@@ -467,12 +655,78 @@ impl Process {
     pub fn recv(&self, timeout: Duration) -> Option<Event> {
         self.events.recv_timeout(timeout).ok()
     }
+
+    /// Stop the process (spec 10.3). Refuse new work, park each group in the budget, then stop the threads.
+    ///
+    /// A second signal stops the park at once. A group that does not answer inside the budget stops nothing else.
+    pub fn stop(&mut self, budget: Duration, signals: &SignalFlag) -> StopReport {
+        if self.stopped {
+            return StopReport::default();
+        }
+        self.accepting.store(false, Ordering::SeqCst);
+        let started = Instant::now();
+        let entered = signals.count();
+        let mut replies = Vec::with_capacity(self.group_stops.len());
+        let mut complete = true;
+        for stop in &self.group_stops {
+            let (reply_tx, reply_rx) = mpsc::channel();
+            if stop.send(GroupMessage::Park(reply_tx)).is_ok() {
+                replies.push(reply_rx);
+            } else {
+                complete = false;
+            }
+        }
+        let mut parked = ParkReport::default();
+        for reply in replies {
+            loop {
+                if signals.count() != entered {
+                    self.finish_stop();
+                    return StopReport {
+                        parked,
+                        complete: false,
+                        interrupted: true,
+                    };
+                }
+                let left = budget.saturating_sub(started.elapsed());
+                if left.is_zero() {
+                    complete = false;
+                    break;
+                }
+                match reply.recv_timeout(left.min(STOP_POLL)) {
+                    Ok(report) => {
+                        parked.merge(report);
+                        break;
+                    }
+                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => {
+                        complete = false;
+                        break;
+                    }
+                }
+            }
+        }
+        self.finish_stop();
+        StopReport {
+            parked,
+            complete,
+            interrupted: false,
+        }
+    }
+
+    /// Stop the watchdog and the ledger. The drop joins them.
+    fn finish_stop(&mut self) {
+        if let Some(stop) = self.watchdog_stop.take() {
+            let _ = stop.send(WatchMessage::Stop);
+        }
+        let _ = self.ledger.send(LedgerMessage::Stop);
+        self.stopped = true;
+    }
 }
 
 impl Drop for Process {
     fn drop(&mut self) {
         for stop in self.group_stops.drain(..) {
-            let _ = stop.send(());
+            let _ = stop.send(GroupMessage::Stop);
         }
         if let Some(stop) = self.watchdog_stop.take() {
             let _ = stop.send(WatchMessage::Stop);

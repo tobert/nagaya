@@ -103,6 +103,8 @@ pub enum AdmitError {
     Ledger(LedgerError),
     /// A profile device is missing or differs from the plan.
     Device(DeviceError),
+    /// The process is stopping and takes no new work (spec 10.3).
+    Stopping,
 }
 
 impl std::fmt::Display for AdmitError {
@@ -120,6 +122,7 @@ impl std::fmt::Display for AdmitError {
             AdmitError::Device(error) => {
                 write!(formatter, "the profile cannot be admitted: {error}")
             }
+            AdmitError::Stopping => write!(formatter, "the process is stopping"),
         }
     }
 }
@@ -129,7 +132,7 @@ impl std::error::Error for AdmitError {
         match self {
             AdmitError::Ledger(error) => Some(error),
             AdmitError::Device(error) => Some(error),
-            AdmitError::UnknownKind { .. } | AdmitError::Plan { .. } => None,
+            AdmitError::UnknownKind { .. } | AdmitError::Plan { .. } | AdmitError::Stopping => None,
         }
     }
 }
