@@ -337,7 +337,7 @@ fn eviction_skips_pins_and_thins_interiors() {
     let middle = put_delta(&mut store, &delta_at(root, 2), middle_recipe, root_recipe, 1);
     let tip_recipe = next_recipe(middle_recipe, 4);
     let tip = put_delta(&mut store, &delta_at(middle, 4), tip_recipe, middle_recipe, 1);
-    store.pin(root, 1, 100).unwrap();
+    store.pin(root, 1, 100, 10).unwrap();
     let victims = store.evict(1, 1, 10).unwrap();
     assert!(!victims.contains(&root));
     assert_eq!(victims.first(), Some(&middle));
@@ -374,7 +374,7 @@ fn a_pin_on_a_child_protects_its_parent() {
     let root = put(&mut store, &base_snapshot(1), root_recipe, 1);
     let child_recipe = next_recipe(root_recipe, 2);
     let child = put_delta(&mut store, &delta_at(root, 2), child_recipe, root_recipe, 1);
-    store.pin(child, 1, 100).unwrap();
+    store.pin(child, 1, 100, 10).unwrap();
     assert!(matches!(store.evict(1, 1, 10), Err(StoreError::NoSpace)));
     assert!(store.entries().contains_key(&root));
     assert!(store.entries().contains_key(&child));
@@ -434,7 +434,7 @@ fn a_pin_survives_a_restart() {
     {
         let mut store = Store::open(dir.path()).unwrap();
         id = put(&mut store, &base_snapshot(1), recipe(8), 1);
-        store.pin(id, 1, 100).unwrap();
+        store.pin(id, 1, 100, 10).unwrap();
     }
     let mut store = Store::open(dir.path()).unwrap();
     assert!(store.pins().contains_key(&id));
@@ -1036,7 +1036,7 @@ fn a_put_that_cannot_fit_changes_nothing() {
     let mut store = Store::open_with_budget(dir.path(), 10_000).unwrap();
     let first = put(&mut store, &base_snapshot(1), recipe(27), 1);
     let second = put(&mut store, &base_snapshot(2), recipe(28), 1);
-    store.pin(second, 1, 100).unwrap();
+    store.pin(second, 1, 100, 10).unwrap();
     store.set_budget(Tier::Host, 5_000);
     let before: Vec<String> = std::fs::read_dir(dir.path().join("blobs"))
         .unwrap()
@@ -1088,11 +1088,38 @@ fn a_pin_larger_than_the_budget_loses_protection() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open_with_budget(dir.path(), 10_000).unwrap();
     let id = put(&mut store, &base_snapshot(1), recipe(32), 1);
-    store.pin(id, 1, 100).unwrap();
+    store.pin(id, 1, 100, 10).unwrap();
     store.set_budget(Tier::Host, 100);
     let victims = store.evict(1, 1, 10).unwrap();
     assert_eq!(victims, vec![id]);
     assert!(!store.entries().contains_key(&id));
+}
+
+#[test]
+fn a_pin_longer_than_a_day_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let recipe = recipe(170);
+    let id = put(&mut store, &base_snapshot(1), recipe, 1);
+    let now = 10;
+    let one_day = 86_400_000;
+    let error = store.pin(id, 1, now + one_day + 1, now).unwrap_err();
+    assert!(format!("{error}").contains("one day"), "{error}");
+    assert!(store.pins().is_empty());
+    store.pin(id, 1, now + one_day, now).unwrap();
+    assert!(store.pins().contains_key(&id));
+    store.unpin(&id).unwrap();
+
+    let mut engine = FakeAlways::new();
+    let pin = Pin {
+        owner: 1,
+        expires_ms: now + one_day + 1,
+    };
+    let error = store
+        .lookup_and_pin(recipe, &Tolerance::Exact, &mut engine, 0, pin, now)
+        .unwrap_err();
+    assert!(format!("{error}").contains("one day"), "{error}");
+    assert!(store.pins().is_empty());
 }
 
 #[test]
@@ -1125,7 +1152,7 @@ fn another_owners_pin_protects() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(dir.path()).unwrap();
     let id = put(&mut store, &base_snapshot(1), recipe(34), 1);
-    store.pin(id, 2, 100).unwrap();
+    store.pin(id, 2, 100, 10).unwrap();
     assert!(matches!(store.evict(1, 1, 10), Err(StoreError::NoSpace)));
     assert!(store.entries().contains_key(&id));
 }
@@ -1205,8 +1232,8 @@ fn pins_protect_one_by_one() {
     let mut store = Store::open(dir.path()).unwrap();
     let first = put(&mut store, &base_snapshot(1), recipe(156), 1);
     let second = put(&mut store, &base_snapshot(2), recipe(157), 1);
-    store.pin(first, 1, 100).unwrap();
-    store.pin(second, 1, 100).unwrap();
+    store.pin(first, 1, 100, 10).unwrap();
+    store.pin(second, 1, 100, 10).unwrap();
     // Each pin alone fits the budget. Their sum does not.
     store.set_budget(Tier::Host, 7_000);
     assert!(matches!(store.evict(1, 1, 10), Err(StoreError::NoSpace)));

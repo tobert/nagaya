@@ -15,6 +15,9 @@ use serde_json::{Map, Value};
 /// The alignment of the data section.
 const ALIGN: usize = 4096;
 
+/// The longest pin lease, one day in milliseconds.
+const MAX_PIN_MS: u64 = 86_400_000;
+
 /// One stored part as a tensor.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tensor {
@@ -1133,6 +1136,7 @@ impl Store {
         pin: Pin,
         now_ms: u64,
     ) -> Result<Vec<ContentId>, StoreError> {
+        check_pin_lease(pin.expires_ms, now_ms)?;
         let chain = self.lookup(recipe, tolerance, engine, slot, now_ms)?;
         for id in &chain {
             self.index.pins.insert(*id, pin.clone());
@@ -1256,8 +1260,9 @@ impl Store {
         }
     }
 
-    /// Pin an entry for an owner until an expiry.
-    pub fn pin(&mut self, id: ContentId, owner: u64, expires_ms: u64) -> Result<(), StoreError> {
+    /// Pin an entry for an owner until an expiry. A lease is at most one day.
+    pub fn pin(&mut self, id: ContentId, owner: u64, expires_ms: u64, now_ms: u64) -> Result<(), StoreError> {
+        check_pin_lease(expires_ms, now_ms)?;
         let Some(entry) = self.index.entries.get(&id) else {
             return Err(StoreError::Invalid("missing entry".to_owned()));
         };
@@ -1705,6 +1710,13 @@ impl Store {
 
 fn prune_pins(index: &mut Index, now_ms: u64) {
     index.pins.retain(|_, pin| pin.expires_ms > now_ms);
+}
+
+fn check_pin_lease(expires_ms: u64, now_ms: u64) -> Result<(), StoreError> {
+    if expires_ms.saturating_sub(now_ms) > MAX_PIN_MS {
+        return Err(StoreError::Invalid("a pin cannot last longer than one day".to_owned()));
+    }
+    Ok(())
 }
 
 fn coverage_of(snapshot: &Snapshot) -> Vec<PartCoverage> {
