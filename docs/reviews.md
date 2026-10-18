@@ -2,13 +2,13 @@
 
 ## 2026-10-17: kaibo consult on the first drafts
 
-Cast `deepseek` (explorer and synth `deepseek-flash`), 539k tokens in, 83k out. kaibo could read only gmk, so the
-drafts and copies of mk's `capi.hip`, `engine.h` and mkviolet's `gemma4.rs`, `held.rs`, `protocol.rs`,
-`hot_handoff.rs` were staged there for the review and deleted after.
+Cast `deepseek` (explorer and synth `deepseek-flash`), 539k tokens in, 83k out. kaibo could read only gmk. Thus we
+staged the drafts there for the review, with copies of mk's `capi.hip` and `engine.h` and of mkviolet's
+`gemma4.rs`, `held.rs`, `protocol.rs` and `hot_handoff.rs`. We deleted the copies after the review.
 
-Verdict: the inventory of both engines was largely right (names, part numbers, fork sharing, slots, the 0-14 / 15-29
-split, the priority locks, arena attach, `FDSTORE`). The generalizations were not. "The first engine that breaks the
-ABI is the second one, not the third."
+Verdict: the inventory of both engines was largely right. That covers names, part numbers, fork sharing, slots,
+the 0-14 / 15-29 split, the priority locks, arena attach and `FDSTORE`. The generalizations were not right.
+"The first engine that breaks the ABI is the second one, not the third."
 
 | # | Finding | What we did |
 |---|---|---|
@@ -38,10 +38,12 @@ Amy asked for a read of every file for consistency and use of the ontology.
 
 - mk's "stage" (`stage.h`, "A stage is one op with its arguments") is our op. Noted in Op; ABI telemetry is
   `op_times()`.
-- Weights became a state object, but State object listed two kinds. Now three: weights, context, snapshot; the
-  identity's weights hash is the weights' content id.
-- Leftovers from geometry-in-the-id: Boundary said boundaries are in the id (now the recipe); quantum condition 4
-  said "same slot geometry" (now: a slot the coverage fits); "layout" and "geometry" named one thing (now geometry).
+- Weights became a state object, but State object listed two kinds. Now three: weights, context, snapshot. (The
+  identity's weights hash was the weights' content id. spec 12.2 later replaced it with two weight ids.)
+- Leftovers from geometry in the id:
+  - Boundary said that boundaries are in the id. Now they are in the recipe.
+  - Quantum condition 4 said "same slot geometry". Now it says "a slot the coverage fits".
+  - "Layout" and "geometry" named one thing. Now the term is geometry.
 - Content id: the parent's id is hashed only for a piece of a chain; mk's whole snapshots have no parent.
 - D1 said per-card use makes mkviolet two engines; Gemma 4 does not fit on one card, so per-card means smaller
   engines. D2 deferred to the first port. Decision status listed: D4-D7 not yet reviewed with Amy.

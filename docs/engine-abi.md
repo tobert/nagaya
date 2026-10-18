@@ -1,22 +1,25 @@
 # Engine ABI v0 (draft)
 
-The interface every engine exports to the nagaya. Terms are defined in `docs/ontology.md`.
+This doc defines the interface that each engine exports to the nagaya. `docs/ontology.md` defines the terms.
 
-Drafted 2026-10-17 from mk's C ABI (`src/engine/capi.hip`, `src/engine/engine.h`) and mkviolet's Gemma 4 engine
-(`src/gemma4.rs`, `src/held.rs`, `src/protocol.rs`, `src/hot_handoff.rs`). Revised the same day after a kaibo review
-(deepseek cast) checked it against copies of that source. The review's headline: the first draft's call list was mk's
-`Context` model, and mkviolet, the second engine, already failed half of it. So the ABI is now a small core that
-every engine has, plus capabilities an engine declares.
+We drafted the ABI on 2026-10-17 from two sources:
+
+- mk's C ABI (`src/engine/capi.hip`, `src/engine/engine.h`);
+- mkviolet's Gemma 4 engine (`src/gemma4.rs`, `src/held.rs`, `src/protocol.rs`, `src/hot_handoff.rs`).
+
+On the same day, a kaibo review (deepseek cast) checked the draft against copies of that source. The review's
+headline: the first draft's call list was mk's `Context` model, and mkviolet, the second engine, already failed half
+of it. Thus the ABI is now a small core that every engine has, plus capabilities that an engine declares.
 
 ## Shape
 
-The nagaya is Rust. An engine is a Rust type that implements the `Engine` trait. An engine written in another
-language (mk: C++ and HIP behind `extern "C"`) exports a C ABI, and a thin Rust wrapper implements the trait on top.
-mkviolet's Gemma 4 engine implements the trait directly.
+The nagaya is Rust. An engine is a Rust type that implements the `Engine` trait. Some engines use another language
+(mk: C++ and HIP behind `extern "C"`). Such an engine exports a C ABI, and a thin Rust wrapper implements the trait
+on top of it. mkviolet's Gemma 4 engine implements the trait directly.
 
-Each device has one nagaya thread. Calls for one device come from that thread only and are synchronous; a pass
-blocks it. mk already works this way. mkviolet does not yet: `pipeline_stage` spawns a thread per card per stage,
-which moves into the nagaya's device threads.
+Each device has one nagaya thread. Calls for one device come only from that thread, and they are synchronous. A
+pass blocks the thread. mk already works this way. mkviolet does not yet: `pipeline_stage` spawns a thread per card
+per stage. That work moves into the nagaya's device threads.
 
 ## Core (every engine)
 
@@ -31,6 +34,8 @@ limits() -> {
     stages: [{device, layers, head: bool}],
     max_segments, max_pass_inputs, max_logit_rows, slots per device and their sizes,
     max_quantum_ms,              the longest a quantum may hold its device (D8)
+    memory: {mandatory, elastic},  the engine's ledger terms (spec 4.2)
+    batch_exact: bool,           segments that share a pass get the bits of a pass alone (spec 5.7)
     determinism: always | pinned | per-process,   and bit_dependence: [residency, ...] (D3)
     taps: [...], with the conditions each needs (mk: unfused, one segment)
 }
@@ -40,9 +45,9 @@ last_error() -> why
 close()
 ```
 
-`positions` and `meta` cover mkviolet's `pos0` and per-token `meta` (`PipeJob`, `gemma4.rs:998-1004`); `outputs
-wanted` covers `logit_rows`. `state` is a context handle where the engine has contexts, or a slot index where it has
-slots.
+`positions` and `meta` cover mkviolet's `pos0` and per-token `meta` (`PipeJob`, `gemma4.rs:998-1004`). `outputs
+wanted` covers `logit_rows`. `state` is a context handle when the engine has contexts. It is a slot index when the
+engine has slots.
 
 ## Capabilities (declared in `limits()`)
 
@@ -56,11 +61,18 @@ seal         seal(state)                 the engine's boundary rule
 geometry     geometry_key(state) -> bytes   slot geometry that changes bits, added to the recipe
 coverage     coverage(part bytes) -> positions held; fits(coverage, slot) -> ok | why
              without it, a snapshot holds every position, 0 to n
+resize       resize(term, units) -> ok | why   an elastic term, only between quanta (spec 4.5)
 poison       poisoned(state) -> bool
 admission    pass_problem(segments) -> ok | why
 stages       stage_pass(stage, segments, residual_in) -> residual_out | outputs
 telemetry    op_times(), dispatches(), ...
 ```
+
+`slot_load` and `part_write` return one of three results (spec 6.8):
+
+- ok;
+- refused, and nothing changed;
+- failed after a change. The state is poisoned (D6).
 
 ## How mk maps
 
@@ -97,44 +109,55 @@ telemetry    op_times(), dispatches(), ...
 
 Decided: D1, D3, D8, D9. Deferred to the first engine port: D2. Proposed, not yet reviewed with Amy: D4-D7.
 
-**D1. Engines that span devices.** (a) The engine schedules its own stages and the nagaya sees one quantum per pass;
-or (b) the engine declares stages and exports `stage_pass`, and the nagaya schedules each stage on its device.
-(b) lets the scheduler fill an idle card, as mkviolet's low-priority path does today, and the same residual boundary
-is what a model split across machines needs later. But (b) needs the full segment shape (positions, meta, logit rows,
-a snapshot to restore, the slot) and must stop another job writing the slot between a block's two stages.
-Decided 2026-10-17 (Amy: "yeah that sound reasonable"): mkviolet starts with (a); (b) comes once the segment shape
-is settled, and first for splits across machines. Amy may stop running one model across both B70 cards and use
-them independently, "since they're the fastest memory we have at home". Today's Gemma 4 does not fit on one card,
-so per-card work means smaller engines (a smaller Gemma, "or probably a qwen and lfm"), each with one stage.
+**D1. Engines that span devices.** There are two options:
 
-**D2. Inputs.** An engine declares tokens, rows, or both. mk needs token ids even when given rows, because its
-per-layer embeddings (PLE) hash them and its PLE history is a fixed part (`engine.h:75`, `ple_rows`). gmk's audio rows
+- (a) The engine schedules its own stages. The nagaya sees one quantum per pass.
+- (b) The engine declares stages and exports `stage_pass`. The nagaya schedules each stage on its device.
+
+Option (b) lets the scheduler fill an idle card, as mkviolet's low-priority path does today. A model split across
+machines needs the same residual boundary later. But (b) needs the full segment shape: positions, meta, logit rows,
+a snapshot to restore, and the slot. It must also stop another job from writing the slot between a block's two
+stages.
+
+Decided 2026-10-17 (Amy: "yeah that sound reasonable"): mkviolet starts with (a). Option (b) comes when the segment
+shape is settled, and first for splits across machines.
+
+Amy may stop running one model across both B70 cards and use them independently, "since they're the fastest memory
+we have at home". Today's Gemma 4 does not fit on one card. Thus per-card work means smaller engines, each with one
+stage: a smaller Gemma, "or probably a qwen and lfm".
+
+**D2. Inputs.** An engine declares tokens, rows, or both. mk needs token ids even when it gets rows. Its per-layer
+embeddings (PLE) hash the token ids, and its PLE history is a fixed part (`engine.h:75`, `ple_rows`). gmk's audio rows
 and diffusion latents have no tokens. Proposed: `inputs = tokens | rows | tokens+rows`, declared per engine.
-Deferred 2026-10-17 (Amy: "sort it out with the first engine"): mkviolet's Gemma 4 is the first port, and it takes
-rows made from tokens on the host today.
 
-**D3. Snapshot ids are content ids.** Decided 2026-10-17 (Amy: "yeah, 1, cas is awesome"). Two keys:
+Deferred 2026-10-17 (Amy: "sort it out with the first engine"). mkviolet's Gemma 4 is the first port. Today it takes
+rows that the host makes from tokens.
 
-- The **content id** names a stored snapshot: a BLAKE3 hash of its sealed bytes, and of its parent's content id when
-  it is a piece of a chain (mkviolet holds only the rows after its parent). mk stores snapshots whole, so its ids
-  have no parent. Dedup, integrity, pins, and moving snapshots between machines all use it.
-- The **recipe** is a hash the nagaya computes, with the engine unloaded if need be, from the identity (bit settings
-  included), the inputs and the boundaries, plus `geometry_key` for an engine whose bits depend on slot geometry.
-  The store maps a recipe to one or more content ids, which answers "do we already have this?" before a build, and
-  prefix lookups are hashing.
+**D3. Snapshot ids are content ids.** Decided 2026-10-17 (Amy: "yeah, 1, cas is awesome"). There are two keys:
 
-One recipe can have several content ids because coverage differs. In mkviolet, slot size decides which rows a
-snapshot *holds*, not what their bits *are*: `kv_ring` and `kv_keep_from` choose the positions a slot keeps, and a
+- The **content id** names a stored snapshot. It is a BLAKE3 hash of the snapshot's sealed bytes. When the snapshot
+  is a piece of a chain, the hash also covers its parent's content id. (mkviolet holds only the rows after the
+  parent.) mk stores snapshots whole, so its ids have no parent. Dedup, integrity, pins, and moves of snapshots
+  between machines all use the content id.
+- The **recipe** is a hash that the nagaya computes, also when the engine is not loaded. It covers the identity
+  (bit settings included), the inputs and the boundaries. For an engine whose bits depend on slot geometry, it also
+  covers `geometry_key`. The store maps a recipe to one or more content ids. Thus the store can answer "do we
+  already have this?" before a build, and a prefix lookup is only hashing.
+
+One recipe can have several content ids, because coverage differs. In mkviolet, slot size decides which rows a
+snapshot *holds*, not what their bits *are*. `kv_ring` and `kv_keep_from` choose the positions that a slot keeps. A
 ring row holds the same K and V for its position as a full plane does (`gemma4.rs:44-63`). `join` fails on missing
-rows, not on different bits. Each stored snapshot therefore records its coverage (positions held, per part), and
-fit is a separate check (`coverage` capability). This corrects review finding 3, which put geometry in the id.
+rows, not on different bits.
 
-Two content ids under one recipe that cover the same positions mean the engine did not reproduce its bits, or the
-recipe misses an input. The nagaya refuses to serve that recipe and reports it; it never picks one. Hashing an mk
-snapshot whole (about 316 MB) costs tens of milliseconds at BLAKE3 speeds, small next to a pass.
+Thus each stored snapshot records its coverage (positions held, per part), and fit is
+a separate check (`coverage` capability). This corrects review finding 3, which put geometry in the id.
 
-That refusal is a tripwire, and it means something only when the engine promises the same bits. Amended 2026-10-17
-(Amy: "having some tolerance discernment makes sense. yeah go ahead"): each engine declares which promise it makes.
+Two content ids under one recipe that cover the same positions have two possible causes. The engine did not
+reproduce its bits, or the recipe misses an input. The nagaya refuses to serve that recipe and reports it. It never
+picks one. A BLAKE3 hash of a whole mk snapshot (about 316 MB) takes tens of milliseconds, small next to a pass.
+
+That refusal is a tripwire. It has a meaning only when the engine promises the same bits. Amended 2026-10-17 (Amy:
+"having some tolerance discernment makes sense. yeah go ahead"): each engine declares which promise it makes.
 
 | `determinism` | Promise | The refusal | Reuse of a snapshot |
 |---|---|---|---|
@@ -142,44 +165,52 @@ That refusal is a tripwire, and it means something only when the engine promises
 | `pinned` | the same, because every free evaluation choice comes from the engine's plan table (ontology) | on | exact while the plan table's lineage holds |
 | `per-process` | the same bits within one process only | within one process only | exact within the process; across processes only for a request that accepts it (tolerance, ontology) |
 
-An engine whose history changes its bits (ds4-recipe's routing reads which experts are cached) also declares
-`bit_dependence: residency`. The nagaya then claims no identical bits under interleaving for it, quantum condition 7
-does not hold, and the refusal is off. Engines we build are `always` or `pinned`, with no bit dependence.
+Some engines have a history that changes their bits (ds4-recipe's routing reads which experts are cached). Such an
+engine also declares `bit_dependence: residency`. Then these rules apply:
 
-Where the refusal is off, an **audit** stands in for it: a filler job that now and then rebuilds a stored recipe
-under a pinned plan table (and exact routing) in a fresh process, compares content ids, and reports. It costs idle
-time only. ds4-recipe does this by hand ("pinned plans for every experiment and byte-equality gate").
+- the nagaya claims no identical bits under interleaving for it;
+- quantum condition 7 does not hold;
+- the refusal is off.
 
-**D4. Cost before a pass.** Neither engine estimates; both report time after. Proposed: no estimate call in v0; the
-nagaya fits a cost model per engine from pass times and segment sizes.
+Engines we build are `always` or `pinned`, with no bit dependence.
 
-**D5. Rust trait first, C ABI as a binding.** Handles are opaque pointers, errors are a status plus `last_error`,
-buffers are caller-owned.
+When the refusal is off, an **audit** takes its place. The audit is a filler job. From time to time, it builds a
+stored recipe again in a fresh process, under a pinned plan table and exact routing. It compares the content ids and
+reports. It uses only idle time. ds4-recipe does this by hand ("pinned plans for every experiment and byte-equality
+gate").
 
-**D6. Poison stays fatal.** A poisoned context is freed, never read. A pass that returns a poison status poisons
-every context in it (mk: "-1, every context poisoned"). The nagaya fails the jobs that held those segments and keeps
-the others.
+**D4. Cost before a pass.** Neither engine estimates a cost. Both report the time after the pass. Proposed: no
+estimate call in v0. The nagaya fits a cost model per engine from pass times and segment sizes.
 
-**D7. Seal and park are separate calls.** Seal runs only at boundaries in the chain and may change bits. Park is
-`part_read` to another tier and back, bit for bit. The scheduler parks; it never seals to free a slot.
+**D5. Rust trait first, C ABI as a binding.** Handles are opaque pointers. Errors are a status plus `last_error`.
+The caller owns the buffers.
+
+**D6. Poison stays fatal.** The nagaya frees a poisoned context and never reads it. A pass that returns a poison
+status poisons every context in it (mk: "-1, every context poisoned"). The nagaya fails the jobs that held those
+segments and keeps the others.
+
+**D7. Seal and park are separate calls.** Seal runs only at boundaries in the chain, and it can change bits. Park is
+`part_read` to another tier and back, bit for bit. The scheduler parks. It never seals to free a slot.
 
 **D8. Quanta have a declared length bound.** Decided 2026-10-17 (Amy: "a lil head of line blocking is okay in this
-design. max_quantum_ms seems like a good call"). An engine declares `max_quantum_ms` in `limits()`; a pass that
-would run longer is split by the engine into shorter quanta. No yields inside a pass in v0: a quantum still runs to
-its end, so the worst wait behind other work is one quantum. ds4-recipe chose cooperative yields after a short turn
-waited 283.95 s behind a long prefill (`docs/prior-art.md` 3); we take the bounded wait instead.
+design. max_quantum_ms seems like a good call"). An engine declares `max_quantum_ms` in `limits()`. When a pass
+would run longer, the engine splits it into shorter quanta. In v0 there are no yields inside a pass. A quantum
+still runs to its end, so the worst wait behind other work is one quantum.
+
+ds4-recipe chose cooperative yields after
+a short turn waited 283.95 s behind a long prefill (`docs/prior-art.md` 3). We take the bounded wait instead.
 
 **D9. Spare memory goes by weight.** Decided 2026-10-17 (Amy: "we'll assign some weight per machine"). Each
-machine's placement profile gives every engine on it a weight; the ledger divides what remains after all mandatory
-bytes among the engines' elastic terms by those weights (`docs/prior-art.md` 2).
+machine's placement profile gives every engine on it a weight. The ledger first charges all mandatory bytes. It
+then divides what remains among the engines' elastic terms by those weights (`docs/prior-art.md` 2).
 
 ## Not covered yet
 
-- Training: an engine that writes its weights state object (an arena that is not read-only), backward passes,
-  optimizer state as fixed parts (full size at every snapshot unless stored another way), micro-batch quanta that
-  filler work is preempted between.
-- Image engines: a diffusion latent is a fixed part replaced at each step; there is no `n` to extend, and the outputs
-  need a latent or image tap. mk's painter is the first case (mk `docs/painter.md`).
-- Streams: period, deadline and late policy in `limits()` or per job; a pass is blocking, so a stream's deadline is
-  met by scheduling, not by the engine.
+- Training. An engine writes its weights state object, so its arena is not read-only. It also needs backward
+  passes and optimizer state as fixed parts. That state is full size at every snapshot, unless the engine stores it
+  another way. Filler work gives way between micro-batch quanta.
+- Image engines. A diffusion latent is a fixed part that each step replaces. There is no `n` to extend, and the
+  outputs need a latent or image tap. mk's painter is the first case (mk `docs/painter.md`).
+- Streams. They need a period, a deadline and a late policy, in `limits()` or per job. A pass blocks, so the
+  scheduler meets a stream's deadline, not the engine.
 - Unloading an engine while its arena stays staged in host memory for a fast swap back.
