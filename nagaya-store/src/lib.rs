@@ -210,7 +210,11 @@ impl Snapshot {
             tensors.push(tensor);
         }
         tensors.sort_by(|left, right| left.name.as_bytes().cmp(right.name.as_bytes()));
-        Ok(Snapshot { tensors, parent })
+        let snapshot = Snapshot { tensors, parent };
+        if snapshot.encode()? != bytes {
+            return Err(StoreError::Invalid("non-canonical file".to_owned()));
+        }
+        Ok(snapshot)
     }
 
     /// The content id of this snapshot.
