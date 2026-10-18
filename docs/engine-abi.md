@@ -23,7 +23,7 @@ which moves into the nagaya's device threads.
 ```
 open(config) -> engine           config: devices, weights, engine-specific settings (mkviolet: slot sizes, max_block)
 attach(config, arena_set)        the same, on an existing arena set
-identity() -> {model, weights_hash, tokenizer_hash, template, numbers, bit settings}
+identity() -> {model, weights_hash, tokenizer_hash, template, numbers, plan table, bit settings}
 limits() -> {
     capabilities: [...],         which optional calls below this engine has
     parts: [{name, kind: fixed|cells|ring|derived, bytes(n)}],
@@ -31,6 +31,7 @@ limits() -> {
     stages: [{device, layers, head: bool}],
     max_segments, max_pass_inputs, max_logit_rows, slots per device and their sizes,
     max_quantum_ms,              the longest a quantum may hold its device (D8)
+    determinism: always | pinned | per-process,   and bit_dependence: [residency, ...] (D3)
     taps: [...], with the conditions each needs (mk: unfused, one segment)
 }
 pass(segments, taps) -> status, ms, outputs
@@ -75,6 +76,7 @@ telemetry    op_times(), dispatches(), ...
 | admission / pass | `mk_segments_problem`, `mk_pass_segments` | tokens only (PLE needs token ids); outputs are logits and hidden per segment |
 | taps | `mk_pass` (layers, routes), `mk_pass_gdn_ab` (gates) | unfused, one segment; logits go straight to the caller's buffer, the other taps are copied |
 | telemetry | `mk_stage_times`, `mk_stage_detail`, `mk_dispatches`, `mk_host_stats` | mk's stages are ops (`stage.h`), so these are op times |
+| determinism | `always` | `stage.h`: "every op's output bits depend only on its work items"; top-k ties break by index; bit settings in the identity |
 
 ## How mkviolet maps
 
@@ -89,6 +91,7 @@ telemetry    op_times(), dispatches(), ...
 | segments | `PipeJob`; `branch_block` with per-token `meta` | a branch block is atomic and is not a snapshot |
 | inputs | `write_embeddings` puts rows into `Buf::X` | rows today, made from tokens on the host |
 | class | `CardLock`, `GpuLock` | moves out of the engine into the nagaya scheduler |
+| determinism | not yet known | the first port runs one recipe in two processes and compares content ids |
 
 ## Decisions
 
@@ -129,6 +132,23 @@ fit is a separate check (`coverage` capability). This corrects review finding 3,
 Two content ids under one recipe that cover the same positions mean the engine did not reproduce its bits, or the
 recipe misses an input. The nagaya refuses to serve that recipe and reports it; it never picks one. Hashing an mk
 snapshot whole (about 316 MB) costs tens of milliseconds at BLAKE3 speeds, small next to a pass.
+
+That refusal is a tripwire, and it means something only when the engine promises the same bits. Amended 2026-10-17
+(Amy: "having some tolerance discernment makes sense. yeah go ahead"): each engine declares which promise it makes.
+
+| `determinism` | Promise | The refusal | Reuse of a snapshot |
+|---|---|---|---|
+| `always` | the same identity and inputs give the same bits in any process | on: a mismatch is a bug | exact |
+| `pinned` | the same, because every free evaluation choice comes from the engine's plan table (ontology) | on | exact while the plan table's lineage holds |
+| `per-process` | the same bits within one process only | within one process only | exact within the process; across processes only for a request that accepts it (tolerance, ontology) |
+
+An engine whose history changes its bits (ds4-recipe's routing reads which experts are cached) also declares
+`bit_dependence: residency`. The nagaya then claims no identical bits under interleaving for it, quantum condition 7
+does not hold, and the refusal is off. Engines we build are `always` or `pinned`, with no bit dependence.
+
+Where the refusal is off, an **audit** stands in for it: a filler job that now and then rebuilds a stored recipe
+under a pinned plan table (and exact routing) in a fresh process, compares content ids, and reports. It costs idle
+time only. ds4-recipe does this by hand ("pinned plans for every experiment and byte-equality gate").
 
 **D4. Cost before a pass.** Neither engine estimates; both report time after. Proposed: no estimate call in v0; the
 nagaya fits a cost model per engine from pass times and segment sizes.

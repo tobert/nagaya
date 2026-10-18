@@ -20,16 +20,18 @@ Read 2026-10-17 by four readers (chapters 01, 03, 04, 05, 06, 10, 11, 12, 13; th
   `identity()` becomes `{name, value, class}`; reference-defining settings are identity, approved approximations
   are recipe inputs and mark the snapshot non-exact, policy settings are neither unless declared output-relevant.
 - **Same binary, different bits per process.** Timed GEMM plan selection is "reference-defining per process": 32
-  processes of one binary at λ = 0 "picked 28 distinct plan sets, and their dumps fell into 13 groups" (01). This
-  breaks D3's refusal rule (two content ids under one recipe with the same coverage) on every restart. Proposed:
-  `limits()` declares `determinism: always | pinned | per-process`; the refusal applies to `always` and `pinned`; a
-  `per-process` engine puts its plan-set hash in the identity. Our engines should be `pinned`.
+  processes of one binary at λ = 0 "picked 28 distinct plan sets, and their dumps fell into 13 groups" (01); runs
+  with identical plan sets matched. This breaks D3's refusal rule on every restart. Decided: the D3 amendment
+  (`determinism: always | pinned | per-process`) and an append-only plan table (ontology), which covers the ragged
+  shapes that kept ds4 from pinning in production (07). Pinned plans cost ds4 nothing measurable: a cold 32k prefill
+  took 85.87-86.07 s pinned against 86.20-86.99 s timed (07).
 - **History changes bits.** With cache-conditional routing, "Every eviction, residency and sizing decision is
   `[policy]`, but it is **output-relevant**" (06), and "execution order changes expert-cache history". Residency
   state is read by every pass but lives in no state object and is never parked; a restore starts cold, so "restore
   is not resume". Proposed: quantum condition 7, "engine history that feeds arithmetic is identical"; an engine
   declares `bit_dependence: residency` in `limits()`, and the nagaya then makes no interleave-identity claim for it
   and refuses no recipe over it. Policy that never changes bits holds only for engines that do not declare it.
+  (Decided: D3 amendment and quantum condition 7.)
 - **Pass shape changes bits.** Changing GEMM N changes the library's algorithm (01); prefill call boundaries matter;
   ds4 says "Never choose the job size independently of the engine cohort" (11). Our Segment entry claims each
   segment gets the bits of a pass of it alone. Proposed: `limits()` declares `batch_exact` and whether quantum split

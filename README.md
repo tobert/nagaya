@@ -23,6 +23,8 @@ tempted to come up with a new name and port all the code into a fresh repo and c
 - mk (`~/src/megakernel-qwen38-flashnext-strixhalo`) joins through its existing C ABI (`src/engine/capi.hip`); the HIP
   code stays in mk.
 - One nagaya process per machine (Amy: "we'd do 1 process per host that owns the gpus").
+- Engines we build give the same bits for the same identity and inputs: `always` or `pinned` (`docs/engine-abi.md`
+  D3). Engines we borrow declare what they promise instead.
 
 ## Documents
 

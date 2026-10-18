@@ -38,6 +38,14 @@ that computes its numbers (council `identity`; mk's `libmkengine:<sha>+numbers:<
 changes bits (mk: `fused`, `MK_FAST_QMM`'s f16 WMMA path versus exact f32, `engine.h:19-32`). The weights hash is
 the content id of the weights state object. Two runs with different identities are not expected to match.
 
+**Plan table.** An engine's record of the free evaluation choices it made: which GEMM algorithm for each shape,
+fold orders, split counts. Each choice is valid, but different choices give different bits, so the table is part of
+the identity. It is append-only: a shape seen for the first time is timed once and its pick appended; an entry never
+changes. A recipe's bits depend only on the entries for the shapes it used, so snapshots stay valid as the table
+grows. A new library, driver or device starts a new **lineage** (a new identity). ds4-recipe times plans per process
+and left a fixed table as "Optional idea, not needed", because "ragged-tail shapes ... a fixed table cannot cover"
+(ds4-recipe `07-prefill-pipeline.md`); an append-only table covers new shapes. mk has no library GEMMs and needs none.
+
 **Build.** The binary only. The history of how a context was made is its **chain**.
 
 **Arena.** An engine's weights as memory that can outlive the process: a set of named file descriptors. mk has one
@@ -98,6 +106,12 @@ chain (plus a geometry key, for an engine whose bits depend on slot geometry). T
 content ids made from it, so the nagaya can ask "do we already have this?" before building. mkviolet's current
 `snapshot_id` is a recipe (`held.rs:312-325`).
 
+**Tolerance.** What a request accepts in place of exact bits: `exact`, or named approximations, each with a quality
+budget measured once by whoever approved it (ds4-recipe's `[approx — approved]`: KL, dNLL, agreement of top-1 tokens
+against a noise floor). A snapshot made by an approximation has its own recipe, tagged with the method; a lookup
+returns only snapshots within the request's tolerance. A `per-process` engine's snapshot from another process is one
+such approximation.
+
 **Slot.** Device memory an engine reserves for one live context. mkviolet fixes its slots and their sizes at load
 (`new_slots`, `gemma4.rs:445-475`) and has no stored token count: the position is the caller's `pos0`, and `kv_high`
 holds the high-water mark. mk allocates contexts on demand (`new_context`) and keeps fork buffers on a free list
@@ -128,7 +142,9 @@ quanta. Interleaving other work between quanta gives the same bits as an uninter
 3. state that leaves a slot is parked bit for bit, not sealed;
 4. a slot on resume that the parked state's coverage fits (mkviolet ring rows);
 5. no other job's quantum writes the slot between two stages of one block (mkviolet's stages share a slot);
-6. lab-only state that changes bits (mk's attention cell mask) counts as an input.
+6. lab-only state that changes bits (mk's attention cell mask) counts as an input;
+7. engine history that feeds arithmetic is the same (it fails for an engine that declares `bit_dependence`, such
+   as ds4-recipe's routing by which experts are cached).
 
 mk's `YieldHook` (`lab/paint/yieldhook.py`) showed this for diffusion: a paused run matched the unpaused one, max
 pixel difference 0.
