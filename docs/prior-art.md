@@ -30,7 +30,7 @@ chapters 02, 07, 08, 09, 14 and 15 as engine-internal. We checked the load-beari
   - Policy settings are neither, unless the engine declares them output-relevant.
 - **Same binary, different bits per process.** Timed GEMM plan selection is "reference-defining per process". 32
   processes of one binary at λ = 0 "picked 28 distinct plan sets, and their dumps fell into 13 groups" (01). Runs
-  with identical plan sets matched. This breaks D3's refusal rule at each restart.
+  with identical plan tables matched. This breaks D3's refusal rule at each restart.
   - Decided: the D3 amendment (`determinism: always | pinned | per-process`) and an append-only plan table
     (ontology). The table covers the ragged shapes that kept ds4 from pinning in production (07).
   - Pinned plans cost ds4 nothing measurable. A cold 32k prefill took 85.87-86.07 s pinned against 86.20-86.99 s
@@ -46,16 +46,16 @@ chapters 02, 07, 08, 09, 14 and 15 as engine-internal. We checked the load-beari
 - **Pass shape changes bits.** A change of GEMM N changes the library's algorithm (01). Prefill call boundaries
   also matter. ds4 says "Never choose the job size independently of the engine cohort" (11). Our Segment entry
   claims that each segment gets the bits of a pass of it alone.
-  - Proposed: `limits()` declares `batch_exact`, and whether quantum split points change bits (spec 5.7).
+  - Proposed: `limits()` declares `segments_exact`, and whether quantum split points change bits (spec 5.7).
   - If they do, the split points join the boundaries in the recipe.
 - **Logical digest, not layout digest** (03 §12, Pitfall 16). A bit-identical new encoding of the weights must not
   change the identity: "Keyed on the layout digest, every checkpoint would have been refused".
-  - Proposed: `weights_hash` is a logical digest: the canonical config plus the shard payload hashes. The arena's
-    layout hash is a separate record (spec 12.2).
+  - Decided (spec 12.2): `checkpoint_digest` is a logical digest: the canonical config plus the shard payload
+    hashes. The arena's layout hash is a separate record.
   - This amends our line "the weights hash is the content id of the weights state object".
 - **Equality in tests** (01 "What exact means"). This is for the nagaya's engine conformance and park/seal tests
   (spec 8.3).
-  - Compare integer bit patterns. NaN or Inf fails, also when the values are equal.
+  - Compare integer bit patterns. NaN or Inf fails, also when the bit patterns are equal.
   - Counters must also match. Report the first row that differs.
   - Keep a broken variant that the gate must fail.
   - Outputs from `pass` that are not finite are poison (D6).
@@ -66,16 +66,16 @@ chapters 02, 07, 08, 09, 14 and 15 as engine-internal. We checked the load-beari
   under Holding, with one budget per tier (spec 4.1). gfx1151host and sm121host have one shared pool, and b70host has
   two. Each engine declares terms in `limits().memory` (spec 4.2):
   - mandatory `{name, bytes, lifetime}`, per engine, per context, or loaned to one holder at a time;
-  - elastic `{name, unit_bytes, min_units, max_units}`;
+  - elastic `{name, unit_bytes, min_units, max_units}`. `min_units` is the term's minimum;
   - a key by phase, where the bytes differ by phase.
 - **Counts from arithmetic, never from free memory** (05 "2.", 06 technique 12). "The slot count changes routes", so
-  a restart must give the same sizes. Free memory only enforces a safety floor (spec 4.4, 4.7).
+  a restart must give the same sizes. Free memory only enforces the safety floor (spec 4.4, 4.7).
 - **Reserve before allocate** (05 invariant 4), transient peaks included. A refused admission changes nothing
   (invariant 7). The worst phase is checked at launch, before any weight is read: "Fail at launch, not at hour 9".
   Proposed: the nagaya admits every call that allocates before it runs, and `open` reports the minimum bytes per
   tier first (spec 4.3, 2.3).
 - **Reclaim parks** (05 "7.", 11 "11."), in a fixed order (spec 4.6). Agrees with D7.
-  1. Park idle contexts that have no pin to NVMe, the oldest first.
+  1. Park idle contexts that have no pin or lease to a lower tier, the oldest first. (ds4 parks them to NVMe.)
   2. Shrink the elastic terms of idle engines.
   3. Refuse.
 - **Resize only between quanta** (05: "refuse while leases, pins, cohort references ... exist"). Proposed: a
@@ -83,12 +83,12 @@ chapters 02, 07, 08, 09, 14 and 15 as engine-internal. We checked the load-beari
 - **Charge everything.** Vision weights and a capture pool without a charge "show up as untracked bytes". Other
   processes on the machine (tmpfs, swap) caused ds4's OOM. The nagaya sets its own OOM score (spec 4.2, 4.7).
 - **Two elastic consumers.** When two engines both have elastic terms, which engine gets the remainder? ds4 has one
-  elastic consumer. Decided (D9): a weight for each engine in each machine's placement profile (spec 4.4).
+  elastic consumer. Decided (D9): a share for each engine in each machine's placement profile (spec 4.4).
 
 ### 3. Scheduling
 
 - **No preemption of a running request** ("No active request is preempted"). This agrees with quanta. Priority
-  orders the work that waits only. It never moves a continuation off its required context (spec 5.6).
+  orders only the work that waits. It never moves a continuation off its required context (spec 5.6).
 - **Head-of-line blocking is the cost.** A 201-row turn waited 283.95 s behind a 112,257-row prefill of 32k-row
   jobs (11). ds4's fix is cooperative yields inside a pass, and nested guests in the yield.
   - Decided (D8): no yields. Each engine declares `max_quantum_ms` in `limits()`. An engine with a longer natural
@@ -100,16 +100,18 @@ chapters 02, 07, 08, 09, 14 and 15 as engine-internal. We checked the load-beari
 - **Gathering segments.** Wait a bounded join window for jobs that are ready, never for jobs that are not ready:
   "Nothing waits on a member that is not about to post". The window is a scheduler parameter for each class (spec
   5.7).
-- **Cancel is per job, between quanta. Cancel is not failure.** A cancelled prefill deleted its checkpoint, so the
+- **Cancel is per job, between quanta. Cancel is not failure.** A cancelled prefill deleted its snapshot, so the
   retry did a cold prefill of 442,546 tokens (about 35 minutes). Only poison discards state. A lease drain gets a
   time budget (ds4: 10 s to persist resident sessions) (spec 5.9, 10.3).
 - **Loans are leases that the nagaya enforces.** A stranded loan of prefill scratch made every other prefill fail
   behind it. Every terminal state of a job releases its loans: done, cancelled, failed, expired (spec 5.9).
 - **Cost model (D4)** (spec 5.11).
-  - Fit robust affine costs for each engine and segment count, with Theil-Sen. A median fit stalled admission.
+  - Fit robust affine costs for each engine and segment count, with Theil-Sen. ds4's first profile used a median
+    per cell, and one noisy step in it stalled admission. Theil-Sen over every round corrected it (11).
   - Key the fit by context depth.
   - Exclude passes that ran beside other work.
-  - Fit from production passes with telemetry on. Profiled and observed costs differed by 2x.
+  - Fit from production passes with telemetry on. In ds4, an extra row cost 0.060-0.073 s in production and
+    0.026-0.037 s in the profile (11, "Production per-row cost").
   - At cold start, record "no model yet" and schedule by class and arrival until a fit exists. Never guess
     silently.
 - **Phase transitions are a cost term.** ds4's change from prefill to decode (draft reload, regrow) took 1.594 s.
@@ -120,7 +122,7 @@ chapters 02, 07, 08, 09, 14 and 15 as engine-internal. We checked the load-beari
 ### 4. The store (snapshots)
 
 - **Keep metadata out of sealed bytes.** ds4's header carries a hit count and a last-used time. Thus two
-  checkpoints of one state differ in 16 bytes ("mask those 16 bytes"). For us that breaks dedup by content id. So
+  snapshots of one state differ in 16 bytes ("mask those 16 bytes"). For us that breaks dedup by content id. So
   times, counts and reasons live in the store index. Seal sets padding and unused rows to zero ("never
   uninitialized device memory") (spec 6.3).
 - **Recipe inputs.** ds4 keys by rendered text, because token-id keys miss when "BPE merges across the boundary"
@@ -134,7 +136,7 @@ chapters 02, 07, 08, 09, 14 and 15 as engine-internal. We checked the load-beari
   (spec 6.4). Anchors are seals. Evict and reclaim stores are parks (D7). A boundary never falls inside an atomic
   input span, such as an image.
 - **Chains.** ds4 permits depth 1 only ("never delta-of-delta"). It writes a delta only if the delta is at most a
-  quarter of a full checkpoint. A delta stores fixed and ring parts whole, and cells as a range.
+  quarter of a full snapshot. A delta stores fixed and ring parts whole, and cells as a range.
   - Proposed: each engine declares a maximum depth and a size fraction (spec 6.5).
   - The store never evicts a base while a delta needs it. Deltas go first.
   - A delta is legal only while no cell below its start was written again. The engine must report this.
@@ -152,7 +154,7 @@ chapters 02, 07, 08, 09, 14 and 15 as engine-internal. We checked the load-beari
   Both are `[approx — approved]` and opt-in for each request. Proposed (spec 6.6):
   - An approximate snapshot has its own recipe. The recipe has a tag for the method and its parameters, and names
     the source content ids.
-  - Lookups take an exactness predicate. Thus a request that did not opt in never sees an approximate snapshot.
+  - Lookups take the request's tolerance. Thus a request that did not opt in never sees an approximate snapshot.
   - An approximate piece is never the parent of an exact one.
   - The D3 refusal never compares across tags.
   - Exact restores win every tie, as in ds4.
@@ -196,12 +198,14 @@ These stay in the engine:
 
 ## Ai2's allocations scheduler (https://allenai.org/blog/impactful-scheduling)
 
-Ai2 schedules thousands of H100, B200 and B300 GPUs for about 150 researchers, and demand is 2-3x supply. They give
-out whole GPUs, in jobs of hours. We give out shares of a GPU, in quanta of milliseconds. The rules still apply:
+Ai2 schedules thousands of H100, B200 and B300 GPUs for about 150 researchers, and demand is 2-3x supply. Ai2
+allocates whole GPUs, in jobs of hours. We allocate parts of a GPU's time, in quanta of milliseconds. The rules
+still apply:
 
 - **Minimum runtime.** Each workload declares a minimum runtime (8 hours at most) that is safe from preemption. It is
-  our quantum's "runs to its end", at the scale of a job. For training as filler, it is the time between
-  checkpoints (spec 5.5).
+  our quantum's "runs to its end", at the scale of a job. For training as filler, the nearest thing is its checkpoint
+  interval (spec 5.5). Our filler gives its device to other work between quanta, so the interval protects nothing
+  from preemption.
 - **Resumable.** A workload declares it, and preempted resumable work goes back in the queue. For us, a filler job
   must be resumable: its state parks (spec 5.5).
 - **"Unallocated" time.** The minimum runtime is zero, the time is free, and it is always preemptible. That is our
@@ -210,5 +214,6 @@ out whole GPUs, in jobs of hours. We give out shares of a GPU, in quanta of mill
   kinds of work (interactive endpoints, image batch, training), each with a share. ds4's owed-share rule works inside
   a class. This is open (spec 15, question 6).
 - **Hosts drain** as their workloads reach their minimum runtimes. That is our lease drain.
-- **Their stated cost.** Interactive sessions did worse under the cap, and they plan a separate place for them. For
+- **Their stated cost.** Interactive sessions did worse under the cap. Ai2 plans a separate place for interactive
+  sessions. For
   us, interactive is a class above everything, not a share (spec 5.3).

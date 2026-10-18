@@ -50,3 +50,55 @@ Amy asked for a read of every file for consistency and use of the ontology.
 - Machines: the third lab machine is the DGX Spark; gfx1151host and the Spark are 128 GB unified LPDDR5X.
 - References into other repos named their repo (mkviolet `docs/03`, `council_v2.rs`; mk `docs/painter.md`).
 - README said the ABI "names as a contract" the residual boundary; it does not, D1 defers it.
+
+## 2026-10-17: kaibo consult on the spec (job-1)
+
+Cast `deepseek` (explorer and synth `deepseek-flash`), 238k tokens in, 85k out. kaibo read all seven files whole:
+the spec, the ontology, the ABI, the README, `CLAUDE.md`, and the prior art. We asked for contradictions, gaps,
+rules that cannot work, ontology misuse, and STE problems that the length checker cannot see.
+
+kaibo listed about 95 findings. Claude checked the claims about the text. The triage:
+
+| Verdict | About | Examples |
+|---|---|---|
+| Real, and changes the design | 12 | below |
+| Real and small | 50 | D10 not in the "D1-D9" pointer; two weight ids against `weights_hash`; Store, Geometry, Loan, Owner and Chain not defined; span prefix `nagaya.job.` against span name `nagaya.job`; "weight" for D9 and for weights; "batch" with four meanings |
+| Duplicates | 15 | the thread and ledger findings, three times each |
+| Not right | 15 | below |
+
+The 12 that change the design, and what we did:
+
+| # | Finding | What we did |
+|---|---|---|
+| 1 | The ledger must admit `open`, but `limits()` exists only after `open` | a static `plan(config) -> limits` call |
+| 2 | No thread writes the host and NVMe parts of the ledger | one ledger owner; device threads send requests |
+| 3 | A D1(a) pass on two cards breaks one thread per device | one thread per device group (Amy) |
+| 4 | The audit's fresh process is a second GPU client | the audit runs after each start, in-process (Amy) |
+| 5 | v0 scope differs between the spec, README and ABI | image batch and training are in v0 (Amy); the ABI gains both sections |
+| 6 | D10 shapes by slot capacity, so equal coverage gives different content ids | cells and ring parts are shaped by coverage |
+| 7 | D10 stores ring parts whole in a delta | a delta holds the rows after its parent's end |
+| 8 | A refused restore would quarantine a good entry | quarantine only when verification fails |
+| 9 | A lookup returns one entry, but a delta needs its chain | lookup returns the covering chain |
+| 10 | An engine whose bits depend on cache size cannot have an elastic cache | that term is mandatory |
+| 11 | The watchdog runs on the thread that it watches | the watchdog has its own thread |
+| 12 | systemd reads `FileDescriptorStoreMax` before the nagaya starts | the unit file sets it, from the profile; fds drop only after a cold load fits |
+
+Not right:
+
+- Reclaim does not park through `part_write`. A park out uses `part_read`, which changes nothing. We kept one part:
+  the device copy is freed only after the lower-tier copy is durable.
+- `set_n` and `cells_write` do not allocate: mk sizes a context at `ctx_new(max)`. `attach` and `ctx_copy` do
+  allocate, and we added them to admission.
+- The count of six conditions in this file's first review is a dated record. It was right at that time.
+- ds4's failed fit used medians per cell, and Theil-Sen was the correction. The fault was our wording.
+- Boundaries need no ABI declaration. Clients mark them (`snap: true`); the engine only seals.
+
+Amy's answers:
+
+- v0 is inference, image batch and training.
+- The audit runs across restarts.
+- D9's number is a "share".
+- An engine that spans devices gets one thread for its device group.
+
+The checker gap that kaibo found: `tools/ste_check.py` applies 25 words to every sentence. CLAUDE.md says 20 for an
+instruction. The checker cannot yet tell an instruction from a description.

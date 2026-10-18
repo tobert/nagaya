@@ -38,8 +38,12 @@ b70host can go faster (it has a BlueField-2), and gfx1151host can go to 5 GbE.
 mkviolet's AVX-512 lens, mkviolet `docs/03-distributed-state-architecture.md` 2.5.)
 
 mkviolet keeps one Level Zero context per card (`gemma4.rs:7`). Its `pipeline_stage` starts a thread per card for
-each stage. In the nagaya, each device has one long-lived thread, and every call for that device comes from it. That
-rule is new, and mkviolet's per-stage threads move into it.
+each stage. In the nagaya, each device group has one long-lived thread, and every engine call for that group comes
+from it. That rule is new, and mkviolet's per-stage threads move into it.
+
+**Device group.** The devices that one engine spans. A device group has one nagaya thread. An engine on one device
+has a group of one. mkviolet's Gemma 4 spans both B70 cards, so its group is the two cards. The engine runs its own
+work for each card inside a pass (`docs/engine-abi.md` D1). Amy chose this on 2026-10-17.
 
 **Tier.** A place where a state object can be: device memory, host memory, NVMe, or another machine. Tiers are a
 graph with measured bandwidths per machine, not a fixed list. On gfx1151host and the DGX Spark, device memory and host
@@ -48,7 +52,7 @@ about 14.8 GB/s NVMe (mkviolet `docs/03`).
 
 ## Things
 
-**Engine.** A model's code and its weights, loaded on one or more devices of one machine. It exports the engine ABI
+**Engine.** A model's code and its weights, loaded on one device group of one machine. It exports the engine ABI
 (`docs/engine-abi.md`). It has an identity with these items:
 
 - the model;
@@ -67,6 +71,10 @@ An engine has two weight ids (`docs/spec.md` 12.2):
 
 Two runs with different identities are not expected to match.
 
+**Fatal.** An engine state. The nagaya marks an engine fatal at runtime after a canary mismatch, or after a fourth
+timeout in 600 s (`docs/spec.md` 8.2). It refuses every later job for that engine. The process continues, and the
+other engines continue. A canary mismatch at start is different: the nagaya refuses to start (`docs/spec.md` 10.4).
+
 **Plan table.** An engine's record of the free evaluation choices that it made: which GEMM algorithm for each
 shape, fold orders, and split counts. Each choice is valid, but different choices give different bits. Thus the
 table is part of the identity. It is append-only: the engine times a new shape once and appends its pick, and an
@@ -78,7 +86,10 @@ process. It left a fixed table as "Optional idea, not needed", because "ragged-t
 cover" (ds4-recipe `07-prefill-pipeline.md`). An append-only table covers new shapes. mk has no library GEMMs and
 needs no plan table.
 
-**Build.** The binary only. The history of how a context was made is its **chain**.
+**Build.** The binary only.
+
+**Chain.** The history of how a context was made: its inputs and boundaries, in order. A snapshot can be stored as
+pieces of its chain, and each piece names its parent's content id.
 
 **Arena.** An engine's weights as memory that can outlive the process: a set of named file descriptors.
 
@@ -129,12 +140,13 @@ spec layers are boundaries. Boundaries are part of a snapshot's recipe.
 **Park.** A move of a state object to another tier, bit for bit. A park never seals. Seals occur only at boundaries
 that the chain declares. Thus when the scheduler parks a context to free its slot, later results do not change.
 
-**Snapshot id.** A content id: a hash of a stored snapshot's sealed bytes, in the canonical safetensors form
-(`docs/engine-abi.md` D10). When the snapshot is stored as a piece of
-a chain, the hash also covers its parent's content id (`docs/engine-abi.md` D3). Each stored snapshot records its
-**coverage**: the positions that it holds per part. The same chain, stored from different slots, holds different
-rows. mkviolet's sliding layers keep a ring's worth in a large slot and every row in a small one
-(`gemma4.rs:44-63`). Whether a snapshot fits a slot is a check on coverage, not part of the id.
+**Content id.** The name of a stored snapshot: a hash of its sealed bytes, in the canonical safetensors form
+(`docs/engine-abi.md` D10). The old name of this entry was "snapshot id". When the snapshot is stored as a piece of
+a chain, the hash also covers its parent's content id (`docs/engine-abi.md` D3).
+
+Each stored snapshot records its **coverage**: the positions that it holds per part. The same chain, stored from
+different slots, holds different rows. mkviolet's sliding layers keep a ring's worth in a large slot and every row
+in a small one (`gemma4.rs:44-63`). Whether a snapshot fits a slot is a check on coverage, not part of the id.
 
 **Recipe.** What a snapshot was made from: a hash of the engine identity, the inputs, and the boundaries along the
 chain. For an engine whose bits depend on slot geometry, the recipe also has a geometry key. The store maps a recipe
@@ -147,6 +159,16 @@ agreement of top-1 tokens against a noise floor.) A snapshot made by an approxim
 with the method. A lookup returns only snapshots in the request's tolerance. A snapshot of a `per-process` engine
 from another process is one such approximation.
 
+**Store.** The one content-addressed store on each machine. It holds the snapshots of every engine in tiers: host
+memory and NVMe. Its budgets come from the ledger (`docs/spec.md` 6.1).
+
+**Index.** The store's list of entries. It holds what the sealed bytes must not hold: times, hit counts, owners and
+reasons (`docs/spec.md` 6.3).
+
+**Entry.** One record in the index (`docs/spec.md` 6.4). It names a content id, its recipe, its parent and its
+coverage. It also gives the tier, the size, the owner, the times, the reason for the store, and the strength of the
+last check.
+
 **Slot.** Device memory that an engine reserves for one live context.
 
 - mkviolet fixes its slots and their sizes at load (`new_slots`, `gemma4.rs:445-475`). It has no stored token
@@ -154,6 +176,9 @@ from another process is one such approximation.
 - mk allocates contexts on demand (`new_context`) and keeps fork buffers on a free list (`fork_free_`).
 
 Both are "a context resident on a device". An engine's limits say how many fit.
+
+**Geometry.** A slot's shape: its size and its ring rows. Geometry changes coverage: which rows a snapshot holds
+(`gemma4.rs:44-63`). It changes bits only for an engine that declares `geometry_key` (`docs/engine-abi.md` D3).
 
 ## Time
 
@@ -174,7 +199,8 @@ stages: layers 0-14 on card 0, and layers 15-29 and the head on card 1 (`CARD_LA
 `run_card0` returns them, and `run_card1` writes them to card 1.
 
 **Quantum.** The unit that the nagaya schedules: one pass, or one stage of a pass. It is not longer than the
-engine's `max_quantum_ms` (`docs/engine-abi.md` D8). A quantum runs to its end. The nagaya changes what runs only
+engine's `max_quantum_ms` (`docs/engine-abi.md` D8). Segments of one class share a pass, so each quantum has one
+class. A quantum runs to its end. The nagaya changes what runs only
 between quanta. Other work between quanta gives the same bits as a run without it, when all of these conditions
 hold:
 
@@ -200,9 +226,9 @@ micro-batch) (`docs/spec.md` 5.2). Metrics and the cost model use kinds. A kind 
 mk calls it `mk.gpu.kind`.
 
 **Segment.** One job's share of a pass: a context, its new inputs, where they go, and which outputs it wants. A pass
-carries segments from several jobs. Each segment gets the bits that a pass of it alone would give (mk `engine.h`
-`Segment`, up to 16 per pass, `tests/engine/test_segments.py`). mk's `segments_problem` refuses two segments that
-share K/V.
+carries segments from several jobs of one class. Each segment gets the bits that a pass of it alone would give
+(mk `engine.h` `Segment`, up to 16 per pass, `tests/engine/test_segments.py`). mk's `segments_problem` refuses two
+segments that share K/V.
 
 mkviolet's branch block has a different shape. It is one shared prefix plus branches in one block, with per-token
 `meta`, all in one slot, when it fits (`branch_block`, `gemma4.rs:1521-1554`). The next forward from that position
@@ -216,9 +242,15 @@ on a generation's context (mkviolet `council_v2.rs`).
 - an image: encode, steps, decode;
 - training: micro-batch quanta until something preempts it.
 
+**Ready.** A job is ready when the inputs of its next quantum exist and the ledger admitted that quantum. The
+scheduler chooses only among ready jobs.
+
 **Class.** How urgently a job's quanta run. mkviolet has two classes: a council decision goes before a generation's
 next stage (`gemma4.rs` `CardLock`, `GpuLock`). The planned set is interactive, batch, and filler (training that
-gives way to anything else). The term is "class", not "tier", because tier already names a place.
+runs only when no other work is ready). The term is "class", not "tier", because tier already names a place.
+
+**Checkpoint interval.** The time between a filler job's checkpoints. A filler job declares it. When the filler
+gives its device to other work, its state parks, and it continues from its last checkpoint (`docs/spec.md` 5.5).
 
 **Stream.** A job with no end, a period, and a deadline per period. Examples are frames of home video, audio hops
 for the cochlea, and beat tracking. A stream says what to do when it is late: drop, catch up, or degrade. It reports
@@ -231,26 +263,39 @@ yet.
 that the file-descriptor store keeps is a lease on memory that outlives the process. To drain a lease:
 
 1. Accept no new jobs.
-2. Let quanta go to their ends.
+2. Let each quantum finish.
 3. Park pinned and wanted state to a lasting tier.
-4. Let the resource go.
+4. Release the resource.
+
+A job's hold on a live context is a lease. It is not a pin.
+
+**Loan.** A mandatory term that one job at a time holds, for example prefill scratch. A loan is a lease, and the
+nagaya enforces it. Each terminal state of the job releases it: done, cancelled, failed or expired.
 
 **Pin.** A lease on a snapshot and the chain under it. It keeps them out of eviction until it expires. mkviolet
 keeps pins in `pins.json` beside the snapshots, so they outlive a restart (`held.rs` `PinSet { snapshots, expires
 }`).
 
-**Ledger.** One machine's account of its memory. It has a budget per tier: one shared pool on gfx1151host and sm121host, and
-separate device and host budgets on b70host. The ledger admits every engine's mandatory bytes first. It divides
-what remains among the engines' elastic terms, by the weights in the machine's placement profile
-(`docs/engine-abi.md` D9). Counts come from the ledger's arithmetic, never from probes of free memory. The idea
-comes from ds4-recipe's memory ledger (`docs/prior-art.md` 2).
+**Owner.** The client principal that created an entry or a job. Quotas and pins name an owner.
 
-"Tenant" in the README is a figure of speech for an engine, not a term.
+**Quota.** An owner's byte limit in the store. One owner cannot evict the entries of another owner beyond it.
+
+**Ledger.** One machine's account of its memory. It has a budget per tier: one shared pool on gfx1151host and sm121host, and
+separate device and host budgets on b70host.
+
+The ledger admits every engine's mandatory bytes first. It divides
+what remains among the engines' elastic terms, by the shares in the machine's placement profile
+(`docs/engine-abi.md` D9). Each elastic term gets at least its minimum. Counts come from the ledger's arithmetic,
+never from probes of free memory. The idea comes from ds4-recipe's memory ledger (`docs/prior-art.md` 2).
+
+The **safety floor** is a different check. It watches the host's free memory for what the ledger cannot see
+(`docs/spec.md` 4.7).
 
 ## Open questions
 
 None are open. These were decided on 2026-10-17:
 
 - weights are a state object (see Arena);
-- an engine that spans devices schedules its own stages for now (D1);
-- snapshot ids are content ids, with recipes for lookup and coverage for fit (D3).
+- an engine that spans devices schedules its own stages for now (D1), and has one thread for its device group;
+- the profile gives each engine a share of spare memory (D9);
+- a snapshot is named by its content id, with recipes for lookup and coverage for fit (D3).
