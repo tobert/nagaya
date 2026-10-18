@@ -123,6 +123,117 @@ pub fn stored_part(part: u32) -> Result<u32, String> {
     }
 }
 
+/// The floats of one mk scratch buffer for each token of a pass. The names are mk's `scratch()` names.
+///
+/// mk sizes each buffer at `kMaxPassTokens`, whatever the pass's token count, so this table is the pool at its
+/// largest. The sizes come from mk's `src/engine/blocks.hip` and `src/engine/engine.hip` at 555a2a3.
+#[cfg(test)]
+const SCRATCH_PER_TOKEN: [(&str, u64); 48] = [
+    // The gated DeltaNet block (blocks.hip:34-39).
+    ("gdn_qkv", 10_240), // kGdnConvDim
+    ("gdn_qkvc", 10_240),
+    ("gdn_z", 6_144), // kGdnValDim
+    ("gdn_a", 48),    // kGdnVHeads
+    ("gdn_b", 48),
+    ("gdn_core", 6_144),
+    // The mixture of experts block (blocks.hip:68-84).
+    ("moe_logits", 512), // kExperts
+    ("moe_tidx", 10),    // kTopK
+    ("moe_tw", 10),
+    ("moe_asg", 10),
+    ("moe_tok", 10),
+    ("moe_gu", 12_800), // kTopK * 2 * kFf
+    ("moe_h", 6_400),   // kTopK * kFf
+    ("moe_y", 25_600),  // kTopK * kEmbd
+    ("moe_sg", 640),    // kFfShared
+    ("moe_su", 640),
+    ("moe_sh", 640),
+    ("moe_sd", 2_560), // kEmbd
+    // The attention block (blocks.hip:143-156).
+    ("att_q", 12_288), // kHeads * 2 * kHeadDim
+    ("att_k", 512),    // kKvHeads * kHeadDim
+    ("att_v", 512),
+    ("att_iq", 512),   // kIdxHeads * kIdxDim
+    ("att_ik", 128),   // kIdxDim
+    ("att_qo", 6_144), // kHeads * kHeadDim
+    ("att_go", 6_144),
+    ("att_iqo", 512),
+    ("att_scores", 8_192), // kMaxContext / kIdxRatio
+    ("att_picked", 512),   // kIdxBudget / kIdxRatio
+    ("att_sel", 2_075),    // kAttnMaxSelMasked
+    ("att_seln", 1),
+    ("att_out", 6_144),
+    // The pass's own rows and the hyper-connection mixer (engine.hip:1203-1212).
+    ("e", 2_560),  // kEmbd
+    ("h", 10_240), // kHcDim
+    ("xn", 10_240),
+    ("down", 320), // kHcRank
+    ("act", 320),
+    ("up", 10_240),
+    ("z4", 4),
+    ("inj", 4),
+    ("mixed", 2_560),
+    ("out", 2_560),
+    // The PLE block of layer 1 (engine.hip:1254-1260).
+    ("ple_emb", 2_560),
+    ("ple_k", 10_240),
+    ("ple_kn", 10_240),
+    ("ple_v", 2_560),
+    ("ple_gv", 10_240),
+    ("ple_gvn", 10_240),
+    ("ple_y", 10_240),
+];
+
+/// The mk scratch buffers that do not grow with the token count, in floats.
+#[cfg(test)]
+const SCRATCH_FIXED: [(&str, u64); 8] = [
+    ("moe_cnt", 512), // kExperts
+    ("moe_off", 513), // kExperts + 1
+    ("moe_igu", 513),
+    ("moe_idn", 513),
+    ("moe_sgt", 256), // kMaxPassTokens
+    // The head's logits row for each segment (engine.hip:1293).
+    ("logits", 16 * 248_320),
+    // The largest split-K slice (engine.hip:1184): a small pass asks for the second one (engine.hip:1188).
+    ("qmm_part", 16 * 256 * 640),
+    ("qmm_part2", 16 * 256 * 640),
+];
+
+/// The floats that mk's pass scratch asks for, one entry for each named buffer at its largest ask.
+#[cfg(test)]
+pub fn scratch_buffers() -> Vec<(&'static str, u64)> {
+    let tokens = u64::from(MAX_PASS_TOKENS);
+    SCRATCH_PER_TOKEN
+        .iter()
+        .map(|(name, per_token)| (*name, per_token * tokens))
+        .chain(SCRATCH_FIXED.iter().copied())
+        .collect()
+}
+
+/// The bytes of mk's pass scratch pool at its largest: every named buffer, sized for `kMaxPassTokens`.
+#[cfg(test)]
+pub fn pass_scratch_bytes() -> u64 {
+    scratch_buffers().iter().map(|(_, floats)| floats).sum::<u64>() * 4
+}
+
+/// The pass scratch that this binding declares for mk on gfx1151, in bytes.
+///
+/// The value is the derived sum of `scratch_buffers` (263 934 988 bytes at MAX_PASS_TOKENS). Milestone 9c measures
+/// the pool on gfx1151 and puts the measured source in this comment.
+pub const PASS_SCRATCH_BYTES: u64 = 263_934_988;
+
+/// The reason that a measured pass scratch is past the declared constant, or `Ok` when it fits.
+#[cfg(test)]
+pub fn scratch_problem(measured: u64) -> Result<(), String> {
+    if measured > PASS_SCRATCH_BYTES {
+        return Err(format!(
+            "mk asks {measured} bytes for pass scratch; this binding declares {PASS_SCRATCH_BYTES}. \
+             Use the mk commit that milestone 9c measured, or measure again and raise the constant"
+        ));
+    }
+    Ok(())
+}
+
 /// The limits of the engine for the fixed context pool.
 pub fn limits(arena_bytes: u64) -> Limits {
     Limits {
@@ -152,6 +263,13 @@ pub fn limits(arena_bytes: u64) -> Limits {
                     bytes: arena_bytes,
                     lifetime: Lifetime::Engine,
                     kinds: vec![Kind::Read, Kind::Prefill, Kind::Decode],
+                },
+                MandatoryTerm {
+                    name: "pass_scratch".to_owned(),
+                    tier: Tier::Device(0),
+                    bytes: PASS_SCRATCH_BYTES,
+                    lifetime: Lifetime::Engine,
+                    kinds: vec![Kind::Prefill, Kind::Decode],
                 },
                 MandatoryTerm {
                     name: "context".to_owned(),
@@ -397,6 +515,42 @@ mod tests {
         assert_ne!(on, off);
         assert!(on.bit_settings.iter().any(|setting| setting.name == "MK_TILES"));
         assert!(off.bit_settings.iter().any(|setting| setting.name == "MK_TILES"));
+    }
+
+    #[test]
+    fn the_limits_declare_the_pass_scratch_as_a_mandatory_term() {
+        let limits = limits(94);
+        let term = limits
+            .memory
+            .mandatory
+            .iter()
+            .find(|term| term.name == "pass_scratch")
+            .expect("the limits must declare the pass scratch (docs/engine-abi.md)");
+        assert_eq!(term.tier, Tier::Device(0));
+        assert_eq!(term.bytes, PASS_SCRATCH_BYTES);
+        assert_eq!(term.lifetime, Lifetime::Engine);
+        assert_eq!(term.kinds, vec![Kind::Prefill, Kind::Decode]);
+    }
+
+    #[test]
+    fn a_measured_scratch_above_the_declared_constant_is_refused() {
+        assert_eq!(scratch_problem(PASS_SCRATCH_BYTES - 1), Ok(()));
+        assert_eq!(scratch_problem(PASS_SCRATCH_BYTES), Ok(()));
+        let above = PASS_SCRATCH_BYTES + 1;
+        let error = scratch_problem(above).expect_err("one byte above the constant must refuse");
+        assert!(error.contains("pass scratch"), "{error}");
+        assert!(error.contains(&PASS_SCRATCH_BYTES.to_string()), "{error}");
+        assert!(error.contains(&above.to_string()), "{error}");
+    }
+
+    #[test]
+    fn the_declared_scratch_is_the_sum_of_the_mk_scratch_buffers() {
+        // The names and the sizes come from mk's src/engine/blocks.hip and src/engine/engine.hip at 555a2a3.
+        let buffers = scratch_buffers();
+        assert_eq!(buffers.len(), 56, "one entry for each named mk scratch buffer");
+        assert_eq!(pass_scratch_bytes(), PASS_SCRATCH_BYTES);
+        // The largest single buffer is the MoE block's expert rows: kMaxPassTokens x kTopK x kEmbd floats.
+        assert_eq!(buffers.iter().map(|(_, floats)| *floats).max(), Some(6_553_600));
     }
 
     #[test]
