@@ -172,9 +172,11 @@ feature to the test build. This is a plain correction to the Proposed section, n
 - `pooled`, derived, `U8`, row shape [8].
 
 Its slots are 64 bytes and 256 bytes, one each. Its seal flips the low bit of the first `state` byte.
+
 Its `pass` changes state and is deterministic. For each token it appends one `cells` row and one `ring` row.
 It sets the 16-byte `state` part from the token bytes, and it returns the state as one output. It reads no
 clock, random value or address. The fake pass allocates its test rows; the fake is not a ledger engine.
+
 `FakeBroken` is the same, but `part_read` flips the low bit of byte 0. Thus a park and restore loses a bit,
 and gate 8.3 (park and restore) must fail it.
 
