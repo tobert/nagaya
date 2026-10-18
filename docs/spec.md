@@ -629,6 +629,10 @@ a filter by engine or kind when it connects.
 **10.1 systemd.** The unit is `Type=notify`. The process sends `READY=1` when every engine in the profile has
 opened, passed its canary, and woken its pinned state. `STATUS=` gives the state of each engine.
 
+**Proposed** by deepseek-flash, 2026-10-18: when `<store_dir>/profile.toml` does not exist, the process starts with an
+empty profile. An empty profile is valid: a machine with no engine can serve as a coordinator or hold a store tier
+(2.1). A profile with no engines sends `READY=1` when admission passes. Step c has no HTTP to accept a first profile.
+
 **10.2 Arenas through a restart.** systemd's file-descriptor store keeps the arenas (`FDSTORE=1`). Each fd has the
 name `<engine>/<device>/<part>`. systemd reads `FileDescriptorStoreMax` from the unit file before the process starts.
 The unit file sets a generous ceiling (`FileDescriptorStoreMax=512`), and profile admission (2.4) refuses a profile
