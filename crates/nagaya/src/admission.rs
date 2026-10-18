@@ -109,6 +109,24 @@ impl std::error::Error for AdmitError {
     }
 }
 
+/// One engine's admitted limits.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdmittedEngine {
+    /// The engine name.
+    pub name: String,
+    /// The result of `plan(config)` that the ledger admitted.
+    pub limits: Limits,
+}
+
+/// The result of admitting a profile.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Admitted {
+    /// The ledger's admission.
+    pub admission: Admission,
+    /// The planned limits, one per engine, in profile order.
+    pub engines: Vec<AdmittedEngine>,
+}
+
 /// The fake engine's planner. The fake engine reads no weights.
 #[cfg(feature = "fake")]
 pub struct FakePlan;
@@ -121,7 +139,7 @@ impl Plan for FakePlan {
 }
 
 /// Admit a placement profile with the ledger, before any engine opens.
-pub fn admit(profile: &PlacementProfile, registry: &Registry, ledger: &mut Ledger) -> Result<Admission, AdmitError> {
+pub fn admit(profile: &PlacementProfile, registry: &Registry, ledger: &mut Ledger) -> Result<Admitted, AdmitError> {
     let budgets: Vec<Budget> = profile
         .budgets
         .iter()
@@ -131,6 +149,7 @@ pub fn admit(profile: &PlacementProfile, registry: &Registry, ledger: &mut Ledge
         })
         .collect();
     let mut engines = Vec::with_capacity(profile.engines.len());
+    let mut planned = Vec::with_capacity(profile.engines.len());
     for engine in &profile.engines {
         let planner = registry.planner(&engine.kind).ok_or_else(|| AdmitError::UnknownKind {
             engine: engine.name.clone(),
@@ -140,11 +159,21 @@ pub fn admit(profile: &PlacementProfile, registry: &Registry, ledger: &mut Ledge
             engine: engine.name.clone(),
             message: error.to_string(),
         })?;
+        planned.push(AdmittedEngine {
+            name: engine.name.clone(),
+            limits: limits.clone(),
+        });
         engines.push(EnginePlan {
             name: engine.name.clone(),
             limits,
             share: engine.share,
         });
     }
-    ledger.admit(&Profile { budgets, engines }).map_err(AdmitError::Ledger)
+    let admission = ledger
+        .admit(&Profile { budgets, engines })
+        .map_err(AdmitError::Ledger)?;
+    Ok(Admitted {
+        admission,
+        engines: planned,
+    })
 }

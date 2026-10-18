@@ -66,6 +66,20 @@ impl Plan for FailingPlan {
 }
 
 #[test]
+fn the_admission_carries_the_planned_limits() {
+    let profile = PlacementProfile {
+        engines: vec![engine("fake-one", "fake", 1)],
+        budgets: vec![host_budget(100)],
+    };
+    let mut ledger = Ledger::new();
+    let admitted = admit(&profile, &Registry::with_fake(), &mut ledger).unwrap();
+    assert_eq!(admitted.engines.len(), 1);
+    assert_eq!(admitted.engines[0].name, "fake-one");
+    assert_eq!(admitted.engines[0].limits, FakeAlways::new().limits());
+    assert_eq!(admitted.admission.engines.len(), 1);
+}
+
+#[test]
 fn the_mandatory_bytes_must_fit() {
     let mut registry = Registry::new();
     registry.register(
@@ -82,9 +96,9 @@ fn the_mandatory_bytes_must_fit() {
         budgets: vec![host_budget(120)],
     };
     let mut ledger = Ledger::new();
-    let admission = admit(&profile, &registry, &mut ledger).unwrap();
-    assert_eq!(admission.engines[0].mandatory, vec![(Tier::Host, 120)]);
-    assert_eq!(admission.unassigned, vec![(vec![Tier::Host], 0)]);
+    let admitted = admit(&profile, &registry, &mut ledger).unwrap();
+    assert_eq!(admitted.admission.engines[0].mandatory, vec![(Tier::Host, 120)]);
+    assert_eq!(admitted.admission.unassigned, vec![(vec![Tier::Host], 0)]);
 
     let mut registry = Registry::new();
     registry.register(
@@ -129,9 +143,9 @@ fn the_elastic_minimum_must_fit() {
         budgets: vec![host_budget(110)],
     };
     let mut ledger = Ledger::new();
-    let admission = admit(&profile, &registry, &mut ledger).unwrap();
-    assert_eq!(admission.engines[0].elastic, vec![("e".to_owned(), 50)]);
-    assert_eq!(admission.unassigned, vec![(vec![Tier::Host], 0)]);
+    let admitted = admit(&profile, &registry, &mut ledger).unwrap();
+    assert_eq!(admitted.admission.engines[0].elastic, vec![("e".to_owned(), 50)]);
+    assert_eq!(admitted.admission.unassigned, vec![(vec![Tier::Host], 0)]);
 
     let profile = PlacementProfile {
         engines: vec![engine("short", "test", 1)],
@@ -184,8 +198,8 @@ fn the_fake_engine_admits_with_its_limits() {
         budgets: vec![host_budget(100)],
     };
     let mut ledger = Ledger::new();
-    let admission = admit(&profile, &Registry::with_fake(), &mut ledger).unwrap();
-    assert_eq!(admission.engines[0].mandatory, Vec::new());
-    assert_eq!(admission.engines[0].elastic, Vec::new());
-    assert_eq!(admission.unassigned, vec![(vec![Tier::Host], 100)]);
+    let admitted = admit(&profile, &Registry::with_fake(), &mut ledger).unwrap();
+    assert_eq!(admitted.admission.engines[0].mandatory, Vec::new());
+    assert_eq!(admitted.admission.engines[0].elastic, Vec::new());
+    assert_eq!(admitted.admission.unassigned, vec![(vec![Tier::Host], 100)]);
 }
