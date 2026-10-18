@@ -86,10 +86,43 @@ fn smallest_slot(limits: &Limits) -> Option<(u32, u64)> {
     best
 }
 
-fn pattern(len: usize, seed: u8) -> Vec<u8> {
-    (0..len)
-        .map(|index| ((index as u8).wrapping_mul(37).wrapping_add(seed)) | 1)
-        .collect()
+/// Synthetic bytes for one part. A float part gets finite values, because the suite refuses a non-finite one.
+fn pattern(len: usize, seed: u8, dtype: Dtype) -> Vec<u8> {
+    match dtype {
+        Dtype::F32 => (0..len / 4)
+            .flat_map(|index| {
+                let value = ((index % 97) as f32) * 0.25 - 7.0 + f32::from(seed) * 0.5;
+                value.to_le_bytes()
+            })
+            .collect(),
+        Dtype::F16 => (0..len / 2)
+            .flat_map(|index| (0x3c00u16 | ((index as u16) % 0x3ff)).to_le_bytes())
+            .collect(),
+        Dtype::BF16 => (0..len / 2)
+            .flat_map(|index| (0x3f80u16 | ((index as u16) % 0x7f)).to_le_bytes())
+            .collect(),
+        Dtype::U8 | Dtype::U32 => (0..len)
+            .map(|index| ((index as u8).wrapping_mul(37).wrapping_add(seed)) | 1)
+            .collect(),
+    }
+}
+
+/// The first index of a non-finite value in a float part, or `None` for an integer part.
+fn non_finite(dtype: Dtype, bytes: &[u8]) -> Option<usize> {
+    let (width, exponent) = match dtype {
+        Dtype::F32 => (4, 0x7f80_0000u32),
+        Dtype::F16 => (2, 0x7c00u32),
+        Dtype::BF16 => (2, 0x7f80u32),
+        Dtype::U8 | Dtype::U32 => return None,
+    };
+    bytes.chunks_exact(width).position(|chunk| {
+        let bits = if width == 4 {
+            u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
+        } else {
+            u32::from(u16::from_le_bytes([chunk[0], chunk[1]]))
+        };
+        bits & exponent == exponent
+    })
 }
 
 /// The number of rows that `fill` leaves in a cells part: one.
@@ -110,7 +143,7 @@ fn fill<E: Engine + ?Sized>(
         if !part.is_stored() {
             continue;
         }
-        let bytes = pattern(shape_bytes(part) as usize, seed.wrapping_add(id as u8));
+        let bytes = pattern(shape_bytes(part) as usize, seed.wrapping_add(id as u8), part.dtype);
         let result = match part.kind {
             PartKind::Fixed => engine.parts().unwrap().part_write(state, id, &bytes),
             PartKind::Cells | PartKind::Ring => engine.parts().unwrap().cells_write(state, id, 1, &bytes),
@@ -235,6 +268,16 @@ fn compare_filled(
                 gate,
                 format!("the part ids differ: {left_id} and {right_id}"),
             ));
+        }
+        let part = &limits.parts[*left_id];
+        // Spec 8.3: a NaN or an infinity fails, even when the two bit patterns are equal.
+        for (side, bytes) in [("left", left_bytes), ("right", right_bytes)] {
+            if let Some(index) = non_finite(part.dtype, bytes) {
+                return Err(Failure::new(
+                    gate,
+                    format!("part {} {side} index {index} is not finite", part.name),
+                ));
+            }
         }
         if let Err(failure) = compare_bytes(gate, left_bytes, right_bytes) {
             return Err(Failure {
@@ -770,4 +813,26 @@ fn compare_fixed<E: Engine + ?Sized>(
     let left = read_fixed(first, state, limits, gate)?;
     let right = read_fixed(second, state, limits, gate)?;
     compare_filled(gate, limits, &left, &right)
+}
+
+#[cfg(test)]
+mod tests {
+    use nagaya_abi::Dtype;
+
+    use super::non_finite;
+
+    #[test]
+    fn every_float_width_finds_a_nan_and_an_infinity() {
+        assert_eq!(non_finite(Dtype::F32, &f32::NAN.to_le_bytes()), Some(0));
+        assert_eq!(non_finite(Dtype::F32, &f32::INFINITY.to_le_bytes()), Some(0));
+        assert_eq!(non_finite(Dtype::F32, &1.0f32.to_le_bytes()), None);
+        assert_eq!(non_finite(Dtype::F16, &0x7e00u16.to_le_bytes()), Some(0));
+        assert_eq!(non_finite(Dtype::F16, &0x7c00u16.to_le_bytes()), Some(0));
+        assert_eq!(non_finite(Dtype::F16, &0x3c00u16.to_le_bytes()), None);
+        assert_eq!(non_finite(Dtype::BF16, &0x7fc0u16.to_le_bytes()), Some(0));
+        assert_eq!(non_finite(Dtype::BF16, &0x7f80u16.to_le_bytes()), Some(0));
+        assert_eq!(non_finite(Dtype::BF16, &0x3f80u16.to_le_bytes()), None);
+        // An integer part has no NaN.
+        assert_eq!(non_finite(Dtype::U32, &0xffff_ffffu32.to_le_bytes()), None);
+    }
 }

@@ -4,9 +4,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use nagaya_abi::fake::{FakeAlways, FakeBroken};
 use nagaya_abi::{
-    ChainLimits, Coverage, CoverageSpan, Determinism, ElasticTerm, Engine, Identity, Inputs, Lifetime, Limits,
-    MandatoryTerm, MemoryLimits, PartError, PartId, PartKind, Parts, PassError, PassOut, Segment, SlotLimit, Slots,
-    State, Tap, Tier, WriteResult,
+    Capability, ChainLimits, Coverage, CoverageSpan, Determinism, Dtype, ElasticTerm, Engine, Identity, Inputs,
+    Lifetime, Limits, MandatoryTerm, MemoryLimits, PartError, PartId, PartKind, PartLimits, Parts, PassError, PassOut,
+    PassStatus, Segment, SlotLimit, Slots, Stage, State, Tap, Tier, WriteResult,
 };
 use nagaya_conformance::{
     Admit, Outcome, admission_refusal_changes_nothing, park_and_restore, quantum_identity, quantum_isolation,
@@ -756,6 +756,185 @@ fn fits_that_always_accepts_fails_resume_fit() {
         quantum_resume_fit(&mut FitsAlways::new()),
         "FitsAlways quantum_resume_fit",
     );
+}
+
+/// An engine with a fixed F32 part that its pass fills with NaN. It refuses the gate's synthetic bytes, so the gate
+/// takes the pass path, and both sides of the comparison hold the same NaN bits. Spec 8.3 says that fails.
+struct NanAfterAPass {
+    limits: Limits,
+    fixed: [Vec<u8>; 2],
+    cells: [Vec<Vec<u8>>; 2],
+    last_error: Option<String>,
+}
+
+/// The fixed F32 part of `NanAfterAPass`.
+const NAN_FIXED: PartId = 0;
+/// The cells part of `NanAfterAPass`.
+const NAN_CELLS: PartId = 1;
+
+impl NanAfterAPass {
+    fn new() -> Self {
+        let limits = Limits {
+            capabilities: vec![Capability::Parts],
+            parts: vec![
+                PartLimits {
+                    name: "weights".to_owned(),
+                    kind: PartKind::Fixed,
+                    dtype: Dtype::F32,
+                    shape: vec![4],
+                },
+                PartLimits {
+                    name: "rows".to_owned(),
+                    kind: PartKind::Cells,
+                    dtype: Dtype::U8,
+                    shape: vec![8],
+                },
+            ],
+            inputs: Inputs::Tokens,
+            devices: vec![0],
+            stages: vec![Stage {
+                device: 0,
+                layers: 0..1,
+                head: true,
+            }],
+            max_segments: 1,
+            max_pass_inputs: 1,
+            max_logit_rows: 1,
+            slots: vec![SlotLimit { bytes: 64, count: 1 }, SlotLimit { bytes: 256, count: 1 }],
+            max_quantum_ms: 10,
+            memory: MemoryLimits::default(),
+            chain: ChainLimits {
+                max_depth: 0,
+                delta_fraction: 0.0,
+            },
+            segments_exact: true,
+            determinism: Determinism::Always,
+            bit_dependence: Vec::new(),
+            taps: Vec::new(),
+        };
+        Self {
+            limits,
+            fixed: [vec![0u8; 16], vec![0u8; 16]],
+            cells: [Vec::new(), Vec::new()],
+            last_error: None,
+        }
+    }
+
+    fn slot(state: State) -> usize {
+        let State::Slot(id) = state;
+        id as usize
+    }
+}
+
+impl Engine for NanAfterAPass {
+    fn identity(&self) -> Identity {
+        Identity {
+            model: "nan-after-a-pass".to_owned(),
+            checkpoint_digest: "fake:0".to_owned(),
+            tokenizer_hash: "fake:0".to_owned(),
+            template: String::new(),
+            numbers: std::collections::BTreeMap::new(),
+            plan_table: String::new(),
+            bit_settings: Vec::new(),
+            canary_hash: String::new(),
+        }
+    }
+
+    fn limits(&self) -> Limits {
+        self.limits.clone()
+    }
+
+    fn pass(&mut self, segments: &[Segment], _taps: &[Tap]) -> Result<PassOut, PassError> {
+        for segment in segments {
+            let slot = Self::slot(segment.state);
+            self.fixed[slot] = f32::NAN.to_le_bytes().repeat(4);
+            self.cells[slot].push(vec![7u8; 8]);
+        }
+        Ok(PassOut {
+            status: PassStatus::Ok,
+            ms: 0,
+            outputs: Vec::new(),
+        })
+    }
+
+    fn last_error(&self) -> Option<String> {
+        self.last_error.clone()
+    }
+
+    fn parts(&mut self) -> Option<&mut dyn Parts> {
+        Some(self)
+    }
+}
+
+impl Parts for NanAfterAPass {
+    fn part_read(&mut self, state: State, part: PartId, out: &mut [u8]) -> Result<(), PartError> {
+        let slot = Self::slot(state);
+        match part {
+            NAN_FIXED => {
+                if out.len() != self.fixed[slot].len() {
+                    return Err(PartError::Refused);
+                }
+                out.copy_from_slice(&self.fixed[slot]);
+                Ok(())
+            }
+            NAN_CELLS => {
+                let row = 8;
+                if out.len() != self.cells[slot].len() * row {
+                    return Err(PartError::Refused);
+                }
+                for (index, bytes) in self.cells[slot].iter().enumerate() {
+                    out[index * row..(index + 1) * row].copy_from_slice(bytes);
+                }
+                Ok(())
+            }
+            _ => Err(PartError::Refused),
+        }
+    }
+
+    fn part_write(&mut self, state: State, part: PartId, bytes: &[u8]) -> WriteResult {
+        if part != NAN_FIXED || bytes.len() != 16 {
+            return WriteResult::Refused;
+        }
+        let nan = f32::NAN.to_le_bytes().repeat(4);
+        // The zero fill and the pass's NaN are welcome; the gate's synthetic pattern is not.
+        if bytes.iter().all(|byte| *byte == 0) || bytes == nan {
+            self.fixed[Self::slot(state)].copy_from_slice(bytes);
+            WriteResult::Ok
+        } else {
+            WriteResult::Refused
+        }
+    }
+
+    fn cells_read(
+        &mut self,
+        _state: State,
+        _part: PartId,
+        _from: u64,
+        _n: u64,
+        _out: &mut [u8],
+    ) -> Result<(), PartError> {
+        Err(PartError::Refused)
+    }
+
+    fn cells_write(&mut self, state: State, part: PartId, n: u64, bytes: &[u8]) -> WriteResult {
+        if part != NAN_CELLS || bytes.len() as u64 != n * 8 {
+            return WriteResult::Refused;
+        }
+        let rows = &mut self.cells[Self::slot(state)];
+        for chunk in bytes.chunks(8) {
+            rows.push(chunk.to_vec());
+        }
+        WriteResult::Ok
+    }
+
+    fn set_n(&mut self, _state: State, _n: u64) -> WriteResult {
+        WriteResult::Ok
+    }
+}
+
+#[test]
+fn a_nan_part_fails_park_and_restore() {
+    assert_fail(park_and_restore(&mut NanAfterAPass::new()), "NanAfterAPass");
 }
 
 fn limits_with(mandatory_bytes: u64) -> Limits {
