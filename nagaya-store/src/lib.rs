@@ -1402,7 +1402,7 @@ impl Store {
                 };
                 if child_entry.owner != owner
                     || self.pin_protects(child_entry, now_ms)
-                    || tier.is_some_and(|tier| child_entry.tier != tier)
+                    || child_entry.tier != tier.unwrap_or(entry.tier)
                 {
                     evictable = false;
                     break;

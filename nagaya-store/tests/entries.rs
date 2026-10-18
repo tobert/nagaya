@@ -1158,6 +1158,32 @@ fn another_owners_pin_protects() {
 }
 
 #[test]
+fn an_eviction_without_a_tier_skips_a_mixed_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open_with_limits(dir.path(), 100_000, 100_000, u64::MAX, open_chain()).unwrap();
+    let root_recipe = recipe(171);
+    let root = put(&mut store, &base_snapshot(1), root_recipe, 1);
+    let middle_recipe = next_recipe(root_recipe, 2);
+    let middle = put_delta(&mut store, &delta_at(root, 2), middle_recipe, root_recipe, 1);
+    let tip_recipe = next_recipe(middle_recipe, 4);
+    let tip = try_put(
+        &mut store,
+        &delta_at(middle, 4),
+        tip_recipe,
+        Some(middle_recipe),
+        1,
+        Tier::Nvme,
+        10,
+    )
+    .unwrap();
+    // The middle group spans host and NVMe. Only the NVMe tip can go.
+    let victims = store.evict(1, 1, 10).unwrap();
+    assert_eq!(victims, vec![tip]);
+    assert!(store.entries().contains_key(&root));
+    assert!(store.entries().contains_key(&middle));
+}
+
+#[test]
 fn an_eviction_of_zero_bytes_takes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(dir.path()).unwrap();
