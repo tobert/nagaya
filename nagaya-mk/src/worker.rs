@@ -753,8 +753,8 @@ impl ThreadState {
                     ));
                 }
                 let history = bytes.to_vec();
-                let first = i32::from_le_bytes([history[0], history[1], history[2], history[3]]);
-                let second = i32::from_le_bytes([history[4], history[5], history[6], history[7]]);
+                let first = i32::from_ne_bytes([history[0], history[1], history[2], history[3]]);
+                let second = i32::from_ne_bytes([history[4], history[5], history[6], history[7]]);
                 for (index, value) in [first, second].into_iter().enumerate() {
                     if value < 0 || value as u32 >= spec::VOCAB {
                         return Call::Refused(format!(
@@ -1026,10 +1026,14 @@ impl ThreadState {
 
 /// A byte buffer that is aligned for mk's f32 stores. mk reads and writes a part as f32 values in host memory.
 ///
-/// A `Vec<u8>` holds no alignment promise. This buffer holds its bytes in `u64` words, so the pointer is 8-byte
-/// aligned, and it copies to and from bytes without unsafe code.
+/// A `Vec<u8>` holds no alignment promise. This buffer holds its bytes in 8-byte words, so the pointer is 8-byte
+/// aligned. It copies bytes into the words and out again, so it makes no assumption about the host byte order.
+#[repr(align(8))]
+#[derive(Clone, Copy)]
+struct Word([u8; 8]);
+
 struct Aligned {
-    words: Vec<u64>,
+    words: Vec<Word>,
     len: usize,
 }
 
@@ -1037,7 +1041,7 @@ impl Aligned {
     /// A zeroed buffer of `len` bytes.
     fn zeroed(len: usize) -> Self {
         Self {
-            words: vec![0u64; len.div_ceil(8)],
+            words: vec![Word([0; 8]); len.div_ceil(8)],
             len,
         }
     }
@@ -1046,9 +1050,7 @@ impl Aligned {
     fn copy(bytes: &[u8]) -> Self {
         let mut buffer = Self::zeroed(bytes.len());
         for (word, chunk) in buffer.words.iter_mut().zip(bytes.chunks(8)) {
-            let mut piece = [0u8; 8];
-            piece[..chunk.len()].copy_from_slice(chunk);
-            *word = u64::from_le_bytes(piece);
+            word.0[..chunk.len()].copy_from_slice(chunk);
         }
         buffer
     }
@@ -1058,25 +1060,18 @@ impl Aligned {
         self.len
     }
 
-    /// The bytes of the buffer.
+    /// The bytes of the buffer, in memory order.
     fn to_vec(&self) -> Vec<u8> {
-        self.words
-            .iter()
-            .flat_map(|word| word.to_le_bytes())
-            .take(self.len)
-            .collect()
+        self.words.iter().flat_map(|word| word.0).take(self.len).collect()
     }
 
     /// The buffer as f32 values, in order, for a buffer that holds f32 data.
     fn f32_values(&self) -> impl Iterator<Item = f32> + '_ {
         (0..self.len / 4).map(move |index| {
-            let word = self.words[index / 2];
-            let bits = if index % 2 == 0 {
-                word as u32
-            } else {
-                (word >> 32) as u32
-            };
-            f32::from_bits(bits)
+            let start = index * 4;
+            let word = self.words[start / 8].0;
+            let offset = start % 8;
+            f32::from_ne_bytes([word[offset], word[offset + 1], word[offset + 2], word[offset + 3]])
         })
     }
 
@@ -1105,7 +1100,9 @@ mod tests {
     use std::os::unix::ffi::OsStrExt;
     use std::path::PathBuf;
 
-    use super::{Aligned, fast_qmm_from, memory_problem, open_contexts, parse_shards, rounds_to_finite, tiles_from};
+    use super::{
+        Aligned, Word, fast_qmm_from, memory_problem, open_contexts, parse_shards, rounds_to_finite, tiles_from,
+    };
 
     #[test]
     fn a_context_pool_frees_what_it_made_when_a_later_new_fails() {
@@ -1156,10 +1153,28 @@ mod tests {
         assert_eq!(zeroed.to_vec(), vec![0u8; 13]);
         let values: Vec<u8> = [1.0f32, -2.5, 3.25]
             .iter()
-            .flat_map(|value| value.to_le_bytes())
+            .flat_map(|value| value.to_ne_bytes())
             .collect();
         let floats: Vec<f32> = Aligned::copy(&values).f32_values().collect();
         assert_eq!(floats, vec![1.0, -2.5, 3.25]);
+    }
+
+    #[test]
+    fn an_aligned_buffer_keeps_the_memory_order_of_its_words() {
+        let mut buffer = Aligned::zeroed(16);
+        buffer.words[0] = Word([1, 2, 3, 4, 5, 6, 7, 8]);
+        buffer.words[1] = Word([9, 10, 11, 12, 13, 14, 15, 16]);
+        assert_eq!(buffer.to_vec(), (1..=16u8).collect::<Vec<u8>>());
+        assert_eq!(
+            buffer.f32_values().next(),
+            Some(f32::from_ne_bytes([1, 2, 3, 4])),
+            "the first f32 is the first four bytes of the first word"
+        );
+        assert_eq!(
+            buffer.f32_values().nth(1),
+            Some(f32::from_ne_bytes([5, 6, 7, 8])),
+            "the second f32 is the second four bytes of the first word"
+        );
     }
 
     #[test]
