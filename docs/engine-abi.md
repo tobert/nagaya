@@ -222,6 +222,31 @@ and gate 8.3 (park and restore) must fail it.
 | telemetry | `mk_stage_times`, `mk_stage_detail`, `mk_dispatches`, `mk_host_stats` | mk's stages are ops (`stage.h`), so these are op times |
 | determinism | `always` | `stage.h`: "every op's output bits depend only on its work items"; top-k ties break by index; bit settings in the identity |
 
+### Proposed: v0 mk binding choices
+
+**Proposed** by deepseek-flash, 2026-10-18. The milestone 8 binding needs these choices. Each is the simplest choice
+that fits the ABI.
+
+- **A context is a state.** `State` is `Slot(u32)` in v0, so each mk context has a slot index. `limits().slots`
+  declares the pool that the binding creates at open: 2 contexts of 256 tokens. `plan(config)` comes with the process
+  crate, so this binding fixes the pool.
+- **`max_quantum_ms` is 30000.** mk splits a pass at 256 tokens (`kMaxPassTokens`). A prefill chunk of that size takes
+  about 2 s. The declared bound is 30 s.
+- **`cells_write` writes rows 0 to n-1.** mk writes n cells into an empty context that owns its K/V. The caller calls
+  `set_n` after it writes every part. On a first write, an append and row 0 agree.
+- **`positions` and `meta` are hints.** mk appends the tokens at the context's n. It reads no per-token metadata. The
+  binding requires contiguous positions and empty metadata. It does not compare the first position with n.
+- **A pass is fused by default.** The binding passes `fused = 1`. A tap needs the unfused path and one segment. This
+  binding declares no taps.
+- **The checkpoint digest is a spot check.** The binding hashes each shard's size and its GGUF header, as mk's
+  `weight_hash` does. The digest starts with `spot-sha256:`.
+- **`tokenizer_hash` is `none`.** mk loads no tokenizer file. The nagaya's family library tokenizes text (spec 11.3).
+- **`canary_hash` is empty.** This binding does not run mk's canary. The process adds it in a later milestone.
+- **The identity carries `MK_FAST_QMM` and `fused`.** Both are `Approx` bit settings. mk reads `MK_FAST_QMM` at each
+  pass build (`engine.h:27-32`).
+
+Reason for all: the code must not guess. Amy can change each choice.
+
 ## How mkviolet maps
 
 | ABI | mkviolet (`gemma4.rs` unless named) | Notes |
