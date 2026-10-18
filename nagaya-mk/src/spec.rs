@@ -29,8 +29,8 @@ pub const CONTEXT_CAPACITY: u32 = 256;
 /// The number of contexts in the declared pool.
 pub const CONTEXT_COUNT: u32 = 2;
 
-/// The longest quantum that mk declares, in milliseconds.
-pub const MAX_QUANTUM_MS: u32 = 30_000;
+/// The longest quantum that mk declares, in milliseconds. mk's watchdog aborts a pass at 10 s (`engine.h:302-306`).
+pub const MAX_QUANTUM_MS: u32 = 10_000;
 
 /// The most segments in one pass (mk `kMaxSegments`).
 pub const MAX_SEGMENTS: u32 = 16;
@@ -368,7 +368,7 @@ mod tests {
         assert_eq!(limits.slots[0].count, 2);
         assert_eq!(limits.slots[0].bytes, context_bytes(256));
         assert_eq!(limits.max_segments, 16);
-        assert_eq!(limits.max_quantum_ms, 30_000);
+        assert_eq!(limits.max_quantum_ms, 10_000);
         assert!(
             limits
                 .memory
