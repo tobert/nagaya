@@ -226,12 +226,11 @@ impl Scheduler {
                     deltas.push((*id, delta));
                 }
                 let total: i64 = deltas.iter().map(|(_, delta)| *delta).sum();
-                if total != 0 {
-                    if let Some((earliest, _)) = present.iter().min_by_key(|(id, arrival)| (*arrival, *id)) {
-                        if let Some((_, delta)) = deltas.iter_mut().find(|(id, _)| id == earliest) {
-                            *delta -= total;
-                        }
-                    }
+                if total != 0
+                    && let Some((earliest, _)) = present.iter().min_by_key(|(id, arrival)| (*arrival, *id))
+                    && let Some((_, delta)) = deltas.iter_mut().find(|(id, _)| id == earliest)
+                {
+                    *delta -= total;
                 }
                 for (id, delta) in deltas {
                     if let Some(job) = self.jobs.iter_mut().find(|job| job.id == id) {
