@@ -104,8 +104,9 @@ Do them in this order. Each milestone ends with all checks green and one or more
     instrument has a call site under test.
 14. **Deploy on gfx1151host.** Write a systemd user unit in `deploy/` (10.1). The bootstrap config binds
     `198.51.100.20:8090`, mk's address now (Amy, 2026-10-18). Run `gogi-conformance` against the process on gfx1151
-    with the mk engine. Write the cutover steps in `docs/deploy.md`, and keep arenas through a restart (10.2) for
-    later. Do not start, stop or disable a service: senpai does the cutover with Amy.
+    with the mk engine. Then drive one kaijutsu context against it: kaijutsu speaks council v2 through gogi. Write
+    the cutover steps in `docs/deploy.md`, and keep arenas through a restart (10.2) for later. Do not start, stop
+    or disable a service: senpai does the cutover with Amy.
 15. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
