@@ -223,7 +223,6 @@ pub fn pass_scratch_bytes() -> u64 {
 pub const PASS_SCRATCH_BYTES: u64 = 263_934_988;
 
 /// The reason that a measured pass scratch is past the declared constant, or `Ok` when it fits.
-#[cfg(test)]
 pub fn scratch_problem(measured: u64) -> Result<(), String> {
     if measured > PASS_SCRATCH_BYTES {
         return Err(format!(
