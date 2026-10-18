@@ -107,6 +107,35 @@ impl Drop for MkEngine {
     }
 }
 
+/// Build the logit outputs from mk's bytes.
+///
+/// The pass ran before this call, so a buffer that is too short is a fault. The error says `Poison`: the state is
+/// unknown, and the nagaya must free it (D6, spec 8.2).
+fn logit_outputs(bytes: &[u8], wants: &[bool], row: usize) -> Result<Vec<Output>, PassError> {
+    let mut outputs = Vec::new();
+    for (index, want) in wants.iter().enumerate() {
+        if !*want {
+            continue;
+        }
+        let start = index * row;
+        let end = start + row;
+        let Some(slice) = bytes.get(start..end) else {
+            return Err(PassError {
+                status: PassStatus::Poison,
+                message: format!(
+                    "mk returned {} logits bytes; segment {index} needs bytes {start}..{end}",
+                    bytes.len()
+                ),
+            });
+        };
+        outputs.push(Output {
+            name: "logits".to_owned(),
+            bytes: slice.to_vec(),
+        });
+    }
+    Ok(outputs)
+}
+
 impl Engine for MkEngine {
     fn identity(&self) -> Identity {
         self.worker.spec().identity.clone()
@@ -222,22 +251,12 @@ impl Engine for MkEngine {
         let mut outputs = Vec::new();
         if let Some(bytes) = reply.logits {
             let row = spec::VOCAB as usize * 4;
-            for (index, want) in wants.iter().enumerate() {
-                if !*want {
-                    continue;
+            match logit_outputs(&bytes, &wants, row) {
+                Ok(found) => outputs = found,
+                Err(error) => {
+                    self.last_error = Some(error.message.clone());
+                    return Err(error);
                 }
-                let start = index * row;
-                let end = start + row;
-                let Some(slice) = bytes.get(start..end) else {
-                    return Err(self.failed(format!(
-                        "mk returned {} logits bytes; segment {index} needs bytes {start}..{end}",
-                        bytes.len()
-                    )));
-                };
-                outputs.push(Output {
-                    name: "logits".to_owned(),
-                    bytes: slice.to_vec(),
-                });
             }
         }
         Ok(PassOut {
@@ -386,5 +405,36 @@ impl Seal for MkEngine {
                 Err(SealError::Failed)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nagaya_abi::PassStatus;
+
+    use super::logit_outputs;
+
+    #[test]
+    fn a_short_logits_buffer_is_a_fault_after_the_pass() {
+        let error = logit_outputs(&[0u8; 16], &[true, true], 16).expect_err("a short buffer must fail");
+        assert_eq!(
+            error.status,
+            PassStatus::Poison,
+            "the pass ran, so a short buffer poisons the state"
+        );
+        assert_eq!(
+            error.message,
+            "mk returned 16 logits bytes; segment 1 needs bytes 16..32"
+        );
+    }
+
+    #[test]
+    fn a_complete_logits_buffer_gives_one_output_for_each_wanted_row() {
+        let bytes: Vec<u8> = (0..48u8).collect();
+        let outputs = logit_outputs(&bytes, &[true, false, true], 16).expect("the buffer holds every row");
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0].bytes, bytes[0..16]);
+        assert_eq!(outputs[1].bytes, bytes[32..48]);
+        assert!(outputs.iter().all(|output| output.name == "logits"));
     }
 }

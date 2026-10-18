@@ -177,6 +177,10 @@ The simplest fix is a fourth status, `Refused`. `pass` then returns `Err(PassErr
 pass that did not run. A caller tells a refusal from a pass that ran, and it need not read `last_error` to know.
 Until the status exists, the binding returns `Ok`.
 
+A fault after the pass is different. The mk binding returns `Poison` when the logits buffer is shorter than the
+wanted rows. The pass ran, so the state is unknown (D6, spec 8.2). A unit test pins this decision. Real mk gives the
+full buffer, so the test calls the builder and not a pass.
+
 ### Canonical file bytes
 
 **Proposed** by deepseek-flash, 2026-10-18. The `safetensors` crate reads the canonical file, but its writer
