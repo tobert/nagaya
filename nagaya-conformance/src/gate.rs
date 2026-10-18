@@ -1,4 +1,8 @@
 //! The conformance gates: the properties of spec 8.3 that need no GPU.
+//!
+//! A fill writes synthetic bytes into every stored part. An engine with a value rule refuses them, as mk refuses a
+//! PLE history that is not a token id. The gate then starts the state with a one-token pass and reads it back, so
+//! every part holds a value that the engine accepts. Both paths call `set_n` after the parts.
 
 use std::fmt;
 
@@ -88,6 +92,11 @@ fn pattern(len: usize, seed: u8) -> Vec<u8> {
         .collect()
 }
 
+/// The number of rows that `fill` leaves in a cells part: one.
+fn filled_rows(limits: &Limits) -> u64 {
+    u64::from(limits.parts.iter().any(|part| part.kind == PartKind::Cells))
+}
+
 fn fill<E: Engine + ?Sized>(
     engine: &mut E,
     state: State,
@@ -96,6 +105,7 @@ fn fill<E: Engine + ?Sized>(
     gate: &'static str,
 ) -> Result<Vec<(PartId, Vec<u8>)>, Failure> {
     let mut written = Vec::new();
+    let mut cells = false;
     for (id, part) in limits.parts.iter().enumerate() {
         if !part.is_stored() {
             continue;
@@ -106,15 +116,54 @@ fn fill<E: Engine + ?Sized>(
             PartKind::Cells | PartKind::Ring => engine.parts().unwrap().cells_write(state, id, 1, &bytes),
             PartKind::Derived => unreachable!("a derived part is not stored"),
         };
-        if result != WriteResult::Ok {
-            return Err(Failure::new(
-                gate,
-                format!("the engine refused to fill part {}", part.name),
-            ));
+        match result {
+            WriteResult::Ok => written.push((id, bytes)),
+            // An engine with a value rule refuses synthetic bytes. Start its state with its own pass instead.
+            WriteResult::Refused => return fill_from_a_pass(engine, state, limits, gate),
+            WriteResult::Failed => {
+                return Err(Failure::new(
+                    gate,
+                    format!("the engine failed to fill part {} and poisoned the state", part.name),
+                ));
+            }
         }
-        written.push((id, bytes));
+        if part.kind == PartKind::Cells {
+            cells = true;
+        }
+    }
+    if cells && engine.parts().unwrap().set_n(state, 1) != WriteResult::Ok {
+        return Err(Failure::new(gate, "the engine refused to set n after the parts"));
     }
     Ok(written)
+}
+
+/// Fill a state through the engine's own pass.
+///
+/// The engine refused the synthetic bytes. Zero every fixed part, then run a one-token pass. The pass writes the row
+/// parts from position 0, and it gives every fixed part a value that the engine accepts, such as a token id in the
+/// PLE history. The one-token input makes each cells part hold one row, as the synthetic path writes.
+fn fill_from_a_pass<E: Engine + ?Sized>(
+    engine: &mut E,
+    state: State,
+    limits: &Limits,
+    gate: &'static str,
+) -> Result<Vec<(PartId, Vec<u8>)>, Failure> {
+    if limits.inputs != Inputs::Tokens {
+        return Err(Failure::new(
+            gate,
+            "the engine refused the synthetic bytes and it takes no tokens, so the gate cannot fill it",
+        ));
+    }
+    for (id, part) in limits.parts.iter().enumerate() {
+        if part.kind != PartKind::Fixed {
+            continue;
+        }
+        let zeros = vec![0u8; shape_bytes(part) as usize];
+        let _ = engine.parts().unwrap().part_write(state, id, &zeros);
+    }
+    let segment = token_segment(state, 0, &[1]);
+    run_pass(engine, &segment, gate)?;
+    read_filled(engine, state, limits, gate)
 }
 
 fn read_filled<E: Engine + ?Sized>(
@@ -176,11 +225,39 @@ fn restore<E: Engine + ?Sized>(
     parts: &[(PartId, Vec<u8>)],
     gate: &'static str,
 ) -> Result<(), Failure> {
+    let mut rows = None;
+    let mut cells = false;
     for (id, bytes) in parts {
         let part = &limits.parts[*id];
         let result = match part.kind {
             PartKind::Fixed => engine.parts().unwrap().part_write(state, *id, bytes),
-            PartKind::Cells | PartKind::Ring => engine.parts().unwrap().cells_write(state, *id, 1, bytes),
+            PartKind::Cells | PartKind::Ring => {
+                let row = shape_bytes(part);
+                if row == 0 {
+                    return Err(Failure::new(gate, format!("part {} has a zero row", part.name)));
+                }
+                if !(bytes.len() as u64).is_multiple_of(row) {
+                    return Err(Failure::new(
+                        gate,
+                        format!("part {} ends with a partial row", part.name),
+                    ));
+                }
+                let count = bytes.len() as u64 / row;
+                if let Some(rows) = rows {
+                    if rows != count {
+                        return Err(Failure::new(
+                            gate,
+                            format!("the row parts hold {rows} and {count} rows"),
+                        ));
+                    }
+                } else {
+                    rows = Some(count);
+                }
+                if part.kind == PartKind::Cells {
+                    cells = true;
+                }
+                engine.parts().unwrap().cells_write(state, *id, count, bytes)
+            }
             PartKind::Derived => unreachable!("a derived part is not stored"),
         };
         if result != WriteResult::Ok {
@@ -189,6 +266,9 @@ fn restore<E: Engine + ?Sized>(
                 format!("the engine refused to restore part {}", part.name),
             ));
         }
+    }
+    if cells && engine.parts().unwrap().set_n(state, rows.unwrap_or(0)) != WriteResult::Ok {
+        return Err(Failure::new(gate, "the engine refused to set n after the restore"));
     }
     Ok(())
 }
@@ -376,7 +456,7 @@ fn quantum_isolation_inner<E: Engine + ?Sized>(engine: &mut E, limits: &Limits, 
     fill(engine, other, limits, 0x81, gate)?;
     let before = read_filled(engine, other, limits, gate)?;
     let before_spans = coverage_spans(engine, other, limits, &before);
-    let segment = token_segment(target, &[1, 2, 3]);
+    let segment = token_segment(target, filled_rows(limits), &[1, 2, 3]);
     run_pass(engine, &segment, gate)?;
     let after = read_filled(engine, other, limits, gate)?;
     compare_filled(gate, limits, &before, &after)?;
@@ -414,7 +494,7 @@ fn same_boundaries_inner<E: Engine>(mut first: E, make: &mut dyn FnMut() -> E, l
     let gate = "quantum_same_boundaries";
     let mut second = make();
     let state = State::Slot(0);
-    let segment = token_segment(state, &[11, 12, 13]);
+    let segment = token_segment(state, 0, &[11, 12, 13]);
     let first_out = run_pass(&mut first, &segment, gate)?;
     let second_out = run_pass(&mut second, &segment, gate)?;
     compare_outputs(gate, &first_out.outputs, &second_out.outputs)?;
@@ -427,11 +507,11 @@ fn same_boundaries_inner<E: Engine>(mut first: E, make: &mut dyn FnMut() -> E, l
     {
         let mut with_gap = make();
         let mut without_gap = make();
-        run_pass(&mut with_gap, &token_segment(state, &[1, 2]), gate)?;
-        run_pass(&mut with_gap, &token_segment(State::Slot(other), &[9]), gate)?;
-        let with_gap_out = run_pass(&mut with_gap, &token_segment(state, &[3]), gate)?;
-        run_pass(&mut without_gap, &token_segment(state, &[1, 2]), gate)?;
-        let without_gap_out = run_pass(&mut without_gap, &token_segment(state, &[3]), gate)?;
+        run_pass(&mut with_gap, &token_segment(state, 0, &[1, 2]), gate)?;
+        run_pass(&mut with_gap, &token_segment(State::Slot(other), 0, &[9]), gate)?;
+        let with_gap_out = run_pass(&mut with_gap, &token_segment(state, 2, &[3]), gate)?;
+        run_pass(&mut without_gap, &token_segment(state, 0, &[1, 2]), gate)?;
+        let without_gap_out = run_pass(&mut without_gap, &token_segment(state, 2, &[3]), gate)?;
         compare_outputs(gate, &with_gap_out.outputs, &without_gap_out.outputs)?;
         compare_fixed(gate, &mut with_gap, &mut without_gap, state, limits)?;
     }
@@ -584,11 +664,11 @@ where
     }
 }
 
-fn token_segment(state: State, tokens: &[u32]) -> Segment {
+fn token_segment(state: State, start: u64, tokens: &[u32]) -> Segment {
     Segment {
         state,
         inputs: SegmentInputs::Tokens(tokens.to_vec()),
-        positions: (0..tokens.len() as u64).collect(),
+        positions: (start..start + tokens.len() as u64).collect(),
         meta: Vec::new(),
         outputs: OutputsWanted::default(),
     }
