@@ -155,6 +155,7 @@ decisions. Amy can change them later.
 - `Seal::seal` returns `Result<(), SealError>` and changes bits in place.
 - The first code defines the core, `Parts`, `Coverage`, `Seal` and `Slots`. Each other capability trait
   arrives with the milestone that uses it.
+- The `EngineFactory` trait arrives with the process crate. The fake engines are constructed directly.
 - The `fake` feature is off by default. Run the fake tests with `--features fake`.
 
 ### Fake engines
@@ -167,6 +168,7 @@ decisions. Amy can change them later.
 - `pooled`, derived, `U8`, row shape [8].
 
 Its slots are 64 bytes and 256 bytes, one each. Its seal flips the low bit of the first `state` byte.
+Its `pass` returns `Ok` with no outputs.
 `FakeBroken` is the same, but `part_read` flips the low bit of byte 0. Thus a park and restore loses a bit,
 and gate 8.3 (park and restore) must fail it.
 
