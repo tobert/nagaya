@@ -2,3 +2,12 @@
 name = "nagaya"
 version = "0.1.0"
 edition = "2024"
+
+[dependencies]
+nagaya-abi = { version = "0.1.0", path = "../nagaya-abi", features = ["fake"] }
+nagaya-ledger = { version = "0.1.0", path = "../nagaya-ledger" }
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.8"
+
+[dev-dependencies]
+tempfile = "3"
