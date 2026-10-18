@@ -1,7 +1,7 @@
 //! Generate the canonical fixture and print the golden ids.
 
 use nagaya_abi::{Dtype, PartKind};
-use nagaya_store::{Snapshot, Tensor, recipe_boundary, recipe_root};
+use nagaya_store::{ContentId, Snapshot, Tensor, recipe_boundary, recipe_root};
 
 fn main() {
     let snapshot = Snapshot {
@@ -20,12 +20,14 @@ fn main() {
                 kind: PartKind::Cells,
                 dtype: Dtype::U8,
                 shape: vec![2, 8],
-                data: (0u8..16).collect(),
+                data: (16u8..32).collect(),
                 coverage: Some((0, 2)),
-                block_format: None,
+                block_format: Some("IQ4_NL".to_owned()),
             },
         ],
-        parent: None,
+        parent: Some(
+            ContentId::from_hex("1111111111111111111111111111111111111111111111111111111111111111").expect("parent"),
+        ),
     };
     let bytes = snapshot.encode().expect("encode");
     std::fs::write("nagaya-store/tests/fixtures/snapshot.safetensors", &bytes).expect("write fixture");

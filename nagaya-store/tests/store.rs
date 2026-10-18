@@ -74,7 +74,15 @@ fn the_fixture_keeps_the_canonical_bytes() {
     ));
     let decoded = Snapshot::decode(fixture).unwrap();
     assert_eq!(decoded.encode().unwrap(), fixture);
-    let expected = ContentId::from_hex("f92f9e355291b7a21db577ed995e2a84d5ab1fee8142bb91ae58e38ce7e67be5").unwrap();
+    let parent = ContentId::from_hex("1111111111111111111111111111111111111111111111111111111111111111").unwrap();
+    assert_eq!(decoded.parent, Some(parent));
+    let state = decoded.tensors.iter().find(|tensor| tensor.name == "state").unwrap();
+    assert_eq!(state.data, (0u8..16).collect::<Vec<_>>());
+    let cells = decoded.tensors.iter().find(|tensor| tensor.name == "cells").unwrap();
+    assert_eq!(cells.data, (16u8..32).collect::<Vec<_>>());
+    assert_eq!(cells.coverage, Some((0, 2)));
+    assert_eq!(cells.block_format.as_deref(), Some("IQ4_NL"));
+    let expected = ContentId::from_hex("b1012c1fd9439ba81489195014e1fd31b2227d019dfedd52a8ba72f09657a4ae").unwrap();
     assert_eq!(content_id(fixture), expected);
     assert_eq!(decoded.content_id().unwrap(), expected);
 }
