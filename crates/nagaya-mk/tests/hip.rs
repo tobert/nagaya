@@ -5,7 +5,9 @@
 
 #![cfg(feature = "hip")]
 
-use nagaya_abi::{Engine, OutputsWanted, PartError, SealError, Segment, SegmentInputs, State, Tap, WriteResult};
+use nagaya_abi::{
+    Engine, OutputsWanted, PartError, PassErrorKind, SealError, Segment, SegmentInputs, State, Tap, WriteResult,
+};
 use nagaya_conformance::{compare_f32_rows, run_all};
 use nagaya_mk::open;
 
@@ -282,12 +284,18 @@ fn a_pass_runs_and_refuses_a_wrong_position() {
     drop(second);
     drop(third);
 
-    // A position that is not the context's n is refused, and the context stays empty.
+    // A position that is not the context's n is refused, and the context stays as it was.
     let empty = State::Slot(1);
+    let mut before = vec![0u8; 8];
+    engine.parts().unwrap().part_read(empty, 5, &mut before).unwrap();
     let wrong = segment(empty, &[11, 12, 13], 1);
     let error = engine.pass(std::slice::from_ref(&wrong), &[]).unwrap_err();
+    assert_eq!(error.kind, PassErrorKind::Refused, "{:?}", error.kind);
     assert!(error.message.contains("appends at 0"), "{}", error.message);
     assert_eq!(engine.n(empty).unwrap(), 0);
+    let mut after = vec![0u8; 8];
+    engine.parts().unwrap().part_read(empty, 5, &mut after).unwrap();
+    assert_eq!(before, after, "a refused pass changed the state");
 
     // Rows, metadata and taps are not part of this binding.
     let mut rows = segment(empty, &[1], 0);
@@ -308,7 +316,7 @@ fn a_pass_runs_and_refuses_a_wrong_position() {
     // Two segments on one context are a segments problem, and the wrapper reports it without a die.
     let same = vec![segment(empty, &[1], 0), segment(empty, &[2], 0)];
     let error = engine.pass(&same, &[]).unwrap_err();
-    assert!(error.status == nagaya_abi::PassStatus::Ok, "{:?}", error.status);
+    assert_eq!(error.kind, PassErrorKind::Refused, "{:?}", error.kind);
     assert!(!error.message.is_empty());
 
     // Seventeen segments are past mk's limit, and the wrapper refuses them before the call.
