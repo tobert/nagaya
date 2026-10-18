@@ -175,7 +175,7 @@ The mk binding refuses a pass before it calls mk when a segment breaks an mk rul
 is not the context's n, a token past the vocabulary, or rows instead of tokens. That pass did not run, and no context
 changed. A caller tells a refusal from a pass that ran, and it need not read `last_error` to know (review finding 9).
 
-The error type arrives with the milestone 9 code.
+A refused pass returns a `PassError` with kind `PassErrorKind::Refused`.
 
 A fault after the pass is different. The mk binding returns `Poison` when the logits buffer is shorter than the
 wanted rows. The pass ran, so the state is unknown (D6, spec 8.2). A unit test pins this decision. Real mk gives the
