@@ -105,6 +105,15 @@ returns 507 and keeps the active profile.
 that share it. A caller that adds the entries does not count a pooled budget twice. On gfx1151host, `device(0)` and
 `host` are one pool (4.2).
 
+**Proposed** by deepseek-flash, 2026-10-18: the placement profile is one TOML file. It has `[[engines]]` entries with
+`name`, `kind`, `devices`, `config`, `share`, and `pin_identity`. It has `[[budgets]]` entries with `tiers` and
+`bytes`, where a tier is `host` or `device(i)`.
+
+The process writes an accepted profile to `<store_dir>/profile.toml`, atomically: a temporary file, then a rename.
+The file has the same shape as the input, so a read gives an equal profile. An unknown kind or key refuses the
+profile before any engine opens. Reason: TOML is the engine config format, so one format is easier to read and to
+check.
+
 ## 3. Process
 
 **3.1 One process per machine.** The nagaya owns every GPU on the machine (Amy: "we'd do 1 process per host that
