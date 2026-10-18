@@ -428,9 +428,9 @@ victims before it deletes one. It also chooses them before it writes the new ent
 Each owner has a quota, so one long conversation cannot remove the others (a ds4-recipe incident). If a pin alone
 is larger than a budget, the pin loses its protection, so eviction cannot deadlock.
 
-**Proposed** by deepseek-flash, 2026-10-18. An owner's quota is per store tier, like the budget. A put evicts the
-owner's entries in its own tier until the owner's total fits the quota and the tier's total fits the budget. Reason:
-memory and NVMe are separate budgets in 6.1. A byte in one tier does not make room in the other.
+**An owner's quota is per store tier.** A put evicts the owner's entries in its own tier until the owner's total
+fits the quota and the tier's total fits the budget. Reason: memory and NVMe are separate budgets in 6.1. A byte in
+one tier does not make room in the other. Decided 2026-10-18.
 
 **6.10 Pins.** A pin is a lease on a snapshot, with an owner and an expiry (mkviolet v2: one day at most). A request
 pin holds a snapshot from its lookup to the end of its load. Pins stay through a restart (mkviolet `pins.json`).
