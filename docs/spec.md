@@ -325,11 +325,10 @@ identity. mk's id is a SHA-256 of the tokens and boundaries with `|gdn-bf16-v1|`
 
 **6.3 Sealed bytes are canonical.** In the store, each snapshot is a canonical safetensors file (D10). Each cells
 part and ring part has the shape of its coverage: the rows that it holds, in position order. Thus two slots of
-different sizes that hold the same rows make the same file. Padding is zero.
+different sizes that hold the same rows make the same file.
 
-**Proposed** by deepseek-flash, 2026-10-18: spec 6.3 says "Padding is zero". D10 rule 5 says the JSON header
-pads with spaces (0x20). The simplest reading is that "zero" names the data section and the header uses spaces.
-The code follows that reading. Amy decides which rule changes.
+Padding between tensors is zero. The header pads with spaces (0x20), so that the data starts on a 4 KiB
+boundary (D10 rule 5). Thus the word "zero" names the data section, not the header. Decided 2026-10-18.
 
 Times, hit counts, owners and reasons go in the store's index, never in the sealed bytes. If they go in the sealed
 bytes, two copies of one state get different content ids. Then the store keeps both copies, because it cannot see
