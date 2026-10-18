@@ -94,7 +94,10 @@ fn run() -> ExitCode {
         "stopped with {} states parked in {} bytes",
         report.parked.states, report.parked.bytes
     );
-    report.exit_code()
+    let code = report.exit_code();
+    // Spec 10.3: exit after the park budget. Do not join a group that is still parking.
+    std::mem::forget(ready.process);
+    code
 }
 
 /// The bootstrap config path (spec 2.1 note).
