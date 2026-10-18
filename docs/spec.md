@@ -139,6 +139,10 @@ thread priorities:
   to obey `max_quantum_ms`. On unified-memory machines (`gfx1151host` and `sm121host`), the scheduler pauses background CPU
   memory work during a GPU pass to protect GPU memory bandwidth.
 
+**Proposed** by deepseek-flash, 2026-10-18: the control runtime (`tokio`) arrives with the HTTP coordinator in
+milestone 12. It is not in milestone 10 step b, because no HTTP or gossip runs there. Step b uses std threads and
+channels. Gossip follows the HTTP server.
+
 **3.3 Engine lifecycle and profile swaps.** The nagaya opens each engine at start, from the profile. mk cannot close
 inside a process today: "the HIP runtime's own teardown segfaults" (mk `service/__main__.py`). Thus in v0, when
 `PUT /nagaya/v1/profile` changes the engines, the nagaya persists the profile and stops as in 10.3. It keeps its
