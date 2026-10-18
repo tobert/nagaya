@@ -82,11 +82,6 @@ impl MkEngine {
         self.worker.owns_kv(id)
     }
 
-    /// True when mk returns a pass that stopped on a spin-timeout instead of stopping the program.
-    pub fn spin_recovery(&self) -> bool {
-        self.worker.spec().recover_spin_timeouts
-    }
-
     /// mk's byte count for one stored part and token count.
     pub fn part_bytes(&self, part: u32, n: u32) -> Result<u64, MkError> {
         spec::stored_part(part)?;
