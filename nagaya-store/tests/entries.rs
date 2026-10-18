@@ -842,6 +842,26 @@ fn a_per_process_engine_does_not_trip_the_wire() {
 }
 
 #[test]
+fn a_tie_serves_the_newest_then_the_smaller_content_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    store.set_determinism(nagaya_abi::Determinism::PerProcess, Vec::new());
+    let new_recipe = recipe(165);
+    let first = try_put(&mut store, &base_snapshot(1), new_recipe, None, 1, Tier::Host, 10).unwrap();
+    let second = try_put(&mut store, &base_snapshot(2), new_recipe, None, 1, Tier::Host, 20).unwrap();
+    assert_ne!(first, second);
+    assert_eq!(lookup(&mut store, new_recipe).unwrap(), vec![second]);
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    store.set_determinism(nagaya_abi::Determinism::PerProcess, Vec::new());
+    let old_recipe = recipe(166);
+    let first = try_put(&mut store, &base_snapshot(3), old_recipe, None, 1, Tier::Host, 10).unwrap();
+    let second = try_put(&mut store, &base_snapshot(4), old_recipe, None, 1, Tier::Host, 10).unwrap();
+    assert_eq!(lookup(&mut store, old_recipe).unwrap(), vec![first.min(second)]);
+}
+
+#[test]
 fn a_lookup_miss_is_empty() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(dir.path()).unwrap();

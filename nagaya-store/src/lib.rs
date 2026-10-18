@@ -1098,14 +1098,24 @@ impl Store {
         if chains.is_empty() {
             return Ok(Vec::new());
         }
-        let best: Vec<&(Vec<ContentId>, Vec<PartCoverage>)> = chains
+        let mut best: Vec<&(Vec<ContentId>, Vec<PartCoverage>)> = chains
             .iter()
             .filter(|(_, coverage)| chains.iter().all(|(_, other)| dominates(coverage, other)))
             .collect();
-        // Zero maxima means the chains are incomparable. Two maxima means they are equal.
-        if best.len() != 1 {
+        // Zero maxima means the chains are incomparable.
+        if best.is_empty() {
             return Err(StoreError::Ambiguous);
         }
+        // 6.6: a tie is served by the newest created_ms, then the smaller content id.
+        best.sort_by(|left, right| {
+            let left_tip = left.0.last().and_then(|id| self.index.entries.get(id));
+            let right_tip = right.0.last().and_then(|id| self.index.entries.get(id));
+            let left_created = left_tip.map_or(0, |entry| entry.created_ms);
+            let right_created = right_tip.map_or(0, |entry| entry.created_ms);
+            right_created
+                .cmp(&left_created)
+                .then_with(|| left.0.last().cmp(&right.0.last()))
+        });
         let chain = best[0].0.clone();
         if let Some(tip) = chain.last() {
             self.touch(tip, now_ms);
