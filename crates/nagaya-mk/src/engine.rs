@@ -90,7 +90,7 @@ impl MkEngine {
             .ok_or_else(|| MkError::new("the mk worker stopped"))
     }
 
-    /// The pass scratch that the library asked for at open, in bytes (milestone 9c).
+    /// The pass scratch that the probe measured at open, in bytes (milestone 9c).
     pub fn pass_scratch(&self) -> u64 {
         self.worker.spec().pass_scratch
     }

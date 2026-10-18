@@ -66,7 +66,7 @@ fn the_binding_opens_mk_and_declares_its_parts() {
         .find(|term| term.name == "context")
         .expect("a context term");
     assert_eq!(context.bytes, 132_587_520);
-    // The pass scratch term holds the pool that the probe measured at open.
+    // The pass scratch term holds the device cost that the probe measured at open.
     let scratch = limits
         .memory
         .mandatory

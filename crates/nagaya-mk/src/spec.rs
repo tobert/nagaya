@@ -224,16 +224,17 @@ pub fn pass_scratch_bytes() -> u64 {
 /// never under-declares the pool.
 ///
 /// Measured on 2026-10-18 on gfx1151, by `cargo run -p nagaya-mk --example pass_scratch --features hip`, in five
-/// fresh engines: 323 731 456 bytes three times and 323 735 552 bytes twice (one with MK_STAGE_TIMING). Spread:
-/// 4 096 bytes. The declared value is the largest of the five.
-pub const PASS_SCRATCH_BYTES: u64 = 323_735_552;
+/// fresh engines: 323 731 456 bytes three times and 323 735 552 twice (one with MK_STAGE_TIMING). The declared value
+/// is the largest reading rounded up to 309 MiB. The reading moves by one HIP page between runs, so the rounding
+/// keeps a larger reading from refusing a library whose pool did not change.
+pub const PASS_SCRATCH_BYTES: u64 = 324_009_984;
 
 /// The reason that a measured pass scratch is past the declared constant, or `Ok` when it fits.
 pub fn scratch_problem(measured: u64) -> Result<(), String> {
     if measured > PASS_SCRATCH_BYTES {
         return Err(format!(
-            "mk asks {measured} bytes for pass scratch; this binding declares {PASS_SCRATCH_BYTES}. \
-             Use the mk commit that milestone 9c measured, or measure again and raise the constant"
+            "the mk pass scratch measures {measured} bytes of device memory; this binding declares \
+             {PASS_SCRATCH_BYTES}. Use the mk commit that milestone 9c measured, or measure again and raise the constant"
         ));
     }
     Ok(())

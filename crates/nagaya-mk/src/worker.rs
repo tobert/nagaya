@@ -111,7 +111,7 @@ impl MkPaths {
 pub(crate) struct Spec {
     pub identity: Identity,
     pub limits: Limits,
-    /// The pass scratch that the library asked for at open, in bytes.
+    /// The pass scratch that the probe measured at open, in bytes.
     pub pass_scratch: u64,
 }
 
@@ -635,12 +635,31 @@ impl ThreadState {
         Ok(free as u64)
     }
 
-    /// The pass scratch in bytes: the free device memory that the pool's first asks take.
+    /// Run mk's segment check. Every `mk_pass_segments` call runs it first, because mk aborts on a bad segment.
+    fn segments_problem(&self, contexts: &[*mut c_void], lens: &[u32]) -> Result<(), String> {
+        let mut why = [0 as c_char; 512];
+        let code = unsafe {
+            (self.binding.segments_problem)(
+                self.engine,
+                contexts.len() as u32,
+                contexts.as_ptr(),
+                lens.as_ptr(),
+                why.as_mut_ptr(),
+                why.len() as u32,
+            )
+        };
+        if code == 0 {
+            return Ok(());
+        }
+        let message = unsafe { CStr::from_ptr(why.as_ptr()) }.to_string_lossy().into_owned();
+        Err(message)
+    }
+
+    /// The pass scratch in bytes: the device free memory that the pool's first asks take.
     ///
-    /// A pass of 1 token asks for `qmm_part2`, and a pass of 17 or more tokens does not (mk `engine.hip:1187`). A pass
-    /// of 256 tokens with logits asks for every other buffer at `kMaxPassTokens`. mk keeps the pool for the engine's
-    /// life, so the difference between the two readings is the pool. The probe context is freed before the second
-    /// reading, so a context of this size changes nothing.
+    /// A pass of 1 token asks for `qmm_part2`, and a pass of 17 or more tokens does not (mk `engine.hip:1187`). The
+    /// second pass has the 255 tokens that remain, with logits, so it asks for every other buffer at `kMaxPassTokens`.
+    /// mk keeps the pool for the engine's life. The probe context is freed before the second reading.
     fn measure_pass_scratch(&self) -> Result<u64, String> {
         let before = self.free_device_bytes()?;
         let context = unsafe { (self.binding.ctx_new)(self.engine, spec::CONTEXT_CAPACITY) };
@@ -675,6 +694,8 @@ impl ThreadState {
     fn probe_pass(&self, context: *mut c_void, tokens: &[i32], want_logits: bool) -> Result<(), String> {
         let contexts = [context];
         let lens = [tokens.len() as u32];
+        // mk aborts the process on a bad segment, so run its check first (docs/engine-abi.md:235).
+        self.segments_problem(&contexts, &lens)?;
         let mut logits = if want_logits {
             vec![0f32; spec::VOCAB as usize]
         } else {
@@ -1098,19 +1119,8 @@ impl ThreadState {
             pointers.push(context.ptr);
         }
 
-        let mut why = [0 as c_char; 512];
-        let code = unsafe {
-            (self.binding.segments_problem)(
-                self.engine,
-                count as u32,
-                pointers.as_ptr(),
-                request.lens.as_ptr(),
-                why.as_mut_ptr(),
-                why.len() as u32,
-            )
-        };
-        if code != 0 {
-            let message = unsafe { CStr::from_ptr(why.as_ptr()) }.to_string_lossy().into_owned();
+        // mk aborts the process on a bad segment, so run its check first (docs/engine-abi.md:235).
+        if let Err(message) = self.segments_problem(&pointers, &request.lens) {
             return Err(problem(message));
         }
 
