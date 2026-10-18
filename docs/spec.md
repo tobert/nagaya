@@ -435,12 +435,12 @@ one tier does not make room in the other. Decided 2026-10-18.
 **6.10 Pins.** A pin is a lease on a snapshot, with an owner and an expiry (mkviolet v2: one day at most). A request
 pin holds a snapshot from its lookup to the end of its load. Pins stay through a restart (mkviolet `pins.json`).
 
-**Proposed** by deepseek-flash, 2026-10-18. The one-day maximum is a nagaya rule for every pin, not only for
-mkviolet. The store has no clock, so `pin` takes `now_ms` from the caller.
+**The one-day maximum is for every pin.** The one-day maximum is a nagaya rule for every engine, not only for
+mkviolet. The store has no clock, so `pin` takes `now_ms` from the caller. It refuses an expiry more than one day
+(86,400,000 ms) after `now_ms` with `Invalid`. A refused pin changes nothing. Decided 2026-10-18.
 
-It refuses an expiry more than one day (86,400,000 ms) after `now_ms` with `Invalid`. A refused pin changes
-nothing. Reason: one store holds every engine, pins stay through a restart, and a lease with no bound can hold
-bytes forever. The mkviolet rule is the origin, not the scope. Amy decides.
+Reason: one store holds every engine, pins stay through a restart, and a lease with no bound can hold bytes
+forever. The mkviolet rule is the origin, not the scope.
 
 **6.11 Restart.** At start, the store loads its index again. It checks each entry when a lookup first uses it. It
 wakes pinned entries into slots when the profile asks for them. (mk wakes its pinned parked contexts before
