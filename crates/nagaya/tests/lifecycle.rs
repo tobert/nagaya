@@ -82,6 +82,14 @@ fn receive(socket: &UnixDatagram) -> String {
 }
 
 #[test]
+fn the_open_wait_outlasts_the_watchdog() {
+    assert!(
+        lifecycle::DEFAULT_OPEN_TIMEOUT > nagaya::process::DEFAULT_WATCHDOG_TIMEOUT,
+        "the watchdog must report a stalled open before the wait gives up"
+    );
+}
+
+#[test]
 fn a_missing_profile_is_empty() {
     let directory = tempfile::tempdir().unwrap();
     let profile = lifecycle::active_profile(directory.path()).unwrap();

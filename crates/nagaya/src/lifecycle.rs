@@ -12,8 +12,8 @@ use crate::process::{Event, OpenedEngine, Process, Start, StartError, WaitError}
 use crate::profile::{PlacementProfile, ProfileError};
 use crate::signal::SignalFlag;
 
-/// The time to wait for every engine to open.
-pub const DEFAULT_OPEN_TIMEOUT: Duration = Duration::from_secs(30);
+/// The backstop wait for every engine to open. It is two watchdog timeouts (spec 7.4).
+pub const DEFAULT_OPEN_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// How often the wait loop reads the signal counter (spec 10.3 note).
 pub const WAIT_POLL: Duration = Duration::from_millis(50);
