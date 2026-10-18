@@ -1185,6 +1185,34 @@ fn an_index_mismatch_quarantines_the_entry() {
 }
 
 #[test]
+fn an_index_mismatch_in_a_middle_entry_is_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let (middle, tip);
+    {
+        let mut store = Store::open(dir.path()).unwrap();
+        let root_recipe = recipe(164);
+        let root = put(&mut store, &base_snapshot(1), root_recipe, 1);
+        let middle_recipe = next_recipe(root_recipe, 2);
+        middle = put_delta(&mut store, &delta_at(root, 2), middle_recipe, root_recipe, 1);
+        let tip_recipe = next_recipe(middle_recipe, 4);
+        tip = put_delta(&mut store, &delta_at(middle, 4), tip_recipe, middle_recipe, 1);
+    }
+    edit_index(dir.path(), |index| {
+        index["entries"][middle.hex()]["coverage"][0]["end"] = serde_json::json!(5);
+    });
+    let mut store = Store::open(dir.path()).unwrap();
+    let mut target = FakeAlways::new();
+    let error = store
+        .restore(&tip, &mut target, State::Slot(0), &[1u8; 32], 10)
+        .unwrap_err();
+    assert!(format!("{error}").contains("disagrees"), "{error}");
+    assert_eq!(
+        store.entries().get(&middle).unwrap().quarantine,
+        Some(Quarantine::Index)
+    );
+}
+
+#[test]
 fn an_unreadable_blob_quarantines_with_read() {
     let dir = tempfile::tempdir().unwrap();
     let id;

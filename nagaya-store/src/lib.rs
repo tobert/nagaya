@@ -1157,13 +1157,21 @@ impl Store {
 
         // 6.5: a chain with a missing parent is an error, never a short chain.
         let chain = self.chain(*id)?;
+        let mut snapshots = Vec::new();
         for member in &chain {
             self.check(member)?;
-        }
-        let tip = self.read_snapshot(id)?;
-        if tip.parent != entry.parent || coverage_of(&tip) != entry.coverage {
-            self.quarantine(id, Quarantine::Index)?;
-            return Err(StoreError::Invalid("the index disagrees with the blob".to_owned()));
+            let snapshot = self.read_snapshot(member)?;
+            // 6.11: every entry's index facts must match its blob.
+            let record = self
+                .index
+                .entries
+                .get(member)
+                .ok_or_else(|| StoreError::Invalid("missing entry".to_owned()))?;
+            if snapshot.parent != record.parent || coverage_of(&snapshot) != record.coverage {
+                self.quarantine(member, Quarantine::Index)?;
+                return Err(StoreError::Invalid("the index disagrees with the blob".to_owned()));
+            }
+            snapshots.push(snapshot);
         }
 
         let limits = engine.limits();
@@ -1190,8 +1198,7 @@ impl Store {
         }
 
         let mut results = Vec::new();
-        for member in &chain {
-            let snapshot = self.read_snapshot(member)?;
+        for snapshot in &snapshots {
             for tensor in &snapshot.tensors {
                 let index = limits
                     .parts
