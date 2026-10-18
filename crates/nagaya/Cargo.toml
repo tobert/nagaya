@@ -3,11 +3,17 @@ name = "nagaya"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# The fake engine is for tests only. A normal build leaves it out (AGENTS.md "Milestones" 10).
+fake = ["nagaya-abi/fake"]
+
 [dependencies]
-nagaya-abi = { version = "0.1.0", path = "../nagaya-abi", features = ["fake"] }
+nagaya-abi = { version = "0.1.0", path = "../nagaya-abi" }
 nagaya-ledger = { version = "0.1.0", path = "../nagaya-ledger" }
 serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.1.8"
 
 [dev-dependencies]
+# The tests turn on the `fake` feature of this crate. A dev-dependency on the crate itself does this.
+nagaya = { path = ".", features = ["fake"] }
 tempfile = "3"

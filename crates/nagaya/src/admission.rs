@@ -2,8 +2,11 @@
 
 use std::collections::BTreeMap;
 
+#[cfg(feature = "fake")]
+use nagaya_abi::Engine;
+#[cfg(feature = "fake")]
 use nagaya_abi::fake::FakeAlways;
-use nagaya_abi::{Engine, Limits, Tier};
+use nagaya_abi::{Limits, Tier};
 use nagaya_ledger::{Admission, Budget, EnginePlan, Ledger, LedgerError, Profile};
 
 use crate::profile::PlacementProfile;
@@ -51,7 +54,8 @@ impl Registry {
         self.planners.get(kind).map(Box::as_ref)
     }
 
-    /// Make a registry with the fake engine.
+    /// Make a registry with the fake engine. The tests use it.
+    #[cfg(feature = "fake")]
     pub fn with_fake() -> Self {
         let mut registry = Self::new();
         registry.register("fake", Box::new(FakePlan));
@@ -105,9 +109,11 @@ impl std::error::Error for AdmitError {
     }
 }
 
-/// The fake engine's planner. The fake engine reads no weights and declares no memory terms.
+/// The fake engine's planner. The fake engine reads no weights.
+#[cfg(feature = "fake")]
 pub struct FakePlan;
 
+#[cfg(feature = "fake")]
 impl Plan for FakePlan {
     fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
         Ok(FakeAlways::new().limits())
