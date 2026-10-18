@@ -68,6 +68,11 @@ An unknown key is an error, so a misspelled key stops the process. v0 has no fla
 file is the only source. Reason: 2.1 names the file, and the engine config is already TOML (ABI "Rust shape"). Two
 sources for one value can disagree.
 
+**Proposed** by deepseek-flash, 2026-10-18: the process reads the bootstrap config from the path in the environment
+variable `NAGAYA_CONFIG`. When the variable is unset, it reads `nagaya.toml` in the working directory. Reason: the
+systemd unit sets the variable, and a test points it at a temporary file. No argument parser is needed. A file that
+does not read or parse stops the process with exit 3, and the message names the path.
+
 **2.2 Tier edges.** An edge records more than a bandwidth (`docs/prior-art.md` 5):
 
 - the rate for each read size and queue depth;
