@@ -1,5 +1,6 @@
 //! Canonical safetensors, content ids, recipes, entries, lookup, and eviction.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
@@ -60,6 +61,10 @@ pub enum StoreError {
     Quarantined(ContentId),
     /// The entry does not fit the slot.
     Fit(String),
+    /// Two chains are incomparable under the deepest rule.
+    Ambiguous,
+    /// The budget cannot hold the new entry.
+    NoSpace,
 }
 
 impl std::fmt::Display for StoreError {
@@ -70,6 +75,8 @@ impl std::fmt::Display for StoreError {
             StoreError::Tripwire => write!(formatter, "the recipe has two content ids with the same coverage"),
             StoreError::Quarantined(id) => write!(formatter, "the entry {} is quarantined", id.hex()),
             StoreError::Fit(message) => write!(formatter, "{message}"),
+            StoreError::Ambiguous => write!(formatter, "two chains are incomparable"),
+            StoreError::NoSpace => write!(formatter, "the budget cannot hold the entry"),
         }
     }
 }
@@ -658,6 +665,19 @@ struct Index {
     pins: BTreeMap<ContentId, Pin>,
 }
 
+/// A place where a test injects a write failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FailPoint {
+    /// Fail before the blob write.
+    BlobWrite,
+    /// Fail before the blob rename.
+    BlobRename,
+    /// Fail before the index write.
+    IndexWrite,
+    /// Fail before the index rename.
+    IndexRename,
+}
+
 /// The content-addressed store.
 #[derive(Debug)]
 pub struct Store {
@@ -665,6 +685,7 @@ pub struct Store {
     index: Index,
     checked: BTreeSet<ContentId>,
     budget: u64,
+    fail_point: Cell<Option<FailPoint>>,
 }
 
 impl Store {
@@ -684,12 +705,24 @@ impl Store {
         } else {
             Index::default()
         };
+        // 6.11: the wake of pinned entries needs the profile; the process crate does it.
         Ok(Store {
             dir,
             index,
             checked: BTreeSet::new(),
             budget,
+            fail_point: Cell::new(None),
         })
+    }
+
+    /// Set the store budget. A profile change can do this.
+    pub fn set_budget(&mut self, budget: u64) {
+        self.budget = budget;
+    }
+
+    /// Make the next write fail at one point.
+    pub fn fail_next(&mut self, point: FailPoint) {
+        self.fail_point.set(Some(point));
     }
 
     /// The entries, for a test or a report.
@@ -727,9 +760,45 @@ impl Store {
             return Err(StoreError::Tripwire);
         }
 
+        let size = bytes.len() as u64;
+        let total: u64 = self
+            .index
+            .entries
+            .values()
+            .filter(|entry| entry.state == EntryState::Live)
+            .map(|entry| entry.size)
+            .sum();
+        if total.saturating_add(size) > self.budget {
+            self.index.pins.retain(|_, pin| pin.expires_ms > put.now_ms);
+            let need = total + size - self.budget;
+            let victims = self.choose_victims(put.owner, need, put.now_ms);
+            let freed: u64 = victims
+                .iter()
+                .filter_map(|id| self.index.entries.get(id))
+                .map(|entry| entry.size)
+                .sum();
+            if freed < need {
+                return Err(StoreError::NoSpace);
+            }
+            for id in &victims {
+                self.index.entries.remove(id);
+                let _ = std::fs::remove_file(self.blob_path(id));
+            }
+            self.persist()?;
+        }
+
         let path = self.blob_path(&id);
         let temp = self.dir.join("blobs").join(format!("{}.tmp", id.hex()));
+        if self.fail_point.get() == Some(FailPoint::BlobWrite) {
+            self.fail_point.set(None);
+            return Err(StoreError::Io("injected blob write".to_owned()));
+        }
         std::fs::write(&temp, &bytes).map_err(io_error)?;
+        if self.fail_point.get() == Some(FailPoint::BlobRename) {
+            self.fail_point.set(None);
+            let _ = std::fs::remove_file(&temp);
+            return Err(StoreError::Io("injected blob rename".to_owned()));
+        }
         std::fs::rename(&temp, &path).map_err(io_error)?;
 
         let entry = Entry {
@@ -779,6 +848,7 @@ impl Store {
         tolerance: &Tolerance,
         now_ms: u64,
     ) -> Result<Vec<ContentId>, StoreError> {
+        // 6.7: a quarantined entry refuses the whole recipe.
         if self
             .index
             .entries
@@ -794,7 +864,7 @@ impl Store {
             .filter(|entry| entry.recipe == recipe && entry.state == EntryState::Live)
             .map(|entry| entry.content_id)
             .collect();
-        let mut best: Option<(Vec<ContentId>, u64)> = None;
+        let mut chains: Vec<(Vec<ContentId>, Vec<PartCoverage>)> = Vec::new();
         for id in ids {
             self.check(&id)?;
             let chain = self.chain(id);
@@ -810,15 +880,32 @@ impl Store {
             if *tolerance == Tolerance::Exact && entry.provenance.is_some() {
                 continue;
             }
-            let depth: u64 = entry.coverage.iter().map(|part| part.end).sum();
-            if best.as_ref().is_none_or(|(_, best_depth)| depth > *best_depth) {
-                best = Some((chain, depth));
-            }
+            chains.push((chain, entry.coverage.clone()));
         }
-        let (chain, _) = best.ok_or_else(|| StoreError::Invalid("no chain".to_owned()))?;
+        let best = chains
+            .iter()
+            .find(|(_, coverage)| chains.iter().all(|(_, other)| dominates(coverage, other)));
+        let (chain, _) = best.cloned().ok_or(StoreError::Ambiguous)?;
         if let Some(tip) = chain.last() {
             self.touch(tip, now_ms);
         }
+        Ok(chain)
+    }
+
+    /// Look up a chain and pin it until the load ends.
+    pub fn lookup_and_pin(
+        &mut self,
+        recipe: RecipeId,
+        tolerance: &Tolerance,
+        owner: u64,
+        expires_ms: u64,
+        now_ms: u64,
+    ) -> Result<Vec<ContentId>, StoreError> {
+        let chain = self.lookup(recipe, tolerance, now_ms)?;
+        for id in &chain {
+            self.index.pins.insert(*id, Pin { owner, expires_ms });
+        }
+        self.persist()?;
         Ok(chain)
     }
 
@@ -972,6 +1059,66 @@ impl Store {
         Ok(victims)
     }
 
+    fn choose_victims(&self, owner: u64, need_bytes: u64, now_ms: u64) -> Vec<ContentId> {
+        let pinned_bytes: u64 = self
+            .index
+            .pins
+            .keys()
+            .filter_map(|id| self.index.entries.get(id))
+            .map(|entry| entry.size)
+            .sum();
+        let protect_pins = pinned_bytes <= self.budget;
+        let parents: BTreeSet<ContentId> = self
+            .index
+            .entries
+            .values()
+            .filter(|entry| entry.state == EntryState::Live)
+            .filter_map(|entry| entry.parent)
+            .collect();
+        let mut groups: Vec<(u8, u128, Vec<ContentId>)> = Vec::new();
+        for entry in self.index.entries.values() {
+            if entry.owner != owner || entry.state != EntryState::Live {
+                continue;
+            }
+            if protect_pins && self.index.pins.contains_key(&entry.content_id) {
+                continue;
+            }
+            let has_child = parents.contains(&entry.content_id);
+            let rank = if entry.parent.is_some() && has_child {
+                0
+            } else if entry.parent.is_some() {
+                1
+            } else if has_child {
+                2
+            } else {
+                3
+            };
+            let mut group = vec![entry.content_id];
+            if rank == 0 {
+                for child in self.descendants(entry.content_id) {
+                    group.push(child);
+                }
+            }
+            groups.push((rank, value_per_byte(entry, now_ms), group));
+        }
+        groups.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+        let mut victims = Vec::new();
+        let mut bytes = 0;
+        for (_, _, group) in groups {
+            let group_bytes: u64 = group
+                .iter()
+                .filter_map(|id| self.index.entries.get(id))
+                .map(|entry| entry.size)
+                .sum();
+            victims.extend(group);
+            bytes += group_bytes;
+            if bytes >= need_bytes {
+                break;
+            }
+        }
+        victims
+    }
+
     fn descendants(&self, base: ContentId) -> Vec<ContentId> {
         let mut found = Vec::new();
         let mut current = base;
@@ -1056,7 +1203,16 @@ impl Store {
         let path = self.dir.join("index.json");
         let temp = self.dir.join("index.json.tmp");
         let bytes = serde_json::to_vec(&self.index).map_err(json_error)?;
+        if self.fail_point.get() == Some(FailPoint::IndexWrite) {
+            self.fail_point.set(None);
+            return Err(StoreError::Io("injected index write".to_owned()));
+        }
         std::fs::write(&temp, bytes).map_err(io_error)?;
+        if self.fail_point.get() == Some(FailPoint::IndexRename) {
+            self.fail_point.set(None);
+            let _ = std::fs::remove_file(&temp);
+            return Err(StoreError::Io("injected index rename".to_owned()));
+        }
         std::fs::rename(&temp, &path).map_err(io_error)?;
         Ok(())
     }
@@ -1080,6 +1236,21 @@ fn coverage_of(snapshot: &Snapshot) -> Vec<PartCoverage> {
         .collect();
     coverage.sort();
     coverage
+}
+
+fn dominates(left: &[PartCoverage], right: &[PartCoverage]) -> bool {
+    let parts: BTreeSet<&str> = left.iter().chain(right.iter()).map(|part| part.part.as_str()).collect();
+    parts.iter().all(|part| {
+        let left_end = left
+            .iter()
+            .find(|candidate| candidate.part == *part)
+            .map_or(0, |candidate| candidate.end);
+        let right_end = right
+            .iter()
+            .find(|candidate| candidate.part == *part)
+            .map_or(0, |candidate| candidate.end);
+        left_end >= right_end
+    })
 }
 
 fn value_per_byte(entry: &Entry, now_ms: u64) -> u128 {

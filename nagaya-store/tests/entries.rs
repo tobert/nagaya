@@ -305,3 +305,210 @@ fn segment(tokens: &[u32]) -> Segment {
         outputs: OutputsWanted::default(),
     }
 }
+
+fn dual_snapshot(cells_end: u64, ring_end: u64, seed: u8) -> Snapshot {
+    let rows =
+        |count: u64, value: u8| -> Vec<u8> { (0..count * 8).map(|index| value.wrapping_add(index as u8)).collect() };
+    Snapshot {
+        tensors: vec![
+            tensor("state", PartKind::Fixed, vec![16], vec![seed; 16], None),
+            tensor(
+                "cells",
+                PartKind::Cells,
+                vec![cells_end, 8],
+                rows(cells_end, seed),
+                Some((0, cells_end)),
+            ),
+            tensor(
+                "ring",
+                PartKind::Ring,
+                vec![ring_end, 8],
+                rows(ring_end, seed.wrapping_add(1)),
+                Some((0, ring_end)),
+            ),
+        ],
+        parent: None,
+    }
+}
+
+#[test]
+fn a_sum_does_not_hide_a_lower_part() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let recipe = recipe(20);
+    put(&mut store, &dual_snapshot(1, 5, 1), recipe, 0);
+    put(&mut store, &dual_snapshot(3, 2, 2), recipe, 0);
+    let error = store.lookup(recipe, &Tolerance::Exact, 10).unwrap_err();
+    assert!(matches!(error, nagaya_store::StoreError::Ambiguous));
+}
+
+#[test]
+fn a_chain_higher_in_every_part_is_chosen() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let recipe = recipe(21);
+    let deeper = put(&mut store, &dual_snapshot(5, 5, 1), recipe, 0);
+    put(&mut store, &dual_snapshot(3, 4, 2), recipe, 0);
+    assert_eq!(store.lookup(recipe, &Tolerance::Exact, 10).unwrap(), vec![deeper]);
+}
+
+#[test]
+fn a_quarantined_entry_refuses_its_recipe_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let bad_recipe = recipe(22);
+    let first = put(&mut store, &base_snapshot(1), bad_recipe, 0);
+    assert!(
+        store
+            .put(Put {
+                snapshot: &base_snapshot(2),
+                recipe: bad_recipe,
+                identity: [1u8; 32],
+                determinism: Determinism::Always,
+                owner: 0,
+                tier: Tier::Host,
+                reason: Reason::Anchor,
+                provenance: None,
+                now_ms: 10,
+            })
+            .is_err()
+    );
+    put(&mut store, &base_snapshot(3), bad_recipe, 0);
+    let good_recipe = recipe(23);
+    let good = put(&mut store, &base_snapshot(4), good_recipe, 0);
+    assert!(matches!(
+        store.lookup(bad_recipe, &Tolerance::Exact, 10),
+        Err(nagaya_store::StoreError::Tripwire)
+    ));
+    assert_eq!(store.lookup(good_recipe, &Tolerance::Exact, 10).unwrap(), vec![good]);
+    assert_eq!(store.entries().get(&first).unwrap().state, EntryState::Quarantined);
+}
+
+#[test]
+fn a_put_that_fits_writes_no_victims() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open_with_budget(dir.path(), 10_000).unwrap();
+    let first = put(&mut store, &base_snapshot(1), recipe(24), 1);
+    let second = put(&mut store, &base_snapshot(2), recipe(35), 1);
+    assert!(store.entries().contains_key(&first));
+    assert!(store.entries().contains_key(&second));
+    assert_eq!(store.entries().len(), 2);
+}
+
+#[test]
+fn a_put_over_budget_evicts_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open_with_budget(dir.path(), 5_000).unwrap();
+    let first = put(&mut store, &base_snapshot(1), recipe(25), 1);
+    let second = put(&mut store, &base_snapshot(2), recipe(26), 1);
+    assert!(!store.entries().contains_key(&first));
+    assert!(store.entries().contains_key(&second));
+    assert!(!dir.path().join("blobs").join(first.hex()).exists());
+    assert!(dir.path().join("blobs").join(second.hex()).exists());
+}
+
+#[test]
+fn a_put_that_cannot_fit_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open_with_budget(dir.path(), 10_000).unwrap();
+    let first = put(&mut store, &base_snapshot(1), recipe(27), 1);
+    let second = put(&mut store, &base_snapshot(2), recipe(28), 1);
+    store.pin(second, 1, 100).unwrap();
+    store.set_budget(5_000);
+    let before: Vec<String> = std::fs::read_dir(dir.path().join("blobs"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    let error = store.put(Put {
+        snapshot: &base_snapshot(3),
+        recipe: recipe(29),
+        identity: [1u8; 32],
+        determinism: Determinism::Always,
+        owner: 1,
+        tier: Tier::Host,
+        reason: Reason::Anchor,
+        provenance: None,
+        now_ms: 10,
+    });
+    assert!(matches!(error, Err(nagaya_store::StoreError::NoSpace)));
+    let after: Vec<String> = std::fs::read_dir(dir.path().join("blobs"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(before, after);
+    assert!(store.entries().contains_key(&first));
+    assert!(store.entries().contains_key(&second));
+    assert!(dir.path().join("blobs").join(first.hex()).exists());
+    assert!(dir.path().join("blobs").join(second.hex()).exists());
+}
+
+#[test]
+fn a_failed_put_keeps_the_index_and_blobs() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let first = put(&mut store, &base_snapshot(1), recipe(30), 1);
+    for point in [
+        nagaya_store::FailPoint::BlobWrite,
+        nagaya_store::FailPoint::BlobRename,
+        nagaya_store::FailPoint::IndexWrite,
+        nagaya_store::FailPoint::IndexRename,
+    ] {
+        let before: Vec<String> = std::fs::read_dir(dir.path().join("blobs"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        store.fail_next(point);
+        let error = store.put(Put {
+            snapshot: &base_snapshot(2),
+            recipe: recipe(31),
+            identity: [1u8; 32],
+            determinism: Determinism::Always,
+            owner: 1,
+            tier: Tier::Host,
+            reason: Reason::Anchor,
+            provenance: None,
+            now_ms: 10,
+        });
+        assert!(error.is_err());
+        assert_eq!(store.entries().len(), 1);
+        assert!(store.entries().contains_key(&first));
+        let after: Vec<String> = std::fs::read_dir(dir.path().join("blobs"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(before, after);
+    }
+}
+
+#[test]
+fn a_pin_larger_than_the_budget_loses_protection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open_with_budget(dir.path(), 10_000).unwrap();
+    let id = put(&mut store, &base_snapshot(1), recipe(32), 1);
+    store.pin(id, 1, 100).unwrap();
+    store.set_budget(100);
+    let victims = store.evict(1, 1, 10).unwrap();
+    assert_eq!(victims, vec![id]);
+    assert!(!store.entries().contains_key(&id));
+}
+
+#[test]
+fn a_request_pin_protects_until_its_expiry() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let recipe = recipe(33);
+    let id = put(&mut store, &base_snapshot(1), recipe, 1);
+    store.lookup_and_pin(recipe, &Tolerance::Exact, 1, 100, 10).unwrap();
+    assert!(store.evict(1, 1, 10).unwrap().is_empty());
+    assert_eq!(store.evict(1, 1, 101).unwrap(), vec![id]);
+}
+
+#[test]
+fn another_owners_pin_protects() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let id = put(&mut store, &base_snapshot(1), recipe(34), 1);
+    store.pin(id, 2, 100).unwrap();
+    assert!(store.evict(1, 1, 10).unwrap().is_empty());
+    assert!(store.entries().contains_key(&id));
+}
