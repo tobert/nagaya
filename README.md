@@ -29,6 +29,7 @@ tempted to come up with a new name and port all the code into a fresh repo and c
 - `docs/ontology.md`: the nouns, defined once, with where each one already exists in mk and mkviolet.
 - `docs/engine-abi.md`: the draft engine ABI v0, how mk and mkviolet map onto it, and its decisions.
 - `docs/reviews.md`: reviews of these documents and what we did with each finding.
+- `docs/prior-art.md`: what ds4-recipe and Ai2's scheduler teach us, as proposals.
 
 ## Later (doors to keep open, nothing to build in the first pass)
 
