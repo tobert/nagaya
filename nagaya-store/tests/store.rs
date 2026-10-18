@@ -1,5 +1,9 @@
 use nagaya_abi::fake::FakeAlways;
-use nagaya_abi::{Engine, OutputsWanted, PartKind, Segment, SegmentInputs, SlotLimit, State};
+use nagaya_abi::{
+    Capability, ChainLimits, Coverage, CoverageSpan, Determinism, Dtype, Engine, Identity, Inputs, Limits,
+    MemoryLimits, OutputsWanted, PartError, PartKind, PartLimits, Parts, PassError, PassOut, Segment, SegmentInputs,
+    SlotLimit, State, WriteResult,
+};
 use nagaya_store::{ContentId, Snapshot, Tensor, content_id, recipe_boundary, recipe_root, snapshot_from_engine};
 use serde_json::Value;
 
@@ -237,4 +241,131 @@ fn a_slot_id_maps_through_the_size_classes() {
     let large = snapshot_from_engine(&mut engine, State::Slot(4), &rows).unwrap();
     assert_eq!(small.tensors.len(), 3);
     assert_eq!(large.tensors.len(), 3);
+}
+
+struct TestEngine {
+    with_coverage: bool,
+}
+
+impl Engine for TestEngine {
+    fn identity(&self) -> Identity {
+        Identity {
+            model: "test".to_owned(),
+            checkpoint_digest: String::new(),
+            tokenizer_hash: String::new(),
+            template: String::new(),
+            numbers: Default::default(),
+            plan_table: String::new(),
+            bit_settings: Vec::new(),
+            canary_hash: String::new(),
+        }
+    }
+
+    fn limits(&self) -> Limits {
+        Limits {
+            capabilities: if self.with_coverage {
+                vec![Capability::Parts, Capability::Coverage]
+            } else {
+                vec![Capability::Parts]
+            },
+            parts: vec![PartLimits {
+                name: "cells".to_owned(),
+                kind: PartKind::Cells,
+                dtype: Dtype::U8,
+                shape: vec![8],
+            }],
+            inputs: Inputs::Tokens,
+            devices: vec![0],
+            stages: Vec::new(),
+            max_segments: 1,
+            max_pass_inputs: 1,
+            max_logit_rows: 1,
+            slots: vec![SlotLimit { bytes: 64, count: 1 }],
+            max_quantum_ms: 10,
+            memory: MemoryLimits::default(),
+            chain: ChainLimits {
+                max_depth: 0,
+                delta_fraction: 0.0,
+            },
+            segments_exact: true,
+            determinism: Determinism::Always,
+            bit_dependence: Vec::new(),
+            taps: Vec::new(),
+        }
+    }
+
+    fn pass(&mut self, _segments: &[Segment], _taps: &[nagaya_abi::Tap]) -> Result<PassOut, PassError> {
+        Ok(PassOut::default())
+    }
+
+    fn last_error(&self) -> Option<String> {
+        None
+    }
+
+    fn parts(&mut self) -> Option<&mut dyn Parts> {
+        Some(self)
+    }
+
+    fn coverage(&mut self) -> Option<&mut dyn Coverage> {
+        if self.with_coverage { Some(self) } else { None }
+    }
+}
+
+impl Parts for TestEngine {
+    fn part_read(&mut self, _state: State, _part: usize, _out: &mut [u8]) -> Result<(), PartError> {
+        Err(PartError::Refused)
+    }
+
+    fn part_write(&mut self, _state: State, _part: usize, _bytes: &[u8]) -> WriteResult {
+        WriteResult::Refused
+    }
+
+    fn cells_read(
+        &mut self,
+        _state: State,
+        _part: usize,
+        _from: u64,
+        _n: u64,
+        out: &mut [u8],
+    ) -> Result<(), PartError> {
+        for (index, byte) in out.iter_mut().enumerate() {
+            *byte = (index % 251) as u8;
+        }
+        Ok(())
+    }
+
+    fn cells_write(&mut self, _state: State, _part: usize, _n: u64, _bytes: &[u8]) -> WriteResult {
+        WriteResult::Refused
+    }
+
+    fn set_n(&mut self, _state: State, _n: u64) -> WriteResult {
+        WriteResult::Refused
+    }
+}
+
+impl Coverage for TestEngine {
+    fn coverage(&self, _state: State, part: usize, _bytes: &[u8]) -> CoverageSpan {
+        CoverageSpan { part, start: 3, end: 5 }
+    }
+
+    fn fits(&self, _coverage: &CoverageSpan, _slot: u32) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+#[test]
+fn coverage_capability_sets_the_span() {
+    let mut engine = TestEngine { with_coverage: true };
+    let rows = [(0, 0, 2)];
+    let snapshot = snapshot_from_engine(&mut engine, State::Slot(0), &rows).unwrap();
+    assert_eq!(snapshot.tensors[0].coverage, Some((3, 5)));
+    assert_eq!(snapshot.tensors[0].shape, vec![2, 8]);
+}
+
+#[test]
+fn no_coverage_records_zero_to_n() {
+    let mut engine = TestEngine { with_coverage: false };
+    let rows = [(0, 0, 2)];
+    let snapshot = snapshot_from_engine(&mut engine, State::Slot(0), &rows).unwrap();
+    assert_eq!(snapshot.tensors[0].coverage, Some((0, 2)));
 }

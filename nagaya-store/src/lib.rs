@@ -284,9 +284,6 @@ pub fn snapshot_from_engine(
                 let row_bytes = checked_len(&row_shape, part.dtype)?;
                 let count =
                     usize::try_from(count).map_err(|_| StoreError::Invalid("row count too large".to_owned()))?;
-                let end = start
-                    .checked_add(count as u64)
-                    .ok_or_else(|| StoreError::Invalid("coverage overflow".to_owned()))?;
                 let length = count
                     .checked_mul(row_bytes)
                     .ok_or_else(|| StoreError::Invalid("row bytes overflow".to_owned()))?;
@@ -296,25 +293,37 @@ pub fn snapshot_from_engine(
                     .ok_or_else(|| StoreError::Invalid("no parts capability".to_owned()))?
                     .cells_read(state, id, start, count as u64, &mut data)
                     .map_err(|error| StoreError::Invalid(format!("cells read: {error:?}")))?;
-                let mut shape = vec![count as u64];
+                let span = match engine.coverage() {
+                    Some(coverage) => {
+                        let span = coverage.coverage(state, id, &data);
+                        if span.start > span.end {
+                            return Err(StoreError::Invalid("coverage start after end".to_owned()));
+                        }
+                        coverage.fits(&span, slot_id).map_err(StoreError::Invalid)?;
+                        span
+                    }
+                    None => CoverageSpan {
+                        part: id,
+                        start: 0,
+                        end: count as u64,
+                    },
+                };
+                let mut shape = vec![span.end - span.start];
                 shape.extend(row_shape);
-                let span = CoverageSpan { part: id, start, end };
-                engine
-                    .coverage()
-                    .ok_or_else(|| StoreError::Invalid("no coverage capability".to_owned()))?
-                    .fits(&span, slot_id)
-                    .map_err(StoreError::Invalid)?;
                 tensors.push(Tensor {
                     name: part.name.clone(),
                     kind: part.kind,
                     dtype: part.dtype,
                     shape,
                     data,
-                    coverage: Some((start, end)),
+                    coverage: Some((span.start, span.end)),
                     block_format: None,
                 });
             }
         }
+    }
+    for tensor in &tensors {
+        check_tensor(tensor)?;
     }
     Ok(Snapshot { tensors, parent: None })
 }
