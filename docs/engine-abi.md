@@ -228,8 +228,9 @@ and gate 8.3 (park and restore) must fail it.
 that fits the ABI.
 
 - **A context is a state.** `State` is `Slot(u32)` in v0, so each mk context has a slot index. `limits().slots`
-  declares the pool that the binding creates at open: 2 contexts of 256 tokens. `plan(config)` comes with the process
-  crate, so this binding fixes the pool.
+  declares the pool that one handle creates at open: 2 contexts of 256 tokens. The process opens one handle. The
+  conformance suite opens a handle for each gate, so the engine holds more contexts while the suite runs. This
+  binding does not bind `mk_ctx_fork`. `plan(config)` comes with the process crate, so this binding fixes the pool.
 - **`max_quantum_ms` is 30000.** mk splits a pass at 256 tokens (`kMaxPassTokens`). A prefill chunk of that size takes
   about 2 s. The declared bound is 30 s.
 - **`cells_write` writes rows 0 to n-1.** mk writes n cells into an empty context that owns its K/V. The caller calls
