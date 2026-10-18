@@ -385,11 +385,12 @@ tie-break. The process treats that refusal as a miss and recomputes. Decided 202
 
 Reason: a silent choice would not be the deepest in every part.
 
-**Proposed** by deepseek-flash, 2026-10-18. Two chains can be equal: the same furthest covered position in every
+**An equal chain goes to the newest entry.** Two chains can be equal: the same furthest covered position in every
 part. A tie is not an incomparable pair. The store serves the newest entry by `created_ms`. If two entries have the
-same `created_ms`, the store serves the smaller content id.
+same `created_ms`, the store serves the smaller content id. Decided 2026-10-18.
 
-Reason: senpai leans to a fixed tie-break. A put that the store allowed should not fail at lookup. Amy decides.
+Reason: a fixed tie-break keeps a put that the store allowed from failing at lookup.
+
 Note: D3 says a per-process engine refuses only within one process, and 6.7 lists only `always` and `pinned`. A
 per-process store can hold two equal-coverage entries under one recipe.
 
