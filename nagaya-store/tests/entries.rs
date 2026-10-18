@@ -439,6 +439,41 @@ fn a_restart_rebuilds_the_index_and_checks_entries() {
 }
 
 #[test]
+fn a_quarantined_parent_skips_only_its_chain() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let first_root_recipe = recipe(160);
+    let second_root_recipe = recipe(161);
+    let first_root = put(&mut store, &base_snapshot(1), first_root_recipe, 1);
+    let second_root = put(&mut store, &base_snapshot(2), second_root_recipe, 1);
+    let first_delta_recipe = next_recipe(first_root_recipe, 2);
+    put_delta(
+        &mut store,
+        &delta_at(first_root, 2),
+        first_delta_recipe,
+        first_root_recipe,
+        1,
+    );
+    let second_delta_recipe = next_recipe(second_root_recipe, 3);
+    let second_delta = put_delta(
+        &mut store,
+        &delta_at(second_root, 2),
+        second_delta_recipe,
+        second_root_recipe,
+        1,
+    );
+    let blob = dir.path().join("blobs").join(first_root.hex());
+    std::fs::write(&blob, b"corrupt").unwrap();
+    assert!(store.get(&first_root, 10).is_err());
+    assert_eq!(store.entries().get(&first_root).unwrap().state, EntryState::Quarantined);
+    assert!(lookup(&mut store, first_delta_recipe).unwrap().is_empty());
+    assert_eq!(
+        lookup(&mut store, second_delta_recipe).unwrap(),
+        vec![second_root, second_delta]
+    );
+}
+
+#[test]
 fn a_chain_with_a_missing_parent_is_an_error() {
     let dir = tempfile::tempdir().unwrap();
     let root_recipe = recipe(63);

@@ -1054,8 +1054,13 @@ impl Store {
         let mut coverage = engine.coverage();
         let mut chains: Vec<(Vec<ContentId>, Vec<PartCoverage>)> = Vec::new();
         for id in ids {
-            let chain = self.chain(id)?;
             // 6.8: a quarantine of one entry does not refuse the recipe. Skip its chain.
+            // 6.5: a missing parent stays an error.
+            let chain = match self.chain(id) {
+                Ok(chain) => chain,
+                Err(StoreError::Quarantined(_)) => continue,
+                Err(error) => return Err(error),
+            };
             if chain.iter().any(|member| self.check(member).is_err()) {
                 continue;
             }
@@ -1518,10 +1523,7 @@ impl Store {
                 ))
             })?;
             if parent_entry.state != EntryState::Live {
-                return Err(StoreError::Invalid(format!(
-                    "the chain of {} has a quarantined parent",
-                    tip.hex()
-                )));
+                return Err(StoreError::Quarantined(parent));
             }
             if !visited.insert(parent) {
                 return Err(StoreError::Invalid("the chain has a cycle".to_owned()));
