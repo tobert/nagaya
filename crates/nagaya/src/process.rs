@@ -600,6 +600,7 @@ enum GroupMessage {
 }
 
 /// The started process threads.
+#[derive(Debug)]
 pub struct Process {
     ledger: Sender<LedgerMessage>,
     ledger_thread: Option<JoinHandle<()>>,
