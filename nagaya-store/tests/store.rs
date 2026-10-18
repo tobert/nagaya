@@ -205,3 +205,12 @@ fn decode_refuses_noncanonical_files() {
     );
     assert!(Snapshot::decode(&rebuild(&cells_bytes, cells_len, &cells_value)).is_err());
 }
+
+#[test]
+fn encode_refuses_metadata_tensor() {
+    let snapshot = Snapshot {
+        tensors: vec![tensor("__metadata__", PartKind::Fixed, vec![1], vec![0], None)],
+        parent: None,
+    };
+    assert!(snapshot.encode().is_err());
+}

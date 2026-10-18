@@ -348,6 +348,9 @@ fn add_item(hasher: &mut blake3::Hasher, tag: u16, bytes: &[u8]) {
 }
 
 fn check_tensor(tensor: &Tensor) -> Result<(), StoreError> {
+    if tensor.name == "__metadata__" {
+        return Err(StoreError::Invalid("reserved tensor name".to_owned()));
+    }
     if tensor.kind == PartKind::Derived {
         return Err(StoreError::Invalid("derived part is never stored".to_owned()));
     }
