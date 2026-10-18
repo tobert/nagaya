@@ -128,7 +128,9 @@ impl Snapshot {
                 metadata.insert(format!("nagaya.part.{}.block", tensor.name), block.clone());
             }
 
-            let end = offset + tensor.data.len() as u64;
+            let end = offset
+                .checked_add(tensor.data.len() as u64)
+                .ok_or_else(|| StoreError::Invalid("data offset overflow".to_owned()))?;
             let mut entry: BTreeMap<String, Value> = BTreeMap::new();
             entry.insert("dtype".to_owned(), Value::String(dtype_name(tensor.dtype).to_owned()));
             entry.insert(
@@ -158,7 +160,12 @@ impl Snapshot {
         let json = serde_json::to_vec(&header).map_err(|error| StoreError::Invalid(error.to_string()))?;
         let padding = (ALIGN - ((8 + json.len()) % ALIGN)) % ALIGN;
         let header_len = json.len() + padding;
-        let mut out = Vec::with_capacity(8 + header_len + offset as usize);
+        let data_len = usize::try_from(offset).map_err(|_| StoreError::Invalid("data too large".to_owned()))?;
+        let capacity = 8usize
+            .checked_add(header_len)
+            .and_then(|value| value.checked_add(data_len))
+            .ok_or_else(|| StoreError::Invalid("file too large".to_owned()))?;
+        let mut out = Vec::with_capacity(capacity);
         out.extend_from_slice(&(header_len as u64).to_le_bytes());
         out.extend_from_slice(&json);
         out.resize(8 + header_len, b' ');
@@ -254,7 +261,7 @@ pub fn snapshot_from_engine(
         match part.kind {
             PartKind::Derived => continue,
             PartKind::Fixed => {
-                let length = part.shape.iter().product::<u64>() as usize * dtype_bytes(part.dtype);
+                let length = checked_len(&part.shape, part.dtype)?;
                 let mut data = vec![0u8; length];
                 engine
                     .parts()
@@ -277,20 +284,24 @@ pub fn snapshot_from_engine(
                     .find(|(part_id, _, _)| *part_id == id)
                     .ok_or_else(|| StoreError::Invalid("missing rows".to_owned()))?;
                 let row_shape = part.shape.clone();
-                let row_bytes = row_shape.iter().product::<u64>() as usize * dtype_bytes(part.dtype);
-                let mut data = vec![0u8; count as usize * row_bytes];
+                let row_bytes = checked_len(&row_shape, part.dtype)?;
+                let count =
+                    usize::try_from(count).map_err(|_| StoreError::Invalid("row count too large".to_owned()))?;
+                let end = start
+                    .checked_add(count as u64)
+                    .ok_or_else(|| StoreError::Invalid("coverage overflow".to_owned()))?;
+                let length = count
+                    .checked_mul(row_bytes)
+                    .ok_or_else(|| StoreError::Invalid("row bytes overflow".to_owned()))?;
+                let mut data = vec![0u8; length];
                 engine
                     .parts()
                     .ok_or_else(|| StoreError::Invalid("no parts capability".to_owned()))?
-                    .cells_read(state, id, start, count, &mut data)
+                    .cells_read(state, id, start, count as u64, &mut data)
                     .map_err(|error| StoreError::Invalid(format!("cells read: {error:?}")))?;
-                let mut shape = vec![count];
+                let mut shape = vec![count as u64];
                 shape.extend(row_shape);
-                let span = CoverageSpan {
-                    part: id,
-                    start,
-                    end: start + count,
-                };
+                let span = CoverageSpan { part: id, start, end };
                 engine
                     .coverage()
                     .ok_or_else(|| StoreError::Invalid("no coverage capability".to_owned()))?
@@ -302,7 +313,7 @@ pub fn snapshot_from_engine(
                     dtype: part.dtype,
                     shape,
                     data,
-                    coverage: Some((start, start + count)),
+                    coverage: Some((start, end)),
                     block_format: None,
                 });
             }
@@ -358,8 +369,7 @@ fn check_tensor(tensor: &Tensor) -> Result<(), StoreError> {
     if tensor.kind == PartKind::Derived {
         return Err(StoreError::Invalid("derived part is never stored".to_owned()));
     }
-    let elements: u64 = tensor.shape.iter().product();
-    let expected = elements as usize * dtype_bytes(tensor.dtype);
+    let expected = checked_len(&tensor.shape, tensor.dtype)?;
     if tensor.data.len() != expected {
         return Err(StoreError::Invalid(format!("wrong data length for {}", tensor.name)));
     }
@@ -406,6 +416,17 @@ fn dtype_bytes(dtype: Dtype) -> usize {
         Dtype::F16 | Dtype::BF16 => 2,
         Dtype::F32 | Dtype::U32 => 4,
     }
+}
+
+fn checked_len(shape: &[u64], dtype: Dtype) -> Result<usize, StoreError> {
+    let elements = shape
+        .iter()
+        .try_fold(1u64, |total, &dim| total.checked_mul(dim))
+        .ok_or_else(|| StoreError::Invalid("shape overflow".to_owned()))?;
+    let bytes = elements
+        .checked_mul(dtype_bytes(dtype) as u64)
+        .ok_or_else(|| StoreError::Invalid("shape overflow".to_owned()))?;
+    usize::try_from(bytes).map_err(|_| StoreError::Invalid("shape too large".to_owned()))
 }
 
 fn dtype_from_safetensors(dtype: SafeDtype) -> Result<Dtype, StoreError> {

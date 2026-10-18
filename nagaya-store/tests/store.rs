@@ -214,3 +214,12 @@ fn encode_refuses_metadata_tensor() {
     };
     assert!(snapshot.encode().is_err());
 }
+
+#[test]
+fn a_huge_shape_is_an_error() {
+    let snapshot = Snapshot {
+        tensors: vec![tensor("state", PartKind::Fixed, vec![u64::MAX, 2], Vec::new(), None)],
+        parent: None,
+    };
+    assert!(snapshot.encode().is_err());
+}
