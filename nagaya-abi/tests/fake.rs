@@ -197,7 +197,7 @@ fn broken_fake_has_the_same_limits() {
 }
 
 #[test]
-fn fake_pass_is_ok_with_no_outputs() {
+fn an_empty_pass_is_ok_with_no_outputs() {
     let mut engine = FakeAlways::new();
     let out = engine.pass(&[], &[]).unwrap();
     assert_eq!(out.status, PassStatus::Ok);
