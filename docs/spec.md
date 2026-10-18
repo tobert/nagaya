@@ -391,9 +391,11 @@ per-process store can hold two equal-coverage entries under one recipe.
 recipe with the same coverage are a defect. The store quarantines both entries, refuses that recipe, and reports
 it. A person clears the refusal after the cause is known.
 
-**Proposed** by deepseek-flash, 2026-10-18. Clearing a tripwire refusal removes the recipe's quarantined entries
-and their blobs. It does not clear a content-id quarantine; `clear_entry` does that. Reason: a tripwire entry is
-never served, eviction sees only live entries, and a person has named the cause. Amy decides.
+Decided 2026-10-18 (Amy). Clearing a tripwire refusal removes the recipe's quarantined entries from the index and
+moves their blobs to the store's `quarantine/` directory. The blobs stay there until a person removes them. No budget
+counts that directory, and no lookup, restore or eviction reads it. It does not clear a content-id quarantine;
+`clear_entry` does that. Reason: 6.8 says that a failure never deletes content, and a person can find the cause only
+while the blobs exist.
 
 For other engines, the audit job (8.4) does the check.
 
