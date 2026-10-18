@@ -859,6 +859,10 @@ impl ThreadState {
             ));
         }
         unsafe { (self.binding.set_n)(self.engine, ptr, n) };
+        // mk returns nothing here. A call that left the context poisoned is a failure (spec 6.8), so check first.
+        if unsafe { (self.binding.ctx_poisoned)(ptr) } != 0 {
+            return Call::Failed("set_n poisoned the context".to_owned());
+        }
         if unsafe { (self.binding.ctx_n)(ptr) } != n {
             return Call::Failed(format!("set_n({n}) did not set the token count"));
         }
