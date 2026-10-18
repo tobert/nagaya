@@ -9,6 +9,8 @@ use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{Limits, Tier};
 use nagaya_ledger::{Admission, Budget, EnginePlan, Ledger, LedgerError, Profile};
 
+use crate::inventory::Inventory;
+use crate::placement::{DeviceError, check_devices};
 use crate::profile::PlacementProfile;
 
 /// Why an engine cannot give its limits before it opens.
@@ -82,6 +84,8 @@ pub enum AdmitError {
     },
     /// The ledger refused the profile.
     Ledger(LedgerError),
+    /// A profile device is missing or differs from the plan.
+    Device(DeviceError),
 }
 
 impl std::fmt::Display for AdmitError {
@@ -96,6 +100,9 @@ impl std::fmt::Display for AdmitError {
             AdmitError::Ledger(error) => {
                 write!(formatter, "the profile cannot be admitted: {error}")
             }
+            AdmitError::Device(error) => {
+                write!(formatter, "the profile cannot be admitted: {error}")
+            }
         }
     }
 }
@@ -104,6 +111,7 @@ impl std::error::Error for AdmitError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             AdmitError::Ledger(error) => Some(error),
+            AdmitError::Device(error) => Some(error),
             AdmitError::UnknownKind { .. } | AdmitError::Plan { .. } => None,
         }
     }
@@ -139,7 +147,12 @@ impl Plan for FakePlan {
 }
 
 /// Admit a placement profile with the ledger, before any engine opens.
-pub fn admit(profile: &PlacementProfile, registry: &Registry, ledger: &mut Ledger) -> Result<Admitted, AdmitError> {
+pub fn admit(
+    profile: &PlacementProfile,
+    registry: &Registry,
+    inventory: &Inventory,
+    ledger: &mut Ledger,
+) -> Result<Admitted, AdmitError> {
     let budgets: Vec<Budget> = profile
         .budgets
         .iter()
@@ -169,6 +182,7 @@ pub fn admit(profile: &PlacementProfile, registry: &Registry, ledger: &mut Ledge
             share: engine.share,
         });
     }
+    check_devices(profile, &planned, inventory).map_err(AdmitError::Device)?;
     let admission = ledger
         .admit(&Profile { budgets, engines })
         .map_err(AdmitError::Ledger)?;
