@@ -59,17 +59,18 @@ Read 2026-10-17 by four readers (chapters 01, 03, 04, 05, 06, 10, 11, 12, 13; th
   `resize(term, units)` capability, called only between quanta.
 - **Charge everything.** Uncharged vision weights and a capture pool "show up as untracked bytes"; co-tenant
   processes (tmpfs, swap) caused ds4's OOM. The nagaya sets its own OOM score.
-- Open: when two engines both have elastic terms, who gets the remainder? ds4 has one elastic consumer. Proposed: a
-  weight or floor per engine in the placement profile, not a heuristic.
+- When two engines both have elastic terms, who gets the remainder? ds4 has one elastic consumer. Decided (D9): a
+  weight per engine in each machine's placement profile.
 
 ### 3. Scheduling
 
 - **No preemption of a running request** ("No active request is preempted"). Agrees with quanta. Priority orders
   waiting work only and never moves a continuation off its required context.
-- **Head-of-line blocking is the cost.** A 201-row turn waited 283.95 s behind a 112,257-row prefill of 32k-row jobs
-  (11). ds4's fix is cooperative yields inside a pass and nested guests in the yield. Proposed for v0: no yields; a
-  `max_quantum_ms` in `limits()`, and an engine whose natural pass exceeds it splits into shorter quanta or (later)
-  stages. Nested guests are deferred; their "refused, nothing changed, the waiter keeps its place" protocol is not.
+- **Head-of-line blocking is the cost.** A 201-row turn waited 283.95 s behind a 112,257-row prefill of 32k-row
+  jobs (11). ds4's fix is cooperative yields inside a pass and nested guests in the yield. Decided (D8): no yields;
+  a `max_quantum_ms` in `limits()`, and an engine whose natural pass exceeds it splits into shorter quanta or
+  (later) stages. Nested guests are deferred; their "refused, nothing changed, the waiter keeps its place" protocol
+  is not.
 - **Owed-share fairness within a class** (11 "6."): order by priority, then owed seconds (clamped ±30 s), then
   arrival; "Leaving members take only their own balance". Time-based, not token-based. Fillers accrue no debt.
 - **Gathering segments**: wait a bounded join window for ready jobs, never for unready ones ("Nothing waits on a

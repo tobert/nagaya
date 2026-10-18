@@ -30,6 +30,7 @@ limits() -> {
     inputs: tokens | rows | tokens+rows, row width and dtype,
     stages: [{device, layers, head: bool}],
     max_segments, max_pass_inputs, max_logit_rows, slots per device and their sizes,
+    max_quantum_ms,              the longest a quantum may hold its device (D8)
     taps: [...], with the conditions each needs (mk: unfused, one segment)
 }
 pass(segments, taps) -> status, ms, outputs
@@ -91,7 +92,7 @@ telemetry    op_times(), dispatches(), ...
 
 ## Decisions
 
-Decided: D1, D3. Deferred to the first engine port: D2. Proposed, not yet reviewed with Amy: D4-D7.
+Decided: D1, D3, D8, D9. Deferred to the first engine port: D2. Proposed, not yet reviewed with Amy: D4-D7.
 
 **D1. Engines that span devices.** (a) The engine schedules its own stages and the nagaya sees one quantum per pass;
 or (b) the engine declares stages and exports `stage_pass`, and the nagaya schedules each stage on its device.
@@ -141,6 +142,16 @@ the others.
 
 **D7. Seal and park are separate calls.** Seal runs only at boundaries in the chain and may change bits. Park is
 `part_read` to another tier and back, bit for bit. The scheduler parks; it never seals to free a slot.
+
+**D8. Quanta have a declared length bound.** Decided 2026-10-17 (Amy: "a lil head of line blocking is okay in this
+design. max_quantum_ms seems like a good call"). An engine declares `max_quantum_ms` in `limits()`; a pass that
+would run longer is split by the engine into shorter quanta. No yields inside a pass in v0: a quantum still runs to
+its end, so the worst wait behind other work is one quantum. ds4-recipe chose cooperative yields after a short turn
+waited 283.95 s behind a long prefill (`docs/prior-art.md` 3); we take the bounded wait instead.
+
+**D9. Spare memory goes by weight.** Decided 2026-10-17 (Amy: "we'll assign some weight per machine"). Each
+machine's placement profile gives every engine on it a weight; the ledger divides what remains after all mandatory
+bytes among the engines' elastic terms by those weights (`docs/prior-art.md` 2).
 
 ## Not covered yet
 

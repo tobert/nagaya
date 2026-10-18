@@ -119,9 +119,9 @@ target of 256 tokens in total (mk `DESIGN.md`, "Workloads and passes"). mkviolet
 **Residual.** The hidden rows handed from one stage to the next. mkviolet hands them across on the host
 (`run_card0` returns them; `run_card1` writes them to card 1).
 
-**Quantum.** The unit the nagaya schedules: one pass, or one stage of a pass. A quantum runs to its end; the nagaya
-changes what runs only between quanta. Interleaving other work between quanta gives the same bits as an uninterrupted
-run when all of these hold:
+**Quantum.** The unit the nagaya schedules: one pass, or one stage of a pass, no longer than the engine's
+`max_quantum_ms` (`docs/engine-abi.md` D8). A quantum runs to its end; the nagaya changes what runs only between
+quanta. Interleaving other work between quanta gives the same bits as an uninterrupted run when all of these hold:
 
 1. the same engine identity, including the arithmetic path (mk `fused`, `MK_FAST_QMM`);
 2. the same boundaries, so the same seals;
@@ -161,6 +161,12 @@ quanta reach their ends, park pinned and wanted state to a lasting tier, then le
 
 **Pin.** A lease on a snapshot and the chain under it: it stays out of eviction until it expires. mkviolet keeps pins
 in `pins.json` beside the snapshots so they outlive a restart (`held.rs` `PinSet { snapshots, expires }`).
+
+**Ledger.** One machine's account of its memory: a budget per tier (one shared pool on gfx1151host and sm121host, device
+and host separately on b70host). Every engine's mandatory bytes are admitted first; what remains is divided among
+the engines' elastic terms by the weights in the machine's placement profile (`docs/engine-abi.md` D9). Counts come
+from the ledger's arithmetic, never from probing free memory. From ds4-recipe's memory ledger (`docs/prior-art.md`
+2).
 
 "Tenant" in the README is a figure of speech for an engine, not a term.
 
