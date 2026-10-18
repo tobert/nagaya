@@ -2,3 +2,9 @@
 name = "nagaya-ledger"
 version = "0.1.0"
 edition = "2024"
+
+[dependencies]
+nagaya-abi = { version = "0.1.0", path = "../nagaya-abi" }
+
+[dev-dependencies]
+nagaya-abi = { path = "../nagaya-abi", features = ["fake"] }
