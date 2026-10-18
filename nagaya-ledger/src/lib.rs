@@ -95,6 +95,9 @@ impl Ledger {
 
     /// Admit a profile. A refusal changes nothing.
     pub fn admit(&mut self, profile: &Profile) -> Result<Admission, LedgerError> {
+        if profile.budgets.iter().any(|budget| budget.tiers.is_empty()) {
+            return Err(LedgerError::Invalid("budget has no tiers".to_owned()));
+        }
         let mut mandatory = vec![0u128; profile.budgets.len()];
         let mut minimums = vec![0u128; profile.budgets.len()];
         for engine in &profile.engines {

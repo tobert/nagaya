@@ -246,3 +246,16 @@ fn a_zero_share_leaves_the_spare_unassigned() {
     assert_eq!(admission.engines[0].elastic, vec![("e".to_owned(), 1)]);
     assert_eq!(admission.unassigned, vec![(vec![Tier::Host], 99)]);
 }
+
+#[test]
+fn a_budget_with_no_tiers_is_invalid() {
+    let profile = Profile {
+        budgets: vec![Budget {
+            tiers: Vec::new(),
+            bytes: 100,
+        }],
+        engines: Vec::new(),
+    };
+    let mut ledger = Ledger::new();
+    assert!(matches!(ledger.admit(&profile), Err(LedgerError::Invalid(_))));
+}
