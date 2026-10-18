@@ -133,6 +133,9 @@ and diffusion latents have no tokens. Proposed: `inputs = tokens | rows | tokens
 Deferred 2026-10-17 (Amy: "sort it out with the first engine"). mkviolet's Gemma 4 is the first port. Today it takes
 rows that the host makes from tokens.
 
+Settled the same day: an engine never takes text. The family library in the host turns text into tokens (spec 11.3).
+Only the choice between tokens, rows, or both waits for the first port.
+
 **D3. Snapshot ids are content ids.** Decided 2026-10-17 (Amy: "yeah, 1, cas is awesome"). There are two keys:
 
 - The **content id** names a stored snapshot. It is a BLAKE3 hash of the snapshot's sealed bytes. When the snapshot

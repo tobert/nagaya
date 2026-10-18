@@ -441,11 +441,15 @@ The draw is seeded, and the response reports the seed. Each engine has its own d
 All engines share the SSE framing. Speculative drafts change how the sampler uses the seed (mkviolet's
 prompt-lookup drafts). Thus a request says if drafts are on, and the reported seed includes that setting.
 
-**11.3 Text front-end.** Each model family has its own tokenizer, template, escapes for special tokens in client
-text, and tool-call parser.
+**11.3 Text front-end.** Each model family has its own text rules. They are a tokenizer, a template, escapes for
+special tokens in client text, and parsers for tool calls and thinking. The nagaya holds one library per family (ontology
+"Family"), and the engine identity selects it by its `tokenizer_hash` and `template`. Engines never see text. They
+take tokens, rows, or both (D2).
 
-**Open:** Is the text front-end an ABI capability (`text`) that each engine exports? Or is it a host library that
-the engine identity selects?
+Decided 2026-10-17 (Amy: "oh, yes, b for sure, plus that can support the tokenize apis nicely for when we bring back
+kaijutsu's semantic search and stuff"). Thus one renderer serves every engine of a family, on any vendor's card.
+The rendering rules in gogi, such as where a boundary exists and where thinking renders, get one implementation and
+one set of conformance tests. mk's C ABI does not need a tokenizer.
 
 **11.4 `/mk/v1`.** kaijutsu's mk provider uses `model`, `render` and `generate` (mkviolet `mk_api.rs`).
 
@@ -453,6 +457,12 @@ Decided 2026-10-17: the nagaya does not serve `/mk/v1`. kaijutsu moves to counci
 (`~/src/gogi`). Amy: "kaijutsu will move to council v2 and use the new gogi (~/src/gogi) reference. it's happening
 now, on b70host". In council v2 the server renders messages with its model's own template, and the template is
 part of identity (gogi `docs/council-api-v2.md`, "Terms").
+
+**11.4a Extensions.** gogi puts model-specific routes under the server's own prefix, listed in
+`identity.extensions` (gogi `docs/council-api-v2.md`, "Extensions"). The nagaya's prefix is `/nagaya/v1`. The
+family library serves `render`, `tokenize` and `detokenize`, for bench tools and for kaijutsu's semantic search when
+it returns. The engine serves `embeddings` through a pass with a hidden-state output. The status stream (9.7) and
+traces (13.1) are extensions too.
 
 **11.5 Errors.** All routes use one error shape:
 
@@ -534,8 +544,7 @@ The inventories found these items. We correct each one when its code moves. We d
 
 ## 15. Open questions
 
-1. Is the text front-end an ABI capability or a host library (11.3)?
-2. Do an idle engine's GPU queues slow the other engines on its device (3.3)? A measurement answers this.
-3. What makes `close()` safe for mk, so that engines can load and unload at runtime (3.3)?
-4. D4-D7 are not yet reviewed with Amy (engine-abi, "Decisions").
-5. Do kinds of work get fair shares over a window, as Ai2's teams do? Or do strict classes do the job (5.3)?
+1. Do an idle engine's GPU queues slow the other engines on its device (3.3)? A measurement answers this.
+2. What makes `close()` safe for mk, so that engines can load and unload at runtime (3.3)?
+3. D4-D7 are not yet reviewed with Amy (engine-abi, "Decisions").
+4. Do kinds of work get fair shares over a window, as Ai2's teams do? Or do strict classes do the job (5.3)?
