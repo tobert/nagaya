@@ -344,13 +344,15 @@ that they are the same state.
 - the times of creation and last use;
 - the reason for the store: anchor, interval, prefill done, evict, reclaim, or shutdown;
 - the provenance of an approximate entry;
-- the strength of the store's last check of the entry: `full` (every byte hashed) or `none` yet.
+- the strength of the store's last check of the entry: `full` (every byte hashed), `spot` (a sample hashed) or `none`
+  yet.
 
-**Proposed** by deepseek-flash, 2026-10-18. The store's `Check` is `full | spot | none`. The ABI uses one enum for
-arenas and store entries (engine-abi "Capabilities"). 6.4 names `full` and `none` only.
+**One `Check` enum.** The store's `Check` is `full | spot | none`, the same enum that the ABI uses for arenas and
+store entries (engine-abi "Capabilities"). Decided 2026-10-18.
 
 The store sets `none` after a restart, before it hashes the blob. It sets `full` after it hashes the blob. It does
-not produce `spot` in v0. Reason: the two docs disagree. The ABI's enum is the larger set.
+not produce `spot` in v0. Reason: the ABI uses one enum for arenas and store entries, so the store's set is the ABI's
+set.
 
 **6.5 Chains.** Each engine declares a maximum chain depth and a size fraction. (ds4-recipe: depth 1, and a delta
 only when it is at most a quarter of a full snapshot.) A delta holds, for each cells part and ring part, the rows
