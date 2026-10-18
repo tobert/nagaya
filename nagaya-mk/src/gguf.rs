@@ -18,6 +18,9 @@ const DEFAULT_ALIGNMENT: u32 = 32;
 /// The largest metadata key that the reader stores, in bytes.
 const MAX_KEY: u64 = 4096;
 
+/// The most arrays that a metadata value may nest. A crafted file must not exhaust the stack.
+const MAX_NESTING: u32 = 16;
+
 /// What the header reader learns about one shard.
 #[derive(Debug)]
 pub(crate) struct ShardHeader {
@@ -112,7 +115,10 @@ impl<R: Read> Cursor<R> {
         self.take(length)
     }
 
-    fn skip_value(&mut self, kind: u32) -> Result<(), String> {
+    fn skip_value(&mut self, kind: u32, depth: u32) -> Result<(), String> {
+        if depth > MAX_NESTING {
+            return Err(format!("{}: metadata arrays nest deeper than {MAX_NESTING}", self.path));
+        }
         match kind {
             0..=1 | 7 => self.take(1),
             2..=3 => self.take(2),
@@ -128,7 +134,7 @@ impl<R: Read> Cursor<R> {
                     ));
                 }
                 for _ in 0..count {
-                    self.skip_value(element)?;
+                    self.skip_value(element, depth + 1)?;
                 }
                 Ok(())
             }
@@ -181,7 +187,7 @@ pub(crate) fn read_header(path: &Path) -> Result<ShardHeader, String> {
             }
             alignment = value;
         } else {
-            cursor.skip_value(kind)?;
+            cursor.skip_value(kind, 0)?;
         }
     }
 
@@ -264,6 +270,46 @@ mod tests {
         // Padding to the 64-byte alignment and a little tensor data.
         bytes.resize(154, 0);
         file.write_all(&bytes).unwrap();
+    }
+
+    /// Write a GGUF v3 file with no tensors and one metadata value: an array nested `depth` times.
+    fn write_nested_gguf(path: &std::path::Path, depth: u32) {
+        fn nest(bytes: &mut Vec<u8>, depth: u32) {
+            let element = if depth > 1 { 9u32 } else { 4u32 };
+            bytes.extend_from_slice(&element.to_le_bytes());
+            bytes.extend_from_slice(&1u64.to_le_bytes()); // one element
+            if depth > 1 {
+                nest(bytes, depth - 1);
+            } else {
+                bytes.extend_from_slice(&0x2au32.to_le_bytes());
+            }
+        }
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0x4655_4747u32.to_le_bytes());
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&0u64.to_le_bytes()); // no tensors
+        bytes.extend_from_slice(&1u64.to_le_bytes()); // one metadata key
+        let key = b"nested";
+        bytes.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(key);
+        bytes.extend_from_slice(&9u32.to_le_bytes()); // ARRAY
+        nest(&mut bytes, depth);
+        let padded = bytes.len().div_ceil(32) * 32;
+        bytes.resize(padded, 0);
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn a_metadata_array_that_nests_too_deep_is_refused() {
+        let directory = tempfile::tempdir().unwrap();
+        let shallow = directory.path().join("shallow.gguf");
+        write_nested_gguf(&shallow, 4);
+        assert!(read_header(&shallow).is_ok(), "a shallow array is fine");
+        // A crafted file must not exhaust the stack. The bound is deeper than any key that mk writes.
+        let deep = directory.path().join("deep.gguf");
+        write_nested_gguf(&deep, super::MAX_NESTING + 1);
+        let error = read_header(&deep).unwrap_err();
+        assert!(error.contains("nest"), "{error}");
     }
 
     #[test]
