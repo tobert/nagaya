@@ -175,6 +175,9 @@ version = "0.1.0"
 [[package]]
 name = "nagaya-sched"
 version = "0.1.0"
+dependencies = [
+ "nagaya-abi",
+]
 
 [[package]]
 name = "nagaya-store"
