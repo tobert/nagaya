@@ -151,7 +151,8 @@ decisions. Amy can change them later.
 - `Capability` is an enum. `Limits::capabilities` is a `Vec<Capability>`. The fake engine declares `Parts`,
   `Coverage` and `Seal`.
 - A write returns `WriteResult`: `Ok`, `Refused` or `Failed`. A read returns `Result<(), PartError>`.
-- `Coverage` is one `{start, end}` position range for one part. A ring keeps the last rows that fit.
+- `Coverage` is one `{start, end}` position range for one part. The call takes the `State` too, so a ring
+  reports the positions that it holds. A ring keeps the last rows that fit.
 - `Seal::seal` returns `Result<(), SealError>` and changes bits in place.
 - The first code defines the core, `Parts`, `Coverage`, `Seal` and `Slots`. Each other capability trait
   arrives with the milestone that uses it.
@@ -161,6 +162,9 @@ decisions. Amy can change them later.
 
 **Corrected** 2026-10-18: a default feature still let the tests be skipped. The dev-dependency ties the
 feature to the test build. This is a plain correction to the Proposed section, not a new design choice.
+
+**Amended** by deepseek-flash, 2026-10-18: `Coverage::coverage` takes the `State`. The ring's base position
+is in the state, not in the part bytes. The old call reported 0..n after a wrap.
 
 ### Fake engines
 
