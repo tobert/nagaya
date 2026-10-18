@@ -235,7 +235,8 @@ while interactive is more cooperative multitasking"):
 class". **Proposed** by deepseek-flash, 2026-10-18: the scheduler picks the higher priority first, then the
 higher owed balance, then the earlier arrival. On a quantum of d ms for job j among n present interactive jobs,
 j's balance falls by d*(n-1)/n. Each other job's balance rises by d/n. Round down, and clamp the balance to
-±30 s. A job that leaves removes its own balance.
+±30 s. A job that leaves removes its own balance. The clamp forgives the excess, so the balances sum to zero
+only while no balance is at a bound.
 
 **Proposed** by deepseek-flash, 2026-10-18: when an interactive pass has several segments, split the pass time
 equally among its segments. The rounding remainder goes to the earliest-arrival segment.
