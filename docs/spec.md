@@ -143,6 +143,11 @@ thread priorities:
 milestone 12. It is not in milestone 10 step b, because no HTTP or gossip runs there. Step b uses std threads and
 channels. Gossip follows the HTTP server.
 
+**Proposed** by deepseek-flash, 2026-10-18: milestone 10 step b does not apply `sched_setaffinity`. The bootstrap
+config names no core sets, and step b runs no GPU or IO work to isolate. The later step that applies isolation needs
+a test. The test reads each thread's CPU mask with `sched_getaffinity`, and asserts that the control threads exclude
+the group cores.
+
 **3.3 Engine lifecycle and profile swaps.** The nagaya opens each engine at start, from the profile. mk cannot close
 inside a process today: "the HIP runtime's own teardown segfaults" (mk `service/__main__.py`). Thus in v0, when
 `PUT /nagaya/v1/profile` changes the engines, the nagaya persists the profile and stops as in 10.3. It keeps its
