@@ -496,6 +496,12 @@ copy that has no verification gives no reads.
 The watchdog thread (3.2) reports each quantum that is past `max_quantum_ms` by a margin. It runs on its own thread,
 because the group thread is blocked in the pass.
 
+**Proposed** by deepseek-flash, 2026-10-18: a device group that stops its heartbeat is a failure. The process exits
+with code 1, the crash code of 10.4, and systemd restarts it. Reason: spec 8.5 says the process stops before it
+continues in a bad state, and a stalled engine may hold a device. The default timeout is 30 s. It is three times the
+longest declared quantum bound in the ABI (mk: 10 s). A start parameter sets the timeout, and the tests use a short
+value.
+
 ## 8. Correctness at runtime
 
 **8.1 Canary.** The nagaya records a canary for each engine: fixed inputs and the exact outputs that the engine gave
