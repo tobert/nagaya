@@ -54,8 +54,8 @@ pub struct Admission {
 /// A profile that does not fit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Refusal {
-    /// The shortfall in bytes for each short tier.
-    pub shortfall: Vec<(Tier, u64)>,
+    /// The shortfall in bytes for each short budget, with the tiers it covers.
+    pub shortfall: Vec<(Vec<Tier>, u64)>,
 }
 
 /// A ledger error.
@@ -116,9 +116,7 @@ impl Ledger {
             let required = mandatory[index] + minimums[index];
             if required > budget.bytes as u128 {
                 let bytes = (required - budget.bytes as u128).min(u64::MAX as u128) as u64;
-                for tier in &budget.tiers {
-                    shortfall.push((*tier, bytes));
-                }
+                shortfall.push((budget.tiers.clone(), bytes));
             }
         }
         if !shortfall.is_empty() {

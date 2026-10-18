@@ -55,7 +55,7 @@ fn mandatory_and_minimums_must_fit() {
     assert_eq!(
         error,
         LedgerError::Refused(Refusal {
-            shortfall: vec![(Tier::Host, 20)],
+            shortfall: vec![(vec![Tier::Host], 20)],
         })
     );
 }
@@ -113,7 +113,7 @@ fn a_refusal_changes_nothing() {
     assert_eq!(
         error,
         LedgerError::Refused(Refusal {
-            shortfall: vec![(Tier::Host, 20)],
+            shortfall: vec![(vec![Tier::Host], 20)],
         })
     );
     assert_eq!(ledger, before);
@@ -134,7 +134,7 @@ fn each_tier_has_its_own_shortfall() {
     assert_eq!(
         error,
         LedgerError::Refused(Refusal {
-            shortfall: vec![(Tier::Host, 20)],
+            shortfall: vec![(vec![Tier::Host], 20)],
         })
     );
 }
@@ -169,4 +169,47 @@ fn a_term_without_a_budget_is_invalid() {
     };
     let mut ledger = Ledger::new();
     assert!(matches!(ledger.admit(&profile), Err(LedgerError::Invalid(_))));
+}
+
+#[test]
+fn a_pooled_budget_reports_one_shortfall() {
+    let memory = MemoryLimits {
+        mandatory: vec![mandatory("m", Tier::Device(0), 150)],
+        elastic: Vec::new(),
+    };
+    let profile = Profile {
+        budgets: vec![budget(&[Tier::Device(0), Tier::Host], 100)],
+        engines: vec![plan("a", 1, memory)],
+    };
+    let mut ledger = Ledger::new();
+    let error = ledger.admit(&profile).unwrap_err();
+    assert_eq!(
+        error,
+        LedgerError::Refused(Refusal {
+            shortfall: vec![(vec![Tier::Device(0), Tier::Host], 50)],
+        })
+    );
+}
+
+#[test]
+fn two_short_budgets_report_two_entries() {
+    let memory = MemoryLimits {
+        mandatory: vec![mandatory("h", Tier::Host, 120), mandatory("d", Tier::Device(1), 130)],
+        elastic: Vec::new(),
+    };
+    let profile = Profile {
+        budgets: vec![
+            budget(&[Tier::Host, Tier::Device(0)], 100),
+            budget(&[Tier::Device(1)], 100),
+        ],
+        engines: vec![plan("a", 1, memory)],
+    };
+    let mut ledger = Ledger::new();
+    let error = ledger.admit(&profile).unwrap_err();
+    assert_eq!(
+        error,
+        LedgerError::Refused(Refusal {
+            shortfall: vec![(vec![Tier::Host, Tier::Device(0)], 20), (vec![Tier::Device(1)], 30),],
+        })
+    );
 }
