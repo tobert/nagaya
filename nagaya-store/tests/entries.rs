@@ -938,11 +938,38 @@ fn a_delta_respects_the_chain_limits() {
     .unwrap();
     let root_recipe = recipe(136);
     let root = put(&mut store, &base_snapshot(1), root_recipe, 1);
-    let delta_recipe = next_recipe(root_recipe, 2);
+    let first_recipe = next_recipe(root_recipe, 2);
+    let first = put_delta(&mut store, &delta_at(root, 2), first_recipe, root_recipe, 1);
+    let second_recipe = next_recipe(first_recipe, 4);
+    let error = try_put(
+        &mut store,
+        &delta_at(first, 4),
+        second_recipe,
+        Some(first_recipe),
+        1,
+        Tier::Host,
+        10,
+    )
+    .unwrap_err();
+    assert!(format!("{error}").contains("deeper"), "{error}");
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open_with_limits(
+        dir.path(),
+        u64::MAX,
+        u64::MAX,
+        u64::MAX,
+        ChainLimits {
+            max_depth: 0,
+            delta_fraction: 1.0,
+        },
+    )
+    .unwrap();
+    let root = put(&mut store, &base_snapshot(1), root_recipe, 1);
     let error = try_put(
         &mut store,
         &delta_at(root, 2),
-        delta_recipe,
+        first_recipe,
         Some(root_recipe),
         1,
         Tier::Host,
@@ -967,7 +994,7 @@ fn a_delta_respects_the_chain_limits() {
     let error = try_put(
         &mut store,
         &delta_at(root, 2),
-        delta_recipe,
+        first_recipe,
         Some(root_recipe),
         1,
         Tier::Host,

@@ -1476,7 +1476,7 @@ impl Store {
             return Err(StoreError::Invalid("the delta's recipe is not a later one".to_owned()));
         }
         let depth = self.chain(parent_id)?.len();
-        if depth >= self.chain.max_depth as usize {
+        if depth > self.chain.max_depth as usize {
             return Err(StoreError::Invalid(
                 "the chain is deeper than the engine allows".to_owned(),
             ));
