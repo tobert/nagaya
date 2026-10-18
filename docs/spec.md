@@ -426,8 +426,8 @@ The restart policy follows mk's unit: `Restart=on-failure`, `RestartSec=30`, and
 
 ## 11. Client API
 
-**11.1 Council.** The nagaya serves council v1 and v2 for all its engines (`~/src/kaijutsu/docs/council-api.md`,
-types in `gogi-proto`). It routes each request by its `model` field. The API has contexts, specs, decisions,
+**11.1 Council.** The nagaya serves council v2 for all its engines, and v1 while clients still use it. The contract
+is gogi (`~/src/gogi`: `docs/council-api-v2.md`, types in `gogi-proto`, a conformance suite in `gogi-conformance`). It routes each request by its `model` field. The API has contexts, specs, decisions,
 snapshots, pins, reads, and generations with riding decisions (mkviolet `council_v2.rs`). Pooling and the decision
 numbers come from `gogi_proto::math`, which all engines share. The council `identity.engine` covers two things: the
 engine identity, and the host code that turns logits into decisions. (mk: `libmkengine:<sha>+numbers:<sha>`.)
@@ -446,8 +446,10 @@ the engine identity selects?
 
 **11.4 `/mk/v1`.** kaijutsu's mk provider uses `model`, `render` and `generate` (mkviolet `mk_api.rs`).
 
-**Open:** Does the nagaya keep `/mk/v1` as an API for each engine? Or does kaijutsu move to council v2 generations,
-so that `/mk/v1` can go?
+Decided 2026-10-17: the nagaya does not serve `/mk/v1`. kaijutsu moves to council v2 and uses the gogi reference
+(`~/src/gogi`). Amy: "kaijutsu will move to council v2 and use the new gogi (~/src/gogi) reference. it's happening
+now, on b70host". In council v2 the server renders messages with its model's own template, and the template is
+part of identity (gogi `docs/council-api-v2.md`, "Terms").
 
 **11.5 Errors.** All routes use one error shape:
 
@@ -529,9 +531,8 @@ The inventories found these items. We correct each one when its code moves. We d
 
 ## 15. Open questions
 
-1. Does the nagaya keep `/mk/v1`, or does it go in favor of council v2 generations (11.4)?
-2. Is the text front-end an ABI capability or a host library (11.3)?
-3. Do an idle engine's GPU queues slow the other engines on its device (3.3)? A measurement answers this.
-4. What makes `close()` safe for mk, so that engines can load and unload at runtime (3.3)?
-5. D4-D7 are not yet reviewed with Amy (engine-abi, "Decisions").
-6. Do kinds of work get fair shares over a window, as Ai2's teams do? Or do strict classes do the job (5.3)?
+1. Is the text front-end an ABI capability or a host library (11.3)?
+2. Do an idle engine's GPU queues slow the other engines on its device (3.3)? A measurement answers this.
+3. What makes `close()` safe for mk, so that engines can load and unload at runtime (3.3)?
+4. D4-D7 are not yet reviewed with Amy (engine-abi, "Decisions").
+5. Do kinds of work get fair shares over a window, as Ai2's teams do? Or do strict classes do the job (5.3)?
