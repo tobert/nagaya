@@ -513,3 +513,38 @@ fn the_clamp_forgives_the_excess() {
     let total: i64 = scheduler.jobs.iter().map(|job| job.balance_ms).sum();
     assert_eq!(total, 29_999);
 }
+
+#[test]
+fn the_lower_clamp_forgives_the_excess() {
+    let mut running_job = job(1, Class::Interactive, 1, 1, 0, &[Kind::Prefill, Kind::Prefill]);
+    running_job.state = JobState::Running;
+    running_job.quanta.pop_front();
+    running_job.balance_ms = -30_000;
+    let earliest = job(2, Class::Interactive, 0, 0, 0, &[Kind::Prefill]);
+    let middle = job(3, Class::Interactive, 0, 2, 0, &[Kind::Prefill]);
+    let latest = job(4, Class::Interactive, 0, 3, 0, &[Kind::Prefill]);
+    let scheduler = Scheduler {
+        jobs: vec![running_job, earliest, middle, latest],
+        engines: Vec::new(),
+        running: Some(Quantum {
+            engine: 0,
+            class: Class::Interactive,
+            kind: Kind::Prefill,
+            segments: vec![1],
+        }),
+    };
+    let (scheduler, _) = step(
+        scheduler,
+        Event::Complete {
+            now_ms: 4,
+            duration_ms: 4,
+            outcome: Completion::Done,
+        },
+    );
+    assert_eq!(scheduler.jobs[0].balance_ms, -30_000);
+    assert_eq!(scheduler.jobs[1].balance_ms, 1);
+    assert_eq!(scheduler.jobs[2].balance_ms, 1);
+    assert_eq!(scheduler.jobs[3].balance_ms, 1);
+    let total: i64 = scheduler.jobs.iter().map(|job| job.balance_ms).sum();
+    assert_eq!(total, -29_997);
+}
