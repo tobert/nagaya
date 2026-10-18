@@ -4,4 +4,5 @@ pub mod admission;
 pub mod bootstrap;
 pub mod inventory;
 pub mod placement;
+pub mod process;
 pub mod profile;

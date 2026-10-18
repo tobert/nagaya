@@ -1,4 +1,4 @@
-use nagaya::admission::{AdmitError, Plan, PlanError, Registry, admit};
+use nagaya::admission::{AdmitError, Factory, OpenError, PlanError, Registry, admit};
 use nagaya::inventory::{Device, Inventory};
 use nagaya::placement::DeviceError;
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, TierSpec};
@@ -48,9 +48,15 @@ fn inventory(ids: &[nagaya_abi::DeviceId]) -> Inventory {
 
 struct FailingPlan;
 
-impl Plan for FailingPlan {
+impl Factory for FailingPlan {
     fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
         Err(PlanError {
+            message: "the weights are absent".to_owned(),
+        })
+    }
+
+    fn open(&self, _config: &toml::Table) -> Result<Box<dyn nagaya_abi::Engine>, OpenError> {
+        Err(OpenError {
             message: "the weights are absent".to_owned(),
         })
     }

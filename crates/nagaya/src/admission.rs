@@ -1,12 +1,11 @@
 //! Admission of a placement profile before any engine opens (spec 2.4).
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 #[cfg(feature = "fake")]
-use nagaya_abi::Engine;
-#[cfg(feature = "fake")]
 use nagaya_abi::fake::FakeAlways;
-use nagaya_abi::{Limits, Tier};
+use nagaya_abi::{Engine, Limits, Tier};
 use nagaya_ledger::{Admission, Budget, EnginePlan, Ledger, LedgerError, Profile};
 
 use crate::inventory::Inventory;
@@ -28,16 +27,34 @@ impl std::fmt::Display for PlanError {
 
 impl std::error::Error for PlanError {}
 
-/// The planner of one engine kind. It reads no weights (spec 2.4).
-pub trait Plan {
-    /// Give the engine's limits for a config.
-    fn plan(&self, config: &toml::Table) -> Result<Limits, PlanError>;
+/// Why an engine cannot open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenError {
+    /// What the engine could not open.
+    pub message: String,
 }
 
-/// The planners by engine kind.
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}", self.message)
+    }
+}
+
+impl std::error::Error for OpenError {}
+
+/// The factory of one engine kind (ABI "Rust shape").
+pub trait Factory {
+    /// Give the engine's limits for a config.
+    fn plan(&self, config: &toml::Table) -> Result<Limits, PlanError>;
+
+    /// Open the engine on the calling thread. The process calls this on the group thread.
+    fn open(&self, config: &toml::Table) -> Result<Box<dyn Engine>, OpenError>;
+}
+
+/// The factories by engine kind.
 #[derive(Default)]
 pub struct Registry {
-    planners: BTreeMap<String, Box<dyn Plan>>,
+    factories: BTreeMap<String, Arc<dyn Factory + Send + Sync>>,
 }
 
 impl Registry {
@@ -46,21 +63,21 @@ impl Registry {
         Self::default()
     }
 
-    /// Add a planner for an engine kind.
-    pub fn register(&mut self, kind: &str, planner: Box<dyn Plan>) {
-        self.planners.insert(kind.to_owned(), planner);
+    /// Add a factory for an engine kind.
+    pub fn register(&mut self, kind: &str, factory: Box<dyn Factory + Send + Sync>) {
+        self.factories.insert(kind.to_owned(), Arc::from(factory));
     }
 
-    /// The planner for an engine kind.
-    fn planner(&self, kind: &str) -> Option<&dyn Plan> {
-        self.planners.get(kind).map(Box::as_ref)
+    /// The factory for an engine kind.
+    pub fn factory(&self, kind: &str) -> Option<Arc<dyn Factory + Send + Sync>> {
+        self.factories.get(kind).cloned()
     }
 
     /// Make a registry with the fake engine. The tests use it.
     #[cfg(feature = "fake")]
     pub fn with_fake() -> Self {
         let mut registry = Self::new();
-        registry.register("fake", Box::new(FakePlan));
+        registry.register("fake", Box::new(FakeFactory));
         registry
     }
 }
@@ -135,14 +152,18 @@ pub struct Admitted {
     pub engines: Vec<AdmittedEngine>,
 }
 
-/// The fake engine's planner. The fake engine reads no weights.
+/// The fake engine's factory. The fake engine reads no weights.
 #[cfg(feature = "fake")]
-pub struct FakePlan;
+pub struct FakeFactory;
 
 #[cfg(feature = "fake")]
-impl Plan for FakePlan {
+impl Factory for FakeFactory {
     fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
         Ok(FakeAlways::new().limits())
+    }
+
+    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+        Ok(Box::new(FakeAlways::new()))
     }
 }
 
@@ -164,11 +185,11 @@ pub fn admit(
     let mut engines = Vec::with_capacity(profile.engines.len());
     let mut planned = Vec::with_capacity(profile.engines.len());
     for engine in &profile.engines {
-        let planner = registry.planner(&engine.kind).ok_or_else(|| AdmitError::UnknownKind {
+        let factory = registry.factory(&engine.kind).ok_or_else(|| AdmitError::UnknownKind {
             engine: engine.name.clone(),
             kind: engine.kind.clone(),
         })?;
-        let limits = planner.plan(&engine.config).map_err(|error| AdmitError::Plan {
+        let limits = factory.plan(&engine.config).map_err(|error| AdmitError::Plan {
             engine: engine.name.clone(),
             message: error.to_string(),
         })?;
