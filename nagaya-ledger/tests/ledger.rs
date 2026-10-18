@@ -213,3 +213,36 @@ fn two_short_budgets_report_two_entries() {
         })
     );
 }
+
+#[test]
+fn an_engine_without_elastic_terms_leaves_its_share() {
+    let memory_a = MemoryLimits {
+        mandatory: Vec::new(),
+        elastic: vec![elastic("a", Tier::Host, 1, 1, 1000)],
+    };
+    let profile = Profile {
+        budgets: vec![budget(&[Tier::Host], 101)],
+        engines: vec![plan("a", 1, memory_a), plan("b", 1, MemoryLimits::default())],
+    };
+    let mut ledger = Ledger::new();
+    let admission = ledger.admit(&profile).unwrap();
+    assert_eq!(admission.engines[0].elastic, vec![("a".to_owned(), 51)]);
+    assert_eq!(admission.engines[1].elastic, Vec::new());
+    assert_eq!(admission.unassigned, vec![(vec![Tier::Host], 50)]);
+}
+
+#[test]
+fn a_zero_share_leaves_the_spare_unassigned() {
+    let memory = MemoryLimits {
+        mandatory: Vec::new(),
+        elastic: vec![elastic("e", Tier::Host, 1, 1, 1000)],
+    };
+    let profile = Profile {
+        budgets: vec![budget(&[Tier::Host], 100)],
+        engines: vec![plan("a", 0, memory)],
+    };
+    let mut ledger = Ledger::new();
+    let admission = ledger.admit(&profile).unwrap();
+    assert_eq!(admission.engines[0].elastic, vec![("e".to_owned(), 1)]);
+    assert_eq!(admission.unassigned, vec![(vec![Tier::Host], 99)]);
+}
