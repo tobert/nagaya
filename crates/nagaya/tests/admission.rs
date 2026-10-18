@@ -3,7 +3,7 @@ use nagaya::inventory::{Device, Inventory};
 use nagaya::placement::DeviceError;
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, TierSpec};
 use nagaya_abi::fake::FakeAlways;
-use nagaya_abi::{ElasticTerm, Engine, Lifetime, Limits, MandatoryTerm, MemoryLimits, Tier};
+use nagaya_abi::{Engine, Limits, Tier};
 use nagaya_ledger::{Ledger, LedgerError};
 
 fn engine(name: &str, kind: &str, share: u64) -> EnginePlacement {
@@ -24,6 +24,13 @@ fn host_budget(bytes: u64) -> BudgetSpec {
     }
 }
 
+fn device_budget(device: nagaya_abi::DeviceId, bytes: u64) -> BudgetSpec {
+    BudgetSpec {
+        tiers: vec![TierSpec::from(Tier::Device(device))],
+        bytes,
+    }
+}
+
 fn inventory(ids: &[nagaya_abi::DeviceId]) -> Inventory {
     Inventory {
         devices: ids
@@ -36,39 +43,6 @@ fn inventory(ids: &[nagaya_abi::DeviceId]) -> Inventory {
             })
             .collect(),
         host_bytes: 1024,
-    }
-}
-
-fn mandatory(bytes: u64) -> MandatoryTerm {
-    MandatoryTerm {
-        name: "m".to_owned(),
-        tier: Tier::Host,
-        bytes,
-        lifetime: Lifetime::Engine,
-        kinds: Vec::new(),
-    }
-}
-
-fn elastic(unit_bytes: u64, minimum: u64, maximum: u64) -> ElasticTerm {
-    ElasticTerm {
-        name: "e".to_owned(),
-        tier: Tier::Host,
-        unit_bytes,
-        minimum,
-        maximum,
-        kinds: Vec::new(),
-    }
-}
-
-struct TestPlan {
-    memory: MemoryLimits,
-}
-
-impl Plan for TestPlan {
-    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
-        let mut limits = FakeAlways::new().limits();
-        limits.memory = self.memory.clone();
-        Ok(limits)
     }
 }
 
@@ -86,7 +60,7 @@ impl Plan for FailingPlan {
 fn the_admission_carries_the_planned_limits() {
     let profile = PlacementProfile {
         engines: vec![engine("fake-one", "fake", 1)],
-        budgets: vec![host_budget(100)],
+        budgets: vec![device_budget(0, 4096), host_budget(256)],
     };
     let mut ledger = Ledger::new();
     let admitted = admit(&profile, &Registry::with_fake(), &inventory(&[0]), &mut ledger).unwrap();
@@ -98,45 +72,28 @@ fn the_admission_carries_the_planned_limits() {
 
 #[test]
 fn the_mandatory_bytes_must_fit() {
-    let mut registry = Registry::new();
-    registry.register(
-        "test",
-        Box::new(TestPlan {
-            memory: MemoryLimits {
-                mandatory: vec![mandatory(120)],
-                elastic: Vec::new(),
-            },
-        }),
-    );
     let profile = PlacementProfile {
-        engines: vec![engine("fits", "test", 1)],
-        budgets: vec![host_budget(120)],
+        engines: vec![engine("fits", "fake", 1)],
+        budgets: vec![device_budget(0, 4096), host_budget(256)],
     };
     let mut ledger = Ledger::new();
-    let admitted = admit(&profile, &registry, &inventory(&[0]), &mut ledger).unwrap();
-    assert_eq!(admitted.admission.engines[0].mandatory, vec![(Tier::Host, 120)]);
-    assert_eq!(admitted.admission.unassigned, vec![(vec![Tier::Host], 0)]);
-
-    let mut registry = Registry::new();
-    registry.register(
-        "test",
-        Box::new(TestPlan {
-            memory: MemoryLimits {
-                mandatory: vec![mandatory(130)],
-                elastic: Vec::new(),
-            },
-        }),
+    let admitted = admit(&profile, &Registry::with_fake(), &inventory(&[0]), &mut ledger).unwrap();
+    assert_eq!(admitted.admission.engines[0].mandatory, vec![(Tier::Device(0), 4096)]);
+    assert_eq!(
+        admitted.admission.unassigned,
+        vec![(vec![Tier::Device(0)], 0), (vec![Tier::Host], 0)]
     );
+
     let profile = PlacementProfile {
-        engines: vec![engine("short", "test", 1)],
-        budgets: vec![host_budget(100)],
+        engines: vec![engine("short", "fake", 1)],
+        budgets: vec![device_budget(0, 4000), host_budget(256)],
     };
     let mut ledger = Ledger::new();
     let before = ledger.clone();
-    let error = admit(&profile, &registry, &inventory(&[0]), &mut ledger).unwrap_err();
+    let error = admit(&profile, &Registry::with_fake(), &inventory(&[0]), &mut ledger).unwrap_err();
     match error {
         AdmitError::Ledger(LedgerError::Refused(refusal)) => {
-            assert_eq!(refusal.shortfall, vec![(vec![Tier::Host], 30)]);
+            assert_eq!(refusal.shortfall, vec![(vec![Tier::Device(0)], 96)]);
         }
         other => panic!("expected a ledger refusal, got {other:?}"),
     }
@@ -145,37 +102,35 @@ fn the_mandatory_bytes_must_fit() {
 
 #[test]
 fn the_elastic_minimum_must_fit() {
-    let mut registry = Registry::new();
-    registry.register(
-        "test",
-        Box::new(TestPlan {
-            memory: MemoryLimits {
-                mandatory: vec![mandatory(60)],
-                elastic: vec![elastic(10, 5, 10)],
-            },
-        }),
-    );
     let profile = PlacementProfile {
-        engines: vec![engine("fits", "test", 1)],
-        budgets: vec![host_budget(110)],
+        engines: vec![engine("fits", "fake", 1)],
+        budgets: vec![device_budget(0, 4096), host_budget(256)],
     };
     let mut ledger = Ledger::new();
-    let admitted = admit(&profile, &registry, &inventory(&[0]), &mut ledger).unwrap();
-    assert_eq!(admitted.admission.engines[0].elastic, vec![("e".to_owned(), 50)]);
-    assert_eq!(admitted.admission.unassigned, vec![(vec![Tier::Host], 0)]);
+    let admitted = admit(&profile, &Registry::with_fake(), &inventory(&[0]), &mut ledger).unwrap();
+    assert_eq!(
+        admitted.admission.engines[0].elastic,
+        vec![("workspace".to_owned(), 256)]
+    );
+    assert_eq!(
+        admitted.admission.unassigned,
+        vec![(vec![Tier::Device(0)], 0), (vec![Tier::Host], 0)]
+    );
 
     let profile = PlacementProfile {
-        engines: vec![engine("short", "test", 1)],
-        budgets: vec![host_budget(100)],
+        engines: vec![engine("short", "fake", 1)],
+        budgets: vec![device_budget(0, 4096), host_budget(200)],
     };
     let mut ledger = Ledger::new();
-    let error = admit(&profile, &registry, &inventory(&[0]), &mut ledger).unwrap_err();
+    let before = ledger.clone();
+    let error = admit(&profile, &Registry::with_fake(), &inventory(&[0]), &mut ledger).unwrap_err();
     match error {
         AdmitError::Ledger(LedgerError::Refused(refusal)) => {
-            assert_eq!(refusal.shortfall, vec![(vec![Tier::Host], 10)]);
+            assert_eq!(refusal.shortfall, vec![(vec![Tier::Host], 56)]);
         }
         other => panic!("expected a ledger refusal, got {other:?}"),
     }
+    assert_eq!(ledger, before);
 }
 
 #[test]
@@ -212,13 +167,19 @@ fn a_failed_plan_is_refused_and_names_the_engine() {
 fn the_fake_engine_admits_with_its_limits() {
     let profile = PlacementProfile {
         engines: vec![engine("fake-one", "fake", 1)],
-        budgets: vec![host_budget(100)],
+        budgets: vec![device_budget(0, 4096), host_budget(4096)],
     };
     let mut ledger = Ledger::new();
     let admitted = admit(&profile, &Registry::with_fake(), &inventory(&[0]), &mut ledger).unwrap();
-    assert_eq!(admitted.admission.engines[0].mandatory, Vec::new());
-    assert_eq!(admitted.admission.engines[0].elastic, Vec::new());
-    assert_eq!(admitted.admission.unassigned, vec![(vec![Tier::Host], 100)]);
+    assert_eq!(admitted.admission.engines[0].mandatory, vec![(Tier::Device(0), 4096)]);
+    assert_eq!(
+        admitted.admission.engines[0].elastic,
+        vec![("workspace".to_owned(), 2048)]
+    );
+    assert_eq!(
+        admitted.admission.unassigned,
+        vec![(vec![Tier::Device(0)], 0), (vec![Tier::Host], 2048)]
+    );
 }
 
 #[test]

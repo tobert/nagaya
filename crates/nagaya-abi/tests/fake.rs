@@ -2,8 +2,8 @@
 
 use nagaya_abi::fake::{FakeAlways, FakeBroken};
 use nagaya_abi::{
-    Capability, Determinism, Engine, OutputsWanted, PartError, PartKind, PassStatus, Segment, SegmentInputs, State,
-    WriteResult,
+    Capability, Determinism, Engine, Lifetime, OutputsWanted, PartError, PartKind, PassStatus, Segment, SegmentInputs,
+    State, Tier, WriteResult,
 };
 
 #[test]
@@ -29,6 +29,24 @@ fn fake_declares_two_slot_sizes() {
     assert_eq!(sizes, [64, 256]);
     assert_eq!(limits.slots.len(), 2);
     assert!(limits.slots.iter().all(|slot| slot.count == 1));
+}
+
+#[test]
+fn fake_declares_one_mandatory_and_one_elastic_term() {
+    let limits = FakeAlways::new().limits();
+    assert_eq!(limits.memory.mandatory.len(), 1);
+    let mandatory = &limits.memory.mandatory[0];
+    assert_eq!(mandatory.name, "weights");
+    assert_eq!(mandatory.tier, Tier::Device(0));
+    assert_eq!(mandatory.bytes, 4096);
+    assert_eq!(mandatory.lifetime, Lifetime::Engine);
+    assert_eq!(limits.memory.elastic.len(), 1);
+    let elastic = &limits.memory.elastic[0];
+    assert_eq!(elastic.name, "workspace");
+    assert_eq!(elastic.tier, Tier::Host);
+    assert_eq!(elastic.unit_bytes, 256);
+    assert_eq!(elastic.minimum, 1);
+    assert_eq!(elastic.maximum, 8);
 }
 
 #[test]

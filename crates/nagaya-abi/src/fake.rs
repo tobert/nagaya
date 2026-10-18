@@ -3,9 +3,10 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use crate::{
-    Capability, ChainLimits, Coverage, CoverageSpan, Determinism, Dtype, Engine, Identity, Inputs, Limits,
-    MemoryLimits, Output, PartError, PartKind, PartLimits, Parts, PassError, PassErrorKind, PassOut, PassStatus, Seal,
-    SealError, Segment, SegmentInputs, SlotLimit, Stage, State, Tap, WriteResult,
+    Capability, ChainLimits, Coverage, CoverageSpan, Determinism, Dtype, ElasticTerm, Engine, Identity, Inputs, Kind,
+    Lifetime, Limits, MandatoryTerm, MemoryLimits, Output, PartError, PartKind, PartLimits, Parts, PassError,
+    PassErrorKind, PassOut, PassStatus, Seal, SealError, Segment, SegmentInputs, SlotLimit, Stage, State, Tap, Tier,
+    WriteResult,
 };
 
 /// The ring window in rows.
@@ -126,7 +127,23 @@ impl Fake {
             max_logit_rows: 1,
             slots: slot_limits,
             max_quantum_ms: 10,
-            memory: MemoryLimits::default(),
+            memory: MemoryLimits {
+                mandatory: vec![MandatoryTerm {
+                    name: "weights".to_owned(),
+                    tier: Tier::Device(0),
+                    bytes: 4096,
+                    lifetime: Lifetime::Engine,
+                    kinds: vec![Kind::Prefill, Kind::Decode],
+                }],
+                elastic: vec![ElasticTerm {
+                    name: "workspace".to_owned(),
+                    tier: Tier::Host,
+                    unit_bytes: 256,
+                    minimum: 1,
+                    maximum: 8,
+                    kinds: vec![Kind::Prefill, Kind::Decode],
+                }],
+            },
             chain: ChainLimits {
                 max_depth: 0,
                 delta_fraction: 0.0,

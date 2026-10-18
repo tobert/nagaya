@@ -143,7 +143,7 @@ fn only_the_short_tier_is_reported() {
 fn the_fake_limits_admit() {
     let limits = FakeAlways::new().limits();
     let profile = Profile {
-        budgets: vec![budget(&[Tier::Host], 100)],
+        budgets: vec![budget(&[Tier::Device(0)], 4096), budget(&[Tier::Host], 4096)],
         engines: vec![EnginePlan {
             name: "fake".to_owned(),
             limits,
@@ -152,9 +152,12 @@ fn the_fake_limits_admit() {
     };
     let mut ledger = Ledger::new();
     let admission = ledger.admit(&profile).unwrap();
-    assert_eq!(admission.engines[0].mandatory, Vec::new());
-    assert_eq!(admission.engines[0].elastic, Vec::new());
-    assert_eq!(admission.unassigned, vec![(vec![Tier::Host], 100)]);
+    assert_eq!(admission.engines[0].mandatory, vec![(Tier::Device(0), 4096)]);
+    assert_eq!(admission.engines[0].elastic, vec![("workspace".to_owned(), 2048)]);
+    assert_eq!(
+        admission.unassigned,
+        vec![(vec![Tier::Device(0)], 0), (vec![Tier::Host], 2048)]
+    );
 }
 
 #[test]
