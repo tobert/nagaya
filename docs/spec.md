@@ -351,8 +351,8 @@ that they are the same state.
 store entries (engine-abi "Capabilities"). Decided 2026-10-18.
 
 The store sets `none` after a restart, before it hashes the blob. It sets `full` after it hashes the blob. It does
-not produce `spot` in v0. Reason: the ABI uses one enum for arenas and store entries, so the store's set is the ABI's
-set.
+not produce `spot` in v0. Reason: `spot` now names mk's digest, and the store does a full hash of each entry.
+Decided 2026-10-18 evening.
 
 **6.5 Chains.** Each engine declares a maximum chain depth and a size fraction. (ds4-recipe: depth 1, and a delta
 only when it is at most a quarter of a full snapshot.) A delta holds, for each cells part and ring part, the rows
@@ -369,9 +369,9 @@ is a later one.
 The store cannot compute the recipe hash again, because it does not have the tokens. Reason: 6.5 says a delta's
 recipe follows its parent's. The caller holds the inputs that prove it.
 
-**Proposed** by deepseek-flash, 2026-10-18. `max_depth` counts deltas, not entries. A chain with a base and one
-delta has depth 1. A store with `max_depth: 0` refuses every delta. Reason: 6.5 gives ds4-recipe depth 1 with one
-delta. Amy decides.
+**`max_depth` counts deltas, not entries.** A chain with a base and one delta has depth 1. A store with
+`max_depth: 0` refuses every delta. Reason: 6.5 gives ds4-recipe depth 1 with one delta. Decided 2026-10-18
+(senpai).
 
 **6.6 Lookup.** A lookup is by recipe. It returns the chain of entries that covers the request, from its base to
 its tip. The store keeps only the chains that fit the slot (coverage) and the served model's tolerance (ontology).
