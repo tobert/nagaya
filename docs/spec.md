@@ -676,6 +676,9 @@ one lock-free increment. The main loop reads the counter every 50 ms. Reason: no
 The restart policy follows mk's unit: `Restart=on-failure`, `RestartSec=30`, and at most 3 starts in 600 s.
 systemd counts each start against that limit, also a start after code 4. Thus a fourth profile swap in 600 s fails.
 
+**Proposed** by deepseek-flash, 2026-10-18: an engine that does not open at start stops the process with exit 3. The
+process has no ready state and no work to serve. A message on stderr names the engine and the reason.
+
 ## 11. Client API
 
 **11.1 Council and coordinator routing.** The nagaya serves council v2 for all engines in the cluster. It does not
