@@ -30,7 +30,9 @@ fn main() {
         ),
     };
     let bytes = snapshot.encode().expect("encode");
-    std::fs::write("nagaya-store/tests/fixtures/snapshot.safetensors", &bytes).expect("write fixture");
+    // The fixture sits in this crate, so the path does not depend on the current directory.
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/snapshot.safetensors");
+    std::fs::write(&fixture, &bytes).expect("write fixture");
     println!("fixture {}", snapshot.content_id().expect("id").hex());
 
     let root = recipe_root(&[1u8; 32], b"geometry", &[b"approx".to_vec()], b"lab");
