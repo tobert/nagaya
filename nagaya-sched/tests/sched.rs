@@ -387,3 +387,34 @@ fn the_owed_remainder_goes_to_the_earliest() {
     assert_eq!(scheduler.jobs[1].balance_ms, 1);
     assert_eq!(scheduler.jobs[2].balance_ms, 0);
 }
+
+#[test]
+fn a_shared_pass_splits_its_time() {
+    let mut first = job(1, Class::Interactive, 0, 0, 0, &[Kind::Prefill, Kind::Prefill]);
+    first.state = JobState::Running;
+    first.quanta.pop_front();
+    let mut second = job(2, Class::Interactive, 0, 1, 0, &[Kind::Prefill, Kind::Prefill]);
+    second.state = JobState::Running;
+    second.quanta.pop_front();
+    let third = job(3, Class::Interactive, 0, 2, 1, &[Kind::Prefill]);
+    let scheduler = Scheduler {
+        jobs: vec![first, second, third],
+        running: Some(Quantum {
+            engine: 0,
+            class: Class::Interactive,
+            kind: Kind::Prefill,
+            segments: vec![1, 2],
+        }),
+    };
+    let (scheduler, _) = step(
+        scheduler,
+        Event::Complete {
+            now_ms: 5,
+            duration_ms: 5,
+            outcome: Completion::Done,
+        },
+    );
+    assert_eq!(scheduler.jobs[0].balance_ms, 0);
+    assert_eq!(scheduler.jobs[1].balance_ms, -1);
+    assert_eq!(scheduler.jobs[2].balance_ms, 1);
+}

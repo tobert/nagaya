@@ -216,10 +216,33 @@ impl Scheduler {
             let count = present.len() as u128;
             if count > 0 {
                 let duration = duration_ms as u128;
+                let segment_count = running.segments.len() as u128;
+                let base = duration.checked_div(segment_count).unwrap_or(0);
+                let remainder = if segment_count == 0 {
+                    0
+                } else {
+                    duration % segment_count
+                };
+                let earliest_segment = running
+                    .segments
+                    .iter()
+                    .min_by_key(|id| {
+                        self.jobs
+                            .iter()
+                            .find(|job| job.id == **id)
+                            .map(|job| (job.arrival_ms, job.id))
+                            .unwrap_or((u64::MAX, **id))
+                    })
+                    .copied();
                 let mut deltas: Vec<(JobId, i64)> = Vec::new();
                 for (id, _) in &present {
                     let delta = if running.segments.contains(id) {
-                        -((duration * (count - 1)).checked_div(count).unwrap_or(0) as i64)
+                        let charge = if Some(*id) == earliest_segment {
+                            base + remainder
+                        } else {
+                            base
+                        };
+                        -((charge * (count - 1)).checked_div(count).unwrap_or(0) as i64)
                     } else {
                         duration.checked_div(count).unwrap_or(0) as i64
                     };
