@@ -2,3 +2,4 @@ signoff.md
 target/
 *.gguf
 *.mkctx
+__pycache__/
