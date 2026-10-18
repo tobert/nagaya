@@ -180,6 +180,10 @@ The metadata keys are:
 Reason: D10 rules 3 and 5 need sorted keys and a 4 KiB data start. The crate cannot write them. The crate
 still reads the file.
 
+**Proposed** by deepseek-flash, 2026-10-18: `PartLimits` has no block format field, so `snapshot_from_engine`
+cannot write one. The simplest fix is a `block_format: Option<String>` field on `PartLimits`. Until Amy adds
+it, the store refuses a block format on a dtype that is not `U8`.
+
 ### Fake engines
 
 `FakeAlways` is deterministic (`always`). Its parts are:
