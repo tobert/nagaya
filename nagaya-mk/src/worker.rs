@@ -162,6 +162,7 @@ struct ThreadState {
     contexts: HashMap<u64, Context>,
     next_id: u64,
     fast_qmm: bool,
+    tiles: bool,
 }
 
 /// One context that a handle owns.
@@ -413,6 +414,25 @@ fn fast_qmm() -> Result<bool, MkError> {
     }
 }
 
+/// Read `MK_TILES` as mk reads it: unset or 1 is tiled, 0 is the GGUF layout, and any other value stops mk.
+fn tiles() -> Result<bool, MkError> {
+    match std::env::var("MK_TILES") {
+        Ok(value) => tiles_from(Some(&value)),
+        Err(std::env::VarError::NotPresent) => tiles_from(None),
+        Err(error) => Err(MkError::new(format!("MK_TILES: {error}"))),
+    }
+}
+
+/// The value of one `MK_TILES` string.
+fn tiles_from(value: Option<&str>) -> Result<bool, MkError> {
+    match value {
+        Some("1") => Ok(true),
+        Some("0") => Ok(false),
+        Some(other) => Err(MkError::new(format!("MK_TILES={other}: want 0 or 1"))),
+        None => Ok(true),
+    }
+}
+
 /// The value of one `MK_FAST_QMM` string.
 fn fast_qmm_from(value: Option<&str>) -> Result<bool, MkError> {
     match value {
@@ -474,6 +494,7 @@ impl ThreadState {
         let digest = gguf::spot_digest(&paths.shards)?;
         let library_sha256 = file_sha256(&paths.library)?;
         let fast_qmm = fast_qmm()?;
+        let tiles = tiles()?;
         let binding = binding::load(&paths.library).map_err(MkError::new)?;
 
         let shards: Vec<CString> = paths
@@ -492,7 +513,7 @@ impl ThreadState {
         let mut arena_bytes = 0u64;
         unsafe { (binding.arena)(engine, &mut fd, &mut arena_bytes) };
 
-        let identity = spec::identity(&paths.shards, &paths.library, &library_sha256, fast_qmm, &digest);
+        let identity = spec::identity(&paths.shards, &paths.library, &library_sha256, fast_qmm, tiles, &digest);
         let limits = spec::limits(arena_bytes);
         Ok((
             Self {
@@ -501,6 +522,7 @@ impl ThreadState {
                 contexts: HashMap::new(),
                 next_id: 0,
                 fast_qmm,
+                tiles,
             },
             Spec { identity, limits },
         ))
@@ -847,6 +869,19 @@ impl ThreadState {
             }
             Err(error) => return Err(problem(error.to_string())),
         }
+        // mk reads MK_TILES once, at load. A change after open makes the environment disagree with the identity,
+        // so refuse the pass, as for MK_FAST_QMM.
+        match tiles() {
+            Ok(value) if value == self.tiles => {}
+            Ok(value) => {
+                return Err(problem(format!(
+                    "MK_TILES changed from {} to {} after the engine opened",
+                    u8::from(self.tiles),
+                    u8::from(value)
+                )));
+            }
+            Err(error) => return Err(problem(error.to_string())),
+        }
         let count = request.contexts.len();
         if count == 0 || count > spec::MAX_SEGMENTS as usize {
             return Err(problem(format!(
@@ -1027,7 +1062,15 @@ mod tests {
     use std::os::unix::ffi::OsStrExt;
     use std::path::PathBuf;
 
-    use super::{Aligned, fast_qmm_from, memory_problem, parse_shards, rounds_to_finite};
+    use super::{Aligned, fast_qmm_from, memory_problem, parse_shards, rounds_to_finite, tiles_from};
+
+    #[test]
+    fn tiles_has_two_values() {
+        assert_eq!(tiles_from(None), Ok(true));
+        assert_eq!(tiles_from(Some("1")), Ok(true));
+        assert_eq!(tiles_from(Some("0")), Ok(false));
+        assert!(tiles_from(Some("2")).is_err());
+    }
 
     #[test]
     fn an_aligned_buffer_keeps_its_bytes_and_its_alignment() {

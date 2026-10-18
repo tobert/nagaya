@@ -180,12 +180,14 @@ pub fn identity(
     library: &Path,
     library_sha256: &str,
     fast_qmm: bool,
+    tiles: bool,
     checkpoint_digest: &str,
 ) -> Identity {
     let mut numbers = BTreeMap::new();
     numbers.insert("engine_lib".to_owned(), library.display().to_string());
     numbers.insert("engine_lib_sha256".to_owned(), library_sha256.to_owned());
     numbers.insert("fast_qmm".to_owned(), u8::from(fast_qmm).to_string());
+    numbers.insert("tiles".to_owned(), u8::from(tiles).to_string());
     numbers.insert("fused".to_owned(), "1".to_owned());
     numbers.insert("device".to_owned(), "0".to_owned());
     numbers.insert("shards".to_owned(), shards.len().to_string());
@@ -204,6 +206,13 @@ pub fn identity(
                 name: "MK_FAST_QMM".to_owned(),
                 value: u8::from(fast_qmm).to_string(),
                 class: BitClass::Approx,
+            },
+            BitSetting {
+                name: "MK_TILES".to_owned(),
+                value: u8::from(tiles).to_string(),
+                // The tiled and the GGUF layouts use different kernels. The binding has not measured whether they
+                // give equal bits, so each layout defines its own reference.
+                class: BitClass::ReferenceDefining,
             },
             BitSetting {
                 name: "fused".to_owned(),
@@ -237,6 +246,8 @@ pub fn model_name(path: Option<&Path>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
     use super::*;
 
     #[test]
@@ -315,6 +326,19 @@ mod tests {
         // poison or the pass check, so the limits must not declare those.
         let limits = limits(0);
         assert_eq!(limits.capabilities, vec![Capability::Parts, Capability::Seal]);
+    }
+
+    #[test]
+    fn the_identity_records_the_tile_setting() {
+        let shards = vec![PathBuf::from("/models/Qwen-00001-of-00003.gguf")];
+        let library = Path::new("/lib/libmkengine.so");
+        let on = identity(&shards, library, "sha", true, true, "spot");
+        let off = identity(&shards, library, "sha", true, false, "spot");
+        assert_eq!(on.numbers.get("tiles").map(String::as_str), Some("1"));
+        assert_eq!(off.numbers.get("tiles").map(String::as_str), Some("0"));
+        assert_ne!(on, off);
+        assert!(on.bit_settings.iter().any(|setting| setting.name == "MK_TILES"));
+        assert!(off.bit_settings.iter().any(|setting| setting.name == "MK_TILES"));
     }
 
     #[test]
