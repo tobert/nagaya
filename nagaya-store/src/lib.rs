@@ -2,9 +2,12 @@
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
-use nagaya_abi::{CoverageSpan, Determinism, Dtype, Engine, PartKind, SlotLimit, State, WriteResult};
+use nagaya_abi::{
+    BitDependence, ChainLimits, CoverageSpan, Determinism, Dtype, Engine, PartKind, SlotLimit, State, WriteResult,
+};
 use safetensors::{Dtype as SafeDtype, SafeTensors};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -45,7 +48,7 @@ pub struct Snapshot {
 pub struct ContentId([u8; 32]);
 
 /// The BLAKE3 recipe hash.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct RecipeId([u8; 32]);
 
 /// A store error.
@@ -55,8 +58,13 @@ pub enum StoreError {
     Invalid(String),
     /// The file system failed.
     Io(String),
-    /// Two content ids share one recipe and coverage.
-    Tripwire,
+    /// Two content ids under one recipe have the same coverage.
+    Tripwire {
+        /// The refused recipe.
+        recipe: RecipeId,
+        /// The quarantined content ids.
+        ids: Vec<ContentId>,
+    },
     /// The entry is quarantined.
     Quarantined(ContentId),
     /// The entry does not fit the slot.
@@ -72,7 +80,12 @@ impl std::fmt::Display for StoreError {
         match self {
             StoreError::Invalid(message) => write!(formatter, "{message}"),
             StoreError::Io(message) => write!(formatter, "{message}"),
-            StoreError::Tripwire => write!(formatter, "the recipe has two content ids with the same coverage"),
+            StoreError::Tripwire { recipe, ids } => write!(
+                formatter,
+                "the recipe {} has two content ids with the same coverage: {}",
+                recipe.hex(),
+                ids.iter().map(ContentId::hex).collect::<Vec<String>>().join(", ")
+            ),
             StoreError::Quarantined(id) => write!(formatter, "the entry {} is quarantined", id.hex()),
             StoreError::Fit(message) => write!(formatter, "{message}"),
             StoreError::Ambiguous => write!(formatter, "two chains are incomparable"),
@@ -529,13 +542,13 @@ fn parse_canonical_u64(text: &str, what: &str) -> Result<u64, StoreError> {
         .map_err(|_| StoreError::Invalid(format!("bad {what}")))
 }
 
-/// One engine tier in the store index.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// A place where the store keeps an entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Tier {
     /// Host memory.
     Host,
-    /// Device memory.
-    Device(u32),
+    /// NVMe.
+    Nvme,
 }
 
 /// Why the store holds an entry.
@@ -560,6 +573,8 @@ pub enum Reason {
 pub enum Check {
     /// Every byte was hashed.
     Full,
+    /// Some bytes were hashed.
+    Spot,
     /// The entry is not checked yet.
     None,
 }
@@ -571,6 +586,42 @@ pub enum EntryState {
     Live,
     /// The entry is quarantined.
     Quarantined,
+}
+
+/// Why the store quarantined an entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Quarantine {
+    /// Two content ids under one recipe have the same coverage.
+    Tripwire,
+    /// The blob does not match its content id.
+    ContentId,
+    /// The blob fails the engine's identity.
+    Identity,
+    /// The index disagrees with the blob.
+    Index,
+    /// The blob could not be read.
+    Read,
+}
+
+/// The determinism class of the engine that made an entry. It survives a restart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DeterminismClass {
+    /// The same identity and inputs give the same bits in any process.
+    Always,
+    /// The same, because the plan table fixes every free choice.
+    Pinned,
+    /// The same bits within one process only.
+    PerProcess,
+}
+
+impl From<Determinism> for DeterminismClass {
+    fn from(determinism: Determinism) -> Self {
+        match determinism {
+            Determinism::Always => DeterminismClass::Always,
+            Determinism::Pinned => DeterminismClass::Pinned,
+            Determinism::PerProcess => DeterminismClass::PerProcess,
+        }
+    }
 }
 
 /// The positions that one part holds.
@@ -617,6 +668,12 @@ pub struct Entry {
     pub identity: [u8; 32],
     /// The entry state.
     pub state: EntryState,
+    /// The determinism class of the engine that made the snapshot.
+    pub determinism: DeterminismClass,
+    /// The store epoch that made the entry.
+    pub epoch: u64,
+    /// Why the store quarantined the entry.
+    pub quarantine: Option<Quarantine>,
 }
 
 /// A pin on an entry.
@@ -633,8 +690,8 @@ pub struct Pin {
 pub enum Tolerance {
     /// Exact bits only.
     Exact,
-    /// An approved approximation is accepted.
-    Approx,
+    /// The approved approximations, by method name. Exact entries are also accepted.
+    Approx(Vec<String>),
 }
 
 /// The facts for one put.
@@ -643,10 +700,10 @@ pub struct Put<'a> {
     pub snapshot: &'a Snapshot,
     /// The recipe.
     pub recipe: RecipeId,
+    /// The previous recipe, for a delta. It must equal the parent entry's recipe.
+    pub previous_recipe: Option<RecipeId>,
     /// The engine identity digest.
     pub identity: [u8; 32],
-    /// The determinism class.
-    pub determinism: Determinism,
     /// The owner.
     pub owner: u64,
     /// The tier.
@@ -663,6 +720,8 @@ pub struct Put<'a> {
 struct Index {
     entries: BTreeMap<ContentId, Entry>,
     pins: BTreeMap<ContentId, Pin>,
+    refused: BTreeSet<RecipeId>,
+    epoch: u64,
 }
 
 /// A place where a test injects a write failure.
@@ -684,40 +743,101 @@ pub struct Store {
     dir: PathBuf,
     index: Index,
     checked: BTreeSet<ContentId>,
-    budget: u64,
+    budgets: BTreeMap<Tier, u64>,
+    owner_quota: u64,
+    chain: ChainLimits,
+    determinism: Determinism,
+    bit_dependence: Vec<BitDependence>,
     fail_point: Cell<Option<FailPoint>>,
 }
+
+/// The chain limits with no limit. The caller sets the engine's limits.
+const OPEN_CHAIN: ChainLimits = ChainLimits {
+    max_depth: u32::MAX,
+    delta_fraction: 1.0,
+};
 
 impl Store {
     /// Open the store in `dir`, or make an empty one.
     pub fn open(dir: impl Into<PathBuf>) -> Result<Self, StoreError> {
-        Self::open_with_budget(dir, u64::MAX)
+        let mut budgets = BTreeMap::new();
+        budgets.insert(Tier::Host, u64::MAX);
+        budgets.insert(Tier::Nvme, u64::MAX);
+        Self::open_inner(dir.into(), budgets, u64::MAX, OPEN_CHAIN)
     }
 
-    /// Open the store with a byte budget for pins.
+    /// Open the store with a byte budget for host memory.
     pub fn open_with_budget(dir: impl Into<PathBuf>, budget: u64) -> Result<Self, StoreError> {
-        let dir = dir.into();
+        Self::open_with_limits(dir, budget, u64::MAX, u64::MAX, OPEN_CHAIN)
+    }
+
+    /// Open the store with a budget for each tier, an owner quota and chain limits.
+    pub fn open_with_limits(
+        dir: impl Into<PathBuf>,
+        host_budget: u64,
+        nvme_budget: u64,
+        owner_quota: u64,
+        chain: ChainLimits,
+    ) -> Result<Self, StoreError> {
+        let mut budgets = BTreeMap::new();
+        budgets.insert(Tier::Host, host_budget);
+        budgets.insert(Tier::Nvme, nvme_budget);
+        Self::open_inner(dir.into(), budgets, owner_quota, chain)
+    }
+
+    fn open_inner(
+        dir: PathBuf,
+        budgets: BTreeMap<Tier, u64>,
+        owner_quota: u64,
+        chain: ChainLimits,
+    ) -> Result<Self, StoreError> {
         std::fs::create_dir_all(dir.join("blobs")).map_err(io_error)?;
         let path = dir.join("index.json");
-        let index = if path.is_file() {
+        let mut index: Index = if path.is_file() {
             let bytes = std::fs::read(&path).map_err(io_error)?;
             serde_json::from_slice(&bytes).map_err(json_error)?
         } else {
             Index::default()
         };
-        // 6.11: the wake of pinned entries needs the profile; the process crate does it.
-        Ok(Store {
+        // 6.11: each entry is checked again at its first use after a restart.
+        index.epoch = index.epoch.saturating_add(1);
+        for entry in index.entries.values_mut() {
+            entry.check = Check::None;
+        }
+        let store = Store {
             dir,
             index,
             checked: BTreeSet::new(),
-            budget,
+            budgets,
+            owner_quota,
+            chain,
+            determinism: Determinism::Always,
+            bit_dependence: Vec::new(),
             fail_point: Cell::new(None),
-        })
+        };
+        store.persist()?;
+        Ok(store)
     }
 
-    /// Set the store budget. A profile change can do this.
-    pub fn set_budget(&mut self, budget: u64) {
-        self.budget = budget;
+    /// Set a tier's budget. A profile change can do this.
+    pub fn set_budget(&mut self, tier: Tier, budget: u64) {
+        self.budgets.insert(tier, budget);
+    }
+
+    /// Set the byte quota of one owner in one tier.
+    pub fn set_owner_quota(&mut self, quota: u64) {
+        self.owner_quota = quota;
+    }
+
+    /// Set the engine's chain limits.
+    pub fn set_chain(&mut self, chain: ChainLimits) {
+        self.chain = chain;
+    }
+
+    /// Set the engine's determinism class and its bit dependence.
+    pub fn set_determinism(&mut self, determinism: Determinism, bit_dependence: Vec<BitDependence>) {
+        self.determinism = determinism;
+        self.bit_dependence = bit_dependence;
     }
 
     /// Make the next write fail at one point.
@@ -735,100 +855,165 @@ impl Store {
         &self.index.pins
     }
 
+    /// The refused recipes, for a test or a report.
+    pub fn refused(&self) -> &BTreeSet<RecipeId> {
+        &self.index.refused
+    }
+
     /// Put a snapshot in the store.
     pub fn put(&mut self, put: Put<'_>) -> Result<ContentId, StoreError> {
         let bytes = put.snapshot.encode()?;
         let id = content_id(&bytes);
-        if self.index.entries.contains_key(&id) {
+        if let Some(existing) = self.index.entries.get(&id) {
+            let state = existing.state;
+            let quarantine = existing.quarantine;
+            let recipe = existing.recipe;
+            let parent = existing.parent;
+            if state == EntryState::Quarantined {
+                if quarantine == Some(Quarantine::Tripwire) {
+                    return Err(self.tripwire_error(put.recipe));
+                }
+                return Err(StoreError::Quarantined(id));
+            }
+            if recipe != put.recipe || parent != put.snapshot.parent {
+                return Err(StoreError::Invalid(
+                    "the content id already has another recipe".to_owned(),
+                ));
+            }
             return Ok(id);
         }
-        let coverage = coverage_of(put.snapshot);
-
-        let conflict = self.index.entries.values().any(|entry| {
-            entry.recipe == put.recipe
-                && entry.coverage == coverage
-                && entry.state == EntryState::Live
-                && entry.content_id != id
-        });
-        if conflict && put.determinism != Determinism::PerProcess {
-            for entry in self.index.entries.values_mut() {
-                if entry.recipe == put.recipe && entry.coverage == coverage && entry.state == EntryState::Live {
-                    entry.state = EntryState::Quarantined;
-                }
-            }
-            self.persist()?;
-            return Err(StoreError::Tripwire);
+        if self.index.refused.contains(&put.recipe) {
+            return Err(self.tripwire_error(put.recipe));
         }
 
+        let coverage = coverage_of(put.snapshot);
         let size = bytes.len() as u64;
-        let total: u64 = self
-            .index
-            .entries
-            .values()
-            .filter(|entry| entry.state == EntryState::Live)
-            .map(|entry| entry.size)
-            .sum();
-        if total.saturating_add(size) > self.budget {
-            self.index.pins.retain(|_, pin| pin.expires_ms > put.now_ms);
-            let need = total + size - self.budget;
-            let victims = self.choose_victims(put.owner, need, put.now_ms);
+        if put.snapshot.parent.is_some() {
+            self.check_delta(&put, &coverage, size)?;
+        }
+
+        // 6.7: two content ids under one recipe with the same coverage are a defect.
+        let conflict = self.tripwire_on()
+            && self.index.entries.values().any(|entry| {
+                entry.recipe == put.recipe && entry.coverage == coverage && entry.state == EntryState::Live
+            });
+        if conflict {
+            return self.put_tripwire(put, &bytes, id, coverage);
+        }
+
+        // 6.9: choose the victims before the store writes the new entry.
+        let need = self.need_bytes(&put, size);
+        let victims = if need == 0 {
+            Vec::new()
+        } else {
+            self.choose_victims(put.owner, Some(put.tier), need, put.now_ms)
+        };
+        if need > 0 {
             let freed: u64 = victims
                 .iter()
-                .filter_map(|id| self.index.entries.get(id))
+                .filter_map(|victim| self.index.entries.get(victim))
                 .map(|entry| entry.size)
                 .sum();
             if freed < need {
                 return Err(StoreError::NoSpace);
             }
-            for id in &victims {
-                self.index.entries.remove(id);
-                let _ = std::fs::remove_file(self.blob_path(id));
-            }
-            self.persist()?;
         }
 
-        let path = self.blob_path(&id);
-        let temp = self.dir.join("blobs").join(format!("{}.tmp", id.hex()));
-        if self.fail_point.get() == Some(FailPoint::BlobWrite) {
-            self.fail_point.set(None);
-            return Err(StoreError::Io("injected blob write".to_owned()));
-        }
-        std::fs::write(&temp, &bytes).map_err(io_error)?;
-        if self.fail_point.get() == Some(FailPoint::BlobRename) {
-            self.fail_point.set(None);
-            let _ = std::fs::remove_file(&temp);
-            return Err(StoreError::Io("injected blob rename".to_owned()));
-        }
-        std::fs::rename(&temp, &path).map_err(io_error)?;
+        self.write_blob(&bytes, &id)?;
 
-        let entry = Entry {
-            content_id: id,
-            recipe: put.recipe,
-            parent: put.snapshot.parent,
-            coverage,
-            tier: put.tier,
-            size: bytes.len() as u64,
-            owner: put.owner,
-            created_ms: put.now_ms,
-            last_used_ms: put.now_ms,
-            hits: 0,
-            reason: put.reason,
-            provenance: put.provenance,
-            check: Check::Full,
-            identity: put.identity,
-            state: EntryState::Live,
-        };
         let mut index = self.index.clone();
-        index.entries.insert(id, entry);
+        prune_pins(&mut index, put.now_ms);
+        for victim in &victims {
+            index.entries.remove(victim);
+        }
+        index.entries.insert(
+            id,
+            Entry {
+                content_id: id,
+                recipe: put.recipe,
+                parent: put.snapshot.parent,
+                coverage,
+                tier: put.tier,
+                size,
+                owner: put.owner,
+                created_ms: put.now_ms,
+                last_used_ms: put.now_ms,
+                hits: 0,
+                reason: put.reason,
+                provenance: put.provenance,
+                check: Check::Full,
+                identity: put.identity,
+                state: EntryState::Live,
+                determinism: self.determinism.into(),
+                epoch: self.index.epoch,
+                quarantine: None,
+            },
+        );
         let previous = std::mem::replace(&mut self.index, index);
-        match self.persist() {
-            Ok(()) => Ok(id),
-            Err(error) => {
-                self.index = previous;
-                let _ = std::fs::remove_file(&path);
-                Err(error)
+        if let Err(error) = self.persist() {
+            self.index = previous;
+            return Err(self.rollback_blob(&id, error));
+        }
+        // The index no longer names the victims, so their blobs can go.
+        self.remove_blobs(&victims)?;
+        Ok(id)
+    }
+
+    /// The tripwire path: store the new entry and quarantine both content ids.
+    fn put_tripwire(
+        &mut self,
+        put: Put<'_>,
+        bytes: &[u8],
+        id: ContentId,
+        coverage: Vec<PartCoverage>,
+    ) -> Result<ContentId, StoreError> {
+        self.write_blob(bytes, &id)?;
+        let mut index = self.index.clone();
+        let epoch = self.index.epoch;
+        prune_pins(&mut index, put.now_ms);
+        let mut ids = vec![id];
+        for entry in index.entries.values_mut() {
+            if entry.recipe == put.recipe && entry.coverage == coverage && entry.state == EntryState::Live {
+                entry.state = EntryState::Quarantined;
+                entry.quarantine = Some(Quarantine::Tripwire);
+                ids.push(entry.content_id);
             }
         }
+        let size = bytes.len() as u64;
+        index.entries.insert(
+            id,
+            Entry {
+                content_id: id,
+                recipe: put.recipe,
+                parent: put.snapshot.parent,
+                coverage,
+                tier: put.tier,
+                size,
+                owner: put.owner,
+                created_ms: put.now_ms,
+                last_used_ms: put.now_ms,
+                hits: 0,
+                reason: put.reason,
+                provenance: put.provenance,
+                check: Check::Full,
+                identity: put.identity,
+                state: EntryState::Quarantined,
+                determinism: self.determinism.into(),
+                epoch,
+                quarantine: Some(Quarantine::Tripwire),
+            },
+        );
+        index.refused.insert(put.recipe);
+        let previous = std::mem::replace(&mut self.index, index);
+        if let Err(error) = self.persist() {
+            self.index = previous;
+            return Err(self.rollback_blob(&id, error));
+        }
+        ids.sort();
+        Err(StoreError::Tripwire {
+            recipe: put.recipe,
+            ids,
+        })
     }
 
     /// Read an entry, and check it on the first use after a restart.
@@ -841,21 +1026,18 @@ impl Store {
         Ok(self.index.entries.get(id))
     }
 
-    /// Look up a chain by recipe.
+    /// Look up a chain by recipe. A miss is an empty result, not an error.
     pub fn lookup(
         &mut self,
         recipe: RecipeId,
         tolerance: &Tolerance,
+        engine: &mut dyn Engine,
+        slot: u32,
         now_ms: u64,
     ) -> Result<Vec<ContentId>, StoreError> {
-        // 6.7: a quarantined entry refuses the whole recipe.
-        if self
-            .index
-            .entries
-            .values()
-            .any(|entry| entry.recipe == recipe && entry.state == EntryState::Quarantined)
-        {
-            return Err(StoreError::Tripwire);
+        // 6.7: only a tripwire refuses the whole recipe.
+        if self.index.refused.contains(&recipe) {
+            return Err(self.tripwire_error(recipe));
         }
         let ids: Vec<ContentId> = self
             .index
@@ -864,28 +1046,62 @@ impl Store {
             .filter(|entry| entry.recipe == recipe && entry.state == EntryState::Live)
             .map(|entry| entry.content_id)
             .collect();
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let limits = engine.limits();
+        let mut coverage = engine.coverage();
         let mut chains: Vec<(Vec<ContentId>, Vec<PartCoverage>)> = Vec::new();
         for id in ids {
-            self.check(&id)?;
-            let chain = self.chain(id);
-            let tip = chain
-                .last()
-                .copied()
-                .ok_or_else(|| StoreError::Invalid("empty chain".to_owned()))?;
-            let entry = self
-                .index
-                .entries
-                .get(&tip)
-                .ok_or_else(|| StoreError::Invalid("missing tip".to_owned()))?;
-            if *tolerance == Tolerance::Exact && entry.provenance.is_some() {
+            let chain = self.chain(id)?;
+            // 6.8: a quarantine of one entry does not refuse the recipe. Skip its chain.
+            if chain.iter().any(|member| self.check(member).is_err()) {
                 continue;
             }
-            chains.push((chain, entry.coverage.clone()));
+            let entries: Vec<Entry> = chain
+                .iter()
+                .filter_map(|member| self.index.entries.get(member).cloned())
+                .collect();
+            if !chain_accepts(&entries, tolerance, self.index.epoch) {
+                continue;
+            }
+            let union = chain_coverage(&entries);
+            if let Some(fits) = coverage.as_mut() {
+                let mut ok = true;
+                for span in &union {
+                    let Some(part) = limits.parts.iter().position(|candidate| candidate.name == span.part) else {
+                        return Err(StoreError::Invalid(format!("unknown part {}", span.part)));
+                    };
+                    let span = CoverageSpan {
+                        part,
+                        start: span.start,
+                        end: span.end,
+                    };
+                    if fits.fits(&span, slot).is_err() {
+                        ok = false;
+                        break;
+                    }
+                }
+                if !ok {
+                    continue;
+                }
+            }
+            chains.push((chain, union));
         }
-        let best = chains
+
+        if chains.is_empty() {
+            return Ok(Vec::new());
+        }
+        let best: Vec<&(Vec<ContentId>, Vec<PartCoverage>)> = chains
             .iter()
-            .find(|(_, coverage)| chains.iter().all(|(_, other)| dominates(coverage, other)));
-        let (chain, _) = best.cloned().ok_or(StoreError::Ambiguous)?;
+            .filter(|(_, coverage)| chains.iter().all(|(_, other)| dominates(coverage, other)))
+            .collect();
+        // Zero maxima means the chains are incomparable. Two maxima means they are equal.
+        if best.len() != 1 {
+            return Err(StoreError::Ambiguous);
+        }
+        let chain = best[0].0.clone();
         if let Some(tip) = chain.last() {
             self.touch(tip, now_ms);
         }
@@ -897,19 +1113,20 @@ impl Store {
         &mut self,
         recipe: RecipeId,
         tolerance: &Tolerance,
-        owner: u64,
-        expires_ms: u64,
+        engine: &mut dyn Engine,
+        slot: u32,
+        pin: Pin,
         now_ms: u64,
     ) -> Result<Vec<ContentId>, StoreError> {
-        let chain = self.lookup(recipe, tolerance, now_ms)?;
+        let chain = self.lookup(recipe, tolerance, engine, slot, now_ms)?;
         for id in &chain {
-            self.index.pins.insert(*id, Pin { owner, expires_ms });
+            self.index.pins.insert(*id, pin.clone());
         }
         self.persist()?;
         Ok(chain)
     }
 
-    /// Restore an entry into an engine state.
+    /// Restore an entry and its chain into an engine state.
     pub fn restore(
         &mut self,
         id: &ContentId,
@@ -925,60 +1142,105 @@ impl Store {
             .get(id)
             .ok_or_else(|| StoreError::Invalid("missing entry".to_owned()))?
             .clone();
-        if entry.identity != *identity {
-            self.quarantine(id)?;
+        if entry.state != EntryState::Live {
             return Err(StoreError::Quarantined(*id));
         }
-        let bytes = std::fs::read(self.blob_path(id)).map_err(io_error)?;
-        let snapshot = Snapshot::decode(&bytes)?;
+        if entry.identity != *identity {
+            self.quarantine(id, Quarantine::Identity)?;
+            return Err(StoreError::Quarantined(*id));
+        }
+
+        // 6.5: a chain with a missing parent is an error, never a short chain.
+        let chain = self.chain(*id)?;
+        for member in &chain {
+            self.check(member)?;
+        }
+        let tip = self.read_snapshot(id)?;
+        if tip.parent != entry.parent || coverage_of(&tip) != entry.coverage {
+            self.quarantine(id, Quarantine::Index)?;
+            return Err(StoreError::Invalid("the index disagrees with the blob".to_owned()));
+        }
+
         let limits = engine.limits();
         let State::Slot(slot) = state;
+        let entries: Vec<Entry> = chain
+            .iter()
+            .filter_map(|member| self.index.entries.get(member).cloned())
+            .collect();
+        let union = chain_coverage(&entries);
         if let Some(coverage) = engine.coverage() {
-            for part in &entry.coverage {
-                let index = limits
+            for span in &union {
+                let part = limits
                     .parts
                     .iter()
-                    .position(|candidate| candidate.name == part.part)
-                    .ok_or_else(|| StoreError::Invalid("unknown part".to_owned()))?;
+                    .position(|candidate| candidate.name == span.part)
+                    .ok_or_else(|| StoreError::Invalid(format!("unknown part {}", span.part)))?;
                 let span = CoverageSpan {
-                    part: index,
-                    start: part.start,
-                    end: part.end,
+                    part,
+                    start: span.start,
+                    end: span.end,
                 };
                 coverage.fits(&span, slot).map_err(StoreError::Fit)?;
             }
         }
+
         let mut results = Vec::new();
-        for tensor in &snapshot.tensors {
-            let index = limits
-                .parts
-                .iter()
-                .position(|candidate| candidate.name == tensor.name)
-                .ok_or_else(|| StoreError::Invalid("unknown part".to_owned()))?;
-            let result = match tensor.kind {
-                PartKind::Fixed => engine
-                    .parts()
-                    .ok_or_else(|| StoreError::Invalid("no parts".to_owned()))?
-                    .part_write(state, index, &tensor.data),
-                PartKind::Cells | PartKind::Ring => {
-                    let rows = tensor.coverage.map_or(0, |(start, end)| end - start);
-                    engine
+        for member in &chain {
+            let snapshot = self.read_snapshot(member)?;
+            for tensor in &snapshot.tensors {
+                let index = limits
+                    .parts
+                    .iter()
+                    .position(|candidate| candidate.name == tensor.name)
+                    .ok_or_else(|| StoreError::Invalid(format!("unknown part {}", tensor.name)))?;
+                let result = match tensor.kind {
+                    PartKind::Fixed => engine
                         .parts()
                         .ok_or_else(|| StoreError::Invalid("no parts".to_owned()))?
-                        .cells_write(state, index, rows, &tensor.data)
-                }
-                PartKind::Derived => continue,
-            };
-            results.push(result);
+                        .part_write(state, index, &tensor.data),
+                    PartKind::Cells | PartKind::Ring => {
+                        let rows = tensor.coverage.map_or(0, |(start, end)| end - start);
+                        engine
+                            .parts()
+                            .ok_or_else(|| StoreError::Invalid("no parts".to_owned()))?
+                            .cells_write(state, index, rows, &tensor.data)
+                    }
+                    PartKind::Derived => continue,
+                };
+                results.push(result);
+            }
         }
-        self.touch(id, now_ms);
+        // 6.8: a refusal or a failure leaves the entry as it is.
+        if results.iter().all(|result| *result == WriteResult::Ok) {
+            self.touch(id, now_ms);
+        }
         Ok(results)
+    }
+
+    fn read_snapshot(&mut self, id: &ContentId) -> Result<Snapshot, StoreError> {
+        let bytes = match std::fs::read(self.blob_path(id)) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.quarantine(id, Quarantine::Read)?;
+                return Err(io_error(error));
+            }
+        };
+        match Snapshot::decode(&bytes) {
+            Ok(snapshot) => Ok(snapshot),
+            Err(error) => {
+                self.quarantine(id, Quarantine::ContentId)?;
+                Err(error)
+            }
+        }
     }
 
     /// Pin an entry for an owner until an expiry.
     pub fn pin(&mut self, id: ContentId, owner: u64, expires_ms: u64) -> Result<(), StoreError> {
-        if !self.index.entries.contains_key(&id) {
+        let Some(entry) = self.index.entries.get(&id) else {
             return Err(StoreError::Invalid("missing entry".to_owned()));
+        };
+        if entry.state != EntryState::Live {
+            return Err(StoreError::Quarantined(id));
         }
         self.index.pins.insert(id, Pin { owner, expires_ms });
         self.persist()
@@ -990,84 +1252,77 @@ impl Store {
         self.persist()
     }
 
+    /// Clear a tripwire refusal after a person knows the cause.
+    pub fn clear_refusal(&mut self, recipe: RecipeId) -> Result<(), StoreError> {
+        if self.index.refused.remove(&recipe) {
+            self.persist()?;
+        }
+        Ok(())
+    }
+
+    /// Clear the quarantine of one entry after a person repairs its blob.
+    pub fn clear_entry(&mut self, id: &ContentId) -> Result<(), StoreError> {
+        let Some(entry) = self.index.entries.get(id).cloned() else {
+            return Err(StoreError::Invalid("missing entry".to_owned()));
+        };
+        if entry.state != EntryState::Quarantined {
+            return Ok(());
+        }
+        if entry.quarantine == Some(Quarantine::Tripwire) {
+            return Err(StoreError::Invalid(
+                "a tripwire quarantine clears with its recipe".to_owned(),
+            ));
+        }
+        let bytes = std::fs::read(self.blob_path(id)).map_err(io_error)?;
+        if content_id(&bytes) != *id {
+            return Err(StoreError::Quarantined(*id));
+        }
+        let snapshot = Snapshot::decode(&bytes)?;
+        if snapshot.parent != entry.parent || coverage_of(&snapshot) != entry.coverage {
+            return Err(StoreError::Invalid("the index disagrees with the blob".to_owned()));
+        }
+        if let Some(entry) = self.index.entries.get_mut(id) {
+            entry.state = EntryState::Live;
+            entry.quarantine = None;
+            entry.check = Check::Full;
+        }
+        self.checked.insert(*id);
+        self.persist()
+    }
+
     /// Choose and remove victims for an owner.
     pub fn evict(&mut self, owner: u64, need_bytes: u64, now_ms: u64) -> Result<Vec<ContentId>, StoreError> {
-        self.index.pins.retain(|_, pin| pin.expires_ms > now_ms);
-        let pinned_bytes: u64 = self
-            .index
-            .pins
-            .keys()
-            .filter_map(|id| self.index.entries.get(id))
+        if need_bytes == 0 {
+            return Ok(Vec::new());
+        }
+        let victims = self.choose_victims(owner, None, need_bytes, now_ms);
+        let freed: u64 = victims
+            .iter()
+            .filter_map(|victim| self.index.entries.get(victim))
             .map(|entry| entry.size)
             .sum();
-        let protect_pins = pinned_bytes <= self.budget;
-
-        let parents: BTreeSet<ContentId> = self
-            .index
-            .entries
-            .values()
-            .filter(|entry| entry.state == EntryState::Live)
-            .filter_map(|entry| entry.parent)
-            .collect();
-        let mut groups: Vec<(u8, u128, Vec<ContentId>)> = Vec::new();
-        for entry in self.index.entries.values() {
-            if entry.owner != owner || entry.state != EntryState::Live {
-                continue;
-            }
-            if protect_pins && self.index.pins.contains_key(&entry.content_id) {
-                continue;
-            }
-            let has_child = parents.contains(&entry.content_id);
-            let rank = if entry.parent.is_some() && has_child {
-                0
-            } else if entry.parent.is_some() {
-                1
-            } else if has_child {
-                2
-            } else {
-                3
-            };
-            let mut group = vec![entry.content_id];
-            if rank == 0 {
-                for child in self.descendants(entry.content_id) {
-                    group.push(child);
-                }
-            }
-            groups.push((rank, value_per_byte(entry, now_ms), group));
+        if freed < need_bytes {
+            return Err(StoreError::NoSpace);
         }
-        groups.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
-
-        let mut victims = Vec::new();
-        let mut bytes = 0;
-        for (_, _, group) in groups {
-            let group_bytes: u64 = group
-                .iter()
-                .filter_map(|id| self.index.entries.get(id))
-                .map(|entry| entry.size)
-                .sum();
-            victims.extend(group);
-            bytes += group_bytes;
-            if bytes >= need_bytes {
-                break;
-            }
-        }
+        let mut index = self.index.clone();
+        prune_pins(&mut index, now_ms);
         for id in &victims {
-            self.index.entries.remove(id);
-            let _ = std::fs::remove_file(self.blob_path(id));
+            index.entries.remove(id);
         }
-        self.persist()?;
+        let previous = std::mem::replace(&mut self.index, index);
+        if let Err(error) = self.persist() {
+            self.index = previous;
+            return Err(error);
+        }
+        // 6.9 and the banto: persist the index first, then delete the blobs.
+        self.remove_blobs(&victims)?;
         Ok(victims)
     }
 
-    fn choose_victims(&self, owner: u64, need_bytes: u64, now_ms: u64) -> Vec<ContentId> {
-        let pinned_bytes: u64 = self
-            .index
-            .pins
-            .keys()
-            .filter_map(|id| self.index.entries.get(id))
-            .map(|entry| entry.size)
-            .sum();
-        let protect_pins = pinned_bytes <= self.budget;
+    fn choose_victims(&self, owner: u64, tier: Option<Tier>, need_bytes: u64, now_ms: u64) -> Vec<ContentId> {
+        if need_bytes == 0 {
+            return Vec::new();
+        }
         let parents: BTreeSet<ContentId> = self
             .index
             .entries
@@ -1080,38 +1335,58 @@ impl Store {
             if entry.owner != owner || entry.state != EntryState::Live {
                 continue;
             }
-            if protect_pins && self.index.pins.contains_key(&entry.content_id) {
+            if let Some(tier) = tier
+                && entry.tier != tier
+            {
+                continue;
+            }
+            if self.pin_protects(entry, now_ms) {
+                continue;
+            }
+            // A group can go only when every live descendant has the same owner and no pin.
+            let mut group = vec![entry.content_id];
+            let mut evictable = true;
+            for child in self.descendants(entry.content_id) {
+                let Some(child_entry) = self.index.entries.get(&child) else {
+                    continue;
+                };
+                if child_entry.owner != owner || self.pin_protects(child_entry, now_ms) {
+                    evictable = false;
+                    break;
+                }
+                group.push(child);
+            }
+            if !evictable {
                 continue;
             }
             let has_child = parents.contains(&entry.content_id);
-            let rank = if entry.parent.is_some() && has_child {
-                0
-            } else if entry.parent.is_some() {
-                1
-            } else if has_child {
-                2
-            } else {
-                3
+            let rank = match (entry.parent.is_some(), has_child) {
+                (true, true) => 0,
+                (true, false) => 1,
+                (false, true) => 2,
+                (false, false) => 3,
             };
-            let mut group = vec![entry.content_id];
-            if rank == 0 {
-                for child in self.descendants(entry.content_id) {
-                    group.push(child);
-                }
-            }
             groups.push((rank, value_per_byte(entry, now_ms), group));
         }
         groups.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+
         let mut victims = Vec::new();
-        let mut bytes = 0;
+        let mut chosen = BTreeSet::new();
+        let mut bytes = 0u64;
         for (_, _, group) in groups {
+            if group.iter().any(|id| chosen.contains(id)) {
+                continue;
+            }
             let group_bytes: u64 = group
                 .iter()
                 .filter_map(|id| self.index.entries.get(id))
                 .map(|entry| entry.size)
                 .sum();
+            for id in &group {
+                chosen.insert(*id);
+            }
             victims.extend(group);
-            bytes += group_bytes;
+            bytes = bytes.saturating_add(group_bytes);
             if bytes >= need_bytes {
                 break;
             }
@@ -1119,45 +1394,158 @@ impl Store {
         victims
     }
 
+    /// True when a pin keeps the entry from eviction.
+    fn pin_protects(&self, entry: &Entry, now_ms: u64) -> bool {
+        match self.index.pins.get(&entry.content_id) {
+            Some(pin) => pin.expires_ms > now_ms && entry.size <= self.budget_of(entry.tier),
+            None => false,
+        }
+    }
+
+    fn budget_of(&self, tier: Tier) -> u64 {
+        self.budgets.get(&tier).copied().unwrap_or(u64::MAX)
+    }
+
+    fn need_bytes(&self, put: &Put<'_>, size: u64) -> u64 {
+        let tier_total: u64 = self
+            .index
+            .entries
+            .values()
+            .filter(|entry| entry.state == EntryState::Live && entry.tier == put.tier)
+            .map(|entry| entry.size)
+            .sum();
+        let owner_total: u64 = self
+            .index
+            .entries
+            .values()
+            .filter(|entry| entry.state == EntryState::Live && entry.owner == put.owner && entry.tier == put.tier)
+            .map(|entry| entry.size)
+            .sum();
+        let by_budget = tier_total.saturating_add(size).saturating_sub(self.budget_of(put.tier));
+        let by_quota = owner_total.saturating_add(size).saturating_sub(self.owner_quota);
+        by_budget.max(by_quota)
+    }
+
+    fn check_delta(&self, put: &Put<'_>, coverage: &[PartCoverage], size: u64) -> Result<(), StoreError> {
+        let parent_id = put
+            .snapshot
+            .parent
+            .ok_or_else(|| StoreError::Invalid("a delta needs a parent".to_owned()))?;
+        let parent = self
+            .index
+            .entries
+            .get(&parent_id)
+            .ok_or_else(|| StoreError::Invalid("the delta's parent is missing".to_owned()))?;
+        if parent.state != EntryState::Live {
+            return Err(StoreError::Quarantined(parent_id));
+        }
+        let previous = put
+            .previous_recipe
+            .ok_or_else(|| StoreError::Invalid("a delta needs its previous recipe".to_owned()))?;
+        if previous != parent.recipe {
+            return Err(StoreError::Invalid(
+                "the previous recipe is not the parent's recipe".to_owned(),
+            ));
+        }
+        if put.recipe == parent.recipe {
+            return Err(StoreError::Invalid("the delta's recipe is not a later one".to_owned()));
+        }
+        let depth = self.chain(parent_id)?.len();
+        if depth >= self.chain.max_depth as usize {
+            return Err(StoreError::Invalid(
+                "the chain is deeper than the engine allows".to_owned(),
+            ));
+        }
+        if (size as f64) > (self.chain.delta_fraction as f64) * (parent.size as f64) {
+            return Err(StoreError::Invalid(
+                "the delta is larger than the engine allows".to_owned(),
+            ));
+        }
+        for parent_span in &parent.coverage {
+            let span = coverage
+                .iter()
+                .find(|span| span.part == parent_span.part)
+                .ok_or_else(|| StoreError::Invalid(format!("the delta has no {} part", parent_span.part)))?;
+            if span.start != parent_span.end {
+                return Err(StoreError::Invalid(format!(
+                    "{} does not start at the parent's end",
+                    span.part
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn descendants(&self, base: ContentId) -> Vec<ContentId> {
         let mut found = Vec::new();
-        let mut current = base;
-        loop {
-            let child = self
-                .index
-                .entries
-                .values()
-                .find(|entry| entry.parent == Some(current) && entry.state == EntryState::Live)
-                .map(|entry| entry.content_id);
-            match child {
-                Some(id) => {
-                    found.push(id);
-                    current = id;
+        let mut visited = BTreeSet::new();
+        visited.insert(base);
+        let mut queue = vec![base];
+        while let Some(current) = queue.pop() {
+            for entry in self.index.entries.values() {
+                if entry.parent == Some(current) && entry.state == EntryState::Live && visited.insert(entry.content_id)
+                {
+                    found.push(entry.content_id);
+                    queue.push(entry.content_id);
                 }
-                None => break,
             }
         }
         found
     }
 
-    fn chain(&self, tip: ContentId) -> Vec<ContentId> {
+    fn chain(&self, tip: ContentId) -> Result<Vec<ContentId>, StoreError> {
         let mut chain = vec![tip];
+        let mut visited = BTreeSet::new();
+        visited.insert(tip);
         let mut current = tip;
-        while let Some(parent) = self.index.entries.get(&current).and_then(|entry| entry.parent) {
-            if self
+        loop {
+            let entry = self
                 .index
                 .entries
-                .get(&parent)
-                .is_some_and(|entry| entry.state == EntryState::Live)
-            {
-                chain.push(parent);
-                current = parent;
-            } else {
-                break;
+                .get(&current)
+                .ok_or_else(|| StoreError::Invalid(format!("the chain has a missing entry {}", current.hex())))?;
+            if entry.state != EntryState::Live {
+                return Err(StoreError::Quarantined(current));
             }
+            let Some(parent) = entry.parent else {
+                break;
+            };
+            let parent_entry = self.index.entries.get(&parent).ok_or_else(|| {
+                StoreError::Invalid(format!(
+                    "the chain of {} has a missing parent {}",
+                    tip.hex(),
+                    parent.hex()
+                ))
+            })?;
+            if parent_entry.state != EntryState::Live {
+                return Err(StoreError::Invalid(format!(
+                    "the chain of {} has a quarantined parent",
+                    tip.hex()
+                )));
+            }
+            if !visited.insert(parent) {
+                return Err(StoreError::Invalid("the chain has a cycle".to_owned()));
+            }
+            chain.push(parent);
+            current = parent;
         }
         chain.reverse();
-        chain
+        Ok(chain)
+    }
+
+    fn tripwire_on(&self) -> bool {
+        self.determinism != Determinism::PerProcess && !self.bit_dependence.contains(&BitDependence::Residency)
+    }
+
+    fn tripwire_error(&self, recipe: RecipeId) -> StoreError {
+        let ids = self
+            .index
+            .entries
+            .values()
+            .filter(|entry| entry.recipe == recipe && entry.quarantine == Some(Quarantine::Tripwire))
+            .map(|entry| entry.content_id)
+            .collect();
+        StoreError::Tripwire { recipe, ids }
     }
 
     fn check(&mut self, id: &ContentId) -> Result<(), StoreError> {
@@ -1173,22 +1561,27 @@ impl Store {
         let bytes = match std::fs::read(self.blob_path(id)) {
             Ok(bytes) => bytes,
             Err(error) => {
-                self.quarantine(id)?;
+                self.quarantine(id, Quarantine::Read)?;
                 return Err(io_error(error));
             }
         };
         if content_id(&bytes) != *id {
-            self.quarantine(id)?;
+            self.quarantine(id, Quarantine::ContentId)?;
             return Err(StoreError::Quarantined(*id));
+        }
+        if let Some(entry) = self.index.entries.get_mut(id) {
+            entry.check = Check::Full;
         }
         self.checked.insert(*id);
         Ok(())
     }
 
-    fn quarantine(&mut self, id: &ContentId) -> Result<(), StoreError> {
+    fn quarantine(&mut self, id: &ContentId, reason: Quarantine) -> Result<(), StoreError> {
         if let Some(entry) = self.index.entries.get_mut(id) {
             entry.state = EntryState::Quarantined;
+            entry.quarantine = Some(reason);
         }
+        self.checked.remove(id);
         self.persist()
     }
 
@@ -1199,6 +1592,48 @@ impl Store {
         }
     }
 
+    fn write_blob(&self, bytes: &[u8], id: &ContentId) -> Result<(), StoreError> {
+        let path = self.blob_path(id);
+        let temp = self.dir.join("blobs").join(format!("{}.tmp", id.hex()));
+        if self.fail_point.get() == Some(FailPoint::BlobWrite) {
+            self.fail_point.set(None);
+            return Err(StoreError::Io("injected blob write".to_owned()));
+        }
+        write_synced(&temp, bytes).map_err(io_error)?;
+        if self.fail_point.get() == Some(FailPoint::BlobRename) {
+            self.fail_point.set(None);
+            let _ = std::fs::remove_file(&temp);
+            return Err(StoreError::Io("injected blob rename".to_owned()));
+        }
+        std::fs::rename(&temp, &path).map_err(io_error)?;
+        sync_dir(&self.dir.join("blobs")).map_err(io_error)?;
+        Ok(())
+    }
+
+    fn rollback_blob(&self, id: &ContentId, error: StoreError) -> StoreError {
+        match std::fs::remove_file(self.blob_path(id)) {
+            Ok(()) => error,
+            Err(remove_error) if remove_error.kind() == std::io::ErrorKind::NotFound => error,
+            Err(remove_error) => StoreError::Io(format!("{error}; the new blob also failed to remove: {remove_error}")),
+        }
+    }
+
+    fn remove_blobs(&self, ids: &[ContentId]) -> Result<(), StoreError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        for id in ids {
+            match std::fs::remove_file(self.blob_path(id)) {
+                Ok(()) => {}
+                // The index no longer names the entry. An absent blob is the wanted state.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(io_error(error)),
+            }
+        }
+        sync_dir(&self.dir.join("blobs")).map_err(io_error)?;
+        Ok(())
+    }
+
     fn persist(&self) -> Result<(), StoreError> {
         let path = self.dir.join("index.json");
         let temp = self.dir.join("index.json.tmp");
@@ -1207,19 +1642,24 @@ impl Store {
             self.fail_point.set(None);
             return Err(StoreError::Io("injected index write".to_owned()));
         }
-        std::fs::write(&temp, bytes).map_err(io_error)?;
+        write_synced(&temp, &bytes).map_err(io_error)?;
         if self.fail_point.get() == Some(FailPoint::IndexRename) {
             self.fail_point.set(None);
             let _ = std::fs::remove_file(&temp);
             return Err(StoreError::Io("injected index rename".to_owned()));
         }
         std::fs::rename(&temp, &path).map_err(io_error)?;
+        sync_dir(&self.dir).map_err(io_error)?;
         Ok(())
     }
 
     fn blob_path(&self, id: &ContentId) -> PathBuf {
         self.dir.join("blobs").join(id.hex())
     }
+}
+
+fn prune_pins(index: &mut Index, now_ms: u64) {
+    index.pins.retain(|_, pin| pin.expires_ms > now_ms);
 }
 
 fn coverage_of(snapshot: &Snapshot) -> Vec<PartCoverage> {
@@ -1236,6 +1676,36 @@ fn coverage_of(snapshot: &Snapshot) -> Vec<PartCoverage> {
         .collect();
     coverage.sort();
     coverage
+}
+
+fn chain_coverage(entries: &[Entry]) -> Vec<PartCoverage> {
+    let mut spans: BTreeMap<&str, (u64, u64)> = BTreeMap::new();
+    for entry in entries {
+        for span in &entry.coverage {
+            let slot = spans.entry(span.part.as_str()).or_insert((span.start, span.end));
+            slot.0 = slot.0.min(span.start);
+            slot.1 = slot.1.max(span.end);
+        }
+    }
+    spans
+        .into_iter()
+        .map(|(part, (start, end))| PartCoverage {
+            part: part.to_owned(),
+            start,
+            end,
+        })
+        .collect()
+}
+
+fn chain_accepts(entries: &[Entry], tolerance: &Tolerance, epoch: u64) -> bool {
+    match tolerance {
+        Tolerance::Exact => entries.iter().all(|entry| {
+            entry.provenance.is_none() && (entry.determinism != DeterminismClass::PerProcess || entry.epoch == epoch)
+        }),
+        Tolerance::Approx(methods) => entries
+            .iter()
+            .all(|entry| entry.provenance.as_ref().is_none_or(|method| methods.contains(method))),
+    }
 }
 
 fn dominates(left: &[PartCoverage], right: &[PartCoverage]) -> bool {
@@ -1257,6 +1727,17 @@ fn value_per_byte(entry: &Entry, now_ms: u64) -> u128 {
     let age = now_ms.saturating_sub(entry.last_used_ms) as u128;
     let base = (entry.hits as u128 + 1) * 1_000_000;
     base.saturating_sub(age.min(base)) / entry.size.max(1) as u128
+}
+
+fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn sync_dir(path: &Path) -> std::io::Result<()> {
+    std::fs::File::open(path)?.sync_all()
 }
 
 fn io_error(error: std::io::Error) -> StoreError {
