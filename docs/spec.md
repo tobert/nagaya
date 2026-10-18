@@ -659,6 +659,11 @@ At start, the nagaya does these steps for each engine:
 A second signal makes the process exit at once. Cancellation of running work follows 5.9. **Open:** the conversion
 to canonical safetensors (D10) is not yet measured, so we do not know how many contexts fit in the budget.
 
+**Proposed** by deepseek-flash, 2026-10-18: the process handles SIGTERM with a handler that increments a static atomic
+counter. The handler is a declaration of `signal(2)` in `extern "C"`, because std has no signal API. The handler does
+one lock-free increment. The main loop reads the counter every 50 ms. Reason: no new dependency. A later step with
+`tokio` can replace it with a signal stream.
+
 **10.4 Exit codes.**
 
 | Code | Meaning | systemd |
