@@ -82,17 +82,6 @@ impl MkEngine {
         self.worker.owns_kv(id)
     }
 
-    /// Fork a context. The fork shares its parent's K/V and index keys.
-    pub fn fork(&mut self, state: State) -> Result<State, MkError> {
-        let id = self
-            .context(state)
-            .ok_or_else(|| MkError::new(format!("{state:?} is not in this engine")))?;
-        let forked = self.worker.fork(id)?;
-        let slot = self.states.len() as u32;
-        self.states.push(forked);
-        Ok(State::Slot(slot))
-    }
-
     /// mk's byte count for one part and token count.
     pub fn part_bytes(&self, part: u32, n: u32) -> u64 {
         self.worker.part_bytes(part, n)

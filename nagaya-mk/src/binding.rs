@@ -14,9 +14,6 @@ pub(crate) type EngineOpen = unsafe extern "C" fn(*const c_char, *const c_char, 
 /// `void *mk_ctx_new(void *e, uint32_t max_tokens)`.
 pub(crate) type CtxNew = unsafe extern "C" fn(*mut c_void, u32) -> *mut c_void;
 
-/// `void *mk_ctx_fork(void *e, void *c)`.
-pub(crate) type CtxFork = unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void;
-
 /// `void mk_ctx_free(void *e, void *c)`.
 pub(crate) type CtxFree = unsafe extern "C" fn(*mut c_void, *mut c_void);
 
@@ -80,7 +77,6 @@ pub(crate) struct Binding {
     library: &'static Library,
     pub engine_open: EngineOpen,
     pub ctx_new: CtxNew,
-    pub ctx_fork: CtxFork,
     pub ctx_free: CtxFree,
     pub ctx_n: CtxN,
     pub ctx_max: CtxMax,
@@ -112,7 +108,6 @@ pub(crate) fn load(path: &Path) -> Result<Binding, String> {
             library,
             engine_open: symbol(library, b"mk_engine_open\0")?,
             ctx_new: symbol(library, b"mk_ctx_new\0")?,
-            ctx_fork: symbol(library, b"mk_ctx_fork\0")?,
             ctx_free: symbol(library, b"mk_ctx_free\0")?,
             ctx_n: symbol(library, b"mk_ctx_n\0")?,
             ctx_max: symbol(library, b"mk_ctx_max\0")?,

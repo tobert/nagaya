@@ -234,7 +234,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_part_sizes_match_mk() {
+    fn the_declared_part_shapes_use_the_mk_sizes() {
+        // The GPU test pins these constants to mk's own mk_ctx_part_bytes.
         let parts = parts();
         let size = |index: usize| parts[index].shape.iter().product::<u64>() * 4;
         assert_eq!(size(0), GDN_STATE_BYTES);
@@ -262,6 +263,22 @@ mod tests {
     #[test]
     fn the_limits_declare_two_contexts_and_mk_parts() {
         let limits = limits(94);
+        let names: Vec<&str> = limits.parts.iter().map(|part| part.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "gdn_state",
+                "gdn_conv",
+                "ple_conv",
+                "kv",
+                "idx_keys",
+                "ple_hist",
+                "idx_pooled"
+            ]
+        );
+        assert_eq!(limits.parts[3].kind, PartKind::Cells);
+        assert_eq!(limits.parts[4].kind, PartKind::Cells);
+        assert_eq!(limits.parts[6].kind, PartKind::Derived);
         assert_eq!(limits.slots.len(), 1);
         assert_eq!(limits.slots[0].count, 2);
         assert_eq!(limits.slots[0].bytes, context_bytes(256));

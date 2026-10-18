@@ -168,18 +168,6 @@ fn a_cell_part_round_trips_and_sets_n() {
         WriteResult::Refused
     );
     assert_eq!(engine.parts().unwrap().set_n(state, 3), WriteResult::Refused);
-
-    // A fork shares its parent's K/V, so mk refuses a cells write into it.
-    let fork = engine.fork(state).unwrap();
-    assert!(!engine.owns_kv(fork).unwrap());
-    assert_eq!(
-        engine.parts().unwrap().cells_write(fork, 3, 1, &kv[..49_152]),
-        WriteResult::Refused
-    );
-    assert_eq!(
-        engine.parts().unwrap().part_write(fork, 5, &[7, 0, 0, 0, 9, 0, 0, 0]),
-        WriteResult::Refused
-    );
 }
 
 #[test]

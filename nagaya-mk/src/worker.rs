@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::fmt;
 use std::io::Read;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 
@@ -57,6 +58,21 @@ pub struct MkPaths {
     pub shards: Vec<PathBuf>,
 }
 
+/// Split `MK_SHARDS` on `:` as raw bytes, so a path that is not UTF-8 stays the same path.
+fn parse_shards(raw: &[u8]) -> Result<Vec<PathBuf>, MkError> {
+    let shards: Vec<PathBuf> = raw
+        .split(|byte| *byte == b':')
+        .map(|part| PathBuf::from(std::ffi::OsString::from_vec(part.to_vec())))
+        .collect();
+    if shards.len() != 3 || shards.iter().any(|path| path.as_os_str().is_empty()) {
+        return Err(MkError::new(format!(
+            "MK_SHARDS has {} paths; mk needs three, with : between them",
+            shards.len()
+        )));
+    }
+    Ok(shards)
+}
+
 impl MkPaths {
     /// Read the paths from `MK_ENGINE_LIB` and `MK_SHARDS`.
     pub fn from_env() -> Result<Self, MkError> {
@@ -64,14 +80,7 @@ impl MkPaths {
             .ok_or_else(|| MkError::new("MK_ENGINE_LIB is not set; set it to libmkengine.so"))?;
         let shards = std::env::var_os("MK_SHARDS")
             .ok_or_else(|| MkError::new("MK_SHARDS is not set; give three GGUF paths with : between them"))?;
-        let text = shards.to_string_lossy();
-        let shards: Vec<PathBuf> = text.split(':').map(PathBuf::from).collect();
-        if shards.len() != 3 || shards.iter().any(|path| path.as_os_str().is_empty()) {
-            return Err(MkError::new(format!(
-                "MK_SHARDS has {} paths; mk needs three, with : between them",
-                shards.len()
-            )));
-        }
+        let shards = parse_shards(shards.as_os_str().as_bytes())?;
         Ok(Self {
             library: PathBuf::from(library),
             shards,
@@ -152,6 +161,7 @@ struct ThreadState {
     engine: *mut c_void,
     contexts: HashMap<u64, Context>,
     next_id: u64,
+    fast_qmm: bool,
 }
 
 /// One context that a handle owns.
@@ -173,10 +183,6 @@ enum Command {
     Free {
         ids: Vec<u64>,
         reply: mpsc::Sender<()>,
-    },
-    Fork {
-        id: u64,
-        reply: mpsc::Sender<Result<u64, String>>,
     },
     N {
         id: u64,
@@ -273,13 +279,6 @@ impl Worker {
             return;
         }
         let _ = self.ask(|reply| Command::Free { ids, reply });
-    }
-
-    /// Fork a context.
-    pub fn fork(&self, id: u64) -> Result<u64, MkError> {
-        self.ask(|reply| Command::Fork { id, reply })
-            .unwrap_or_else(|| Err("the mk worker stopped".to_owned()))
-            .map_err(MkError::from)
     }
 
     /// The context's token count.
@@ -408,11 +407,19 @@ pub(crate) fn start(paths: MkPaths) -> Result<Arc<Worker>, MkError> {
 /// Read `MK_FAST_QMM` as mk reads it: unset or 1 is fast, 0 is exact, and any other value stops mk.
 fn fast_qmm() -> Result<bool, MkError> {
     match std::env::var("MK_FAST_QMM") {
-        Ok(value) if value == "1" => Ok(true),
-        Ok(value) if value == "0" => Ok(false),
-        Ok(value) => Err(MkError::new(format!("MK_FAST_QMM={value}: want 0 or 1"))),
-        Err(std::env::VarError::NotPresent) => Ok(true),
+        Ok(value) => fast_qmm_from(Some(&value)),
+        Err(std::env::VarError::NotPresent) => fast_qmm_from(None),
         Err(error) => Err(MkError::new(format!("MK_FAST_QMM: {error}"))),
+    }
+}
+
+/// The value of one `MK_FAST_QMM` string.
+fn fast_qmm_from(value: Option<&str>) -> Result<bool, MkError> {
+    match value {
+        Some("1") => Ok(true),
+        Some("0") => Ok(false),
+        Some(other) => Err(MkError::new(format!("MK_FAST_QMM={other}: want 0 or 1"))),
+        None => Ok(true),
     }
 }
 
@@ -465,7 +472,7 @@ impl ThreadState {
             .shards
             .iter()
             .map(|path| {
-                CString::new(path.to_string_lossy().as_bytes())
+                CString::new(path.as_os_str().as_bytes())
                     .map_err(|_| MkError::new(format!("the shard path {} holds a NUL", path.display())))
             })
             .collect::<Result<_, _>>()?;
@@ -485,6 +492,7 @@ impl ThreadState {
                 engine,
                 contexts: HashMap::new(),
                 next_id: 0,
+                fast_qmm,
             },
             Spec { identity, limits },
         ))
@@ -509,9 +517,6 @@ impl ThreadState {
                     }
                 }
                 let _ = reply.send(());
-            }
-            Command::Fork { id, reply } => {
-                let _ = reply.send(self.fork(id));
             }
             Command::N { id, reply } => {
                 let _ =
@@ -594,31 +599,6 @@ impl ThreadState {
             ids.push(id);
         }
         Ok(ids)
-    }
-
-    fn fork(&mut self, id: u64) -> Result<u64, String> {
-        let parent = self
-            .contexts
-            .get(&id)
-            .ok_or_else(|| format!("context {id} is not in this engine"))?;
-        let ptr = unsafe { (self.binding.ctx_fork)(self.engine, parent.ptr) };
-        if ptr.is_null() {
-            return Err(format!("mk_ctx_fork({id}) returned no context"));
-        }
-        let capacity = unsafe { (self.binding.ctx_max)(ptr) };
-        let new_id = self.next_id;
-        self.next_id += 1;
-        self.contexts.insert(
-            new_id,
-            Context {
-                ptr,
-                capacity,
-                restored_kv: 0,
-                restored_idx: 0,
-                restored_ple: false,
-            },
-        );
-        Ok(new_id)
     }
 
     /// Run `call` with one context, or report that the id is unknown.
@@ -842,6 +822,19 @@ impl ThreadState {
 
     fn pass(&mut self, request: PassRequest) -> Result<PassReply, PassProblem> {
         let problem = |message: String| PassProblem { message, poison: false };
+        // mk reads MK_FAST_QMM at each pass build. A change after open would change the bits, and the identity
+        // would be wrong, so refuse the pass.
+        match fast_qmm() {
+            Ok(value) if value == self.fast_qmm => {}
+            Ok(value) => {
+                return Err(problem(format!(
+                    "MK_FAST_QMM changed from {} to {} after the engine opened",
+                    u8::from(self.fast_qmm),
+                    u8::from(value)
+                )));
+            }
+            Err(error) => return Err(problem(error.to_string())),
+        }
         let count = request.contexts.len();
         if count == 0 || count > spec::MAX_SEGMENTS as usize {
             return Err(problem(format!(
@@ -952,7 +945,10 @@ fn rounds_to_finite(value: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::rounds_to_finite;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::PathBuf;
+
+    use super::{fast_qmm_from, parse_shards, rounds_to_finite};
 
     #[test]
     fn a_bf16_round_of_a_finite_value_can_be_infinite() {
@@ -963,5 +959,26 @@ mod tests {
         assert!(!rounds_to_finite(f32::INFINITY));
         // f32::MAX rounds to 3.39e38, which bf16 cannot hold.
         assert!(!rounds_to_finite(f32::MAX));
+    }
+
+    #[test]
+    fn a_shard_list_splits_on_colons_and_keeps_raw_bytes() {
+        assert_eq!(
+            parse_shards(b"/a:/b:/c").unwrap(),
+            vec![PathBuf::from("/a"), PathBuf::from("/b"), PathBuf::from("/c")]
+        );
+        assert!(parse_shards(b"/a:/b").is_err());
+        assert!(parse_shards(b"/a::/c").is_err());
+        // A path that is not UTF-8 stays the same bytes.
+        let paths = parse_shards(&[0xff, b':', b'/', b'b', b':', b'/', b'c']).unwrap();
+        assert_eq!(paths[0].as_os_str().as_bytes(), &[0xff]);
+    }
+
+    #[test]
+    fn fast_qmm_has_two_values() {
+        assert_eq!(fast_qmm_from(None), Ok(true));
+        assert_eq!(fast_qmm_from(Some("1")), Ok(true));
+        assert_eq!(fast_qmm_from(Some("0")), Ok(false));
+        assert!(fast_qmm_from(Some("2")).is_err());
     }
 }
