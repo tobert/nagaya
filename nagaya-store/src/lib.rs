@@ -754,6 +754,8 @@ pub struct Store {
     chain: ChainLimits,
     determinism: Determinism,
     bit_dependence: Vec<BitDependence>,
+    /// The largest serial in a quarantine name. `open` sets the maximum; a unit test sets a smaller one.
+    quarantine_serials: u32,
     fail_point: Cell<Option<FailPoint>>,
 }
 
@@ -821,6 +823,7 @@ impl Store {
             chain,
             determinism: Determinism::Always,
             bit_dependence: Vec::new(),
+            quarantine_serials: u32::MAX,
             fail_point: Cell::new(None),
         };
         store.persist()?;
@@ -1297,6 +1300,11 @@ impl Store {
             .filter(|entry| entry.recipe == recipe && entry.quarantine == Some(Quarantine::Tripwire))
             .map(|entry| entry.content_id)
             .collect();
+        // Find every destination name first. A name that is not free must leave the index and the blobs as they are.
+        let moves: Vec<(PathBuf, PathBuf)> = bad
+            .iter()
+            .map(|id| Ok((self.blob_path(id), self.quarantine_path(id)?)))
+            .collect::<Result<_, StoreError>>()?;
         let mut index = self.index.clone();
         index.refused.remove(&recipe);
         for id in &bad {
@@ -1311,7 +1319,7 @@ impl Store {
         for id in &bad {
             self.checked.remove(id);
         }
-        self.move_blobs_to_quarantine(&bad)?;
+        self.move_blobs_to_quarantine(&moves)?;
         Ok(())
     }
 
@@ -1690,14 +1698,12 @@ impl Store {
     }
 
     /// Move cleared blobs to `quarantine/`, and never delete them. A failed move is an error.
-    fn move_blobs_to_quarantine(&self, ids: &[ContentId]) -> Result<(), StoreError> {
-        if ids.is_empty() {
+    fn move_blobs_to_quarantine(&self, moves: &[(PathBuf, PathBuf)]) -> Result<(), StoreError> {
+        if moves.is_empty() {
             return Ok(());
         }
-        for id in ids {
-            let from = self.blob_path(id);
-            let to = self.quarantine_path(id);
-            match std::fs::rename(&from, &to) {
+        for (from, to) in moves {
+            match std::fs::rename(from, to) {
                 Ok(()) => {}
                 // The index no longer names the entry. An absent blob is the state that a crash between
                 // the index write and the move leaves. There is nothing to keep.
@@ -1705,7 +1711,7 @@ impl Store {
                 Err(error) => {
                     return Err(StoreError::Io(format!(
                         "the blob {} did not move to quarantine: {error}",
-                        id.hex()
+                        from.display()
                     )));
                 }
             }
@@ -1715,16 +1721,8 @@ impl Store {
     }
 
     /// The name that no earlier quarantined blob holds. The content id comes first; a serial follows it.
-    fn quarantine_path(&self, id: &ContentId) -> PathBuf {
-        let dir = self.dir.join(QUARANTINE);
-        let name = id.hex();
-        let mut serial = 0u32;
-        let mut path = dir.join(&name);
-        while path.exists() {
-            serial = serial.saturating_add(1);
-            path = dir.join(format!("{name}.{serial}"));
-        }
-        path
+    fn quarantine_path(&self, id: &ContentId) -> Result<PathBuf, StoreError> {
+        next_quarantine_path(&self.dir.join(QUARANTINE), &id.hex(), self.quarantine_serials)
     }
 
     fn persist(&self) -> Result<(), StoreError> {
@@ -1748,6 +1746,30 @@ impl Store {
 
     fn blob_path(&self, id: &ContentId) -> PathBuf {
         self.dir.join("blobs").join(id.hex())
+    }
+}
+
+/// The name that no earlier quarantined blob holds. The content id comes first; a serial follows it.
+/// The search stops at `max_serial`. An error names the blob when every name is taken.
+fn next_quarantine_path(dir: &Path, name: &str, max_serial: u32) -> Result<PathBuf, StoreError> {
+    let mut serial = 0u32;
+    loop {
+        let path = if serial == 0 {
+            dir.join(name)
+        } else {
+            dir.join(format!("{name}.{serial}"))
+        };
+        if !path.exists() {
+            return Ok(path);
+        }
+        match serial.checked_add(1) {
+            Some(next) if next <= max_serial => serial = next,
+            _ => {
+                return Err(StoreError::Io(format!(
+                    "no quarantine name is free for the blob {name}; remove an old quarantined blob"
+                )));
+            }
+        }
     }
 }
 
@@ -1940,5 +1962,66 @@ mod tests {
             block_format: Some("IQ4_NL".to_owned()),
         };
         assert!(check_tensor(&byte).is_ok());
+    }
+
+    #[test]
+    fn a_full_quarantine_reports_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["abc", "abc.1", "abc.2"] {
+            std::fs::write(dir.path().join(name), b"").unwrap();
+        }
+        let result = next_quarantine_path(dir.path(), "abc", 2);
+        assert!(matches!(result, Err(StoreError::Io(_))), "{result:?}");
+    }
+
+    #[test]
+    fn a_full_quarantine_leaves_the_index_and_the_blobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        store.quarantine_serials = 1;
+        let recipe = recipe_root(&[9u8; 32], b"", &[], b"");
+        let snapshot = |seed: u8| Snapshot {
+            tensors: vec![Tensor {
+                name: "state".to_owned(),
+                kind: PartKind::Fixed,
+                dtype: Dtype::U8,
+                shape: vec![4],
+                data: vec![seed; 4],
+                coverage: None,
+                block_format: None,
+            }],
+            parent: None,
+        };
+        fn put<'a>(snapshot: &'a Snapshot, recipe: RecipeId) -> Put<'a> {
+            Put {
+                snapshot,
+                recipe,
+                previous_recipe: None,
+                identity: [1u8; 32],
+                owner: 1,
+                tier: Tier::Host,
+                reason: Reason::Anchor,
+                provenance: None,
+                now_ms: 10,
+            }
+        }
+        let first = store.put(put(&snapshot(1), recipe)).unwrap();
+        let error = store.put(put(&snapshot(2), recipe)).unwrap_err();
+        let second = match error {
+            StoreError::Tripwire { ids, .. } => ids.into_iter().find(|id| *id != first).unwrap(),
+            other => panic!("expected the tripwire, got {other:?}"),
+        };
+        for id in [first, second] {
+            for name in [id.hex(), format!("{}.1", id.hex())] {
+                std::fs::write(dir.path().join(QUARANTINE).join(name), b"").unwrap();
+            }
+        }
+
+        assert!(store.clear_refusal(recipe).is_err());
+        assert_eq!(store.entries().len(), 2);
+        assert!(store.refused().contains(&recipe));
+        assert!(dir.path().join("blobs").join(first.hex()).exists());
+        assert!(dir.path().join("blobs").join(second.hex()).exists());
+        assert_eq!(std::fs::read_dir(dir.path().join(QUARANTINE)).unwrap().count(), 4);
     }
 }
