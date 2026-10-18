@@ -120,7 +120,7 @@ fn a_refusal_changes_nothing() {
 }
 
 #[test]
-fn each_tier_has_its_own_shortfall() {
+fn only_the_short_tier_is_reported() {
     let memory = MemoryLimits {
         mandatory: vec![mandatory("h", Tier::Host, 120), mandatory("d", Tier::Device(0), 50)],
         elastic: Vec::new(),
