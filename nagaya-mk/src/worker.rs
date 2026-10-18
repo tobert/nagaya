@@ -488,6 +488,29 @@ fn file_sha256(path: &Path) -> Result<String, MkError> {
     Ok(hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
+/// Create `count` contexts of `capacity`, or free the ones that were made when a later call fails.
+fn open_contexts(
+    count: u32,
+    capacity: u32,
+    mut new: impl FnMut(u32) -> *mut c_void,
+    mut max: impl FnMut(*mut c_void) -> u32,
+    mut free: impl FnMut(*mut c_void),
+) -> Result<Vec<(*mut c_void, u32)>, String> {
+    let mut made: Vec<(*mut c_void, u32)> = Vec::new();
+    for _ in 0..count {
+        let ptr = new(capacity);
+        if ptr.is_null() {
+            for (ptr, _) in made.drain(..) {
+                free(ptr);
+            }
+            return Err(format!("mk_ctx_new({capacity}) returned no context"));
+        }
+        let max_tokens = max(ptr);
+        made.push((ptr, max_tokens));
+    }
+    Ok(made)
+}
+
 impl ThreadState {
     /// Load the library and open the engine. This runs on the worker thread.
     fn open(paths: &MkPaths) -> Result<(Self, Spec), MkError> {
@@ -607,13 +630,15 @@ impl ThreadState {
                 spec::MAX_CONTEXT
             ));
         }
-        let mut ids = Vec::new();
-        for _ in 0..count {
-            let ptr = unsafe { (self.binding.ctx_new)(self.engine, capacity) };
-            if ptr.is_null() {
-                return Err(format!("mk_ctx_new({capacity}) returned no context"));
-            }
-            let max = unsafe { (self.binding.ctx_max)(ptr) };
+        let made = open_contexts(
+            count,
+            capacity,
+            |capacity| unsafe { (self.binding.ctx_new)(self.engine, capacity) },
+            |ptr| unsafe { (self.binding.ctx_max)(ptr) },
+            |ptr| unsafe { (self.binding.ctx_free)(self.engine, ptr) },
+        )?;
+        let mut ids = Vec::with_capacity(made.len());
+        for (ptr, max) in made {
             let id = self.next_id;
             self.next_id += 1;
             self.contexts.insert(
@@ -1059,10 +1084,38 @@ fn rounds_to_finite(value: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::ffi::c_void;
     use std::os::unix::ffi::OsStrExt;
     use std::path::PathBuf;
 
-    use super::{Aligned, fast_qmm_from, memory_problem, parse_shards, rounds_to_finite, tiles_from};
+    use super::{Aligned, fast_qmm_from, memory_problem, open_contexts, parse_shards, rounds_to_finite, tiles_from};
+
+    #[test]
+    fn a_context_pool_frees_what_it_made_when_a_later_new_fails() {
+        let freed = RefCell::new(Vec::new());
+        let mut calls = 0;
+        let result = open_contexts(
+            3,
+            256,
+            |_capacity| {
+                calls += 1;
+                if calls == 3 {
+                    std::ptr::null_mut()
+                } else {
+                    (calls as usize) as *mut c_void
+                }
+            },
+            |_ptr| 256,
+            |ptr| freed.borrow_mut().push(ptr as usize),
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            freed.into_inner(),
+            vec![1usize, 2],
+            "the made contexts were not all freed"
+        );
+    }
 
     #[test]
     fn tiles_has_two_values() {
