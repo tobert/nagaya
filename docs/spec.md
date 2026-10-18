@@ -291,9 +291,11 @@ tiers (host memory, NVMe) and gets its budgets from the ledger. It replaces thes
 - mkviolet's `council_server` snapshots, its `held::Store`, and the prefix cache in `mk_api`. These are three
   formats and three SHA-256 id schemes on one host.
 
-**Proposed** by deepseek-flash, 2026-10-18. An entry's tier is `host` or `nvme`. The ABI's memory tier, `device(i)`
-or `host`, names where an engine term lives. The store does not use the ABI's memory tier. Reason: 6.1 gives the
-store its own tiers. An entry is host memory or a file, never device memory.
+**The store tier is `host` or `nvme`.** An entry's tier is `host` or `nvme`, apart from the ABI's memory tier. The
+ABI's memory tier, `device(i)` or `host`, names where an engine term lives. The store does not use it. Decided
+2026-10-18.
+
+Reason: 6.1 gives the store its own tiers. An entry is host memory or a file, never device memory.
 
 **6.2 Keys.** A snapshot's content id is the BLAKE3 hash of its sealed bytes. When the snapshot is a piece of a
 chain, the hash includes its parent's content id. A snapshot's recipe is a hash of these items:
