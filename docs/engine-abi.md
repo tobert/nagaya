@@ -280,6 +280,19 @@ The simplest term is `{name: "pass_scratch", tier: device(0), bytes: measured, l
 decode]}`. mk has no call for the size, so the process crate measures it once at start and sets the term. The
 wrapper's host buffers also wait for the process crate (the review's note on finding 9).
 
+### Proposed: test limits of the spin-timeout opt-in and the poisoned set_n path
+
+**Proposed** by deepseek-flash, 2026-10-18. The binding binds `mk_engine_recover_spin_timeouts` and calls it with
+`on = 1` at open (`566446c`). The binding of the symbol has a test. A misspelled symbol makes open fail with an
+undefined-symbol error, and `f99f9c0` quotes that mutation.
+
+Two paths have no test. A forced spin-timeout, and the `-1` to `PassStatus::Poison` path that follows it, need GPU
+contention, so no test in this suite reaches them. The poisoned `set_n` path has no test because mk's `restore_n`
+stops the program on a poisoned context (`engine.hip:775-776`).
+
+Reason: a test that passes when the code is broken is a defect, so the suite reports these limits instead of a false
+check. Amy can decide whether a lab hook for the first case earns its cost.
+
 ## How mkviolet maps
 
 | ABI | mkviolet (`gemma4.rs` unless named) | Notes |
