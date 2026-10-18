@@ -523,16 +523,24 @@ impl Parts for Fake {
 }
 
 impl Coverage for Fake {
-    fn coverage(&self, part: usize, bytes: &[u8]) -> CoverageSpan {
+    fn coverage(&self, state: State, part: usize, bytes: &[u8]) -> CoverageSpan {
         let row_bytes = self.row_bytes(part).map(|bytes| bytes.max(1)).unwrap_or(1);
         let rows = match self.limits.parts.get(part) {
             Some(part) if part.is_row() => bytes.len() as u64 / row_bytes as u64,
             _ => 0,
         };
+        let start = match self
+            .slots
+            .get(Self::slot_id(state))
+            .and_then(|slot| slot.parts.get(part))
+        {
+            Some(PartData::Ring { base, .. }) => *base,
+            _ => 0,
+        };
         CoverageSpan {
             part,
-            start: 0,
-            end: rows,
+            start,
+            end: start + rows,
         }
     }
 

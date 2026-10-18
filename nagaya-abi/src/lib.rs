@@ -489,8 +489,8 @@ pub trait Slots {
 
 /// The coverage capability.
 pub trait Coverage {
-    /// The positions that `bytes` hold for one part.
-    fn coverage(&self, part: PartId, bytes: &[u8]) -> CoverageSpan;
+    /// The positions that `bytes` hold for one part, on one state.
+    fn coverage(&self, state: State, part: PartId, bytes: &[u8]) -> CoverageSpan;
 
     /// True when the coverage fits the slot.
     fn fits(&self, coverage: &CoverageSpan, slot: SlotId) -> Result<(), String>;

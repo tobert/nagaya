@@ -164,10 +164,10 @@ fn seal_flips_one_bit_of_the_fixed_part() {
 fn coverage_fits_both_slot_sizes() {
     let mut engine = FakeAlways::new();
     let coverage = engine.coverage().unwrap();
-    let small = coverage.coverage(1, &[0u8; 8 * 8]);
+    let small = coverage.coverage(State::Slot(0), 1, &[0u8; 8 * 8]);
     assert_eq!((small.start, small.end), (0, 8));
     assert!(coverage.fits(&small, 0).is_ok());
-    let large = coverage.coverage(1, &[0u8; 8 * 16]);
+    let large = coverage.coverage(State::Slot(0), 1, &[0u8; 8 * 16]);
     assert_eq!((large.start, large.end), (0, 16));
     assert!(coverage.fits(&large, 0).is_err());
     assert!(coverage.fits(&large, 1).is_ok());
@@ -282,4 +282,18 @@ fn broken_corruption_is_visible_after_passes() {
     assert_eq!(good_state, expected);
     assert_eq!(broken_state[0] ^ good_state[0], 1);
     assert_eq!(&broken_state[1..], &good_state[1..]);
+}
+
+#[test]
+fn ring_coverage_keeps_the_window_base() {
+    let mut engine = FakeAlways::new();
+    engine.pass(&[token_segment(&[1, 2, 3, 4, 5, 6])], &[]).unwrap();
+    let mut ring = [0u8; 4 * 8];
+    {
+        let parts = engine.parts().unwrap();
+        assert_eq!(parts.part_read(State::Slot(0), 2, &mut ring), Ok(()));
+    }
+    let coverage = engine.coverage().unwrap();
+    let span = coverage.coverage(State::Slot(0), 2, &ring);
+    assert_eq!((span.start, span.end), (2, 6));
 }
