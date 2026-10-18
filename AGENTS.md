@@ -98,9 +98,10 @@ Do them in this order. Each milestone ends with all checks green and one or more
 - `mk_engine_attach` takes a path, not an fd. For an fd from systemd's store, give `/proc/self/fd/<n>`.
 - `mk_ctx_state_write` returns nothing. The wrapper maps mk's result onto the three write results (ABI
   "Capabilities") through `mk_ctx_poisoned`.
-- The nagaya must be the only GPU client (spec 3.1). Before you run GPU tests, check that `megakernel.service` is
-  inactive. If it runs, stop and report. Do not stop the service yourself. In a container with no systemd, ask your
-  reviewer to check it.
+- The nagaya must be the only GPU client (spec 3.1). Before you run GPU tests, check that mk's service is inactive:
+  `systemctl --user is-active megakernel.service`. It is a user unit, so the command without `--user` says
+  "inactive" while it runs. If it runs, stop and report. Do not stop the service yourself. In a container with no
+  systemd, ask your reviewer to check it.
 - mk aborts the process on some bad arguments (`MK_DIE` in `src/engine/capi.hip`). Call `mk_segments_problem`
   before `mk_pass_segments`.
 - mk's HIP device is the device that is current on the calling thread. Make every mk call from one thread.
@@ -142,6 +143,8 @@ have no check. Keep instructions at 20 words or fewer yourself.
 
 ## Working notes
 
-- `signoff.md` is the handoff between sessions; it is never committed. The lasting copy is
-  `~/exomemory/nagaya/signoff.md`.
+- `signoff.md` is the handoff between sessions and seats in a run. Read it first, and keep it current. It is never
+  committed.
 - Commit messages are in STE and end with the attribution lines.
+
+頑張って！
