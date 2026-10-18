@@ -638,9 +638,9 @@ impl ThreadState {
                 "the buffer is {len} bytes; part {part} holds {expected} bytes at n = {n}"
             )));
         }
-        let mut bytes = vec![0u8; len];
-        unsafe { (self.binding.state_read)(self.engine, context.ptr, part, bytes.as_mut_ptr().cast::<c_void>()) };
-        Ok(bytes)
+        let mut bytes = Aligned::zeroed(len);
+        unsafe { (self.binding.state_read)(self.engine, context.ptr, part, bytes.as_mut_ptr()) };
+        Ok(bytes.to_vec())
     }
 
     fn write(&mut self, id: u64, part: u32, bytes: &[u8]) -> Call {
@@ -652,6 +652,8 @@ impl ThreadState {
         let poisoned = unsafe { (self.binding.ctx_poisoned)(ptr) } != 0;
         let n = unsafe { (self.binding.ctx_n)(ptr) };
         let owns_kv = unsafe { (self.binding.ctx_owns_kv)(ptr) } != 0;
+        // mk reads the part as f32 values, so the source must be aligned for them.
+        let bytes = Aligned::copy(bytes);
         match part {
             0..=2 => {
                 if poisoned {
@@ -668,7 +670,7 @@ impl ThreadState {
                         bytes.len()
                     ));
                 }
-                unsafe { (self.binding.state_write)(self.engine, ptr, part, bytes.as_ptr().cast::<c_void>()) };
+                unsafe { (self.binding.state_write)(self.engine, ptr, part, bytes.as_ptr()) };
                 if unsafe { (self.binding.ctx_poisoned)(ptr) } != 0 {
                     return Call::Failed("the write poisoned the context".to_owned());
                 }
@@ -691,8 +693,9 @@ impl ThreadState {
                         bytes.len()
                     ));
                 }
-                let first = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-                let second = i32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+                let history = bytes.to_vec();
+                let first = i32::from_le_bytes([history[0], history[1], history[2], history[3]]);
+                let second = i32::from_le_bytes([history[4], history[5], history[6], history[7]]);
                 for (index, value) in [first, second].into_iter().enumerate() {
                     if value < 0 || value as u32 >= spec::VOCAB {
                         return Call::Refused(format!(
@@ -701,7 +704,7 @@ impl ThreadState {
                         ));
                     }
                 }
-                unsafe { (self.binding.state_write)(self.engine, ptr, part, bytes.as_ptr().cast::<c_void>()) };
+                unsafe { (self.binding.state_write)(self.engine, ptr, part, bytes.as_ptr()) };
                 if unsafe { (self.binding.ctx_poisoned)(ptr) } != 0 {
                     return Call::Failed("the write poisoned the context".to_owned());
                 }
@@ -727,6 +730,8 @@ impl ThreadState {
         if poisoned {
             return Call::Failed("the context is poisoned; free it".to_owned());
         }
+        // mk reads the rows as f32 values, so the source must be aligned for them.
+        let bytes = Aligned::copy(bytes);
         let row = match part {
             3 => spec::KV_ROW_BYTES,
             4 => spec::IDX_ROW_BYTES,
@@ -747,7 +752,7 @@ impl ThreadState {
                 bytes.len()
             ));
         }
-        unsafe { (self.binding.cells_write)(self.engine, ptr, part, n, bytes.as_ptr().cast::<c_void>()) };
+        unsafe { (self.binding.cells_write)(self.engine, ptr, part, n, bytes.as_ptr()) };
         if unsafe { (self.binding.ctx_poisoned)(ptr) } != 0 {
             return Call::Failed("the cells write poisoned the context".to_owned());
         }
@@ -811,10 +816,9 @@ impl ThreadState {
             return Call::Refused("the context is poisoned; free it".to_owned());
         }
         // mk_ctx_round_gdn_bf16 stops the program on a non-finite value, or one that rounds to infinity. Check first.
-        let mut state = vec![0u8; spec::GDN_STATE_BYTES as usize];
-        unsafe { (self.binding.state_read)(self.engine, ptr, 0, state.as_mut_ptr().cast::<c_void>()) };
-        for (index, chunk) in state.as_chunks::<4>().0.iter().enumerate() {
-            let value = f32::from_le_bytes(*chunk);
+        let mut state = Aligned::zeroed(spec::GDN_STATE_BYTES as usize);
+        unsafe { (self.binding.state_read)(self.engine, ptr, 0, state.as_mut_ptr()) };
+        for (index, value) in state.f32_values().enumerate() {
             if !value.is_finite() || !rounds_to_finite(value) {
                 return Call::Refused(format!(
                     "gdn_state[{index}] = {value} is not finite after a bf16 round; mk stops on it"
@@ -944,6 +948,73 @@ impl ThreadState {
     }
 }
 
+/// A byte buffer that is aligned for mk's f32 stores. mk reads and writes a part as f32 values in host memory.
+///
+/// A `Vec<u8>` holds no alignment promise. This buffer holds its bytes in `u64` words, so the pointer is 8-byte
+/// aligned, and it copies to and from bytes without unsafe code.
+struct Aligned {
+    words: Vec<u64>,
+    len: usize,
+}
+
+impl Aligned {
+    /// A zeroed buffer of `len` bytes.
+    fn zeroed(len: usize) -> Self {
+        Self {
+            words: vec![0u64; len.div_ceil(8)],
+            len,
+        }
+    }
+
+    /// A buffer that holds a copy of `bytes`.
+    fn copy(bytes: &[u8]) -> Self {
+        let mut buffer = Self::zeroed(bytes.len());
+        for (word, chunk) in buffer.words.iter_mut().zip(bytes.chunks(8)) {
+            let mut piece = [0u8; 8];
+            piece[..chunk.len()].copy_from_slice(chunk);
+            *word = u64::from_le_bytes(piece);
+        }
+        buffer
+    }
+
+    /// The buffer's length in bytes.
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    /// The bytes of the buffer.
+    fn to_vec(&self) -> Vec<u8> {
+        self.words
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .take(self.len)
+            .collect()
+    }
+
+    /// The buffer as f32 values, in order, for a buffer that holds f32 data.
+    fn f32_values(&self) -> impl Iterator<Item = f32> + '_ {
+        (0..self.len / 4).map(move |index| {
+            let word = self.words[index / 2];
+            let bits = if index % 2 == 0 {
+                word as u32
+            } else {
+                (word >> 32) as u32
+            };
+            f32::from_bits(bits)
+        })
+    }
+
+    /// The pointer for mk to read.
+    fn as_ptr(&self) -> *const c_void {
+        self.words.as_ptr().cast()
+    }
+
+    /// The pointer for mk to write.
+    fn as_mut_ptr(&mut self) -> *mut c_void {
+        self.words.as_mut_ptr().cast()
+    }
+}
+
 /// True when a finite f32 rounds to a finite bf16 under round-to-nearest, ties-to-even.
 fn rounds_to_finite(value: f32) -> bool {
     let bits = value.to_bits();
@@ -956,7 +1027,28 @@ mod tests {
     use std::os::unix::ffi::OsStrExt;
     use std::path::PathBuf;
 
-    use super::{fast_qmm_from, memory_problem, parse_shards, rounds_to_finite};
+    use super::{Aligned, fast_qmm_from, memory_problem, parse_shards, rounds_to_finite};
+
+    #[test]
+    fn an_aligned_buffer_keeps_its_bytes_and_its_alignment() {
+        let source: Vec<u8> = (0..19u8).collect();
+        let buffer = Aligned::copy(&source);
+        assert_eq!(buffer.to_vec(), source);
+        assert_eq!(buffer.words.len(), 3, "19 bytes take three 8-byte words");
+        assert_eq!(
+            buffer.as_ptr() as usize % std::mem::align_of::<u64>(),
+            0,
+            "the buffer is not 8-byte aligned"
+        );
+        let zeroed = Aligned::zeroed(13);
+        assert_eq!(zeroed.to_vec(), vec![0u8; 13]);
+        let values: Vec<u8> = [1.0f32, -2.5, 3.25]
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        let floats: Vec<f32> = Aligned::copy(&values).f32_values().collect();
+        assert_eq!(floats, vec![1.0, -2.5, 3.25]);
+    }
 
     #[test]
     fn a_load_that_leaves_less_than_the_floor_is_refused() {
