@@ -12,7 +12,6 @@ fn job(id: JobId, class: Class, priority: i64, arrival_ms: u64, engine: u32, qua
         quanta: quanta.iter().copied().collect(),
         admitted: true,
         inputs_present: true,
-        segments_exact: false,
         state: JobState::Ready,
         balance_ms: 0,
         cancel_requested: false,
@@ -196,10 +195,8 @@ fn a_running_quantum_is_not_preempted() {
 
 #[test]
 fn ready_segments_of_one_class_share_a_pass() {
-    let mut first = job(1, Class::Batch, 0, 0, 0, &[Kind::Prefill]);
-    first.segments_exact = true;
-    let mut second = job(2, Class::Batch, 0, 1, 0, &[Kind::Prefill]);
-    second.segments_exact = true;
+    let first = job(1, Class::Batch, 0, 0, 0, &[Kind::Prefill]);
+    let second = job(2, Class::Batch, 0, 1, 0, &[Kind::Prefill]);
     let other_engine = job(3, Class::Batch, 0, 2, 1, &[Kind::Prefill]);
     let mut not_ready = job(4, Class::Batch, 0, 3, 0, &[Kind::Prefill]);
     not_ready.admitted = false;

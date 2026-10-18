@@ -80,8 +80,6 @@ pub struct Job {
     pub admitted: bool,
     /// True when the inputs of the next quantum are present.
     pub inputs_present: bool,
-    /// True when the engine allows segments in one pass.
-    pub segments_exact: bool,
     /// The job state.
     pub state: JobState,
     /// The owed balance in milliseconds.
