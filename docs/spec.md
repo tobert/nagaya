@@ -442,9 +442,9 @@ All engines share the SSE framing. Speculative drafts change how the sampler use
 prompt-lookup drafts). Thus a request says if drafts are on, and the reported seed includes that setting.
 
 **11.3 Text front-end.** Each model family has its own text rules. They are a tokenizer, a template, escapes for
-special tokens in client text, and parsers for tool calls and thinking. The nagaya holds one library per family (ontology
-"Family"), and the engine identity selects it by its `tokenizer_hash` and `template`. Engines never see text. They
-take tokens, rows, or both (D2).
+special tokens in client text, and parsers for tool calls and thinking. The nagaya holds one library per family
+(ontology "Family"), and the engine identity selects it by its `tokenizer_hash` and `template`. Engines never see
+text. They take tokens, rows, or both (D2).
 
 Decided 2026-10-17 (Amy: "oh, yes, b for sure, plus that can support the tokenize apis nicely for when we bring back
 kaijutsu's semantic search and stuff"). Thus one renderer serves every engine of a family, on any vendor's card.

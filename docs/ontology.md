@@ -191,9 +191,9 @@ mk's `YieldHook` (`lab/paint/yieldhook.py`) showed this for diffusion. A paused 
 with a maximum pixel difference of 0.
 
 **Family.** The text rules that a set of models share. They are a tokenizer, a chat template, the escapes for
-special tokens, and the parsers for tool calls and thinking. Qwen, Gemma and LFM are families. The nagaya holds one library per
-family and selects it by the engine identity's `tokenizer_hash` and `template` (`docs/spec.md` 11.3). An engine
-never sees text.
+special tokens, and the parsers for tool calls and thinking. Qwen, Gemma and LFM are families. The nagaya holds
+one library per family and selects it by the engine identity's `tokenizer_hash` and `template` (`docs/spec.md`
+11.3). An engine never sees text.
 
 **Kind.** What a quantum does: `read`, `prefill`, `decode`, `embed`, `copy`, `step` (an image step), or `train` (a
 micro-batch) (`docs/spec.md` 5.2). Metrics and the cost model use kinds. A kind does not set urgency; a class does.
