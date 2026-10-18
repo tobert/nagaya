@@ -3,8 +3,8 @@
 use std::sync::{Arc, OnceLock};
 
 use nagaya_abi::{
-    Coverage, Engine, Identity, Limits, Output, PartError, Parts, PassError, PassOut, PassStatus, Seal, SealError,
-    Segment, SegmentInputs, Slots, State, Tap, WriteResult,
+    Coverage, Engine, Identity, Limits, Output, PartError, Parts, PassError, PassErrorKind, PassOut, PassStatus, Seal,
+    SealError, Segment, SegmentInputs, Slots, State, Tap, WriteResult,
 };
 
 use crate::spec;
@@ -94,7 +94,7 @@ impl MkEngine {
     fn failed(&mut self, message: String) -> PassError {
         self.last_error = Some(message.clone());
         PassError {
-            status: PassStatus::Ok,
+            kind: PassErrorKind::Ran(PassStatus::Ok),
             message,
         }
     }
@@ -121,7 +121,7 @@ fn logit_outputs(bytes: &[u8], wants: &[bool], row: usize) -> Result<Vec<Output>
         let end = start + row;
         let Some(slice) = bytes.get(start..end) else {
             return Err(PassError {
-                status: PassStatus::Poison,
+                kind: PassErrorKind::Ran(PassStatus::Poison),
                 message: format!(
                     "mk returned {} logits bytes; segment {index} needs bytes {start}..{end}",
                     bytes.len()
@@ -242,7 +242,7 @@ impl Engine for MkEngine {
             Err(PassProblem { message, poison }) => {
                 self.last_error = Some(message.clone());
                 return Err(PassError {
-                    status: if poison { PassStatus::Poison } else { PassStatus::Ok },
+                    kind: PassErrorKind::Ran(if poison { PassStatus::Poison } else { PassStatus::Ok }),
                     message,
                 });
             }
@@ -410,7 +410,7 @@ impl Seal for MkEngine {
 
 #[cfg(test)]
 mod tests {
-    use nagaya_abi::PassStatus;
+    use nagaya_abi::{PassErrorKind, PassStatus};
 
     use super::logit_outputs;
 
@@ -418,8 +418,8 @@ mod tests {
     fn a_short_logits_buffer_is_a_fault_after_the_pass() {
         let error = logit_outputs(&[0u8; 16], &[true, true], 16).expect_err("a short buffer must fail");
         assert_eq!(
-            error.status,
-            PassStatus::Poison,
+            error.kind,
+            PassErrorKind::Ran(PassStatus::Poison),
             "the pass ran, so a short buffer poisons the state"
         );
         assert_eq!(

@@ -845,7 +845,7 @@ fn run_pass<E: Engine + ?Sized>(engine: &mut E, segment: &Segment, gate: &'stati
         Ok(output) => Err(Failure::new(gate, format!("the pass returned {:?}", output.status))),
         Err(error) => Err(Failure::new(
             gate,
-            format!("the pass failed: {:?}: {}", error.status, error.message),
+            format!("the pass failed: {:?}: {}", error.kind, error.message),
         )),
     }
 }

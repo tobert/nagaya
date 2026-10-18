@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use nagaya_abi::fake::{FakeAlways, FakeBroken};
 use nagaya_abi::{
     Capability, ChainLimits, Coverage, CoverageSpan, Determinism, Dtype, ElasticTerm, Engine, Identity, Inputs,
-    Lifetime, Limits, MandatoryTerm, MemoryLimits, PartError, PartId, PartKind, PartLimits, Parts, PassError, PassOut,
-    PassStatus, Segment, SegmentInputs, SlotLimit, Slots, Stage, State, Tap, Tier, WriteResult,
+    Lifetime, Limits, MandatoryTerm, MemoryLimits, PartError, PartId, PartKind, PartLimits, Parts, PassError,
+    PassErrorKind, PassOut, PassStatus, Segment, SegmentInputs, SlotLimit, Slots, Stage, State, Tap, Tier, WriteResult,
 };
 use nagaya_conformance::{
     Admit, Outcome, admission_refusal_changes_nothing, park_and_restore, quantum_identity, quantum_isolation,
@@ -475,13 +475,13 @@ impl Engine for CellsOnlyConstantRead {
         for segment in segments {
             let SegmentInputs::Tokens(tokens) = &segment.inputs else {
                 return Err(PassError {
-                    status: PassStatus::Poison,
+                    kind: PassErrorKind::Ran(PassStatus::Poison),
                     message: "the variant takes tokens".to_owned(),
                 });
             };
             let Some(rows) = self.rows_mut(segment.state) else {
                 return Err(PassError {
-                    status: PassStatus::Poison,
+                    kind: PassErrorKind::Ran(PassStatus::Poison),
                     message: "the variant has no such slot".to_owned(),
                 });
             };
@@ -655,7 +655,7 @@ impl Engine for NeedsTheAsk {
     fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
         if segments.iter().any(|segment| segment.outputs.logit_rows.is_empty()) {
             return Err(PassError {
-                status: PassStatus::Ok,
+                kind: PassErrorKind::Ran(PassStatus::Ok),
                 message: "the segment asks for no logit row".to_owned(),
             });
         }

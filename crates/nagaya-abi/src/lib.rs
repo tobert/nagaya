@@ -411,11 +411,20 @@ pub struct PassOut {
     pub outputs: Vec<Output>,
 }
 
-/// A pass that did not run.
+/// Why a pass did not give its outputs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PassErrorKind {
+    /// The engine refused the pass before it ran. Nothing changed.
+    Refused,
+    /// The pass ran and gave no outputs. The status says what it did to its contexts.
+    Ran(PassStatus),
+}
+
+/// A pass that did not give its outputs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PassError {
-    /// The pass status.
-    pub status: PassStatus,
+    /// Whether the pass ran, and what it did to its contexts.
+    pub kind: PassErrorKind,
     /// Why the pass failed.
     pub message: String,
 }

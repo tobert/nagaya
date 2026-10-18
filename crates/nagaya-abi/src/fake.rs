@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, VecDeque};
 
 use crate::{
     Capability, ChainLimits, Coverage, CoverageSpan, Determinism, Dtype, Engine, Identity, Inputs, Limits,
-    MemoryLimits, Output, PartError, PartKind, PartLimits, Parts, PassError, PassOut, PassStatus, Seal, SealError,
-    Segment, SegmentInputs, SlotLimit, Stage, State, Tap, WriteResult,
+    MemoryLimits, Output, PartError, PartKind, PartLimits, Parts, PassError, PassErrorKind, PassOut, PassStatus, Seal,
+    SealError, Segment, SegmentInputs, SlotLimit, Stage, State, Tap, WriteResult,
 };
 
 /// The ring window in rows.
@@ -172,7 +172,7 @@ impl Fake {
                 SegmentInputs::Tokens(tokens) => tokens,
                 _ => {
                     return Err(PassError {
-                        status: PassStatus::Poison,
+                        kind: PassErrorKind::Ran(PassStatus::Poison),
                         message: "the fake takes tokens".to_owned(),
                     });
                 }
@@ -189,20 +189,20 @@ impl Fake {
             let count = tokens.len() as u64;
             if self.cells_write(segment.state, CELLS_PART, count, &rows) != WriteResult::Ok {
                 return Err(PassError {
-                    status: PassStatus::Poison,
+                    kind: PassErrorKind::Ran(PassStatus::Poison),
                     message: "the fake could not append the cells".to_owned(),
                 });
             }
             if self.cells_write(segment.state, RING_PART, count, &rows) != WriteResult::Ok {
                 return Err(PassError {
-                    status: PassStatus::Poison,
+                    kind: PassErrorKind::Ran(PassStatus::Poison),
                     message: "the fake could not advance the ring".to_owned(),
                 });
             }
             let state_bytes = state_from_tokens(tokens);
             if self.part_write(segment.state, STATE_PART, &state_bytes) != WriteResult::Ok {
                 return Err(PassError {
-                    status: PassStatus::Poison,
+                    kind: PassErrorKind::Ran(PassStatus::Poison),
                     message: "the fake could not write the state".to_owned(),
                 });
             }
