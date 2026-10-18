@@ -1,0 +1,17 @@
+[workspace]
+members = [
+    "nagaya-abi",
+    "nagaya-store",
+    "nagaya-ledger",
+    "nagaya-sched",
+    "nagaya-mk",
+    "nagaya-conformance",
+    "nagaya",
+]
+resolver = "3"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
