@@ -1,5 +1,18 @@
 //! The process exit codes (spec 10.4).
 
+use std::any::Any;
+
+/// The text of a panic payload.
+pub fn panic_text(payload: &(dyn Any + Send)) -> String {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        (*text).to_owned()
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text.clone()
+    } else {
+        "a worker thread panicked".to_owned()
+    }
+}
+
 /// Why the process stopped. The number is the exit code of spec 10.4.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExitCode {

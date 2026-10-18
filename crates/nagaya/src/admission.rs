@@ -73,11 +73,12 @@ impl Registry {
         self.factories.get(kind).cloned()
     }
 
-    /// Make a registry with the fake engine. The tests use it.
+    /// Make a registry with the fake engine and the fake that panics on open. The tests use it.
     #[cfg(feature = "fake")]
     pub fn with_fake() -> Self {
         let mut registry = Self::new();
         registry.register("fake", Box::new(FakeFactory));
+        registry.register("fake-panic", Box::new(PanicFactory));
         registry
     }
 }
@@ -167,6 +168,21 @@ impl Factory for FakeFactory {
 
     fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
         Ok(Box::new(FakeAlways::new()))
+    }
+}
+
+/// The factory of a fake engine that panics on open. The tests use it for the panic path (spec 8.5).
+#[cfg(feature = "fake")]
+pub struct PanicFactory;
+
+#[cfg(feature = "fake")]
+impl Factory for PanicFactory {
+    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+        Ok(FakeAlways::new().limits())
+    }
+
+    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+        panic!("the fake engine cannot open")
     }
 }
 

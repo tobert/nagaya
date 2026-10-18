@@ -1,6 +1,5 @@
 //! The process threads: the ledger, the watchdog, and one thread per device group (spec 3.2).
 
-use std::any::Any;
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
@@ -13,7 +12,7 @@ use nagaya_abi::{DeviceId, Dtype, Engine, Limits, PartLimits, State};
 use nagaya_ledger::Ledger;
 
 use crate::admission::{AdmitError, Admitted, Factory, Registry, admit};
-use crate::exit::ExitCode;
+use crate::exit::{ExitCode, panic_text};
 use crate::inventory::Inventory;
 use crate::placement::{self, DeviceGroup};
 use crate::profile::{EnginePlacement, PlacementProfile};
@@ -82,19 +81,8 @@ impl StopReport {
 /// Run one worker body. A panic becomes an event for the main thread (spec 8.5).
 fn guard(thread: &'static str, events: &Sender<Event>, body: impl FnOnce()) {
     if let Err(payload) = catch_unwind(AssertUnwindSafe(body)) {
-        let message = panic_message(payload.as_ref());
+        let message = panic_text(payload.as_ref());
         let _ = events.send(Event::Panicked { thread, message });
-    }
-}
-
-/// The text of a panic payload.
-fn panic_message(payload: &(dyn Any + Send)) -> String {
-    if let Some(text) = payload.downcast_ref::<&str>() {
-        (*text).to_owned()
-    } else if let Some(text) = payload.downcast_ref::<String>() {
-        text.clone()
-    } else {
-        "a worker thread panicked".to_owned()
     }
 }
 
