@@ -427,10 +427,13 @@ The restart policy follows mk's unit: `Restart=on-failure`, `RestartSec=30`, and
 ## 11. Client API
 
 **11.1 Council.** The nagaya serves council v2 for all its engines, and v1 while clients still use it. The contract
-is gogi (`~/src/gogi`: `docs/council-api-v2.md`, types in `gogi-proto`, a conformance suite in `gogi-conformance`). It routes each request by its `model` field. The API has contexts, specs, decisions,
-snapshots, pins, reads, and generations with riding decisions (mkviolet `council_v2.rs`). Pooling and the decision
-numbers come from `gogi_proto::math`, which all engines share. The council `identity.engine` covers two things: the
-engine identity, and the host code that turns logits into decisions. (mk: `libmkengine:<sha>+numbers:<sha>`.)
+is gogi (`~/src/gogi`): `docs/council-api-v2.md`, the types in `gogi-proto`, and the suite in `gogi-conformance`.
+The nagaya routes each request by its `model` field. The API has contexts, specs, decisions, snapshots, pins, reads,
+and generations with riding decisions (mkviolet `council_v2.rs`).
+
+Pooling and the decision numbers come from `gogi_proto::math`, which all engines share. The council
+`identity.engine` covers two things: the engine identity, and the host code that turns logits into decisions. (mk:
+`libmkengine:<sha>+numbers:<sha>`.)
 
 **11.2 Generation.** The host runs one sampler for all engines. It applies top_k, top_p, min_p, then temperature.
 The draw is seeded, and the response reports the seed. Each engine has its own defaults.
