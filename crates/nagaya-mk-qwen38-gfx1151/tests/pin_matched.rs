@@ -11,7 +11,7 @@ fn a_matching_pin_lets_open_reach_the_library() {
     let pin = install.digest();
     // SAFETY: this binary holds one test, so no other test reads the environment.
     unsafe { install.set_env(Some(&pin)) };
-    let error = match nagaya_mk::open() {
+    let error = match nagaya_mk_qwen38_gfx1151::open() {
         // The fake library is not an ELF file, so a load of it cannot succeed. Success is not the point here.
         Ok(_) => panic!("the fake library loaded"),
         Err(error) => error,

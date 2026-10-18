@@ -223,10 +223,11 @@ pub fn pass_scratch_bytes() -> u64 {
 /// setup for the first pass, which the engine also keeps for its life. The ledger holds the larger number, so it
 /// never under-declares the pool.
 ///
-/// Measured on 2026-10-18 on gfx1151, by `cargo run -p nagaya-mk --example pass_scratch --features hip`, in fresh
-/// engines. The reading is 323 731 456 or 323 735 552 bytes: one HIP page apart. The declared value is the larger
-/// reading rounded up to 309 MiB. The one-page movement is why the value is rounded: an exact maximum would refuse a
-/// library whose pool did not change.
+/// Measured on 2026-10-18 on gfx1151, by
+/// `cargo run -p nagaya-mk-qwen38-gfx1151 --example pass_scratch --features hip`, in fresh engines. The reading is
+/// 323 731 456 or 323 735 552 bytes: one HIP page apart. The declared value is the larger reading rounded up to
+/// 309 MiB. The one-page movement is why the value is rounded: an exact maximum would refuse a library whose pool
+/// did not change.
 pub const PASS_SCRATCH_BYTES: u64 = 324_009_984;
 
 /// The reason that a measured pass scratch is past the declared constant, or `Ok` when it fits.

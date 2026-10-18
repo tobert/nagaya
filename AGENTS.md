@@ -57,12 +57,17 @@ The seven crates live in directories under `crates/`. Use these crates:
 | `nagaya-store` | canonical safetensors, content ids, recipes, entries, lookup, eviction | 6, D3, D10 |
 | `nagaya-ledger` | budgets, terms, admission, shares, reclaim order | 4, D9 |
 | `nagaya-sched` | jobs, quanta, classes, the order of ready quanta | 5 |
-| `nagaya-mk` | the mk engine: an FFI binding to `libmkengine.so` and the `Engine` trait on top | ABI "How mk maps" |
+| `nagaya-mk-qwen38-gfx1151` | the mk engine: an FFI binding to `libmkengine.so` and the `Engine` trait on top | ABI "How mk maps" |
 | `nagaya-conformance` | the conformance suite (8.3), generic over the `Engine` trait | 8.3 |
 | `nagaya` | the process: bootstrap config, threads, HTTP, gossip, systemd | 2, 3, 9-11 |
 
-Keep pure logic out of `nagaya-mk` and `nagaya`. The ledger, the store and the scheduler run in tests with no GPU.
-The ledger is a plain owned type with `&mut self` methods. Do not wrap it in a lock: one thread owns it (3.2).
+Crate names follow `nagaya-<kind>-<model>-<target>`. The kind `mk` is a megakernel engine. The model is the family
+and version without dots. The target is the compiler's device target, for example `gfx1151`. The device count is the
+profile's business.
+
+Keep pure logic out of `nagaya-mk-qwen38-gfx1151` and `nagaya`. The ledger, the store and the scheduler run in tests
+with no GPU. The ledger is a plain owned type with `&mut self` methods. Do not wrap it in a lock: one thread owns it
+(3.2).
 
 ### Milestones
 
@@ -142,10 +147,11 @@ python3 tools/ste_check.py README.md AGENTS.md docs/*.md
 awk 'length > 120 && !/^\|/ {print FILENAME":"FNR}' README.md AGENTS.md docs/*.md
 ```
 
-Run `cargo fmt --all` often, not only before a commit. On gfx1151host, after a change to `nagaya-mk`, also run this:
+Run `cargo fmt --all` often, not only before a commit. On gfx1151host, after a change to
+`nagaya-mk-qwen38-gfx1151`, also run this:
 
 ```
-cargo test -p nagaya-mk --tests --features hip -- --test-threads=1
+cargo test -p nagaya-mk-qwen38-gfx1151 --tests --features hip -- --test-threads=1
 ```
 
 `cargo test --lib` does not compile integration tests. Name `--tests`.

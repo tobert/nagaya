@@ -9,7 +9,7 @@ use nagaya_abi::{
     Engine, OutputsWanted, PartError, PassErrorKind, SealError, Segment, SegmentInputs, State, Tap, WriteResult,
 };
 use nagaya_conformance::{compare_f32_rows, run_all};
-use nagaya_mk::open;
+use nagaya_mk_qwen38_gfx1151::open;
 
 /// A finite f32 pattern as bytes.
 fn finite_bytes(len: usize, seed: f32) -> Vec<u8> {

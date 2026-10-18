@@ -11,7 +11,7 @@ fn open_refuses_a_library_whose_digest_is_not_the_pin() {
     let wrong = "0".repeat(64);
     // SAFETY: this binary holds one test, so no other test reads the environment.
     unsafe { install.set_env(Some(&wrong)) };
-    let error = match nagaya_mk::open() {
+    let error = match nagaya_mk_qwen38_gfx1151::open() {
         Ok(_) => panic!("open accepted a library whose digest is not the pin"),
         Err(error) => error,
     };

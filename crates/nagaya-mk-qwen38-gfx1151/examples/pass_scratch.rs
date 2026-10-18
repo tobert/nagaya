@@ -7,7 +7,7 @@
 use nagaya_abi::Engine;
 
 fn main() {
-    let engine = nagaya_mk::open().expect("open mk");
+    let engine = nagaya_mk_qwen38_gfx1151::open().expect("open mk");
     let declared = engine
         .limits()
         .memory
