@@ -1275,10 +1275,33 @@ impl Store {
     }
 
     /// Clear a tripwire refusal after a person knows the cause.
+    /// It removes the recipe's quarantined entries and their blobs.
     pub fn clear_refusal(&mut self, recipe: RecipeId) -> Result<(), StoreError> {
-        if self.index.refused.remove(&recipe) {
-            self.persist()?;
+        if !self.index.refused.contains(&recipe) {
+            return Ok(());
         }
+        let bad: Vec<ContentId> = self
+            .index
+            .entries
+            .values()
+            .filter(|entry| entry.recipe == recipe && entry.quarantine == Some(Quarantine::Tripwire))
+            .map(|entry| entry.content_id)
+            .collect();
+        let mut index = self.index.clone();
+        index.refused.remove(&recipe);
+        for id in &bad {
+            index.entries.remove(id);
+            index.pins.remove(id);
+        }
+        let previous = std::mem::replace(&mut self.index, index);
+        if let Err(error) = self.persist() {
+            self.index = previous;
+            return Err(error);
+        }
+        for id in &bad {
+            self.checked.remove(id);
+        }
+        self.remove_blobs(&bad)?;
         Ok(())
     }
 

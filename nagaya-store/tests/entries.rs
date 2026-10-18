@@ -269,6 +269,7 @@ fn a_person_clears_a_tripwire() {
     assert!(try_put(&mut store, &base_snapshot(2), recipe, None, 0, Tier::Host, 10).is_err());
     assert!(store.clear_entry(&first).is_err());
     store.clear_refusal(recipe).unwrap();
+    assert!(!store.entries().contains_key(&first));
     let fresh = put(&mut store, &base_snapshot(3), recipe, 0);
     assert_eq!(lookup(&mut store, recipe).unwrap(), vec![fresh]);
 }
@@ -633,6 +634,8 @@ fn a_content_id_quarantine_leaves_the_recipe_servable() {
     assert_eq!(entry.state, EntryState::Quarantined);
     assert_eq!(entry.quarantine, Some(Quarantine::ContentId));
     assert!(!store.refused().contains(&recipe));
+    store.clear_refusal(recipe).unwrap();
+    assert_eq!(store.entries().get(&a).unwrap().state, EntryState::Quarantined);
 
     std::fs::write(&blob, base_snapshot(1).encode().unwrap()).unwrap();
     store.clear_entry(&a).unwrap();
@@ -1276,6 +1279,27 @@ fn an_unreadable_blob_quarantines_with_read() {
 }
 
 #[test]
+fn clearing_a_tripwire_removes_its_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let recipe = recipe(167);
+    let first = put(&mut store, &base_snapshot(1), recipe, 1);
+    let error = try_put(&mut store, &base_snapshot(2), recipe, None, 1, Tier::Host, 10).unwrap_err();
+    let second = match error {
+        StoreError::Tripwire { ids, .. } => ids.into_iter().find(|id| *id != first).unwrap(),
+        other => panic!("expected the tripwire, got {other:?}"),
+    };
+    store.clear_refusal(recipe).unwrap();
+    assert!(!store.entries().contains_key(&first));
+    assert!(!store.entries().contains_key(&second));
+    assert!(!dir.path().join("blobs").join(first.hex()).exists());
+    assert!(!dir.path().join("blobs").join(second.hex()).exists());
+    assert!(store.refused().is_empty());
+    let fresh = put(&mut store, &base_snapshot(3), recipe, 1);
+    assert_eq!(lookup(&mut store, recipe).unwrap(), vec![fresh]);
+}
+
+#[test]
 fn a_tripwire_quarantine_clears_with_its_recipe() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(dir.path()).unwrap();
@@ -1284,6 +1308,7 @@ fn a_tripwire_quarantine_clears_with_its_recipe() {
     assert!(try_put(&mut store, &base_snapshot(2), recipe, None, 1, Tier::Host, 10).is_err());
     assert!(store.clear_entry(&first).is_err());
     store.clear_refusal(recipe).unwrap();
+    assert!(!store.entries().contains_key(&first));
     let fresh = put(&mut store, &base_snapshot(3), recipe, 1);
     assert_eq!(lookup(&mut store, recipe).unwrap(), vec![fresh]);
 }
