@@ -38,6 +38,25 @@ fn equal_coverage_gives_equal_bytes() {
     let rows = [(1, 0, 6), (2, 2, 4)];
     let small = snapshot_from_engine(&mut small, State::Slot(0), &rows).unwrap();
     let large = snapshot_from_engine(&mut large, State::Slot(1), &rows).unwrap();
+
+    let names: Vec<&str> = small.tensors.iter().map(|tensor| tensor.name.as_str()).collect();
+    assert_eq!(names, ["state", "cells", "ring"]);
+    let kinds: Vec<PartKind> = small.tensors.iter().map(|tensor| tensor.kind).collect();
+    assert_eq!(kinds, [PartKind::Fixed, PartKind::Cells, PartKind::Ring]);
+    assert_eq!(small.tensors[0].shape, vec![16]);
+    assert_eq!(small.tensors[1].shape, vec![6, 8]);
+    assert_eq!(small.tensors[2].shape, vec![4, 8]);
+    assert_eq!(small.tensors[0].coverage, None);
+    assert_eq!(small.tensors[1].coverage, Some((0, 6)));
+    assert_eq!(small.tensors[2].coverage, Some((2, 6)));
+    assert_eq!(small.tensors[0].data.len(), 16);
+    assert_eq!(small.tensors[1].data.len(), 48);
+    let expected_ring: Vec<u8> = [3u8, 4, 5, 6]
+        .into_iter()
+        .flat_map(|token| [token, 0, 0, 0, token, 0, 0, 0])
+        .collect();
+    assert_eq!(small.tensors[2].data, expected_ring);
+
     assert_eq!(small.encode().unwrap(), large.encode().unwrap());
     assert_eq!(small.content_id().unwrap(), large.content_id().unwrap());
 }
@@ -91,7 +110,6 @@ fn the_fixture_keeps_the_canonical_bytes() {
 fn the_recipe_is_deterministic_and_chains() {
     let identity = [1u8; 32];
     let root = recipe_root(&identity, b"geometry", &[b"approx".to_vec()], b"lab");
-    assert_eq!(root, recipe_root(&identity, b"geometry", &[b"approx".to_vec()], b"lab"));
     assert_eq!(
         root.hex(),
         "668bd9fc91f16b4f7fd5bdaaffa1b4ce53e32537111956f26bb85f608cb8170a"
@@ -100,13 +118,22 @@ fn the_recipe_is_deterministic_and_chains() {
         root,
         recipe_root(&[2u8; 32], b"geometry", &[b"approx".to_vec()], b"lab")
     );
+    assert_ne!(
+        root,
+        recipe_root(&identity, b"other geometry", &[b"approx".to_vec()], b"lab")
+    );
+    assert_ne!(root, recipe_root(&identity, b"geometry", &[b"other".to_vec()], b"lab"));
+    assert_ne!(
+        root,
+        recipe_root(&identity, b"geometry", &[b"approx".to_vec()], b"other lab")
+    );
     let first = recipe_boundary(&root, &[1, 2, 3], 3);
-    assert_eq!(first, recipe_boundary(&root, &[1, 2, 3], 3));
     assert_eq!(
         first.hex(),
         "93cf3f0db6369a63ad2c6541071ee33a0937bfcaefdeb1739c68a946cbbb00e7"
     );
     assert_ne!(first, recipe_boundary(&root, &[1, 2, 4], 3));
+    assert_ne!(first, recipe_boundary(&root, &[1, 2, 3], 4));
     let other_root = recipe_root(&[2u8; 32], b"geometry", &[b"approx".to_vec()], b"lab");
     assert_ne!(first, recipe_boundary(&other_root, &[1, 2, 3], 3));
 }
