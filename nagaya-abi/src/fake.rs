@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, VecDeque};
 
 use crate::{
     Capability, ChainLimits, Coverage, CoverageSpan, Determinism, Dtype, Engine, Identity, Inputs, Limits,
-    MemoryLimits, PartError, PartKind, PartLimits, Parts, PassError, PassOut, Seal, SealError, Segment, SlotLimit,
-    Stage, State, Tap, WriteResult,
+    MemoryLimits, Output, PartError, PartKind, PartLimits, Parts, PassError, PassOut, PassStatus, Seal, SealError,
+    Segment, SegmentInputs, SlotLimit, Stage, State, Tap, WriteResult,
 };
 
 /// The ring window in rows.
@@ -16,6 +16,9 @@ const STATE_PART: usize = 0;
 
 /// The cells part index.
 const CELLS_PART: usize = 1;
+
+/// The ring part index.
+const RING_PART: usize = 2;
 
 /// The deterministic fake engine.
 pub struct FakeAlways(pub(crate) Fake);
@@ -153,8 +156,57 @@ impl Fake {
         }
     }
 
-    fn pass(&mut self, _segments: &[Segment], _taps: &[Tap]) -> Result<PassOut, PassError> {
-        Ok(PassOut::default())
+    fn pass(&mut self, segments: &[Segment], _taps: &[Tap]) -> Result<PassOut, PassError> {
+        let mut outputs = Vec::new();
+        for segment in segments {
+            let tokens = match &segment.inputs {
+                SegmentInputs::Tokens(tokens) => tokens,
+                _ => {
+                    return Err(PassError {
+                        status: PassStatus::Poison,
+                        message: "the fake takes tokens".to_owned(),
+                    });
+                }
+            };
+            let rows: Vec<u8> = tokens
+                .iter()
+                .flat_map(|token| {
+                    let bytes = token.to_le_bytes();
+                    [
+                        bytes[0], bytes[1], bytes[2], bytes[3], bytes[0], bytes[1], bytes[2], bytes[3],
+                    ]
+                })
+                .collect();
+            let count = tokens.len() as u64;
+            if self.cells_write(segment.state, CELLS_PART, count, &rows) != WriteResult::Ok {
+                return Err(PassError {
+                    status: PassStatus::Poison,
+                    message: "the fake could not append the cells".to_owned(),
+                });
+            }
+            if self.cells_write(segment.state, RING_PART, count, &rows) != WriteResult::Ok {
+                return Err(PassError {
+                    status: PassStatus::Poison,
+                    message: "the fake could not advance the ring".to_owned(),
+                });
+            }
+            let state_bytes = state_from_tokens(tokens);
+            if self.part_write(segment.state, STATE_PART, &state_bytes) != WriteResult::Ok {
+                return Err(PassError {
+                    status: PassStatus::Poison,
+                    message: "the fake could not write the state".to_owned(),
+                });
+            }
+            outputs.push(Output {
+                name: "state".to_owned(),
+                bytes: state_bytes.to_vec(),
+            });
+        }
+        Ok(PassOut {
+            status: PassStatus::Ok,
+            ms: 0,
+            outputs,
+        })
     }
 
     fn slot_id(state: State) -> usize {
@@ -266,6 +318,17 @@ impl Fake {
             Err(format!("{bytes} bytes do not fit {slot_bytes}"))
         }
     }
+}
+
+fn state_from_tokens(tokens: &[u32]) -> [u8; 16] {
+    let mut state = [0u8; 16];
+    for (index, token) in tokens.iter().enumerate() {
+        for (offset, byte) in token.to_le_bytes().iter().enumerate() {
+            let slot = (index + offset) % 16;
+            state[slot] = state[slot].wrapping_mul(31).wrapping_add(*byte);
+        }
+    }
+    state
 }
 
 impl SlotData {

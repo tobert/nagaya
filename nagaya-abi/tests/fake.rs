@@ -1,7 +1,10 @@
 #![cfg(feature = "fake")]
 
 use nagaya_abi::fake::{FakeAlways, FakeBroken};
-use nagaya_abi::{Capability, Determinism, Engine, PartError, PartKind, PassStatus, State, WriteResult};
+use nagaya_abi::{
+    Capability, Determinism, Engine, OutputsWanted, PartError, PartKind, PassStatus, Segment, SegmentInputs, State,
+    WriteResult,
+};
 
 #[test]
 fn fake_limits_has_four_part_kinds() {
@@ -207,4 +210,76 @@ fn fake_pass_is_ok_with_no_outputs() {
 fn fake_identity_names_the_model() {
     assert_eq!(FakeAlways::new().identity().model, "fake-always");
     assert_eq!(FakeBroken::new().identity().model, "fake-broken");
+}
+
+fn token_segment(tokens: &[u32]) -> Segment {
+    Segment {
+        state: State::Slot(0),
+        inputs: SegmentInputs::Tokens(tokens.to_vec()),
+        positions: (0..tokens.len() as u64).collect(),
+        meta: Vec::new(),
+        outputs: OutputsWanted::default(),
+    }
+}
+
+fn read_state(engine: &mut dyn Engine) -> Vec<u8> {
+    let mut out = [0u8; 16];
+    engine.parts().unwrap().part_read(State::Slot(0), 0, &mut out).unwrap();
+    out.to_vec()
+}
+
+#[test]
+fn different_tokens_give_different_state() {
+    let mut first = FakeAlways::new();
+    first.pass(&[token_segment(&[1, 2, 3])], &[]).unwrap();
+    let mut second = FakeAlways::new();
+    second.pass(&[token_segment(&[4, 5, 6])], &[]).unwrap();
+    assert_ne!(read_state(&mut first), read_state(&mut second));
+}
+
+#[test]
+fn same_tokens_give_the_same_state() {
+    let mut first = FakeAlways::new();
+    let out_first = first.pass(&[token_segment(&[7, 8])], &[]).unwrap();
+    let mut second = FakeAlways::new();
+    let out_second = second.pass(&[token_segment(&[7, 8])], &[]).unwrap();
+    assert_eq!(read_state(&mut first), read_state(&mut second));
+    assert_eq!(out_first.outputs, out_second.outputs);
+}
+
+#[test]
+fn a_pass_appends_cells_and_advances_the_ring() {
+    let mut engine = FakeAlways::new();
+    engine.pass(&[token_segment(&[1, 2, 3, 4, 5])], &[]).unwrap();
+    let mut cells = [0u8; 5 * 8];
+    {
+        let parts = engine.parts().unwrap();
+        assert_eq!(parts.part_read(State::Slot(0), 1, &mut cells), Ok(()));
+    }
+    let mut ring_tail = [0u8; 4 * 8];
+    {
+        let parts = engine.parts().unwrap();
+        assert_eq!(parts.cells_read(State::Slot(0), 2, 1, 4, &mut ring_tail), Ok(()));
+        assert_eq!(
+            parts.cells_read(State::Slot(0), 2, 0, 1, &mut [0u8; 8]),
+            Err(PartError::Refused)
+        );
+    }
+}
+
+#[test]
+fn broken_corruption_is_visible_after_passes() {
+    let mut good = FakeAlways::new();
+    let mut broken = FakeBroken::new();
+    let segment = token_segment(&[9, 10]);
+    let good_out = good.pass(std::slice::from_ref(&segment), &[]).unwrap();
+    let broken_out = broken.pass(&[segment], &[]).unwrap();
+    assert_eq!(good_out.outputs, broken_out.outputs);
+    let expected = good_out.outputs.first().unwrap().bytes.clone();
+    assert_ne!(expected, vec![0u8; 16]);
+    let good_state = read_state(&mut good);
+    let broken_state = read_state(&mut broken);
+    assert_eq!(good_state, expected);
+    assert_eq!(broken_state[0] ^ good_state[0], 1);
+    assert_eq!(&broken_state[1..], &good_state[1..]);
 }
