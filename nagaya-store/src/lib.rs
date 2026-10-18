@@ -372,8 +372,20 @@ fn check_tensor(tensor: &Tensor) -> Result<(), StoreError> {
     }
     match tensor.kind {
         PartKind::Fixed if tensor.coverage.is_some() => Err(StoreError::Invalid("fixed part has coverage".to_owned())),
-        PartKind::Cells | PartKind::Ring if tensor.coverage.is_none() => {
-            Err(StoreError::Invalid("row part has no coverage".to_owned()))
+        PartKind::Cells | PartKind::Ring => {
+            let Some((start, end)) = tensor.coverage else {
+                return Err(StoreError::Invalid("row part has no coverage".to_owned()));
+            };
+            if start > end {
+                return Err(StoreError::Invalid("coverage start after end".to_owned()));
+            }
+            let Some(&rows) = tensor.shape.first() else {
+                return Err(StoreError::Invalid("row part has no rows dimension".to_owned()));
+            };
+            if rows != end - start {
+                return Err(StoreError::Invalid("shape rows do not match coverage".to_owned()));
+            }
+            Ok(())
         }
         _ => Ok(()),
     }
@@ -491,5 +503,52 @@ mod tests {
         assert!(parse_span("00..2").is_err());
         assert!(parse_span("0..02").is_err());
         assert!(parse_span("2..0").is_err());
+    }
+
+    #[test]
+    fn check_tensor_enforces_row_rules() {
+        let fixed = Tensor {
+            name: "f".to_owned(),
+            kind: PartKind::Fixed,
+            dtype: Dtype::U8,
+            shape: vec![1],
+            data: vec![0],
+            coverage: None,
+            block_format: None,
+        };
+        assert!(check_tensor(&fixed).is_ok());
+
+        let shape_mismatch = Tensor {
+            name: "c".to_owned(),
+            kind: PartKind::Cells,
+            dtype: Dtype::U8,
+            shape: vec![5, 8],
+            data: vec![0; 40],
+            coverage: Some((0, 2)),
+            block_format: None,
+        };
+        assert!(check_tensor(&shape_mismatch).is_err());
+
+        let start_after_end = Tensor {
+            name: "r".to_owned(),
+            kind: PartKind::Ring,
+            dtype: Dtype::U8,
+            shape: vec![0, 8],
+            data: Vec::new(),
+            coverage: Some((5, 3)),
+            block_format: None,
+        };
+        assert!(check_tensor(&start_after_end).is_err());
+
+        let no_rows = Tensor {
+            name: "n".to_owned(),
+            kind: PartKind::Cells,
+            dtype: Dtype::U8,
+            shape: Vec::new(),
+            data: vec![0],
+            coverage: Some((0, 0)),
+            block_format: None,
+        };
+        assert!(check_tensor(&no_rows).is_err());
     }
 }
