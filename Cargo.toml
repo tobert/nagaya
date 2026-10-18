@@ -1,12 +1,12 @@
 [workspace]
 members = [
-    "nagaya-abi",
-    "nagaya-store",
-    "nagaya-ledger",
-    "nagaya-sched",
-    "nagaya-mk",
-    "nagaya-conformance",
-    "nagaya",
+    "crates/nagaya-abi",
+    "crates/nagaya-store",
+    "crates/nagaya-ledger",
+    "crates/nagaya-sched",
+    "crates/nagaya-mk",
+    "crates/nagaya-conformance",
+    "crates/nagaya",
 ]
 resolver = "3"
 

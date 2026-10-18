@@ -49,7 +49,7 @@ unified memory. The first engine is mk (`~/src/megakernel-qwen38-flashnext-strix
 
 ### Layout
 
-Use these crates:
+The seven crates live in directories under `crates/`. Use these crates:
 
 | Crate | Holds | Spec |
 |---|---|---|
