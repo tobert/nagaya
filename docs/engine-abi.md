@@ -234,8 +234,9 @@ that fits the ABI.
   about 2 s. The declared bound is 30 s.
 - **`cells_write` writes rows 0 to n-1.** mk writes n cells into an empty context that owns its K/V. The caller calls
   `set_n` after it writes every part. On a first write, an append and row 0 agree.
-- **`positions` and `meta` are hints.** mk appends the tokens at the context's n. It reads no per-token metadata. The
-  binding requires contiguous positions and empty metadata. It does not compare the first position with n.
+- **`positions` are strict and `meta` is empty.** mk appends the tokens at the context's n. The binding refuses a
+  segment whose first position is not n, or whose positions are not contiguous. mk reads no per-token metadata, so
+  `meta` must be empty.
 - **A pass is fused by default.** The binding passes `fused = 1`. A tap needs the unfused path and one segment. This
   binding declares no taps.
 - **The checkpoint digest is a spot check.** The binding hashes each shard's size and its GGUF header, as mk's
