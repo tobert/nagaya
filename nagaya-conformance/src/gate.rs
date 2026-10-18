@@ -159,11 +159,39 @@ fn fill_from_a_pass<E: Engine + ?Sized>(
             continue;
         }
         let zeros = vec![0u8; shape_bytes(part) as usize];
-        let _ = engine.parts().unwrap().part_write(state, id, &zeros);
+        match engine.parts().unwrap().part_write(state, id, &zeros) {
+            WriteResult::Ok => {}
+            // A refusal leaves the part as it was. The pass writes every part, so the gate needs no zero fill.
+            WriteResult::Refused => {}
+            WriteResult::Failed => {
+                return Err(Failure::new(
+                    gate,
+                    format!("the engine failed to zero part {} and poisoned the state", part.name),
+                ));
+            }
+        }
     }
+    // Keep the value before the pass. A read-back after the pass alone cannot tell a fill from a constant read.
+    let before = read_fixed(engine, state, limits, gate)?;
     let segment = token_segment(state, 0, &[1]);
     run_pass(engine, &segment, gate)?;
+    let after = read_fixed(engine, state, limits, gate)?;
+    if !before.is_empty() && !any_part_differs(&before, &after) {
+        return Err(Failure::new(
+            gate,
+            "the pass changed no fixed part, so the gate cannot tell a fill from a constant read",
+        ));
+    }
     read_filled(engine, state, limits, gate)
+}
+
+/// True when at least one part's bytes differ between two reads.
+fn any_part_differs(left: &[(PartId, Vec<u8>)], right: &[(PartId, Vec<u8>)]) -> bool {
+    left.len() != right.len()
+        || left
+            .iter()
+            .zip(right)
+            .any(|((left_id, left), (right_id, right))| left_id != right_id || left != right)
 }
 
 fn read_filled<E: Engine + ?Sized>(

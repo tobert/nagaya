@@ -233,6 +233,168 @@ fn a_value_rule_falls_back_to_a_pass() {
     );
 }
 
+/// An engine that refuses the synthetic fill and fails the zero write that the pass path uses.
+struct FailsZeroWrite {
+    inner: FakeAlways,
+}
+
+impl FailsZeroWrite {
+    fn new() -> Self {
+        Self {
+            inner: FakeAlways::new(),
+        }
+    }
+}
+
+impl Engine for FailsZeroWrite {
+    fn identity(&self) -> Identity {
+        self.inner.identity()
+    }
+
+    fn limits(&self) -> Limits {
+        self.inner.limits()
+    }
+
+    fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
+        self.inner.pass(segments, taps)
+    }
+
+    fn last_error(&self) -> Option<String> {
+        self.inner.last_error()
+    }
+
+    fn parts(&mut self) -> Option<&mut dyn Parts> {
+        Some(self)
+    }
+
+    fn coverage(&mut self) -> Option<&mut dyn Coverage> {
+        self.inner.coverage()
+    }
+
+    fn seal(&mut self) -> Option<&mut dyn nagaya_abi::Seal> {
+        self.inner.seal()
+    }
+
+    fn slots(&mut self) -> Option<&mut dyn Slots> {
+        self.inner.slots()
+    }
+}
+
+impl Parts for FailsZeroWrite {
+    fn part_read(&mut self, state: State, part: PartId, out: &mut [u8]) -> Result<(), PartError> {
+        self.inner.parts().unwrap().part_read(state, part, out)
+    }
+
+    fn part_write(&mut self, state: State, part: PartId, bytes: &[u8]) -> WriteResult {
+        // The synthetic fill is all odd bytes, so the gate takes the pass path. Its zero fill then fails.
+        if bytes.iter().all(|byte| *byte == 0) {
+            return WriteResult::Failed;
+        }
+        if part == 0 && bytes.iter().all(|byte| byte & 1 == 1) {
+            return WriteResult::Refused;
+        }
+        self.inner.parts().unwrap().part_write(state, part, bytes)
+    }
+
+    fn cells_read(&mut self, state: State, part: PartId, from: u64, n: u64, out: &mut [u8]) -> Result<(), PartError> {
+        self.inner.parts().unwrap().cells_read(state, part, from, n, out)
+    }
+
+    fn cells_write(&mut self, state: State, part: PartId, n: u64, bytes: &[u8]) -> WriteResult {
+        self.inner.parts().unwrap().cells_write(state, part, n, bytes)
+    }
+
+    fn set_n(&mut self, state: State, n: u64) -> WriteResult {
+        self.inner.parts().unwrap().set_n(state, n)
+    }
+}
+
+#[test]
+fn a_failed_zero_write_fails_the_gate() {
+    assert_fail(park_and_restore(&mut FailsZeroWrite::new()), "FailsZeroWrite");
+}
+
+/// An engine that refuses the synthetic fill and returns the same bytes for every read.
+struct RefusesOddBytesAndReadsConstant {
+    inner: FakeAlways,
+}
+
+impl RefusesOddBytesAndReadsConstant {
+    fn new() -> Self {
+        Self {
+            inner: FakeAlways::new(),
+        }
+    }
+}
+
+impl Engine for RefusesOddBytesAndReadsConstant {
+    fn identity(&self) -> Identity {
+        self.inner.identity()
+    }
+
+    fn limits(&self) -> Limits {
+        self.inner.limits()
+    }
+
+    fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
+        self.inner.pass(segments, taps)
+    }
+
+    fn last_error(&self) -> Option<String> {
+        self.inner.last_error()
+    }
+
+    fn parts(&mut self) -> Option<&mut dyn Parts> {
+        Some(self)
+    }
+
+    fn coverage(&mut self) -> Option<&mut dyn Coverage> {
+        self.inner.coverage()
+    }
+
+    fn seal(&mut self) -> Option<&mut dyn nagaya_abi::Seal> {
+        self.inner.seal()
+    }
+
+    fn slots(&mut self) -> Option<&mut dyn Slots> {
+        self.inner.slots()
+    }
+}
+
+impl Parts for RefusesOddBytesAndReadsConstant {
+    fn part_read(&mut self, _state: State, _part: PartId, out: &mut [u8]) -> Result<(), PartError> {
+        out.fill(0x5a);
+        Ok(())
+    }
+
+    fn part_write(&mut self, state: State, part: PartId, bytes: &[u8]) -> WriteResult {
+        if part == 0 && bytes.iter().all(|byte| byte & 1 == 1) {
+            return WriteResult::Refused;
+        }
+        self.inner.parts().unwrap().part_write(state, part, bytes)
+    }
+
+    fn cells_read(&mut self, state: State, part: PartId, from: u64, n: u64, out: &mut [u8]) -> Result<(), PartError> {
+        self.inner.parts().unwrap().cells_read(state, part, from, n, out)
+    }
+
+    fn cells_write(&mut self, state: State, part: PartId, n: u64, bytes: &[u8]) -> WriteResult {
+        self.inner.parts().unwrap().cells_write(state, part, n, bytes)
+    }
+
+    fn set_n(&mut self, state: State, n: u64) -> WriteResult {
+        self.inner.parts().unwrap().set_n(state, n)
+    }
+}
+
+#[test]
+fn a_constant_read_fails_the_gate() {
+    assert_fail(
+        park_and_restore(&mut RefusesOddBytesAndReadsConstant::new()),
+        "RefusesOddBytesAndReadsConstant",
+    );
+}
+
 /// An engine whose pass writes the fixed part of another slot.
 struct PassWritesOtherSlots {
     inner: FakeAlways,
