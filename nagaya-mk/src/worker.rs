@@ -519,6 +519,13 @@ impl ThreadState {
         let fast_qmm = fast_qmm()?;
         let tiles = tiles()?;
         let binding = binding::load(&paths.library).map_err(MkError::new)?;
+        // Refuse a library whose parts are not the declared size, before it writes past a Rust buffer.
+        if let Some(problem) = spec::parts_problem(
+            |part| unsafe { (binding.state_bytes)(part) },
+            |part, n| unsafe { (binding.part_bytes)(part, n) },
+        ) {
+            return Err(MkError::new(problem));
+        }
 
         let shards: Vec<CString> = paths
             .shards

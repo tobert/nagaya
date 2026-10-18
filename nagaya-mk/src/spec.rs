@@ -174,6 +174,41 @@ pub fn limits(arena_bytes: u64) -> Limits {
     }
 }
 
+/// The bytes of one declared part: the whole shape for a fixed part, one row for a cells or ring part.
+fn declared_bytes(part: &PartLimits) -> u64 {
+    let element = match part.dtype {
+        Dtype::F32 | Dtype::U32 => 4,
+        Dtype::F16 | Dtype::BF16 => 2,
+        Dtype::U8 => 1,
+    };
+    part.shape.iter().product::<u64>() * element
+}
+
+/// The reason that mk's part byte counts do not match the declared shapes, or `None` when they agree.
+///
+/// A library with a larger part would write past the Rust buffer, so open must refuse it.
+pub fn parts_problem(mk_state_bytes: impl Fn(u32) -> u64, mk_part_bytes: impl Fn(u32, u32) -> u64) -> Option<String> {
+    for (index, part) in parts().iter().enumerate() {
+        if !part.is_stored() {
+            continue;
+        }
+        let index = index as u32;
+        let declared = declared_bytes(part);
+        let actual = if part.is_row() {
+            mk_part_bytes(index, 1)
+        } else {
+            mk_state_bytes(index)
+        };
+        if actual != declared {
+            return Some(format!(
+                "mk says part {index} ({}) holds {actual} bytes; this binding declares {declared}",
+                part.name
+            ));
+        }
+    }
+    None
+}
+
 /// The identity of the engine and its weights.
 pub fn identity(
     shards: &[std::path::PathBuf],
@@ -258,6 +293,29 @@ mod tests {
         // mk's state_bytes dies on part 6, which is derived, and on a part past 5. The binding must not call it.
         assert!(stored_part(6).is_err());
         assert!(stored_part(99).is_err());
+    }
+
+    #[test]
+    fn a_library_with_another_part_size_is_refused() {
+        let fixed = |part: u32| match part {
+            0 => GDN_STATE_BYTES,
+            1 => GDN_CONV_BYTES,
+            2 => PLE_CONV_BYTES,
+            5 => PLE_HIST_BYTES,
+            _ => unreachable!("part {part} is not fixed"),
+        };
+        let rows = |part: u32, n: u32| match part {
+            3 => u64::from(n) * KV_ROW_BYTES,
+            4 => u64::from(n) * IDX_ROW_BYTES,
+            _ => unreachable!("part {part} is not a row part"),
+        };
+        assert_eq!(parts_problem(fixed, rows), None);
+        // A library with a larger recurrent state would write past the Rust buffer.
+        let larger = |part: u32| {
+            if part == 0 { GDN_STATE_BYTES + 4 } else { fixed(part) }
+        };
+        let problem = parts_problem(larger, rows).expect("a larger part must be a mismatch");
+        assert!(problem.contains("gdn_state"), "{problem}");
     }
 
     #[test]

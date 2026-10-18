@@ -47,6 +47,9 @@ pub(crate) type RoundGdn = unsafe extern "C" fn(*mut c_void, *mut c_void);
 /// `uint64_t mk_ctx_part_bytes(uint32_t part, uint32_t n)`.
 pub(crate) type PartBytes = unsafe extern "C" fn(u32, u32) -> u64;
 
+/// `uint64_t mk_ctx_state_bytes(uint32_t part)`.
+pub(crate) type StateBytes = unsafe extern "C" fn(u32) -> u64;
+
 /// `void mk_engine_arena(void *e, int32_t *fd, uint64_t *bytes)`.
 pub(crate) type Arena = unsafe extern "C" fn(*mut c_void, *mut i32, *mut u64);
 
@@ -88,6 +91,7 @@ pub(crate) struct Binding {
     pub set_n: SetN,
     pub round_gdn: RoundGdn,
     pub part_bytes: PartBytes,
+    pub state_bytes: StateBytes,
     pub arena: Arena,
     pub last_error: LastError,
     pub segments_problem: SegmentsProblem,
@@ -119,6 +123,7 @@ pub(crate) fn load(path: &Path) -> Result<Binding, String> {
             set_n: symbol(library, b"mk_ctx_set_n\0")?,
             round_gdn: symbol(library, b"mk_ctx_round_gdn_bf16\0")?,
             part_bytes: symbol(library, b"mk_ctx_part_bytes\0")?,
+            state_bytes: symbol(library, b"mk_ctx_state_bytes\0")?,
             arena: symbol(library, b"mk_engine_arena\0")?,
             last_error: symbol(library, b"mk_last_error\0")?,
             segments_problem: symbol(library, b"mk_segments_problem\0")?,
