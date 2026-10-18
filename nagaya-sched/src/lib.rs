@@ -106,9 +106,9 @@ pub struct Quantum {
 /// The scheduler state.
 ///
 /// One scheduler serves one device group in the process (spec 3.2, D1:
-/// one thread per device group). A test state may carry more than one
-/// engine to check that a pass never mixes engines; the gate is per
-/// scheduler.
+/// one thread per device group). This is the D1 reading. A test state may
+/// carry more than one engine to check that a pass never mixes engines;
+/// the gate is per scheduler.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Scheduler {
     /// The jobs.
