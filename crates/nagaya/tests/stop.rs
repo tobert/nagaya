@@ -223,6 +223,12 @@ fn a_stop_parks_every_engine() {
         record.reads.iter().all(|read| read.3 == opened[0].thread),
         "every park read runs on the group thread"
     );
+    drop(record);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !process.finished() {
+        assert!(Instant::now() < deadline, "every worker ends after the stop");
+        thread::sleep(Duration::from_millis(5));
+    }
 }
 
 #[test]
@@ -255,6 +261,39 @@ fn a_stop_takes_no_more_admissions() {
     let error = process.admit(profile(vec![engine("a", "park", &[0])])).unwrap_err();
     assert_eq!(error.to_string(), "the process is stopping");
     assert!(matches!(error, AdmitError::Stopping));
+}
+
+#[test]
+fn two_signals_before_the_stop_park_nothing() {
+    let record = Arc::new(Mutex::new(ParkRecord::default()));
+    let (mut process, _) = started(ParkFactory::new("a", Arc::clone(&record)).slow(Duration::from_millis(100)));
+    let flag = SignalFlag::new();
+    flag.raise();
+    flag.raise();
+    let started = Instant::now();
+    let report = process.stop(Duration::from_secs(10), &flag);
+    assert!(report.interrupted);
+    assert!(!report.complete);
+    assert!(
+        started.elapsed() < Duration::from_millis(100),
+        "a second signal exits at once"
+    );
+    assert!(
+        record.lock().unwrap().reads.is_empty(),
+        "an interrupted stop parks nothing"
+    );
+}
+
+#[test]
+fn an_abort_parks_nothing() {
+    let record = Arc::new(Mutex::new(ParkRecord::default()));
+    let (mut process, _) = started(ParkFactory::new("a", Arc::clone(&record)));
+    process.abort();
+    let error = process.admit(profile(vec![engine("a", "park", &[0])])).unwrap_err();
+    assert!(matches!(error, AdmitError::Stopping));
+    // The drop joins every worker, so the record is complete here.
+    drop(process);
+    assert!(record.lock().unwrap().reads.is_empty(), "an abort parks nothing");
 }
 
 #[test]

@@ -83,7 +83,8 @@ fn run() -> ExitCode {
     eprintln!("ready with {} engines", ready.opened.len());
     let code = lifecycle::wait(&ready.process, &SIGNALS, notifier.as_ref(), lifecycle::WAIT_POLL);
     if code != ExitCode::Clean {
-        // Spec 8.5: an unexpected failure stops the process. Do not join a worker that may be wedged.
+        // Spec 8.5: an unexpected failure stops the process. Ask the workers to stop, then do not join one.
+        ready.process.abort();
         std::mem::forget(ready.process);
         return code;
     }

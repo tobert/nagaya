@@ -655,6 +655,14 @@ impl Process {
         self.accepting.store(false, Ordering::SeqCst);
         let started = Instant::now();
         let entered = signals.count();
+        if entered > 1 {
+            self.finish_stop();
+            return StopReport {
+                parked: ParkReport::default(),
+                complete: false,
+                interrupted: true,
+            };
+        }
         let mut replies = Vec::with_capacity(self.group_stops.len());
         let mut complete = true;
         for stop in &self.group_stops {
@@ -700,6 +708,22 @@ impl Process {
             complete,
             interrupted: false,
         }
+    }
+
+    /// Ask every worker to stop, without a park and without a join. A crash exits at once (spec 8.5).
+    pub fn abort(&mut self) {
+        self.accepting.store(false, Ordering::SeqCst);
+        for stop in &self.group_stops {
+            let _ = stop.send(GroupMessage::Stop);
+        }
+        self.finish_stop();
+    }
+
+    /// True when every worker thread has ended.
+    pub fn finished(&self) -> bool {
+        self.groups.iter().all(JoinHandle::is_finished)
+            && self.ledger_thread.as_ref().is_none_or(JoinHandle::is_finished)
+            && self.watchdog_thread.as_ref().is_none_or(JoinHandle::is_finished)
     }
 
     /// Stop the watchdog and the ledger. The drop joins them.

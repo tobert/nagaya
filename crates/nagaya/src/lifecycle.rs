@@ -133,6 +133,10 @@ pub fn wait(process: &Process, signals: &SignalFlag, notifier: Option<&Notifier>
             return ExitCode::Clean;
         }
         let Some(event) = process.recv(poll) else {
+            if process.finished() {
+                // Every worker ended without an event. That is a crash, not an idle process (spec 8.5).
+                return ExitCode::Crash;
+            }
             continue;
         };
         let Some(code) = event.exit_code() else {
