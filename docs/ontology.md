@@ -13,8 +13,10 @@ changed.
 
 ## Places
 
-**Machine.** One computer. It runs exactly one nagaya process, and that process owns all of the machine's GPUs.
-The machines today are gfx1151host, b70host and sm121host (`docs/spec.md` 2.1), plus rented machines.
+**Machine.** One computer. It runs one nagaya process, and that process owns all of the machine's GPUs. The machines
+today are gfx1151host, b70host and sm121host (`docs/spec.md` 2.1), plus rented machines. The processes gossip their
+inventory, active profile, and engine identities through `chitchat` (`docs/spec.md` 2.3). Any machine can act as the
+**coordinator** for a client request (`docs/spec.md` 11.1).
 
 **Device.** One thing that runs quanta: a GPU, or the CPU when an engine runs work there (mkviolet's AVX-512 lens).
 The devices that one engine spans are its **device group**. Each device group has one long-lived nagaya thread, and

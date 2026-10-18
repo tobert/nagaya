@@ -67,10 +67,11 @@ The first pass keeps three doors open:
 1. Engines load and unload while the nagaya runs. Weight arenas are file descriptors that we can export (mk's
    arena, mkviolet's DMA-BUF slabs). Thus with an arena staged in host memory or on NVMe, a swap is a copy between
    tiers.
-2. Placement is data. Which engine runs where is a declared profile (day: several models; night: one job across
-   machines). A small controller can reconcile toward it later; the first inventory is a static file.
-3. State objects (weights, contexts, snapshots) are bytes with content ids, so they can cross the network between
-   machines that run the same engine identity.
+2. Placement is live cluster data. The nagaya processes gossip their probed hardware, active profiles, and loaded
+   engine identities through `chitchat` (`docs/spec.md` 2.3). Any machine can receive a request, tokenize it locally,
+   and coordinate or proxy it (`docs/spec.md` 11.1).
+3. State objects (weights, contexts, snapshots) are canonical safetensors with BLAKE3 content ids, served over plain
+   HTTP (`/nagaya/v1/cas/{content_id}`) between machines that run the same engine identity.
 
 A model spread across machines over Ethernet means pipeline stages per machine. mkviolet already splits Gemma 4 by
 layers across its two cards. It hands the residual between them through host memory (`gemma4.rs`

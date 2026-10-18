@@ -42,9 +42,11 @@ Not in v0:
 - Cooperative yields inside a pass (D8).
 - Tensor transfer between engines (13.3).
 
-## 2. Machines and placement
+## 2. Machines, gossip and placement
 
-**2.1 Inventory.** A static file names each machine, its devices, its tiers and the measured edges between tiers.
+**2.1 Inventory.** At start, the nagaya probes its own machine: its devices (amdgpu KFD, Intel Xe, or NVIDIA NVML),
+its host memory, and its NVMe store path. It needs only a tiny bootstrap config (`nagaya.toml` or flags) with its
+bind addresses, store directory, and seed peer addresses.
 
 | Machine | Devices | Memory |
 |---|---|---|
@@ -52,8 +54,8 @@ Not in v0:
 | b70host | two Intel Arc Pro B70, a BlueField-2 | 64 GB GDDR6, 128 GB DDR5, 4 TB NVMe |
 | sm121host | DGX Spark, one Blackwell GPU | 128 GB unified |
 
-Telemetry takes hardware attributes from the inventory, not from constants in code. (mkviolet puts B70 values in
-`telemetry.rs` as constants.) A CPU that runs work is a device in the inventory too, with host memory as its tier.
+Telemetry takes hardware attributes from the probed inventory, not from constants in code. (mkviolet puts B70 values
+in `telemetry.rs` as constants.) A CPU that runs work is a device in the inventory too, with host memory as its tier.
 
 **2.2 Tier edges.** An edge records more than a bandwidth (`docs/prior-art.md` 5):
 
@@ -61,25 +63,31 @@ Telemetry takes hardware attributes from the inventory, not from constants in co
 - whether direct IO works into the destination;
 - the alignment that the edge needs.
 
-The nagaya measures edges at install and can measure them again. Each measurement is data with a date.
+The nagaya measures edges at install, stores the result in its local store index, and can measure them again. Each
+measurement is data with a date.
 
-**2.3 Placement profile and config.** Each machine has one TOML file (`configs/<host>.toml`). It holds three
-sections:
+**2.3 Gossip (`chitchat`).** The nagaya processes form a cluster over UDP with `chitchat` (Scuttlebutt reconciliation
+and phi-accrual failure detection). Gossip data stays small and write-light. Each machine writes only its own node
+state:
 
-- `[machine]`: the devices, the tiers with their byte budgets (4.1), and the measured edges between tiers (2.2);
-- `[daemon]`: the listen address (11.6), the stop time budget (10.3), and the request limit per engine (5.10);
-- `[[engines]]`: each engine that loads, its devices, its config, its share of spare memory (D9), and whether its
-  identity is pinned (12.1).
+- `inventory`: its probed devices, tiers and measured edges;
+- `profile:active`: the placement profile that it currently runs;
+- `profile:desired:<host>`: a target profile for `<host>` with a version, set when a client posts a profile to any
+  machine;
+- `engine:<name>`: the engine's `identity()`, its state (`loading`, `ready`, `fatal`), and its HTTP address.
 
-The nagaya reads the file at start. For each engine, it calls `plan(config)`, which gives the engine's limits
-without a read of the weights.
+Pins and snapshot entries never go in gossip.
 
-The nagaya then adds all mandatory terms and the minimum of each elastic term. If the sum does not fit the budgets
-(section 4), the nagaya refuses the profile before it opens an engine. The refusal gives the shortfall in bytes for
-each tier, and the process exits 3 (10.4).
+**2.4 Placement profile.** A placement profile names a machine's engines, their devices, their config, each tier's
+budget (4.1), each engine's share (D9), and pinned identities (12.1). A client reads or updates a machine's profile
+through `GET` and `PUT /nagaya/v1/profile` on any machine in the cluster. The target machine persists its accepted
+profile in its store directory, so it starts with that profile after a restart.
 
-In v0, each machine has one profile. A later controller can change profiles between day and night (README,
-"Later").
+Before the nagaya applies a profile, it calls `plan(config)` for each engine, which gives the engine's limits without
+a read of the weights. The nagaya adds all mandatory terms and the minimum of each elastic term. If the sum does not
+fit the budgets (section 4), the nagaya refuses the profile before it opens an engine. The refusal gives the
+shortfall in bytes for each tier. At cold start, a refused profile exits 3 (10.4). At runtime, a refused `PUT`
+returns 507 and keeps the active profile.
 
 ## 3. Process
 
@@ -499,10 +507,15 @@ The restart policy follows mk's unit: `Restart=on-failure`, `RestartSec=30`, and
 
 ## 11. Client API
 
-**11.1 Council.** The nagaya serves council v2 for all its engines, and v1 while clients still use it. The contract
-is gogi (`~/src/gogi`): `docs/council-api-v2.md`, the types in `gogi-proto`, and the suite in `gogi-conformance`.
-The nagaya routes each request by its `model` field. When two engines serve one model, the profile names the engine
-that serves the model's requests.
+**11.1 Council and coordinator routing.** The nagaya serves council v2 for all engines in the cluster, and v1 while
+clients still use it. The contract is gogi (`~/src/gogi`): `docs/council-api-v2.md`, the types in `gogi-proto`, and
+the suite in `gogi-conformance`.
+
+Any machine can receive any request and act as its coordinator (Cassandra style). The coordinator finds the target
+engine from the request's `model` field and the `chitchat` cluster state (2.3). Because the coordinator has the
+family libraries (11.3) and the engine's `identity()` from gossip, it can render, tokenize and compute the recipe
+locally. If the engine is on the same machine, the coordinator schedules the job locally. If the engine is on another
+machine, the coordinator forwards the work or transparently proxies the HTTP or SSE stream to that machine.
 
 The API has contexts, specs, decisions, snapshots, pins, reads, and generations with riding decisions (mkviolet
 `council_v2.rs`). In council v2 responses, a snapshot `id` is its BLAKE3 content id (`blake3:<hex>`), and the store
@@ -539,10 +552,13 @@ now, on b70host". In council v2 the server renders messages with its model's own
 part of identity (gogi `docs/council-api-v2.md`, "Terms").
 
 **11.4a Extensions.** gogi puts model-specific routes under the server's own prefix, listed in
-`identity.extensions` (gogi `docs/council-api-v2.md`, "Extensions"). The nagaya's prefix is `/nagaya/v1`. The
-family library serves `render`, `tokenize` and `detokenize`, for bench tools and for kaijutsu's semantic search when
-it returns. The engine serves `embeddings` through a pass with a hidden-state output. The status feed (9.7) and
-traces (13.1) are extensions too.
+`identity.extensions` (gogi `docs/council-api-v2.md`, "Extensions"). The nagaya's prefix is `/nagaya/v1`:
+
+- `profile` and `cluster`: dynamic placement profiles and the `chitchat` cluster view (2.3, 2.4);
+- `cas/{content_id}`: plain HTTP `GET` and `HEAD` for content-addressed snapshots and tap artifacts across machines;
+- `render`, `tokenize` and `detokenize`: served by the family library for bench tools and semantic search;
+- `embeddings`: served by the engine through a pass with a hidden-state output;
+- `status` (9.7) and `traces` (13.1).
 
 **11.5 Errors.** All routes use one error shape:
 
@@ -558,7 +574,8 @@ traces (13.1) are extensions too.
 
 An unexpected failure is a 500, and the process stops (8.5).
 
-**11.6 Binding.** The listen address is in the config. (mkviolet has a tailnet address in its code.)
+**11.6 Binding.** The HTTP and gossip listen addresses and seed peers are in the bootstrap config (2.1). (mkviolet
+has a tailnet address in its code.)
 
 ## 12. Identity
 
