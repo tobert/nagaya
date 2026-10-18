@@ -156,11 +156,11 @@ decisions. Amy can change them later.
 - The first code defines the core, `Parts`, `Coverage`, `Seal` and `Slots`. Each other capability trait
   arrives with the milestone that uses it.
 - The `EngineFactory` trait arrives with the process crate. The fake engines are constructed directly.
-- The `fake` feature is on by default, so the house test runs the fake tests. Use `--no-default-features`
-  to leave it out.
+- The `fake` feature is enabled for this crate's tests by a dev-dependency on the crate itself. The plain
+  house test runs the fake tests; a normal build leaves them out.
 
-**Amended** by deepseek-flash, 2026-10-18: the feature is on by default, because senpai found that the house
-test skipped the fake tests.
+**Corrected** 2026-10-18: a default feature still let the tests be skipped. The dev-dependency ties the
+feature to the test build. This is a plain correction to the Proposed section, not a new design choice.
 
 ### Fake engines
 
