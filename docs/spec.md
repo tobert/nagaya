@@ -60,6 +60,14 @@ in `telemetry.rs` as constants.) A CPU that runs work is a device in the invento
 A machine with no GPU engine can also join the cluster to serve as a coordinator, run CPU devices (13.2), or hold a
 store tier.
 
+**Proposed** by deepseek-flash, 2026-10-18: the bootstrap config is one TOML file, `nagaya.toml`, with these keys:
+`http_bind`, `gossip_bind`, `store_dir`, `seed_peers`, and `park_budget_secs`. The first three keys are required.
+`seed_peers` defaults to an empty list. `park_budget_secs` defaults to 10 (10.3, ds4-recipe).
+
+An unknown key is an error, so a misspelled key stops the process. v0 has no flags for these values, because the
+file is the only source. Reason: 2.1 names the file, and the engine config is already TOML (ABI "Rust shape"). Two
+sources for one value can disagree.
+
 **2.2 Tier edges.** An edge records more than a bandwidth (`docs/prior-art.md` 5):
 
 - the rate for each read size and queue depth;
