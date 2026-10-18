@@ -50,6 +50,20 @@ fn the_binding_opens_mk_and_declares_its_parts() {
     assert_eq!(limits.slots[0].count, 2);
     assert_eq!(limits.max_segments, 16);
     assert_eq!(limits.max_pass_inputs, 256);
+    let weights = limits
+        .memory
+        .mandatory
+        .iter()
+        .find(|term| term.name == "weights")
+        .expect("a weights term");
+    assert!(weights.bytes > 0, "mk_engine_arena gave no arena bytes");
+    let context = limits
+        .memory
+        .mandatory
+        .iter()
+        .find(|term| term.name == "context")
+        .expect("a context term");
+    assert_eq!(context.bytes, 132_587_520);
 
     // mk's own byte counts agree with the declared shapes.
     assert_eq!(engine.part_bytes(0, 0), 113_246_208);
