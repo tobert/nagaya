@@ -2,3 +2,4 @@
 
 pub mod bootstrap;
 pub mod inventory;
+pub mod profile;
