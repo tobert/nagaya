@@ -257,7 +257,8 @@ fn a_pass_runs_and_refuses_a_wrong_position() {
     // The same pass in two more contexts gives the same bits.
     let mut second = open().expect("open mk");
     let mut third = open().expect("open mk");
-    let fresh = segment(State::Slot(0), &[11, 12, 13], 0);
+    let mut fresh = segment(State::Slot(0), &[11, 12, 13], 0);
+    fresh.outputs.logit_rows = vec![2];
     let other = second.pass(std::slice::from_ref(&fresh), &[]).expect("second pass");
     let again = third.pass(std::slice::from_ref(&fresh), &[]).expect("third pass");
     compare_f32_rows(
