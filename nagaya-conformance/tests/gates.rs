@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use nagaya_abi::fake::{FakeAlways, FakeBroken};
 use nagaya_abi::{
     ChainLimits, Coverage, CoverageSpan, Determinism, Engine, Identity, Inputs, Lifetime, Limits, MandatoryTerm,
-    MemoryLimits, PartError, PartId, PartKind, Parts, PassError, PassOut, Segment, Slots, State, Tap, Tier,
+    MemoryLimits, PartError, PartId, PartKind, Parts, PassError, PassOut, Segment, SlotLimit, Slots, State, Tap, Tier,
     WriteResult,
 };
 use nagaya_conformance::{
@@ -55,8 +55,16 @@ fn fake_broken_fails_park_and_restore() {
     assert_fail(park_and_restore(&mut FakeBroken::new()), "fake_broken park_and_restore");
 }
 
-// The broken fake flips a bit in `part_read`. It also fails the seal gate, because that gate compares two reads.
-// This test keeps the park gate's failure on its own.
+#[test]
+fn a_one_slot_engine_gets_not_applicable() {
+    let mut one_slot = || FakeAlways::with_slots(vec![SlotLimit { bytes: 256, count: 1 }]);
+    assert!(matches!(park_and_restore(&mut one_slot()), Outcome::NotApplicable(_)));
+    assert!(matches!(quantum_isolation(&mut one_slot), Outcome::NotApplicable(_)));
+    assert!(run_all(&mut one_slot).passed());
+}
+
+// The broken fake flips a bit in `part_read`. It also fails the seal gate, because a read then returns different
+// bits than the gate wrote. This test keeps the park gate's failure on its own.
 
 /// An engine whose `part_read` seals the state after the read.
 struct SealsOnRead {

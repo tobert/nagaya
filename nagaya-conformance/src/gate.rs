@@ -238,41 +238,44 @@ fn compare_spans(
 ///
 /// The gate also checks the counts and the coverage spans. It is quantum condition 3.
 pub fn park_and_restore<E: Engine + ?Sized>(engine: &mut E) -> Outcome {
-    match park_and_restore_inner(engine) {
+    let limits = engine.limits();
+    if engine.parts().is_none() {
+        return Outcome::NotApplicable("the engine has no parts capability".to_owned());
+    }
+    let Some(destination) = second_slot(&limits) else {
+        return Outcome::NotApplicable(
+            "the engine declares one slot; park and restore needs a second state".to_owned(),
+        );
+    };
+    match park_and_restore_inner(engine, &limits, destination) {
         Ok(()) => Outcome::Pass,
         Err(failure) => Outcome::Fail(failure),
     }
 }
 
-fn park_and_restore_inner<E: Engine + ?Sized>(engine: &mut E) -> Result<(), Failure> {
+fn park_and_restore_inner<E: Engine + ?Sized>(
+    engine: &mut E,
+    limits: &Limits,
+    destination: u32,
+) -> Result<(), Failure> {
     let gate = "park_and_restore";
-    let limits = engine.limits();
-    if engine.parts().is_none() {
-        return Err(Failure::new(gate, "the engine has no parts capability"));
-    }
-    let Some(destination) = second_slot(&limits) else {
-        return Err(Failure::new(
-            gate,
-            "the engine declares one slot; park and restore needs a second state",
-        ));
-    };
     let source = State::Slot(0);
     let target = State::Slot(destination);
-    let written = fill(engine, source, &limits, 0x21, gate)?;
+    let written = fill(engine, source, limits, 0x21, gate)?;
     if written.is_empty() {
         return Err(Failure::new(
             gate,
             "the engine declares no stored part; park has nothing to move",
         ));
     }
-    let parked = read_filled(engine, source, &limits, gate)?;
-    compare_filled(gate, &limits, &written, &parked)?;
-    let source_spans = coverage_spans(engine, source, &limits, &parked);
-    restore(engine, target, &limits, &parked, gate)?;
-    let restored = read_filled(engine, target, &limits, gate)?;
-    compare_filled(gate, &limits, &parked, &restored)?;
+    let parked = read_filled(engine, source, limits, gate)?;
+    compare_filled(gate, limits, &written, &parked)?;
+    let source_spans = coverage_spans(engine, source, limits, &parked);
+    restore(engine, target, limits, &parked, gate)?;
+    let restored = read_filled(engine, target, limits, gate)?;
+    compare_filled(gate, limits, &parked, &restored)?;
     if let (Some(source_spans), Some(restored_spans)) =
-        (source_spans, coverage_spans(engine, target, &limits, &restored))
+        (source_spans, coverage_spans(engine, target, limits, &restored))
     {
         compare_spans(gate, &source_spans, &restored_spans)?;
     }
@@ -284,6 +287,12 @@ fn park_and_restore_inner<E: Engine + ?Sized>(engine: &mut E) -> Result<(), Fail
 /// The scheduler chooses the boundaries. The engine-side rule is: only `seal` and `pass` may change bits, and a
 /// read or a park may not. The gate checks a read, a second read, a seal, and two reads after the seal.
 pub fn seal_only_at_boundaries<E: Engine + ?Sized>(engine: &mut E) -> Outcome {
+    if engine.parts().is_none() {
+        return Outcome::NotApplicable("the engine has no parts capability".to_owned());
+    }
+    if engine.seal().is_none() {
+        return Outcome::NotApplicable("the engine has no seal capability".to_owned());
+    }
     match seal_only_at_boundaries_inner(engine) {
         Ok(()) => Outcome::Pass,
         Err(failure) => Outcome::Fail(failure),
@@ -293,12 +302,6 @@ pub fn seal_only_at_boundaries<E: Engine + ?Sized>(engine: &mut E) -> Outcome {
 fn seal_only_at_boundaries_inner<E: Engine + ?Sized>(engine: &mut E) -> Result<(), Failure> {
     let gate = "seal_only_at_boundaries";
     let limits = engine.limits();
-    if engine.parts().is_none() {
-        return Err(Failure::new(gate, "the engine has no parts capability"));
-    }
-    if engine.seal().is_none() {
-        return Err(Failure::new(gate, "the engine has no seal capability"));
-    }
     let state = State::Slot(0);
     let written = fill(engine, state, &limits, 0x41, gate)?;
     if written.is_empty() {
@@ -354,13 +357,10 @@ pub fn quantum_isolation<E: Engine>(make: &mut dyn FnMut() -> E) -> Outcome {
         return Outcome::NotApplicable("the gate makes token segments; this engine takes rows".to_owned());
     }
     if engine.parts().is_none() {
-        return Outcome::Fail(Failure::new("quantum_isolation", "the engine has no parts capability"));
+        return Outcome::NotApplicable("the engine has no parts capability".to_owned());
     }
     let Some(other) = second_slot(&limits) else {
-        return Outcome::Fail(Failure::new(
-            "quantum_isolation",
-            "the engine declares one slot; the gate needs a second state",
-        ));
+        return Outcome::NotApplicable("the engine declares one slot; the gate needs a second state".to_owned());
     };
     match quantum_isolation_inner(&mut engine, &limits, other) {
         Ok(()) => Outcome::Pass,
@@ -399,10 +399,10 @@ pub fn quantum_same_boundaries<E: Engine>(make: &mut dyn FnMut() -> E) -> Outcom
         return Outcome::NotApplicable("the gate makes token segments; this engine takes rows".to_owned());
     }
     if first.parts().is_none() {
-        return Outcome::Fail(Failure::new(
-            "quantum_same_boundaries",
-            "the engine has no parts capability",
-        ));
+        return Outcome::NotApplicable("the engine has no parts capability".to_owned());
+    }
+    if first.seal().is_none() {
+        return Outcome::NotApplicable("the engine has no seal capability".to_owned());
     }
     match same_boundaries_inner(first, make, &limits) {
         Ok(()) => Outcome::Pass,
@@ -456,6 +456,12 @@ fn seal_state<E: Engine + ?Sized>(
 ///
 /// This is quantum condition 4.
 pub fn quantum_resume_fit<E: Engine + ?Sized>(engine: &mut E) -> Outcome {
+    if engine.parts().is_none() {
+        return Outcome::NotApplicable("the engine has no parts capability".to_owned());
+    }
+    if engine.coverage().is_none() {
+        return Outcome::NotApplicable("the engine has no coverage capability".to_owned());
+    }
     match quantum_resume_fit_inner(engine) {
         Ok(Some(())) => Outcome::Pass,
         Ok(None) => Outcome::NotApplicable("the engine has no row part; coverage has nothing to hold".to_owned()),
@@ -466,12 +472,6 @@ pub fn quantum_resume_fit<E: Engine + ?Sized>(engine: &mut E) -> Outcome {
 fn quantum_resume_fit_inner<E: Engine + ?Sized>(engine: &mut E) -> Result<Option<()>, Failure> {
     let gate = "quantum_resume_fit";
     let limits = engine.limits();
-    if engine.parts().is_none() {
-        return Err(Failure::new(gate, "the engine has no parts capability"));
-    }
-    if engine.coverage().is_none() {
-        return Err(Failure::new(gate, "the engine has no coverage capability"));
-    }
     let Some(slot) = limits.slots.iter().any(|class| class.count > 0).then_some(0) else {
         return Err(Failure::new(gate, "the engine declares no slot"));
     };
