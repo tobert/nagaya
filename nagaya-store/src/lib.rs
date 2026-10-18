@@ -740,6 +740,9 @@ pub enum FailPoint {
     IndexRename,
 }
 
+/// The directory under the store that holds the blobs of cleared tripwires. No budget counts it.
+const QUARANTINE: &str = "quarantine";
+
 /// The content-addressed store.
 #[derive(Debug)]
 pub struct Store {
@@ -795,6 +798,8 @@ impl Store {
         chain: ChainLimits,
     ) -> Result<Self, StoreError> {
         std::fs::create_dir_all(dir.join("blobs")).map_err(io_error)?;
+        // 6.7: a cleared tripwire keeps its blobs here until a person removes them.
+        std::fs::create_dir_all(dir.join(QUARANTINE)).map_err(io_error)?;
         let path = dir.join("index.json");
         let mut index: Index = if path.is_file() {
             let bytes = std::fs::read(&path).map_err(io_error)?;
@@ -1280,7 +1285,7 @@ impl Store {
     }
 
     /// Clear a tripwire refusal after a person knows the cause.
-    /// It removes the recipe's quarantined entries and their blobs.
+    /// It removes the recipe's quarantined entries from the index and moves their blobs to `quarantine/`.
     pub fn clear_refusal(&mut self, recipe: RecipeId) -> Result<(), StoreError> {
         if !self.index.refused.contains(&recipe) {
             return Ok(());
@@ -1306,7 +1311,7 @@ impl Store {
         for id in &bad {
             self.checked.remove(id);
         }
-        self.remove_blobs(&bad)?;
+        self.move_blobs_to_quarantine(&bad)?;
         Ok(())
     }
 
@@ -1682,6 +1687,44 @@ impl Store {
         }
         sync_dir(&self.dir.join("blobs")).map_err(io_error)?;
         Ok(())
+    }
+
+    /// Move cleared blobs to `quarantine/`, and never delete them. A failed move is an error.
+    fn move_blobs_to_quarantine(&self, ids: &[ContentId]) -> Result<(), StoreError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        for id in ids {
+            let from = self.blob_path(id);
+            let to = self.quarantine_path(id);
+            match std::fs::rename(&from, &to) {
+                Ok(()) => {}
+                // The index no longer names the entry. An absent blob is the state that a crash between
+                // the index write and the move leaves. There is nothing to keep.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(StoreError::Io(format!(
+                        "the blob {} did not move to quarantine: {error}",
+                        id.hex()
+                    )));
+                }
+            }
+        }
+        sync_dir(&self.dir.join(QUARANTINE)).map_err(io_error)?;
+        sync_dir(&self.dir.join("blobs")).map_err(io_error)
+    }
+
+    /// The name that no earlier quarantined blob holds. The content id comes first; a serial follows it.
+    fn quarantine_path(&self, id: &ContentId) -> PathBuf {
+        let dir = self.dir.join(QUARANTINE);
+        let name = id.hex();
+        let mut serial = 0u32;
+        let mut path = dir.join(&name);
+        while path.exists() {
+            serial = serial.saturating_add(1);
+            path = dir.join(format!("{name}.{serial}"));
+        }
+        path
     }
 
     fn persist(&self) -> Result<(), StoreError> {

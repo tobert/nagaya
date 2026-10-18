@@ -1347,6 +1347,8 @@ fn clearing_a_tripwire_removes_its_entries() {
     assert!(!store.entries().contains_key(&second));
     assert!(!dir.path().join("blobs").join(first.hex()).exists());
     assert!(!dir.path().join("blobs").join(second.hex()).exists());
+    assert!(dir.path().join("quarantine").join(first.hex()).exists());
+    assert!(dir.path().join("quarantine").join(second.hex()).exists());
     assert!(store.refused().is_empty());
     let fresh = put(&mut store, &base_snapshot(3), recipe, 1);
     assert_eq!(lookup(&mut store, recipe).unwrap(), vec![fresh]);
@@ -1364,4 +1366,80 @@ fn a_tripwire_quarantine_clears_with_its_recipe() {
     assert!(!store.entries().contains_key(&first));
     let fresh = put(&mut store, &base_snapshot(3), recipe, 1);
     assert_eq!(lookup(&mut store, recipe).unwrap(), vec![fresh]);
+}
+
+fn quarantine_names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir.join("quarantine"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn a_second_quarantine_of_one_id_keeps_both_blobs() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let recipe = recipe(170);
+    let first = put(&mut store, &base_snapshot(1), recipe, 1);
+    assert!(try_put(&mut store, &base_snapshot(2), recipe, None, 1, Tier::Host, 10).is_err());
+    store.clear_refusal(recipe).unwrap();
+    assert_eq!(quarantine_names(dir.path()).len(), 2);
+
+    let again = put(&mut store, &base_snapshot(1), recipe, 1);
+    assert_eq!(again, first, "the same bytes give the same content id");
+    assert!(try_put(&mut store, &base_snapshot(2), recipe, None, 1, Tier::Host, 10).is_err());
+    store.clear_refusal(recipe).unwrap();
+
+    let names = quarantine_names(dir.path());
+    assert_eq!(names.len(), 4, "{names:?}");
+    assert!(names.contains(&first.hex()), "{names:?}");
+    assert!(names.contains(&format!("{}.1", first.hex())), "{names:?}");
+}
+
+#[test]
+fn quarantined_blobs_are_not_in_the_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let size = base_snapshot(1).encode().unwrap().len() as u64;
+    let mut store = Store::open_with_budget(dir.path(), size).unwrap();
+    let recipe = recipe(171);
+    put(&mut store, &base_snapshot(1), recipe, 1);
+    assert!(try_put(&mut store, &base_snapshot(2), recipe, None, 1, Tier::Host, 10).is_err());
+    store.clear_refusal(recipe).unwrap();
+
+    let fresh = put(&mut store, &base_snapshot(3), recipe, 1);
+    assert_eq!(lookup(&mut store, recipe).unwrap(), vec![fresh]);
+}
+
+#[test]
+fn a_failed_move_reports_an_error_and_leaves_the_blob_in_blobs() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let recipe = recipe(172);
+    let first = put(&mut store, &base_snapshot(1), recipe, 1);
+    let error = try_put(&mut store, &base_snapshot(2), recipe, None, 1, Tier::Host, 10).unwrap_err();
+    let second = match error {
+        StoreError::Tripwire { ids, .. } => ids.into_iter().find(|id| *id != first).unwrap(),
+        other => panic!("expected the tripwire, got {other:?}"),
+    };
+    let quarantine = dir.path().join("quarantine");
+    std::fs::set_permissions(&quarantine, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+    let error = store.clear_refusal(recipe).unwrap_err();
+    assert!(matches!(error, StoreError::Io(_)), "{error:?}");
+    assert!(dir.path().join("blobs").join(first.hex()).exists());
+    assert!(dir.path().join("blobs").join(second.hex()).exists());
+    assert_eq!(quarantine_names(dir.path()).len(), 0);
+    std::fs::set_permissions(&quarantine, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    // A crash between the index write and the move leaves the same state. The next open reads the index,
+    // which does not name the blob, so the blob stays and no entry serves it.
+    let mut store = Store::open(dir.path()).unwrap();
+    assert!(dir.path().join("blobs").join(first.hex()).exists());
+    assert!(store.entries().is_empty());
+    let again = put(&mut store, &base_snapshot(1), recipe, 1);
+    assert_eq!(again, first);
 }
