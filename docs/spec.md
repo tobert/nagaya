@@ -350,8 +350,8 @@ its tip. The store keeps only the chains that fit the slot (coverage) and the se
 The store picks the deepest exact chain. The deepest chain is the one whose furthest covered position is highest in
 every part. The store gives an approximate chain only to a served model whose tolerance names that method.
 
-**Proposed** by deepseek-flash, 2026-10-18: when two chains are incomparable under the deepest rule (each is
-higher in a different part), the store refuses the lookup with an error. It does not pick one by a tie-break.
+**Proposed** by deepseek-flash, 2026-10-18. Two chains can be incomparable under the deepest rule: each is
+higher in a different part. The store refuses the lookup with an error. It does not pick one by a tie-break.
 Reason: a silent choice would not be the deepest in every part.
 
 **6.7 The tripwire.** Some engines declare `always` or `pinned` (D3). For those engines, two content ids under one
