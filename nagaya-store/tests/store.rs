@@ -1,5 +1,5 @@
 use nagaya_abi::fake::FakeAlways;
-use nagaya_abi::{Engine, OutputsWanted, PartKind, Segment, SegmentInputs, State};
+use nagaya_abi::{Engine, OutputsWanted, PartKind, Segment, SegmentInputs, SlotLimit, State};
 use nagaya_store::{ContentId, Snapshot, Tensor, content_id, recipe_boundary, recipe_root, snapshot_from_engine};
 use serde_json::Value;
 
@@ -222,4 +222,19 @@ fn a_huge_shape_is_an_error() {
         parent: None,
     };
     assert!(snapshot.encode().is_err());
+}
+
+#[test]
+fn a_slot_id_maps_through_the_size_classes() {
+    let mut engine = FakeAlways::with_slots(vec![
+        SlotLimit { bytes: 64, count: 4 },
+        SlotLimit { bytes: 256, count: 2 },
+    ]);
+    engine.pass(&[segment(3, &[1, 2, 3, 4, 5, 6])], &[]).unwrap();
+    engine.pass(&[segment(4, &[1, 2, 3, 4, 5, 6])], &[]).unwrap();
+    let rows = [(1, 0, 6), (2, 2, 4)];
+    let small = snapshot_from_engine(&mut engine, State::Slot(3), &rows).unwrap();
+    let large = snapshot_from_engine(&mut engine, State::Slot(4), &rows).unwrap();
+    assert_eq!(small.tensors.len(), 3);
+    assert_eq!(large.tensors.len(), 3);
 }

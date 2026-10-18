@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use nagaya_abi::{CoverageSpan, Dtype, Engine, PartKind, State};
+use nagaya_abi::{CoverageSpan, Dtype, Engine, PartKind, SlotLimit, State};
 use safetensors::{Dtype as SafeDtype, SafeTensors};
 use serde_json::{Map, Value};
 
@@ -247,11 +247,8 @@ pub fn snapshot_from_engine(
 ) -> Result<Snapshot, StoreError> {
     let limits = engine.limits();
     let State::Slot(slot_id) = state;
-    let slot_bytes = limits
-        .slots
-        .get(slot_id as usize)
-        .ok_or_else(|| StoreError::Invalid("unknown slot".to_owned()))?
-        .bytes;
+    let slot_bytes =
+        slot_capacity(&limits.slots, slot_id).ok_or_else(|| StoreError::Invalid("unknown slot".to_owned()))?;
     if slot_bytes == 0 {
         return Err(StoreError::Invalid("empty slot".to_owned()));
     }
@@ -408,6 +405,17 @@ fn dtype_name(dtype: Dtype) -> &'static str {
         Dtype::U8 => "U8",
         Dtype::U32 => "U32",
     }
+}
+
+fn slot_capacity(slots: &[SlotLimit], slot: u32) -> Option<u64> {
+    let mut remaining = slot as usize;
+    for class in slots {
+        if remaining < class.count as usize {
+            return Some(class.bytes);
+        }
+        remaining -= class.count as usize;
+    }
+    None
 }
 
 fn dtype_bytes(dtype: Dtype) -> usize {

@@ -29,15 +29,24 @@ pub struct FakeBroken(pub(crate) Fake);
 impl FakeAlways {
     /// Make the engine.
     pub fn new() -> Self {
-        FakeAlways(Fake::new("fake-always", false))
+        Self::with_slots(default_slots())
+    }
+
+    /// Make the engine with the given slot size classes.
+    pub fn with_slots(slots: Vec<SlotLimit>) -> Self {
+        FakeAlways(Fake::new("fake-always", false, slots))
     }
 }
 
 impl FakeBroken {
     /// Make the broken engine.
     pub fn new() -> Self {
-        FakeBroken(Fake::new("fake-broken", true))
+        FakeBroken(Fake::new("fake-broken", true, default_slots()))
     }
+}
+
+fn default_slots() -> Vec<SlotLimit> {
+    vec![SlotLimit { bytes: 64, count: 1 }, SlotLimit { bytes: 256, count: 1 }]
 }
 
 impl Default for FakeAlways {
@@ -75,7 +84,7 @@ enum PartData {
 }
 
 impl Fake {
-    fn new(model: &str, broken: bool) -> Self {
+    fn new(model: &str, broken: bool, slot_limits: Vec<SlotLimit>) -> Self {
         let parts = vec![
             PartLimits {
                 name: "state".to_owned(),
@@ -115,7 +124,7 @@ impl Fake {
             max_segments: 1,
             max_pass_inputs: 1,
             max_logit_rows: 1,
-            slots: vec![SlotLimit { bytes: 64, count: 1 }, SlotLimit { bytes: 256, count: 1 }],
+            slots: slot_limits,
             max_quantum_ms: 10,
             memory: MemoryLimits::default(),
             chain: ChainLimits {
@@ -219,9 +228,19 @@ impl Fake {
         Some(part.shape.iter().product::<u64>() as usize)
     }
 
+    fn slot_capacity(&self, slot: usize) -> Option<u64> {
+        let mut remaining = slot;
+        for class in &self.limits.slots {
+            if remaining < class.count as usize {
+                return Some(class.bytes);
+            }
+            remaining -= class.count as usize;
+        }
+        None
+    }
+
     fn slot_bytes(&self, state: State) -> Option<u64> {
-        let slot = self.limits.slots.get(Self::slot_id(state))?;
-        Some(slot.bytes)
+        self.slot_capacity(Self::slot_id(state))
     }
 
     fn refuse(&mut self, message: &str) -> WriteResult {
@@ -305,11 +324,8 @@ impl Fake {
 
     fn fits_inner(&self, coverage: &CoverageSpan, slot: u32) -> Result<(), String> {
         let slot_bytes = self
-            .limits
-            .slots
-            .get(slot as usize)
-            .ok_or_else(|| "unknown slot".to_owned())?
-            .bytes;
+            .slot_capacity(slot as usize)
+            .ok_or_else(|| "unknown slot".to_owned())?;
         let row_bytes = self.row_bytes(coverage.part).ok_or_else(|| "unknown part".to_owned())? as u64;
         let bytes = (coverage.end - coverage.start) * row_bytes;
         if bytes <= slot_bytes {
