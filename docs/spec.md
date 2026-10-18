@@ -93,6 +93,10 @@ fit the budgets (section 4), the nagaya refuses the profile before it opens an e
 shortfall in bytes for each tier. At cold start, a refused profile exits 3 (10.4). At runtime, a refused `PUT`
 returns 507 and keeps the active profile.
 
+**Proposed** by deepseek-flash, 2026-10-18: the refusal reports one entry for each short budget, with the tiers
+that share it. A caller that adds the entries does not count a pooled budget twice. On gfx1151host, `device(0)` and
+`host` are one pool (4.2).
+
 ## 3. Process
 
 **3.1 One process per machine.** The nagaya owns every GPU on the machine (Amy: "we'd do 1 process per host that
