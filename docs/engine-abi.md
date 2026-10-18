@@ -129,7 +129,7 @@ instead, so a new packing does not change the identity.
 | open / attach | `load_slots(cluster, model_dir, slot_seqs, max_block)`, `load_slots_stored` | slot sizes and `max_block` are load-time config |
 | device group | both B70 cards | one nagaya thread; `run_card0`, `run_card1` and `pipeline_stage` stay inside the pass |
 | arena | 60 DMA-BUF slabs (`slab_fd_name(l, card)`), `verify_stored_slab` | spot check: first and last 64 bytes per tensor |
-| slots | `set_slot`, `kv_high` | no contexts, no stored token count, no fork |
+| slots | `set_slot`, `kv_high`, `slot_clear` | no contexts, no stored token count, no fork |
 | parts | `save_kv_layer_from` (a range read), `load_kv`, `load_kv_layer` | `state` is the slot index; KV only: cells on global layers, ring on sliding layers |
 | geometry / coverage | slot size, ring rows (`kv_ring`, `kv_keep_from`); `KvSnapshot::join` is the fit check | changes rows held, not bits, so no `geometry_key`; today's id is a recipe (`held.rs:312-325`) |
 | pass | `run_card0` then `run_card1`; `pipeline_stage` for jobs in flight on both cards | two stages |
@@ -230,7 +230,7 @@ sizes for `max_quantum_ms`.
 plus `last_error`. The caller owns the buffers.
 
 **D6. Poison stays fatal.** Decided 2026-10-18. The nagaya frees a poisoned context and never reads it. For a slot
-engine, it marks a poisoned slot dirty until a job overwrites it from position 0 or through `part_write`. A pass
+engine, it marks a poisoned slot dirty until `slot_clear`, `part_write`, or a pass from position 0 resets it. A pass
 that returns a poison status poisons every context or slot in it (mk: "-1, every context poisoned"). The nagaya fails
 those jobs, keeps the others, and runs the canary before more work runs (spec 8.2).
 

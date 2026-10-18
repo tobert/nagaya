@@ -1,7 +1,7 @@
 # nagaya spec v0 (draft)
 
 This spec says what the nagaya is and what it does, one rule at a time. It is written in Simplified Technical
-English (`CLAUDE.md`).
+English (`AGENTS.md`).
 
 - `docs/ontology.md` defines each term once.
 - `docs/engine-abi.md` defines the calls and the decisions D1-D10. The spec refers to them by number.
@@ -56,7 +56,7 @@ bind addresses, store directory, and seed peer addresses.
 
 Telemetry takes hardware attributes from the probed inventory, not from constants in code. (mkviolet puts B70 values
 in `telemetry.rs` as constants.) A CPU that runs work is a device in the inventory too, with host memory as its tier.
-A machine with no GPU Engine can also join the cluster to serve as a coordinator, run CPU devices (13.2), or hold a
+A machine with no GPU engine can also join the cluster to serve as a coordinator, run CPU devices (13.2), or hold a
 store tier.
 
 **2.2 Tier edges.** An edge records more than a bandwidth (`docs/prior-art.md` 5):
@@ -100,9 +100,13 @@ stops the nagaya first. (ds4-recipe: a shader fault with a second GPU client mad
 **3.2 Threads and CPU isolation.** The nagaya isolates control work from compute work with `sched_setaffinity` and OS
 thread priorities:
 
-- **Housekeeping threads.** The `chitchat` gossip runtime, the HTTP coordinator, the ledger thread, and the watchdog
-  thread are pinned to reserved housekeeping cores (`sched_setaffinity`) at elevated priority. They never run
-  tokenization, hashing, safetensors conversion, or engine passes directly.
+- **Control runtime (`tokio`).** Runs `chitchat` gossip and the HTTP coordinator on reserved housekeeping cores
+  (`sched_setaffinity`) at elevated priority. It never runs tokenization, hashing, safetensors conversion, or engine
+  passes directly.
+- **One ledger thread.** Runs on the housekeeping cores and owns every budget: device memory, host memory and NVMe.
+  Group threads and the store send admission requests to it. No other thread writes the ledger.
+- **One watchdog thread.** Runs on the housekeeping cores and watches each group thread from outside, because a pass
+  blocks the thread that it watches (7.4).
 - **One thread per GPU device group.** A device group is the set of devices that one engine uses. Most groups have
   one device. mkviolet's Gemma 4 uses both B70 cards, so its group has two. Every engine call for a group comes from
   its thread, and the call is synchronous. Inside a pass, the engine runs its own work on each of its devices (D1).
@@ -110,15 +114,11 @@ thread priorities:
   (13.2) run on a bounded pool pinned to the remaining cores at `SCHED_BATCH`. Long CPU work yields between chunks
   to obey `max_quantum_ms`. On unified-memory machines (`gfx1151host` and `sm121host`), the scheduler pauses background CPU
   memory work during a GPU pass to protect GPU memory bandwidth.
-- **One ledger thread.** It owns every budget: device memory, host memory and NVMe. Group threads and the store send
-  admission requests to it. No other thread writes the ledger.
-- **One watchdog thread.** It watches each group thread from outside, because a pass blocks the thread that it
-  watches (7.4).
 
-**3.3 Engines live as long as the process (v0).** The nagaya opens each engine at start, from the profile. It
-closes the engines at exit. mk cannot close inside a process today: "the HIP runtime's own teardown segfaults" (mk
-`service/__main__.py`). Thus the nagaya calls `close()` only at exit, and it can exit without the call. Engines can
-load and unload at runtime (README door 1) only when each engine's `close()` is safe.
+**3.3 Engine lifecycle and profile swaps.** The nagaya opens each engine at start, from the profile. mk cannot close
+inside a process today: "the HIP runtime's own teardown segfaults" (mk `service/__main__.py`). When an engine's
+`close()` is safe, it loads and unloads in place (README door 1). Otherwise, when `PUT /nagaya/v1/profile` changes
+the engines, the nagaya persists the profile, drains running work (10.3), and restarts with `FDSTORE=1`.
 
 **Open:** Do the GPU queues of an idle engine slow the other engines on its device? mk has a note that its idle
 queues slow another process, but we did not find the source. A measurement answers the question.
@@ -128,15 +128,15 @@ queues slow another process, but we did not find the source. A measurement answe
 The ledger is the machine's account of memory (ontology "Ledger", D9, ds4-recipe `05-memory-ledger.md`). The
 ledger thread owns it (3.2).
 
-**4.1 Budgets.** Each tier has one budget. A budget is a byte target in the config. It is not a measurement of free
-memory.
+**4.1 Budgets.** Each tier has one budget. A budget is a byte target in the placement profile (2.4). It is not a
+measurement of free memory.
 
 - gfx1151host and sm121host: one shared pool for device and host memory.
 - b70host: one budget for each card's device memory, and one for host memory.
 - Every machine: one budget for the store's host-memory tier, and one for the store on NVMe.
 
 **4.2 Terms.** Each engine declares its terms in `limits().memory`. `plan(config)` gives the same terms before
-`open` (2.3).
+`open` (2.4).
 
 - Mandatory terms `{name, bytes, lifetime}`. The lifetime is per engine, per context, or loaned (one holder at a
   time).
@@ -158,7 +158,7 @@ When the ledger refuses a quantum's call, the quantum waits in the scheduler and
 
 **4.4 Spare memory.** The ledger first charges all mandatory terms. It then divides what remains among the elastic
 terms by the profile's shares (D9). Each term gets at least its minimum. If what remains is less than the sum of the
-minimums, the nagaya refuses the profile at start (2.3). Counts come from this arithmetic, never from free memory.
+minimums, the nagaya refuses the profile (2.4). Counts come from this arithmetic, never from free memory.
 
 Some engines have bits that depend on the size of a cache. Such an engine declares that cache as a mandatory term,
 not an elastic one. Thus reclaim and resize cannot change its bits, and each start gives it the same size.
@@ -369,8 +369,8 @@ process continues with its other engines.
 **8.2 Pass failures.** A pass returns ok, poison (D6), or timeout. The nagaya treats outputs that are not finite as
 poison. After a poison or a timeout, the nagaya does these steps:
 
-1. Fail the jobs in that pass. Free their contexts, or mark their slots dirty until a job overwrites them from
-   position 0 or through `part_write`.
+1. Fail the jobs in that pass. Free their contexts, or mark their slots dirty until a job clears them (`slot_clear`),
+   overwrites them from position 0, or writes them through `part_write`.
 2. Run the canary again on the group thread, before any other work.
 3. If the canary does not match, or if this is the fourth timeout in 600 s, mark the engine fatal. Refuse every
    later job for it.
@@ -479,13 +479,13 @@ opened, passed its canary, and woken its pinned state. `STATUS=` gives the state
 
 **10.2 Arenas through a restart.** systemd's file-descriptor store keeps the arenas (`FDSTORE=1`). Each fd has the
 name `<engine>/<device>/<part>`. systemd reads `FileDescriptorStoreMax` from the unit file before the process starts.
-Thus the nagaya's installer generates the unit file from the profile, with a limit that covers every arena fd.
-(mkviolet keeps 61 fds under a fixed limit of 64, `systemd/mkviolet.service`.)
+The unit file sets a generous ceiling (`FileDescriptorStoreMax=512`), and profile admission (2.4) refuses a profile
+that needs more arena fds than the ceiling. (mkviolet keeps 61 fds under a limit of 64, `systemd/mkviolet.service`.)
 
 At start, the nagaya does these steps for each engine:
 
 1. Check each stored arena against the engine's build, and record the strength of the check.
-2. If an arena does not match, make sure that a cold load fits the ledger first (2.3). Then drop that engine's
+2. If an arena does not match, make sure that a cold load fits the ledger first (2.4). Then drop that engine's
    stored fds and load it cold. If a cold load does not fit, keep the fds and exit 3.
 3. Duplicate each fd before use. (In mkviolet on 2026-10-16, an import closed the stored fd and caused a crash
    loop.)
@@ -496,7 +496,8 @@ At start, the nagaya does these steps for each engine:
 
 1. Accept no new jobs.
 2. Let each running quantum go to its end.
-3. Park pinned and wanted contexts to NVMe in a time budget (ds4-recipe: 10 s). The budget is in the config.
+3. Park pinned and wanted contexts to NVMe in a time budget (ds4-recipe: 10 s). The budget is in the bootstrap config
+   (2.1).
 4. Exit.
 
 A second signal makes the process exit at once. Cancellation of running work follows 5.9. **Open:** the conversion

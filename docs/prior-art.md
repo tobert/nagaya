@@ -73,7 +73,7 @@ chapters 02, 07, 08, 09, 14 and 15 as engine-internal. We checked the load-beari
 - **Reserve before allocate** (05 invariant 4), transient peaks included. A refused admission changes nothing
   (invariant 7). The worst phase is checked at launch, before any weight is read: "Fail at launch, not at hour 9".
   Proposed: the nagaya admits every call that allocates before it runs, and `open` reports the minimum bytes per
-  tier first (spec 4.3, 2.3).
+  tier first (spec 4.3, 2.4).
 - **Reclaim parks** (05 "7.", 11 "11."), in a fixed order (spec 4.6). Agrees with D7.
   1. Park idle contexts that have no pin or lease to a lower tier, the oldest first. (ds4 parks them to NVMe.)
   2. Shrink the elastic terms of idle engines.

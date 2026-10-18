@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check Markdown files against the STE limits in CLAUDE.md.
+"""Check Markdown files against the STE limits in AGENTS.md.
 
 A description sentence has at most 25 words. A paragraph has at most 6 sentences. Code blocks, tables, headings
 quoted text, and a bold label at the start of a paragraph are not checked. A code span counts as one word. The exit status is 1 when a file breaks a limit.
