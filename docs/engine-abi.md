@@ -269,6 +269,15 @@ the binding cannot check `kVocab` against the library either. The simplest guard
 is set, the binding refuses a library with another digest, before it binds any symbol. The process crate reads the
 pin from the profile. Until then, the digest in the identity is a record only (review finding 2).
 
+**Proposed** by deepseek-flash, 2026-10-18: mk's pass scratch is a mandatory memory term. The ABI says that `pass`
+never allocates and that its scratch is a mandatory term. mk allocates one scratch pool at its first ask and keeps
+it for the engine's life (`engine.h:104-112`). This binding declares no term for it, so the ledger does not charge
+it.
+
+The simplest term is `{name: "pass_scratch", tier: device(0), bytes: measured, lifetime: engine, kinds: [prefill,
+decode]}`. mk has no call for the size, so the process crate measures it once at start and sets the term. The
+wrapper's host buffers also wait for the process crate (the review's note on finding 9).
+
 ## How mkviolet maps
 
 | ABI | mkviolet (`gemma4.rs` unless named) | Notes |
