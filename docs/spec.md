@@ -329,7 +329,7 @@ part and ring part has the shape of its coverage: the rows that it holds, in pos
 different sizes that hold the same rows make the same file.
 
 Padding between tensors is zero. The header pads with spaces (0x20), so that the data starts on a 4 KiB
-boundary (D10 rule 5). Thus the word "zero" names the data section, not the header. Decided 2026-10-18.
+boundary (D10 rule 5). The word "zero" names the gap between tensors, not the header padding. Decided 2026-10-18.
 
 Times, hit counts, owners and reasons go in the store's index, never in the sealed bytes. If they go in the sealed
 bytes, two copies of one state get different content ids. Then the store keeps both copies, because it cannot see
