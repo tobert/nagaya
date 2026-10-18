@@ -269,20 +269,22 @@ Reason for all: the code must not guess. Amy can change each choice.
 **Corrected** by deepseek-flash, 2026-10-18: `max_quantum_ms` was 30000. mk's watchdog aborts a pass at 10 s
 (`engine.h:302-306`), so a 30 s bound promises a quantum that mk would stop. Review finding 13.
 
-**Proposed** by deepseek-flash, 2026-10-18: a pin on the mk library build. The identity records the SHA-256 of
-`libmkengine.so`, but nothing compares that digest with an expected one. mk has no call for the vocabulary size, so
-the binding cannot check `kVocab` against the library either. The simplest guard is `MK_ENGINE_LIB_SHA256`: when it
-is set, the binding refuses a library with another digest, before it binds any symbol. The process crate reads the
-pin from the profile. Until then, the digest in the identity is a record only (review finding 2).
+**The deploy profile pins the mk library.** The identity records the SHA-256 of `libmkengine.so`. The deploy profile
+requires that pin. The binding reads `MK_ENGINE_LIB_SHA256` and refuses a library with another digest before it binds
+any symbol. Tests may leave the pin unset. mk has no call for the vocabulary size, so the binding cannot check
+`kVocab` against the library either. Decided 2026-10-18.
 
-**Proposed** by deepseek-flash, 2026-10-18: mk's pass scratch is a mandatory memory term. The ABI says that `pass`
-never allocates and that its scratch is a mandatory term. mk allocates one scratch pool at its first ask and keeps
-it for the engine's life (`engine.h:104-112`). This binding declares no term for it, so the ledger does not charge
-it.
+Reason: without the pin, nothing compares the digest in the identity with an expected one (review finding 2).
 
-The simplest term is `{name: "pass_scratch", tier: device(0), bytes: measured, lifetime: engine, kinds: [prefill,
-decode]}`. mk has no call for the size, so the process crate measures it once at start and sets the term. The
-wrapper's host buffers also wait for the process crate (the review's note on finding 9).
+**mk's pass scratch is a mandatory term.** The ABI says that `pass` never allocates and that its scratch is a
+mandatory term. mk allocates one scratch pool at its first ask and keeps it for the engine's life
+(`engine.h:104-112`). The term is `{name: "pass_scratch", tier: device(0), bytes: the measured constant (milestone
+9c), lifetime: engine, kinds: [prefill, decode]}`.
+
+mk has no call for the size. The process measures the pool once on gfx1151 and declares that constant. It refuses
+the engine when a later measurement is larger than the constant. Decided 2026-10-18.
+
+The wrapper's host buffers also wait for the process crate (the review's note on finding 9).
 
 ### Proposed: test limits of the spin-timeout opt-in and the poisoned set_n path
 
