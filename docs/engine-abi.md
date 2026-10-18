@@ -306,7 +306,7 @@ check. Amy can decide whether a lab hook for the first case earns its cost.
 refuses a library with other part sizes before any write. Real mk matches the declared shapes, so the check passes
 in every test.
 
-Deleting the call leaves every test green. Only `parts_problem` has a test (`spec.rs:298`): it refuses a larger part
+Deleting the call leaves every test green. Only `parts_problem` has a test (`spec.rs:299`): it refuses a larger part
 with `a larger part must be a mismatch`. The call at open is not pinned. A fake library would pin it, and this suite
 has none.
 
