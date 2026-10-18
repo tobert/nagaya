@@ -107,7 +107,7 @@ telemetry    op_times(), dispatches(), ...
 
 ## Decisions
 
-Decided: D1, D3, D8, D9. Deferred to the first engine port: D2. Proposed, not yet reviewed with Amy: D4-D7.
+Decided: D1, D3, D8, D9, D10. Deferred to the first engine port: D2. Proposed, not yet reviewed with Amy: D4-D7.
 
 **D1. Engines that span devices.** There are two options:
 
@@ -203,6 +203,33 @@ a short turn waited 283.95 s behind a long prefill (`docs/prior-art.md` 3). We t
 **D9. Spare memory goes by weight.** Decided 2026-10-17 (Amy: "we'll assign some weight per machine"). Each
 machine's placement profile gives every engine on it a weight. The ledger first charges all mandatory bytes. It
 then divides what remains among the engines' elastic terms by those weights (`docs/prior-art.md` 2).
+
+**D10. Snapshots at rest are canonical safetensors.** Decided 2026-10-17 (Amy: "yeah, seems like a good call"). In
+device memory, each engine keeps its own layout. The model and the kernels decide that layout, and it stays private.
+
+In the store, every snapshot is a safetensors file in one canonical form. Thus any tool can read any engine's parts
+without that engine's code: numpy, a trace viewer, a lens job, the audit. The HF checkpoints are safetensors too, so
+weights and state at rest use one format. These rules apply:
+
+1. **One part, one tensor.** Each part is a tensor with the name, dtype and shape that `limits().parts` declares.
+   The data is little-endian and row-major, with no engine padding.
+2. **A canonical header.** Keys are sorted, the JSON has no extra whitespace, and the tensors are in a fixed order.
+   `__metadata__` holds only facts about the bytes: the part kinds, the coverage, the parent's content id, and each
+   block format. It never holds times, hit counts or owners (spec 6.3).
+3. **Dtypes.** Use a native dtype where one exists: F32, F16, BF16, the integer types, and F8 (E4M3, E5M2). A block
+   format that safetensors does not have (IQ4_NL, MXFP4, FP4 KV) is `U8`, and `__metadata__` names the format.
+4. **Alignment.** Safetensors permits no gaps between tensors. Pad the header to 4 KiB. Where a tensor must start
+   on a 4 KiB boundary for direct IO, put an explicit `U8` padding tensor before it.
+5. **Chains.** A delta is a safetensors file. It holds the new rows of each cells part, and each fixed and ring part
+   whole. Its metadata names its parent's content id and the rows that it covers.
+
+The content id is the BLAKE3 hash of this canonical file. Each engine converts between its layout and the canonical
+form on the way into and out of the store. For mk, that is the copy it already does: its copy re-strides cells by
+capacity (`engine.h:169`). For mkviolet, the conversion reorders the rows of each ring.
+
+A park from device memory to host memory can keep the engine's native bytes, if the conversion is too slow for short
+parks. Such a park has no content id. It gets one when it goes into the store. **Open:** measure the conversion on
+both engines before we use this exception.
 
 ## Not covered yet
 

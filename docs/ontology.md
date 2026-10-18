@@ -129,7 +129,8 @@ spec layers are boundaries. Boundaries are part of a snapshot's recipe.
 **Park.** A move of a state object to another tier, bit for bit. A park never seals. Seals occur only at boundaries
 that the chain declares. Thus when the scheduler parks a context to free its slot, later results do not change.
 
-**Snapshot id.** A content id: a hash of a stored snapshot's sealed bytes. When the snapshot is stored as a piece of
+**Snapshot id.** A content id: a hash of a stored snapshot's sealed bytes, in the canonical safetensors form
+(`docs/engine-abi.md` D10). When the snapshot is stored as a piece of
 a chain, the hash also covers its parent's content id (`docs/engine-abi.md` D3). Each stored snapshot records its
 **coverage**: the positions that it holds per part. The same chain, stored from different slots, holds different
 rows. mkviolet's sliding layers keep a ring's worth in a large slot and every row in a small one

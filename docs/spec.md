@@ -208,9 +208,9 @@ chain, the hash includes its parent's content id. A snapshot's recipe is a hash 
 mk's `context_id` and mkviolet's `snap:<sha256>` are recipes in this sense. mk's id is a SHA-256 of the tokens and
 boundaries with `|gdn-bf16-v1|`.
 
-**6.3 Sealed bytes are canonical.** Padding and unused rows are zero. Times, hit counts, owners and reasons go in
-the store's index, never in the sealed bytes. If they go in the sealed bytes, two copies of one state get different
-content ids, and dedup fails.
+**6.3 Sealed bytes are canonical.** In the store, each snapshot is a canonical safetensors file (D10). Padding and
+unused rows are zero. Times, hit counts, owners and reasons go in the store's index, never in the sealed bytes. If
+they go in the sealed bytes, two copies of one state get different content ids, and dedup fails.
 
 **6.4 Entries.** Each entry in the index records:
 
