@@ -94,9 +94,10 @@ chapters 02, 07, 08, 09, 14 and 15 as engine-internal. We checked the load-beari
   - Decided (D8): no yields. Each engine declares `max_quantum_ms` in `limits()`. An engine with a longer natural
     pass splits it into shorter quanta, or later into stages (spec 5.1).
   - Nested guests wait for later. Their protocol stays: "refused, nothing changed, the waiter keeps its place".
-- **Owed-share fairness in a class** (11 "6."). The order is priority, then owed seconds (clamped to ±30 s), then
-  arrival. "Leaving members take only their own balance". The balance is in time, not in tokens. Fillers collect no
-  debt (spec 5.4).
+- **Owed-share fairness in `interactive`, FIFO flow in `batch` and `filler`** (11 "6."). Decided (spec 5.4): in
+  `interactive`, the order is priority, then owed seconds (clamped to ±30 s), then arrival. "Leaving members take
+  only their own balance", in time, not in tokens. In `batch` and `filler`, the order is priority and arrival, so one
+  job runs in flow until higher-priority work is ready.
 - **Gathering segments.** Wait a bounded join window for jobs that are ready, never for jobs that are not ready:
   "Nothing waits on a member that is not about to post". The window is a scheduler parameter for each class (spec
   5.7).
@@ -105,15 +106,15 @@ chapters 02, 07, 08, 09, 14 and 15 as engine-internal. We checked the load-beari
   time budget (ds4: 10 s to persist resident sessions) (spec 5.9, 10.3).
 - **Loans are leases that the nagaya enforces.** A stranded loan of prefill scratch made every other prefill fail
   behind it. Every terminal state of a job releases its loans: done, cancelled, failed, expired (spec 5.9).
-- **Cost model (D4)** (spec 5.11).
+- **Cost model (D4)** (spec 5.11, decided).
   - Fit robust affine costs for each engine and segment count, with Theil-Sen. ds4's first profile used a median
     per cell, and one noisy step in it stalled admission. Theil-Sen over every round corrected it (11).
   - Key the fit by context depth.
   - Exclude passes that ran beside other work.
   - Fit from production passes with telemetry on. In ds4, an extra row cost 0.060-0.073 s in production and
     0.026-0.037 s in the profile (11, "Production per-row cost").
-  - At cold start, record "no model yet" and schedule by class and arrival until a fit exists. Never guess
-    silently.
+  - Use the fit for store eviction value-per-byte and deadline checks between quanta. At cold start, record "no model
+    yet" until a fit exists. Never guess silently.
 - **Phase transitions are a cost term.** ds4's change from prefill to decode (draft reload, regrow) took 1.594 s.
   It was the largest fixed cost for short turns. A loadable piece that shares the engine's memory (a draft model, an
   image model) declares its bytes and reload time. Then the scheduler can compare the cost to keep it and to unload
@@ -147,9 +148,9 @@ chapters 02, 07, 08, 09, 14 and 15 as engine-internal. We checked the load-beari
     an owner on every entry.
   - A pin that alone is larger than the budget loses its protection, so eviction cannot deadlock.
 - **Restore.** Validate everything before a change. Give one reason for each failed check.
-  - Proposed: `slot_load` and `part_write` return one of three results (spec 6.8). These are ok, refused with
+  - Decided: `part_write` and `cells_write` return one of three results (spec 6.8). These are ok, refused with
     nothing changed, and failed after a change (poison, D6).
-  - A failed restore quarantines the store entry. A failure never deletes content.
+  - A failed restore quarantines the store entry only when verification fails. A failure never deletes content.
 - **Approximate reuse.** ds4 has crop and bounded replay, and suffix cache reuse, which moves KV to a new position.
   Both are `[approx — approved]` and opt-in for each request. Proposed (spec 6.6):
   - An approximate snapshot has its own recipe. The recipe has a tag for the method and its parameters, and names
@@ -210,9 +211,9 @@ still apply:
   must be resumable: its state parks (spec 5.5).
 - **"Unallocated" time.** The minimum runtime is zero, the time is free, and it is always preemptible. That is our
   filler class.
-- **Hierarchical fair share over a 7-day window.** Priority orders work only in a team. For us, the "teams" could be
-  kinds of work (interactive endpoints, image batch, training), each with a share. ds4's owed-share rule works inside
-  a class. This is open (spec 15, question 6).
+- **Hierarchical fair share over a 7-day window.** Priority orders work only in a team. Decided for v0 (spec 5.3,
+  5.4): strict classes (`interactive` > `batch` > `filler`) do the job. `interactive` interleaves by owed seconds,
+  while `batch` and `filler` run FIFO within each priority so one job runs in flow until higher-priority work arrives.
 - **Hosts drain** as their workloads reach their minimum runtimes. That is our lease drain.
 - **Their stated cost.** Interactive sessions did worse under the cap. Ai2 plans a separate place for interactive
   sessions. For

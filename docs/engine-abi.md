@@ -11,8 +11,7 @@ On the same day, a kaibo review (deepseek cast) checked the draft against copies
 headline: the first draft's call list was mk's `Context` model, and mkviolet, the second engine, already failed half
 of it. Thus the ABI is now a small core that every engine has, plus capabilities that an engine declares.
 
-v0 covers three kinds of engine: inference, image batch, and training (Amy, 2026-10-17). The training and image
-sections below are proposals.
+v0 covers three kinds of engine: inference, image batch, and training (Amy, 2026-10-17).
 
 ## Shape
 
@@ -71,8 +70,7 @@ engine has slots.
 
 `pass` never allocates. Its scratch is a mandatory term, keyed by the kinds of quantum that use it. These calls do
 allocate, and the ledger admits each one before it runs: `open`, `attach`, `ctx_new`, `ctx_fork`, `ctx_copy`,
-`part_write`, `slot_load`, and `resize`. (`set_n` and `cells_write` do not allocate: mk sizes a context at
-`ctx_new(max)`.)
+`part_write`, and `resize`. (`set_n` and `cells_write` do not allocate: mk sizes a context at `ctx_new(max)`.)
 
 ## Capabilities (declared in `limits()`)
 
@@ -80,7 +78,7 @@ allocate, and the ledger admits each one before it runs: `open`, `attach`, `ctx_
 arena        arena_export() -> {name: fd, arena_id, check: full | spot}
              arena_check(config, arena_set) -> ok | why, check: full | spot
 contexts     ctx_new(max) / ctx_fork / ctx_copy / ctx_free / ctx_n
-slots        slot_load(slot, snapshot parts) / slot_high(slot)
+slots        slot_high(slot) / slot_clear(slot)
 parts        part_read(state, part) / part_write(state, part, bytes)
              cells_read(state, part, from, n) / cells_write(state, part, n, bytes) / set_n(state, n)
 seal         seal(state)                 the engine's boundary rule
@@ -94,11 +92,11 @@ stages       stage_pass(stage, segments, residual_in) -> residual_out | outputs
 io           io_submit(IO requests [(file, offset, len, dest)], class) -> ticket; io_wait(ticket, prefix | all)
              dest is a device-buffer handle that the engine gives; the nagaya's IO service does the reads
 telemetry    op_times(), dispatches(), ...; pass(…, trace_context) so engine spans nest under the quantum span
-train        train_pass(segments) -> status, ms, loss     a forward, a backward and an optimizer step (proposed)
-step         step_pass(segments) -> status, ms, outputs   one image step over a latent (proposed)
+train        train_pass(segments) -> status, ms, loss     a forward, a backward and an optimizer step
 ```
 
-`slot_load` and `part_write` return one of three results (spec 6.8):
+`parts` works on any `state` (a context handle or a slot index). `part_write` and `cells_write` return one of three
+results (spec 6.8):
 
 - ok;
 - refused, and nothing changed;
@@ -131,8 +129,8 @@ instead, so a new packing does not change the identity.
 | open / attach | `load_slots(cluster, model_dir, slot_seqs, max_block)`, `load_slots_stored` | slot sizes and `max_block` are load-time config |
 | device group | both B70 cards | one nagaya thread; `run_card0`, `run_card1` and `pipeline_stage` stay inside the pass |
 | arena | 60 DMA-BUF slabs (`slab_fd_name(l, card)`), `verify_stored_slab` | spot check: first and last 64 bytes per tensor |
-| slots | `set_slot`, `load_kv`, `load_kv_layer`; `kv_high` | no contexts, no stored token count, no fork |
-| parts | `save_kv_layer_from` (a range read), `load_kv_layer` | KV only: cells on global layers, ring on sliding layers |
+| slots | `set_slot`, `kv_high` | no contexts, no stored token count, no fork |
+| parts | `save_kv_layer_from` (a range read), `load_kv`, `load_kv_layer` | `state` is the slot index; KV only: cells on global layers, ring on sliding layers |
 | geometry / coverage | slot size, ring rows (`kv_ring`, `kv_keep_from`); `KvSnapshot::join` is the fit check | changes rows held, not bits, so no `geometry_key`; today's id is a recipe (`held.rs:312-325`) |
 | pass | `run_card0` then `run_card1`; `pipeline_stage` for jobs in flight on both cards | two stages |
 | segments | `PipeJob`; `branch_block` with per-token `meta` | a branch block is atomic and is not a snapshot |
@@ -142,8 +140,7 @@ instead, so a new packing does not change the identity.
 
 ## Decisions
 
-Decided: D1, D3, D8, D9, D10. D2 is narrowed and waits for the first port. Proposed, not yet reviewed with Amy:
-D4-D7.
+Decided: D1, D3-D10. D2 is narrowed and waits for the first port.
 
 **D1. Engines that span devices.** There are two options:
 
@@ -177,10 +174,10 @@ Settled the same day: an engine never takes text. The family library in the naga
 
 **D3. Snapshots are named by content ids.** Decided 2026-10-17 (Amy: "yeah, 1, cas is awesome"). There are two keys:
 
-- The **content id** names a stored snapshot. It is a BLAKE3 hash of the snapshot's sealed bytes. When the snapshot
-  is a piece of a chain, the hash also covers its parent's content id. (mkviolet holds only the rows after the
-  parent.) mk stores snapshots whole, so its ids have no parent. Dedup, integrity, pins, and moves of snapshots
-  between machines all use the content id.
+- The **content id** names a stored snapshot: the BLAKE3 hash of its sealed bytes (`blake3:<hex>` in council v2).
+  When the snapshot is a piece of a chain, the hash also covers its parent's content id. (mkviolet holds only the
+  rows after the parent.) mk stores snapshots whole, so its ids have no parent. Dedup, integrity, pins, and moves of
+  snapshots between machines all use the content id.
 - The **recipe** is a hash that the nagaya computes, also when the engine is not loaded. It covers the identity
   (bit settings included), the inputs and the boundaries. For an engine whose bits depend on slot geometry, it also
   covers `geometry_key`. The store maps a recipe to one or more content ids. Thus the store can answer "do we
@@ -224,18 +221,22 @@ each start, a filler job in the nagaya builds a sample of stored recipes again a
 start is the fresh process, so there is no second GPU client. The audit reports each mismatch and uses only idle
 time. ds4-recipe does this by hand ("pinned plans for every experiment and byte-equality gate").
 
-**D4. Cost before a pass.** Neither engine estimates a cost. Both report the time after the pass. Proposed: no
-estimate call in v0. The nagaya fits a cost model per engine from pass times and segment sizes.
+**D4. Cost before a pass.** Decided 2026-10-18. Neither engine estimates a cost, and both report the time after the
+pass. There is no estimate call in v0. The nagaya fits a cost model per engine from pass times and segment sizes. It
+uses the fit for store eviction value-per-byte and deadline checks between quanta. The engine picks its own chunk
+sizes for `max_quantum_ms`.
 
-**D5. Rust trait first, C ABI as a binding.** Handles are opaque pointers. Errors are a status plus `last_error`.
-The caller owns the buffers.
+**D5. Rust trait first, C ABI as a binding.** Decided 2026-10-18. Handles are opaque pointers. Errors are a status
+plus `last_error`. The caller owns the buffers.
 
-**D6. Poison stays fatal.** The nagaya frees a poisoned context and never reads it. A pass that returns a poison
-status poisons every context in it (mk: "-1, every context poisoned"). The nagaya fails the jobs that held those
-segments and keeps the others.
+**D6. Poison stays fatal.** Decided 2026-10-18. The nagaya frees a poisoned context and never reads it. For a slot
+engine, it marks a poisoned slot dirty until a job overwrites it from position 0 or through `part_write`. A pass
+that returns a poison status poisons every context or slot in it (mk: "-1, every context poisoned"). The nagaya fails
+those jobs, keeps the others, and runs the canary before more work runs (spec 8.2).
 
-**D7. Seal and park are separate calls.** Seal runs only at boundaries in the chain, and it can change bits. Park is
-`part_read` to another tier and back, bit for bit. The scheduler parks. It never seals to free a slot.
+**D7. Seal and park are separate calls.** Decided 2026-10-18. Seal runs only at boundaries in the chain, and it can
+change bits. Park uses the `parts` calls to move state between tiers bit for bit, for both contexts and slots. The
+scheduler parks. It never seals to free a slot.
 
 **D8. Quanta have a declared length bound.** Decided 2026-10-17 (Amy: "a lil head of line blocking is okay in this
 design. max_quantum_ms seems like a good call"). An engine declares `max_quantum_ms` in `limits()`. The engine
@@ -283,23 +284,24 @@ A park from device memory to host memory can keep the engine's native bytes, if 
 parks. Such a park has no content id. It gets one when it goes into the store. **Open:** measure the conversion on
 both engines before we use this exception.
 
-## Training (proposed)
+## Training
 
-Amy chose training for v0. A training engine declares the `train` capability. These rules are proposals:
+Decided 2026-10-18. A training engine declares the `train` capability:
 
 - The weights are a state object that the engine writes. The engine opens its arena read-write.
-- A `train` quantum is one micro-batch: a forward pass, a backward pass, and an optimizer step.
-- The optimizer state is a state object of fixed parts. It is the same size at every snapshot, unless the engine
-  stores it another way.
-- A training checkpoint is a snapshot of the weights and the optimizer state, through the store (D10).
+- A `train` quantum is one micro-batch (`train_pass`): a forward pass, a backward pass, and an optimizer step.
+- The optimizer state and the weights are fixed parts in `limits().parts`. They are the same size at every snapshot,
+  unless the engine stores them another way.
+- A training checkpoint is a snapshot of the weights and the optimizer parts through `part_read` and `part_write` into
+  the store (D10).
 - The job can resume at every quantum boundary. Training is filler: it gives way between micro-batch quanta, and it
   declares its checkpoint interval (spec 5.5).
 - Atomic reductions in a backward pass make training `per-process` at best. An engine that pins its reductions can
   declare `pinned`.
 
-## Image (proposed)
+## Image
 
-Amy chose image batch for v0. An image engine declares the `step` capability. These rules are proposals:
+Decided 2026-10-18. An image engine uses `pass(segments, taps)` with quantum kind `step`:
 
 - A diffusion latent is a fixed part. Each `step` quantum replaces it. There is no `n` to extend.
 - The outputs are a latent tap or an image tap.

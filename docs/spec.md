@@ -7,10 +7,9 @@ English (`CLAUDE.md`).
 - `docs/engine-abi.md` defines the calls and the decisions D1-D10. The spec refers to them by number.
 - `docs/prior-art.md` and `docs/reviews.md` record where the rules came from.
 
-When this spec and another doc do not agree, correct one of them. Neither one wins without a decision. Some rules
-rest on D4-D7, which Amy has not yet reviewed. Those rules change if the decisions change.
+When this spec and another doc do not agree, correct one of them. Neither one wins without a decision.
 
-Status: draft, 2026-10-17. The sources are the design conversation with Amy and inventories of mk
+Status: draft, 2026-10-18. The sources are the design conversations with Amy and inventories of mk
 (`~/src/megakernel-qwen38-flashnext-strixhalo`) and mkviolet (`~/src/mkviolet`). There is no code yet. Each open
 question has the mark **Open**, and section 15 lists all of them.
 
@@ -64,9 +63,16 @@ Telemetry takes hardware attributes from the inventory, not from constants in co
 
 The nagaya measures edges at install and can measure them again. Each measurement is data with a date.
 
-**2.3 Placement profile.** Each machine has one profile. It names the engines that load, their devices, their
-config, and each engine's share of spare memory (D9). The nagaya reads the profile at start. For each engine, it
-calls `plan(config)`, which gives the engine's limits without a read of the weights.
+**2.3 Placement profile and config.** Each machine has one TOML file (`configs/<host>.toml`). It holds three
+sections:
+
+- `[machine]`: the devices, the tiers with their byte budgets (4.1), and the measured edges between tiers (2.2);
+- `[daemon]`: the listen address (11.6), the stop time budget (10.3), and the request limit per engine (5.10);
+- `[[engines]]`: each engine that loads, its devices, its config, its share of spare memory (D9), and whether its
+  identity is pinned (12.1).
+
+The nagaya reads the file at start. For each engine, it calls `plan(config)`, which gives the engine's limits
+without a read of the weights.
 
 The nagaya then adds all mandatory terms and the minimum of each elastic term. If the sum does not fit the budgets
 (section 4), the nagaya refuses the profile before it opens an engine. The refusal gives the shortfall in bytes for
@@ -127,8 +133,8 @@ The nagaya declares its own terms in the ledger: staging, store buffers and IO. 
 Bytes without a charge are a defect. (ds4-recipe: vision weights without a charge "show up as untracked bytes".)
 
 **4.3 Admission.** The ledger thread admits each call that allocates before the call runs. These calls are `open`,
-`attach`, `ctx_new`, `ctx_fork`, `ctx_copy`, `part_write`, `slot_load`, and each resize. The check includes
-transient peaks. A refusal charges nothing and changes nothing.
+`attach`, `ctx_new`, `ctx_fork`, `ctx_copy`, `part_write`, and each resize. The check includes transient peaks. A
+refusal charges nothing and changes nothing.
 
 `pass` never allocates. Its scratch for each kind is a mandatory term, which the ledger charges at `open`.
 
@@ -182,15 +188,16 @@ A council decision is interactive. A job's class starts to apply at its first qu
 mkviolet's `lazy_high` takes the card at the council's first GPU step. That change cut decisions beside a prefill
 from 383-702 ms to 300-390 ms.
 
-**5.4 Order in a class.** The scheduler orders the jobs in a class by three keys:
+**5.4 Order in a class.** The classes do not schedule the same way (Amy, 2026-10-18: "batch/filler can be fifo-ish,
+while interactive is more cooperative multitasking"):
 
-1. integer priority, 0 by default;
-2. owed seconds;
-3. time of arrival.
-
-Owed seconds is the device time that a job is owed under equal sharing among the jobs that are present in its class.
-The scheduler clamps it to ±30 s. A job that leaves takes only its own balance (ds4-recipe
-`11-multi-session-serving.md` section 6). Filler jobs do not collect a debt.
+- In `batch` and `filler`, the scheduler orders jobs by integer priority (0 by default) and then time of arrival.
+  One job runs its quanta in flow until it finishes, or until a higher class or higher priority job becomes ready.
+  The scheduler does not interleave jobs of equal priority in `batch` or `filler`.
+- In `interactive`, the scheduler interleaves ready jobs by three keys: integer priority (0 by default), owed
+  seconds, and time of arrival. Owed seconds is the device time that a job is owed under equal sharing among the
+  present jobs in `interactive`, clamped to ±30 s. A job that leaves takes only its own balance (ds4-recipe
+  `11-multi-session-serving.md` section 6).
 
 **5.5 Filler.** A filler job declares a checkpoint interval: the time between its checkpoints. It must be resumable:
 its state parks when it gives way (Ai2's "unallocated" time). It runs only when no interactive or batch quantum is
@@ -221,11 +228,10 @@ expired. A release does not delete a snapshot. Only eviction (6.9) removes a sto
 **5.10 Admission at the door.** The client API admits a limited number of requests in flight for each engine (mk:
 16). Above that limit it answers 429 with `Retry-After`.
 
-**5.11 Cost model (D4, proposed).** The nagaya fits a robust affine cost from production quanta. The fit has a key
-for each engine, kind and segment count, and it uses context depth. Quanta that ran beside other work are not in the
-fit. Before a fit exists, the nagaya records "no model yet" and schedules by class and arrival. An engine can have
-its own private planner, which stays in the engine. (mkviolet's council planner uses 39 ms + 0.21 ms per token,
-`council_server.rs`.)
+**5.11 Cost model (D4).** The nagaya fits a robust affine cost from production quanta, keyed by engine, kind,
+segment count and context depth. Quanta that ran beside other work are not in the fit. The nagaya uses the fit for
+store eviction value-per-byte (6.9) and deadline checks between quanta (5.8). Before a fit exists, the nagaya records
+"no model yet". An engine can have its own private planner, which stays in the engine (mkviolet `council_server.rs`).
 
 ## 6. State and the store
 
@@ -282,7 +288,7 @@ it. A person clears the refusal after the cause is known.
 For other engines, the audit job (8.4) does the check.
 
 **6.8 Restore.** The nagaya checks the content id, the identity and the fit before it calls the engine.
-`slot_load` and `part_write` return one of three results:
+`part_write` and `cells_write` return one of three results:
 
 - ok;
 - refused, and nothing changed;
@@ -345,14 +351,16 @@ The nagaya runs the canary again before the engine is ready, with no tolerance. 
 nagaya exit with code 3, "do not restart" (10.4). After start, a mismatch marks the engine fatal (8.2), and the
 process continues with its other engines.
 
-**8.2 Pass failures.** A pass returns ok, poison (D6), or timeout. After a timeout, the nagaya does these steps:
+**8.2 Pass failures.** A pass returns ok, poison (D6), or timeout. The nagaya treats outputs that are not finite as
+poison. After a poison or a timeout, the nagaya does these steps:
 
-1. Fail the jobs in that pass and free their contexts.
+1. Fail the jobs in that pass. Free their contexts, or mark their slots dirty until a job overwrites them from
+   position 0 or through `part_write`.
 2. Run the canary again on the group thread, before any other work.
 3. If the canary does not match, or if this is the fourth timeout in 600 s, mark the engine fatal. Refuse every
    later job for it.
 
-(mk `service/gpu.py` does this.) The nagaya treats outputs that are not finite as poison.
+(mk `service/gpu.py` does this.)
 
 **8.3 Conformance.** Each engine has a conformance suite in the nagaya's tests. It checks these properties:
 
@@ -497,9 +505,11 @@ The nagaya routes each request by its `model` field. When two engines serve one 
 that serves the model's requests.
 
 The API has contexts, specs, decisions, snapshots, pins, reads, and generations with riding decisions (mkviolet
-`council_v2.rs`). The request kind sets the job's class: a decision or a read is interactive, and a generation is
-interactive unless the request asks for batch. An optional request field sets the priority (5.4). A request can also
-carry a tolerance (6.6). These fields go in a gogi extension.
+`council_v2.rs`). In council v2 responses, a snapshot `id` is its BLAKE3 content id (`blake3:<hex>`), and the store
+looks up prefixes by recipe (6.6). The request kind sets the job's class: a decision or a read is interactive, and a
+generation is interactive unless the request asks for batch. An optional request field sets the priority (5.4). A
+request can also carry a tolerance (6.6). **Open:** coordinate `model`, `class`, `priority`, and `tolerance` with
+gogi.
 
 Pooling and the decision numbers come from `gogi_proto::math`, which all engines share. The council
 `identity.engine` covers two things: the engine identity, and the nagaya code that turns logits into decisions.
@@ -622,8 +632,5 @@ The inventories found these items. We correct each one when its code moves. We d
 
 1. Do an idle engine's GPU queues slow the other engines on its device (3.3)? A measurement answers this.
 2. What makes `close()` safe for mk, so that engines can load and unload at runtime (3.3)?
-3. We have not yet reviewed D4-D7 with Amy (engine-abi, "Decisions").
-4. Do kinds of work get fair shares over a window, as Ai2's teams do? Or do strict classes do the job (5.3)?
-5. The schemas for the config, the inventory and the profile are not yet written (2.1, 2.3, 4.1).
-6. gogi has no field for tolerance, class or priority yet (11.1). We propose them as a gogi extension.
-7. How long does the conversion to canonical safetensors take on mk and mkviolet (10.3, D10)?
+3. How do `model`, `class`, `priority`, and `tolerance` land in gogi (`docs/council-api-v2.md`, 11.1)?
+4. How long does the conversion to canonical safetensors take on mk and mkviolet (10.3, D10)?
