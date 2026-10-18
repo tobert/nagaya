@@ -10,7 +10,7 @@ use nagaya_abi::{
 };
 use nagaya_conformance::{
     Admit, Outcome, admission_refusal_changes_nothing, park_and_restore, quantum_identity, quantum_isolation,
-    quantum_resume_fit, quantum_same_boundaries, seal_only_at_boundaries,
+    quantum_resume_fit, quantum_same_boundaries, run_all, seal_only_at_boundaries,
 };
 use nagaya_ledger::{Admission, Budget, EnginePlan, Ledger, LedgerError, Profile};
 
@@ -603,4 +603,34 @@ fn a_ledger_that_writes_on_refusal_fails_the_admission_gate() {
         admission_refusal_changes_nothing(&mut GreedyLedger::new(), &fitting, &refused),
         "GreedyLedger admission",
     );
+}
+
+#[test]
+fn the_suite_runs_every_gate_and_fake_always_passes() {
+    let mut make = || FakeAlways::new();
+    let suite = run_all(&mut make);
+    let names: Vec<&str> = suite.gates.iter().map(|gate| gate.name).collect();
+    assert_eq!(
+        names,
+        [
+            "park_and_restore",
+            "seal_only_at_boundaries",
+            "quantum_identity",
+            "quantum_isolation",
+            "quantum_same_boundaries",
+            "quantum_resume_fit",
+            "admission_refusal_changes_nothing",
+        ]
+    );
+    assert!(suite.passed(), "{suite}");
+    assert_eq!(suite.failures().count(), 0);
+    assert_eq!(suite.not_applicable().count(), 0);
+}
+
+#[test]
+fn the_suite_fails_a_broken_engine() {
+    let mut make = || FakeBroken::new();
+    let suite = run_all(&mut make);
+    assert!(!suite.passed(), "{suite}");
+    assert!(suite.failures().any(|gate| gate.name == "park_and_restore"), "{suite}");
 }
