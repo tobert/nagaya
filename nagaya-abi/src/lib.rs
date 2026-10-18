@@ -536,3 +536,6 @@ pub trait Engine {
         None
     }
 }
+
+#[cfg(feature = "fake")]
+pub mod fake;
