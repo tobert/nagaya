@@ -85,7 +85,28 @@ Do them in this order. Each milestone ends with all checks green and one or more
 6. **Store entries.** Write entries, chains, lookup, the tripwire, restore results, eviction and pins (6.4-6.11).
 7. **Conformance.** Write the properties of 8.3 that need no GPU, and run them against the fake engine.
 8. **mk engine.** Bind mk's C ABI and implement the trait on top. Run the conformance suite on gfx1151.
-9. Stop and ask Amy for the next milestone.
+9. **Decisions.** Amy decided the eight open Proposed notes on 2026-10-18. The signoff lists them under "Decided
+   2026-10-18 evening". Write each one as a rule in its doc, and remove its Proposed mark. Three need code:
+   - A pass that the mk binding refuses before it calls mk returns a `PassError`. It does not return `Ok`.
+   - The binding refuses a library whose SHA-256 is not the pin in the profile. Tests can leave the pin unset.
+   - mk's pass scratch is a mandatory term. Measure the pool once on gfx1151, and declare that size. Refuse the
+     engine when a later measurement is larger.
+10. **Process.** In `nagaya`, read the bootstrap config (2.1, 11.6) and a profile for one machine (2.4). Admit the
+    profile with the ledger, and open each engine on its own thread (3.2). Send `READY=1` (10.1), stop on SIGTERM
+    (10.3), and exit with the codes of 10.4. Test with the fake engine. Gossip comes later.
+11. **Text front-end.** Write the family library for Qwen3.8 (11.3): the tokenizer, the chat template and the
+    detokenizer, from the GGUF metadata. Test against fixed outputs of mk's Python front-end (`harness/tokenizer.py`,
+    `service/chatfmt.py`). Make those outputs with mk's Python, with no service and no GPU. Keep them in the tests.
+12. **Council v2.** Serve council v2 for the engines of the profile, with one sampler (11.1, 11.2, 11.5). gogi is
+    the contract: `~/src/gogi/docs/council-api.md` and the types in `gogi-proto`. Run `gogi-conformance` against
+    the process with the fake engine. Coordinator routing waits for a second machine.
+13. **Observability.** Log to stderr. Export traces and metrics over OTLP when the endpoint is set (9.1-9.5). Each
+    instrument has a call site under test.
+14. **Deploy on gfx1151host.** Write a systemd user unit in `deploy/` (10.1). The bootstrap config binds
+    `198.51.100.20:8090`, mk's address now (Amy, 2026-10-18). Run `gogi-conformance` against the process on gfx1151
+    with the mk engine. Write the cutover steps in `docs/deploy.md`, and keep arenas through a restart (10.2) for
+    later. Do not start, stop or disable a service: senpai does the cutover with Amy.
+15. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
 
