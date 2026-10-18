@@ -282,7 +282,10 @@ mandatory term. mk allocates one scratch pool at its first ask and keeps it for 
 9c), lifetime: engine, kinds: [prefill, decode]}`.
 
 mk has no call for the size. The process measures the pool once on gfx1151 and declares that constant. It refuses
-the engine when a later measurement is larger than the constant. Decided 2026-10-18.
+the engine when a later measurement is larger than the constant. Decided 2026-10-18. **Open** (nagaya-coder-12,
+2026-10-18): the declared bytes are the measured device cost, which is 59 800 564 bytes above the pool's 263 934
+988-byte ask. The HIP runtime's first launch is the likely source of 38 522 880 bytes that the pool and the
+allocator's rounding do not explain.
 
 The wrapper's host buffers also wait for the process crate (the review's note on finding 9).
 
