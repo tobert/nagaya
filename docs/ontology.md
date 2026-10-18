@@ -19,9 +19,10 @@ inventory, active profile, and engine identities through `chitchat` (`docs/spec.
 **coordinator** for a client request (`docs/spec.md` 11.1).
 
 **Device.** One thing that runs quanta: a GPU, or the CPU when an engine runs work there (mkviolet's AVX-512 lens).
-The devices that one engine spans are its **device group**. Each device group has one long-lived nagaya thread, and
-every engine call for the group comes from that thread. mkviolet's Gemma 4 spans both B70 cards, so its group is
-the two cards. It runs its own work for each card inside a pass (`docs/engine-abi.md` D1).
+A **device group** is the set of devices that one or more engines use. Each device group has one long-lived nagaya
+thread, and every engine call for the group comes from that thread. Two engines that use one device share one group.
+mkviolet's Gemma 4 spans both B70 cards, so its group is the two cards. It runs its own work for each card inside a
+pass (`docs/engine-abi.md` D1).
 
 **Tier.** A place where a state object can be: device memory, host memory, NVMe, or another machine. Tiers are a
 graph with measured edges per machine, not a fixed list. On gfx1151host and sm121host, device memory and host memory are one

@@ -19,9 +19,9 @@ The nagaya is Rust. An engine is a Rust type that implements the `Engine` trait.
 (mk: C++ and HIP behind `extern "C"`). Such an engine exports a C ABI, and a thin Rust wrapper implements the trait
 on top of it. mkviolet's Gemma 4 engine implements the trait directly.
 
-Each engine runs on a **device group**: one device, or the set of devices that the engine spans. Each device group
-has one nagaya thread. Calls for one engine come only from that thread, and they are synchronous. A pass blocks the
-thread.
+Each engine runs on a **device group**: the set of devices that one or more engines use. Each device group has one
+nagaya thread. Calls for the engines in the group come only from that thread, and they are synchronous. A pass
+blocks the thread.
 
 An engine that spans devices runs its own work for each device inside the pass. mk already works this way,
 with a group of one device. mkviolet's group is both B70 cards; its `pipeline_stage` threads stay inside its pass.
@@ -347,7 +347,8 @@ Decided 2026-10-17 (Amy: "yeah that sound reasonable"): mkviolet starts with (a)
 shape is settled, and first for splits across machines.
 
 Under (a), the engine's devices are one device group with one nagaya thread (Shape). Decided 2026-10-17: "one thread
-per device group".
+per device group". A group can serve more than one engine: two engines that use one device share one group, one
+thread and one scheduler.
 
 Amy may stop running one model across both B70 cards and use them independently, "since they're the fastest memory
 we have at home". Today's Gemma 4 does not fit on one card. Thus per-card work means smaller engines, each with a

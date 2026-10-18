@@ -113,9 +113,10 @@ thread priorities:
   Group threads and the store send admission requests to it. No other thread writes the ledger.
 - **One watchdog thread.** Runs on the housekeeping cores and watches each group thread from outside, because a pass
   blocks the thread that it watches (7.4).
-- **One thread per GPU device group.** A device group is the set of devices that one engine uses. Most groups have
-  one device. mkviolet's Gemma 4 uses both B70 cards, so its group has two. Every engine call for a group comes from
-  its thread, and the call is synchronous. Inside a pass, the engine runs its own work on each of its devices (D1).
+- **One thread per GPU device group.** A device group is the set of devices that one or more engines use. Most groups
+  have one device. mkviolet's Gemma 4 uses both B70 cards, so its group has two. Two engines that use one device
+  share one group, one thread and one scheduler. Every engine call for a group comes from its thread, and the call
+  is synchronous. Inside a pass, the engine runs its own work on each of its devices (D1).
 - **A bounded CPU worker pool.** Rendering, tokenization, hashing, safetensors conversion, and CPU device passes
   (13.2) run on a bounded pool pinned to the remaining cores at `SCHED_BATCH`. Long CPU work yields between chunks
   to obey `max_quantum_ms`. On unified-memory machines (`gfx1151host` and `sm121host`), the scheduler pauses background CPU
