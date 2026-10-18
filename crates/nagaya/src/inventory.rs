@@ -1,0 +1,81 @@
+//! The machine's inventory and its probe (spec 2.1).
+
+use nagaya_abi::DeviceId;
+
+/// One device of the machine. A CPU is a device when an engine runs work on it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Device {
+    /// The device index in the machine.
+    pub id: DeviceId,
+    /// The device name from the probe.
+    pub name: String,
+    /// The device memory in bytes.
+    pub memory_bytes: u64,
+    /// True when device memory is the host's memory (gfx1151host, sm121host).
+    pub unified: bool,
+}
+
+/// The inventory of one machine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Inventory {
+    /// The devices.
+    pub devices: Vec<Device>,
+    /// The host memory in bytes.
+    pub host_bytes: u64,
+}
+
+impl Inventory {
+    /// The device with the given id.
+    pub fn device(&self, id: DeviceId) -> Option<&Device> {
+        self.devices.iter().find(|device| device.id == id)
+    }
+}
+
+/// An error in the probe.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProbeError {
+    /// What the probe could not find.
+    pub message: String,
+}
+
+impl std::fmt::Display for ProbeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "the probe failed: {}", self.message)
+    }
+}
+
+impl std::error::Error for ProbeError {}
+
+/// A probe of the machine's devices and host memory.
+pub trait Probe {
+    /// Read the inventory.
+    fn probe(&self) -> Result<Inventory, ProbeError>;
+}
+
+/// A probe that returns a fixed result. The real probes (KFD, Xe, NVML) come later.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FakeProbe {
+    result: Result<Inventory, ProbeError>,
+}
+
+impl FakeProbe {
+    /// Make a probe that returns `inventory`.
+    pub fn new(inventory: Inventory) -> Self {
+        Self { result: Ok(inventory) }
+    }
+
+    /// Make a probe that fails.
+    pub fn failing(message: &str) -> Self {
+        Self {
+            result: Err(ProbeError {
+                message: message.to_owned(),
+            }),
+        }
+    }
+}
+
+impl Probe for FakeProbe {
+    fn probe(&self) -> Result<Inventory, ProbeError> {
+        self.result.clone()
+    }
+}
