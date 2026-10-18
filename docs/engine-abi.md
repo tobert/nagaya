@@ -166,16 +166,16 @@ feature to the test build. This is a plain correction to the Proposed section, n
 **Amended** by deepseek-flash, 2026-10-18: `Coverage::coverage` takes the `State`. The ring's base position
 is in the state, not in the part bytes. The old call reported 0..n after a wrap.
 
-### Proposed: a status for a pass that did not run
+### A pass that did not run
 
-**Proposed** by deepseek-flash, 2026-10-18. `PassStatus` is `Ok`, `Poison` or `Timeout`. The mk binding refuses a
-pass before it calls mk when a segment breaks an mk rule. The rule can be a position that is not the context's n, a
-token past the vocabulary, or rows instead of tokens. That pass did not run, and no context changed. The binding
-returns `Ok`, because no status says "did not run" (review finding 9).
+**A refused pass returns an error.** A pass that the mk binding refuses before it calls mk returns an error, not
+`PassStatus::Ok`. `PassStatus` stays `Ok | Poison | Timeout` for passes that ran. Decided 2026-10-18.
 
-The simplest fix is a fourth status, `Refused`. `pass` then returns `Err(PassError { status: Refused, .. })` for a
-pass that did not run. A caller tells a refusal from a pass that ran, and it need not read `last_error` to know.
-Until the status exists, the binding returns `Ok`.
+The mk binding refuses a pass before it calls mk when a segment breaks an mk rule. The rule can be a position that
+is not the context's n, a token past the vocabulary, or rows instead of tokens. That pass did not run, and no context
+changed. A caller tells a refusal from a pass that ran, and it need not read `last_error` to know (review finding 9).
+
+The error type arrives with the milestone 9 code.
 
 A fault after the pass is different. The mk binding returns `Poison` when the logits buffer is shorter than the
 wanted rows. The pass ran, so the state is unknown (D6, spec 8.2). A unit test pins this decision. Real mk gives the
