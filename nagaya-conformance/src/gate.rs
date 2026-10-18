@@ -565,9 +565,15 @@ fn same_boundaries_inner<E: Engine>(mut first: E, make: &mut dyn FnMut() -> E, l
     let gate = "quantum_same_boundaries";
     let mut second = make();
     let state = State::Slot(0);
-    let segment = token_segment(state, 0, &[11, 12, 13]);
+    let segment = with_last_logit(token_segment(state, 0, &[11, 12, 13]), limits);
     let first_out = run_pass(&mut first, &segment, gate)?;
     let second_out = run_pass(&mut second, &segment, gate)?;
+    if limits.max_logit_rows > 0 && first_out.outputs.is_empty() {
+        return Err(Failure::new(
+            gate,
+            "the gate asked for a logit row and the engine returned no output",
+        ));
+    }
     compare_outputs(gate, &first_out.outputs, &second_out.outputs)?;
     compare_fixed(gate, &mut first, &mut second, state, limits)?;
     seal_state(&mut first, state, gate, "the first engine")?;
@@ -578,11 +584,31 @@ fn same_boundaries_inner<E: Engine>(mut first: E, make: &mut dyn FnMut() -> E, l
     {
         let mut with_gap = make();
         let mut without_gap = make();
-        run_pass(&mut with_gap, &token_segment(state, 0, &[1, 2]), gate)?;
-        run_pass(&mut with_gap, &token_segment(State::Slot(other), 0, &[9]), gate)?;
-        let with_gap_out = run_pass(&mut with_gap, &token_segment(state, 2, &[3]), gate)?;
-        run_pass(&mut without_gap, &token_segment(state, 0, &[1, 2]), gate)?;
-        let without_gap_out = run_pass(&mut without_gap, &token_segment(state, 2, &[3]), gate)?;
+        run_pass(
+            &mut with_gap,
+            &with_last_logit(token_segment(state, 0, &[1, 2]), limits),
+            gate,
+        )?;
+        run_pass(
+            &mut with_gap,
+            &with_last_logit(token_segment(State::Slot(other), 0, &[9]), limits),
+            gate,
+        )?;
+        let with_gap_out = run_pass(
+            &mut with_gap,
+            &with_last_logit(token_segment(state, 2, &[3]), limits),
+            gate,
+        )?;
+        run_pass(
+            &mut without_gap,
+            &with_last_logit(token_segment(state, 0, &[1, 2]), limits),
+            gate,
+        )?;
+        let without_gap_out = run_pass(
+            &mut without_gap,
+            &with_last_logit(token_segment(state, 2, &[3]), limits),
+            gate,
+        )?;
         compare_outputs(gate, &with_gap_out.outputs, &without_gap_out.outputs)?;
         compare_fixed(gate, &mut with_gap, &mut without_gap, state, limits)?;
     }
@@ -743,6 +769,16 @@ fn token_segment(state: State, start: u64, tokens: &[u32]) -> Segment {
         meta: Vec::new(),
         outputs: OutputsWanted::default(),
     }
+}
+
+/// Ask for the logit row at the segment's last position, when the engine gives logit rows.
+fn with_last_logit(mut segment: Segment, limits: &Limits) -> Segment {
+    if limits.max_logit_rows > 0
+        && let Some(last) = segment.positions.last()
+    {
+        segment.outputs.logit_rows = vec![*last];
+    }
+    segment
 }
 
 fn run_pass<E: Engine + ?Sized>(engine: &mut E, segment: &Segment, gate: &'static str) -> Result<PassOut, Failure> {

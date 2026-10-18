@@ -395,6 +395,126 @@ fn a_constant_read_fails_the_gate() {
     );
 }
 
+/// An engine whose pass returns no output, so a gate that asks for a logit row gets nothing to compare.
+struct DropsOutputs {
+    inner: FakeAlways,
+}
+
+impl DropsOutputs {
+    fn new() -> Self {
+        Self {
+            inner: FakeAlways::new(),
+        }
+    }
+}
+
+impl Engine for DropsOutputs {
+    fn identity(&self) -> Identity {
+        self.inner.identity()
+    }
+
+    fn limits(&self) -> Limits {
+        self.inner.limits()
+    }
+
+    fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
+        let mut output = self.inner.pass(segments, taps)?;
+        output.outputs.clear();
+        Ok(output)
+    }
+
+    fn last_error(&self) -> Option<String> {
+        self.inner.last_error()
+    }
+
+    fn parts(&mut self) -> Option<&mut dyn Parts> {
+        self.inner.parts()
+    }
+
+    fn coverage(&mut self) -> Option<&mut dyn Coverage> {
+        self.inner.coverage()
+    }
+
+    fn seal(&mut self) -> Option<&mut dyn nagaya_abi::Seal> {
+        self.inner.seal()
+    }
+
+    fn slots(&mut self) -> Option<&mut dyn Slots> {
+        self.inner.slots()
+    }
+}
+
+#[test]
+fn an_engine_that_drops_the_wanted_outputs_fails_same_boundaries() {
+    let mut make = || DropsOutputs::new();
+    assert_fail(
+        quantum_same_boundaries(&mut make),
+        "DropsOutputs quantum_same_boundaries",
+    );
+}
+
+/// An engine that refuses a pass unless the segment asks for a logit row.
+struct NeedsTheAsk {
+    inner: FakeAlways,
+}
+
+impl NeedsTheAsk {
+    fn new() -> Self {
+        Self {
+            inner: FakeAlways::new(),
+        }
+    }
+}
+
+impl Engine for NeedsTheAsk {
+    fn identity(&self) -> Identity {
+        self.inner.identity()
+    }
+
+    fn limits(&self) -> Limits {
+        self.inner.limits()
+    }
+
+    fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
+        if segments.iter().any(|segment| segment.outputs.logit_rows.is_empty()) {
+            return Err(PassError {
+                status: PassStatus::Ok,
+                message: "the segment asks for no logit row".to_owned(),
+            });
+        }
+        self.inner.pass(segments, taps)
+    }
+
+    fn last_error(&self) -> Option<String> {
+        self.inner.last_error()
+    }
+
+    fn parts(&mut self) -> Option<&mut dyn Parts> {
+        self.inner.parts()
+    }
+
+    fn coverage(&mut self) -> Option<&mut dyn Coverage> {
+        self.inner.coverage()
+    }
+
+    fn seal(&mut self) -> Option<&mut dyn nagaya_abi::Seal> {
+        self.inner.seal()
+    }
+
+    fn slots(&mut self) -> Option<&mut dyn Slots> {
+        self.inner.slots()
+    }
+}
+
+#[test]
+fn same_boundaries_asks_for_the_last_logit_row() {
+    let mut make = || NeedsTheAsk::new();
+    assert_pass(
+        quantum_same_boundaries(&mut make),
+        "NeedsTheAsk quantum_same_boundaries",
+    );
+}
+
 /// An engine whose pass writes the fixed part of another slot.
 struct PassWritesOtherSlots {
     inner: FakeAlways,
