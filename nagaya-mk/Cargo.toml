@@ -5,3 +5,12 @@ edition = "2024"
 
 [features]
 hip = []
+
+[dependencies]
+libloading = "0.8"
+nagaya-abi = { version = "0.1.0", path = "../nagaya-abi" }
+sha2 = "0.10"
+
+[dev-dependencies]
+nagaya-conformance = { version = "0.1.0", path = "../nagaya-conformance" }
+tempfile = "3"
