@@ -66,6 +66,20 @@ fn the_binding_opens_mk_and_declares_its_parts() {
         .find(|term| term.name == "context")
         .expect("a context term");
     assert_eq!(context.bytes, 132_587_520);
+    // The pass scratch term holds the pool that the probe measured at open.
+    let scratch = limits
+        .memory
+        .mandatory
+        .iter()
+        .find(|term| term.name == "pass_scratch")
+        .expect("a pass_scratch term");
+    assert!(engine.pass_scratch() > 0, "the probe measured no pass scratch");
+    assert!(
+        engine.pass_scratch() <= scratch.bytes,
+        "measured {} bytes, declared {}",
+        engine.pass_scratch(),
+        scratch.bytes
+    );
 
     // mk's own byte counts agree with the declared shapes.
     assert_eq!(engine.part_bytes(0, 0).expect("part 0"), 113_246_208);

@@ -218,9 +218,15 @@ pub fn pass_scratch_bytes() -> u64 {
 
 /// The pass scratch that this binding declares for mk on gfx1151, in bytes.
 ///
-/// The value is the derived sum of `scratch_buffers` (263 934 988 bytes at MAX_PASS_TOKENS). Milestone 9c measures
-/// the pool on gfx1151 and puts the measured source in this comment.
-pub const PASS_SCRATCH_BYTES: u64 = 263_934_988;
+/// The source is the measured device cost, not the pool's ask. The pool asks for 263 934 988 bytes: the sum of
+/// `scratch_buffers` at `MAX_PASS_TOKENS`. The rest is the HIP allocator's granularity and the runtime's one-time
+/// setup for the first pass, which the engine also keeps for its life. The ledger holds the larger number, so it
+/// never under-declares the pool.
+///
+/// Measured on 2026-10-18 on gfx1151, by `cargo run -p nagaya-mk --example pass_scratch --features hip` in three
+/// fresh engines: 323 731 456, 323 731 456 and 323 735 552 bytes (the last with MK_STAGE_TIMING). Spread: 4 096
+/// bytes. The declared value is the largest of the three.
+pub const PASS_SCRATCH_BYTES: u64 = 323_735_552;
 
 /// The reason that a measured pass scratch is past the declared constant, or `Ok` when it fits.
 pub fn scratch_problem(measured: u64) -> Result<(), String> {
@@ -543,11 +549,18 @@ mod tests {
     }
 
     #[test]
-    fn the_declared_scratch_is_the_sum_of_the_mk_scratch_buffers() {
+    fn the_declared_scratch_holds_the_sum_of_the_mk_scratch_buffers() {
         // The names and the sizes come from mk's src/engine/blocks.hip and src/engine/engine.hip at 555a2a3.
         let buffers = scratch_buffers();
         assert_eq!(buffers.len(), 56, "one entry for each named mk scratch buffer");
-        assert_eq!(pass_scratch_bytes(), PASS_SCRATCH_BYTES);
+        let asked = pass_scratch_bytes();
+        assert_eq!(asked, 263_934_988, "the pool's ask at kMaxPassTokens");
+        // The declared constant is the measured device cost, which is the ask plus the allocator's granularity.
+        assert!(
+            PASS_SCRATCH_BYTES >= asked,
+            "the declared {} bytes must hold the pool's {asked} bytes",
+            PASS_SCRATCH_BYTES
+        );
         // The largest single buffer is the MoE block's expert rows: kMaxPassTokens x kTopK x kEmbd floats.
         assert_eq!(buffers.iter().map(|(_, floats)| *floats).max(), Some(6_553_600));
     }
