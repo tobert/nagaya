@@ -63,10 +63,14 @@ impl std::fmt::Display for StoreError {
 impl std::error::Error for StoreError {}
 
 impl ContentId {
-    /// Read a content id from 64 hex characters.
+    /// Read a content id from 64 lowercase hex characters.
     pub fn from_hex(text: &str) -> Result<Self, StoreError> {
-        if text.len() != 64 {
-            return Err(StoreError::Invalid("content id length".to_owned()));
+        if text.len() != 64
+            || !text
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(StoreError::Invalid("content id hex".to_owned()));
         }
         let mut bytes = [0u8; 32];
         for (index, pair) in text.as_bytes().chunks(2).enumerate() {
@@ -419,14 +423,44 @@ fn parse_span(text: &str) -> Result<(u64, u64), StoreError> {
     let (start, end) = text
         .split_once("..")
         .ok_or_else(|| StoreError::Invalid("bad coverage string".to_owned()))?;
-    let start = start
-        .parse::<u64>()
-        .map_err(|_| StoreError::Invalid("bad coverage start".to_owned()))?;
-    let end = end
-        .parse::<u64>()
-        .map_err(|_| StoreError::Invalid("bad coverage end".to_owned()))?;
+    let start = parse_canonical_u64(start, "coverage start")?;
+    let end = parse_canonical_u64(end, "coverage end")?;
     if start > end {
         return Err(StoreError::Invalid("coverage start after end".to_owned()));
     }
     Ok((start, end))
+}
+
+fn parse_canonical_u64(text: &str, what: &str) -> Result<u64, StoreError> {
+    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(StoreError::Invalid(format!("bad {what}")));
+    }
+    if text.len() > 1 && text.starts_with('0') {
+        return Err(StoreError::Invalid(format!("bad {what}")));
+    }
+    text.parse::<u64>()
+        .map_err(|_| StoreError::Invalid(format!("bad {what}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn content_id_hex_is_canonical() {
+        let lower = "ab".repeat(32);
+        assert!(ContentId::from_hex(&lower).is_ok());
+        assert!(ContentId::from_hex(&lower.to_uppercase()).is_err());
+        let plus = format!("+{}", &lower[1..]);
+        assert!(ContentId::from_hex(&plus).is_err());
+    }
+
+    #[test]
+    fn coverage_span_is_canonical() {
+        assert_eq!(parse_span("0..2").unwrap(), (0, 2));
+        assert!(parse_span("+0..02").is_err());
+        assert!(parse_span("00..2").is_err());
+        assert!(parse_span("0..02").is_err());
+        assert!(parse_span("2..0").is_err());
+    }
 }
