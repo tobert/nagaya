@@ -90,6 +90,11 @@ impl MkEngine {
             .ok_or_else(|| MkError::new("the mk worker stopped"))
     }
 
+    /// The pass scratch that the library asked for at open, in bytes (milestone 9c).
+    pub fn pass_scratch(&self) -> u64 {
+        self.worker.spec().pass_scratch
+    }
+
     /// Record one refused pass and return its error. No context changed.
     fn failed(&mut self, message: String) -> PassError {
         self.last_error = Some(message.clone());

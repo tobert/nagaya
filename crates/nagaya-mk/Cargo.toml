@@ -6,6 +6,10 @@ edition = "2024"
 [features]
 hip = []
 
+[[example]]
+name = "pass_scratch"
+required-features = ["hip"]
+
 [dependencies]
 libloading = "0.8"
 nagaya-abi = { version = "0.1.0", path = "../nagaya-abi" }

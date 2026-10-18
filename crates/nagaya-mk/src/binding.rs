@@ -56,6 +56,10 @@ pub(crate) type StateBytes = unsafe extern "C" fn(u32) -> u64;
 /// `void mk_engine_arena(void *e, int32_t *fd, uint64_t *bytes)`.
 pub(crate) type Arena = unsafe extern "C" fn(*mut c_void, *mut i32, *mut u64);
 
+/// `hipError_t hipMemGetInfo(size_t *free, size_t *total)`. HIP is a dependency of the mk library, so the loader
+/// finds it through the mk library handle.
+pub(crate) type MemGetInfo = unsafe extern "C" fn(*mut usize, *mut usize) -> c_int;
+
 /// `uint32_t mk_last_error(void *e, char *why, uint32_t cap)`.
 pub(crate) type LastError = unsafe extern "C" fn(*mut c_void, *mut c_char, u32) -> u32;
 
@@ -100,6 +104,7 @@ pub(crate) struct Binding {
     pub last_error: LastError,
     pub segments_problem: SegmentsProblem,
     pub pass_segments: PassSegments,
+    pub mem_get_info: MemGetInfo,
 }
 
 /// Load the library and bind every call.
@@ -133,6 +138,7 @@ pub(crate) fn load(path: &Path) -> Result<Binding, String> {
             last_error: symbol(library, b"mk_last_error\0")?,
             segments_problem: symbol(library, b"mk_segments_problem\0")?,
             pass_segments: symbol(library, b"mk_pass_segments\0")?,
+            mem_get_info: symbol(library, b"hipMemGetInfo\0")?,
         })
     }
 }

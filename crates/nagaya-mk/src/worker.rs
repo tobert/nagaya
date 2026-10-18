@@ -111,6 +111,8 @@ impl MkPaths {
 pub(crate) struct Spec {
     pub identity: Identity,
     pub limits: Limits,
+    /// The pass scratch that the library asked for at open, in bytes.
+    pub pass_scratch: u64,
 }
 
 /// The result of a write or a seal.
@@ -547,6 +549,17 @@ fn open_contexts(
     Ok(made)
 }
 
+/// The two pass shapes of the scratch probe: the token count and whether the pass asks for logits.
+///
+/// The first shape has 1 token, so mk asks for `qmm_part2` too. The second shape asks for every other buffer at
+/// `kMaxPassTokens`. The token counts add to the probe context's capacity, so one context serves both.
+fn probe_shapes(capacity: u32) -> [(u32, bool); 2] {
+    let rest = capacity
+        .checked_sub(1)
+        .expect("the probe context holds at least two tokens");
+    [(1, false), (rest, true)]
+}
+
 impl ThreadState {
     /// Load the library and open the engine. This runs on the worker thread.
     fn open(paths: &MkPaths) -> Result<(Self, Spec), MkError> {
@@ -586,19 +599,111 @@ impl ThreadState {
         // mk has no query for this flag, so a test cannot observe the call. A forced spin-timeout needs contention.
         unsafe { (binding.recover_spin_timeouts)(engine, 1) };
 
+        let state = Self {
+            binding,
+            engine,
+            contexts: HashMap::new(),
+            next_id: 0,
+            fast_qmm,
+            tiles,
+        };
+        // mk has no call for the pool's size. Measure it here, before a caller's pass, so a larger pool is an open
+        // error and the ledger's term is what the engine holds.
+        let pass_scratch = state.measure_pass_scratch().map_err(MkError::new)?;
+        spec::scratch_problem(pass_scratch).map_err(MkError::new)?;
+
         let identity = spec::identity(&paths.shards, &paths.library, &library_sha256, fast_qmm, tiles, &digest);
         let limits = spec::limits(arena_bytes);
         Ok((
-            Self {
-                binding,
-                engine,
-                contexts: HashMap::new(),
-                next_id: 0,
-                fast_qmm,
-                tiles,
+            state,
+            Spec {
+                identity,
+                limits,
+                pass_scratch,
             },
-            Spec { identity, limits },
         ))
+    }
+
+    /// The free device memory in bytes, on the worker thread's current device.
+    fn free_device_bytes(&self) -> Result<u64, String> {
+        let mut free = 0usize;
+        let mut total = 0usize;
+        let code = unsafe { (self.binding.mem_get_info)(&mut free, &mut total) };
+        if code != 0 {
+            return Err(format!("hipMemGetInfo failed with HIP error {code}"));
+        }
+        Ok(free as u64)
+    }
+
+    /// The pass scratch in bytes: the free device memory that the pool's first asks take.
+    ///
+    /// A pass of 1 token asks for `qmm_part2`, and a pass of 17 or more tokens does not (mk `engine.hip:1187`). A pass
+    /// of 256 tokens with logits asks for every other buffer at `kMaxPassTokens`. mk keeps the pool for the engine's
+    /// life, so the difference between the two readings is the pool. The probe context is freed before the second
+    /// reading, so a context of this size changes nothing.
+    fn measure_pass_scratch(&self) -> Result<u64, String> {
+        let before = self.free_device_bytes()?;
+        let context = unsafe { (self.binding.ctx_new)(self.engine, spec::CONTEXT_CAPACITY) };
+        if context.is_null() {
+            return Err(format!(
+                "mk_ctx_new({}) returned no context for the pass scratch probe",
+                spec::CONTEXT_CAPACITY
+            ));
+        }
+        let result = self.probe_passes(context);
+        unsafe { (self.binding.ctx_free)(self.engine, context) };
+        let after = self.free_device_bytes()?;
+        result?;
+        before
+            .checked_sub(after)
+            .ok_or_else(|| format!("the free device memory grew from {before} to {after} bytes during the probe"))
+    }
+
+    /// Run the two probe passes on one context: 1 token, then the rest, with logits.
+    fn probe_passes(&self, context: *mut c_void) -> Result<(), String> {
+        let tokens: Vec<i32> = (1..=spec::CONTEXT_CAPACITY as i32).collect();
+        let mut start = 0;
+        for (count, want_logits) in probe_shapes(spec::CONTEXT_CAPACITY) {
+            let end = start + count as usize;
+            self.probe_pass(context, &tokens[start..end], want_logits)?;
+            start = end;
+        }
+        Ok(())
+    }
+
+    /// Run one probe pass: `tokens` at the context's end, with the logits row when asked.
+    fn probe_pass(&self, context: *mut c_void, tokens: &[i32], want_logits: bool) -> Result<(), String> {
+        let contexts = [context];
+        let lens = [tokens.len() as u32];
+        let mut logits = if want_logits {
+            vec![0f32; spec::VOCAB as usize]
+        } else {
+            Vec::new()
+        };
+        let logits_ptr = if want_logits {
+            logits.as_mut_ptr()
+        } else {
+            std::ptr::null_mut()
+        };
+        let ms = unsafe {
+            (self.binding.pass_segments)(
+                self.engine,
+                1,
+                contexts.as_ptr(),
+                lens.as_ptr(),
+                tokens.as_ptr(),
+                1,
+                logits_ptr,
+                std::ptr::null_mut(),
+            )
+        };
+        if ms < 0.0 {
+            let mut why = [0 as c_char; 512];
+            unsafe { (self.binding.last_error)(self.engine, why.as_mut_ptr(), why.len() as u32) };
+            let why = unsafe { CStr::from_ptr(why.as_ptr()) }.to_string_lossy().into_owned();
+            return Err(format!("the pass scratch probe stopped: {why}"));
+        }
+        Ok(())
     }
 
     /// Serve commands until the handle side closes the channel.
@@ -1139,9 +1244,17 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        Aligned, Word, fast_qmm_from, memory_problem, open_contexts, parse_shards, pin_problem, rounds_to_finite,
-        tiles_from,
+        Aligned, Word, fast_qmm_from, memory_problem, open_contexts, parse_shards, pin_problem, probe_shapes,
+        rounds_to_finite, tiles_from,
     };
+
+    #[test]
+    fn the_probe_asks_for_the_small_pass_and_then_the_logits_row() {
+        // A pass of 1 token asks for qmm_part2 (mk engine.hip:1187). The second pass asks for the rest, with logits.
+        assert_eq!(probe_shapes(256), [(1, false), (255, true)]);
+        let total: u32 = probe_shapes(256).iter().map(|(tokens, _)| tokens).sum();
+        assert_eq!(total, crate::spec::CONTEXT_CAPACITY);
+    }
 
     #[test]
     fn a_context_pool_frees_what_it_made_when_a_later_new_fails() {
