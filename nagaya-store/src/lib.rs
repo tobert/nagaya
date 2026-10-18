@@ -375,6 +375,9 @@ fn check_tensor(tensor: &Tensor) -> Result<(), StoreError> {
     if tensor.kind == PartKind::Derived {
         return Err(StoreError::Invalid("derived part is never stored".to_owned()));
     }
+    if tensor.block_format.is_some() && tensor.dtype != Dtype::U8 {
+        return Err(StoreError::Invalid("block format needs U8".to_owned()));
+    }
     let expected = checked_len(&tensor.shape, tensor.dtype)?;
     if tensor.data.len() != expected {
         return Err(StoreError::Invalid(format!("wrong data length for {}", tensor.name)));
@@ -559,5 +562,30 @@ mod tests {
             block_format: None,
         };
         assert!(check_tensor(&no_rows).is_err());
+    }
+
+    #[test]
+    fn block_format_requires_u8() {
+        let float = Tensor {
+            name: "f".to_owned(),
+            kind: PartKind::Fixed,
+            dtype: Dtype::F32,
+            shape: vec![1],
+            data: vec![0; 4],
+            coverage: None,
+            block_format: Some("IQ4_NL".to_owned()),
+        };
+        assert!(check_tensor(&float).is_err());
+
+        let byte = Tensor {
+            name: "b".to_owned(),
+            kind: PartKind::Fixed,
+            dtype: Dtype::U8,
+            shape: vec![1],
+            data: vec![0],
+            coverage: None,
+            block_format: Some("IQ4_NL".to_owned()),
+        };
+        assert!(check_tensor(&byte).is_ok());
     }
 }
