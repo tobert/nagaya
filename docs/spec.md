@@ -56,6 +56,8 @@ bind addresses, store directory, and seed peer addresses.
 
 Telemetry takes hardware attributes from the probed inventory, not from constants in code. (mkviolet puts B70 values
 in `telemetry.rs` as constants.) A CPU that runs work is a device in the inventory too, with host memory as its tier.
+A machine with no GPU Engine can also join the cluster to serve as a coordinator, run CPU devices (13.2), or hold a
+store tier.
 
 **2.2 Tier edges.** An edge records more than a bandwidth (`docs/prior-art.md` 5):
 
@@ -95,14 +97,19 @@ returns 507 and keeps the active profile.
 owns the gpus"). The nagaya is the only GPU client. A tool that needs a device sends its work through the nagaya, or
 stops the nagaya first. (ds4-recipe: a shader fault with a second GPU client made the SMU stop responding.)
 
-**3.2 Threads.** The nagaya has three kinds of thread with fixed jobs:
+**3.2 Threads and CPU isolation.** The nagaya isolates control work from compute work with `sched_setaffinity` and OS
+thread priorities:
 
-- **One thread per device group.** A device group is the set of devices that one engine uses. Most groups have one
-  device. mkviolet's Gemma 4 uses both B70 cards, so its group has two. Every engine call for a group comes from its
-  thread, and the call is synchronous. A pass blocks the thread.
-
-  Inside a pass, the engine runs its own work on each of its devices (D1). mkviolet's rule "one
-  `ze_context_handle_t` per card, never share across cards" still holds inside the engine.
+- **Housekeeping threads.** The `chitchat` gossip runtime, the HTTP coordinator, the ledger thread, and the watchdog
+  thread are pinned to reserved housekeeping cores (`sched_setaffinity`) at elevated priority. They never run
+  tokenization, hashing, safetensors conversion, or engine passes directly.
+- **One thread per GPU device group.** A device group is the set of devices that one engine uses. Most groups have
+  one device. mkviolet's Gemma 4 uses both B70 cards, so its group has two. Every engine call for a group comes from
+  its thread, and the call is synchronous. Inside a pass, the engine runs its own work on each of its devices (D1).
+- **A bounded CPU worker pool.** Rendering, tokenization, hashing, safetensors conversion, and CPU device passes
+  (13.2) run on a bounded pool pinned to the remaining cores at `SCHED_BATCH`. Long CPU work yields between chunks
+  to obey `max_quantum_ms`. On unified-memory machines (`gfx1151host` and `sm121host`), the scheduler pauses background CPU
+  memory work during a GPU pass to protect GPU memory bandwidth.
 - **One ledger thread.** It owns every budget: device memory, host memory and NVMe. Group threads and the store send
   admission requests to it. No other thread writes the ledger.
 - **One watchdog thread.** It watches each group thread from outside, because a pass blocks the thread that it
@@ -511,11 +518,12 @@ The restart policy follows mk's unit: `Restart=on-failure`, `RestartSec=30`, and
 clients still use it. The contract is gogi (`~/src/gogi`): `docs/council-api-v2.md`, the types in `gogi-proto`, and
 the suite in `gogi-conformance`.
 
-Any machine can receive any request and act as its coordinator (Cassandra style). The coordinator finds the target
-engine from the request's `model` field and the `chitchat` cluster state (2.3). Because the coordinator has the
-family libraries (11.3) and the engine's `identity()` from gossip, it can render, tokenize and compute the recipe
-locally. If the engine is on the same machine, the coordinator schedules the job locally. If the engine is on another
-machine, the coordinator forwards the work or transparently proxies the HTTP or SSE stream to that machine.
+Any machine can receive any request and act as its coordinator (Cassandra style). Clients prefer a coordinator with
+separate host memory (`b70host` or a CPU rig) to save unified memory bandwidth on `gfx1151host` and `sm121host` (3.2). The
+coordinator finds the target engine from the request's `model` field and the `chitchat` cluster state (2.3). Because
+the coordinator has the family libraries (11.3) and the engine's `identity()` from gossip, it can render, tokenize
+and compute the recipe locally. It then schedules the job locally or forwards the work to the machine that holds the
+engine.
 
 The API has contexts, specs, decisions, snapshots, pins, reads, and generations with riding decisions (mkviolet
 `council_v2.rs`). In council v2 responses, a snapshot `id` is its BLAKE3 content id (`blake3:<hex>`), and the store
