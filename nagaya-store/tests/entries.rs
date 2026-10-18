@@ -1092,6 +1092,57 @@ fn a_failed_blob_delete_is_reported() {
 }
 
 #[test]
+fn pins_protect_one_by_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let first = put(&mut store, &base_snapshot(1), recipe(156), 1);
+    let second = put(&mut store, &base_snapshot(2), recipe(157), 1);
+    store.pin(first, 1, 100).unwrap();
+    store.pin(second, 1, 100).unwrap();
+    // Each pin alone fits the budget. Their sum does not.
+    store.set_budget(Tier::Host, 7_000);
+    assert!(matches!(store.evict(1, 1, 10), Err(StoreError::NoSpace)));
+    assert!(store.entries().contains_key(&first));
+    assert!(store.entries().contains_key(&second));
+}
+
+#[test]
+fn an_index_mismatch_quarantines_the_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let id;
+    {
+        let mut store = Store::open(dir.path()).unwrap();
+        id = put(&mut store, &base_snapshot(1), recipe(158), 1);
+    }
+    edit_index(dir.path(), |index| {
+        index["entries"][id.hex()]["coverage"][0]["end"] = serde_json::json!(3);
+    });
+    let mut store = Store::open(dir.path()).unwrap();
+    let mut target = FakeAlways::new();
+    let error = store
+        .restore(&id, &mut target, State::Slot(0), &[1u8; 32], 10)
+        .unwrap_err();
+    assert!(format!("{error}").contains("disagrees"), "{error}");
+    assert_eq!(store.entries().get(&id).unwrap().quarantine, Some(Quarantine::Index));
+}
+
+#[test]
+fn an_unreadable_blob_quarantines_with_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let id;
+    {
+        let mut store = Store::open(dir.path()).unwrap();
+        id = put(&mut store, &base_snapshot(1), recipe(159), 1);
+    }
+    let path = dir.path().join("blobs").join(id.hex());
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    assert!(matches!(store.get(&id, 10), Err(StoreError::Io(_))));
+    assert_eq!(store.entries().get(&id).unwrap().quarantine, Some(Quarantine::Read));
+}
+
+#[test]
 fn a_tripwire_quarantine_clears_with_its_recipe() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(dir.path()).unwrap();
