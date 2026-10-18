@@ -290,6 +290,10 @@ tiers (host memory, NVMe) and gets its budgets from the ledger. It replaces thes
 - mkviolet's `council_server` snapshots, its `held::Store`, and the prefix cache in `mk_api`. These are three
   formats and three SHA-256 id schemes on one host.
 
+**Proposed** by deepseek-flash, 2026-10-18. An entry's tier is `host` or `nvme`. The ABI's memory tier, `device(i)`
+or `host`, names where an engine term lives. The store does not use the ABI's memory tier. Reason: 6.1 gives the
+store its own tiers. An entry is host memory or a file, never device memory.
+
 **6.2 Keys.** A snapshot's content id is the BLAKE3 hash of its sealed bytes. When the snapshot is a piece of a
 chain, the hash includes its parent's content id. A snapshot's recipe is a hash of these items:
 
@@ -340,9 +344,26 @@ that they are the same state.
 - the provenance of an approximate entry;
 - the strength of the store's last check of the entry: `full` (every byte hashed) or `none` yet.
 
+**Proposed** by deepseek-flash, 2026-10-18. The store's `Check` is `full | spot | none`. The ABI uses one enum for
+arenas and store entries (engine-abi "Capabilities"). 6.4 names `full` and `none` only.
+
+The store sets `none` after a restart, before it hashes the blob. It sets `full` after it hashes the blob. It does
+not produce `spot` in v0. Reason: the two docs disagree. The ABI's enum is the larger set.
+
 **6.5 Chains.** Each engine declares a maximum chain depth and a size fraction. (ds4-recipe: depth 1, and a delta
 only when it is at most a quarter of a full snapshot.) A delta holds, for each cells part and ring part, the rows
 after its parent's end. It holds each fixed part whole. The store never evicts a base while a delta needs it.
+
+**Proposed** by deepseek-flash, 2026-10-18. A delta's `put` names its parent content id and its previous recipe.
+
+The store checks four facts. The parent is live. The delta is no deeper than the chain limit. Its size is within
+the delta fraction. Its coverage starts at the parent's end.
+
+The store also checks that the previous recipe equals the parent entry's recipe. It checks that the delta's recipe
+is a later one.
+
+The store cannot compute the recipe hash again, because it does not have the tokens. Reason: 6.5 says a delta's
+recipe follows its parent's. The caller holds the inputs that prove it.
 
 **6.6 Lookup.** A lookup is by recipe. It returns the chain of entries that covers the request, from its base to
 its tip. The store keeps only the chains that fit the slot (coverage) and the served model's tolerance (ontology).
@@ -381,6 +402,10 @@ victims before it deletes one. It also chooses them before it writes the new ent
 
 Each owner has a quota, so one long conversation cannot remove the others (a ds4-recipe incident). If a pin alone
 is larger than a budget, the pin loses its protection, so eviction cannot deadlock.
+
+**Proposed** by deepseek-flash, 2026-10-18. An owner's quota is per store tier, like the budget. A put evicts the
+owner's entries in its own tier until the owner's total fits the quota and the tier's total fits the budget. Reason:
+memory and NVMe are separate budgets in 6.1. A byte in one tier does not make room in the other.
 
 **6.10 Pins.** A pin is a lease on a snapshot, with an owner and an expiry (mkviolet v2: one day at most). A request
 pin holds a snapshot from its lookup to the end of its load. Pins stay through a restart (mkviolet `pins.json`).
