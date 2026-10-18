@@ -4,6 +4,7 @@ pub mod admission;
 pub mod bootstrap;
 pub mod exit;
 pub mod inventory;
+pub mod notify;
 pub mod placement;
 pub mod process;
 pub mod profile;
