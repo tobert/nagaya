@@ -287,8 +287,11 @@ wrapper's host buffers also wait for the process crate (the review's note on fin
 ### Proposed: test limits of the spin-timeout opt-in and the poisoned set_n path
 
 **Proposed** by deepseek-flash, 2026-10-18. The binding binds `mk_engine_recover_spin_timeouts` and calls it with
-`on = 1` at open (`566446c`). The binding of the symbol has a test. A misspelled symbol makes open fail with an
-undefined-symbol error, and `f99f9c0` quotes that mutation.
+`on = 1` at open (`566446c`, `worker.rs:549`). A misspelled symbol makes open fail with an undefined-symbol error,
+and `f99f9c0` quotes that mutation. Thus the suite pins the symbol's name only.
+
+Removing the binding and the `on = 1` call leaves every test green. mk has no query for the flag, so the suite cannot
+see the call. The opt-in is not pinned.
 
 Two paths have no test. A forced spin-timeout, and the `-1` to `PassStatus::Poison` path that follows it, need GPU
 contention, so no test in this suite reaches them. The poisoned `set_n` path has no test because mk's `restore_n`
