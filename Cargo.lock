@@ -186,7 +186,9 @@ dependencies = [
  "blake3",
  "nagaya-abi",
  "safetensors",
+ "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
