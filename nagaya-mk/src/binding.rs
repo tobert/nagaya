@@ -41,6 +41,9 @@ pub(crate) type CellsWrite = unsafe extern "C" fn(*mut c_void, *mut c_void, u32,
 /// `void mk_ctx_set_n(void *e, void *c, uint32_t n)`.
 pub(crate) type SetN = unsafe extern "C" fn(*mut c_void, *mut c_void, u32);
 
+/// `void mk_engine_recover_spin_timeouts(void *e, int on)`.
+pub(crate) type RecoverSpinTimeouts = unsafe extern "C" fn(*mut c_void, c_int);
+
 /// `void mk_ctx_round_gdn_bf16(void *e, void *c)`.
 pub(crate) type RoundGdn = unsafe extern "C" fn(*mut c_void, *mut c_void);
 
@@ -89,6 +92,7 @@ pub(crate) struct Binding {
     pub state_write: StateWrite,
     pub cells_write: CellsWrite,
     pub set_n: SetN,
+    pub recover_spin_timeouts: RecoverSpinTimeouts,
     pub round_gdn: RoundGdn,
     pub part_bytes: PartBytes,
     pub state_bytes: StateBytes,
@@ -121,6 +125,7 @@ pub(crate) fn load(path: &Path) -> Result<Binding, String> {
             state_write: symbol(library, b"mk_ctx_state_write\0")?,
             cells_write: symbol(library, b"mk_ctx_cells_write\0")?,
             set_n: symbol(library, b"mk_ctx_set_n\0")?,
+            recover_spin_timeouts: symbol(library, b"mk_engine_recover_spin_timeouts\0")?,
             round_gdn: symbol(library, b"mk_ctx_round_gdn_bf16\0")?,
             part_bytes: symbol(library, b"mk_ctx_part_bytes\0")?,
             state_bytes: symbol(library, b"mk_ctx_state_bytes\0")?,

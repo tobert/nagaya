@@ -89,6 +89,8 @@ fn the_binding_opens_mk_and_declares_its_parts() {
     assert_eq!(engine.n(State::Slot(0)).unwrap(), 0);
     assert_eq!(engine.capacity(State::Slot(0)).unwrap(), 256);
     assert!(engine.owns_kv(State::Slot(0)).unwrap());
+    // A pass that stops on a spin-timeout must reach the nagaya as poison, not stop the program (D6, spec 8.2).
+    assert!(engine.spin_recovery(), "mk does not recover a spin-timeout");
 }
 
 #[test]

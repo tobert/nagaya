@@ -111,6 +111,8 @@ impl MkPaths {
 pub(crate) struct Spec {
     pub identity: Identity,
     pub limits: Limits,
+    /// True when mk returns a pass that stopped on a spin-timeout instead of stopping the program.
+    pub recover_spin_timeouts: bool,
 }
 
 /// The result of a write or a seal.
@@ -543,6 +545,10 @@ impl ThreadState {
         let mut arena_bytes = 0u64;
         unsafe { (binding.arena)(engine, &mut fd, &mut arena_bytes) };
 
+        // mk stops the program on a pass that stops early by default (engine.h:215-220). Opt in, so a spin-timeout
+        // returns -1 and poisons the contexts, and the wrapper reports PassStatus::Poison (D6, spec 8.2).
+        unsafe { (binding.recover_spin_timeouts)(engine, 1) };
+
         let identity = spec::identity(&paths.shards, &paths.library, &library_sha256, fast_qmm, tiles, &digest);
         let limits = spec::limits(arena_bytes);
         Ok((
@@ -554,7 +560,11 @@ impl ThreadState {
                 fast_qmm,
                 tiles,
             },
-            Spec { identity, limits },
+            Spec {
+                identity,
+                limits,
+                recover_spin_timeouts: true,
+            },
         ))
     }
 
