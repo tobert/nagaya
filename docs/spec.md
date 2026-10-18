@@ -237,6 +237,9 @@ higher owed balance, then the earlier arrival. On a quantum of d ms for job j am
 j's balance falls by d*(n-1)/n. Each other job's balance rises by d/n. Round down, and clamp the balance to
 ±30 s. A job that leaves removes its own balance.
 
+**Proposed** by deepseek-flash, 2026-10-18: when an interactive pass has several segments, split the pass time
+equally among its segments. The rounding remainder goes to the earliest-arrival segment.
+
 **5.5 Filler.** A filler job declares a checkpoint interval: the time between its checkpoints. It must be resumable:
 its state parks when it gives way (Ai2's "unallocated" time). It runs only when no interactive or batch quantum is
 ready on its device group.
