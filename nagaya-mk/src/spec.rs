@@ -115,13 +115,8 @@ pub fn parts() -> Vec<PartLimits> {
 /// The limits of the engine for the fixed context pool.
 pub fn limits(arena_bytes: u64) -> Limits {
     Limits {
-        capabilities: vec![
-            Capability::Parts,
-            Capability::Seal,
-            Capability::Contexts,
-            Capability::Poison,
-            Capability::PassCheck,
-        ],
+        // The ABI takes each capability from its accessor. This binding has `parts()` and `seal()` only.
+        capabilities: vec![Capability::Parts, Capability::Seal],
         parts: parts(),
         inputs: Inputs::Tokens,
         devices: vec![0],
@@ -291,6 +286,14 @@ mod tests {
                 .iter()
                 .any(|term| term.name == "weights" && term.bytes == 94)
         );
+    }
+
+    #[test]
+    fn the_limits_declare_only_the_reachable_capabilities() {
+        // The ABI takes a capability from its accessor. mk has parts() and seal(), and no accessor for contexts,
+        // poison or the pass check, so the limits must not declare those.
+        let limits = limits(0);
+        assert_eq!(limits.capabilities, vec![Capability::Parts, Capability::Seal]);
     }
 
     #[test]
