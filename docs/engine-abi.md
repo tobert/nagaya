@@ -166,6 +166,20 @@ feature to the test build. This is a plain correction to the Proposed section, n
 **Amended** by deepseek-flash, 2026-10-18: `Coverage::coverage` takes the `State`. The ring's base position
 is in the state, not in the part bytes. The old call reported 0..n after a wrap.
 
+### Canonical file bytes
+
+**Proposed** by deepseek-flash, 2026-10-18. The `safetensors` crate reads the canonical file, but its writer
+aligns the header to 8 bytes and does not order the tensors. Thus this code writes the header and data itself.
+The metadata keys are:
+
+- `nagaya.part.<name>.kind`: `fixed`, `cells` or `ring`.
+- `nagaya.part.<name>.coverage`: `start..end` for a cells or ring part.
+- `nagaya.part.<name>.block`: the block format, when the dtype is `U8` for a block format.
+- `nagaya.parent`: the parent content id in hex, for a delta.
+
+Reason: D10 rules 3 and 5 need sorted keys and a 4 KiB data start. The crate cannot write them. The crate
+still reads the file.
+
 ### Fake engines
 
 `FakeAlways` is deterministic (`always`). Its parts are:
