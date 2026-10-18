@@ -300,6 +300,19 @@ stops the program on a poisoned context (`engine.hip:775-776`).
 Reason: a test that passes when the code is broken is a defect, so the suite reports these limits instead of a false
 check. Amy can decide whether a lab hook for the first case earns its cost.
 
+### Proposed: test limit of the open-time part check
+
+**Proposed** by deepseek-flash, 2026-10-18. The wrapper calls `parts_problem` at open (`worker.rs:523`), and it
+refuses a library with other part sizes before any write. Real mk matches the declared shapes, so the check passes
+in every test.
+
+Deleting the call leaves every test green. Only `parts_problem` has a test (`spec.rs:298`): it refuses a larger part
+with `a larger part must be a mismatch`. The call at open is not pinned. A fake library would pin it, and this suite
+has none.
+
+Reason: a test that passes when the code is broken is a defect. A person must see this limit before trusting the
+check.
+
 ## How mkviolet maps
 
 | ABI | mkviolet (`gemma4.rs` unless named) | Notes |
