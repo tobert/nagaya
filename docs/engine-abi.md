@@ -263,6 +263,12 @@ Reason for all: the code must not guess. Amy can change each choice.
 **Corrected** by deepseek-flash, 2026-10-18: `max_quantum_ms` was 30000. mk's watchdog aborts a pass at 10 s
 (`engine.h:302-306`), so a 30 s bound promises a quantum that mk would stop. Review finding 13.
 
+**Proposed** by deepseek-flash, 2026-10-18: a pin on the mk library build. The identity records the SHA-256 of
+`libmkengine.so`, but nothing compares that digest with an expected one. mk has no call for the vocabulary size, so
+the binding cannot check `kVocab` against the library either. The simplest guard is `MK_ENGINE_LIB_SHA256`: when it
+is set, the binding refuses a library with another digest, before it binds any symbol. The process crate reads the
+pin from the profile. Until then, the digest in the identity is a record only (review finding 2).
+
 ## How mkviolet maps
 
 | ABI | mkviolet (`gemma4.rs` unless named) | Notes |
