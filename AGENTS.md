@@ -69,7 +69,9 @@ The ledger is a plain owned type with `&mut self` methods. Do not wrap it in a l
 Do them in this order. Each milestone ends with all checks green and one or more commits.
 
 1. **Workspace.** Make the workspace, the seven crates, and a `rustfmt.toml` with `max_width = 120`. Run each check
-   once, with `--features hip` too, so that each one works before there is real code.
+   once, with `--features hip` too, so that each one works before there is real code. In the workspace
+   `Cargo.toml`, set `[profile.dev] debug = "line-tables-only"` and `[profile.dev.package."*"] debug = false`.
+   Backtraces keep their lines, and `target/` stays small (Amy, 2026-10-18: "we almost never use debug info").
 2. **Engine trait.** Write the ABI core and capabilities as a trait, plus a fake engine. The fake engine is
    `always`. It has fixed, cells, ring and derived parts, slots of two sizes, a seal that changes bits, and the
    `parts`, `coverage` and `seal` capabilities. A second fake engine is broken on purpose, for the gates (8.3).
@@ -97,7 +99,8 @@ Do them in this order. Each milestone ends with all checks green and one or more
 - `mk_ctx_state_write` returns nothing. The wrapper maps mk's result onto the three write results (ABI
   "Capabilities") through `mk_ctx_poisoned`.
 - The nagaya must be the only GPU client (spec 3.1). Before you run GPU tests, check that `megakernel.service` is
-  inactive. If it runs, stop and report. Do not stop the service yourself.
+  inactive. If it runs, stop and report. Do not stop the service yourself. In a container with no systemd, ask your
+  reviewer to check it.
 - mk aborts the process on some bad arguments (`MK_DIE` in `src/engine/capi.hip`). Call `mk_segments_problem`
   before `mk_pass_segments`.
 - mk's HIP device is the device that is current on the calling thread. Make every mk call from one thread.
