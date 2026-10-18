@@ -8,3 +8,4 @@ pub mod notify;
 pub mod placement;
 pub mod process;
 pub mod profile;
+pub mod signal;
