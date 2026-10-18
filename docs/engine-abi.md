@@ -231,8 +231,8 @@ that fits the ABI.
   declares the pool that one handle creates at open: 2 contexts of 256 tokens. The process opens one handle. The
   conformance suite opens a handle for each gate, so the engine holds more contexts while the suite runs. This
   binding does not bind `mk_ctx_fork`. `plan(config)` comes with the process crate, so this binding fixes the pool.
-- **`max_quantum_ms` is 30000.** mk splits a pass at 256 tokens (`kMaxPassTokens`). A prefill chunk of that size takes
-  about 2 s. The declared bound is 30 s.
+- **`max_quantum_ms` is 10000.** mk splits a pass at 256 tokens (`kMaxPassTokens`). A prefill chunk of that size takes
+  about 2 s. mk's watchdog stops the program at a 10 s deadline (`engine.h:302-306`), so the declared bound is 10 s.
 - **`cells_write` writes rows 0 to n-1.** mk writes n cells into an empty context that owns its K/V. The caller calls
   `set_n` after it writes every part. On a first write, an append and row 0 agree.
 - **`positions` are strict and `meta` is empty.** mk appends the tokens at the context's n. The binding refuses a
@@ -248,6 +248,9 @@ that fits the ABI.
   pass build (`engine.h:27-32`).
 
 Reason for all: the code must not guess. Amy can change each choice.
+
+**Corrected** by deepseek-flash, 2026-10-18: `max_quantum_ms` was 30000. mk's watchdog aborts a pass at 10 s
+(`engine.h:302-306`), so a 30 s bound promises a quantum that mk would stop. Review finding 13.
 
 ## How mkviolet maps
 
