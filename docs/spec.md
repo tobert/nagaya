@@ -247,8 +247,8 @@ equally among its segments. The rounding remainder goes to the earliest-arrival 
 its state parks when it gives way (Ai2's "unallocated" time). It runs only when no interactive or batch quantum is
 ready on its device group.
 
-**Proposed** by deepseek-flash, 2026-10-18: one scheduler serves one device group (spec 3.2, D1: one thread per
-device group). This is the D1 reading. The filler gate is therefore per group.
+One scheduler serves one device group (spec 3.2, D1: one thread per device group). Two engines that use one device
+share one scheduler. The filler gate is per group. Decided 2026-10-18.
 
 **5.6 No preemption.** Nothing interrupts a quantum that runs. Priority orders the work that waits. Priority never
 moves a continuation off the context that holds it. The job holds that context with a lease.
