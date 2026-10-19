@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use nagaya::admission::{Factory, OpenError, PlanError, Registry};
+use nagaya::admission::{Factory, OpenError, OpenErrorKind, PlanError, Registry};
 use nagaya::exit::ExitCode;
 use nagaya::inventory::{Device, Inventory};
 use nagaya::lifecycle::{self, LifecycleError};
@@ -162,6 +162,7 @@ fn an_empty_profile_is_ready() {
 
 struct FailingFactory {
     limits: Limits,
+    kind: OpenErrorKind,
 }
 
 impl Factory for FailingFactory {
@@ -171,13 +172,14 @@ impl Factory for FailingFactory {
 
     fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
         Err(OpenError {
+            kind: self.kind,
             message: "the weights are absent".to_owned(),
         })
     }
 }
 
 #[test]
-fn an_open_failure_gets_status_and_exit_three() {
+fn a_plain_open_failure_is_a_crash() {
     let directory = tempfile::tempdir().unwrap();
     let (socket, path) = bound(directory.path());
     let notifier = Notifier::at(&path).unwrap();
@@ -186,6 +188,7 @@ fn an_open_failure_gets_status_and_exit_three() {
         "broken",
         Box::new(FailingFactory {
             limits: limits_on(&[0]),
+            kind: OpenErrorKind::Other,
         }),
     );
     let error = lifecycle::start(
@@ -197,11 +200,36 @@ fn an_open_failure_gets_status_and_exit_three() {
         Duration::from_secs(2),
     )
     .unwrap_err();
-    assert_eq!(error.exit_code(), ExitCode::RefusedStart);
+    assert_eq!(error.exit_code(), ExitCode::Crash);
     assert_eq!(
         receive(&socket),
         "STATUS=engine broken-one failed to open: the weights are absent"
     );
+}
+
+#[test]
+fn an_identity_pin_or_part_size_mismatch_exits_three() {
+    for kind in [OpenErrorKind::Identity, OpenErrorKind::Pin, OpenErrorKind::PartSize] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut registry = Registry::new();
+        registry.register(
+            "broken",
+            Box::new(FailingFactory {
+                limits: limits_on(&[0]),
+                kind,
+            }),
+        );
+        let error = lifecycle::start(
+            profile(vec![engine("broken-one", "broken", &[0])]),
+            registry,
+            inventory(&[0]),
+            directory.path(),
+            None,
+            Duration::from_secs(2),
+        )
+        .unwrap_err();
+        assert_eq!(error.exit_code(), ExitCode::RefusedStart, "{kind:?}");
+    }
 }
 
 struct PanicFactory {

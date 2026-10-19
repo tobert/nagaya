@@ -27,9 +27,31 @@ impl std::fmt::Display for PlanError {
 
 impl std::error::Error for PlanError {}
 
+/// Why an engine did not open (spec 10.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpenErrorKind {
+    /// The engine identity differs from the identity that the profile pins.
+    Identity,
+    /// The library differs from the pin in the profile.
+    Pin,
+    /// A part size differs from the admitted plan.
+    PartSize,
+    /// Any other open failure.
+    Other,
+}
+
+impl OpenErrorKind {
+    /// True when the failure refuses the start (spec 10.4 row 3).
+    pub fn refuses_start(self) -> bool {
+        matches!(self, Self::Identity | Self::Pin | Self::PartSize)
+    }
+}
+
 /// Why an engine cannot open.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenError {
+    /// The kind of failure, for the exit code.
+    pub kind: OpenErrorKind,
     /// What the engine could not open.
     pub message: String,
 }

@@ -1,4 +1,4 @@
-use nagaya::admission::{AdmitError, Factory, OpenError, PlanError, Registry, admit};
+use nagaya::admission::{AdmitError, Factory, OpenError, OpenErrorKind, PlanError, Registry, admit};
 use nagaya::inventory::{Device, Inventory};
 use nagaya::placement::DeviceError;
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, TierSpec};
@@ -57,6 +57,7 @@ impl Factory for FailingPlan {
 
     fn open(&self, _config: &toml::Table) -> Result<Box<dyn nagaya_abi::Engine>, OpenError> {
         Err(OpenError {
+            kind: OpenErrorKind::Other,
             message: "the weights are absent".to_owned(),
         })
     }

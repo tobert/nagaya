@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, ThreadId};
 use std::time::Duration;
 
-use nagaya::admission::{Factory, OpenError, PlanError, Registry};
+use nagaya::admission::{Factory, OpenError, OpenErrorKind, PlanError, Registry};
 use nagaya::inventory::{Device, Inventory};
 use nagaya::process::{Event, OwnedLedger, Start, WaitError};
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, TierSpec};
@@ -238,6 +238,7 @@ impl Factory for FailingOpenFactory {
 
     fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
         Err(OpenError {
+            kind: OpenErrorKind::Other,
             message: "the weights are absent".to_owned(),
         })
     }

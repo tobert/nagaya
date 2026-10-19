@@ -1,3 +1,4 @@
+use nagaya::admission::OpenErrorKind;
 use nagaya::exit::ExitCode;
 use nagaya::process::Event;
 
@@ -28,13 +29,25 @@ fn a_stall_is_a_crash() {
 }
 
 #[test]
-fn an_open_failure_is_a_refusal_to_start() {
+fn an_open_mismatch_is_a_refusal_to_start() {
     let event = Event::OpenFailed {
         group: 0,
         engine: "a".to_owned(),
+        kind: OpenErrorKind::Identity,
         message: "no weights".to_owned(),
     };
     assert_eq!(event.exit_code(), Some(ExitCode::RefusedStart));
+}
+
+#[test]
+fn another_open_failure_is_a_crash() {
+    let event = Event::OpenFailed {
+        group: 0,
+        engine: "a".to_owned(),
+        kind: OpenErrorKind::Other,
+        message: "no weights".to_owned(),
+    };
+    assert_eq!(event.exit_code(), Some(ExitCode::Crash));
 }
 
 #[test]

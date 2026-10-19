@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use nagaya_abi::{DeviceId, Engine, Limits};
 use nagaya_ledger::Ledger;
 
-use crate::admission::{AdmitError, Admitted, Factory, Registry, admit};
+use crate::admission::{AdmitError, Admitted, Factory, OpenErrorKind, Registry, admit};
 use crate::exit::{ExitCode, panic_text};
 use crate::inventory::Inventory;
 use crate::park::{self, StoreBudget, StoreMessage};
@@ -185,6 +185,8 @@ pub enum Event {
         group: usize,
         /// The engine name.
         engine: String,
+        /// The kind of failure, for the exit code (spec 10.4).
+        kind: OpenErrorKind,
         /// Why the open failed.
         message: String,
     },
@@ -209,7 +211,11 @@ impl Event {
     pub fn exit_code(&self) -> Option<ExitCode> {
         match self {
             Event::Stalled { .. } => Some(ExitCode::Crash),
-            Event::OpenFailed { .. } => Some(ExitCode::RefusedStart),
+            Event::OpenFailed { kind, .. } => Some(if kind.refuses_start() {
+                ExitCode::RefusedStart
+            } else {
+                ExitCode::Crash
+            }),
             Event::Panicked { .. } => Some(ExitCode::Crash),
             Event::Opened { .. } => None,
         }
@@ -503,6 +509,7 @@ fn group_thread(
                 let _ = events.send(Event::OpenFailed {
                     group,
                     engine: job.placement.name.clone(),
+                    kind: error.kind,
                     message: error.to_string(),
                 });
                 return;
@@ -512,6 +519,7 @@ fn group_thread(
             let _ = events.send(Event::OpenFailed {
                 group,
                 engine: job.placement.name.clone(),
+                kind: OpenErrorKind::Other,
                 message: "limits() after open do not equal the admitted limits".to_owned(),
             });
             return;
