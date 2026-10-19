@@ -59,12 +59,17 @@ fn fake_capabilities_match_accessors() {
     let mut engine = FakeAlways::new();
     assert_eq!(
         engine.limits().capabilities,
-        vec![Capability::Parts, Capability::Coverage, Capability::Seal,]
+        vec![
+            Capability::Parts,
+            Capability::Coverage,
+            Capability::Seal,
+            Capability::Slots,
+        ]
     );
     assert!(engine.parts().is_some());
     assert!(engine.coverage().is_some());
     assert!(engine.seal().is_some());
-    assert!(engine.slots().is_none());
+    assert!(engine.slots().is_some());
 }
 
 #[test]
@@ -314,4 +319,40 @@ fn ring_coverage_keeps_the_window_base() {
     let coverage = engine.coverage().unwrap();
     let span = coverage.coverage(State::Slot(0), 2, &ring);
     assert_eq!((span.start, span.end), (2, 6));
+}
+
+#[test]
+fn a_row_part_of_a_fake_slot_reads_its_real_length() {
+    let mut engine = FakeAlways::new();
+    engine.pass(&[token_segment(&[1, 2, 3, 4, 5])], &[]).unwrap();
+    let high = engine.slots().unwrap().slot_high(0);
+    assert_eq!(high, 5, "five tokens give five rows");
+    let mut cells = vec![0u8; high as usize * 8];
+    assert_eq!(engine.parts().unwrap().part_read(State::Slot(0), 1, &mut cells), Ok(()));
+    let span = engine.coverage().unwrap().coverage(State::Slot(0), 2, &[]);
+    assert_eq!(span.start, 1, "the ring holds the last four rows of five");
+    let count = high - span.start;
+    let mut ring = vec![0u8; count as usize * 8];
+    assert_eq!(
+        engine
+            .parts()
+            .unwrap()
+            .cells_read(State::Slot(0), 2, span.start, count, &mut ring),
+        Ok(())
+    );
+    assert_eq!(ring.len(), 4 * 8);
+}
+
+#[test]
+fn slot_clear_removes_the_rows() {
+    let mut engine = FakeAlways::new();
+    engine.pass(&[token_segment(&[1, 2, 3])], &[]).unwrap();
+    assert_eq!(engine.slots().unwrap().slot_high(0), 3);
+    assert_eq!(engine.slots().unwrap().slot_clear(0), WriteResult::Ok);
+    assert_eq!(engine.slots().unwrap().slot_high(0), 0);
+    let mut out = [0u8; 8];
+    assert_eq!(
+        engine.parts().unwrap().cells_read(State::Slot(0), 1, 0, 1, &mut out),
+        Err(PartError::Refused)
+    );
 }

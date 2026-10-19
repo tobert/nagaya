@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, VecDeque};
 use crate::{
     Capability, ChainLimits, Coverage, CoverageSpan, Determinism, Dtype, ElasticTerm, Engine, Identity, Inputs, Kind,
     Lifetime, Limits, MandatoryTerm, MemoryLimits, Output, PartError, PartKind, PartLimits, Parts, PassError,
-    PassErrorKind, PassOut, PassStatus, Seal, SealError, Segment, SegmentInputs, SlotLimit, Stage, State, Tap, Tier,
-    WriteResult,
+    PassErrorKind, PassOut, PassStatus, Seal, SealError, Segment, SegmentInputs, SlotId, SlotLimit, Slots, Stage,
+    State, Tap, Tier, WriteResult,
 };
 
 /// The ring window in rows.
@@ -113,7 +113,12 @@ impl Fake {
             },
         ];
         let limits = Limits {
-            capabilities: vec![Capability::Parts, Capability::Coverage, Capability::Seal],
+            capabilities: vec![
+                Capability::Parts,
+                Capability::Coverage,
+                Capability::Seal,
+                Capability::Slots,
+            ],
             parts: parts.clone(),
             inputs: Inputs::Tokens,
             devices: vec![0],
@@ -412,6 +417,10 @@ macro_rules! engine_impl {
             fn seal(&mut self) -> Option<&mut dyn Seal> {
                 Some(&mut self.0)
             }
+
+            fn slots(&mut self) -> Option<&mut dyn Slots> {
+                Some(&mut self.0)
+            }
         }
     };
 }
@@ -552,6 +561,42 @@ impl Parts for Fake {
             }
             _ => unreachable!("the part kind was checked as cells"),
         }
+    }
+}
+
+impl Slots for Fake {
+    /// The highest row that any row part of the slot holds.
+    fn slot_high(&self, slot: SlotId) -> u64 {
+        let Some(slot) = self.slots.get(slot as usize) else {
+            return 0;
+        };
+        slot.parts.iter().fold(0, |high, part| match part {
+            PartData::Cells { n, .. } => high.max(*n),
+            PartData::Ring { rows, base } => high.max(*base + rows.len() as u64),
+            PartData::Fixed(_) | PartData::Derived => high,
+        })
+    }
+
+    /// Clear every part of the slot.
+    fn slot_clear(&mut self, slot: SlotId) -> WriteResult {
+        let Some(slot) = self.slots.get_mut(slot as usize) else {
+            return self.refuse("unknown slot");
+        };
+        for part in &mut slot.parts {
+            match part {
+                PartData::Fixed(bytes) => bytes.fill(0),
+                PartData::Cells { rows, n } => {
+                    rows.clear();
+                    *n = 0;
+                }
+                PartData::Ring { rows, base } => {
+                    rows.clear();
+                    *base = 0;
+                }
+                PartData::Derived => {}
+            }
+        }
+        WriteResult::Ok
     }
 }
 

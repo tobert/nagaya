@@ -215,7 +215,7 @@ fn a_stop_parks_every_engine() {
     assert_eq!(report.parked.states, 2, "the fake declares two slots");
     assert_eq!(report.parked.parts, 6, "three stored parts in two states");
     assert_eq!(report.parked.bytes, 32, "two fixed parts of 16 bytes");
-    assert_eq!(report.parked.unmeasured_row_parts, 4);
+    assert_eq!(report.parked.unmeasured_row_parts, 0, "the fake measures its row parts");
     assert!(report.parked.failures.is_empty());
     let record = record.lock().unwrap();
     assert_eq!(record.reads.len(), 6);
