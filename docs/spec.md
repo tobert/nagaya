@@ -107,6 +107,27 @@ refuses to publish a larger value. The refusal names the key and the size. Reaso
 UDP datagram of at most 65,507 bytes. A node writes a few keys, plus one key for each engine. A profile that does
 not fit in 8192 bytes needs a different path, which is not in v0.
 
+**Proposed** by Sonnet 5.5, 2026-10-19: the value of `profile:desired:<host>` is JSON with two fields. `version` is an
+integer that the client picks. `profile` is the placement profile (2.4) as a JSON object. The machine that takes a
+`PUT` writes the key under its own node.
+
+A node reads the key for its own name (2.1 note) from every live peer. It takes the highest `version`. It ignores a
+version that is not higher than the last version that it handled.
+
+The node writes the handled version to `<store_dir>/profile.version`, after it writes `profile.toml`. A restart keeps
+the order. A missing file means version 0.
+
+The node handles a version in this order: admit the profile with the ledger, persist it, then act on it (3.3). A
+profile that changes the engines makes the node stop and exit 4. A profile that keeps the engines is admitted and
+persisted, and the node keeps running.
+
+A node refuses a profile that does not parse or does not fit. It keeps the active profile and the process runs on.
+It logs the reason, and the shortfall in bytes for each tier.
+
+The node writes the key `profile:refused` under its own node. Its value is JSON with `version`, `reason` and
+`shortfall`. Each `shortfall` entry has `tiers` and `bytes`. The node removes the key when it handles a newer
+version.
+
 **2.4 Placement profile.** A placement profile names a machine's engines, their devices, their config, each tier's
 budget (4.1), each engine's share (D9), and pinned identities (12.1). A client reads or updates a machine's profile
 through `GET` and `PUT /nagaya/v1/profile` on any machine in the cluster. The target machine persists its accepted
