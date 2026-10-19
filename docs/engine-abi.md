@@ -141,8 +141,8 @@ instead, so a new packing does not change the identity.
 ### Proposed: the first row of a cells write
 
 **Proposed** by deepseek-flash, 2026-10-19. `cells_write` takes `from`, the position of its first row. The call
-matches `cells_read(state, part, from, n, out)`. A Cells part holds positions from 0, so its write names 0. A Ring
-part may name a later position, because its window moves.
+matches `cells_read(state, part, from, n, out)`. A Cells part appends from 0, so its write names the number of rows it
+holds; the first write names 0. A Ring part may name a later position, because its window moves.
 
 An engine that cannot place the rows at `from` returns `WriteResult::Refused` and changes nothing. It must not move
 the rows to another position.
