@@ -139,7 +139,10 @@ fn serve(
     let code = {
         // A desired profile from a peer arrives through gossip (spec 2.4 note, 3.3).
         let process = &ready.process;
-        let mut tick = || desired_profile(&mut swap, node, process);
+        let mut tick = || {
+            node.check_name();
+            desired_profile(&mut swap, node, process)
+        };
         lifecycle::wait_with(process, &SIGNALS, notifier.as_ref(), lifecycle::WAIT_POLL, &mut tick)
     };
     if code != ExitCode::Clean && code != ExitCode::PlannedRestart {

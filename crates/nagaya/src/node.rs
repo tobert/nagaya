@@ -1,6 +1,6 @@
 //! What a node writes to gossip: its inventory, its profile and its engines (spec 2.3).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 
 use serde_json::{Value, json};
@@ -29,6 +29,10 @@ pub struct Node {
     http: SocketAddr,
     engines: BTreeMap<String, EngineRecord>,
     refused: bool,
+    /// The ids of the peers that the node logged as a duplicate name.
+    logged_names: BTreeSet<String>,
+    /// The peers in the last `name:conflict` value. It is empty when the node wrote no such key.
+    conflict: Vec<String>,
 }
 
 impl Node {
@@ -39,6 +43,8 @@ impl Node {
             http,
             engines: BTreeMap::new(),
             refused: false,
+            logged_names: BTreeSet::new(),
+            conflict: Vec::new(),
         }
     }
 
@@ -128,6 +134,41 @@ impl Node {
             self.write_engine(name, record)?;
         }
         Ok(())
+    }
+
+    /// Report the live peers that have this node's name. Call it often.
+    ///
+    /// A peer has this node's name and another chitchat id (spec 2.3 note). The node logs an error once for each such
+    /// peer id, and it writes `name:conflict` while such a peer is live. It takes no other action.
+    pub fn check_name(&mut self) {
+        let view = self.gossip.view();
+        let name = self.gossip.node_name();
+        let own = self.gossip.id();
+        let mut peers: Vec<String> = view
+            .live
+            .iter()
+            .filter(|node| !node.is_self && node.name == name)
+            .map(|node| node.id.clone())
+            .collect();
+        peers.sort();
+        for peer in &peers {
+            if self.logged_names.insert(peer.clone()) {
+                eprintln!("error: duplicate node name `{name}`: peer {peer} and this node {own} have one name");
+            }
+        }
+        if peers == self.conflict {
+            return;
+        }
+        if peers.is_empty() {
+            self.gossip.withdraw(&Key::NameConflict);
+        } else {
+            let value = json!({"own": own, "peers": peers});
+            if let Err(error) = self.gossip.publish(&Key::NameConflict, &value) {
+                eprintln!("cannot publish to gossip: {error}");
+                return;
+            }
+        }
+        self.conflict = peers;
     }
 
     /// Stop gossip.

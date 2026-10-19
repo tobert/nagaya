@@ -73,6 +73,7 @@ fn view(entries: &[(&str, &str, serde_json::Value)]) -> ClusterView {
         if !nodes.iter().any(|node| node.name == *peer) {
             nodes.push(NodeView {
                 name: (*peer).to_owned(),
+                id: format!("{peer}:1:127.0.0.1:1"),
                 addr: "127.0.0.1:1".parse::<SocketAddr>().unwrap(),
                 is_self: false,
                 keys: Default::default(),

@@ -79,6 +79,8 @@ pub enum Key {
     ProfileDesired(String),
     /// `profile:refused`: the profile that the node refused.
     ProfileRefused,
+    /// `name:conflict`: the live peers that have this node's name (spec 2.3 note).
+    NameConflict,
 }
 
 impl Key {
@@ -90,6 +92,7 @@ impl Key {
             Key::Engine(name) => format!("engine:{name}"),
             Key::ProfileDesired(host) => format!("profile:desired:{host}"),
             Key::ProfileRefused => "profile:refused".to_owned(),
+            Key::NameConflict => "name:conflict".to_owned(),
         }
     }
 
@@ -99,6 +102,7 @@ impl Key {
             "inventory" => Some(Key::Inventory),
             "profile:active" => Some(Key::ProfileActive),
             "profile:refused" => Some(Key::ProfileRefused),
+            "name:conflict" => Some(Key::NameConflict),
             _ => name
                 .strip_prefix("engine:")
                 .filter(|engine| !engine.is_empty())
@@ -142,6 +146,8 @@ impl std::error::Error for PublishError {}
 pub struct NodeView {
     /// The node name.
     pub name: String,
+    /// The chitchat id: `name:generation:address`.
+    pub id: String,
     /// The gossip address of the node.
     pub addr: SocketAddr,
     /// True for this node.
@@ -236,6 +242,11 @@ impl Gossip {
         &self.name
     }
 
+    /// The chitchat id of this node: `name:generation:address`.
+    pub fn id(&self) -> String {
+        format!("{:?}", self.handle.chitchat_id())
+    }
+
     /// The UDP address that gossip is bound to.
     pub fn local_addr(&self) -> SocketAddr {
         self.addr
@@ -249,6 +260,7 @@ impl Gossip {
                 .live_nodes()
                 .map(|id| NodeView {
                     name: id.node_id.to_string(),
+                    id: format!("{id:?}"),
                     addr: id.gossip_advertise_addr,
                     is_self: *id == own,
                     keys: chitchat
