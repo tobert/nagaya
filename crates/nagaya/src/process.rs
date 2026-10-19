@@ -76,6 +76,27 @@ impl StopReport {
             ExitCode::Crash
         }
     }
+
+    /// The line that the process writes to stderr when the stop ends (spec 10.3).
+    pub fn log_line(&self) -> String {
+        if self.interrupted {
+            return "the stop was interrupted before the park finished".to_owned();
+        }
+        let failed = self.parked.failures.len();
+        if self.parked.states == 0 && failed == 0 {
+            return "the stop parked nothing: no state needed a park".to_owned();
+        }
+        if failed == 0 {
+            return format!(
+                "the stop read {} states and {} parts, but parked nothing",
+                self.parked.states, self.parked.parts
+            );
+        }
+        format!(
+            "the stop read {} states and {} parts, but parked nothing; {failed} part(s) failed",
+            self.parked.states, self.parked.parts
+        )
+    }
 }
 
 /// Run one worker body. A panic becomes an event for the main thread (spec 8.5).

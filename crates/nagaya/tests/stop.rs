@@ -297,6 +297,18 @@ fn an_abort_parks_nothing() {
 }
 
 #[test]
+fn a_stop_that_writes_nothing_says_so() {
+    let record = Arc::new(Mutex::new(ParkRecord::default()));
+    let (mut process, _) = started(ParkFactory::new("a", record));
+    let report = process.stop(Duration::from_secs(2), &SignalFlag::new());
+    let line = report.log_line();
+    assert!(
+        line.contains("parked nothing"),
+        "the stop must not claim a park: {line}"
+    );
+}
+
+#[test]
 fn a_park_failure_is_a_crash() {
     let record = Arc::new(Mutex::new(ParkRecord::default()));
     let (mut process, _) = started(ParkFactory::new("a", record).failing());

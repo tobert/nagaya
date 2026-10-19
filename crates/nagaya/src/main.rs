@@ -90,10 +90,10 @@ fn run() -> ExitCode {
     }
     let budget = Duration::from_secs(config.park_budget_secs);
     let report = ready.process.stop(budget, &SIGNALS);
-    eprintln!(
-        "stopped with {} states parked in {} bytes",
-        report.parked.states, report.parked.bytes
-    );
+    for failure in &report.parked.failures {
+        eprintln!("the park failed: {failure}");
+    }
+    eprintln!("{}", report.log_line());
     let code = report.exit_code();
     // Spec 10.3: exit after the park budget. Do not join a group that is still parking.
     std::mem::forget(ready.process);
