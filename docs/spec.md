@@ -137,6 +137,17 @@ The node writes the key `profile:refused` under its own node. Its value is JSON 
 `shortfall`. Each `shortfall` entry has `tiers` and `bytes`. The node removes the key when it handles a newer
 version. Decided 2026-10-19.
 
+**Proposed** by Sonnet 5.5, 2026-10-19: a node reports a duplicate node name. Amy decided to log it and to publish a
+key (2026-10-19). A chitchat id has the name, a generation and the gossip address. A live peer has this node's name
+and another chitchat id when it differs in the generation or the address.
+
+For each such peer, the node logs one error that names both ids, as `name:generation:address`. It writes the key
+`name:conflict` under its own node. The value is JSON: `{"own": "<id>", "peers": ["<id>", ...]}`. `peers` holds the
+ids of the live peers with this node's name, in sorted order. The node removes the key when no such peer is live.
+
+The node takes no other action. A restart of a node can show its old generation as a live peer, until the failure
+detector marks it dead. The node logs that peer too, and it removes the key when the peer is dead.
+
 **2.4 Placement profile.** A placement profile names a machine's engines, their devices, their config, each tier's
 budget (4.1), each engine's share (D9), and pinned identities (12.1). A client reads or updates a machine's profile
 through `GET` and `PUT /nagaya/v1/profile` on any machine in the cluster. The target machine persists its accepted
