@@ -111,9 +111,9 @@ node writes a few keys, plus one key for each engine.
 
 A profile that does not fit in 8192 bytes needs a different path, which is not in v0. Decided 2026-10-19.
 
-**Proposed** by Sonnet 5.5, 2026-10-19: the value of `profile:desired:<host>` is JSON with two fields. `version` is an
-integer that the client picks. `profile` is the placement profile (2.4) as a JSON object. The machine that takes a
-`PUT` writes the key under its own node.
+The value of `profile:desired:<host>` is JSON with two fields. `version` is an integer that the client picks.
+`profile` is the placement profile (2.4) as a JSON object. The machine that takes a `PUT` writes the key under its
+own node.
 
 A node reads the key for its own name (2.1 note) from every live peer. It takes the highest `version`. It ignores a
 version that is not higher than the last version that it handled.
@@ -122,15 +122,17 @@ The node writes the handled version to `<store_dir>/profile.version`, after it w
 the order. A missing file means version 0.
 
 The node handles a version in this order: admit the profile with the ledger, persist it, then act on it (3.3). A
-profile that changes the engines makes the node stop and exit 4. A profile that keeps the engines is admitted and
-persisted, and the node keeps running.
+profile that differs from the active profile in any field is admitted and persisted. The node then stops through the
+drain and the park (10.3) and exits 4. A profile that equals the active profile changes nothing: the node does not
+ask the ledger and does not rewrite `profile.toml`. It records the handled version and logs that nothing changed.
+Reason: a profile that the ledger admits must match the engines that run.
 
 A node refuses a profile that does not parse or does not fit. It keeps the active profile and the process runs on.
 It logs the reason, and the shortfall in bytes for each tier.
 
 The node writes the key `profile:refused` under its own node. Its value is JSON with `version`, `reason` and
 `shortfall`. Each `shortfall` entry has `tiers` and `bytes`. The node removes the key when it handles a newer
-version.
+version. Decided 2026-10-19.
 
 **2.4 Placement profile.** A placement profile names a machine's engines, their devices, their config, each tier's
 budget (4.1), each engine's share (D9), and pinned identities (12.1). A client reads or updates a machine's profile
@@ -192,7 +194,7 @@ the group cores.
 
 **3.3 Engine lifecycle and profile swaps.** The nagaya opens each engine at start, from the profile. mk cannot close
 inside a process today: "the HIP runtime's own teardown segfaults" (mk `service/__main__.py`). Thus in v0, when
-`PUT /nagaya/v1/profile` changes the engines, the nagaya persists the profile and stops as in 10.3. It keeps its
+`PUT /nagaya/v1/profile` changes the profile, the nagaya persists the profile and stops as in 10.3. It keeps its
 arenas in the file-descriptor store (10.2) and exits with code 4, and systemd starts it again. Later, an engine whose
 `close()` is safe loads and unloads in place (README door 1).
 
