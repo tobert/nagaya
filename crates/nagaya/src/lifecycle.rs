@@ -98,10 +98,12 @@ pub fn start(
     profile: PlacementProfile,
     registry: Registry,
     inventory: Inventory,
+    store_dir: &Path,
     notifier: Option<&Notifier>,
     timeout: Duration,
 ) -> Result<Ready, LifecycleError> {
     let mut process = Start::new(profile, registry, inventory)
+        .store(store_dir)
         .start()
         .map_err(LifecycleError::Start)?;
     match process.wait_opens(timeout) {

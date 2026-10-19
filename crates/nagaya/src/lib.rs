@@ -6,6 +6,7 @@ pub mod exit;
 pub mod inventory;
 pub mod lifecycle;
 pub mod notify;
+pub mod park;
 pub mod placement;
 pub mod process;
 pub mod profile;

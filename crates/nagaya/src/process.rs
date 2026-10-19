@@ -2,18 +2,20 @@
 
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 
-use nagaya_abi::{DeviceId, Dtype, Engine, Limits, PartLimits, State};
+use nagaya_abi::{DeviceId, Engine, Limits};
 use nagaya_ledger::Ledger;
 
 use crate::admission::{AdmitError, Admitted, Factory, Registry, admit};
 use crate::exit::{ExitCode, panic_text};
 use crate::inventory::Inventory;
+use crate::park::{self, StoreBudget, StoreMessage};
 use crate::placement::{self, DeviceGroup};
 use crate::profile::{EnginePlacement, PlacementProfile};
 use crate::signal::SignalFlag;
@@ -38,6 +40,8 @@ pub struct ParkReport {
     pub parts: usize,
     /// The bytes that the group read.
     pub bytes: u64,
+    /// The store entries that the group wrote.
+    pub entries: usize,
     /// The row parts that the group read with no row count, because the engine has no `Slots` capability.
     pub unmeasured_row_parts: usize,
     /// The parts that the group could not read, one message for each.
@@ -51,6 +55,7 @@ impl ParkReport {
         self.states += other.states;
         self.parts += other.parts;
         self.bytes += other.bytes;
+        self.entries += other.entries;
         self.unmeasured_row_parts += other.unmeasured_row_parts;
         self.failures.extend(other.failures);
     }
@@ -68,9 +73,12 @@ pub struct StopReport {
 }
 
 impl StopReport {
-    /// The exit code of the stop. A park failure is a crash (spec 8.5).
+    /// The exit code of the stop. A failed write or an unfinished park is a crash (spec 8.5).
     pub fn exit_code(&self) -> ExitCode {
-        if self.parked.failures.is_empty() {
+        if !self.parked.failures.is_empty() {
+            return ExitCode::Crash;
+        }
+        if self.interrupted || self.complete {
             ExitCode::Clean
         } else {
             ExitCode::Crash
@@ -83,17 +91,23 @@ impl StopReport {
             return "the stop was interrupted before the park finished".to_owned();
         }
         let failed = self.parked.failures.len();
-        if self.parked.states == 0 && failed == 0 {
+        if self.parked.states == 0 && self.parked.entries == 0 && failed == 0 {
             return "the stop parked nothing: no state needed a park".to_owned();
         }
-        if failed == 0 {
+        if !self.complete {
             return format!(
-                "the stop read {} states and {} parts, but parked nothing",
+                "the park did not finish; it wrote {} states and {} parts",
                 self.parked.states, self.parked.parts
             );
         }
+        if failed == 0 {
+            return format!(
+                "the stop wrote {} states and {} parts ({} bytes) to the store",
+                self.parked.states, self.parked.parts, self.parked.bytes
+            );
+        }
         format!(
-            "the stop read {} states and {} parts, but parked nothing; {failed} part(s) failed",
+            "the stop wrote {} states and {} parts, then failed {failed} part(s)",
             self.parked.states, self.parked.parts
         )
     }
@@ -221,12 +235,22 @@ pub enum WaitError {
 pub enum StartError {
     /// The profile cannot be admitted. The ledger keeps its state.
     Admit(AdmitError),
+    /// The machine's store did not open.
+    Store {
+        /// The store directory.
+        path: PathBuf,
+        /// Why the store did not open.
+        message: String,
+    },
 }
 
 impl std::fmt::Display for StartError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             StartError::Admit(error) => write!(formatter, "the process cannot start: {error}"),
+            StartError::Store { path, message } => {
+                write!(formatter, "cannot open the store `{}`: {message}", path.display())
+            }
         }
     }
 }
@@ -235,6 +259,7 @@ impl std::error::Error for StartError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             StartError::Admit(error) => Some(error),
+            StartError::Store { .. } => None,
         }
     }
 }
@@ -246,6 +271,8 @@ pub struct Start {
     inventory: Inventory,
     heartbeat: Duration,
     timeout: Duration,
+    store_dir: Option<PathBuf>,
+    store_budget: Option<StoreBudget>,
 }
 
 impl Start {
@@ -257,7 +284,21 @@ impl Start {
             inventory,
             heartbeat: DEFAULT_HEARTBEAT,
             timeout: DEFAULT_WATCHDOG_TIMEOUT,
+            store_dir: None,
+            store_budget: None,
         }
+    }
+
+    /// Set the store directory. The process opens the machine's store there (spec 6.1).
+    pub fn store(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.store_dir = Some(dir.into());
+        self
+    }
+
+    /// Set the store budgets. Without this, the profile's unassigned host bytes set them (spec 4.1 note).
+    pub fn store_budget(mut self, budget: StoreBudget) -> Self {
+        self.store_budget = Some(budget);
+        self
     }
 
     /// Set the heartbeat interval. The tests use a short value.
@@ -280,6 +321,8 @@ impl Start {
             inventory,
             heartbeat,
             timeout,
+            store_dir,
+            store_budget,
         } = self;
         assert!(
             heartbeat < timeout,
@@ -336,6 +379,40 @@ impl Start {
             Err(_) => panic!("the ledger thread stopped"),
         };
 
+        // The store thread. It is the one owner of the store (spec 6.1).
+        let store = match store_dir {
+            Some(dir) => {
+                let budget = store_budget.unwrap_or_else(|| StoreBudget::from_admission(&admitted.admission));
+                match park::open_store(&dir, budget) {
+                    Ok(store) => Some(store),
+                    Err(error) => {
+                        let _ = watch_tx.send(WatchMessage::Stop);
+                        let _ = ledger_tx.send(LedgerMessage::Stop);
+                        let _ = ledger_thread.join();
+                        let _ = watchdog_thread.join();
+                        return Err(StartError::Store {
+                            path: dir,
+                            message: error.to_string(),
+                        });
+                    }
+                }
+            }
+            None => None,
+        };
+        let (store_tx, store_thread) = match store {
+            Some(store) => {
+                let (messages, replies) = mpsc::channel();
+                let store_events = events_tx.clone();
+                let handle = thread::spawn(move || {
+                    guard("store", &store_events, || {
+                        park::store_thread(store, replies);
+                    });
+                });
+                (Some(messages), Some(handle))
+            }
+            None => (None, None),
+        };
+
         let groups = placement::device_groups(&profile);
         let mut group_threads = Vec::with_capacity(groups.len());
         let mut group_stops = Vec::with_capacity(groups.len());
@@ -349,9 +426,10 @@ impl Start {
             let group_events = events_tx.clone();
             let group_guard = group_events.clone();
             let group_watch = watch_tx.clone();
+            let group_store = store_tx.clone();
             let handle = thread::spawn(move || {
                 guard("group", &group_guard, || {
-                    group_thread(index, jobs, group_events, group_watch, stop_rx, heartbeat);
+                    group_thread(index, jobs, group_events, group_watch, stop_rx, heartbeat, group_store);
                 });
             });
             group_threads.push(handle);
@@ -363,6 +441,8 @@ impl Start {
             ledger_thread: Some(ledger_thread),
             watchdog_stop: Some(watch_tx),
             watchdog_thread: Some(watchdog_thread),
+            store: store_tx,
+            store_thread,
             groups: group_threads,
             group_stops,
             events,
@@ -411,6 +491,7 @@ fn group_thread(
     heartbeats: Sender<WatchMessage>,
     stop: Receiver<GroupMessage>,
     interval: Duration,
+    store: Option<Sender<StoreMessage>>,
 ) {
     let _ = heartbeats.send(WatchMessage::Beat {
         group,
@@ -444,11 +525,12 @@ fn group_thread(
         });
         engines.push(engine);
     }
+    let names: Vec<String> = opened.iter().map(|engine| engine.name.clone()).collect();
     let _ = events.send(Event::Opened { group, engines: opened });
     loop {
         match stop.recv_timeout(interval) {
             Ok(GroupMessage::Park(reply)) => {
-                let report = park_group(&mut engines);
+                let report = park_group(&names, &mut engines, store.as_ref());
                 let _ = reply.send(report);
                 break;
             }
@@ -467,82 +549,15 @@ fn group_thread(
     drop(engines);
 }
 
-/// Park every engine of one group. A part that the engine cannot read is a failure, not a stop.
-fn park_group(engines: &mut [Box<dyn Engine>]) -> ParkReport {
+/// Park every engine of one group. A part that the engine cannot read or write is a failure.
+fn park_group(names: &[String], engines: &mut [Box<dyn Engine>], store: Option<&Sender<StoreMessage>>) -> ParkReport {
     let mut report = ParkReport::default();
-    for engine in engines.iter_mut() {
+    for (index, engine) in engines.iter_mut().enumerate() {
         report.engines += 1;
-        if let Err(message) = park_engine(engine.as_mut(), &mut report) {
-            report.failures.push(message);
-        }
+        let name = names.get(index).map(String::as_str).unwrap_or("engine");
+        park::park_engine(name, engine.as_mut(), store, &mut report);
     }
     report
-}
-
-/// Park one engine: read every stored part of every slot state (ABI D7).
-///
-/// The process has no contexts in milestone 10, so the park reads the slot states. A row part needs a row count
-/// from `Slots::slot_high`. An engine without that capability gives no row count, and its row parts read empty.
-fn park_engine(engine: &mut dyn Engine, report: &mut ParkReport) -> Result<(), String> {
-    let limits = engine.limits();
-    if engine.parts().is_none() {
-        return Ok(());
-    }
-    let slots: u32 = limits.slots.iter().map(|slot| slot.count).sum();
-    for id in 0..slots {
-        let state = State::Slot(id);
-        let rows = engine.slots().map(|slots| slots.slot_high(id));
-        let mut states = false;
-        for (part_id, part) in limits.parts.iter().enumerate() {
-            if !part.is_stored() {
-                continue;
-            }
-            states = true;
-            let row_bytes = shape_bytes(part);
-            let size = if part.is_row() {
-                match rows {
-                    Some(rows) => rows * row_bytes,
-                    None => {
-                        report.unmeasured_row_parts += 1;
-                        0
-                    }
-                }
-            } else {
-                row_bytes
-            };
-            let mut out = vec![0u8; size as usize];
-            engine
-                .parts()
-                .expect("the engine has the parts capability")
-                .part_read(state, part_id, &mut out)
-                .map_err(|error| {
-                    format!(
-                        "engine parked state {id} part {} but the read failed: {error:?}",
-                        part.name
-                    )
-                })?;
-            report.parts += 1;
-            report.bytes += out.len() as u64;
-        }
-        if states {
-            report.states += 1;
-        }
-    }
-    Ok(())
-}
-
-/// The bytes of one shape, with the element size of the part's dtype.
-fn shape_bytes(part: &PartLimits) -> u64 {
-    part.shape.iter().product::<u64>() * element_bytes(part.dtype)
-}
-
-/// The bytes of one element of a dtype (ABI "Core").
-fn element_bytes(dtype: Dtype) -> u64 {
-    match dtype {
-        Dtype::F32 | Dtype::U32 => 4,
-        Dtype::F16 | Dtype::BF16 => 2,
-        Dtype::U8 => 1,
-    }
 }
 
 fn watchdog(messages: Receiver<WatchMessage>, events: Sender<Event>, timeout: Duration) {
@@ -615,6 +630,8 @@ pub struct Process {
     ledger_thread: Option<JoinHandle<()>>,
     watchdog_stop: Option<Sender<WatchMessage>>,
     watchdog_thread: Option<JoinHandle<()>>,
+    store: Option<Sender<StoreMessage>>,
+    store_thread: Option<JoinHandle<()>>,
     groups: Vec<JoinHandle<()>>,
     group_stops: Vec<Sender<GroupMessage>>,
     events: Receiver<Event>,
@@ -745,12 +762,16 @@ impl Process {
         self.groups.iter().all(JoinHandle::is_finished)
             && self.ledger_thread.as_ref().is_none_or(JoinHandle::is_finished)
             && self.watchdog_thread.as_ref().is_none_or(JoinHandle::is_finished)
+            && self.store_thread.as_ref().is_none_or(JoinHandle::is_finished)
     }
 
-    /// Stop the watchdog and the ledger. The drop joins them.
+    /// Stop the watchdog, the store and the ledger. The drop joins them.
     fn finish_stop(&mut self) {
         if let Some(stop) = self.watchdog_stop.take() {
             let _ = stop.send(WatchMessage::Stop);
+        }
+        if let Some(store) = &self.store {
+            let _ = store.send(StoreMessage::Stop);
         }
         let _ = self.ledger.send(LedgerMessage::Stop);
         self.stopped = true;
@@ -774,6 +795,12 @@ impl Drop for Process {
         }
         // A group that is inside a stalled engine call cannot stop. The process exits (8.5).
         for handle in self.groups.drain(..) {
+            let _ = handle.join();
+        }
+        if let Some(store) = &self.store {
+            let _ = store.send(StoreMessage::Stop);
+        }
+        if let Some(handle) = self.store_thread.take() {
             let _ = handle.join();
         }
     }

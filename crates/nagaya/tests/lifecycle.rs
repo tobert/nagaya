@@ -126,6 +126,7 @@ fn ready_reaches_the_socket() {
         fake_profile(),
         Registry::with_fake(),
         inventory(&[0]),
+        directory.path(),
         Some(&notifier),
         Duration::from_secs(2),
     )
@@ -149,6 +150,7 @@ fn an_empty_profile_is_ready() {
         profile,
         Registry::new(),
         inventory(&[]),
+        directory.path(),
         Some(&notifier),
         Duration::from_secs(2),
     )
@@ -190,6 +192,7 @@ fn an_open_failure_gets_status_and_exit_three() {
         profile(vec![engine("broken-one", "broken", &[0])]),
         registry,
         inventory(&[0]),
+        directory.path(),
         Some(&notifier),
         Duration::from_secs(2),
     )
@@ -217,6 +220,7 @@ impl Factory for PanicFactory {
 
 #[test]
 fn a_group_panic_exits_one() {
+    let directory = tempfile::tempdir().unwrap();
     let mut registry = Registry::new();
     registry.register(
         "panic",
@@ -228,6 +232,7 @@ fn a_group_panic_exits_one() {
         profile(vec![engine("panic-one", "panic", &[0])]),
         registry,
         inventory(&[0]),
+        directory.path(),
         None,
         Duration::from_secs(2),
     )
@@ -244,10 +249,12 @@ fn a_group_panic_exits_one() {
 
 #[test]
 fn a_signal_ends_the_wait_with_exit_zero() {
+    let directory = tempfile::tempdir().unwrap();
     let mut ready = lifecycle::start(
         fake_profile(),
         Registry::with_fake(),
         inventory(&[0]),
+        directory.path(),
         None,
         Duration::from_secs(2),
     )

@@ -71,6 +71,7 @@ fn run() -> ExitCode {
         profile,
         registry,
         inventory,
+        &config.store_dir,
         notifier.as_ref(),
         lifecycle::DEFAULT_OPEN_TIMEOUT,
     ) {

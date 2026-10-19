@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use nagaya::admission::{AdmitError, Factory, OpenError, PlanError, Registry};
 use nagaya::exit::ExitCode;
 use nagaya::inventory::{Device, Inventory};
+use nagaya::park::StoreBudget;
 use nagaya::process::Start;
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, TierSpec};
 use nagaya::signal::SignalFlag;
@@ -191,23 +192,31 @@ impl Parts for ParkEngine {
     }
 }
 
-fn started(factory: ParkFactory) -> (nagaya::process::Process, Vec<nagaya::process::OpenedEngine>) {
+fn started(
+    factory: ParkFactory,
+) -> (
+    nagaya::process::Process,
+    Vec<nagaya::process::OpenedEngine>,
+    tempfile::TempDir,
+) {
+    let directory = tempfile::tempdir().unwrap();
     let mut registry = Registry::new();
     registry.register("park", Box::new(factory));
     let profile = profile(vec![engine("a", "park", &[0])]);
     let mut process = Start::new(profile, registry, inventory(&[0]))
+        .store(directory.path())
         .heartbeat(Duration::from_millis(10))
         .timeout(Duration::from_secs(2))
         .start()
         .unwrap();
     let opened = process.wait_opens(Duration::from_secs(2)).unwrap();
-    (process, opened)
+    (process, opened, directory)
 }
 
 #[test]
 fn a_stop_parks_every_engine() {
     let record = Arc::new(Mutex::new(ParkRecord::default()));
-    let (mut process, opened) = started(ParkFactory::new("a", Arc::clone(&record)));
+    let (mut process, opened, _directory) = started(ParkFactory::new("a", Arc::clone(&record)));
     let report = process.stop(Duration::from_secs(2), &SignalFlag::new());
     assert!(report.complete, "every group answered");
     assert_eq!(report.exit_code(), ExitCode::Clean);
@@ -218,7 +227,7 @@ fn a_stop_parks_every_engine() {
     assert_eq!(report.parked.unmeasured_row_parts, 0, "the fake measures its row parts");
     assert!(report.parked.failures.is_empty());
     let record = record.lock().unwrap();
-    assert_eq!(record.reads.len(), 6);
+    assert_eq!(record.reads.len(), 2, "one fixed part is read in each state");
     assert!(
         record.reads.iter().all(|read| read.3 == opened[0].thread),
         "every park read runs on the group thread"
@@ -234,7 +243,8 @@ fn a_stop_parks_every_engine() {
 #[test]
 fn a_second_signal_stops_at_once() {
     let record = Arc::new(Mutex::new(ParkRecord::default()));
-    let (mut process, _) = started(ParkFactory::new("a", Arc::clone(&record)).slow(Duration::from_millis(100)));
+    let (mut process, _, _directory) =
+        started(ParkFactory::new("a", Arc::clone(&record)).slow(Duration::from_millis(100)));
     let flag = Arc::new(SignalFlag::new());
     let raiser = Arc::clone(&flag);
     let tick = thread::spawn(move || {
@@ -256,7 +266,7 @@ fn a_second_signal_stops_at_once() {
 #[test]
 fn a_stop_takes_no_more_admissions() {
     let record = Arc::new(Mutex::new(ParkRecord::default()));
-    let (mut process, _) = started(ParkFactory::new("a", record));
+    let (mut process, _, _directory) = started(ParkFactory::new("a", record));
     process.stop(Duration::from_secs(2), &SignalFlag::new());
     let error = process.admit(profile(vec![engine("a", "park", &[0])])).unwrap_err();
     assert_eq!(error.to_string(), "the process is stopping");
@@ -266,7 +276,8 @@ fn a_stop_takes_no_more_admissions() {
 #[test]
 fn two_signals_before_the_stop_park_nothing() {
     let record = Arc::new(Mutex::new(ParkRecord::default()));
-    let (mut process, _) = started(ParkFactory::new("a", Arc::clone(&record)).slow(Duration::from_millis(100)));
+    let (mut process, _, _directory) =
+        started(ParkFactory::new("a", Arc::clone(&record)).slow(Duration::from_millis(100)));
     let flag = SignalFlag::new();
     flag.raise();
     flag.raise();
@@ -287,7 +298,7 @@ fn two_signals_before_the_stop_park_nothing() {
 #[test]
 fn an_abort_parks_nothing() {
     let record = Arc::new(Mutex::new(ParkRecord::default()));
-    let (mut process, _) = started(ParkFactory::new("a", Arc::clone(&record)));
+    let (mut process, _, _directory) = started(ParkFactory::new("a", Arc::clone(&record)));
     process.abort();
     let error = process.admit(profile(vec![engine("a", "park", &[0])])).unwrap_err();
     assert!(matches!(error, AdmitError::Stopping));
@@ -297,9 +308,19 @@ fn an_abort_parks_nothing() {
 }
 
 #[test]
-fn a_stop_that_writes_nothing_says_so() {
-    let record = Arc::new(Mutex::new(ParkRecord::default()));
-    let (mut process, _) = started(ParkFactory::new("a", record));
+fn a_stop_with_no_state_says_it_parked_nothing() {
+    let directory = tempfile::tempdir().unwrap();
+    let profile = PlacementProfile {
+        engines: Vec::new(),
+        budgets: Vec::new(),
+    };
+    let mut process = Start::new(profile, Registry::new(), inventory(&[]))
+        .store(directory.path())
+        .heartbeat(Duration::from_millis(10))
+        .timeout(Duration::from_secs(2))
+        .start()
+        .unwrap();
+    process.wait_opens(Duration::from_secs(2)).unwrap();
     let report = process.stop(Duration::from_secs(2), &SignalFlag::new());
     let line = report.log_line();
     assert!(
@@ -309,11 +330,52 @@ fn a_stop_that_writes_nothing_says_so() {
 }
 
 #[test]
+fn a_stop_that_writes_says_what_it_wrote() {
+    let record = Arc::new(Mutex::new(ParkRecord::default()));
+    let (mut process, _, _directory) = started(ParkFactory::new("a", record));
+    let report = process.stop(Duration::from_secs(2), &SignalFlag::new());
+    let line = report.log_line();
+    assert_eq!(report.parked.entries, 2, "two slots give two writes");
+    assert_eq!(report.parked.states, 2, "every state is parked");
+    assert!(
+        line.contains("wrote 2 states and 6 parts"),
+        "the stop must say what it wrote: {line}"
+    );
+}
+
+#[test]
+fn a_store_refusal_is_a_crash_with_the_names() {
+    let directory = tempfile::tempdir().unwrap();
+    let record = Arc::new(Mutex::new(ParkRecord::default()));
+    let mut registry = Registry::new();
+    registry.register("park", Box::new(ParkFactory::new("a", record)));
+    let profile = profile(vec![engine("a", "park", &[0])]);
+    let mut process = Start::new(profile, registry, inventory(&[0]))
+        .store(directory.path())
+        .store_budget(StoreBudget { host: 0, nvme: 8 })
+        .heartbeat(Duration::from_millis(10))
+        .timeout(Duration::from_secs(2))
+        .start()
+        .unwrap();
+    process.wait_opens(Duration::from_secs(2)).unwrap();
+    let report = process.stop(Duration::from_secs(2), &SignalFlag::new());
+    assert_eq!(report.exit_code(), ExitCode::Crash);
+    assert_eq!(report.parked.entries, 0);
+    let text = report.parked.failures.join(" | ");
+    assert!(text.contains("engine `a`"), "{text}");
+    assert!(text.contains("state 0"), "{text}");
+    assert!(text.contains("`state`"), "{text}");
+    assert!(text.contains("budget cannot hold the entry"), "{text}");
+}
+
+#[test]
 fn a_park_failure_is_a_crash() {
     let record = Arc::new(Mutex::new(ParkRecord::default()));
-    let (mut process, _) = started(ParkFactory::new("a", record).failing());
+    let (mut process, _, _directory) = started(ParkFactory::new("a", record).failing());
     let report = process.stop(Duration::from_secs(2), &SignalFlag::new());
-    assert_eq!(report.parked.failures.len(), 1, "{report:?}");
+    assert_eq!(report.parked.failures.len(), 2, "{report:?}");
+    assert!(report.parked.failures[0].contains("engine `a`"), "{report:?}");
     assert!(report.parked.failures[0].contains("state 0"), "{report:?}");
+    assert!(report.parked.failures[0].contains("part `state`"), "{report:?}");
     assert_eq!(report.exit_code(), ExitCode::Crash);
 }
