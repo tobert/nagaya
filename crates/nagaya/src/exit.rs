@@ -24,7 +24,7 @@ pub enum ExitCode {
     RefusedStart,
     /// A planned restart for a profile change (spec 3.3, 10.4 row 4).
     ///
-    /// No path reaches this code in milestone 10. The profile change arrives with the HTTP coordinator.
+    /// A desired profile from a peer that changes the engines gives this code (spec 2.4 note).
     PlannedRestart,
 }
 

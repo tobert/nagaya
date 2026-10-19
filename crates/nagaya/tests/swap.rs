@@ -1,0 +1,268 @@
+use std::net::SocketAddr;
+use std::path::Path;
+
+use nagaya::admission::{AdmitError, Registry, admit};
+use nagaya::gossip::{ClusterView, NodeView};
+use nagaya::inventory::{Device, Inventory};
+use nagaya::process::{Process, Start};
+use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, StoreSpec, TierSpec};
+use nagaya::swap::{Outcome, Swap, VERSION_FILE, desired_value};
+use nagaya_abi::Tier;
+use nagaya_ledger::{Ledger, LedgerError};
+use serde_json::json;
+
+fn engine(name: &str) -> EnginePlacement {
+    EnginePlacement {
+        name: name.to_owned(),
+        kind: "fake".to_owned(),
+        devices: vec![0],
+        config: toml::Table::new(),
+        share: 1,
+        pin_identity: false,
+    }
+}
+
+/// A profile with `engines` fake engines and `device` bytes of device budget.
+fn profile(engines: &[&str], device: u64) -> PlacementProfile {
+    PlacementProfile {
+        engines: engines.iter().map(|name| engine(name)).collect(),
+        budgets: vec![
+            BudgetSpec {
+                tiers: vec![TierSpec::from(Tier::Device(0))],
+                bytes: device,
+            },
+            BudgetSpec {
+                tiers: vec![TierSpec::from(Tier::Host)],
+                bytes: 1 << 20,
+            },
+        ],
+        store: Some(StoreSpec {
+            nvme: 65536,
+            host: None,
+        }),
+    }
+}
+
+fn inventory() -> Inventory {
+    Inventory {
+        devices: vec![Device {
+            id: 0,
+            name: "fake-0".to_owned(),
+            memory_bytes: 1 << 30,
+            unified: false,
+        }],
+        host_bytes: 1 << 30,
+    }
+}
+
+/// A running process that holds `active` in its ledger. The store is in `dir`.
+fn running(dir: &Path, active: &PlacementProfile) -> Process {
+    active.write(dir).unwrap();
+    let mut process = Start::new(active.clone(), Registry::with_fake(), inventory())
+        .store(dir)
+        .start()
+        .unwrap();
+    process.wait_opens(std::time::Duration::from_secs(10)).unwrap();
+    process
+}
+
+/// A view in which each `(peer, key, value)` is a key of a live peer.
+fn view(entries: &[(&str, &str, serde_json::Value)]) -> ClusterView {
+    let mut nodes: Vec<NodeView> = Vec::new();
+    for (peer, key, value) in entries {
+        if !nodes.iter().any(|node| node.name == *peer) {
+            nodes.push(NodeView {
+                name: (*peer).to_owned(),
+                addr: "127.0.0.1:1".parse::<SocketAddr>().unwrap(),
+                is_self: false,
+                keys: Default::default(),
+            });
+        }
+        let node = nodes.iter_mut().find(|node| node.name == *peer).unwrap();
+        node.keys.insert((*key).to_owned(), value.to_string());
+    }
+    ClusterView { live: nodes }
+}
+
+const KEY: &str = "profile:desired:gfx1151host";
+
+fn swap(dir: &Path, active: &PlacementProfile) -> Swap {
+    Swap::open(dir, "gfx1151host", active.clone()).unwrap()
+}
+
+#[test]
+fn an_older_version_never_replaces_a_newer_one() {
+    let directory = tempfile::tempdir().unwrap();
+    let active = profile(&["fake-one"], 4096);
+    let process = running(directory.path(), &active);
+    let mut swap = swap(directory.path(), &active);
+
+    // Peer b holds the older version and sorts last. Peer a holds the newer one.
+    let newer = profile(&["fake-one"], 8192);
+    let older = profile(&["fake-one", "fake-two"], 8192);
+    let both = view(&[
+        ("a", KEY, desired_value(5, &newer)),
+        ("b", KEY, desired_value(3, &older)),
+    ]);
+    let candidate = swap.candidate(&both).expect("a version above 0 is a candidate");
+    assert_eq!((candidate.version, candidate.from.as_str()), (5, "a"));
+    assert_eq!(swap.handle(candidate, &process).unwrap(), Outcome::Kept);
+    assert_eq!(swap.handled(), 5);
+
+    assert_eq!(swap.candidate(&both), None, "versions 5 and 3 are not above 5");
+    let only_older = view(&[("b", KEY, desired_value(3, &older))]);
+    assert_eq!(swap.candidate(&only_older), None);
+    let newest = view(&[
+        ("a", KEY, desired_value(5, &newer)),
+        ("c", KEY, desired_value(6, &newer)),
+    ]);
+    assert_eq!(swap.candidate(&newest).unwrap().version, 6);
+    assert_eq!(PlacementProfile::read_active(directory.path()).unwrap(), newer);
+}
+
+#[test]
+fn the_handled_version_survives_a_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let active = profile(&["fake-one"], 4096);
+    let process = running(directory.path(), &active);
+    let mut first = swap(directory.path(), &active);
+    let newer = profile(&["fake-one"], 8192);
+    let offered = view(&[("a", KEY, desired_value(7, &newer))]);
+    let candidate = first.candidate(&offered).unwrap();
+    first.handle(candidate, &process).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join(VERSION_FILE))
+            .unwrap()
+            .trim(),
+        "7"
+    );
+
+    let second = Swap::open(directory.path(), "gfx1151host", newer).unwrap();
+    assert_eq!(second.handled(), 7);
+    let mut second = second;
+    assert_eq!(second.candidate(&offered), None);
+}
+
+#[test]
+fn a_profile_that_changes_the_engines_is_persisted_and_restarts() {
+    let directory = tempfile::tempdir().unwrap();
+    let active = profile(&["fake-one"], 4096);
+    let process = running(directory.path(), &active);
+    let mut swap = swap(directory.path(), &active);
+    let wanted = profile(&["fake-one", "fake-two"], 8192);
+    let offered = view(&[("a", KEY, desired_value(1, &wanted))]);
+    let candidate = swap.candidate(&offered).unwrap();
+    assert_eq!(swap.handle(candidate, &process).unwrap(), Outcome::Restart);
+    assert_eq!(PlacementProfile::read_active(directory.path()).unwrap(), wanted);
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join(VERSION_FILE))
+            .unwrap()
+            .trim(),
+        "1"
+    );
+}
+
+#[test]
+fn a_profile_that_does_not_fit_is_refused_and_changes_nothing() {
+    let directory = tempfile::tempdir().unwrap();
+    let active = profile(&["fake-one"], 4096);
+    let process = running(directory.path(), &active);
+    let mut swap = swap(directory.path(), &active);
+    let too_small = profile(&["fake-one", "fake-two"], 1);
+    let offered = view(&[("a", KEY, desired_value(2, &too_small))]);
+
+    // The ledger gives the shortfall that the refusal must report.
+    let expected = match admit(&too_small, &Registry::with_fake(), &inventory(), &mut Ledger::new()) {
+        Err(AdmitError::Ledger(LedgerError::Refused(refusal))) => refusal.shortfall,
+        other => panic!("the test profile must not fit: {other:?}"),
+    };
+    assert!(!expected.is_empty());
+
+    let candidate = swap.candidate(&offered).unwrap();
+    let Outcome::Refused(refusal) = swap.handle(candidate, &process).unwrap() else {
+        panic!("the profile does not fit")
+    };
+    assert_eq!(refusal.version, 2);
+    let reported: Vec<(Vec<Tier>, u64)> = refusal
+        .shortfall
+        .iter()
+        .map(|entry| (entry.tiers.iter().map(|tier| Tier::from(*tier)).collect(), entry.bytes))
+        .collect();
+    assert_eq!(reported, expected);
+    assert_eq!(
+        refusal.to_value()["shortfall"][0]["tiers"],
+        json!(["device(0)"]),
+        "the value names the tiers"
+    );
+    assert_eq!(
+        PlacementProfile::read_active(directory.path()).unwrap(),
+        active,
+        "the file keeps the active profile"
+    );
+    assert!(
+        !directory.path().join(VERSION_FILE).exists(),
+        "a refusal writes no version"
+    );
+    assert_eq!(swap.active(), &active);
+    assert_eq!(
+        swap.candidate(&offered),
+        None,
+        "the node does not handle version 2 twice"
+    );
+}
+
+#[test]
+fn a_profile_that_does_not_parse_is_refused() {
+    let directory = tempfile::tempdir().unwrap();
+    let active = profile(&["fake-one"], 4096);
+    let process = running(directory.path(), &active);
+    let mut swap = swap(directory.path(), &active);
+    let offered = view(&[("a", KEY, json!({"version": 4, "profile": {"engines": 3}}))]);
+    let candidate = swap.candidate(&offered).unwrap();
+    let Outcome::Refused(refusal) = swap.handle(candidate, &process).unwrap() else {
+        panic!("the profile does not parse")
+    };
+    assert_eq!(refusal.version, 4);
+    assert!(refusal.reason.contains("profile"), "{}", refusal.reason);
+    assert!(refusal.shortfall.is_empty());
+    assert_eq!(PlacementProfile::read_active(directory.path()).unwrap(), active);
+}
+
+#[test]
+fn a_profile_with_engines_and_no_store_budget_is_refused() {
+    let directory = tempfile::tempdir().unwrap();
+    let active = profile(&["fake-one"], 4096);
+    let process = running(directory.path(), &active);
+    let mut swap = swap(directory.path(), &active);
+    let mut wanted = profile(&["fake-one"], 8192);
+    wanted.store = None;
+    let offered = view(&[("a", KEY, desired_value(1, &wanted))]);
+    let candidate = swap.candidate(&offered).unwrap();
+    let Outcome::Refused(refusal) = swap.handle(candidate, &process).unwrap() else {
+        panic!("the profile has no store budget")
+    };
+    assert!(refusal.reason.contains("store.nvme"), "{}", refusal.reason);
+    assert_eq!(PlacementProfile::read_active(directory.path()).unwrap(), active);
+}
+
+#[test]
+fn a_desired_profile_for_another_host_is_not_a_candidate() {
+    let directory = tempfile::tempdir().unwrap();
+    let active = profile(&["fake-one"], 4096);
+    let mut swap = swap(directory.path(), &active);
+    let offered = view(&[("a", "profile:desired:b70host", desired_value(9, &active))]);
+    assert_eq!(swap.candidate(&offered), None);
+}
+
+#[test]
+fn a_version_file_that_is_not_a_number_stops_the_open() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join(VERSION_FILE), "seven\n").unwrap();
+    let error = Swap::open(directory.path(), "gfx1151host", profile(&["fake-one"], 4096))
+        .err()
+        .expect("the open fails");
+    assert!(
+        error.to_string().contains(VERSION_FILE),
+        "the message names the file: {error}"
+    );
+}

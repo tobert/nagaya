@@ -75,6 +75,10 @@ pub enum Key {
     ProfileActive,
     /// `engine:<name>`: one engine.
     Engine(String),
+    /// `profile:desired:<host>`: a target profile for a host.
+    ProfileDesired(String),
+    /// `profile:refused`: the profile that the node refused.
+    ProfileRefused,
 }
 
 impl Key {
@@ -84,6 +88,8 @@ impl Key {
             Key::Inventory => "inventory".to_owned(),
             Key::ProfileActive => "profile:active".to_owned(),
             Key::Engine(name) => format!("engine:{name}"),
+            Key::ProfileDesired(host) => format!("profile:desired:{host}"),
+            Key::ProfileRefused => "profile:refused".to_owned(),
         }
     }
 
@@ -92,10 +98,16 @@ impl Key {
         match name {
             "inventory" => Some(Key::Inventory),
             "profile:active" => Some(Key::ProfileActive),
+            "profile:refused" => Some(Key::ProfileRefused),
             _ => name
                 .strip_prefix("engine:")
                 .filter(|engine| !engine.is_empty())
-                .map(|engine| Key::Engine(engine.to_owned())),
+                .map(|engine| Key::Engine(engine.to_owned()))
+                .or_else(|| {
+                    name.strip_prefix("profile:desired:")
+                        .filter(|host| !host.is_empty())
+                        .map(|host| Key::ProfileDesired(host.to_owned()))
+                }),
         }
     }
 }
@@ -307,6 +319,15 @@ impl Gossip {
                 .with_chitchat(|chitchat| chitchat.self_node_state().set(name.clone(), text.clone())),
         );
         Ok(())
+    }
+
+    /// Remove a key of this node. A key that the node did not write is a defect.
+    pub fn withdraw(&self, key: &Key) {
+        let name = key.name();
+        self.runtime.block_on(
+            self.handle
+                .with_chitchat(|chitchat| chitchat.self_node_state().delete(&name)),
+        );
     }
 
     /// Stop gossip and the control runtime. The gossip port is free after this call.

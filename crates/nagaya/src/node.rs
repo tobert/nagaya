@@ -11,6 +11,7 @@ use crate::notify::EngineState;
 use crate::park::identity_digest;
 use crate::process::OpenedEngine;
 use crate::profile::PlacementProfile;
+use crate::swap::Refusal;
 
 /// What the node last wrote for one engine. A new state keeps the rest.
 #[derive(Clone, Debug)]
@@ -27,6 +28,7 @@ pub struct Node {
     gossip: Gossip,
     http: SocketAddr,
     engines: BTreeMap<String, EngineRecord>,
+    refused: bool,
 }
 
 impl Node {
@@ -36,6 +38,7 @@ impl Node {
             gossip,
             http,
             engines: BTreeMap::new(),
+            refused: false,
         }
     }
 
@@ -60,8 +63,28 @@ impl Node {
             .collect();
         let inventory = json!({"devices": devices, "host_bytes": inventory.host_bytes});
         self.gossip.publish(&Key::Inventory, &inventory)?;
+        self.publish_profile(profile)
+    }
+
+    /// Write `profile:active`.
+    pub fn publish_profile(&self, profile: &PlacementProfile) -> Result<(), PublishError> {
         let active = serde_json::to_value(profile).expect("a placement profile is JSON data");
         self.gossip.publish(&Key::ProfileActive, &active)
+    }
+
+    /// Write `profile:refused` (spec 2.4 note).
+    pub fn publish_refusal(&mut self, refusal: &Refusal) -> Result<(), PublishError> {
+        self.gossip.publish(&Key::ProfileRefused, &refusal.to_value())?;
+        self.refused = true;
+        Ok(())
+    }
+
+    /// Remove `profile:refused`, when the node wrote it.
+    pub fn clear_refusal(&mut self) {
+        if self.refused {
+            self.gossip.withdraw(&Key::ProfileRefused);
+            self.refused = false;
+        }
     }
 
     /// Write the engines of the profile as `loading`.

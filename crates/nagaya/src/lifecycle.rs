@@ -141,9 +141,23 @@ pub fn start(
 
 /// Wait for a stop signal or a failure event. Gives the exit code of the event, or `Clean` for a signal.
 pub fn wait(process: &Process, signals: &SignalFlag, notifier: Option<&Notifier>, poll: Duration) -> ExitCode {
+    wait_with(process, signals, notifier, poll, &mut || None)
+}
+
+/// Like `wait`, and call `tick` in each turn of the loop. A `tick` that gives a code ends the wait with that code.
+pub fn wait_with(
+    process: &Process,
+    signals: &SignalFlag,
+    notifier: Option<&Notifier>,
+    poll: Duration,
+    tick: &mut dyn FnMut() -> Option<ExitCode>,
+) -> ExitCode {
     loop {
         if signals.count() > 0 {
             return ExitCode::Clean;
+        }
+        if let Some(code) = tick() {
+            return code;
         }
         let Some(event) = process.recv(poll) else {
             if process.finished() {

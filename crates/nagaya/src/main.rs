@@ -11,6 +11,7 @@ use nagaya::lifecycle;
 use nagaya::node::Node;
 use nagaya::notify::{EngineState, Notifier};
 use nagaya::signal::{SignalFlag, install_terminate};
+use nagaya::swap::{Outcome, Swap};
 
 /// The environment variable that names the bootstrap config (`docs/spec.md` 2.1).
 const CONFIG_ENV: &str = "NAGAYA_CONFIG";
@@ -81,7 +82,7 @@ fn run() -> ExitCode {
     eprintln!("gossip listening on {}", gossip.local_addr());
     gossip.watch_peers(|line| eprintln!("{line}"));
     let mut node = Node::new(gossip, config.http_bind);
-    let code = serve(&config, profile, registry, inventory, &mut node);
+    let code = serve(&config, &node_name, profile, registry, inventory, &mut node);
     node.shutdown();
     code
 }
@@ -96,6 +97,7 @@ fn published(result: Result<(), PublishError>) {
 /// Open the engines, run until a stop, and stop (spec 10.1, 10.3).
 fn serve(
     config: &Bootstrap,
+    node_name: &str,
     profile: nagaya::profile::PlacementProfile,
     registry: nagaya::admission::Registry,
     inventory: nagaya::inventory::Inventory,
@@ -106,6 +108,13 @@ fn serve(
         Err(error) => {
             eprintln!("cannot use the systemd notify socket: {error}");
             None
+        }
+    };
+    let mut swap = match Swap::open(&config.store_dir, node_name, profile.clone()) {
+        Ok(swap) => swap,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::RefusedStart;
         }
     };
     let names: Vec<String> = profile.engines.iter().map(|engine| engine.name.clone()).collect();
@@ -127,8 +136,13 @@ fn serve(
     };
     published(node.engines_ready(&ready.opened));
     eprintln!("ready with {} engines", ready.opened.len());
-    let code = lifecycle::wait(&ready.process, &SIGNALS, notifier.as_ref(), lifecycle::WAIT_POLL);
-    if code != ExitCode::Clean {
+    let code = {
+        // A desired profile from a peer arrives through gossip (spec 2.4 note, 3.3).
+        let process = &ready.process;
+        let mut tick = || desired_profile(&mut swap, node, process);
+        lifecycle::wait_with(process, &SIGNALS, notifier.as_ref(), lifecycle::WAIT_POLL, &mut tick)
+    };
+    if code != ExitCode::Clean && code != ExitCode::PlannedRestart {
         // Spec 8.5: an unexpected failure stops the process. Ask the workers to stop, then do not join one.
         ready.process.abort();
         std::mem::forget(ready.process);
@@ -143,10 +157,48 @@ fn serve(
         eprintln!("the park failed: {failure}");
     }
     eprintln!("{}", report.log_line());
-    let code = report.exit_code();
+    let stop_code = report.exit_code();
+    // A planned restart stops as in 10.3, then exits 4 (spec 3.3). A failed stop is still a crash.
+    let code = if code == ExitCode::PlannedRestart && stop_code == ExitCode::Clean {
+        ExitCode::PlannedRestart
+    } else {
+        stop_code
+    };
     // Spec 10.3: exit after the park budget. Do not join a group that is still parking.
     std::mem::forget(ready.process);
     code
+}
+
+/// Handle the newest desired profile for this host, when a peer offers one. Gives a code when the process must stop.
+fn desired_profile(swap: &mut Swap, node: &mut Node, process: &nagaya::process::Process) -> Option<ExitCode> {
+    let candidate = swap.candidate(&node.gossip().view())?;
+    let version = candidate.version;
+    match swap.handle(candidate, process) {
+        Err(error) => {
+            eprintln!("cannot handle desired profile version {version}: {error}");
+            Some(ExitCode::Crash)
+        }
+        Ok(Outcome::Restart) => {
+            eprintln!("desired profile version {version} changes the engines; the process stops to restart");
+            node.clear_refusal();
+            Some(ExitCode::PlannedRestart)
+        }
+        Ok(Outcome::Kept) => {
+            eprintln!("desired profile version {version} keeps the engines; the process saved it and runs on");
+            node.clear_refusal();
+            published(node.publish_profile(swap.active()));
+            None
+        }
+        Ok(Outcome::Refused(refusal)) => {
+            eprintln!("refused desired profile version {version}: {}", refusal.reason);
+            for entry in &refusal.shortfall {
+                let tiers: Vec<String> = entry.tiers.iter().map(ToString::to_string).collect();
+                eprintln!("  short by {} bytes: {}", entry.bytes, tiers.join(", "));
+            }
+            published(node.publish_refusal(&refusal));
+            None
+        }
+    }
 }
 
 /// The bootstrap config path (spec 2.1 note).

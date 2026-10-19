@@ -93,10 +93,17 @@ fn a_pin_or_a_store_entry_has_no_gossip_key() {
     ] {
         assert_eq!(Key::parse(name), None, "`{name}` is not a key of spec 2.3");
     }
-    for key in [Key::Inventory, Key::ProfileActive, Key::Engine("mk".to_owned())] {
+    for key in [
+        Key::Inventory,
+        Key::ProfileActive,
+        Key::ProfileRefused,
+        Key::ProfileDesired("gfx1151host".to_owned()),
+        Key::Engine("mk".to_owned()),
+    ] {
         assert_eq!(Key::parse(&key.name()), Some(key.clone()), "{key:?} reads back");
     }
     assert_eq!(Key::Engine("mk".to_owned()).name(), "engine:mk");
+    assert_eq!(Key::ProfileDesired("gfx1151host".to_owned()).name(), "profile:desired:gfx1151host");
 }
 
 #[test]

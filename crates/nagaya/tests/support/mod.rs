@@ -2,6 +2,9 @@
 
 #![allow(dead_code)]
 
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use nagaya::gossip::{ClusterView, Gossip};
@@ -83,8 +86,129 @@ impl Lines {
         }
     }
 
+    /// Read the lines that are waiting, without a wait.
+    pub fn drain(&mut self) -> &[String] {
+        while let Ok(line) = self.receiver.try_recv() {
+            self.seen.push(line);
+        }
+        &self.seen
+    }
+
     /// The lines read so far.
     pub fn seen(&self) -> &[String] {
         &self.seen
+    }
+}
+
+const SIGTERM: i32 = 15;
+
+unsafe extern "C" {
+    fn kill(pid: i32, signal: i32) -> i32;
+}
+
+/// The profile of a new process: one fake engine.
+pub const ACTIVE_PROFILE: &str = "[[engines]]\nname = \"fake-one\"\nkind = \"fake\"\ndevices = [0]\nshare = 1\n\
+     [[budgets]]\ntiers = [\"device(0)\"]\nbytes = 4096\n\
+     [[budgets]]\ntiers = [\"host\"]\nbytes = 256\n\
+     [store]\nnvme = 65536\n";
+
+/// A nagaya process with its own directory. The process is killed when the value drops.
+pub struct Proc {
+    _directory: tempfile::TempDir,
+    child: Option<Child>,
+    /// The lines that the process writes to stderr.
+    pub lines: Lines,
+    /// The gossip address of the process.
+    pub gossip_addr: SocketAddr,
+    /// The store directory of the process.
+    pub store: PathBuf,
+}
+
+impl Proc {
+    /// Start a process and wait for its gossip address.
+    pub fn spawn(name: &str, http: &str, seeds: &[SocketAddr]) -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        let store = directory.path().join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        let seeds: Vec<String> = seeds.iter().map(|seed| format!("\"{seed}\"")).collect();
+        let config = directory.path().join("nagaya.toml");
+        std::fs::write(
+            &config,
+            format!(
+                "http_bind = \"{http}\"\n\
+                 gossip_bind = \"127.0.0.1:0\"\n\
+                 store_dir = \"{}\"\n\
+                 node_name = \"{name}\"\n\
+                 seed_peers = [{}]\n\
+                 park_budget_secs = 1\n",
+                store.display(),
+                seeds.join(", ")
+            ),
+        )
+        .unwrap();
+        std::fs::write(store.join("profile.toml"), ACTIVE_PROFILE).unwrap();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_nagaya"))
+            .env("NAGAYA_CONFIG", &config)
+            .env_remove("NOTIFY_SOCKET")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut lines = Lines::new(child.stderr.take().unwrap());
+        let gossip_addr = lines.wait_for("gossip listening on ", WAIT).parse().unwrap();
+        Self {
+            _directory: directory,
+            child: Some(child),
+            lines,
+            gossip_addr,
+            store,
+        }
+    }
+
+    /// Send SIGTERM and wait for the exit.
+    pub fn terminate(&mut self) -> ExitStatus {
+        let mut child = self.child.take().unwrap();
+        // SAFETY: the child pid is live, and SIGTERM is the stop signal of spec 10.3.
+        assert_eq!(unsafe { kill(child.id() as i32, SIGTERM) }, 0);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                return status;
+            }
+            assert!(Instant::now() < deadline, "the process did not exit after SIGTERM");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+impl Proc {
+    /// The exit status, when the process ended.
+    pub fn try_exit(&mut self) -> Option<ExitStatus> {
+        self.child.as_mut().and_then(|child| child.try_wait().unwrap())
+    }
+
+    /// Wait for the process to end on its own. Panic with the stderr lines when the wait ends.
+    pub fn wait_exit(&mut self, timeout: Duration) -> ExitStatus {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(status) = self.try_exit() {
+                return status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the process did not exit in {timeout:?}; its stderr:\n{}",
+                self.lines.drain().join("\n")
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+impl Drop for Proc {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
