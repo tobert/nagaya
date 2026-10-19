@@ -2,8 +2,8 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use nagaya::gossip::{Gossip, GossipConfig, Key};
-use nagaya::node::Node;
+use nagaya::gossip::{ClusterView, Gossip, GossipConfig, Key, NodeView};
+use nagaya::node::{Node, duplicate_names};
 use serde_json::json;
 use support::{WAIT, wait_for_view};
 
@@ -96,4 +96,92 @@ fn the_key_goes_when_the_other_node_stops() {
         value.is_none()
     });
     one.shutdown();
+}
+
+fn peer(name: &str, generation: u64, addr: &str, is_self: bool) -> NodeView {
+    NodeView {
+        name: name.to_owned(),
+        id: format!("{name}:{generation}:{addr}"),
+        generation,
+        addr: addr.parse().unwrap(),
+        is_self,
+        keys: Default::default(),
+    }
+}
+
+fn view(nodes: Vec<NodeView>) -> ClusterView {
+    ClusterView {
+        live: nodes,
+        dead: Vec::new(),
+    }
+}
+
+#[test]
+fn only_a_peer_that_is_not_an_earlier_run_is_a_duplicate() {
+    let addr: std::net::SocketAddr = "127.0.0.1:9000".parse().unwrap();
+    let cases = [
+        (
+            "an earlier run on this address",
+            peer("twin", 5, "127.0.0.1:9000", false),
+            false,
+        ),
+        (
+            "another address, lower generation",
+            peer("twin", 5, "127.0.0.1:9001", false),
+            true,
+        ),
+        (
+            "another address, higher generation",
+            peer("twin", 20, "127.0.0.1:9001", false),
+            true,
+        ),
+        (
+            "this address, higher generation",
+            peer("twin", 20, "127.0.0.1:9000", false),
+            true,
+        ),
+        (
+            "this address, equal generation",
+            peer("twin", 10, "127.0.0.1:9000", false),
+            true,
+        ),
+        ("another name", peer("other", 5, "127.0.0.1:9000", false), false),
+    ];
+    for (what, other, duplicate) in cases {
+        let nodes = view(vec![peer("twin", 10, "127.0.0.1:9000", true), other.clone()]);
+        let found = duplicate_names(&nodes, "twin", addr, 10);
+        let expected = if duplicate { vec![other.id.clone()] } else { Vec::new() };
+        assert_eq!(found, expected, "{what}");
+    }
+}
+
+#[test]
+fn a_restart_on_the_same_address_has_no_conflict_in_a_running_cluster() {
+    let mut watcher = node("watcher", None);
+    let mut first_config = config("twin");
+    first_config.seeds = vec![watcher.gossip().local_addr()];
+    let first = Gossip::start(first_config).unwrap();
+    let (address, old_id) = (first.local_addr(), first.id());
+    wait_for_view(watcher.gossip(), "the first run live", |view| {
+        view.live.iter().any(|node| node.id == old_id)
+    });
+    first.shutdown();
+
+    std::thread::sleep(Duration::from_millis(5));
+    let mut second_config = config("twin");
+    second_config.bind = address;
+    second_config.seeds = vec![watcher.gossip().local_addr()];
+    let mut second = Node::new(Gossip::start(second_config).unwrap(), "127.0.0.1:1".parse().unwrap());
+    let new_id = second.gossip().id();
+    assert_ne!(old_id, new_id);
+    // The failure detector may hold the first run as live or as dead. Neither is a conflict.
+    wait_for_view(second.gossip(), "the watcher live", |view| view.live.len() == 2);
+    for _ in 0..40 {
+        second.check_name();
+        watcher.check_name();
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert_eq!(own_conflict(&second), None, "{}", second.gossip().view());
+    second.shutdown();
+    watcher.shutdown();
 }

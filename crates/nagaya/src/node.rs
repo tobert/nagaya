@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 
 use serde_json::{Value, json};
 
-use crate::gossip::{Gossip, Key, PublishError};
+use crate::gossip::{ClusterView, Gossip, Key, PublishError};
 use crate::inventory::Inventory;
 use crate::notify::EngineState;
 use crate::park::identity_digest;
@@ -21,6 +21,22 @@ struct EngineRecord {
     /// The models that the engine serves.
     models: Vec<String>,
     state: EngineState,
+}
+
+/// The ids of the live peers that have `name` and are not this node's own earlier run (spec 2.3 note).
+///
+/// An earlier run has this node's gossip address and a lower generation. A peer with another address, or with this
+/// address and a higher generation, is a duplicate.
+pub fn duplicate_names(view: &ClusterView, name: &str, addr: SocketAddr, generation: u64) -> Vec<String> {
+    let mut peers: Vec<String> = view
+        .live
+        .iter()
+        .filter(|node| !node.is_self && node.name == name)
+        .filter(|node| !(node.addr == addr && node.generation < generation))
+        .map(|node| node.id.clone())
+        .collect();
+    peers.sort();
+    peers
 }
 
 /// A node: its gossip and the last record of each engine.
@@ -144,13 +160,7 @@ impl Node {
         let view = self.gossip.view();
         let name = self.gossip.node_name();
         let own = self.gossip.id();
-        let mut peers: Vec<String> = view
-            .live
-            .iter()
-            .filter(|node| !node.is_self && node.name == name)
-            .map(|node| node.id.clone())
-            .collect();
-        peers.sort();
+        let peers = duplicate_names(&view, name, self.gossip.local_addr(), self.gossip.generation());
         for peer in &peers {
             if self.logged_names.insert(peer.clone()) {
                 eprintln!("error: duplicate node name `{name}`: peer {peer} and this node {own} have one name");

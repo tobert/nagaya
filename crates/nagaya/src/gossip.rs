@@ -148,6 +148,8 @@ pub struct NodeView {
     pub name: String,
     /// The chitchat id: `name:generation:address`.
     pub id: String,
+    /// The generation of the node: the start time in milliseconds since 1970.
+    pub generation: u64,
     /// The gossip address of the node.
     pub addr: SocketAddr,
     /// True for this node.
@@ -247,6 +249,11 @@ impl Gossip {
         format!("{:?}", self.handle.chitchat_id())
     }
 
+    /// The generation of this node: its start time in milliseconds since 1970.
+    pub fn generation(&self) -> u64 {
+        self.handle.chitchat_id().generation_id
+    }
+
     /// The UDP address that gossip is bound to.
     pub fn local_addr(&self) -> SocketAddr {
         self.addr
@@ -261,6 +268,7 @@ impl Gossip {
                 .map(|id| NodeView {
                     name: id.node_id.to_string(),
                     id: format!("{id:?}"),
+                    generation: id.generation_id,
                     addr: id.gossip_advertise_addr,
                     is_self: *id == own,
                     keys: chitchat
