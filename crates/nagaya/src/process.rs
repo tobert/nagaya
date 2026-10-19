@@ -342,7 +342,10 @@ impl Start {
         self
     }
 
-    /// Set the store budgets. Without this, the profile's `[store]` table sets them (spec 4.1a).
+    /// Set the store budgets for a test. Only the `fake` feature builds this method.
+    ///
+    /// A normal build has no way to override the profile's `[store]` table (spec 4.1a).
+    #[cfg(feature = "fake")]
     pub fn store_budget(mut self, budget: StoreBudget) -> Self {
         self.store_budget = Some(budget);
         self
