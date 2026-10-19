@@ -11,8 +11,8 @@ use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, TierSpec};
 use nagaya::signal::SignalFlag;
 use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{
-    Coverage, DeviceId, Engine, Identity, Limits, PartError, Parts, PassError, PassOut, Seal, Segment, Slots, State,
-    Tap, Tier, WriteResult,
+    Capability, Coverage, DeviceId, Engine, Identity, Limits, PartError, Parts, PassError, PassOut, Seal, Segment,
+    Slots, State, Tap, Tier, WriteResult,
 };
 
 #[derive(Default)]
@@ -75,6 +75,7 @@ struct ParkFactory {
     record: Arc<Mutex<ParkRecord>>,
     delay: Duration,
     fail: bool,
+    no_slots: bool,
 }
 
 impl ParkFactory {
@@ -85,6 +86,7 @@ impl ParkFactory {
             record,
             delay: Duration::ZERO,
             fail: false,
+            no_slots: false,
         }
     }
 
@@ -95,6 +97,15 @@ impl ParkFactory {
 
     fn failing(mut self) -> Self {
         self.fail = true;
+        self
+    }
+
+    /// Remove the slots capability, so a row part has no row count.
+    fn without_slots(mut self) -> Self {
+        self.no_slots = true;
+        self.limits
+            .capabilities
+            .retain(|capability| *capability != Capability::Slots);
         self
     }
 }
@@ -112,6 +123,7 @@ impl Factory for ParkFactory {
             record: Arc::clone(&self.record),
             delay: self.delay,
             fail: self.fail,
+            no_slots: self.no_slots,
         }))
     }
 }
@@ -123,6 +135,7 @@ struct ParkEngine {
     record: Arc<Mutex<ParkRecord>>,
     delay: Duration,
     fail: bool,
+    no_slots: bool,
 }
 
 impl Engine for ParkEngine {
@@ -155,6 +168,9 @@ impl Engine for ParkEngine {
     }
 
     fn slots(&mut self) -> Option<&mut dyn Slots> {
+        if self.no_slots {
+            return None;
+        }
         self.inner.slots()
     }
 }
@@ -224,7 +240,6 @@ fn a_stop_parks_every_engine() {
     assert_eq!(report.parked.states, 2, "the fake declares two slots");
     assert_eq!(report.parked.parts, 6, "three stored parts in two states");
     assert_eq!(report.parked.bytes, 32, "two fixed parts of 16 bytes");
-    assert_eq!(report.parked.unmeasured_row_parts, 0, "the fake measures its row parts");
     assert!(report.parked.failures.is_empty());
     let record = record.lock().unwrap();
     assert_eq!(record.reads.len(), 2, "one fixed part is read in each state");
@@ -366,6 +381,20 @@ fn a_store_refusal_is_a_crash_with_the_names() {
     assert!(text.contains("state 0"), "{text}");
     assert!(text.contains("`state`"), "{text}");
     assert!(text.contains("budget cannot hold the entry"), "{text}");
+}
+
+#[test]
+fn an_unmeasured_row_part_is_a_crash_with_the_names() {
+    let record = Arc::new(Mutex::new(ParkRecord::default()));
+    let (mut process, _, _directory) = started(ParkFactory::new("a", record).without_slots());
+    let report = process.stop(Duration::from_secs(2), &SignalFlag::new());
+    assert_eq!(report.exit_code(), ExitCode::Crash);
+    assert_eq!(report.parked.failures.len(), 2, "{report:?}");
+    let text = report.parked.failures.join(" | ");
+    assert!(text.contains("engine `a`"), "{text}");
+    assert!(text.contains("state 0"), "{text}");
+    assert!(text.contains("part `cells`"), "{text}");
+    assert!(text.contains("no slots capability"), "{text}");
 }
 
 #[test]

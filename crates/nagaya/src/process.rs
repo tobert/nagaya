@@ -42,8 +42,6 @@ pub struct ParkReport {
     pub bytes: u64,
     /// The store entries that the group wrote.
     pub entries: usize,
-    /// The row parts that the group read with no row count, because the engine has no `Slots` capability.
-    pub unmeasured_row_parts: usize,
     /// The parts that the group could not read, one message for each.
     pub failures: Vec<String>,
 }
@@ -56,7 +54,6 @@ impl ParkReport {
         self.parts += other.parts;
         self.bytes += other.bytes;
         self.entries += other.entries;
-        self.unmeasured_row_parts += other.unmeasured_row_parts;
         self.failures.extend(other.failures);
     }
 }
