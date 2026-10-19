@@ -63,6 +63,68 @@ impl fmt::Display for GossipError {
 
 impl std::error::Error for GossipError {}
 
+/// The largest gossip value in bytes (spec 2.3 note).
+pub const MAX_VALUE_BYTES: usize = 8192;
+
+/// A gossip key that a node may write (spec 2.3). No other key exists, so a pin or a store entry has no key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Key {
+    /// `inventory`: the probed devices and tiers.
+    Inventory,
+    /// `profile:active`: the profile that the node runs.
+    ProfileActive,
+    /// `engine:<name>`: one engine.
+    Engine(String),
+}
+
+impl Key {
+    /// The key text.
+    pub fn name(&self) -> String {
+        match self {
+            Key::Inventory => "inventory".to_owned(),
+            Key::ProfileActive => "profile:active".to_owned(),
+            Key::Engine(name) => format!("engine:{name}"),
+        }
+    }
+
+    /// The key for a text, or `None` when spec 2.3 has no such key.
+    pub fn parse(name: &str) -> Option<Key> {
+        match name {
+            "inventory" => Some(Key::Inventory),
+            "profile:active" => Some(Key::ProfileActive),
+            _ => name
+                .strip_prefix("engine:")
+                .filter(|engine| !engine.is_empty())
+                .map(|engine| Key::Engine(engine.to_owned())),
+        }
+    }
+}
+
+/// Why a value was not published.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PublishError {
+    /// The value has more bytes than the bound.
+    TooLarge {
+        /// The key.
+        key: String,
+        /// The size of the value in bytes.
+        bytes: usize,
+    },
+}
+
+impl fmt::Display for PublishError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PublishError::TooLarge { key, bytes } => write!(
+                formatter,
+                "the value of gossip key `{key}` has {bytes} bytes; the bound is {MAX_VALUE_BYTES} bytes"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PublishError {}
+
 /// One node in a cluster view.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NodeView {
@@ -72,6 +134,16 @@ pub struct NodeView {
     pub addr: SocketAddr,
     /// True for this node.
     pub is_self: bool,
+    /// The keys of the node and their values, as JSON text.
+    pub keys: std::collections::BTreeMap<String, String>,
+}
+
+impl NodeView {
+    /// The value of a key, parsed.
+    pub fn value(&self, key: &Key) -> Option<serde_json::Value> {
+        let text = self.keys.get(&key.name())?;
+        serde_json::from_str(text).ok()
+    }
 }
 
 /// The cluster as one node sees it.
@@ -84,7 +156,8 @@ pub struct ClusterView {
 impl fmt::Display for ClusterView {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         for node in &self.live {
-            writeln!(formatter, "live {} {}", node.name, node.addr)?;
+            let keys: Vec<&str> = node.keys.keys().map(String::as_str).collect();
+            writeln!(formatter, "live {} {} keys {keys:?}", node.name, node.addr)?;
         }
         Ok(())
     }
@@ -161,11 +234,79 @@ impl Gossip {
                     name: id.node_id.to_string(),
                     addr: id.gossip_advertise_addr,
                     is_self: *id == own,
+                    keys: chitchat
+                        .node_state(id)
+                        .map(|state| {
+                            state
+                                .key_values()
+                                .map(|(key, value)| (key.to_owned(), value.to_owned()))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                 })
                 .collect();
             live.sort_by(|left, right| left.name.cmp(&right.name));
             ClusterView { live }
         }))
+    }
+
+    /// Report each change of the live peers to `report`, one line for each change.
+    ///
+    /// The lines are `gossip: peer <name> is live`, `gossip: peer <name> keys <list>` and
+    /// `gossip: peer <name> is dead`. The task runs on the control runtime.
+    pub fn watch_peers(&self, report: impl Fn(String) + Send + 'static) {
+        let own = self.handle.chitchat_id().clone();
+        let mut watcher = self
+            .runtime
+            .block_on(self.handle.with_chitchat(|chitchat| chitchat.live_nodes_watcher()));
+        self.runtime.spawn(async move {
+            let mut known: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+            loop {
+                let now: std::collections::BTreeMap<String, String> = watcher
+                    .borrow_and_update()
+                    .iter()
+                    .filter(|(id, _)| **id != own)
+                    .map(|(id, state)| {
+                        let keys: Vec<&str> = state.key_values().map(|(key, _)| key).collect();
+                        (id.node_id.to_string(), keys.join(","))
+                    })
+                    .collect();
+                for (name, keys) in &now {
+                    match known.get(name) {
+                        None => {
+                            report(format!("gossip: peer {name} is live"));
+                            report(format!("gossip: peer {name} keys {keys}"));
+                        }
+                        Some(before) if before != keys => report(format!("gossip: peer {name} keys {keys}")),
+                        Some(_) => {}
+                    }
+                }
+                for name in known.keys().filter(|name| !now.contains_key(*name)) {
+                    report(format!("gossip: peer {name} is dead"));
+                }
+                known = now;
+                if watcher.changed().await.is_err() {
+                    return;
+                }
+            }
+        });
+    }
+
+    /// Publish a value under one of this node's keys. The value is compact JSON.
+    pub fn publish(&self, key: &Key, value: &serde_json::Value) -> Result<(), PublishError> {
+        let name = key.name();
+        let text = value.to_string();
+        if text.len() > MAX_VALUE_BYTES {
+            return Err(PublishError::TooLarge {
+                key: name,
+                bytes: text.len(),
+            });
+        }
+        self.runtime.block_on(
+            self.handle
+                .with_chitchat(|chitchat| chitchat.self_node_state().set(name.clone(), text.clone())),
+        );
+        Ok(())
     }
 
     /// Stop gossip and the control runtime. The gossip port is free after this call.

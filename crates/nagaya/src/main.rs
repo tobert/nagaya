@@ -6,9 +6,10 @@ use std::time::Duration;
 
 use nagaya::bootstrap::Bootstrap;
 use nagaya::exit::{ExitCode, panic_text};
-use nagaya::gossip::{Gossip, GossipConfig};
+use nagaya::gossip::{Gossip, GossipConfig, PublishError};
 use nagaya::lifecycle;
-use nagaya::notify::Notifier;
+use nagaya::node::Node;
+use nagaya::notify::{EngineState, Notifier};
 use nagaya::signal::{SignalFlag, install_terminate};
 
 /// The environment variable that names the bootstrap config (`docs/spec.md` 2.1).
@@ -78,9 +79,18 @@ fn run() -> ExitCode {
         }
     };
     eprintln!("gossip listening on {}", gossip.local_addr());
-    let code = serve(&config, profile, registry, inventory);
-    gossip.shutdown();
+    gossip.watch_peers(|line| eprintln!("{line}"));
+    let mut node = Node::new(gossip, config.http_bind);
+    let code = serve(&config, profile, registry, inventory, &mut node);
+    node.shutdown();
     code
+}
+
+/// Log a gossip write that failed. Gossip is advice for peers, so a failed write does not stop the process.
+fn published(result: Result<(), PublishError>) {
+    if let Err(error) = result {
+        eprintln!("cannot publish to gossip: {error}");
+    }
 }
 
 /// Open the engines, run until a stop, and stop (spec 10.1, 10.3).
@@ -89,6 +99,7 @@ fn serve(
     profile: nagaya::profile::PlacementProfile,
     registry: nagaya::admission::Registry,
     inventory: nagaya::inventory::Inventory,
+    node: &mut Node,
 ) -> ExitCode {
     let notifier = match Notifier::from_env() {
         Ok(notifier) => notifier,
@@ -97,6 +108,9 @@ fn serve(
             None
         }
     };
+    let names: Vec<String> = profile.engines.iter().map(|engine| engine.name.clone()).collect();
+    published(node.publish_machine(&inventory, &profile));
+    published(node.engines_loading(&names));
     let mut ready = match lifecycle::start(
         profile,
         registry,
@@ -111,6 +125,7 @@ fn serve(
             return error.exit_code();
         }
     };
+    published(node.engines_ready(&ready.opened));
     eprintln!("ready with {} engines", ready.opened.len());
     let code = lifecycle::wait(&ready.process, &SIGNALS, notifier.as_ref(), lifecycle::WAIT_POLL);
     if code != ExitCode::Clean {
@@ -120,7 +135,10 @@ fn serve(
         return code;
     }
     let budget = Duration::from_secs(config.park_budget_secs);
+    let opened: Vec<String> = ready.opened.iter().map(|engine| engine.name.clone()).collect();
+    published(node.engines_state(&opened, EngineState::Draining));
     let report = lifecycle::stop(&mut ready, notifier.as_ref(), budget, &SIGNALS);
+    published(node.engines_state(&opened, EngineState::Unloaded));
     for failure in &report.parked.failures {
         eprintln!("the park failed: {failure}");
     }

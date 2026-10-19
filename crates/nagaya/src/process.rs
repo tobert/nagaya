@@ -9,7 +9,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 
-use nagaya_abi::{DeviceId, Engine, Limits};
+use nagaya_abi::{DeviceId, Engine, Identity, Limits};
 use nagaya_ledger::Ledger;
 
 use crate::admission::{AdmitError, Admitted, Factory, OpenErrorKind, Registry, admit};
@@ -167,6 +167,8 @@ pub struct OpenedEngine {
     pub name: String,
     /// The thread that opened it.
     pub thread: ThreadId,
+    /// The identity that the engine reported after it opened (spec 12.1).
+    pub identity: Identity,
 }
 
 /// The work of one quantum: the group's engines, in profile order.
@@ -597,6 +599,7 @@ fn group_thread(
         opened.push(OpenedEngine {
             name: job.placement.name.clone(),
             thread: thread::current().id(),
+            identity: engine.identity(),
         });
         engines.push(engine);
     }
