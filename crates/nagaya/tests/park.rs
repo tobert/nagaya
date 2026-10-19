@@ -7,7 +7,7 @@ use nagaya::exit::ExitCode;
 use nagaya::inventory::{Device, Inventory};
 use nagaya::park::{StoreBudget, identity_digest};
 use nagaya::process::Start;
-use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, TierSpec};
+use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, StoreSpec, TierSpec};
 use nagaya::signal::SignalFlag;
 use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{DeviceId, Engine, Limits, OutputsWanted, PartKind, Segment, SegmentInputs, State, Tier, WriteResult};
@@ -76,6 +76,10 @@ fn profile() -> PlacementProfile {
                 bytes: 4096,
             },
         ],
+        store: Some(StoreSpec {
+            nvme: 65536,
+            host: None,
+        }),
     }
 }
 
@@ -168,11 +172,8 @@ fn the_store_host_budget_is_the_unassigned_host_bytes() {
         unassigned: vec![(vec![Tier::Device(0), Tier::Host], 4096), (vec![Tier::Host], 128)],
     };
     assert_eq!(
-        StoreBudget::from_admission(&admission),
-        StoreBudget {
-            host: 128,
-            nvme: u64::MAX
-        },
+        StoreBudget::host_from_admission(&admission),
+        128,
         "a shared pool is not a store budget"
     );
 }

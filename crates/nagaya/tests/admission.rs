@@ -68,6 +68,7 @@ fn the_admission_carries_the_planned_limits() {
     let profile = PlacementProfile {
         engines: vec![engine("fake-one", "fake", 1)],
         budgets: vec![device_budget(0, 4096), host_budget(256)],
+        store: None,
     };
     let mut ledger = Ledger::new();
     let admitted = admit(&profile, &Registry::with_fake(), &inventory(&[0]), &mut ledger).unwrap();
@@ -82,6 +83,7 @@ fn the_mandatory_bytes_must_fit() {
     let profile = PlacementProfile {
         engines: vec![engine("fits", "fake", 1)],
         budgets: vec![device_budget(0, 4096), host_budget(256)],
+        store: None,
     };
     let mut ledger = Ledger::new();
     let admitted = admit(&profile, &Registry::with_fake(), &inventory(&[0]), &mut ledger).unwrap();
@@ -94,6 +96,7 @@ fn the_mandatory_bytes_must_fit() {
     let profile = PlacementProfile {
         engines: vec![engine("short", "fake", 1)],
         budgets: vec![device_budget(0, 4000), host_budget(256)],
+        store: None,
     };
     let mut ledger = Ledger::new();
     let before = ledger.clone();
@@ -112,6 +115,7 @@ fn the_elastic_minimum_must_fit() {
     let profile = PlacementProfile {
         engines: vec![engine("fits", "fake", 1)],
         budgets: vec![device_budget(0, 4096), host_budget(256)],
+        store: None,
     };
     let mut ledger = Ledger::new();
     let admitted = admit(&profile, &Registry::with_fake(), &inventory(&[0]), &mut ledger).unwrap();
@@ -127,6 +131,7 @@ fn the_elastic_minimum_must_fit() {
     let profile = PlacementProfile {
         engines: vec![engine("short", "fake", 1)],
         budgets: vec![device_budget(0, 4096), host_budget(200)],
+        store: None,
     };
     let mut ledger = Ledger::new();
     let before = ledger.clone();
@@ -145,6 +150,7 @@ fn an_unknown_kind_is_refused() {
     let profile = PlacementProfile {
         engines: vec![engine("ghost", "absent-kind", 1)],
         budgets: vec![host_budget(100)],
+        store: None,
     };
     let mut ledger = Ledger::new();
     let error = admit(&profile, &Registry::new(), &inventory(&[0]), &mut ledger).unwrap_err();
@@ -161,6 +167,7 @@ fn a_failed_plan_is_refused_and_names_the_engine() {
     let profile = PlacementProfile {
         engines: vec![engine("ghost", "broken", 1)],
         budgets: vec![host_budget(100)],
+        store: None,
     };
     let mut ledger = Ledger::new();
     let error = admit(&profile, &registry, &inventory(&[0]), &mut ledger).unwrap_err();
@@ -175,6 +182,7 @@ fn the_fake_engine_admits_with_its_limits() {
     let profile = PlacementProfile {
         engines: vec![engine("fake-one", "fake", 1)],
         budgets: vec![device_budget(0, 4096), host_budget(4096)],
+        store: None,
     };
     let mut ledger = Ledger::new();
     let admitted = admit(&profile, &Registry::with_fake(), &inventory(&[0]), &mut ledger).unwrap();
@@ -196,6 +204,7 @@ fn a_device_refusal_changes_nothing() {
     let profile = PlacementProfile {
         engines: vec![placement],
         budgets: vec![host_budget(100)],
+        store: None,
     };
     let mut ledger = Ledger::new();
     let before = ledger.clone();

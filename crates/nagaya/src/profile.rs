@@ -95,6 +95,17 @@ pub struct BudgetSpec {
     pub bytes: u64,
 }
 
+/// The store's budgets in the profile (spec 4.1 rule).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct StoreSpec {
+    /// The NVMe budget in bytes.
+    pub nvme: u64,
+    /// The host-memory budget in bytes. Without it, the budget is the unassigned host bytes (spec 4.4 step 4).
+    #[serde(default)]
+    pub host: Option<u64>,
+}
+
 /// A machine's placement profile (spec 2.4).
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -103,6 +114,9 @@ pub struct PlacementProfile {
     pub engines: Vec<EnginePlacement>,
     /// The budgets.
     pub budgets: Vec<BudgetSpec>,
+    /// The store's budgets. A profile with engines must name them (spec 4.1 rule).
+    #[serde(default)]
+    pub store: Option<StoreSpec>,
 }
 
 /// A profile that cannot be read, parsed or written.

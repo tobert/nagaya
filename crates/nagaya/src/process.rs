@@ -281,6 +281,8 @@ pub enum StartError {
         /// Why the store did not open.
         message: String,
     },
+    /// The profile names no store NVMe budget (spec 4.1 rule).
+    NoStoreBudget,
 }
 
 impl std::fmt::Display for StartError {
@@ -290,6 +292,12 @@ impl std::fmt::Display for StartError {
             StartError::Store { path, message } => {
                 write!(formatter, "cannot open the store `{}`: {message}", path.display())
             }
+            StartError::NoStoreBudget => {
+                write!(
+                    formatter,
+                    "the placement profile has no `store.nvme` budget; name it in the profile"
+                )
+            }
         }
     }
 }
@@ -298,7 +306,7 @@ impl std::error::Error for StartError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             StartError::Admit(error) => Some(error),
-            StartError::Store { .. } => None,
+            StartError::Store { .. } | StartError::NoStoreBudget => None,
         }
     }
 }
@@ -334,7 +342,7 @@ impl Start {
         self
     }
 
-    /// Set the store budgets. Without this, the profile's unassigned host bytes set them (spec 4.1 note).
+    /// Set the store budgets. Without this, the profile's `[store]` table sets them (spec 4.1a).
     pub fn store_budget(mut self, budget: StoreBudget) -> Self {
         self.store_budget = Some(budget);
         self
@@ -421,7 +429,30 @@ impl Start {
         // The store thread. It is the one owner of the store (spec 6.1).
         let store = match store_dir {
             Some(dir) => {
-                let budget = store_budget.unwrap_or_else(|| StoreBudget::from_admission(&admitted.admission));
+                let budget = match store_budget {
+                    Some(budget) => Some(budget),
+                    None => match &profile.store {
+                        Some(spec) => Some(StoreBudget {
+                            host: spec
+                                .host
+                                .unwrap_or_else(|| StoreBudget::host_from_admission(&admitted.admission)),
+                            nvme: spec.nvme,
+                        }),
+                        // A profile with no engine parks nothing, so it can keep an empty store (spec 10.1 note).
+                        None if profile.engines.is_empty() => Some(StoreBudget {
+                            host: StoreBudget::host_from_admission(&admitted.admission),
+                            nvme: 0,
+                        }),
+                        None => None,
+                    },
+                };
+                let Some(budget) = budget else {
+                    let _ = watch_tx.send(WatchMessage::Stop);
+                    let _ = ledger_tx.send(LedgerMessage::Stop);
+                    let _ = ledger_thread.join();
+                    let _ = watchdog_thread.join();
+                    return Err(StartError::NoStoreBudget);
+                };
                 match park::open_store(&dir, budget) {
                     Ok(store) => Some(store),
                     Err(error) => {

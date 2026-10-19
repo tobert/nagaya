@@ -57,6 +57,7 @@ fn output(mut guard: Guard) -> Output {
 struct Fixture {
     _directory: tempfile::TempDir,
     config: PathBuf,
+    store: PathBuf,
     notify: PathBuf,
 }
 
@@ -92,7 +93,10 @@ impl Fixture {
                  \n\
                  [[budgets]]\n\
                  tiers = [\"host\"]\n\
-                 bytes = 256\n"
+                  bytes = 256\n\
+                  \n\
+                  [store]\n\
+                  nvme = 65536\n"
             ),
         )
         .unwrap();
@@ -100,6 +104,7 @@ impl Fixture {
         Self {
             _directory: directory,
             config,
+            store,
             notify,
         }
     }
@@ -191,4 +196,30 @@ fn a_profile_that_does_not_admit_exits_three() {
     assert_eq!(output.status.code(), Some(3));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("ghost"), "the message names the kind: {stderr}");
+}
+
+#[test]
+fn a_profile_without_a_store_budget_exits_three() {
+    let fixture = Fixture::new("fake");
+    std::fs::write(
+        fixture.store.join("profile.toml"),
+        "[[engines]]\n\
+         name = \"fake-one\"\n\
+         kind = \"fake\"\n\
+         devices = [0]\n\
+         share = 1\n\
+         \n\
+         [[budgets]]\n\
+         tiers = [\"device(0)\"]\n\
+         bytes = 4096\n\
+         \n\
+         [[budgets]]\n\
+         tiers = [\"host\"]\n\
+         bytes = 256\n",
+    )
+    .unwrap();
+    let output = output(fixture.spawn(None));
+    assert_eq!(output.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("store.nvme"), "the message must name the key: {stderr}");
 }

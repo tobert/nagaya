@@ -1,4 +1,4 @@
-use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, TierSpec};
+use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, StoreSpec, TierSpec};
 use nagaya_abi::Tier;
 
 const EXAMPLE: &str = r#"
@@ -21,6 +21,10 @@ share = 3
 [[budgets]]
 tiers = ["device(0)", "host"]
 bytes = 1000
+
+[store]
+nvme = 4096
+host = 1024
 "#;
 
 fn example_profile() -> PlacementProfile {
@@ -47,6 +51,10 @@ fn example_profile() -> PlacementProfile {
             tiers: vec![TierSpec::from(Tier::Device(0)), TierSpec::from(Tier::Host)],
             bytes: 1000,
         }],
+        store: Some(StoreSpec {
+            nvme: 4096,
+            host: Some(1024),
+        }),
     }
 }
 
@@ -65,6 +73,27 @@ fn the_profile_names_engines_devices_config_and_shares() {
         vec![TierSpec::from(Tier::Device(0)), TierSpec::from(Tier::Host)]
     );
     assert_eq!(profile.budgets[0].bytes, 1000);
+    assert_eq!(
+        profile.store,
+        Some(StoreSpec {
+            nvme: 4096,
+            host: Some(1024)
+        })
+    );
+}
+
+#[test]
+fn a_profile_without_a_store_section_has_no_store_budget() {
+    let text = EXAMPLE.replace("\n[store]\nnvme = 4096\nhost = 1024\n", "");
+    let profile = PlacementProfile::parse(&text).unwrap();
+    assert_eq!(profile.store, None);
+}
+
+#[test]
+fn a_store_section_without_nvme_names_the_key() {
+    let text = EXAMPLE.replace("nvme = 4096\n", "");
+    let error = PlacementProfile::parse(&text).unwrap_err();
+    assert!(error.to_string().contains("nvme"), "{error}");
 }
 
 #[test]

@@ -45,6 +45,7 @@ fn profile(engines: Vec<EnginePlacement>) -> PlacementProfile {
                 bytes,
             },
         ],
+        store: None,
     }
 }
 

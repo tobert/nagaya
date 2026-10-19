@@ -88,6 +88,7 @@ pub fn active_profile(store_dir: &Path) -> Result<PlacementProfile, ProfileError
         Err(ProfileError::Read { source, .. }) if source.kind() == io::ErrorKind::NotFound => Ok(PlacementProfile {
             engines: Vec::new(),
             budgets: Vec::new(),
+            store: None,
         }),
         Err(error) => Err(error),
     }

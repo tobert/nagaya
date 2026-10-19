@@ -10,7 +10,7 @@ use nagaya::inventory::{Device, Inventory};
 use nagaya::lifecycle::{self, LifecycleError};
 use nagaya::notify::Notifier;
 use nagaya::process::Event;
-use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, TierSpec};
+use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, StoreSpec, TierSpec};
 use nagaya::signal::SignalFlag;
 use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{DeviceId, Engine, Limits, Tier};
@@ -46,6 +46,10 @@ fn profile(engines: Vec<EnginePlacement>) -> PlacementProfile {
                 bytes,
             },
         ],
+        store: Some(StoreSpec {
+            nvme: 65536,
+            host: None,
+        }),
     }
 }
 
@@ -135,7 +139,7 @@ fn ready_reaches_the_socket() {
     assert_eq!(receive(&socket), "STATUS=engine fake-one loading");
     assert_eq!(receive(&socket), "READY=1\nSTATUS=engine fake-one ready");
     let report = ready.process.stop(Duration::from_secs(2), &SignalFlag::new());
-    assert_eq!(report.exit_code(), ExitCode::Clean);
+    assert_eq!(report.exit_code(), ExitCode::Clean, "{report:?}");
 }
 
 #[test]
@@ -168,6 +172,7 @@ fn an_empty_profile_is_ready() {
     let profile = PlacementProfile {
         engines: Vec::new(),
         budgets: Vec::new(),
+        store: None,
     };
     let mut ready = lifecycle::start(
         profile,

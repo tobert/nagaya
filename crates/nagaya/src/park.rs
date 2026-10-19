@@ -31,15 +31,14 @@ pub struct StoreBudget {
 }
 
 impl StoreBudget {
-    /// Read the store budgets from a fitting profile (spec 4.1 note).
-    pub fn from_admission(admission: &Admission) -> Self {
-        let host = admission
+    /// The store's host budget from a fitting profile: the unassigned host-only bytes (spec 4.4 step 4).
+    pub fn host_from_admission(admission: &Admission) -> u64 {
+        admission
             .unassigned
             .iter()
             .filter(|(tiers, _)| tiers.as_slice() == [MemoryTier::Host])
             .map(|(_, bytes)| *bytes)
-            .sum();
-        Self { host, nvme: u64::MAX }
+            .sum()
     }
 }
 

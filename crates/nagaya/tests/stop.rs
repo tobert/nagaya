@@ -6,8 +6,8 @@ use nagaya::admission::{AdmitError, Factory, OpenError, PlanError, Registry};
 use nagaya::exit::ExitCode;
 use nagaya::inventory::{Device, Inventory};
 use nagaya::park::StoreBudget;
-use nagaya::process::{Quantum, Start, SubmitError};
-use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, TierSpec};
+use nagaya::process::{Quantum, Start, StartError, SubmitError};
+use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, StoreSpec, TierSpec};
 use nagaya::signal::SignalFlag;
 use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{
@@ -53,6 +53,10 @@ fn profile(engines: Vec<EnginePlacement>) -> PlacementProfile {
                 bytes,
             },
         ],
+        store: Some(StoreSpec {
+            nvme: 65536,
+            host: None,
+        }),
     }
 }
 
@@ -341,6 +345,7 @@ fn a_stop_with_no_state_says_it_parked_nothing() {
     let profile = PlacementProfile {
         engines: Vec::new(),
         budgets: Vec::new(),
+        store: None,
     };
     let mut process = Start::new(profile, Registry::new(), inventory(&[]))
         .store(directory.path())
@@ -498,4 +503,19 @@ fn a_quantum_for_an_unknown_group_is_refused() {
     let (mut process, _, _directory) = started(ParkFactory::new("a", record));
     assert_eq!(process.submit(3, Quantum::new(|_| {})), Err(SubmitError::UnknownGroup));
     process.stop(Duration::from_secs(2), &SignalFlag::new());
+}
+
+#[test]
+fn a_profile_without_a_store_budget_is_refused() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut profile = profile(vec![engine("fake-one", "fake", &[0])]);
+    profile.store = None;
+    let error = Start::new(profile, Registry::with_fake(), inventory(&[0]))
+        .store(directory.path())
+        .heartbeat(Duration::from_millis(10))
+        .timeout(Duration::from_secs(2))
+        .start()
+        .unwrap_err();
+    assert!(matches!(error, StartError::NoStoreBudget), "{error}");
+    assert!(error.to_string().contains("store.nvme"), "{error}");
 }

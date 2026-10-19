@@ -20,6 +20,7 @@ fn profile(engines: Vec<EnginePlacement>) -> PlacementProfile {
     PlacementProfile {
         engines,
         budgets: Vec::new(),
+        store: None,
     }
 }
 
