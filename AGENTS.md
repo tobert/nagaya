@@ -105,7 +105,9 @@ Do them in this order. Each milestone ends with all checks green and one or more
     `service/chatfmt.py`). Make those outputs with mk's Python, with no service and no GPU. Keep them in the tests.
 12. **Council v2.** Serve council v2 for the engines of the profile, with one sampler (11.1, 11.2, 11.5). gogi is
     the contract: `~/src/gogi/docs/council-api.md` and the types in `gogi-proto`. Run `gogi-conformance` against
-    the process with the fake engine. Coordinator routing waits for a second machine.
+    the process with the fake engine. Coordinator routing waits for a second machine. Test the sampler against fixed
+    outputs of mk's `service/sampling.py`, made from fixed logits, settings and seeds, as in milestone 11. If its
+    random draw cannot match bit for bit, match the filter order and the probabilities, and say so in a note.
 13. **Observability.** Log to stderr. Export traces and metrics over OTLP when the endpoint is set (9.1-9.5). Each
     instrument has a call site under test.
 14. **Deploy on gfx1151host.** Write a systemd user unit in `deploy/` (10.1). The bootstrap config binds
