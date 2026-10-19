@@ -90,7 +90,7 @@ fn run() -> ExitCode {
         return code;
     }
     let budget = Duration::from_secs(config.park_budget_secs);
-    let report = ready.process.stop(budget, &SIGNALS);
+    let report = lifecycle::stop(&mut ready, notifier.as_ref(), budget, &SIGNALS);
     for failure in &report.parked.failures {
         eprintln!("the park failed: {failure}");
     }

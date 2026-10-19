@@ -7,8 +7,8 @@ use std::time::Duration;
 use crate::admission::Registry;
 use crate::exit::ExitCode;
 use crate::inventory::Inventory;
-use crate::notify::Notifier;
-use crate::process::{Event, OpenedEngine, Process, Start, StartError, WaitError};
+use crate::notify::{EngineState, Notifier};
+use crate::process::{Event, OpenedEngine, Process, Start, StartError, StopReport, WaitError};
 use crate::profile::{PlacementProfile, ProfileError};
 use crate::signal::SignalFlag;
 
@@ -102,10 +102,18 @@ pub fn start(
     notifier: Option<&Notifier>,
     timeout: Duration,
 ) -> Result<Ready, LifecycleError> {
-    let mut process = Start::new(profile, registry, inventory)
-        .store(store_dir)
-        .start()
-        .map_err(LifecycleError::Start)?;
+    let mut process = {
+        let names: Vec<String> = profile.engines.iter().map(|engine| engine.name.clone()).collect();
+        if let Some(notifier) = notifier
+            && let Err(error) = notifier.states(&names, EngineState::Loading)
+        {
+            eprintln!("cannot send STATUS= to systemd: {error}");
+        }
+        Start::new(profile, registry, inventory)
+            .store(store_dir)
+            .start()
+            .map_err(LifecycleError::Start)?
+    };
     match process.wait_opens(timeout) {
         Ok(opened) => {
             let mut names: Vec<String> = opened.iter().map(|engine| engine.name.clone()).collect();
@@ -118,8 +126,10 @@ pub fn start(
             Ok(Ready { process, opened })
         }
         Err(WaitError::Event(event)) => {
-            if let (Some(notifier), Event::OpenFailed { engine, message, .. }) = (notifier, &event) {
-                let _ = notifier.failed(engine, message);
+            if let Some(notifier) = notifier
+                && let Err(error) = notifier.notify(&status(&event))
+            {
+                eprintln!("cannot send STATUS= to systemd: {error}");
             }
             Err(LifecycleError::Event(event))
         }
@@ -151,6 +161,23 @@ pub fn wait(process: &Process, signals: &SignalFlag, notifier: Option<&Notifier>
     }
 }
 
+/// Stop the process and report each engine's state: draining, then unloaded (spec 10.1, 10.3).
+pub fn stop(ready: &mut Ready, notifier: Option<&Notifier>, budget: Duration, signals: &SignalFlag) -> StopReport {
+    let names: Vec<String> = ready.opened.iter().map(|engine| engine.name.clone()).collect();
+    if let Some(notifier) = notifier
+        && let Err(error) = notifier.states(&names, EngineState::Draining)
+    {
+        eprintln!("cannot send STATUS= to systemd: {error}");
+    }
+    let report = ready.process.stop(budget, signals);
+    if let Some(notifier) = notifier
+        && let Err(error) = notifier.states(&names, EngineState::Unloaded)
+    {
+        eprintln!("cannot send STATUS= to systemd: {error}");
+    }
+    report
+}
+
 /// The `STATUS=` text of an event that stops the process.
 fn status(event: &Event) -> String {
     match event {
@@ -158,9 +185,7 @@ fn status(event: &Event) -> String {
             format!("STATUS=group {group} stalled on devices {devices:?}")
         }
         Event::Panicked { thread, message } => format!("STATUS=the {thread} thread panicked: {message}"),
-        Event::OpenFailed { engine, message, .. } => {
-            format!("STATUS=engine {engine} failed to open: {message}")
-        }
+        Event::OpenFailed { engine, message, .. } => format!("STATUS=engine {engine} fatal: {message}"),
         Event::Opened { group, .. } => format!("STATUS=group {group} opened"),
     }
 }

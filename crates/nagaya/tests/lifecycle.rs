@@ -132,9 +132,32 @@ fn ready_reaches_the_socket() {
     )
     .unwrap();
     assert_eq!(ready.opened.len(), 1);
-    assert_eq!(receive(&socket), "READY=1\nSTATUS=engines opened: fake-one");
+    assert_eq!(receive(&socket), "STATUS=engine fake-one loading");
+    assert_eq!(receive(&socket), "READY=1\nSTATUS=engine fake-one ready");
     let report = ready.process.stop(Duration::from_secs(2), &SignalFlag::new());
     assert_eq!(report.exit_code(), ExitCode::Clean);
+}
+
+#[test]
+fn the_stop_reports_draining_then_unloaded() {
+    let directory = tempfile::tempdir().unwrap();
+    let (socket, path) = bound(directory.path());
+    let notifier = Notifier::at(&path).unwrap();
+    let mut ready = lifecycle::start(
+        fake_profile(),
+        Registry::with_fake(),
+        inventory(&[0]),
+        directory.path(),
+        Some(&notifier),
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    assert_eq!(receive(&socket), "STATUS=engine fake-one loading");
+    assert_eq!(receive(&socket), "READY=1\nSTATUS=engine fake-one ready");
+    let report = lifecycle::stop(&mut ready, Some(&notifier), Duration::from_secs(2), &SignalFlag::new());
+    assert_eq!(report.exit_code(), ExitCode::Clean);
+    assert_eq!(receive(&socket), "STATUS=engine fake-one draining");
+    assert_eq!(receive(&socket), "STATUS=engine fake-one unloaded");
 }
 
 #[test]
@@ -201,9 +224,10 @@ fn a_plain_open_failure_is_a_crash() {
     )
     .unwrap_err();
     assert_eq!(error.exit_code(), ExitCode::Crash);
+    assert_eq!(receive(&socket), "STATUS=engine broken-one loading");
     assert_eq!(
         receive(&socket),
-        "STATUS=engine broken-one failed to open: the weights are absent"
+        "STATUS=engine broken-one fatal: the weights are absent"
     );
 }
 

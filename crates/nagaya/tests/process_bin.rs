@@ -125,9 +125,12 @@ fn ready_and_a_sigterm_exit_zero() {
     socket.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     let mut child = fixture.spawn(Some(&fixture.notify));
     let mut buffer = [0u8; 512];
+    let count = socket.recv(&mut buffer).expect("the process sends its loading status");
+    let text = std::str::from_utf8(&buffer[..count]).unwrap();
+    assert_eq!(text, "STATUS=engine fake-one loading");
     let count = socket.recv(&mut buffer).expect("the process sends READY");
     let text = std::str::from_utf8(&buffer[..count]).unwrap();
-    assert_eq!(text, "READY=1\nSTATUS=engines opened: fake-one");
+    assert_eq!(text, "READY=1\nSTATUS=engine fake-one ready");
     // SAFETY: the child pid is live, and SIGTERM is the stop signal of spec 10.3.
     assert_eq!(unsafe { kill(child.id() as i32, SIGTERM) }, 0);
     let status = wait_timeout(&mut child, Duration::from_secs(10));

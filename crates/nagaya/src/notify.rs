@@ -8,6 +8,46 @@ use std::path::{Path, PathBuf};
 /// The environment variable that names the systemd notify socket.
 pub const NOTIFY_SOCKET: &str = "NOTIFY_SOCKET";
 
+/// The state of one engine, for systemd's `STATUS=` (spec 10.1, 2.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EngineState {
+    /// The engine is opening.
+    Loading,
+    /// The engine opened and serves work.
+    Ready,
+    /// The engine takes no new work, and its running quantum ends.
+    Draining,
+    /// The engine closed its state.
+    Unloaded,
+    /// The engine failed.
+    Fatal,
+}
+
+impl EngineState {
+    /// The word that `STATUS=` uses.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EngineState::Loading => "loading",
+            EngineState::Ready => "ready",
+            EngineState::Draining => "draining",
+            EngineState::Unloaded => "unloaded",
+            EngineState::Fatal => "fatal",
+        }
+    }
+}
+
+/// The `STATUS=` text for the engines and their states. An empty list gives the empty-profile text.
+fn status_text(engines: &[String], state: EngineState) -> String {
+    if engines.is_empty() {
+        return "STATUS=no engines in the profile".to_owned();
+    }
+    let states: Vec<String> = engines
+        .iter()
+        .map(|engine| format!("engine {engine} {}", state.as_str()))
+        .collect();
+    format!("STATUS={}", states.join("; "))
+}
+
 /// The systemd notify socket. A process without the variable has no notifier.
 pub struct Notifier {
     socket: UnixDatagram,
@@ -45,18 +85,28 @@ impl Notifier {
         self.socket.send_to(text.as_bytes(), &self.path).map(|_| ())
     }
 
+    /// Report one state for every engine (spec 10.1). An empty list sends nothing.
+    pub fn states(&self, engines: &[String], state: EngineState) -> io::Result<()> {
+        if engines.is_empty() {
+            return Ok(());
+        }
+        self.notify(&status_text(engines, state))
+    }
+
     /// Report that every engine opened (spec 10.1). One datagram holds `READY=1` and `STATUS=`.
     pub fn ready(&self, engines: &[String]) -> io::Result<()> {
         let status = if engines.is_empty() {
             "no engines in the profile".to_owned()
         } else {
-            format!("engines opened: {}", engines.join(", "))
+            status_text(engines, EngineState::Ready)
+                .trim_start_matches("STATUS=")
+                .to_owned()
         };
         self.notify(&format!("READY=1\nSTATUS={status}"))
     }
 
-    /// Report an engine that did not open. The status names the engine and the reason.
+    /// Report an engine that did not open.
     pub fn failed(&self, engine: &str, message: &str) -> io::Result<()> {
-        self.notify(&format!("STATUS=engine {engine} failed to open: {message}"))
+        self.notify(&format!("STATUS=engine {engine} fatal: {message}"))
     }
 }
