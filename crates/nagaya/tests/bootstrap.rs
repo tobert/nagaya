@@ -74,3 +74,30 @@ fn a_missing_file_is_an_error_that_names_the_path() {
     let error = Bootstrap::read(&path).unwrap_err();
     assert!(error.to_string().contains("/nonexistent/nagaya.toml"), "{error}");
 }
+
+#[test]
+fn the_node_name_is_read_from_the_config() {
+    let text = format!("{REQUIRED_ONLY}node_name = \"gfx1151host\"\n");
+    let config = Bootstrap::parse(&text).unwrap();
+    assert_eq!(config.node_name().unwrap(), "gfx1151host");
+}
+
+#[test]
+fn without_a_node_name_the_host_name_is_used() {
+    let config = Bootstrap::parse(REQUIRED_ONLY).unwrap();
+    let host = std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap();
+    assert!(!host.trim().is_empty(), "the test machine has a host name");
+    assert_eq!(config.node_name().unwrap(), host.trim());
+}
+
+#[test]
+fn a_node_name_with_a_colon_is_refused() {
+    for name in ["a:b", "", "a b", "a/b"] {
+        let text = format!("{REQUIRED_ONLY}node_name = \"{name}\"\n");
+        let error = Bootstrap::parse(&text).unwrap_err();
+        assert!(
+            error.to_string().contains("node_name"),
+            "the message must name the key for {name:?}: {error}"
+        );
+    }
+}

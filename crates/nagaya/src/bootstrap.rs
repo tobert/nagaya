@@ -8,6 +8,9 @@ use serde::Deserialize;
 /// The default for the stop park's time budget (spec 10.3, ds4-recipe: 10 s).
 const DEFAULT_PARK_BUDGET_SECS: u64 = 10;
 
+/// Where Linux keeps the host name. It is the default node name (spec 2.1 note).
+const HOST_NAME_FILE: &str = "/proc/sys/kernel/hostname";
+
 /// An error in the bootstrap config.
 #[derive(Debug)]
 pub enum BootstrapError {
@@ -68,14 +71,35 @@ pub struct Bootstrap {
     /// The time budget for the stop park, in seconds (spec 10.3).
     #[serde(default = "default_park_budget_secs")]
     pub park_budget_secs: u64,
+    /// The node name: the `<host>` of the gossip keys (spec 2.1 note, 2.3). Without it, the host name.
+    #[serde(default)]
+    pub node_name: Option<String>,
 }
 
 impl Bootstrap {
     /// Parse a bootstrap config from TOML text.
     pub fn parse(text: &str) -> Result<Self, BootstrapError> {
-        toml::from_str(text).map_err(|error| BootstrapError::Parse {
+        let config: Self = toml::from_str(text).map_err(|error| BootstrapError::Parse {
             message: error.to_string(),
-        })
+        })?;
+        if let Some(name) = &config.node_name {
+            check_node_name(name)?;
+        }
+        Ok(config)
+    }
+
+    /// The node name. It is `node_name`, or else the host name of the machine.
+    pub fn node_name(&self) -> Result<String, BootstrapError> {
+        if let Some(name) = &self.node_name {
+            return Ok(name.clone());
+        }
+        let host = std::fs::read_to_string(HOST_NAME_FILE).map_err(|source| BootstrapError::Read {
+            path: PathBuf::from(HOST_NAME_FILE),
+            source,
+        })?;
+        let host = host.trim();
+        check_node_name(host)?;
+        Ok(host.to_owned())
     }
 
     /// Read a bootstrap config from a TOML file.
@@ -91,4 +115,21 @@ impl Bootstrap {
 /// The default time budget for the stop park, in seconds.
 fn default_park_budget_secs() -> u64 {
     DEFAULT_PARK_BUDGET_SECS
+}
+
+/// Refuse a node name that a gossip key cannot hold. A key is `profile:desired:<host>`, so a name has no colon.
+fn check_node_name(name: &str) -> Result<(), BootstrapError> {
+    let valid = !name.is_empty()
+        && name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-'));
+    if valid {
+        Ok(())
+    } else {
+        Err(BootstrapError::Parse {
+            message: format!(
+                "node_name `{name}` is not valid; use letters, digits, `.`, `_` and `-`, and at least one character"
+            ),
+        })
+    }
 }
