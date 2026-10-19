@@ -144,9 +144,9 @@ thread priorities:
   to obey `max_quantum_ms`. On unified-memory machines (`gfx1151host` and `sm121host`), the scheduler pauses background CPU
   memory work during a GPU pass to protect GPU memory bandwidth.
 
-**Proposed** by deepseek-flash, 2026-10-18: the control runtime (`tokio`) arrives with the HTTP coordinator in
-milestone 12. It is not in milestone 10 step b, because no HTTP or gossip runs there. Step b uses std threads and
-channels. Gossip follows the HTTP server.
+**3.2a Control runtime first.** The control runtime (`tokio`) arrives with gossip, in milestone 10 step f. Gossip
+comes before the HTTP coordinator, which joins the runtime in milestone 12. The group threads, the ledger thread
+and the watchdog thread stay std threads. They do not use `tokio`. The `sched_setaffinity` isolation stays deferred.
 
 **Proposed** by deepseek-flash, 2026-10-18: milestone 10 step b does not apply `sched_setaffinity`. The bootstrap
 config names no core sets, and step b runs no GPU or IO work to isolate. The later step that applies isolation needs
