@@ -27,6 +27,9 @@ pub struct FakeAlways(pub(crate) Fake);
 /// The fake engine with one defect, for the conformance gates.
 pub struct FakeBroken(pub(crate) Fake);
 
+/// The fake engine whose empty ring forgets the position of its first row. The park and restore gate must fail it.
+pub struct FakeRingBase(pub(crate) Fake);
+
 impl FakeAlways {
     /// Make the engine.
     pub fn new() -> Self {
@@ -35,14 +38,21 @@ impl FakeAlways {
 
     /// Make the engine with the given slot size classes.
     pub fn with_slots(slots: Vec<SlotLimit>) -> Self {
-        FakeAlways(Fake::new("fake-always", false, slots))
+        FakeAlways(Fake::new("fake-always", false, slots, false))
     }
 }
 
 impl FakeBroken {
     /// Make the broken engine.
     pub fn new() -> Self {
-        FakeBroken(Fake::new("fake-broken", true, default_slots()))
+        FakeBroken(Fake::new("fake-broken", true, default_slots(), false))
+    }
+}
+
+impl FakeRingBase {
+    /// Make the engine that loses an empty ring's base.
+    pub fn new() -> Self {
+        FakeRingBase(Fake::new("fake-ring-base", false, default_slots(), true))
     }
 }
 
@@ -62,10 +72,17 @@ impl Default for FakeBroken {
     }
 }
 
+impl Default for FakeRingBase {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// The state of a fake engine.
 pub(crate) struct Fake {
     model: String,
     broken: bool,
+    ignore_ring_from: bool,
     limits: Limits,
     slots: Vec<SlotData>,
     last_error: Option<String>,
@@ -85,7 +102,7 @@ enum PartData {
 }
 
 impl Fake {
-    fn new(model: &str, broken: bool, slot_limits: Vec<SlotLimit>) -> Self {
+    fn new(model: &str, broken: bool, slot_limits: Vec<SlotLimit>, ignore_ring_from: bool) -> Self {
         let parts = vec![
             PartLimits {
                 name: "state".to_owned(),
@@ -164,6 +181,7 @@ impl Fake {
         Fake {
             model: model.to_owned(),
             broken,
+            ignore_ring_from,
             limits,
             slots,
             last_error: None,
@@ -209,13 +227,15 @@ impl Fake {
                 })
                 .collect();
             let count = tokens.len() as u64;
-            if self.cells_write(segment.state, CELLS_PART, count, &rows) != WriteResult::Ok {
+            let cells_from = self.cells_high(segment.state);
+            if self.cells_write(segment.state, CELLS_PART, cells_from, count, &rows) != WriteResult::Ok {
                 return Err(PassError {
                     kind: PassErrorKind::Ran(PassStatus::Poison),
                     message: "the fake could not append the cells".to_owned(),
                 });
             }
-            if self.cells_write(segment.state, RING_PART, count, &rows) != WriteResult::Ok {
+            let ring_from = self.ring_high(segment.state);
+            if self.cells_write(segment.state, RING_PART, ring_from, count, &rows) != WriteResult::Ok {
                 return Err(PassError {
                     kind: PassErrorKind::Ran(PassStatus::Poison),
                     message: "the fake could not advance the ring".to_owned(),
@@ -263,6 +283,30 @@ impl Fake {
 
     fn slot_bytes(&self, state: State) -> Option<u64> {
         self.slot_capacity(Self::slot_id(state))
+    }
+
+    /// The number of rows that the cells part holds.
+    fn cells_high(&self, state: State) -> u64 {
+        match self
+            .slots
+            .get(Self::slot_id(state))
+            .and_then(|slot| slot.parts.get(CELLS_PART))
+        {
+            Some(PartData::Cells { rows, .. }) => rows.len() as u64,
+            _ => 0,
+        }
+    }
+
+    /// The position after the ring's last row.
+    fn ring_high(&self, state: State) -> u64 {
+        match self
+            .slots
+            .get(Self::slot_id(state))
+            .and_then(|slot| slot.parts.get(RING_PART))
+        {
+            Some(PartData::Ring { rows, base }) => *base + rows.len() as u64,
+            _ => 0,
+        }
     }
 
     fn refuse(&mut self, message: &str) -> WriteResult {
@@ -427,6 +471,7 @@ macro_rules! engine_impl {
 
 engine_impl!(FakeAlways);
 engine_impl!(FakeBroken);
+engine_impl!(FakeRingBase);
 
 impl Parts for Fake {
     fn part_read(&mut self, state: State, part: usize, out: &mut [u8]) -> Result<(), PartError> {
@@ -476,7 +521,7 @@ impl Parts for Fake {
         result
     }
 
-    fn cells_write(&mut self, state: State, part: usize, n: u64, bytes: &[u8]) -> WriteResult {
+    fn cells_write(&mut self, state: State, part: usize, from: u64, n: u64, bytes: &[u8]) -> WriteResult {
         let slot_id = Self::slot_id(state);
         let row_bytes = match self.row_bytes(part) {
             Some(row_bytes) => row_bytes,
@@ -499,6 +544,9 @@ impl Parts for Fake {
                     },
                     None => return self.refuse("unknown slot"),
                 };
+                if from != current as u64 {
+                    return self.refuse("a cells part appends at its last row");
+                }
                 let slot_bytes = match self.slot_bytes(state) {
                     Some(bytes) => bytes,
                     None => return self.refuse("unknown slot"),
@@ -521,11 +569,22 @@ impl Parts for Fake {
                 }
             }
             PartKind::Ring => {
+                let ring = match self.slots.get(slot_id).and_then(|slot| slot.parts.get(part)) {
+                    Some(PartData::Ring { rows, base }) => Some((*base, rows.len())),
+                    _ => return self.refuse("part is not a ring"),
+                };
+                let (base, length) = ring.expect("the ring was checked");
+                if length > 0 && from != base + length as u64 {
+                    return self.refuse("the ring cannot place rows at this position");
+                }
                 let Some(slot) = self.slots.get_mut(slot_id) else {
                     return self.refuse("unknown slot");
                 };
                 match slot.parts.get_mut(part) {
                     Some(PartData::Ring { rows, base }) => {
+                        if rows.is_empty() && !self.ignore_ring_from {
+                            *base = from;
+                        }
                         for chunk in bytes.chunks(row_bytes) {
                             rows.push_back(chunk.to_vec());
                         }

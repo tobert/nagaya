@@ -369,7 +369,7 @@ impl Parts for TestEngine {
         Ok(())
     }
 
-    fn cells_write(&mut self, _state: State, _part: usize, _n: u64, _bytes: &[u8]) -> WriteResult {
+    fn cells_write(&mut self, _state: State, _part: usize, _from: u64, _n: u64, _bytes: &[u8]) -> WriteResult {
         WriteResult::Refused
     }
 

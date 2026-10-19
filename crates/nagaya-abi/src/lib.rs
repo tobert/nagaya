@@ -480,8 +480,8 @@ pub trait Parts {
     /// Read `n` rows from `from` into `out`.
     fn cells_read(&mut self, state: State, part: PartId, from: u64, n: u64, out: &mut [u8]) -> Result<(), PartError>;
 
-    /// Write `n` rows from `bytes`.
-    fn cells_write(&mut self, state: State, part: PartId, n: u64, bytes: &[u8]) -> WriteResult;
+    /// Write `n` rows at `from` from `bytes`.
+    fn cells_write(&mut self, state: State, part: PartId, from: u64, n: u64, bytes: &[u8]) -> WriteResult;
 
     /// Set the number of rows.
     fn set_n(&mut self, state: State, n: u64) -> WriteResult;

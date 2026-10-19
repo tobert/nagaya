@@ -137,8 +137,14 @@ fn a_cell_part_round_trips_and_sets_n() {
     let kv = finite_bytes(2 * 49_152, 1.0);
     let keys = finite_bytes(2 * 6_144, 2.0);
 
-    assert_eq!(engine.parts().unwrap().cells_write(state, 3, 2, &kv), WriteResult::Ok);
-    assert_eq!(engine.parts().unwrap().cells_write(state, 4, 2, &keys), WriteResult::Ok);
+    assert_eq!(
+        engine.parts().unwrap().cells_write(state, 3, 0, 2, &kv),
+        WriteResult::Ok
+    );
+    assert_eq!(
+        engine.parts().unwrap().cells_write(state, 4, 0, 2, &keys),
+        WriteResult::Ok
+    );
     // A failed set_n leaves the context empty.
     assert_eq!(engine.parts().unwrap().set_n(state, 2), WriteResult::Refused);
     assert_eq!(engine.n(state).unwrap(), 0);

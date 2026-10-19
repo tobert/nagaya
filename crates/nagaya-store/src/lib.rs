@@ -1233,11 +1233,11 @@ impl Store {
                         .ok_or_else(|| StoreError::Invalid("no parts".to_owned()))?
                         .part_write(state, index, &tensor.data),
                     PartKind::Cells | PartKind::Ring => {
-                        let rows = tensor.coverage.map_or(0, |(start, end)| end - start);
+                        let (from, rows) = tensor.coverage.map_or((0, 0), |(start, end)| (start, end - start));
                         engine
                             .parts()
                             .ok_or_else(|| StoreError::Invalid("no parts".to_owned()))?
-                            .cells_write(state, index, rows, &tensor.data)
+                            .cells_write(state, index, from, rows, &tensor.data)
                     }
                     PartKind::Derived => continue,
                 };

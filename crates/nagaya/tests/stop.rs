@@ -199,8 +199,8 @@ impl Parts for ParkEngine {
         self.inner.parts().unwrap().cells_read(state, part, from, n, out)
     }
 
-    fn cells_write(&mut self, state: State, part: usize, n: u64, bytes: &[u8]) -> WriteResult {
-        self.inner.parts().unwrap().cells_write(state, part, n, bytes)
+    fn cells_write(&mut self, state: State, part: usize, from: u64, n: u64, bytes: &[u8]) -> WriteResult {
+        self.inner.parts().unwrap().cells_write(state, part, from, n, bytes)
     }
 
     fn set_n(&mut self, state: State, n: u64) -> WriteResult {

@@ -146,7 +146,7 @@ fn fill<E: Engine + ?Sized>(
         let bytes = pattern(shape_bytes(part) as usize, seed.wrapping_add(id as u8), part.dtype);
         let result = match part.kind {
             PartKind::Fixed => engine.parts().unwrap().part_write(state, id, &bytes),
-            PartKind::Cells | PartKind::Ring => engine.parts().unwrap().cells_write(state, id, 1, &bytes),
+            PartKind::Cells | PartKind::Ring => engine.parts().unwrap().cells_write(state, id, 0, 1, &bytes),
             PartKind::Derived => unreachable!("a derived part is not stored"),
         };
         match result {
@@ -296,7 +296,20 @@ fn read_filled<E: Engine + ?Sized>(
         if !part.is_stored() {
             continue;
         }
-        let mut out = vec![0u8; shape_bytes(part) as usize];
+        // The fill leaves one row in each row part. Only a moved ring holds more, and the gate moves it forward,
+        // so the slot's high is the ring's high.
+        let length = if part.kind == PartKind::Ring {
+            let State::Slot(slot) = state;
+            let start = engine
+                .coverage()
+                .map(|coverage| coverage.coverage(state, id, &[]).start)
+                .unwrap_or(0);
+            let high = engine.slots().map_or(1, |slots| slots.slot_high(slot));
+            ((high.saturating_sub(start)) * shape_bytes(part)) as usize
+        } else {
+            shape_bytes(part) as usize
+        };
+        let mut out = vec![0u8; length];
         if let Err(error) = engine.parts().unwrap().part_read(state, id, &mut out) {
             return Err(Failure::new(
                 gate,
@@ -352,10 +365,10 @@ fn restore<E: Engine + ?Sized>(
     state: State,
     limits: &Limits,
     parts: &[(PartId, Vec<u8>)],
+    spans: Option<&[(PartId, CoverageSpan)]>,
     gate: &'static str,
 ) -> Result<(), Failure> {
-    let mut rows = None;
-    let mut cells = false;
+    let mut cells_rows = None;
     for (id, bytes) in parts {
         let part = &limits.parts[*id];
         let result = match part.kind {
@@ -372,20 +385,13 @@ fn restore<E: Engine + ?Sized>(
                     ));
                 }
                 let count = bytes.len() as u64 / row;
-                if let Some(rows) = rows {
-                    if rows != count {
-                        return Err(Failure::new(
-                            gate,
-                            format!("the row parts hold {rows} and {count} rows"),
-                        ));
-                    }
-                } else {
-                    rows = Some(count);
-                }
                 if part.kind == PartKind::Cells {
-                    cells = true;
+                    cells_rows = Some(count);
                 }
-                engine.parts().unwrap().cells_write(state, *id, count, bytes)
+                let from = spans
+                    .and_then(|spans| spans.iter().find(|(part, _)| part == id).map(|(_, span)| span.start))
+                    .unwrap_or(0);
+                engine.parts().unwrap().cells_write(state, *id, from, count, bytes)
             }
             PartKind::Derived => unreachable!("a derived part is not stored"),
         };
@@ -396,7 +402,9 @@ fn restore<E: Engine + ?Sized>(
             ));
         }
     }
-    if cells && engine.parts().unwrap().set_n(state, rows.unwrap_or(0)) != WriteResult::Ok {
+    if let Some(rows) = cells_rows
+        && engine.parts().unwrap().set_n(state, rows) != WriteResult::Ok
+    {
         return Err(Failure::new(gate, "the engine refused to set n after the restore"));
     }
     Ok(())
@@ -477,10 +485,11 @@ fn park_and_restore_inner<E: Engine + ?Sized>(
             "the engine declares no stored part; park has nothing to move",
         ));
     }
-    let parked = read_filled(engine, source, limits, gate)?;
+    let mut parked = read_filled(engine, source, limits, gate)?;
     compare_filled(gate, limits, &written, &parked)?;
+    move_ring_window(engine, source, limits, &mut parked, gate)?;
     let source_spans = coverage_spans(engine, source, limits, &parked);
-    restore(engine, target, limits, &parked, gate)?;
+    restore(engine, target, limits, &parked, source_spans.as_deref(), gate)?;
     let restored = read_filled(engine, target, limits, gate)?;
     compare_filled(gate, limits, &parked, &restored)?;
     if let (Some(source_spans), Some(restored_spans)) =
@@ -488,6 +497,91 @@ fn park_and_restore_inner<E: Engine + ?Sized>(
     {
         compare_spans(gate, &source_spans, &restored_spans)?;
     }
+    Ok(())
+}
+
+/// The bytes of one slot.
+fn slot_capacity(limits: &Limits, slot: u32) -> Option<u64> {
+    let mut rest = slot;
+    for class in &limits.slots {
+        if rest < class.count {
+            return Some(class.bytes);
+        }
+        rest -= class.count;
+    }
+    None
+}
+
+/// Move a ring part's window, so that a restore that writes at row 0 loses its base.
+fn move_ring_window<E: Engine + ?Sized>(
+    engine: &mut E,
+    state: State,
+    limits: &Limits,
+    parked: &mut [(PartId, Vec<u8>)],
+    gate: &'static str,
+) -> Result<(), Failure> {
+    let Some((id, part)) = limits
+        .parts
+        .iter()
+        .enumerate()
+        .find(|(_, part)| part.kind == PartKind::Ring)
+    else {
+        return Ok(());
+    };
+    let row_bytes = shape_bytes(part);
+    if row_bytes == 0 {
+        return Err(Failure::new(gate, format!("part {} has a zero row", part.name)));
+    }
+    let Some(entry) = parked.iter_mut().find(|(part_id, _)| *part_id == id) else {
+        return Ok(());
+    };
+    if !(entry.1.len() as u64).is_multiple_of(row_bytes) {
+        return Err(Failure::new(gate, format!("part {} is a partial row", part.name)));
+    }
+    let Some(coverage) = engine.coverage() else {
+        return Ok(());
+    };
+    let State::Slot(slot) = state;
+    let Some(slot_bytes) = slot_capacity(limits, slot) else {
+        return Ok(());
+    };
+    let span = coverage.coverage(state, id, &entry.1);
+    if span.end < span.start {
+        return Err(Failure::new(
+            gate,
+            format!("part {} has coverage {}..{}", part.name, span.start, span.end),
+        ));
+    }
+    // A ring keeps only its window, so a write larger than the slot forces the window to move.
+    let count = slot_bytes / row_bytes + 1;
+    let bytes = pattern((count * row_bytes) as usize, 0xC3, part.dtype);
+    match engine.parts().unwrap().cells_write(state, id, span.end, count, &bytes) {
+        WriteResult::Ok => {}
+        WriteResult::Refused => return Ok(()),
+        WriteResult::Failed => {
+            return Err(Failure::new(
+                gate,
+                format!("the engine failed to move part {} and poisoned the state", part.name),
+            ));
+        }
+    }
+    let Some(coverage) = engine.coverage() else {
+        return Ok(());
+    };
+    let base = coverage.coverage(state, id, &[]).start;
+    if base == 0 {
+        return Ok(());
+    }
+    let high = span.end + count;
+    let length = ((high - base) * row_bytes) as usize;
+    let mut moved = vec![0u8; length];
+    if let Err(error) = engine.parts().unwrap().part_read(state, id, &mut moved) {
+        return Err(Failure::new(
+            gate,
+            format!("the engine refused to read the moved part {}: {error:?}", part.name),
+        ));
+    }
+    entry.1 = moved;
     Ok(())
 }
 

@@ -303,7 +303,7 @@ fn restore_writes_the_parts_and_verifies_the_content_id() {
             }
             PartKind::Cells | PartKind::Ring => {
                 let (start, end) = tensor.coverage.unwrap();
-                let from = if tensor.kind == PartKind::Ring { 0 } else { start };
+                let from = start;
                 target
                     .parts()
                     .unwrap()
@@ -325,6 +325,39 @@ fn restore_writes_the_parts_and_verifies_the_content_id() {
     assert_eq!(entry.state, EntryState::Quarantined);
     assert_eq!(entry.quarantine, Some(Quarantine::ContentId));
     assert!(blob.exists());
+}
+
+#[test]
+fn a_restore_keeps_a_ring_base() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let mut source = FakeAlways::new();
+    source.pass(&[segment(&[1, 2, 3, 4, 5, 6])], &[]).unwrap();
+    let snapshot = snapshot_from_engine(&mut source, State::Slot(0), &[(1, 0, 6), (2, 2, 4)]).unwrap();
+    let ring = snapshot.tensors.iter().find(|tensor| tensor.name == "ring").unwrap();
+    assert_eq!(ring.coverage, Some((2, 6)), "the ring window moved");
+    assert_eq!(ring.data.len(), 32, "four rows of eight bytes");
+
+    let id = put(&mut store, &snapshot, recipe(30), 0);
+    let mut target = FakeAlways::new();
+    let results = store.restore(&id, &mut target, State::Slot(0), &[1u8; 32], 20).unwrap();
+    assert_eq!(results, vec![WriteResult::Ok; 3], "{results:?}");
+
+    let index = target
+        .limits()
+        .parts
+        .iter()
+        .position(|part| part.name == "ring")
+        .unwrap();
+    let span = target.coverage().unwrap().coverage(State::Slot(0), index, &ring.data);
+    assert_eq!((span.start, span.end), (2, 6), "the restore must keep the ring base");
+    let mut bytes = vec![0u8; ring.data.len()];
+    target
+        .parts()
+        .unwrap()
+        .cells_read(State::Slot(0), index, 2, 4, &mut bytes)
+        .unwrap();
+    assert_eq!(bytes, ring.data);
 }
 
 #[test]

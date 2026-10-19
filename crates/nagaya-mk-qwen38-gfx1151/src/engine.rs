@@ -102,6 +102,18 @@ impl MkEngine {
     }
 }
 
+/// The first row of a cells write. mk writes rows from 0 and cannot place them later (ABI "Proposed: the first row
+/// of a cells write").
+fn write_from(from: u64) -> Result<(), String> {
+    if from == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "mk cannot place rows at position {from}; it writes rows from 0"
+        ))
+    }
+}
+
 impl Drop for MkEngine {
     fn drop(&mut self) {
         let ids = std::mem::take(&mut self.states);
@@ -419,7 +431,11 @@ impl Parts for MkEngine {
         Err(PartError::Refused)
     }
 
-    fn cells_write(&mut self, state: State, part: usize, n: u64, bytes: &[u8]) -> WriteResult {
+    fn cells_write(&mut self, state: State, part: usize, from: u64, n: u64, bytes: &[u8]) -> WriteResult {
+        if let Err(message) = write_from(from) {
+            self.last_error = Some(message);
+            return WriteResult::Refused;
+        }
         let Some(id) = self.context(state) else {
             self.last_error = Some(format!("{state:?} is not in this engine"));
             return WriteResult::Refused;
@@ -470,8 +486,15 @@ impl Seal for MkEngine {
 mod tests {
     use nagaya_abi::{OutputsWanted, PassErrorKind, PassStatus, Segment, SegmentInputs, State};
 
-    use super::{SegmentContext, logit_outputs, plan_pass};
+    use super::{SegmentContext, logit_outputs, plan_pass, write_from};
     use crate::spec;
+
+    #[test]
+    fn a_write_that_is_not_at_row_zero_is_refused() {
+        assert_eq!(write_from(0), Ok(()));
+        let error = write_from(2).expect_err("mk cannot place rows at 2");
+        assert!(error.contains("rows from 0"), "{error}");
+    }
 
     /// A segment that asks for `tokens` at `start`.
     fn token_segment(tokens: &[u32], start: u64) -> Segment {

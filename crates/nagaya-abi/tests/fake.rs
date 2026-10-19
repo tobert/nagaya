@@ -96,7 +96,7 @@ fn cells_append_and_read_a_range() {
     let rows: Vec<u8> = (0u8..4).flat_map(|i| [i; 8]).collect();
     {
         let parts = engine.parts().unwrap();
-        assert_eq!(parts.cells_write(state, 1, 4, &rows), WriteResult::Ok);
+        assert_eq!(parts.cells_write(state, 1, 0, 4, &rows), WriteResult::Ok);
     }
     let mut out = [0u8; 16];
     {
@@ -113,7 +113,7 @@ fn set_n_limits_the_readable_rows() {
     let rows: Vec<u8> = (0u8..2).flat_map(|i| [i; 8]).collect();
     {
         let parts = engine.parts().unwrap();
-        assert_eq!(parts.cells_write(state, 1, 2, &rows), WriteResult::Ok);
+        assert_eq!(parts.cells_write(state, 1, 0, 2, &rows), WriteResult::Ok);
         assert_eq!(parts.set_n(state, 1), WriteResult::Ok);
     }
     let mut out = [0u8; 8];
@@ -126,13 +126,32 @@ fn set_n_limits_the_readable_rows() {
 }
 
 #[test]
+fn a_row_write_refuses_a_position_that_is_not_the_next_row() {
+    let mut engine = FakeAlways::new();
+    let state = State::Slot(1);
+    let parts = engine.parts().unwrap();
+    assert_eq!(parts.cells_write(state, 1, 0, 1, &[1; 8]), WriteResult::Ok);
+    assert_eq!(
+        parts.cells_write(state, 1, 2, 1, &[2; 8]),
+        WriteResult::Refused,
+        "a cells part appends at its last row"
+    );
+    assert_eq!(parts.cells_write(state, 2, 0, 1, &[3; 8]), WriteResult::Ok);
+    assert_eq!(
+        parts.cells_write(state, 2, 3, 1, &[4; 8]),
+        WriteResult::Refused,
+        "a ring places rows at the position of its window end"
+    );
+}
+
+#[test]
 fn ring_keeps_the_last_window() {
     let mut engine = FakeAlways::new();
     let state = State::Slot(1);
     {
         let parts = engine.parts().unwrap();
         for i in 0u8..6 {
-            assert_eq!(parts.cells_write(state, 2, 1, &[i; 8]), WriteResult::Ok);
+            assert_eq!(parts.cells_write(state, 2, u64::from(i), 1, &[i; 8]), WriteResult::Ok);
         }
     }
     let mut out = [0u8; 32];

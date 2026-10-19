@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use nagaya_abi::fake::{FakeAlways, FakeBroken};
+use nagaya_abi::fake::{FakeAlways, FakeBroken, FakeRingBase};
 use nagaya_abi::{
     Capability, ChainLimits, Coverage, CoverageSpan, Determinism, Dtype, ElasticTerm, Engine, Identity, Inputs,
     Lifetime, Limits, MandatoryTerm, MemoryLimits, PartError, PartId, PartKind, PartLimits, Parts, PassError,
@@ -53,6 +53,16 @@ fn fake_always_passes_every_engine_gate() {
 #[test]
 fn fake_broken_fails_park_and_restore() {
     assert_fail(park_and_restore(&mut FakeBroken::new()), "fake_broken park_and_restore");
+}
+
+#[test]
+fn a_ring_that_loses_its_base_fails_park_and_restore() {
+    match park_and_restore(&mut FakeRingBase::new()) {
+        Outcome::Fail(failure) => {
+            assert!(failure.message.contains("coverage differs"), "{failure}");
+        }
+        other => panic!("expected a coverage failure, got {other}"),
+    }
 }
 
 #[test]
@@ -130,8 +140,8 @@ impl Parts for SealsOnRead {
         self.inner.parts().unwrap().cells_read(state, part, from, n, out)
     }
 
-    fn cells_write(&mut self, state: State, part: PartId, n: u64, bytes: &[u8]) -> WriteResult {
-        self.inner.parts().unwrap().cells_write(state, part, n, bytes)
+    fn cells_write(&mut self, state: State, part: PartId, from: u64, n: u64, bytes: &[u8]) -> WriteResult {
+        self.inner.parts().unwrap().cells_write(state, part, from, n, bytes)
     }
 
     fn set_n(&mut self, state: State, n: u64) -> WriteResult {
@@ -215,8 +225,8 @@ impl Parts for RefusesOddBytes {
         self.inner.parts().unwrap().cells_read(state, part, from, n, out)
     }
 
-    fn cells_write(&mut self, state: State, part: PartId, n: u64, bytes: &[u8]) -> WriteResult {
-        self.inner.parts().unwrap().cells_write(state, part, n, bytes)
+    fn cells_write(&mut self, state: State, part: PartId, from: u64, n: u64, bytes: &[u8]) -> WriteResult {
+        self.inner.parts().unwrap().cells_write(state, part, from, n, bytes)
     }
 
     fn set_n(&mut self, state: State, n: u64) -> WriteResult {
@@ -300,8 +310,8 @@ impl Parts for FailsZeroWrite {
         self.inner.parts().unwrap().cells_read(state, part, from, n, out)
     }
 
-    fn cells_write(&mut self, state: State, part: PartId, n: u64, bytes: &[u8]) -> WriteResult {
-        self.inner.parts().unwrap().cells_write(state, part, n, bytes)
+    fn cells_write(&mut self, state: State, part: PartId, from: u64, n: u64, bytes: &[u8]) -> WriteResult {
+        self.inner.parts().unwrap().cells_write(state, part, from, n, bytes)
     }
 
     fn set_n(&mut self, state: State, n: u64) -> WriteResult {
@@ -378,8 +388,8 @@ impl Parts for RefusesOddBytesAndReadsConstant {
         self.inner.parts().unwrap().cells_read(state, part, from, n, out)
     }
 
-    fn cells_write(&mut self, state: State, part: PartId, n: u64, bytes: &[u8]) -> WriteResult {
-        self.inner.parts().unwrap().cells_write(state, part, n, bytes)
+    fn cells_write(&mut self, state: State, part: PartId, from: u64, n: u64, bytes: &[u8]) -> WriteResult {
+        self.inner.parts().unwrap().cells_write(state, part, from, n, bytes)
     }
 
     fn set_n(&mut self, state: State, n: u64) -> WriteResult {
@@ -547,9 +557,9 @@ impl Parts for CellsOnlyConstantRead {
         Ok(())
     }
 
-    fn cells_write(&mut self, state: State, part: PartId, n: u64, bytes: &[u8]) -> WriteResult {
+    fn cells_write(&mut self, state: State, part: PartId, from: u64, n: u64, bytes: &[u8]) -> WriteResult {
         // Refuse the gate's synthetic fill, which is all odd bytes, so that the gate takes the pass path.
-        if part != 0 || bytes.len() != n as usize * Self::ROW || bytes.iter().all(|byte| byte & 1 == 1) {
+        if from != 0 || part != 0 || bytes.len() != n as usize * Self::ROW || bytes.iter().all(|byte| byte & 1 == 1) {
             return WriteResult::Refused;
         }
         let Some(rows) = self.rows_mut(state) else {
@@ -1213,8 +1223,8 @@ impl Parts for NanAfterAPass {
         Err(PartError::Refused)
     }
 
-    fn cells_write(&mut self, state: State, part: PartId, n: u64, bytes: &[u8]) -> WriteResult {
-        if part != NAN_CELLS || bytes.len() as u64 != n * 8 {
+    fn cells_write(&mut self, state: State, part: PartId, from: u64, n: u64, bytes: &[u8]) -> WriteResult {
+        if from != 0 || part != NAN_CELLS || bytes.len() as u64 != n * 8 {
             return WriteResult::Refused;
         }
         let rows = &mut self.cells[Self::slot(state)];

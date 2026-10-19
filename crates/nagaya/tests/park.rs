@@ -147,7 +147,7 @@ fn a_stop_writes_every_state_and_a_restore_reads_every_part() {
                 PartKind::Fixed => target.parts().unwrap().part_read(state, index, &mut bytes).unwrap(),
                 PartKind::Cells | PartKind::Ring => {
                     let (start, end) = tensor.coverage.unwrap();
-                    let from = if tensor.kind == PartKind::Ring { 0 } else { start };
+                    let from = start;
                     target
                         .parts()
                         .unwrap()
