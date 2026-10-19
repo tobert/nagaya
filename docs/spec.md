@@ -95,6 +95,11 @@ state:
 
 Pins and snapshot entries never go in gossip.
 
+**Proposed** by Sonnet 5.5, 2026-10-19: each gossip value is compact JSON, and it has at most 8192 bytes. The nagaya
+refuses to publish a larger value. The refusal names the key and the size. Reason: `chitchat` sends a delta in one
+UDP datagram of at most 65,507 bytes. A node writes a few keys, plus one key for each engine. A profile that does
+not fit in 8192 bytes needs a different path, which is not in v0.
+
 **2.4 Placement profile.** A placement profile names a machine's engines, their devices, their config, each tier's
 budget (4.1), each engine's share (D9), and pinned identities (12.1). A client reads or updates a machine's profile
 through `GET` and `PUT /nagaya/v1/profile` on any machine in the cluster. The target machine persists its accepted
