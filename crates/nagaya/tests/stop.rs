@@ -6,18 +6,20 @@ use nagaya::admission::{AdmitError, Factory, OpenError, PlanError, Registry};
 use nagaya::exit::ExitCode;
 use nagaya::inventory::{Device, Inventory};
 use nagaya::park::StoreBudget;
-use nagaya::process::Start;
+use nagaya::process::{Quantum, Start, SubmitError};
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, TierSpec};
 use nagaya::signal::SignalFlag;
 use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{
-    Capability, Coverage, DeviceId, Engine, Identity, Limits, PartError, Parts, PassError, PassOut, Seal, Segment,
-    Slots, State, Tap, Tier, WriteResult,
+    Capability, Coverage, DeviceId, Engine, Identity, Limits, OutputsWanted, PartError, Parts, PassError, PassOut,
+    Seal, Segment, SegmentInputs, Slots, State, Tap, Tier, WriteResult,
 };
+use nagaya_store::{Store, snapshot_from_engine};
 
 #[derive(Default)]
 struct ParkRecord {
     reads: Vec<(String, State, usize, ThreadId)>,
+    events: Vec<String>,
 }
 
 fn limits_on(devices: &[DeviceId]) -> Limits {
@@ -66,6 +68,16 @@ fn inventory(ids: &[DeviceId]) -> Inventory {
             })
             .collect(),
         host_bytes: 1024,
+    }
+}
+
+fn segment(state: State, tokens: &[u32]) -> Segment {
+    Segment {
+        state,
+        inputs: SegmentInputs::Tokens(tokens.to_vec()),
+        positions: (0..tokens.len() as u64).collect(),
+        meta: Vec::new(),
+        outputs: OutputsWanted::default(),
     }
 }
 
@@ -185,6 +197,7 @@ impl Parts for ParkEngine {
             .unwrap()
             .reads
             .push((self.name.clone(), state, part, thread::current().id()));
+        self.record.lock().unwrap().events.push("read".to_owned());
         if self.fail {
             return Err(PartError::Refused);
         }
@@ -407,4 +420,82 @@ fn a_park_failure_is_a_crash() {
     assert!(report.parked.failures[0].contains("state 0"), "{report:?}");
     assert!(report.parked.failures[0].contains("part `state`"), "{report:?}");
     assert_eq!(report.exit_code(), ExitCode::Crash);
+}
+
+#[test]
+fn a_running_quantum_ends_before_the_park() {
+    let record = Arc::new(Mutex::new(ParkRecord::default()));
+    let directory = tempfile::tempdir().unwrap();
+    let mut registry = Registry::new();
+    registry.register("park", Box::new(ParkFactory::new("a", Arc::clone(&record))));
+    let mut process = Start::new(profile(vec![engine("a", "park", &[0])]), registry, inventory(&[0]))
+        .store(directory.path())
+        .heartbeat(Duration::from_millis(10))
+        .timeout(Duration::from_secs(2))
+        .start()
+        .unwrap();
+    process.wait_opens(Duration::from_secs(2)).unwrap();
+
+    let events = Arc::clone(&record);
+    process
+        .submit(
+            0,
+            Quantum::new(move |engines| {
+                events.lock().unwrap().events.push("quantum".to_owned());
+                thread::sleep(Duration::from_millis(60));
+                engines[0]
+                    .pass(&[segment(State::Slot(0), &[7, 8, 9])], &[])
+                    .expect("the quantum runs its pass");
+                events.lock().unwrap().events.push("quantum-end".to_owned());
+            }),
+        )
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !record.lock().unwrap().events.iter().any(|event| event == "quantum") {
+        assert!(Instant::now() < deadline, "the quantum did not start");
+        thread::sleep(Duration::from_millis(2));
+    }
+    let report = process.stop(Duration::from_secs(2), &SignalFlag::new());
+    assert_eq!(report.exit_code(), ExitCode::Clean, "{report:?}");
+    assert!(report.complete);
+
+    let events = record.lock().unwrap().events.clone();
+    let end = events
+        .iter()
+        .position(|event| event == "quantum-end")
+        .expect("the quantum ends");
+    assert!(
+        events[end + 1..].iter().all(|event| event == "read"),
+        "the park reads only after the quantum: {events:?}"
+    );
+    assert!(events[end + 1..].len() >= 2, "the park reads both states: {events:?}");
+    drop(record);
+
+    let mut seeded = FakeAlways::new();
+    seeded
+        .pass(&[segment(State::Slot(0), &[7, 8, 9])], &[])
+        .expect("the seeded pass runs");
+    let snapshot = snapshot_from_engine(&mut seeded, State::Slot(0), &[(1, 0, 3), (2, 0, 3)]).unwrap();
+    let id = snapshot.content_id().unwrap();
+    drop(process);
+    let store = Store::open(directory.path()).unwrap();
+    assert!(store.entries().contains_key(&id), "the quantum's result is parked");
+}
+
+#[test]
+fn a_job_submitted_after_the_stop_is_refused() {
+    let record = Arc::new(Mutex::new(ParkRecord::default()));
+    let (mut process, _, _directory) = started(ParkFactory::new("a", record));
+    let flag = SignalFlag::new();
+    flag.raise();
+    process.stop(Duration::from_secs(2), &flag);
+    assert_eq!(process.submit(0, Quantum::new(|_| {})), Err(SubmitError::Stopping));
+}
+
+#[test]
+fn a_quantum_for_an_unknown_group_is_refused() {
+    let record = Arc::new(Mutex::new(ParkRecord::default()));
+    let (mut process, _, _directory) = started(ParkFactory::new("a", record));
+    assert_eq!(process.submit(3, Quantum::new(|_| {})), Err(SubmitError::UnknownGroup));
+    process.stop(Duration::from_secs(2), &SignalFlag::new());
 }

@@ -169,6 +169,42 @@ pub struct OpenedEngine {
     pub thread: ThreadId,
 }
 
+/// The work of one quantum: the group's engines, in profile order.
+type QuantumWork = Box<dyn FnOnce(&mut [Box<dyn Engine>]) + Send>;
+
+/// One quantum of work for a group thread. The group runs it to its end before the park reads a state (spec 10.3).
+pub struct Quantum(QuantumWork);
+
+impl Quantum {
+    /// Make a quantum from its work. The work gets the group's engines, in profile order.
+    pub fn new(work: impl FnOnce(&mut [Box<dyn Engine>]) + Send + 'static) -> Self {
+        Self(Box::new(work))
+    }
+}
+
+/// Why a quantum did not reach its group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubmitError {
+    /// The process is stopping and takes no new jobs.
+    Stopping,
+    /// There is no group at this index.
+    UnknownGroup,
+    /// The group thread stopped.
+    Stopped,
+}
+
+impl std::fmt::Display for SubmitError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SubmitError::Stopping => write!(formatter, "the process is stopping"),
+            SubmitError::UnknownGroup => write!(formatter, "there is no group at this index"),
+            SubmitError::Stopped => write!(formatter, "the group stopped"),
+        }
+    }
+}
+
+impl std::error::Error for SubmitError {}
+
 /// A report from a group thread or the watchdog.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
@@ -534,6 +570,9 @@ fn group_thread(
     let _ = events.send(Event::Opened { group, engines: opened });
     loop {
         match stop.recv_timeout(interval) {
+            Ok(GroupMessage::Quantum(quantum)) => {
+                (quantum.0)(&mut engines);
+            }
             Ok(GroupMessage::Park(reply)) => {
                 let report = park_group(&names, &mut engines, store.as_ref());
                 let _ = reply.send(report);
@@ -622,6 +661,8 @@ enum LedgerMessage {
 
 /// A request to one group thread.
 enum GroupMessage {
+    /// Run one quantum to its end.
+    Quantum(Quantum),
     /// Park every engine, then stop the thread (spec 10.3).
     Park(Sender<ParkReport>),
     /// Stop the thread without a park. `Process::drop` uses it.
@@ -658,6 +699,20 @@ impl Process {
             .send(LedgerMessage::Admit(profile, reply_tx))
             .expect("the ledger thread stopped");
         reply_rx.recv().expect("the ledger thread stopped")
+    }
+
+    /// Send one quantum to a group thread. A stop refuses every later quantum (spec 10.3 step 1).
+    ///
+    /// The group runs the quantum to its end before it parks, so the park never reads a state during a quantum.
+    pub fn submit(&self, group: usize, quantum: Quantum) -> Result<(), SubmitError> {
+        if !self.accepting.load(Ordering::SeqCst) {
+            return Err(SubmitError::Stopping);
+        }
+        let Some(stop) = self.group_stops.get(group) else {
+            return Err(SubmitError::UnknownGroup);
+        };
+        stop.send(GroupMessage::Quantum(quantum))
+            .map_err(|_| SubmitError::Stopped)
     }
 
     /// Wait for every group to open its engines, or for a failure.
