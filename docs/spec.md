@@ -112,7 +112,7 @@ that share it. A caller that adds the entries does not count a pooled budget twi
 
 **Proposed** by deepseek-flash, 2026-10-18: the placement profile is one TOML file. It has `[[engines]]` entries with
 `name`, `kind`, `devices`, `config`, `share`, and `pin_identity`. It has `[[budgets]]` entries with `tiers` and
-`bytes`, where a tier is `host` or `device(i)`.
+`bytes`, where a tier is `host` or `device(i)`. It has a `[store]` table with `nvme` and optional `host` (4.1a).
 
 The process writes an accepted profile to `<store_dir>/profile.toml`, atomically: a temporary file, then a rename.
 The file has the same shape as the input, so a read gives an equal profile. An unknown kind or key refuses the
