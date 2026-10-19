@@ -174,6 +174,11 @@ measurement of free memory.
 - b70host: one budget for each card's device memory, and one for host memory.
 - Every machine: one budget for the store's host-memory tier, and one for the store on NVMe.
 
+**Proposed** by deepseek-flash, 2026-10-19: the placement profile names no store tier today. The store's host
+budget is the bytes that profile admission leaves unassigned in the host budget (4.4 step 4). The store's NVMe
+budget is unbounded until the profile names one. The owner quota is unbounded, and the chain limit is open. Reason:
+a store write must not take bytes that an engine needs, and no profile field names NVMe yet.
+
 **4.2 Terms.** Each engine declares its terms in `limits().memory`. `plan(config)` gives the same terms before
 `open` (2.4).
 
