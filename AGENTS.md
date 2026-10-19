@@ -99,8 +99,7 @@ Do them in this order. Each milestone ends with all checks green and one or more
 10. **Process.** In `nagaya`, read the bootstrap config (2.1, 11.6) and a profile for one machine (2.4). Admit the
     profile with the ledger, and open each engine on its own thread (3.2). Send `READY=1` (10.1), stop on SIGTERM
     (10.3), and exit with the codes of 10.4. Test with the fake engine. Then join the cluster with `chitchat` (2.3)
-    before the HTTP server. Amy, 2026-10-19, chose "step e plus gossip now". Test gossip with two processes on
-    loopback.
+    before the HTTP server, and test it with two processes on loopback (Amy, 2026-10-19: "step e plus gossip now").
 11. **Text front-end.** Write the family library for Qwen3.8 (11.3): the tokenizer, the chat template and the
     detokenizer, from the GGUF metadata. Test against fixed outputs of mk's Python front-end (`harness/tokenizer.py`,
     `service/chatfmt.py`). Make those outputs with mk's Python, with no service and no GPU. Keep them in the tests.
