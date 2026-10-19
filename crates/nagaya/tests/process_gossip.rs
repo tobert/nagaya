@@ -52,3 +52,24 @@ fn two_processes_see_the_keys_of_each_other() {
     assert_eq!(json!(two.terminate().code()), json!(0));
     watcher.shutdown();
 }
+
+#[test]
+fn a_stopped_process_is_marked_dead_by_the_other() {
+    let mut one = Proc::spawn("host-one", "127.0.0.1:18083", &[]);
+    let mut two = Proc::spawn("host-two", "127.0.0.1:18084", &[one.gossip_addr]);
+    let watcher = observer(one.gossip_addr);
+    wait_for_view(&watcher, "host-two live", |view| {
+        view.live.iter().any(|node| node.name == "host-two")
+    });
+    one.lines.wait_for("gossip: peer host-two keys ", WAIT);
+
+    assert_eq!(two.terminate().code(), Some(0));
+    // The failure detector (phi-accrual) marks the peer dead; the live view loses it.
+    let view = wait_for_view(&watcher, "host-two dead and not live", |view| {
+        !view.live.iter().any(|node| node.name == "host-two") && view.dead.iter().any(|name| name == "host-two")
+    });
+    assert!(view.live.iter().any(|node| node.name == "host-one"), "{view}");
+    one.lines.wait_for("gossip: peer host-two is dead", WAIT);
+    assert_eq!(one.terminate().code(), Some(0));
+    watcher.shutdown();
+}

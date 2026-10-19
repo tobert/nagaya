@@ -81,7 +81,10 @@ fn view(entries: &[(&str, &str, serde_json::Value)]) -> ClusterView {
         let node = nodes.iter_mut().find(|node| node.name == *peer).unwrap();
         node.keys.insert((*key).to_owned(), value.to_string());
     }
-    ClusterView { live: nodes }
+    ClusterView {
+        live: nodes,
+        dead: Vec::new(),
+    }
 }
 
 const KEY: &str = "profile:desired:gfx1151host";

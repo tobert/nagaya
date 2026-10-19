@@ -163,10 +163,15 @@ impl NodeView {
 pub struct ClusterView {
     /// The nodes that the failure detector holds live, with this node.
     pub live: Vec<NodeView>,
+    /// The names of the nodes that the failure detector marked dead (spec 2.3). A dead node is not live.
+    pub dead: Vec<String>,
 }
 
 impl fmt::Display for ClusterView {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !self.dead.is_empty() {
+            writeln!(formatter, "dead {:?}", self.dead)?;
+        }
         for node in &self.live {
             let keys: Vec<&str> = node.keys.keys().map(String::as_str).collect();
             writeln!(formatter, "live {} {} keys {keys:?}", node.name, node.addr)?;
@@ -258,7 +263,9 @@ impl Gossip {
                 })
                 .collect();
             live.sort_by(|left, right| left.name.cmp(&right.name));
-            ClusterView { live }
+            let mut dead: Vec<String> = chitchat.dead_nodes().map(|id| id.node_id.to_string()).collect();
+            dead.sort();
+            ClusterView { live, dead }
         }))
     }
 
