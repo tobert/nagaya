@@ -70,10 +70,10 @@ impl Refusal {
 /// What the node did with a desired profile.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
-    /// The profile changes the engines. The node persisted it and must stop with exit 4 (spec 3.3).
+    /// The profile differs from the active profile. The node persisted it and must stop with exit 4 (spec 3.3).
     Restart,
-    /// The profile keeps the engines. The node persisted it and keeps running.
-    Kept,
+    /// The profile equals the active profile. The node changed nothing and keeps running.
+    Unchanged,
     /// The node refused the profile.
     Refused(Refusal),
 }
@@ -204,6 +204,11 @@ impl Swap {
                 Vec::new(),
             );
         }
+        if profile == self.active {
+            // The ledger already holds this profile. Another admission would not match the running engines.
+            self.write_version(version)?;
+            return Ok(Outcome::Unchanged);
+        }
         match process.admit(profile.clone()) {
             Ok(_) => {}
             Err(AdmitError::Ledger(LedgerError::Refused(refusal))) => {
@@ -221,9 +226,8 @@ impl Swap {
         }
         profile.write(&self.store_dir).map_err(SwapError::Profile)?;
         self.write_version(version)?;
-        let restart = profile.engines != self.active.engines;
         self.active = profile;
-        Ok(if restart { Outcome::Restart } else { Outcome::Kept })
+        Ok(Outcome::Restart)
     }
 
     /// Write the handled version atomically: a temporary file, then a rename.

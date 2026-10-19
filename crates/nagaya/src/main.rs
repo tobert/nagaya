@@ -179,14 +179,15 @@ fn desired_profile(swap: &mut Swap, node: &mut Node, process: &nagaya::process::
             Some(ExitCode::Crash)
         }
         Ok(Outcome::Restart) => {
-            eprintln!("desired profile version {version} changes the engines; the process stops to restart");
+            eprintln!(
+                "desired profile version {version} differs from the active profile; the process stops to restart"
+            );
             node.clear_refusal();
             Some(ExitCode::PlannedRestart)
         }
-        Ok(Outcome::Kept) => {
-            eprintln!("desired profile version {version} keeps the engines; the process saved it and runs on");
+        Ok(Outcome::Unchanged) => {
+            eprintln!("desired profile version {version} equals the active profile; nothing changed");
             node.clear_refusal();
-            published(node.publish_profile(swap.active()));
             None
         }
         Ok(Outcome::Refused(refusal)) => {

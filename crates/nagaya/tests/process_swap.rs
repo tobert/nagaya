@@ -70,7 +70,7 @@ fn a_desired_profile_that_changes_the_engines_stops_the_process_with_exit_four()
 }
 
 #[test]
-fn a_desired_profile_that_does_not_fit_is_refused_and_the_process_runs_on() {
+fn a_desired_profile_that_does_not_fit_is_refused_and_an_equal_one_clears_it() {
     let mut process = Proc::spawn("host-x", "127.0.0.1:18091", &[]);
     let poster = poster("poster", process.gossip_addr);
     ready(&poster);
@@ -100,20 +100,48 @@ fn a_desired_profile_that_does_not_fit_is_refused_and_the_process_runs_on() {
     assert!(!process.store.join("profile.version").exists());
     assert_eq!(process.try_exit(), None, "the process runs on");
 
-    // A newer profile that fits and keeps the engines clears the refusal and becomes the active profile.
-    let fits = profile(&["fake-one"], 8192);
-    poster.publish(&key, &desired_value(2, &fits)).unwrap();
-    let view = wait_for_view(&poster, "the new active profile of host-x", |view| {
-        value(view, "host-x", &Key::ProfileActive).is_some_and(|active| active["budgets"][0]["bytes"] == 8192)
+    // A newer profile that equals the active profile clears the refusal. Nothing else changes.
+    let same = PlacementProfile::parse(ACTIVE_PROFILE).unwrap();
+    poster.publish(&key, &desired_value(2, &same)).unwrap();
+    let view = wait_for_view(&poster, "no refusal of host-x", |view| {
+        value(view, "host-x", &Key::ProfileRefused).is_none()
     });
-    assert_eq!(value(&view, "host-x", &Key::ProfileRefused), None, "{view}");
-    assert_eq!(PlacementProfile::read_active(&process.store).unwrap(), fits);
-    assert_eq!(
-        process.try_exit(),
-        None,
-        "a profile that keeps the engines does not restart"
+    process.lines.wait_for(
+        "desired profile version 2 equals the active profile",
+        Duration::from_secs(5),
     );
+    assert_eq!(
+        value(&view, "host-x", &Key::ProfileActive).unwrap()["budgets"][0]["bytes"],
+        4096
+    );
+    assert_eq!(
+        std::fs::read_to_string(process.store.join("profile.toml")).unwrap(),
+        ACTIVE_PROFILE,
+        "an equal profile does not rewrite the file"
+    );
+    assert_eq!(
+        std::fs::read_to_string(process.store.join("profile.version"))
+            .unwrap()
+            .trim(),
+        "2"
+    );
+    assert_eq!(process.try_exit(), None, "an equal profile does not restart");
     assert_eq!(process.terminate().code(), Some(0));
+    poster.shutdown();
+}
+
+#[test]
+fn a_desired_profile_that_changes_only_a_budget_stops_the_process_with_exit_four() {
+    let mut process = Proc::spawn("host-x", "127.0.0.1:18093", &[]);
+    let poster = poster("poster", process.gossip_addr);
+    ready(&poster);
+    let wanted = profile(&["fake-one"], 8192);
+    poster
+        .publish(&Key::ProfileDesired("host-x".to_owned()), &desired_value(1, &wanted))
+        .unwrap();
+    let status = process.wait_exit(WAIT);
+    assert_eq!(status.code(), Some(4), "stderr:\n{}", process.lines.drain().join("\n"));
+    assert_eq!(PlacementProfile::read_active(&process.store).unwrap(), wanted);
     poster.shutdown();
 }
 
@@ -132,17 +160,20 @@ fn an_older_version_from_a_second_peer_does_not_replace_a_newer_one() {
         .publish(&key, &desired_value(5, &profile(&["fake-one"], 8192)))
         .unwrap();
 
-    wait_for_view(&newer, "the version 5 profile of host-x", |view| {
-        value(view, "host-x", &Key::ProfileActive).is_some_and(|active| active["budgets"][0]["bytes"] == 8192)
-    });
-    assert_eq!(process.try_exit(), None, "version 3 does not stop the process");
+    // The version 5 profile keeps one engine and changes a budget, so the process restarts with it.
+    let status = process.wait_exit(WAIT);
+    assert_eq!(status.code(), Some(4), "stderr:\n{}", process.lines.drain().join("\n"));
+    assert_eq!(
+        PlacementProfile::read_active(&process.store).unwrap(),
+        profile(&["fake-one"], 8192),
+        "version 3 does not replace version 5"
+    );
     assert_eq!(
         std::fs::read_to_string(process.store.join("profile.version"))
             .unwrap()
             .trim(),
         "5"
     );
-    assert_eq!(process.terminate().code(), Some(0));
     newer.shutdown();
     older.shutdown();
 }

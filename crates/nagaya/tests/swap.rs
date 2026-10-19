@@ -109,7 +109,7 @@ fn an_older_version_never_replaces_a_newer_one() {
     ]);
     let candidate = swap.candidate(&both).expect("a version above 0 is a candidate");
     assert_eq!((candidate.version, candidate.from.as_str()), (5, "a"));
-    assert_eq!(swap.handle(candidate, &process).unwrap(), Outcome::Kept);
+    assert_eq!(swap.handle(candidate, &process).unwrap(), Outcome::Restart);
     assert_eq!(swap.handled(), 5);
 
     assert_eq!(swap.candidate(&both), None, "versions 5 and 3 are not above 5");
@@ -163,6 +163,65 @@ fn a_profile_that_changes_the_engines_is_persisted_and_restarts() {
             .trim(),
         "1"
     );
+}
+
+/// Offer `wanted` as version 1 and give the outcome of the swap.
+fn offer(dir: &Path, active: &PlacementProfile, wanted: &PlacementProfile, process: &Process) -> Outcome {
+    let mut swap = swap(dir, active);
+    let offered = view(&[("a", KEY, desired_value(1, wanted))]);
+    let candidate = swap.candidate(&offered).unwrap();
+    swap.handle(candidate, process).unwrap()
+}
+
+#[test]
+fn a_profile_that_changes_only_a_share_restarts() {
+    let directory = tempfile::tempdir().unwrap();
+    let active = profile(&["fake-one"], 4096);
+    let process = running(directory.path(), &active);
+    let mut wanted = active.clone();
+    wanted.engines[0].share = 2;
+    assert_eq!(offer(directory.path(), &active, &wanted, &process), Outcome::Restart);
+    assert_eq!(PlacementProfile::read_active(directory.path()).unwrap(), wanted);
+}
+
+#[test]
+fn a_profile_that_changes_only_a_store_budget_restarts() {
+    let directory = tempfile::tempdir().unwrap();
+    let active = profile(&["fake-one"], 4096);
+    let process = running(directory.path(), &active);
+    let mut wanted = active.clone();
+    wanted.store = Some(StoreSpec {
+        nvme: 131072,
+        host: None,
+    });
+    assert_eq!(offer(directory.path(), &active, &wanted, &process), Outcome::Restart);
+    assert_eq!(PlacementProfile::read_active(directory.path()).unwrap(), wanted);
+}
+
+#[test]
+fn an_identical_profile_changes_nothing() {
+    let directory = tempfile::tempdir().unwrap();
+    let active = profile(&["fake-one"], 4096);
+    let mut process = running(directory.path(), &active);
+    let file = directory.path().join("profile.toml");
+    let bytes = std::fs::read(&file).unwrap();
+    let modified = std::fs::metadata(&file).unwrap().modified().unwrap();
+    // A stopped process refuses each admission. So a handle that asks the ledger would not give `Unchanged`.
+    process.abort();
+    let mut swap = swap(directory.path(), &active);
+    let offered = view(&[("a", KEY, desired_value(3, &active))]);
+    let candidate = swap.candidate(&offered).unwrap();
+    assert_eq!(swap.handle(candidate, &process).unwrap(), Outcome::Unchanged);
+    assert_eq!(swap.handled(), 3, "the version is recorded");
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join(VERSION_FILE))
+            .unwrap()
+            .trim(),
+        "3"
+    );
+    assert_eq!(std::fs::read(&file).unwrap(), bytes);
+    assert_eq!(std::fs::metadata(&file).unwrap().modified().unwrap(), modified);
+    assert_eq!(swap.candidate(&offered), None);
 }
 
 #[test]
