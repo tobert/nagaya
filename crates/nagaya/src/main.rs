@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use nagaya::bootstrap::Bootstrap;
 use nagaya::exit::{ExitCode, panic_text};
+use nagaya::gossip::{Gossip, GossipConfig};
 use nagaya::lifecycle;
 use nagaya::notify::Notifier;
 use nagaya::signal::{SignalFlag, install_terminate};
@@ -60,6 +61,35 @@ fn run() -> ExitCode {
         eprintln!("cannot install the SIGTERM handler: {error}");
         return ExitCode::Crash;
     }
+    let node_name = match config.node_name() {
+        Ok(name) => name,
+        Err(error) => {
+            eprintln!("cannot use the node name: {error}");
+            return ExitCode::RefusedStart;
+        }
+    };
+    let mut gossip_config = GossipConfig::new(&node_name, config.gossip_bind);
+    gossip_config.seeds = config.seed_peers.clone();
+    let gossip = match Gossip::start(gossip_config) {
+        Ok(gossip) => gossip,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::RefusedStart;
+        }
+    };
+    eprintln!("gossip listening on {}", gossip.local_addr());
+    let code = serve(&config, profile, registry, inventory);
+    gossip.shutdown();
+    code
+}
+
+/// Open the engines, run until a stop, and stop (spec 10.1, 10.3).
+fn serve(
+    config: &Bootstrap,
+    profile: nagaya::profile::PlacementProfile,
+    registry: nagaya::admission::Registry,
+    inventory: nagaya::inventory::Inventory,
+) -> ExitCode {
     let notifier = match Notifier::from_env() {
         Ok(notifier) => notifier,
         Err(error) => {

@@ -3,6 +3,7 @@
 pub mod admission;
 pub mod bootstrap;
 pub mod exit;
+pub mod gossip;
 pub mod inventory;
 pub mod lifecycle;
 pub mod notify;

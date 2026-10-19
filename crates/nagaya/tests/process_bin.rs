@@ -1,4 +1,7 @@
+mod support;
+
 use std::io;
+use std::net::UdpSocket;
 use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
@@ -143,6 +146,29 @@ fn ready_and_a_sigterm_exit_zero() {
 }
 
 #[test]
+fn ready_comes_with_gossip_up() {
+    let fixture = Fixture::new("fake");
+    let socket = UnixDatagram::bind(&fixture.notify).unwrap();
+    socket.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let mut child = fixture.spawn(Some(&fixture.notify));
+    let mut lines = support::Lines::new(child.0.as_mut().unwrap().stderr.take().unwrap());
+    let mut buffer = [0u8; 512];
+    socket.recv(&mut buffer).expect("the process sends its loading status");
+    let count = socket.recv(&mut buffer).expect("the process sends READY");
+    assert!(std::str::from_utf8(&buffer[..count]).unwrap().starts_with("READY=1"));
+    let addr = lines.wait_for("gossip listening on ", Duration::from_secs(10));
+    let addr: std::net::SocketAddr = addr.parse().unwrap();
+    assert_ne!(addr.port(), 0);
+    let error = UdpSocket::bind(addr).expect_err("the gossip socket holds the port while the process is ready");
+    assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
+    // SAFETY: the child pid is live, and SIGTERM is the stop signal of spec 10.3.
+    assert_eq!(unsafe { kill(child.id() as i32, SIGTERM) }, 0);
+    let status = wait_timeout(&mut child, Duration::from_secs(10));
+    assert_eq!(status.code(), Some(0));
+    UdpSocket::bind(addr).expect("the port is free after the process exits");
+}
+
+#[test]
 fn a_panic_in_a_group_thread_exits_one() {
     let fixture = Fixture::new("fake-panic");
     let output = output(fixture.spawn(None));
@@ -222,4 +248,19 @@ fn a_profile_without_a_store_budget_exits_three() {
     assert_eq!(output.status.code(), Some(3));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("store.nvme"), "the message must name the key: {stderr}");
+}
+
+#[test]
+fn a_gossip_address_that_is_in_use_exits_three() {
+    let fixture = Fixture::new("fake");
+    let held = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let text = std::fs::read_to_string(&fixture.config).unwrap().replace(
+        "gossip_bind = \"127.0.0.1:0\"",
+        &format!("gossip_bind = \"{}\"", held.local_addr().unwrap()),
+    );
+    std::fs::write(&fixture.config, text).unwrap();
+    let output = output(fixture.spawn(None));
+    assert_eq!(output.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("gossip"), "the message must name gossip: {stderr}");
 }
