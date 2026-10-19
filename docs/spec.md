@@ -68,12 +68,15 @@ An unknown key is an error, so a misspelled key stops the process. v0 has no fla
 file is the only source. Reason: 2.1 names the file, and the engine config is already TOML (ABI "Rust shape"). Two
 sources for one value can disagree.
 
-**Proposed** by Sonnet 5.5, 2026-10-19: the bootstrap config has one more key, `node_name`. It is optional. Its
-default is the machine's host name. The name is the `<host>` of the gossip keys (2.3), and gossip uses it as the node
-id. Each machine in a cluster needs its own name.
+The bootstrap config has one more key, `node_name`. It is optional. Its default is the machine's host name. The name
+is the `<host>` of the gossip keys (2.3), and gossip uses it as the node id. Each machine in a cluster needs its own
+name.
+
+A name has letters, digits, `.`, `_` and `-`, and at least one character. Any other name stops the process with
+exit 3.
 
 Reason for `node_name`: a profile for `<host>` needs a name that a client knows. A test that runs two processes on
-one machine sets two names.
+one machine sets two names. Decided 2026-10-19.
 
 **Proposed** by deepseek-flash, 2026-10-18: the process reads the bootstrap config from the path in the environment
 variable `NAGAYA_CONFIG`. When the variable is unset, it reads `nagaya.toml` in the working directory. Reason: the
