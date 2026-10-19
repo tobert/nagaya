@@ -264,3 +264,21 @@ fn a_gossip_address_that_is_in_use_exits_three() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("gossip"), "the message must name gossip: {stderr}");
 }
+
+#[test]
+fn an_unspecified_gossip_address_exits_three() {
+    for address in ["0.0.0.0:0", "[::]:0"] {
+        let fixture = Fixture::new("fake");
+        let text = std::fs::read_to_string(&fixture.config)
+            .unwrap()
+            .replace("gossip_bind = \"127.0.0.1:0\"", &format!("gossip_bind = \"{address}\""));
+        std::fs::write(&fixture.config, text).unwrap();
+        let output = output(fixture.spawn(None));
+        assert_eq!(output.status.code(), Some(3), "{address}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("gossip_bind"),
+            "the message must name the key for {address}: {stderr}"
+        );
+    }
+}

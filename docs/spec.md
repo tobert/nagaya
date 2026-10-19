@@ -68,6 +68,9 @@ An unknown key is an error, so a misspelled key stops the process. v0 has no fla
 file is the only source. Reason: 2.1 names the file, and the engine config is already TOML (ABI "Rust shape"). Two
 sources for one value can disagree.
 
+The node advertises `gossip_bind` to its peers (2.3). An unspecified address, `0.0.0.0` or `::`, is an address that no
+peer can reach. The process refuses it and exits 3, and the message names `gossip_bind`. Decided 2026-10-19.
+
 The bootstrap config has one more key, `node_name`. It is optional. Its default is the machine's host name. The name
 is the `<host>` of the gossip keys (2.3), and gossip uses it as the node id. Each machine in a cluster needs its own
 name.

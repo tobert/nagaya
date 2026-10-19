@@ -101,3 +101,26 @@ fn a_node_name_with_a_colon_is_refused() {
         );
     }
 }
+
+#[test]
+fn an_unspecified_gossip_address_is_refused() {
+    for address in ["0.0.0.0:8091", "[::]:8091", "0.0.0.0:0"] {
+        let text = REQUIRED_ONLY.replace("127.0.0.1:8091", address);
+        let error = Bootstrap::parse(&text).unwrap_err();
+        assert!(
+            error.to_string().contains("gossip_bind"),
+            "the message must name the key for {address}: {error}"
+        );
+    }
+}
+
+#[test]
+fn a_specified_gossip_address_is_read() {
+    for address in ["127.0.0.1:8091", "[::1]:8091", "198.51.100.20:8091"] {
+        let text = REQUIRED_ONLY.replace("127.0.0.1:8091", address);
+        assert_eq!(
+            Bootstrap::parse(&text).unwrap().gossip_bind,
+            address.parse::<SocketAddr>().unwrap()
+        );
+    }
+}

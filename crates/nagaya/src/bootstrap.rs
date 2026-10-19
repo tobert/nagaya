@@ -82,6 +82,15 @@ impl Bootstrap {
         let config: Self = toml::from_str(text).map_err(|error| BootstrapError::Parse {
             message: error.to_string(),
         })?;
+        if config.gossip_bind.ip().is_unspecified() {
+            // The node advertises this address to its peers (spec 2.3), so a wildcard address can reach no peer.
+            return Err(BootstrapError::Parse {
+                message: format!(
+                    "gossip_bind `{}` is an unspecified address that no peer can reach; use the address of this machine",
+                    config.gossip_bind
+                ),
+            });
+        }
         if let Some(name) = &config.node_name {
             check_node_name(name)?;
         }
