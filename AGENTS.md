@@ -113,7 +113,19 @@ Do them in this order. Each milestone ends with all checks green and one or more
     with the mk engine. Then drive one kaijutsu context against it: kaijutsu speaks council v2 through gogi. Write
     the cutover steps in `docs/deploy.md`, and keep arenas through a restart (10.2) for later. Do not start, stop
     or disable a service: senpai does the cutover with Amy.
-15. Stop and ask Amy for the next milestone.
+15. **Import mk.** Copy mk's engine into `nagaya-mk-qwen38-gfx1151`, after the cutover. We own the copy, and the old
+    repository stays an archive (Amy, 2026-10-19: "copy code in, we own all of it 100%"). The rules:
+    - The HIP device kernels stay HIP. The host code is Rust.
+    - Copy only what the engine needs: the sources of `libmkengine` and what they include. Leave `lab/`, `probes/`,
+      `reference/`, the service and the harness behind. Amy: "don't copy extra stuff".
+    - `build.rs` calls `hipcc` for `gfx1151`. No CMake (Amy: "I'd rather not drag cmake in"). Keep mk's float
+      flags, `-ffp-contract=off -fno-fast-math`, because the conformance gates compare bits.
+    - Link the engine statically. The `libloading` binding and the library pin go, and the build identity takes the
+      pin's place in the engine identity (12.1).
+    - First copy the code with no change in behavior, and run the hip suite and the conformance gates on gfx1151.
+      Then port host code to Rust one part at a time, each with the gates green. Start with the GGUF reader.
+    - Before step one, interview Amy on the copy list and the order of the ports.
+16. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
 
