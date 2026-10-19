@@ -5,12 +5,13 @@ use std::time::Duration;
 use nagaya::admission::{Factory, OpenError, PlanError, Registry};
 use nagaya::exit::ExitCode;
 use nagaya::inventory::{Device, Inventory};
-use nagaya::park::identity_digest;
+use nagaya::park::{StoreBudget, identity_digest};
 use nagaya::process::Start;
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, TierSpec};
 use nagaya::signal::SignalFlag;
 use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{DeviceId, Engine, Limits, OutputsWanted, PartKind, Segment, SegmentInputs, State, Tier, WriteResult};
+use nagaya_ledger::Admission;
 use nagaya_store::{Snapshot, Store, snapshot_from_engine};
 
 struct SeedFactory {
@@ -158,4 +159,20 @@ fn a_stop_writes_every_state_and_a_restore_reads_every_part() {
             assert_eq!(bytes, tensor.data, "part {}", tensor.name);
         }
     }
+}
+
+#[test]
+fn the_store_host_budget_is_the_unassigned_host_bytes() {
+    let admission = Admission {
+        engines: Vec::new(),
+        unassigned: vec![(vec![Tier::Device(0), Tier::Host], 4096), (vec![Tier::Host], 128)],
+    };
+    assert_eq!(
+        StoreBudget::from_admission(&admission),
+        StoreBudget {
+            host: 128,
+            nvme: u64::MAX
+        },
+        "a shared pool is not a store budget"
+    );
 }
