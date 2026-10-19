@@ -138,6 +138,16 @@ results (spec 6.8):
 `arena_id` is the content id of the packed bytes that the engine runs. The identity carries the checkpoint digest
 instead, so a new packing does not change the identity.
 
+### Proposed: the first row of a cells write
+
+**Proposed** by deepseek-flash, 2026-10-19. `cells_write` takes `from`, the position of its first row. The call
+matches `cells_read(state, part, from, n, out)`. A Cells part holds positions from 0, so its write names 0. A Ring
+part may name a later position, because its window moves. An engine that cannot place the rows at `from` returns
+`WriteResult::Refused` and changes nothing. It must not move the rows to another position.
+
+Reason: without `from`, a ring that held positions 2 to 6 came back from the store at positions 0 to 4. That is a
+silent loss of state (spec 8.5).
+
 ## Proposed: v0 Rust shapes
 
 **Proposed** by deepseek-flash, 2026-10-18. The ABI text names the calls and the fields, but it does not fix
