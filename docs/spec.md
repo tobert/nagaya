@@ -102,10 +102,11 @@ state:
 
 Pins and snapshot entries never go in gossip.
 
-**Proposed** by Sonnet 5.5, 2026-10-19: each gossip value is compact JSON, and it has at most 8192 bytes. The nagaya
-refuses to publish a larger value. The refusal names the key and the size. Reason: `chitchat` sends a delta in one
-UDP datagram of at most 65,507 bytes. A node writes a few keys, plus one key for each engine. A profile that does
-not fit in 8192 bytes needs a different path, which is not in v0.
+Each gossip value is compact JSON, and it has at most 8192 bytes. The nagaya refuses to publish a larger value. The
+refusal names the key and the size. Reason: `chitchat` sends a delta in one UDP datagram of at most 65,507 bytes. A
+node writes a few keys, plus one key for each engine.
+
+A profile that does not fit in 8192 bytes needs a different path, which is not in v0. Decided 2026-10-19.
 
 **Proposed** by Sonnet 5.5, 2026-10-19: the value of `profile:desired:<host>` is JSON with two fields. `version` is an
 integer that the client picks. `profile` is the placement profile (2.4) as a JSON object. The machine that takes a
