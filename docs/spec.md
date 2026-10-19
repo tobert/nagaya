@@ -138,15 +138,16 @@ The node writes the key `profile:refused` under its own node. Its value is JSON 
 version. Decided 2026-10-19.
 
 **Proposed** by Sonnet 5.5, 2026-10-19: a node reports a duplicate node name. Amy decided to log it and to publish a
-key (2026-10-19). A chitchat id has the name, a generation and the gossip address. A live peer has this node's name
-and another chitchat id when it differs in the generation or the address.
+key (2026-10-19). A chitchat id has the name, a generation and the gossip address. A live peer is a duplicate when
+it has this node's name and is not this node's own earlier run. An earlier run has this node's gossip address and a
+lower generation.
 
 For each such peer, the node logs one error that names both ids, as `name:generation:address`. It writes the key
 `name:conflict` under its own node. The value is JSON: `{"own": "<id>", "peers": ["<id>", ...]}`. `peers` holds the
-ids of the live peers with this node's name, in sorted order. The node removes the key when no such peer is live.
+ids of the duplicates, in sorted order.
 
-The node takes no other action. A restart of a node can show its old generation as a live peer, until the failure
-detector marks it dead. The node logs that peer too, and it removes the key when the peer is dead.
+A peer with another address is a duplicate. A peer with this address and a generation that is not lower is a
+duplicate too. The node takes no other action. It removes the key when no duplicate is live.
 
 **2.4 Placement profile.** A placement profile names a machine's engines, their devices, their config, each tier's
 budget (4.1), each engine's share (D9), and pinned identities (12.1). A client reads or updates a machine's profile
