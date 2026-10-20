@@ -2728,3 +2728,89 @@ fn a_failed_quarantine_write_loses_no_host_bytes() {
     assert!(quarantine.join(first.hex()).exists());
     assert_eq!(std::fs::read_dir(&quarantine).unwrap().count(), 2);
 }
+
+/// The index as a person sees it: the entries, the pins and the refused recipes.
+fn view(store: &Store) -> String {
+    format!("{:?} {:?} {:?}", store.entries(), store.pins(), store.refused())
+}
+
+#[test]
+fn a_failed_pin_changes_nothing() {
+    // Kaibo job 2, finding 5 (6.10): a refused pin changes nothing.
+    for point in [
+        nagaya_store::FailPoint::IndexWrite,
+        nagaya_store::FailPoint::IndexRename,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        let id = put(&mut store, &base_snapshot(1), recipe(181), 1);
+        let before = view(&store);
+        store.fail_next(point);
+        assert!(store.pin(id, 1, 100, 10).is_err());
+        assert_eq!(view(&store), before, "{point:?}");
+        assert!(store.pins().is_empty());
+    }
+}
+
+#[test]
+fn a_failed_unpin_changes_nothing() {
+    for point in [
+        nagaya_store::FailPoint::IndexWrite,
+        nagaya_store::FailPoint::IndexRename,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        let id = put(&mut store, &base_snapshot(1), recipe(182), 1);
+        store.pin(id, 1, 100, 10).unwrap();
+        store.pin(id, 2, 100, 10).unwrap();
+        let before = view(&store);
+        store.fail_next(point);
+        assert!(store.unpin(&id, 1).is_err());
+        assert_eq!(view(&store), before, "{point:?}");
+        assert_eq!(store.pins().get(&id).unwrap().len(), 2);
+    }
+}
+
+#[test]
+fn a_failed_lookup_and_pin_adds_no_pin() {
+    for point in [
+        nagaya_store::FailPoint::IndexWrite,
+        nagaya_store::FailPoint::IndexRename,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        let recipe = recipe(183);
+        put(&mut store, &base_snapshot(1), recipe, 1);
+        let mut engine = FakeAlways::new();
+        store.fail_next(point);
+        let pin = Pin {
+            owner: 1,
+            expires_ms: 100,
+        };
+        let result = store.lookup_and_pin(recipe, &Tolerance::Exact, &mut engine, 0, pin, 10);
+        assert!(result.is_err());
+        assert!(store.pins().is_empty(), "{point:?}");
+    }
+}
+
+#[test]
+fn a_failed_clear_entry_leaves_the_entry_quarantined() {
+    for point in [
+        nagaya_store::FailPoint::IndexWrite,
+        nagaya_store::FailPoint::IndexRename,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        let id = put(&mut store, &base_snapshot(1), recipe(184), 1);
+        let mut target = FakeAlways::new();
+        assert!(store.restore(&id, &mut target, State::Slot(0), &[9u8; 32], 10).is_err());
+        assert_eq!(store.entries().get(&id).unwrap().state, EntryState::Quarantined);
+        let before = view(&store);
+        store.fail_next(point);
+        assert!(store.clear_entry(&id).is_err());
+        assert_eq!(view(&store), before, "{point:?}");
+        // The entry is still quarantined, so a retry does the work.
+        store.clear_entry(&id).unwrap();
+        assert_eq!(store.entries().get(&id).unwrap().state, EntryState::Live);
+    }
+}

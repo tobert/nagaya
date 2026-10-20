@@ -1361,10 +1361,11 @@ impl Store {
     ) -> Result<Vec<ContentId>, StoreError> {
         check_pin_lease(pin.expires_ms, now_ms)?;
         let chain = self.lookup(recipe, tolerance, engine, slot, now_ms)?;
+        let mut pins = self.index.pins.clone();
         for id in &chain {
-            set_pin(&mut self.index.pins, *id, pin.clone());
+            set_pin(&mut pins, *id, pin.clone());
         }
-        self.persist()?;
+        self.persist_pins(pins)?;
         Ok(chain)
     }
 
@@ -1509,19 +1510,31 @@ impl Store {
         if entry.state != EntryState::Live {
             return Err(StoreError::Quarantined(id));
         }
-        set_pin(&mut self.index.pins, id, Pin { owner, expires_ms });
-        self.persist()
+        let mut pins = self.index.pins.clone();
+        set_pin(&mut pins, id, Pin { owner, expires_ms });
+        self.persist_pins(pins)
     }
 
     /// Remove the pin of one owner. The pins of other owners stay (spec 6.10).
     pub fn unpin(&mut self, id: &ContentId, owner: u64) -> Result<(), StoreError> {
-        if let Some(pins) = self.index.pins.get_mut(id) {
-            pins.retain(|pin| pin.owner != owner);
-            if pins.is_empty() {
-                self.index.pins.remove(id);
+        let mut pins = self.index.pins.clone();
+        if let Some(held) = pins.get_mut(id) {
+            held.retain(|pin| pin.owner != owner);
+            if held.is_empty() {
+                pins.remove(id);
             }
         }
-        self.persist()
+        self.persist_pins(pins)
+    }
+
+    /// Replace the pins and write the index. A failed write puts the old pins back.
+    fn persist_pins(&mut self, pins: BTreeMap<ContentId, Vec<Pin>>) -> Result<(), StoreError> {
+        let previous = std::mem::replace(&mut self.index.pins, pins);
+        if let Err(error) = self.persist() {
+            self.index.pins = previous;
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Clear a tripwire refusal after a person knows the cause.
@@ -1598,13 +1611,19 @@ impl Store {
         if snapshot.parent != entry.parent || coverage_of(&snapshot) != entry.coverage {
             return Err(StoreError::Invalid("the index disagrees with the blob".to_owned()));
         }
-        if let Some(entry) = self.index.entries.get_mut(id) {
+        let mut index = self.index.clone();
+        if let Some(entry) = index.entries.get_mut(id) {
             entry.state = EntryState::Live;
             entry.quarantine = None;
             entry.check = Check::Full;
         }
+        let previous = std::mem::replace(&mut self.index, index);
+        if let Err(error) = self.persist() {
+            self.index = previous;
+            return Err(error);
+        }
         self.checked.insert(*id);
-        self.persist()
+        Ok(())
     }
 
     /// Choose and remove victims for an owner in one tier. A byte in one tier does not make room in the other (6.9).
