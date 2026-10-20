@@ -188,6 +188,11 @@ cargo test -p nagaya-mk-qwen38-gfx1151 --tests --features hip -- --test-threads=
 
 `cargo test --lib` does not compile integration tests. Name `--tests`.
 
+On gfx1151host, run the oracle bench with `MK_ENGINE_LIB` and `MK_SHARDS` set and the service inactive:
+`cargo bench -p nagaya-mk-qwen38-gfx1151 --features hip --bench oracle`. It exits with 1 when a tolerance breaks.
+Make the fixture again with `PYTHONDONTWRITEBYTECODE=1 nice -n 19 ionice -c3 <mk venv python> -I tools/oracle_fixture.py
+OUT.json`. It needs about 30 GiB of RAM, and it must not run with a GPU job.
+
 `tools/ste_check.py` checks Markdown only, and it allows 25 words in each sentence. Comments and commit messages
 have no check. Keep instructions at 20 words or fewer yourself.
 
