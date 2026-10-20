@@ -175,6 +175,28 @@ fn tojson_writes_what_python_writes() {
 }
 
 #[test]
+fn tojson_writes_keys_that_are_not_strings_as_python_does() {
+    let fixture = fixture("tojson_keys.json");
+    let cases = fixture.get("cases").items();
+    assert!(cases.len() >= 20);
+    let mut refused = 0;
+    for case in cases {
+        let source = case.get("src").str();
+        if case.has("error") {
+            refused += 1;
+            assert!(small(source, "[]").is_err(), "Python refuses {source}");
+        } else {
+            assert_eq!(
+                small(source, "[]").unwrap(),
+                case.get("out").str(),
+                "tojson of {source}"
+            );
+        }
+    }
+    assert_eq!(refused, 2);
+}
+
+#[test]
 fn trim_strips_what_python_strips() {
     let cases = chat_fixture().get("trim").items();
     assert!(cases.len() >= 22);
