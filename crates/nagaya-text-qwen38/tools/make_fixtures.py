@@ -310,6 +310,32 @@ def decode_refusal(tok, ids: list[int], what: str) -> dict:
     sys.exit(f"mk decodes {what}: the fixture would be wrong")
 
 
+def chat_refusal(e: Exception) -> dict:
+    """How mk refused a chat. The kinds: `raise_exception` (the template's own message in `reason`), `reserved` (a
+    noncharacter, with `char` and `offset`), `undefined` and `template` (an error of the template engine), and
+    `exception` (a Python exception that mk does not catch, such as a TypeError)."""
+    import re
+    import jinja2
+    from service.common import BadRequest
+    out = {"error": str(e), "exception": type(e).__name__}
+    if isinstance(e, BadRequest):
+        cause = e.__cause__
+        if cause is None or isinstance(cause, ValueError):
+            m = re.search(r"U\+([0-9A-F]{4,6}) at offset (\d+) is a Unicode noncharacter", str(e))
+            if m is None:
+                sys.exit(f"mk refuses with a message that I do not know: {e}")
+            out.update(kind="reserved", char=m.group(1), offset=int(m.group(2)))
+        elif type(cause) is jinja2.TemplateError:
+            out.update(kind="raise_exception", reason=str(cause))
+        elif isinstance(cause, jinja2.UndefinedError):
+            out.update(kind="undefined")
+        else:
+            out.update(kind="template")
+    else:
+        out.update(kind="exception")
+    return out
+
+
 def hexs(b: bytes) -> str:
     return b.hex()
 
@@ -570,18 +596,16 @@ def main() -> None:
     chat_out, chat_err = [], []
     for c in chat:
         kw = {k: c[k] for k in ("thinking", "generation_prompt", "reasoning_effort") if k in c}
+        for flag in ("thinking", "generation_prompt"):
+            if flag in kw and not isinstance(kw[flag], bool):
+                sys.exit(f"case {c['name']}: {flag} must be a bool")
         try:
             escaped, ids = render_messages(template, tok, c["messages"], c.get("tools"), kw.get("thinking", True),
                                            kw.get("generation_prompt", True), kw.get("reasoning_effort"))
-        except BadRequest as e:
-            chat_err.append({**c, "error": str(e)})
+        except Exception as e:  # noqa: BLE001 - every kind of refusal is a fixture
+            chat_err.append({**c, **chat_refusal(e)})
             continue
         chat_out.append({**c, "escaped": escaped, "text": tok.unescape(escaped), "ids": ids})
-    methods = run_cases(Template, method_cases())
-    dump_cases(OUT / "jinja.json", header, {"sweep": pystr_sweep(), "methods": methods,
-                                           "formats": run_cases(Template, format_cases()),
-                                           "tests": run_cases(Template, test_cases()),
-                                           "undefined": run_cases(Template, undefined_cases())})
     # The filters of the template engine that the chat template uses, on their own.
     from service.template import _tojson
     tojson = []
@@ -1002,6 +1026,104 @@ def chat_cases() -> list[dict]:
         + [U("final")])
     add("ids_unicode_mix", [S("あいう ☃"), U("é \U0001f680 مرحبا")])
     add("extra_message_keys", [{"role": "user", "content": "x", "name": "bob", "extra": [1, 2]}])
+    # Input that the API does not promise, as mk's jinja2 reads it (review finding F7 of milestone 11). A role that is
+    # missing, a bare string for a message, a tool without parameters, numbers and bools in content, and nested values.
+    add("no_role_only", [{"content": "x"}])
+    add("no_role_between", [U("a"), {"content": "x"}, U("b")])
+    add("no_role_no_content", [{}])
+    add("role_none", [{"role": None, "content": "x"}])
+    add("role_int", [{"role": 5, "content": "x"}])
+    add("role_list", [{"role": ["user"], "content": "x"}])
+    add("role_uppercase", [{"role": "User", "content": "x"}])
+    add("bare_string_only", ["hi"])
+    add("bare_string_between", [U("a"), "bare", U("b")])
+    add("bare_string_first", ["bare", U("a")])
+    add("bare_int", [5])
+    add("bare_none", [None])
+    add("bare_list", [[1]])
+    add("bare_empty_dict", [{}])
+    add("tool_no_parameters", [U("x")], tools=[{"type": "function", "function": {"name": "f", "description": "d"}}])
+    add("tool_no_function", [U("x")], tools=[{"type": "function"}])
+    add("tool_null_parameters", [U("x")], tools=[{"type": "function", "function": {"name": "f", "parameters": None}}])
+    add("tool_bare_string", [U("x")], tools=["just a string"])
+    add("tool_bare_int", [U("x")], tools=[5])
+    add("tool_bare_none", [U("x")], tools=[None])
+    add("tool_bare_list", [U("x")], tools=[[1, "a"]])
+    add("tools_a_map", [U("x")], tools={"type": "function"})
+    add("tools_a_string", [U("x")], tools="abc")
+    add("tools_an_int", [U("x")], tools=5)
+    add("tools_a_true", [U("x")], tools=True)
+    add("tools_false", [U("x")], tools=False)
+    add("tools_none", [U("x")], tools=None)
+    add("tools_empty_string", [U("x")], tools="")
+    add("tools_empty_map", [U("x")], tools={})
+    add("content_float", [{"role": "user", "content": 1.5}])
+    add("content_float_big", [{"role": "user", "content": 1e16}])
+    add("content_int_zero", [{"role": "user", "content": 0}])
+    add("content_true", [{"role": "user", "content": True}])
+    add("content_false", [{"role": "user", "content": False}])
+    add("content_none_user", [{"role": "user", "content": None}, A("a")])
+    add("content_none_system", [{"role": "system", "content": None}, U("a")])
+    add("content_none_tool", [U("x"), {"role": "tool", "content": None}])
+    add("content_empty_list", [{"role": "user", "content": []}])
+    add("content_empty_dict", [{"role": "user", "content": {}}])
+    add("content_float_assistant", [U("q"), {"role": "assistant", "content": 2.5}])
+    add("content_bool_tool", [U("q"), {"role": "tool", "content": True}])
+    add("part_text_float", [{"role": "user", "content": [{"type": "text", "text": 1.5}]}])
+    add("part_text_float_big", [{"role": "user", "content": [{"text": 1e16}, {"text": 1e-5}]}])
+    add("part_text_bool", [{"role": "user", "content": [{"type": "text", "text": True}]}])
+    add("part_text_none", [{"role": "user", "content": [{"type": "text", "text": None}]}])
+    add("part_text_int", [{"role": "user", "content": [{"text": 7}]}])
+    add("part_text_list", [{"role": "user", "content": [{"text": [1, "a'b", None]}]}])
+    add("part_text_dict", [{"role": "user", "content": [{"text": {"k": "v", "n": [1.5]}}]}])
+    add("part_string_item", [{"role": "user", "content": ["bare part"]}])
+    add("part_string_item_with_image", [{"role": "user", "content": ["an image of x"]}])
+    add("part_string_item_with_video", [{"role": "user", "content": ["video here"]}])
+    add("part_string_item_with_text", [{"role": "user", "content": ["text"]}])
+    add("part_int_item", [{"role": "user", "content": [5]}])
+    add("part_none_item", [{"role": "user", "content": [None]}])
+    add("part_list_item", [{"role": "user", "content": [[{"text": "x"}]]}])
+    add("part_list_item_image", [{"role": "user", "content": [["image"]]}])
+    add("part_empty_dict", [{"role": "user", "content": [{}]}])
+    add("part_type_int", [{"role": "user", "content": [{"type": 5, "text": "x"}]}])
+    add("part_type_image_with_text", [{"role": "user", "content": [{"type": "image", "text": "x"}]}])
+    add("part_image_key_none", [{"role": "user", "content": [{"image": None}]}])
+    add("part_video_key_only", [{"role": "user", "content": [{"video": "v"}, {"text": "after"}]}])
+    add("part_text_empty_key", [{"role": "user", "content": [{"text": ""}, {"text": " "}]}])
+    add("parts_in_assistant", [U("q"), A([{"type": "text", "text": "part"}])])
+    add("parts_in_tool", [U("q"), {"role": "tool", "content": [{"type": "text", "text": "r"}, {"type": "image"}]}])
+    add("parts_in_system", [S([{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]), U("q")])
+    add("parts_image_in_system", [S([{"type": "image"}]), U("q")])
+    add("parts_video_in_system", [S([{"type": "video"}]), U("q")])
+    add("nested_arguments", [U("x"), A("", tool_calls=[{"function": {"name": "f", "arguments": {
+        "a": {"b": [1, {"c": None}]}, "d": [[1, 2], [3]], "e": {"f": {"g": "h"}}, "s": ["x", "y z"], "f": 1.5,
+        "big": 1e22, "u": "\u00e9\u4e16", "t": True, "n": None, "z": 0, "q": "it's \"q\""}}}])])
+    add("nested_arguments_empty", [U("x"), A("", tool_calls=[{"function": {"name": "f", "arguments": {
+        "a": {}, "b": [], "c": [[]], "d": [{}], "e": ""}}}])])
+    add("arguments_int", [U("x"), A("", tool_calls=[{"function": {"name": "f", "arguments": 5}}])])
+    add("arguments_true", [U("x"), A("", tool_calls=[{"function": {"name": "f", "arguments": True}}])])
+    add("arguments_false", [U("x"), A("", tool_calls=[{"function": {"name": "f", "arguments": False}}])])
+    add("arguments_zero", [U("x"), A("", tool_calls=[{"function": {"name": "f", "arguments": 0}}])])
+    add("arguments_empty_list", [U("x"), A("", tool_calls=[{"function": {"name": "f", "arguments": []}}])])
+    add("tool_call_name_int", [U("x"), A("", tool_calls=[{"function": {"name": 5, "arguments": {}}}])])
+    add("tool_call_name_bool", [U("x"), A("", tool_calls=[{"function": {"name": True, "arguments": {}}}])])
+    add("tool_call_name_list", [U("x"), A("", tool_calls=[{"function": {"name": ["f"], "arguments": {}}}])])
+    add("tool_call_name_empty", [U("x"), A("", tool_calls=[{"function": {"name": "", "arguments": {}}}])])
+    add("tool_calls_a_map", [U("x"), A("", tool_calls={"function": {"name": "f", "arguments": {}}})])
+    add("tool_calls_a_string", [U("x"), A("", tool_calls="abc")])
+    add("tool_calls_an_int", [U("x"), A("", tool_calls=5)])
+    add("tool_calls_none", [U("x"), A("", tool_calls=None)])
+    add("tool_call_not_a_map", [U("x"), A("", tool_calls=[5])])
+    add("tool_call_a_string", [U("x"), A("", tool_calls=["f"])])
+    add("tool_call_function_string", [U("x"), A("", tool_calls=[{"function": "f"}])])
+    add("tool_call_function_null", [U("x"), A("", tool_calls=[{"function": None}])])
+    add("tool_call_function_list", [U("x"), A("", tool_calls=[{"function": ["f"]}])])
+    add("tool_call_function_and_name", [U("x"), A("", tool_calls=[{"name": "outer", "function": {"name": "inner",
+                                                                                                "arguments": {}}}])])
+    add("reasoning_dict", [U("q"), A("a", reasoning_content={"k": 1}), U("q2")])
+    add("reasoning_none", [U("q"), A("a", reasoning_content=None), U("q2")])
+    add("reasoning_in_user", [{"role": "user", "content": "x", "reasoning_content": "r"}])
+    add("tool_calls_in_user", [{"role": "user", "content": "x", "tool_calls": [{"function": {"name": "f"}}]}])
     return cases
 
 
