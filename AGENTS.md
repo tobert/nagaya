@@ -50,7 +50,7 @@ unified memory. The first engine is mk (`~/src/megakernel-qwen38-flashnext-strix
 
 ### Layout
 
-The eight crates live in directories under `crates/`. Use these crates:
+The ten crates live in directories under `crates/`. Use these crates:
 
 | Crate | Holds | Spec |
 |---|---|---|
@@ -59,7 +59,9 @@ The eight crates live in directories under `crates/`. Use these crates:
 | `nagaya-ledger` | budgets, terms, admission, shares, reclaim order | 4, D9 |
 | `nagaya-sched` | jobs, quanta, classes, the order of ready quanta | 5 |
 | `nagaya-mk-qwen38-gfx1151` | the mk engine: an FFI binding to `libmkengine.so` and the `Engine` trait on top | ABI "How mk maps" |
-| `nagaya-text-qwen38` | the Qwen3.8 family library: tokenizer, chat template, detokenizer | 11.3 |
+| `nagaya-council` | council v2 logic with no I/O: the family interface, the sampler, request checks | 11 |
+| `nagaya-text-qwen38` | the Qwen3.8 family library: tokenizer, templates, detokenizer, reply parser | 11.3, 11.3a |
+| `nagaya-text-toy` | the toy family library on gogi's `gogi-toy`, for tests with the fake engine | 11.3b |
 | `nagaya-conformance` | the conformance suite (8.3), generic over the `Engine` trait | 8.3 |
 | `nagaya` | the process: bootstrap config, threads, HTTP, gossip, systemd | 2, 3, 9-11 |
 
@@ -67,9 +69,9 @@ Crate names follow `nagaya-<kind>-<model>-<target>`. The kind `mk` is a megakern
 and version without dots. The target is the compiler's device target, for example `gfx1151`. The device count is the
 profile's business.
 
-Keep pure logic out of `nagaya-mk-qwen38-gfx1151` and `nagaya`. The ledger, the store and the scheduler run in tests
-with no GPU. The ledger is a plain owned type with `&mut self` methods. Do not wrap it in a lock: one thread owns it
-(3.2).
+Keep pure logic out of `nagaya-mk-qwen38-gfx1151` and `nagaya`. The ledger, the store, the scheduler and the
+council logic run in tests with no GPU. The ledger is a plain owned type with `&mut self` methods. Do not wrap it
+in a lock: one thread owns it (3.2).
 
 ### Milestones
 
@@ -113,14 +115,30 @@ Do them in this order. Each milestone ends with all checks green and one or more
     - Each gap is a step with a test that fails first. A gap that needs a decision goes to Amy.
     - A rule for a part that no milestone built yet waits for the milestone that builds that part. The audit lists
       it as deferred.
-12. **Council v2.** Serve council v2 for the engines of the profile, with one sampler (11.1, 11.2, 11.5). gogi is
-    the contract: `~/src/gogi/docs/council-api.md` and the types in `gogi-proto`. Run `gogi-conformance` against
-    the process with the fake engine; coordinator routing waits for a second machine. Test the sampler against fixed
-    outputs of mk's `service/sampling.py`, made from fixed logits, settings and seeds, as in milestone 11. The draw
-    keeps no state (11.2), so it does not match mk's PCG64 bits. Match the filter order and the probabilities.
-    - Also build the scheduler's part of interval copies (6.13), and declare mk's grain when it works.
-    - Restore through `Store::restore` in the conformance gates (8.3), and refuse an interval copy as a parent
-      (6.13). The ledger counts per-context terms when it admits `ctx_new` (4.2).
+12. **Council v2.** Serve council v2 for the engines of the profile, with one sampler (11.1-11.3b, 11.5). gogi is
+    the contract: `~/src/gogi/docs/council-api.md` and the types in `gogi-proto`. Coordinator routing waits for a
+    second machine. Serve the core capabilities only (11.1). Do the steps in this order:
+    1. **gogi-toy.** In gogi, move the toy tokenizer, template and model out of `gogi-fake` into a new crate
+       `gogi-toy`. Add a reply parser for calls and thinking. `gogi-fake` uses the new crate. gogi's `AGENTS.md`
+       applies there: do not run `cargo fmt` in gogi. Amy decided this on 2026-10-20.
+    2. **Sampler.** In `nagaya-council`, write the sampler of 11.2. Test it against fixed outputs of mk's
+       `service/sampling.py`, made from fixed logits, settings and seeds, as in milestone 11. The draw keeps no state,
+       so it does not match mk's PCG64 bits. Match the filter order and the probabilities.
+    3. **Family interface.** In `nagaya-council`, write the interface of a family library. It renders a context with its
+       boundaries and a council read (11.3a), parses a reply, and gives the template id. Write
+       `nagaya-text-toy` on `gogi-toy`. Give the fake engine logits over the toy vocabulary.
+    4. **Qwen3.8 council.** In `nagaya-text-qwen38`, port mkviolet's council rendering (`src/template.rs` and its
+       council code) to Qwen3.8 tokens, and the reply parser of mk's `service/chatfmt.py`. Test the parser against
+       fixed outputs of mk's Python. Test the template id: a comment edit keeps it, and a token change changes it.
+    5. **Job path.** In `nagaya`, take a request to an engine through `nagaya-sched`. Build a context: look up the
+       longest held prefix by recipe (6.6), restore it, feed the rest, and put a snapshot at each boundary.
+    6. **HTTP.** Serve the council routes with `axum` on the control runtime: identity, contexts, snapshots, pins,
+       specs, decisions, reads and generations with SSE. Use gogi's error body and request ids (11.5). Specs persist
+       in the store directory. Run `gogi-conformance` against the process with the fake engine, in a test.
+    7. **Follow-ups.** Build the scheduler's part of interval copies (6.13), and declare mk's grain when it works.
+       Restore through `Store::restore` in the conformance gates (8.3), and refuse an interval copy as a parent
+       (6.13). The ledger counts per-context terms when it admits `ctx_new` (4.2). This step does not wait for the
+       others.
 13. **Observability.** Log to stderr. Export traces and metrics over OTLP when the endpoint is set (9.1-9.5). Each
     instrument has a call site under test.
 14. **Deploy on gfx1151host.** Write a systemd user unit in `deploy/` (10.1). The bootstrap config binds

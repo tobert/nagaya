@@ -111,7 +111,7 @@ recipe, tagged with the method. A lookup returns only snapshots in the served mo
 
 A **served model** is one name that clients send in council v2's `model` field (gogi). It names an engine and a
 tolerance. A request never carries a tolerance. An approximation is a served model of its own, with its own name
-(gogi `docs/council-api-v2.md`, "Served models").
+(gogi `docs/council-api.md`, "Served models").
 
 **Store.** The one content-addressed store on each machine. It holds the snapshots of every engine in host memory
 and on NVMe, with budgets from the ledger (`docs/spec.md` section 6).

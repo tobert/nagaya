@@ -936,8 +936,8 @@ restarts it within its start limit. A message on stderr names the engine and the
 ## 11. Client API
 
 **11.1 Council and coordinator routing.** The nagaya serves council v2 for all engines in the cluster. It does not
-serve v1: no client speaks v1 (gogi `docs/council-api.md`). The contract is gogi (`~/src/gogi`):
-`docs/council-api-v2.md`, the types in `gogi-proto`, and the suite in `gogi-conformance`. mkviolet and kaijutsu move
+serve v1, because no client speaks v1. The contract is gogi (`~/src/gogi`): `docs/council-api.md`, the types in
+`gogi-proto`, and the suite in `gogi-conformance`. mkviolet and kaijutsu move
 to the same gogi before the nagaya serves them (Amy, 2026-10-18).
 
 Any machine can receive any request and act as its coordinator (Cassandra style). Clients prefer a coordinator with
@@ -961,6 +961,11 @@ responses, a snapshot `id` is its BLAKE3 content id (`blake3:<hex>`), and the st
 - A served model that is not `ready` gets 503 `model_unavailable`.
 - `class` is `interactive` (the default) or `batch` (5.3). `priority` is an `i32`, 0 by default (5.4).
 - A request carries no tolerance. Its served model sets the tolerance (6.6).
+
+**Capabilities.** Milestone 12 declares `reads`, `generate`, `dry_run` and `leave_one_out` for each served model. It
+declares `pins` and `classes` for the server. Decided 2026-10-20 (Amy chose the core set). `describe`, `think`,
+`ride` and `tiers` come in a later milestone. A request that needs one of them is a 400 that names it (gogi
+"Errors").
 
 Pooling and the decision numbers come from `gogi_proto::math`, which all engines share. The council
 `identity.engine` covers two things: the engine identity, and the nagaya code that turns logits into decisions.
@@ -1047,18 +1052,42 @@ milestones 11 and 11b).
 - The tokenizer reads `tokenizer.ggml.token_type` of any integer type. A value that does not fit a signed 64-bit
   integer, and any float, is an error. A special token with an empty text is an error. mk builds an empty
   alternative that splits the text at every position, so a file like that is a mistake.
-- The parsers for tool calls and thinking (`service/chatfmt.py`, `ReplyTracker`) are not in this milestone.
-  The tokenizer, the template and the detokenizer come first.
+- The parsers for tool calls and thinking come in milestone 12. They match mk's `service/chatfmt.py`
+  (`ReplyTracker`), and fixed outputs of mk's Python test them. Milestone 11 built the tokenizer, the template and
+  the detokenizer.
+
+**11.3a Council rendering.** A decision and a raw read put a spec, a case and a letter menu after each context. The
+nagaya renders them with mkviolet's rules (mkviolet `src/template.rs` and its council code), ported to each family.
+The family library holds the port, because the tokens belong to the family. Decided 2026-10-20 (Amy: "mkviolet is
+the most recent; mk is a bit behind. so port mkviolet's rules").
+
+A served model's `template` in council identity has two parts: `nagaya-council:<hash>+<family>-chat:<hash>`.
+
+- The first hash is over the tokens of a fixed set of test renders. The family library keeps the set: specs, cases
+  and contexts. Thus the id changes only when the rendered tokens change.
+- An edit to a comment or a change in the code structure keeps the id. Thus it keeps the thresholds that clients
+  fitted (gogi rule 6).
+- The id has no hand version, such as the `-1` of mkviolet's `mkv-letters-1`. The hash does that work.
+- The second hash is the digest of the chat template text (12.1).
+- Each hash is the first 16 hex digits of a SHA-256.
+
+Decided 2026-10-20 (Amy chose the name `nagaya-council`).
+
+**11.3b The toy family.** The fake engine has no real tokenizer. For tests, it serves the toy family of gogi's
+`gogi-toy` crate. Its tokens are the 256 byte values and 14 template markers, and its template is the template of
+`gogi-fake`. The family library `nagaya-text-toy` puts the nagaya's family interface on `gogi-toy`, and the fake
+engine gives logits over the toy vocabulary. Thus `gogi-conformance` runs against the process with the fake engine, and
+needs no GPU and no GGUF. Decided 2026-10-20 (Amy: "extend gogi to have what we need").
 
 **11.4 `/mk/v1`.** kaijutsu's mk provider uses `model`, `render` and `generate` (mkviolet `mk_api.rs`).
 
 Decided 2026-10-17: the nagaya does not serve `/mk/v1`. kaijutsu moves to council v2 and uses the gogi reference
 (`~/src/gogi`). Amy: "kaijutsu will move to council v2 and use the new gogi (~/src/gogi) reference. it's happening
 now, on b70host". In council v2 the server renders messages with its model's own template, and the template is
-part of identity (gogi `docs/council-api-v2.md`, "Terms").
+part of identity (gogi `docs/council-api.md`, "Terms").
 
 **11.4a Extensions.** gogi puts model-specific routes under the server's own prefix, listed in
-`identity.extensions` (gogi `docs/council-api-v2.md`, "Extensions"). The nagaya's prefix is `/nagaya/v1`:
+`identity.extensions` (gogi `docs/council-api.md`, "Extensions"). The nagaya's prefix is `/nagaya/v1`:
 
 - `profile` and `cluster`: dynamic placement profiles and the `chitchat` cluster view (2.3, 2.4);
 - `cas/{content_id}`: plain HTTP `GET` and `HEAD` for content-addressed snapshots and tap artifacts across machines;
@@ -1067,7 +1096,7 @@ part of identity (gogi `docs/council-api-v2.md`, "Terms").
 - `status` (9.7) and `traces` (13.1).
 
 **11.5 Errors.** All routes use gogi's error body, `{"error": {"type", "message", "param"?}, "request_id"}`, and the
-`request-id` header. Council routes use only gogi's error table (gogi `docs/council-api-v2.md`, "Errors"). The
+`request-id` header. Council routes use only gogi's error table (gogi `docs/council-api.md`, "Errors"). The
 `/nagaya/v1` routes add two codes:
 
 | Code | `error.type` | When |
