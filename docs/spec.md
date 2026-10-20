@@ -1133,6 +1133,32 @@ Decided 2026-10-20 (Amy chose the name `nagaya-council`).
 engine gives logits over the toy vocabulary. Thus `gogi-conformance` runs against the process with the fake engine, and
 needs no GPU and no GGUF. Decided 2026-10-20 (Amy: "extend gogi to have what we need").
 
+**11.3c The job path of a build.** A build renders a context, finds the longest held prefix, restores it, feeds the
+rest, and holds a snapshot at each boundary. These notes fix the choices that the text above leaves open.
+
+- **Proposed** (Claude Sonnet 5.5, 2026-10-20), the store and the group thread. `lookup` and `restore` take the
+  engine, and the engine lives on its group thread (3.2). Thus a build runs them on the group thread, and the store
+  sits behind a mutex that the group threads and the park thread share. The ledger stays on its own thread. A build
+  asks it by message.
+- **Proposed** (Claude Sonnet 5.5, 2026-10-20), the quanta of a build. The first quantum has the kind `copy`. It
+  chooses a slot, looks up the prefixes and restores the longest one. It then adds the other quanta to the job.
+- **Proposed** (Claude Sonnet 5.5, 2026-10-20), the same. A feed of at most `max_pass_inputs` tokens is `prefill`.
+  A seal and a put at a boundary is `copy`. A feed never crosses a boundary.
+- **Proposed** (Claude Sonnet 5.5, 2026-10-20), the seal. A build calls `seal` at each boundary that it passes,
+  before it reads the parts. A snapshot is a context sealed at a boundary (ontology). An engine without `seal` skips
+  the call.
+- **Proposed** (Claude Sonnet 5.5, 2026-10-20), the slot. A build takes the lowest free slot where the prompt fits
+  (`fits` on each cells part). A build that fits no slot is `too_large`. A build with no free slot is `busy`.
+- **Proposed** (Claude Sonnet 5.5, 2026-10-20), what a build lists. The response lists the boundaries that the
+  store holds when the build ends. A boundary that eviction removed, below the start of the build, is not made
+  again. A dry run feeds nothing and lists no snapshot.
+- **Proposed** (Claude Sonnet 5.5, 2026-10-20), the head of a dry run. A dry run reports the head only when the
+  store holds it. Otherwise the head is null. gogi types `head` as required, so step 6 needs Amy to choose: change
+  gogi, or name the recipe.
+- **Proposed** (Claude Sonnet 5.5, 2026-10-20), the pin owner. gogi names an owner with text, and the store names
+  it with a `u64`. The service keeps the text and gives the store the first 8 bytes of the BLAKE3 hash of the text. A
+  restart keeps the text in `pins.json` in the store directory. Entries that builds put have the owner 1.
+
 **11.4 `/mk/v1`.** kaijutsu's mk provider uses `model`, `render` and `generate` (mkviolet `mk_api.rs`).
 
 Decided 2026-10-17: the nagaya does not serve `/mk/v1`. kaijutsu moves to council v2 and uses the gogi reference
