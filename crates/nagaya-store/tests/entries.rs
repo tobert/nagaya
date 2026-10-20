@@ -1437,20 +1437,56 @@ fn an_index_mismatch_in_a_middle_entry_is_found() {
     );
 }
 
-#[test]
-fn an_unreadable_blob_quarantines_with_read() {
-    let dir = tempfile::tempdir().unwrap();
+/// Put one entry, then make its blob unreadable: a directory takes the place of the file.
+fn store_with_unreadable_blob(dir: &Path) -> (Store, ContentId, RecipeId, Vec<u8>) {
+    let recipe = recipe(159);
     let id;
     {
-        let mut store = Store::open(dir.path()).unwrap();
-        id = put(&mut store, &base_snapshot(1), recipe(159), 1);
+        let mut store = Store::open(dir).unwrap();
+        id = put(&mut store, &base_snapshot(1), recipe, 1);
     }
-    let path = dir.path().join("blobs").join(id.hex());
+    let path = dir.join("blobs").join(id.hex());
+    let bytes = std::fs::read(&path).unwrap();
     std::fs::remove_file(&path).unwrap();
     std::fs::create_dir(&path).unwrap();
-    let mut store = Store::open(dir.path()).unwrap();
+    (Store::open(dir).unwrap(), id, recipe, bytes)
+}
+
+fn repair_blob(dir: &Path, id: &ContentId, bytes: &[u8]) {
+    let path = dir.join("blobs").join(id.hex());
+    std::fs::remove_dir(&path).unwrap();
+    std::fs::write(&path, bytes).unwrap();
+}
+
+#[test]
+fn a_read_error_in_a_lookup_is_a_miss_and_not_a_quarantine() {
+    // Spec 6.8: only a content id or an identity that fails verification quarantines an entry.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut store, id, recipe, bytes) = store_with_unreadable_blob(dir.path());
+    assert_eq!(lookup(&mut store, recipe).unwrap(), Vec::<ContentId>::new());
+    let entry = store.entries().get(&id).expect("the entry stays in the index");
+    assert_eq!(entry.state, EntryState::Live);
+    assert_eq!(entry.quarantine, None);
+
+    // The next use checks the entry again. The blob is back, so the lookup hits.
+    repair_blob(dir.path(), &id, &bytes);
+    assert_eq!(lookup(&mut store, recipe).unwrap(), vec![id]);
+}
+
+#[test]
+fn a_read_error_in_a_restore_or_a_get_is_an_error_and_not_a_quarantine() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut store, id, _, bytes) = store_with_unreadable_blob(dir.path());
     assert!(matches!(store.get(&id, 10), Err(StoreError::Io(_))));
-    assert_eq!(store.entries().get(&id).unwrap().quarantine, Some(Quarantine::Read));
+    let mut target = FakeAlways::new();
+    let error = store.restore(&id, &mut target, State::Slot(0), &[1u8; 32], 10);
+    assert!(matches!(error, Err(StoreError::Io(_))), "{error:?}");
+    let entry = store.entries().get(&id).unwrap();
+    assert_eq!(entry.state, EntryState::Live);
+    assert_eq!(entry.quarantine, None);
+
+    repair_blob(dir.path(), &id, &bytes);
+    assert!(store.get(&id, 10).unwrap().is_some());
 }
 
 #[test]

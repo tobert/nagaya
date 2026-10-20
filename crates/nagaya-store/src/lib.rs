@@ -620,8 +620,6 @@ pub enum Quarantine {
     Identity,
     /// The index disagrees with the blob.
     Index,
-    /// The blob could not be read.
-    Read,
 }
 
 /// The determinism class of the engine that made an entry. It survives a restart.
@@ -1310,10 +1308,7 @@ impl Store {
     fn read_snapshot(&mut self, id: &ContentId) -> Result<Snapshot, StoreError> {
         let bytes = match std::fs::read(self.blob_path(id)) {
             Ok(bytes) => bytes,
-            Err(error) => {
-                self.quarantine(id, Quarantine::Read)?;
-                return Err(io_error(error));
-            }
+            Err(error) => return Err(read_failed(id, error)),
         };
         match Snapshot::decode(&bytes) {
             Ok(snapshot) => Ok(snapshot),
@@ -1686,10 +1681,7 @@ impl Store {
         }
         let bytes = match std::fs::read(self.blob_path(id)) {
             Ok(bytes) => bytes,
-            Err(error) => {
-                self.quarantine(id, Quarantine::Read)?;
-                return Err(io_error(error));
-            }
+            Err(error) => return Err(read_failed(id, error)),
         };
         if content_id(&bytes) != *id {
             self.quarantine(id, Quarantine::ContentId)?;
@@ -1834,6 +1826,16 @@ fn next_quarantine_path(dir: &Path, name: &str, max_serial: u32) -> Result<PathB
             }
         }
     }
+}
+
+/// A blob read error is not a verification failure (spec 6.8). The entry stays in the index and the next use
+/// reads the blob again. The caller sees an error, and a lookup treats it as a miss.
+fn read_failed(id: &ContentId, error: std::io::Error) -> StoreError {
+    eprintln!(
+        "nagaya-store: cannot read the blob of {}: {error}; the entry stays and the next use checks it again",
+        id.hex()
+    );
+    io_error(error)
 }
 
 fn prune_pins(index: &mut Index, now_ms: u64) {
