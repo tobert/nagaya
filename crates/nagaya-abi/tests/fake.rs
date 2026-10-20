@@ -560,8 +560,10 @@ fn a_fake_with_a_vocabulary_gives_one_f32_row_for_each_logit_row() {
         assert_eq!(row.bytes.len(), 270 * 4);
         assert!(
             row.bytes
-                .chunks_exact(4)
-                .all(|b| f32::from_le_bytes(b.try_into().unwrap()).is_finite())
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|b| f32::from_le_bytes(*b).is_finite())
         );
     }
     assert_ne!(rows[0].bytes, rows[1].bytes, "two positions give two rows");
