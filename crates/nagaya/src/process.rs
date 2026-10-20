@@ -955,6 +955,8 @@ impl std::error::Error for ContextChargeError {}
 pub struct Ports {
     ledger: Sender<LedgerMessage>,
     groups: Vec<Sender<GroupMessage>>,
+    /// The engine names of each group, in profile order.
+    group_engines: Arc<Vec<Vec<String>>>,
     store: Option<Arc<Mutex<Store>>>,
     accepting: Arc<AtomicBool>,
 }
@@ -1009,7 +1011,15 @@ impl Ports {
         stop.send(GroupMessage::Job(job)).map_err(|_| SubmitError::Stopped)
     }
 
-    /// The machine's store, when the process has one. Call it from a group thread only (spec 11.3c).
+    /// The group and the place in the group of the engine with this name in the profile.
+    pub fn locate(&self, engine: &str) -> Option<(usize, usize)> {
+        self.group_engines
+            .iter()
+            .enumerate()
+            .find_map(|(group, names)| names.iter().position(|name| name == engine).map(|index| (group, index)))
+    }
+
+    /// The machine's store, when the process has one. Run `lookup` and `restore` on a group thread (spec 11.3c).
     pub fn store(&self) -> Option<&Arc<Mutex<Store>>> {
         self.store.as_ref()
     }
@@ -1071,6 +1081,7 @@ impl Process {
         Ports {
             ledger: self.ledger.clone(),
             groups: self.group_stops.clone(),
+            group_engines: Arc::new(self.group_engines.clone()),
             store: self.store_handle.clone(),
             accepting: Arc::clone(&self.accepting),
         }

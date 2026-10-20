@@ -3,7 +3,12 @@
 #![allow(dead_code)]
 
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+
+use nagaya::council::{Clock, Service, ServiceConfig};
+use nagaya_text_toy::ToyFamily;
 
 use nagaya::admission::{Factory, OpenError, PlanError, Registry};
 use nagaya::inventory::{Device, Inventory};
@@ -160,4 +165,90 @@ pub fn start(
         .unwrap();
     let opened = process.wait_opens(Duration::from_secs(10)).unwrap();
     (process, opened)
+}
+
+/// A started process with one engine, and a service on it. The process outlives the service.
+pub struct Fixture {
+    pub service: Service,
+    pub process: Process,
+    pub directory: tempfile::TempDir,
+    /// The clock of the service, in milliseconds.
+    pub clock: Arc<AtomicU64>,
+}
+
+/// Each reading of the clock is a minute later. The eviction value of the store has a resolution of about a second,
+/// so a smaller step would leave the entries tied.
+pub const TICK_MS: u64 = 60_000;
+
+impl Fixture {
+    pub fn new() -> Self {
+        Self::with(0, 1 << 20, None, ServiceConfig::new("toy", ENGINE))
+    }
+
+    pub fn with(term: u64, host_budget: u64, host_store: Option<u64>, config: ServiceConfig) -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        let (process, _) = start(
+            directory.path(),
+            TermFactory {
+                bytes: term,
+                slots: roomy_slots(3),
+                vocab: Some(gogi_toy::VOCAB),
+            },
+            host_budget,
+            host_store,
+        );
+        let clock = Arc::new(AtomicU64::new(1_000_000));
+        let reader = Arc::clone(&clock);
+        let read: Clock = Arc::new(move || reader.fetch_add(TICK_MS, Ordering::SeqCst));
+        let service = Service::attach_with_clock(
+            process.ports(),
+            Arc::new(ToyFamily::new()),
+            directory.path(),
+            config,
+            read,
+        )
+        .unwrap();
+        Self {
+            service,
+            process,
+            directory,
+            clock,
+        }
+    }
+
+    /// A reader of the clock of the service. Each reading is a tick later.
+    pub fn reader(&self) -> Clock {
+        let reader = Arc::clone(&self.clock);
+        Arc::new(move || reader.fetch_add(TICK_MS, Ordering::SeqCst))
+    }
+
+    /// Attach another service to the same process and store directory, with the same clock.
+    pub fn attach_again(&self) -> Service {
+        Service::attach_with_clock(
+            self.process.ports(),
+            Arc::new(ToyFamily::new()),
+            self.directory.path(),
+            ServiceConfig::new("toy", ENGINE),
+            self.reader(),
+        )
+        .unwrap()
+    }
+
+    /// Move the clock forward.
+    pub fn advance(&self, ms: u64) {
+        self.clock.fetch_add(ms, Ordering::SeqCst);
+    }
+
+    /// The entries of the store.
+    pub fn entries(&self) -> usize {
+        let ports = self.process.ports();
+        let store = ports.store().unwrap().lock().unwrap();
+        store.entries().len()
+    }
+}
+
+impl Default for Fixture {
+    fn default() -> Self {
+        Self::new()
+    }
 }
