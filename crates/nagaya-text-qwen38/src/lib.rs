@@ -1,4 +1,4 @@
-//! The text rules of the Qwen3.8 family (spec 11.3): the tokenizer, the chat template and the detokenizer.
+//! The text rules of the Qwen3.8 family (spec 11.3): tokenizer, chat template, detokenizer and reply parser.
 //!
 //! Every rule comes from the GGUF metadata of the model. The tests compare each result with the output of mk's
 //! Python front-end, byte for byte and id for id.
@@ -16,6 +16,7 @@ mod unicode_tables;
 pub mod gguf;
 pub mod json;
 pub mod pystr;
+pub mod reply;
 
 pub use error::Error;
 pub use family::{Qwen38, Rendered};
