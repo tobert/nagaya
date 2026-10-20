@@ -97,7 +97,13 @@ fn a_desired_profile_that_does_not_fit_is_refused_and_an_equal_one_clears_it() {
         std::fs::read_to_string(process.store.join("profile.toml")).unwrap(),
         ACTIVE_PROFILE
     );
-    assert!(!process.store.join("profile.version").exists());
+    assert_eq!(
+        std::fs::read_to_string(process.store.join("profile.version"))
+            .unwrap()
+            .trim(),
+        "1",
+        "a refused version is a handled version"
+    );
     assert_eq!(process.try_exit(), None, "the process runs on");
 
     // A newer profile that equals the active profile clears the refusal. Nothing else changes.

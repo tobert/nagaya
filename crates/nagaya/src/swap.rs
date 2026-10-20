@@ -185,24 +185,20 @@ impl Swap {
     }
 
     /// Admit a candidate with the ledger, persist it, and say what the node does next (spec 3.3).
+    ///
+    /// A refused version is a handled version: the node writes it to the version file, and `profile.toml` stays.
     pub fn handle(&mut self, candidate: Candidate, process: &Process) -> Result<Outcome, SwapError> {
         let version = candidate.version;
         let before = self.handled;
-        // The node handles a version once, also when it refuses the version.
+        // The node handles a version once, also when it refuses the version. A restart keeps that (spec 2.3).
         self.handled = version;
-        let refuse = |reason: String, shortfall: Vec<Shortfall>| {
-            Ok(Outcome::Refused(Refusal {
-                version,
-                reason,
-                shortfall,
-            }))
-        };
         let profile: PlacementProfile = match serde_json::from_value(candidate.profile) {
             Ok(profile) => profile,
-            Err(error) => return refuse(format!("the profile does not parse: {error}"), Vec::new()),
+            Err(error) => return self.refuse(version, format!("the profile does not parse: {error}"), Vec::new()),
         };
         if !profile.engines.is_empty() && profile.store.is_none() {
-            return refuse(
+            return self.refuse(
+                version,
                 "the profile has engines and no `store.nvme` budget; add a [store] table".to_owned(),
                 Vec::new(),
             );
@@ -223,19 +219,29 @@ impl Swap {
                         bytes,
                     })
                     .collect();
-                return refuse("the profile does not fit its budgets".to_owned(), shortfall);
+                return self.refuse(version, "the profile does not fit its budgets".to_owned(), shortfall);
             }
             Err(AdmitError::Stopping) => {
                 // The stop took no new admission. This is not a refusal: the node handled nothing (spec 10.3 step 1).
                 self.handled = before;
                 return Ok(Outcome::Stopping);
             }
-            Err(error) => return refuse(error.to_string(), Vec::new()),
+            Err(error) => return self.refuse(version, error.to_string(), Vec::new()),
         }
         profile.write(&self.store_dir).map_err(SwapError::Profile)?;
         self.write_version(version)?;
         self.active = profile;
         Ok(Outcome::Restart)
+    }
+
+    /// Refuse a version. The version is handled, so the node writes it. `profile.toml` stays as it is.
+    fn refuse(&self, version: u64, reason: String, shortfall: Vec<Shortfall>) -> Result<Outcome, SwapError> {
+        self.write_version(version)?;
+        Ok(Outcome::Refused(Refusal {
+            version,
+            reason,
+            shortfall,
+        }))
     }
 
     /// Write the handled version atomically: a temporary file, then a rename.

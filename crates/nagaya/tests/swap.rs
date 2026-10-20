@@ -263,9 +263,12 @@ fn a_profile_that_does_not_fit_is_refused_and_changes_nothing() {
         active,
         "the file keeps the active profile"
     );
-    assert!(
-        !directory.path().join(VERSION_FILE).exists(),
-        "a refusal writes no version"
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join(VERSION_FILE))
+            .unwrap()
+            .trim(),
+        "2",
+        "a refused version is a handled version"
     );
     assert_eq!(swap.active(), &active);
     assert_eq!(
@@ -350,5 +353,54 @@ fn a_stopping_process_is_not_a_refusal() {
         swap.candidate(&offered).map(|candidate| candidate.version),
         Some(4),
         "the version stays a candidate"
+    );
+}
+
+/// Refuse `wanted` as `version` with a running process, and give the swap that refused it.
+fn refuse(dir: &Path, active: &PlacementProfile, version: u64) -> Swap {
+    let process = running(dir, active);
+    let mut swap = swap(dir, active);
+    let too_small = profile(&["fake-one", "fake-two"], 1);
+    let offered = view(&[("a", KEY, desired_value(version, &too_small))]);
+    let candidate = swap.candidate(&offered).unwrap();
+    assert!(matches!(swap.handle(candidate, &process).unwrap(), Outcome::Refused(_)));
+    swap
+}
+
+#[test]
+fn a_refused_version_survives_a_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let active = profile(&["fake-one"], 4096);
+    refuse(directory.path(), &active, 5);
+    let mut second = Swap::open(directory.path(), "gfx1151host", active.clone()).unwrap();
+    assert_eq!(second.handled(), 5);
+    let too_small = profile(&["fake-one", "fake-two"], 1);
+    let offered = view(&[("a", KEY, desired_value(5, &too_small))]);
+    assert_eq!(
+        second.candidate(&offered),
+        None,
+        "the restart does not handle version 5 again"
+    );
+    assert_eq!(
+        PlacementProfile::read_active(directory.path()).unwrap(),
+        active,
+        "a refusal keeps profile.toml"
+    );
+}
+
+#[test]
+fn a_lower_version_after_a_refused_one_is_ignored_after_a_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let active = profile(&["fake-one"], 4096);
+    // Version 3 was applied earlier. Version 5 is refused.
+    std::fs::write(directory.path().join(VERSION_FILE), "3\n").unwrap();
+    refuse(directory.path(), &active, 5);
+    let mut second = Swap::open(directory.path(), "gfx1151host", active.clone()).unwrap();
+    let lower = profile(&["fake-one", "fake-two"], 8192);
+    let offered = view(&[("a", KEY, desired_value(4, &lower))]);
+    assert_eq!(
+        second.candidate(&offered),
+        None,
+        "version 4 is below the refused version 5"
     );
 }
