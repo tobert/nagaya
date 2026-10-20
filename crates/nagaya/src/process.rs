@@ -42,6 +42,8 @@ pub struct ParkReport {
     pub bytes: u64,
     /// The store entries that the group wrote.
     pub entries: usize,
+    /// The engines that parked every state without a failure.
+    pub parked_engines: Vec<String>,
     /// The queued quanta that the stop cancelled before they started (spec 10.3, 5.9).
     pub cancelled: usize,
     /// The parts that the group could not read, one message for each.
@@ -57,6 +59,7 @@ impl ParkReport {
         self.bytes += other.bytes;
         self.entries += other.entries;
         self.cancelled += other.cancelled;
+        self.parked_engines.extend(other.parked_engines);
         self.failures.extend(other.failures);
     }
 }
@@ -86,6 +89,16 @@ impl StopReport {
         } else {
             ExitCode::Crash
         }
+    }
+
+    /// Split engine names into the engines that parked every state and the engines that did not (spec 10.1, 10.3).
+    ///
+    /// An engine of a group that did not answer, or of a stop that was interrupted, did not park.
+    pub fn split_parked(&self, names: &[String]) -> (Vec<String>, Vec<String>) {
+        names
+            .iter()
+            .cloned()
+            .partition(|name| self.parked.parked_engines.contains(name))
     }
 
     /// The line that the process writes to stderr when the stop ends (spec 10.3).
@@ -720,7 +733,11 @@ fn park_group(names: &[String], engines: &mut [Box<dyn Engine>], store: Option<&
     for (index, engine) in engines.iter_mut().enumerate() {
         report.engines += 1;
         let name = names.get(index).map(String::as_str).unwrap_or("engine");
+        let failed = report.failures.len();
         park::park_engine(name, engine.as_mut(), store, &mut report);
+        if report.failures.len() == failed {
+            report.parked_engines.push(name.to_owned());
+        }
     }
     report
 }

@@ -155,7 +155,9 @@ fn serve(
     let opened: Vec<String> = ready.opened.iter().map(|engine| engine.name.clone()).collect();
     published(node.engines_state(&opened, EngineState::Draining));
     let report = lifecycle::stop(&mut ready, notifier.as_ref(), budget, &SIGNALS);
-    published(node.engines_state(&opened, EngineState::Unloaded));
+    let (parked, unparked) = report.split_parked(&opened);
+    published(node.engines_state(&parked, EngineState::Unloaded));
+    published(node.engines_state(&unparked, EngineState::Fatal));
     for failure in &report.parked.failures {
         eprintln!("the park failed: {failure}");
     }

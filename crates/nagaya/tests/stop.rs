@@ -1,3 +1,4 @@
+use std::os::unix::net::UnixDatagram;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, ThreadId};
 use std::time::{Duration, Instant};
@@ -5,6 +6,8 @@ use std::time::{Duration, Instant};
 use nagaya::admission::{AdmitError, Factory, OpenError, PlanError, Registry};
 use nagaya::exit::ExitCode;
 use nagaya::inventory::{Device, Inventory};
+use nagaya::lifecycle;
+use nagaya::notify::Notifier;
 use nagaya::park::StoreBudget;
 use nagaya::process::{ParkReport, Quantum, QuantumOutcome, Start, StartError, StopReport, SubmitError};
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, StoreSpec, TierSpec};
@@ -746,4 +749,60 @@ fn a_profile_without_a_store_budget_is_refused() {
         .unwrap_err();
     assert!(matches!(error, StartError::NoStoreBudget), "{error}");
     assert!(error.to_string().contains("store.nvme"), "{error}");
+}
+
+/// Start two engines on one group with a notifier: `good` parks, `bad` fails to read.
+fn started_pair(directory: &std::path::Path) -> (lifecycle::Ready, UnixDatagram, Notifier, tempfile::TempDir) {
+    let socket = UnixDatagram::bind(directory.join("notify")).unwrap();
+    socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let notifier = Notifier::at(&directory.join("notify")).unwrap();
+    let record = Arc::new(Mutex::new(ParkRecord::default()));
+    let mut registry = Registry::new();
+    registry.register("good", Box::new(ParkFactory::new("good", Arc::clone(&record))));
+    registry.register("bad", Box::new(ParkFactory::new("bad", record).failing()));
+    let store = tempfile::tempdir().unwrap();
+    let ready = lifecycle::start(
+        profile(vec![engine("good", "good", &[0]), engine("bad", "bad", &[0])]),
+        registry,
+        inventory(&[0]),
+        store.path(),
+        Some(&notifier),
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    (ready, socket, notifier, store)
+}
+
+fn receive(socket: &UnixDatagram) -> String {
+    let mut buffer = [0u8; 512];
+    let count = socket.recv(&mut buffer).unwrap();
+    std::str::from_utf8(&buffer[..count]).unwrap().to_owned()
+}
+
+#[test]
+fn a_failed_park_reports_fatal_for_the_engine_that_did_not_park() {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut ready, socket, notifier, _store) = started_pair(directory.path());
+    assert_eq!(receive(&socket), "STATUS=engine good loading; engine bad loading");
+    assert_eq!(receive(&socket), "READY=1\nSTATUS=engine bad ready; engine good ready");
+    let report = lifecycle::stop(&mut ready, Some(&notifier), Duration::from_secs(2), &SignalFlag::new());
+    assert_eq!(report.exit_code(), ExitCode::Crash, "{report:?}");
+    assert_eq!(receive(&socket), "STATUS=engine good draining; engine bad draining");
+    assert_eq!(receive(&socket), "STATUS=engine good unloaded");
+    assert_eq!(receive(&socket), "STATUS=engine bad fatal");
+}
+
+#[test]
+fn an_interrupted_stop_reports_fatal_for_every_engine() {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut ready, socket, notifier, _store) = started_pair(directory.path());
+    receive(&socket);
+    receive(&socket);
+    let flag = SignalFlag::new();
+    flag.raise();
+    flag.raise();
+    let report = lifecycle::stop(&mut ready, Some(&notifier), Duration::from_secs(2), &flag);
+    assert!(report.interrupted);
+    assert_eq!(receive(&socket), "STATUS=engine good draining; engine bad draining");
+    assert_eq!(receive(&socket), "STATUS=engine good fatal; engine bad fatal");
 }

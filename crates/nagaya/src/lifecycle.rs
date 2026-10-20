@@ -176,7 +176,9 @@ pub fn wait_with(
     }
 }
 
-/// Stop the process and report each engine's state: draining, then unloaded (spec 10.1, 10.3).
+/// Stop the process and report each engine's state: draining, then unloaded or fatal (spec 10.1, 10.3).
+///
+/// An engine that parked every state is `unloaded`. An engine that did not park is `fatal`.
 pub fn stop(ready: &mut Ready, notifier: Option<&Notifier>, budget: Duration, signals: &SignalFlag) -> StopReport {
     let names: Vec<String> = ready.opened.iter().map(|engine| engine.name.clone()).collect();
     if let Some(notifier) = notifier
@@ -185,10 +187,13 @@ pub fn stop(ready: &mut Ready, notifier: Option<&Notifier>, budget: Duration, si
         eprintln!("cannot send STATUS= to systemd: {error}");
     }
     let report = ready.process.stop(budget, signals);
-    if let Some(notifier) = notifier
-        && let Err(error) = notifier.states(&names, EngineState::Unloaded)
-    {
-        eprintln!("cannot send STATUS= to systemd: {error}");
+    if let Some(notifier) = notifier {
+        let (parked, unparked) = report.split_parked(&names);
+        for (engines, state) in [(parked, EngineState::Unloaded), (unparked, EngineState::Fatal)] {
+            if let Err(error) = notifier.states(&engines, state) {
+                eprintln!("cannot send STATUS= to systemd: {error}");
+            }
+        }
     }
     report
 }
