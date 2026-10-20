@@ -632,9 +632,13 @@ forever. The mkviolet rule is the origin, not the scope.
 
 **6.11 Restart.** At start, the store loads its index again. It checks each entry when a lookup first uses it.
 Entries in the host tier do not survive a restart, so the store removes them from the index at start. Decided
-2026-10-20 (reading). It
-wakes pinned entries into slots when the profile asks for them. (mk wakes its pinned parked contexts before
-`READY=1`.)
+2026-10-20 (reading).
+
+The hits and the last use of each entry are in memory only, and a restart starts them again at zero. **Open:** a
+flush at a stop or at an interval keeps them. A write at each use is too slow.
+
+At start, the store also wakes pinned entries into slots when the profile asks for them. (mk wakes its pinned
+parked contexts before `READY=1`.)
 
 **6.12 Steering and lab inputs.** Some state changes bits but is not an input, for example mk's attention cell mask
 or a steering vector. Such state goes into the recipe. Thus a steered or masked result never has a plain recipe.
@@ -652,6 +656,8 @@ Until then, mk declares no grain. Decided
   of every generation.
 - **Whole parts.** The copy holds every part from position 0. It has no parent. A later step can make a copy a delta
   of the context's last boundary entry.
+- **Never a parent.** No entry names an interval copy as its parent. The store refuses such a put. Thus the cap and
+  eviction can remove a copy without cutting a chain. Decided 2026-10-20 (reading, from the store fix step).
 - **Host memory only.** The copy goes to the store's host tier, and the store makes room for it as for any put
   (6.9). It never goes to NVMe. A restart loses it (6.11).
 - **The latest copy only.** When a new copy of a context is in the store, the scheduler removes that context's
@@ -769,6 +775,9 @@ of 1.7e-5 on 2026-10-20. Decided 2026-10-20 (reading).
 A family with no reference has no oracle yet: the first port of mkviolet builds the Gemma reference. Decided 2026-10-20
 (`docs/deepinfer.md` 6). The engine crates stay one for each vendor and device (Amy: "we generate a megakernel per
 vendor/device and they get their own whole crate").
+
+A gate that restores state restores it through `Store::restore`, the path that production uses. Thus a gate and
+the store cannot drift apart. Decided 2026-10-20 (reading, kaibo job-2 finding 1).
 
 The suite compares values by integer bit pattern. NaN or Inf fails, even when the bit patterns are equal. Counts
 must also match. Each gate keeps a broken variant that it must fail (ds4-recipe `01-correctness-and-measurement.md`).
@@ -1153,3 +1162,8 @@ The inventories found these items. We correct each one when its code moves. We d
    settles it with the routes.
 6. The template engine differs from jinja2 on integers past 2^127 and on a float key that is not finite (milestone
    11.5 text step). The chat template uses none of them. Which ones do we match?
+7. How far does mk's fast path (`MK_FAST_QMM` unset) move council decisions? At 249 tokens it moved logits by up to
+   1.03, and the argmax and the top 8 held (8.3). Amy, 2026-10-20: "we'll measure later".
+8. What is the oracle gap at 2,000 tokens and more? The binding's contexts hold 256 tokens today, and mk allows
+   32,768. The measurement needs larger contexts in the binding and a loop of passes (8.3). Amy, 2026-10-20: "we can
+   save and do the measurement later".

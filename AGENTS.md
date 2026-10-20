@@ -119,6 +119,8 @@ Do them in this order. Each milestone ends with all checks green and one or more
     outputs of mk's `service/sampling.py`, made from fixed logits, settings and seeds, as in milestone 11. The draw
     keeps no state (11.2), so it does not match mk's PCG64 bits. Match the filter order and the probabilities.
     - Also build the scheduler's part of interval copies (6.13), and declare mk's grain when it works.
+    - Restore through `Store::restore` in the conformance gates (8.3), and refuse an interval copy as a parent
+      (6.13). The ledger counts per-context terms when it admits `ctx_new` (4.2).
 13. **Observability.** Log to stderr. Export traces and metrics over OTLP when the endpoint is set (9.1-9.5). Each
     instrument has a call site under test.
 14. **Deploy on gfx1151host.** Write a systemd user unit in `deploy/` (10.1). The bootstrap config binds
