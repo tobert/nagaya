@@ -473,6 +473,17 @@ The tag numbers are in this table. Decided 2026-10-20 (reading).
 | 7 | the boundary position |
 | 8 | "not sealed", with no bytes: only on an interval copy (6.13). It follows tag 5, which holds the sealed recipe at the same position |
 
+**The park recipe.** Until jobs track the inputs of a context (milestone 12), a park does not know them. Thus the
+park recipe names the bytes. It is a root recipe with four items:
+
+- tag 1, the identity digest;
+- tag 2, the fixed key `nagaya park v1`;
+- tag 3, no approximations;
+- tag 4, the 32 bytes of the snapshot's content id.
+
+Equal bytes give one entry, and the tripwire fires only on a real duplicate. Decided 2026-10-20 (reading, kaibo
+job-2 finding 2).
+
 mk's `context_id` and mkviolet's `snap:<sha256>` are the input part of a recipe. They do not include the engine
 identity. mk's id is a SHA-256 of the tokens and boundaries with `|gdn-bf16-v1|`.
 
