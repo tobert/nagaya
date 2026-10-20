@@ -5,6 +5,7 @@
 //! more than 128 bits.
 
 use crate::Error;
+use std::collections::HashMap;
 
 /// A JSON value. An object is a list of pairs in the order of the text.
 #[derive(Debug, Clone, PartialEq)]
@@ -18,7 +19,8 @@ pub enum Json {
     Object(Vec<(String, Json)>),
 }
 
-/// How deep arrays and objects may nest. Python stops at about 1000, and a deep text must not overflow the stack.
+/// How deep arrays and objects may nest. Python stops at about 1000. The reader stops earlier, so that a deep text
+/// cannot overflow the stack. A text of 512 levels reads, and a text of 513 levels is an error.
 const MAX_DEPTH: usize = 512;
 
 impl Json {
@@ -83,7 +85,7 @@ impl Parser<'_> {
 
     fn array(&mut self, depth: usize) -> Result<Json, Error> {
         if depth >= MAX_DEPTH {
-            return Err(self.fail("the nesting is too deep"));
+            return Err(self.fail(&format!("the nesting is deeper than {MAX_DEPTH} levels")));
         }
         self.at += 1;
         let mut items = Vec::new();
@@ -109,10 +111,11 @@ impl Parser<'_> {
 
     fn object(&mut self, depth: usize) -> Result<Json, Error> {
         if depth >= MAX_DEPTH {
-            return Err(self.fail("the nesting is too deep"));
+            return Err(self.fail(&format!("the nesting is deeper than {MAX_DEPTH} levels")));
         }
         self.at += 1;
         let mut pairs: Vec<(String, Json)> = Vec::new();
+        let mut places: HashMap<String, usize> = HashMap::new();
         self.skip_space();
         if self.peek() == Some(b'}') {
             self.at += 1;
@@ -132,9 +135,12 @@ impl Parser<'_> {
             self.skip_space();
             let value = self.value(depth + 1)?;
             // A repeated key keeps its first place and its last value, as in Python.
-            match pairs.iter_mut().find(|(k, _)| *k == key) {
-                Some(pair) => pair.1 = value,
-                None => pairs.push((key, value)),
+            match places.get(&key) {
+                Some(&at) => pairs[at].1 = value,
+                None => {
+                    places.insert(key.clone(), pairs.len());
+                    pairs.push((key, value));
+                }
             }
             self.skip_space();
             match self.peek() {
