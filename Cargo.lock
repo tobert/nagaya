@@ -398,6 +398,7 @@ dependencies = [
  "nagaya",
  "nagaya-abi",
  "nagaya-ledger",
+ "nagaya-sched",
  "nagaya-store",
  "serde",
  "serde_json",

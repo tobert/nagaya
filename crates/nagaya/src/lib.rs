@@ -5,6 +5,7 @@ pub mod bootstrap;
 pub mod exit;
 pub mod gossip;
 pub mod inventory;
+pub mod jobs;
 pub mod lifecycle;
 pub mod node;
 pub mod notify;
