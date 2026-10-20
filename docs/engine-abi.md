@@ -304,7 +304,9 @@ The wrapper's host buffers also wait for the process crate (the review's note on
 
 ### Test limits of the spin-timeout opt-in and the poisoned set_n path
 
-Decided 2026-10-20 (reading): these limits stay, and this section records them. The binding binds `mk_engine_recover_spin_timeouts` and calls it with
+Decided 2026-10-20 (reading): these limits stay, and this section records them.
+
+The binding binds `mk_engine_recover_spin_timeouts` and calls it with
 `on = 1` at open (`566446c`, `worker.rs:549`). A misspelled symbol makes open fail with an undefined-symbol error,
 and `f99f9c0` quotes that mutation. Thus the suite pins the symbol's name only.
 
@@ -320,7 +322,9 @@ check. A lab hook for the first case is not in v0.
 
 ### Test limit of the open-time part check
 
-Decided 2026-10-20 (reading): this limit stays, and this section records it. The wrapper calls `parts_problem` at open (`worker.rs:523`), and it
+Decided 2026-10-20 (reading): this limit stays, and this section records it.
+
+The wrapper calls `parts_problem` at open (`worker.rs:523`), and it
 refuses a library with other part sizes before any write. Real mk matches the declared shapes, so the check passes
 in every test.
 
