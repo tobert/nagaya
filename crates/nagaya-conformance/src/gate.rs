@@ -54,17 +54,9 @@ impl Admit for Ledger {
     }
 }
 
-fn element_bytes(dtype: Dtype) -> u64 {
-    match dtype {
-        Dtype::F32 | Dtype::U32 => 4,
-        Dtype::F16 | Dtype::BF16 => 2,
-        Dtype::U8 => 1,
-    }
-}
-
 /// The whole size of a fixed part, or the row size of a cells or ring part.
 fn shape_bytes(part: &PartLimits) -> u64 {
-    part.shape.iter().product::<u64>() * element_bytes(part.dtype)
+    part.shape.iter().product::<u64>() * part.dtype.element_bytes()
 }
 
 fn second_slot(limits: &Limits) -> Option<u32> {
@@ -101,7 +93,11 @@ fn pattern(len: usize, seed: u8, dtype: Dtype) -> Vec<u8> {
         Dtype::BF16 => (0..len / 2)
             .flat_map(|index| (0x3f80u16 | ((index as u16) % 0x7f)).to_le_bytes())
             .collect(),
-        Dtype::U8 | Dtype::U32 => (0..len)
+        // The mask clears the top exponent bit of an F8 value, so that the value is finite.
+        Dtype::F8E4M3 | Dtype::F8E5M2 => (0..len)
+            .map(|index| (((index as u8).wrapping_mul(37).wrapping_add(seed)) | 1) & 0xbf)
+            .collect(),
+        _ => (0..len)
             .map(|index| ((index as u8).wrapping_mul(37).wrapping_add(seed)) | 1)
             .collect(),
     }
@@ -109,19 +105,22 @@ fn pattern(len: usize, seed: u8, dtype: Dtype) -> Vec<u8> {
 
 /// The first index of a non-finite value in a float part, or `None` for an integer part.
 fn non_finite(dtype: Dtype, bytes: &[u8]) -> Option<usize> {
-    let (width, exponent) = match dtype {
-        Dtype::F32 => (4, 0x7f80_0000u32),
-        Dtype::F16 => (2, 0x7c00u32),
-        Dtype::BF16 => (2, 0x7f80u32),
-        Dtype::U8 | Dtype::U32 => return None,
+    // A value is non-finite when its bits under the mask equal the pattern. E4M3 has a NaN and no Inf.
+    let (width, mask, pattern) = match dtype {
+        Dtype::F32 => (4, 0x7f80_0000u32, 0x7f80_0000u32),
+        Dtype::F16 => (2, 0x7c00, 0x7c00),
+        Dtype::BF16 => (2, 0x7f80, 0x7f80),
+        Dtype::F8E5M2 => (1, 0x7c, 0x7c),
+        Dtype::F8E4M3 => (1, 0x7f, 0x7f),
+        _ => return None,
     };
     bytes.chunks_exact(width).position(|chunk| {
-        let bits = if width == 4 {
-            u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
-        } else {
-            u32::from(u16::from_le_bytes([chunk[0], chunk[1]]))
+        let bits = match width {
+            4 => u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]),
+            2 => u32::from(u16::from_le_bytes([chunk[0], chunk[1]])),
+            _ => u32::from(chunk[0]),
         };
-        bits & exponent == exponent
+        bits & mask == pattern
     })
 }
 
@@ -1022,5 +1021,12 @@ mod tests {
         assert_eq!(non_finite(Dtype::BF16, &0x3f80u16.to_le_bytes()), None);
         // An integer part has no NaN.
         assert_eq!(non_finite(Dtype::U32, &0xffff_ffffu32.to_le_bytes()), None);
+        assert_eq!(non_finite(Dtype::F8E5M2, &[0x3c]), None);
+        assert_eq!(non_finite(Dtype::F8E5M2, &[0x7c]), Some(0));
+        assert_eq!(non_finite(Dtype::F8E5M2, &[0xfd]), Some(0));
+        assert_eq!(non_finite(Dtype::F8E4M3, &[0x78]), None);
+        assert_eq!(non_finite(Dtype::F8E4M3, &[0x7f]), Some(0));
+        assert_eq!(non_finite(Dtype::F8E4M3, &[0xff]), Some(0));
+        assert_eq!(non_finite(Dtype::I64, &[0xff; 8]), None);
     }
 }

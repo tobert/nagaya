@@ -5,7 +5,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nagaya_abi::{
-    BitClass, ChainLimits, CoverageSpan, Dtype, Engine, Identity, PartKind, PartLimits, State, Tier as MemoryTier,
+    BitClass, ChainLimits, CoverageSpan, Engine, Identity, PartKind, PartLimits, State, Tier as MemoryTier,
 };
 use nagaya_ledger::Admission;
 use nagaya_store::{ContentId, Put, Reason, RecipeId, Snapshot, Store, StoreError, Tensor, Tier, recipe_root};
@@ -313,15 +313,7 @@ fn part_names(parts: &[&PartLimits]) -> String {
 }
 
 fn shape_bytes(part: &PartLimits) -> u64 {
-    part.shape.iter().product::<u64>() * element_bytes(part.dtype)
-}
-
-fn element_bytes(dtype: Dtype) -> u64 {
-    match dtype {
-        Dtype::F32 | Dtype::U32 => 4,
-        Dtype::F16 | Dtype::BF16 => 2,
-        Dtype::U8 => 1,
-    }
+    part.shape.iter().product::<u64>() * part.dtype.element_bytes()
 }
 
 fn now_ms() -> u64 {

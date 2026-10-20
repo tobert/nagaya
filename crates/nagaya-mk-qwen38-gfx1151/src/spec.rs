@@ -301,12 +301,7 @@ pub fn limits(arena_bytes: u64) -> Limits {
 
 /// The bytes of one declared part: the whole shape for a fixed part, one row for a cells or ring part.
 fn declared_bytes(part: &PartLimits) -> u64 {
-    let element = match part.dtype {
-        Dtype::F32 | Dtype::U32 => 4,
-        Dtype::F16 | Dtype::BF16 => 2,
-        Dtype::U8 => 1,
-    };
-    part.shape.iter().product::<u64>() * element
+    part.shape.iter().product::<u64>() * part.dtype.element_bytes()
 }
 
 /// The reason that mk's part byte counts do not match the declared shapes, or `None` when they agree.
