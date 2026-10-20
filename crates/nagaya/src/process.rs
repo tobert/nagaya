@@ -42,6 +42,8 @@ pub struct ParkReport {
     pub bytes: u64,
     /// The store entries that the group wrote.
     pub entries: usize,
+    /// The queued quanta that the stop cancelled before they started (spec 10.3, 5.9).
+    pub cancelled: usize,
     /// The parts that the group could not read, one message for each.
     pub failures: Vec<String>,
 }
@@ -54,6 +56,7 @@ impl ParkReport {
         self.parts += other.parts;
         self.bytes += other.bytes;
         self.entries += other.entries;
+        self.cancelled += other.cancelled;
         self.failures.extend(other.failures);
     }
 }
@@ -90,24 +93,28 @@ impl StopReport {
         if self.interrupted {
             return "the stop was interrupted before the park finished".to_owned();
         }
+        let cancelled = match self.parked.cancelled {
+            0 => String::new(),
+            count => format!("; cancelled {count} queued quanta"),
+        };
         let failed = self.parked.failures.len();
         if !self.complete {
             return format!(
-                "the park did not finish; it wrote {} states and {} parts",
+                "the park did not finish; it wrote {} states and {} parts{cancelled}",
                 self.parked.states, self.parked.parts
             );
         }
         if self.parked.states == 0 && self.parked.entries == 0 && failed == 0 {
-            return "the stop parked nothing: no state needed a park".to_owned();
+            return format!("the stop parked nothing: no state needed a park{cancelled}");
         }
         if failed == 0 {
             return format!(
-                "the stop wrote {} states and {} parts ({} bytes) to the store",
+                "the stop wrote {} states and {} parts ({} bytes) to the store{cancelled}",
                 self.parked.states, self.parked.parts, self.parked.bytes
             );
         }
         format!(
-            "the stop wrote {} states and {} parts, then failed {failed} part(s)",
+            "the stop wrote {} states and {} parts, then failed {failed} part(s){cancelled}",
             self.parked.states, self.parked.parts
         )
     }
@@ -177,13 +184,59 @@ pub struct OpenedEngine {
 /// The work of one quantum: the group's engines, in profile order.
 type QuantumWork = Box<dyn FnOnce(&mut [Box<dyn Engine>]) + Send>;
 
-/// One quantum of work for a group thread. The group runs it to its end before the park reads a state (spec 10.3).
-pub struct Quantum(QuantumWork);
+/// What became of a quantum that reached its group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuantumOutcome {
+    /// The group ran the quantum to its end.
+    Ran,
+    /// The stop cancelled the quantum before it started (spec 10.3, 5.9). The work did not run.
+    Cancelled,
+}
+
+/// One quantum of work for a group thread.
+///
+/// The group runs a started quantum to its end before the park reads a state. A stop cancels each quantum that has
+/// not started (spec 10.3).
+pub struct Quantum {
+    work: QuantumWork,
+    outcome: Option<Sender<QuantumOutcome>>,
+}
 
 impl Quantum {
     /// Make a quantum from its work. The work gets the group's engines, in profile order.
     pub fn new(work: impl FnOnce(&mut [Box<dyn Engine>]) + Send + 'static) -> Self {
-        Self(Box::new(work))
+        Self {
+            work: Box::new(work),
+            outcome: None,
+        }
+    }
+
+    /// Make a quantum and the receiver of its outcome.
+    ///
+    /// The receiver gets `Ran` or `Cancelled`. It gets no outcome and reports a closed channel when the quantum never
+    /// reached its group, or when its work panicked.
+    pub fn with_outcome(
+        work: impl FnOnce(&mut [Box<dyn Engine>]) + Send + 'static,
+    ) -> (Self, Receiver<QuantumOutcome>) {
+        let (sender, receiver) = mpsc::channel();
+        let quantum = Self {
+            work: Box::new(work),
+            outcome: Some(sender),
+        };
+        (quantum, receiver)
+    }
+
+    fn finish(self, engines: &mut [Box<dyn Engine>]) {
+        (self.work)(engines);
+        if let Some(outcome) = self.outcome {
+            let _ = outcome.send(QuantumOutcome::Ran);
+        }
+    }
+
+    fn cancel(self) {
+        if let Some(outcome) = self.outcome {
+            let _ = outcome.send(QuantumOutcome::Cancelled);
+        }
     }
 }
 
@@ -491,6 +544,7 @@ impl Start {
             None => (None, None),
         };
 
+        let accepting = Arc::new(AtomicBool::new(true));
         let groups = placement::device_groups(&profile);
         let mut group_threads = Vec::with_capacity(groups.len());
         let mut group_stops = Vec::with_capacity(groups.len());
@@ -505,9 +559,17 @@ impl Start {
             let group_guard = group_events.clone();
             let group_watch = watch_tx.clone();
             let group_store = store_tx.clone();
+            let group_accepting = Arc::clone(&accepting);
             let handle = thread::spawn(move || {
                 guard("group", &group_guard, || {
-                    group_thread(index, jobs, group_events, group_watch, stop_rx, heartbeat, group_store);
+                    let links = GroupLinks {
+                        events: group_events,
+                        heartbeats: group_watch,
+                        messages: stop_rx,
+                        store: group_store,
+                        accepting: group_accepting,
+                    };
+                    group_thread(index, jobs, links, heartbeat);
                 });
             });
             group_threads.push(handle);
@@ -525,7 +587,7 @@ impl Start {
             group_stops,
             events,
             group_count: groups.len(),
-            accepting: AtomicBool::new(true),
+            accepting,
             stopped: false,
         })
     }
@@ -562,15 +624,23 @@ fn group_jobs(
         .collect()
 }
 
-fn group_thread(
-    group: usize,
-    jobs: Vec<GroupJob>,
+/// The channels and flags that connect a group thread to the rest of the process.
+struct GroupLinks {
     events: Sender<Event>,
     heartbeats: Sender<WatchMessage>,
-    stop: Receiver<GroupMessage>,
-    interval: Duration,
+    messages: Receiver<GroupMessage>,
     store: Option<Sender<StoreMessage>>,
-) {
+    accepting: Arc<AtomicBool>,
+}
+
+fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: Duration) {
+    let GroupLinks {
+        events,
+        heartbeats,
+        messages: stop,
+        store,
+        accepting,
+    } = links;
     let _ = heartbeats.send(WatchMessage::Beat {
         group,
         at: Instant::now(),
@@ -608,14 +678,25 @@ fn group_thread(
     }
     let names: Vec<String> = opened.iter().map(|engine| engine.name.clone()).collect();
     let _ = events.send(Event::Opened { group, engines: opened });
+    let mut cancelled = 0;
     loop {
         match stop.recv_timeout(interval) {
             Ok(GroupMessage::Quantum(quantum)) => {
-                (quantum.0)(&mut engines);
+                // A stop cancels each queued quantum that has not started. The running quantum went to its end
+                // before this receive (spec 10.3 step 2).
+                if accepting.load(Ordering::SeqCst) {
+                    quantum.finish(&mut engines);
+                } else {
+                    quantum.cancel();
+                    cancelled += 1;
+                }
             }
             Ok(GroupMessage::Park(reply)) => {
-                let report = park_group(&names, &mut engines, store.as_ref());
-                let _ = reply.send(report);
+                // The drain ends here. The park budget of the group starts now.
+                let _ = reply.send(ParkProgress::Draining { ended: Instant::now() });
+                let mut report = park_group(&names, &mut engines, store.as_ref());
+                report.cancelled = cancelled;
+                let _ = reply.send(ParkProgress::Parked(report));
                 break;
             }
             Ok(GroupMessage::Stop) | Err(RecvTimeoutError::Disconnected) => break,
@@ -699,12 +780,30 @@ enum LedgerMessage {
     Stop,
 }
 
+/// What a group tells the stop while it parks.
+enum ParkProgress {
+    /// The queued quanta are cancelled and the running quantum ended. The park starts at `ended`.
+    Draining { ended: Instant },
+    /// The park ended.
+    Parked(ParkReport),
+}
+
+/// How the wait for one drain ended.
+enum Drain {
+    /// The drain ended at this time.
+    Ended(Instant),
+    /// The group answered no further, or the group thread ended.
+    Gone,
+    /// The stop ends now. The flag is true for a second signal.
+    Stopped(bool),
+}
+
 /// A request to one group thread.
 enum GroupMessage {
     /// Run one quantum to its end.
     Quantum(Quantum),
     /// Park every engine, then stop the thread (spec 10.3).
-    Park(Sender<ParkReport>),
+    Park(Sender<ParkProgress>),
     /// Stop the thread without a park. `Process::drop` uses it.
     Stop,
 }
@@ -722,7 +821,7 @@ pub struct Process {
     group_stops: Vec<Sender<GroupMessage>>,
     events: Receiver<Event>,
     group_count: usize,
-    accepting: AtomicBool,
+    accepting: Arc<AtomicBool>,
     stopped: bool,
 }
 
@@ -743,7 +842,7 @@ impl Process {
 
     /// Send one quantum to a group thread. A stop refuses every later quantum (spec 10.3 step 1).
     ///
-    /// The group runs the quantum to its end before it parks, so the park never reads a state during a quantum.
+    /// The group runs the quantum to its end before it parks. A stop cancels a quantum that has not started.
     pub fn submit(&self, group: usize, quantum: Quantum) -> Result<(), SubmitError> {
         if !self.accepting.load(Ordering::SeqCst) {
             return Err(SubmitError::Stopping);
@@ -783,15 +882,16 @@ impl Process {
         self.events.recv_timeout(timeout).ok()
     }
 
-    /// Stop the process (spec 10.3). Refuse new work, park each group in the budget, then stop the threads.
+    /// Stop the process (spec 10.3). Refuse new work, drain each group, park it in the budget, then stop the threads.
     ///
-    /// A second signal stops the park at once. A group that does not answer inside the budget stops nothing else.
+    /// A group cancels its queued quanta and lets the running quantum end. The park budget of a group starts when
+    /// its drain ends, so a long quantum does not use it. A drain that never ends is a stall, which the watchdog
+    /// reports (spec 7.4); the stop then ends with a crash. A second signal stops the park at once.
     pub fn stop(&mut self, budget: Duration, signals: &SignalFlag) -> StopReport {
         if self.stopped {
             return StopReport::default();
         }
         self.accepting.store(false, Ordering::SeqCst);
-        let started = Instant::now();
         let entered = signals.count();
         if entered > 1 {
             self.finish_stop();
@@ -813,6 +913,22 @@ impl Process {
         }
         let mut parked = ParkReport::default();
         for reply in replies {
+            let ended = match self.wait_drain(&reply, signals, entered, &mut parked) {
+                Drain::Ended(ended) => ended,
+                Drain::Gone => {
+                    complete = false;
+                    continue;
+                }
+                Drain::Stopped(interrupted) => {
+                    self.finish_stop();
+                    return StopReport {
+                        parked,
+                        complete: false,
+                        interrupted,
+                    };
+                }
+            };
+            let deadline = ended + budget;
             loop {
                 if signals.count() != entered {
                     self.finish_stop();
@@ -822,16 +938,17 @@ impl Process {
                         interrupted: true,
                     };
                 }
-                let left = budget.saturating_sub(started.elapsed());
+                let left = deadline.saturating_duration_since(Instant::now());
                 if left.is_zero() {
                     complete = false;
                     break;
                 }
                 match reply.recv_timeout(left.min(STOP_POLL)) {
-                    Ok(report) => {
+                    Ok(ParkProgress::Parked(report)) => {
                         parked.merge(report);
                         break;
                     }
+                    Ok(ParkProgress::Draining { .. }) => {}
                     Err(RecvTimeoutError::Timeout) => {}
                     Err(RecvTimeoutError::Disconnected) => {
                         complete = false;
@@ -845,6 +962,42 @@ impl Process {
             parked,
             complete,
             interrupted: false,
+        }
+    }
+
+    /// Wait for a group to end its drain. A stall or a panic ends the wait: the drain cannot end (spec 7.4, 8.5).
+    fn wait_drain(
+        &self,
+        reply: &Receiver<ParkProgress>,
+        signals: &SignalFlag,
+        entered: usize,
+        parked: &mut ParkReport,
+    ) -> Drain {
+        loop {
+            if signals.count() != entered {
+                return Drain::Stopped(true);
+            }
+            while let Ok(event) = self.events.try_recv() {
+                match event {
+                    Event::Stalled { group, .. } => {
+                        parked
+                            .failures
+                            .push(format!("group {group} stalled while it drained its quanta"));
+                        return Drain::Stopped(false);
+                    }
+                    Event::Panicked { thread, message } => {
+                        parked.failures.push(format!("the {thread} thread panicked: {message}"));
+                        return Drain::Stopped(false);
+                    }
+                    Event::Opened { .. } | Event::OpenFailed { .. } => {}
+                }
+            }
+            match reply.recv_timeout(STOP_POLL) {
+                Ok(ParkProgress::Draining { ended }) => return Drain::Ended(ended),
+                Ok(ParkProgress::Parked(_)) => unreachable!("a group parks only after it reports the end of its drain"),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return Drain::Gone,
+            }
         }
     }
 

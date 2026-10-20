@@ -6,7 +6,7 @@ use nagaya::admission::{AdmitError, Factory, OpenError, PlanError, Registry};
 use nagaya::exit::ExitCode;
 use nagaya::inventory::{Device, Inventory};
 use nagaya::park::StoreBudget;
-use nagaya::process::{ParkReport, Quantum, Start, StartError, StopReport, SubmitError};
+use nagaya::process::{ParkReport, Quantum, QuantumOutcome, Start, StartError, StopReport, SubmitError};
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, StoreSpec, TierSpec};
 use nagaya::signal::SignalFlag;
 use nagaya_abi::fake::FakeAlways;
@@ -392,7 +392,7 @@ fn a_stop_that_wrote_a_part_and_did_not_finish_says_so() {
             parts: 3,
             bytes: 16,
             entries: 1,
-            failures: Vec::new(),
+            ..ParkReport::default()
         },
         complete: false,
         interrupted: false,
@@ -546,6 +546,128 @@ fn a_running_quantum_ends_before_the_park() {
     drop(process);
     let store = Store::open(directory.path()).unwrap();
     assert!(store.entries().contains_key(&id), "the quantum's result is parked");
+}
+
+/// Start one `park` engine with a short heartbeat and the given watchdog timeout.
+fn started_with_timeout(factory: ParkFactory, timeout: Duration) -> (nagaya::process::Process, tempfile::TempDir) {
+    let directory = tempfile::tempdir().unwrap();
+    let mut registry = Registry::new();
+    registry.register("park", Box::new(factory));
+    let mut process = Start::new(profile(vec![engine("a", "park", &[0])]), registry, inventory(&[0]))
+        .store(directory.path())
+        .heartbeat(Duration::from_millis(10))
+        .timeout(timeout)
+        .start()
+        .unwrap();
+    process.wait_opens(Duration::from_secs(2)).unwrap();
+    (process, directory)
+}
+
+/// Submit a quantum that sleeps, and wait until it runs.
+fn submit_sleeper(process: &nagaya::process::Process, sleep: Duration, ran: &Arc<Mutex<Vec<String>>>) {
+    let log = Arc::clone(ran);
+    process
+        .submit(
+            0,
+            Quantum::new(move |_| {
+                log.lock().unwrap().push("long".to_owned());
+                thread::sleep(sleep);
+            }),
+        )
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !ran.lock().unwrap().iter().any(|entry| entry == "long") {
+        assert!(Instant::now() < deadline, "the long quantum did not start");
+        thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn a_stop_during_a_long_quantum_still_parks_every_state() {
+    let record = Arc::new(Mutex::new(ParkRecord::default()));
+    let (mut process, _directory) = started_with_timeout(ParkFactory::new("a", record), Duration::from_secs(2));
+    let ran = Arc::new(Mutex::new(Vec::new()));
+    submit_sleeper(&process, Duration::from_millis(400), &ran);
+    // The park budget is shorter than the quantum. The budget starts when the drain ends (spec 10.3).
+    let report = process.stop(Duration::from_millis(150), &SignalFlag::new());
+    assert!(report.complete, "the drain does not use the park budget: {report:?}");
+    assert_eq!(report.exit_code(), ExitCode::Clean, "{report:?}");
+    assert_eq!(report.parked.states, 2, "every state is parked: {report:?}");
+    assert!(report.parked.failures.is_empty(), "{report:?}");
+}
+
+#[test]
+fn a_stop_cancels_the_queued_quanta_and_runs_none_of_them() {
+    let record = Arc::new(Mutex::new(ParkRecord::default()));
+    let (mut process, _directory) = started_with_timeout(ParkFactory::new("a", record), Duration::from_secs(2));
+    let ran = Arc::new(Mutex::new(Vec::new()));
+    submit_sleeper(&process, Duration::from_millis(200), &ran);
+    let mut outcomes = Vec::new();
+    for name in ["second", "third"] {
+        let log = Arc::clone(&ran);
+        let (quantum, outcome) = Quantum::with_outcome(move |_| log.lock().unwrap().push(name.to_owned()));
+        process.submit(0, quantum).unwrap();
+        outcomes.push(outcome);
+    }
+    let report = process.stop(Duration::from_secs(2), &SignalFlag::new());
+    assert_eq!(report.exit_code(), ExitCode::Clean, "{report:?}");
+    assert_eq!(
+        report.parked.cancelled, 2,
+        "the stop counts the cancelled quanta: {report:?}"
+    );
+    assert_eq!(report.parked.states, 2, "{report:?}");
+    assert_eq!(*ran.lock().unwrap(), vec!["long".to_owned()], "no queued quantum runs");
+    for outcome in outcomes {
+        assert_eq!(outcome.try_recv(), Ok(QuantumOutcome::Cancelled));
+    }
+    assert!(report.log_line().contains("cancelled 2"), "{}", report.log_line());
+}
+
+#[test]
+fn a_quantum_that_ran_reports_its_outcome() {
+    let record = Arc::new(Mutex::new(ParkRecord::default()));
+    let (mut process, _directory) = started_with_timeout(ParkFactory::new("a", record), Duration::from_secs(2));
+    let (quantum, outcome) = Quantum::with_outcome(|_| {});
+    process.submit(0, quantum).unwrap();
+    assert_eq!(outcome.recv_timeout(Duration::from_secs(2)), Ok(QuantumOutcome::Ran));
+    let report = process.stop(Duration::from_secs(2), &SignalFlag::new());
+    assert_eq!(report.parked.cancelled, 0);
+}
+
+#[test]
+fn a_drain_that_never_ends_is_a_crash() {
+    let record = Arc::new(Mutex::new(ParkRecord::default()));
+    // The quantum outlasts the watchdog timeout, so the watchdog reports a stall (spec 7.4).
+    let (mut process, _directory) = started_with_timeout(ParkFactory::new("a", record), Duration::from_millis(150));
+    let ran = Arc::new(Mutex::new(Vec::new()));
+    submit_sleeper(&process, Duration::from_millis(900), &ran);
+    let started = Instant::now();
+    let report = process.stop(Duration::from_secs(10), &SignalFlag::new());
+    assert_eq!(report.exit_code(), ExitCode::Crash, "{report:?}");
+    assert!(!report.complete, "{report:?}");
+    assert!(
+        started.elapsed() < Duration::from_millis(700),
+        "the stall ends the stop; it took {:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn a_park_that_outlasts_its_budget_after_the_drain_is_a_crash() {
+    let record = Arc::new(Mutex::new(ParkRecord::default()));
+    let (mut process, _directory) = started_with_timeout(
+        ParkFactory::new("a", record).slow(Duration::from_millis(300)),
+        Duration::from_secs(5),
+    );
+    let started = Instant::now();
+    let report = process.stop(Duration::from_millis(100), &SignalFlag::new());
+    assert!(!report.complete, "{report:?}");
+    assert_eq!(report.exit_code(), ExitCode::Crash);
+    assert!(
+        started.elapsed() < Duration::from_millis(280),
+        "{:?}",
+        started.elapsed()
+    );
 }
 
 #[test]
