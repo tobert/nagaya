@@ -628,7 +628,9 @@ wakes pinned entries into slots when the profile asks for them. (mk wakes its pi
 or a steering vector. Such state goes into the recipe. Thus a steered or masked result never has a plain recipe.
 
 **6.13 Interval copies.** An engine can declare a checkpoint grain in `limits()`, in tokens. Then, between quanta,
-the scheduler makes an interval copy (ontology) of each context that passed a multiple of the grain. Decided
+the scheduler makes an interval copy (ontology) of each context that passed a multiple of the grain. Milestone 11.5
+built the store's part. The scheduler's part needs the recipe of each live context, so it comes with milestone 12.
+Until then, mk declares no grain. Decided
 2026-10-20 (`docs/deepinfer.md` 3), and reworked the same day after kaibo's review.
 
 - **A store entry that is not sealed.** The copy is a store put like any other: it has a content id, a recipe and
