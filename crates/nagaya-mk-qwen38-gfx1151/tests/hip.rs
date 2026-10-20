@@ -110,6 +110,15 @@ fn the_binding_opens_mk_and_declares_its_parts() {
         identity.tokenizer_hash,
         "sha256:9724dd72094b6311776a1f5a8a49d283f676a5f0f56d8e0ba9671adb18df06ad"
     );
+    // The template is the text of `tokenizer.chat_template` in the first shard.
+    match metadata.get("tokenizer.chat_template") {
+        Some(nagaya_text_qwen38::gguf::Value::Str(text)) => {
+            assert!(!text.is_empty());
+            assert_eq!(&identity.template, text);
+        }
+        other => panic!("the first shard has no string chat template: {other:?}"),
+    }
+    assert_eq!(identity.canary_hash, "");
     assert_eq!(identity.numbers.get("fused").map(String::as_str), Some("1"));
     assert_eq!(identity.numbers.get("fast_qmm").map(String::as_str), Some("1"));
 
