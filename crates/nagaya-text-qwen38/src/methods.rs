@@ -35,7 +35,7 @@ fn refuse(method: &str, what: impl std::fmt::Display) -> Error {
 }
 
 /// The name of a kind of value, as Python names the type.
-fn type_name(v: &Value) -> &'static str {
+pub(crate) fn type_name(v: &Value) -> &'static str {
     match v.kind() {
         ValueKind::Undefined => "Undefined",
         ValueKind::None => "NoneType",

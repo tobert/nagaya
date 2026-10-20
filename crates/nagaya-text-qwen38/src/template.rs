@@ -60,10 +60,14 @@ impl ChatTemplate {
         env.add_filter("tojson", tojson);
         env.add_filter("trim", trim);
         env.add_filter("string", |value: Value| py_str(&value));
+        env.add_filter("length", length);
+        env.add_filter("count", length);
+        env.add_filter("items", items);
         env.set_formatter(|out, _state, value| {
             out.write_str(&py_str(value))
                 .map_err(|_| minijinja::Error::from(ErrorKind::WriteFailure))
         });
+        add_tests_of_jinja2(&mut env);
         env.add_function("raise_exception", raise_exception);
         env.set_unknown_method_callback(crate::methods::string_method);
         env.add_template_owned(NAME, source.to_string())
@@ -130,6 +134,29 @@ fn to_value(j: &Json) -> Value {
     }
 }
 
+/// The tests of jinja2 on which the engine differs. The engine says that a string is not a sequence and that a bool is
+/// not a number, and it has no test `callable`. Python answers the other way, and the undefined value of jinja2 is
+/// a sequence, an iterable and callable. (jinja2 `tests.py`.)
+fn add_tests_of_jinja2(env: &mut Environment<'_>) {
+    use ValueKind::{Bool, Iterable, Map, Number, Plain, Seq, String as Str, Undefined};
+    env.add_test("sequence", |v: Value| matches!(v.kind(), Undefined | Str | Seq | Map));
+    env.add_test("number", |v: Value| matches!(v.kind(), Number | Bool));
+    env.add_test("string", |v: Value| v.kind() == Str);
+    env.add_test("mapping", |v: Value| v.kind() == Map);
+    env.add_test("iterable", |v: Value| {
+        matches!(v.kind(), Undefined | Str | Seq | Map | Iterable)
+    });
+    env.add_test("defined", |v: Value| v.kind() != Undefined);
+    env.add_test("undefined", |v: Value| v.kind() == Undefined);
+    env.add_test("none", |v: Value| v.kind() == ValueKind::None);
+    env.add_test("true", |v: Value| v.kind() == Bool && v.is_true());
+    env.add_test("false", |v: Value| v.kind() == Bool && !v.is_true());
+    env.add_test("boolean", |v: Value| v.kind() == Bool);
+    env.add_test("integer", |v: Value| v.kind() == Number && v.is_integer());
+    env.add_test("float", |v: Value| v.kind() == Number && !v.is_integer());
+    env.add_test("callable", |v: Value| matches!(v.kind(), Undefined | Plain));
+}
+
 /// `raise_exception(message)` of mk's template: Python's `str` of any value is the message. The function takes one
 /// argument, by position or as `msg=`.
 fn raise_exception(args: Rest<Value>) -> Result<Value, minijinja::Error> {
@@ -159,7 +186,7 @@ pub(crate) fn py_str(value: &Value) -> String {
 
 fn py_repr(value: &Value) -> String {
     match value.kind() {
-        ValueKind::Undefined => String::new(),
+        ValueKind::Undefined => "Undefined".to_string(),
         ValueKind::None => "None".to_string(),
         ValueKind::Bool => if value.is_true() { "True" } else { "False" }.to_string(),
         ValueKind::Number if value.is_integer() => match i128::try_from(value.clone()) {
@@ -197,9 +224,49 @@ fn py_repr(value: &Value) -> String {
     }
 }
 
-/// The `trim` filter of jinja2: `str(value).strip(chars)`.
-fn trim(value: Value, chars: Option<Value>) -> Result<String, minijinja::Error> {
-    let set = match &chars {
+/// The `length` filter of jinja2: `len(value)`. The undefined value has length 0.
+fn length(value: Value) -> Result<usize, minijinja::Error> {
+    if value.kind() == ValueKind::Undefined {
+        return Ok(0);
+    }
+    value.len().ok_or_else(|| {
+        minijinja::Error::new(
+            ErrorKind::InvalidOperation,
+            format!("a value of type {} has no length", crate::methods::type_name(&value)),
+        )
+    })
+}
+
+/// The `items` filter of jinja2: the pairs of a map. The undefined value has no pairs.
+fn items(value: Value) -> Result<Value, minijinja::Error> {
+    match value.kind() {
+        ValueKind::Undefined => Ok(Value::from(Vec::<Value>::new())),
+        ValueKind::Map => {
+            let pairs: Vec<Value> = value
+                .try_iter()?
+                .map(|key| {
+                    let item = value.get_item(&key).unwrap_or(Value::UNDEFINED);
+                    Value::from(vec![key, item])
+                })
+                .collect();
+            Ok(Value::from(pairs))
+        }
+        _ => Err(minijinja::Error::new(
+            ErrorKind::InvalidOperation,
+            format!("a value of type {} has no items", crate::methods::type_name(&value)),
+        )),
+    }
+}
+
+/// The `trim` filter of jinja2: `str(value).strip(chars)`. The characters may be left out or be `none`.
+fn trim(value: Value, rest: Rest<Value>) -> Result<String, minijinja::Error> {
+    if rest.len() > 1 {
+        return Err(minijinja::Error::new(
+            ErrorKind::TooManyArguments,
+            "trim takes at most one argument, the characters",
+        ));
+    }
+    let set = match rest.first() {
         None => None,
         Some(v) if v.is_none() => None,
         Some(v) => Some(v.as_str().ok_or_else(|| {

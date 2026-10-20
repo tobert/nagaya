@@ -579,7 +579,9 @@ def main() -> None:
         chat_out.append({**c, "escaped": escaped, "text": tok.unescape(escaped), "ids": ids})
     methods = run_cases(Template, method_cases())
     dump_cases(OUT / "jinja.json", header, {"sweep": pystr_sweep(), "methods": methods,
-                                           "formats": run_cases(Template, format_cases())})
+                                           "formats": run_cases(Template, format_cases()),
+                                           "tests": run_cases(Template, test_cases()),
+                                           "undefined": run_cases(Template, undefined_cases())})
     # The filters of the template engine that the chat template uses, on their own.
     from service.template import _tojson
     tojson = []
@@ -777,6 +779,66 @@ def format_cases() -> list[dict]:
                 "{{ {'a': 1} }}", "{{ 'x' * 3 }}", "{{ 7 // 2 }}", "{{ 7 / 2 }}", "{{ 2 ** 10 }}",
                 "{{ 7 % 3 }}", "{{ 1 + 1.5 }}", "{{ 'a' + 'b' }}", "{{ 'a' + 1 }}", "{{ 1 + 'a' }}", "{{ [1] + [2] }}"):
         cases.append({"src": src, "msgs": [{}], "m": "format"})
+    return cases
+
+
+# ------------------------------------------------------------------ tests and the undefined value
+TEST_VALUES = [None, True, False, 0, 1, -1, 2.5, 1e16, "", "abc", " ", [], [1], ["a"], {}, {"a": 1}]
+# The tests that the library follows. The tests lower, upper, odd, even, lt, ge, divisibleby, filter and test are left
+# out: the template engine answers them in its own way, the chat template calls none of them, and the note of spec 11.3
+# says so.
+TESTS = ["sequence", "number", "string", "mapping", "defined", "undefined", "none", "iterable", "true", "false",
+         "boolean", "integer", "float", "callable", "escaped", "eq(1)", "ne(1)", "sameas(true)", "sameas(none)",
+         "in([1, 'abc'])"]
+
+
+def test_cases() -> list[dict]:
+    cases = []
+    for test in TESTS:
+        for v in TEST_VALUES:
+            cases.append({"src": "{{ messages[0].v is " + test + " }}", "msgs": [{"v": v}], "m": "test"})
+        # A name that no variable has, an attribute that the object does not have, and an item that the list lacks.
+        for src in ("{{ nothing is " + test + " }}", "{{ messages[0].gone is " + test + " }}",
+                    "{{ messages[0].v.gone is " + test + " }}", "{{ messages[5] is " + test + " }}"):
+            cases.append({"src": src, "msgs": [{"v": {}}], "m": "test"})
+    for test in ("sequence", "number", "string", "mapping", "defined", "none", "iterable"):
+        cases.append({"src": "{{ messages[0].v is not " + test + " }}", "msgs": [{"v": "abc"}], "m": "test"})
+        cases.append({"src": "{{ messages[0].gone is not " + test + " }}", "msgs": [{}], "m": "test"})
+    return cases
+
+
+UNDEFINED_SOURCES = [
+    "{{ u }}", "{{ u.a }}", "{{ u.a.b }}", "{{ u[0] }}", "{{ u['a'] }}", "{{ u() }}", "{{ u.m() }}", "{{ u|length }}",
+    "{{ u|string }}", "{{ u|trim }}", "{{ u|tojson }}", "{{ u|default('d') }}", "{{ u|default('d', true) }}",
+    "{{ u|list }}", "{{ u|join(',') }}", "{{ u|upper }}", "{{ u|lower }}",
+    "{{ u|abs }}", "{{ u|sort }}",
+    "{{ u|sum }}", "{{ u|min }}", "{{ u|max }}",
+    "{% for x in u %}x{% else %}empty{% endfor %}", "{% for k, v in u|items %}x{% endfor %}",
+    "{% for x in u.a %}x{% endfor %}", "{% if u %}yes{% else %}no{% endif %}", "{{ not u }}", "{{ u and 1 }}",
+    "{{ u or 1 }}", "{{ u == '' }}", "{{ u == u }}", "{{ u != 1 }}", "{{ u == none }}", "{{ u is none }}",
+    "{{ u + 'a' }}", "{{ 'a' + u }}", "{{ u + 1 }}", "{{ 1 + u }}", "{{ u - 1 }}", "{{ u * 2 }}",
+    "{{ u / 2 }}", "{{ u ~ 'a' }}", "{{ 'a' ~ u }}", "{{ u in [1] }}", "{{ 1 in u }}", "{{ 'a' in u }}",
+    "{{ 'a' not in u }}", "{{ u.startswith('a') }}", "{{ 'abc'.startswith(u) }}", "{{ 'abc'.join(u) }}",
+    "{{ 'abc'.split(u) }}", "{{ 'abc'.replace(u, 'x') }}", "{{ 'abc'.count(u) }}", "{{ 'abc'.strip(u) }}",
+    "{{ [1, u] }}", "{{ [1, u]|tojson }}", "{{ {'a': u} }}", "{{ {'a': u}|tojson }}", "{{ u if u else 'else' }}",
+    "{% set y = u %}[{{ y }}]", "{% set y = u.a %}[{{ y }}]", "{% set y = u %}{{ y is defined }}",
+    "{% macro m(a) %}[{{ a }}]{% endmacro %}{{ m(u) }}", "{% macro m(a) %}{{ a is defined }}{% endmacro %}{{ m(u) }}",
+    "{% macro m(a) %}[{{ a }}]{% endmacro %}{{ m() }}", "{% macro m(a) %}{{ a is defined }}{% endmacro %}{{ m() }}",
+    "{% set ns = namespace(v=u) %}[{{ ns.v }}]", "{% set ns = namespace(v=1) %}{% set ns.v = u %}[{{ ns.v }}]",
+    "{{ messages[0].v }}", "{{ messages[0].v.a }}", "{{ messages[0].gone }}", "{{ messages[0].gone.a }}",
+    "{{ messages[0]['gone'] }}", "{{ messages[0]['gone'].a }}", "{{ messages[3] }}", "{{ messages[3].a }}",
+    "{{ messages|first }}", "{{ messages[0]|length }}", "{{ messages[0].v|length }}", "{{ messages[0].v|trim }}",
+    "{{ messages[0].gone|trim }}", "{{ 'x'|trim(u) }}", "{{ loop }}", "{{ loop.index }}", "{{ messages|length }}",
+    "{{ raise_exception(u) }}", "{{ caller }}", "{{ range(u) }}", "{{ range(2)|list }}",
+    "{{ u|attr('a') }}", "{{ ''.__class__ }}", "{{ [].append }}", "{{ 'a'.__len__ }}",
+    "{{ messages[0].__class__ }}", "{{ messages[0]._x }}",
+]
+
+
+def undefined_cases() -> list[dict]:
+    cases = []
+    for src in UNDEFINED_SOURCES:
+        cases.append({"src": src, "msgs": [{"v": "text"}, {"v": None}], "m": "undefined"})
     return cases
 
 

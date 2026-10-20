@@ -54,7 +54,7 @@ fn check(cases: &[Json]) -> Vec<String> {
             (Err(e), true) => wrong.push(format!("{shown}: refused ({e}), mk gives {:?}", case.get("out").str())),
             (Err(Error::Template(m)), false) => {
                 let method = case.get("m").str();
-                if !["direct", "join", "format"].contains(&method) && !m.contains(method) {
+                if !["direct", "join", "format", "test", "undefined"].contains(&method) && !m.contains(method) {
                     wrong.push(format!("{shown}: the refusal does not name the method {method}: {m}"));
                 }
                 // A message of raise_exception reaches the error as Python writes it.
@@ -74,8 +74,8 @@ fn assert_none_wrong(wrong: Vec<String>, total: usize) {
         wrong.is_empty(),
         "{} of {total} cases differ from mk. The first {}:\n{}",
         wrong.len(),
-        wrong.len().min(25),
-        wrong[..wrong.len().min(25)].join("\n")
+        wrong.len().min(400),
+        wrong[..wrong.len().min(400)].join("\n")
     );
 }
 
@@ -178,4 +178,37 @@ fn a_tuple_of_the_template_is_a_list() {
     // The engine has no tuple type. Python writes (1, 2) for the tuple. JSON gives no tuple, so only a literal in the
     // template can differ.
     assert_eq!(render("{{ (1, 2) }}").unwrap(), "[1, 2]");
+}
+
+#[test]
+fn tests_of_jinja2_give_its_answers() {
+    let cases = jinja().get("tests").items();
+    assert!(cases.len() >= 400, "{} cases", cases.len());
+    assert_none_wrong(check(cases), cases.len());
+}
+
+#[test]
+fn the_undefined_value_acts_as_it_does_in_jinja2() {
+    let cases = jinja().get("undefined").items();
+    assert!(cases.len() >= 90, "{} cases", cases.len());
+    assert_none_wrong(check(cases), cases.len());
+}
+
+#[test]
+fn known_differences_in_the_undefined_value_and_in_names_of_dict_methods() {
+    // Python refuses these, or answers with a method. The engine answers in its own way. The chat template does
+    // none of this, and spec 11.3 states the differences. The test pins them, so that a change is a choice.
+    let messages = Json::parse(r#"[{"v": 1}]"#).unwrap();
+    let render = |source: &str| {
+        ChatTemplate::from_source(source).and_then(|t| t.render(&messages, None, &RenderOptions::default()))
+    };
+    // Python: UndefinedError. Here: zero and True.
+    assert_eq!(
+        render("{{ nothing|int }}|{{ nothing|float }}|{{ nothing < 1 }}").unwrap(),
+        "0|0.0|True"
+    );
+    // Python: the first item of an empty value is an undefined value, and it writes nothing. Here: an error.
+    assert!(render("{{ nothing|first }}").is_err());
+    // Python: messages[0].items is the method items of the dict. Here: the key, or an undefined value.
+    assert_eq!(render("[{{ messages[0].items }}]").unwrap(), "[]");
 }
