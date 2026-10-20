@@ -280,6 +280,18 @@ fn a_slot_id_maps_through_the_size_classes() {
 
 struct TestEngine {
     with_coverage: bool,
+    dtype: Dtype,
+    block_format: Option<String>,
+}
+
+impl TestEngine {
+    fn new(with_coverage: bool) -> Self {
+        TestEngine {
+            with_coverage,
+            dtype: Dtype::U8,
+            block_format: None,
+        }
+    }
 }
 
 impl Engine for TestEngine {
@@ -303,12 +315,22 @@ impl Engine for TestEngine {
             } else {
                 vec![Capability::Parts]
             },
-            parts: vec![PartLimits {
-                name: "cells".to_owned(),
-                kind: PartKind::Cells,
-                dtype: Dtype::U8,
-                shape: vec![8],
-            }],
+            parts: vec![
+                PartLimits {
+                    name: "cells".to_owned(),
+                    kind: PartKind::Cells,
+                    dtype: self.dtype,
+                    shape: vec![8],
+                    block_format: self.block_format.clone(),
+                },
+                PartLimits {
+                    name: "fixed".to_owned(),
+                    kind: PartKind::Fixed,
+                    dtype: self.dtype,
+                    shape: vec![4],
+                    block_format: self.block_format.clone(),
+                },
+            ],
             inputs: Inputs::Tokens,
             devices: vec![0],
             stages: Vec::new(),
@@ -326,6 +348,7 @@ impl Engine for TestEngine {
             determinism: Determinism::Always,
             bit_dependence: Vec::new(),
             taps: Vec::new(),
+            checkpoint_grain: None,
         }
     }
 
@@ -347,8 +370,9 @@ impl Engine for TestEngine {
 }
 
 impl Parts for TestEngine {
-    fn part_read(&mut self, _state: State, _part: usize, _out: &mut [u8]) -> Result<(), PartError> {
-        Err(PartError::Refused)
+    fn part_read(&mut self, _state: State, _part: usize, out: &mut [u8]) -> Result<(), PartError> {
+        out.fill(7);
+        Ok(())
     }
 
     fn part_write(&mut self, _state: State, _part: usize, _bytes: &[u8]) -> WriteResult {
@@ -390,7 +414,7 @@ impl Coverage for TestEngine {
 
 #[test]
 fn coverage_capability_sets_the_span() {
-    let mut engine = TestEngine { with_coverage: true };
+    let mut engine = TestEngine::new(true);
     let rows = [(0, 0, 2)];
     let snapshot = snapshot_from_engine(&mut engine, State::Slot(0), &rows).unwrap();
     assert_eq!(snapshot.tensors[0].coverage, Some((3, 5)));
@@ -399,8 +423,37 @@ fn coverage_capability_sets_the_span() {
 
 #[test]
 fn no_coverage_records_zero_to_n() {
-    let mut engine = TestEngine { with_coverage: false };
+    let mut engine = TestEngine::new(false);
     let rows = [(0, 0, 2)];
     let snapshot = snapshot_from_engine(&mut engine, State::Slot(0), &rows).unwrap();
     assert_eq!(snapshot.tensors[0].coverage, Some((0, 2)));
+}
+
+#[test]
+fn a_block_format_on_a_u8_part_round_trips() {
+    let mut engine = TestEngine::new(false);
+    engine.block_format = Some("IQ4_NL".to_owned());
+    let snapshot = snapshot_from_engine(&mut engine, State::Slot(0), &[(0, 0, 2)]).unwrap();
+    let back = Snapshot::decode(&snapshot.encode().unwrap()).unwrap();
+    for tensors in [&snapshot.tensors, &back.tensors] {
+        assert_eq!(tensors.len(), 2);
+        for tensor in tensors {
+            assert_eq!(tensor.block_format.as_deref(), Some("IQ4_NL"), "{}", tensor.name);
+        }
+    }
+}
+
+#[test]
+fn a_part_with_no_block_format_stays_without_one() {
+    let mut engine = TestEngine::new(false);
+    let snapshot = snapshot_from_engine(&mut engine, State::Slot(0), &[(0, 0, 2)]).unwrap();
+    assert!(snapshot.tensors.iter().all(|tensor| tensor.block_format.is_none()));
+}
+
+#[test]
+fn a_block_format_on_another_dtype_is_refused() {
+    let mut engine = TestEngine::new(false);
+    engine.dtype = Dtype::F32;
+    engine.block_format = Some("IQ4_NL".to_owned());
+    assert!(snapshot_from_engine(&mut engine, State::Slot(0), &[(0, 0, 2)]).is_err());
 }

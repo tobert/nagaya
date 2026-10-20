@@ -694,7 +694,7 @@ impl ThreadState {
     fn probe_pass(&self, context: *mut c_void, tokens: &[i32], want_logits: bool) -> Result<(), String> {
         let contexts = [context];
         let lens = [tokens.len() as u32];
-        // mk aborts the process on a bad segment, so run its check first (docs/engine-abi.md:235).
+        // mk aborts the process on a bad segment, so run its check first (engine-abi, "How mk maps").
         self.segments_problem(&contexts, &lens)?;
         let mut logits = if want_logits {
             vec![0f32; spec::VOCAB as usize]
@@ -1119,7 +1119,7 @@ impl ThreadState {
             pointers.push(context.ptr);
         }
 
-        // mk aborts the process on a bad segment, so run its check first (docs/engine-abi.md:235).
+        // mk aborts the process on a bad segment, so run its check first (engine-abi, "How mk maps").
         if let Err(message) = self.segments_problem(&pointers, &request.lens) {
             return Err(problem(message));
         }

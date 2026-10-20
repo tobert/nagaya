@@ -75,7 +75,7 @@ pub enum PartKind {
     Derived,
 }
 
-/// The element type of a part.
+/// The element type of a part. The variants are the native dtypes of D10 rule 4.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dtype {
     /// A 32-bit float.
@@ -86,8 +86,53 @@ pub enum Dtype {
     BF16,
     /// An unsigned byte.
     U8,
+    /// A 16-bit unsigned integer.
+    U16,
     /// A 32-bit unsigned integer.
     U32,
+    /// A 64-bit unsigned integer.
+    U64,
+    /// A signed byte.
+    I8,
+    /// A 16-bit signed integer.
+    I16,
+    /// A 32-bit signed integer.
+    I32,
+    /// A 64-bit signed integer.
+    I64,
+    /// An 8-bit float with 4 exponent bits and 3 mantissa bits.
+    F8E4M3,
+    /// An 8-bit float with 5 exponent bits and 2 mantissa bits.
+    F8E5M2,
+}
+
+impl Dtype {
+    /// Every dtype, so that a test can visit each one.
+    pub const ALL: [Dtype; 13] = [
+        Dtype::F32,
+        Dtype::F16,
+        Dtype::BF16,
+        Dtype::U8,
+        Dtype::U16,
+        Dtype::U32,
+        Dtype::U64,
+        Dtype::I8,
+        Dtype::I16,
+        Dtype::I32,
+        Dtype::I64,
+        Dtype::F8E4M3,
+        Dtype::F8E5M2,
+    ];
+
+    /// The size of one element in bytes.
+    pub fn element_bytes(self) -> u64 {
+        match self {
+            Dtype::U8 | Dtype::I8 | Dtype::F8E4M3 | Dtype::F8E5M2 => 1,
+            Dtype::F16 | Dtype::BF16 | Dtype::U16 | Dtype::I16 => 2,
+            Dtype::F32 | Dtype::U32 | Dtype::I32 => 4,
+            Dtype::U64 | Dtype::I64 => 8,
+        }
+    }
 }
 
 /// One part that an engine declares.
@@ -101,6 +146,8 @@ pub struct PartLimits {
     pub dtype: Dtype,
     /// The whole shape for a fixed or derived part; the row shape for cells or ring.
     pub shape: Vec<u64>,
+    /// The name of the block format, when the dtype is `U8` for a block format. `None` otherwise.
+    pub block_format: Option<String>,
 }
 
 impl PartLimits {
@@ -332,6 +379,8 @@ pub struct Limits {
     pub bit_dependence: Vec<BitDependence>,
     /// The taps and their conditions.
     pub taps: Vec<TapLimit>,
+    /// The token count at which an engine keeps a state that it can copy, or `None` when it keeps none (spec 6.13).
+    pub checkpoint_grain: Option<u64>,
 }
 
 /// The result of a pass.
@@ -396,6 +445,8 @@ pub struct Tap {
 pub struct Output {
     /// The output name.
     pub name: String,
+    /// The element type of the bytes. A float output is compared as values (spec 8.3).
+    pub dtype: Dtype,
     /// The output bytes.
     pub bytes: Vec<u8>,
 }

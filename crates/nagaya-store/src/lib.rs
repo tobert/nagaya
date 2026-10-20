@@ -322,7 +322,7 @@ pub fn snapshot_from_engine(
                     shape: part.shape.clone(),
                     data,
                     coverage: None,
-                    block_format: None,
+                    block_format: part.block_format.clone(),
                 });
             }
             PartKind::Cells | PartKind::Ring => {
@@ -367,7 +367,7 @@ pub fn snapshot_from_engine(
                     shape,
                     data,
                     coverage: Some((span.start, span.end)),
-                    block_format: None,
+                    block_format: part.block_format.clone(),
                 });
             }
         }
@@ -477,7 +477,15 @@ fn dtype_name(dtype: Dtype) -> &'static str {
         Dtype::F16 => "F16",
         Dtype::BF16 => "BF16",
         Dtype::U8 => "U8",
+        Dtype::U16 => "U16",
         Dtype::U32 => "U32",
+        Dtype::U64 => "U64",
+        Dtype::I8 => "I8",
+        Dtype::I16 => "I16",
+        Dtype::I32 => "I32",
+        Dtype::I64 => "I64",
+        Dtype::F8E4M3 => "F8_E4M3",
+        Dtype::F8E5M2 => "F8_E5M2",
     }
 }
 
@@ -492,21 +500,13 @@ fn slot_capacity(slots: &[SlotLimit], slot: u32) -> Option<u64> {
     None
 }
 
-fn dtype_bytes(dtype: Dtype) -> usize {
-    match dtype {
-        Dtype::U8 => 1,
-        Dtype::F16 | Dtype::BF16 => 2,
-        Dtype::F32 | Dtype::U32 => 4,
-    }
-}
-
 fn checked_len(shape: &[u64], dtype: Dtype) -> Result<usize, StoreError> {
     let elements = shape
         .iter()
         .try_fold(1u64, |total, &dim| total.checked_mul(dim))
         .ok_or_else(|| StoreError::Invalid("shape overflow".to_owned()))?;
     let bytes = elements
-        .checked_mul(dtype_bytes(dtype) as u64)
+        .checked_mul(dtype.element_bytes())
         .ok_or_else(|| StoreError::Invalid("shape overflow".to_owned()))?;
     usize::try_from(bytes).map_err(|_| StoreError::Invalid("shape too large".to_owned()))
 }
@@ -517,7 +517,15 @@ fn dtype_from_safetensors(dtype: SafeDtype) -> Result<Dtype, StoreError> {
         SafeDtype::F16 => Ok(Dtype::F16),
         SafeDtype::BF16 => Ok(Dtype::BF16),
         SafeDtype::U8 => Ok(Dtype::U8),
+        SafeDtype::U16 => Ok(Dtype::U16),
         SafeDtype::U32 => Ok(Dtype::U32),
+        SafeDtype::U64 => Ok(Dtype::U64),
+        SafeDtype::I8 => Ok(Dtype::I8),
+        SafeDtype::I16 => Ok(Dtype::I16),
+        SafeDtype::I32 => Ok(Dtype::I32),
+        SafeDtype::I64 => Ok(Dtype::I64),
+        SafeDtype::F8_E4M3 => Ok(Dtype::F8E4M3),
+        SafeDtype::F8_E5M2 => Ok(Dtype::F8E5M2),
         other => Err(StoreError::Invalid(format!("unsupported dtype {other:?}"))),
     }
 }
@@ -1937,6 +1945,40 @@ mod tests {
             block_format: None,
         };
         assert!(check_tensor(&no_rows).is_err());
+    }
+
+    #[test]
+    fn every_dtype_round_trips_through_the_canonical_file() {
+        for dtype in Dtype::ALL {
+            let width = dtype.element_bytes() as usize;
+            let tensor = Tensor {
+                name: "t".to_owned(),
+                kind: PartKind::Fixed,
+                dtype,
+                shape: vec![3],
+                data: (0..3 * width).map(|byte| byte as u8 + 1).collect(),
+                coverage: None,
+                block_format: None,
+            };
+            let snapshot = Snapshot {
+                tensors: vec![tensor.clone()],
+                parent: None,
+            };
+            let bytes = snapshot.encode().unwrap();
+            let back = Snapshot::decode(&bytes).unwrap();
+            assert_eq!(back.tensors, vec![tensor], "{dtype:?}");
+        }
+    }
+
+    #[test]
+    fn dtype_names_are_the_safetensors_names() {
+        let names: Vec<_> = Dtype::ALL.iter().map(|&dtype| dtype_name(dtype)).collect();
+        assert_eq!(
+            names,
+            [
+                "F32", "F16", "BF16", "U8", "U16", "U32", "U64", "I8", "I16", "I32", "I64", "F8_E4M3", "F8_E5M2"
+            ]
+        );
     }
 
     #[test]

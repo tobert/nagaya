@@ -1,7 +1,7 @@
 //! The constants and the declared shapes of the mk engine.
 //!
 //! The numbers come from mk's `src/ops/model.h` and `src/engine/engine.h`. The engine has one device group and one
-//! context pool in this binding (docs/engine-abi.md, "Proposed: v0 mk binding choices").
+//! context pool in this binding (docs/engine-abi.md, "v0 mk binding choices").
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -72,42 +72,49 @@ pub fn parts() -> Vec<PartLimits> {
             kind: PartKind::Fixed,
             dtype: Dtype::F32,
             shape: vec![36, 48, 128, 128],
+            block_format: None,
         },
         PartLimits {
             name: "gdn_conv".to_owned(),
             kind: PartKind::Fixed,
             dtype: Dtype::F32,
             shape: vec![36, 3, 10_240],
+            block_format: None,
         },
         PartLimits {
             name: "ple_conv".to_owned(),
             kind: PartKind::Fixed,
             dtype: Dtype::F32,
             shape: vec![9, 10_240],
+            block_format: None,
         },
         PartLimits {
             name: "kv".to_owned(),
             kind: PartKind::Cells,
             dtype: Dtype::F32,
             shape: vec![12, 2, 2, 256],
+            block_format: None,
         },
         PartLimits {
             name: "idx_keys".to_owned(),
             kind: PartKind::Cells,
             dtype: Dtype::F32,
             shape: vec![12, 128],
+            block_format: None,
         },
         PartLimits {
             name: "ple_hist".to_owned(),
             kind: PartKind::Fixed,
             dtype: Dtype::U32,
             shape: vec![2],
+            block_format: None,
         },
         PartLimits {
             name: "idx_pooled".to_owned(),
             kind: PartKind::Derived,
             dtype: Dtype::F32,
             shape: vec![12, 128],
+            block_format: None,
         },
     ]
 }
@@ -296,17 +303,13 @@ pub fn limits(arena_bytes: u64) -> Limits {
         determinism: Determinism::Always,
         bit_dependence: Vec::new(),
         taps: Vec::new(),
+        checkpoint_grain: None,
     }
 }
 
 /// The bytes of one declared part: the whole shape for a fixed part, one row for a cells or ring part.
 fn declared_bytes(part: &PartLimits) -> u64 {
-    let element = match part.dtype {
-        Dtype::F32 | Dtype::U32 => 4,
-        Dtype::F16 | Dtype::BF16 => 2,
-        Dtype::U8 => 1,
-    };
-    part.shape.iter().product::<u64>() * element
+    part.shape.iter().product::<u64>() * part.dtype.element_bytes()
 }
 
 /// The reason that mk's part byte counts do not match the declared shapes, or `None` when they agree.
@@ -441,6 +444,11 @@ mod tests {
         };
         let problem = parts_problem(larger, rows).expect("a larger part must be a mismatch");
         assert!(problem.contains("gdn_state"), "{problem}");
+    }
+
+    #[test]
+    fn mk_declares_no_checkpoint_grain() {
+        assert_eq!(limits(0).checkpoint_grain, None);
     }
 
     #[test]

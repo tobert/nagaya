@@ -3,8 +3,8 @@
 use std::sync::{Arc, OnceLock};
 
 use nagaya_abi::{
-    Coverage, Engine, Identity, Limits, Output, PartError, Parts, PassError, PassErrorKind, PassOut, PassStatus, Seal,
-    SealError, Segment, SegmentInputs, Slots, State, Tap, WriteResult,
+    Coverage, Dtype, Engine, Identity, Limits, Output, PartError, Parts, PassError, PassErrorKind, PassOut, PassStatus,
+    Seal, SealError, Segment, SegmentInputs, Slots, State, Tap, WriteResult,
 };
 
 use crate::spec;
@@ -102,7 +102,7 @@ impl MkEngine {
     }
 }
 
-/// The first row of a cells write. mk writes rows from 0 and cannot place them later (ABI "Proposed: the first row
+/// The first row of a cells write. mk writes rows from 0 and cannot place them later (engine-abi, "The first row
 /// of a cells write").
 fn write_from(from: u64) -> Result<(), String> {
     if from == 0 {
@@ -144,6 +144,7 @@ fn logit_outputs(bytes: &[u8], wants: &[bool], row: usize) -> Result<Vec<Output>
         };
         outputs.push(Output {
             name: "logits".to_owned(),
+            dtype: Dtype::F32,
             bytes: slice.to_vec(),
         });
     }
