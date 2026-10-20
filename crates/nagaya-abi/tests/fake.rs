@@ -516,3 +516,23 @@ fn the_count_defects_change_bits_and_the_others_do_not() {
     split.pass(&[token_segment_at(0, 2, &[3, 4])], &[]).unwrap();
     assert_ne!(read_state(&mut whole), read_state(&mut split));
 }
+
+#[test]
+fn a_cells_write_refused_before_any_change_is_a_refused_pass() {
+    let mut engine = FakeAlways::new();
+    engine.pass(&[token_segment(&[1, 2])], &[]).unwrap();
+    let before = state_snapshot(&mut engine);
+    // Slot 0 holds 64 bytes. Eight rows of eight bytes fill it, so nine tokens do not fit.
+    let error = engine.pass(&[token_segment(&[3; 9])], &[]).unwrap_err();
+    assert_eq!(error.kind, PassErrorKind::Refused, "{}", error.message);
+    assert_eq!(state_snapshot(&mut engine), before);
+}
+
+#[test]
+fn a_write_refused_after_an_earlier_segment_changed_state_is_poison() {
+    let mut engine = FakeAlways::new();
+    let mut first = token_segment(&[1]);
+    first.state = State::Slot(1);
+    let error = engine.pass(&[first, token_segment(&[3; 9])], &[]).unwrap_err();
+    assert_eq!(error.kind, PassErrorKind::Ran(PassStatus::Poison), "{}", error.message);
+}

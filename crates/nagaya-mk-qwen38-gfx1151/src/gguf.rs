@@ -216,17 +216,46 @@ pub(crate) fn read_header(path: &Path) -> Result<ShardHeader, String> {
     Ok(ShardHeader { size, data_offset })
 }
 
-/// The hash of the tokenizer keys in a shard's GGUF metadata, for the engine identity.
+/// The text keys of a shard's GGUF metadata that the engine identity holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TextKeys {
+    /// The hash of the tokenizer keys.
+    pub tokenizer_hash: String,
+    /// The text of the key `tokenizer.chat_template`.
+    pub template: String,
+}
+
+/// The tokenizer hash and the chat template in a shard's GGUF metadata, for the engine identity.
 ///
 /// The text library computes the hash (`nagaya_text_qwen38::tokenizer_hash`), so the identity and the library
 /// agree. The metadata is in the first shard. The hash covers these keys of the file: `tokenizer.ggml.model`, `.pre`,
 /// `.tokens`, `.token_type` and `.merges`, which the file must hold, and `.bos_token_id`, `.eos_token_id`,
-/// `.eot_token_id`, `.padding_token_id` and `.unknown_token_id`, which it may hold.
-pub(crate) fn tokenizer_hash(shard: &Path) -> Result<String, String> {
+/// `.eot_token_id`, `.padding_token_id` and `.unknown_token_id`, which it may hold. The template is the text of
+/// `tokenizer.chat_template`, as the text library reads it. The file must hold it as a string.
+pub(crate) fn text_keys(shard: &Path) -> Result<TextKeys, String> {
     let metadata = nagaya_text_qwen38::gguf::Metadata::open(shard)
         .map_err(|error| format!("the tokenizer of {} is not readable: {error}", shard.display()))?;
-    nagaya_text_qwen38::tokenizer_hash(&metadata)
-        .map_err(|error| format!("the tokenizer hash of {} is not available: {error}", shard.display()))
+    let tokenizer_hash = nagaya_text_qwen38::tokenizer_hash(&metadata)
+        .map_err(|error| format!("the tokenizer hash of {} is not available: {error}", shard.display()))?;
+    let template = match metadata.get("tokenizer.chat_template") {
+        Some(nagaya_text_qwen38::gguf::Value::Str(text)) => text.clone(),
+        Some(_) => {
+            return Err(format!(
+                "the key tokenizer.chat_template of {} is not a string. Use a GGUF made for this family.",
+                shard.display()
+            ));
+        }
+        None => {
+            return Err(format!(
+                "the key tokenizer.chat_template of {} is missing. Use a GGUF made for this family.",
+                shard.display()
+            ));
+        }
+    };
+    Ok(TextKeys {
+        tokenizer_hash,
+        template,
+    })
 }
 
 /// The spot digest: each shard's size and every byte before its tensor data, in the given order.
@@ -258,7 +287,7 @@ pub(crate) fn spot_digest(shards: &[std::path::PathBuf]) -> Result<String, Strin
 mod tests {
     use std::io::Write;
 
-    use super::{read_header, spot_digest, tokenizer_hash};
+    use super::{read_header, spot_digest, text_keys};
 
     /// Write a minimal GGUF v3 file with one metadata key and one tensor.
     fn write_gguf(path: &std::path::Path, magic: u32, alignment: u32) {
@@ -367,6 +396,11 @@ mod tests {
 
     /// Write a GGUF v3 file with the tokenizer keys of a three-token vocabulary. `skip` leaves out one key.
     fn write_tokenizer_gguf(path: &std::path::Path, skip: Option<&str>) {
+        write_text_gguf(path, skip, "{{ messages }}");
+    }
+
+    /// The same file, with the given chat template.
+    fn write_text_gguf(path: &std::path::Path, skip: Option<&str>, template: &str) {
         let strings = |items: &[&str]| {
             let mut out = 9u32.to_le_bytes().to_vec();
             out.extend_from_slice(&8u32.to_le_bytes());
@@ -398,6 +432,7 @@ mod tests {
             ("tokenizer.ggml.tokens", strings(&["a", "b", "<|x|>"])),
             ("tokenizer.ggml.token_type", types),
             ("tokenizer.ggml.merges", strings(&["a b"])),
+            ("tokenizer.chat_template", text(template)),
             ("tokenizer.ggml.bos_token_id", number(7)),
             ("tokenizer.ggml.eos_token_id", number(8)),
         ];
@@ -422,7 +457,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("tokenizer.gguf");
         write_tokenizer_gguf(&path, None);
-        let from_mk = tokenizer_hash(&path).unwrap();
+        let from_mk = text_keys(&path).unwrap().tokenizer_hash;
         let metadata = nagaya_text_qwen38::gguf::Metadata::open(&path).unwrap();
         assert_eq!(from_mk, nagaya_text_qwen38::tokenizer_hash(&metadata).unwrap());
         assert_eq!(from_mk, FIXTURE_HASH);
@@ -433,14 +468,51 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("tokenizer.gguf");
         write_tokenizer_gguf(&path, Some("tokenizer.ggml.merges"));
-        let error = tokenizer_hash(&path).expect_err("a file without merges has no hash");
+        let error = text_keys(&path).expect_err("a file without merges has no hash");
         assert!(error.contains("tokenizer.ggml.merges"), "{error}");
         assert!(error.contains(path.to_str().unwrap()), "{error}");
     }
 
     #[test]
     fn a_missing_shard_has_no_tokenizer_hash() {
-        let error = tokenizer_hash(std::path::Path::new("/nonexistent/shard.gguf")).expect_err("a missing file");
+        let error = text_keys(std::path::Path::new("/nonexistent/shard.gguf")).expect_err("a missing file");
         assert!(error.contains("/nonexistent/shard.gguf"), "{error}");
+    }
+
+    #[test]
+    fn the_template_is_the_text_of_the_chat_template_key() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tokenizer.gguf");
+        write_text_gguf(&path, None, "<|im_start|>{{ x }}");
+        assert_eq!(text_keys(&path).unwrap().template, "<|im_start|>{{ x }}");
+    }
+
+    #[test]
+    fn a_shard_without_a_chat_template_is_an_error_that_names_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tokenizer.gguf");
+        write_text_gguf(&path, Some("tokenizer.chat_template"), "unused");
+        let error = text_keys(&path).expect_err("a file without a template has no identity");
+        assert!(error.contains("tokenizer.chat_template"), "{error}");
+        assert!(error.contains(path.to_str().unwrap()), "{error}");
+    }
+
+    #[test]
+    fn two_files_that_differ_only_in_the_chat_template_have_two_identities() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("one.gguf");
+        let second = directory.path().join("two.gguf");
+        write_text_gguf(&first, None, "template one");
+        write_text_gguf(&second, None, "template two");
+        let shards = vec![first.clone()];
+        let library = std::path::Path::new("/lib/libmkengine.so");
+        let identity_of = |path: &std::path::Path| {
+            crate::spec::identity(&shards, library, "sha", true, true, "spot", &text_keys(path).unwrap())
+        };
+        let (one, two) = (identity_of(&first), identity_of(&second));
+        assert_eq!(one.tokenizer_hash, two.tokenizer_hash);
+        assert_ne!(one.template, two.template);
+        assert_ne!(one, two);
+        assert_eq!(one.canary_hash, "");
     }
 }

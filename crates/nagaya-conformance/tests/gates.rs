@@ -150,6 +150,82 @@ impl Parts for SealsOnRead {
     }
 }
 
+/// An engine that reports the coverage of one state under the wrong part.
+struct WrongPartCoverage {
+    inner: std::cell::RefCell<FakeAlways>,
+    wrong_state: State,
+}
+
+impl WrongPartCoverage {
+    /// The engine that reports the spans of `wrong_state` under the wrong part.
+    fn new(wrong_state: State) -> Self {
+        Self {
+            inner: std::cell::RefCell::new(FakeAlways::new()),
+            wrong_state,
+        }
+    }
+}
+
+impl Engine for WrongPartCoverage {
+    fn identity(&self) -> Identity {
+        self.inner.borrow().identity()
+    }
+
+    fn limits(&self) -> Limits {
+        self.inner.borrow().limits()
+    }
+
+    fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
+        self.inner.get_mut().pass(segments, taps)
+    }
+
+    fn last_error(&self) -> Option<String> {
+        self.inner.borrow().last_error()
+    }
+
+    fn parts(&mut self) -> Option<&mut dyn Parts> {
+        self.inner.get_mut().parts()
+    }
+
+    fn coverage(&mut self) -> Option<&mut dyn Coverage> {
+        Some(self)
+    }
+
+    fn seal(&mut self) -> Option<&mut dyn nagaya_abi::Seal> {
+        self.inner.get_mut().seal()
+    }
+
+    fn slots(&mut self) -> Option<&mut dyn Slots> {
+        self.inner.get_mut().slots()
+    }
+}
+
+impl Coverage for WrongPartCoverage {
+    fn coverage(&self, state: State, part: PartId, bytes: &[u8]) -> CoverageSpan {
+        let mut engine = self.inner.borrow_mut();
+        let mut span = engine.coverage().unwrap().coverage(state, part, bytes);
+        if state == self.wrong_state {
+            span.part = part + 1;
+        }
+        span
+    }
+
+    fn fits(&self, coverage: &CoverageSpan, slot: u32) -> Result<(), String> {
+        self.inner.borrow_mut().coverage().unwrap().fits(coverage, slot)
+    }
+}
+
+#[test]
+fn coverage_under_the_wrong_part_fails_park_and_restore() {
+    // Slot 0 is the source of the park. Slot 1 is the target of the restore.
+    for wrong in [State::Slot(0), State::Slot(1)] {
+        match park_and_restore(&mut WrongPartCoverage::new(wrong)) {
+            Outcome::Fail(failure) => assert!(failure.message.contains("part"), "{wrong:?} {failure}"),
+            other => panic!("{wrong:?}: expected a failure, got {other}"),
+        }
+    }
+}
+
 #[test]
 fn a_seal_on_read_fails_the_seal_gate() {
     assert_pass(

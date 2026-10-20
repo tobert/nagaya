@@ -583,7 +583,7 @@ impl ThreadState {
         }
 
         // The tokenizer is in the first shard. Hash it before the weights load, so a shard with no tokenizer fails fast.
-        let tokenizer_hash = gguf::tokenizer_hash(&paths.shards[0])?;
+        let text = gguf::text_keys(&paths.shards[0])?;
 
         let shards: Vec<CString> = paths
             .shards
@@ -626,7 +626,7 @@ impl ThreadState {
             fast_qmm,
             tiles,
             &digest,
-            &tokenizer_hash,
+            &text,
         );
         let limits = spec::limits(arena_bytes);
         Ok((
