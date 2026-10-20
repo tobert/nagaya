@@ -1,5 +1,15 @@
 use nagaya_abi::Kind;
-use nagaya_sched::{Class, Completion, Engine, Event, Job, JobId, JobState, Quantum, Scheduler, step};
+use nagaya_sched::{Class, Completion, Engine, Event, Job, JobId, JobState, Quantum, Scheduler, StepError};
+
+/// Step with an event that must fit the state.
+fn step(state: Scheduler, event: Event) -> (Scheduler, Option<Quantum>) {
+    nagaya_sched::step(state, event).expect("the event fits the state")
+}
+
+/// Step with an event that may not fit the state.
+fn try_step(state: Scheduler, event: Event) -> Result<(Scheduler, Option<Quantum>), StepError> {
+    nagaya_sched::step(state, event)
+}
 
 fn job(id: JobId, class: Class, priority: i64, arrival_ms: u64, engine: u32, quanta: &[Kind]) -> Job {
     Job {
@@ -204,6 +214,7 @@ fn ready_segments_of_one_class_share_a_pass() {
     scheduler.engines = vec![Engine {
         id: 0,
         segments_exact: true,
+        max_segments: 16,
     }];
     let (_, next) = step(scheduler, Event::Tick { now_ms: 0 });
     assert_eq!(next, quantum(Class::Batch, Kind::Prefill, &[1, 2]));
@@ -399,8 +410,8 @@ fn the_owed_remainder_goes_to_the_earliest() {
     assert_eq!(scheduler.jobs[2].balance_ms, 0);
 }
 
-#[test]
-fn a_shared_pass_splits_its_time() {
+/// Three present jobs. Jobs 1 and 2 run in one pass of `duration_ms`.
+fn two_segment_pass(duration_ms: u64) -> Scheduler {
     let mut first = job(1, Class::Interactive, 0, 0, 0, &[Kind::Prefill, Kind::Prefill]);
     first.state = JobState::Running;
     first.quanta.pop_front();
@@ -421,14 +432,33 @@ fn a_shared_pass_splits_its_time() {
     let (scheduler, _) = step(
         scheduler,
         Event::Complete {
-            now_ms: 5,
-            duration_ms: 5,
+            now_ms: duration_ms,
+            duration_ms,
             outcome: Completion::Done,
         },
     );
-    assert_eq!(scheduler.jobs[0].balance_ms, 0);
-    assert_eq!(scheduler.jobs[1].balance_ms, -1);
-    assert_eq!(scheduler.jobs[2].balance_ms, 1);
+    scheduler
+}
+
+fn balances(scheduler: &Scheduler) -> Vec<i64> {
+    scheduler.jobs.iter().map(|job| job.balance_ms).collect()
+}
+
+#[test]
+fn a_shared_pass_splits_its_time() {
+    // Segment charges: job 1 owes 3 ms, job 2 owes 2 ms.
+    // Job 1: falls 2, job 2 and job 3 rise 1 each.
+    // Job 2: falls 1, job 1 and job 3 rise 0 each (2 / 3 rounds down).
+    // The sum is -1. The remainder goes to the earliest job, job 1.
+    assert_eq!(balances(&two_segment_pass(5)), vec![-1, 0, 1]);
+}
+
+#[test]
+fn a_segment_job_rises_by_the_time_of_the_other_segments() {
+    // Segment charges: job 1 owes 4 ms, job 2 owes 3 ms.
+    // Job 1 falls 2 and job 2 falls 2. Each segment makes the other job and job 3 rise 1.
+    // The sum is zero, so no remainder moves.
+    assert_eq!(balances(&two_segment_pass(7)), vec![-1, -1, 2]);
 }
 
 #[test]
@@ -444,10 +474,12 @@ fn two_engines_get_their_own_passes() {
         Engine {
             id: 0,
             segments_exact: true,
+            max_segments: 16,
         },
         Engine {
             id: 1,
             segments_exact: true,
+            max_segments: 16,
         },
     ];
     let (scheduler, next) = step(scheduler, Event::Tick { now_ms: 0 });
@@ -547,4 +579,153 @@ fn the_lower_clamp_forgives_the_excess() {
     assert_eq!(scheduler.jobs[3].balance_ms, 1);
     let total: i64 = scheduler.jobs.iter().map(|job| job.balance_ms).sum();
     assert_eq!(total, -29_997);
+}
+
+fn limited_engine(max_segments: u32) -> Vec<Engine> {
+    vec![Engine {
+        id: 0,
+        segments_exact: true,
+        max_segments,
+    }]
+}
+
+#[test]
+fn a_pass_holds_no_more_segments_than_the_engine_allows() {
+    let jobs = (1..=3)
+        .map(|id| job(id, Class::Batch, 0, id, 0, &[Kind::Prefill]))
+        .collect();
+    let mut scheduler = state(jobs);
+    scheduler.engines = limited_engine(2);
+    let (scheduler, next) = step(scheduler, Event::Tick { now_ms: 0 });
+    assert_eq!(next, quantum(Class::Batch, Kind::Prefill, &[1, 2]));
+    let (_, next) = step(
+        scheduler,
+        Event::Complete {
+            now_ms: 1,
+            duration_ms: 1,
+            outcome: Completion::Done,
+        },
+    );
+    assert_eq!(next, quantum(Class::Batch, Kind::Prefill, &[3]));
+}
+
+#[test]
+fn an_engine_with_one_segment_runs_one_job_a_pass() {
+    let jobs = (1..=2)
+        .map(|id| job(id, Class::Batch, 0, id, 0, &[Kind::Prefill]))
+        .collect();
+    let mut scheduler = state(jobs);
+    scheduler.engines = limited_engine(1);
+    let (_, next) = step(scheduler, Event::Tick { now_ms: 0 });
+    assert_eq!(next, quantum(Class::Batch, Kind::Prefill, &[1]));
+}
+
+#[test]
+#[should_panic(expected = "max_segments")]
+fn an_engine_that_allows_no_segment_is_a_bug() {
+    let mut scheduler = state(vec![job(1, Class::Batch, 0, 0, 0, &[Kind::Prefill])]);
+    scheduler.engines = limited_engine(0);
+    let _ = step(scheduler, Event::Tick { now_ms: 0 });
+}
+
+#[test]
+fn a_pass_holds_segments_of_one_kind() {
+    let jobs = vec![
+        job(1, Class::Batch, 0, 0, 0, &[Kind::Decode]),
+        job(2, Class::Batch, 0, 1, 0, &[Kind::Prefill]),
+        job(3, Class::Batch, 0, 2, 0, &[Kind::Decode]),
+    ];
+    let mut scheduler = state(jobs);
+    scheduler.engines = limited_engine(16);
+    let (scheduler, next) = step(scheduler, Event::Tick { now_ms: 0 });
+    assert_eq!(next, quantum(Class::Batch, Kind::Decode, &[1, 3]));
+    let (scheduler, _) = step(
+        scheduler,
+        Event::Complete {
+            now_ms: 1,
+            duration_ms: 1,
+            outcome: Completion::Done,
+        },
+    );
+    // The prefill job still has its own quantum, and it is still ready.
+    assert_eq!(scheduler.running, quantum(Class::Batch, Kind::Prefill, &[2]));
+    assert!(scheduler.jobs[1].quanta.is_empty());
+}
+
+fn error_of(state: Scheduler, event: Event) -> StepError {
+    try_step(state, event).expect_err("the event does not fit the state")
+}
+
+#[test]
+fn admit_of_an_unknown_job_is_an_error() {
+    let scheduler = state(vec![job(1, Class::Batch, 0, 0, 0, &[Kind::Prefill])]);
+    assert_eq!(
+        error_of(scheduler, Event::Admit { now_ms: 0, job: 9 }),
+        StepError::UnknownJob(9)
+    );
+}
+
+#[test]
+fn cancel_of_an_unknown_job_is_an_error() {
+    let scheduler = state(vec![job(1, Class::Batch, 0, 0, 0, &[Kind::Prefill])]);
+    assert_eq!(
+        error_of(scheduler, Event::Cancel { now_ms: 0, job: 9 }),
+        StepError::UnknownJob(9)
+    );
+}
+
+#[test]
+fn complete_with_nothing_running_is_an_error() {
+    let event = Event::Complete {
+        now_ms: 0,
+        duration_ms: 1,
+        outcome: Completion::Done,
+    };
+    assert_eq!(error_of(state(Vec::new()), event), StepError::NothingRunning);
+}
+
+#[test]
+fn a_duplicate_arrival_is_an_error() {
+    let scheduler = state(vec![job(1, Class::Batch, 0, 0, 0, &[Kind::Prefill])]);
+    let again = job(1, Class::Batch, 0, 5, 0, &[Kind::Prefill]);
+    assert_eq!(
+        error_of(scheduler, Event::Arrive { now_ms: 5, job: again }),
+        StepError::DuplicateJob(1)
+    );
+}
+
+#[test]
+fn an_arrival_that_is_not_ready_is_an_error() {
+    let mut arriving = job(2, Class::Batch, 0, 0, 0, &[Kind::Prefill]);
+    arriving.state = JobState::Running;
+    let event = Event::Arrive {
+        now_ms: 0,
+        job: arriving,
+    };
+    assert_eq!(
+        error_of(state(Vec::new()), event),
+        StepError::ArrivalNotReady(2, JobState::Running)
+    );
+}
+
+#[test]
+fn an_arrival_and_an_admit_that_fit_are_not_errors() {
+    let mut late = job(1, Class::Batch, 0, 0, 0, &[Kind::Prefill]);
+    late.admitted = false;
+    let (scheduler, next) = step(state(Vec::new()), Event::Arrive { now_ms: 0, job: late });
+    assert_eq!(next, None);
+    let (_, next) = step(scheduler, Event::Admit { now_ms: 1, job: 1 });
+    assert_eq!(next, quantum(Class::Batch, Kind::Prefill, &[1]));
+}
+
+#[test]
+fn a_job_expires_at_its_deadline_and_not_before() {
+    let mut early = job(1, Class::Batch, 0, 0, 0, &[Kind::Prefill]);
+    early.deadline_ms = Some(100);
+    let (scheduler, next) = step(state(vec![early.clone()]), Event::Tick { now_ms: 99 });
+    assert_eq!(next, quantum(Class::Batch, Kind::Prefill, &[1]));
+    assert_eq!(scheduler.jobs[0].state, JobState::Running);
+    let (scheduler, next) = step(state(vec![early]), Event::Tick { now_ms: 100 });
+    assert_eq!(next, None);
+    assert_eq!(scheduler.jobs[0].state, JobState::Expired);
 }

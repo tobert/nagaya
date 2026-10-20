@@ -1,6 +1,7 @@
 //! Jobs, quanta, classes, and the order of ready quanta.
 //!
-//! Stub: the tests fail until the scheduler is built.
+//! The scheduler is a state machine. The function [`step`] takes the state and one [`Event`]. It gives the new
+//! state and the next [`Quantum`]. An event that does not fit the state is an error (spec 8.5).
 
 use std::collections::VecDeque;
 
@@ -19,6 +20,8 @@ pub struct Engine {
     pub id: EngineId,
     /// True when the engine allows segments in one pass.
     pub segments_exact: bool,
+    /// The most segments in one pass (`Limits.max_segments`).
+    pub max_segments: u32,
 }
 
 /// How urgently a job's quanta run.
@@ -180,42 +183,88 @@ impl Event {
     }
 }
 
+/// An event that does not fit the state.
+///
+/// The step function takes the state by value and drops it on an error. The caller must not continue with a
+/// scheduler that has seen a wrong event: the caller reports the error and stops (spec 8.5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StepError {
+    /// An `Arrive` event names a job id that the scheduler already holds.
+    DuplicateJob(JobId),
+    /// An `Arrive` event brings a job that is not `Ready`.
+    ArrivalNotReady(JobId, JobState),
+    /// An `Admit` or `Cancel` event names a job that the scheduler does not hold.
+    UnknownJob(JobId),
+    /// A `Complete` event arrives while no quantum runs.
+    NothingRunning,
+}
+
+impl std::fmt::Display for StepError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StepError::DuplicateJob(id) => write!(f, "job {id} arrived twice: the job id must be new"),
+            StepError::ArrivalNotReady(id, state) => {
+                write!(f, "job {id} arrived in state {state:?}: an arriving job must be Ready")
+            }
+            StepError::UnknownJob(id) => write!(f, "job {id} is not in the scheduler: send Arrive first"),
+            StepError::NothingRunning => write!(f, "a quantum ended but none was running: send Complete only once"),
+        }
+    }
+}
+
+impl std::error::Error for StepError {}
+
 /// Take one step: one event in, one new state and one next quantum out.
-pub fn step(mut state: Scheduler, event: Event) -> (Scheduler, Option<Quantum>) {
+///
+/// An event that does not fit the state returns a [`StepError`].
+pub fn step(mut state: Scheduler, event: Event) -> Result<(Scheduler, Option<Quantum>), StepError> {
     let now = event.now();
     match event {
-        Event::Arrive { job, .. } => state.jobs.push(job),
-        Event::Admit { job, .. } => {
-            if let Some(job) = state.jobs.iter_mut().find(|candidate| candidate.id == job) {
-                job.admitted = true;
+        Event::Arrive { job, .. } => {
+            if state.jobs.iter().any(|held| held.id == job.id) {
+                return Err(StepError::DuplicateJob(job.id));
             }
+            if job.state != JobState::Ready {
+                return Err(StepError::ArrivalNotReady(job.id, job.state));
+            }
+            state.jobs.push(job);
+        }
+        Event::Admit { job, .. } => {
+            let held = state
+                .jobs
+                .iter_mut()
+                .find(|candidate| candidate.id == job)
+                .ok_or(StepError::UnknownJob(job))?;
+            held.admitted = true;
         }
         Event::Complete {
             duration_ms, outcome, ..
         } => {
-            if let Some(running) = state.running.take() {
-                state.complete(running, duration_ms, outcome);
-            }
+            let running = state.running.take().ok_or(StepError::NothingRunning)?;
+            state.complete(running, duration_ms, outcome);
         }
         Event::Cancel { job, .. } => {
-            if let Some(job) = state.jobs.iter_mut().find(|candidate| candidate.id == job) {
-                if job.state == JobState::Running {
-                    job.cancel_requested = true;
-                } else if !job.state.is_terminal() {
-                    job.state = JobState::Cancelled;
-                    job.quanta.clear();
-                }
+            let held = state
+                .jobs
+                .iter_mut()
+                .find(|candidate| candidate.id == job)
+                .ok_or(StepError::UnknownJob(job))?;
+            if held.state == JobState::Running {
+                held.cancel_requested = true;
+            } else if !held.state.is_terminal() {
+                held.state = JobState::Cancelled;
+                held.quanta.clear();
             }
         }
         Event::Tick { .. } => {}
     }
 
     if state.running.is_some() {
-        return (state, None);
+        return Ok((state, None));
     }
     state.expire(now);
     let next = state.choose();
-    (state, next)
+    Ok((state, next))
 }
 
 impl Scheduler {
@@ -229,51 +278,7 @@ impl Scheduler {
                 .collect();
             let count = present.len() as u128;
             if count > 0 {
-                let duration = duration_ms as u128;
-                let segment_count = running.segments.len() as u128;
-                let base = duration.checked_div(segment_count).unwrap_or(0);
-                let remainder = if segment_count == 0 {
-                    0
-                } else {
-                    duration % segment_count
-                };
-                let earliest_segment = running
-                    .segments
-                    .iter()
-                    .min_by_key(|id| {
-                        self.jobs
-                            .iter()
-                            .find(|job| job.id == **id)
-                            .map(|job| (job.arrival_ms, job.id))
-                            .unwrap_or((u64::MAX, **id))
-                    })
-                    .copied();
-                let mut deltas: Vec<(JobId, i64)> = Vec::new();
-                for (id, _) in &present {
-                    let delta = if running.segments.contains(id) {
-                        let charge = if Some(*id) == earliest_segment {
-                            base + remainder
-                        } else {
-                            base
-                        };
-                        -((charge * (count - 1)).checked_div(count).unwrap_or(0) as i64)
-                    } else {
-                        duration.checked_div(count).unwrap_or(0) as i64
-                    };
-                    deltas.push((*id, delta));
-                }
-                let total: i64 = deltas.iter().map(|(_, delta)| *delta).sum();
-                if total != 0
-                    && let Some((earliest, _)) = present.iter().min_by_key(|(id, arrival)| (*arrival, *id))
-                    && let Some((_, delta)) = deltas.iter_mut().find(|(id, _)| id == earliest)
-                {
-                    *delta -= total;
-                }
-                for (id, delta) in deltas {
-                    if let Some(job) = self.jobs.iter_mut().find(|job| job.id == id) {
-                        job.balance_ms = (job.balance_ms + delta).clamp(-30_000, 30_000);
-                    }
-                }
+                self.charge_segments(&running, duration_ms, &present);
             }
         }
 
@@ -290,6 +295,61 @@ impl Scheduler {
                 } else {
                     job.state = JobState::Ready;
                 }
+            }
+        }
+    }
+
+    /// Charge each segment of a pass on its own (spec 5.4).
+    ///
+    /// A segment with the share `c` lowers its balance by `c * (n - 1) / n` and raises the balance of each other
+    /// present job by `c / n`. Both round down. The rounding remainder goes to the earliest present job, so the sum
+    /// stays zero. Then each balance is clamped.
+    fn charge_segments(&mut self, running: &Quantum, duration_ms: u64, present: &[(JobId, u64)]) {
+        let count = present.len() as u128;
+        let duration = duration_ms as u128;
+        let segment_count = running.segments.len() as u128;
+        if segment_count == 0 {
+            return;
+        }
+        let base = duration / segment_count;
+        let remainder = duration % segment_count;
+        let earliest_segment = running
+            .segments
+            .iter()
+            .min_by_key(|id| {
+                self.jobs
+                    .iter()
+                    .find(|job| job.id == **id)
+                    .map(|job| (job.arrival_ms, job.id))
+                    .unwrap_or((u64::MAX, **id))
+            })
+            .copied();
+        let mut deltas: Vec<(JobId, i128)> = present.iter().map(|(id, _)| (*id, 0)).collect();
+        for segment in &running.segments {
+            let share = if Some(*segment) == earliest_segment {
+                base + remainder
+            } else {
+                base
+            };
+            let fall = (share * (count - 1) / count) as i128;
+            let rise = (share / count) as i128;
+            for (id, delta) in &mut deltas {
+                if id == segment {
+                    *delta -= fall;
+                } else {
+                    *delta += rise;
+                }
+            }
+        }
+        let total: i128 = deltas.iter().map(|(_, delta)| *delta).sum();
+        if let Some((earliest, _)) = present.iter().min_by_key(|(id, arrival)| (*arrival, *id))
+            && let Some((_, delta)) = deltas.iter_mut().find(|(id, _)| id == earliest)
+        {
+            *delta -= total;
+        }
+        for (id, delta) in deltas {
+            if let Some(job) = self.jobs.iter_mut().find(|job| job.id == id) {
+                job.balance_ms = (job.balance_ms as i128 + delta).clamp(-30_000, 30_000) as i64;
             }
         }
     }
@@ -341,19 +401,30 @@ impl Scheduler {
             }
             let best = candidates.first().copied()?;
             let engine = best.engine;
-            let engine_exact = self
-                .engines
-                .iter()
-                .find(|info| info.id == engine)
-                .map(|info| info.segments_exact)
-                .unwrap_or(false);
+            // An engine that is not listed takes one segment in a pass.
+            let segment_limit = match self.engines.iter().find(|info| info.id == engine) {
+                None => 1,
+                Some(info) => {
+                    assert!(
+                        info.max_segments > 0,
+                        "engine {engine} has max_segments 0, so no pass can run"
+                    );
+                    if info.segments_exact {
+                        info.max_segments as usize
+                    } else {
+                        1
+                    }
+                }
+            };
             let kind = *best.quanta.front()?;
             let mut segments = vec![best.id];
-            if engine_exact {
-                for candidate in &candidates[1..] {
-                    if candidate.engine == engine {
-                        segments.push(candidate.id);
-                    }
+            for candidate in &candidates[1..] {
+                if segments.len() >= segment_limit {
+                    break;
+                }
+                // A pass holds segments of one kind (spec 5.7).
+                if candidate.engine == engine && candidate.quanta.front() == Some(&kind) {
+                    segments.push(candidate.id);
                 }
             }
             (engine, class, kind, segments)
