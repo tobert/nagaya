@@ -385,7 +385,8 @@ the scheduler chooses. Decided 2026-10-18.
 In v0 the windows have no key in the bootstrap config. A measurement that
 changes them adds the key (2.1). Decided 2026-10-20 (reading).
 
-A pass holds segments of one kind only (5.2). The scheduler joins a ready job only when its next quantum has the
+A pass holds segments of one kind only (5.2), and at most the engine's `max_segments`.
+The scheduler joins a ready job only when its next quantum has the
 kind of the first segment. Decided 2026-10-20 (reading).
 
 **What `segments_exact` promises.** An engine that declares `segments_exact` promises that the order of each sum
@@ -737,7 +738,9 @@ recipes again and compares the content ids (D3). A restart is the fresh process 
 needs no second GPU client.
 
 **8.5 Crash over corruption.** An unexpected failure in the nagaya stops the process (exit 1). The process does not
-continue in a bad state.
+continue in a bad state. An event that does not fit the scheduler's state, such as a cancel of an unknown job, is
+an error that its caller sees. A cancel of a job that already ended is not an error, because a client can race the
+end of a job. Decided 2026-10-20 (reading).
 
 ## 9. Observability
 
