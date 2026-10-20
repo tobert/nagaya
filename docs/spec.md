@@ -124,6 +124,10 @@ version that is not higher than the last version that it handled.
 The node writes the handled version to `<store_dir>/profile.version`, after it writes `profile.toml`. A restart keeps
 the order. A missing file means version 0.
 
+**Proposed** by Sonnet 5.5, 2026-10-19, on senpai's instruction: a refused version is a handled version. The node
+writes it to `profile.version` and keeps `profile.toml`. A restart does not handle that version again, and it
+ignores a lower version.
+
 The node handles a version in this order: admit the profile with the ledger, persist it, then act on it (3.3). A
 profile that differs from the active profile in any field is admitted and persisted. The node then stops through the
 drain and the park (10.3) and exits 4. A profile that equals the active profile changes nothing: the node does not
