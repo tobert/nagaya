@@ -2697,3 +2697,34 @@ fn evict_removes_the_pins_of_its_victims() {
     assert_eq!(store.evict(1, Tier::Nvme, 1, 10).unwrap(), vec![victim]);
     assert!(!store.pins().contains_key(&victim));
 }
+
+#[test]
+fn a_failed_quarantine_write_loses_no_host_bytes() {
+    // Kaibo job 2, finding 4 (6.8): a failure never deletes content. A host entry has only its bytes in memory.
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let recipe = recipe(180);
+    let first = put_in(&mut store, &base_snapshot(1), recipe, 1, Tier::Host);
+    let error = try_put(&mut store, &base_snapshot(2), recipe, None, 1, Tier::Host, 10).unwrap_err();
+    assert!(matches!(error, StoreError::Tripwire { .. }));
+    let held = store.host_resident_bytes();
+    assert!(held > 0);
+    let quarantine = dir.path().join("quarantine");
+    std::fs::set_permissions(&quarantine, std::fs::Permissions::from_mode(0o500)).unwrap();
+    assert!(
+        std::fs::File::create(quarantine.join("probe")).is_err(),
+        "this test needs a directory that refuses writes; run it as a user other than root"
+    );
+    let result = store.clear_refusal(recipe);
+    std::fs::set_permissions(&quarantine, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(result.is_err(), "the write failed, so clear_refusal fails");
+    assert_eq!(store.host_resident_bytes(), held, "the bytes are still in memory");
+    assert!(store.entries().contains_key(&first));
+    assert!(store.refused().contains(&recipe));
+    // The retry saves both entries.
+    store.clear_refusal(recipe).unwrap();
+    assert_eq!(store.host_resident_bytes(), 0);
+    assert!(quarantine.join(first.hex()).exists());
+    assert_eq!(std::fs::read_dir(&quarantine).unwrap().count(), 2);
+}

@@ -1550,6 +1550,14 @@ impl Store {
                 moves.push((self.blob_path(id), to));
             }
         }
+        // Save the host bytes before the index forgets them. An error here leaves the index and the memory as they
+        // were, and the retry saves the bytes again.
+        for (bytes, to) in &saves {
+            write_synced(to, bytes).map_err(io_error)?;
+        }
+        if !saves.is_empty() {
+            sync_dir(&self.dir.join(QUARANTINE)).map_err(io_error)?;
+        }
         let mut index = self.index.clone();
         index.refused.remove(&recipe);
         for id in &bad {
@@ -1564,12 +1572,6 @@ impl Store {
         for id in &bad {
             self.checked.remove(id);
             self.host_blobs.remove(id);
-        }
-        for (bytes, to) in &saves {
-            write_synced(to, bytes).map_err(io_error)?;
-        }
-        if !saves.is_empty() {
-            sync_dir(&self.dir.join(QUARANTINE)).map_err(io_error)?;
         }
         self.move_blobs_to_quarantine(&moves)?;
         Ok(())
