@@ -4,7 +4,7 @@
 //! Unicode version, so this module holds the tables of that module (`unicode_tables.rs`). A test compares each class
 //! with the fixture for every code point.
 
-use crate::unicode_tables::{LETTER, MARK, NUMBER, SPACE};
+use crate::unicode_tables::{LETTER, MARK, NUMBER, PYTHON_SPACE, SPACE};
 
 fn in_table(table: &[(u32, u32)], c: char) -> bool {
     let cp = c as u32;
@@ -30,4 +30,9 @@ pub fn is_number(c: char) -> bool {
 /// White space: the `\s` of the pattern.
 pub fn is_space(c: char) -> bool {
     in_table(&SPACE, c)
+}
+
+/// What Python's `str.isspace` accepts, and so what `str.strip` strips. The table comes from Python, like the others. It holds U+001C to U+001F, which `is_space` does not.
+pub fn is_python_space(c: char) -> bool {
+    in_table(&PYTHON_SPACE, c)
 }

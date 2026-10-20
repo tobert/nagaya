@@ -143,18 +143,22 @@ def reserved_cases(tok):
 
 
 def class_ranges() -> dict:
-    """Ranges of code points that the pre-tokenizer pattern's classes match, from the same `regex` module."""
+    """Ranges of code points that the pre-tokenizer pattern's classes match, from the same `regex` module, and the
+    ranges of `str.isspace`."""
     import regex
     classes = {"L": regex.compile(r"\p{L}"), "M": regex.compile(r"\p{M}"), "N": regex.compile(r"\p{N}"),
                "s": regex.compile(r"\s")}
+    tests = {name: (lambda ch, rx=rx: rx.fullmatch(ch) is not None) for name, rx in classes.items()}
+    # What `str.strip()` strips, and what `str.isspace` accepts. The chat template's `trim` filter is `str.strip`.
+    tests["isspace"] = lambda ch: ch.isspace()
     out = {}
-    for name, rx in classes.items():
+    for name, test in tests.items():
         ranges, start, prev = [], None, None
         for cp in range(0x110000):
             if 0xD800 <= cp <= 0xDFFF:
                 hit = False
             else:
-                hit = rx.fullmatch(chr(cp)) is not None
+                hit = test(chr(cp))
             if hit and start is None:
                 start = cp
             if not hit and start is not None:
@@ -169,7 +173,7 @@ def class_ranges() -> dict:
 def write_tables(path: Path, header: dict, ranges: dict) -> None:
     """The character classes as Rust source. Rust's own Unicode tables are older than the `regex` module's, and the
     pattern must match mk's Python, so the library holds mk's tables."""
-    names = {"L": "LETTER", "M": "MARK", "N": "NUMBER", "s": "SPACE"}
+    names = {"L": "LETTER", "M": "MARK", "N": "NUMBER", "s": "SPACE", "isspace": "PYTHON_SPACE"}
     out = [
         "//! The character classes of the pre-tokenizer pattern, as sorted ranges of code points (first, last).",
         "//!",

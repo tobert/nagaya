@@ -5,6 +5,7 @@
 //! `tojson` writes what `json.dumps` writes with `ensure_ascii` off, and `trim` strips what `str.strip` strips.
 
 use crate::Error;
+use crate::chars;
 use crate::gguf::{Metadata, Value as MetaValue};
 use crate::json::Json;
 use minijinja::value::{Value, ValueKind};
@@ -128,18 +129,13 @@ fn raise_exception(message: String) -> Result<Value, minijinja::Error> {
     Err(minijinja::Error::new(ErrorKind::InvalidOperation, message))
 }
 
-/// Python's `str.isspace`: the White_Space property, and the four separators U+001C to U+001F.
-fn is_python_space(c: char) -> bool {
-    c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)
-}
-
 fn trim(value: Value) -> String {
     let text = if value.is_undefined() {
         String::new()
     } else {
         value.to_string()
     };
-    text.trim_matches(is_python_space).to_string()
+    text.trim_matches(chars::is_python_space).to_string()
 }
 
 /// The methods of Python strings that the template calls.

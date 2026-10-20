@@ -275,3 +275,32 @@ fn block_settings_and_the_trailing_newline_are_the_ones_of_mk() {
         assert_eq!(small(source, "[]").unwrap(), case.get("out").str(), "source {source:?}");
     }
 }
+
+#[test]
+fn trim_strips_exactly_the_code_points_that_python_isspace_accepts() {
+    let classes = fixture("classes.json");
+    let ranges: Vec<(u32, u32)> = classes
+        .get("isspace")
+        .items()
+        .iter()
+        .map(|r| (r.items()[0].int() as u32, r.items()[1].int() as u32))
+        .collect();
+    let t = ChatTemplate::from_source("[{{ messages[0].content|trim }}]").unwrap();
+    let mut wrong = Vec::new();
+    for cp in 0..=0x10FFFFu32 {
+        let Some(c) = char::from_u32(cp) else { continue };
+        let messages = Json::Array(vec![Json::Object(vec![("content".into(), Json::Str(c.to_string()))])]);
+        let out = t.render(&messages, None, &RenderOptions::default()).unwrap();
+        let space = ranges.iter().any(|&(a, b)| (a..=b).contains(&cp));
+        // A space leaves nothing between the brackets. Another character stays.
+        if (out == "[]") != space {
+            wrong.push(format!("U+{cp:04X}"));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "trim differs from str.strip at {} code points, first: {:?}",
+        wrong.len(),
+        &wrong[..wrong.len().min(10)]
+    );
+}
