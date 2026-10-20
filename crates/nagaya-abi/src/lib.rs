@@ -379,6 +379,8 @@ pub struct Limits {
     pub bit_dependence: Vec<BitDependence>,
     /// The taps and their conditions.
     pub taps: Vec<TapLimit>,
+    /// The token count at which an engine keeps a state that it can copy, or `None` when it keeps none (spec 6.13).
+    pub checkpoint_grain: Option<u64>,
 }
 
 /// The result of a pass.

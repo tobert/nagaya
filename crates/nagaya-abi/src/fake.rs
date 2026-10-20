@@ -178,6 +178,7 @@ impl Fake {
             determinism: Determinism::Always,
             bit_dependence: Vec::new(),
             taps: Vec::new(),
+            checkpoint_grain: None,
         };
         let slots = (0..limits.slots.iter().map(|slot| slot.count).sum())
             .map(|_| SlotData::new(&parts))

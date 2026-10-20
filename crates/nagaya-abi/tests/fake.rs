@@ -375,3 +375,17 @@ fn slot_clear_removes_the_rows() {
         Err(PartError::Refused)
     );
 }
+
+#[test]
+fn fake_declares_no_checkpoint_grain() {
+    assert_eq!(FakeAlways::new().limits().checkpoint_grain, None);
+}
+
+#[test]
+fn a_checkpoint_grain_is_part_of_the_limits() {
+    let none = FakeAlways::new().limits();
+    let mut grain = none.clone();
+    grain.checkpoint_grain = Some(256);
+    assert_eq!(grain.clone().checkpoint_grain, Some(256));
+    assert_ne!(none, grain);
+}

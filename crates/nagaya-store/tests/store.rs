@@ -348,6 +348,7 @@ impl Engine for TestEngine {
             determinism: Determinism::Always,
             bit_dependence: Vec::new(),
             taps: Vec::new(),
+            checkpoint_grain: None,
         }
     }
 

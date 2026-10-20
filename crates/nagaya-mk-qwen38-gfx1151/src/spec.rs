@@ -303,6 +303,7 @@ pub fn limits(arena_bytes: u64) -> Limits {
         determinism: Determinism::Always,
         bit_dependence: Vec::new(),
         taps: Vec::new(),
+        checkpoint_grain: None,
     }
 }
 
@@ -443,6 +444,11 @@ mod tests {
         };
         let problem = parts_problem(larger, rows).expect("a larger part must be a mismatch");
         assert!(problem.contains("gdn_state"), "{problem}");
+    }
+
+    #[test]
+    fn mk_declares_no_checkpoint_grain() {
+        assert_eq!(limits(0).checkpoint_grain, None);
     }
 
     #[test]

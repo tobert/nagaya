@@ -479,6 +479,7 @@ impl Engine for CellsOnlyConstantRead {
             determinism: Determinism::Always,
             bit_dependence: Vec::new(),
             taps: Vec::new(),
+            checkpoint_grain: None,
         }
     }
 
@@ -1121,6 +1122,7 @@ impl NanAfterAPass {
             determinism: Determinism::Always,
             bit_dependence: Vec::new(),
             taps: Vec::new(),
+            checkpoint_grain: None,
         };
         Self {
             limits,
@@ -1277,6 +1279,7 @@ fn limits_with(mandatory_bytes: u64) -> Limits {
         determinism: Determinism::Always,
         bit_dependence: Vec::new(),
         taps: Vec::new(),
+        checkpoint_grain: None,
     }
 }
 
