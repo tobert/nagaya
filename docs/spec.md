@@ -992,8 +992,8 @@ its own purpose, so it never moves a later draw. Thus the reported seed does not
   position are 8 bytes each, little-endian. The purpose is 1 byte.
 - The uniform value is the first 8 bytes of the hash, little-endian, shifted right by 11 and times 2^-53. It is in
   [0, 1).
-- A child seed is the first 8 bytes, little-endian, of the BLAKE3 hash of `nagaya fork v1`, the parent seed and the
-  branch number, each 8 bytes little-endian.
+- A child seed is the first 8 bytes of a BLAKE3 hash, little-endian. The hash is of `nagaya fork v1`, the parent
+  seed and the branch number, each 8 bytes little-endian.
 - The pick is mk's inverse CDF: the survivors in order of logit down and id up, in float64.
 
 Thus mk's own uniform value, put into the nagaya's pick, gives mk's token. The sampler's tests use that.
