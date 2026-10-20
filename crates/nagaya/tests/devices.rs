@@ -147,3 +147,42 @@ fn two_engines_on_one_device_set_share_a_group() {
     assert_eq!(groups[0].devices, vec![0, 1]);
     assert_eq!(groups[0].engines, vec![0, 1]);
 }
+
+#[test]
+fn engines_whose_device_sets_overlap_share_a_group() {
+    let profile = profile(vec![engine("a", &[0, 1]), engine("b", &[1])]);
+    let groups = device_groups(&profile);
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].devices, vec![0, 1]);
+    assert_eq!(groups[0].engines, vec![0, 1]);
+}
+
+#[test]
+fn an_engine_that_bridges_two_groups_merges_them() {
+    // Engines a and b share no device. Engine c uses a device of each, so all three share one group.
+    let profile = profile(vec![engine("a", &[0]), engine("b", &[1]), engine("c", &[0, 1, 2])]);
+    let groups = device_groups(&profile);
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].devices, vec![0, 1, 2]);
+    assert_eq!(groups[0].engines, vec![0, 1, 2]);
+}
+
+#[test]
+fn a_chain_of_overlaps_makes_one_group() {
+    let profile = profile(vec![engine("a", &[0, 1]), engine("b", &[2, 3]), engine("c", &[1, 2])]);
+    let groups = device_groups(&profile);
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].devices, vec![0, 1, 2, 3]);
+    assert_eq!(groups[0].engines, vec![0, 1, 2]);
+}
+
+#[test]
+fn disjoint_device_sets_stay_apart_beside_an_overlap() {
+    let profile = profile(vec![engine("a", &[0]), engine("b", &[1]), engine("c", &[1, 2])]);
+    let groups = device_groups(&profile);
+    assert_eq!(groups.len(), 2);
+    assert_eq!(groups[0].devices, vec![0]);
+    assert_eq!(groups[0].engines, vec![0]);
+    assert_eq!(groups[1].devices, vec![1, 2]);
+    assert_eq!(groups[1].engines, vec![1, 2]);
+}
