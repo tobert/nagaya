@@ -1,6 +1,7 @@
 //! Jobs, quanta, classes, and the order of ready quanta.
 //!
-//! Stub: the tests fail until the scheduler is built.
+//! The scheduler is a state machine. The function [`step`] takes the state and one [`Event`]. It gives the new
+//! state and the next [`Quantum`]. An event that does not fit the state is an error (spec 8.5).
 
 use std::collections::VecDeque;
 
@@ -182,42 +183,88 @@ impl Event {
     }
 }
 
+/// An event that does not fit the state.
+///
+/// The step function takes the state by value and drops it on an error. The caller must not continue with a
+/// scheduler that has seen a wrong event: the caller reports the error and stops (spec 8.5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StepError {
+    /// An `Arrive` event names a job id that the scheduler already holds.
+    DuplicateJob(JobId),
+    /// An `Arrive` event brings a job that is not `Ready`.
+    ArrivalNotReady(JobId, JobState),
+    /// An `Admit` or `Cancel` event names a job that the scheduler does not hold.
+    UnknownJob(JobId),
+    /// A `Complete` event arrives while no quantum runs.
+    NothingRunning,
+}
+
+impl std::fmt::Display for StepError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StepError::DuplicateJob(id) => write!(f, "job {id} arrived twice: the job id must be new"),
+            StepError::ArrivalNotReady(id, state) => {
+                write!(f, "job {id} arrived in state {state:?}: an arriving job must be Ready")
+            }
+            StepError::UnknownJob(id) => write!(f, "job {id} is not in the scheduler: send Arrive first"),
+            StepError::NothingRunning => write!(f, "a quantum ended but none was running: send Complete only once"),
+        }
+    }
+}
+
+impl std::error::Error for StepError {}
+
 /// Take one step: one event in, one new state and one next quantum out.
-pub fn step(mut state: Scheduler, event: Event) -> (Scheduler, Option<Quantum>) {
+///
+/// An event that does not fit the state returns a [`StepError`].
+pub fn step(mut state: Scheduler, event: Event) -> Result<(Scheduler, Option<Quantum>), StepError> {
     let now = event.now();
     match event {
-        Event::Arrive { job, .. } => state.jobs.push(job),
-        Event::Admit { job, .. } => {
-            if let Some(job) = state.jobs.iter_mut().find(|candidate| candidate.id == job) {
-                job.admitted = true;
+        Event::Arrive { job, .. } => {
+            if state.jobs.iter().any(|held| held.id == job.id) {
+                return Err(StepError::DuplicateJob(job.id));
             }
+            if job.state != JobState::Ready {
+                return Err(StepError::ArrivalNotReady(job.id, job.state));
+            }
+            state.jobs.push(job);
+        }
+        Event::Admit { job, .. } => {
+            let held = state
+                .jobs
+                .iter_mut()
+                .find(|candidate| candidate.id == job)
+                .ok_or(StepError::UnknownJob(job))?;
+            held.admitted = true;
         }
         Event::Complete {
             duration_ms, outcome, ..
         } => {
-            if let Some(running) = state.running.take() {
-                state.complete(running, duration_ms, outcome);
-            }
+            let running = state.running.take().ok_or(StepError::NothingRunning)?;
+            state.complete(running, duration_ms, outcome);
         }
         Event::Cancel { job, .. } => {
-            if let Some(job) = state.jobs.iter_mut().find(|candidate| candidate.id == job) {
-                if job.state == JobState::Running {
-                    job.cancel_requested = true;
-                } else if !job.state.is_terminal() {
-                    job.state = JobState::Cancelled;
-                    job.quanta.clear();
-                }
+            let held = state
+                .jobs
+                .iter_mut()
+                .find(|candidate| candidate.id == job)
+                .ok_or(StepError::UnknownJob(job))?;
+            if held.state == JobState::Running {
+                held.cancel_requested = true;
+            } else if !held.state.is_terminal() {
+                held.state = JobState::Cancelled;
+                held.quanta.clear();
             }
         }
         Event::Tick { .. } => {}
     }
 
     if state.running.is_some() {
-        return (state, None);
+        return Ok((state, None));
     }
     state.expire(now);
     let next = state.choose();
-    (state, next)
+    Ok((state, next))
 }
 
 impl Scheduler {

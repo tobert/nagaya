@@ -1,5 +1,15 @@
 use nagaya_abi::Kind;
-use nagaya_sched::{Class, Completion, Engine, Event, Job, JobId, JobState, Quantum, Scheduler, step};
+use nagaya_sched::{Class, Completion, Engine, Event, Job, JobId, JobState, Quantum, Scheduler, StepError};
+
+/// Step with an event that must fit the state.
+fn step(state: Scheduler, event: Event) -> (Scheduler, Option<Quantum>) {
+    nagaya_sched::step(state, event).expect("the event fits the state")
+}
+
+/// Step with an event that may not fit the state.
+fn try_step(state: Scheduler, event: Event) -> Result<(Scheduler, Option<Quantum>), StepError> {
+    nagaya_sched::step(state, event)
+}
 
 fn job(id: JobId, class: Class, priority: i64, arrival_ms: u64, engine: u32, quanta: &[Kind]) -> Job {
     Job {
@@ -640,4 +650,70 @@ fn a_pass_holds_segments_of_one_kind() {
     // The prefill job still has its own quantum, and it is still ready.
     assert_eq!(scheduler.running, quantum(Class::Batch, Kind::Prefill, &[2]));
     assert!(scheduler.jobs[1].quanta.is_empty());
+}
+
+fn error_of(state: Scheduler, event: Event) -> StepError {
+    try_step(state, event).expect_err("the event does not fit the state")
+}
+
+#[test]
+fn admit_of_an_unknown_job_is_an_error() {
+    let scheduler = state(vec![job(1, Class::Batch, 0, 0, 0, &[Kind::Prefill])]);
+    assert_eq!(
+        error_of(scheduler, Event::Admit { now_ms: 0, job: 9 }),
+        StepError::UnknownJob(9)
+    );
+}
+
+#[test]
+fn cancel_of_an_unknown_job_is_an_error() {
+    let scheduler = state(vec![job(1, Class::Batch, 0, 0, 0, &[Kind::Prefill])]);
+    assert_eq!(
+        error_of(scheduler, Event::Cancel { now_ms: 0, job: 9 }),
+        StepError::UnknownJob(9)
+    );
+}
+
+#[test]
+fn complete_with_nothing_running_is_an_error() {
+    let event = Event::Complete {
+        now_ms: 0,
+        duration_ms: 1,
+        outcome: Completion::Done,
+    };
+    assert_eq!(error_of(state(Vec::new()), event), StepError::NothingRunning);
+}
+
+#[test]
+fn a_duplicate_arrival_is_an_error() {
+    let scheduler = state(vec![job(1, Class::Batch, 0, 0, 0, &[Kind::Prefill])]);
+    let again = job(1, Class::Batch, 0, 5, 0, &[Kind::Prefill]);
+    assert_eq!(
+        error_of(scheduler, Event::Arrive { now_ms: 5, job: again }),
+        StepError::DuplicateJob(1)
+    );
+}
+
+#[test]
+fn an_arrival_that_is_not_ready_is_an_error() {
+    let mut arriving = job(2, Class::Batch, 0, 0, 0, &[Kind::Prefill]);
+    arriving.state = JobState::Running;
+    let event = Event::Arrive {
+        now_ms: 0,
+        job: arriving,
+    };
+    assert_eq!(
+        error_of(state(Vec::new()), event),
+        StepError::ArrivalNotReady(2, JobState::Running)
+    );
+}
+
+#[test]
+fn an_arrival_and_an_admit_that_fit_are_not_errors() {
+    let mut late = job(1, Class::Batch, 0, 0, 0, &[Kind::Prefill]);
+    late.admitted = false;
+    let (scheduler, next) = step(state(Vec::new()), Event::Arrive { now_ms: 0, job: late });
+    assert_eq!(next, None);
+    let (_, next) = step(scheduler, Event::Admit { now_ms: 1, job: 1 });
+    assert_eq!(next, quantum(Class::Batch, Kind::Prefill, &[1]));
 }
