@@ -703,6 +703,14 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
                     quantum.cancel();
                     cancelled += 1;
                 }
+                // A group with steady work never waits out the interval, so it beats after each quantum (spec 7.4).
+                let beat = WatchMessage::Beat {
+                    group,
+                    at: Instant::now(),
+                };
+                if heartbeats.send(beat).is_err() {
+                    break;
+                }
             }
             Ok(GroupMessage::Park(reply)) => {
                 // The drain ends here. The park budget of the group starts now.
