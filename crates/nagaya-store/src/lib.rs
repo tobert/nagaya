@@ -756,6 +756,11 @@ pub enum FailPoint {
     IndexRename,
 }
 
+/// The eviction rank of a chain interior (spec 6.9 step 3).
+const RANK_INTERIOR: u8 = 1;
+/// The eviction rank of every other entry: tips, roots and standalone entries (spec 6.9 step 4).
+const RANK_BY_VALUE: u8 = 2;
+
 /// The directory under the store that holds the blobs of cleared tripwires. No budget counts it.
 const QUARANTINE: &str = "quarantine";
 
@@ -1444,6 +1449,8 @@ impl Store {
             .filter(|entry| entry.state == EntryState::Live)
             .filter_map(|entry| entry.parent)
             .collect();
+        // 6.9 step 1: interval copies go first. They are not built yet (spec 6.13); their groups take a rank
+        // below `RANK_INTERIOR` here. Step 2: a pinned entry is exempt, so the loop below skips it.
         let mut groups: Vec<(u8, u128, Vec<ContentId>)> = Vec::new();
         for entry in self.index.entries.values() {
             if entry.owner != owner || entry.state != EntryState::Live {
@@ -1476,13 +1483,9 @@ impl Store {
             if !evictable {
                 continue;
             }
-            let has_child = parents.contains(&entry.content_id);
-            let rank = match (entry.parent.is_some(), has_child) {
-                (true, true) => 0,
-                (true, false) => 1,
-                (false, true) => 2,
-                (false, false) => 3,
-            };
+            // 6.9 step 3: a chain interior goes before a tip or a root. Step 4 ranks all the others together.
+            let interior = entry.parent.is_some() && parents.contains(&entry.content_id);
+            let rank = if interior { RANK_INTERIOR } else { RANK_BY_VALUE };
             groups.push((rank, value_per_byte(entry, now_ms), group));
         }
         groups.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));

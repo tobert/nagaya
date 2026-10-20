@@ -214,6 +214,10 @@ fn a_delta_keeps_its_parent_and_the_base() {
     assert_eq!(store.entries().get(&delta).unwrap().parent, Some(base));
     let chain = lookup(&mut store, delta_recipe).unwrap();
     assert_eq!(chain, vec![base, delta]);
+    // The base is hotter than the delta, so by value (spec 6.9 step 4) the delta goes first and the base stays.
+    for _ in 0..3 {
+        store.get(&base, 15).unwrap();
+    }
     let victims = store.evict(0, 1, 20).unwrap();
     assert!(!victims.contains(&base));
     assert!(victims.contains(&delta));
@@ -1127,6 +1131,41 @@ fn the_delta_fraction_compares_with_the_base_of_the_chain() {
     )
     .unwrap_err();
     assert!(format!("{error}").contains("larger"), "{error}");
+}
+
+#[test]
+fn eviction_ranks_tips_roots_and_standalone_entries_by_value_together() {
+    // Spec 6.9 step 4: after the interiors, one ranking by value per byte covers every remaining entry.
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let root_recipe = recipe(181);
+    let root = put(&mut store, &base_snapshot(1), root_recipe, 1);
+    let tip_recipe = next_recipe(root_recipe, 2);
+    let tip = put_delta(&mut store, &delta_at(root, 2), tip_recipe, root_recipe, 1);
+    let cold = put(&mut store, &base_snapshot(5), recipe(182), 1);
+    for _ in 0..5 {
+        store.get(&tip, 1_000).unwrap();
+    }
+    let victims = store.evict(1, 1, 1_000).unwrap();
+    assert_eq!(victims, vec![cold], "the cold standalone entry goes before the hot tip");
+    assert!(store.entries().contains_key(&tip));
+}
+
+#[test]
+fn eviction_takes_a_cold_tip_before_a_hot_standalone_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let root_recipe = recipe(183);
+    let root = put(&mut store, &base_snapshot(1), root_recipe, 1);
+    let tip_recipe = next_recipe(root_recipe, 2);
+    let tip = put_delta(&mut store, &delta_at(root, 2), tip_recipe, root_recipe, 1);
+    let hot = put(&mut store, &base_snapshot(5), recipe(184), 1);
+    for _ in 0..5 {
+        store.get(&hot, 1_000).unwrap();
+    }
+    let victims = store.evict(1, 1, 1_000).unwrap();
+    assert_eq!(victims, vec![tip]);
+    assert!(store.entries().contains_key(&hot));
 }
 
 #[test]
