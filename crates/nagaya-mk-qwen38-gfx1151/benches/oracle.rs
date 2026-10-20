@@ -48,10 +48,15 @@ fn main() {
     if let Some(problem) = oracle::fixture_problem(&fixture, 256) {
         panic!("the fixture is bad: {problem}");
     }
+    let path = oracle::QmmPath::from_env();
     let mut engine = nagaya_mk_qwen38_gfx1151::open().expect("open mk");
     println!(
-        "oracle: reference {} layers, transformers {}, reference_sha {}, {} s",
-        fixture.layers, fixture.transformers, fixture.reference_sha, fixture.seconds
+        "oracle: qmm path {}; reference {} layers, transformers {}, reference_sha {}, {} s",
+        path.name(),
+        fixture.layers,
+        fixture.transformers,
+        fixture.reference_sha,
+        fixture.seconds
     );
     println!(
         "{:<8} {:>6} {:>6} {:>3} {:>3} {:>3} {:>5} {:>10} {:>10} {:>10} {:>8}",
@@ -75,18 +80,19 @@ fn main() {
             gap.lse_diff,
             seconds
         );
-        for breach in oracle::breaches(&gap) {
+        for breach in oracle::breaches(&gap, path) {
             failed = true;
             println!("  BREACH {}: {breach}", prompt.name);
         }
     }
+    let gate = |limit: Option<f64>| limit.map_or("not a gate".to_owned(), |v| format!("<= {v:e}"));
     println!(
-        "tolerances: margin>{} argmax; ref top-8 in top-{}; max|dlogit|<={}; KL<={:e}; |dlogsumexp|<={}",
+        "gates: margin>{} argmax; ref top-8 in top-{}; max|dlogit| {}; KL {}; |dlogsumexp| {}",
         oracle::MARGIN,
         oracle::TOP8_INSIDE,
-        oracle::MAX_ABS_DIFF,
-        oracle::MAX_KL,
-        oracle::MAX_LSE_DIFF
+        gate(path.max_abs_diff()),
+        gate(path.max_kl()),
+        gate(path.max_lse_diff())
     );
     std::process::exit(i32::from(failed));
 }

@@ -18,14 +18,50 @@ pub const MARGIN: f64 = 0.25;
 /// The reference top-8 ids must all be inside the engine's top list of this size.
 pub const TOP8_INSIDE: usize = 16;
 
-/// The largest absolute logit difference over the reference top-64.
-pub const MAX_ABS_DIFF: f64 = 0.1;
+/// The qmm path that the engine runs. `MK_FAST_QMM=0` is exact. Unset or 1 is the f16 fast path, an approximation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QmmPath {
+    Exact,
+    Fast,
+}
 
-/// The largest KL(reference || engine) over the reference top-64, both sides renormalised over those ids.
-pub const MAX_KL: f64 = 1e-4;
+impl QmmPath {
+    /// Read the value of `MK_FAST_QMM` as the binding reads it (`worker.rs` `fast_qmm_from`).
+    pub fn from_setting(value: Option<&str>) -> Result<Self, String> {
+        match value {
+            None | Some("1") => Ok(Self::Fast),
+            Some("0") => Ok(Self::Exact),
+            Some(other) => Err(format!("MK_FAST_QMM={other}: want 0 or 1")),
+        }
+    }
 
-/// The largest absolute difference of the two logsumexp values over the whole vocabulary.
-pub const MAX_LSE_DIFF: f64 = 0.05;
+    pub fn from_env() -> Self {
+        let value = std::env::var("MK_FAST_QMM").ok();
+        Self::from_setting(value.as_deref()).unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Exact => "exact (MK_FAST_QMM=0, a gate)",
+            Self::Fast => "fast (f16 qmm, measured only)",
+        }
+    }
+
+    /// The largest absolute logit difference over the reference top-64. `None` means that it is not a gate.
+    pub fn max_abs_diff(self) -> Option<f64> {
+        (self == Self::Exact).then_some(1e-3)
+    }
+
+    /// The largest KL(reference || engine) over the reference top-64, both sides renormalised over those ids.
+    pub fn max_kl(self) -> Option<f64> {
+        (self == Self::Exact).then_some(1e-8)
+    }
+
+    /// The largest absolute difference of the two logsumexp values over the whole vocabulary.
+    pub fn max_lse_diff(self) -> Option<f64> {
+        (self == Self::Exact).then_some(1e-3)
+    }
+}
 
 /// One prompt of the fixture.
 #[derive(Clone, Debug)]
@@ -241,8 +277,8 @@ pub fn measure(prompt: &Prompt, logits: &[f32]) -> Gap {
     }
 }
 
-/// The tolerances that a gap breaks. An empty list means that the gap is inside every tolerance.
-pub fn breaches(gap: &Gap) -> Vec<String> {
+/// The tolerances that a gap breaks on one qmm path. An empty list means that the gap is inside every gate.
+pub fn breaches(gap: &Gap, path: QmmPath) -> Vec<String> {
     let mut list = Vec::new();
     if !gap.finite {
         list.push("the engine gave a non-finite logit".to_owned());
@@ -259,14 +295,20 @@ pub fn breaches(gap: &Gap) -> Vec<String> {
             gap.top8_inside
         ));
     }
-    if gap.max_abs_diff.is_nan() || gap.max_abs_diff > MAX_ABS_DIFF {
-        list.push(format!("max abs diff {:.4} is past {MAX_ABS_DIFF}", gap.max_abs_diff));
+    if let Some(limit) = path.max_abs_diff()
+        && (gap.max_abs_diff.is_nan() || gap.max_abs_diff > limit)
+    {
+        list.push(format!("max abs diff {:.6} is past {limit:e}", gap.max_abs_diff));
     }
-    if gap.kl.is_nan() || gap.kl > MAX_KL {
-        list.push(format!("KL {:.3e} is past {MAX_KL:e}", gap.kl));
+    if let Some(limit) = path.max_kl()
+        && (gap.kl.is_nan() || gap.kl > limit)
+    {
+        list.push(format!("KL {:.3e} is past {limit:e}", gap.kl));
     }
-    if gap.lse_diff.is_nan() || gap.lse_diff.abs() > MAX_LSE_DIFF {
-        list.push(format!("logsumexp diff {:.4} is past {MAX_LSE_DIFF}", gap.lse_diff));
+    if let Some(limit) = path.max_lse_diff()
+        && (gap.lse_diff.is_nan() || gap.lse_diff.abs() > limit)
+    {
+        list.push(format!("logsumexp diff {:.6} is past {limit:e}", gap.lse_diff));
     }
     list
 }

@@ -5,7 +5,7 @@ mod oracle;
 
 use std::path::Path;
 
-use oracle::{Fixture, Prompt, TOP};
+use oracle::{Fixture, Prompt, QmmPath, TOP};
 
 /// The most tokens that one mk context takes (`spec.rs` `CONTEXT_CAPACITY`).
 const MAX_TOKENS: usize = 256;
@@ -116,13 +116,29 @@ fn reference_of(logits: &[f32]) -> Prompt {
     }
 }
 
-fn breaches_of(logits: &[f32]) -> Vec<String> {
+fn breaches_on(logits: &[f32], path: QmmPath) -> Vec<String> {
     let prompt = reference_of(&engine_logits());
-    oracle::breaches(&oracle::measure(&prompt, logits))
+    oracle::breaches(&oracle::measure(&prompt, logits), path)
+}
+
+fn exact(logits: &[f32]) -> Vec<String> {
+    breaches_on(logits, QmmPath::Exact)
+}
+
+fn fast(logits: &[f32]) -> Vec<String> {
+    breaches_on(logits, QmmPath::Fast)
 }
 
 #[test]
-fn equal_logits_break_no_tolerance() {
+fn the_path_follows_mk_fast_qmm() {
+    assert_eq!(QmmPath::from_setting(None), Ok(QmmPath::Fast));
+    assert_eq!(QmmPath::from_setting(Some("1")), Ok(QmmPath::Fast));
+    assert_eq!(QmmPath::from_setting(Some("0")), Ok(QmmPath::Exact));
+    assert!(QmmPath::from_setting(Some("2")).is_err());
+}
+
+#[test]
+fn equal_logits_break_no_gate() {
     let prompt = reference_of(&engine_logits());
     let gap = oracle::measure(&prompt, &engine_logits());
     assert!(gap.argmax_agrees);
@@ -132,59 +148,77 @@ fn equal_logits_break_no_tolerance() {
     );
     assert_eq!(gap.max_abs_diff, 0.0);
     assert!(gap.kl.abs() < 1e-12 && gap.lse_diff.abs() < 1e-9);
-    assert_eq!(oracle::breaches(&gap), Vec::<String>::new());
+    for path in [QmmPath::Exact, QmmPath::Fast] {
+        assert_eq!(oracle::breaches(&gap, path), Vec::<String>::new());
+    }
 }
 
 #[test]
-fn a_shift_inside_the_tolerance_is_accepted() {
+fn a_shift_inside_the_exact_gate_is_accepted() {
     let mut logits = engine_logits();
-    logits[40] += 0.09;
-    assert_eq!(breaches_of(&logits), Vec::<String>::new());
+    logits[40] += 0.0009;
+    assert_eq!(exact(&logits), Vec::<String>::new());
 }
 
 #[test]
-fn one_logit_shifted_past_the_tolerance_is_a_breach() {
+fn a_shift_of_2e_3_breaks_the_exact_gate_and_the_fast_path_allows_it() {
     let mut logits = engine_logits();
-    logits[40] += 0.11;
-    let list = breaches_of(&logits);
+    logits[40] += 0.002;
+    let list = exact(&logits);
     assert_eq!(list.len(), 1, "{list:?}");
     assert!(list[0].contains("max abs diff"), "{list:?}");
+    assert_eq!(fast(&logits), Vec::<String>::new());
 }
 
 #[test]
-fn a_shift_of_the_top_logit_breaks_the_divergence_and_the_sum() {
+fn a_big_shift_of_the_top_logit_breaks_every_exact_gate_and_no_fast_gate() {
     let mut logits = engine_logits();
-    logits[0] -= 0.5;
-    let list = breaches_of(&logits).join("; ");
+    logits[0] -= 0.5; // The reference margin is 0.2, so the argmax rule does not apply.
+    let list = exact(&logits).join("; ");
     assert!(
         list.contains("KL") && list.contains("logsumexp") && list.contains("max abs diff"),
         "{list}"
     );
+    assert_eq!(fast(&logits), Vec::<String>::new());
 }
 
 #[test]
-fn a_small_shift_of_the_top_logit_breaks_only_the_divergence() {
-    // The shift is inside the diff and sum tolerances, but the top id holds much of the mass.
+fn a_small_shift_of_the_top_logit_breaks_only_the_exact_divergence() {
+    // The shift is inside the diff and sum gates, but the top id holds much of the mass.
     let mut logits = engine_logits();
-    logits[0] -= 0.09;
-    let list = breaches_of(&logits);
+    logits[0] -= 0.0009;
+    let list = exact(&logits);
     assert_eq!(list.len(), 1, "{list:?}");
     assert!(list[0].contains("KL"), "{list:?}");
+    assert_eq!(fast(&logits), Vec::<String>::new());
 }
 
 #[test]
-fn two_swapped_ids_are_a_breach() {
-    // The engine gives the logit of id 0 to id 1 and the logit of id 1 to id 0. The reference margin is 0.2 here, so
-    // the argmax rule does not apply. The diff rule does.
+fn a_shift_of_the_sum_alone_breaks_the_exact_sum_gate() {
+    // Move the tail, which the top-64 diff and KL do not see. The tail holds little mass, so the shift is large.
+    let mut logits = engine_logits();
+    for logit in &mut logits[TOP..] {
+        *logit += 6.0;
+    }
+    let list = exact(&logits);
+    assert_eq!(list.len(), 1, "{list:?}");
+    assert!(list[0].contains("logsumexp"), "{list:?}");
+    assert_eq!(fast(&logits), Vec::<String>::new());
+}
+
+#[test]
+fn two_swapped_ids_are_an_exact_breach() {
+    // The reference margin is 0.2 here, so the argmax rule does not apply. The diff rule does.
     let mut logits = engine_logits();
     logits.swap(0, 1);
-    let list = breaches_of(&logits).join("; ");
+    let list = exact(&logits).join("; ");
     assert!(list.contains("max abs diff"), "{list}");
     assert!(!list.contains("argmax"), "{list}");
+    assert_eq!(fast(&logits), Vec::<String>::new());
 }
 
 #[test]
-fn a_dropped_argmax_is_a_breach_when_the_margin_is_wide() {
+fn a_dropped_argmax_is_a_breach_on_both_paths_when_the_margin_is_wide() {
     let mut logits = engine_logits();
     logits[0] = 20.0; // The reference top-1 is id 0 with logit 12.
     let mut prompt = reference_of(&engine_logits());
@@ -192,34 +226,39 @@ fn a_dropped_argmax_is_a_breach_when_the_margin_is_wide() {
     prompt.top_logits[1] = 12.0;
     let gap = oracle::measure(&prompt, &[&[0.0f32][..], &logits[1..]].concat());
     assert!(!gap.argmax_agrees);
-    let list = oracle::breaches(&gap).join("; ");
-    assert!(list.contains("argmax"), "{list}");
+    for path in [QmmPath::Exact, QmmPath::Fast] {
+        let list = oracle::breaches(&gap, path).join("; ");
+        assert!(list.contains("argmax"), "{path:?}: {list}");
+    }
 }
 
 #[test]
 fn a_dropped_argmax_is_no_breach_when_the_margin_is_narrow() {
     let prompt = reference_of(&engine_logits());
     assert!(prompt.top_logits[0] - prompt.top_logits[1] < oracle::MARGIN);
-    // Ids 0 and 1 swap in rank: the engine puts id 1 on top by a hair. The diffs stay small.
     let mut logits = engine_logits();
     logits[0] = 11.85;
     logits[1] = 11.95;
     let gap = oracle::measure(&prompt, &logits);
     assert!(!gap.argmax_agrees);
-    assert!(!oracle::breaches(&gap).iter().any(|b| b.contains("argmax")));
+    for path in [QmmPath::Exact, QmmPath::Fast] {
+        assert!(!oracle::breaches(&gap, path).iter().any(|b| b.contains("argmax")));
+    }
 }
 
 #[test]
-fn a_reference_top8_id_outside_the_engine_top16_is_a_breach() {
+fn a_reference_top8_id_outside_the_engine_top16_is_a_breach_on_both_paths() {
     let mut logits = engine_logits();
     logits[3] = -50.0;
-    let list = breaches_of(&logits).join("; ");
-    assert!(list.contains("top-16"), "{list}");
+    for list in [exact(&logits), fast(&logits)] {
+        assert!(list.join("; ").contains("top-16"), "{list:?}");
+    }
 }
 
 #[test]
-fn a_non_finite_logit_is_a_breach() {
+fn a_non_finite_logit_is_a_breach_on_both_paths() {
     let mut logits = engine_logits();
     logits[400] = f32::NAN;
-    assert!(breaches_of(&logits).iter().any(|b| b.contains("non-finite")));
+    assert!(exact(&logits).iter().any(|b| b.contains("non-finite")));
+    assert!(fast(&logits).iter().any(|b| b.contains("non-finite")));
 }
