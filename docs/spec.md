@@ -50,7 +50,7 @@ Not in v0:
 ## 2. Machines, gossip and placement
 
 **2.1 Inventory.** At start, the nagaya probes its own machine: its devices (amdgpu KFD, Intel Xe, or NVIDIA NVML),
-its host memory, and its NVMe store path. It needs only a tiny bootstrap config (`nagaya.toml` or flags) with its
+its host memory, and its NVMe store path. It needs only a tiny bootstrap config (`nagaya.toml`) with its
 bind addresses, store directory, and seed peer addresses.
 
 | Machine | Devices | Memory |
@@ -82,6 +82,9 @@ peer can reach. The process refuses it and exits 3, and the message names `gossi
 The bootstrap config has one more key, `node_name`. It is optional. Its default is the machine's host name. The name
 is the `<host>` of the gossip keys (2.3), and gossip uses it as the node id. Each machine in a cluster needs its own
 name.
+
+A name has at most 128 bytes, so each gossip key that holds it fits 1024 bytes (2.3). Decided 2026-10-20
+(reading).
 
 A name has letters, digits, `.`, `_` and `-`, and at least one character. Any other name stops the process with
 exit 3.
@@ -180,7 +183,8 @@ adds the entries does not count a pooled budget twice. On gfx1151host, `device(0
 
 The placement profile is one TOML file. Each `[[engines]]` entry has `name`, `kind`, `devices`, `config`, `share`
 and `pin_identity`. Each `[[budgets]]` entry has `tiers` and `bytes`, and a tier is `host` or `device(i)`. The
-`[store]` table has `nvme` and an optional `host` (4.1a). Decided 2026-10-20 (reading).
+`[store]` table has `nvme`, an optional `host` (4.1a), and an optional `interval_copies` (6.13), 0 by default.
+Decided 2026-10-20 (reading).
 
 An engine name has letters, digits, `.`, `_` and `-`, and at most 128 bytes. A profile with another name does not
 parse. Reason: the name is part of the gossip key `engine:<name>` (2.3). Decided 2026-10-20.
@@ -207,8 +211,9 @@ thread priorities:
 - **One watchdog thread.** Runs on the housekeeping cores and watches each group thread from outside, because a pass
   blocks the thread that it watches (7.4).
 - **One thread per GPU device group.** A device group is the set of devices that one or more engines use. Most groups
-  have one device. mkviolet's Gemma 4 uses both B70 cards, so its group has two. Two engines that use one device
-  share one group, one thread and one scheduler. Every engine call for a group comes from its thread, and the call
+  have one device, and mkviolet's group has both B70 cards. Engines whose device sets share a device, also through
+  a chain of shared devices, are in one group with the union of their devices. A group has one thread and one
+  scheduler. Every engine call for a group comes from its thread, and the call
   is synchronous. Inside a pass, the engine runs its own work on each of its devices (D1).
 - **A bounded CPU worker pool.** Rendering, tokenization, hashing, safetensors conversion, and CPU device passes
   (13.2) run on a bounded pool pinned to the remaining cores at `SCHED_BATCH`. Long CPU work yields between chunks
@@ -273,13 +278,14 @@ refusal charges nothing and changes nothing.
 `pass` never allocates. Its scratch for each kind is a mandatory term, which the ledger charges at `open`.
 
 When the ledger refuses a quantum's call, the quantum waits in the scheduler and keeps its place. A request that can
-never fit, even with all reclaim done (4.6), gets 413 `too_large`. Its `param` names the limit in identity.
+never fit, even with all reclaim done (4.6), gets 413 `too_large`. Its `param` names the limit that it is over.
 
 **4.4 Spare memory.** The ledger first charges all mandatory terms and the minimum of each elastic term. If they do
 not fit, the nagaya refuses the profile (2.4). The ledger then divides what remains in each budget like this:
 
 1. Give each engine a part of the spare bytes in proportion to its share (D9).
-2. Inside an engine, split its part among its elastic terms in proportion to each term's minimum bytes.
+2. Inside an engine, split its part among its elastic terms in proportion to each term's minimum bytes. When every
+   minimum is 0, the elastic terms get no spare bytes.
 3. Round each term down to whole units, and cap it at its maximum.
 4. Leave the bytes that remain unassigned, and report them.
 
@@ -324,7 +330,7 @@ service, and that split moves into mk's engine wrapper.) The watchdog reports ea
 council v2's `class` field (gogi). Only jobs that the nagaya or a profile starts, such as training and the audit, are
 `filler`. Between quanta, the scheduler always runs a
 ready quantum of a higher class first. A quantum is ready when its job has no quantum that runs, its inputs are
-present, and the ledger admitted it (4.3).
+present, and the ledger admitted its calls (4.3).
 
 A council decision is interactive. A job's class starts to apply at its first quantum, not when the job arrives.
 mkviolet's `lazy_high` takes the card at the council's first GPU step. That change cut decisions beside a prefill
@@ -342,18 +348,21 @@ while interactive is more cooperative multitasking"):
   `11-multi-session-serving.md` section 6).
 
 gogi settles the first key: "a higher priority runs first within its class" (`~/src/gogi/docs/council-api.md:159-160`).
-Among equal priorities, the higher owed balance runs first, and then the earlier arrival. A quantum of `d` ms for job
-`j`, among `n` present interactive jobs, changes the balances like this:
-
-- the balance of `j` falls by `d*(n-1)/n`;
-- the balance of each other job rises by `d/n`;
-- each change rounds down, and each balance stays between -30 s and +30 s.
-
-A job that leaves removes its own balance. The bounds forgive the excess, so the balances sum to zero only while no
-balance is at a bound. Decided 2026-10-20 (reading).
+Among equal priorities, the higher owed balance runs first, and then the earlier arrival.
 
 When an interactive pass has several segments, each segment gets an equal part of the pass time. The rounding
 remainder goes to the segment with the earliest arrival. Decided 2026-10-20 (reading).
+
+The scheduler charges each segment on its own. A segment of job `j` with a share of `c` ms, among `n` present
+interactive jobs, changes the balances like this:
+
+1. the balance of `j` falls by `c*(n-1)/n`, rounded down;
+2. the balance of each other present job rises by `c/n`, rounded down;
+3. the rounding remainder goes to the present job with the earliest arrival, so the changes sum to zero;
+4. each balance then stays between -30 s and +30 s.
+
+A job that leaves removes its own balance. Step 4 forgives the excess, so the balances sum to zero only while no
+balance is at a bound. Decided 2026-10-20 (reading, after the audit found two readings of the old text).
 
 **5.5 Filler.** A filler job declares a checkpoint interval: the time between its checkpoints. It must be resumable:
 its state parks when it gives way (Ai2's "unallocated" time). It runs only when no interactive or batch quantum is
@@ -371,8 +380,13 @@ the quantum takes that class.
 
 Each class has a join window: the time that the scheduler waits to add more ready segments to a pass. It never
 waits for jobs that are not ready. In v0 each window is 0 ms, so a pass takes only the segments that are ready when
-the scheduler chooses. The windows are in the bootstrap config (2.1), so a measurement can change them. Decided
-2026-10-18.
+the scheduler chooses. Decided 2026-10-18.
+
+In v0 the windows have no key in the bootstrap config. A measurement that
+changes them adds the key (2.1). Decided 2026-10-20 (reading).
+
+A pass holds segments of one kind only (5.2). The scheduler joins a ready job only when its next quantum has the
+kind of the first segment. Decided 2026-10-20 (reading).
 
 **What `segments_exact` promises.** An engine that declares `segments_exact` promises that the order of each sum
 depends only on the shape of the problem. It never depends on the segment count, the row count of a pass, or the
@@ -381,7 +395,7 @@ no floats with atomics. Decided 2026-10-20 (`docs/deepinfer.md` 2). DeepInfer's 
 rule: its gate GEMM never splits K, and its other splits have a fixed count.
 
 **5.8 Deadlines.** A job can have a deadline (council v2 `timeout_ms`). The scheduler checks it between quanta. A
-job after its deadline goes to the terminal state "expired", and its segments do not run again. On a status code,
+job at or after its deadline goes to the terminal state "expired", and its segments do not run again. On a status code,
 an expired job is a 504 `timeout`. On a stream that already sent its first event, the nagaya sends a terminal
 `error` event of type `timeout` (gogi).
 
@@ -392,7 +406,7 @@ loss of one such snapshot cost a cold prefill of 35 minutes.)
 Every terminal state of a job releases its loans and leases. The terminal states are done, cancelled, failed and
 expired. A release does not delete a snapshot. Only eviction (6.9) removes a stored entry.
 
-**5.10 Admission at the door.** The client API admits a limited number of requests in flight for each engine (mk:
+**5.10 The door limit.** The client API accepts a limited number of requests in flight for each engine (mk:
 16). Above that limit it answers 429 with `Retry-After`.
 
 **5.11 Cost model (D4).** The nagaya fits a robust affine cost from production quanta, keyed by engine, kind,
@@ -401,8 +415,8 @@ store eviction value-per-byte (6.9) and deadline checks between quanta (5.8). An
 planner, which stays in the engine (mkviolet `council_server.rs`).
 
 **A measured prior.** At the first start of an engine identity, the nagaya times a short curve for each kind. Each
-point is one warmup run and the trimmed mean of five runs. The curve goes into the plan table under the identity,
-and later starts read it. The fit starts from the curve and corrects it with production quanta. Decided
+point is one warmup run and the trimmed mean of five runs. The curve goes into the store's index under the identity
+digest, and later starts read it. The fit starts from the curve and corrects it with production quanta. Decided
 2026-10-20 (`docs/deepinfer.md` 4). DeepInfer measures its decode curve in this way
 (`deepinfer/worker/model_runner.py:586-619`).
 
@@ -661,8 +675,15 @@ because the group thread is blocked in the pass.
 
 A device group that stops its heartbeat is a failure. The process exits with code 1, the crash code of 10.4, and
 systemd restarts it. Reason: a stalled engine can hold a device, and the process stops before it continues in a bad
-state (8.5). The default timeout is 30 s, three times the longest declared quantum bound (mk: 10 s). A start
-parameter sets the timeout, and the tests use a short value. Decided 2026-10-20 (reading).
+state (8.5).
+
+The timeout is 30 s, three times the longest declared quantum bound (mk: 10 s). It has no key in the
+bootstrap config. The code takes it as a start parameter, so the tests use a short value.
+Decided 2026-10-20 (reading).
+
+**The watchdog during an open.** An engine's open can take longer than the timeout: mk loaded in 24-50 s on
+2026-10-20. A group beats its heartbeat while its engine opens, so a long open is not a stall. Milestone 14 builds
+this (Amy, 2026-10-20).
 
 ## 8. Correctness at runtime
 
@@ -681,8 +702,8 @@ poison. After a poison or a timeout, the nagaya does these steps:
 1. Fail the jobs in that pass. Free their contexts, or mark their slots dirty until a job clears them (`slot_clear`),
    overwrites them from position 0, or writes them through `part_write`.
 2. Run the canary again on the group thread, before any other work.
-3. If the canary does not match, or if this is the fourth timeout in 600 s, mark the engine fatal. Refuse every
-   later job for it.
+3. If the canary does not match, or if this is the engine's fourth timeout in the last 600 s, mark the engine fatal.
+   Refuse every later job for it.
 
 (mk `service/gpu.py` does this.)
 
@@ -696,7 +717,10 @@ poison. After a poison or a timeout, the nagaya does these steps:
   maximum count of segments (5.7).
 
 **One oracle for each family.** Each model family has one reference: today, fixed outputs of mk's Python. Every
-engine of that family passes its conformance against that reference, on any vendor's device. Decided 2026-10-20
+engine of that family passes its conformance against that reference, on any vendor's device. The reference runs on
+the CPU, so it does not give the bits of a GPU. Thus the oracle has a tolerance, and a spike measures the gap first.
+
+A family with no reference has no oracle yet: the first port of mkviolet builds the Gemma reference. Decided 2026-10-20
 (`docs/deepinfer.md` 6). The engine crates stay one for each vendor and device (Amy: "we generate a megakernel per
 vendor/device and they get their own whole crate").
 
@@ -828,6 +852,9 @@ gets a cancelled result (5.9). Only the running quantum goes to its end. The par
 drain of that group ends. A drain that does not end is a stall, and the process exits 1 (7.4). When a second signal
 interrupts a stop, the process exits 1, unless every state was parked. Decided 2026-10-20.
 
+A park that runs past the park budget makes the process exit 1. A SIGTERM during a planned restart stops the
+process with exit 0. Decided 2026-10-20 (reading).
+
 The process catches SIGTERM with a handler that adds one to a static atomic counter. The handler is `signal(2)`,
 declared in `extern "C"`, because std has no signal API. The main loop reads the counter every 50 ms. Reason: this
 needs no new dependency. A later step can use a signal stream from `tokio` instead. Decided 2026-10-20 (reading).
@@ -838,14 +865,14 @@ needs no new dependency. A later step can use a signal stream from `tokio` inste
 |---|---|---|
 | 0 | a clean stop | no restart |
 | 1 | a crash | restart |
-| 3 | a refusal to start: a canary mismatch at start, an identity mismatch, or a profile that does not fit | `RestartPreventExitStatus=3` |
-| 4 | a planned restart: a profile changed the engines (3.3) | `RestartForceExitStatus=4` |
+| 3 | a refusal to start: a bad bootstrap config (2.1), a profile that does not fit, a canary mismatch at start, a mismatch of a pinned identity (12.1), of the library pin or of a part size, a store that does not open, or a gossip bind that fails | `RestartPreventExitStatus=3` |
+| 4 | a planned restart: a new profile (2.3, 3.3) | `RestartForceExitStatus=4` |
 
 The restart policy follows mk's unit: `Restart=on-failure`, `RestartSec=30`, and at most 3 starts in 600 s.
 systemd counts each start against that limit, also a start after code 4. Thus a fourth profile swap in 600 s fails.
 
-An engine that does not open at start stops the process. A mismatch of the identity, the pin or a part size is a
-refusal to start, so the process exits 3. Any other failure to open is a crash. The process exits 1, and systemd
+An engine that does not open at start stops the process. A mismatch of a pinned identity (12.1), the library pin
+or a part size is a refusal to start: exit 3. Any other failure to open is a crash. The process exits 1, and systemd
 restarts it within its start limit. A message on stderr names the engine and the reason. Decided 2026-10-20
 (reading).
 
@@ -891,9 +918,9 @@ token, and the purpose of the draw. The purposes are a sample, a resample and th
 The sampler keeps no random state between tokens. A fork gets a child seed, a hash of the parent's seed and a branch
 number. Decided 2026-10-20 (`docs/deepinfer.md` 1).
 
-Reason: a park, a restore or a fork then keeps the sampler's bits, with nothing to save. A generation that resumes
-after a restart gives the same tokens. A speculative draft (mkviolet's prompt-lookup drafts) has its own purpose,
-so it never moves a later draw. Thus the reported seed does not change when drafts are on.
+Reason: a park, a restore or a fork then keeps the sampler's bits, with nothing to save. A client that sends a
+request again with the same seed gets the same tokens. A speculative draft (mkviolet's prompt-lookup drafts) has
+its own purpose, so it never moves a later draw. Thus the reported seed does not change when drafts are on.
 
 mk's sampler draws from one PCG64 stream for each request (mk `service/sampling.py:106`, `:153`). The nagaya does
 not match those bits. It matches mk's filter order and its probabilities (milestone 12).
@@ -953,8 +980,9 @@ milestones 11 and 11b).
   - `nothing|int`, `nothing|float` and `nothing < 1` give a value, where Python raises. `nothing|first` raises,
     where Python gives an undefined value.
   - A key with the name of a method of a dict, such as `items`, reads as the key. Python reads the method.
-- The library takes JSON in its own type that keeps key order. It refuses `NaN`, `Infinity` and an integer of more
-  than 128 bits. Python accepts those, so this is stricter than mk. It refuses nesting of more than 512 levels.
+- The library takes JSON in its own type that keeps key order. It refuses `NaN`, `Infinity` and an integer outside
+  the range of a signed 128-bit integer. Python accepts those, so this is stricter than mk.
+  It refuses nesting of more than 512 levels.
   Python stops near 1000 levels.
 - The GGUF reader bounds its allocations. A string of more than 16 MiB is an error, and a string is read in chunks.
   An array grows with the values that the file gives. A key twice in one file is an error.
