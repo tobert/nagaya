@@ -6,7 +6,7 @@ use nagaya::admission::{AdmitError, Factory, OpenError, PlanError, Registry};
 use nagaya::exit::ExitCode;
 use nagaya::inventory::{Device, Inventory};
 use nagaya::park::StoreBudget;
-use nagaya::process::{Quantum, Start, StartError, SubmitError};
+use nagaya::process::{ParkReport, Quantum, Start, StartError, StopReport, SubmitError};
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, StoreSpec, TierSpec};
 use nagaya::signal::SignalFlag;
 use nagaya_abi::fake::FakeAlways;
@@ -368,6 +368,50 @@ fn a_stop_with_no_state_says_it_parked_nothing() {
         line.contains("parked nothing"),
         "the stop must not claim a park: {line}"
     );
+}
+
+#[test]
+fn a_stop_that_no_group_answered_does_not_say_it_parked_nothing() {
+    let report = StopReport {
+        parked: ParkReport::default(),
+        complete: false,
+        interrupted: false,
+    };
+    let line = report.log_line();
+    assert!(line.contains("did not finish"), "the park did not finish: {line}");
+    assert!(!line.contains("parked nothing"), "{line}");
+    assert_eq!(report.exit_code(), ExitCode::Crash);
+}
+
+#[test]
+fn a_stop_that_wrote_a_part_and_did_not_finish_says_so() {
+    let report = StopReport {
+        parked: ParkReport {
+            engines: 1,
+            states: 1,
+            parts: 3,
+            bytes: 16,
+            entries: 1,
+            failures: Vec::new(),
+        },
+        complete: false,
+        interrupted: false,
+    };
+    assert!(report.log_line().contains("did not finish"), "{}", report.log_line());
+}
+
+#[test]
+fn a_stop_that_wrote_nothing_and_failed_says_the_failure() {
+    let report = StopReport {
+        parked: ParkReport {
+            failures: vec!["engine `a` state 0 failed".to_owned()],
+            ..ParkReport::default()
+        },
+        complete: true,
+        interrupted: false,
+    };
+    let line = report.log_line();
+    assert!(line.contains("failed 1 part"), "{line}");
 }
 
 #[test]

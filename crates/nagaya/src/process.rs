@@ -91,14 +91,14 @@ impl StopReport {
             return "the stop was interrupted before the park finished".to_owned();
         }
         let failed = self.parked.failures.len();
-        if self.parked.states == 0 && self.parked.entries == 0 && failed == 0 {
-            return "the stop parked nothing: no state needed a park".to_owned();
-        }
         if !self.complete {
             return format!(
                 "the park did not finish; it wrote {} states and {} parts",
                 self.parked.states, self.parked.parts
             );
+        }
+        if self.parked.states == 0 && self.parked.entries == 0 && failed == 0 {
+            return "the stop parked nothing: no state needed a park".to_owned();
         }
         if failed == 0 {
             return format!(
