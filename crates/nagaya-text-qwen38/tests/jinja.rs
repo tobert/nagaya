@@ -54,8 +54,13 @@ fn check(cases: &[Json]) -> Vec<String> {
             (Err(e), true) => wrong.push(format!("{shown}: refused ({e}), mk gives {:?}", case.get("out").str())),
             (Err(Error::Template(m)), false) => {
                 let method = case.get("m").str();
-                if !["direct", "join"].contains(&method) && !m.contains(method) {
+                if !["direct", "join", "format"].contains(&method) && !m.contains(method) {
                     wrong.push(format!("{shown}: the refusal does not name the method {method}: {m}"));
+                }
+                // A message of raise_exception reaches the error as Python writes it.
+                let said = case.get("error").str();
+                if case.get("x").str() == "TemplateError" && !m.contains(said) {
+                    wrong.push(format!("{shown}: the refusal should say {said:?}: {m}"));
                 }
             }
             (Err(other), false) => wrong.push(format!("{shown}: wrong kind of error {other:?}")),
@@ -141,4 +146,36 @@ fn a_list_stands_for_a_tuple_in_startswith_and_endswith() {
     // is in the note of spec 11.3. The test pins it, so that a change is a choice.
     assert_eq!(render("{{ 'abc'.startswith(['x', 'a']) }}").unwrap(), "True");
     assert_eq!(render("{{ 'abc'.endswith(['x', 'c']) }}").unwrap(), "True");
+}
+
+#[test]
+fn values_are_written_as_python_writes_them() {
+    let cases = jinja().get("formats").items();
+    assert!(cases.len() >= 290, "{} cases", cases.len());
+    assert_none_wrong(check(cases), cases.len());
+}
+
+#[test]
+fn the_concatenation_operator_writes_a_container_in_the_form_of_the_engine() {
+    // Python writes ['x', 1.5]. The operator ~ of the engine writes its own form, and a template cannot change that.
+    // The chat template joins strings and integers only. Spec 11.3 states the difference, and this test pins it.
+    let messages = Json::parse(r#"[{"v": ["x", 1.5], "f": 1e16}]"#).unwrap();
+    let render = |source: &str| {
+        ChatTemplate::from_source(source)
+            .unwrap()
+            .render(&messages, None, &RenderOptions::default())
+            .unwrap()
+    };
+    assert_eq!(render("{{ 'a' ~ messages[0].v }}"), "a[\"x\", 1.5]");
+    assert_eq!(render("{{ 'a' ~ messages[0].f }}"), "a10000000000000000.0");
+    // The output of a value, the string filter and raise_exception use the form of Python.
+    assert_eq!(render("{{ messages[0].v }}"), "['x', 1.5]");
+    assert_eq!(render("{{ messages[0].f|string }}"), "1e+16");
+}
+
+#[test]
+fn a_tuple_of_the_template_is_a_list() {
+    // The engine has no tuple type. Python writes (1, 2) for the tuple. JSON gives no tuple, so only a literal in the
+    // template can differ.
+    assert_eq!(render("{{ (1, 2) }}").unwrap(), "[1, 2]");
 }

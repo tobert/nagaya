@@ -578,7 +578,8 @@ def main() -> None:
             continue
         chat_out.append({**c, "escaped": escaped, "text": tok.unescape(escaped), "ids": ids})
     methods = run_cases(Template, method_cases())
-    dump_cases(OUT / "jinja.json", header, {"sweep": pystr_sweep(), "methods": methods})
+    dump_cases(OUT / "jinja.json", header, {"sweep": pystr_sweep(), "methods": methods,
+                                           "formats": run_cases(Template, format_cases())})
     # The filters of the template engine that the chat template uses, on their own.
     from service.template import _tojson
     tojson = []
@@ -738,6 +739,45 @@ def run_cases(template_class, cases: list[dict]) -> list[dict]:
         except Exception as e:  # noqa: BLE001 - every kind of failure is a fixture
             out.append({**c, "x": type(e).__name__, "error": str(e)})
     return out
+
+
+# ------------------------------------------------------------------ how values are written
+FORMAT_VALUES = [
+    None, True, False, 0, 1, -7, 2.5, 1.0, 1e16, 1e15, 1e-5, 1e-4, 0.1, -0.0, 123456789.125, 10 ** 30, 1e22, 1e100,
+    5e-324, 1.7976931348623157e308, 0.30000000000000004, "s", "", " padded ", "a'b", 'a"b', "x\ny", "é世",
+    [], ["a", 1, None, True, 2.5], [[]], [[1, [2]]], {}, {"a": "b", "c": [1]}, {"é": 1, "k": None},
+    ["it's", 'q"d', "\n", "é", "​", "\x00", "\x7f", "\U0001f600", "", "￾", "\\"],
+    {"k": {"j": {"i": [1.5, True]}}},
+]
+
+
+def format_cases() -> list[dict]:
+    cases = []
+    for v in FORMAT_VALUES:
+        for src in ("{{ messages[0].v }}", "{{ messages[0].v|string }}", "{{ messages[0].v|trim }}",
+                    "{{ messages[0].v|trim('x') }}", "{{ raise_exception(messages[0].v) }}",
+                    "{{ messages[0].v|length }}"):
+            cases.append({"src": src, "msgs": [{"v": v}], "m": "format"})
+        # The operator ~ writes a float or a container in the form of the template engine, not in the form of Python.
+        # A test in jinja.rs pins that difference. The fixtures keep the values that agree.
+        if v is None or isinstance(v, (bool, int, str)):
+            for src in ("{{ 'a' ~ messages[0].v }}", "{{ messages[0].v ~ 'b' }}"):
+                cases.append({"src": src, "msgs": [{"v": v}], "m": "format"})
+    for src in ("{{ messages[0].gone }}", "{{ messages[0].gone|string }}", "{{ 'a' ~ messages[0].gone }}",
+                "{{ messages[0].gone|trim }}", "{{ messages[0].gone|trim('x') }}",
+                "{{ '  xx a xx  '|trim }}", "{{ '  xx a xx  '|trim('x ') }}", "{{ '  xx a xx  '|trim('') }}",
+                "{{ '  xx a xx  '|trim(None) }}", "{{ '  xx a xx  '|trim(1) }}", "{{ '  a  '|trim('x', 'y') }}",
+                "{{ '　a　'|trim }}", "{{ '　a　'|trim('　') }}",
+                "{{ raise_exception('plain') }}", "{{ raise_exception() }}", "{{ raise_exception('a', 'b') }}",
+                "{{ raise_exception(msg='by name') }}", "{{ raise_exception(1, msg='x') }}",
+                "{{ raise_exception(5) }}", "{{ raise_exception(none) }}", "{{ raise_exception(1.5) }}",
+                "{{ raise_exception(true) }}", "{{ raise_exception([1, 'a']) }}", "{{ raise_exception({'k': 'v'}) }}",
+                "{{ raise_exception('a' ~ 1 ~ 'b') }}", "{{ raise_exception(messages[0].gone) }}",
+                "{{ 1.5 }}", "{{ 1.0 }}", "{{ 1e16 }}", "{{ none }}", "{{ true }}", "{{ false }}", "{{ [1, 'a'] }}",
+                "{{ {'a': 1} }}", "{{ 'x' * 3 }}", "{{ 7 // 2 }}", "{{ 7 / 2 }}", "{{ 2 ** 10 }}",
+                "{{ 7 % 3 }}", "{{ 1 + 1.5 }}", "{{ 'a' + 'b' }}", "{{ 'a' + 1 }}", "{{ 1 + 'a' }}", "{{ [1] + [2] }}"):
+        cases.append({"src": src, "msgs": [{}], "m": "format"})
+    return cases
 
 
 TOJSON_TEXTS = [

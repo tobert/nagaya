@@ -5,10 +5,10 @@
 //! `tojson` writes what `json.dumps` writes with `ensure_ascii` off, and `trim` strips what `str.strip` strips.
 
 use crate::Error;
-use crate::chars;
 use crate::gguf::{Metadata, Value as MetaValue};
 use crate::json::Json;
-use minijinja::value::{Value, ValueKind};
+use crate::pystr;
+use minijinja::value::{Kwargs, Rest, Value, ValueKind};
 use minijinja::{AutoEscape, Environment, ErrorKind};
 
 /// What a render takes besides the messages and the tools.
@@ -59,6 +59,11 @@ impl ChatTemplate {
         env.set_auto_escape_callback(|_| AutoEscape::None);
         env.add_filter("tojson", tojson);
         env.add_filter("trim", trim);
+        env.add_filter("string", |value: Value| py_str(&value));
+        env.set_formatter(|out, _state, value| {
+            out.write_str(&py_str(value))
+                .map_err(|_| minijinja::Error::from(ErrorKind::WriteFailure))
+        });
         env.add_function("raise_exception", raise_exception);
         env.set_unknown_method_callback(crate::methods::string_method);
         env.add_template_owned(NAME, source.to_string())
@@ -125,17 +130,86 @@ fn to_value(j: &Json) -> Value {
     }
 }
 
-fn raise_exception(message: String) -> Result<Value, minijinja::Error> {
-    Err(minijinja::Error::new(ErrorKind::InvalidOperation, message))
+/// `raise_exception(message)` of mk's template: Python's `str` of any value is the message. The function takes one
+/// argument, by position or as `msg=`.
+fn raise_exception(args: Rest<Value>) -> Result<Value, minijinja::Error> {
+    let refuse = |m: &str| minijinja::Error::new(ErrorKind::InvalidOperation, m.to_string());
+    let message = match args.split_last() {
+        Some((last, [])) if !last.is_kwargs() => last.clone(),
+        Some((last, [])) => {
+            let keywords = Kwargs::try_from(last.clone())?;
+            let message: Value = keywords.get("msg")?;
+            keywords.assert_all_used()?;
+            message
+        }
+        _ => return Err(refuse("raise_exception takes one argument, the message")),
+    };
+    Err(refuse(&py_str(&message)))
 }
 
-fn trim(value: Value) -> String {
-    let text = if value.is_undefined() {
-        String::new()
-    } else {
-        value.to_string()
+/// Python's `str(value)`. The default way to write a value in a template, and the result of the `string` filter.
+/// A string holds its own text, and a string inside a list or a map is in quotes, as `repr` writes it.
+pub(crate) fn py_str(value: &Value) -> String {
+    match value.kind() {
+        ValueKind::Undefined => String::new(),
+        ValueKind::String => value.as_str().expect("a string value has text").to_string(),
+        _ => py_repr(value),
+    }
+}
+
+fn py_repr(value: &Value) -> String {
+    match value.kind() {
+        ValueKind::Undefined => String::new(),
+        ValueKind::None => "None".to_string(),
+        ValueKind::Bool => if value.is_true() { "True" } else { "False" }.to_string(),
+        ValueKind::Number if value.is_integer() => match i128::try_from(value.clone()) {
+            Ok(i) => i.to_string(),
+            Err(_) => u128::try_from(value.clone()).map_or_else(|_| value.to_string(), |u| u.to_string()),
+        },
+        ValueKind::Number => {
+            let f = f64::try_from(value.clone()).unwrap_or(f64::NAN);
+            if f.is_nan() {
+                "nan".to_string()
+            } else if f.is_infinite() {
+                if f < 0.0 { "-inf" } else { "inf" }.to_string()
+            } else {
+                python_float(f).expect("a finite float")
+            }
+        }
+        ValueKind::String => pystr::repr(value.as_str().expect("a string value has text")),
+        ValueKind::Seq => {
+            let items: Vec<String> = value.try_iter().into_iter().flatten().map(|v| py_repr(&v)).collect();
+            format!("[{}]", items.join(", "))
+        }
+        ValueKind::Map => {
+            let pairs: Vec<String> = value
+                .try_iter()
+                .into_iter()
+                .flatten()
+                .map(|key| {
+                    let item = value.get_item(&key).unwrap_or(Value::UNDEFINED);
+                    format!("{}: {}", py_repr(&key), py_repr(&item))
+                })
+                .collect();
+            format!("{{{}}}", pairs.join(", "))
+        }
+        _ => value.to_string(),
+    }
+}
+
+/// The `trim` filter of jinja2: `str(value).strip(chars)`.
+fn trim(value: Value, chars: Option<Value>) -> Result<String, minijinja::Error> {
+    let set = match &chars {
+        None => None,
+        Some(v) if v.is_none() => None,
+        Some(v) => Some(v.as_str().ok_or_else(|| {
+            minijinja::Error::new(
+                ErrorKind::InvalidOperation,
+                "the characters of trim must be a string or none",
+            )
+        })?),
     };
-    text.trim_matches(chars::is_python_space).to_string()
+    Ok(pystr::strip(&py_str(&value), set, true, true))
 }
 
 /// `json.dumps(value, ensure_ascii=False)`: a comma and a space between items, a colon and a space after a key.
