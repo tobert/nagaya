@@ -582,6 +582,9 @@ impl ThreadState {
             return Err(MkError::new(problem));
         }
 
+        // The tokenizer is in the first shard. Hash it before the weights load, so a shard with no tokenizer fails fast.
+        let tokenizer_hash = gguf::tokenizer_hash(&paths.shards[0])?;
+
         let shards: Vec<CString> = paths
             .shards
             .iter()
@@ -616,7 +619,15 @@ impl ThreadState {
         let pass_scratch = state.measure_pass_scratch().map_err(MkError::new)?;
         spec::scratch_problem(pass_scratch).map_err(MkError::new)?;
 
-        let identity = spec::identity(&paths.shards, &paths.library, &library_sha256, fast_qmm, tiles, &digest);
+        let identity = spec::identity(
+            &paths.shards,
+            &paths.library,
+            &library_sha256,
+            fast_qmm,
+            tiles,
+            &digest,
+            &tokenizer_hash,
+        );
         let limits = spec::limits(arena_bytes);
         Ok((
             state,

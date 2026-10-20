@@ -399,6 +399,7 @@ dependencies = [
  "libloading",
  "nagaya-abi",
  "nagaya-conformance",
+ "nagaya-text-qwen38",
  "sha2",
  "tempfile",
 ]

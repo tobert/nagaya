@@ -347,6 +347,7 @@ pub fn identity(
     fast_qmm: bool,
     tiles: bool,
     checkpoint_digest: &str,
+    tokenizer_hash: &str,
 ) -> Identity {
     let mut numbers = BTreeMap::new();
     numbers.insert("engine_lib".to_owned(), library.display().to_string());
@@ -362,7 +363,7 @@ pub fn identity(
     Identity {
         model: model_name(shards.first().map(std::path::PathBuf::as_path)),
         checkpoint_digest: format!("spot-sha256:{checkpoint_digest}"),
-        tokenizer_hash: "none".to_owned(),
+        tokenizer_hash: tokenizer_hash.to_owned(),
         template: String::new(),
         numbers,
         plan_table: "none".to_owned(),
@@ -540,13 +541,23 @@ mod tests {
     fn the_identity_records_the_tile_setting() {
         let shards = vec![PathBuf::from("/models/Qwen-00001-of-00003.gguf")];
         let library = Path::new("/lib/libmkengine.so");
-        let on = identity(&shards, library, "sha", true, true, "spot");
-        let off = identity(&shards, library, "sha", true, false, "spot");
+        let on = identity(&shards, library, "sha", true, true, "spot", "sha256:t");
+        let off = identity(&shards, library, "sha", true, false, "spot", "sha256:t");
         assert_eq!(on.numbers.get("tiles").map(String::as_str), Some("1"));
         assert_eq!(off.numbers.get("tiles").map(String::as_str), Some("0"));
         assert_ne!(on, off);
         assert!(on.bit_settings.iter().any(|setting| setting.name == "MK_TILES"));
         assert!(off.bit_settings.iter().any(|setting| setting.name == "MK_TILES"));
+    }
+
+    #[test]
+    fn the_identity_carries_the_tokenizer_hash() {
+        let shards = vec![PathBuf::from("/models/Qwen-00001-of-00003.gguf")];
+        let library = Path::new("/lib/libmkengine.so");
+        let first = identity(&shards, library, "sha", true, true, "spot", "sha256:one");
+        let second = identity(&shards, library, "sha", true, true, "spot", "sha256:two");
+        assert_eq!(first.tokenizer_hash, "sha256:one");
+        assert_ne!(first, second);
     }
 
     #[test]

@@ -17,6 +17,7 @@ required-features = ["hip"]
 [dependencies]
 libloading = "0.8"
 nagaya-abi = { version = "0.1.0", path = "../nagaya-abi" }
+nagaya-text-qwen38 = { version = "0.1.0", path = "../nagaya-text-qwen38" }
 sha2 = "0.10"
 
 [dev-dependencies]

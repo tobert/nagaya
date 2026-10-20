@@ -98,7 +98,18 @@ fn the_binding_opens_mk_and_declares_its_parts() {
         "{}",
         identity.checkpoint_digest
     );
-    assert_eq!(identity.tokenizer_hash, "none");
+    // The identity holds the hash of the tokenizer keys in the first shard, as the text library computes it.
+    let shards = std::env::var("MK_SHARDS").expect("MK_SHARDS");
+    let first = shards.split(':').next().expect("a first shard");
+    let metadata = nagaya_text_qwen38::gguf::Metadata::open(std::path::Path::new(first)).expect("the first shard");
+    assert_eq!(
+        identity.tokenizer_hash,
+        nagaya_text_qwen38::tokenizer_hash(&metadata).expect("a tokenizer hash")
+    );
+    assert_eq!(
+        identity.tokenizer_hash,
+        "sha256:9724dd72094b6311776a1f5a8a49d283f676a5f0f56d8e0ba9671adb18df06ad"
+    );
     assert_eq!(identity.numbers.get("fused").map(String::as_str), Some("1"));
     assert_eq!(identity.numbers.get("fast_qmm").map(String::as_str), Some("1"));
 
