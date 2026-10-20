@@ -30,6 +30,12 @@ pub struct FakeBroken(pub(crate) Fake);
 /// The fake engine whose empty ring forgets the position of its first row. The park and restore gate must fail it.
 pub struct FakeRingBase(pub(crate) Fake);
 
+/// The fake engine whose bits depend on the segment count of a pass. The segments gate (spec 8.3) must fail it.
+pub struct FakeSegmentCount(pub(crate) Fake);
+
+/// The fake engine whose bits depend on the row count of a pass. The segments gate must fail it on the split.
+pub struct FakeRowCount(pub(crate) Fake);
+
 impl FakeAlways {
     /// Make the engine.
     pub fn new() -> Self {
@@ -56,8 +62,35 @@ impl FakeRingBase {
     }
 }
 
+impl FakeSegmentCount {
+    /// Make the engine whose bits depend on the segment count.
+    pub fn new() -> Self {
+        let mut fake = Fake::new("fake-segment-count", false, default_slots(), false);
+        fake.count_defect = CountDefect::Segments;
+        FakeSegmentCount(fake)
+    }
+}
+
+impl FakeRowCount {
+    /// Make the engine whose bits depend on the row count of a pass.
+    pub fn new() -> Self {
+        let mut fake = Fake::new("fake-row-count", false, default_slots(), false);
+        fake.count_defect = CountDefect::Rows;
+        FakeRowCount(fake)
+    }
+}
+
+/// Slot 0 is small. The gate for several segments needs one slot for each segment of the largest pass.
 fn default_slots() -> Vec<SlotLimit> {
-    vec![SlotLimit { bytes: 64, count: 1 }, SlotLimit { bytes: 256, count: 1 }]
+    vec![SlotLimit { bytes: 64, count: 1 }, SlotLimit { bytes: 256, count: 7 }]
+}
+
+/// A defect in which the bits of a segment depend on the shape of the pass.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CountDefect {
+    None,
+    Segments,
+    Rows,
 }
 
 impl Default for FakeAlways {
@@ -67,6 +100,18 @@ impl Default for FakeAlways {
 }
 
 impl Default for FakeBroken {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for FakeSegmentCount {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for FakeRowCount {
     fn default() -> Self {
         Self::new()
     }
@@ -83,6 +128,7 @@ pub(crate) struct Fake {
     model: String,
     broken: bool,
     ignore_ring_from: bool,
+    count_defect: CountDefect,
     limits: Limits,
     slots: Vec<SlotData>,
     last_error: Option<String>,
@@ -148,9 +194,9 @@ impl Fake {
                 layers: 0..1,
                 head: true,
             }],
-            max_segments: 1,
-            max_pass_inputs: 1,
-            max_logit_rows: 1,
+            max_segments: 8,
+            max_pass_inputs: 64,
+            max_logit_rows: 8,
             slots: slot_limits,
             max_quantum_ms: 10,
             memory: MemoryLimits {
@@ -187,6 +233,7 @@ impl Fake {
             model: model.to_owned(),
             broken,
             ignore_ring_from,
+            count_defect: CountDefect::None,
             limits,
             slots,
             last_error: None,
@@ -219,6 +266,32 @@ impl Fake {
                     "the pass has {} segments; the fake takes {}",
                     segments.len(),
                     self.limits.max_segments
+                ),
+            });
+        }
+        let rows: usize = segments
+            .iter()
+            .map(|segment| match &segment.inputs {
+                SegmentInputs::Tokens(tokens) => tokens.len(),
+                _ => 0,
+            })
+            .sum();
+        if rows > self.limits.max_pass_inputs as usize {
+            return Err(PassError {
+                kind: PassErrorKind::Refused,
+                message: format!(
+                    "the pass has {rows} tokens; the fake takes {}",
+                    self.limits.max_pass_inputs
+                ),
+            });
+        }
+        let logit_rows: usize = segments.iter().map(|segment| segment.outputs.logit_rows.len()).sum();
+        if logit_rows > self.limits.max_logit_rows as usize {
+            return Err(PassError {
+                kind: PassErrorKind::Refused,
+                message: format!(
+                    "the pass asks for {logit_rows} logit rows; the fake gives {}",
+                    self.limits.max_logit_rows
                 ),
             });
         }
@@ -260,7 +333,21 @@ impl Fake {
                     message: "the fake could not advance the ring".to_owned(),
                 });
             }
-            let state_bytes = state_from_tokens(tokens);
+            let mut state_bytes = self.state_bytes(segment.state);
+            fold_tokens(&mut state_bytes, tokens, &segment.positions);
+            match self.count_defect {
+                CountDefect::None => {}
+                CountDefect::Segments => {
+                    if segments.len() > 1 {
+                        state_bytes[0] ^= segments.len() as u8;
+                    }
+                }
+                CountDefect::Rows => {
+                    if tokens.len() > 1 {
+                        state_bytes[1] ^= tokens.len() as u8;
+                    }
+                }
+            }
             if self.part_write(segment.state, STATE_PART, &state_bytes) != WriteResult::Ok {
                 return Err(PassError {
                     kind: PassErrorKind::Ran(PassStatus::Poison),
@@ -278,6 +365,19 @@ impl Fake {
             ms: 0,
             outputs,
         })
+    }
+
+    /// The bytes of the fixed state part, or zeros for an unknown slot.
+    fn state_bytes(&self, state: State) -> [u8; 16] {
+        let mut bytes = [0u8; 16];
+        if let Some(PartData::Fixed(stored)) = self
+            .slots
+            .get(Self::slot_id(state))
+            .and_then(|slot| slot.parts.get(STATE_PART))
+        {
+            bytes.copy_from_slice(stored);
+        }
+        bytes
     }
 
     fn slot_id(state: State) -> usize {
@@ -422,15 +522,15 @@ impl Fake {
     }
 }
 
-fn state_from_tokens(tokens: &[u32]) -> [u8; 16] {
-    let mut state = [0u8; 16];
+/// Fold the tokens into the state, one after another. The result does not depend on how a pass splits the tokens.
+fn fold_tokens(state: &mut [u8; 16], tokens: &[u32], positions: &[u64]) {
     for (index, token) in tokens.iter().enumerate() {
+        let position = positions.get(index).copied().unwrap_or(index as u64);
         for (offset, byte) in token.to_le_bytes().iter().enumerate() {
-            let slot = (index + offset) % 16;
+            let slot = (position as usize + offset) % 16;
             state[slot] = state[slot].wrapping_mul(31).wrapping_add(*byte);
         }
     }
-    state
 }
 
 impl SlotData {
@@ -492,6 +592,8 @@ macro_rules! engine_impl {
 engine_impl!(FakeAlways);
 engine_impl!(FakeBroken);
 engine_impl!(FakeRingBase);
+engine_impl!(FakeSegmentCount);
+engine_impl!(FakeRowCount);
 
 impl Parts for Fake {
     fn part_read(&mut self, state: State, part: usize, out: &mut [u8]) -> Result<(), PartError> {

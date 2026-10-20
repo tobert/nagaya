@@ -28,7 +28,13 @@ fn fake_declares_two_slot_sizes() {
     let sizes: Vec<u64> = limits.slots.iter().map(|slot| slot.bytes).collect();
     assert_eq!(sizes, [64, 256]);
     assert_eq!(limits.slots.len(), 2);
-    assert!(limits.slots.iter().all(|slot| slot.count == 1));
+    // Slot 0 is the small one. The gates for several segments need one slot for each segment.
+    assert_eq!(limits.slots[0].count, 1);
+    assert_eq!(limits.slots[1].count, 7);
+    assert_eq!(
+        limits.slots.iter().map(|slot| slot.count).sum::<u32>(),
+        limits.max_segments
+    );
 }
 
 #[test]
@@ -427,4 +433,86 @@ fn more_segments_than_max_segments_are_refused_and_change_nothing() {
     let error = engine.pass(&segments, &[]).unwrap_err();
     assert_eq!(error.kind, PassErrorKind::Refused, "{}", error.message);
     assert_eq!(state_snapshot(&mut engine), before);
+}
+
+#[test]
+fn the_fake_declares_a_pass_of_several_segments() {
+    let limits = FakeAlways::new().limits();
+    assert_eq!(limits.max_segments, 8);
+    assert_eq!(limits.max_pass_inputs, 64);
+    assert_eq!(limits.max_logit_rows, 8);
+}
+
+#[test]
+fn a_pass_with_more_tokens_than_max_pass_inputs_is_refused_and_changes_nothing() {
+    let mut engine = FakeAlways::new();
+    let max = engine.limits().max_pass_inputs as usize;
+    let before = state_snapshot(&mut engine);
+    let tokens = vec![1u32; max + 1];
+    let error = engine.pass(&[token_segment(&tokens)], &[]).unwrap_err();
+    assert_eq!(error.kind, PassErrorKind::Refused, "{}", error.message);
+    assert_eq!(state_snapshot(&mut engine), before);
+}
+
+#[test]
+fn a_pass_with_more_logit_rows_than_max_logit_rows_is_refused_and_changes_nothing() {
+    let mut engine = FakeAlways::new();
+    let max = engine.limits().max_logit_rows;
+    let before = state_snapshot(&mut engine);
+    let mut segment = token_segment(&[1, 2]);
+    segment.outputs.logit_rows = vec![1; max as usize + 1];
+    let error = engine.pass(&[segment], &[]).unwrap_err();
+    assert_eq!(error.kind, PassErrorKind::Refused, "{}", error.message);
+    assert_eq!(state_snapshot(&mut engine), before);
+}
+
+fn token_segment_at(state: u32, start: u64, tokens: &[u32]) -> Segment {
+    Segment {
+        state: State::Slot(state),
+        inputs: SegmentInputs::Tokens(tokens.to_vec()),
+        positions: (start..start + tokens.len() as u64).collect(),
+        meta: Vec::new(),
+        outputs: OutputsWanted::default(),
+    }
+}
+
+#[test]
+fn two_passes_give_the_state_of_one_pass_of_the_same_tokens() {
+    let mut whole = FakeAlways::new();
+    whole.pass(&[token_segment_at(0, 0, &[1, 2, 3, 4])], &[]).unwrap();
+    let mut split = FakeAlways::new();
+    split.pass(&[token_segment_at(0, 0, &[1, 2])], &[]).unwrap();
+    let last = split.pass(&[token_segment_at(0, 2, &[3, 4])], &[]).unwrap();
+    assert_eq!(read_state(&mut whole), read_state(&mut split));
+    assert_eq!(last.outputs[0].bytes, read_state(&mut split));
+}
+
+#[test]
+fn a_segment_gives_the_same_bits_alone_and_beside_another() {
+    let mut alone = FakeAlways::new();
+    alone.pass(&[token_segment_at(0, 0, &[1, 2, 3])], &[]).unwrap();
+    let mut beside = FakeAlways::new();
+    beside
+        .pass(&[token_segment_at(0, 0, &[1, 2, 3]), token_segment_at(1, 0, &[9])], &[])
+        .unwrap();
+    assert_eq!(read_state(&mut alone), read_state(&mut beside));
+}
+
+#[test]
+fn the_count_defects_change_bits_and_the_others_do_not() {
+    use nagaya_abi::fake::{FakeRowCount, FakeSegmentCount};
+    let mut alone = FakeSegmentCount::new();
+    alone.pass(&[token_segment_at(0, 0, &[1, 2, 3])], &[]).unwrap();
+    let mut beside = FakeSegmentCount::new();
+    beside
+        .pass(&[token_segment_at(0, 0, &[1, 2, 3]), token_segment_at(1, 0, &[9])], &[])
+        .unwrap();
+    assert_ne!(read_state(&mut alone), read_state(&mut beside));
+
+    let mut whole = FakeRowCount::new();
+    whole.pass(&[token_segment_at(0, 0, &[1, 2, 3, 4])], &[]).unwrap();
+    let mut split = FakeRowCount::new();
+    split.pass(&[token_segment_at(0, 0, &[1, 2])], &[]).unwrap();
+    split.pass(&[token_segment_at(0, 2, &[3, 4])], &[]).unwrap();
+    assert_ne!(read_state(&mut whole), read_state(&mut split));
 }

@@ -10,7 +10,7 @@ use nagaya::process::Start;
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, StoreSpec, TierSpec};
 use nagaya::signal::SignalFlag;
 use nagaya_abi::fake::FakeAlways;
-use nagaya_abi::{DeviceId, Engine, Limits, OutputsWanted, PartKind, Segment, SegmentInputs, State, Tier};
+use nagaya_abi::{DeviceId, Engine, Limits, OutputsWanted, PartKind, Segment, SegmentInputs, SlotLimit, State, Tier};
 use nagaya_ledger::Admission;
 use nagaya_store::{Restored, Snapshot, Store, snapshot_from_engine};
 
@@ -38,16 +38,24 @@ fn segment(state: State, tokens: &[u32]) -> Segment {
     }
 }
 
+/// A fake with two slots. The park writes every slot, so the test keeps the count at two.
+fn two_slots() -> FakeAlways {
+    FakeAlways::with_slots(vec![
+        SlotLimit { bytes: 64, count: 1 },
+        SlotLimit { bytes: 256, count: 1 },
+    ])
+}
+
 /// A fake with three tokens in slot 0 and five tokens in slot 1. The row coverage differs.
 fn seeded() -> FakeAlways {
-    let mut engine = FakeAlways::new();
+    let mut engine = two_slots();
     engine.pass(&[segment(State::Slot(0), &[1, 2, 3])], &[]).unwrap();
     engine.pass(&[segment(State::Slot(1), &[4, 5, 6, 7, 8])], &[]).unwrap();
     engine
 }
 
 fn limits_on(devices: &[DeviceId]) -> Limits {
-    let mut limits = FakeAlways::new().limits();
+    let mut limits = two_slots().limits();
     limits.devices = devices.to_vec();
     limits
 }
