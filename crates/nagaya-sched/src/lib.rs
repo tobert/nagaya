@@ -197,6 +197,8 @@ pub enum StepError {
     UnknownJob(JobId),
     /// A `Complete` event arrives while no quantum runs.
     NothingRunning,
+    /// A caller appends quanta to a job that has no quantum that runs.
+    AppendToIdleJob(JobId, JobState),
 }
 
 impl std::fmt::Display for StepError {
@@ -208,6 +210,10 @@ impl std::fmt::Display for StepError {
             }
             StepError::UnknownJob(id) => write!(f, "job {id} is not in the scheduler: send Arrive first"),
             StepError::NothingRunning => write!(f, "a quantum ended but none was running: send Complete only once"),
+            StepError::AppendToIdleJob(id, state) => write!(
+                f,
+                "job {id} is in state {state:?}: append quanta only while a quantum of the job runs"
+            ),
         }
     }
 }
@@ -268,6 +274,23 @@ pub fn step(mut state: Scheduler, event: Event) -> Result<(Scheduler, Option<Qua
 }
 
 impl Scheduler {
+    /// Add quanta to the end of a job, while one of its quanta runs.
+    ///
+    /// A job whose later quanta depend on its first one, such as a build after its lookup, calls this before the
+    /// `Complete` event of the running quantum. A refusal changes nothing.
+    pub fn append_quanta(&mut self, job: JobId, kinds: &[Kind]) -> Result<(), StepError> {
+        let held = self
+            .jobs
+            .iter_mut()
+            .find(|candidate| candidate.id == job)
+            .ok_or(StepError::UnknownJob(job))?;
+        if held.state != JobState::Running {
+            return Err(StepError::AppendToIdleJob(job, held.state));
+        }
+        held.quanta.extend(kinds.iter().copied());
+        Ok(())
+    }
+
     fn complete(&mut self, running: Quantum, duration_ms: u64, outcome: Completion) {
         if running.class == Class::Interactive {
             let present: Vec<(JobId, u64)> = self
