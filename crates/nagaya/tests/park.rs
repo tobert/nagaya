@@ -5,14 +5,17 @@ use std::time::Duration;
 use nagaya::admission::{Factory, OpenError, PlanError, Registry};
 use nagaya::exit::ExitCode;
 use nagaya::inventory::{Device, Inventory};
-use nagaya::park::{StoreBudget, identity_digest};
+use nagaya::park::{StoreBudget, identity_digest, open_store};
 use nagaya::process::Start;
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, StoreSpec, TierSpec};
 use nagaya::signal::SignalFlag;
 use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{DeviceId, Engine, Limits, OutputsWanted, PartKind, Segment, SegmentInputs, State, Tier};
 use nagaya_ledger::Admission;
-use nagaya_store::{Restored, Snapshot, Store, snapshot_from_engine};
+use nagaya_store::{
+    EngineFacts, Put, Reason, Restored, Snapshot, Store, StoreError, Tensor, Tier as StoreTier, recipe_not_sealed,
+    recipe_root, snapshot_from_engine,
+};
 
 struct SeedFactory {
     limits: Limits,
@@ -79,6 +82,7 @@ fn profile() -> PlacementProfile {
         store: Some(StoreSpec {
             nvme: 65536,
             host: None,
+            interval_copies: 0,
         }),
     }
 }
@@ -186,4 +190,97 @@ fn the_store_host_budget_is_the_unassigned_host_bytes() {
         128,
         "a shared pool is not a store budget"
     );
+}
+
+#[test]
+fn the_store_budget_takes_the_profile_values() {
+    let admission = Admission {
+        engines: Vec::new(),
+        unassigned: vec![(vec![Tier::Host], 128)],
+    };
+    let named = StoreSpec {
+        nvme: 4096,
+        host: Some(1024),
+        interval_copies: 5,
+    };
+    assert_eq!(
+        StoreBudget::from_spec(&named, &admission),
+        StoreBudget {
+            host: 1024,
+            nvme: 4096,
+            interval_copies: 5
+        }
+    );
+    let unnamed = StoreSpec {
+        nvme: 4096,
+        host: None,
+        interval_copies: 0,
+    };
+    assert_eq!(
+        StoreBudget::from_spec(&unnamed, &admission),
+        StoreBudget {
+            host: 128,
+            nvme: 4096,
+            interval_copies: 0
+        }
+    );
+}
+
+fn copy_snapshot(seed: u8) -> Snapshot {
+    Snapshot {
+        tensors: vec![Tensor {
+            name: "state".to_owned(),
+            kind: PartKind::Fixed,
+            dtype: nagaya_abi::Dtype::U8,
+            shape: vec![4],
+            data: vec![seed; 4],
+            coverage: None,
+            block_format: None,
+        }],
+        parent: None,
+    }
+}
+
+fn put_copy(
+    store: &mut Store,
+    sealed: nagaya_store::RecipeId,
+    seed: u8,
+) -> Result<nagaya_store::ContentId, StoreError> {
+    let engine = FakeAlways::new();
+    store.put(Put {
+        snapshot: &copy_snapshot(seed),
+        recipe: recipe_not_sealed(&sealed),
+        previous_recipe: None,
+        engine: EngineFacts::of("fake", &engine.limits()),
+        identity: [1u8; 32],
+        owner: 1,
+        tier: StoreTier::Host,
+        reason: Reason::Interval,
+        sealed_recipe: Some(sealed),
+        provenance: None,
+        now_ms: 10,
+    })
+}
+
+#[test]
+fn the_opened_store_holds_the_profile_cap_of_interval_copies() {
+    let sealed = recipe_root(&[1u8; 32], b"", &[], b"");
+    let other = recipe_root(&[2u8; 32], b"", &[], b"");
+    let dir = tempfile::tempdir().unwrap();
+    let budget = |interval_copies| StoreBudget {
+        host: 1 << 20,
+        nvme: 1 << 20,
+        interval_copies,
+    };
+    let mut none = open_store(dir.path(), budget(0)).unwrap();
+    assert!(
+        put_copy(&mut none, sealed, 1).is_err(),
+        "a cap of 0 refuses interval copies"
+    );
+    drop(none);
+    let mut one = open_store(dir.path(), budget(1)).unwrap();
+    let first = put_copy(&mut one, sealed, 1).unwrap();
+    let second = put_copy(&mut one, other, 2).unwrap();
+    assert!(!one.entries().contains_key(&first), "a cap of 1 keeps one copy");
+    assert!(one.entries().contains_key(&second));
 }

@@ -49,6 +49,7 @@ fn profile(engines: Vec<EnginePlacement>) -> PlacementProfile {
         store: Some(StoreSpec {
             nvme: 65536,
             host: None,
+            interval_copies: 0,
         }),
     }
 }
