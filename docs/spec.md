@@ -1077,8 +1077,11 @@ has a tailnet address in its code.)
 
 - `model`;
 - `checkpoint_digest`, the first of the two weight ids (12.2);
-- `tokenizer_hash`, the hash of the tokenizer file that the engine loads;
-- `template`;
+- `tokenizer_hash`, the hash of the tokenizer that the engine uses: of its tokenizer file, or of the tokenizer keys
+  of its GGUF (engine-abi "v0 mk binding choices");
+- `template`, the text of the chat template, for example the GGUF key `tokenizer.chat_template`. The identity digest
+  covers it, so a new template is a new recipe. Gossip carries the digest, not the text (2.3). Decided 2026-10-20
+  (reading, kaibo job-2 finding 7);
 - `numbers`: the engine binary, and the nagaya code that turns its outputs into answers;
 - the lineage of the plan table;
 - the bit settings, each with its class (`docs/prior-art.md` 1);

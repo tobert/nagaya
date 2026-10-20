@@ -291,6 +291,8 @@ the ABI.
   digits, made by `nagaya-text-qwen38` (`hash.rs`). It covers `tokenizer.ggml.model`, `.pre`, `.tokens`,
   `.token_type` and `.merges`, and the bos, eos, eot, padding and unknown token ids when they exist. The template is
   apart: it is the identity's `template`.
+- **The template is the GGUF's text.** The identity's `template` is the text of `tokenizer.chat_template` in the
+  first shard. A missing key, or a value that is not a string, is an error at open that names the key and the file.
 - **The context term holds the pool.** The mandatory term `context` has lifetime `engine` and holds all 16
   contexts: 16 × 132,587,520 bytes, about 2.1 GB. A read of a poisoned context is an error.
 - **`canary_hash` is empty.** This binding does not run mk's canary. The process adds it in a later milestone.
