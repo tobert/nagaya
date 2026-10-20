@@ -400,6 +400,7 @@ dependencies = [
  "nagaya-abi",
  "nagaya-conformance",
  "nagaya-text-qwen38",
+ "serde_json",
  "sha2",
  "tempfile",
 ]
