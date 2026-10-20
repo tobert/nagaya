@@ -211,16 +211,30 @@ impl Fake {
     }
 
     fn pass(&mut self, segments: &[Segment], _taps: &[Tap]) -> Result<PassOut, PassError> {
+        // A pass that the fake refuses runs no segment and changes no state (engine-abi, "A pass that did not run").
+        if segments.len() > self.limits.max_segments as usize {
+            return Err(PassError {
+                kind: PassErrorKind::Refused,
+                message: format!(
+                    "the pass has {} segments; the fake takes {}",
+                    segments.len(),
+                    self.limits.max_segments
+                ),
+            });
+        }
+        if segments
+            .iter()
+            .any(|segment| !matches!(segment.inputs, SegmentInputs::Tokens(_)))
+        {
+            return Err(PassError {
+                kind: PassErrorKind::Refused,
+                message: "the fake takes tokens".to_owned(),
+            });
+        }
         let mut outputs = Vec::new();
         for segment in segments {
-            let tokens = match &segment.inputs {
-                SegmentInputs::Tokens(tokens) => tokens,
-                _ => {
-                    return Err(PassError {
-                        kind: PassErrorKind::Ran(PassStatus::Poison),
-                        message: "the fake takes tokens".to_owned(),
-                    });
-                }
+            let SegmentInputs::Tokens(tokens) = &segment.inputs else {
+                unreachable!("the check above admits only tokens");
             };
             let rows: Vec<u8> = tokens
                 .iter()

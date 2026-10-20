@@ -2,8 +2,8 @@
 
 use nagaya_abi::fake::{FakeAlways, FakeBroken};
 use nagaya_abi::{
-    Capability, Determinism, Engine, Lifetime, OutputsWanted, PartError, PartKind, PassStatus, Segment, SegmentInputs,
-    State, Tier, WriteResult,
+    Capability, Determinism, Engine, Lifetime, OutputsWanted, PartError, PartKind, PassErrorKind, PassStatus, Segment,
+    SegmentInputs, State, Tier, WriteResult,
 };
 
 #[test]
@@ -388,4 +388,43 @@ fn a_checkpoint_grain_is_part_of_the_limits() {
     grain.checkpoint_grain = Some(256);
     assert_eq!(grain.clone().checkpoint_grain, Some(256));
     assert_ne!(none, grain);
+}
+
+/// The bytes of the fixed part of slot 0 and the cells high mark, to show that a refused pass changed nothing.
+fn state_snapshot(engine: &mut FakeAlways) -> (Vec<u8>, u64) {
+    let mut bytes = vec![0u8; 16];
+    engine
+        .parts()
+        .unwrap()
+        .part_read(State::Slot(0), 0, &mut bytes)
+        .unwrap();
+    let high = engine.coverage().unwrap().coverage(State::Slot(0), 1, &[]).end;
+    (bytes, high)
+}
+
+#[test]
+fn a_rows_segment_is_refused_and_changes_nothing() {
+    let mut engine = FakeAlways::new();
+    engine.pass(&[token_segment(&[1, 2])], &[]).unwrap();
+    let before = state_snapshot(&mut engine);
+    let mut rows = token_segment(&[3]);
+    rows.inputs = SegmentInputs::Rows(vec![0; 4]);
+    let error = engine.pass(&[rows], &[]).unwrap_err();
+    assert_eq!(error.kind, PassErrorKind::Refused, "{}", error.message);
+    assert_eq!(state_snapshot(&mut engine), before);
+}
+
+#[test]
+fn more_segments_than_max_segments_are_refused_and_change_nothing() {
+    let mut engine = FakeAlways::new();
+    let max = engine.limits().max_segments as usize;
+    let mut other = token_segment(&[9]);
+    other.state = State::Slot(1);
+    let segments: Vec<Segment> = (0..=max)
+        .map(|index| if index == 0 { token_segment(&[1]) } else { other.clone() })
+        .collect();
+    let before = state_snapshot(&mut engine);
+    let error = engine.pass(&segments, &[]).unwrap_err();
+    assert_eq!(error.kind, PassErrorKind::Refused, "{}", error.message);
+    assert_eq!(state_snapshot(&mut engine), before);
 }
