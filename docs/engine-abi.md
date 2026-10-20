@@ -44,10 +44,10 @@ trait Engine {
     // ... one accessor for each capability below
 }
 
-trait EngineFactory {
-    fn plan(config: &toml::Table) -> Result<Limits, PlanError>;
-    fn open(config: &toml::Table) -> Result<Box<dyn Engine>, OpenError>;
-    fn attach(config: &toml::Table, arena_set: ArenaSet) -> Result<Box<dyn Engine>, OpenError>;
+trait Factory {                  // in the `nagaya` crate, crates/nagaya/src/admission.rs
+    fn plan(&self, config: &toml::Table) -> Result<Limits, PlanError>;
+    fn open(&self, config: &toml::Table) -> Result<Box<dyn Engine>, OpenError>;
+    // attach(config, arena_set) arrives with arenas through a restart (spec 10.2)
 }
 ```
 
@@ -165,14 +165,21 @@ This section gives the simplest shapes that fit the decisions.
   uses its row shape.
 - `SlotLimit` is `{bytes, count}`. The fake engine declares two sizes: 64 bytes and 256 bytes.
 - `Capability` is an enum. `Limits::capabilities` is a `Vec<Capability>`. The fake engine declares `Parts`,
-  `Coverage` and `Seal`.
+  `Coverage`, `Seal` and `Slots`.
 - A write returns `WriteResult`: `Ok`, `Refused` or `Failed`. A read returns `Result<(), PartError>`.
 - `Coverage` is one `{start, end}` position range for one part. The call takes the `State` too, so a ring
   reports the positions that it holds. A ring keeps the last rows that fit.
 - `Seal::seal` returns `Result<(), SealError>` and changes bits in place.
 - The first code defines the core, `Parts`, `Coverage`, `Seal` and `Slots`. Each other capability trait
   arrives with the milestone that uses it.
-- The `EngineFactory` trait arrives with the process crate. The fake engines are constructed directly.
+- The `Factory` trait is in the process crate. The fake engines are constructed directly.
+- `Dtype` has the native dtypes of D10 rule 4: F32, F16, BF16, F8E4M3, F8E5M2, I8, I16, I32, I64, U8, U16, U32 and
+  U64. `Dtype::element_bytes` gives the size of one element, and every crate uses it. Amy, 2026-10-20: "add them
+  now, they should be designed in early even if used late".
+- `PartLimits` has `block_format: Option<String>` ("Canonical file bytes"). An `Output` has a `dtype`, so a
+  compare of outputs can find NaN and Inf (spec 8.3).
+- `Limits::checkpoint_grain` is `Option<u64>`, in tokens. `None` means that the engine makes no interval copies
+  (spec 6.13).
 - The `fake` feature is enabled for this crate's tests by a dev-dependency on the crate itself. The plain
   house test runs the fake tests; a normal build leaves them out.
 
@@ -191,7 +198,8 @@ The mk binding refuses a pass before it calls mk when a segment breaks an mk rul
 is not the context's n, a token past the vocabulary, or rows instead of tokens. That pass did not run, and no context
 changed. A caller tells a refusal from a pass that ran, and it need not read `last_error` to know (review finding 9).
 
-A refused pass returns a `PassError` with kind `PassErrorKind::Refused`.
+A refused pass returns a `PassError` with kind `PassErrorKind::Refused`. Each engine refuses a pass with more
+segments than `max_segments` in this way, before it changes any state.
 
 A fault after the pass is different. The mk binding returns `Poison` when the logits buffer is shorter than the
 wanted rows. The pass ran, so the state is unknown (D6, spec 8.2). A unit test pins this decision. Real mk gives the
@@ -232,6 +240,10 @@ clock, random value or address. The fake pass allocates its test rows; the fake 
 `FakeBroken` is the same, but `part_read` flips the low bit of byte 0. Thus a park and restore loses a bit,
 and gate 8.3 (park and restore) must fail it.
 
+`FakeRingBase` is the same as `FakeAlways`, but it reports the wrong base position for its ring. The park gate must
+fail it. `FakeAlways::with_slots` makes a `FakeAlways` with other slot sizes. Each new gate of spec 8.3 adds its own
+broken fake.
+
 ## How mk maps
 
 | ABI | mk (`capi.hip`) | Notes |
@@ -244,7 +256,7 @@ and gate 8.3 (park and restore) must fail it.
 | parts | `mk_ctx_state_read`, `mk_ctx_state_write`, `mk_ctx_cells_write`, `mk_ctx_set_n` | parts 0-2 and 5 fixed, 3-4 cells; `idx_pooled` derived. No `cells_read` range yet: snapshots are stored whole (about 316 MB at n = 3584, ontology "Part") |
 | seal | `mk_ctx_round_gdn_bf16` | changes bits in place |
 | poison / last_error | `mk_ctx_poisoned`, `mk_last_error` | |
-| part writes | `mk_ctx_state_write`, `mk_ctx_cells_write`, `mk_ctx_set_n` | return nothing and abort on input they refuse; the wrapper checks every precondition first (part index, bytes, an empty context that owns its K/V for parts 3-5, n within `max`, not poisoned) and returns refused; after the call, `mk_ctx_poisoned` gives failed (decided 2026-10-18) |
+| part writes | `mk_ctx_state_write`, `mk_ctx_cells_write`, `mk_ctx_set_n` | return nothing and abort on input they refuse; the wrapper checks every precondition first (part index, bytes, an empty context that owns its K/V for parts 3-5, n within `max`, not poisoned) and returns refused; a write to a context that is already poisoned is refused, because this call changes nothing; after the call, `mk_ctx_poisoned` gives failed (decided 2026-10-18) |
 | close | none | `mk_engine_close` exists, but HIP teardown segfaults in the process; mk does not declare `close` |
 | attach path | `mk_engine_attach(…, path)` | the path is `/proc/self/fd/<n>` for an fd from systemd's store |
 | pass_check / pass | `mk_segments_problem`, `mk_pass_segments` | tokens only (PLE needs token ids); outputs are logits and hidden per segment; `mk_pass_segments` aborts the process on bad segments (`MK_DIE`), so the wrapper calls `mk_segments_problem` first |
@@ -258,9 +270,10 @@ Decided 2026-10-20 (reading). The milestone 8 binding needs these choices. Each 
 the ABI.
 
 - **A context is a state.** `State` is `Slot(u32)` in v0, so each mk context has a slot index. `limits().slots`
-  declares the pool that one handle creates at open: 2 contexts of 256 tokens. The process opens one handle. The
-  conformance suite opens a handle for each gate, so the engine holds more contexts while the suite runs. This
-  binding does not bind `mk_ctx_fork`. `plan(config)` comes with the process crate, so this binding fixes the pool.
+  declares the pool that one handle creates at open: 16 contexts of 256 tokens (Amy, 2026-10-20: "grow the
+  pool"). The process opens one handle. The conformance suite opens a handle for each gate, so the engine holds
+  more contexts while the suite runs. This binding does not bind `mk_ctx_fork`.
+  `plan(config)` comes with the process crate, so this binding fixes the pool.
 - **`max_quantum_ms` is 10000.** mk splits a pass at 256 tokens (`kMaxPassTokens`). A prefill chunk of that size takes
   about 2 s. mk's watchdog stops the program at a 10 s deadline (`engine.h:302-306`), so the declared bound is 10 s.
 - **`cells_write` writes `n` rows from `from`.** The binding refuses a `from` other than 0 and changes nothing. mk
@@ -272,7 +285,9 @@ the ABI.
   binding declares no taps.
 - **The checkpoint digest is a spot check.** The binding hashes each shard's size and its GGUF header, as mk's
   `weight_hash` does. The digest starts with `spot-sha256:`.
-- **`tokenizer_hash` is `none`.** mk loads no tokenizer file. The nagaya's family library tokenizes text (spec 11.3).
+- **`tokenizer_hash` is a hash of the GGUF tokenizer.** mk loads no tokenizer file. The binding hashes the
+  tokenizer keys of the GGUF metadata, and the family library computes the same hash from the same keys (spec 11.3).
+  Amy chose this on 2026-10-20, so a change of the tokenizer changes the recipe.
 - **`canary_hash` is empty.** This binding does not run mk's canary. The process adds it in a later milestone.
 - **The identity carries `MK_FAST_QMM`, `MK_TILES` and `fused`.** They are `Approx`, `ReferenceDefining` and
   `Approx`. mk reads `MK_FAST_QMM` at each pass build (`engine.h:27-32`). `MK_TILES` chooses the tiled or the GGUF
@@ -308,9 +323,9 @@ The wrapper's host buffers also wait for the process crate (the review's note on
 
 Decided 2026-10-20 (reading): these limits stay, and this section records them.
 
-The binding binds `mk_engine_recover_spin_timeouts` and calls it with
-`on = 1` at open (`566446c`, `worker.rs:549`). A misspelled symbol makes open fail with an undefined-symbol error,
-and `f99f9c0` quotes that mutation. Thus the suite pins the symbol's name only.
+The binding binds `mk_engine_recover_spin_timeouts` and calls it with `on = 1` at open (`566446c`, in the open path
+of `worker.rs`). A misspelled symbol makes open fail with an undefined-symbol error, and `f99f9c0` quotes that
+mutation. Thus the suite pins the symbol's name only.
 
 Removing the binding and the `on = 1` call leaves every test green. mk has no query for the flag, so the suite cannot
 see the call. The opt-in is not pinned.
@@ -326,11 +341,11 @@ check. A lab hook for the first case is not in v0.
 
 Decided 2026-10-20 (reading): this limit stays, and this section records it.
 
-The wrapper calls `parts_problem` at open (`worker.rs:523`), and it
+The wrapper calls `parts_problem` at open (in the open path of `worker.rs`), and it
 refuses a library with other part sizes before any write. Real mk matches the declared shapes, so the check passes
 in every test.
 
-Deleting the call leaves every test green. Only `parts_problem` has a test (`spec.rs:299`): it refuses a larger part
+Deleting the call leaves every test green. Only `parts_problem` has a test (in `spec.rs`): it refuses a larger part
 with `a larger part must be a mismatch`. The call at open is not pinned. A fake library would pin it, and this suite
 has none.
 
@@ -421,7 +436,7 @@ That refusal is a tripwire. It has a meaning only when the engine promises the s
 |---|---|---|---|
 | `always` | the same identity and inputs give the same bits in any process | on: a mismatch is a bug | exact |
 | `pinned` | the same, because every free evaluation choice comes from the engine's plan table (ontology) | on | exact while the plan table's lineage holds |
-| `per-process` | the same bits within one process only | within one process only | exact within the process; across processes only for a served model whose tolerance accepts it (ontology) |
+| `per-process` | the same bits within one process only | off in the store; the audit job checks (spec 6.7, 8.4) | exact within the process; across processes only for a served model whose tolerance accepts it (ontology) |
 
 Some engines have a history that changes their bits (ds4-recipe's routing reads which experts are cached). Such an
 engine also declares `bit_dependence: residency`. Then these rules apply:
