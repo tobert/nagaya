@@ -1089,10 +1089,13 @@ impl Store {
 
         // 6.9: choose the victims before the store writes the new entry.
         let need = self.need_bytes(&put, size, &capped_set);
+        // 6.5: the new entry needs its whole chain. A victim is never an ancestor of the new entry.
+        let mut spared = capped_set.clone();
+        spared.extend(self.ancestors(put.snapshot.parent));
         let mut victims = if need == 0 {
             Vec::new()
         } else {
-            self.choose_victims(put.owner, put.tier, need, put.now_ms, &capped_set)
+            self.choose_victims(put.owner, put.tier, need, put.now_ms, &spared)
         };
         if need > 0 {
             let freed: u64 = victims
@@ -1882,6 +1885,20 @@ impl Store {
             }
         }
         Ok(())
+    }
+
+    /// The ids from `parent` up to the root of its chain, in the entries that the index holds.
+    fn ancestors(&self, parent: Option<ContentId>) -> Vec<ContentId> {
+        let mut found = Vec::new();
+        let mut next = parent;
+        while let Some(id) = next {
+            if found.contains(&id) {
+                break;
+            }
+            found.push(id);
+            next = self.index.entries.get(&id).and_then(|entry| entry.parent);
+        }
+        found
     }
 
     fn descendants(&self, base: ContentId) -> Vec<ContentId> {

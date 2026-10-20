@@ -2580,3 +2580,66 @@ fn a_refused_set_n_after_the_writes_is_a_failed_restore() {
         assert_eq!(store.entries().get(&delta).unwrap().hits, 0);
     }
 }
+
+/// Put a root and a delta in a store whose budget holds exactly them. Returns their ids and the budget.
+fn full_chain_of_two(dir: &Path, seed: u8) -> (Store, ContentId, ContentId, RecipeId) {
+    let mut store = Store::open(dir).unwrap();
+    let root_recipe = recipe(seed);
+    let root = put(&mut store, &base_snapshot(1), root_recipe, 1);
+    let delta_recipe = next_recipe(root_recipe, 2);
+    let d1 = put_delta(&mut store, &delta_at(root, 2), delta_recipe, root_recipe, 1);
+    let used = store.entries().get(&root).unwrap().size + store.entries().get(&d1).unwrap().size;
+    store.set_budget(Tier::Nvme, used);
+    (store, root, d1, delta_recipe)
+}
+
+#[test]
+fn a_put_never_evicts_the_ancestors_of_its_delta() {
+    // Kaibo job 2, finding 3 (6.5, 6.9): the only victims are the root and D1, which are the ancestors of D2.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut store, root, d1, d1_recipe) = full_chain_of_two(dir.path(), 160);
+    let d2_recipe = next_recipe(d1_recipe, 3);
+    let error = try_put(
+        &mut store,
+        &delta_at(d1, 4),
+        d2_recipe,
+        Some(d1_recipe),
+        1,
+        Tier::Nvme,
+        10,
+    );
+    assert!(matches!(error, Err(StoreError::NoSpace)), "{error:?}");
+    assert!(store.entries().contains_key(&root));
+    assert!(store.entries().contains_key(&d1));
+    assert_eq!(store.entries().len(), 2);
+}
+
+#[test]
+fn a_put_under_pressure_evicts_another_entry_and_keeps_the_chain_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut store, root, d1, d1_recipe) = full_chain_of_two(dir.path(), 161);
+    // A hot standalone entry. By value it ranks above the cold chain.
+    store.set_budget(Tier::Nvme, u64::MAX);
+    let hot = put(&mut store, &wide_snapshot(9), recipe(162), 1);
+    for time in 0..5 {
+        store.get(&hot, 10 + time).unwrap();
+    }
+    let used: u64 = store.entries().values().map(|entry| entry.size).sum();
+    store.set_budget(Tier::Nvme, used);
+    let d2_recipe = next_recipe(d1_recipe, 3);
+    let d2 = try_put(
+        &mut store,
+        &delta_at(d1, 4),
+        d2_recipe,
+        Some(d1_recipe),
+        1,
+        Tier::Nvme,
+        20,
+    )
+    .expect("put D2");
+    assert!(store.entries().contains_key(&root));
+    assert!(store.entries().contains_key(&d1));
+    assert!(store.entries().contains_key(&d2));
+    assert!(!store.entries().contains_key(&hot), "the other entry made room");
+    assert_eq!(lookup(&mut store, d2_recipe).unwrap().len(), 3);
+}
