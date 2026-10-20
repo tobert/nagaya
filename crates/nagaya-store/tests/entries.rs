@@ -7,7 +7,8 @@ use nagaya_abi::{
 };
 use nagaya_store::{
     Check, ContentId, EngineFacts, EntryState, PartCoverage, Pin, Put, Quarantine, Reason, RecipeId, Restored,
-    Snapshot, Store, StoreError, Tensor, Tier, Tolerance, recipe_boundary, recipe_root, snapshot_from_engine,
+    Snapshot, Store, StoreError, Tensor, Tier, Tolerance, recipe_boundary, recipe_not_sealed, recipe_root,
+    snapshot_from_engine,
 };
 
 fn tensor(name: &str, kind: PartKind, shape: Vec<u64>, data: Vec<u8>, coverage: Option<(u64, u64)>) -> Tensor {
@@ -129,8 +130,9 @@ fn put_as_at(
         engine: engine.clone(),
         identity: [1u8; 32],
         owner: 1,
-        tier: Tier::Host,
+        tier: Tier::Nvme,
         reason: Reason::Anchor,
+        sealed_recipe: None,
         provenance: None,
         now_ms,
     })
@@ -154,17 +156,18 @@ fn try_put(
         owner,
         tier,
         reason: Reason::Anchor,
+        sealed_recipe: None,
         provenance: None,
         now_ms,
     })
 }
 
 fn put(store: &mut Store, snapshot: &Snapshot, recipe: RecipeId, owner: u64) -> ContentId {
-    try_put(store, snapshot, recipe, None, owner, Tier::Host, 10).expect("put")
+    try_put(store, snapshot, recipe, None, owner, Tier::Nvme, 10).expect("put")
 }
 
 fn put_delta(store: &mut Store, snapshot: &Snapshot, recipe: RecipeId, previous: RecipeId, owner: u64) -> ContentId {
-    try_put(store, snapshot, recipe, Some(previous), owner, Tier::Host, 10).expect("put delta")
+    try_put(store, snapshot, recipe, Some(previous), owner, Tier::Nvme, 10).expect("put delta")
 }
 
 fn put_provenance(
@@ -182,8 +185,9 @@ fn put_provenance(
             engine: open_engine(),
             identity: [1u8; 32],
             owner: 1,
-            tier: Tier::Host,
+            tier: Tier::Nvme,
             reason: Reason::Anchor,
+            sealed_recipe: None,
             provenance: Some(provenance.to_owned()),
             now_ms: 10,
         })
@@ -223,7 +227,8 @@ fn an_entry_records_its_facts() {
             identity: [9u8; 32],
             owner: 7,
             tier: Tier::Nvme,
-            reason: Reason::Interval,
+            reason: Reason::PrefillDone,
+            sealed_recipe: None,
             provenance: Some("exact".to_owned()),
             now_ms: 10,
         })
@@ -245,7 +250,7 @@ fn an_entry_records_its_facts() {
     assert_eq!(entry.owner, 7);
     assert_eq!(entry.created_ms, 10);
     assert_eq!(entry.hits, 0);
-    assert_eq!(entry.reason, Reason::Interval);
+    assert_eq!(entry.reason, Reason::PrefillDone);
     assert_eq!(entry.provenance.as_deref(), Some("exact"));
     assert_eq!(entry.check, Check::Full);
     assert_eq!(entry.identity, [9u8; 32]);
@@ -268,7 +273,7 @@ fn a_delta_keeps_its_parent_and_the_base() {
     for _ in 0..3 {
         store.get(&base, 15).unwrap();
     }
-    let victims = store.evict(0, 1, 20).unwrap();
+    let victims = store.evict(0, Tier::Nvme, 1, 20).unwrap();
     assert!(!victims.contains(&base));
     assert!(victims.contains(&delta));
     assert!(store.entries().contains_key(&base));
@@ -294,7 +299,7 @@ fn the_tripwire_quarantines_both() {
     let mut store = Store::open(dir.path()).unwrap();
     let recipe = recipe(4);
     let first = put(&mut store, &base_snapshot(1), recipe, 0);
-    let error = try_put(&mut store, &base_snapshot(2), recipe, None, 0, Tier::Host, 10).unwrap_err();
+    let error = try_put(&mut store, &base_snapshot(2), recipe, None, 0, Tier::Nvme, 10).unwrap_err();
     let ids = match error {
         StoreError::Tripwire { ids, .. } => ids,
         other => panic!("expected the tripwire, got {other:?}"),
@@ -309,7 +314,7 @@ fn the_tripwire_quarantines_both() {
     assert!(store.refused().contains(&recipe));
     assert!(matches!(lookup(&mut store, recipe), Err(StoreError::Tripwire { .. })));
     assert!(matches!(
-        try_put(&mut store, &base_snapshot(3), recipe, None, 0, Tier::Host, 10),
+        try_put(&mut store, &base_snapshot(3), recipe, None, 0, Tier::Nvme, 10),
         Err(StoreError::Tripwire { .. })
     ));
 }
@@ -320,7 +325,7 @@ fn a_person_clears_a_tripwire() {
     let mut store = Store::open(dir.path()).unwrap();
     let recipe = recipe(40);
     let first = put(&mut store, &base_snapshot(1), recipe, 0);
-    assert!(try_put(&mut store, &base_snapshot(2), recipe, None, 0, Tier::Host, 10).is_err());
+    assert!(try_put(&mut store, &base_snapshot(2), recipe, None, 0, Tier::Nvme, 10).is_err());
     assert!(store.clear_entry(&first).is_err());
     store.clear_refusal(recipe).unwrap();
     assert!(!store.entries().contains_key(&first));
@@ -425,7 +430,7 @@ fn eviction_skips_pins_and_thins_interiors() {
     let tip_recipe = next_recipe(middle_recipe, 4);
     let tip = put_delta(&mut store, &delta_at(middle, 4), tip_recipe, middle_recipe, 1);
     store.pin(root, 1, 100, 10).unwrap();
-    let victims = store.evict(1, 1, 10).unwrap();
+    let victims = store.evict(1, Tier::Nvme, 1, 10).unwrap();
     assert!(!victims.contains(&root));
     assert_eq!(victims.first(), Some(&middle));
     assert!(victims.contains(&tip));
@@ -444,7 +449,7 @@ fn an_interior_eviction_takes_every_child() {
     let first = put_delta(&mut store, &delta_with(middle, 4, 4), first_recipe, middle_recipe, 1);
     let second_recipe = next_recipe(middle_recipe, 5);
     let second = put_delta(&mut store, &delta_with(middle, 4, 5), second_recipe, middle_recipe, 1);
-    let victims = store.evict(1, 1, 10).unwrap();
+    let victims = store.evict(1, Tier::Nvme, 1, 10).unwrap();
     assert!(victims.contains(&middle));
     assert!(victims.contains(&first));
     assert!(victims.contains(&second));
@@ -462,7 +467,7 @@ fn a_pin_on_a_child_protects_its_parent() {
     let child_recipe = next_recipe(root_recipe, 2);
     let child = put_delta(&mut store, &delta_at(root, 2), child_recipe, root_recipe, 1);
     store.pin(child, 1, 100, 10).unwrap();
-    assert!(matches!(store.evict(1, 1, 10), Err(StoreError::NoSpace)));
+    assert!(matches!(store.evict(1, Tier::Nvme, 1, 10), Err(StoreError::NoSpace)));
     assert!(store.entries().contains_key(&root));
     assert!(store.entries().contains_key(&child));
 }
@@ -470,7 +475,7 @@ fn a_pin_on_a_child_protects_its_parent() {
 #[test]
 fn a_cross_tier_child_keeps_the_parent() {
     let dir = tempfile::tempdir().unwrap();
-    let mut store = Store::open_with_limits(dir.path(), 5_000, 5_000, u64::MAX).unwrap();
+    let mut store = Store::open_with_limits(dir.path(), 5_000, 5_000, u64::MAX, 0).unwrap();
     let root_recipe = recipe(162);
     let root = put(&mut store, &base_snapshot(1), root_recipe, 1);
     let child_recipe = next_recipe(root_recipe, 2);
@@ -480,11 +485,11 @@ fn a_cross_tier_child_keeps_the_parent() {
         child_recipe,
         Some(root_recipe),
         1,
-        Tier::Nvme,
+        Tier::Host,
         10,
     )
     .unwrap();
-    let error = try_put(&mut store, &base_snapshot(3), recipe(163), None, 1, Tier::Host, 10).unwrap_err();
+    let error = try_put(&mut store, &base_snapshot(3), recipe(163), None, 1, Tier::Nvme, 10).unwrap_err();
     assert!(matches!(error, StoreError::NoSpace));
     assert!(store.entries().contains_key(&root));
     assert!(store.entries().contains_key(&child));
@@ -498,7 +503,7 @@ fn another_owners_child_keeps_the_parent() {
     let root = put(&mut store, &base_snapshot(1), root_recipe, 1);
     let child_recipe = next_recipe(root_recipe, 2);
     let child = put_delta(&mut store, &delta_at(root, 2), child_recipe, root_recipe, 2);
-    assert!(matches!(store.evict(1, 1, 10), Err(StoreError::NoSpace)));
+    assert!(matches!(store.evict(1, Tier::Nvme, 1, 10), Err(StoreError::NoSpace)));
     assert!(store.entries().contains_key(&root));
     assert!(store.entries().contains_key(&child));
 }
@@ -509,7 +514,7 @@ fn an_owner_does_not_evict_another() {
     let mut store = Store::open(dir.path()).unwrap();
     let first = put(&mut store, &base_snapshot(1), recipe(7), 1);
     let second = put(&mut store, &wide_snapshot(2), recipe(8), 2);
-    let victims = store.evict(1, 1, 10).unwrap();
+    let victims = store.evict(1, Tier::Nvme, 1, 10).unwrap();
     assert_eq!(victims, vec![first]);
     assert!(store.entries().contains_key(&second));
 }
@@ -525,7 +530,7 @@ fn a_pin_survives_a_restart() {
     }
     let mut store = Store::open(dir.path()).unwrap();
     assert!(store.pins().contains_key(&id));
-    assert!(matches!(store.evict(1, 1, 10), Err(StoreError::NoSpace)));
+    assert!(matches!(store.evict(1, Tier::Nvme, 1, 10), Err(StoreError::NoSpace)));
     assert!(store.entries().contains_key(&id));
 }
 
@@ -703,7 +708,7 @@ fn a_quarantined_entry_refuses_its_recipe_only() {
     let mut store = Store::open(dir.path()).unwrap();
     let bad_recipe = recipe(22);
     let first = put(&mut store, &base_snapshot(1), bad_recipe, 0);
-    assert!(try_put(&mut store, &base_snapshot(2), bad_recipe, None, 0, Tier::Host, 10).is_err());
+    assert!(try_put(&mut store, &base_snapshot(2), bad_recipe, None, 0, Tier::Nvme, 10).is_err());
     let good_recipe = recipe(23);
     let good = put(&mut store, &base_snapshot(4), good_recipe, 0);
     assert!(matches!(
@@ -756,7 +761,7 @@ fn a_put_does_not_store_a_quarantined_id_again() {
     std::fs::write(&blob, b"corrupt").unwrap();
     let mut store = Store::open(dir.path()).unwrap();
     assert!(store.get(&id, 10).is_err());
-    let error = try_put(&mut store, &base_snapshot(1), recipe, None, 1, Tier::Host, 10).unwrap_err();
+    let error = try_put(&mut store, &base_snapshot(1), recipe, None, 1, Tier::Nvme, 10).unwrap_err();
     assert!(matches!(error, StoreError::Quarantined(quarantined) if quarantined == id));
 }
 
@@ -1003,7 +1008,7 @@ fn a_duplicate_put_under_another_recipe_is_an_error() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(dir.path()).unwrap();
     put(&mut store, &base_snapshot(1), recipe(132), 1);
-    let error = try_put(&mut store, &base_snapshot(1), recipe(133), None, 1, Tier::Host, 10).unwrap_err();
+    let error = try_put(&mut store, &base_snapshot(1), recipe(133), None, 1, Tier::Nvme, 10).unwrap_err();
     assert!(matches!(error, StoreError::Invalid(_)));
 }
 
@@ -1021,7 +1026,7 @@ fn a_delta_checks_its_parent() {
         delta_recipe,
         Some(root_recipe),
         1,
-        Tier::Host,
+        Tier::Nvme,
         10,
     )
     .unwrap_err();
@@ -1033,7 +1038,7 @@ fn a_delta_checks_its_parent() {
         delta_recipe,
         Some(root_recipe),
         1,
-        Tier::Host,
+        Tier::Nvme,
         10,
     )
     .unwrap_err();
@@ -1045,7 +1050,7 @@ fn a_delta_checks_its_parent() {
         delta_recipe,
         Some(recipe(135)),
         1,
-        Tier::Host,
+        Tier::Nvme,
         10,
     )
     .unwrap_err();
@@ -1205,7 +1210,7 @@ fn the_delta_fraction_compares_with_the_base_of_the_chain() {
         second_recipe,
         Some(first_recipe),
         1,
-        Tier::Host,
+        Tier::Nvme,
         10,
     )
     .expect("a delta larger than its parent and no larger than the base fits");
@@ -1221,7 +1226,7 @@ fn the_delta_fraction_compares_with_the_base_of_the_chain() {
         next_recipe(second_recipe, 6),
         Some(second_recipe),
         1,
-        Tier::Host,
+        Tier::Nvme,
         10,
     )
     .unwrap_err();
@@ -1241,7 +1246,7 @@ fn eviction_ranks_tips_roots_and_standalone_entries_by_value_together() {
     for _ in 0..5 {
         store.get(&tip, 1_000).unwrap();
     }
-    let victims = store.evict(1, 1, 1_000).unwrap();
+    let victims = store.evict(1, Tier::Nvme, 1, 1_000).unwrap();
     assert_eq!(victims, vec![cold], "the cold standalone entry goes before the hot tip");
     assert!(store.entries().contains_key(&tip));
 }
@@ -1258,7 +1263,7 @@ fn eviction_takes_a_cold_tip_before_a_hot_standalone_entry() {
     for _ in 0..5 {
         store.get(&hot, 1_000).unwrap();
     }
-    let victims = store.evict(1, 1, 1_000).unwrap();
+    let victims = store.evict(1, Tier::Nvme, 1, 1_000).unwrap();
     assert_eq!(victims, vec![tip]);
     assert!(store.entries().contains_key(&hot));
 }
@@ -1266,7 +1271,7 @@ fn eviction_takes_a_cold_tip_before_a_hot_standalone_entry() {
 #[test]
 fn a_put_that_fits_writes_no_victims() {
     let dir = tempfile::tempdir().unwrap();
-    let mut store = Store::open_with_budget(dir.path(), 10_000).unwrap();
+    let mut store = Store::open_with_nvme_budget(dir.path(), 10_000).unwrap();
     let first = put(&mut store, &base_snapshot(1), recipe(24), 1);
     let second = put(&mut store, &base_snapshot(2), recipe(35), 1);
     assert!(store.entries().contains_key(&first));
@@ -1277,7 +1282,7 @@ fn a_put_that_fits_writes_no_victims() {
 #[test]
 fn a_put_over_budget_evicts_first() {
     let dir = tempfile::tempdir().unwrap();
-    let mut store = Store::open_with_budget(dir.path(), 5_000).unwrap();
+    let mut store = Store::open_with_nvme_budget(dir.path(), 5_000).unwrap();
     let first = put(&mut store, &base_snapshot(1), recipe(25), 1);
     let second = put(&mut store, &base_snapshot(2), recipe(26), 1);
     assert!(!store.entries().contains_key(&first));
@@ -1289,16 +1294,16 @@ fn a_put_over_budget_evicts_first() {
 #[test]
 fn a_put_that_cannot_fit_changes_nothing() {
     let dir = tempfile::tempdir().unwrap();
-    let mut store = Store::open_with_budget(dir.path(), 10_000).unwrap();
+    let mut store = Store::open_with_nvme_budget(dir.path(), 10_000).unwrap();
     let first = put(&mut store, &base_snapshot(1), recipe(27), 1);
     let second = put(&mut store, &base_snapshot(2), recipe(28), 1);
     store.pin(second, 1, 100, 10).unwrap();
-    store.set_budget(Tier::Host, 5_000);
+    store.set_budget(Tier::Nvme, 5_000);
     let before: Vec<String> = std::fs::read_dir(dir.path().join("blobs"))
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
-    let error = try_put(&mut store, &base_snapshot(3), recipe(29), None, 1, Tier::Host, 10);
+    let error = try_put(&mut store, &base_snapshot(3), recipe(29), None, 1, Tier::Nvme, 10);
     assert!(matches!(error, Err(nagaya_store::StoreError::NoSpace)));
     let after: Vec<String> = std::fs::read_dir(dir.path().join("blobs"))
         .unwrap()
@@ -1327,7 +1332,7 @@ fn a_failed_put_keeps_the_index_and_blobs() {
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         store.fail_next(point);
-        let error = try_put(&mut store, &base_snapshot(2), recipe(31), None, 1, Tier::Host, 10);
+        let error = try_put(&mut store, &base_snapshot(2), recipe(31), None, 1, Tier::Nvme, 10);
         assert!(error.is_err());
         assert_eq!(store.entries().len(), 1);
         assert!(store.entries().contains_key(&first));
@@ -1342,11 +1347,11 @@ fn a_failed_put_keeps_the_index_and_blobs() {
 #[test]
 fn a_pin_larger_than_the_budget_loses_protection() {
     let dir = tempfile::tempdir().unwrap();
-    let mut store = Store::open_with_budget(dir.path(), 10_000).unwrap();
+    let mut store = Store::open_with_nvme_budget(dir.path(), 10_000).unwrap();
     let id = put(&mut store, &base_snapshot(1), recipe(32), 1);
     store.pin(id, 1, 100, 10).unwrap();
-    store.set_budget(Tier::Host, 100);
-    let victims = store.evict(1, 1, 10).unwrap();
+    store.set_budget(Tier::Nvme, 100);
+    let victims = store.evict(1, Tier::Nvme, 1, 10).unwrap();
     assert_eq!(victims, vec![id]);
     assert!(!store.entries().contains_key(&id));
 }
@@ -1361,12 +1366,12 @@ fn an_entry_stays_pinned_while_any_owner_pin_is_live() {
     store.pin(id, 20, 50_000, 10).unwrap();
     // The pin of owner 20 has run out. The pin of owner 10 has not.
     assert_eq!(
-        store.evict(1, 1, 60_000).unwrap_err().to_string(),
+        store.evict(1, Tier::Nvme, 1, 60_000).unwrap_err().to_string(),
         StoreError::NoSpace.to_string()
     );
     assert!(store.entries().contains_key(&id));
     // Both have run out.
-    assert_eq!(store.evict(1, 1, 100_000).unwrap(), vec![id]);
+    assert_eq!(store.evict(1, Tier::Nvme, 1, 100_000).unwrap(), vec![id]);
 }
 
 #[test]
@@ -1376,7 +1381,7 @@ fn a_later_live_pin_protects_after_an_earlier_pin_ran_out() {
     let id = put(&mut store, &base_snapshot(1), recipe(195), 1);
     store.pin(id, 10, 50_000, 10).unwrap();
     store.pin(id, 20, 100_000, 10).unwrap();
-    assert!(store.evict(1, 1, 60_000).is_err());
+    assert!(store.evict(1, Tier::Nvme, 1, 60_000).is_err());
     assert!(store.entries().contains_key(&id));
 }
 
@@ -1400,7 +1405,7 @@ fn unpin_removes_only_the_pin_of_its_owner() {
     assert_eq!(store.pins()[&id].len(), 1);
     assert_eq!(store.pins()[&id][0].owner, 20);
     assert!(
-        store.evict(1, 1, 60_000).is_err(),
+        store.evict(1, Tier::Nvme, 1, 60_000).is_err(),
         "the pin of owner 20 still protects the entry"
     );
     store.unpin(&id, 20).unwrap();
@@ -1427,12 +1432,12 @@ fn two_owner_pins_survive_a_restart() {
     owners.sort();
     assert_eq!(owners, vec![(10, 100_000), (20, 50_000)]);
     assert!(
-        store.evict(1, 1, 60_000).is_err(),
+        store.evict(1, Tier::Nvme, 1, 60_000).is_err(),
         "the pin of owner 10 protects the entry after the restart"
     );
     store.unpin(&id, 10).unwrap();
     assert_eq!(
-        store.evict(1, 1, 40_000).unwrap_err().to_string(),
+        store.evict(1, Tier::Nvme, 1, 40_000).unwrap_err().to_string(),
         StoreError::NoSpace.to_string()
     );
 }
@@ -1455,7 +1460,7 @@ fn an_index_with_one_pin_for_each_entry_still_opens() {
     let mut store = Store::open(dir.path()).unwrap();
     assert_eq!(store.pins()[&id].len(), 1);
     assert_eq!(store.pins()[&id][0].owner, 10);
-    assert!(store.evict(1, 1, 60_000).is_err());
+    assert!(store.evict(1, Tier::Nvme, 1, 60_000).is_err());
 }
 
 #[test]
@@ -1480,7 +1485,7 @@ fn a_lookup_pin_of_a_second_owner_keeps_the_first_pin() {
         )
         .unwrap();
     assert_eq!(store.pins()[&id].len(), 2);
-    assert!(store.evict(1, 1, 60_000).is_err());
+    assert!(store.evict(1, Tier::Nvme, 1, 60_000).is_err());
 }
 
 #[test]
@@ -1530,8 +1535,8 @@ fn a_request_pin_protects_until_its_expiry() {
             10,
         )
         .unwrap();
-    assert!(matches!(store.evict(1, 1, 10), Err(StoreError::NoSpace)));
-    assert_eq!(store.evict(1, 1, 101).unwrap(), vec![id]);
+    assert!(matches!(store.evict(1, Tier::Nvme, 1, 10), Err(StoreError::NoSpace)));
+    assert_eq!(store.evict(1, Tier::Nvme, 1, 101).unwrap(), vec![id]);
     assert!(store.pins().is_empty());
 }
 
@@ -1541,14 +1546,14 @@ fn another_owners_pin_protects() {
     let mut store = Store::open(dir.path()).unwrap();
     let id = put(&mut store, &base_snapshot(1), recipe(34), 1);
     store.pin(id, 2, 100, 10).unwrap();
-    assert!(matches!(store.evict(1, 1, 10), Err(StoreError::NoSpace)));
+    assert!(matches!(store.evict(1, Tier::Nvme, 1, 10), Err(StoreError::NoSpace)));
     assert!(store.entries().contains_key(&id));
 }
 
 #[test]
-fn an_eviction_without_a_tier_skips_a_mixed_group() {
+fn an_eviction_in_one_tier_skips_a_group_that_spans_tiers() {
     let dir = tempfile::tempdir().unwrap();
-    let mut store = Store::open_with_limits(dir.path(), 100_000, 100_000, u64::MAX).unwrap();
+    let mut store = Store::open_with_limits(dir.path(), 100_000, 100_000, u64::MAX, 0).unwrap();
     let root_recipe = recipe(171);
     let root = put(&mut store, &base_snapshot(1), root_recipe, 1);
     let middle_recipe = next_recipe(root_recipe, 2);
@@ -1560,12 +1565,14 @@ fn an_eviction_without_a_tier_skips_a_mixed_group() {
         tip_recipe,
         Some(middle_recipe),
         1,
-        Tier::Nvme,
+        Tier::Host,
         10,
     )
     .unwrap();
-    // The middle group spans host and NVMe. Only the NVMe tip can go.
-    let victims = store.evict(1, 1, 10).unwrap();
+    // The groups of the root and the middle span NVMe and host, so an NVMe eviction takes nothing.
+    assert!(matches!(store.evict(1, Tier::Nvme, 1, 10), Err(StoreError::NoSpace)));
+    // Only the host tip can go.
+    let victims = store.evict(1, Tier::Host, 1, 10).unwrap();
     assert_eq!(victims, vec![tip]);
     assert!(store.entries().contains_key(&root));
     assert!(store.entries().contains_key(&middle));
@@ -1576,16 +1583,16 @@ fn an_eviction_of_zero_bytes_takes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(dir.path()).unwrap();
     let id = put(&mut store, &base_snapshot(1), recipe(140), 1);
-    assert!(store.evict(1, 0, 10).unwrap().is_empty());
+    assert!(store.evict(1, Tier::Nvme, 0, 10).unwrap().is_empty());
     assert!(store.entries().contains_key(&id));
 }
 
 #[test]
 fn a_put_does_not_evict_another_owners_entry() {
     let dir = tempfile::tempdir().unwrap();
-    let mut store = Store::open_with_budget(dir.path(), 5_000).unwrap();
+    let mut store = Store::open_with_nvme_budget(dir.path(), 5_000).unwrap();
     let first = put(&mut store, &base_snapshot(1), recipe(141), 1);
-    let error = try_put(&mut store, &base_snapshot(2), recipe(142), None, 2, Tier::Host, 10);
+    let error = try_put(&mut store, &base_snapshot(2), recipe(142), None, 2, Tier::Nvme, 10);
     assert!(matches!(error, Err(StoreError::NoSpace)));
     assert!(store.entries().contains_key(&first));
     assert_eq!(store.entries().len(), 1);
@@ -1594,7 +1601,7 @@ fn a_put_does_not_evict_another_owners_entry() {
 #[test]
 fn a_put_over_the_owner_quota_evicts_that_owner() {
     let dir = tempfile::tempdir().unwrap();
-    let mut store = Store::open_with_limits(dir.path(), 100_000, 100_000, 5_000).unwrap();
+    let mut store = Store::open_with_limits(dir.path(), 100_000, 100_000, 5_000, 0).unwrap();
     let first = put(&mut store, &base_snapshot(1), recipe(143), 1);
     let second = put(&mut store, &base_snapshot(2), recipe(144), 1);
     assert!(!store.entries().contains_key(&first));
@@ -1607,10 +1614,10 @@ fn a_put_over_the_owner_quota_evicts_that_owner() {
 #[test]
 fn a_put_does_not_take_a_budget_from_another_tier() {
     let dir = tempfile::tempdir().unwrap();
-    let mut store = Store::open_with_limits(dir.path(), 5_000, 5_000, u64::MAX).unwrap();
-    let host_first = put(&mut store, &base_snapshot(1), recipe(146), 1);
+    let mut store = Store::open_with_limits(dir.path(), 5_000, 5_000, u64::MAX, 0).unwrap();
+    let host_first = put_in(&mut store, &base_snapshot(1), recipe(146), 1, Tier::Host);
     let nvme = try_put(&mut store, &base_snapshot(2), recipe(147), None, 1, Tier::Nvme, 10).unwrap();
-    let host_second = put(&mut store, &base_snapshot(3), recipe(148), 1);
+    let host_second = put_in(&mut store, &base_snapshot(3), recipe(148), 1, Tier::Host);
     assert!(!store.entries().contains_key(&host_first));
     assert!(store.entries().contains_key(&host_second));
     assert!(store.entries().contains_key(&nvme));
@@ -1619,7 +1626,7 @@ fn a_put_does_not_take_a_budget_from_another_tier() {
 #[test]
 fn a_failed_blob_delete_is_reported() {
     let dir = tempfile::tempdir().unwrap();
-    let mut store = Store::open_with_budget(dir.path(), 10_000).unwrap();
+    let mut store = Store::open_with_nvme_budget(dir.path(), 10_000).unwrap();
     let first = put(&mut store, &base_snapshot(1), recipe(149), 1);
     let second = put(&mut store, &base_snapshot(2), recipe(150), 1);
     // A directory at the blob path makes the delete fail.
@@ -1628,7 +1635,7 @@ fn a_failed_blob_delete_is_reported() {
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir(&path).unwrap();
     }
-    let error = try_put(&mut store, &base_snapshot(3), recipe(151), None, 1, Tier::Host, 10).unwrap_err();
+    let error = try_put(&mut store, &base_snapshot(3), recipe(151), None, 1, Tier::Nvme, 10).unwrap_err();
     assert!(matches!(error, StoreError::Io(_)), "{error}");
     assert_eq!(store.entries().len(), 2);
     let victim = if store.entries().contains_key(&first) {
@@ -1649,8 +1656,8 @@ fn pins_protect_one_by_one() {
     store.pin(first, 1, 100, 10).unwrap();
     store.pin(second, 1, 100, 10).unwrap();
     // Each pin alone fits the budget. Their sum does not.
-    store.set_budget(Tier::Host, 7_000);
-    assert!(matches!(store.evict(1, 1, 10), Err(StoreError::NoSpace)));
+    store.set_budget(Tier::Nvme, 7_000);
+    assert!(matches!(store.evict(1, Tier::Nvme, 1, 10), Err(StoreError::NoSpace)));
     assert!(store.entries().contains_key(&first));
     assert!(store.entries().contains_key(&second));
 }
@@ -1761,7 +1768,7 @@ fn clearing_a_tripwire_removes_its_entries() {
     let mut store = Store::open(dir.path()).unwrap();
     let recipe = recipe(167);
     let first = put(&mut store, &base_snapshot(1), recipe, 1);
-    let error = try_put(&mut store, &base_snapshot(2), recipe, None, 1, Tier::Host, 10).unwrap_err();
+    let error = try_put(&mut store, &base_snapshot(2), recipe, None, 1, Tier::Nvme, 10).unwrap_err();
     let second = match error {
         StoreError::Tripwire { ids, .. } => ids.into_iter().find(|id| *id != first).unwrap(),
         other => panic!("expected the tripwire, got {other:?}"),
@@ -1784,7 +1791,7 @@ fn a_tripwire_quarantine_clears_with_its_recipe() {
     let mut store = Store::open(dir.path()).unwrap();
     let recipe = recipe(152);
     let first = put(&mut store, &base_snapshot(1), recipe, 1);
-    assert!(try_put(&mut store, &base_snapshot(2), recipe, None, 1, Tier::Host, 10).is_err());
+    assert!(try_put(&mut store, &base_snapshot(2), recipe, None, 1, Tier::Nvme, 10).is_err());
     assert!(store.clear_entry(&first).is_err());
     store.clear_refusal(recipe).unwrap();
     assert!(!store.entries().contains_key(&first));
@@ -1807,13 +1814,13 @@ fn a_second_quarantine_of_one_id_keeps_both_blobs() {
     let mut store = Store::open(dir.path()).unwrap();
     let recipe = recipe(170);
     let first = put(&mut store, &base_snapshot(1), recipe, 1);
-    assert!(try_put(&mut store, &base_snapshot(2), recipe, None, 1, Tier::Host, 10).is_err());
+    assert!(try_put(&mut store, &base_snapshot(2), recipe, None, 1, Tier::Nvme, 10).is_err());
     store.clear_refusal(recipe).unwrap();
     assert_eq!(quarantine_names(dir.path()).len(), 2);
 
     let again = put(&mut store, &base_snapshot(1), recipe, 1);
     assert_eq!(again, first, "the same bytes give the same content id");
-    assert!(try_put(&mut store, &base_snapshot(2), recipe, None, 1, Tier::Host, 10).is_err());
+    assert!(try_put(&mut store, &base_snapshot(2), recipe, None, 1, Tier::Nvme, 10).is_err());
     store.clear_refusal(recipe).unwrap();
 
     let names = quarantine_names(dir.path());
@@ -1826,10 +1833,10 @@ fn a_second_quarantine_of_one_id_keeps_both_blobs() {
 fn quarantined_blobs_are_not_in_the_budget() {
     let dir = tempfile::tempdir().unwrap();
     let size = base_snapshot(1).encode().unwrap().len() as u64;
-    let mut store = Store::open_with_budget(dir.path(), size).unwrap();
+    let mut store = Store::open_with_nvme_budget(dir.path(), size).unwrap();
     let recipe = recipe(171);
     put(&mut store, &base_snapshot(1), recipe, 1);
-    assert!(try_put(&mut store, &base_snapshot(2), recipe, None, 1, Tier::Host, 10).is_err());
+    assert!(try_put(&mut store, &base_snapshot(2), recipe, None, 1, Tier::Nvme, 10).is_err());
     store.clear_refusal(recipe).unwrap();
 
     let fresh = put(&mut store, &base_snapshot(3), recipe, 1);
@@ -1844,7 +1851,7 @@ fn a_failed_move_reports_an_error_and_leaves_the_blob_in_blobs() {
     let mut store = Store::open(dir.path()).unwrap();
     let recipe = recipe(172);
     let first = put(&mut store, &base_snapshot(1), recipe, 1);
-    let error = try_put(&mut store, &base_snapshot(2), recipe, None, 1, Tier::Host, 10).unwrap_err();
+    let error = try_put(&mut store, &base_snapshot(2), recipe, None, 1, Tier::Nvme, 10).unwrap_err();
     let second = match error {
         StoreError::Tripwire { ids, .. } => ids.into_iter().find(|id| *id != first).unwrap(),
         other => panic!("expected the tripwire, got {other:?}"),
@@ -2005,4 +2012,462 @@ fn a_refusal_after_a_write_is_reported_as_failed() {
         }
     );
     assert_eq!(target.writes, 3, "no later part is written");
+}
+
+fn blob_names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir.join("blobs"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+fn put_in(store: &mut Store, snapshot: &Snapshot, recipe: RecipeId, owner: u64, tier: Tier) -> ContentId {
+    try_put(store, snapshot, recipe, None, owner, tier, 10).expect("put")
+}
+
+#[test]
+fn a_host_entry_keeps_its_bytes_in_memory_and_not_in_a_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let id = put_in(&mut store, &base_snapshot(1), recipe(60), 1, Tier::Host);
+    assert!(blob_names(dir.path()).is_empty(), "a host entry writes no file");
+    let size = store.entries().get(&id).unwrap().size;
+    assert_eq!(store.host_resident_bytes(), size);
+    assert_eq!(store.get(&id, 11).unwrap().unwrap().check, Check::Full);
+}
+
+#[test]
+fn an_nvme_entry_keeps_its_bytes_in_a_file_and_not_in_memory() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let id = put_in(&mut store, &base_snapshot(1), recipe(61), 1, Tier::Nvme);
+    assert_eq!(blob_names(dir.path()), vec![id.hex()]);
+    assert_eq!(store.host_resident_bytes(), 0);
+}
+
+#[test]
+fn the_content_id_is_the_same_in_either_tier() {
+    let host_dir = tempfile::tempdir().unwrap();
+    let nvme_dir = tempfile::tempdir().unwrap();
+    let mut host = Store::open(host_dir.path()).unwrap();
+    let mut nvme = Store::open(nvme_dir.path()).unwrap();
+    let snapshot = base_snapshot(3);
+    let in_host = put_in(&mut host, &snapshot, recipe(62), 1, Tier::Host);
+    let in_nvme = put_in(&mut nvme, &snapshot, recipe(62), 1, Tier::Nvme);
+    assert_eq!(in_host, in_nvme);
+    assert_eq!(in_host, snapshot.content_id().unwrap());
+}
+
+#[test]
+fn a_lookup_and_a_restore_read_a_host_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let mut source = FakeAlways::new();
+    source.pass(&[segment(&[1, 2, 3, 4, 5, 6])], &[]).unwrap();
+    let snapshot = snapshot_from_engine(&mut source, State::Slot(0), &[(1, 0, 6), (2, 2, 4)]).unwrap();
+    let id = put_in(&mut store, &snapshot, recipe(63), 0, Tier::Host);
+    assert_eq!(lookup(&mut store, recipe(63)).unwrap(), vec![id]);
+    let mut target = FakeAlways::new();
+    let result = store.restore(&id, &mut target, State::Slot(0), &[1u8; 32], 20).unwrap();
+    assert_eq!(result, Restored::Done);
+}
+
+#[test]
+fn a_restart_removes_host_entries_and_keeps_nvme_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let (host, nvme);
+    {
+        let mut store = Store::open(dir.path()).unwrap();
+        host = put_in(&mut store, &base_snapshot(1), recipe(64), 1, Tier::Host);
+        nvme = put_in(&mut store, &base_snapshot(2), recipe(65), 1, Tier::Nvme);
+        store.pin(host, 1, 100, 10).unwrap();
+    }
+    let mut store = Store::open(dir.path()).unwrap();
+    assert!(!store.entries().contains_key(&host));
+    assert!(!store.pins().contains_key(&host), "a pin on a removed entry goes too");
+    assert!(store.entries().contains_key(&nvme));
+    assert_eq!(store.host_resident_bytes(), 0);
+    assert!(lookup(&mut store, recipe(64)).unwrap().is_empty());
+    // The index file on disk has no host entry either.
+    let text = std::fs::read_to_string(dir.path().join("index.json")).unwrap();
+    assert!(!text.contains(&host.hex()));
+}
+
+#[test]
+fn a_restart_removes_the_blob_file_of_an_old_host_entry() {
+    // An index from before the host tier held host entries as files.
+    let dir = tempfile::tempdir().unwrap();
+    let id;
+    {
+        let mut store = Store::open(dir.path()).unwrap();
+        id = put_in(&mut store, &base_snapshot(1), recipe(66), 1, Tier::Nvme);
+    }
+    edit_index(dir.path(), |value| {
+        value["entries"][id.hex()]["tier"] = serde_json::json!("Host");
+    });
+    let store = Store::open(dir.path()).unwrap();
+    assert!(!store.entries().contains_key(&id));
+    assert!(
+        blob_names(dir.path()).is_empty(),
+        "no file stays for a removed host entry"
+    );
+}
+
+#[test]
+fn an_nvme_delta_needs_an_nvme_parent() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let base_recipe = recipe(67);
+    let base = put_in(&mut store, &base_snapshot(1), base_recipe, 1, Tier::Host);
+    let delta_recipe = next_recipe(base_recipe, 2);
+    let error = try_put(
+        &mut store,
+        &delta_at(base, 2),
+        delta_recipe,
+        Some(base_recipe),
+        1,
+        Tier::Nvme,
+        10,
+    )
+    .unwrap_err();
+    assert!(matches!(error, StoreError::Invalid(_)), "{error:?}");
+    assert!(error.to_string().contains("host"), "{error}");
+    assert_eq!(store.entries().len(), 1);
+    // A host delta on a host parent is fine.
+    try_put(
+        &mut store,
+        &delta_at(base, 2),
+        delta_recipe,
+        Some(base_recipe),
+        1,
+        Tier::Host,
+        10,
+    )
+    .unwrap();
+}
+
+#[test]
+fn the_tiers_have_separate_budgets_and_eviction_runs_in_one_tier() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open_with_limits(dir.path(), 5_000, 5_000, u64::MAX, 0).unwrap();
+    let size = base_snapshot(1).encode().unwrap().len() as u64;
+    assert!(
+        size > 2_500 && size <= 5_000,
+        "the fixture fills most of one tier: {size}"
+    );
+    let nvme = put_in(&mut store, &base_snapshot(1), recipe(68), 1, Tier::Nvme);
+    let host_old = put_in(&mut store, &base_snapshot(2), recipe(69), 1, Tier::Host);
+    // A new host entry evicts the old host entry. The NVMe entry stays, though it is the older one.
+    let host_new = put_in(&mut store, &base_snapshot(3), recipe(70), 1, Tier::Host);
+    assert!(store.entries().contains_key(&nvme));
+    assert!(!store.entries().contains_key(&host_old));
+    assert!(store.entries().contains_key(&host_new));
+    assert_eq!(store.host_resident_bytes(), size, "the evicted bytes leave memory");
+    assert_eq!(blob_names(dir.path()), vec![nvme.hex()]);
+}
+
+#[test]
+fn an_evict_call_names_its_tier() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let nvme = put_in(&mut store, &base_snapshot(1), recipe(71), 1, Tier::Nvme);
+    let host = put_in(&mut store, &base_snapshot(2), recipe(72), 1, Tier::Host);
+    let victims = store.evict(1, Tier::Host, 1, 20).unwrap();
+    assert_eq!(victims, vec![host]);
+    assert!(store.entries().contains_key(&nvme));
+    assert_eq!(store.host_resident_bytes(), 0);
+}
+
+#[test]
+fn clearing_a_refusal_keeps_the_bytes_of_a_host_entry_in_quarantine() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let shared = recipe(73);
+    let first = put_in(&mut store, &base_snapshot(1), shared, 1, Tier::Host);
+    let second = match try_put(&mut store, &base_snapshot(2), shared, None, 1, Tier::Host, 10) {
+        Err(StoreError::Tripwire { ids, .. }) => ids.into_iter().find(|id| *id != first).unwrap(),
+        other => panic!("expected the tripwire, got {other:?}"),
+    };
+    store.clear_refusal(shared).unwrap();
+    assert!(store.entries().is_empty());
+    assert_eq!(store.host_resident_bytes(), 0);
+    for (id, seed) in [(first, 1u8), (second, 2u8)] {
+        let kept = std::fs::read(dir.path().join("quarantine").join(id.hex())).unwrap();
+        assert_eq!(kept, base_snapshot(seed).encode().unwrap());
+    }
+}
+
+/// Put an interval copy: the host tier, and the recipe of the sealed snapshot with the item "not sealed".
+fn put_copy(
+    store: &mut Store,
+    snapshot: &Snapshot,
+    sealed: RecipeId,
+    owner: u64,
+    now_ms: u64,
+) -> Result<ContentId, StoreError> {
+    store.put(Put {
+        snapshot,
+        recipe: recipe_not_sealed(&sealed),
+        previous_recipe: None,
+        engine: open_engine(),
+        identity: [1u8; 32],
+        owner,
+        tier: Tier::Host,
+        reason: Reason::Interval,
+        sealed_recipe: Some(sealed),
+        provenance: None,
+        now_ms,
+    })
+}
+
+fn copy_store(dir: &Path, copies: u32) -> Store {
+    Store::open_with_limits(dir, u64::MAX, u64::MAX, u64::MAX, copies).unwrap()
+}
+
+#[test]
+fn a_store_with_no_interval_copies_refuses_an_interval_put() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let error = put_copy(&mut store, &base_snapshot(1), recipe(80), 1, 10).unwrap_err();
+    assert!(matches!(error, StoreError::Invalid(_)), "{error:?}");
+    assert!(error.to_string().contains("interval_copies"), "{error}");
+    assert!(store.entries().is_empty());
+    assert_eq!(store.host_resident_bytes(), 0);
+}
+
+#[test]
+fn an_interval_put_in_nvme_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = copy_store(dir.path(), 4);
+    let sealed = recipe(81);
+    let error = store
+        .put(Put {
+            snapshot: &base_snapshot(1),
+            recipe: recipe_not_sealed(&sealed),
+            previous_recipe: None,
+            engine: open_engine(),
+            identity: [1u8; 32],
+            owner: 1,
+            tier: Tier::Nvme,
+            reason: Reason::Interval,
+            sealed_recipe: Some(sealed),
+            provenance: None,
+            now_ms: 10,
+        })
+        .unwrap_err();
+    assert!(matches!(error, StoreError::Invalid(_)), "{error:?}");
+    assert!(error.to_string().contains("host"), "{error}");
+    assert!(store.entries().is_empty());
+    assert!(blob_names(dir.path()).is_empty());
+}
+
+#[test]
+fn an_interval_put_needs_the_not_sealed_recipe() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = copy_store(dir.path(), 4);
+    let sealed = recipe(82);
+    let put_with = |store: &mut Store, recipe: RecipeId, sealed_recipe: Option<RecipeId>| {
+        store.put(Put {
+            snapshot: &base_snapshot(1),
+            recipe,
+            previous_recipe: None,
+            engine: open_engine(),
+            identity: [1u8; 32],
+            owner: 1,
+            tier: Tier::Host,
+            reason: Reason::Interval,
+            sealed_recipe,
+            provenance: None,
+            now_ms: 10,
+        })
+    };
+    // The sealed recipe itself, with no tag 8.
+    let error = put_with(&mut store, sealed, Some(sealed)).unwrap_err();
+    assert!(error.to_string().contains("not sealed"), "{error}");
+    // No sealed recipe to check against.
+    assert!(put_with(&mut store, recipe_not_sealed(&sealed), None).is_err());
+    // A not sealed recipe of another position.
+    assert!(put_with(&mut store, recipe_not_sealed(&recipe(83)), Some(sealed)).is_err());
+    assert!(store.entries().is_empty());
+    put_with(&mut store, recipe_not_sealed(&sealed), Some(sealed)).unwrap();
+}
+
+#[test]
+fn only_an_interval_put_may_carry_the_not_sealed_recipe() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = copy_store(dir.path(), 4);
+    let sealed = recipe(84);
+    let error = store
+        .put(Put {
+            snapshot: &base_snapshot(1),
+            recipe: recipe_not_sealed(&sealed),
+            previous_recipe: None,
+            engine: open_engine(),
+            identity: [1u8; 32],
+            owner: 1,
+            tier: Tier::Nvme,
+            reason: Reason::Anchor,
+            sealed_recipe: Some(sealed),
+            provenance: None,
+            now_ms: 10,
+        })
+        .unwrap_err();
+    assert!(matches!(error, StoreError::Invalid(_)), "{error:?}");
+    assert!(store.entries().is_empty());
+}
+
+#[test]
+fn an_interval_copy_has_no_parent_and_no_delta_names_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = copy_store(dir.path(), 4);
+    let base_recipe = recipe(85);
+    let base = put(&mut store, &base_snapshot(1), base_recipe, 1);
+    let error = put_copy(&mut store, &delta_at(base, 2), base_recipe, 1, 10).unwrap_err();
+    assert!(error.to_string().contains("parent"), "{error}");
+    let copy_recipe = recipe(86);
+    let copy = put_copy(&mut store, &base_snapshot(2), copy_recipe, 1, 10).unwrap();
+    let error = try_put(
+        &mut store,
+        &delta_at(copy, 2),
+        next_recipe(recipe_not_sealed(&copy_recipe), 2),
+        Some(recipe_not_sealed(&copy_recipe)),
+        1,
+        Tier::Host,
+        10,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("interval copy"), "{error}");
+    assert_eq!(store.entries().len(), 2);
+}
+
+#[test]
+fn a_lookup_with_the_item_finds_the_copy_and_one_without_never_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = copy_store(dir.path(), 4);
+    let sealed = recipe(87);
+    let copy = put_copy(&mut store, &base_snapshot(1), sealed, 1, 10).unwrap();
+    assert_eq!(lookup(&mut store, recipe_not_sealed(&sealed)).unwrap(), vec![copy]);
+    assert!(
+        lookup(&mut store, sealed).unwrap().is_empty(),
+        "a sealed lookup misses a copy"
+    );
+    // A sealed snapshot at the same position is a different entry with a different recipe.
+    let snapshot = put(&mut store, &base_snapshot(2), sealed, 1);
+    assert_eq!(lookup(&mut store, sealed).unwrap(), vec![snapshot]);
+    assert_eq!(lookup(&mut store, recipe_not_sealed(&sealed)).unwrap(), vec![copy]);
+}
+
+#[test]
+fn above_the_cap_the_store_removes_the_least_recently_used_copy_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = copy_store(dir.path(), 2);
+    let first = put_copy(&mut store, &base_snapshot(1), recipe(88), 1, 10).unwrap();
+    let second = put_copy(&mut store, &base_snapshot(2), recipe(89), 1, 11).unwrap();
+    // A use makes the first copy the more recent one. The second is the least recently used.
+    store.get(&first, 20).unwrap();
+    let third = put_copy(&mut store, &base_snapshot(3), recipe(90), 1, 30).unwrap();
+    assert!(store.entries().contains_key(&first));
+    assert!(!store.entries().contains_key(&second));
+    assert!(store.entries().contains_key(&third));
+    let size = store.entries().get(&first).unwrap().size;
+    assert_eq!(store.host_resident_bytes(), 2 * size, "the removed copy leaves memory");
+}
+
+#[test]
+fn a_cap_of_pinned_copies_refuses_the_put_and_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = copy_store(dir.path(), 1);
+    let first = put_copy(&mut store, &base_snapshot(1), recipe(91), 1, 10).unwrap();
+    store.pin(first, 1, 1_000, 10).unwrap();
+    let error = put_copy(&mut store, &base_snapshot(2), recipe(92), 1, 20).unwrap_err();
+    assert!(matches!(error, StoreError::NoSpace), "{error:?}");
+    assert_eq!(store.entries().len(), 1);
+    assert!(store.entries().contains_key(&first));
+}
+
+#[test]
+fn a_put_that_needs_bytes_takes_interval_copies_before_the_ranking() {
+    let dir = tempfile::tempdir().unwrap();
+    // The host budget holds two entries of the fixture.
+    let size = base_snapshot(1).encode().unwrap().len() as u64;
+    let mut store = Store::open_with_limits(dir.path(), 2 * size, u64::MAX, u64::MAX, 4).unwrap();
+    // A cold sealed entry: the value ranking would take it first.
+    let cold = put_in(&mut store, &base_snapshot(1), recipe(93), 1, Tier::Host);
+    // A hot copy: many hits and a late use.
+    let copy = put_copy(&mut store, &base_snapshot(2), recipe(94), 1, 10).unwrap();
+    for time in 90..100 {
+        store.get(&copy, time).unwrap();
+    }
+    let new = put_in(&mut store, &base_snapshot(3), recipe(95), 1, Tier::Host);
+    assert!(!store.entries().contains_key(&copy), "the copy goes first");
+    assert!(store.entries().contains_key(&cold));
+    assert!(store.entries().contains_key(&new));
+}
+
+#[test]
+fn copies_go_least_recently_used_first_not_by_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let size = base_snapshot(1).encode().unwrap().len() as u64;
+    let mut store = Store::open_with_limits(dir.path(), 2 * size, u64::MAX, u64::MAX, 4).unwrap();
+    // The older use has many hits. The newer use has none. By value the newer copy would go first.
+    let old_use = put_copy(&mut store, &base_snapshot(1), recipe(96), 1, 10).unwrap();
+    for _ in 0..20 {
+        store.get(&old_use, 20).unwrap();
+    }
+    let new_use = put_copy(&mut store, &base_snapshot(2), recipe(97), 1, 30).unwrap();
+    let new = put_in(&mut store, &base_snapshot(3), recipe(98), 1, Tier::Host);
+    assert!(
+        !store.entries().contains_key(&old_use),
+        "the least recently used copy goes"
+    );
+    assert!(store.entries().contains_key(&new_use));
+    assert!(store.entries().contains_key(&new));
+}
+
+#[test]
+fn remove_drops_one_interval_copy_and_its_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = copy_store(dir.path(), 4);
+    let keep = put_copy(&mut store, &base_snapshot(1), recipe(99), 1, 10).unwrap();
+    let drop_id = put_copy(&mut store, &base_snapshot(2), recipe(100), 1, 10).unwrap();
+    assert!(store.remove(&drop_id, 20).unwrap());
+    assert!(!store.entries().contains_key(&drop_id));
+    assert!(store.entries().contains_key(&keep));
+    let size = store.entries().get(&keep).unwrap().size;
+    assert_eq!(store.host_resident_bytes(), size);
+    assert!(lookup(&mut store, recipe_not_sealed(&recipe(100))).unwrap().is_empty());
+    // The index on disk agrees.
+    let text = std::fs::read_to_string(dir.path().join("index.json")).unwrap();
+    assert!(!text.contains(&drop_id.hex()));
+    // A second remove of the same id finds nothing. The cap can have removed the copy already.
+    assert!(!store.remove(&drop_id, 21).unwrap());
+}
+
+#[test]
+fn remove_refuses_a_sealed_entry_and_a_pinned_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = copy_store(dir.path(), 4);
+    let sealed = put(&mut store, &base_snapshot(1), recipe(101), 1);
+    let error = store.remove(&sealed, 20).unwrap_err();
+    assert!(matches!(error, StoreError::Invalid(_)), "{error:?}");
+    assert!(store.entries().contains_key(&sealed));
+    let copy = put_copy(&mut store, &base_snapshot(2), recipe(102), 1, 10).unwrap();
+    store.pin(copy, 2, 1_000, 10).unwrap();
+    assert!(matches!(store.remove(&copy, 20), Err(StoreError::Invalid(_))));
+    assert!(store.entries().contains_key(&copy));
+    // After the lease ends, the remove works.
+    assert!(store.remove(&copy, 2_000).unwrap());
+}
+
+#[test]
+fn a_restart_loses_the_interval_copies() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let mut store = copy_store(dir.path(), 4);
+        put_copy(&mut store, &base_snapshot(1), recipe(103), 1, 10).unwrap();
+    }
+    let store = copy_store(dir.path(), 4);
+    assert!(store.entries().is_empty());
 }

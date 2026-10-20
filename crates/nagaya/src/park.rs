@@ -6,6 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use nagaya_abi::{BitClass, CoverageSpan, Engine, Identity, PartKind, PartLimits, State, Tier as MemoryTier};
 use nagaya_ledger::Admission;
+
+use crate::profile::StoreSpec;
 use nagaya_store::{
     ContentId, EngineFacts, Put, Reason, RecipeId, Snapshot, Store, StoreError, Tensor, Tier, recipe_root,
 };
@@ -22,9 +24,20 @@ pub struct StoreBudget {
     pub host: u64,
     /// The budget of the store's NVMe tier.
     pub nvme: u64,
+    /// The most interval copies that the store keeps (spec 6.13).
+    pub interval_copies: u32,
 }
 
 impl StoreBudget {
+    /// The store's budget from the profile's `[store]` table and the admission (spec 4.1a, 2.4).
+    pub fn from_spec(spec: &StoreSpec, admission: &Admission) -> Self {
+        StoreBudget {
+            host: spec.host.unwrap_or_else(|| Self::host_from_admission(admission)),
+            nvme: spec.nvme,
+            interval_copies: spec.interval_copies,
+        }
+    }
+
     /// The store's host budget from a fitting profile: the unassigned host-only bytes (spec 4.4 step 4).
     pub fn host_from_admission(admission: &Admission) -> u64 {
         admission
@@ -60,8 +73,8 @@ pub(crate) enum StoreMessage {
 }
 
 /// Open the machine's store with the park's budgets.
-pub(crate) fn open_store(dir: &Path, budget: StoreBudget) -> Result<Store, StoreError> {
-    Store::open_with_limits(dir, budget.host, budget.nvme, u64::MAX)
+pub fn open_store(dir: &Path, budget: StoreBudget) -> Result<Store, StoreError> {
+    Store::open_with_limits(dir, budget.host, budget.nvme, u64::MAX, budget.interval_copies)
 }
 
 /// Store one parked state for one engine, and add its counts or its failure to `report`.
@@ -342,6 +355,7 @@ pub(crate) fn store_thread(mut store: Store, messages: Receiver<StoreMessage>) {
                     owner,
                     tier: Tier::Nvme,
                     reason: Reason::Shutdown,
+                    sealed_recipe: None,
                     provenance: None,
                     now_ms,
                 });

@@ -138,6 +138,10 @@ pub struct StoreSpec {
     /// The host-memory budget in bytes. Without it, the budget is the unassigned host bytes (spec 4.4 step 4).
     #[serde(default)]
     pub host: Option<u64>,
+    /// The most interval copies that the store keeps in host memory (spec 6.13). Zero, the default, means the
+    /// store refuses them.
+    #[serde(default)]
+    pub interval_copies: u32,
 }
 
 /// A machine's placement profile (spec 2.4).

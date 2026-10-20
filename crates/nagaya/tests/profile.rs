@@ -26,6 +26,7 @@ bytes = 1000
 [store]
 nvme = 4096
 host = 1024
+interval_copies = 3
 "#;
 
 fn example_profile() -> PlacementProfile {
@@ -55,6 +56,7 @@ fn example_profile() -> PlacementProfile {
         store: Some(StoreSpec {
             nvme: 4096,
             host: Some(1024),
+            interval_copies: 3,
         }),
     }
 }
@@ -78,16 +80,31 @@ fn the_profile_names_engines_devices_config_and_shares() {
         profile.store,
         Some(StoreSpec {
             nvme: 4096,
-            host: Some(1024)
+            host: Some(1024),
+            interval_copies: 3,
         })
     );
 }
 
 #[test]
 fn a_profile_without_a_store_section_has_no_store_budget() {
-    let text = EXAMPLE.replace("\n[store]\nnvme = 4096\nhost = 1024\n", "");
+    let text = EXAMPLE.replace("\n[store]\nnvme = 4096\nhost = 1024\ninterval_copies = 3\n", "");
     let profile = PlacementProfile::parse(&text).unwrap();
     assert_eq!(profile.store, None);
+}
+
+#[test]
+fn interval_copies_is_zero_when_the_key_is_absent() {
+    let text = EXAMPLE.replace("interval_copies = 3\n", "");
+    let profile = PlacementProfile::parse(&text).unwrap();
+    assert_eq!(profile.store.unwrap().interval_copies, 0);
+}
+
+#[test]
+fn a_negative_interval_copies_is_refused() {
+    let text = EXAMPLE.replace("interval_copies = 3", "interval_copies = -1");
+    let error = PlacementProfile::parse(&text).unwrap_err();
+    assert!(error.to_string().contains("interval_copies"), "{error}");
 }
 
 #[test]

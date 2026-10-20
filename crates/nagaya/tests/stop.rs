@@ -59,6 +59,7 @@ fn profile(engines: Vec<EnginePlacement>) -> PlacementProfile {
         store: Some(StoreSpec {
             nvme: 65536,
             host: None,
+            interval_copies: 0,
         }),
     }
 }
@@ -466,7 +467,11 @@ fn a_store_refusal_is_a_crash_with_the_names() {
     let profile = profile(vec![engine("a", "park", &[0])]);
     let mut process = Start::new(profile, registry, inventory(&[0]))
         .store(directory.path())
-        .store_budget(StoreBudget { host: 0, nvme: 8 })
+        .store_budget(StoreBudget {
+            host: 0,
+            nvme: 8,
+            interval_copies: 0,
+        })
         .heartbeat(Duration::from_millis(10))
         .timeout(Duration::from_secs(2))
         .start()

@@ -509,16 +509,12 @@ impl Start {
                 let budget = match store_budget {
                     Some(budget) => Some(budget),
                     None => match &profile.store {
-                        Some(spec) => Some(StoreBudget {
-                            host: spec
-                                .host
-                                .unwrap_or_else(|| StoreBudget::host_from_admission(&admitted.admission)),
-                            nvme: spec.nvme,
-                        }),
+                        Some(spec) => Some(StoreBudget::from_spec(spec, &admitted.admission)),
                         // A profile with no engine parks nothing, so it can keep an empty store (spec 10.1 note).
                         None if profile.engines.is_empty() => Some(StoreBudget {
                             host: StoreBudget::host_from_admission(&admitted.admission),
                             nvme: 0,
+                            interval_copies: 0,
                         }),
                         None => None,
                     },
