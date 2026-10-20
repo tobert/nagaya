@@ -743,6 +743,17 @@ poison. After a poison or a timeout, the nagaya does these steps:
 engine of that family passes its conformance against that reference, on any vendor's device. The reference runs on
 the CPU, so it does not give the bits of a GPU. Thus the oracle has a tolerance, and a spike measures the gap first.
 
+**The Qwen3.8 oracle.** mk's Python reference (`tools/oracle_fixture.py`) writes the fixture. It holds four prompts
+of 5 to 249 tokens, with the top 64 logits and the logsumexp of the last position. The bench `oracle` in the mk
+crate compares mk with it. mk's exact path (`MK_FAST_QMM=0`) is the gate. Its largest gap was a logit difference
+of 1.7e-5 on 2026-10-20. Decided 2026-10-20 (reading).
+
+- On the exact path, the argmax agrees when the reference's top two differ by more than 0.25. The reference's top 8
+  are in the engine's top 16. The largest logit difference is at most 1e-3, the KL at most 1e-8, and the logsumexp
+  difference at most 1e-3.
+- The fast path (`MK_FAST_QMM` unset) is an approximation (12.1). It keeps only the argmax and top-8 rules, and the
+  bench reports its other numbers. At 249 tokens its largest logit difference was 1.03.
+
 A family with no reference has no oracle yet: the first port of mkviolet builds the Gemma reference. Decided 2026-10-20
 (`docs/deepinfer.md` 6). The engine crates stay one for each vendor and device (Amy: "we generate a megakernel per
 vendor/device and they get their own whole crate").
