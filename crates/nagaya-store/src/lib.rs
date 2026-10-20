@@ -322,7 +322,7 @@ pub fn snapshot_from_engine(
                     shape: part.shape.clone(),
                     data,
                     coverage: None,
-                    block_format: None,
+                    block_format: part.block_format.clone(),
                 });
             }
             PartKind::Cells | PartKind::Ring => {
@@ -367,7 +367,7 @@ pub fn snapshot_from_engine(
                     shape,
                     data,
                     coverage: Some((span.start, span.end)),
-                    block_format: None,
+                    block_format: part.block_format.clone(),
                 });
             }
         }

@@ -146,6 +146,8 @@ pub struct PartLimits {
     pub dtype: Dtype,
     /// The whole shape for a fixed or derived part; the row shape for cells or ring.
     pub shape: Vec<u64>,
+    /// The name of the block format, when the dtype is `U8` for a block format. `None` otherwise.
+    pub block_format: Option<String>,
 }
 
 impl PartLimits {

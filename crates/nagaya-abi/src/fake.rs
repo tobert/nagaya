@@ -109,24 +109,28 @@ impl Fake {
                 kind: PartKind::Fixed,
                 dtype: Dtype::U8,
                 shape: vec![16],
+                block_format: None,
             },
             PartLimits {
                 name: "cells".to_owned(),
                 kind: PartKind::Cells,
                 dtype: Dtype::U8,
                 shape: vec![8],
+                block_format: None,
             },
             PartLimits {
                 name: "ring".to_owned(),
                 kind: PartKind::Ring,
                 dtype: Dtype::U8,
                 shape: vec![8],
+                block_format: None,
             },
             PartLimits {
                 name: "pooled".to_owned(),
                 kind: PartKind::Derived,
                 dtype: Dtype::U8,
                 shape: vec![8],
+                block_format: None,
             },
         ];
         let limits = Limits {
