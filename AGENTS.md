@@ -104,11 +104,18 @@ Do them in this order. Each milestone ends with all checks green and one or more
 11. **Text front-end.** Write the family library for Qwen3.8 (11.3): the tokenizer, the chat template and the
     detokenizer, from the GGUF metadata. Test against fixed outputs of mk's Python front-end (`harness/tokenizer.py`,
     `service/chatfmt.py`). Make those outputs with mk's Python, with no service and no GPU. Keep them in the tests.
+11.5. **Spec compliance.** Amy, 2026-10-20: "rework our specs and do a M11.5 pass of bringin the code into
+    compliance with the spec after updating it with what we learned." The spec changed first, on 2026-10-20:
+    - An audit compares each crate with its spec sections. It lists each gap with `file:line` in the code and in
+      the doc.
+    - Each gap is a step with a test that fails first. A gap that needs a decision goes to Amy.
+    - A rule for a part that no milestone built yet waits for the milestone that builds that part. The audit lists
+      it as deferred.
 12. **Council v2.** Serve council v2 for the engines of the profile, with one sampler (11.1, 11.2, 11.5). gogi is
     the contract: `~/src/gogi/docs/council-api.md` and the types in `gogi-proto`. Run `gogi-conformance` against
-    the process with the fake engine. Coordinator routing waits for a second machine. Test the sampler against fixed
-    outputs of mk's `service/sampling.py`, made from fixed logits, settings and seeds, as in milestone 11. If its
-    random draw cannot match bit for bit, match the filter order and the probabilities, and say so in a note.
+    the process with the fake engine; coordinator routing waits for a second machine. Test the sampler against fixed
+    outputs of mk's `service/sampling.py`, made from fixed logits, settings and seeds, as in milestone 11. The draw
+    keeps no state (11.2), so it does not match mk's PCG64 bits. Match the filter order and the probabilities.
 13. **Observability.** Log to stderr. Export traces and metrics over OTLP when the endpoint is set (9.1-9.5). Each
     instrument has a call site under test.
 14. **Deploy on gfx1151host.** Write a systemd user unit in `deploy/` (10.1). The bootstrap config binds
@@ -160,7 +167,7 @@ cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --tests
 python3 tools/ste_check.py README.md AGENTS.md docs/*.md
-awk 'length > 120 && !/^\|/ {print FILENAME":"FNR}' README.md AGENTS.md docs/*.md
+awk 'length > 120 && !/^\|/ {print FILENAME":"FNR; bad = 1} END {exit bad}' README.md AGENTS.md docs/*.md
 ```
 
 Run `cargo fmt --all` often, not only before a commit. On gfx1151host, after a change to

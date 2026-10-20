@@ -9,9 +9,13 @@ English (`AGENTS.md`).
 
 When this spec and another doc do not agree, correct one of them. Neither one wins without a decision.
 
-Status: draft, 2026-10-18. The sources are the design conversations with Amy and inventories of mk
+Status: draft, 2026-10-20. The sources are the design conversations with Amy and inventories of mk
 (`~/src/megakernel-qwen38-flashnext-strixhalo`) and mkviolet (`~/src/mkviolet`). The code follows `AGENTS.md`. Each open
 question has the mark **Open**, and section 15 lists all of them.
+
+We change this spec before we change the code (Amy, 2026-10-20: "I want to keep updating the spec before the code so
+we could redo it all again if we decide to"). The mark "Decided 2026-10-20 (reading)" is on a rule that began as a
+**Proposed** reading of the text. Senpai wrote it as a rule, and Amy can veto it.
 
 ## 1. Scope
 
@@ -60,13 +64,17 @@ in `telemetry.rs` as constants.) A CPU that runs work is a device in the invento
 A machine with no GPU engine can also join the cluster to serve as a coordinator, run CPU devices (13.2), or hold a
 store tier.
 
-**Proposed** by deepseek-flash, 2026-10-18: the bootstrap config is one TOML file, `nagaya.toml`, with these keys:
-`http_bind`, `gossip_bind`, `store_dir`, `seed_peers`, and `park_budget_secs`. The first three keys are required.
-`seed_peers` defaults to an empty list. `park_budget_secs` defaults to 10 (10.3, ds4-recipe).
+**The probe reads files, not a GPU runtime.** The inventory probe reads sysfs, procfs and `/dev` under a root path.
+It does not open a GPU runtime to count devices. A call into a vendor library is allowed only when it opens no device
+context. (DeepInfer reads NVML through `ctypes`.) The tests run the probe against fixed trees for gfx1151host, b70host
+and sm121host. Decided 2026-10-20 (`docs/deepinfer.md` 5).
 
-An unknown key is an error, so a misspelled key stops the process. v0 has no flags for these values, because the
-file is the only source. Reason: 2.1 names the file, and the engine config is already TOML (ABI "Rust shape"). Two
-sources for one value can disagree.
+**The bootstrap config.** The bootstrap config is one TOML file, `nagaya.toml`. Its keys are `http_bind`,
+`gossip_bind`, `store_dir`, `seed_peers` and `park_budget_secs`. The first three keys are required. By default,
+`seed_peers` is an empty list, and `park_budget_secs` is 10 (10.3, ds4-recipe).
+
+An unknown key is an error, so a misspelled key stops the process. There are no flags for these values, and the file
+is the only source. Reason: two sources for one value can disagree. Decided 2026-10-20 (reading).
 
 The node advertises `gossip_bind` to its peers (2.3). An unspecified address, `0.0.0.0` or `::`, is an address that no
 peer can reach. The process refuses it and exits 3, and the message names `gossip_bind`. Decided 2026-10-19.
@@ -81,10 +89,10 @@ exit 3.
 Reason for `node_name`: a profile for `<host>` needs a name that a client knows. A test that runs two processes on
 one machine sets two names. Decided 2026-10-19.
 
-**Proposed** by deepseek-flash, 2026-10-18: the process reads the bootstrap config from the path in the environment
-variable `NAGAYA_CONFIG`. When the variable is unset, it reads `nagaya.toml` in the working directory. Reason: the
-systemd unit sets the variable, and a test points it at a temporary file. No argument parser is needed. A file that
-does not read or parse stops the process with exit 3, and the message names the path.
+The process reads the bootstrap config from the path in the environment variable `NAGAYA_CONFIG`. When the variable
+is unset, it reads `nagaya.toml` in the working directory. The systemd unit sets the variable, and a test points it
+at a temporary file. A file that does not read or parse stops the process with exit 3, and the message names the
+path. Decided 2026-10-20 (reading).
 
 **2.2 Tier edges.** An edge records more than a bandwidth (`docs/prior-art.md` 5):
 
@@ -114,9 +122,9 @@ node writes a few keys, plus one key for each engine.
 
 A profile that does not fit in 8192 bytes needs a different path, which is not in v0. Decided 2026-10-19.
 
-**Proposed** by Sonnet 5.5, 2026-10-19, on senpai's instruction: a gossip key has at most 1024 bytes. The nagaya
-refuses to publish a longer key, and the refusal names the key. Reason: `chitchat` 0.13.0 writes the length of a key
-in 16 bits, and a delta must fit one datagram.
+A gossip key has at most 1024 bytes. The nagaya refuses to publish a longer key, and the refusal names the key.
+Reason: `chitchat` 0.13.0 writes the length of a key in 16 bits, and a delta must fit in one datagram. Decided
+2026-10-20.
 
 The value of `profile:desired:<host>` is JSON with two fields. `version` is an integer that the client picks.
 `profile` is the placement profile (2.4) as a JSON object. The machine that takes a `PUT` writes the key under its
@@ -127,10 +135,6 @@ version that is not higher than the last version that it handled.
 
 The node writes the handled version to `<store_dir>/profile.version`, after it writes `profile.toml`. A restart keeps
 the order. A missing file means version 0.
-
-**Proposed** by Sonnet 5.5, 2026-10-19, on senpai's instruction: a refused version is a handled version. The node
-writes it to `profile.version` and keeps `profile.toml`. A restart does not handle that version again, and it
-ignores a lower version.
 
 The node handles a version in this order: admit the profile with the ledger, persist it, then act on it (3.3). A
 profile that differs from the active profile in any field is admitted and persisted. The node then stops through the
@@ -145,17 +149,19 @@ The node writes the key `profile:refused` under its own node. Its value is JSON 
 `shortfall`. Each `shortfall` entry has `tiers` and `bytes`. The node removes the key when it handles a newer
 version. Decided 2026-10-19.
 
-**Proposed** by Sonnet 5.5, 2026-10-19: a node reports a duplicate node name. Amy decided to log it and to publish a
-key (2026-10-19). A chitchat id has the name, a generation and the gossip address. A live peer is a duplicate when
-it has this node's name and is not this node's own earlier run. An earlier run has this node's gossip address and a
-lower generation.
+A refused version counts as handled. The node writes the version to `profile.version`, and it keeps the old
+`profile.toml`. After a restart, the node does not handle that version again, and it ignores each lower version.
+Decided 2026-10-20.
 
-For each such peer, the node logs one error that names both ids, as `name:generation:address`. It writes the key
-`name:conflict` under its own node. The value is JSON: `{"own": "<id>", "peers": ["<id>", ...]}`. `peers` holds the
-ids of the duplicates, in sorted order.
+**A duplicate node name.** Two live nodes can have one name. A chitchat id has three fields: the name, a generation
+and the gossip address. A live peer is a duplicate when it has this node's name and is not this node's earlier run.
+An earlier run has this node's gossip address and a lower generation. Thus a peer with another address is a
+duplicate. A peer with this address and a generation that is not lower is a duplicate too.
 
-A peer with another address is a duplicate. A peer with this address and a generation that is not lower is a
-duplicate too. The node takes no other action. It removes the key when no duplicate is live.
+For each duplicate, the node logs one error that names both ids as `name:generation:address`. It also writes the key
+`name:conflict` under its own node, with the JSON value `{"own": "<id>", "peers": ["<id>", ...]}`. `peers` holds the
+ids of the live duplicates, in sorted order. The node removes the key when no duplicate is live. It takes no other
+action. Decided 2026-10-19 (Amy: log it and publish a key), and written as a rule 2026-10-20.
 
 **2.4 Placement profile.** A placement profile names a machine's engines, their devices, their config, each tier's
 budget (4.1), each engine's share (D9), and pinned identities (12.1). A client reads or updates a machine's profile
@@ -168,17 +174,16 @@ fit the budgets (section 4), the nagaya refuses the profile before it opens an e
 shortfall in bytes for each tier. At cold start, a refused profile exits 3 (10.4). At runtime, a refused `PUT`
 returns 507 and keeps the active profile.
 
-**Proposed** by deepseek-flash, 2026-10-18: the refusal reports one entry for each short budget, with the tiers
-that share it. A caller that adds the entries does not count a pooled budget twice. On gfx1151host, `device(0)` and
-`host` are one pool (4.2).
+A refusal has one entry for each budget that is short, with the tiers that share that budget. Thus a caller that
+adds the entries does not count a pooled budget twice. On gfx1151host, `device(0)` and `host` are one pool (4.2). Decided
+2026-10-20 (reading).
 
-**Proposed** by deepseek-flash, 2026-10-18: the placement profile is one TOML file. It has `[[engines]]` entries with
-`name`, `kind`, `devices`, `config`, `share`, and `pin_identity`. It has `[[budgets]]` entries with `tiers` and
-`bytes`, where a tier is `host` or `device(i)`. It has a `[store]` table with `nvme` and optional `host` (4.1a).
+The placement profile is one TOML file. Each `[[engines]]` entry has `name`, `kind`, `devices`, `config`, `share`
+and `pin_identity`. Each `[[budgets]]` entry has `tiers` and `bytes`, and a tier is `host` or `device(i)`. The
+`[store]` table has `nvme` and an optional `host` (4.1a). Decided 2026-10-20 (reading).
 
-**Proposed** by Sonnet 5.5, 2026-10-19, on senpai's instruction: an engine name has letters, digits, `.`, `_` and
-`-`, and at most 128 bytes. A profile with another name does not parse. Reason: the name is in the gossip key
-`engine:<name>`.
+An engine name has letters, digits, `.`, `_` and `-`, and at most 128 bytes. A profile with another name does not
+parse. Reason: the name is part of the gossip key `engine:<name>` (2.3). Decided 2026-10-20.
 
 The process writes an accepted profile to `<store_dir>/profile.toml`, atomically: a temporary file, then a rename.
 The file has the same shape as the input, so a read gives an equal profile. An unknown kind or key refuses the
@@ -214,10 +219,9 @@ thread priorities:
 comes before the HTTP coordinator, which joins the runtime in milestone 12. The group threads, the ledger thread
 and the watchdog thread stay std threads. They do not use `tokio`. The `sched_setaffinity` isolation stays deferred.
 
-**Proposed** by deepseek-flash, 2026-10-18: milestone 10 step b does not apply `sched_setaffinity`. The bootstrap
-config names no core sets, and step b runs no GPU or IO work to isolate. The later step that applies isolation needs
-a test. The test reads each thread's CPU mask with `sched_getaffinity`, and asserts that the control threads exclude
-the group cores.
+Milestone 10 does not apply `sched_setaffinity`, because the bootstrap config names no core sets. The step that
+applies isolation needs a test. The test reads the CPU mask of each thread with `sched_getaffinity`. It checks that
+the control threads do not use the group cores. Decided 2026-10-20 (reading).
 
 **3.3 Engine lifecycle and profile swaps.** The nagaya opens each engine at start, from the profile. mk cannot close
 inside a process today: "the HIP runtime's own teardown segfaults" (mk `service/__main__.py`). Thus in v0, when
@@ -337,16 +341,19 @@ while interactive is more cooperative multitasking"):
   present jobs in `interactive`, clamped to ±30 s. A job that leaves takes only its own balance (ds4-recipe
   `11-multi-session-serving.md` section 6).
 
-**Settled** by gogi (`~/src/gogi/docs/council-api.md:159-160`): "a higher priority runs first within its
-class". **Proposed** by deepseek-flash, 2026-10-18: the scheduler picks the higher priority first, then the
-higher owed balance, then the earlier arrival. On a quantum of d ms for job j among n present interactive jobs,
-j's balance falls by d*(n-1)/n. Each other job's balance rises by d/n. Round down, and clamp the balance to
-±30 s. A job that leaves removes its own balance.
+gogi settles the first key: "a higher priority runs first within its class" (`~/src/gogi/docs/council-api.md:159-160`).
+Among equal priorities, the higher owed balance runs first, and then the earlier arrival. A quantum of `d` ms for job
+`j`, among `n` present interactive jobs, changes the balances like this:
 
-The clamp forgives the excess, so the balances sum to zero only while no balance is at a bound.
+- the balance of `j` falls by `d*(n-1)/n`;
+- the balance of each other job rises by `d/n`;
+- each change rounds down, and each balance stays between -30 s and +30 s.
 
-**Proposed** by deepseek-flash, 2026-10-18: when an interactive pass has several segments, split the pass time
-equally among its segments. The rounding remainder goes to the earliest-arrival segment.
+A job that leaves removes its own balance. The bounds forgive the excess, so the balances sum to zero only while no
+balance is at a bound. Decided 2026-10-20 (reading).
+
+When an interactive pass has several segments, each segment gets an equal part of the pass time. The rounding
+remainder goes to the segment with the earliest arrival. Decided 2026-10-20 (reading).
 
 **5.5 Filler.** A filler job declares a checkpoint interval: the time between its checkpoints. It must be resumable:
 its state parks when it gives way (Ai2's "unallocated" time). It runs only when no interactive or batch quantum is
@@ -367,6 +374,12 @@ waits for jobs that are not ready. In v0 each window is 0 ms, so a pass takes on
 the scheduler chooses. The windows are in the bootstrap config (2.1), so a measurement can change them. Decided
 2026-10-18.
 
+**What `segments_exact` promises.** An engine that declares `segments_exact` promises that the order of each sum
+depends only on the shape of the problem. It never depends on the segment count, the row count of a pass, or the
+count of compute units. Thus the engine does not choose a split of a reduction by the size of a pass, and it adds
+no floats with atomics. Decided 2026-10-20 (`docs/deepinfer.md` 2). DeepInfer's batch-invariant mode keeps this
+rule: its gate GEMM never splits K, and its other splits have a fixed count.
+
 **5.8 Deadlines.** A job can have a deadline (council v2 `timeout_ms`). The scheduler checks it between quanta. A
 job after its deadline goes to the terminal state "expired", and its segments do not run again. On a status code,
 an expired job is a 504 `timeout`. On a stream that already sent its first event, the nagaya sends a terminal
@@ -384,8 +397,14 @@ expired. A release does not delete a snapshot. Only eviction (6.9) removes a sto
 
 **5.11 Cost model (D4).** The nagaya fits a robust affine cost from production quanta, keyed by engine, kind,
 segment count and context depth. Quanta that ran beside other work are not in the fit. The nagaya uses the fit for
-store eviction value-per-byte (6.9) and deadline checks between quanta (5.8). Before a fit exists, the nagaya records
-"no model yet". An engine can have its own private planner, which stays in the engine (mkviolet `council_server.rs`).
+store eviction value-per-byte (6.9) and deadline checks between quanta (5.8). An engine can have its own private
+planner, which stays in the engine (mkviolet `council_server.rs`).
+
+**A measured prior.** At the first start of an engine identity, the nagaya times a short curve for each kind. Each
+point is one warmup run and the trimmed mean of five runs. The curve goes into the plan table under the identity,
+and later starts read it. The fit starts from the curve and corrects it with production quanta. Decided
+2026-10-20 (`docs/deepinfer.md` 4). DeepInfer measures its decode curve in this way
+(`deepinfer/worker/model_runner.py:586-619`).
 
 ## 6. State and the store
 
@@ -423,10 +442,17 @@ Thus a prefix lookup hashes only the tokens since the last boundary. The identit
 the fields of `identity()` (12.1). The inputs are tokens, not text: the tokenizer and template are in the identity.
 Decided 2026-10-18.
 
-**Proposed** by deepseek-flash, 2026-10-18. The tags are: 1 identity digest, 2 geometry key, 3 approximation
-tags, 4 lab state; 5 previous recipe, 6 tokens, 7 boundary position. The approximation item holds a `u64`
-count, then each tag as a `u64` length and its bytes. The caller gives the identity digest; the identity hash
-is spec 12.1. Reason: 6.2 fixes the item shape, but it does not give the tag numbers.
+The tag numbers are in this table. Decided 2026-10-20 (reading).
+
+| Tag | Item |
+|---|---|
+| 1 | the identity digest (12.1), which the caller gives |
+| 2 | the geometry key |
+| 3 | the approximation tags: a `u64` count, then each tag as a `u64` length and its bytes |
+| 4 | the lab state |
+| 5 | the previous recipe |
+| 6 | the tokens |
+| 7 | the boundary position |
 
 mk's `context_id` and mkviolet's `snap:<sha256>` are the input part of a recipe. They do not include the engine
 identity. mk's id is a SHA-256 of the tokens and boundaries with `|gdn-bf16-v1|`.
@@ -463,16 +489,16 @@ Decided 2026-10-18 evening.
 only when it is at most a quarter of a full snapshot.) A delta holds, for each cells part and ring part, the rows
 after its parent's end. It holds each fixed part whole. The store never evicts a base while a delta needs it.
 
-**Proposed** by deepseek-flash, 2026-10-18. A delta's `put` names its parent content id and its previous recipe.
+A delta's `put` names its parent content id and its previous recipe. The store checks these facts:
 
-The store checks four facts. The parent is live. The delta is no deeper than the chain limit. Its size is within
-the delta fraction. Its coverage starts at the parent's end.
+1. The parent is live.
+2. The delta is no deeper than the chain limit.
+3. The size of the delta is within the delta fraction.
+4. The coverage of the delta starts at the end of the parent.
+5. The previous recipe equals the recipe of the parent entry, and the recipe of the delta is a later one.
 
-The store also checks that the previous recipe equals the parent entry's recipe. It checks that the delta's recipe
-is a later one.
-
-The store cannot compute the recipe hash again, because it does not have the tokens. Reason: 6.5 says a delta's
-recipe follows its parent's. The caller holds the inputs that prove it.
+The store does not have the tokens, so it cannot compute the recipe again. The caller holds the inputs that prove
+it. Decided 2026-10-20 (reading).
 
 **`max_depth` counts deltas, not entries.** A chain with a base and one delta has depth 1. A store with
 `max_depth: 0` refuses every delta. Reason: 6.5 gives ds4-recipe depth 1 with one delta. Decided 2026-10-18
@@ -523,9 +549,10 @@ entry as it is. A failure never deletes content.
 
 **6.9 Eviction.** The store chooses victims in this order:
 
-1. Pinned entries are exempt.
-2. Thin the chains: interiors go before tips and roots.
-3. Remove whole entries by value per byte: recency, hits, and the cost to build them again.
+1. Interval copies go first (6.13).
+2. Pinned entries are exempt.
+3. Thin the chains: interiors go before tips and roots.
+4. Remove whole entries by value per byte: recency, hits, and the cost to build them again.
 
 The formula for value per byte is a choice of the implementation. It never changes bits. The store chooses all
 victims before it deletes one. It also chooses them before it writes the new entry.
@@ -554,6 +581,31 @@ wakes pinned entries into slots when the profile asks for them. (mk wakes its pi
 **6.12 Steering and lab inputs.** Some state changes bits but is not an input, for example mk's attention cell mask
 or a steering vector. Such state goes into the recipe. Thus a steered or masked result never has a plain recipe.
 
+**6.13 Interval copies.** An engine can declare a checkpoint grain in `limits()`, in tokens. Then, between quanta,
+the scheduler makes an interval copy (ontology) of each context that passed a multiple of the grain. Decided
+2026-10-20 (`docs/deepinfer.md` 3).
+
+- **No seal.** The copy does not seal, so the live context keeps its bits. A seal would change every later token
+  of every generation.
+- **Host memory only.** The store keeps interval copies in its host tier, charged to the store's host budget (4.1a).
+  They never go to NVMe, and a park of the context does not take them.
+- **The latest copy only.** The store keeps one copy for each context. A new copy replaces the old one.
+- **Evicted first.** Interval copies go before any entry in eviction (6.9). The profile caps their count, and the
+  store evicts the least recently used copy above the cap.
+- **Exact replay.** A restore writes the copy's parts, then replays the tokens after the copy. The replay uses the
+  same boundaries and the same pass boundaries as the first run. Thus it gives the bits of the first run.
+
+The copy serves three uses: a branch from an earlier position, a truncate, and a recovery after the live state is
+lost. Amy, 2026-10-20: "I suspect we only want a few copies online and won't benefit as much as a commerical
+service does, but it is cool and we'll do it."
+
+For mk, one copy is about 112 MiB: the GDN state in f32 (108 MiB) and the conv state (4.3 MiB, mk `DESIGN.md`). A
+copy does not repeat K/V, because K/V rows are only appended. With a grain of 256 tokens, a decode makes a copy every
+10-15 s. A replay of up to 255 tokens takes up to about 13 s on mk, with one pass for each token (51 ms each).
+
+**Open:** does one pass of many tokens give the same bits on mk as one pass for each token? If it does, a
+replay can use one pass of up to 255 tokens, about 2 s. A measurement answers the question.
+
 ## 7. IO
 
 **7.1 One IO service per machine.** Engines (through the `io` capability) and the store send IO requests
@@ -575,11 +627,10 @@ copy that has no verification gives no reads.
 The watchdog thread (3.2) reports each quantum that is past `max_quantum_ms` by a margin. It runs on its own thread,
 because the group thread is blocked in the pass.
 
-**Proposed** by deepseek-flash, 2026-10-18: a device group that stops its heartbeat is a failure. The process exits
-with code 1, the crash code of 10.4, and systemd restarts it. Reason: spec 8.5 says the process stops before it
-continues in a bad state, and a stalled engine may hold a device. The default timeout is 30 s. It is three times the
-longest declared quantum bound in the ABI (mk: 10 s). A start parameter sets the timeout, and the tests use a short
-value.
+A device group that stops its heartbeat is a failure. The process exits with code 1, the crash code of 10.4, and
+systemd restarts it. Reason: a stalled engine can hold a device, and the process stops before it continues in a bad
+state (8.5). The default timeout is 30 s, three times the longest declared quantum bound (mk: 10 s). A start
+parameter sets the timeout, and the tests use a short value. Decided 2026-10-20 (reading).
 
 ## 8. Correctness at runtime
 
@@ -608,7 +659,14 @@ poison. After a poison or a timeout, the nagaya does these steps:
 - park and restore keep every bit;
 - seal runs only at boundaries;
 - the quantum conditions hold (ontology "Quantum");
-- an admission refusal changes nothing.
+- an admission refusal changes nothing;
+- for an engine that declares `segments_exact`, a segment gives the same bits in passes with one, two and the
+  maximum count of segments (5.7).
+
+**One oracle for each family.** Each model family has one reference: today, fixed outputs of mk's Python. Every
+engine of that family passes its conformance against that reference, on any vendor's device. Decided 2026-10-20
+(`docs/deepinfer.md` 6). The engine crates stay one for each vendor and device (Amy: "we generate a megakernel per
+vendor/device and they get their own whole crate").
 
 The suite compares values by integer bit pattern. NaN or Inf fails, even when the bit patterns are equal. Counts
 must also match. Each gate keeps a broken variant that it must fail (ds4-recipe `01-correctness-and-measurement.md`).
@@ -703,9 +761,9 @@ a filter by engine or kind when it connects.
 **10.1 systemd.** The unit is `Type=notify`. The process sends `READY=1` when every engine in the profile has
 opened, passed its canary, and woken its pinned state. `STATUS=` gives the state of each engine.
 
-**Proposed** by deepseek-flash, 2026-10-18: when `<store_dir>/profile.toml` does not exist, the process starts with an
-empty profile. An empty profile is valid: a machine with no engine can serve as a coordinator or hold a store tier
-(2.1). A profile with no engines sends `READY=1` when admission passes. Step c has no HTTP to accept a first profile.
+When `<store_dir>/profile.toml` does not exist, the process starts with an empty profile. An empty profile is valid,
+because a machine with no engine can serve as a coordinator or hold a store tier (2.1). A process with an empty
+profile sends `READY=1` when admission passes. Decided 2026-10-20 (reading).
 
 **10.2 Arenas through a restart.** systemd's file-descriptor store keeps the arenas (`FDSTORE=1`). Each fd has the
 name `<engine>/<device>/<part>`. systemd reads `FileDescriptorStoreMax` from the unit file before the process starts.
@@ -733,15 +791,14 @@ At start, the nagaya does these steps for each engine:
 A second signal makes the process exit at once. Cancellation of running work follows 5.9. **Open:** the conversion
 to canonical safetensors (D10) is not yet measured, so we do not know how many contexts fit in the budget.
 
-**Proposed** by Sonnet 5.5, 2026-10-19, on senpai's instruction: a stop cancels each queued quantum that has not
-started. The submitter sees a cancelled outcome (5.9). Only the running quantum goes to its end. The park budget
-of a group starts when its drain ends. A drain that never ends is a stall, and the process exits 1 (7.4). A stop that
-a second signal interrupts exits 1, unless every state was parked.
+**Queued quanta and the park budget.** A stop cancels each queued quantum that has not started, and the submitter
+gets a cancelled result (5.9). Only the running quantum goes to its end. The park budget of a group starts when the
+drain of that group ends. A drain that does not end is a stall, and the process exits 1 (7.4). When a second signal
+interrupts a stop, the process exits 1, unless every state was parked. Decided 2026-10-20.
 
-**Proposed** by deepseek-flash, 2026-10-18: the process handles SIGTERM with a handler that increments a static atomic
-counter. The handler is a declaration of `signal(2)` in `extern "C"`, because std has no signal API. The handler does
-one lock-free increment. The main loop reads the counter every 50 ms. Reason: no new dependency. A later step with
-`tokio` can replace it with a signal stream.
+The process catches SIGTERM with a handler that adds one to a static atomic counter. The handler is `signal(2)`,
+declared in `extern "C"`, because std has no signal API. The main loop reads the counter every 50 ms. Reason: this
+needs no new dependency. A later step can use a signal stream from `tokio` instead. Decided 2026-10-20 (reading).
 
 **10.4 Exit codes.**
 
@@ -755,9 +812,10 @@ one lock-free increment. The main loop reads the counter every 50 ms. Reason: no
 The restart policy follows mk's unit: `Restart=on-failure`, `RestartSec=30`, and at most 3 starts in 600 s.
 systemd counts each start against that limit, also a start after code 4. Thus a fourth profile swap in 600 s fails.
 
-**Proposed** by deepseek-flash, 2026-10-18, corrected 2026-10-19: an engine that does not open at start stops the
-process. An identity, pin or part-size mismatch is a refusal to start: exit 3. Any other open failure is a crash:
-exit 1, so systemd restarts it within its start limit. A message on stderr names the engine and the reason.
+An engine that does not open at start stops the process. A mismatch of the identity, the pin or a part size is a
+refusal to start, so the process exits 3. Any other failure to open is a crash. The process exits 1, and systemd
+restarts it within its start limit. A message on stderr names the engine and the reason. Decided 2026-10-20
+(reading).
 
 ## 11. Client API
 
@@ -772,6 +830,10 @@ coordinator finds the target engine from the request's `model` field and the `ch
 the coordinator has the family libraries (11.3) and the engine's `identity()` from gossip, it can render, tokenize
 and compute the recipe locally. It then schedules the job locally or forwards the work to the machine that holds the
 engine.
+
+Routing to the machine that holds the deepest chain is deferred. Amy, 2026-10-20: "it's more likely folks like me
+and my friend Gavin have a heterogeneous fleet, and will typically want sticky sessions with each model/gpu rig,
+and it's okay those can't move around easily" (`docs/deepinfer.md` 7).
 
 The API has contexts, specs, decisions, snapshots, pins, reads, and generations with riding decisions. In council v2
 responses, a snapshot `id` is its BLAKE3 content id (`blake3:<hex>`), and the store looks up prefixes by recipe
@@ -789,10 +851,20 @@ Pooling and the decision numbers come from `gogi_proto::math`, which all engines
 (mk: `libmkengine:<sha>+numbers:<sha>`.)
 
 **11.2 Generation.** The nagaya runs one sampler for all engines. It applies top_k, top_p, min_p, then temperature.
-The draw is seeded, and the response reports the seed. Each engine has its own defaults.
+The draw is seeded, and the response reports the seed. Each engine has its own defaults. All engines share the SSE
+framing.
 
-All engines share the SSE framing. Speculative drafts change how the sampler uses the seed (mkviolet's
-prompt-lookup drafts). Thus a request says if drafts are on, and the reported seed includes that setting.
+**The draw keeps no state.** The random value for a token depends on three things: the seed, the position of the
+token, and the purpose of the draw. The purposes are a sample, a resample and the test of a draft.
+The sampler keeps no random state between tokens. A fork gets a child seed, a hash of the parent's seed and a branch
+number. Decided 2026-10-20 (`docs/deepinfer.md` 1).
+
+Reason: a park, a restore or a fork then keeps the sampler's bits, with nothing to save. A generation that resumes
+after a restart gives the same tokens. A speculative draft (mkviolet's prompt-lookup drafts) has its own purpose,
+so it never moves a later draw. Thus the reported seed does not change when drafts are on.
+
+mk's sampler draws from one PCG64 stream for each request (mk `service/sampling.py:106`, `:153`). The nagaya does
+not match those bits. It matches mk's filter order and its probabilities (milestone 12).
 
 **11.3 Text front-end.** Each model family has its own text rules. They are a tokenizer, a template, escapes for
 special tokens in client text, and parsers for tool calls and thinking. The nagaya holds one library per family
@@ -804,7 +876,8 @@ kaijutsu's semantic search and stuff"). Thus one renderer serves every engine of
 The rendering rules in gogi, such as where a boundary exists and where thinking renders, get one implementation and
 one set of conformance tests. mk's C ABI does not need a tokenizer.
 
-**Proposed** (Claude Sonnet 5.5, milestone 11 and 11b): the Qwen3.8 library follows these rules.
+**The Qwen3.8 library.** The library follows these rules. Decided 2026-10-20 (Amy accepted the note from
+milestones 11 and 11b).
 
 - The library reads the template from the GGUF key `tokenizer.chat_template` and runs it with a Jinja interpreter.
   It does not hold a hand-written copy. The template is part of the identity, so a new template in a GGUF needs no
@@ -962,3 +1035,4 @@ The inventories found these items. We correct each one when its code moves. We d
 1. Do an idle engine's GPU queues slow the other engines on its device (3.3)? A measurement answers this.
 2. What makes `close()` safe for mk, so that engines can load and unload at runtime (3.3)?
 3. How long does the conversion to canonical safetensors take on mk and mkviolet (10.3, D10)?
+4. Does one pass of many tokens give the same bits on mk as one pass for each token (6.13)?

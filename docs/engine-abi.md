@@ -80,7 +80,9 @@ limits() -> {
         elastic: [{name, tier, unit_bytes, minimum, maximum, kinds}],
     },                           tier: device(i) | host; i is an index into the device group
     chain: {max_depth, delta_fraction},   how the store may chain this engine's snapshots (spec 6.5)
-    segments_exact: bool,        segments that share a pass get the bits of a pass alone (spec 5.7)
+    segments_exact: bool,        segments that share a pass get the bits of a pass alone; no sum's order
+                                 depends on the segment count, the row count or the unit count (spec 5.7)
+    checkpoint_grain: tokens?,   the scheduler makes an interval copy at each multiple (spec 6.13)
     determinism: always | pinned | per-process,   and bit_dependence: [residency, ...] (D3)
     taps: [...], with the conditions each needs (mk: unfused, one segment)
 }
@@ -141,9 +143,9 @@ results (spec 6.8):
 `arena_id` is the content id of the packed bytes that the engine runs. The identity carries the checkpoint digest
 instead, so a new packing does not change the identity.
 
-### Proposed: the first row of a cells write
+### The first row of a cells write
 
-**Proposed** by deepseek-flash, 2026-10-19. `cells_write` takes `from`, the position of its first row. The call
+Decided 2026-10-20 (reading). `cells_write` takes `from`, the position of its first row. The call
 matches `cells_read(state, part, from, n, out)`. A Cells part appends from 0, so its write names the number of rows it
 holds; the first write names 0. A Ring part may name a later position, because its window moves.
 
@@ -153,11 +155,10 @@ the rows to another position.
 Reason: without `from`, a ring that held positions 2 to 6 came back from the store at positions 0 to 4. That is a
 silent loss of state (spec 8.5).
 
-## Proposed: v0 Rust shapes
+## v0 Rust shapes
 
-**Proposed** by deepseek-flash, 2026-10-18. The ABI text names the calls and the fields, but it does not fix
-the Rust types. The first code needs concrete types. This section gives the simplest shapes that fit the
-decisions. Amy can change them later.
+Decided 2026-10-20 (reading). The ABI text names the calls and the fields, but it does not fix the Rust types.
+This section gives the simplest shapes that fit the decisions.
 
 - `State` is `Slot(u32)` in v0. A context handle arrives with the `contexts` capability.
 - `PartLimits` holds one `shape` vector. A fixed or derived part uses the whole shape. A cells or ring part
@@ -176,7 +177,7 @@ decisions. Amy can change them later.
   house test runs the fake tests; a normal build leaves them out.
 
 **Corrected** 2026-10-18: a default feature still let the tests be skipped. The dev-dependency ties the
-feature to the test build. This is a plain correction to the Proposed section, not a new design choice.
+feature to the test build. This is a plain correction, not a new design choice.
 
 **Amended** by deepseek-flash, 2026-10-18: `Coverage::coverage` takes the `State`. The ring's base position
 is in the state, not in the part bytes. The old call reported 0..n after a wrap.
@@ -198,7 +199,7 @@ full buffer, so the test calls the builder and not a pass.
 
 ### Canonical file bytes
 
-**Proposed** by deepseek-flash, 2026-10-18. The `safetensors` crate reads the canonical file, but its writer
+Decided 2026-10-20 (reading). The `safetensors` crate reads the canonical file, but its writer
 aligns the header to 8 bytes and does not order the tensors. Thus this code writes the header and data itself.
 The metadata keys are:
 
@@ -210,9 +211,8 @@ The metadata keys are:
 Reason: D10 rules 3 and 5 need sorted keys and a 4 KiB data start. The crate cannot write them. The crate
 still reads the file.
 
-**Proposed** by deepseek-flash, 2026-10-18: `PartLimits` has no block format field, so `snapshot_from_engine`
-cannot write one. The simplest fix is a `block_format: Option<String>` field on `PartLimits`. Until Amy adds
-it, the store refuses a block format on a dtype that is not `U8`.
+`PartLimits` has a field `block_format: Option<String>`, so `snapshot_from_engine` can write the block format. The
+store refuses a block format on a dtype that is not `U8`. Decided 2026-10-20 (reading).
 
 ### Fake engines
 
@@ -252,10 +252,10 @@ and gate 8.3 (park and restore) must fail it.
 | telemetry | `mk_stage_times`, `mk_stage_detail`, `mk_dispatches`, `mk_host_stats` | mk's stages are ops (`stage.h`), so these are op times |
 | determinism | `always` | `stage.h`: "every op's output bits depend only on its work items"; top-k ties break by index; bit settings in the identity |
 
-### Proposed: v0 mk binding choices
+### v0 mk binding choices
 
-**Proposed** by deepseek-flash, 2026-10-18. The milestone 8 binding needs these choices. Each is the simplest choice
-that fits the ABI.
+Decided 2026-10-20 (reading). The milestone 8 binding needs these choices. Each is the simplest choice that fits
+the ABI.
 
 - **A context is a state.** `State` is `Slot(u32)` in v0, so each mk context has a slot index. `limits().slots`
   declares the pool that one handle creates at open: 2 contexts of 256 tokens. The process opens one handle. The
@@ -279,7 +279,7 @@ that fits the ABI.
   layout at load (`engine.h:139-146`). The binding has not measured whether the two give equal bits. A change after
   open refuses the pass, as for `MK_FAST_QMM`.
 
-Reason for all: the code must not guess. Amy can change each choice.
+Reason for all: the code must not guess.
 
 **Corrected** by deepseek-flash, 2026-10-18: `max_quantum_ms` was 30000. mk's watchdog aborts a pass at 10 s
 (`engine.h:302-306`), so a 30 s bound promises a quantum that mk would stop. Review finding 13.
@@ -304,9 +304,11 @@ allocator's rounding do not explain.
 
 The wrapper's host buffers also wait for the process crate (the review's note on finding 9).
 
-### Proposed: test limits of the spin-timeout opt-in and the poisoned set_n path
+### Test limits of the spin-timeout opt-in and the poisoned set_n path
 
-**Proposed** by deepseek-flash, 2026-10-18. The binding binds `mk_engine_recover_spin_timeouts` and calls it with
+Decided 2026-10-20 (reading): these limits stay, and this section records them.
+
+The binding binds `mk_engine_recover_spin_timeouts` and calls it with
 `on = 1` at open (`566446c`, `worker.rs:549`). A misspelled symbol makes open fail with an undefined-symbol error,
 and `f99f9c0` quotes that mutation. Thus the suite pins the symbol's name only.
 
@@ -318,11 +320,13 @@ contention, so no test in this suite reaches them. The poisoned `set_n` path has
 stops the program on a poisoned context (`engine.hip:775-776`).
 
 Reason: a test that passes when the code is broken is a defect, so the suite reports these limits instead of a false
-check. Amy can decide whether a lab hook for the first case earns its cost.
+check. A lab hook for the first case is not in v0.
 
-### Proposed: test limit of the open-time part check
+### Test limit of the open-time part check
 
-**Proposed** by deepseek-flash, 2026-10-18. The wrapper calls `parts_problem` at open (`worker.rs:523`), and it
+Decided 2026-10-20 (reading): this limit stays, and this section records it.
+
+The wrapper calls `parts_problem` at open (`worker.rs:523`), and it
 refuses a library with other part sizes before any write. Real mk matches the declared shapes, so the check passes
 in every test.
 

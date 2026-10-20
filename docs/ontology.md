@@ -83,6 +83,12 @@ messages and spec layers.
 **Park.** A move of a state object to another tier, bit for bit. A park never seals. Thus when the scheduler parks a
 context to free its slot, later results do not change (`docs/engine-abi.md` D7).
 
+**Interval copy.** A copy of a context's parts at a multiple of the engine's checkpoint **grain**, taken between
+quanta. It is not sealed, so the context's later bits do not change. It is not a snapshot: it has no content id and
+no recipe, and only its own context restores from it. A restore from it replays the tokens after it, with the same
+pass boundaries as the first run (`docs/spec.md` 6.13). DeepInfer copies its window state each 128 tokens in the
+same way (`docs/deepinfer.md` 3).
+
 **Content id.** The name of a stored snapshot: the BLAKE3 hash of its canonical safetensors file. For a piece of a
 chain, the hash also covers the parent's content id (`docs/engine-abi.md` D3, D10). Each stored snapshot also
 records its **coverage**: the positions that it holds in each part. Coverage is in the canonical file, so it is in

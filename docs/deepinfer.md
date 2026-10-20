@@ -48,10 +48,12 @@ Four of their designs match rules that the spec already states. This is evidence
 
 ## Proposed changes to the spec
 
-Each item gives the lesson, its source, and the place in our docs where it lands. Amy decides each one before the
-spec changes. **Proposed** by Claude Opus 5.5, 2026-10-20, for each item in this section.
+Each item gives the lesson, its source, and the place in our docs where it lands. Claude Opus 5.5 proposed them on
+2026-10-20, and Amy decided them the same day by interview. Each item starts with its decision.
 
 ### 1. A sampler draw that is a function of the seed and the position (spec 11.2)
+
+**Decided:** adopted. Milestone 12 matches mk's filter order and probabilities, not mk's bits.
 
 DeepInfer keeps no random state for a sequence. Each draw seeds the generator from the sequence seed and a counter
 (`deepinfer/model_executor/layers/tilelang_ops/cuda/random_sampling.py:113`). The counter is three times the
@@ -72,6 +74,8 @@ We can match mk and keep a step counter in each job, or take the new rule and ma
 
 ### 2. A reduction order that depends only on the shape (D3, spec 5.7)
 
+**Decided:** adopted as the meaning of `segments_exact`. Conformance varies the segment count (spec 8.3).
+
 DeepInfer's batch-invariant mode has one rule. The order of every sum depends on the problem shape, never on the
 batch size or the count of compute units. Their switches show it:
 
@@ -88,6 +92,9 @@ a test that a kernel author can check.
 
 ### 3. Interval checkpoints at a fixed grain (spec 6.4, 6.5)
 
+**Decided:** an interval copy that does not seal (spec 6.13, ontology "Interval copy"). The latest copy for each
+context stays in host memory, and eviction takes those copies first, with a cap.
+
 DeepInfer stores state only at positions that are multiples of 128 (`KVSTORE_GRAIN`,
 `deepinfer/worker/cache_engine.py:32`). During decode, it copies a sequence's state on the device each time the
 sequence crosses a multiple of 128 (doc line 165). At the end of a request, the store takes the last copy.
@@ -102,8 +109,8 @@ the position, with the same boundaries.
 Proposed: an engine can declare a checkpoint grain in `limits()`. The scheduler then makes an `interval` snapshot
 (6.4) at each multiple of the grain.
 
-**Open:** mk's seal rounds the GDN state to bf16 (ontology "Seal"), so a seal changes the bits that follow. An interval
-checkpoint must therefore be one of these:
+mk's seal rounds the GDN state to bf16 (ontology "Seal"), so a seal changes the bits that follow. There were two
+choices for an interval checkpoint:
 
 - a seal at a declared boundary, so the grain positions join the recipe;
 - a copy that does not seal, which has no content id until it goes into the store (engine-abi, D7).
@@ -112,6 +119,8 @@ The first choice changes every generation's bits at each grain. The second choic
 store rule. This connects to the "shadow rounding points" from mk's goal 06.
 
 ### 4. A cost model with a measured prior (spec 5.11)
+
+**Decided:** adopted (spec 5.11).
 
 Spec 5.11 records "no model yet" until a fit exists. DeepInfer measures a curve at start instead: five timed runs
 for each batch size, a trimmed mean (`deepinfer/worker/model_runner.py:586-619`), saved under a hash
@@ -128,6 +137,8 @@ grow with depth.
 
 ### 5. Device discovery that tests can fake (spec 2.1)
 
+**Decided:** adopted (spec 2.1).
+
 DeepInfer finds devices from sysfs, procfs and `/dev`. It reads NVML through `ctypes`, so it never opens a GPU
 runtime to count devices (`deep_cluster/hardware/nvidia.py:18-129`). Each probe takes a root path, so a test runs it
 against a fake sysfs tree.
@@ -137,6 +148,9 @@ sm121host. DeepInfer assumes one vendor for each machine and records no links be
 measured edges of the tier graph (ontology "Tier").
 
 ### 6. One directory of kernels for each vendor (spec 14)
+
+**Decided:** not this layout. Each engine crate already serves one vendor and device. Adopted instead: one
+reference for each model family is the oracle for every engine of that family (spec 8.3).
 
 DeepInfer keeps a neutral interface and a Python reference for each kernel. The kernels for each vendor live in
 their own directory (`deepinfer/model_executor/layers/tilelang_ops/{cuda,asc}/`). A missing kernel raises
@@ -148,6 +162,8 @@ Proposed: when an engine has kernels for two vendors, use this layout. Do not ta
 extra vendor, but we have three.
 
 ### 7. Routing goes to the chain (spec 11.1)
+
+**Decided:** deferred. Amy expects fleets with sticky sessions for each model and machine (spec 11.1).
 
 DeepInfer's store is shared and fast, so any engine can load any prefix. Their prefill balancer thus ignores where a
 prefix lives (doc line 111). Our links are gigabit. A few hundred MB of state takes seconds to move.
