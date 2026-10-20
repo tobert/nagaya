@@ -574,7 +574,8 @@ A restore stops at the first write that is not ok, and it names the part that st
 write is a refused restore: nothing changed. A refusal after an earlier write changed the state is a failed
 restore, and the state is poisoned (8.5). Decided 2026-10-20 (reading).
 
-The store quarantines an entry only when its content id or its identity fails verification. A refusal leaves the
+The store quarantines an entry only when its content id or its identity fails verification. A blob whose hash
+matches but whose bytes do not decode fails its content id too. A refusal leaves the
 entry as it is. A failure never deletes content.
 
 A read error of a blob is not a quarantine. The lookup or the
@@ -589,6 +590,7 @@ the error, and the next use checks the entry again. Decided 2026-10-20.
 4. Remove the remaining entries by value per byte: recency, hits, and the cost to build them again. Tips, roots and
    entries without a chain are in one ranking. Decided 2026-10-20 (reading).
 
+A chain goes as a group: a root takes its chain with it, and the group's value is the value of its first entry.
 The formula for value per byte is a choice of the implementation. It never changes bits. The store chooses all
 victims before it deletes one. It also chooses them before it writes the new entry.
 
@@ -603,7 +605,8 @@ one tier does not make room in the other. Decided 2026-10-18.
 pin holds a snapshot from its lookup to the end of its load. Pins stay through a restart (mkviolet `pins.json`).
 
 **Many owners can pin one entry.** Each owner holds its own pin, with its own expiry. An entry is pinned while any
-pin on it is live. An unpin removes only the caller's own pin. Decided 2026-10-20.
+pin on it is live. An unpin removes only the caller's own pin. A pin on a tip also keeps the entries under it,
+because eviction takes a chain as a group (6.9). Decided 2026-10-20.
 
 **The one-day maximum is for every pin.** The one-day maximum is a nagaya rule for every engine, not only for
 mkviolet. The store has no clock, so `pin` takes `now_ms` from the caller. It refuses an expiry more than one day
