@@ -4,6 +4,7 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use nagaya_abi::{
     BitDependence, ChainLimits, CoverageSpan, Determinism, Dtype, Engine, PartKind, SlotLimit, State, WriteResult,
@@ -830,6 +831,10 @@ pub struct Store {
     dir: PathBuf,
     index: Index,
     checked: BTreeSet<ContentId>,
+    /// The canonical bytes of the host-tier entries. A restart empties it (spec 6.11).
+    /// `Arc<[u8]>` is the simplest holder that is sound: the bytes are immutable, a reader shares them with no copy,
+    /// and the map key is the content id, so equal bytes cannot sit under two keys.
+    host_blobs: BTreeMap<ContentId, Arc<[u8]>>,
     budgets: BTreeMap<Tier, u64>,
     owner_quota: u64,
     /// The largest serial in a quarantine name. `open` sets the maximum; a unit test sets a smaller one.
@@ -865,10 +870,10 @@ impl Store {
         Self::open_inner(dir.into(), budgets, u64::MAX)
     }
 
-    /// Open the store with a byte budget for host memory and none for NVMe. For tests only (spec 4.1a).
+    /// Open the store with a byte budget for NVMe and none for host memory. For tests only (spec 4.1a).
     #[cfg(any(test, feature = "testing"))]
-    pub fn open_with_budget(dir: impl Into<PathBuf>, budget: u64) -> Result<Self, StoreError> {
-        Self::open_with_limits(dir, budget, u64::MAX, u64::MAX)
+    pub fn open_with_nvme_budget(dir: impl Into<PathBuf>, budget: u64) -> Result<Self, StoreError> {
+        Self::open_with_limits(dir, u64::MAX, budget, u64::MAX)
     }
 
     /// Open the store with a budget for each tier and an owner quota. Each put carries its engine's chain limits.
@@ -895,6 +900,23 @@ impl Store {
         } else {
             Index::default()
         };
+        // 6.11: the host tier does not survive a restart, so its entries and their pins leave the index.
+        // An index from before the host tier held its bytes in memory also left a file for each such entry.
+        let lost: Vec<ContentId> = index
+            .entries
+            .values()
+            .filter(|entry| entry.tier == Tier::Host)
+            .map(|entry| entry.content_id)
+            .collect();
+        for id in &lost {
+            index.entries.remove(id);
+            index.pins.remove(id);
+            match std::fs::remove_file(dir.join("blobs").join(id.hex())) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(io_error(error)),
+            }
+        }
         // 6.11: each entry is checked again at its first use after a restart.
         index.epoch = index.epoch.saturating_add(1);
         for entry in index.entries.values_mut() {
@@ -904,6 +926,7 @@ impl Store {
             dir,
             index,
             checked: BTreeSet::new(),
+            host_blobs: BTreeMap::new(),
             budgets,
             owner_quota,
             quarantine_serials: u32::MAX,
@@ -926,6 +949,11 @@ impl Store {
     /// Make the next write fail at one point.
     pub fn fail_next(&mut self, point: FailPoint) {
         self.fail_point.set(Some(point));
+    }
+
+    /// The bytes that the host tier holds in memory, for a test or a report.
+    pub fn host_resident_bytes(&self) -> u64 {
+        self.host_blobs.values().map(|bytes| bytes.len() as u64).sum()
     }
 
     /// The entries, for a test or a report.
@@ -993,7 +1021,7 @@ impl Store {
         let victims = if need == 0 {
             Vec::new()
         } else {
-            self.choose_victims(put.owner, Some(put.tier), need, put.now_ms)
+            self.choose_victims(put.owner, put.tier, need, put.now_ms)
         };
         if need > 0 {
             let freed: u64 = victims
@@ -1006,7 +1034,7 @@ impl Store {
             }
         }
 
-        self.write_blob(&bytes, &id)?;
+        self.store_bytes(put.tier, &bytes, &id)?;
 
         let mut index = self.index.clone();
         prune_pins(&mut index, put.now_ms);
@@ -1045,9 +1073,9 @@ impl Store {
         let previous = std::mem::replace(&mut self.index, index);
         if let Err(error) = self.persist() {
             self.index = previous;
-            return Err(self.rollback_blob(&id, error));
+            return Err(self.rollback_blob(&id, put.tier, error));
         }
-        // The index no longer names the victims, so their blobs can go.
+        // The index no longer names the victims, so their bytes can go.
         self.remove_blobs(&victims)?;
         Ok(id)
     }
@@ -1060,7 +1088,7 @@ impl Store {
         id: ContentId,
         coverage: Vec<PartCoverage>,
     ) -> Result<ContentId, StoreError> {
-        self.write_blob(bytes, &id)?;
+        self.store_bytes(put.tier, bytes, &id)?;
         let mut index = self.index.clone();
         let epoch = self.index.epoch;
         prune_pins(&mut index, put.now_ms);
@@ -1110,7 +1138,7 @@ impl Store {
         let previous = std::mem::replace(&mut self.index, index);
         if let Err(error) = self.persist() {
             self.index = previous;
-            return Err(self.rollback_blob(&id, error));
+            return Err(self.rollback_blob(&id, put.tier, error));
         }
         ids.sort();
         Err(StoreError::Tripwire {
@@ -1361,10 +1389,7 @@ impl Store {
     }
 
     fn read_snapshot(&mut self, id: &ContentId) -> Result<Snapshot, StoreError> {
-        let bytes = match std::fs::read(self.blob_path(id)) {
-            Ok(bytes) => bytes,
-            Err(error) => return Err(read_failed(id, error)),
-        };
+        let bytes = self.read_bytes(id)?;
         match Snapshot::decode(&bytes) {
             Ok(snapshot) => Ok(snapshot),
             Err(error) => {
@@ -1412,10 +1437,18 @@ impl Store {
             .map(|entry| entry.content_id)
             .collect();
         // Find every destination name first. A name that is not free must leave the index and the blobs as they are.
-        let moves: Vec<(PathBuf, PathBuf)> = bad
-            .iter()
-            .map(|id| Ok((self.blob_path(id), self.quarantine_path(id)?)))
-            .collect::<Result<_, StoreError>>()?;
+        // A host entry has no file, so its bytes are written to `quarantine/` instead of moved (spec 6.8: a failure
+        // never deletes content).
+        let mut moves: Vec<(PathBuf, PathBuf)> = Vec::new();
+        let mut saves: Vec<(Arc<[u8]>, PathBuf)> = Vec::new();
+        for id in &bad {
+            let to = self.quarantine_path(id)?;
+            if self.index.entries.get(id).is_some_and(|entry| entry.tier == Tier::Host) {
+                saves.push((self.read_bytes(id)?, to));
+            } else {
+                moves.push((self.blob_path(id), to));
+            }
+        }
         let mut index = self.index.clone();
         index.refused.remove(&recipe);
         for id in &bad {
@@ -1429,6 +1462,13 @@ impl Store {
         }
         for id in &bad {
             self.checked.remove(id);
+            self.host_blobs.remove(id);
+        }
+        for (bytes, to) in &saves {
+            write_synced(to, bytes).map_err(io_error)?;
+        }
+        if !saves.is_empty() {
+            sync_dir(&self.dir.join(QUARANTINE)).map_err(io_error)?;
         }
         self.move_blobs_to_quarantine(&moves)?;
         Ok(())
@@ -1447,7 +1487,7 @@ impl Store {
                 "a tripwire quarantine clears with its recipe".to_owned(),
             ));
         }
-        let bytes = std::fs::read(self.blob_path(id)).map_err(io_error)?;
+        let bytes = self.read_bytes(id)?;
         if content_id(&bytes) != *id {
             return Err(StoreError::Quarantined(*id));
         }
@@ -1464,12 +1504,18 @@ impl Store {
         self.persist()
     }
 
-    /// Choose and remove victims for an owner.
-    pub fn evict(&mut self, owner: u64, need_bytes: u64, now_ms: u64) -> Result<Vec<ContentId>, StoreError> {
+    /// Choose and remove victims for an owner in one tier. A byte in one tier does not make room in the other (6.9).
+    pub fn evict(
+        &mut self,
+        owner: u64,
+        tier: Tier,
+        need_bytes: u64,
+        now_ms: u64,
+    ) -> Result<Vec<ContentId>, StoreError> {
         if need_bytes == 0 {
             return Ok(Vec::new());
         }
-        let victims = self.choose_victims(owner, None, need_bytes, now_ms);
+        let victims = self.choose_victims(owner, tier, need_bytes, now_ms);
         let freed: u64 = victims
             .iter()
             .filter_map(|victim| self.index.entries.get(victim))
@@ -1493,7 +1539,7 @@ impl Store {
         Ok(victims)
     }
 
-    fn choose_victims(&self, owner: u64, tier: Option<Tier>, need_bytes: u64, now_ms: u64) -> Vec<ContentId> {
+    fn choose_victims(&self, owner: u64, tier: Tier, need_bytes: u64, now_ms: u64) -> Vec<ContentId> {
         if need_bytes == 0 {
             return Vec::new();
         }
@@ -1511,9 +1557,7 @@ impl Store {
             if entry.owner != owner || entry.state != EntryState::Live {
                 continue;
             }
-            if let Some(tier) = tier
-                && entry.tier != tier
-            {
+            if entry.tier != tier {
                 continue;
             }
             if self.pin_protects(entry, now_ms) {
@@ -1526,10 +1570,7 @@ impl Store {
                 let Some(child_entry) = self.index.entries.get(&child) else {
                     continue;
                 };
-                if child_entry.owner != owner
-                    || self.pin_protects(child_entry, now_ms)
-                    || child_entry.tier != tier.unwrap_or(entry.tier)
-                {
+                if child_entry.owner != owner || self.pin_protects(child_entry, now_ms) || child_entry.tier != tier {
                     evictable = false;
                     break;
                 }
@@ -1614,6 +1655,13 @@ impl Store {
             .ok_or_else(|| StoreError::Invalid("the delta's parent is missing".to_owned()))?;
         if parent.state != EntryState::Live {
             return Err(StoreError::Quarantined(parent_id));
+        }
+        // 6.11: a restart loses the host tier, so an NVMe delta must not depend on a host parent.
+        if put.tier == Tier::Nvme && parent.tier == Tier::Host {
+            return Err(StoreError::Invalid(
+                "an NVMe delta cannot have a host parent: a restart loses the host tier. Put the delta in the host tier"
+                    .to_owned(),
+            ));
         }
         let previous = put
             .previous_recipe
@@ -1734,10 +1782,7 @@ impl Store {
         if entry.state != EntryState::Live {
             return Err(StoreError::Quarantined(*id));
         }
-        let bytes = match std::fs::read(self.blob_path(id)) {
-            Ok(bytes) => bytes,
-            Err(error) => return Err(read_failed(id, error)),
-        };
+        let bytes = self.read_bytes(id)?;
         if content_id(&bytes) != *id {
             self.quarantine(id, Quarantine::ContentId)?;
             return Err(StoreError::Quarantined(*id));
@@ -1765,6 +1810,38 @@ impl Store {
         }
     }
 
+    /// Keep the canonical bytes of an entry in its tier: in memory for host, in a file for NVMe.
+    fn store_bytes(&mut self, tier: Tier, bytes: &[u8], id: &ContentId) -> Result<(), StoreError> {
+        match tier {
+            Tier::Host => {
+                self.host_blobs.insert(*id, Arc::from(bytes));
+                Ok(())
+            }
+            Tier::Nvme => self.write_blob(bytes, id),
+        }
+    }
+
+    /// Read the canonical bytes of an entry from its tier. A missing host entry is an error, never an empty read.
+    fn read_bytes(&self, id: &ContentId) -> Result<Arc<[u8]>, StoreError> {
+        let entry = self
+            .index
+            .entries
+            .get(id)
+            .ok_or_else(|| StoreError::Invalid("missing entry".to_owned()))?;
+        match entry.tier {
+            Tier::Host => self.host_blobs.get(id).cloned().ok_or_else(|| {
+                StoreError::Invalid(format!(
+                    "the host tier holds no bytes for the entry {}; the index and the memory disagree",
+                    id.hex()
+                ))
+            }),
+            Tier::Nvme => match std::fs::read(self.blob_path(id)) {
+                Ok(bytes) => Ok(Arc::from(bytes)),
+                Err(error) => Err(read_failed(id, error)),
+            },
+        }
+    }
+
     fn write_blob(&self, bytes: &[u8], id: &ContentId) -> Result<(), StoreError> {
         let path = self.blob_path(id);
         let temp = self.dir.join("blobs").join(format!("{}.tmp", id.hex()));
@@ -1783,7 +1860,11 @@ impl Store {
         Ok(())
     }
 
-    fn rollback_blob(&self, id: &ContentId, error: StoreError) -> StoreError {
+    fn rollback_blob(&mut self, id: &ContentId, tier: Tier, error: StoreError) -> StoreError {
+        if tier == Tier::Host {
+            self.host_blobs.remove(id);
+            return error;
+        }
         match std::fs::remove_file(self.blob_path(id)) {
             Ok(()) => error,
             Err(remove_error) if remove_error.kind() == std::io::ErrorKind::NotFound => error,
@@ -1791,11 +1872,18 @@ impl Store {
         }
     }
 
-    fn remove_blobs(&self, ids: &[ContentId]) -> Result<(), StoreError> {
+    fn remove_blobs(&mut self, ids: &[ContentId]) -> Result<(), StoreError> {
         if ids.is_empty() {
             return Ok(());
         }
+        let mut files = false;
         for id in ids {
+            self.checked.remove(id);
+            // A host entry has no file.
+            if self.host_blobs.remove(id).is_some() {
+                continue;
+            }
+            files = true;
             match std::fs::remove_file(self.blob_path(id)) {
                 Ok(()) => {}
                 // The index no longer names the entry. An absent blob is the wanted state.
@@ -1803,7 +1891,9 @@ impl Store {
                 Err(error) => return Err(io_error(error)),
             }
         }
-        sync_dir(&self.dir.join("blobs")).map_err(io_error)?;
+        if files {
+            sync_dir(&self.dir.join("blobs")).map_err(io_error)?;
+        }
         Ok(())
     }
 
@@ -2207,7 +2297,7 @@ mod tests {
                 },
                 identity: [1u8; 32],
                 owner: 1,
-                tier: Tier::Host,
+                tier: Tier::Nvme,
                 reason: Reason::Anchor,
                 provenance: None,
                 now_ms: 10,
