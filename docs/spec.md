@@ -787,6 +787,21 @@ kaijutsu's semantic search and stuff"). Thus one renderer serves every engine of
 The rendering rules in gogi, such as where a boundary exists and where thinking renders, get one implementation and
 one set of conformance tests. mk's C ABI does not need a tokenizer.
 
+**Proposed** (Claude Sonnet 5.5, milestone 11): the Qwen3.8 library follows these rules.
+
+- The library reads the template from the GGUF key `tokenizer.chat_template` and runs it with a Jinja interpreter.
+  It does not hold a hand-written copy. The template is part of the identity, so a new template in a GGUF needs no
+  new code.
+- The interpreter matches mk's Python on three points. `trim` strips what Python's `str.strip` strips, which includes
+  U+001C to U+001F. `tojson` writes what Python's `json.dumps` writes, with `ensure_ascii` off.
+  A map keeps its key order.
+- A render refuses the same input as mk. A template error is an error. A message that holds a Unicode noncharacter is
+  an error, because mk keeps those for its escapes (`harness/tokenizer.py`, `RESERVED`).
+- The library takes JSON in its own type that keeps key order. It refuses `NaN`, `Infinity` and an integer of more
+  than 128 bits. Python accepts those, so this is stricter than mk.
+- The parsers for tool calls and thinking (`service/chatfmt.py`, `ReplyTracker`) are not in this milestone.
+  The tokenizer, the template and the detokenizer come first.
+
 **11.4 `/mk/v1`.** kaijutsu's mk provider uses `model`, `render` and `generate` (mkviolet `mk_api.rs`).
 
 Decided 2026-10-17: the nagaya does not serve `/mk/v1`. kaijutsu moves to council v2 and uses the gogi reference
