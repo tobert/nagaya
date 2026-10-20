@@ -261,20 +261,18 @@ warning (Amy, 2026-10-19). The owner quota is unbounded, and the chain limit is 
 `open` (2.4).
 
 - Mandatory terms `{name, tier, bytes, lifetime, kinds}`. The lifetime is per engine, per context, or loaned (one
-  holder at a time). **Open** (milestone 11.5): the ledger charges `bytes` once and does not read the lifetime yet.
-  mk declares its whole pool as one term with lifetime `engine`, so nothing is short today. Milestone 12 counts
-  per-context terms when it admits `ctx_new`.
-
-  **Proposed** (Sonnet 5.5, 2026-10-20): the ledger reads the lifetime like this.
+  holder at a time). mk declares its whole pool as one term with lifetime `engine`. The ledger reads the lifetime
+  like this. Decided 2026-10-20 (reading, from a note by Sonnet 5.5 in milestone 12).
   - `open` charges each `engine` term and each `loan` term once. A loan has one holder, so one copy is enough.
   - `open` does not charge a `context` term. Each `ctx_new` charges the bytes of every `context` term of its
     engine, in the tier of the term.
   - `ctx_new` takes the bytes from the unassigned bytes of the budget (4.4 step 4). If they are too few, the
     ledger refuses and changes nothing (4.3). The reclaim of 4.6 is the caller's step.
+  - `ctx_fork` and `ctx_copy` make a context too, so each charges as `ctx_new` does.
   - The end of a context releases its bytes.
 
   Reason: this is the smallest rule that gives the lifetime a meaning. No engine declares a `context` term today,
-  so mk does not change. Amy decides.
+  so mk does not change.
 - Elastic terms `{name, tier, unit_bytes, minimum, maximum, kinds}`. The minimum and maximum are counts of units.
 - A term's tier is `device(i)` or `host`, where `i` is an index into the engine's device group. The ledger maps each
   tier to a budget (4.1). On gfx1151host and sm121host, `device(0)` and `host` map to one pool. NVMe belongs to the store.
@@ -689,8 +687,7 @@ Until then, mk declares no grain. Decided
 - **Any split replays.** An engine that declares a checkpoint grain must also declare `segments_exact`. Thus the row
   count of a pass does not change its bits (5.7), and a replay can use any split into passes.
 
-**Proposed** (Sonnet 5.5, 2026-10-20): the scheduler's part of interval copies. The text above leaves these choices
-open. The note gives the simplest choice for each.
+**The scheduler's part.** Decided 2026-10-20 (reading, from a note by Sonnet 5.5 in milestone 12).
 
 - **When a copy is due.** A copy is due after a quantum that moves a context across a multiple of the grain. The
   copy holds the state at the end of that quantum, so its position can be above the multiple. The scheduler does
@@ -706,7 +703,7 @@ open. The note gives the simplest choice for each.
 - **Class and kind.** The copy is a quantum of the kind `copy` (5.2). This note does not choose its class. The job
   path of milestone 12 step 5 chooses it.
 
-Reason: these are the smallest rules that keep the text above true. Amy decides.
+Reason: these are the smallest rules that keep the text above true.
 
 A restore from a copy writes its parts, then replays the tokens after it, with the same boundaries. The result has
 the bits of the first run. The lookup is by recipe with tag 8, so any context with the same prefix can use a copy.
