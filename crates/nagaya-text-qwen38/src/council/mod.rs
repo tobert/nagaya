@@ -58,6 +58,10 @@ pub(crate) enum Site {
     Context,
     /// The tokens of a letter or a suffix of a raw read.
     Raw,
+    /// The prefix of a read plan.
+    Prefix,
+    /// The tokens that a step of a read plan feeds.
+    Feed,
 }
 
 /// The test hook: it changes tokens that the library renders. Test builds only.
@@ -68,6 +72,8 @@ pub struct Qwen38Family {
     model: Qwen38,
     /// The token of each letter with a leading space, `A` first. This is the menu of a plain read.
     letters: Vec<u32>,
+    /// The token of each bare letter, `A` first. A queue read uses these: its letter follows an opening quote.
+    bare_letters: Vec<u32>,
     template_id: String,
     #[cfg(test)]
     pub(crate) hook: Option<HookFn>,
@@ -119,10 +125,11 @@ impl Qwen38Family {
             }
         };
         let model = Qwen38::from_metadata(m)?;
-        let letters = letter_tokens(model.tokenizer())?;
+        let (letters, bare_letters) = letter_tokens(model.tokenizer())?;
         let mut family = Qwen38Family {
             model,
             letters,
+            bare_letters,
             template_id: String::new(),
             #[cfg(test)]
             hook,
@@ -142,6 +149,11 @@ impl Qwen38Family {
 
     pub(crate) fn tokenizer(&self) -> &Tokenizer {
         self.model.tokenizer()
+    }
+
+    /// The tokenizer, shared with a read plan or a reply parser that outlives a borrow.
+    pub(crate) fn shared_tokenizer(&self) -> std::sync::Arc<Tokenizer> {
+        self.model.shared_tokenizer()
     }
 
     /// The number of letters that a question can use: one token for each, no two the same.
@@ -190,9 +202,10 @@ impl Qwen38Family {
     }
 }
 
-/// The tokens of the letters `A` to `Z` with a leading space. The run stops at the first letter that is not one
-/// token of its own, or whose token an earlier letter has. A run of fewer than two letters is an error.
-fn letter_tokens(tokenizer: &Tokenizer) -> Result<Vec<u32>, Error> {
+/// The tokens of the letters `A` to `Z`, with a leading space and bare. The run stops at the first letter that is
+/// not one token of its own in both forms, or whose token an earlier letter has. A run of fewer than two letters is
+/// an error.
+fn letter_tokens(tokenizer: &Tokenizer) -> Result<(Vec<u32>, Vec<u32>), Error> {
     let one = |text: &str| -> Result<Option<u32>, Error> {
         let ids = tokenizer.encode_escaped(&tokenizer.escape(text)?)?;
         Ok(match ids.as_slice() {
@@ -200,20 +213,23 @@ fn letter_tokens(tokenizer: &Tokenizer) -> Result<Vec<u32>, Error> {
             _ => None,
         })
     };
-    let mut letters: Vec<u32> = Vec::new();
+    let (mut spaced, mut bare): (Vec<u32>, Vec<u32>) = (Vec::new(), Vec::new());
     for letter in 'A'..='Z' {
-        match one(&format!(" {letter}"))? {
-            Some(id) if !letters.contains(&id) => letters.push(id),
+        match (one(&format!(" {letter}"))?, one(&letter.to_string())?) {
+            (Some(s), Some(b)) if !spaced.contains(&s) && !bare.contains(&b) => {
+                spaced.push(s);
+                bare.push(b);
+            }
             _ => break,
         }
     }
-    if letters.len() < 2 {
+    if spaced.len() < 2 {
         return Err(Error::Vocab(format!(
             "only {} of the letters A to Z are one token each. A question needs at least two.",
-            letters.len()
+            spaced.len()
         )));
     }
-    Ok(letters)
+    Ok((spaced, bare))
 }
 
 impl Family for Qwen38Family {

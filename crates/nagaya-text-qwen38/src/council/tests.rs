@@ -37,6 +37,18 @@ fn change_context(site: Site, tokens: &mut [u32]) {
     }
 }
 
+fn change_prefix(site: Site, tokens: &mut [u32]) {
+    if site == Site::Prefix {
+        tokens[0] += 1;
+    }
+}
+
+fn change_feed(site: Site, tokens: &mut [u32]) {
+    if site == Site::Feed {
+        tokens[0] += 1;
+    }
+}
+
 fn change_raw(site: Site, tokens: &mut [u32]) {
     if site == Site::Raw && !tokens.is_empty() {
         tokens[0] += 1;
@@ -75,10 +87,48 @@ fn a_hook_that_changes_nothing_keeps_the_template_id() {
 #[test]
 fn a_change_to_one_rendered_token_changes_the_council_hash_and_not_the_chat_hash() {
     let base = base();
-    for (name, hook) in [("context", change_context as HookFn), ("raw", change_raw)] {
+    for (name, hook) in [
+        ("context", change_context as HookFn),
+        ("raw", change_raw),
+        ("prefix", change_prefix),
+        ("feed", change_feed),
+    ] {
         let changed = Qwen38Family::with_hook(metadata(), hook).unwrap();
         assert_ne!(changed.template_id(), base, "a changed {name} token");
         assert_ne!(halves(changed.template_id()).0, halves(&base).0, "{name}");
         assert_eq!(halves(changed.template_id()).1, halves(&base).1, "{name}");
     }
+}
+
+/// Each hook changes the renders of the set that it should, and no others. The set is: eight renders of four
+/// contexts (the odd ones have a generation prompt), three decisions, and the letters and two suffixes of a raw read.
+#[test]
+fn each_site_of_the_hook_changes_the_renders_that_use_it() {
+    let base = test_set::renders(&Qwen38Family::from_metadata(metadata()).unwrap());
+    assert_eq!(base.len(), 14);
+    for (name, hook, want) in [
+        ("context", change_context as HookFn, vec![1, 3, 5, 7]),
+        ("prefix", change_prefix, vec![8, 9, 10]),
+        ("feed", change_feed, vec![8, 9, 10]),
+        ("raw", change_raw, vec![11, 12, 13]),
+    ] {
+        let changed = test_set::renders(&Qwen38Family::with_hook(metadata(), hook).unwrap());
+        let got: Vec<usize> = (0..base.len()).filter(|&i| base[i] != changed[i]).collect();
+        assert_eq!(got, want, "the renders that the {name} hook changes");
+    }
+}
+
+/// A change to the code does not keep the id unless the set keeps its meaning: it holds a plain read, a read
+/// after a context, a queue read and a raw read.
+#[test]
+fn the_test_set_holds_each_kind_of_read() {
+    let family = Qwen38Family::from_metadata(metadata()).unwrap();
+    let set = test_set::renders(&family);
+    let text = |i: usize| family.tokenizer().decode(&set[i]).unwrap();
+    assert!(text(8).starts_with("<|im_start|>user\ni\n\nAnswer each question"));
+    assert!(text(8).contains("Answer to question 1 (What.):"));
+    assert!(text(9).starts_with("<|im_start|>system\ns<|im_end|>\n<|im_start|>user\nu<|im_end|>\n<|im_start|>user\ni"));
+    assert!(text(10).contains("<tool_response>\na case\n</tool_response>"));
+    assert!(text(10).contains("<parameter=answers>\n{\"undo\": \"AB"));
+    assert!(text(13).contains("<tool_call>"));
 }

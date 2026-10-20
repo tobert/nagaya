@@ -87,6 +87,14 @@ pub(crate) fn message_json(m: &Message) -> Json {
     Json::Object(o)
 }
 
+/// A message with a role and a content.
+pub(crate) fn turn_json(role: &str, content: &str) -> Json {
+    Json::Object(vec![
+        ("role".to_string(), text(role)),
+        ("content".to_string(), text(content)),
+    ])
+}
+
 /// Every string of a message that the library renders: its content, its reasoning, and what its calls say.
 pub(crate) fn message_strings(m: &Message) -> Vec<&str> {
     fn walk<'a>(v: &'a Value, out: &mut Vec<&'a str>) {
