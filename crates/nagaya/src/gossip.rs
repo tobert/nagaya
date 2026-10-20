@@ -126,6 +126,13 @@ impl Key {
 /// Why a value was not published.
 #[derive(Debug, PartialEq, Eq)]
 pub enum PublishError {
+    /// The key has more bytes than the bound.
+    KeyTooLong {
+        /// The key.
+        key: String,
+        /// The size of the key in bytes.
+        bytes: usize,
+    },
     /// The value has more bytes than the bound.
     TooLarge {
         /// The key.
@@ -138,6 +145,10 @@ pub enum PublishError {
 impl fmt::Display for PublishError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            PublishError::KeyTooLong { key, bytes } => write!(
+                formatter,
+                "the gossip key `{key}` has {bytes} bytes; the bound is {MAX_KEY_BYTES} bytes"
+            ),
             PublishError::TooLarge { key, bytes } => write!(
                 formatter,
                 "the value of gossip key `{key}` has {bytes} bytes; the bound is {MAX_VALUE_BYTES} bytes"
@@ -342,6 +353,12 @@ impl Gossip {
     /// Publish a value under one of this node's keys. The value is compact JSON.
     pub fn publish(&self, key: &Key, value: &serde_json::Value) -> Result<(), PublishError> {
         let name = key.name();
+        if name.len() > MAX_KEY_BYTES {
+            return Err(PublishError::KeyTooLong {
+                bytes: name.len(),
+                key: name,
+            });
+        }
         let text = value.to_string();
         if text.len() > MAX_VALUE_BYTES {
             return Err(PublishError::TooLarge {

@@ -1,6 +1,6 @@
 mod support;
 
-use nagaya::gossip::{Gossip, GossipConfig, Key, MAX_VALUE_BYTES, PublishError};
+use nagaya::gossip::{Gossip, GossipConfig, Key, MAX_KEY_BYTES, MAX_VALUE_BYTES, PublishError};
 use nagaya::inventory::{Device, Inventory};
 use nagaya::node::Node;
 use nagaya::notify::EngineState;
@@ -45,6 +45,36 @@ fn opened() -> OpenedEngine {
         thread: std::thread::current().id(),
         identity: FakeAlways::new().identity(),
     }
+}
+
+#[test]
+fn a_key_at_the_bound_is_published_and_one_byte_more_is_refused() {
+    let gossip = Gossip::start(config("solo")).unwrap();
+    let prefix = "engine:".len();
+    let at_the_bound = Key::Engine("k".repeat(MAX_KEY_BYTES - prefix));
+    gossip.publish(&at_the_bound, &json!(1)).unwrap();
+    wait_for_view(&gossip, "the key at the bound", |view| {
+        view.live[0].keys.contains_key(&at_the_bound.name())
+    });
+
+    let over = Key::Engine("k".repeat(MAX_KEY_BYTES - prefix + 1));
+    let error = gossip.publish(&over, &json!(1)).unwrap_err();
+    assert_eq!(
+        error,
+        PublishError::KeyTooLong {
+            key: over.name(),
+            bytes: MAX_KEY_BYTES + 1
+        }
+    );
+    assert!(
+        error.to_string().contains(&over.name()),
+        "the message names the key: {error}"
+    );
+    assert!(
+        !gossip.view().live[0].keys.contains_key(&over.name()),
+        "a refused key is not written"
+    );
+    gossip.shutdown();
 }
 
 #[test]
