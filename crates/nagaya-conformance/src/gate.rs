@@ -912,6 +912,138 @@ where
     }
 }
 
+/// The name of the segments gate.
+const SEGMENTS_GATE: &str = "segments_exact_bits";
+
+/// Check that a segment gives the same bits in passes with one, two and the most segments (spec 5.7, 8.3).
+///
+/// The gate also splits one segment into two passes and compares it with one pass. The row count of a pass must not
+/// change bits either. It compares the pass outputs and the fixed parts by bit pattern, and a value that is not
+/// finite fails.
+///
+/// First the gate runs each of the `max_segments` segments alone, on its own state of a fresh engine. Then, for
+/// each count, it runs the first segments together in one pass on another fresh engine. Each segment must give the
+/// bits that it gave alone. The segments differ in tokens and in length, so a sum that mixes them shows.
+/// The gate needs one state for each segment, and a pass that takes `2 * max_segments` tokens.
+pub fn segments_exact_bits<E: Engine>(make: &mut dyn FnMut() -> E) -> Outcome {
+    let mut reference = make();
+    let limits = reference.limits();
+    if !limits.segments_exact {
+        return Outcome::NotApplicable("the engine does not declare segments_exact".to_owned());
+    }
+    if limits.inputs != Inputs::Tokens {
+        return Outcome::NotApplicable("the gate makes token segments; this engine takes rows".to_owned());
+    }
+    if reference.parts().is_none() {
+        return Outcome::NotApplicable("the engine has no parts capability".to_owned());
+    }
+    let most = limits.max_segments;
+    if most < 2 {
+        return Outcome::NotApplicable("max_segments is below 2; the gate needs a pass of two segments".to_owned());
+    }
+    let slots: u32 = limits.slots.iter().map(|class| class.count).sum();
+    if slots < most {
+        return Outcome::NotApplicable(format!(
+            "the engine declares {slots} slots; the gate needs {most}, one for each segment of the largest pass"
+        ));
+    }
+    if limits.max_pass_inputs < 2 * most {
+        return Outcome::NotApplicable(format!(
+            "max_pass_inputs is {}; the gate needs {} for the largest pass",
+            limits.max_pass_inputs,
+            2 * most
+        ));
+    }
+    match segments_exact_bits_inner(&mut reference, make, &limits, most) {
+        Ok(()) => Outcome::Pass,
+        Err(failure) => Outcome::Fail(failure),
+    }
+}
+
+/// The segment for state `index`: its tokens and its length differ from the other segments.
+fn counted_segment(index: u32, limits: &Limits) -> Segment {
+    let length = 1 + index % 2;
+    let tokens: Vec<u32> = (0..length).map(|offset| 1000 + 17 * index + 3 * offset).collect();
+    with_last_logit(token_segment(State::Slot(index), 0, &tokens), limits)
+}
+
+fn segments_exact_bits_inner<E: Engine>(
+    reference: &mut E,
+    make: &mut dyn FnMut() -> E,
+    limits: &Limits,
+    most: u32,
+) -> Result<(), Failure> {
+    let gate = SEGMENTS_GATE;
+    // The reference: each segment alone, in a pass of one segment.
+    let mut alone = Vec::new();
+    for index in 0..most {
+        alone.push(run_pass(reference, &counted_segment(index, limits), gate)?.outputs);
+    }
+    let mut counts = vec![1, 2, most];
+    counts.dedup();
+    for count in counts {
+        let mut engine = make();
+        let segments: Vec<Segment> = (0..count).map(|index| counted_segment(index, limits)).collect();
+        let out = run_pass_of(&mut engine, &segments, gate)?;
+        let expected: usize = alone[..count as usize].iter().map(Vec::len).sum();
+        if out.outputs.len() != expected {
+            return Err(Failure::new(
+                gate,
+                format!(
+                    "a pass of {count} segments gave {} outputs; the segments alone gave {expected}",
+                    out.outputs.len()
+                ),
+            ));
+        }
+        let mut offset = 0;
+        for index in 0..count {
+            let wanted = &alone[index as usize];
+            let found = &out.outputs[offset..offset + wanted.len()];
+            offset += wanted.len();
+            let context = |failure: Failure| Failure {
+                message: format!("in a pass of {count} segments, segment {index}: {}", failure.message),
+                ..failure
+            };
+            compare_outputs(gate, wanted, found).map_err(context)?;
+            compare_fixed(gate, reference, &mut engine, State::Slot(index), limits).map_err(context)?;
+        }
+    }
+    split_pass(make, limits)
+}
+
+/// Check that one pass of four tokens gives the bits of a pass of one token and then a pass of three.
+fn split_pass<E: Engine>(make: &mut dyn FnMut() -> E, limits: &Limits) -> Result<(), Failure> {
+    let gate = SEGMENTS_GATE;
+    let state = State::Slot(0);
+    let tokens = [2001, 2002, 2003, 2004];
+    let mut whole = make();
+    let wanted = run_pass(
+        &mut whole,
+        &with_last_logit(token_segment(state, 0, &tokens), limits),
+        gate,
+    )?;
+    let mut split = make();
+    run_pass(
+        &mut split,
+        &with_last_logit(token_segment(state, 0, &tokens[..1]), limits),
+        gate,
+    )?;
+    let found = run_pass(
+        &mut split,
+        &with_last_logit(token_segment(state, 1, &tokens[1..]), limits),
+        gate,
+    )?;
+    let context = |failure: Failure| Failure {
+        message: format!(
+            "a pass split in two passes gave other bits than one pass: {}",
+            failure.message
+        ),
+        ..failure
+    };
+    compare_outputs(gate, &wanted.outputs, &found.outputs).map_err(context)?;
+    compare_fixed(gate, &mut whole, &mut split, state, limits).map_err(context)
+}
+
 fn token_segment(state: State, start: u64, tokens: &[u32]) -> Segment {
     Segment {
         state,
@@ -933,7 +1065,16 @@ fn with_last_logit(mut segment: Segment, limits: &Limits) -> Segment {
 }
 
 fn run_pass<E: Engine + ?Sized>(engine: &mut E, segment: &Segment, gate: &'static str) -> Result<PassOut, Failure> {
-    match engine.pass(std::slice::from_ref(segment), &[]) {
+    run_pass_of(engine, std::slice::from_ref(segment), gate)
+}
+
+/// Run one pass of several segments.
+fn run_pass_of<E: Engine + ?Sized>(
+    engine: &mut E,
+    segments: &[Segment],
+    gate: &'static str,
+) -> Result<PassOut, Failure> {
+    match engine.pass(segments, &[]) {
         Ok(output) if output.status == PassStatus::Ok => Ok(output),
         Ok(output) => Err(Failure::new(gate, format!("the pass returned {:?}", output.status))),
         Err(error) => Err(Failure::new(
