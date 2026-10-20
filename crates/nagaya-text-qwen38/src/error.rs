@@ -11,6 +11,14 @@ pub enum Error {
     Metadata(String),
     /// JSON text that this library does not read.
     Json(String),
+    /// Text holds a Unicode noncharacter. The library keeps those for its escapes of special tokens.
+    Reserved { ch: char, offset: usize },
+    /// A token id is not in the vocabulary.
+    TokenId { id: u32, count: usize },
+    /// The vocabulary and the merges give a result that cannot be right.
+    Vocab(String),
+    /// Token bytes that do not make text.
+    Bytes(String),
 }
 
 impl fmt::Display for Error {
@@ -20,6 +28,19 @@ impl fmt::Display for Error {
             Error::Gguf(m) => write!(f, "not readable GGUF metadata: {m}"),
             Error::Metadata(m) => write!(f, "unusable GGUF metadata: {m}"),
             Error::Json(m) => write!(f, "not readable JSON: {m}"),
+            Error::Reserved { ch, offset } => write!(
+                f,
+                "U+{:04X} at offset {offset} is a Unicode noncharacter. The library keeps it for escapes. Remove it from the text.",
+                *ch as u32
+            ),
+            Error::TokenId { id, count } => {
+                write!(
+                    f,
+                    "token id {id} is not in the vocabulary of {count} tokens. Use an id below {count}."
+                )
+            }
+            Error::Vocab(m) => write!(f, "the vocabulary is not usable: {m}"),
+            Error::Bytes(m) => write!(f, "the token bytes are not text: {m}"),
         }
     }
 }

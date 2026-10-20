@@ -64,6 +64,7 @@ def encode_texts(tok) -> list[tuple[str, str]]:
         ("ascii_punct", "Wait... what?! (yes) [no] {maybe} -- ok; 'quoted' \"double\" a/b\\c"),
         ("contractions", "I'm sure you'll say he's right, they've said we're fine, it'd be 'S 'T 'RE 'VE 'M 'LL 'D"),
         ("contraction_edge", "'s 'x '' ' s'S'"),
+        ("contraction_then_letters", "'rest 'verb 'llama 'dog 'string 'mother 'tea 'Rest 'VERBS 'Ll'D 'ree 'vee"),
         ("digits_single", "0123456789"),
         ("digits_grouped", "12345 3.14159 1,000,000 -42 +7 0x1F 1e10"),
         ("digits_unicode", "١٢٣ १२ ²³ ⅕ 一二三 ①"),
@@ -237,12 +238,12 @@ def main() -> None:
         enc.append({"name": f"fuzz_{i}", "text": text, "ids": tok.encode(text)})
 
     pretok = []
+    special_texts = [tok.id_to_token[i] for i in tok.special_ids]
     for case in enc:
-        # The words are the pre-tokenizer's split of the text between special tokens.
-        words = []
-        for chunk, is_special in tok._split_special(case["text"]):
-            if not is_special:
-                words += [w for w in tok._pretok_re.findall(chunk) if w]
+        # The pre-tokenizer sees the text between special tokens, so a case holds no special token text.
+        if any(t in case["text"] for t in special_texts):
+            continue
+        words = [w for w in tok._pretok_re.findall(case["text"]) if w]
         pretok.append({"name": case["name"], "text": case["text"], "words": words})
 
     refused = [{"name": f"reserved_U+{ord(c):04X}", "text": f"a{c}b"} for c in RESERVED]

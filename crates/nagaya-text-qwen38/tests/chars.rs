@@ -6,6 +6,8 @@ use common::{JsonExt, fixture};
 use nagaya_text_qwen38::chars;
 use nagaya_text_qwen38::json::Json;
 
+type Class = fn(char) -> bool;
+
 fn in_ranges(ranges: &Json, cp: u32) -> bool {
     ranges.items().iter().any(|r| {
         let r = r.items();
@@ -16,7 +18,7 @@ fn in_ranges(ranges: &Json, cp: u32) -> bool {
 #[test]
 fn every_code_point_has_the_class_that_python_gives() {
     let classes = fixture("classes.json");
-    let tables: [(&str, fn(char) -> bool); 4] = [
+    let tables: [(&str, Class); 4] = [
         ("L", chars::is_letter),
         ("M", chars::is_mark),
         ("N", chars::is_number),

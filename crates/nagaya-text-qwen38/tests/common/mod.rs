@@ -77,3 +77,63 @@ impl JsonExt for Json {
             .collect()
     }
 }
+
+/// The tokenizer of the model file, built once for each test binary.
+pub fn tokenizer() -> &'static nagaya_text_qwen38::Tokenizer {
+    static TOKENIZER: std::sync::OnceLock<nagaya_text_qwen38::Tokenizer> = std::sync::OnceLock::new();
+    TOKENIZER.get_or_init(|| {
+        nagaya_text_qwen38::Tokenizer::from_gguf(&gguf_path())
+            .unwrap_or_else(|e| panic!("cannot build the tokenizer: {e}"))
+    })
+}
+
+fn gguf_string(s: &str) -> Vec<u8> {
+    let mut out = (s.len() as u64).to_le_bytes().to_vec();
+    out.extend_from_slice(s.as_bytes());
+    out
+}
+
+fn gguf_entry(key: &str, value_type: u32, payload: &[u8]) -> Vec<u8> {
+    let mut out = gguf_string(key);
+    out.extend_from_slice(&value_type.to_le_bytes());
+    out.extend_from_slice(payload);
+    out
+}
+
+/// GGUF metadata with the tokenizer keys, built in memory. `tokens` are (text, token type) pairs.
+pub fn small_metadata(
+    pre: &str,
+    model: &str,
+    tokens: &[(&str, i32)],
+    types: Option<&[i32]>,
+    merges: &[&str],
+) -> nagaya_text_qwen38::gguf::Metadata {
+    let mut texts = 8u32.to_le_bytes().to_vec();
+    texts.extend_from_slice(&(tokens.len() as u64).to_le_bytes());
+    for (t, _) in tokens {
+        texts.extend(gguf_string(t));
+    }
+    let types: Vec<i32> = types
+        .map(|t| t.to_vec())
+        .unwrap_or_else(|| tokens.iter().map(|t| t.1).collect());
+    let mut kinds = 5u32.to_le_bytes().to_vec();
+    kinds.extend_from_slice(&(types.len() as u64).to_le_bytes());
+    for t in &types {
+        kinds.extend_from_slice(&t.to_le_bytes());
+    }
+    let mut merge_list = 8u32.to_le_bytes().to_vec();
+    merge_list.extend_from_slice(&(merges.len() as u64).to_le_bytes());
+    for m in merges {
+        merge_list.extend(gguf_string(m));
+    }
+    let mut file = b"GGUF".to_vec();
+    file.extend_from_slice(&3u32.to_le_bytes());
+    file.extend_from_slice(&0u64.to_le_bytes());
+    file.extend_from_slice(&5u64.to_le_bytes());
+    file.extend(gguf_entry("tokenizer.ggml.pre", 8, &gguf_string(pre)));
+    file.extend(gguf_entry("tokenizer.ggml.model", 8, &gguf_string(model)));
+    file.extend(gguf_entry("tokenizer.ggml.tokens", 9, &texts));
+    file.extend(gguf_entry("tokenizer.ggml.token_type", 9, &kinds));
+    file.extend(gguf_entry("tokenizer.ggml.merges", 9, &merge_list));
+    nagaya_text_qwen38::gguf::Metadata::read(file.as_slice(), file.len() as u64).expect("a built file")
+}

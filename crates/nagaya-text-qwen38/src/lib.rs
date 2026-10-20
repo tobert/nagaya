@@ -5,9 +5,11 @@
 
 pub mod chars;
 mod error;
+pub mod tokenizer;
 #[rustfmt::skip]
 mod unicode_tables;
 pub mod gguf;
 pub mod json;
 
 pub use error::Error;
+pub use tokenizer::Tokenizer;
