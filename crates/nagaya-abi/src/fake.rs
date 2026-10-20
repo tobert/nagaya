@@ -305,6 +305,8 @@ impl Fake {
             });
         }
         let mut outputs = Vec::new();
+        // A write that fails before any write of the pass succeeded changed nothing. That pass did not run.
+        let mut changed = false;
         for segment in segments {
             let SegmentInputs::Tokens(tokens) = &segment.inputs else {
                 unreachable!("the check above admits only tokens");
@@ -322,10 +324,15 @@ impl Fake {
             let cells_from = self.cells_high(segment.state);
             if self.cells_write(segment.state, CELLS_PART, cells_from, count, &rows) != WriteResult::Ok {
                 return Err(PassError {
-                    kind: PassErrorKind::Ran(PassStatus::Poison),
+                    kind: if changed {
+                        PassErrorKind::Ran(PassStatus::Poison)
+                    } else {
+                        PassErrorKind::Refused
+                    },
                     message: "the fake could not append the cells".to_owned(),
                 });
             }
+            changed = true;
             let ring_from = self.ring_high(segment.state);
             if self.cells_write(segment.state, RING_PART, ring_from, count, &rows) != WriteResult::Ok {
                 return Err(PassError {
