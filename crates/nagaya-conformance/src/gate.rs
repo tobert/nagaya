@@ -941,6 +941,10 @@ where
             gate,
             format!("the profile is invalid, not refused: {message}"),
         )),
+        Err(LedgerError::ContextRefused(_)) => Outcome::Fail(Failure::new(
+            gate,
+            "the ledger refused a context while it admitted a profile: a profile admission must not do that",
+        )),
         Err(LedgerError::Refused(refusal)) => {
             if refusal.shortfall.iter().all(|(_, bytes)| *bytes == 0) {
                 return Outcome::Fail(Failure::new(gate, "the refusal reports no shortfall"));

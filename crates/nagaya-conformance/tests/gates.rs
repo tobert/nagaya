@@ -1526,6 +1526,34 @@ fn a_ledger_that_writes_on_refusal_fails_the_admission_gate() {
     );
 }
 
+/// A ledger that admits the first profile and answers the second with the refusal of a context.
+#[derive(Clone, PartialEq)]
+struct ContextRefusingLedger(Ledger, u32);
+
+impl Admit for ContextRefusingLedger {
+    fn admit(&mut self, profile: &Profile) -> Result<Admission, LedgerError> {
+        self.1 += 1;
+        if self.1 == 1 {
+            return self.0.admit(profile);
+        }
+        Err(LedgerError::ContextRefused(nagaya_ledger::Refusal {
+            shortfall: vec![(vec![nagaya_abi::Tier::Host], 1)],
+        }))
+    }
+}
+
+#[test]
+fn a_context_refusal_for_a_profile_fails_the_admission_gate() {
+    match admission_refusal_changes_nothing(
+        &mut ContextRefusingLedger(Ledger::new(), 0),
+        &profile(16, 1),
+        &profile(0, 1),
+    ) {
+        Outcome::Fail(failure) => assert!(failure.message.contains("refused a context"), "{failure}"),
+        other => panic!("expected a failure, got {other}"),
+    }
+}
+
 #[test]
 fn the_suite_runs_every_gate_and_fake_always_passes() {
     let mut make = || FakeAlways::new();
