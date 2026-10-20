@@ -220,9 +220,46 @@ fn an_engine_whose_limits_change_after_open_is_refused() {
         .start()
         .unwrap();
     match process.wait_opens(Duration::from_secs(2)).unwrap_err() {
-        WaitError::Event(Event::OpenFailed { engine, message, .. }) => {
+        WaitError::Event(Event::OpenFailed {
+            engine, message, kind, ..
+        }) => {
             assert_eq!(engine, "a");
             assert!(message.contains("limits"), "{message}");
+            assert_eq!(kind, OpenErrorKind::Other);
+        }
+        other => panic!("expected an open failure, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_engine_whose_part_size_changes_after_open_refuses_the_start() {
+    let record: Record = Arc::new(Mutex::new(Vec::new()));
+    let mut opened = limits_on(&[0]);
+    assert!(!opened.parts.is_empty(), "the fixture needs a part");
+    opened.parts[0].shape[0] += 1;
+    let mut registry = Registry::new();
+    registry.register(
+        "a",
+        Box::new(RecordingFactory::opens_with("a", &[0], opened, Arc::clone(&record))),
+    );
+    let profile = profile(vec![engine("a", "a", &[0])]);
+    let mut process = Start::new(profile, registry, inventory(&[0]))
+        .heartbeat(Duration::from_millis(10))
+        .timeout(Duration::from_secs(2))
+        .start()
+        .unwrap();
+    match process.wait_opens(Duration::from_secs(2)).unwrap_err() {
+        WaitError::Event(event @ Event::OpenFailed { .. }) => {
+            let Event::OpenFailed {
+                engine, message, kind, ..
+            } = &event
+            else {
+                unreachable!()
+            };
+            assert_eq!(engine, "a");
+            assert!(message.contains("part"), "{message}");
+            assert_eq!(*kind, OpenErrorKind::PartSize);
+            assert_eq!(event.exit_code(), Some(nagaya::exit::ExitCode::RefusedStart));
         }
         other => panic!("expected an open failure, got {other:?}"),
     }

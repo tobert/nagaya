@@ -686,12 +686,25 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
                 return;
             }
         };
-        if engine.limits() != job.limits {
+        let opened_limits = engine.limits();
+        if opened_limits != job.limits {
+            // A part size is the shape and the element type of a part. Any other difference is a crash (spec 10.4).
+            let (kind, what) = if opened_limits.parts != job.limits.parts {
+                (
+                    OpenErrorKind::PartSize,
+                    "a part size after open does not equal the admitted part size",
+                )
+            } else {
+                (
+                    OpenErrorKind::Other,
+                    "limits() after open do not equal the admitted limits",
+                )
+            };
             let _ = events.send(Event::OpenFailed {
                 group,
                 engine: job.placement.name.clone(),
-                kind: OpenErrorKind::Other,
-                message: "limits() after open do not equal the admitted limits".to_owned(),
+                kind,
+                message: what.to_owned(),
             });
             return;
         }
