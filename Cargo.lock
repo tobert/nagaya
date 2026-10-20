@@ -386,6 +386,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nagaya-council"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "serde_json",
+]
+
+[[package]]
 name = "nagaya-ledger"
 version = "0.1.0"
 dependencies = [

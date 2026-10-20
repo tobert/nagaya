@@ -1,0 +1,10 @@
+[package]
+name = "nagaya-council"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+blake3 = "1.8.7"
+
+[dev-dependencies]
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
