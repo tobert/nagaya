@@ -2,12 +2,12 @@ use std::path::Path;
 
 use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{
-    BitDependence, ChainLimits, Dtype, Engine, OutputsWanted, PartKind, Segment, SegmentInputs, SlotLimit, State,
-    WriteResult,
+    BitDependence, ChainLimits, Dtype, Engine, Identity, Limits, OutputsWanted, PartError, PartId, PartKind, Parts,
+    PassError, PassOut, Segment, SegmentInputs, SlotLimit, State, Tap, WriteResult,
 };
 use nagaya_store::{
-    Check, ContentId, EntryState, PartCoverage, Pin, Put, Quarantine, Reason, RecipeId, Snapshot, Store, StoreError,
-    Tensor, Tier, Tolerance, recipe_boundary, recipe_root, snapshot_from_engine,
+    Check, ContentId, EntryState, PartCoverage, Pin, Put, Quarantine, Reason, RecipeId, Restored, Snapshot, Store,
+    StoreError, Tensor, Tier, Tolerance, recipe_boundary, recipe_root, snapshot_from_engine,
 };
 
 fn tensor(name: &str, kind: PartKind, shape: Vec<u64>, data: Vec<u8>, coverage: Option<(u64, u64)>) -> Tensor {
@@ -284,7 +284,7 @@ fn restore_writes_the_parts_and_verifies_the_content_id() {
     let id = put(&mut store, &snapshot, recipe(5), 0);
     let mut target = FakeAlways::new();
     let results = store.restore(&id, &mut target, State::Slot(0), &[1u8; 32], 20).unwrap();
-    assert_eq!(results, vec![WriteResult::Ok, WriteResult::Ok, WriteResult::Ok]);
+    assert_eq!(results, Restored::Done);
     for tensor in &snapshot.tensors {
         let index = target
             .limits()
@@ -341,7 +341,7 @@ fn a_restore_keeps_a_ring_base() {
     let id = put(&mut store, &snapshot, recipe(30), 0);
     let mut target = FakeAlways::new();
     let results = store.restore(&id, &mut target, State::Slot(0), &[1u8; 32], 20).unwrap();
-    assert_eq!(results, vec![WriteResult::Ok; 3], "{results:?}");
+    assert_eq!(results, Restored::Done);
 
     let index = target
         .limits()
@@ -738,7 +738,12 @@ fn a_refused_restore_does_not_touch_the_entry() {
     let id = put(&mut store, &snapshot, recipe(153), 1);
     let mut target = FakeAlways::new();
     let results = store.restore(&id, &mut target, State::Slot(0), &[1u8; 32], 30).unwrap();
-    assert_eq!(results, vec![WriteResult::Refused, WriteResult::Ok]);
+    assert_eq!(
+        results,
+        Restored::Refused {
+            part: "cells".to_owned()
+        }
+    );
     let entry = store.entries().get(&id).unwrap();
     assert_eq!(entry.hits, 0);
     assert_eq!(entry.last_used_ms, 10);
@@ -756,10 +761,7 @@ fn restore_writes_a_chain_in_order() {
     let results = store
         .restore(&delta, &mut target, State::Slot(0), &[1u8; 32], 20)
         .unwrap();
-    assert_eq!(
-        results,
-        vec![WriteResult::Ok, WriteResult::Ok, WriteResult::Ok, WriteResult::Ok]
-    );
+    assert_eq!(results, Restored::Done);
     let mut rows = vec![0u8; 32];
     target
         .parts()
@@ -1475,4 +1477,143 @@ fn a_failed_move_reports_an_error_and_leaves_the_blob_in_blobs() {
     assert!(store.entries().is_empty());
     let again = put(&mut store, &base_snapshot(1), recipe, 1);
     assert_eq!(again, first);
+}
+
+/// An engine that answers one numbered part write with a chosen result. It counts the writes.
+struct Scripted {
+    inner: FakeAlways,
+    answer_at: usize,
+    answer: WriteResult,
+    writes: usize,
+}
+
+impl Scripted {
+    fn new(answer_at: usize, answer: WriteResult) -> Self {
+        Scripted {
+            inner: FakeAlways::new(),
+            answer_at,
+            answer,
+            writes: 0,
+        }
+    }
+
+    fn next_write(&mut self) -> Option<WriteResult> {
+        self.writes += 1;
+        (self.writes == self.answer_at).then_some(self.answer)
+    }
+}
+
+impl Engine for Scripted {
+    fn identity(&self) -> Identity {
+        self.inner.identity()
+    }
+
+    fn limits(&self) -> Limits {
+        self.inner.limits()
+    }
+
+    fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
+        self.inner.pass(segments, taps)
+    }
+
+    fn last_error(&self) -> Option<String> {
+        self.inner.last_error()
+    }
+
+    fn parts(&mut self) -> Option<&mut dyn Parts> {
+        Some(self)
+    }
+}
+
+impl Parts for Scripted {
+    fn part_read(&mut self, state: State, part: PartId, out: &mut [u8]) -> Result<(), PartError> {
+        self.inner.parts().unwrap().part_read(state, part, out)
+    }
+
+    fn part_write(&mut self, state: State, part: PartId, bytes: &[u8]) -> WriteResult {
+        match self.next_write() {
+            Some(answer) => answer,
+            None => self.inner.parts().unwrap().part_write(state, part, bytes),
+        }
+    }
+
+    fn cells_read(&mut self, state: State, part: PartId, from: u64, n: u64, out: &mut [u8]) -> Result<(), PartError> {
+        self.inner.parts().unwrap().cells_read(state, part, from, n, out)
+    }
+
+    fn cells_write(&mut self, state: State, part: PartId, from: u64, n: u64, bytes: &[u8]) -> WriteResult {
+        match self.next_write() {
+            Some(answer) => answer,
+            None => self.inner.parts().unwrap().cells_write(state, part, from, n, bytes),
+        }
+    }
+
+    fn set_n(&mut self, state: State, n: u64) -> WriteResult {
+        self.inner.parts().unwrap().set_n(state, n)
+    }
+}
+
+/// Put a root and a delta. The chain has four part writes: two for the root, two for the delta.
+fn chain_of_two(store: &mut Store, seed: u8) -> ContentId {
+    let root_recipe = recipe(seed);
+    let root = put(store, &base_snapshot(1), root_recipe, 1);
+    let delta_recipe = next_recipe(root_recipe, 2);
+    put_delta(store, &delta_at(root, 2), delta_recipe, root_recipe, 1)
+}
+
+#[test]
+fn a_refused_base_stops_the_restore_before_the_delta() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let delta = chain_of_two(&mut store, 140);
+    let mut target = Scripted::new(1, WriteResult::Refused);
+    let result = store
+        .restore(&delta, &mut target, State::Slot(0), &[1u8; 32], 20)
+        .unwrap();
+    assert_eq!(
+        result,
+        Restored::Refused {
+            part: "cells".to_owned()
+        }
+    );
+    assert_eq!(target.writes, 1, "no later part is written");
+    assert_eq!(store.entries().get(&delta).unwrap().hits, 0);
+}
+
+#[test]
+fn a_failed_part_stops_the_restore() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let delta = chain_of_two(&mut store, 141);
+    let mut target = Scripted::new(2, WriteResult::Failed);
+    let result = store
+        .restore(&delta, &mut target, State::Slot(0), &[1u8; 32], 20)
+        .unwrap();
+    assert_eq!(
+        result,
+        Restored::Failed {
+            part: "state".to_owned()
+        }
+    );
+    assert_eq!(target.writes, 2, "no later part is written");
+    assert_eq!(store.entries().get(&delta).unwrap().hits, 0);
+}
+
+#[test]
+fn a_refusal_after_a_write_is_reported_as_failed() {
+    // The first part changed the state, so "nothing changed" (6.8) is false. The state is poisoned.
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let delta = chain_of_two(&mut store, 142);
+    let mut target = Scripted::new(3, WriteResult::Refused);
+    let result = store
+        .restore(&delta, &mut target, State::Slot(0), &[1u8; 32], 20)
+        .unwrap();
+    assert_eq!(
+        result,
+        Restored::Failed {
+            part: "cells".to_owned()
+        }
+    );
+    assert_eq!(target.writes, 3, "no later part is written");
 }

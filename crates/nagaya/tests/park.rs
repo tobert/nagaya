@@ -10,9 +10,9 @@ use nagaya::process::Start;
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, StoreSpec, TierSpec};
 use nagaya::signal::SignalFlag;
 use nagaya_abi::fake::FakeAlways;
-use nagaya_abi::{DeviceId, Engine, Limits, OutputsWanted, PartKind, Segment, SegmentInputs, State, Tier, WriteResult};
+use nagaya_abi::{DeviceId, Engine, Limits, OutputsWanted, PartKind, Segment, SegmentInputs, State, Tier};
 use nagaya_ledger::Admission;
-use nagaya_store::{Snapshot, Store, snapshot_from_engine};
+use nagaya_store::{Restored, Snapshot, Store, snapshot_from_engine};
 
 struct SeedFactory {
     limits: Limits,
@@ -138,7 +138,7 @@ fn a_stop_writes_every_state_and_a_restore_reads_every_part() {
         assert!(store.entries().contains_key(&id), "the store holds {id:?}");
         let mut target = FakeAlways::new();
         let results = store.restore(&id, &mut target, state, &identity, 20).unwrap();
-        assert!(results.iter().all(|result| *result == WriteResult::Ok), "{results:?}");
+        assert_eq!(results, Restored::Done);
         for tensor in &snapshot.tensors {
             let index = target
                 .limits()

@@ -759,6 +759,24 @@ pub struct Store {
     fail_point: Cell<Option<FailPoint>>,
 }
 
+/// The result of a restore that reached the engine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Restored {
+    /// Every part was written.
+    Done,
+    /// The engine refused the first write, so the state is as it was. `part` is the part that it refused.
+    Refused {
+        /// The refused part.
+        part: String,
+    },
+    /// A write failed, or the engine refused a write after an earlier write changed the state.
+    /// The state is poisoned (D6). `part` is the part that stopped the restore.
+    Failed {
+        /// The part that stopped the restore.
+        part: String,
+    },
+}
+
 /// The chain limits with no limit. The caller sets the engine's limits.
 const OPEN_CHAIN: ChainLimits = ChainLimits {
     max_depth: u32::MAX,
@@ -1161,7 +1179,7 @@ impl Store {
         state: State,
         identity: &[u8; 32],
         now_ms: u64,
-    ) -> Result<Vec<WriteResult>, StoreError> {
+    ) -> Result<Restored, StoreError> {
         self.check(id)?;
         let entry = self
             .index
@@ -1219,7 +1237,7 @@ impl Store {
             }
         }
 
-        let mut results = Vec::new();
+        let mut written = 0usize;
         for snapshot in &snapshots {
             for tensor in &snapshot.tensors {
                 let index = limits
@@ -1241,14 +1259,19 @@ impl Store {
                     }
                     PartKind::Derived => continue,
                 };
-                results.push(result);
+                // 6.8: stop at the first write that is not ok. A later part must not land on a bad base.
+                let part = tensor.name.clone();
+                match result {
+                    WriteResult::Ok => written += 1,
+                    // A refusal changes nothing, but only when no earlier write changed the state.
+                    WriteResult::Refused if written == 0 => return Ok(Restored::Refused { part }),
+                    WriteResult::Refused | WriteResult::Failed => return Ok(Restored::Failed { part }),
+                }
             }
         }
         // 6.8: a refusal or a failure leaves the entry as it is.
-        if results.iter().all(|result| *result == WriteResult::Ok) {
-            self.touch(id, now_ms);
-        }
-        Ok(results)
+        self.touch(id, now_ms);
+        Ok(Restored::Done)
     }
 
     fn read_snapshot(&mut self, id: &ContentId) -> Result<Snapshot, StoreError> {
