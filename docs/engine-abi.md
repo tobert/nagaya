@@ -109,7 +109,7 @@ arena        arena_export() -> {name: fd, arena_id, check: full | spot}
 contexts     ctx_new(max) / ctx_fork / ctx_copy / ctx_free / ctx_n
 slots        slot_high(slot) / slot_clear(slot)
 parts        part_read(state, part) / part_write(state, part, bytes)
-             cells_read(state, part, from, n) / cells_write(state, part, n, bytes) / set_n(state, n)
+             cells_read(state, part, from, n) / cells_write(state, part, from, n, bytes) / set_n(state, n)
 seal         seal(state)                 the engine's boundary rule
 geometry     geometry_key(state) -> bytes   slot geometry that changes bits, added to the recipe
 coverage     coverage(part bytes) -> positions held; fits(coverage, slot) -> ok | why
@@ -260,8 +260,8 @@ that fits the ABI.
   binding does not bind `mk_ctx_fork`. `plan(config)` comes with the process crate, so this binding fixes the pool.
 - **`max_quantum_ms` is 10000.** mk splits a pass at 256 tokens (`kMaxPassTokens`). A prefill chunk of that size takes
   about 2 s. mk's watchdog stops the program at a 10 s deadline (`engine.h:302-306`), so the declared bound is 10 s.
-- **`cells_write` writes rows 0 to n-1.** mk writes n cells into an empty context that owns its K/V. The caller calls
-  `set_n` after it writes every part. On a first write, an append and row 0 agree.
+- **`cells_write` writes `n` rows from `from`.** The binding refuses a `from` other than 0 and changes nothing. mk
+  writes n cells into an empty context that owns its K/V. The caller calls `set_n` after it writes every part.
 - **`positions` are strict and `meta` is empty.** mk appends the tokens at the context's n. The binding refuses a
   segment whose first position is not n, or whose positions are not contiguous. mk reads no per-token metadata, so
   `meta` must be empty.
