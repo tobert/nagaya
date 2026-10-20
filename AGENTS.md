@@ -189,7 +189,8 @@ cargo test -p nagaya-mk-qwen38-gfx1151 --tests --features hip -- --test-threads=
 `cargo test --lib` does not compile integration tests. Name `--tests`.
 
 On gfx1151host, run the oracle bench with `MK_ENGINE_LIB` and `MK_SHARDS` set and the service inactive:
-`cargo bench -p nagaya-mk-qwen38-gfx1151 --features hip --bench oracle`. It exits with 1 when a tolerance breaks.
+`cargo bench -p nagaya-mk-qwen38-gfx1151 --features hip --bench oracle`. It exits with 1 when a gate breaks.
+Set `MK_FAST_QMM=0` for the gate: the exact path must match the reference. Leave it unset to measure the fast path.
 Make the fixture again with `PYTHONDONTWRITEBYTECODE=1 nice -n 19 ionice -c3 <mk venv python> -I tools/oracle_fixture.py
 OUT.json`. It needs about 30 GiB of RAM, and it must not run with a GPU job.
 
