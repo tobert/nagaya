@@ -128,6 +128,9 @@ close        close()                     frees the engine in the process
 An engine without `close` stays open until the process exits. The nagaya changes such an engine only through a
 planned restart (spec 3.3, exit code 4). Its `Drop` does not free it, and a comment says why. Decided 2026-10-18.
 
+**Open:** the park uses one row count, `slot_high`, for every row part of a slot, so an engine whose row parts differ
+needs per-part coverage.
+
 `parts` works on any `state` (a context handle or a slot index). `part_write` and `cells_write` return one of three
 results (spec 6.8):
 
