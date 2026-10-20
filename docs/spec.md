@@ -1127,6 +1127,26 @@ A served model's `template` in council identity has two parts: `nagaya-council:<
 
 Decided 2026-10-20 (Amy chose the name `nagaya-council`).
 
+**Proposed: the Qwen3.8 rendering** (Sonnet 5.5, 2026-10-20). The spec and gogi leave these choices open for Qwen3.8.
+The library takes the simplest choice in each case. Amy decides later.
+
+- Every render uses the reasoning effort `medium`, as mk's council does. The template then writes no effort line.
+  A context renders the same with thinking on and off, except for the generation prompt.
+- A read closes the thinking. The case turn ends with the template's prompt for thinking off: `<think>\n\n</think>\n\n`.
+- A plain read keeps mkviolet's layout: spec turn, case turn, `Answer to question`, then ` N (stem):`. The letter
+  token has a leading space, as in mkviolet. A raw read uses the letters that the client sends.
+- A queue read writes the call in Qwen3.8's form, with the parameter `answers` as one JSON object. It reads a bare
+  letter after the opening quote of the value.
+- A queue read asks the questions in the order of the properties of `answers` in the queue tool's schema. Qwen3.8's
+  template writes the keys in the order it gets them. mkviolet sorts by question id, because Gemma 4's template sorts.
+- The template has no form for a failed result. The library writes `Error: ` before the content of a tool message
+  with `is_error`.
+- The template refuses a system message after the first message. The library gives a client error.
+- A marked message is a boundary when the tokens of the rendering up to it begin the whole rendering. A tool message
+  inside a run of tool messages is not a boundary, because the template puts one user turn around the run.
+- The template keeps the reasoning of every assistant message. No marked message loses its boundary for that reason.
+- `rendered_sha256` covers the text that the read was conditioned on. mkviolet hashes the head's snapshot id.
+
 **11.3b The toy family.** The fake engine has no real tokenizer. For tests, it serves the toy family of gogi's
 `gogi-toy` crate. Its tokens are the 256 byte values and 14 template markers, and its template is the template of
 `gogi-fake`. The family library `nagaya-text-toy` puts the nagaya's family interface on `gogi-toy`, and the fake
