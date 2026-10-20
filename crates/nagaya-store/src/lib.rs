@@ -423,6 +423,15 @@ pub fn recipe_boundary(previous: &RecipeId, tokens: &[u32], position: u64) -> Re
     RecipeId(*hasher.finalize().as_bytes())
 }
 
+/// The recipe of an interval copy (spec 6.13). It adds the item "not sealed" (tag 8, no bytes) to the recipe of
+/// the sealed snapshot at the same position. Thus a lookup for a sealed snapshot never finds a copy.
+pub fn recipe_not_sealed(sealed: &RecipeId) -> RecipeId {
+    let mut hasher = blake3::Hasher::new_derive_key("nagaya recipe v1");
+    add_item(&mut hasher, 5, &sealed.0);
+    add_item(&mut hasher, 8, &[]);
+    RecipeId(*hasher.finalize().as_bytes())
+}
+
 fn add_item(hasher: &mut blake3::Hasher, tag: u16, bytes: &[u8]) {
     hasher.update(&tag.to_le_bytes());
     hasher.update(&(bytes.len() as u64).to_le_bytes());

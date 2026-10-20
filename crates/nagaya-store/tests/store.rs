@@ -4,7 +4,9 @@ use nagaya_abi::{
     MemoryLimits, OutputsWanted, PartError, PartKind, PartLimits, Parts, PassError, PassOut, Segment, SegmentInputs,
     SlotLimit, State, WriteResult,
 };
-use nagaya_store::{ContentId, Snapshot, Tensor, content_id, recipe_boundary, recipe_root, snapshot_from_engine};
+use nagaya_store::{
+    ContentId, Snapshot, Tensor, content_id, recipe_boundary, recipe_not_sealed, recipe_root, snapshot_from_engine,
+};
 use serde_json::Value;
 
 fn segment(slot: u32, tokens: &[u32]) -> Segment {
@@ -136,6 +138,27 @@ fn the_recipe_is_deterministic_and_chains() {
     assert_ne!(first, recipe_boundary(&root, &[1, 2, 3], 4));
     let other_root = recipe_root(&[2u8; 32], b"geometry", &[b"approx".to_vec()], b"lab");
     assert_ne!(first, recipe_boundary(&other_root, &[1, 2, 3], 3));
+}
+
+#[test]
+fn the_not_sealed_item_changes_the_recipe() {
+    let root = recipe_root(&[1u8; 32], b"geometry", &[b"approx".to_vec()], b"lab");
+    let sealed = recipe_boundary(&root, &[1, 2, 3], 3);
+    let copy = recipe_not_sealed(&sealed);
+    // Fixed vector: BLAKE3 derive-key "nagaya recipe v1" over the item 5 (the sealed recipe) and the item 8
+    // (no bytes), made apart from this crate.
+    assert_eq!(
+        copy.hex(),
+        "3cd303f01cc295d55ef3f02d148f59f78cda1e0c8393374e4868bc648e847de0"
+    );
+    assert_ne!(
+        copy, sealed,
+        "a copy never has the recipe of the sealed snapshot at its position"
+    );
+    assert_ne!(copy, recipe_not_sealed(&recipe_boundary(&root, &[1, 2, 4], 3)));
+    assert_ne!(copy, recipe_not_sealed(&recipe_boundary(&root, &[1, 2, 3], 4)));
+    // The copy of the root differs from the root.
+    assert_ne!(recipe_not_sealed(&root), root);
 }
 
 fn parse_header(bytes: &[u8]) -> (usize, serde_json::Value) {
