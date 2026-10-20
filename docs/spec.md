@@ -264,6 +264,17 @@ warning (Amy, 2026-10-19). The owner quota is unbounded, and the chain limit is 
   holder at a time). **Open** (milestone 11.5): the ledger charges `bytes` once and does not read the lifetime yet.
   mk declares its whole pool as one term with lifetime `engine`, so nothing is short today. Milestone 12 counts
   per-context terms when it admits `ctx_new`.
+
+  **Proposed** (Sonnet 5.5, 2026-10-20): the ledger reads the lifetime like this.
+  - `open` charges each `engine` term and each `loan` term once. A loan has one holder, so one copy is enough.
+  - `open` does not charge a `context` term. Each `ctx_new` charges the bytes of every `context` term of its
+    engine, in the tier of the term.
+  - `ctx_new` takes the bytes from the unassigned bytes of the budget (4.4 step 4). If they are too few, the
+    ledger refuses and changes nothing (4.3). The reclaim of 4.6 is the caller's step.
+  - The end of a context releases its bytes.
+
+  Reason: this is the smallest rule that gives the lifetime a meaning. No engine declares a `context` term today,
+  so mk does not change. Amy decides.
 - Elastic terms `{name, tier, unit_bytes, minimum, maximum, kinds}`. The minimum and maximum are counts of units.
 - A term's tier is `device(i)` or `host`, where `i` is an index into the engine's device group. The ledger maps each
   tier to a budget (4.1). On gfx1151host and sm121host, `device(0)` and `host` map to one pool. NVMe belongs to the store.
