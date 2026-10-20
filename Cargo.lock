@@ -399,6 +399,7 @@ dependencies = [
  "libloading",
  "nagaya-abi",
  "nagaya-conformance",
+ "serde_json",
  "sha2",
  "tempfile",
 ]
