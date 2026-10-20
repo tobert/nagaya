@@ -6,6 +6,7 @@ members = [
     "crates/nagaya-sched",
     "crates/nagaya-mk-qwen38-gfx1151",
     "crates/nagaya-text-qwen38",
+    "crates/nagaya-council",
     "crates/nagaya-conformance",
     "crates/nagaya",
 ]
