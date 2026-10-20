@@ -56,6 +56,8 @@ impl ReplyParser for ToyReplyParser {
                 })
                 .collect(),
             ended: reply.ended,
+            // The toy parser holds nothing back.
+            tail: Vec::new(),
         }
     }
 }

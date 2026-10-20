@@ -235,6 +235,9 @@ pub struct ParsedReply {
     pub calls: Vec<ReplyCall>,
     /// True when the model ended the turn.
     pub ended: bool,
+    /// The pieces that the reply released after its last token, such as text that the parser held back as a
+    /// possible marker. They belong to the parts above, but no `push` gave them.
+    pub tail: Vec<ReplyStep>,
 }
 
 /// Reads the tokens of one reply, in order, after the generation prompt.

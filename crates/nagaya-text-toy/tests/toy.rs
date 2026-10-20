@@ -538,6 +538,7 @@ fn a_reply_without_thinking_is_content_and_a_reply_with_no_end_has_not_ended() {
     assert_eq!(parser.push(u32::from(b'x')).unwrap().phase, Phase::Content);
     let reply = parser.finish();
     assert_eq!((reply.content.as_str(), reply.ended), ("x", false));
+    assert!(reply.tail.is_empty(), "the toy parser holds nothing back");
 }
 
 #[test]
