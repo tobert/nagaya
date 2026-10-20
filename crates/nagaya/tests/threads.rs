@@ -220,9 +220,46 @@ fn an_engine_whose_limits_change_after_open_is_refused() {
         .start()
         .unwrap();
     match process.wait_opens(Duration::from_secs(2)).unwrap_err() {
-        WaitError::Event(Event::OpenFailed { engine, message, .. }) => {
+        WaitError::Event(Event::OpenFailed {
+            engine, message, kind, ..
+        }) => {
             assert_eq!(engine, "a");
             assert!(message.contains("limits"), "{message}");
+            assert_eq!(kind, OpenErrorKind::Other);
+        }
+        other => panic!("expected an open failure, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_engine_whose_part_size_changes_after_open_refuses_the_start() {
+    let record: Record = Arc::new(Mutex::new(Vec::new()));
+    let mut opened = limits_on(&[0]);
+    assert!(!opened.parts.is_empty(), "the fixture needs a part");
+    opened.parts[0].shape[0] += 1;
+    let mut registry = Registry::new();
+    registry.register(
+        "a",
+        Box::new(RecordingFactory::opens_with("a", &[0], opened, Arc::clone(&record))),
+    );
+    let profile = profile(vec![engine("a", "a", &[0])]);
+    let mut process = Start::new(profile, registry, inventory(&[0]))
+        .heartbeat(Duration::from_millis(10))
+        .timeout(Duration::from_secs(2))
+        .start()
+        .unwrap();
+    match process.wait_opens(Duration::from_secs(2)).unwrap_err() {
+        WaitError::Event(event @ Event::OpenFailed { .. }) => {
+            let Event::OpenFailed {
+                engine, message, kind, ..
+            } = &event
+            else {
+                unreachable!()
+            };
+            assert_eq!(engine, "a");
+            assert!(message.contains("part"), "{message}");
+            assert_eq!(*kind, OpenErrorKind::PartSize);
+            assert_eq!(event.exit_code(), Some(nagaya::exit::ExitCode::RefusedStart));
         }
         other => panic!("expected an open failure, got {other:?}"),
     }
@@ -344,4 +381,52 @@ fn a_stalled_group_reaches_the_caller() {
     );
     assert_eq!(event.exit_code(), Some(nagaya::exit::ExitCode::Crash));
     drop(guard);
+}
+
+fn started_one_group(timeout: Duration) -> nagaya::process::Process {
+    let mut registry = Registry::new();
+    registry.register(
+        "a",
+        Box::new(RecordingFactory::new("a", &[0], Arc::new(Mutex::new(Vec::new())))),
+    );
+    let profile = profile(vec![engine("a", "a", &[0])]);
+    let mut process = Start::new(profile, registry, inventory(&[0]))
+        .heartbeat(Duration::from_millis(10))
+        .timeout(timeout)
+        .start()
+        .unwrap();
+    process.wait_opens(Duration::from_secs(2)).unwrap();
+    process
+}
+
+#[test]
+fn a_busy_group_with_short_quanta_does_not_stall() {
+    let process = started_one_group(Duration::from_millis(100));
+    // The queue never empties for 400 ms, so the idle beat never runs. Each quantum is shorter than the timeout.
+    for _ in 0..20 {
+        let quantum = nagaya::process::Quantum::new(|_| thread::sleep(Duration::from_millis(20)));
+        process.submit(0, quantum).unwrap();
+    }
+    assert_eq!(
+        process.recv(Duration::from_millis(450)),
+        None,
+        "a busy group is not stalled"
+    );
+}
+
+#[test]
+fn a_quantum_that_blocks_past_the_timeout_stalls_the_group() {
+    let process = started_one_group(Duration::from_millis(100));
+    let quantum = nagaya::process::Quantum::new(|_| thread::sleep(Duration::from_millis(600)));
+    process.submit(0, quantum).unwrap();
+    let event = process
+        .recv(Duration::from_secs(2))
+        .expect("the watchdog reports the stall");
+    assert_eq!(
+        event,
+        Event::Stalled {
+            group: 0,
+            devices: vec![0]
+        }
+    );
 }

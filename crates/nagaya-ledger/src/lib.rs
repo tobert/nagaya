@@ -71,7 +71,23 @@ impl std::fmt::Display for LedgerError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LedgerError::Refused(refusal) => {
-                write!(formatter, "the profile does not fit: {:?}", refusal.shortfall)
+                write!(formatter, "the profile does not fit: ")?;
+                for (index, (tiers, bytes)) in refusal.shortfall.iter().enumerate() {
+                    let names: Vec<String> = tiers
+                        .iter()
+                        .map(|tier| match tier {
+                            Tier::Device(id) => format!("device {id}"),
+                            Tier::Host => "host".to_owned(),
+                        })
+                        .collect();
+                    let separator = if index == 0 { "" } else { "; " };
+                    write!(
+                        formatter,
+                        "{separator}the budget of {} is short by {bytes} bytes",
+                        names.join(", ")
+                    )?;
+                }
+                Ok(())
             }
             LedgerError::Invalid(message) => write!(formatter, "{message}"),
         }

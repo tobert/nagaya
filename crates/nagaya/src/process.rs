@@ -335,7 +335,10 @@ pub enum WaitError {
     /// A group reported a failure.
     Event(Event),
     /// The groups did not open in time.
-    Timeout,
+    Timeout {
+        /// The engines that had not opened, in profile order.
+        waiting: Vec<String>,
+    },
     /// The group channels closed.
     Disconnected,
 }
@@ -600,6 +603,16 @@ impl Start {
             group_stops,
             events,
             group_count: groups.len(),
+            group_engines: groups
+                .iter()
+                .map(|group| {
+                    group
+                        .engines
+                        .iter()
+                        .map(|&index| profile.engines[index].name.clone())
+                        .collect()
+                })
+                .collect(),
             accepting,
             stopped: false,
         })
@@ -673,12 +686,25 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
                 return;
             }
         };
-        if engine.limits() != job.limits {
+        let opened_limits = engine.limits();
+        if opened_limits != job.limits {
+            // A part size is the shape and the element type of a part. Any other difference is a crash (spec 10.4).
+            let (kind, what) = if opened_limits.parts != job.limits.parts {
+                (
+                    OpenErrorKind::PartSize,
+                    "a part size after open does not equal the admitted part size",
+                )
+            } else {
+                (
+                    OpenErrorKind::Other,
+                    "limits() after open do not equal the admitted limits",
+                )
+            };
             let _ = events.send(Event::OpenFailed {
                 group,
                 engine: job.placement.name.clone(),
-                kind: OpenErrorKind::Other,
-                message: "limits() after open do not equal the admitted limits".to_owned(),
+                kind,
+                message: what.to_owned(),
             });
             return;
         }
@@ -702,6 +728,14 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
                 } else {
                     quantum.cancel();
                     cancelled += 1;
+                }
+                // A group with steady work never waits out the interval, so it beats after each quantum (spec 7.4).
+                let beat = WatchMessage::Beat {
+                    group,
+                    at: Instant::now(),
+                };
+                if heartbeats.send(beat).is_err() {
+                    break;
                 }
             }
             Ok(GroupMessage::Park(reply)) => {
@@ -838,6 +872,8 @@ pub struct Process {
     group_stops: Vec<Sender<GroupMessage>>,
     events: Receiver<Event>,
     group_count: usize,
+    /// The engine names of each group, in profile order.
+    group_engines: Vec<Vec<String>>,
     accepting: Arc<AtomicBool>,
     stopped: bool,
 }
@@ -875,19 +911,27 @@ impl Process {
     pub fn wait_opens(&mut self, timeout: Duration) -> Result<Vec<OpenedEngine>, WaitError> {
         let deadline = Instant::now() + timeout;
         let mut opened = Vec::new();
-        let mut done = 0;
-        while done < self.group_count {
+        let mut done = vec![false; self.group_count];
+        while done.iter().any(|&finished| !finished) {
             let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return Err(WaitError::Timeout);
-            }
-            match self.events.recv_timeout(left) {
-                Ok(Event::Opened { engines, .. }) => {
-                    done += 1;
+            let event = if left.is_zero() {
+                Err(RecvTimeoutError::Timeout)
+            } else {
+                self.events.recv_timeout(left)
+            };
+            match event {
+                Ok(Event::Opened { group, engines }) => {
+                    done[group] = true;
                     opened.extend(engines);
                 }
                 Ok(event) => return Err(WaitError::Event(event)),
-                Err(RecvTimeoutError::Timeout) => return Err(WaitError::Timeout),
+                Err(RecvTimeoutError::Timeout) => {
+                    let waiting = (0..self.group_count)
+                        .filter(|&group| !done[group])
+                        .flat_map(|group| self.group_engines[group].iter().cloned())
+                        .collect();
+                    return Err(WaitError::Timeout { waiting });
+                }
                 Err(RecvTimeoutError::Disconnected) => return Err(WaitError::Disconnected),
             }
         }

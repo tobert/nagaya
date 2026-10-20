@@ -262,3 +262,15 @@ fn a_budget_with_no_tiers_is_invalid() {
     let mut ledger = Ledger::new();
     assert!(matches!(ledger.admit(&profile), Err(LedgerError::Invalid(_))));
 }
+
+#[test]
+fn a_refusal_prints_each_short_budget_with_its_tiers_and_bytes() {
+    let error = LedgerError::Refused(Refusal {
+        shortfall: vec![(vec![Tier::Device(0), Tier::Host], 20), (vec![Tier::Device(1)], 5)],
+    });
+    assert_eq!(
+        error.to_string(),
+        "the profile does not fit: the budget of device 0, host is short by 20 bytes; \
+         the budget of device 1 is short by 5 bytes"
+    );
+}

@@ -15,30 +15,48 @@ pub struct DeviceGroup {
     pub engines: Vec<usize>,
 }
 
-/// Group the profile's engines by their device set. The groups keep the order of the profile.
+/// Group the profile's engines by their devices. Two engines that use one device share a group (spec 3.2).
+///
+/// The overlap is transitive: an engine that uses a device of two groups joins them into one. The groups keep the
+/// order of their first engine. The devices of a group are the union, in the order of first appearance.
 pub fn device_groups(profile: &PlacementProfile) -> Vec<DeviceGroup> {
-    let mut groups: Vec<(Vec<DeviceId>, DeviceGroup)> = Vec::new();
+    let mut groups: Vec<DeviceGroup> = Vec::new();
     for (index, engine) in profile.engines.iter().enumerate() {
-        let key = device_key(&engine.devices);
-        match groups.iter_mut().find(|(other, _)| *other == key) {
-            Some((_, group)) => group.engines.push(index),
-            None => {
-                let group = DeviceGroup {
-                    devices: engine.devices.clone(),
-                    engines: vec![index],
-                };
-                groups.push((key, group));
+        let mut merged = DeviceGroup {
+            devices: Vec::new(),
+            engines: Vec::new(),
+        };
+        let mut rest = Vec::with_capacity(groups.len());
+        let mut slot = None;
+        for group in groups {
+            if group.devices.iter().any(|device| engine.devices.contains(device)) {
+                slot.get_or_insert(rest.len());
+                merge_into(&mut merged, group);
+            } else {
+                rest.push(group);
             }
         }
+        merge_into(
+            &mut merged,
+            DeviceGroup {
+                devices: engine.devices.clone(),
+                engines: vec![index],
+            },
+        );
+        rest.insert(slot.unwrap_or(rest.len()), merged);
+        groups = rest;
     }
-    groups.into_iter().map(|(_, group)| group).collect()
+    groups
 }
 
-fn device_key(devices: &[DeviceId]) -> Vec<DeviceId> {
-    let mut key = devices.to_vec();
-    key.sort_unstable();
-    key.dedup();
-    key
+fn merge_into(target: &mut DeviceGroup, other: DeviceGroup) {
+    for device in other.devices {
+        if !target.devices.contains(&device) {
+            target.devices.push(device);
+        }
+    }
+    target.engines.extend(other.engines);
+    target.engines.sort_unstable();
 }
 
 /// Why an engine's devices cannot open.
