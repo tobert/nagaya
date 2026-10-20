@@ -292,3 +292,74 @@ fn the_opened_store_holds_the_profile_cap_of_interval_copies() {
     assert!(!one.entries().contains_key(&first), "a cap of 1 keeps one copy");
     assert!(one.entries().contains_key(&second));
 }
+
+/// A fake with equal coverage in both slots and different bytes.
+fn equal_coverage(second: &[u32]) -> FakeAlways {
+    let mut engine = two_slots();
+    engine.pass(&[segment(State::Slot(0), &[1, 2, 3])], &[]).unwrap();
+    engine.pass(&[segment(State::Slot(1), second)], &[]).unwrap();
+    engine
+}
+
+fn stop_with(engine: fn() -> FakeAlways) -> (nagaya::process::StopReport, tempfile::TempDir) {
+    struct Factory2(fn() -> FakeAlways);
+    impl Factory for Factory2 {
+        fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+            Ok(limits_on(&[0]))
+        }
+        fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+            Ok(Box::new((self.0)()))
+        }
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let mut registry = Registry::new();
+    registry.register("seed", Box::new(Factory2(engine)));
+    let mut process = Start::new(profile(), registry, inventory(&[0]))
+        .store(directory.path())
+        .heartbeat(Duration::from_millis(10))
+        .timeout(Duration::from_secs(2))
+        .start()
+        .unwrap();
+    process.wait_opens(Duration::from_secs(2)).unwrap();
+    let report = process.stop(Duration::from_secs(2), &SignalFlag::new());
+    (report, directory)
+}
+
+#[test]
+fn a_stop_with_equal_coverage_and_different_bytes_stores_both_states() {
+    // Review finding 2: one recipe for every slot tripped the tripwire on equal coverage.
+    let (report, directory) = stop_with(|| equal_coverage(&[4, 5, 6]));
+    assert_eq!(report.exit_code(), ExitCode::Clean, "{report:?}");
+    assert!(report.parked.failures.is_empty(), "{report:?}");
+    assert_eq!(report.parked.states, 2);
+    let store = Store::open(directory.path()).unwrap();
+    assert_eq!(store.entries().len(), 2, "different bytes give two entries");
+    assert!(store.refused().is_empty(), "no recipe is refused");
+    for entry in store.entries().values() {
+        assert_eq!(entry.state, nagaya_store::EntryState::Live, "no entry is quarantined");
+    }
+    let recipes: std::collections::BTreeSet<_> = store.entries().values().map(|entry| entry.recipe).collect();
+    assert_eq!(recipes.len(), 2, "different bytes give different recipes");
+}
+
+#[test]
+fn a_stop_with_equal_bytes_in_two_slots_stores_one_entry() {
+    let (report, directory) = stop_with(|| equal_coverage(&[1, 2, 3]));
+    assert_eq!(report.exit_code(), ExitCode::Clean, "{report:?}");
+    assert_eq!(report.parked.states, 2, "both states are parked");
+    let store = Store::open(directory.path()).unwrap();
+    assert_eq!(store.entries().len(), 1, "equal bytes give one entry");
+    assert!(store.refused().is_empty());
+}
+
+#[test]
+fn the_park_recipe_has_a_fixed_test_vector() {
+    // The vector was computed outside the code. See the commit message.
+    let identity = [7u8; 32];
+    let content = nagaya_store::ContentId::from_hex(&"ab".repeat(32)).unwrap();
+    let recipe = nagaya::park::park_recipe(&identity, &content);
+    assert_eq!(
+        recipe.hex(),
+        "5dfd383a409537f237e3b81e34a85e7e33964978f7574ecf5e446848cfcd863a"
+    );
+}
