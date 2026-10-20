@@ -2471,3 +2471,112 @@ fn a_restart_loses_the_interval_copies() {
     let store = copy_store(dir.path(), 4);
     assert!(store.entries().is_empty());
 }
+
+/// An engine whose `cells_write` leaves the logical row count alone, as mk does. It records each `set_n`.
+struct CountSpy {
+    inner: Scripted,
+    set_n_calls: Vec<u64>,
+    set_n_answer: WriteResult,
+    log: Vec<&'static str>,
+}
+
+impl CountSpy {
+    fn new(set_n_answer: WriteResult) -> Self {
+        CountSpy {
+            inner: Scripted::new(usize::MAX, WriteResult::Ok),
+            set_n_calls: Vec::new(),
+            set_n_answer,
+            log: Vec::new(),
+        }
+    }
+}
+
+impl Engine for CountSpy {
+    fn identity(&self) -> Identity {
+        self.inner.identity()
+    }
+
+    fn limits(&self) -> Limits {
+        self.inner.limits()
+    }
+
+    fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
+        self.inner.pass(segments, taps)
+    }
+
+    fn last_error(&self) -> Option<String> {
+        self.inner.last_error()
+    }
+
+    fn parts(&mut self) -> Option<&mut dyn Parts> {
+        Some(self)
+    }
+}
+
+impl Parts for CountSpy {
+    fn part_read(&mut self, state: State, part: PartId, out: &mut [u8]) -> Result<(), PartError> {
+        self.inner.part_read(state, part, out)
+    }
+
+    fn part_write(&mut self, state: State, part: PartId, bytes: &[u8]) -> WriteResult {
+        self.log.push("part_write");
+        self.inner.part_write(state, part, bytes)
+    }
+
+    fn cells_read(&mut self, state: State, part: PartId, from: u64, n: u64, out: &mut [u8]) -> Result<(), PartError> {
+        self.inner.cells_read(state, part, from, n, out)
+    }
+
+    fn cells_write(&mut self, state: State, part: PartId, from: u64, n: u64, bytes: &[u8]) -> WriteResult {
+        self.log.push("cells_write");
+        self.inner.cells_write(state, part, from, n, bytes)
+    }
+
+    fn set_n(&mut self, _state: State, n: u64) -> WriteResult {
+        self.log.push("set_n");
+        self.set_n_calls.push(n);
+        self.set_n_answer
+    }
+}
+
+#[test]
+fn a_restore_sets_n_to_the_end_of_the_cells_after_every_part() {
+    // Kaibo job 2, finding 1 (spec 6.8, ABI): the caller calls `set_n` after it writes every part.
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let delta = chain_of_two(&mut store, 150);
+    let mut target = CountSpy::new(WriteResult::Ok);
+    let result = store
+        .restore(&delta, &mut target, State::Slot(0), &[1u8; 32], 20)
+        .unwrap();
+    assert_eq!(result, Restored::Done);
+    assert_eq!(
+        target.set_n_calls,
+        vec![4],
+        "the root covers 0..2 and the delta covers 2..4"
+    );
+    assert_eq!(target.log.last(), Some(&"set_n"), "set_n comes after every part write");
+    assert_eq!(target.log.iter().filter(|call| **call == "set_n").count(), 1);
+}
+
+#[test]
+fn a_refused_set_n_after_the_writes_is_a_failed_restore() {
+    // Every part is written, so the state changed. A refusal is a failure (6.8), and the entry is not touched.
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let delta = chain_of_two(&mut store, 151);
+    for answer in [WriteResult::Refused, WriteResult::Failed] {
+        let mut target = CountSpy::new(answer);
+        let result = store
+            .restore(&delta, &mut target, State::Slot(0), &[1u8; 32], 20)
+            .unwrap();
+        assert_eq!(
+            result,
+            Restored::Failed {
+                part: "cells".to_owned()
+            },
+            "{answer:?}"
+        );
+        assert_eq!(store.entries().get(&delta).unwrap().hits, 0);
+    }
+}

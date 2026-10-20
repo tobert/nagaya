@@ -1424,6 +1424,8 @@ impl Store {
         }
 
         let mut written = 0usize;
+        // The rows that the snapshots hold: the end of the cells coverage. `set_n` takes them after the last part.
+        let mut cells_end: Option<(String, u64)> = None;
         for snapshot in &snapshots {
             for tensor in &snapshot.tensors {
                 let index = limits
@@ -1438,6 +1440,11 @@ impl Store {
                         .part_write(state, index, &tensor.data),
                     PartKind::Cells | PartKind::Ring => {
                         let (from, rows) = tensor.coverage.map_or((0, 0), |(start, end)| (start, end - start));
+                        if let (PartKind::Cells, Some((_, end))) = (tensor.kind, tensor.coverage)
+                            && cells_end.as_ref().is_none_or(|(_, seen)| end > *seen)
+                        {
+                            cells_end = Some((tensor.name.clone(), end));
+                        }
                         engine
                             .parts()
                             .ok_or_else(|| StoreError::Invalid("no parts".to_owned()))?
@@ -1453,6 +1460,17 @@ impl Store {
                     WriteResult::Refused if written == 0 => return Ok(Restored::Refused { part }),
                     WriteResult::Refused | WriteResult::Failed => return Ok(Restored::Failed { part }),
                 }
+            }
+        }
+        // The ABI: the caller calls `set_n` after it writes every part. The writes changed the state, so a refusal
+        // here is a failure (6.8).
+        if let Some((part, end)) = cells_end {
+            let result = engine
+                .parts()
+                .ok_or_else(|| StoreError::Invalid("no parts".to_owned()))?
+                .set_n(state, end);
+            if result != WriteResult::Ok {
+                return Ok(Restored::Failed { part });
             }
         }
         // 6.8: a refusal or a failure leaves the entry as it is.
