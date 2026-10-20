@@ -2,7 +2,8 @@
 
 This doc records what other systems teach the nagaya, and what we take from each. An item is a proposal until Amy
 decides it. Each item says where it lands: an ontology term, an ABI call, a scheduler or store rule, or a decision.
-When `docs/spec.md` now states the rule, the item gives the spec section.
+When `docs/spec.md` now states the rule, the item gives the spec section. This doc is history: where it and the
+spec differ, the spec is the rule (2026-10-20, after kaibo found stale items here).
 
 ## ds4-recipe (`~/src/ds4-recipe`)
 

@@ -45,6 +45,7 @@ unified memory. The first engine is mk (`~/src/megakernel-qwen38-flashnext-strix
 - The spec is the contract. When the code and a doc do not agree, stop and report. Do not choose one.
 - When two docs do not agree, or a doc leaves a choice open, do not guess in code. Write the simplest choice into the
   doc with the mark **Proposed**, your reason, and your model name. Commit it alone, then continue. Amy decides later.
+  When she accepts it, senpai writes it as a rule with the mark "Decided <date>" (spec, header).
 - Do not edit other repositories. mk's HIP code stays in mk. If the work needs a change in mk, stop and report.
 
 ### Layout
@@ -123,6 +124,12 @@ Do them in this order. Each milestone ends with all checks green and one or more
     with the mk engine. Then drive one kaijutsu context against it: kaijutsu speaks council v2 through gogi. Write
     the cutover steps in `docs/deploy.md`, and keep arenas through a restart (10.2) for later. Do not start, stop
     or disable a service: senpai does the cutover with Amy.
+
+    Also build these, which Amy put here on 2026-10-20:
+
+    - the inventory probe that reads files under a root path, with fixed trees for three machines (2.1);
+    - CPU isolation with `sched_setaffinity`, and its test of the CPU masks (3.2a);
+    - the heartbeat of a group while its engine opens (7.4).
 15. **Import mk.** Copy mk's engine into `nagaya-mk-qwen38-gfx1151`, after the cutover. We own the copy, and the old
     repository stays an archive (Amy, 2026-10-19: "copy code in, we own all of it 100%"). The rules:
     - The HIP device kernels stay HIP. The host code is Rust.
