@@ -102,7 +102,7 @@ impl MkEngine {
     }
 }
 
-/// The first row of a cells write. mk writes rows from 0 and cannot place them later (ABI "Proposed: the first row
+/// The first row of a cells write. mk writes rows from 0 and cannot place them later (engine-abi, "The first row
 /// of a cells write").
 fn write_from(from: u64) -> Result<(), String> {
     if from == 0 {

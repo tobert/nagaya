@@ -1,7 +1,7 @@
 //! The constants and the declared shapes of the mk engine.
 //!
 //! The numbers come from mk's `src/ops/model.h` and `src/engine/engine.h`. The engine has one device group and one
-//! context pool in this binding (docs/engine-abi.md, "Proposed: v0 mk binding choices").
+//! context pool in this binding (docs/engine-abi.md, "v0 mk binding choices").
 
 use std::collections::BTreeMap;
 use std::path::Path;
