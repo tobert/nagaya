@@ -291,6 +291,11 @@ fn a_second_signal_stops_at_once() {
     tick.join().unwrap();
     assert!(report.interrupted, "the second signal stopped the park");
     assert!(!report.complete);
+    assert_eq!(
+        report.exit_code(),
+        ExitCode::Crash,
+        "an interrupted park is a crash: {report:?}"
+    );
     assert!(
         elapsed < Duration::from_millis(200),
         "the second signal exits at once, but the stop waited {elapsed:?}"
@@ -319,6 +324,7 @@ fn two_signals_before_the_stop_park_nothing() {
     let report = process.stop(Duration::from_secs(10), &flag);
     assert!(report.interrupted);
     assert!(!report.complete);
+    assert_eq!(report.exit_code(), ExitCode::Crash, "nothing was parked: {report:?}");
     assert!(
         started.elapsed() < Duration::from_millis(100),
         "a second signal exits at once"

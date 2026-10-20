@@ -70,12 +70,15 @@ pub struct StopReport {
 }
 
 impl StopReport {
-    /// The exit code of the stop. A failed write or an unfinished park is a crash (spec 8.5).
+    /// The exit code of the stop. Only a stop that parked every state is clean.
+    ///
+    /// A failed write, an unfinished park and an interrupted stop are a crash (spec 8.5). systemd does not restart
+    /// the process after `systemctl stop`, so exit 1 for an interrupted stop is honest and harmless.
     pub fn exit_code(&self) -> ExitCode {
         if !self.parked.failures.is_empty() {
             return ExitCode::Crash;
         }
-        if self.interrupted || self.complete {
+        if self.complete {
             ExitCode::Clean
         } else {
             ExitCode::Crash
