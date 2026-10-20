@@ -216,6 +216,19 @@ pub(crate) fn read_header(path: &Path) -> Result<ShardHeader, String> {
     Ok(ShardHeader { size, data_offset })
 }
 
+/// The hash of the tokenizer keys in a shard's GGUF metadata, for the engine identity.
+///
+/// The text library computes the hash (`nagaya_text_qwen38::tokenizer_hash`), so the identity and the library
+/// agree. The metadata is in the first shard. The hash covers these keys of the file: `tokenizer.ggml.model`, `.pre`,
+/// `.tokens`, `.token_type` and `.merges`, which the file must hold, and `.bos_token_id`, `.eos_token_id`,
+/// `.eot_token_id`, `.padding_token_id` and `.unknown_token_id`, which it may hold.
+pub(crate) fn tokenizer_hash(shard: &Path) -> Result<String, String> {
+    let metadata = nagaya_text_qwen38::gguf::Metadata::open(shard)
+        .map_err(|error| format!("the tokenizer of {} is not readable: {error}", shard.display()))?;
+    nagaya_text_qwen38::tokenizer_hash(&metadata)
+        .map_err(|error| format!("the tokenizer hash of {} is not available: {error}", shard.display()))
+}
+
 /// The spot digest: each shard's size and every byte before its tensor data, in the given order.
 pub(crate) fn spot_digest(shards: &[std::path::PathBuf]) -> Result<String, String> {
     let mut hash = Sha256::new();
@@ -245,7 +258,7 @@ pub(crate) fn spot_digest(shards: &[std::path::PathBuf]) -> Result<String, Strin
 mod tests {
     use std::io::Write;
 
-    use super::{read_header, spot_digest};
+    use super::{read_header, spot_digest, tokenizer_hash};
 
     /// Write a minimal GGUF v3 file with one metadata key and one tensor.
     fn write_gguf(path: &std::path::Path, magic: u32, alignment: u32) {
@@ -345,5 +358,89 @@ mod tests {
         // A different alignment changes the header bytes and the data offset, so the digest changes.
         write_gguf(&right, 0x4655_4747, 64);
         assert_ne!(left_digest, spot_digest(&[right]).unwrap());
+    }
+    fn gguf_string(text: &str) -> Vec<u8> {
+        let mut out = (text.len() as u64).to_le_bytes().to_vec();
+        out.extend_from_slice(text.as_bytes());
+        out
+    }
+
+    /// Write a GGUF v3 file with the tokenizer keys of a three-token vocabulary. `skip` leaves out one key.
+    fn write_tokenizer_gguf(path: &std::path::Path, skip: Option<&str>) {
+        let strings = |items: &[&str]| {
+            let mut out = 9u32.to_le_bytes().to_vec();
+            out.extend_from_slice(&8u32.to_le_bytes());
+            out.extend_from_slice(&(items.len() as u64).to_le_bytes());
+            for item in items {
+                out.extend(gguf_string(item));
+            }
+            out
+        };
+        let mut types = 9u32.to_le_bytes().to_vec();
+        types.extend_from_slice(&5u32.to_le_bytes());
+        types.extend_from_slice(&3u64.to_le_bytes());
+        for kind in [1i32, 1, 3] {
+            types.extend_from_slice(&kind.to_le_bytes());
+        }
+        let text = |value: &str| {
+            let mut out = 8u32.to_le_bytes().to_vec();
+            out.extend(gguf_string(value));
+            out
+        };
+        let number = |value: u32| {
+            let mut out = 4u32.to_le_bytes().to_vec();
+            out.extend_from_slice(&value.to_le_bytes());
+            out
+        };
+        let entries: Vec<(&str, Vec<u8>)> = vec![
+            ("tokenizer.ggml.model", text("gpt2")),
+            ("tokenizer.ggml.pre", text("qwen35")),
+            ("tokenizer.ggml.tokens", strings(&["a", "b", "<|x|>"])),
+            ("tokenizer.ggml.token_type", types),
+            ("tokenizer.ggml.merges", strings(&["a b"])),
+            ("tokenizer.ggml.bos_token_id", number(7)),
+            ("tokenizer.ggml.eos_token_id", number(8)),
+        ];
+        let entries: Vec<_> = entries.into_iter().filter(|(key, _)| Some(*key) != skip).collect();
+        let mut bytes = 0x4655_4747u32.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+        bytes.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+        for (key, value) in entries {
+            bytes.extend(gguf_string(key));
+            bytes.extend(value);
+        }
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    /// The hash that the text library gives this file. It is the golden value of that library's own test, which
+    /// an independent Python writer made.
+    const FIXTURE_HASH: &str = "sha256:018a61bfe25a6ed49d01bfd9c5f1415e6f99f365646354005fa617aed73a59a8";
+
+    #[test]
+    fn the_tokenizer_hash_of_a_shard_is_the_hash_of_the_text_library() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tokenizer.gguf");
+        write_tokenizer_gguf(&path, None);
+        let from_mk = tokenizer_hash(&path).unwrap();
+        let metadata = nagaya_text_qwen38::gguf::Metadata::open(&path).unwrap();
+        assert_eq!(from_mk, nagaya_text_qwen38::tokenizer_hash(&metadata).unwrap());
+        assert_eq!(from_mk, FIXTURE_HASH);
+    }
+
+    #[test]
+    fn a_shard_without_a_tokenizer_key_is_an_error_that_names_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tokenizer.gguf");
+        write_tokenizer_gguf(&path, Some("tokenizer.ggml.merges"));
+        let error = tokenizer_hash(&path).expect_err("a file without merges has no hash");
+        assert!(error.contains("tokenizer.ggml.merges"), "{error}");
+        assert!(error.contains(path.to_str().unwrap()), "{error}");
+    }
+
+    #[test]
+    fn a_missing_shard_has_no_tokenizer_hash() {
+        let error = tokenizer_hash(std::path::Path::new("/nonexistent/shard.gguf")).expect_err("a missing file");
+        assert!(error.contains("/nonexistent/shard.gguf"), "{error}");
     }
 }

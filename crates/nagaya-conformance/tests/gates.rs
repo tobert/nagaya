@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use nagaya_abi::fake::{FakeAlways, FakeBroken, FakeRingBase};
+use nagaya_abi::fake::{FakeAlways, FakeBroken, FakeRingBase, FakeRowCount, FakeSegmentCount};
 use nagaya_abi::{
     Capability, ChainLimits, Coverage, CoverageSpan, Determinism, Dtype, ElasticTerm, Engine, Identity, Inputs,
     Lifetime, Limits, MandatoryTerm, MemoryLimits, PartError, PartId, PartKind, PartLimits, Parts, PassError,
@@ -10,7 +10,7 @@ use nagaya_abi::{
 };
 use nagaya_conformance::{
     Admit, Outcome, admission_refusal_changes_nothing, park_and_restore, quantum_identity, quantum_isolation,
-    quantum_resume_fit, quantum_same_boundaries, run_all, seal_only_at_boundaries,
+    quantum_resume_fit, quantum_same_boundaries, run_all, seal_only_at_boundaries, segments_exact_bits,
 };
 use nagaya_ledger::{Admission, Budget, EnginePlan, Ledger, LedgerError, Profile};
 
@@ -48,6 +48,7 @@ fn fake_always_passes_every_engine_gate() {
     assert_pass(quantum_isolation(&mut make), "quantum_isolation");
     assert_pass(quantum_same_boundaries(&mut make), "quantum_same_boundaries");
     assert_pass(quantum_resume_fit(&mut FakeAlways::new()), "quantum_resume_fit");
+    assert_pass(segments_exact_bits(&mut make), "segments_exact_bits");
 }
 
 #[test]
@@ -1401,6 +1402,7 @@ fn the_suite_runs_every_gate_and_fake_always_passes() {
             "quantum_same_boundaries",
             "quantum_resume_fit",
             "admission_refusal_changes_nothing",
+            "segments_exact_bits",
         ]
     );
     assert!(suite.passed(), "{suite}");
@@ -1469,5 +1471,213 @@ fn a_nan_output_with_equal_bits_fails_same_boundaries() {
     match quantum_same_boundaries(&mut make) {
         Outcome::Fail(failure) => assert!(failure.message.contains("not finite"), "{}", failure.message),
         other => panic!("expected Fail, got {other}"),
+    }
+}
+
+fn assert_fail_with(outcome: Outcome, what: &str, text: &str) {
+    match outcome {
+        Outcome::Fail(failure) => assert!(failure.message.contains(text), "{what}: {}", failure.message),
+        other => panic!("{what}: expected Fail, got {other}"),
+    }
+}
+
+#[test]
+fn bits_that_depend_on_the_segment_count_fail_the_segments_gate() {
+    let mut make = || FakeSegmentCount::new();
+    assert_fail_with(segments_exact_bits(&mut make), "FakeSegmentCount", "2 segments");
+    assert!(!run_all(&mut make).passed());
+}
+
+#[test]
+fn bits_that_depend_on_the_row_count_of_a_pass_fail_the_segments_gate() {
+    let mut make = || FakeRowCount::new();
+    assert_fail_with(segments_exact_bits(&mut make), "FakeRowCount", "split");
+    assert!(!run_all(&mut make).passed());
+}
+
+#[test]
+fn an_engine_that_does_not_declare_segments_exact_gets_not_applicable() {
+    let mut make = || NotExact {
+        inner: FakeSegmentCount::new(),
+    };
+    assert!(matches!(segments_exact_bits(&mut make), Outcome::NotApplicable(_)));
+}
+
+#[test]
+fn an_engine_with_fewer_slots_than_segments_gets_not_applicable() {
+    let mut make = || FakeAlways::with_slots(vec![SlotLimit { bytes: 256, count: 2 }]);
+    match segments_exact_bits(&mut make) {
+        Outcome::NotApplicable(reason) => assert!(reason.contains("slots"), "{reason}"),
+        other => panic!("expected NotApplicable, got {other}"),
+    }
+}
+
+/// Wraps an engine and changes its answer after a pass of `from` or more segments, or after a pass that continues.
+struct AfterManySegments {
+    inner: FakeAlways,
+    /// The least segment count that changes the answer.
+    from: usize,
+    /// Change the answer of a pass that starts after position 0.
+    continued: bool,
+    /// Flip a bit of the pass outputs.
+    outputs: bool,
+    /// Flip a bit of the fixed state of the first segment.
+    state: bool,
+}
+
+impl Engine for AfterManySegments {
+    fn identity(&self) -> Identity {
+        self.inner.identity()
+    }
+
+    fn limits(&self) -> Limits {
+        self.inner.limits()
+    }
+
+    fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
+        let mut out = self.inner.pass(segments, taps)?;
+        if segments.len() >= self.from || (self.continued && segments[0].positions[0] > 0) {
+            if self.outputs {
+                out.outputs[0].bytes[0] ^= 1;
+            }
+            if self.state {
+                let mut bytes = [0u8; 16];
+                let state = segments[0].state;
+                self.inner.parts().unwrap().part_read(state, 0, &mut bytes).unwrap();
+                bytes[0] ^= 1;
+                self.inner.parts().unwrap().part_write(state, 0, &bytes);
+            }
+        }
+        Ok(out)
+    }
+
+    fn last_error(&self) -> Option<String> {
+        self.inner.last_error()
+    }
+
+    fn parts(&mut self) -> Option<&mut dyn Parts> {
+        self.inner.parts()
+    }
+
+    fn coverage(&mut self) -> Option<&mut dyn Coverage> {
+        self.inner.coverage()
+    }
+
+    fn seal(&mut self) -> Option<&mut dyn nagaya_abi::Seal> {
+        self.inner.seal()
+    }
+
+    fn slots(&mut self) -> Option<&mut dyn Slots> {
+        self.inner.slots()
+    }
+}
+
+#[test]
+fn an_output_that_changes_with_the_segment_count_fails_the_segments_gate() {
+    let mut make = || AfterManySegments {
+        inner: FakeAlways::new(),
+        from: 2,
+        continued: false,
+        outputs: true,
+        state: false,
+    };
+    assert_fail_with(segments_exact_bits(&mut make), "outputs", "output");
+}
+
+#[test]
+fn a_state_that_changes_with_the_segment_count_fails_the_segments_gate() {
+    let mut make = || AfterManySegments {
+        inner: FakeAlways::new(),
+        from: 2,
+        continued: false,
+        outputs: false,
+        state: true,
+    };
+    assert_fail_with(segments_exact_bits(&mut make), "state", "part state");
+}
+
+#[test]
+fn a_change_at_the_maximum_segment_count_only_fails_the_segments_gate() {
+    let max = FakeAlways::new().limits().max_segments as usize;
+    let mut make = || AfterManySegments {
+        inner: FakeAlways::new(),
+        from: max,
+        continued: false,
+        outputs: true,
+        state: false,
+    };
+    assert_fail_with(segments_exact_bits(&mut make), "maximum", &format!("{max} segments"));
+}
+
+#[test]
+fn an_output_that_changes_with_a_split_fails_the_segments_gate() {
+    let mut make = || AfterManySegments {
+        inner: FakeAlways::new(),
+        from: usize::MAX,
+        continued: true,
+        outputs: true,
+        state: false,
+    };
+    assert_fail_with(segments_exact_bits(&mut make), "split output", "split in two passes");
+}
+
+#[test]
+fn a_state_that_changes_with_a_split_fails_the_segments_gate() {
+    let mut make = || AfterManySegments {
+        inner: FakeAlways::new(),
+        from: usize::MAX,
+        continued: true,
+        outputs: false,
+        state: true,
+    };
+    assert_fail_with(segments_exact_bits(&mut make), "split state", "part state");
+}
+
+#[test]
+fn a_nan_output_fails_the_segments_gate() {
+    let mut make = || NanOutput {
+        inner: FakeAlways::new(),
+    };
+    assert_fail_with(segments_exact_bits(&mut make), "NaN", "not finite");
+}
+
+/// Wraps an engine and declares that its segments are not exact.
+struct NotExact {
+    inner: FakeSegmentCount,
+}
+
+impl Engine for NotExact {
+    fn identity(&self) -> Identity {
+        self.inner.identity()
+    }
+
+    fn limits(&self) -> Limits {
+        let mut limits = self.inner.limits();
+        limits.segments_exact = false;
+        limits
+    }
+
+    fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
+        self.inner.pass(segments, taps)
+    }
+
+    fn last_error(&self) -> Option<String> {
+        self.inner.last_error()
+    }
+
+    fn parts(&mut self) -> Option<&mut dyn Parts> {
+        self.inner.parts()
+    }
+
+    fn coverage(&mut self) -> Option<&mut dyn Coverage> {
+        self.inner.coverage()
+    }
+
+    fn seal(&mut self) -> Option<&mut dyn nagaya_abi::Seal> {
+        self.inner.seal()
+    }
+
+    fn slots(&mut self) -> Option<&mut dyn Slots> {
+        self.inner.slots()
     }
 }

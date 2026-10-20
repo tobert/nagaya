@@ -150,6 +150,119 @@ unsafe fn symbol<T: Copy>(library: &'static Library, name: &[u8]) -> Result<T, S
     Ok(*symbol)
 }
 
+/// A binding to stub calls and a stub context, for tests that need a poisoned context. mk poisons a context only
+/// on a spin timeout, and no test can force that.
+#[cfg(test)]
+pub(crate) mod stub {
+    use std::ffi::{c_int, c_void};
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+
+    use libloading::Library;
+
+    use super::{
+        Arena, Binding, CtxFree, CtxMax, CtxNew, EngineOpen, LastError, MemGetInfo, PartBytes, PassSegments,
+        RecoverSpinTimeouts, RoundGdn, SegmentsProblem, StateBytes, StateRead,
+    };
+
+    /// What the stub calls know about one context. A test passes a pointer to this in place of mk's context.
+    pub(crate) struct StubContext {
+        pub poisoned: AtomicBool,
+        pub n: AtomicU32,
+        /// The count of calls that would change the context in mk.
+        pub changes: AtomicUsize,
+        /// When true, a state write poisons the context, as an mk write that fails would.
+        pub write_poisons: bool,
+    }
+
+    impl StubContext {
+        pub(crate) fn new(poisoned: bool) -> Self {
+            StubContext {
+                poisoned: AtomicBool::new(poisoned),
+                n: AtomicU32::new(0),
+                changes: AtomicUsize::new(0),
+                write_poisons: false,
+            }
+        }
+    }
+
+    unsafe fn context<'a>(pointer: *mut c_void) -> &'a StubContext {
+        unsafe { &*(pointer as *const StubContext) }
+    }
+
+    unsafe extern "C" fn ctx_n(pointer: *mut c_void) -> u32 {
+        unsafe { context(pointer) }.n.load(Ordering::SeqCst)
+    }
+
+    unsafe extern "C" fn ctx_owns_kv(_pointer: *mut c_void) -> c_int {
+        1
+    }
+
+    unsafe extern "C" fn ctx_poisoned(pointer: *mut c_void) -> c_int {
+        c_int::from(unsafe { context(pointer) }.poisoned.load(Ordering::SeqCst))
+    }
+
+    unsafe extern "C" fn state_write(_engine: *mut c_void, pointer: *mut c_void, _part: u32, _source: *const c_void) {
+        let context = unsafe { context(pointer) };
+        context.changes.fetch_add(1, Ordering::SeqCst);
+        if context.write_poisons {
+            context.poisoned.store(true, Ordering::SeqCst);
+        }
+    }
+
+    unsafe extern "C" fn cells_write(
+        _engine: *mut c_void,
+        pointer: *mut c_void,
+        _part: u32,
+        _n: u32,
+        _source: *const c_void,
+    ) {
+        unsafe { context(pointer) }.changes.fetch_add(1, Ordering::SeqCst);
+    }
+
+    unsafe extern "C" fn set_n(_engine: *mut c_void, pointer: *mut c_void, n: u32) {
+        let context = unsafe { context(pointer) };
+        context.changes.fetch_add(1, Ordering::SeqCst);
+        context.n.store(n, Ordering::SeqCst);
+    }
+
+    /// A call that a stub test must not reach.
+    unsafe extern "C" fn never() {
+        std::process::abort();
+    }
+
+    /// A binding whose calls on a context read a `StubContext`. Every other call aborts the process.
+    pub(crate) fn binding() -> Binding {
+        let library: &'static Library = Box::leak(Box::new(Library::from(libloading::os::unix::Library::this())));
+        let never: unsafe extern "C" fn() = never;
+        // The transmutes below only name the call types. The stub never calls them, and `never` takes no argument.
+        unsafe {
+            Binding {
+                library,
+                engine_open: std::mem::transmute::<unsafe extern "C" fn(), EngineOpen>(never),
+                ctx_new: std::mem::transmute::<unsafe extern "C" fn(), CtxNew>(never),
+                ctx_free: std::mem::transmute::<unsafe extern "C" fn(), CtxFree>(never),
+                ctx_n,
+                ctx_max: std::mem::transmute::<unsafe extern "C" fn(), CtxMax>(never),
+                ctx_owns_kv,
+                ctx_poisoned,
+                state_read: std::mem::transmute::<unsafe extern "C" fn(), StateRead>(never),
+                state_write,
+                cells_write,
+                set_n,
+                recover_spin_timeouts: std::mem::transmute::<unsafe extern "C" fn(), RecoverSpinTimeouts>(never),
+                round_gdn: std::mem::transmute::<unsafe extern "C" fn(), RoundGdn>(never),
+                part_bytes: std::mem::transmute::<unsafe extern "C" fn(), PartBytes>(never),
+                state_bytes: std::mem::transmute::<unsafe extern "C" fn(), StateBytes>(never),
+                arena: std::mem::transmute::<unsafe extern "C" fn(), Arena>(never),
+                last_error: std::mem::transmute::<unsafe extern "C" fn(), LastError>(never),
+                segments_problem: std::mem::transmute::<unsafe extern "C" fn(), SegmentsProblem>(never),
+                pass_segments: std::mem::transmute::<unsafe extern "C" fn(), PassSegments>(never),
+                mem_get_info: std::mem::transmute::<unsafe extern "C" fn(), MemGetInfo>(never),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::load;

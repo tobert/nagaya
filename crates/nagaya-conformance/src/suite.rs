@@ -9,7 +9,7 @@ use nagaya_ledger::{Budget, EnginePlan, Ledger, Profile};
 
 use crate::gate::{
     Outcome, admission_refusal_changes_nothing, park_and_restore, quantum_identity, quantum_isolation,
-    quantum_resume_fit, quantum_same_boundaries, seal_only_at_boundaries,
+    quantum_resume_fit, quantum_same_boundaries, seal_only_at_boundaries, segments_exact_bits,
 };
 
 /// One gate in a suite run.
@@ -86,6 +86,10 @@ pub fn run_all<E: Engine>(make: &mut dyn FnMut() -> E) -> Suite {
         GateResult {
             name: "admission_refusal_changes_nothing",
             outcome: admission_gate(),
+        },
+        GateResult {
+            name: "segments_exact_bits",
+            outcome: segments_exact_bits(make),
         },
     ];
     Suite { gates }

@@ -7,6 +7,7 @@ pub mod chars;
 pub mod detok;
 mod error;
 pub mod family;
+pub mod hash;
 mod methods;
 pub mod template;
 pub mod tokenizer;
@@ -18,5 +19,6 @@ pub mod pystr;
 
 pub use error::Error;
 pub use family::{Qwen38, Rendered};
+pub use hash::tokenizer_hash;
 pub use template::{ChatTemplate, RenderOptions};
 pub use tokenizer::Tokenizer;

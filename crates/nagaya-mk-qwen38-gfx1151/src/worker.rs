@@ -115,6 +115,10 @@ pub(crate) struct Spec {
     pub pass_scratch: u64,
 }
 
+/// Why a write or a seal refuses a context that was poisoned before the call. The call changed nothing (ABI "How mk
+/// maps", part writes).
+const POISONED: &str = "the context is poisoned; free it";
+
 /// The result of a write or a seal.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Call {
@@ -578,6 +582,9 @@ impl ThreadState {
             return Err(MkError::new(problem));
         }
 
+        // The tokenizer is in the first shard. Hash it before the weights load, so a shard with no tokenizer fails fast.
+        let tokenizer_hash = gguf::tokenizer_hash(&paths.shards[0])?;
+
         let shards: Vec<CString> = paths
             .shards
             .iter()
@@ -612,7 +619,15 @@ impl ThreadState {
         let pass_scratch = state.measure_pass_scratch().map_err(MkError::new)?;
         spec::scratch_problem(pass_scratch).map_err(MkError::new)?;
 
-        let identity = spec::identity(&paths.shards, &paths.library, &library_sha256, fast_qmm, tiles, &digest);
+        let identity = spec::identity(
+            &paths.shards,
+            &paths.library,
+            &library_sha256,
+            fast_qmm,
+            tiles,
+            &digest,
+            &tokenizer_hash,
+        );
         let limits = spec::limits(arena_bytes);
         Ok((
             state,
@@ -880,7 +895,7 @@ impl ThreadState {
         match part {
             0..=2 => {
                 if poisoned {
-                    return Call::Failed("the context is poisoned; free it".to_owned());
+                    return Call::Refused(POISONED.to_owned());
                 }
                 let expected = match part {
                     0 => spec::GDN_STATE_BYTES,
@@ -902,7 +917,7 @@ impl ThreadState {
             3 | 4 => Call::Refused(format!("part {part} is cells; use cells_write with the row count")),
             5 => {
                 if poisoned {
-                    return Call::Failed("the context is poisoned; free it".to_owned());
+                    return Call::Refused(POISONED.to_owned());
                 }
                 if n != 0 || !owns_kv {
                     return Call::Refused(format!(
@@ -951,7 +966,7 @@ impl ThreadState {
         let current = unsafe { (self.binding.ctx_n)(ptr) };
         let owns_kv = unsafe { (self.binding.ctx_owns_kv)(ptr) } != 0;
         if poisoned {
-            return Call::Failed("the context is poisoned; free it".to_owned());
+            return Call::Refused(POISONED.to_owned());
         }
         // mk reads the rows as f32 values, so the source must be aligned for them.
         let bytes = Aligned::copy(bytes);
@@ -1001,7 +1016,7 @@ impl ThreadState {
         let owns_kv = unsafe { (self.binding.ctx_owns_kv)(ptr) } != 0;
         let restored = (context.restored_kv, context.restored_idx, context.restored_ple);
         if poisoned {
-            return Call::Failed("the context is poisoned; free it".to_owned());
+            return Call::Refused(POISONED.to_owned());
         }
         if current != 0 || !owns_kv {
             return Call::Refused(format!(
@@ -1040,7 +1055,7 @@ impl ThreadState {
         };
         let ptr = context.ptr;
         if unsafe { (self.binding.ctx_poisoned)(ptr) } != 0 {
-            return Call::Refused("the context is poisoned; free it".to_owned());
+            return Call::Refused(POISONED.to_owned());
         }
         // mk_ctx_round_gdn_bf16 stops the program on a non-finite value, or one that rounds to infinity. Check first.
         let mut state = Aligned::zeroed(spec::GDN_STATE_BYTES as usize);
@@ -1253,10 +1268,79 @@ mod tests {
     use std::os::unix::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
 
+    use std::collections::HashMap;
+    use std::sync::atomic::Ordering;
+
+    use crate::binding::stub::{self, StubContext};
+
     use super::{
-        Aligned, Word, fast_qmm_from, memory_problem, open_contexts, parse_shards, pin_problem, probe_shapes,
-        rounds_to_finite, tiles_from,
+        Aligned, Call, Context, ThreadState, Word, fast_qmm_from, memory_problem, open_contexts, parse_shards,
+        pin_problem, probe_shapes, rounds_to_finite, tiles_from,
     };
+
+    /// A worker state with one stub context, id 1.
+    fn stub_state(context: &StubContext) -> ThreadState {
+        let contexts = HashMap::from([(
+            1,
+            Context {
+                ptr: context as *const StubContext as *mut c_void,
+                capacity: 256,
+                restored_kv: 0,
+                restored_idx: 0,
+                restored_ple: false,
+            },
+        )]);
+        ThreadState {
+            binding: stub::binding(),
+            engine: std::ptr::null_mut(),
+            contexts,
+            next_id: 2,
+            fast_qmm: true,
+            tiles: false,
+        }
+    }
+
+    fn is_refused(call: &Call) -> bool {
+        matches!(call, Call::Refused(message) if message.contains("poisoned"))
+    }
+
+    #[test]
+    fn every_write_to_a_poisoned_context_is_refused_and_changes_nothing() {
+        let context = StubContext::new(true);
+        let mut state = stub_state(&context);
+        let history = [1u8, 0, 0, 0, 2, 0, 0, 0];
+        let calls = [
+            state.write(1, 0, &[0u8; 16]),
+            state.write(1, 5, &history),
+            state.cells_write(1, 3, 1, &[0u8; 8]),
+            state.set_n(1, 1),
+        ];
+        for call in &calls {
+            assert!(is_refused(call), "{call:?}");
+        }
+        assert_eq!(context.changes.load(Ordering::SeqCst), 0, "a refused call reached mk");
+    }
+
+    #[test]
+    fn a_read_of_a_poisoned_context_is_still_an_error() {
+        let context = StubContext::new(true);
+        let state = stub_state(&context);
+        assert!(matches!(state.read(1, 5, 8), Err(Call::Failed(_))));
+    }
+
+    #[test]
+    fn a_write_that_poisons_the_context_is_failed() {
+        let mut context = StubContext::new(false);
+        context.write_poisons = true;
+        let mut state = stub_state(&context);
+        let history = [1u8, 0, 0, 0, 2, 0, 0, 0];
+        let call = state.write(1, 5, &history);
+        assert!(
+            matches!(call, Call::Failed(ref message) if message.contains("poisoned")),
+            "{call:?}"
+        );
+        assert_eq!(context.changes.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn the_probe_asks_for_the_small_pass_and_then_the_logits_row() {

@@ -15,7 +15,7 @@ use nagaya::signal::SignalFlag;
 use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{
     Capability, Coverage, DeviceId, Engine, Identity, Limits, OutputsWanted, PartError, Parts, PassError, PassOut,
-    Seal, Segment, SegmentInputs, Slots, State, Tap, Tier, WriteResult,
+    Seal, Segment, SegmentInputs, SlotLimit, Slots, State, Tap, Tier, WriteResult,
 };
 use nagaya_store::{Store, snapshot_from_engine};
 
@@ -25,8 +25,16 @@ struct ParkRecord {
     events: Vec<String>,
 }
 
+/// A fake with two slots. A stop parks every slot, so these tests keep the count at two.
+fn two_slots() -> FakeAlways {
+    FakeAlways::with_slots(vec![
+        SlotLimit { bytes: 64, count: 1 },
+        SlotLimit { bytes: 256, count: 1 },
+    ])
+}
+
 fn limits_on(devices: &[DeviceId]) -> Limits {
-    let mut limits = FakeAlways::new().limits();
+    let mut limits = two_slots().limits();
     limits.devices = devices.to_vec();
     limits
 }
@@ -145,7 +153,7 @@ impl Factory for ParkFactory {
 
     fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
         Ok(Box::new(ParkEngine {
-            inner: FakeAlways::new(),
+            inner: two_slots(),
             limits: self.limits.clone(),
             name: self.name.clone(),
             record: Arc::clone(&self.record),
@@ -590,7 +598,7 @@ fn a_running_quantum_ends_before_the_park() {
     assert!(events[end + 1..].len() >= 2, "the park reads both states: {events:?}");
     drop(record);
 
-    let mut seeded = FakeAlways::new();
+    let mut seeded = two_slots();
     seeded
         .pass(&[segment(State::Slot(0), &[7, 8, 9])], &[])
         .expect("the seeded pass runs");
