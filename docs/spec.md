@@ -114,6 +114,10 @@ node writes a few keys, plus one key for each engine.
 
 A profile that does not fit in 8192 bytes needs a different path, which is not in v0. Decided 2026-10-19.
 
+**Proposed** by Sonnet 5.5, 2026-10-19, on senpai's instruction: a gossip key has at most 1024 bytes. The nagaya
+refuses to publish a longer key, and the refusal names the key. Reason: `chitchat` 0.13.0 writes the length of a key
+in 16 bits, and a delta must fit one datagram.
+
 The value of `profile:desired:<host>` is JSON with two fields. `version` is an integer that the client picks.
 `profile` is the placement profile (2.4) as a JSON object. The machine that takes a `PUT` writes the key under its
 own node.
@@ -171,6 +175,10 @@ that share it. A caller that adds the entries does not count a pooled budget twi
 **Proposed** by deepseek-flash, 2026-10-18: the placement profile is one TOML file. It has `[[engines]]` entries with
 `name`, `kind`, `devices`, `config`, `share`, and `pin_identity`. It has `[[budgets]]` entries with `tiers` and
 `bytes`, where a tier is `host` or `device(i)`. It has a `[store]` table with `nvme` and optional `host` (4.1a).
+
+**Proposed** by Sonnet 5.5, 2026-10-19, on senpai's instruction: an engine name has letters, digits, `.`, `_` and
+`-`, and at most 128 bytes. A profile with another name does not parse. Reason: the name is in the gossip key
+`engine:<name>`.
 
 The process writes an accepted profile to `<store_dir>/profile.toml`, atomically: a temporary file, then a rename.
 The file has the same shape as the input, so a read gives an equal profile. An unknown kind or key refuses the
