@@ -4,22 +4,16 @@ use std::path::Path;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use nagaya_abi::{
-    BitClass, ChainLimits, CoverageSpan, Engine, Identity, PartKind, PartLimits, State, Tier as MemoryTier,
-};
+use nagaya_abi::{BitClass, CoverageSpan, Engine, Identity, PartKind, PartLimits, State, Tier as MemoryTier};
 use nagaya_ledger::Admission;
-use nagaya_store::{ContentId, Put, Reason, RecipeId, Snapshot, Store, StoreError, Tensor, Tier, recipe_root};
+use nagaya_store::{
+    ContentId, EngineFacts, Put, Reason, RecipeId, Snapshot, Store, StoreError, Tensor, Tier, recipe_root,
+};
 
 use crate::process::ParkReport;
 
 /// The owner of a park entry: the process itself, not a client.
 pub const PARK_OWNER: u64 = 0;
-
-/// The chain limit of the process store. A park writes a base snapshot.
-const OPEN_CHAIN: ChainLimits = ChainLimits {
-    max_depth: u32::MAX,
-    delta_fraction: 1.0,
-};
 
 /// The store's budgets for the park (spec 4.1 note).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +44,8 @@ pub(crate) enum StoreMessage {
         snapshot: Snapshot,
         /// The recipe of the state.
         recipe: RecipeId,
+        /// The engine name, its class and its chain limits.
+        engine: Box<EngineFacts>,
         /// The digest of the engine identity.
         identity: [u8; 32],
         /// The owner of the entry.
@@ -65,7 +61,7 @@ pub(crate) enum StoreMessage {
 
 /// Open the machine's store with the park's budgets.
 pub(crate) fn open_store(dir: &Path, budget: StoreBudget) -> Result<Store, StoreError> {
-    Store::open_with_limits(dir, budget.host, budget.nvme, u64::MAX, OPEN_CHAIN)
+    Store::open_with_limits(dir, budget.host, budget.nvme, u64::MAX)
 }
 
 /// Store one parked state for one engine, and add its counts or its failure to `report`.
@@ -107,6 +103,7 @@ pub(crate) fn park_engine(
         let message = StoreMessage::Put {
             snapshot,
             recipe: park_recipe(&identity),
+            engine: Box::new(EngineFacts::of(name, &limits)),
             identity,
             owner: PARK_OWNER,
             now_ms: now_ms(),
@@ -330,6 +327,7 @@ pub(crate) fn store_thread(mut store: Store, messages: Receiver<StoreMessage>) {
             StoreMessage::Put {
                 snapshot,
                 recipe,
+                engine,
                 identity,
                 owner,
                 now_ms,
@@ -339,6 +337,7 @@ pub(crate) fn store_thread(mut store: Store, messages: Receiver<StoreMessage>) {
                     snapshot: &snapshot,
                     recipe,
                     previous_recipe: None,
+                    engine: *engine,
                     identity,
                     owner,
                     tier: Tier::Nvme,
