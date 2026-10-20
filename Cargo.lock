@@ -429,6 +429,8 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "gogi-proto",
+ "nagaya-abi",
+ "nagaya-store",
  "serde_json",
  "sha2",
 ]
