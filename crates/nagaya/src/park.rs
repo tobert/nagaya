@@ -213,19 +213,29 @@ pub(crate) fn park_snapshot(engine: &mut dyn Engine, state: State) -> Result<Sna
                     .cells_read(state, id, start, count, &mut data)
                     .map_err(|error| format!("part `{}` read failed: {error:?}", part.name))?;
                 let span = match engine.coverage() {
-                    Some(coverage) => coverage.coverage(state, id, &data),
+                    Some(coverage) => {
+                        let span = coverage.coverage(state, id, &data);
+                        if span.start > span.end {
+                            return Err(format!(
+                                "part `{}` has coverage {}..{}",
+                                part.name, span.start, span.end
+                            ));
+                        }
+                        // The store refuses an entry that cannot restore, as `snapshot_from_engine` does.
+                        coverage.fits(&span, slot).map_err(|why| {
+                            format!(
+                                "part `{}` has coverage {}..{} that does not fit slot {slot}: {why}",
+                                part.name, span.start, span.end
+                            )
+                        })?;
+                        span
+                    }
                     None => CoverageSpan {
                         part: id,
                         start,
                         end: start + count,
                     },
                 };
-                if span.start > span.end {
-                    return Err(format!(
-                        "part `{}` has coverage {}..{}",
-                        part.name, span.start, span.end
-                    ));
-                }
                 let mut shape = vec![span.end - span.start];
                 shape.extend_from_slice(&part.shape);
                 tensors.push(Tensor {

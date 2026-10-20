@@ -92,6 +92,7 @@ struct ParkFactory {
     delay: Duration,
     fail: bool,
     no_slots: bool,
+    misfit: bool,
 }
 
 impl ParkFactory {
@@ -103,7 +104,14 @@ impl ParkFactory {
             delay: Duration::ZERO,
             fail: false,
             no_slots: false,
+            misfit: false,
         }
+    }
+
+    /// Make the coverage capability refuse every span with `fits`.
+    fn misfit(mut self) -> Self {
+        self.misfit = true;
+        self
     }
 
     fn slow(mut self, delay: Duration) -> Self {
@@ -140,6 +148,7 @@ impl Factory for ParkFactory {
             delay: self.delay,
             fail: self.fail,
             no_slots: self.no_slots,
+            misfit: self.misfit.then_some(MisfitCoverage),
         }))
     }
 }
@@ -152,6 +161,20 @@ struct ParkEngine {
     delay: Duration,
     fail: bool,
     no_slots: bool,
+    misfit: Option<MisfitCoverage>,
+}
+
+/// A coverage capability for which no span fits any slot.
+struct MisfitCoverage;
+
+impl Coverage for MisfitCoverage {
+    fn coverage(&self, _state: State, part: usize, _bytes: &[u8]) -> nagaya_abi::CoverageSpan {
+        nagaya_abi::CoverageSpan { part, start: 0, end: 0 }
+    }
+
+    fn fits(&self, _coverage: &nagaya_abi::CoverageSpan, _slot: u32) -> Result<(), String> {
+        Err("the span is too large for the slot".to_owned())
+    }
 }
 
 impl Engine for ParkEngine {
@@ -176,7 +199,10 @@ impl Engine for ParkEngine {
     }
 
     fn coverage(&mut self) -> Option<&mut dyn Coverage> {
-        self.inner.coverage()
+        match self.misfit.as_mut() {
+            Some(misfit) => Some(misfit),
+            None => self.inner.coverage(),
+        }
     }
 
     fn seal(&mut self) -> Option<&mut dyn Seal> {
@@ -465,6 +491,25 @@ fn an_unmeasured_row_part_is_a_crash_with_the_names() {
     assert!(text.contains("state 0"), "{text}");
     assert!(text.contains("part `cells`"), "{text}");
     assert!(text.contains("no slots capability"), "{text}");
+}
+
+#[test]
+fn a_span_that_does_not_fit_its_slot_is_a_crash_with_the_names() {
+    let record = Arc::new(Mutex::new(ParkRecord::default()));
+    let (mut process, _, _directory) = started(ParkFactory::new("a", record).misfit());
+    let report = process.stop(Duration::from_secs(2), &SignalFlag::new());
+    assert_eq!(report.exit_code(), ExitCode::Crash, "{report:?}");
+    assert_eq!(report.parked.entries, 0, "a misfit state is not stored: {report:?}");
+    assert_eq!(
+        report.parked.failures.len(),
+        2,
+        "one failure for each state: {report:?}"
+    );
+    let text = report.parked.failures.join(" | ");
+    assert!(text.contains("engine `a`"), "{text}");
+    assert!(text.contains("state 0"), "{text}");
+    assert!(text.contains("part `cells`"), "{text}");
+    assert!(text.contains("does not fit"), "{text}");
 }
 
 #[test]
