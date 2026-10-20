@@ -145,6 +145,7 @@ pub fn wait(process: &Process, signals: &SignalFlag, notifier: Option<&Notifier>
 }
 
 /// Like `wait`, and call `tick` in each turn of the loop. A `tick` that gives a code ends the wait with that code.
+/// A signal that arrived during the tick turns a planned restart into a clean stop.
 pub fn wait_with(
     process: &Process,
     signals: &SignalFlag,
@@ -157,6 +158,11 @@ pub fn wait_with(
             return ExitCode::Clean;
         }
         if let Some(code) = tick() {
+            // A signal that arrived during the tick wins: an operator stop is not a planned restart. A profile that
+            // the tick persisted stays persisted. A crash stays a crash (spec 8.5).
+            if code == ExitCode::PlannedRestart && signals.count() > 0 {
+                return ExitCode::Clean;
+            }
             return code;
         }
         let Some(event) = process.recv(poll) else {

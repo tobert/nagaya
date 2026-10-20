@@ -76,6 +76,8 @@ pub enum Outcome {
     Unchanged,
     /// The node refused the profile.
     Refused(Refusal),
+    /// The process is stopping and took no new admission. The node handled nothing (spec 10.3 step 1).
+    Stopping,
 }
 
 /// Why a desired profile cannot be handled. The process stops, because it cannot keep its order (spec 8.5).
@@ -185,6 +187,7 @@ impl Swap {
     /// Admit a candidate with the ledger, persist it, and say what the node does next (spec 3.3).
     pub fn handle(&mut self, candidate: Candidate, process: &Process) -> Result<Outcome, SwapError> {
         let version = candidate.version;
+        let before = self.handled;
         // The node handles a version once, also when it refuses the version.
         self.handled = version;
         let refuse = |reason: String, shortfall: Vec<Shortfall>| {
@@ -221,6 +224,11 @@ impl Swap {
                     })
                     .collect();
                 return refuse("the profile does not fit its budgets".to_owned(), shortfall);
+            }
+            Err(AdmitError::Stopping) => {
+                // The stop took no new admission. This is not a refusal: the node handled nothing (spec 10.3 step 1).
+                self.handled = before;
+                return Ok(Outcome::Stopping);
             }
             Err(error) => return refuse(error.to_string(), Vec::new()),
         }

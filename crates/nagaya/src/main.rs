@@ -195,6 +195,10 @@ fn desired_profile(swap: &mut Swap, node: &mut Node, process: &nagaya::process::
             node.clear_refusal();
             None
         }
+        Ok(Outcome::Stopping) => {
+            eprintln!("desired profile version {version} waits: the process is stopping");
+            None
+        }
         Ok(Outcome::Refused(refusal)) => {
             eprintln!("refused desired profile version {version}: {}", refusal.reason);
             for entry in &refusal.shortfall {

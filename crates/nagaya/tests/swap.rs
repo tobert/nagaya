@@ -330,3 +330,25 @@ fn a_version_file_that_is_not_a_number_stops_the_open() {
         "the message names the file: {error}"
     );
 }
+
+#[test]
+fn a_stopping_process_is_not_a_refusal() {
+    let directory = tempfile::tempdir().unwrap();
+    let active = profile(&["fake-one"], 4096);
+    let mut process = running(directory.path(), &active);
+    process.abort();
+    let mut swap = swap(directory.path(), &active);
+    let wanted = profile(&["fake-one", "fake-two"], 8192);
+    let offered = view(&[("a", KEY, desired_value(4, &wanted))]);
+    let candidate = swap.candidate(&offered).unwrap();
+    assert_eq!(swap.handle(candidate, &process).unwrap(), Outcome::Stopping);
+    assert_eq!(swap.handled(), 0, "the node did not handle the version");
+    assert!(!directory.path().join(VERSION_FILE).exists(), "no version is written");
+    assert_eq!(PlacementProfile::read_active(directory.path()).unwrap(), active);
+    assert_eq!(swap.active(), &active);
+    assert_eq!(
+        swap.candidate(&offered).map(|candidate| candidate.version),
+        Some(4),
+        "the version stays a candidate"
+    );
+}

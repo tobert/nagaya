@@ -327,3 +327,46 @@ fn a_signal_ends_the_wait_with_exit_zero() {
     assert_eq!(code, ExitCode::Clean);
     ready.process.stop(Duration::from_secs(2), &SignalFlag::new());
 }
+
+/// Start the fake profile and give a wait with a tick that returns `code` after it raises the signal when asked.
+fn wait_with_tick(raise: bool, code: ExitCode) -> ExitCode {
+    let directory = tempfile::tempdir().unwrap();
+    let mut ready = lifecycle::start(
+        fake_profile(),
+        Registry::with_fake(),
+        inventory(&[0]),
+        directory.path(),
+        None,
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    let flag = SignalFlag::new();
+    let mut tick = || {
+        if raise {
+            flag.raise();
+        }
+        Some(code)
+    };
+    let result = lifecycle::wait_with(&ready.process, &flag, None, Duration::from_millis(5), &mut tick);
+    ready.process.stop(Duration::from_secs(2), &SignalFlag::new());
+    result
+}
+
+#[test]
+fn a_planned_restart_from_the_tick_gives_exit_four() {
+    assert_eq!(
+        wait_with_tick(false, ExitCode::PlannedRestart),
+        ExitCode::PlannedRestart
+    );
+}
+
+#[test]
+fn a_signal_during_the_tick_beats_a_planned_restart() {
+    // An operator stop is not a planned restart, also when a profile was persisted in the same tick.
+    assert_eq!(wait_with_tick(true, ExitCode::PlannedRestart), ExitCode::Clean);
+}
+
+#[test]
+fn a_signal_during_the_tick_does_not_hide_a_crash() {
+    assert_eq!(wait_with_tick(true, ExitCode::Crash), ExitCode::Crash);
+}
