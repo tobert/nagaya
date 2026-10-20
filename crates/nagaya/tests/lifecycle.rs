@@ -414,3 +414,37 @@ fn an_open_that_outlasts_the_wait_is_a_crash_that_names_the_engine() {
 fn closed_group_channels_are_a_crash() {
     assert_eq!(lifecycle::LifecycleError::Disconnected.exit_code(), ExitCode::Crash);
 }
+
+#[test]
+fn an_engine_with_no_segments_exits_three_at_cold_start() {
+    // Review finding 8.
+    struct Zero;
+    impl Factory for Zero {
+        fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+            let mut limits = limits_on(&[0]);
+            limits.max_segments = 0;
+            Ok(limits)
+        }
+        fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+            panic!("an engine that admission refused is never opened")
+        }
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let mut registry = Registry::new();
+    registry.register("zero", Box::new(Zero));
+    let error = lifecycle::start(
+        profile(vec![engine("no-passes", "zero", &[0])]),
+        registry,
+        inventory(&[0]),
+        directory.path(),
+        None,
+        Duration::from_secs(2),
+    )
+    .unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::RefusedStart);
+    let text = error.to_string();
+    assert!(
+        text.contains("`no-passes`") && text.contains("`max_segments`"),
+        "{text}"
+    );
+}

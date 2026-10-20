@@ -122,6 +122,15 @@ pub enum AdmitError {
         /// The planner's message.
         message: String,
     },
+    /// An engine declares a limit that no pass can use.
+    Limits {
+        /// The engine name.
+        engine: String,
+        /// The name of the field in `Limits`.
+        field: &'static str,
+        /// Why the value is invalid.
+        why: &'static str,
+    },
     /// The ledger refused the profile.
     Ledger(LedgerError),
     /// A profile device is missing or differs from the plan.
@@ -139,6 +148,12 @@ impl std::fmt::Display for AdmitError {
             AdmitError::Plan { engine, message } => {
                 write!(formatter, "engine `{engine}` cannot plan: {message}")
             }
+            AdmitError::Limits { engine, field, why } => {
+                write!(
+                    formatter,
+                    "engine `{engine}` declares `{field}` that is invalid: {why}; fix the engine's limits"
+                )
+            }
             AdmitError::Ledger(error) => {
                 write!(formatter, "the profile cannot be admitted: {error}")
             }
@@ -155,7 +170,10 @@ impl std::error::Error for AdmitError {
         match self {
             AdmitError::Ledger(error) => Some(error),
             AdmitError::Device(error) => Some(error),
-            AdmitError::UnknownKind { .. } | AdmitError::Plan { .. } | AdmitError::Stopping => None,
+            AdmitError::UnknownKind { .. }
+            | AdmitError::Plan { .. }
+            | AdmitError::Limits { .. }
+            | AdmitError::Stopping => None,
         }
     }
 }
@@ -234,6 +252,14 @@ pub fn admit(
             engine: engine.name.clone(),
             message: error.to_string(),
         })?;
+        // The scheduler asserts this value, so a zero is refused here, before any thread starts.
+        if limits.max_segments == 0 {
+            return Err(AdmitError::Limits {
+                engine: engine.name.clone(),
+                field: "max_segments",
+                why: "no pass can run with zero segments",
+            });
+        }
         planned.push(AdmittedEngine {
             name: engine.name.clone(),
             limits: limits.clone(),

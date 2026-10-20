@@ -110,12 +110,21 @@ pub(crate) fn park_engine(
             ));
             continue;
         };
+        let content = match snapshot.content_id() {
+            Ok(content) => content,
+            Err(error) => {
+                report
+                    .failures
+                    .push(format!("engine `{name}` state {id} parts {names} {error}"));
+                continue;
+            }
+        };
         let parts = snapshot.tensors.len();
         let bytes: u64 = snapshot.tensors.iter().map(|tensor| tensor.data.len() as u64).sum();
         let (reply, answer) = std::sync::mpsc::channel();
         let message = StoreMessage::Put {
             snapshot,
-            recipe: park_recipe(&identity),
+            recipe: park_recipe(&identity, &content),
             engine: Box::new(EngineFacts::of(name, &limits)),
             identity,
             owner: PARK_OWNER,
@@ -263,12 +272,25 @@ pub(crate) fn park_snapshot(engine: &mut dyn Engine, state: State) -> Result<Sna
     Ok(Snapshot { tensors, parent: None })
 }
 
+/// The geometry key of a park recipe (tag 2 of the root recipe).
+///
+/// A token recipe takes its geometry key from the engine. The marker keeps a park recipe apart from it.
+pub const PARK_GEOMETRY_KEY: &[u8] = b"nagaya park v1";
+
 /// The recipe of a parked state (spec 6.2).
 ///
-/// The fake has no tokens and no boundaries, so a park has one root recipe per engine. The content id
-/// and the coverage name the state. Two slots with equal coverage and different bytes trip the store.
-pub(crate) fn park_recipe(identity: &[u8; 32]) -> RecipeId {
-    recipe_root(identity, b"", &[], b"")
+/// Jobs do not track the inputs of a context yet (milestone 12), so a park does not know them. Thus the
+/// recipe names the bytes. It is a root recipe over the identity digest. Tag 2 holds `PARK_GEOMETRY_KEY`,
+/// tag 3 holds no approximations, and tag 4 holds the 32 bytes of the snapshot's content id.
+/// Equal bytes give one recipe and one entry. Different bytes give different recipes, so the tripwire fires
+/// only for a real duplicate. A token recipe cannot equal it, because its tag 2 holds the engine's own key.
+pub fn park_recipe(identity: &[u8; 32], content: &ContentId) -> RecipeId {
+    // The store gives no byte accessor for a content id, so the 32 bytes come from its hex form.
+    let hex = content.hex();
+    let bytes: Vec<u8> = (0..32)
+        .map(|index| u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).expect("a content id is 64 hex digits"))
+        .collect();
+    recipe_root(identity, PARK_GEOMETRY_KEY, &[], &bytes)
 }
 
 /// The digest of an engine identity (spec 6.2, 12.1).

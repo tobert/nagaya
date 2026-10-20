@@ -215,3 +215,60 @@ fn a_device_refusal_changes_nothing() {
     );
     assert_eq!(ledger, before);
 }
+
+struct FixedLimits(Limits);
+
+impl Factory for FixedLimits {
+    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+        Ok(self.0.clone())
+    }
+
+    fn open(&self, _config: &toml::Table) -> Result<Box<dyn nagaya_abi::Engine>, OpenError> {
+        panic!("an engine that admission refused is never opened")
+    }
+}
+
+#[test]
+fn an_engine_with_no_segments_is_refused_with_its_name_and_the_field() {
+    // Review finding 8: the scheduler asserts `max_segments > 0`, so admission refuses a zero first.
+    let mut limits = FakeAlways::new().limits();
+    limits.max_segments = 0;
+    let mut registry = Registry::new();
+    registry.register("zero", Box::new(FixedLimits(limits)));
+    let profile = PlacementProfile {
+        engines: vec![engine("no-passes", "zero", 1)],
+        budgets: vec![device_budget(0, 4096), host_budget(256)],
+        store: None,
+    };
+    let mut ledger = Ledger::new();
+    let before = ledger.clone();
+    let error = admit(&profile, &registry, &inventory(&[0]), &mut ledger).unwrap_err();
+    match &error {
+        AdmitError::Limits { engine, field, .. } => {
+            assert_eq!(engine, "no-passes");
+            assert_eq!(*field, "max_segments");
+        }
+        other => panic!("expected a limits refusal, got {other:?}"),
+    }
+    let text = error.to_string();
+    assert!(
+        text.contains("`no-passes`") && text.contains("`max_segments`"),
+        "{text}"
+    );
+    assert_eq!(ledger, before, "a refusal changes nothing (spec 4.3)");
+}
+
+#[test]
+fn one_segment_is_admitted() {
+    let mut limits = FakeAlways::new().limits();
+    limits.max_segments = 1;
+    let mut registry = Registry::new();
+    registry.register("one", Box::new(FixedLimits(limits)));
+    let profile = PlacementProfile {
+        engines: vec![engine("one-pass", "one", 1)],
+        budgets: vec![device_budget(0, 4096), host_budget(256)],
+        store: None,
+    };
+    let mut ledger = Ledger::new();
+    admit(&profile, &registry, &inventory(&[0]), &mut ledger).unwrap();
+}
