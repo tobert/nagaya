@@ -2,6 +2,7 @@
 
 pub mod admission;
 pub mod bootstrap;
+pub mod council;
 pub mod exit;
 pub mod gossip;
 pub mod inventory;
