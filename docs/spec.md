@@ -468,7 +468,7 @@ The tag numbers are in this table. Decided 2026-10-20 (reading).
 | 5 | the previous recipe |
 | 6 | the tokens |
 | 7 | the boundary position |
-| 8 | "not sealed", with no bytes: only on an interval copy (6.13) |
+| 8 | "not sealed", with no bytes: only on an interval copy (6.13). It follows tag 5, which holds the sealed recipe at the same position |
 
 mk's `context_id` and mkviolet's `snap:<sha256>` are the input part of a recipe. They do not include the engine
 identity. mk's id is a SHA-256 of the tokens and boundaries with `|gdn-bf16-v1|`.
@@ -642,6 +642,16 @@ the scheduler makes an interval copy (ontology) of each context that passed a mu
 - **A cap and an order.** The `[store]` table of the profile has `interval_copies`, the most copies that the store
   keeps (2.4). Above the cap, the store removes the least recently used copy at once. When a put needs bytes, copies
   go first, the least recently used first (6.9).
+- **How the store knows a copy.** An interval put names the sealed recipe at its position. The store computes the
+  copy's recipe from it (6.2 tag 8) and refuses a put whose recipe differs. It also refuses an interval put to
+  NVMe, a copy with a parent, and any interval put while the cap is 0.
+- **Pins and the cap.** A pinned copy stays above the cap. When pins block the cap, the put fails with no space and
+  changes nothing. `remove` takes only an interval copy, and it returns false for an id that is not in the store.
+- **Owners.** Copies count toward their owner's quota in the host tier. Eviction step 1 takes the copies of the
+  owner whose put needs bytes, and the cap counts the copies of every owner.
+- **The same checks.** The tripwire (6.7) applies to copies as to other entries. A change of `interval_copies` is
+  a new profile, so it restarts the process (2.3). An NVMe delta whose parent is in the host tier is refused,
+  because a restart would cut its chain.
 - **Any split replays.** An engine that declares a checkpoint grain must also declare `segments_exact`. Thus the row
   count of a pass does not change its bits (5.7), and a replay can use any split into passes.
 
