@@ -48,6 +48,17 @@ impl FakeAlways {
     }
 }
 
+impl FakeAlways {
+    /// Give the engine logits over a vocabulary of `vocab` tokens (engine-abi, "Logit outputs").
+    ///
+    /// Each requested logit row is a function of the fixed state after the tokens up to its position.
+    pub fn with_vocab(mut self, vocab: usize) -> Self {
+        assert!(vocab > 0, "a vocabulary has at least one token");
+        self.0.vocab = Some(vocab);
+        self
+    }
+}
+
 impl FakeBroken {
     /// Make the broken engine.
     pub fn new() -> Self {
@@ -129,6 +140,8 @@ pub(crate) struct Fake {
     broken: bool,
     ignore_ring_from: bool,
     count_defect: CountDefect,
+    /// The vocabulary size, when the engine gives logits.
+    vocab: Option<usize>,
     limits: Limits,
     slots: Vec<SlotData>,
     last_error: Option<String>,
@@ -234,6 +247,7 @@ impl Fake {
             broken,
             ignore_ring_from,
             count_defect: CountDefect::None,
+            vocab: None,
             limits,
             slots,
             last_error: None,
@@ -304,6 +318,20 @@ impl Fake {
                 message: "the fake takes tokens".to_owned(),
             });
         }
+        // A logit row names a position that the segment feeds. A pass with another row did not run.
+        for segment in segments {
+            if let Some(row) = segment
+                .outputs
+                .logit_rows
+                .iter()
+                .find(|row| !segment.positions.contains(row))
+            {
+                return Err(PassError {
+                    kind: PassErrorKind::Refused,
+                    message: format!("the segment wants a logit row at position {row}, which it does not feed"),
+                });
+            }
+        }
         let mut outputs = Vec::new();
         // A write that fails before any write of the pass succeeded changed nothing. That pass did not run.
         let mut changed = false;
@@ -341,6 +369,27 @@ impl Fake {
                 });
             }
             let mut state_bytes = self.state_bytes(segment.state);
+            let mut logit_outputs = Vec::new();
+            if let Some(vocab) = self.vocab {
+                // Fold one token at a time, so that a row sees the state at its own position.
+                let mut folded = state_bytes;
+                let mut rows: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
+                for (index, token) in tokens.iter().enumerate() {
+                    let position = segment.positions.get(index).copied().unwrap_or(index as u64);
+                    fold_token(&mut folded, *token, position);
+                    if segment.outputs.logit_rows.contains(&position) {
+                        rows.insert(position, logit_row(&folded, vocab));
+                    }
+                }
+                // The output order is the request order.
+                for row in &segment.outputs.logit_rows {
+                    logit_outputs.push(Output {
+                        name: "logits".to_owned(),
+                        dtype: Dtype::F32,
+                        bytes: rows[row].clone(),
+                    });
+                }
+            }
             fold_tokens(&mut state_bytes, tokens, &segment.positions);
             match self.count_defect {
                 CountDefect::None => {}
@@ -366,6 +415,7 @@ impl Fake {
                 dtype: Dtype::U8,
                 bytes: state_bytes.to_vec(),
             });
+            outputs.extend(logit_outputs);
         }
         Ok(PassOut {
             status: PassStatus::Ok,
@@ -533,11 +583,37 @@ impl Fake {
 fn fold_tokens(state: &mut [u8; 16], tokens: &[u32], positions: &[u64]) {
     for (index, token) in tokens.iter().enumerate() {
         let position = positions.get(index).copied().unwrap_or(index as u64);
-        for (offset, byte) in token.to_le_bytes().iter().enumerate() {
-            let slot = (position as usize + offset) % 16;
-            state[slot] = state[slot].wrapping_mul(31).wrapping_add(*byte);
-        }
+        fold_token(state, *token, position);
     }
+}
+
+fn fold_token(state: &mut [u8; 16], token: u32, position: u64) {
+    for (offset, byte) in token.to_le_bytes().iter().enumerate() {
+        let slot = (position as usize + offset) % 16;
+        state[slot] = state[slot].wrapping_mul(31).wrapping_add(*byte);
+    }
+}
+
+/// One logit row: `vocab` little-endian F32 values between -6 and 6, a function of the state bytes only.
+fn logit_row(state: &[u8; 16], vocab: usize) -> Vec<u8> {
+    let seed = state
+        .iter()
+        .fold(0x6C6F_6769_7473_u64, |hash, byte| mix(hash ^ u64::from(*byte)));
+    let mut bytes = Vec::with_capacity(vocab * 4);
+    for token in 0..vocab as u64 {
+        // 24 bits fill an F32 mantissa, so the value is exact.
+        let unit = (mix(seed ^ mix(token + 1)) >> 40) as f32 / (1u32 << 24) as f32;
+        bytes.extend_from_slice(&(unit * 12.0 - 6.0).to_le_bytes());
+    }
+    bytes
+}
+
+/// A 64-bit mixing function (splitmix64).
+fn mix(value: u64) -> u64 {
+    let mut z = value.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
 }
 
 impl SlotData {

@@ -536,3 +536,83 @@ fn a_write_refused_after_an_earlier_segment_changed_state_is_poison() {
     let error = engine.pass(&[first, token_segment(&[3; 9])], &[]).unwrap_err();
     assert_eq!(error.kind, PassErrorKind::Ran(PassStatus::Poison), "{}", error.message);
 }
+
+// ---- logits
+
+fn logit_segment(start: u64, tokens: &[u32], rows: &[u64]) -> Segment {
+    let mut segment = token_segment_at(0, start, tokens);
+    segment.outputs.logit_rows = rows.to_vec();
+    segment
+}
+
+fn logits_of(out: &nagaya_abi::PassOut) -> Vec<&nagaya_abi::Output> {
+    out.outputs.iter().filter(|output| output.name == "logits").collect()
+}
+
+#[test]
+fn a_fake_with_a_vocabulary_gives_one_f32_row_for_each_logit_row() {
+    let mut engine = FakeAlways::new().with_vocab(270);
+    let out = engine.pass(&[logit_segment(0, &[1, 2, 3], &[0, 2])], &[]).unwrap();
+    let rows = logits_of(&out);
+    assert_eq!(rows.len(), 2);
+    for row in &rows {
+        assert_eq!(row.dtype, nagaya_abi::Dtype::F32);
+        assert_eq!(row.bytes.len(), 270 * 4);
+        assert!(
+            row.bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|b| f32::from_le_bytes(*b).is_finite())
+        );
+    }
+    assert_ne!(rows[0].bytes, rows[1].bytes, "two positions give two rows");
+}
+
+#[test]
+fn a_fake_without_a_vocabulary_gives_no_logits() {
+    let mut engine = FakeAlways::new();
+    let out = engine.pass(&[logit_segment(0, &[1, 2, 3], &[2])], &[]).unwrap();
+    assert!(logits_of(&out).is_empty());
+}
+
+#[test]
+fn the_same_tokens_give_the_same_logit_bits_and_other_tokens_do_not() {
+    let row = |tokens: &[u32]| {
+        let mut engine = FakeAlways::new().with_vocab(64);
+        let last = tokens.len() as u64 - 1;
+        let out = engine.pass(&[logit_segment(0, tokens, &[last])], &[]).unwrap();
+        logits_of(&out)[0].bytes.clone()
+    };
+    assert_eq!(row(&[7, 8, 9]), row(&[7, 8, 9]));
+    assert_ne!(row(&[7, 8, 9]), row(&[7, 8, 10]));
+    assert_ne!(row(&[7, 8, 9]), row(&[7, 9, 8]));
+}
+
+#[test]
+fn a_logit_row_depends_on_the_tokens_up_to_its_position_only() {
+    let mut whole = FakeAlways::new().with_vocab(64);
+    let out_whole = whole.pass(&[logit_segment(0, &[4, 5, 6, 7], &[1])], &[]).unwrap();
+    let mut short = FakeAlways::new().with_vocab(64);
+    let out_short = short.pass(&[logit_segment(0, &[4, 5], &[1])], &[]).unwrap();
+    assert_eq!(logits_of(&out_whole)[0].bytes, logits_of(&out_short)[0].bytes);
+}
+
+#[test]
+fn a_split_pass_gives_the_logit_bits_of_one_pass() {
+    let mut one = FakeAlways::new().with_vocab(64);
+    let out_one = one.pass(&[logit_segment(0, &[4, 5, 6, 7], &[3])], &[]).unwrap();
+    let mut split = FakeAlways::new().with_vocab(64);
+    split.pass(&[logit_segment(0, &[4, 5], &[])], &[]).unwrap();
+    let out_split = split.pass(&[logit_segment(2, &[6, 7], &[3])], &[]).unwrap();
+    assert_eq!(logits_of(&out_one)[0].bytes, logits_of(&out_split)[0].bytes);
+}
+
+#[test]
+fn a_logit_row_outside_the_segment_is_refused_and_changes_nothing() {
+    let mut engine = FakeAlways::new().with_vocab(64);
+    let before = state_snapshot(&mut engine);
+    let error = engine.pass(&[logit_segment(0, &[1, 2], &[2])], &[]).unwrap_err();
+    assert_eq!(error.kind, PassErrorKind::Refused, "{}", error.message);
+    assert_eq!(state_snapshot(&mut engine), before);
+}

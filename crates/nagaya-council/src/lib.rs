@@ -1,3 +1,5 @@
-//! Council v2 logic with no I/O (spec 11). This step holds the sampler only.
+//! Council v2 logic with no I/O (spec 11): the sampler, the family interface and the template id.
 
+pub mod family;
 pub mod sampler;
+pub mod template_id;

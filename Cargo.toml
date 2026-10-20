@@ -7,10 +7,17 @@ members = [
     "crates/nagaya-mk-qwen38-gfx1151",
     "crates/nagaya-text-qwen38",
     "crates/nagaya-council",
+    "crates/nagaya-text-toy",
     "crates/nagaya-conformance",
     "crates/nagaya",
 ]
 resolver = "3"
+
+# gogi is not pushed yet. Senpai changes the URL later. A path dependency breaks in a worktree.
+[workspace.dependencies]
+gogi-proto = { git = "file:///home/atobey/src/gogi", rev = "c6c9228009990863d6826d3b769c7d48edc2375e" }
+gogi-fake = { git = "file:///home/atobey/src/gogi", rev = "c6c9228009990863d6826d3b769c7d48edc2375e" }
+gogi-toy = { git = "file:///home/atobey/src/gogi", rev = "c6c9228009990863d6826d3b769c7d48edc2375e" }
 
 [profile.dev]
 debug = "line-tables-only"

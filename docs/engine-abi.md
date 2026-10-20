@@ -244,6 +244,22 @@ and gate 8.3 (park and restore) must fail it.
 fail it. `FakeAlways::with_slots` makes a `FakeAlways` with other slot sizes. Each new gate of spec 8.3 adds its own
 broken fake.
 
+### Logit outputs
+
+**Proposed** (Claude Sonnet 5.5, 2026-10-20). The ABI does not say how a pass gives logits. The mk binding already
+does it one way, and the fake engine follows it. Amy decides later.
+
+- `logit_rows` holds positions that the segment feeds. A position outside `positions` is a refused pass.
+- A pass gives one output for each entry of `logit_rows`, named `logits`.
+  The order is segment order, then request order.
+- The dtype is F32 and the bytes are little-endian. A row has one element for each token of the vocabulary.
+- The vocabulary size is not in `limits()`. The family library knows it (spec 11.3).
+- The fake engine gives logits only when it has a vocabulary size. Its outputs for one segment are `state`, then its
+  `logits` rows. The mk binding gives `logits` only, and only for the last position.
+
+Reason: the fake engine must serve a family with a vocabulary, and the output rows must compare as F32 in the gates
+(spec 8.3). The simplest rule is the one that mk already follows.
+
 ## How mk maps
 
 | ABI | mk (`capi.hip`) | Notes |
