@@ -1257,6 +1257,138 @@ fn a_pin_larger_than_the_budget_loses_protection() {
 }
 
 #[test]
+fn an_entry_stays_pinned_while_any_owner_pin_is_live() {
+    // Spec 6.10: each owner holds its own pin with its own expiry.
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let id = put(&mut store, &base_snapshot(1), recipe(190), 1);
+    store.pin(id, 10, 100_000, 10).unwrap();
+    store.pin(id, 20, 50_000, 10).unwrap();
+    // The pin of owner 20 has run out. The pin of owner 10 has not.
+    assert_eq!(
+        store.evict(1, 1, 60_000).unwrap_err().to_string(),
+        StoreError::NoSpace.to_string()
+    );
+    assert!(store.entries().contains_key(&id));
+    // Both have run out.
+    assert_eq!(store.evict(1, 1, 100_000).unwrap(), vec![id]);
+}
+
+#[test]
+fn a_later_live_pin_protects_after_an_earlier_pin_ran_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let id = put(&mut store, &base_snapshot(1), recipe(195), 1);
+    store.pin(id, 10, 50_000, 10).unwrap();
+    store.pin(id, 20, 100_000, 10).unwrap();
+    assert!(store.evict(1, 1, 60_000).is_err());
+    assert!(store.entries().contains_key(&id));
+}
+
+#[test]
+fn unpin_removes_only_the_pin_of_its_owner() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let id = put(&mut store, &base_snapshot(1), recipe(191), 1);
+    store.pin(id, 10, 100_000, 10).unwrap();
+    store.pin(id, 20, 50_000, 10).unwrap();
+    // A second pin by the same owner replaces that owner's pin and no other.
+    store.pin(id, 20, 70_000, 10).unwrap();
+    let mut owners: Vec<(u64, u64)> = store.pins()[&id]
+        .iter()
+        .map(|pin| (pin.owner, pin.expires_ms))
+        .collect();
+    owners.sort();
+    assert_eq!(owners, vec![(10, 100_000), (20, 70_000)]);
+
+    store.unpin(&id, 10).unwrap();
+    assert_eq!(store.pins()[&id].len(), 1);
+    assert_eq!(store.pins()[&id][0].owner, 20);
+    assert!(
+        store.evict(1, 1, 60_000).is_err(),
+        "the pin of owner 20 still protects the entry"
+    );
+    store.unpin(&id, 20).unwrap();
+    assert!(store.pins().is_empty());
+    // An owner with no pin changes nothing.
+    store.unpin(&id, 30).unwrap();
+}
+
+#[test]
+fn two_owner_pins_survive_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let id;
+    {
+        let mut store = Store::open(dir.path()).unwrap();
+        id = put(&mut store, &base_snapshot(1), recipe(192), 1);
+        store.pin(id, 10, 100_000, 10).unwrap();
+        store.pin(id, 20, 50_000, 10).unwrap();
+    }
+    let mut store = Store::open(dir.path()).unwrap();
+    let mut owners: Vec<(u64, u64)> = store.pins()[&id]
+        .iter()
+        .map(|pin| (pin.owner, pin.expires_ms))
+        .collect();
+    owners.sort();
+    assert_eq!(owners, vec![(10, 100_000), (20, 50_000)]);
+    assert!(
+        store.evict(1, 1, 60_000).is_err(),
+        "the pin of owner 10 protects the entry after the restart"
+    );
+    store.unpin(&id, 10).unwrap();
+    assert_eq!(
+        store.evict(1, 1, 40_000).unwrap_err().to_string(),
+        StoreError::NoSpace.to_string()
+    );
+}
+
+#[test]
+fn an_index_with_one_pin_for_each_entry_still_opens() {
+    // The old index held one pin object for each entry. The store reads it as a list of one pin.
+    let dir = tempfile::tempdir().unwrap();
+    let id;
+    {
+        let mut store = Store::open(dir.path()).unwrap();
+        id = put(&mut store, &base_snapshot(1), recipe(193), 1);
+        store.pin(id, 10, 100_000, 10).unwrap();
+    }
+    edit_index(dir.path(), |index| {
+        let list = index["pins"][id.hex()].take();
+        assert!(list.is_array(), "the new format is a list");
+        index["pins"][id.hex()] = list[0].clone();
+    });
+    let mut store = Store::open(dir.path()).unwrap();
+    assert_eq!(store.pins()[&id].len(), 1);
+    assert_eq!(store.pins()[&id][0].owner, 10);
+    assert!(store.evict(1, 1, 60_000).is_err());
+}
+
+#[test]
+fn a_lookup_pin_of_a_second_owner_keeps_the_first_pin() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let recipe = recipe(194);
+    let id = put(&mut store, &base_snapshot(1), recipe, 1);
+    store.pin(id, 10, 100_000, 10).unwrap();
+    let mut engine = FakeAlways::new();
+    store
+        .lookup_and_pin(
+            recipe,
+            &Tolerance::Exact,
+            &mut engine,
+            0,
+            Pin {
+                owner: 20,
+                expires_ms: 20_000,
+            },
+            10,
+        )
+        .unwrap();
+    assert_eq!(store.pins()[&id].len(), 2);
+    assert!(store.evict(1, 1, 60_000).is_err());
+}
+
+#[test]
 fn a_pin_longer_than_a_day_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(dir.path()).unwrap();
@@ -1269,7 +1401,7 @@ fn a_pin_longer_than_a_day_is_refused() {
     assert!(store.pins().is_empty());
     store.pin(id, 1, now + one_day, now).unwrap();
     assert!(store.pins().contains_key(&id));
-    store.unpin(&id).unwrap();
+    store.unpin(&id, 1).unwrap();
 
     let mut engine = FakeAlways::new();
     let pin = Pin {

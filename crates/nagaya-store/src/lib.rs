@@ -738,7 +738,9 @@ pub struct Put<'a> {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct Index {
     entries: BTreeMap<ContentId, Entry>,
-    pins: BTreeMap<ContentId, Pin>,
+    /// The live pins of each entry: one per owner (spec 6.10).
+    #[serde(deserialize_with = "read_pins")]
+    pins: BTreeMap<ContentId, Vec<Pin>>,
     refused: BTreeSet<RecipeId>,
     epoch: u64,
 }
@@ -904,7 +906,7 @@ impl Store {
     }
 
     /// The pins, for a test or a report.
-    pub fn pins(&self) -> &BTreeMap<ContentId, Pin> {
+    pub fn pins(&self) -> &BTreeMap<ContentId, Vec<Pin>> {
         &self.index.pins
     }
 
@@ -1201,7 +1203,7 @@ impl Store {
         check_pin_lease(pin.expires_ms, now_ms)?;
         let chain = self.lookup(recipe, tolerance, engine, slot, now_ms)?;
         for id in &chain {
-            self.index.pins.insert(*id, pin.clone());
+            set_pin(&mut self.index.pins, *id, pin.clone());
         }
         self.persist()?;
         Ok(chain)
@@ -1333,13 +1335,18 @@ impl Store {
         if entry.state != EntryState::Live {
             return Err(StoreError::Quarantined(id));
         }
-        self.index.pins.insert(id, Pin { owner, expires_ms });
+        set_pin(&mut self.index.pins, id, Pin { owner, expires_ms });
         self.persist()
     }
 
-    /// Remove a pin.
-    pub fn unpin(&mut self, id: &ContentId) -> Result<(), StoreError> {
-        self.index.pins.remove(id);
+    /// Remove the pin of one owner. The pins of other owners stay (spec 6.10).
+    pub fn unpin(&mut self, id: &ContentId, owner: u64) -> Result<(), StoreError> {
+        if let Some(pins) = self.index.pins.get_mut(id) {
+            pins.retain(|pin| pin.owner != owner);
+            if pins.is_empty() {
+                self.index.pins.remove(id);
+            }
+        }
         self.persist()
     }
 
@@ -1516,8 +1523,9 @@ impl Store {
 
     /// True when a pin keeps the entry from eviction.
     fn pin_protects(&self, entry: &Entry, now_ms: u64) -> bool {
+        // An entry is pinned while any owner's pin is live.
         match self.index.pins.get(&entry.content_id) {
-            Some(pin) => pin.expires_ms > now_ms && entry.size <= self.budget_of(entry.tier),
+            Some(pins) => pins.iter().any(|pin| pin.expires_ms > now_ms) && entry.size <= self.budget_of(entry.tier),
             None => false,
         }
     }
@@ -1842,7 +1850,38 @@ fn read_failed(id: &ContentId, error: std::io::Error) -> StoreError {
 }
 
 fn prune_pins(index: &mut Index, now_ms: u64) {
-    index.pins.retain(|_, pin| pin.expires_ms > now_ms);
+    for pins in index.pins.values_mut() {
+        pins.retain(|pin| pin.expires_ms > now_ms);
+    }
+    index.pins.retain(|_, pins| !pins.is_empty());
+}
+
+/// Set the pin of one owner on an entry. It replaces that owner's earlier pin and no other.
+fn set_pin(pins: &mut BTreeMap<ContentId, Vec<Pin>>, id: ContentId, pin: Pin) {
+    let list = pins.entry(id).or_default();
+    list.retain(|held| held.owner != pin.owner);
+    list.push(pin);
+}
+
+/// Read the pins of an index. The old format held one pin object for each entry. The new format holds a list.
+fn read_pins<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<BTreeMap<ContentId, Vec<Pin>>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Stored {
+        One(Pin),
+        Many(Vec<Pin>),
+    }
+    let stored = BTreeMap::<ContentId, Stored>::deserialize(deserializer)?;
+    Ok(stored
+        .into_iter()
+        .map(|(id, stored)| {
+            let pins = match stored {
+                Stored::One(pin) => vec![pin],
+                Stored::Many(pins) => pins,
+            };
+            (id, pins)
+        })
+        .collect())
 }
 
 fn check_pin_lease(expires_ms: u64, now_ms: u64) -> Result<(), StoreError> {
