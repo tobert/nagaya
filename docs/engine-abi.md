@@ -231,7 +231,7 @@ store refuses a block format on a dtype that is not `U8`. Decided 2026-10-20 (re
 - `ring`, ring, `U8`, row shape [8], window 4 rows;
 - `pooled`, derived, `U8`, row shape [8].
 
-Its slots are 64 bytes and 256 bytes, one each. Its seal flips the low bit of the first `state` byte.
+Its slots are one of 64 bytes and seven of 256 bytes. Its seal flips the low bit of the first `state` byte.
 
 Its `pass` changes state and is deterministic. For each token it appends one `cells` row and one `ring` row.
 It sets the 16-byte `state` part from the token bytes, and it returns the state as one output. It reads no

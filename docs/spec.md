@@ -578,8 +578,9 @@ write is a refused restore: nothing changed. A refusal after an earlier write ch
 restore, and the state is poisoned (8.5). Decided 2026-10-20 (reading).
 
 The store quarantines an entry only when its content id or its identity fails verification. A blob whose hash
-matches but whose bytes do not decode fails its content id too. A refusal leaves the
-entry as it is. A failure never deletes content.
+matches but whose bytes do not decode fails its content id too. So does a blob whose parent or coverage differs
+from its index record: the store cannot tell which one is right, so it serves neither. Decided 2026-10-20
+(reading). A refusal leaves the entry as it is. A failure never deletes content.
 
 A read error of a blob is not a quarantine. The lookup or the
 restore treats it as a miss, and the caller computes the state again. The entry stays in the index, the store logs
