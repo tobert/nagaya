@@ -1054,6 +1054,81 @@ fn a_delta_respects_the_chain_limits() {
     assert!(format!("{error}").contains("larger"), "{error}");
 }
 
+fn rows_delta(parent: ContentId, start: u64, rows: u64) -> Snapshot {
+    Snapshot {
+        tensors: vec![
+            tensor("state", PartKind::Fixed, vec![16], vec![9; 16], None),
+            tensor(
+                "cells",
+                PartKind::Cells,
+                vec![rows, 8],
+                vec![7; (rows * 8) as usize],
+                Some((start, start + rows)),
+            ),
+        ],
+        parent: Some(parent),
+    }
+}
+
+#[test]
+fn the_delta_fraction_compares_with_the_base_of_the_chain() {
+    // Spec 6.5 check 3: the limit is a fraction of the full base snapshot, not of the parent (a delta).
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open_with_limits(
+        dir.path(),
+        u64::MAX,
+        u64::MAX,
+        u64::MAX,
+        ChainLimits {
+            max_depth: 10,
+            delta_fraction: 1.0,
+        },
+    )
+    .unwrap();
+    let root_recipe = recipe(180);
+    let root = put(&mut store, &wide_snapshot(1), root_recipe, 1);
+    let first_recipe = next_recipe(root_recipe, 2);
+    let first_snapshot = rows_delta(root, 3, 1);
+    let first = put_delta(&mut store, &first_snapshot, first_recipe, root_recipe, 1);
+    let base_size = wide_snapshot(1).encode().unwrap().len();
+    let parent_size = first_snapshot.encode().unwrap().len();
+    let second_snapshot = rows_delta(first, 4, 2);
+    let second_size = second_snapshot.encode().unwrap().len();
+    assert!(
+        parent_size < second_size && second_size <= base_size,
+        "the sizes set the test"
+    );
+
+    let second_recipe = next_recipe(first_recipe, 4);
+    let second = try_put(
+        &mut store,
+        &second_snapshot,
+        second_recipe,
+        Some(first_recipe),
+        1,
+        Tier::Host,
+        10,
+    )
+    .expect("a delta larger than its parent and no larger than the base fits");
+
+    let third_snapshot = rows_delta(second, 6, 4);
+    assert!(
+        third_snapshot.encode().unwrap().len() > base_size,
+        "the sizes set the test"
+    );
+    let error = try_put(
+        &mut store,
+        &third_snapshot,
+        next_recipe(second_recipe, 6),
+        Some(second_recipe),
+        1,
+        Tier::Host,
+        10,
+    )
+    .unwrap_err();
+    assert!(format!("{error}").contains("larger"), "{error}");
+}
+
 #[test]
 fn a_put_that_fits_writes_no_victims() {
     let dir = tempfile::tempdir().unwrap();

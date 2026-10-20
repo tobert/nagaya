@@ -1572,13 +1572,20 @@ impl Store {
         if put.recipe == parent.recipe {
             return Err(StoreError::Invalid("the delta's recipe is not a later one".to_owned()));
         }
-        let depth = self.chain(parent_id)?.len();
+        let parent_chain = self.chain(parent_id)?;
+        let depth = parent_chain.len();
         if depth > self.chain.max_depth as usize {
             return Err(StoreError::Invalid(
                 "the chain is deeper than the engine allows".to_owned(),
             ));
         }
-        if (size as f64) > (self.chain.delta_fraction as f64) * (parent.size as f64) {
+        // 6.5 check 3: the limit is a fraction of the full base snapshot. The parent can be a delta.
+        let base_size = parent_chain
+            .first()
+            .and_then(|base| self.index.entries.get(base))
+            .map(|base| base.size)
+            .ok_or_else(|| StoreError::Invalid("the chain has no base".to_owned()))?;
+        if (size as f64) > (self.chain.delta_fraction as f64) * (base_size as f64) {
             return Err(StoreError::Invalid(
                 "the delta is larger than the engine allows".to_owned(),
             ));
