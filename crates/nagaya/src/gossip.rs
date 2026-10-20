@@ -291,8 +291,9 @@ impl Gossip {
 
     /// Report each change of the live peers to `report`, one line for each change.
     ///
-    /// The lines are `gossip: peer <name> is live`, `gossip: peer <name> keys <list>` and
-    /// `gossip: peer <name> is dead`. The task runs on the control runtime.
+    /// The lines are `gossip: peer <id> is live`, `gossip: peer <id> keys <list>` and `gossip: peer <id> is dead`.
+    /// The `<id>` is the chitchat id, `name:generation:address`, so two peers with one name stay two peers. The
+    /// task runs on the control runtime.
     pub fn watch_peers(&self, report: impl Fn(String) + Send + 'static) {
         let own = self.handle.chitchat_id().clone();
         let mut watcher = self
@@ -307,21 +308,21 @@ impl Gossip {
                     .filter(|(id, _)| **id != own)
                     .map(|(id, state)| {
                         let keys: Vec<&str> = state.key_values().map(|(key, _)| key).collect();
-                        (id.node_id.to_string(), keys.join(","))
+                        (format!("{id:?}"), keys.join(","))
                     })
                     .collect();
-                for (name, keys) in &now {
-                    match known.get(name) {
+                for (id, keys) in &now {
+                    match known.get(id) {
                         None => {
-                            report(format!("gossip: peer {name} is live"));
-                            report(format!("gossip: peer {name} keys {keys}"));
+                            report(format!("gossip: peer {id} is live"));
+                            report(format!("gossip: peer {id} keys {keys}"));
                         }
-                        Some(before) if before != keys => report(format!("gossip: peer {name} keys {keys}")),
+                        Some(before) if before != keys => report(format!("gossip: peer {id} keys {keys}")),
                         Some(_) => {}
                     }
                 }
-                for name in known.keys().filter(|name| !now.contains_key(*name)) {
-                    report(format!("gossip: peer {name} is dead"));
+                for id in known.keys().filter(|id| !now.contains_key(*id)) {
+                    report(format!("gossip: peer {id} is dead"));
                 }
                 known = now;
                 if watcher.changed().await.is_err() {

@@ -86,6 +86,28 @@ impl Lines {
         }
     }
 
+    /// Wait for a line that starts with `prefix` and ends with `suffix`. Give the whole line. Panic with the lines seen.
+    pub fn wait_for_line(&mut self, prefix: &str, suffix: &str, timeout: Duration) -> String {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(line) = self
+                .seen
+                .iter()
+                .find(|line| line.starts_with(prefix) && line.ends_with(suffix))
+            {
+                return line.clone();
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.receiver.recv_timeout(left) {
+                Ok(line) => self.seen.push(line),
+                Err(_) => panic!(
+                    "no stderr line with `{prefix}...{suffix}` in {timeout:?}; the lines seen:\n{}",
+                    self.seen.join("\n")
+                ),
+            }
+        }
+    }
+
     /// Read the lines that are waiting, without a wait.
     pub fn drain(&mut self) -> &[String] {
         while let Ok(line) = self.receiver.try_recv() {

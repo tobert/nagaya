@@ -46,8 +46,10 @@ fn two_processes_see_the_keys_of_each_other() {
     }
 
     // Each process sees the other (its stderr says so).
-    one.lines.wait_for(&format!("gossip: peer host-two keys {KEYS}"), WAIT);
-    two.lines.wait_for(&format!("gossip: peer host-one keys {KEYS}"), WAIT);
+    one.lines
+        .wait_for_line("gossip: peer host-two:", &format!(" keys {KEYS}"), WAIT);
+    two.lines
+        .wait_for_line("gossip: peer host-one:", &format!(" keys {KEYS}"), WAIT);
     assert_eq!(json!(one.terminate().code()), json!(0));
     assert_eq!(json!(two.terminate().code()), json!(0));
     watcher.shutdown();
@@ -61,7 +63,7 @@ fn a_stopped_process_is_marked_dead_by_the_other() {
     wait_for_view(&watcher, "host-two live", |view| {
         view.live.iter().any(|node| node.name == "host-two")
     });
-    one.lines.wait_for("gossip: peer host-two keys ", WAIT);
+    one.lines.wait_for("gossip: peer host-two:", WAIT);
 
     assert_eq!(two.terminate().code(), Some(0));
     // The failure detector (phi-accrual) marks the peer dead; the live view loses it.
@@ -69,7 +71,7 @@ fn a_stopped_process_is_marked_dead_by_the_other() {
         !view.live.iter().any(|node| node.name == "host-two") && view.dead.iter().any(|name| name == "host-two")
     });
     assert!(view.live.iter().any(|node| node.name == "host-one"), "{view}");
-    one.lines.wait_for("gossip: peer host-two is dead", WAIT);
+    one.lines.wait_for_line("gossip: peer host-two:", " is dead", WAIT);
     assert_eq!(one.terminate().code(), Some(0));
     watcher.shutdown();
 }
