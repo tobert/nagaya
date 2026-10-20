@@ -9,6 +9,39 @@ use serde::{Deserialize, Serialize};
 /// The name of the accepted profile file in the store directory.
 pub const PROFILE_FILE: &str = "profile.toml";
 
+/// The longest engine name in bytes. The gossip key `engine:<name>` stays within `MAX_KEY_BYTES`.
+pub const MAX_ENGINE_NAME_BYTES: usize = 128;
+
+const _: () = assert!("engine:".len() + MAX_ENGINE_NAME_BYTES <= crate::gossip::MAX_KEY_BYTES);
+
+/// Check an engine name when a profile is read. The name goes into a gossip key, so it has the characters of a node
+/// name (spec 2.1 note) and a length bound.
+fn engine_name<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    let name = String::deserialize(deserializer)?;
+    check_engine_name(&name).map_err(serde::de::Error::custom)?;
+    Ok(name)
+}
+
+fn check_engine_name(name: &str) -> Result<(), String> {
+    if name.len() > MAX_ENGINE_NAME_BYTES {
+        return Err(format!(
+            "engine name `{name}` has {} bytes; the bound is {MAX_ENGINE_NAME_BYTES} bytes",
+            name.len()
+        ));
+    }
+    let valid = !name.is_empty()
+        && name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-'));
+    if valid {
+        Ok(())
+    } else {
+        Err(format!(
+            "engine name `{name}` is not valid; use letters, digits, `.`, `_` and `-`, and at least one character"
+        ))
+    }
+}
+
 /// A tier as the profile writes it: `host` or `device(i)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TierSpec(pub Tier);
@@ -69,7 +102,8 @@ impl<'de> Deserialize<'de> for TierSpec {
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnginePlacement {
-    /// The engine name.
+    /// The engine name. It has the characters of a node name and at most `MAX_ENGINE_NAME_BYTES` bytes.
+    #[serde(deserialize_with = "engine_name")]
     pub name: String,
     /// The engine kind, which selects the factory.
     pub kind: String,

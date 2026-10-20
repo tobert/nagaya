@@ -1,4 +1,5 @@
-use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, StoreSpec, TierSpec};
+use nagaya::gossip::MAX_KEY_BYTES;
+use nagaya::profile::{BudgetSpec, EnginePlacement, MAX_ENGINE_NAME_BYTES, PlacementProfile, StoreSpec, TierSpec};
 use nagaya_abi::Tier;
 
 const EXAMPLE: &str = r#"
@@ -138,4 +139,50 @@ fn a_profile_round_trips_through_the_store_directory() {
     assert_eq!(path, directory.path().join("profile.toml"));
     assert_eq!(PlacementProfile::read_active(directory.path()).unwrap(), profile);
     assert_eq!(PlacementProfile::read_active(directory.path()).unwrap(), profile);
+}
+
+fn with_name(name: &str) -> String {
+    EXAMPLE.replacen("name = \"qwen\"", &format!("name = \"{name}\""), 1)
+}
+
+#[test]
+fn an_engine_name_has_the_characters_of_a_node_name() {
+    for name in ["qwen", "qwen-3.8_a", "A1.b"] {
+        let profile = PlacementProfile::parse(&with_name(name)).unwrap();
+        assert_eq!(profile.engines[0].name, name);
+    }
+    for name in ["", "a b", "a:b", "engine:x", "caf\u{e9}", "a/b"] {
+        let error = PlacementProfile::parse(&with_name(name)).unwrap_err();
+        let text = error.to_string();
+        assert!(text.contains("engine name"), "{name:?}: {text}");
+        assert!(
+            text.contains(&format!("`{name}`")),
+            "the message names the name {name:?}: {text}"
+        );
+    }
+}
+
+#[test]
+fn an_engine_name_has_a_length_bound_that_fits_a_gossip_key() {
+    // The key is `engine:<name>`. It must stay within the key bound of gossip.
+    assert!("engine:".len() + MAX_ENGINE_NAME_BYTES <= MAX_KEY_BYTES);
+    let longest = "n".repeat(MAX_ENGINE_NAME_BYTES);
+    assert!(PlacementProfile::parse(&with_name(&longest)).is_ok());
+    let too_long = "n".repeat(MAX_ENGINE_NAME_BYTES + 1);
+    let error = PlacementProfile::parse(&with_name(&too_long)).unwrap_err();
+    let text = error.to_string();
+    assert!(text.contains("engine name"), "{text}");
+    assert!(
+        text.contains(&MAX_ENGINE_NAME_BYTES.to_string()),
+        "the message gives the bound: {text}"
+    );
+}
+
+#[test]
+fn a_profile_from_a_peer_checks_the_engine_name_too() {
+    // A desired profile arrives as JSON (spec 2.3). It uses the same rules as a file.
+    let mut value = serde_json::to_value(example_profile()).unwrap();
+    value["engines"][0]["name"] = serde_json::json!("a b");
+    let error = serde_json::from_value::<PlacementProfile>(value).unwrap_err();
+    assert!(error.to_string().contains("engine name"), "{error}");
 }

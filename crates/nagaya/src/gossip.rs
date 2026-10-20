@@ -66,6 +66,13 @@ impl std::error::Error for GossipError {}
 /// The largest gossip value in bytes (spec 2.3 note).
 pub const MAX_VALUE_BYTES: usize = 8192;
 
+/// The largest gossip key in bytes.
+///
+/// `chitchat` 0.13.0 writes the length of a key as a `u16` (`src/serialize.rs:213`), so a key of 65536 bytes or more
+/// gets a wrong length on the wire. A delta must also fit one datagram of 65507 bytes (`src/lib.rs:65`), with the
+/// value of at most 8192 bytes. This bound is far below both limits.
+pub const MAX_KEY_BYTES: usize = 1024;
+
 /// A gossip key that a node may write (spec 2.3). No other key exists, so a pin or a store entry has no key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Key {
