@@ -290,6 +290,7 @@ fn write_json(value: &Value, out: &mut String) -> Result<(), String> {
     match value.kind() {
         ValueKind::None => out.push_str("null"),
         ValueKind::Bool => out.push_str(if value.is_true() { "true" } else { "false" }),
+        // A template literal from 2^127 to 2^128-1 is a u128, so this fallback is reachable. A test covers it.
         ValueKind::Number if value.is_integer() => match i128::try_from(value.clone()) {
             Ok(i) => out.push_str(&i.to_string()),
             Err(_) => out.push_str(&u128::try_from(value.clone()).map_err(|e| e.to_string())?.to_string()),
@@ -312,8 +313,7 @@ fn write_json(value: &Value, out: &mut String) -> Result<(), String> {
                 if n > 0 {
                     out.push_str(", ");
                 }
-                let text = key.as_str().ok_or("a key in tojson must be a string")?;
-                write_json_string(text, out);
+                write_json_string(&json_key(&key)?, out);
                 out.push_str(": ");
                 write_json(&value.get_item(&key).map_err(|e| e.to_string())?, out)?;
             }
@@ -322,6 +322,22 @@ fn write_json(value: &Value, out: &mut String) -> Result<(), String> {
         other => return Err(format!("tojson cannot write a value of kind {other:?}")),
     }
     Ok(())
+}
+
+/// The text of a map key, as `json.dumps` converts it: a string stays, a number or a constant becomes its JSON text.
+/// Python refuses any other key.
+fn json_key(key: &Value) -> Result<String, String> {
+    match key.kind() {
+        ValueKind::String => Ok(key.as_str().ok_or("a string key has no text")?.to_string()),
+        ValueKind::None | ValueKind::Bool | ValueKind::Number => {
+            let mut text = String::new();
+            write_json(key, &mut text)?;
+            Ok(text)
+        }
+        other => Err(format!(
+            "a key in tojson must be a string, a number, a bool or none, not {other:?}"
+        )),
+    }
 }
 
 fn write_json_string(text: &str, out: &mut String) {

@@ -1,8 +1,8 @@
 //! JSON that keeps the order of keys.
 //!
 //! The chat template shows the order of keys in a tool schema, so the order is part of the result. This reader keeps
-//! it. It refuses what Python's `json` module accepts and the template cannot show: `NaN`, `Infinity` and an integer of
-//! more than 128 bits.
+//! it. It refuses what Python's `json` module accepts and the template cannot show: `NaN`, `Infinity` and an integer
+//! outside the range of a signed 128-bit integer.
 
 use crate::Error;
 use std::collections::HashMap;
@@ -207,9 +207,11 @@ impl Parser<'_> {
             }
             Ok(Json::Float(f))
         } else {
-            text.parse::<i128>()
-                .map(Json::Int)
-                .map_err(|_| Error::Json(format!("the integer {text} has more than 128 bits, at byte {start}")))
+            text.parse::<i128>().map(Json::Int).map_err(|_| {
+                Error::Json(format!(
+                    "the number {text} is an integer outside the range of a signed 128-bit integer, at byte {start}"
+                ))
+            })
         }
     }
 

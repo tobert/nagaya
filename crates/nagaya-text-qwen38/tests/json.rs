@@ -39,6 +39,23 @@ fn keeps_integers_to_128_bits() {
 }
 
 #[test]
+fn names_the_range_of_an_integer_that_is_too_large() {
+    for text in [
+        "170141183460469231731687303715884105728",
+        "340282366920938463463374607431768211455",
+        "-170141183460469231731687303715884105729",
+    ] {
+        let message = Json::parse(text).unwrap_err().to_string();
+        assert!(
+            message.contains("an integer outside the range of a signed 128-bit integer"),
+            "{message}"
+        );
+        assert!(message.contains(text), "{message}");
+        assert!(!message.contains("more than 128 bits"), "{message}");
+    }
+}
+
+#[test]
 fn reads_string_escapes() {
     assert_eq!(
         p(r#""a\"b\\c\/d\b\f\n\r\t""#),
