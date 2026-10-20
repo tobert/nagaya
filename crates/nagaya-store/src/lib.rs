@@ -620,8 +620,6 @@ pub enum Quarantine {
     Identity,
     /// The index disagrees with the blob.
     Index,
-    /// The blob could not be read.
-    Read,
 }
 
 /// The determinism class of the engine that made an entry. It survives a restart.
@@ -645,6 +643,56 @@ impl From<Determinism> for DeterminismClass {
     }
 }
 
+/// A history that changes the bits of the engine that made an entry. It survives a restart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BitDependenceClass {
+    /// The bits depend on which state is resident.
+    Residency,
+}
+
+impl From<BitDependence> for BitDependenceClass {
+    fn from(dependence: BitDependence) -> Self {
+        match dependence {
+            BitDependence::Residency => BitDependenceClass::Residency,
+        }
+    }
+}
+
+/// The chain limits of the engine that made an entry. They survive a restart.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EntryChain {
+    /// The deepest chain.
+    pub max_depth: u32,
+    /// The largest delta as a fraction of the full base snapshot.
+    pub delta_fraction: f32,
+}
+
+/// What a put says about its engine (spec 6.1). One store serves every engine, so each put carries these facts
+/// and the entry records them. The tripwire (6.7) and the chain checks (6.5) read the recorded values.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EngineFacts {
+    /// The engine name.
+    pub name: String,
+    /// The determinism class of the engine.
+    pub determinism: Determinism,
+    /// The history that changes the bits of the engine.
+    pub bit_dependence: Vec<BitDependence>,
+    /// The chain limits of the engine.
+    pub chain: ChainLimits,
+}
+
+impl EngineFacts {
+    /// The facts of an engine, from its name and its limits.
+    pub fn of(name: &str, limits: &nagaya_abi::Limits) -> Self {
+        EngineFacts {
+            name: name.to_owned(),
+            determinism: limits.determinism,
+            bit_dependence: limits.bit_dependence.clone(),
+            chain: limits.chain,
+        }
+    }
+}
+
 /// The positions that one part holds.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PartCoverage {
@@ -657,7 +705,7 @@ pub struct PartCoverage {
 }
 
 /// One entry in the store index.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
     /// The content id.
     pub content_id: ContentId,
@@ -689,8 +737,14 @@ pub struct Entry {
     pub identity: [u8; 32],
     /// The entry state.
     pub state: EntryState,
+    /// The name of the engine that made the snapshot.
+    pub engine: String,
     /// The determinism class of the engine that made the snapshot.
     pub determinism: DeterminismClass,
+    /// The history that changes the bits of that engine.
+    pub bit_dependence: Vec<BitDependenceClass>,
+    /// The chain limits of that engine.
+    pub chain: EntryChain,
     /// The store epoch that made the entry.
     pub epoch: u64,
     /// Why the store quarantined the entry.
@@ -723,6 +777,8 @@ pub struct Put<'a> {
     pub recipe: RecipeId,
     /// The previous recipe, for a delta. It must equal the parent entry's recipe.
     pub previous_recipe: Option<RecipeId>,
+    /// The engine that made the snapshot, with its class and its chain limits.
+    pub engine: EngineFacts,
     /// The engine identity digest.
     pub identity: [u8; 32],
     /// The owner.
@@ -740,7 +796,9 @@ pub struct Put<'a> {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct Index {
     entries: BTreeMap<ContentId, Entry>,
-    pins: BTreeMap<ContentId, Pin>,
+    /// The live pins of each entry: one per owner (spec 6.10).
+    #[serde(deserialize_with = "read_pins")]
+    pins: BTreeMap<ContentId, Vec<Pin>>,
     refused: BTreeSet<RecipeId>,
     epoch: u64,
 }
@@ -758,6 +816,11 @@ pub enum FailPoint {
     IndexRename,
 }
 
+/// The eviction rank of a chain interior (spec 6.9 step 3).
+const RANK_INTERIOR: u8 = 1;
+/// The eviction rank of every other entry: tips, roots and standalone entries (spec 6.9 step 4).
+const RANK_BY_VALUE: u8 = 2;
+
 /// The directory under the store that holds the blobs of cleared tripwires. No budget counts it.
 const QUARANTINE: &str = "quarantine";
 
@@ -769,9 +832,6 @@ pub struct Store {
     checked: BTreeSet<ContentId>,
     budgets: BTreeMap<Tier, u64>,
     owner_quota: u64,
-    chain: ChainLimits,
-    determinism: Determinism,
-    bit_dependence: Vec<BitDependence>,
     /// The largest serial in a quarantine name. `open` sets the maximum; a unit test sets a smaller one.
     quarantine_serials: u32,
     fail_point: Cell<Option<FailPoint>>,
@@ -795,13 +855,6 @@ pub enum Restored {
     },
 }
 
-/// The chain limits with no limit. The caller sets the engine's limits.
-#[cfg(any(test, feature = "testing"))]
-const OPEN_CHAIN: ChainLimits = ChainLimits {
-    max_depth: u32::MAX,
-    delta_fraction: 1.0,
-};
-
 impl Store {
     /// Open the store in `dir`, or make an empty one, with no budget in any tier. For tests only (spec 4.1a).
     #[cfg(any(test, feature = "testing"))]
@@ -809,35 +862,29 @@ impl Store {
         let mut budgets = BTreeMap::new();
         budgets.insert(Tier::Host, u64::MAX);
         budgets.insert(Tier::Nvme, u64::MAX);
-        Self::open_inner(dir.into(), budgets, u64::MAX, OPEN_CHAIN)
+        Self::open_inner(dir.into(), budgets, u64::MAX)
     }
 
     /// Open the store with a byte budget for host memory and none for NVMe. For tests only (spec 4.1a).
     #[cfg(any(test, feature = "testing"))]
     pub fn open_with_budget(dir: impl Into<PathBuf>, budget: u64) -> Result<Self, StoreError> {
-        Self::open_with_limits(dir, budget, u64::MAX, u64::MAX, OPEN_CHAIN)
+        Self::open_with_limits(dir, budget, u64::MAX, u64::MAX)
     }
 
-    /// Open the store with a budget for each tier, an owner quota and chain limits.
+    /// Open the store with a budget for each tier and an owner quota. Each put carries its engine's chain limits.
     pub fn open_with_limits(
         dir: impl Into<PathBuf>,
         host_budget: u64,
         nvme_budget: u64,
         owner_quota: u64,
-        chain: ChainLimits,
     ) -> Result<Self, StoreError> {
         let mut budgets = BTreeMap::new();
         budgets.insert(Tier::Host, host_budget);
         budgets.insert(Tier::Nvme, nvme_budget);
-        Self::open_inner(dir.into(), budgets, owner_quota, chain)
+        Self::open_inner(dir.into(), budgets, owner_quota)
     }
 
-    fn open_inner(
-        dir: PathBuf,
-        budgets: BTreeMap<Tier, u64>,
-        owner_quota: u64,
-        chain: ChainLimits,
-    ) -> Result<Self, StoreError> {
+    fn open_inner(dir: PathBuf, budgets: BTreeMap<Tier, u64>, owner_quota: u64) -> Result<Self, StoreError> {
         std::fs::create_dir_all(dir.join("blobs")).map_err(io_error)?;
         // 6.7: a cleared tripwire keeps its blobs here until a person removes them.
         std::fs::create_dir_all(dir.join(QUARANTINE)).map_err(io_error)?;
@@ -859,9 +906,6 @@ impl Store {
             checked: BTreeSet::new(),
             budgets,
             owner_quota,
-            chain,
-            determinism: Determinism::Always,
-            bit_dependence: Vec::new(),
             quarantine_serials: u32::MAX,
             fail_point: Cell::new(None),
         };
@@ -879,17 +923,6 @@ impl Store {
         self.owner_quota = quota;
     }
 
-    /// Set the engine's chain limits.
-    pub fn set_chain(&mut self, chain: ChainLimits) {
-        self.chain = chain;
-    }
-
-    /// Set the engine's determinism class and its bit dependence.
-    pub fn set_determinism(&mut self, determinism: Determinism, bit_dependence: Vec<BitDependence>) {
-        self.determinism = determinism;
-        self.bit_dependence = bit_dependence;
-    }
-
     /// Make the next write fail at one point.
     pub fn fail_next(&mut self, point: FailPoint) {
         self.fail_point.set(Some(point));
@@ -901,7 +934,7 @@ impl Store {
     }
 
     /// The pins, for a test or a report.
-    pub fn pins(&self) -> &BTreeMap<ContentId, Pin> {
+    pub fn pins(&self) -> &BTreeMap<ContentId, Vec<Pin>> {
         &self.index.pins
     }
 
@@ -943,9 +976,13 @@ impl Store {
         }
 
         // 6.7: two content ids under one recipe with the same coverage are a defect.
-        let conflict = self.tripwire_on()
+        // Each side counts only when its own recorded class allows the tripwire.
+        let conflict = tripwire_on(put.engine.determinism, &put.engine.bit_dependence)
             && self.index.entries.values().any(|entry| {
-                entry.recipe == put.recipe && entry.coverage == coverage && entry.state == EntryState::Live
+                entry.recipe == put.recipe
+                    && entry.coverage == coverage
+                    && entry.state == EntryState::Live
+                    && entry.tripwire_on()
             });
         if conflict {
             return self.put_tripwire(put, &bytes, id, coverage);
@@ -994,7 +1031,13 @@ impl Store {
                 check: Check::Full,
                 identity: put.identity,
                 state: EntryState::Live,
-                determinism: self.determinism.into(),
+                engine: put.engine.name.clone(),
+                determinism: put.engine.determinism.into(),
+                bit_dependence: put.engine.bit_dependence.iter().map(|&item| item.into()).collect(),
+                chain: EntryChain {
+                    max_depth: put.engine.chain.max_depth,
+                    delta_fraction: put.engine.chain.delta_fraction,
+                },
                 epoch: self.index.epoch,
                 quarantine: None,
             },
@@ -1023,7 +1066,11 @@ impl Store {
         prune_pins(&mut index, put.now_ms);
         let mut ids = vec![id];
         for entry in index.entries.values_mut() {
-            if entry.recipe == put.recipe && entry.coverage == coverage && entry.state == EntryState::Live {
+            if entry.recipe == put.recipe
+                && entry.coverage == coverage
+                && entry.state == EntryState::Live
+                && entry.tripwire_on()
+            {
                 entry.state = EntryState::Quarantined;
                 entry.quarantine = Some(Quarantine::Tripwire);
                 ids.push(entry.content_id);
@@ -1048,7 +1095,13 @@ impl Store {
                 check: Check::Full,
                 identity: put.identity,
                 state: EntryState::Quarantined,
-                determinism: self.determinism.into(),
+                engine: put.engine.name.clone(),
+                determinism: put.engine.determinism.into(),
+                bit_dependence: put.engine.bit_dependence.iter().map(|&item| item.into()).collect(),
+                chain: EntryChain {
+                    max_depth: put.engine.chain.max_depth,
+                    delta_fraction: put.engine.chain.delta_fraction,
+                },
                 epoch,
                 quarantine: Some(Quarantine::Tripwire),
             },
@@ -1198,7 +1251,7 @@ impl Store {
         check_pin_lease(pin.expires_ms, now_ms)?;
         let chain = self.lookup(recipe, tolerance, engine, slot, now_ms)?;
         for id in &chain {
-            self.index.pins.insert(*id, pin.clone());
+            set_pin(&mut self.index.pins, *id, pin.clone());
         }
         self.persist()?;
         Ok(chain)
@@ -1310,10 +1363,7 @@ impl Store {
     fn read_snapshot(&mut self, id: &ContentId) -> Result<Snapshot, StoreError> {
         let bytes = match std::fs::read(self.blob_path(id)) {
             Ok(bytes) => bytes,
-            Err(error) => {
-                self.quarantine(id, Quarantine::Read)?;
-                return Err(io_error(error));
-            }
+            Err(error) => return Err(read_failed(id, error)),
         };
         match Snapshot::decode(&bytes) {
             Ok(snapshot) => Ok(snapshot),
@@ -1333,13 +1383,18 @@ impl Store {
         if entry.state != EntryState::Live {
             return Err(StoreError::Quarantined(id));
         }
-        self.index.pins.insert(id, Pin { owner, expires_ms });
+        set_pin(&mut self.index.pins, id, Pin { owner, expires_ms });
         self.persist()
     }
 
-    /// Remove a pin.
-    pub fn unpin(&mut self, id: &ContentId) -> Result<(), StoreError> {
-        self.index.pins.remove(id);
+    /// Remove the pin of one owner. The pins of other owners stay (spec 6.10).
+    pub fn unpin(&mut self, id: &ContentId, owner: u64) -> Result<(), StoreError> {
+        if let Some(pins) = self.index.pins.get_mut(id) {
+            pins.retain(|pin| pin.owner != owner);
+            if pins.is_empty() {
+                self.index.pins.remove(id);
+            }
+        }
         self.persist()
     }
 
@@ -1449,6 +1504,8 @@ impl Store {
             .filter(|entry| entry.state == EntryState::Live)
             .filter_map(|entry| entry.parent)
             .collect();
+        // 6.9 step 1: interval copies go first. They are not built yet (spec 6.13); their groups take a rank
+        // below `RANK_INTERIOR` here. Step 2: a pinned entry is exempt, so the loop below skips it.
         let mut groups: Vec<(u8, u128, Vec<ContentId>)> = Vec::new();
         for entry in self.index.entries.values() {
             if entry.owner != owner || entry.state != EntryState::Live {
@@ -1481,13 +1538,9 @@ impl Store {
             if !evictable {
                 continue;
             }
-            let has_child = parents.contains(&entry.content_id);
-            let rank = match (entry.parent.is_some(), has_child) {
-                (true, true) => 0,
-                (true, false) => 1,
-                (false, true) => 2,
-                (false, false) => 3,
-            };
+            // 6.9 step 3: a chain interior goes before a tip or a root. Step 4 ranks all the others together.
+            let interior = entry.parent.is_some() && parents.contains(&entry.content_id);
+            let rank = if interior { RANK_INTERIOR } else { RANK_BY_VALUE };
             groups.push((rank, value_per_byte(entry, now_ms), group));
         }
         groups.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
@@ -1518,8 +1571,9 @@ impl Store {
 
     /// True when a pin keeps the entry from eviction.
     fn pin_protects(&self, entry: &Entry, now_ms: u64) -> bool {
+        // An entry is pinned while any owner's pin is live.
         match self.index.pins.get(&entry.content_id) {
-            Some(pin) => pin.expires_ms > now_ms && entry.size <= self.budget_of(entry.tier),
+            Some(pins) => pins.iter().any(|pin| pin.expires_ms > now_ms) && entry.size <= self.budget_of(entry.tier),
             None => false,
         }
     }
@@ -1572,13 +1626,20 @@ impl Store {
         if put.recipe == parent.recipe {
             return Err(StoreError::Invalid("the delta's recipe is not a later one".to_owned()));
         }
-        let depth = self.chain(parent_id)?.len();
-        if depth > self.chain.max_depth as usize {
+        let parent_chain = self.chain(parent_id)?;
+        let depth = parent_chain.len();
+        if depth > put.engine.chain.max_depth as usize {
             return Err(StoreError::Invalid(
                 "the chain is deeper than the engine allows".to_owned(),
             ));
         }
-        if (size as f64) > (self.chain.delta_fraction as f64) * (parent.size as f64) {
+        // 6.5 check 3: the limit is a fraction of the full base snapshot. The parent can be a delta.
+        let base_size = parent_chain
+            .first()
+            .and_then(|base| self.index.entries.get(base))
+            .map(|base| base.size)
+            .ok_or_else(|| StoreError::Invalid("the chain has no base".to_owned()))?;
+        if (size as f64) > (put.engine.chain.delta_fraction as f64) * (base_size as f64) {
             return Err(StoreError::Invalid(
                 "the delta is larger than the engine allows".to_owned(),
             ));
@@ -1652,10 +1713,6 @@ impl Store {
         Ok(chain)
     }
 
-    fn tripwire_on(&self) -> bool {
-        self.determinism != Determinism::PerProcess && !self.bit_dependence.contains(&BitDependence::Residency)
-    }
-
     fn tripwire_error(&self, recipe: RecipeId) -> StoreError {
         let ids = self
             .index
@@ -1679,10 +1736,7 @@ impl Store {
         }
         let bytes = match std::fs::read(self.blob_path(id)) {
             Ok(bytes) => bytes,
-            Err(error) => {
-                self.quarantine(id, Quarantine::Read)?;
-                return Err(io_error(error));
-            }
+            Err(error) => return Err(read_failed(id, error)),
         };
         if content_id(&bytes) != *id {
             self.quarantine(id, Quarantine::ContentId)?;
@@ -1829,8 +1883,63 @@ fn next_quarantine_path(dir: &Path, name: &str, max_serial: u32) -> Result<PathB
     }
 }
 
+/// True when the tripwire (spec 6.7) applies to an engine of this class: its bits are the same in any process
+/// and do not depend on residency.
+fn tripwire_on(determinism: Determinism, bit_dependence: &[BitDependence]) -> bool {
+    determinism != Determinism::PerProcess && !bit_dependence.contains(&BitDependence::Residency)
+}
+
+impl Entry {
+    /// True when the tripwire applies to this entry, by the class that the entry recorded.
+    fn tripwire_on(&self) -> bool {
+        self.determinism != DeterminismClass::PerProcess
+            && !self.bit_dependence.contains(&BitDependenceClass::Residency)
+    }
+}
+
+/// A blob read error is not a verification failure (spec 6.8). The entry stays in the index and the next use
+/// reads the blob again. The caller sees an error, and a lookup treats it as a miss.
+fn read_failed(id: &ContentId, error: std::io::Error) -> StoreError {
+    eprintln!(
+        "nagaya-store: cannot read the blob of {}: {error}; the entry stays and the next use checks it again",
+        id.hex()
+    );
+    io_error(error)
+}
+
 fn prune_pins(index: &mut Index, now_ms: u64) {
-    index.pins.retain(|_, pin| pin.expires_ms > now_ms);
+    for pins in index.pins.values_mut() {
+        pins.retain(|pin| pin.expires_ms > now_ms);
+    }
+    index.pins.retain(|_, pins| !pins.is_empty());
+}
+
+/// Set the pin of one owner on an entry. It replaces that owner's earlier pin and no other.
+fn set_pin(pins: &mut BTreeMap<ContentId, Vec<Pin>>, id: ContentId, pin: Pin) {
+    let list = pins.entry(id).or_default();
+    list.retain(|held| held.owner != pin.owner);
+    list.push(pin);
+}
+
+/// Read the pins of an index. The old format held one pin object for each entry. The new format holds a list.
+fn read_pins<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<BTreeMap<ContentId, Vec<Pin>>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Stored {
+        One(Pin),
+        Many(Vec<Pin>),
+    }
+    let stored = BTreeMap::<ContentId, Stored>::deserialize(deserializer)?;
+    Ok(stored
+        .into_iter()
+        .map(|(id, stored)| {
+            let pins = match stored {
+                Stored::One(pin) => vec![pin],
+                Stored::Many(pins) => pins,
+            };
+            (id, pins)
+        })
+        .collect())
 }
 
 fn check_pin_lease(expires_ms: u64, now_ms: u64) -> Result<(), StoreError> {
@@ -2087,6 +2196,15 @@ mod tests {
                 snapshot,
                 recipe,
                 previous_recipe: None,
+                engine: EngineFacts {
+                    name: "test".to_owned(),
+                    determinism: Determinism::Always,
+                    bit_dependence: Vec::new(),
+                    chain: ChainLimits {
+                        max_depth: u32::MAX,
+                        delta_fraction: 1.0,
+                    },
+                },
                 identity: [1u8; 32],
                 owner: 1,
                 tier: Tier::Host,

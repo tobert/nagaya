@@ -6,8 +6,8 @@ use nagaya_abi::{
     PassError, PassOut, Segment, SegmentInputs, SlotLimit, State, Tap, WriteResult,
 };
 use nagaya_store::{
-    Check, ContentId, EntryState, PartCoverage, Pin, Put, Quarantine, Reason, RecipeId, Restored, Snapshot, Store,
-    StoreError, Tensor, Tier, Tolerance, recipe_boundary, recipe_root, snapshot_from_engine,
+    Check, ContentId, EngineFacts, EntryState, PartCoverage, Pin, Put, Quarantine, Reason, RecipeId, Restored,
+    Snapshot, Store, StoreError, Tensor, Tier, Tolerance, recipe_boundary, recipe_root, snapshot_from_engine,
 };
 
 fn tensor(name: &str, kind: PartKind, shape: Vec<u64>, data: Vec<u8>, coverage: Option<(u64, u64)>) -> Tensor {
@@ -89,6 +89,53 @@ fn open_chain() -> ChainLimits {
     }
 }
 
+fn facts(determinism: nagaya_abi::Determinism, bit_dependence: Vec<BitDependence>, chain: ChainLimits) -> EngineFacts {
+    EngineFacts {
+        name: "fake".to_owned(),
+        determinism,
+        bit_dependence,
+        chain,
+    }
+}
+
+/// The facts of an engine with no chain limit that always gives the same bits.
+fn open_engine() -> EngineFacts {
+    facts(nagaya_abi::Determinism::Always, Vec::new(), open_chain())
+}
+
+/// Put with the facts of one engine. The default helpers use `open_engine`.
+fn put_as(
+    store: &mut Store,
+    snapshot: &Snapshot,
+    recipe: RecipeId,
+    previous_recipe: Option<RecipeId>,
+    engine: &EngineFacts,
+) -> Result<ContentId, StoreError> {
+    put_as_at(store, snapshot, recipe, previous_recipe, engine, 10)
+}
+
+fn put_as_at(
+    store: &mut Store,
+    snapshot: &Snapshot,
+    recipe: RecipeId,
+    previous_recipe: Option<RecipeId>,
+    engine: &EngineFacts,
+    now_ms: u64,
+) -> Result<ContentId, StoreError> {
+    store.put(Put {
+        snapshot,
+        recipe,
+        previous_recipe,
+        engine: engine.clone(),
+        identity: [1u8; 32],
+        owner: 1,
+        tier: Tier::Host,
+        reason: Reason::Anchor,
+        provenance: None,
+        now_ms,
+    })
+}
+
 fn try_put(
     store: &mut Store,
     snapshot: &Snapshot,
@@ -102,6 +149,7 @@ fn try_put(
         snapshot,
         recipe,
         previous_recipe,
+        engine: open_engine(),
         identity: [1u8; 32],
         owner,
         tier,
@@ -131,6 +179,7 @@ fn put_provenance(
             snapshot,
             recipe,
             previous_recipe: previous,
+            engine: open_engine(),
             identity: [1u8; 32],
             owner: 1,
             tier: Tier::Host,
@@ -170,6 +219,7 @@ fn an_entry_records_its_facts() {
             snapshot: &snapshot,
             recipe,
             previous_recipe: None,
+            engine: open_engine(),
             identity: [9u8; 32],
             owner: 7,
             tier: Tier::Nvme,
@@ -214,6 +264,10 @@ fn a_delta_keeps_its_parent_and_the_base() {
     assert_eq!(store.entries().get(&delta).unwrap().parent, Some(base));
     let chain = lookup(&mut store, delta_recipe).unwrap();
     assert_eq!(chain, vec![base, delta]);
+    // The base is hotter than the delta, so by value (spec 6.9 step 4) the delta goes first and the base stays.
+    for _ in 0..3 {
+        store.get(&base, 15).unwrap();
+    }
     let victims = store.evict(0, 1, 20).unwrap();
     assert!(!victims.contains(&base));
     assert!(victims.contains(&delta));
@@ -416,7 +470,7 @@ fn a_pin_on_a_child_protects_its_parent() {
 #[test]
 fn a_cross_tier_child_keeps_the_parent() {
     let dir = tempfile::tempdir().unwrap();
-    let mut store = Store::open_with_limits(dir.path(), 5_000, 5_000, u64::MAX, open_chain()).unwrap();
+    let mut store = Store::open_with_limits(dir.path(), 5_000, 5_000, u64::MAX).unwrap();
     let root_recipe = recipe(162);
     let root = put(&mut store, &base_snapshot(1), root_recipe, 1);
     let child_recipe = next_recipe(root_recipe, 2);
@@ -861,8 +915,14 @@ fn a_restart_makes_a_per_process_entry_not_exact() {
     let id;
     {
         let mut store = Store::open(dir.path()).unwrap();
-        store.set_determinism(nagaya_abi::Determinism::PerProcess, Vec::new());
-        id = put(&mut store, &base_snapshot(1), recipe(128), 1);
+        id = put_as(
+            &mut store,
+            &base_snapshot(1),
+            recipe(128),
+            None,
+            &facts(nagaya_abi::Determinism::PerProcess, Vec::new(), open_chain()),
+        )
+        .unwrap();
         assert_eq!(lookup(&mut store, recipe(128)).unwrap(), vec![id]);
     }
     let mut store = Store::open(dir.path()).unwrap();
@@ -877,17 +937,21 @@ fn a_restart_makes_a_per_process_entry_not_exact() {
 fn a_per_process_engine_does_not_trip_the_wire() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(dir.path()).unwrap();
-    store.set_determinism(nagaya_abi::Determinism::PerProcess, Vec::new());
-    put(&mut store, &base_snapshot(1), recipe(129), 1);
-    put(&mut store, &base_snapshot(2), recipe(129), 1);
+    let engine = facts(nagaya_abi::Determinism::PerProcess, Vec::new(), open_chain());
+    put_as(&mut store, &base_snapshot(1), recipe(129), None, &engine).unwrap();
+    put_as(&mut store, &base_snapshot(2), recipe(129), None, &engine).unwrap();
     assert_eq!(store.entries().len(), 2);
     assert!(store.refused().is_empty());
 
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(dir.path()).unwrap();
-    store.set_determinism(nagaya_abi::Determinism::Always, vec![BitDependence::Residency]);
-    put(&mut store, &base_snapshot(1), recipe(130), 1);
-    put(&mut store, &base_snapshot(2), recipe(130), 1);
+    let engine = facts(
+        nagaya_abi::Determinism::Always,
+        vec![BitDependence::Residency],
+        open_chain(),
+    );
+    put_as(&mut store, &base_snapshot(1), recipe(130), None, &engine).unwrap();
+    put_as(&mut store, &base_snapshot(2), recipe(130), None, &engine).unwrap();
     assert_eq!(store.entries().len(), 2);
 }
 
@@ -895,20 +959,36 @@ fn a_per_process_engine_does_not_trip_the_wire() {
 fn a_tie_serves_the_newest_then_the_smaller_content_id() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(dir.path()).unwrap();
-    store.set_determinism(nagaya_abi::Determinism::PerProcess, Vec::new());
+    let engine = facts(nagaya_abi::Determinism::PerProcess, Vec::new(), open_chain());
     let new_recipe = recipe(165);
-    let first = try_put(&mut store, &base_snapshot(1), new_recipe, None, 1, Tier::Host, 10).unwrap();
-    let second = try_put(&mut store, &base_snapshot(2), new_recipe, None, 1, Tier::Host, 20).unwrap();
+    let first = put_as_at(&mut store, &base_snapshot(1), new_recipe, None, &engine, 10).unwrap();
+    let second = put_as_at(&mut store, &base_snapshot(2), new_recipe, None, &engine, 20).unwrap();
     assert_ne!(first, second);
     assert_eq!(lookup(&mut store, new_recipe).unwrap(), vec![second]);
 
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(dir.path()).unwrap();
-    store.set_determinism(nagaya_abi::Determinism::PerProcess, Vec::new());
+    let engine = facts(nagaya_abi::Determinism::PerProcess, Vec::new(), open_chain());
     let old_recipe = recipe(166);
-    let first = try_put(&mut store, &base_snapshot(3), old_recipe, None, 1, Tier::Host, 10).unwrap();
-    let second = try_put(&mut store, &base_snapshot(4), old_recipe, None, 1, Tier::Host, 10).unwrap();
+    let first = put_as_at(&mut store, &base_snapshot(3), old_recipe, None, &engine, 10).unwrap();
+    let second = put_as_at(&mut store, &base_snapshot(4), old_recipe, None, &engine, 10).unwrap();
     assert_eq!(lookup(&mut store, old_recipe).unwrap(), vec![first.min(second)]);
+}
+
+#[test]
+fn an_index_entry_without_its_engine_facts_does_not_open() {
+    // An index from before the engine facts has no `engine` field. The store refuses it and says why.
+    let dir = tempfile::tempdir().unwrap();
+    let id;
+    {
+        let mut store = Store::open(dir.path()).unwrap();
+        id = put(&mut store, &base_snapshot(1), recipe(196), 1);
+    }
+    edit_index(dir.path(), |index| {
+        index["entries"][id.hex()].as_object_mut().unwrap().remove("engine");
+    });
+    let error = Store::open(dir.path()).unwrap_err();
+    assert!(format!("{error}").contains("engine"), "{error}");
 }
 
 #[test]
@@ -973,85 +1053,214 @@ fn a_delta_checks_its_parent() {
 }
 
 #[test]
-fn a_delta_respects_the_chain_limits() {
+fn a_delta_respects_the_chain_limits_of_its_own_put() {
+    let limits = |max_depth, delta_fraction| {
+        facts(
+            nagaya_abi::Determinism::Always,
+            Vec::new(),
+            ChainLimits {
+                max_depth,
+                delta_fraction,
+            },
+        )
+    };
     let dir = tempfile::tempdir().unwrap();
-    let mut store = Store::open_with_limits(
-        dir.path(),
-        u64::MAX,
-        u64::MAX,
-        u64::MAX,
-        ChainLimits {
-            max_depth: 1,
-            delta_fraction: 1.0,
-        },
-    )
-    .unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let engine = limits(1, 1.0);
     let root_recipe = recipe(136);
-    let root = put(&mut store, &base_snapshot(1), root_recipe, 1);
+    let root = put_as(&mut store, &base_snapshot(1), root_recipe, None, &engine).unwrap();
     let first_recipe = next_recipe(root_recipe, 2);
-    let first = put_delta(&mut store, &delta_at(root, 2), first_recipe, root_recipe, 1);
+    let first = put_as(&mut store, &delta_at(root, 2), first_recipe, Some(root_recipe), &engine).unwrap();
     let second_recipe = next_recipe(first_recipe, 4);
-    let error = try_put(
+    let error = put_as(
         &mut store,
         &delta_at(first, 4),
+        second_recipe,
+        Some(first_recipe),
+        &engine,
+    )
+    .unwrap_err();
+    assert!(format!("{error}").contains("deeper"), "{error}");
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let engine = limits(0, 1.0);
+    let root = put_as(&mut store, &base_snapshot(1), root_recipe, None, &engine).unwrap();
+    let error = put_as(&mut store, &delta_at(root, 2), first_recipe, Some(root_recipe), &engine).unwrap_err();
+    assert!(format!("{error}").contains("deeper"), "{error}");
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let engine = limits(10, 0.0);
+    let root = put_as(&mut store, &base_snapshot(1), root_recipe, None, &engine).unwrap();
+    let error = put_as(&mut store, &delta_at(root, 2), first_recipe, Some(root_recipe), &engine).unwrap_err();
+    assert!(format!("{error}").contains("larger"), "{error}");
+}
+
+#[test]
+fn each_put_carries_the_chain_limits_of_its_engine() {
+    // Spec 6.1 and 6.5: one store serves every engine. Two engines with different limits share it.
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let shallow = facts(
+        nagaya_abi::Determinism::Always,
+        Vec::new(),
+        ChainLimits {
+            max_depth: 0,
+            delta_fraction: 0.0,
+        },
+    );
+    let deep = open_engine();
+
+    let root_recipe = recipe(185);
+    let root = put_as(&mut store, &base_snapshot(1), root_recipe, None, &shallow).unwrap();
+    let delta_recipe = next_recipe(root_recipe, 2);
+    let error = put_as(
+        &mut store,
+        &delta_at(root, 2),
+        delta_recipe,
+        Some(root_recipe),
+        &shallow,
+    )
+    .unwrap_err();
+    assert!(format!("{error}").contains("deeper"), "{error}");
+    // The deep engine puts into the same store after the shallow engine.
+    let delta = put_as(&mut store, &delta_at(root, 2), delta_recipe, Some(root_recipe), &deep).unwrap();
+    assert_eq!(store.entries()[&delta].chain.max_depth, u32::MAX);
+    assert_eq!(store.entries()[&root].chain.max_depth, 0);
+    assert_eq!(store.entries()[&root].engine, "fake");
+}
+
+#[test]
+fn the_tripwire_reads_the_recorded_class_of_each_entry() {
+    // Spec 6.7: the tripwire is on for an entry only when its engine is deterministic across processes.
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let wandering = facts(nagaya_abi::Determinism::PerProcess, Vec::new(), open_chain());
+    let steady = open_engine();
+    let resident = facts(
+        nagaya_abi::Determinism::Always,
+        vec![BitDependence::Residency],
+        open_chain(),
+    );
+
+    // A per-process entry and a steady put under one recipe do not trip.
+    let mixed = recipe(186);
+    put_as(&mut store, &base_snapshot(1), mixed, None, &wandering).unwrap();
+    put_as(&mut store, &base_snapshot(2), mixed, None, &steady).unwrap();
+    assert!(store.refused().is_empty());
+    // The same holds the other way round, and for an engine whose bits depend on residency.
+    put_as(&mut store, &base_snapshot(3), mixed, None, &wandering).unwrap();
+    put_as(&mut store, &base_snapshot(4), mixed, None, &resident).unwrap();
+    assert!(store.refused().is_empty());
+    assert_eq!(store.entries().len(), 4);
+
+    // Two steady puts under one recipe still trip, whatever the engines before them.
+    let pure = recipe(187);
+    put_as(&mut store, &base_snapshot(5), pure, None, &steady).unwrap();
+    let error = put_as(&mut store, &base_snapshot(6), pure, None, &steady).unwrap_err();
+    assert!(matches!(error, StoreError::Tripwire { .. }), "{error:?}");
+    assert!(store.refused().contains(&pure));
+}
+
+fn rows_delta(parent: ContentId, start: u64, rows: u64) -> Snapshot {
+    Snapshot {
+        tensors: vec![
+            tensor("state", PartKind::Fixed, vec![16], vec![9; 16], None),
+            tensor(
+                "cells",
+                PartKind::Cells,
+                vec![rows, 8],
+                vec![7; (rows * 8) as usize],
+                Some((start, start + rows)),
+            ),
+        ],
+        parent: Some(parent),
+    }
+}
+
+#[test]
+fn the_delta_fraction_compares_with_the_base_of_the_chain() {
+    // Spec 6.5 check 3: the limit is a fraction of the full base snapshot, not of the parent (a delta).
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let root_recipe = recipe(180);
+    let root = put(&mut store, &wide_snapshot(1), root_recipe, 1);
+    let first_recipe = next_recipe(root_recipe, 2);
+    let first_snapshot = rows_delta(root, 3, 1);
+    let first = put_delta(&mut store, &first_snapshot, first_recipe, root_recipe, 1);
+    let base_size = wide_snapshot(1).encode().unwrap().len();
+    let parent_size = first_snapshot.encode().unwrap().len();
+    let second_snapshot = rows_delta(first, 4, 2);
+    let second_size = second_snapshot.encode().unwrap().len();
+    assert!(
+        parent_size < second_size && second_size <= base_size,
+        "the sizes set the test"
+    );
+
+    let second_recipe = next_recipe(first_recipe, 4);
+    let second = try_put(
+        &mut store,
+        &second_snapshot,
         second_recipe,
         Some(first_recipe),
         1,
         Tier::Host,
         10,
     )
-    .unwrap_err();
-    assert!(format!("{error}").contains("deeper"), "{error}");
+    .expect("a delta larger than its parent and no larger than the base fits");
 
-    let dir = tempfile::tempdir().unwrap();
-    let mut store = Store::open_with_limits(
-        dir.path(),
-        u64::MAX,
-        u64::MAX,
-        u64::MAX,
-        ChainLimits {
-            max_depth: 0,
-            delta_fraction: 1.0,
-        },
-    )
-    .unwrap();
-    let root = put(&mut store, &base_snapshot(1), root_recipe, 1);
+    let third_snapshot = rows_delta(second, 6, 4);
+    assert!(
+        third_snapshot.encode().unwrap().len() > base_size,
+        "the sizes set the test"
+    );
     let error = try_put(
         &mut store,
-        &delta_at(root, 2),
-        first_recipe,
-        Some(root_recipe),
-        1,
-        Tier::Host,
-        10,
-    )
-    .unwrap_err();
-    assert!(format!("{error}").contains("deeper"), "{error}");
-
-    let dir = tempfile::tempdir().unwrap();
-    let mut store = Store::open_with_limits(
-        dir.path(),
-        u64::MAX,
-        u64::MAX,
-        u64::MAX,
-        ChainLimits {
-            max_depth: 10,
-            delta_fraction: 0.0,
-        },
-    )
-    .unwrap();
-    let root = put(&mut store, &base_snapshot(1), root_recipe, 1);
-    let error = try_put(
-        &mut store,
-        &delta_at(root, 2),
-        first_recipe,
-        Some(root_recipe),
+        &third_snapshot,
+        next_recipe(second_recipe, 6),
+        Some(second_recipe),
         1,
         Tier::Host,
         10,
     )
     .unwrap_err();
     assert!(format!("{error}").contains("larger"), "{error}");
+}
+
+#[test]
+fn eviction_ranks_tips_roots_and_standalone_entries_by_value_together() {
+    // Spec 6.9 step 4: after the interiors, one ranking by value per byte covers every remaining entry.
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let root_recipe = recipe(181);
+    let root = put(&mut store, &base_snapshot(1), root_recipe, 1);
+    let tip_recipe = next_recipe(root_recipe, 2);
+    let tip = put_delta(&mut store, &delta_at(root, 2), tip_recipe, root_recipe, 1);
+    let cold = put(&mut store, &base_snapshot(5), recipe(182), 1);
+    for _ in 0..5 {
+        store.get(&tip, 1_000).unwrap();
+    }
+    let victims = store.evict(1, 1, 1_000).unwrap();
+    assert_eq!(victims, vec![cold], "the cold standalone entry goes before the hot tip");
+    assert!(store.entries().contains_key(&tip));
+}
+
+#[test]
+fn eviction_takes_a_cold_tip_before_a_hot_standalone_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let root_recipe = recipe(183);
+    let root = put(&mut store, &base_snapshot(1), root_recipe, 1);
+    let tip_recipe = next_recipe(root_recipe, 2);
+    let tip = put_delta(&mut store, &delta_at(root, 2), tip_recipe, root_recipe, 1);
+    let hot = put(&mut store, &base_snapshot(5), recipe(184), 1);
+    for _ in 0..5 {
+        store.get(&hot, 1_000).unwrap();
+    }
+    let victims = store.evict(1, 1, 1_000).unwrap();
+    assert_eq!(victims, vec![tip]);
+    assert!(store.entries().contains_key(&hot));
 }
 
 #[test]
@@ -1143,6 +1352,138 @@ fn a_pin_larger_than_the_budget_loses_protection() {
 }
 
 #[test]
+fn an_entry_stays_pinned_while_any_owner_pin_is_live() {
+    // Spec 6.10: each owner holds its own pin with its own expiry.
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let id = put(&mut store, &base_snapshot(1), recipe(190), 1);
+    store.pin(id, 10, 100_000, 10).unwrap();
+    store.pin(id, 20, 50_000, 10).unwrap();
+    // The pin of owner 20 has run out. The pin of owner 10 has not.
+    assert_eq!(
+        store.evict(1, 1, 60_000).unwrap_err().to_string(),
+        StoreError::NoSpace.to_string()
+    );
+    assert!(store.entries().contains_key(&id));
+    // Both have run out.
+    assert_eq!(store.evict(1, 1, 100_000).unwrap(), vec![id]);
+}
+
+#[test]
+fn a_later_live_pin_protects_after_an_earlier_pin_ran_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let id = put(&mut store, &base_snapshot(1), recipe(195), 1);
+    store.pin(id, 10, 50_000, 10).unwrap();
+    store.pin(id, 20, 100_000, 10).unwrap();
+    assert!(store.evict(1, 1, 60_000).is_err());
+    assert!(store.entries().contains_key(&id));
+}
+
+#[test]
+fn unpin_removes_only_the_pin_of_its_owner() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let id = put(&mut store, &base_snapshot(1), recipe(191), 1);
+    store.pin(id, 10, 100_000, 10).unwrap();
+    store.pin(id, 20, 50_000, 10).unwrap();
+    // A second pin by the same owner replaces that owner's pin and no other.
+    store.pin(id, 20, 70_000, 10).unwrap();
+    let mut owners: Vec<(u64, u64)> = store.pins()[&id]
+        .iter()
+        .map(|pin| (pin.owner, pin.expires_ms))
+        .collect();
+    owners.sort();
+    assert_eq!(owners, vec![(10, 100_000), (20, 70_000)]);
+
+    store.unpin(&id, 10).unwrap();
+    assert_eq!(store.pins()[&id].len(), 1);
+    assert_eq!(store.pins()[&id][0].owner, 20);
+    assert!(
+        store.evict(1, 1, 60_000).is_err(),
+        "the pin of owner 20 still protects the entry"
+    );
+    store.unpin(&id, 20).unwrap();
+    assert!(store.pins().is_empty());
+    // An owner with no pin changes nothing.
+    store.unpin(&id, 30).unwrap();
+}
+
+#[test]
+fn two_owner_pins_survive_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let id;
+    {
+        let mut store = Store::open(dir.path()).unwrap();
+        id = put(&mut store, &base_snapshot(1), recipe(192), 1);
+        store.pin(id, 10, 100_000, 10).unwrap();
+        store.pin(id, 20, 50_000, 10).unwrap();
+    }
+    let mut store = Store::open(dir.path()).unwrap();
+    let mut owners: Vec<(u64, u64)> = store.pins()[&id]
+        .iter()
+        .map(|pin| (pin.owner, pin.expires_ms))
+        .collect();
+    owners.sort();
+    assert_eq!(owners, vec![(10, 100_000), (20, 50_000)]);
+    assert!(
+        store.evict(1, 1, 60_000).is_err(),
+        "the pin of owner 10 protects the entry after the restart"
+    );
+    store.unpin(&id, 10).unwrap();
+    assert_eq!(
+        store.evict(1, 1, 40_000).unwrap_err().to_string(),
+        StoreError::NoSpace.to_string()
+    );
+}
+
+#[test]
+fn an_index_with_one_pin_for_each_entry_still_opens() {
+    // The old index held one pin object for each entry. The store reads it as a list of one pin.
+    let dir = tempfile::tempdir().unwrap();
+    let id;
+    {
+        let mut store = Store::open(dir.path()).unwrap();
+        id = put(&mut store, &base_snapshot(1), recipe(193), 1);
+        store.pin(id, 10, 100_000, 10).unwrap();
+    }
+    edit_index(dir.path(), |index| {
+        let list = index["pins"][id.hex()].take();
+        assert!(list.is_array(), "the new format is a list");
+        index["pins"][id.hex()] = list[0].clone();
+    });
+    let mut store = Store::open(dir.path()).unwrap();
+    assert_eq!(store.pins()[&id].len(), 1);
+    assert_eq!(store.pins()[&id][0].owner, 10);
+    assert!(store.evict(1, 1, 60_000).is_err());
+}
+
+#[test]
+fn a_lookup_pin_of_a_second_owner_keeps_the_first_pin() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let recipe = recipe(194);
+    let id = put(&mut store, &base_snapshot(1), recipe, 1);
+    store.pin(id, 10, 100_000, 10).unwrap();
+    let mut engine = FakeAlways::new();
+    store
+        .lookup_and_pin(
+            recipe,
+            &Tolerance::Exact,
+            &mut engine,
+            0,
+            Pin {
+                owner: 20,
+                expires_ms: 20_000,
+            },
+            10,
+        )
+        .unwrap();
+    assert_eq!(store.pins()[&id].len(), 2);
+    assert!(store.evict(1, 1, 60_000).is_err());
+}
+
+#[test]
 fn a_pin_longer_than_a_day_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(dir.path()).unwrap();
@@ -1155,7 +1496,7 @@ fn a_pin_longer_than_a_day_is_refused() {
     assert!(store.pins().is_empty());
     store.pin(id, 1, now + one_day, now).unwrap();
     assert!(store.pins().contains_key(&id));
-    store.unpin(&id).unwrap();
+    store.unpin(&id, 1).unwrap();
 
     let mut engine = FakeAlways::new();
     let pin = Pin {
@@ -1207,7 +1548,7 @@ fn another_owners_pin_protects() {
 #[test]
 fn an_eviction_without_a_tier_skips_a_mixed_group() {
     let dir = tempfile::tempdir().unwrap();
-    let mut store = Store::open_with_limits(dir.path(), 100_000, 100_000, u64::MAX, open_chain()).unwrap();
+    let mut store = Store::open_with_limits(dir.path(), 100_000, 100_000, u64::MAX).unwrap();
     let root_recipe = recipe(171);
     let root = put(&mut store, &base_snapshot(1), root_recipe, 1);
     let middle_recipe = next_recipe(root_recipe, 2);
@@ -1253,7 +1594,7 @@ fn a_put_does_not_evict_another_owners_entry() {
 #[test]
 fn a_put_over_the_owner_quota_evicts_that_owner() {
     let dir = tempfile::tempdir().unwrap();
-    let mut store = Store::open_with_limits(dir.path(), 100_000, 100_000, 5_000, open_chain()).unwrap();
+    let mut store = Store::open_with_limits(dir.path(), 100_000, 100_000, 5_000).unwrap();
     let first = put(&mut store, &base_snapshot(1), recipe(143), 1);
     let second = put(&mut store, &base_snapshot(2), recipe(144), 1);
     assert!(!store.entries().contains_key(&first));
@@ -1266,7 +1607,7 @@ fn a_put_over_the_owner_quota_evicts_that_owner() {
 #[test]
 fn a_put_does_not_take_a_budget_from_another_tier() {
     let dir = tempfile::tempdir().unwrap();
-    let mut store = Store::open_with_limits(dir.path(), 5_000, 5_000, u64::MAX, open_chain()).unwrap();
+    let mut store = Store::open_with_limits(dir.path(), 5_000, 5_000, u64::MAX).unwrap();
     let host_first = put(&mut store, &base_snapshot(1), recipe(146), 1);
     let nvme = try_put(&mut store, &base_snapshot(2), recipe(147), None, 1, Tier::Nvme, 10).unwrap();
     let host_second = put(&mut store, &base_snapshot(3), recipe(148), 1);
@@ -1362,20 +1703,56 @@ fn an_index_mismatch_in_a_middle_entry_is_found() {
     );
 }
 
-#[test]
-fn an_unreadable_blob_quarantines_with_read() {
-    let dir = tempfile::tempdir().unwrap();
+/// Put one entry, then make its blob unreadable: a directory takes the place of the file.
+fn store_with_unreadable_blob(dir: &Path) -> (Store, ContentId, RecipeId, Vec<u8>) {
+    let recipe = recipe(159);
     let id;
     {
-        let mut store = Store::open(dir.path()).unwrap();
-        id = put(&mut store, &base_snapshot(1), recipe(159), 1);
+        let mut store = Store::open(dir).unwrap();
+        id = put(&mut store, &base_snapshot(1), recipe, 1);
     }
-    let path = dir.path().join("blobs").join(id.hex());
+    let path = dir.join("blobs").join(id.hex());
+    let bytes = std::fs::read(&path).unwrap();
     std::fs::remove_file(&path).unwrap();
     std::fs::create_dir(&path).unwrap();
-    let mut store = Store::open(dir.path()).unwrap();
+    (Store::open(dir).unwrap(), id, recipe, bytes)
+}
+
+fn repair_blob(dir: &Path, id: &ContentId, bytes: &[u8]) {
+    let path = dir.join("blobs").join(id.hex());
+    std::fs::remove_dir(&path).unwrap();
+    std::fs::write(&path, bytes).unwrap();
+}
+
+#[test]
+fn a_read_error_in_a_lookup_is_a_miss_and_not_a_quarantine() {
+    // Spec 6.8: only a content id or an identity that fails verification quarantines an entry.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut store, id, recipe, bytes) = store_with_unreadable_blob(dir.path());
+    assert_eq!(lookup(&mut store, recipe).unwrap(), Vec::<ContentId>::new());
+    let entry = store.entries().get(&id).expect("the entry stays in the index");
+    assert_eq!(entry.state, EntryState::Live);
+    assert_eq!(entry.quarantine, None);
+
+    // The next use checks the entry again. The blob is back, so the lookup hits.
+    repair_blob(dir.path(), &id, &bytes);
+    assert_eq!(lookup(&mut store, recipe).unwrap(), vec![id]);
+}
+
+#[test]
+fn a_read_error_in_a_restore_or_a_get_is_an_error_and_not_a_quarantine() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut store, id, _, bytes) = store_with_unreadable_blob(dir.path());
     assert!(matches!(store.get(&id, 10), Err(StoreError::Io(_))));
-    assert_eq!(store.entries().get(&id).unwrap().quarantine, Some(Quarantine::Read));
+    let mut target = FakeAlways::new();
+    let error = store.restore(&id, &mut target, State::Slot(0), &[1u8; 32], 10);
+    assert!(matches!(error, Err(StoreError::Io(_))), "{error:?}");
+    let entry = store.entries().get(&id).unwrap();
+    assert_eq!(entry.state, EntryState::Live);
+    assert_eq!(entry.quarantine, None);
+
+    repair_blob(dir.path(), &id, &bytes);
+    assert!(store.get(&id, 10).unwrap().is_some());
 }
 
 #[test]

@@ -136,6 +136,16 @@ fn a_stop_writes_every_state_and_a_restore_reads_every_part() {
     for (state, snapshot) in expected() {
         let id = snapshot.content_id().unwrap();
         assert!(store.entries().contains_key(&id), "the store holds {id:?}");
+        // Spec 6.1: each put names its engine and carries the engine's class and chain limits.
+        let entry = &store.entries()[&id];
+        let limits = seeded().limits();
+        assert_eq!(entry.engine, "seed");
+        assert_eq!(
+            entry.determinism,
+            nagaya_store::DeterminismClass::from(limits.determinism)
+        );
+        assert_eq!(entry.chain.max_depth, limits.chain.max_depth);
+        assert_eq!(entry.chain.delta_fraction, limits.chain.delta_fraction);
         let mut target = FakeAlways::new();
         let results = store.restore(&id, &mut target, state, &identity, 20).unwrap();
         assert_eq!(results, Restored::Done);
