@@ -274,3 +274,139 @@ fn a_refusal_prints_each_short_budget_with_its_tiers_and_bytes() {
          the budget of device 1 is short by 5 bytes"
     );
 }
+
+fn term_with(name: &str, tier: Tier, bytes: u64, lifetime: Lifetime) -> MandatoryTerm {
+    MandatoryTerm {
+        lifetime,
+        ..mandatory(name, tier, bytes)
+    }
+}
+
+/// One host budget of 100 bytes, one engine `a` with a 30 byte engine term and a 50 byte context term.
+fn context_profile() -> Profile {
+    let memory = MemoryLimits {
+        mandatory: vec![
+            term_with("weights", Tier::Host, 30, Lifetime::Engine),
+            term_with("context", Tier::Host, 50, Lifetime::Context),
+        ],
+        elastic: Vec::new(),
+    };
+    Profile {
+        budgets: vec![budget(&[Tier::Host], 100)],
+        engines: vec![plan("a", 1, memory)],
+    }
+}
+
+#[test]
+fn open_does_not_charge_a_context_term() {
+    let mut ledger = Ledger::new();
+    let admission = ledger.admit(&context_profile()).unwrap();
+    assert_eq!(admission.unassigned, vec![(vec![Tier::Host], 70)]);
+    assert_eq!(admission.engines[0].mandatory, vec![(Tier::Host, 30)]);
+    assert_eq!(ledger.unassigned(), vec![(vec![Tier::Host], 70)]);
+}
+
+#[test]
+fn open_charges_a_loan_term_once() {
+    let memory = MemoryLimits {
+        mandatory: vec![term_with("scratch", Tier::Host, 10, Lifetime::Loan)],
+        elastic: Vec::new(),
+    };
+    let profile = Profile {
+        budgets: vec![budget(&[Tier::Host], 100)],
+        engines: vec![plan("a", 1, memory)],
+    };
+    let mut ledger = Ledger::new();
+    let admission = ledger.admit(&profile).unwrap();
+    assert_eq!(admission.unassigned, vec![(vec![Tier::Host], 90)]);
+}
+
+#[test]
+fn ctx_new_charges_the_context_terms_from_the_unassigned_bytes() {
+    let mut ledger = Ledger::new();
+    ledger.admit(&context_profile()).unwrap();
+    ledger.admit_context("a").unwrap();
+    assert_eq!(ledger.unassigned(), vec![(vec![Tier::Host], 20)]);
+}
+
+#[test]
+fn a_refused_ctx_new_names_the_shortfall_and_changes_nothing() {
+    let mut ledger = Ledger::new();
+    ledger.admit(&context_profile()).unwrap();
+    ledger.admit_context("a").unwrap();
+    let before = ledger.clone();
+    let error = ledger.admit_context("a").unwrap_err();
+    assert_eq!(
+        error,
+        LedgerError::ContextRefused(Refusal {
+            shortfall: vec![(vec![Tier::Host], 30)],
+        })
+    );
+    assert_eq!(ledger, before);
+}
+
+#[test]
+fn a_ctx_new_that_is_short_in_one_tier_charges_no_tier() {
+    let memory = MemoryLimits {
+        mandatory: vec![
+            term_with("host", Tier::Host, 10, Lifetime::Context),
+            term_with("device", Tier::Device(0), 50, Lifetime::Context),
+        ],
+        elastic: Vec::new(),
+    };
+    let profile = Profile {
+        budgets: vec![budget(&[Tier::Host], 100), budget(&[Tier::Device(0)], 40)],
+        engines: vec![plan("a", 1, memory)],
+    };
+    let mut ledger = Ledger::new();
+    ledger.admit(&profile).unwrap();
+    let error = ledger.admit_context("a").unwrap_err();
+    assert!(matches!(error, LedgerError::ContextRefused(_)), "{error:?}");
+    assert_eq!(
+        ledger.unassigned(),
+        vec![(vec![Tier::Host], 100), (vec![Tier::Device(0)], 40)]
+    );
+}
+
+#[test]
+fn the_end_of_a_context_gives_its_bytes_back() {
+    let mut ledger = Ledger::new();
+    ledger.admit(&context_profile()).unwrap();
+    ledger.admit_context("a").unwrap();
+    ledger.release_context("a").unwrap();
+    assert_eq!(ledger.unassigned(), vec![(vec![Tier::Host], 70)]);
+    ledger.admit_context("a").unwrap();
+}
+
+#[test]
+fn a_release_with_no_context_is_an_error() {
+    let mut ledger = Ledger::new();
+    ledger.admit(&context_profile()).unwrap();
+    assert!(matches!(ledger.release_context("a"), Err(LedgerError::Invalid(_))));
+    assert_eq!(ledger.unassigned(), vec![(vec![Tier::Host], 70)]);
+}
+
+#[test]
+fn ctx_new_for_an_engine_that_is_not_admitted_is_an_error() {
+    let mut ledger = Ledger::new();
+    ledger.admit(&context_profile()).unwrap();
+    assert!(matches!(ledger.admit_context("b"), Err(LedgerError::Invalid(_))));
+}
+
+#[test]
+fn a_context_that_fits_exactly_is_admitted() {
+    let memory = MemoryLimits {
+        mandatory: vec![term_with("context", Tier::Host, 50, Lifetime::Context)],
+        elastic: Vec::new(),
+    };
+    let profile = Profile {
+        budgets: vec![budget(&[Tier::Host], 100)],
+        engines: vec![plan("a", 1, memory)],
+    };
+    let mut ledger = Ledger::new();
+    ledger.admit(&profile).unwrap();
+    ledger.admit_context("a").unwrap();
+    ledger.admit_context("a").unwrap();
+    assert_eq!(ledger.unassigned(), vec![(vec![Tier::Host], 0)]);
+    assert!(ledger.admit_context("a").is_err());
+}

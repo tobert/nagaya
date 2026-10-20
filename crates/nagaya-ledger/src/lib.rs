@@ -1,6 +1,8 @@
 //! Budgets, terms, admission, shares, and reclaim order.
 
-use nagaya_abi::{Limits, Tier};
+use std::collections::BTreeMap;
+
+use nagaya_abi::{Lifetime, Limits, Tier};
 
 /// One budget: a byte target for a set of tiers.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,6 +67,8 @@ pub enum LedgerError {
     Refused(Refusal),
     /// The profile is not valid.
     Invalid(String),
+    /// A new context does not fit. The shortfall is in bytes for each short budget.
+    ContextRefused(Refusal),
 }
 
 impl std::fmt::Display for LedgerError {
@@ -72,26 +76,34 @@ impl std::fmt::Display for LedgerError {
         match self {
             LedgerError::Refused(refusal) => {
                 write!(formatter, "the profile does not fit: ")?;
-                for (index, (tiers, bytes)) in refusal.shortfall.iter().enumerate() {
-                    let names: Vec<String> = tiers
-                        .iter()
-                        .map(|tier| match tier {
-                            Tier::Device(id) => format!("device {id}"),
-                            Tier::Host => "host".to_owned(),
-                        })
-                        .collect();
-                    let separator = if index == 0 { "" } else { "; " };
-                    write!(
-                        formatter,
-                        "{separator}the budget of {} is short by {bytes} bytes",
-                        names.join(", ")
-                    )?;
-                }
-                Ok(())
+                write_shortfall(formatter, refusal)
             }
             LedgerError::Invalid(message) => write!(formatter, "{message}"),
+            LedgerError::ContextRefused(refusal) => {
+                write!(formatter, "the new context does not fit: ")?;
+                write_shortfall(formatter, refusal)
+            }
         }
     }
+}
+
+fn write_shortfall(formatter: &mut std::fmt::Formatter<'_>, refusal: &Refusal) -> std::fmt::Result {
+    for (index, (tiers, bytes)) in refusal.shortfall.iter().enumerate() {
+        let names: Vec<String> = tiers
+            .iter()
+            .map(|tier| match tier {
+                Tier::Device(id) => format!("device {id}"),
+                Tier::Host => "host".to_owned(),
+            })
+            .collect();
+        let separator = if index == 0 { "" } else { "; " };
+        write!(
+            formatter,
+            "{separator}the budget of {} is short by {bytes} bytes",
+            names.join(", ")
+        )?;
+    }
+    Ok(())
 }
 
 impl std::error::Error for LedgerError {}
@@ -101,12 +113,77 @@ impl std::error::Error for LedgerError {}
 pub struct Ledger {
     budgets: Vec<Budget>,
     engines: Vec<EngineAllocation>,
+    /// The bytes that no term holds, one entry per budget (spec 4.4 step 4). A new context takes from them.
+    unassigned: Vec<u128>,
+    /// The terms with the lifetime `context` of each admitted engine, by engine name (spec 4.2).
+    context_terms: BTreeMap<String, Vec<(Tier, u64)>>,
+    /// The live contexts of each engine.
+    contexts: BTreeMap<String, u64>,
 }
 
 impl Ledger {
     /// Make an empty ledger.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The bytes that no term holds, one entry per budget.
+    pub fn unassigned(&self) -> Vec<(Vec<Tier>, u64)> {
+        self.budgets
+            .iter()
+            .zip(&self.unassigned)
+            .map(|(budget, left)| (budget.tiers.clone(), (*left).min(u64::MAX as u128) as u64))
+            .collect()
+    }
+
+    /// Admit a new context of an engine (spec 4.2, 4.3).
+    ///
+    /// The ledger charges every term of the engine with the lifetime `context` against the unassigned bytes of its
+    /// budget. A refusal changes nothing.
+    pub fn admit_context(&mut self, engine: &str) -> Result<(), LedgerError> {
+        let terms = self
+            .context_terms
+            .get(engine)
+            .ok_or_else(|| LedgerError::Invalid(format!("engine {engine} is not admitted: admit its profile first")))?;
+        let mut need = vec![0u128; self.budgets.len()];
+        for (tier, bytes) in terms {
+            need[budget_index_in(&self.budgets, *tier)?] += *bytes as u128;
+        }
+        let shortfall: Vec<(Vec<Tier>, u64)> = self
+            .budgets
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| need[*index] > self.unassigned[*index])
+            .map(|(index, budget)| {
+                let bytes = (need[index] - self.unassigned[index]).min(u64::MAX as u128) as u64;
+                (budget.tiers.clone(), bytes)
+            })
+            .collect();
+        if !shortfall.is_empty() {
+            return Err(LedgerError::ContextRefused(Refusal { shortfall }));
+        }
+        for (index, bytes) in need.iter().enumerate() {
+            self.unassigned[index] -= bytes;
+        }
+        *self.contexts.entry(engine.to_owned()).or_insert(0) += 1;
+        Ok(())
+    }
+
+    /// Release the bytes of an ended context. A release with no live context is an error.
+    pub fn release_context(&mut self, engine: &str) -> Result<(), LedgerError> {
+        let live = self.contexts.get(engine).copied().unwrap_or(0);
+        if live == 0 {
+            return Err(LedgerError::Invalid(format!(
+                "engine {engine} has no live context to release: release a context once"
+            )));
+        }
+        let terms = self.context_terms.get(engine).cloned().unwrap_or_default();
+        for (tier, bytes) in terms {
+            let index = budget_index_in(&self.budgets, tier)?;
+            self.unassigned[index] += bytes as u128;
+        }
+        self.contexts.insert(engine.to_owned(), live - 1);
+        Ok(())
     }
 
     /// Admit a profile. A refusal changes nothing.
@@ -117,7 +194,14 @@ impl Ledger {
         let mut mandatory = vec![0u128; profile.budgets.len()];
         let mut minimums = vec![0u128; profile.budgets.len()];
         for engine in &profile.engines {
-            for term in &engine.limits.memory.mandatory {
+            // A context term is charged at `ctx_new`, not at `open` (spec 4.2).
+            for term in engine
+                .limits
+                .memory
+                .mandatory
+                .iter()
+                .filter(|term| term.lifetime != Lifetime::Context)
+            {
                 let index = budget_index(profile, term.tier)?;
                 mandatory[index] += term.bytes as u128;
             }
@@ -155,6 +239,7 @@ impl Ledger {
                 .memory
                 .mandatory
                 .iter()
+                .filter(|term| term.lifetime != Lifetime::Context)
                 .map(|term| (term.tier, term.bytes))
                 .collect();
             let mut elastic_allocation = Vec::new();
@@ -186,27 +271,48 @@ impl Ledger {
             });
         }
 
+        let left: Vec<u128> = (0..profile.budgets.len())
+            .map(|index| {
+                (profile.budgets[index].bytes as u128)
+                    .saturating_sub(mandatory[index])
+                    .saturating_sub(allocated[index])
+            })
+            .collect();
         let unassigned: Vec<(Vec<Tier>, u64)> = profile
             .budgets
             .iter()
-            .enumerate()
-            .map(|(index, budget)| {
-                let left = (budget.bytes as u128)
-                    .saturating_sub(mandatory[index])
-                    .saturating_sub(allocated[index]);
-                (budget.tiers.clone(), left.min(u64::MAX as u128) as u64)
-            })
+            .zip(&left)
+            .map(|(budget, left)| (budget.tiers.clone(), (*left).min(u64::MAX as u128) as u64))
             .collect();
 
+        let mut context_terms = BTreeMap::new();
+        for engine in &profile.engines {
+            let terms = engine
+                .limits
+                .memory
+                .mandatory
+                .iter()
+                .filter(|term| term.lifetime == Lifetime::Context)
+                .map(|term| (term.tier, term.bytes))
+                .collect();
+            context_terms.insert(engine.name.clone(), terms);
+        }
         self.budgets = profile.budgets.clone();
         self.engines = engines.clone();
+        self.unassigned = left;
+        self.context_terms = context_terms;
+        self.contexts = BTreeMap::new();
         Ok(Admission { engines, unassigned })
     }
 }
 
 fn budget_index(profile: &Profile, tier: Tier) -> Result<usize, LedgerError> {
+    budget_index_in(&profile.budgets, tier)
+}
+
+fn budget_index_in(budgets: &[Budget], tier: Tier) -> Result<usize, LedgerError> {
     let mut found = None;
-    for (index, budget) in profile.budgets.iter().enumerate() {
+    for (index, budget) in budgets.iter().enumerate() {
         if budget.tiers.contains(&tier) {
             if found.is_some() {
                 return Err(LedgerError::Invalid("tier has two budgets".to_owned()));
