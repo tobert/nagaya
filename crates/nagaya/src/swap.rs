@@ -1,6 +1,6 @@
 //! A desired profile from a peer: the order of versions, admission, persistence and refusal (spec 2.4, 3.3).
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -113,7 +113,8 @@ pub struct Swap {
     host: String,
     handled: u64,
     active: PlacementProfile,
-    reported: HashSet<String>,
+    /// The last malformed value of each live peer, by chitchat id. The node logs a value once.
+    reported: HashMap<String, String>,
 }
 
 impl Swap {
@@ -138,13 +139,18 @@ impl Swap {
             host: host.to_owned(),
             handled,
             active,
-            reported: HashSet::new(),
+            reported: HashMap::new(),
         })
     }
 
     /// The highest version that the node handled.
     pub fn handled(&self) -> u64 {
         self.handled
+    }
+
+    /// The number of peers with a malformed value on record. It is at most the number of live peers.
+    pub fn reported_len(&self) -> usize {
+        self.reported.len()
     }
 
     /// The profile that the node runs.
@@ -155,6 +161,9 @@ impl Swap {
     /// The newest desired profile for this host in the view, when its version is above the handled version.
     pub fn candidate(&mut self, view: &ClusterView) -> Option<Candidate> {
         let key = Key::ProfileDesired(self.host.clone()).name();
+        // A peer that left the view costs no entry.
+        self.reported
+            .retain(|id, _| view.live.iter().any(|node| node.id == *id));
         let mut best: Option<Candidate> = None;
         for node in &view.live {
             let Some(text) = node.keys.get(&key) else { continue };
@@ -167,8 +176,9 @@ impl Swap {
             let (value, version) = match (parsed, version) {
                 (Ok(value), Ok(version)) => (value, version),
                 (_, Err(reason)) | (Err(reason), _) => {
-                    if self.reported.insert(format!("{}\n{text}", node.name)) {
-                        eprintln!("ignoring the desired profile from peer {}: {reason}", node.name);
+                    // One entry for each peer id: the last malformed value. A new value is logged once.
+                    if self.reported.insert(node.id.clone(), text.clone()).as_ref() != Some(text) {
+                        eprintln!("ignoring the desired profile from peer {}: {reason}", node.id);
                     }
                     continue;
                 }

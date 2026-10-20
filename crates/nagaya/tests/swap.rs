@@ -404,3 +404,23 @@ fn a_lower_version_after_a_refused_one_is_ignored_after_a_restart() {
         "version 4 is below the refused version 5"
     );
 }
+
+#[test]
+fn a_peer_that_churns_malformed_values_costs_one_entry() {
+    let directory = tempfile::tempdir().unwrap();
+    let active = profile(&["fake-one"], 4096);
+    let mut swap = swap(directory.path(), &active);
+    for round in 0..50 {
+        // Each value is malformed in a new way: the version is not a whole number.
+        let offered = view(&[("a", KEY, json!({"version": format!("v{round}"), "profile": {}}))]);
+        assert_eq!(swap.candidate(&offered), None);
+    }
+    assert_eq!(swap.reported_len(), 1, "one entry for the peer, not one for each value");
+    let two = view(&[("a", KEY, json!({"version": "x"})), ("b", KEY, json!({"version": "y"}))]);
+    assert_eq!(swap.candidate(&two), None);
+    assert_eq!(swap.reported_len(), 2, "one entry for each peer id");
+    // A peer that left the view costs nothing.
+    let alone = view(&[("b", KEY, json!({"version": "y"}))]);
+    assert_eq!(swap.candidate(&alone), None);
+    assert_eq!(swap.reported_len(), 1);
+}
