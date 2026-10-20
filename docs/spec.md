@@ -5,7 +5,7 @@ English (`AGENTS.md`).
 
 - `docs/ontology.md` defines each term once.
 - `docs/engine-abi.md` defines the calls and the decisions D1-D10. The spec refers to them by number.
-- `docs/prior-art.md` and `docs/reviews.md` record where the rules came from.
+- `docs/prior-art.md`, `docs/deepinfer.md` and `docs/reviews.md` record where the rules came from.
 
 When this spec and another doc do not agree, correct one of them. Neither one wins without a decision.
 
