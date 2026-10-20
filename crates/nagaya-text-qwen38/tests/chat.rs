@@ -208,23 +208,6 @@ fn a_template_with_bad_syntax_is_refused_when_it_loads() {
 }
 
 #[test]
-fn string_methods_of_python_work_in_the_template() {
-    assert_eq!(
-        small(
-            "{{ 'abc'.startswith('ab') }}{{ 'abc'.endswith('bc') }}{{ 'abc'.startswith('bc') }}",
-            "[]"
-        )
-        .unwrap(),
-        "TrueTrueFalse"
-    );
-}
-
-#[test]
-fn a_method_that_the_template_engine_lacks_is_an_error() {
-    assert!(matches!(small("{{ 'abc'.nonsense() }}", "[]"), Err(Error::Template(_))));
-}
-
-#[test]
 fn keys_keep_their_order_in_items() {
     assert_eq!(
         small(

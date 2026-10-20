@@ -577,7 +577,8 @@ def main() -> None:
             chat_err.append({**c, "error": str(e)})
             continue
         chat_out.append({**c, "escaped": escaped, "text": tok.unescape(escaped), "ids": ids})
-    dump_cases(OUT / "jinja.json", header, {"sweep": pystr_sweep()})
+    methods = run_cases(Template, method_cases())
+    dump_cases(OUT / "jinja.json", header, {"sweep": pystr_sweep(), "methods": methods})
     # The filters of the template engine that the chat template uses, on their own.
     from service.template import _tojson
     tojson = []
@@ -590,6 +591,153 @@ def main() -> None:
         blocks.append({"source": source, "out": Template(source).render([])})
     dump_cases(OUT / "chat.json", header, {
         "render": chat_out, "render_refused": chat_err, "tojson": tojson, "trim": trim, "blocks": blocks})
+
+
+# ------------------------------------------------------------------ the methods of Python strings
+STR_CORPUS = [
+    "", "abc", "Hello World", "  padded  ", "\t\n x \r\n", "a,b,,c", "ab ab ab", "hello wORLD foo-bar 3rd o'clock",
+    "\u01c6ungla D\u017d \u01c4", "\u00df", "\u0149", "\ufb01", "\u0130", "\u0391\u03a3", "\u0391\u03a3 \u0392",
+    "\u0391\u03a3.", "A.\u03a3", "\u03a3", "\u0391\u03a3\u0391", "\u1fb3", "\u65e5\u672c\u8a9e", "\u0663\u0664 \u00b2\u00b3 \u00bd \u4e00",
+    "\uff41\uff42\uff43", "\u2028x\u2029", "\x1c\x1d x \x1e\x1f", "\ua7ce\ua7cf", "\U00016ea0", "\U0001e900\U0001e922",
+    "x\u0345y", "\u03c3\u03c2 \u03a3\u03a3", "dz\u01f3 \u01f1", "\u00e9cole \u00c9COLE", "i\u0307 \u0131 I", "ǅ", "ß ſ K",
+]
+
+
+def method_cases() -> list[dict]:
+    """Calls of the methods of strings, each in a template. Each case holds the method for the tests of the refusals."""
+    cases: list[dict] = []
+
+    def call(method, recv, *args):
+        cases.append({"m": method, "s": recv, "a": list(args)})
+
+    def literal(method, expression):
+        cases.append({"m": method, "src": "{{ (" + expression + ")|tojson }}"})
+
+    for method in ("startswith", "endswith"):
+        for recv in ("", "abc", "Hello", "\u65e5\u672c\u8a9e", "\u01c6abc"):
+            for arg in ("", "a", "abc", "abcd", "c", "\u65e5", "\u8a9e", "\u01c6", None, 1, True):
+                call(method, recv, arg)
+        for args in (("b", 1), ("b", 2), ("c", -1), ("ab", 0, 1), ("a", 5), ("", 3), ("", 4), ("c", -1, 3), ("c", 0, -1),
+                     ("b", None, None), ("b", 1, None), ("a", None, 1), ("a", "x"), ("a", 1.0), ("a", 0, 2.5), ("b", True),
+                     ("bc", 1, 3), ("abc", -10, 10), ("c", 10, 20), ("a", 0, 0), ("", 0, 0), ("", 2, 1)):
+            call(method, "abc", *args)
+        for tuple_ in ("('x', 'abc')", "('x', 'y')", "('x',)", "()", "('abc', 1)", "('', 'x')", "(1,)", "('a', 'b', 'c')"):
+            literal(method, f"'abc'.{method}({tuple_})")
+        literal(method, f"'abc'.{method}(('a', 'x'), 1)")
+        literal(method, f"'abc'.{method}(('c', 'x'), 1, 3)")
+        literal(method, f"'abc'.{method}()")
+        literal(method, f"'abc'.{method}('a', 1, 2, 3)")
+        literal(method, f"'abc'.{method}(prefix='a')")
+    for method in ("strip", "lstrip", "rstrip"):
+        for recv in ("  x  ", "\t\n x \r\n", "xxhixx", "", "   ", "\u3000a\u3000", "\x1c a \x1f", "abcba", "\u65e5\u672c\u8a9e",
+                     "\u00a0\u2007a\u200b"):
+            call(method, recv)
+            for arg in ("x", "ab", "", None, 1, "\u65e5", " ", "a b", True):
+                call(method, recv, arg)
+        call(method, "abc", "a", "b")
+        literal(method, f"'abc'.{method}(chars='a')")
+    for method in ("lower", "upper", "title", "capitalize"):
+        for recv in STR_CORPUS:
+            call(method, recv)
+        call(method, "abc", 1)
+        call(method, "abc", None)
+    for method in ("isdigit", "isalpha", "isspace"):
+        for recv in ("", "abc", "123", "a1", " ", "\t\n", "\u00b2", "\u0663", "\u00bd", "\u4e00", "\u65e5\u672c\u8a9e", "\u3000",
+                     "\x1c", "\u00e9", "\u01c6", "a b", "\u2167", "\ua7ce", "\u200b", "\u0345", "1\u00b2\u0663", "\U0001d7ce"):
+            call(method, recv)
+        call(method, "abc", 1)
+    for recv in ("banana", "aaa", "", "h\u00e9llo w\u00f6rld", "a\u65e5a"):
+        for old, new in (("a", "o"), ("a", ""), ("", "-"), ("an", "AN"), ("aa", "b"), ("x", "y"), ("", ""), ("\u00e9", "e"),
+                         ("\u65e5", "\u672c"), ("l", "\u00df")):
+            call("replace", recv, old, new)
+            for count in (-1, 0, 1, 2, 3, 100):
+                call("replace", recv, old, new, count)
+    for args in ((1, "a"), ("a", 1), ("a", None), (None, "a"), ("a", "b", "1"), ("a", "b", 1.0), ("a", "b", None),
+                 ("a", "b", True), ("a",), ("a", "b", 1, 2), ("a", "b", True)):
+        call("replace", "banana", *args)
+    literal("replace", "'banana'.replace('a', 'o', count=1)")
+    literal("replace", "'banana'.replace('a', 'o', 1, count=1)")
+    literal("replace", "'banana'.replace(old='a', new='o')")
+    for recv in ("a b  c", "  a b  ", "", " ", "a,b,,c", ",a,", "a, b, c", "ab", "a\u3000b\u2028c", "a\x1cb", " a  b  c  ",
+                 "a\u65e5b\u65e5c", "aXbxc"):
+        call("split", recv)
+        for sep in (None, ",", ", ", "", " ", "a", "ab", "\u65e5", "x", "X"):
+            call("split", recv, sep)
+            for maxsplit in (-1, 0, 1, 2, 10):
+                call("split", recv, sep, maxsplit)
+    for args in ((1,), (",", "1"), (",", 1.0), (",", None), ([","],), (True,), (",", True)):
+        call("split", "a,b,c", *args)
+    for expression in ("'a,b,c'.split(sep=',')", "'a,b,c'.split(',', maxsplit=1)", "'a b c'.split(maxsplit=1)",
+                       "'a b c'.split(None, 1)", "'a b c'.split(sep=None)", "'a,b'.split(',', sep=',')",
+                       "'a,b'.split(foo=1)", "'a,b'.split(',', 1, 2)", "'a,b,c'.split(maxsplit=1, sep=',')",
+                       "'a b c'.split(sep=None, maxsplit=0)"):
+        literal("split", expression)
+    for sep in ("", ",", ", ", "\u65e5"):
+        for items in ([], ["a"], ["a", "b", "c"], ["a", 1], [1, 2], [None], "abc", {"k": 1, "j": 2}, 5, None, [["a"]],
+                      ["", ""], [True], [1.5], "", "\u65e5\u672c"):
+            call("join", sep, items)
+    for source in ("{{ ','.join(messages[0].gone)|tojson }}", "{{ ','.join()|tojson }}",
+                   "{{ ','.join(['a'], ['b'])|tojson }}", "{{ ','.join(('a', 'b'))|tojson }}",
+                   "{{ ','.join(['a', 'b']) }}", "{{ ' '.join(['x'] * 3) }}", "{{ ''.join(range(3)|map('string')) }}"):
+        cases.append({"m": "join", "src": source})
+    for method in ("count", "find"):
+        for recv in ("banana", "aaaa", "", "\u65e5\u672c\u65e5\u672c", "a\u00e9a", "\u00e9a\u00e9a"):
+            for sub in ("a", "an", "aa", "", "x", "\u65e5", "\u672c", "\u00e9", "banana", "bananas"):
+                call(method, recv, sub)
+        for args in (("a", 1), ("a", 2), ("a", -1), ("a", 0, 2), ("a", 0, -1), ("an", 1, 4), ("", 3), ("", 4), ("", 1, 2),
+                     ("", -1), ("a", 10), ("a", None, 3), ("a", 1, None), ("a", -100, 100), ("a", "x"), ("a", 1.0),
+                     ("", 7), ("", 6), ("a", 5, 2), ("", 5, 2), (1,), (None,), ("a", True)):
+            call(method, "banana", *args)
+        literal(method, f"'banana'.{method}()")
+        literal(method, f"'banana'.{method}('a', 1, 2, 3)")
+        literal(method, f"'banana'.{method}(sub='a')")
+    for method in ("removeprefix", "removesuffix"):
+        for sub in ("prefix-", "-suffix", "", "x", "prefix-body-suffix-more", "prefix-body-suffix", "body"):
+            call(method, "prefix-body-suffix", sub)
+        for recv in ("", "a", "\u65e5\u672c"):
+            call(method, recv, "")
+            call(method, recv, "\u65e5")
+        for arg in (None, 1, True):
+            call(method, "abc", arg)
+        literal(method, f"'abc'.{method}()")
+        literal(method, f"'abc'.{method}('a', 'b')")
+        literal(method, f"'abc'.{method}(('a',))")
+    # Direct output of the results, without the filter that writes JSON.
+    for source in ("{{ 'abc'.startswith('a') }}", "{{ 'abc'.startswith('x') }}", "{{ 'abc'.find('b') }}",
+                   "{{ 'abc'.count('') }}", "{{ 'ab'.upper() }}", "{{ 'a b'.isalpha() }}", "{{ ' '.isspace() }}",
+                   "{{ 'x'.join(['a', 'b']) }}", "{{ 'abc'.removeprefix('a') }}",
+                   "{% if 'abc'.startswith('a') %}yes{% else %}no{% endif %}",
+                   "{{ 'abc'.find('x') + 1 }}", "{{ 'a-b'.replace('-', '+') ~ '!' }}",
+                   "{{ ('abc'.upper()).lower().title() }}", "{{ 'ab'.upper().lower() }}",
+                   "{{ messages[0].content.strip().upper() }}",
+                   "{% set t = messages[0].content.strip() %}[{{ t }}]",
+                   "{{ messages[0].content.split()|length }}",
+                   "{% for w in messages[0].content.split() %}<{{ w }}>{% endfor %}",
+                   "{{ messages[0].content.startswith('a') and messages[0].content.endswith('z') }}"):
+        cases.append({"m": "direct", "src": source, "msgs": [{"content": " a b z "}]})
+    return cases
+
+
+def case_template(c: dict) -> tuple[str, list]:
+    """The source and the messages of a case. A call case has the receiver in `s` and the arguments in `a`. The Rust
+    test builds them the same way."""
+    if "src" in c:
+        return c["src"], c.get("msgs", [])
+    arguments = ", ".join(f"messages[0].a{i}" for i in range(len(c["a"])))
+    source = "{{ messages[0].s." + c["m"] + "(" + arguments + ")|tojson }}"
+    return source, [{"s": c["s"], **{f"a{i}": a for i, a in enumerate(c["a"])}}]
+
+
+def run_cases(template_class, cases: list[dict]) -> list[dict]:
+    """Render each case with mk's template. A case that mk refuses holds the name of the exception."""
+    out = []
+    for c in cases:
+        source, messages = case_template(c)
+        try:
+            out.append({**c, "out": template_class(source).render(messages)})
+        except Exception as e:  # noqa: BLE001 - every kind of failure is a fixture
+            out.append({**c, "x": type(e).__name__, "error": str(e)})
+    return out
 
 
 TOJSON_TEXTS = [

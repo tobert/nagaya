@@ -7,6 +7,7 @@ pub mod chars;
 pub mod detok;
 mod error;
 pub mod family;
+mod methods;
 pub mod template;
 pub mod tokenizer;
 #[rustfmt::skip]

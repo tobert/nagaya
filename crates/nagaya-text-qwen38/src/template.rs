@@ -60,7 +60,7 @@ impl ChatTemplate {
         env.add_filter("tojson", tojson);
         env.add_filter("trim", trim);
         env.add_function("raise_exception", raise_exception);
-        env.set_unknown_method_callback(string_method);
+        env.set_unknown_method_callback(crate::methods::string_method);
         env.add_template_owned(NAME, source.to_string())
             .map_err(template_error)?;
         Ok(ChatTemplate { env })
@@ -136,32 +136,6 @@ fn trim(value: Value) -> String {
         value.to_string()
     };
     text.trim_matches(chars::is_python_space).to_string()
-}
-
-/// The methods of Python strings that the template calls.
-fn string_method(
-    _state: &minijinja::State,
-    value: &Value,
-    method: &str,
-    args: &[Value],
-) -> Result<Value, minijinja::Error> {
-    let Some(text) = value.as_str() else {
-        return Err(minijinja::Error::from(ErrorKind::UnknownMethod));
-    };
-    let argument = || match args {
-        [one] => one
-            .as_str()
-            .ok_or_else(|| minijinja::Error::new(ErrorKind::InvalidOperation, "the argument must be a string")),
-        _ => Err(minijinja::Error::new(
-            ErrorKind::InvalidOperation,
-            "this method takes one argument",
-        )),
-    };
-    match method {
-        "startswith" => Ok(Value::from(text.starts_with(argument()?))),
-        "endswith" => Ok(Value::from(text.ends_with(argument()?))),
-        _ => Err(minijinja::Error::from(ErrorKind::UnknownMethod)),
-    }
 }
 
 /// `json.dumps(value, ensure_ascii=False)`: a comma and a space between items, a colon and a space after a key.
