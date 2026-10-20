@@ -717,3 +717,15 @@ fn an_arrival_and_an_admit_that_fit_are_not_errors() {
     let (_, next) = step(scheduler, Event::Admit { now_ms: 1, job: 1 });
     assert_eq!(next, quantum(Class::Batch, Kind::Prefill, &[1]));
 }
+
+#[test]
+fn a_job_expires_at_its_deadline_and_not_before() {
+    let mut early = job(1, Class::Batch, 0, 0, 0, &[Kind::Prefill]);
+    early.deadline_ms = Some(100);
+    let (scheduler, next) = step(state(vec![early.clone()]), Event::Tick { now_ms: 99 });
+    assert_eq!(next, quantum(Class::Batch, Kind::Prefill, &[1]));
+    assert_eq!(scheduler.jobs[0].state, JobState::Running);
+    let (scheduler, next) = step(state(vec![early]), Event::Tick { now_ms: 100 });
+    assert_eq!(next, None);
+    assert_eq!(scheduler.jobs[0].state, JobState::Expired);
+}
