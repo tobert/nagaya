@@ -204,6 +204,7 @@ fn ready_segments_of_one_class_share_a_pass() {
     scheduler.engines = vec![Engine {
         id: 0,
         segments_exact: true,
+        max_segments: 16,
     }];
     let (_, next) = step(scheduler, Event::Tick { now_ms: 0 });
     assert_eq!(next, quantum(Class::Batch, Kind::Prefill, &[1, 2]));
@@ -463,10 +464,12 @@ fn two_engines_get_their_own_passes() {
         Engine {
             id: 0,
             segments_exact: true,
+            max_segments: 16,
         },
         Engine {
             id: 1,
             segments_exact: true,
+            max_segments: 16,
         },
     ];
     let (scheduler, next) = step(scheduler, Event::Tick { now_ms: 0 });
@@ -566,4 +569,51 @@ fn the_lower_clamp_forgives_the_excess() {
     assert_eq!(scheduler.jobs[3].balance_ms, 1);
     let total: i64 = scheduler.jobs.iter().map(|job| job.balance_ms).sum();
     assert_eq!(total, -29_997);
+}
+
+fn limited_engine(max_segments: u32) -> Vec<Engine> {
+    vec![Engine {
+        id: 0,
+        segments_exact: true,
+        max_segments,
+    }]
+}
+
+#[test]
+fn a_pass_holds_no_more_segments_than_the_engine_allows() {
+    let jobs = (1..=3)
+        .map(|id| job(id, Class::Batch, 0, id, 0, &[Kind::Prefill]))
+        .collect();
+    let mut scheduler = state(jobs);
+    scheduler.engines = limited_engine(2);
+    let (scheduler, next) = step(scheduler, Event::Tick { now_ms: 0 });
+    assert_eq!(next, quantum(Class::Batch, Kind::Prefill, &[1, 2]));
+    let (_, next) = step(
+        scheduler,
+        Event::Complete {
+            now_ms: 1,
+            duration_ms: 1,
+            outcome: Completion::Done,
+        },
+    );
+    assert_eq!(next, quantum(Class::Batch, Kind::Prefill, &[3]));
+}
+
+#[test]
+fn an_engine_with_one_segment_runs_one_job_a_pass() {
+    let jobs = (1..=2)
+        .map(|id| job(id, Class::Batch, 0, id, 0, &[Kind::Prefill]))
+        .collect();
+    let mut scheduler = state(jobs);
+    scheduler.engines = limited_engine(1);
+    let (_, next) = step(scheduler, Event::Tick { now_ms: 0 });
+    assert_eq!(next, quantum(Class::Batch, Kind::Prefill, &[1]));
+}
+
+#[test]
+#[should_panic(expected = "max_segments")]
+fn an_engine_that_allows_no_segment_is_a_bug() {
+    let mut scheduler = state(vec![job(1, Class::Batch, 0, 0, 0, &[Kind::Prefill])]);
+    scheduler.engines = limited_engine(0);
+    let _ = step(scheduler, Event::Tick { now_ms: 0 });
 }

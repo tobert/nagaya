@@ -19,6 +19,8 @@ pub struct Engine {
     pub id: EngineId,
     /// True when the engine allows segments in one pass.
     pub segments_exact: bool,
+    /// The most segments in one pass (`Limits.max_segments`).
+    pub max_segments: u32,
 }
 
 /// How urgently a job's quanta run.
@@ -352,19 +354,29 @@ impl Scheduler {
             }
             let best = candidates.first().copied()?;
             let engine = best.engine;
-            let engine_exact = self
-                .engines
-                .iter()
-                .find(|info| info.id == engine)
-                .map(|info| info.segments_exact)
-                .unwrap_or(false);
+            // An engine that is not listed takes one segment in a pass.
+            let segment_limit = match self.engines.iter().find(|info| info.id == engine) {
+                None => 1,
+                Some(info) => {
+                    assert!(
+                        info.max_segments > 0,
+                        "engine {engine} has max_segments 0, so no pass can run"
+                    );
+                    if info.segments_exact {
+                        info.max_segments as usize
+                    } else {
+                        1
+                    }
+                }
+            };
             let kind = *best.quanta.front()?;
             let mut segments = vec![best.id];
-            if engine_exact {
-                for candidate in &candidates[1..] {
-                    if candidate.engine == engine {
-                        segments.push(candidate.id);
-                    }
+            for candidate in &candidates[1..] {
+                if segments.len() >= segment_limit {
+                    break;
+                }
+                if candidate.engine == engine {
+                    segments.push(candidate.id);
                 }
             }
             (engine, class, kind, segments)
