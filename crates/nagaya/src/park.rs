@@ -61,7 +61,7 @@ pub(crate) enum StoreMessage {
 
 /// Open the machine's store with the park's budgets.
 pub(crate) fn open_store(dir: &Path, budget: StoreBudget) -> Result<Store, StoreError> {
-    Store::open_with_limits(dir, budget.host, budget.nvme, u64::MAX)
+    Store::open_with_limits(dir, budget.host, budget.nvme, u64::MAX, 0)
 }
 
 /// Store one parked state for one engine, and add its counts or its failure to `report`.
@@ -342,6 +342,7 @@ pub(crate) fn store_thread(mut store: Store, messages: Receiver<StoreMessage>) {
                     owner,
                     tier: Tier::Nvme,
                     reason: Reason::Shutdown,
+                    sealed_recipe: None,
                     provenance: None,
                     now_ms,
                 });
