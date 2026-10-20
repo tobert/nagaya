@@ -72,8 +72,13 @@ pub enum StoreError {
     Quarantined(ContentId),
     /// The entry does not fit the slot.
     Fit(String),
-    /// Two chains are incomparable under the deepest rule.
-    Ambiguous,
+    /// Two chains are incomparable under the deepest rule. The fields are the tips of the two chains.
+    Ambiguous {
+        /// The tip of the first chain.
+        left: ContentId,
+        /// The tip of the second chain.
+        right: ContentId,
+    },
     /// The budget cannot hold the new entry.
     NoSpace,
 }
@@ -91,7 +96,12 @@ impl std::fmt::Display for StoreError {
             ),
             StoreError::Quarantined(id) => write!(formatter, "the entry {} is quarantined", id.hex()),
             StoreError::Fit(message) => write!(formatter, "{message}"),
-            StoreError::Ambiguous => write!(formatter, "two chains are incomparable"),
+            StoreError::Ambiguous { left, right } => write!(
+                formatter,
+                "the chains with the tips {} and {} are incomparable: neither covers more in every part",
+                left.hex(),
+                right.hex()
+            ),
             StoreError::NoSpace => write!(formatter, "the budget cannot hold the entry"),
         }
     }
@@ -767,14 +777,34 @@ pub struct Store {
     fail_point: Cell<Option<FailPoint>>,
 }
 
+/// The result of a restore that reached the engine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Restored {
+    /// Every part was written.
+    Done,
+    /// The engine refused the first write, so the state is as it was. `part` is the part that it refused.
+    Refused {
+        /// The refused part.
+        part: String,
+    },
+    /// A write failed, or the engine refused a write after an earlier write changed the state.
+    /// The state is poisoned (D6). `part` is the part that stopped the restore.
+    Failed {
+        /// The part that stopped the restore.
+        part: String,
+    },
+}
+
 /// The chain limits with no limit. The caller sets the engine's limits.
+#[cfg(any(test, feature = "testing"))]
 const OPEN_CHAIN: ChainLimits = ChainLimits {
     max_depth: u32::MAX,
     delta_fraction: 1.0,
 };
 
 impl Store {
-    /// Open the store in `dir`, or make an empty one.
+    /// Open the store in `dir`, or make an empty one, with no budget in any tier. For tests only (spec 4.1a).
+    #[cfg(any(test, feature = "testing"))]
     pub fn open(dir: impl Into<PathBuf>) -> Result<Self, StoreError> {
         let mut budgets = BTreeMap::new();
         budgets.insert(Tier::Host, u64::MAX);
@@ -782,7 +812,8 @@ impl Store {
         Self::open_inner(dir.into(), budgets, u64::MAX, OPEN_CHAIN)
     }
 
-    /// Open the store with a byte budget for host memory.
+    /// Open the store with a byte budget for host memory and none for NVMe. For tests only (spec 4.1a).
+    #[cfg(any(test, feature = "testing"))]
     pub fn open_with_budget(dir: impl Into<PathBuf>, budget: u64) -> Result<Self, StoreError> {
         Self::open_with_limits(dir, budget, u64::MAX, u64::MAX, OPEN_CHAIN)
     }
@@ -1123,7 +1154,19 @@ impl Store {
             .collect();
         // Zero maxima means the chains are incomparable.
         if best.is_empty() {
-            return Err(StoreError::Ambiguous);
+            // The coverage order is partial and has no greatest chain, so some two chains are incomparable.
+            let (left, right) = chains
+                .iter()
+                .enumerate()
+                .flat_map(|(index, left)| chains[index + 1..].iter().map(move |right| (left, right)))
+                .find(|((_, left), (_, right))| !dominates(left, right) && !dominates(right, left))
+                .map(|((left, _), (right, _))| (left, right))
+                .expect("a set with no greatest chain holds two incomparable chains");
+            let tip = |chain: &Vec<ContentId>| *chain.last().expect("a chain is not empty");
+            return Err(StoreError::Ambiguous {
+                left: tip(left),
+                right: tip(right),
+            });
         }
         // 6.6: a tie is served by the newest created_ms, then the smaller content id.
         best.sort_by(|left, right| {
@@ -1169,7 +1212,7 @@ impl Store {
         state: State,
         identity: &[u8; 32],
         now_ms: u64,
-    ) -> Result<Vec<WriteResult>, StoreError> {
+    ) -> Result<Restored, StoreError> {
         self.check(id)?;
         let entry = self
             .index
@@ -1227,7 +1270,7 @@ impl Store {
             }
         }
 
-        let mut results = Vec::new();
+        let mut written = 0usize;
         for snapshot in &snapshots {
             for tensor in &snapshot.tensors {
                 let index = limits
@@ -1249,14 +1292,19 @@ impl Store {
                     }
                     PartKind::Derived => continue,
                 };
-                results.push(result);
+                // 6.8: stop at the first write that is not ok. A later part must not land on a bad base.
+                let part = tensor.name.clone();
+                match result {
+                    WriteResult::Ok => written += 1,
+                    // A refusal changes nothing, but only when no earlier write changed the state.
+                    WriteResult::Refused if written == 0 => return Ok(Restored::Refused { part }),
+                    WriteResult::Refused | WriteResult::Failed => return Ok(Restored::Failed { part }),
+                }
             }
         }
         // 6.8: a refusal or a failure leaves the entry as it is.
-        if results.iter().all(|result| *result == WriteResult::Ok) {
-            self.touch(id, now_ms);
-        }
-        Ok(results)
+        self.touch(id, now_ms);
+        Ok(Restored::Done)
     }
 
     fn read_snapshot(&mut self, id: &ContentId) -> Result<Snapshot, StoreError> {
