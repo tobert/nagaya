@@ -615,10 +615,22 @@ fn a_sum_does_not_hide_a_lower_part() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(dir.path()).unwrap();
     let recipe = recipe(20);
-    put(&mut store, &dual_snapshot(1, 5, 1), recipe, 0);
-    put(&mut store, &dual_snapshot(3, 2, 2), recipe, 0);
+    let first = put(&mut store, &dual_snapshot(1, 5, 1), recipe, 0);
+    let second = put(&mut store, &dual_snapshot(3, 2, 2), recipe, 0);
     let error = lookup(&mut store, recipe).unwrap_err();
-    assert!(matches!(error, nagaya_store::StoreError::Ambiguous));
+    let StoreError::Ambiguous { left, right } = &error else {
+        panic!("{error:?}");
+    };
+    let mut named = [*left, *right];
+    let mut tips = [first, second];
+    named.sort();
+    tips.sort();
+    assert_eq!(named, tips, "the error names both chain tips");
+    let message = error.to_string();
+    assert!(
+        message.contains(&first.hex()) && message.contains(&second.hex()),
+        "{message}"
+    );
 }
 
 #[test]

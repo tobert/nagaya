@@ -72,8 +72,13 @@ pub enum StoreError {
     Quarantined(ContentId),
     /// The entry does not fit the slot.
     Fit(String),
-    /// Two chains are incomparable under the deepest rule.
-    Ambiguous,
+    /// Two chains are incomparable under the deepest rule. The fields are the tips of the two chains.
+    Ambiguous {
+        /// The tip of the first chain.
+        left: ContentId,
+        /// The tip of the second chain.
+        right: ContentId,
+    },
     /// The budget cannot hold the new entry.
     NoSpace,
 }
@@ -91,7 +96,12 @@ impl std::fmt::Display for StoreError {
             ),
             StoreError::Quarantined(id) => write!(formatter, "the entry {} is quarantined", id.hex()),
             StoreError::Fit(message) => write!(formatter, "{message}"),
-            StoreError::Ambiguous => write!(formatter, "two chains are incomparable"),
+            StoreError::Ambiguous { left, right } => write!(
+                formatter,
+                "the chains with the tips {} and {} are incomparable: neither covers more in every part",
+                left.hex(),
+                right.hex()
+            ),
             StoreError::NoSpace => write!(formatter, "the budget cannot hold the entry"),
         }
     }
@@ -1133,7 +1143,19 @@ impl Store {
             .collect();
         // Zero maxima means the chains are incomparable.
         if best.is_empty() {
-            return Err(StoreError::Ambiguous);
+            // The coverage order is partial and has no greatest chain, so some two chains are incomparable.
+            let (left, right) = chains
+                .iter()
+                .enumerate()
+                .flat_map(|(index, left)| chains[index + 1..].iter().map(move |right| (left, right)))
+                .find(|((_, left), (_, right))| !dominates(left, right) && !dominates(right, left))
+                .map(|((left, _), (right, _))| (left, right))
+                .expect("a set with no greatest chain holds two incomparable chains");
+            let tip = |chain: &Vec<ContentId>| *chain.last().expect("a chain is not empty");
+            return Err(StoreError::Ambiguous {
+                left: tip(left),
+                right: tip(right),
+            });
         }
         // 6.6: a tie is served by the newest created_ms, then the smaller content id.
         best.sort_by(|left, right| {
