@@ -788,13 +788,15 @@ pub enum Restored {
 }
 
 /// The chain limits with no limit. The caller sets the engine's limits.
+#[cfg(any(test, feature = "testing"))]
 const OPEN_CHAIN: ChainLimits = ChainLimits {
     max_depth: u32::MAX,
     delta_fraction: 1.0,
 };
 
 impl Store {
-    /// Open the store in `dir`, or make an empty one.
+    /// Open the store in `dir`, or make an empty one, with no budget in any tier. For tests only (spec 4.1a).
+    #[cfg(any(test, feature = "testing"))]
     pub fn open(dir: impl Into<PathBuf>) -> Result<Self, StoreError> {
         let mut budgets = BTreeMap::new();
         budgets.insert(Tier::Host, u64::MAX);
@@ -802,7 +804,8 @@ impl Store {
         Self::open_inner(dir.into(), budgets, u64::MAX, OPEN_CHAIN)
     }
 
-    /// Open the store with a byte budget for host memory.
+    /// Open the store with a byte budget for host memory and none for NVMe. For tests only (spec 4.1a).
+    #[cfg(any(test, feature = "testing"))]
     pub fn open_with_budget(dir: impl Into<PathBuf>, budget: u64) -> Result<Self, StoreError> {
         Self::open_with_limits(dir, budget, u64::MAX, u64::MAX, OPEN_CHAIN)
     }

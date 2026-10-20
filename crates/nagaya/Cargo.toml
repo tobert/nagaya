@@ -22,3 +22,4 @@ toml = "1.1.8"
 # The tests turn on the `fake` feature of this crate. A dev-dependency on the crate itself does this.
 nagaya = { path = ".", features = ["fake"] }
 tempfile = "3"
+nagaya-store = { path = "../nagaya-store", features = ["testing"] }
