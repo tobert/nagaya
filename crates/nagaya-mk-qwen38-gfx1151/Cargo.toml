@@ -14,8 +14,9 @@ required-features = ["hip"]
 name = "split_bits"
 required-features = ["hip"]
 
-[[example]]
-name = "oracle_gap"
+[[bench]]
+name = "oracle"
+harness = false
 required-features = ["hip"]
 
 [dependencies]
