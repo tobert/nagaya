@@ -1,6 +1,6 @@
 //! The SIGTERM stop signal (spec 10.3).
 //!
-//! std has no signal API. The process declares `signal(2)` here and sets one atomic flag. A Proposed note in
+//! std has no signal API. The process declares `signal(2)` here and sets one atomic flag. A Decided rule in
 //! `docs/spec.md` 10.3 gives the reason.
 
 use std::io;
