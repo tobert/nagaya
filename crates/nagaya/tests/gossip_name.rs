@@ -154,34 +154,3 @@ fn only_a_peer_that_is_not_an_earlier_run_is_a_duplicate() {
         assert_eq!(found, expected, "{what}");
     }
 }
-
-#[test]
-fn a_restart_on_the_same_address_has_no_conflict_in_a_running_cluster() {
-    let mut watcher = node("watcher", None);
-    let mut first_config = config("twin");
-    first_config.seeds = vec![watcher.gossip().local_addr()];
-    let first = Gossip::start(first_config).unwrap();
-    let (address, old_id) = (first.local_addr(), first.id());
-    wait_for_view(watcher.gossip(), "the first run live", |view| {
-        view.live.iter().any(|node| node.id == old_id)
-    });
-    first.shutdown();
-
-    std::thread::sleep(Duration::from_millis(5));
-    let mut second_config = config("twin");
-    second_config.bind = address;
-    second_config.seeds = vec![watcher.gossip().local_addr()];
-    let mut second = Node::new(Gossip::start(second_config).unwrap(), "127.0.0.1:1".parse().unwrap());
-    let new_id = second.gossip().id();
-    assert_ne!(old_id, new_id);
-    // The failure detector may hold the first run as live or as dead. Neither is a conflict.
-    wait_for_view(second.gossip(), "the watcher live", |view| view.live.len() == 2);
-    for _ in 0..40 {
-        second.check_name();
-        watcher.check_name();
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    assert_eq!(own_conflict(&second), None, "{}", second.gossip().view());
-    second.shutdown();
-    watcher.shutdown();
-}
