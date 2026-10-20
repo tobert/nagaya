@@ -261,7 +261,9 @@ warning (Amy, 2026-10-19). The owner quota is unbounded, and the chain limit is 
 `open` (2.4).
 
 - Mandatory terms `{name, tier, bytes, lifetime, kinds}`. The lifetime is per engine, per context, or loaned (one
-  holder at a time).
+  holder at a time). **Open** (milestone 11.5): the ledger charges `bytes` once and does not read the lifetime yet.
+  mk declares its whole pool as one term with lifetime `engine`, so nothing is short today. Milestone 12 counts
+  per-context terms when it admits `ctx_new`.
 - Elastic terms `{name, tier, unit_bytes, minimum, maximum, kinds}`. The minimum and maximum are counts of units.
 - A term's tier is `device(i)` or `host`, where `i` is an index into the engine's device group. The ledger maps each
   tier to a budget (4.1). On gfx1151host and sm121host, `device(0)` and `host` map to one pool. NVMe belongs to the store.
@@ -391,7 +393,8 @@ kind of the first segment. Decided 2026-10-20 (reading).
 
 **What `segments_exact` promises.** An engine that declares `segments_exact` promises that the order of each sum
 depends only on the shape of the problem. It never depends on the segment count, the row count of a pass, or the
-count of compute units. Thus the engine does not choose a split of a reduction by the size of a pass, and it adds
+count of compute units. The split of a segment's tokens into passes does not change bits either. Thus the engine does
+not choose a split of a reduction by the size of a pass, and it adds
 no floats with atomics. Decided 2026-10-20 (`docs/deepinfer.md` 2). DeepInfer's batch-invariant mode keeps this
 rule: its gate GEMM never splits K, and its other splits have a fixed count.
 

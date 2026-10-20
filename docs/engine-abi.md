@@ -287,7 +287,12 @@ the ABI.
   `weight_hash` does. The digest starts with `spot-sha256:`.
 - **`tokenizer_hash` is a hash of the GGUF tokenizer.** mk loads no tokenizer file. The binding hashes the
   tokenizer keys of the GGUF metadata, and the family library computes the same hash from the same keys (spec 11.3).
-  Amy chose this on 2026-10-20, so a change of the tokenizer changes the recipe.
+  Amy chose this on 2026-10-20, so a change of the tokenizer changes the recipe. The hash is `sha256:` and 64 hex
+  digits, made by `nagaya-text-qwen38` (`hash.rs`). It covers `tokenizer.ggml.model`, `.pre`, `.tokens`,
+  `.token_type` and `.merges`, and the bos, eos, eot, padding and unknown token ids when they exist. The template is
+  apart: it is the identity's `template`.
+- **The context term holds the pool.** The mandatory term `context` has lifetime `engine` and holds all 16
+  contexts: 16 × 132,587,520 bytes, about 2.1 GB. A read of a poisoned context is an error.
 - **`canary_hash` is empty.** This binding does not run mk's canary. The process adds it in a later milestone.
 - **The identity carries `MK_FAST_QMM`, `MK_TILES` and `fused`.** They are `Approx`, `ReferenceDefining` and
   `Approx`. mk reads `MK_FAST_QMM` at each pass build (`engine.h:27-32`). `MK_TILES` chooses the tiled or the GGUF
@@ -331,8 +336,8 @@ Removing the binding and the `on = 1` call leaves every test green. mk has no qu
 see the call. The opt-in is not pinned.
 
 Two paths have no test. A forced spin-timeout, and the `-1` to `PassStatus::Poison` path that follows it, need GPU
-contention, so no test in this suite reaches them. The poisoned `set_n` path has no test because mk's `restore_n`
-stops the program on a poisoned context (`engine.hip:775-776`).
+contention, so no test in this suite reaches them. The poisoned `set_n` path has no test on real mk, because mk's
+`restore_n` stops the program on a poisoned context (`engine.hip:775-776`). A stub binding tests the refusal.
 
 Reason: a test that passes when the code is broken is a defect, so the suite reports these limits instead of a false
 check. A lab hook for the first case is not in v0.

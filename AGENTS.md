@@ -90,7 +90,8 @@ Do them in this order. Each milestone ends with all checks green and one or more
 5. **Scheduler order.** Write the scheduler as a state machine. A pure step function takes the scheduler state and
    one event. It gives the new state and the next quantum. Test each class rule (5.3-5.9).
 6. **Store entries.** Write entries, chains, lookup, the tripwire, restore results, eviction and pins (6.4-6.11).
-7. **Conformance.** Write the properties of 8.3 that need no GPU, and run them against the fake engine.
+7. **Conformance.** Write the properties of 8.3 that need no GPU, and run them against the fake engine. Milestone
+   11.5 added the gate `segments_exact_bits`.
 8. **mk engine.** Bind mk's C ABI and implement the trait on top. Run the conformance suite on gfx1151.
 9. **Decisions.** Amy decided the eight open Proposed notes on 2026-10-18. The signoff lists them under "Decided
    2026-10-18 evening". Write each one as a rule in its doc, and remove its Proposed mark. Three need code:
