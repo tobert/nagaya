@@ -33,7 +33,10 @@
 {"name":"lead_then_lead","chunks":["e4b8e4b896"],"outputs":["\ufffd\u4e16"],"flush":""},
 {"name":"lead_then_lead_split","chunks":["e4b8","e4b896"],"outputs":["","\ufffd\u4e16"],"flush":""},
 {"name":"nul_bytes","chunks":["610062"],"outputs":["a\u0000b"],"flush":""},
-{"name":"bom","chunks":["efbbbf61"],"outputs":["\ufeffa"],"flush":""}
+{"name":"bom","chunks":["efbbbf61"],"outputs":["\ufeffa"],"flush":""},
+{"name":"invalid_prefix_e4_41","chunks":["e441"],"outputs":["\ufffdA"],"flush":""},
+{"name":"invalid_prefix_e0_80","chunks":["e080"],"outputs":["\ufffd\ufffd"],"flush":""},
+{"name":"invalid_prefix_f0_90_41","chunks":["f09041"],"outputs":["\ufffdA"],"flush":""}
 ],
 "token_streams": [
 {"name":"cjk_emoji_mixed","ids":[64,160,116,244,172,253,246,222,127,102,89],"outputs":["a","","","\u4e16","","","","\ud83d\ude00","","\u00e9","z"],"flush":""},

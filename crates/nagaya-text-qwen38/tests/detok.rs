@@ -28,7 +28,7 @@ fn run(chunks: &[Vec<u8>]) -> (Vec<String>, String) {
 fn a_stream_of_bytes_gives_the_text_of_mk() {
     let f = fixture("utf8.json");
     let cases = f.get("streams").items();
-    assert!(cases.len() >= 27);
+    assert!(cases.len() >= 36);
     for case in cases {
         let name = case.get("name").str();
         let chunks: Vec<Vec<u8>> = case.get("chunks").items().iter().map(|c| unhex(c.str())).collect();
