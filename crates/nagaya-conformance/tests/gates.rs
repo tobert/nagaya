@@ -150,15 +150,18 @@ impl Parts for SealsOnRead {
     }
 }
 
-/// An engine that reports the coverage of a state other than slot 0 under the wrong part.
+/// An engine that reports the coverage of one state under the wrong part.
 struct WrongPartCoverage {
     inner: std::cell::RefCell<FakeAlways>,
+    wrong_state: State,
 }
 
 impl WrongPartCoverage {
-    fn new() -> Self {
+    /// The engine that reports the spans of `wrong_state` under the wrong part.
+    fn new(wrong_state: State) -> Self {
         Self {
             inner: std::cell::RefCell::new(FakeAlways::new()),
+            wrong_state,
         }
     }
 }
@@ -201,7 +204,7 @@ impl Coverage for WrongPartCoverage {
     fn coverage(&self, state: State, part: PartId, bytes: &[u8]) -> CoverageSpan {
         let mut engine = self.inner.borrow_mut();
         let mut span = engine.coverage().unwrap().coverage(state, part, bytes);
-        if state != State::Slot(0) {
+        if state == self.wrong_state {
             span.part = part + 1;
         }
         span
@@ -214,9 +217,12 @@ impl Coverage for WrongPartCoverage {
 
 #[test]
 fn coverage_under_the_wrong_part_fails_park_and_restore() {
-    match park_and_restore(&mut WrongPartCoverage::new()) {
-        Outcome::Fail(failure) => assert!(failure.message.contains("part"), "{failure}"),
-        other => panic!("expected a failure, got {other}"),
+    // Slot 0 is the source of the park. Slot 1 is the target of the restore.
+    for wrong in [State::Slot(0), State::Slot(1)] {
+        match park_and_restore(&mut WrongPartCoverage::new(wrong)) {
+            Outcome::Fail(failure) => assert!(failure.message.contains("part"), "{wrong:?} {failure}"),
+            other => panic!("{wrong:?}: expected a failure, got {other}"),
+        }
     }
 }
 
