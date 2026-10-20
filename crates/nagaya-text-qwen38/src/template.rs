@@ -7,7 +7,8 @@
 use crate::Error;
 use crate::gguf::{Metadata, Value as MetaValue};
 use crate::json::Json;
-use minijinja::value::{Value, ValueKind};
+use crate::pystr;
+use minijinja::value::{Kwargs, Rest, Value, ValueKind};
 use minijinja::{AutoEscape, Environment, ErrorKind};
 
 /// What a render takes besides the messages and the tools.
@@ -58,8 +59,17 @@ impl ChatTemplate {
         env.set_auto_escape_callback(|_| AutoEscape::None);
         env.add_filter("tojson", tojson);
         env.add_filter("trim", trim);
+        env.add_filter("string", |value: Value| py_str(&value));
+        env.add_filter("length", length);
+        env.add_filter("count", length);
+        env.add_filter("items", items);
+        env.set_formatter(|out, _state, value| {
+            out.write_str(&py_str(value))
+                .map_err(|_| minijinja::Error::from(ErrorKind::WriteFailure))
+        });
+        add_tests_of_jinja2(&mut env);
         env.add_function("raise_exception", raise_exception);
-        env.set_unknown_method_callback(string_method);
+        env.set_unknown_method_callback(crate::methods::string_method);
         env.add_template_owned(NAME, source.to_string())
             .map_err(template_error)?;
         Ok(ChatTemplate { env })
@@ -124,48 +134,149 @@ fn to_value(j: &Json) -> Value {
     }
 }
 
-fn raise_exception(message: String) -> Result<Value, minijinja::Error> {
-    Err(minijinja::Error::new(ErrorKind::InvalidOperation, message))
+/// The tests of jinja2 on which the engine differs. The engine says that a string is not a sequence and that a bool is
+/// not a number, and it has no test `callable`. Python answers the other way, and the undefined value of jinja2 is
+/// a sequence, an iterable and callable. (jinja2 `tests.py`.)
+fn add_tests_of_jinja2(env: &mut Environment<'_>) {
+    use ValueKind::{Bool, Iterable, Map, Number, Plain, Seq, String as Str, Undefined};
+    env.add_test("sequence", |v: Value| matches!(v.kind(), Undefined | Str | Seq | Map));
+    env.add_test("number", |v: Value| matches!(v.kind(), Number | Bool));
+    env.add_test("string", |v: Value| v.kind() == Str);
+    env.add_test("mapping", |v: Value| v.kind() == Map);
+    env.add_test("iterable", |v: Value| {
+        matches!(v.kind(), Undefined | Str | Seq | Map | Iterable)
+    });
+    env.add_test("defined", |v: Value| v.kind() != Undefined);
+    env.add_test("undefined", |v: Value| v.kind() == Undefined);
+    env.add_test("none", |v: Value| v.kind() == ValueKind::None);
+    env.add_test("true", |v: Value| v.kind() == Bool && v.is_true());
+    env.add_test("false", |v: Value| v.kind() == Bool && !v.is_true());
+    env.add_test("boolean", |v: Value| v.kind() == Bool);
+    env.add_test("integer", |v: Value| v.kind() == Number && v.is_integer());
+    env.add_test("float", |v: Value| v.kind() == Number && !v.is_integer());
+    env.add_test("callable", |v: Value| matches!(v.kind(), Undefined | Plain));
 }
 
-/// Python's `str.isspace`: the White_Space property, and the four separators U+001C to U+001F.
-fn is_python_space(c: char) -> bool {
-    c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)
-}
-
-fn trim(value: Value) -> String {
-    let text = if value.is_undefined() {
-        String::new()
-    } else {
-        value.to_string()
+/// `raise_exception(message)` of mk's template: Python's `str` of any value is the message. The function takes one
+/// argument, by position or as `msg=`.
+fn raise_exception(args: Rest<Value>) -> Result<Value, minijinja::Error> {
+    let refuse = |m: &str| minijinja::Error::new(ErrorKind::InvalidOperation, m.to_string());
+    let message = match args.split_last() {
+        Some((last, [])) if !last.is_kwargs() => last.clone(),
+        Some((last, [])) => {
+            let keywords = Kwargs::try_from(last.clone())?;
+            let message: Value = keywords.get("msg")?;
+            keywords.assert_all_used()?;
+            message
+        }
+        _ => return Err(refuse("raise_exception takes one argument, the message")),
     };
-    text.trim_matches(is_python_space).to_string()
+    Err(refuse(&py_str(&message)))
 }
 
-/// The methods of Python strings that the template calls.
-fn string_method(
-    _state: &minijinja::State,
-    value: &Value,
-    method: &str,
-    args: &[Value],
-) -> Result<Value, minijinja::Error> {
-    let Some(text) = value.as_str() else {
-        return Err(minijinja::Error::from(ErrorKind::UnknownMethod));
-    };
-    let argument = || match args {
-        [one] => one
-            .as_str()
-            .ok_or_else(|| minijinja::Error::new(ErrorKind::InvalidOperation, "the argument must be a string")),
+/// Python's `str(value)`. The default way to write a value in a template, and the result of the `string` filter.
+/// A string holds its own text, and a string inside a list or a map is in quotes, as `repr` writes it.
+pub(crate) fn py_str(value: &Value) -> String {
+    match value.kind() {
+        ValueKind::Undefined => String::new(),
+        ValueKind::String => value.as_str().expect("a string value has text").to_string(),
+        _ => py_repr(value),
+    }
+}
+
+fn py_repr(value: &Value) -> String {
+    match value.kind() {
+        ValueKind::Undefined => "Undefined".to_string(),
+        ValueKind::None => "None".to_string(),
+        ValueKind::Bool => if value.is_true() { "True" } else { "False" }.to_string(),
+        ValueKind::Number if value.is_integer() => match i128::try_from(value.clone()) {
+            Ok(i) => i.to_string(),
+            Err(_) => u128::try_from(value.clone()).map_or_else(|_| value.to_string(), |u| u.to_string()),
+        },
+        ValueKind::Number => {
+            let f = f64::try_from(value.clone()).unwrap_or(f64::NAN);
+            if f.is_nan() {
+                "nan".to_string()
+            } else if f.is_infinite() {
+                if f < 0.0 { "-inf" } else { "inf" }.to_string()
+            } else {
+                python_float(f).expect("a finite float")
+            }
+        }
+        ValueKind::String => pystr::repr(value.as_str().expect("a string value has text")),
+        ValueKind::Seq => {
+            let items: Vec<String> = value.try_iter().into_iter().flatten().map(|v| py_repr(&v)).collect();
+            format!("[{}]", items.join(", "))
+        }
+        ValueKind::Map => {
+            let pairs: Vec<String> = value
+                .try_iter()
+                .into_iter()
+                .flatten()
+                .map(|key| {
+                    let item = value.get_item(&key).unwrap_or(Value::UNDEFINED);
+                    format!("{}: {}", py_repr(&key), py_repr(&item))
+                })
+                .collect();
+            format!("{{{}}}", pairs.join(", "))
+        }
+        _ => value.to_string(),
+    }
+}
+
+/// The `length` filter of jinja2: `len(value)`. The undefined value has length 0.
+fn length(value: Value) -> Result<usize, minijinja::Error> {
+    if value.kind() == ValueKind::Undefined {
+        return Ok(0);
+    }
+    value.len().ok_or_else(|| {
+        minijinja::Error::new(
+            ErrorKind::InvalidOperation,
+            format!("a value of type {} has no length", crate::methods::type_name(&value)),
+        )
+    })
+}
+
+/// The `items` filter of jinja2: the pairs of a map. The undefined value has no pairs.
+fn items(value: Value) -> Result<Value, minijinja::Error> {
+    match value.kind() {
+        ValueKind::Undefined => Ok(Value::from(Vec::<Value>::new())),
+        ValueKind::Map => {
+            let pairs: Vec<Value> = value
+                .try_iter()?
+                .map(|key| {
+                    let item = value.get_item(&key).unwrap_or(Value::UNDEFINED);
+                    Value::from(vec![key, item])
+                })
+                .collect();
+            Ok(Value::from(pairs))
+        }
         _ => Err(minijinja::Error::new(
             ErrorKind::InvalidOperation,
-            "this method takes one argument",
+            format!("a value of type {} has no items", crate::methods::type_name(&value)),
         )),
-    };
-    match method {
-        "startswith" => Ok(Value::from(text.starts_with(argument()?))),
-        "endswith" => Ok(Value::from(text.ends_with(argument()?))),
-        _ => Err(minijinja::Error::from(ErrorKind::UnknownMethod)),
     }
+}
+
+/// The `trim` filter of jinja2: `str(value).strip(chars)`. The characters may be left out or be `none`.
+fn trim(value: Value, rest: Rest<Value>) -> Result<String, minijinja::Error> {
+    if rest.len() > 1 {
+        return Err(minijinja::Error::new(
+            ErrorKind::TooManyArguments,
+            "trim takes at most one argument, the characters",
+        ));
+    }
+    let set = match rest.first() {
+        None => None,
+        Some(v) if v.is_none() => None,
+        Some(v) => Some(v.as_str().ok_or_else(|| {
+            minijinja::Error::new(
+                ErrorKind::InvalidOperation,
+                "the characters of trim must be a string or none",
+            )
+        })?),
+    };
+    Ok(pystr::strip(&py_str(&value), set, true, true))
 }
 
 /// `json.dumps(value, ensure_ascii=False)`: a comma and a space between items, a colon and a space after a key.

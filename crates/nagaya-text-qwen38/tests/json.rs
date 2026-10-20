@@ -162,3 +162,43 @@ fn agrees_with_serde_json_on_the_fixtures() {
         assert_eq!(to_serde(&fixture(name)), theirs, "{name}");
     }
 }
+
+#[test]
+fn nesting_stops_at_512_levels_and_the_error_says_so() {
+    let nest = |n: usize| "[".repeat(n) + &"]".repeat(n);
+    p(&nest(512));
+    let objects = |n: usize| "{\"k\":".repeat(n) + "1" + &"}".repeat(n);
+    p(&objects(512));
+    for text in [nest(513), objects(513)] {
+        match Json::parse(&text) {
+            Err(nagaya_text_qwen38::Error::Json(m)) => assert!(m.contains("512"), "{m}"),
+            Ok(_) => panic!("513 levels should be refused"),
+            Err(other) => panic!("513 levels should be a Json error, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn an_object_with_many_keys_is_read_in_linear_time() {
+    let n = 100_000;
+    let body: Vec<String> = (0..n).map(|i| format!("\"key.{i:07}\":{i}")).collect();
+    let text = format!("{{{}}}", body.join(","));
+    let start = std::time::Instant::now();
+    let Json::Object(pairs) = p(&text) else {
+        panic!("not an object")
+    };
+    let seconds = start.elapsed().as_secs_f64();
+    assert_eq!(pairs.len(), n);
+    assert!(seconds < 5.0, "{n} keys took {seconds} seconds");
+}
+
+#[test]
+fn a_repeated_key_among_many_keeps_its_first_place_and_its_last_value() {
+    let mut body: Vec<String> = (0..1000).map(|i| format!("\"k{i}\":{i}")).collect();
+    body.push("\"k7\":\"last\"".to_string());
+    let Json::Object(pairs) = p(&format!("{{{}}}", body.join(","))) else {
+        panic!("not an object")
+    };
+    assert_eq!(pairs.len(), 1000);
+    assert_eq!(pairs[7], ("k7".to_string(), Json::Str("last".to_string())));
+}

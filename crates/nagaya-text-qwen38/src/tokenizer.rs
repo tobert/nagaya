@@ -120,6 +120,14 @@ fn int_array(m: &Metadata, key: &str) -> Result<Vec<i64>, Error> {
                 Value::U32(x) => Ok(*x as i64),
                 Value::I32(x) => Ok(*x as i64),
                 Value::I64(x) => Ok(*x),
+                Value::U64(x) => i64::try_from(*x).map_err(|_| {
+                    Error::Metadata(format!(
+                        "{key} holds {x}, which does not fit a signed 64-bit integer. {FAMILY_HINT}"
+                    ))
+                }),
+                other @ (Value::F32(_) | Value::F64(_)) => Err(Error::Metadata(format!(
+                    "{key} holds {other:?}, a float, not an integer. {FAMILY_HINT}"
+                ))),
                 other => Err(Error::Metadata(format!(
                     "{key} holds {other:?}, not an integer. {FAMILY_HINT}"
                 ))),
@@ -199,10 +207,15 @@ impl Tokenizer {
         // The sort is stable, so equal lengths keep the order of ids. A length is a count of characters, as in Python.
         specials_longest_first.sort_by_key(|(text, _)| std::cmp::Reverse(text.chars().count()));
         let mut special_start = vec![Vec::new(); 256];
-        for (i, (text, _)) in specials_longest_first.iter().enumerate() {
+        for (i, (text, id)) in specials_longest_first.iter().enumerate() {
             match text.as_bytes().first() {
                 Some(&b) => special_start[b as usize].push(i),
-                None => return Err(Error::Vocab("a special token has an empty text".to_string())),
+                // mk builds an empty alternative here and splits the text at every position. We refuse the file.
+                None => {
+                    return Err(Error::Vocab(format!(
+                        "special token {id} has an empty text. {FAMILY_HINT}"
+                    )));
+                }
             }
         }
         let escape_text = special_ids.iter().map(|&id| texts[id as usize].to_string()).collect();

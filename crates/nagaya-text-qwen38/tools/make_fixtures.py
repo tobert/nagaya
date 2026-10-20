@@ -143,18 +143,30 @@ def reserved_cases(tok):
 
 
 def class_ranges() -> dict:
-    """Ranges of code points that the pre-tokenizer pattern's classes match, from the same `regex` module."""
+    """Ranges of code points that the pre-tokenizer pattern's classes match, from the same `regex` module, and the
+    ranges of `str.isspace`."""
     import regex
     classes = {"L": regex.compile(r"\p{L}"), "M": regex.compile(r"\p{M}"), "N": regex.compile(r"\p{N}"),
                "s": regex.compile(r"\s")}
+    tests = {name: (lambda ch, rx=rx: rx.fullmatch(ch) is not None) for name, rx in classes.items()}
+    # What `str.strip()` strips, and what `str.isspace` accepts. The chat template's `trim` filter is `str.strip`.
+    tests["isspace"] = lambda ch: ch.isspace()
+    # The other classes of Python's `str`: isalpha, isdigit, isprintable (for repr), and the two properties that the
+    # case rules of `str.lower` and `str.title` use. Python gives no direct test for the last two, so each is read from
+    # the behavior of the case methods.
+    tests["isalpha"] = lambda ch: ch.isalpha()
+    tests["isdigit"] = lambda ch: ch.isdigit()
+    tests["isprintable"] = lambda ch: ch.isprintable()
+    tests["cased"] = is_cased
+    tests["case_ignorable"] = is_case_ignorable
     out = {}
-    for name, rx in classes.items():
+    for name, test in tests.items():
         ranges, start, prev = [], None, None
         for cp in range(0x110000):
             if 0xD800 <= cp <= 0xDFFF:
                 hit = False
             else:
-                hit = rx.fullmatch(chr(cp)) is not None
+                hit = test(chr(cp))
             if hit and start is None:
                 start = cp
             if not hit and start is not None:
@@ -166,16 +178,78 @@ def class_ranges() -> dict:
     return out
 
 
-def write_tables(path: Path, header: dict, ranges: dict) -> None:
+def is_cased(ch: str) -> bool:
+    """The Cased property. `str.title` lowercases a letter after a cased character, and titlecases it after another."""
+    return ("x" + ch + "a").title()[-1] == "a"
+
+
+def is_case_ignorable(ch: str) -> bool:
+    """The Case_Ignorable property, read from the rule of the final sigma in `str.lower`. A cased character has the
+    two sides of the rule apart, and an uncased one has not."""
+    if is_cased(ch):
+        return ("A\u03a3" + ch + "1").lower()[1] == "\u03c2"
+    return ("A" + ch + "\u03a3").lower()[-1] == "\u03c2"
+
+
+def case_maps() -> dict:
+    """The case maps of Python's `str`, for the code points that change: lower, upper and title. Title is kept where it
+    differs from upper. The capital sigma is left out of lower, because its rule depends on the context."""
+    maps = {"lower": {}, "upper": {}, "title": {}}
+    for cp in range(0x110000):
+        if 0xD800 <= cp <= 0xDFFF:
+            continue
+        ch = chr(cp)
+        lower, upper, title = ch.lower(), ch.upper(), ch.title()
+        if lower != ch and cp != 0x3A3:
+            maps["lower"][cp] = lower
+        if upper != ch:
+            maps["upper"][cp] = upper
+        if title != upper:
+            maps["title"][cp] = title
+    return maps
+
+
+def pystr_sweep() -> dict:
+    """A digest of what the case methods and the class tests of `str` give for every code point, alone and in the
+    contexts that change the result: between letters, after a capital sigma and before one."""
+    h = hashlib.sha256()
+
+    def put(text: str) -> None:
+        raw = text.encode("utf-8")
+        h.update(len(raw).to_bytes(4, "little") + raw)
+
+    swept = 0
+    for cp in range(0x110000):
+        if 0xD800 <= cp <= 0xDFFF:
+            continue
+        ch = chr(cp)
+        put(ch.lower()); put(ch.upper()); put(ch.title()); put(ch.capitalize())
+        put(repr(ch))
+        h.update(bytes([ch.isalpha(), ch.isdigit(), ch.isspace(), ch.isprintable()]))
+        for text in ("a" + ch + "b", "A\u03a3" + ch, "\u03a3" + ch + "A", "A" + ch + "\u03a3"):
+            put(text.lower()); put(text.title()); put(text.capitalize())
+        swept += 1
+    return {"code_points": swept, "sha256": h.hexdigest()}
+
+
+def rust_string(text: str) -> str:
+    return '"' + "".join(f"\\u{{{ord(c):x}}}" for c in text) + '"'
+
+
+def write_tables(path: Path, header: dict, ranges: dict, maps: dict) -> None:
     """The character classes as Rust source. Rust's own Unicode tables are older than the `regex` module's, and the
     pattern must match mk's Python, so the library holds mk's tables."""
-    names = {"L": "LETTER", "M": "MARK", "N": "NUMBER", "s": "SPACE"}
+    names = {"L": "LETTER", "M": "MARK", "N": "NUMBER", "s": "SPACE", "isspace": "PYTHON_SPACE",
+             "isalpha": "PYTHON_ALPHA", "isdigit": "PYTHON_DIGIT", "isprintable": "PYTHON_PRINTABLE",
+             "cased": "PYTHON_CASED", "case_ignorable": "PYTHON_CASE_IGNORABLE"}
     out = [
         "//! The character classes of the pre-tokenizer pattern, as sorted ranges of code points (first, last).",
         "//!",
-        "//! This file is generated by `tools/make_fixtures.py` from the `regex` module of Python, version "
-        + header["regex"] + ",",
-        "//! which mk's tokenizer uses. Do not edit it. The test `tests/chars.rs` compares it with `tests/fixtures/classes.json`.",
+        "//! This file is generated by `tools/make_fixtures.py`. LETTER, MARK, NUMBER and SPACE come from the `regex` module",
+        "//! of Python, version " + header["regex"] + ", which mk's tokenizer uses. The tables with PYTHON in the name and",
+        "//! the case maps come from the `str` type of Python " + header["python"] + ", which runs the chat template of mk",
+        "//! (Unicode " + header["unidata"] + "). Do not edit it. The test `tests/chars.rs` compares the ranges with",
+        "//! `tests/fixtures/classes.json`, and `tests/pystr.rs` compares the case maps with Python.",
         "",
     ]
     for key, name in names.items():
@@ -187,7 +261,79 @@ def write_tables(path: Path, header: dict, ranges: dict) -> None:
             out.append("    " + " ".join(row[i:i + 6]))
         out.append("];")
         out.append("")
+    for key, name in (("lower", "LOWER"), ("upper", "UPPER"), ("title", "TITLE")):
+        single = [(cp, ord(t)) for cp, t in maps[key].items() if len(t) == 1]
+        many = [(cp, t) for cp, t in maps[key].items() if len(t) != 1]
+        out.append(f"/// The code points whose {key}case is one character: (code point, result).")
+        out.append(f"pub static {name}_ONE: [(u32, u32); {len(single)}] = [")
+        row = [f"({a:#x}, {b:#x})," for a, b in single]
+        for i in range(0, len(row), 6):
+            out.append("    " + " ".join(row[i:i + 6]))
+        out.append("];")
+        out.append("")
+        out.append(f"/// The code points whose {key}case is not one character: (code point, result).")
+        out.append(f"pub static {name}_MANY: [(u32, &str); {len(many)}] = [")
+        for a, t in many:
+            out.append(f"    ({a:#x}, {rust_string(t)}),")
+        out.append("];")
+        out.append("")
     path.write_text("\n".join(out).rstrip("\n") + "\n")
+
+
+def refusal(call, what: str) -> dict:
+    """Run `call`, which mk must refuse for a noncharacter. Give mk's message and the character and offset in it."""
+    import re
+    try:
+        call()
+    except ValueError as e:
+        m = re.match(r"U\+([0-9A-F]{4,6}) at offset (\d+) is a Unicode noncharacter", str(e))
+        if m is None:
+            sys.exit(f"mk refuses {what} with a message that has no character and offset: {e}")
+        return {"char": m.group(1), "offset": int(m.group(2)), "error": str(e)}
+    sys.exit(f"mk accepts {what}: the fixture would be wrong")
+
+
+def decode_refusal(tok, ids: list[int], what: str) -> dict:
+    """Run `tok.decode(ids)`, which mk must refuse. Give the kind of the failure and the facts that a message names."""
+    import re
+    try:
+        tok.decode(ids)
+    except UnicodeDecodeError as e:
+        return {"exception": "UnicodeDecodeError", "start": e.start, "error": str(e)}
+    except IndexError as e:
+        return {"exception": "IndexError", "error": str(e), "bad_id": next(i for i in ids if i >= len(tok.id_to_token))}
+    except RuntimeError as e:
+        m = re.match(r"token (\d+) ", str(e))
+        if m is None:
+            sys.exit(f"mk refuses {what} with a message that has no token id: {e}")
+        return {"exception": "RuntimeError", "error": str(e), "token": int(m.group(1))}
+    sys.exit(f"mk decodes {what}: the fixture would be wrong")
+
+
+def chat_refusal(e: Exception) -> dict:
+    """How mk refused a chat. The kinds: `raise_exception` (the template's own message in `reason`), `reserved` (a
+    noncharacter, with `char` and `offset`), `undefined` and `template` (an error of the template engine), and
+    `exception` (a Python exception that mk does not catch, such as a TypeError)."""
+    import re
+    import jinja2
+    from service.common import BadRequest
+    out = {"error": str(e), "exception": type(e).__name__}
+    if isinstance(e, BadRequest):
+        cause = e.__cause__
+        if cause is None or isinstance(cause, ValueError):
+            m = re.search(r"U\+([0-9A-F]{4,6}) at offset (\d+) is a Unicode noncharacter", str(e))
+            if m is None:
+                sys.exit(f"mk refuses with a message that I do not know: {e}")
+            out.update(kind="reserved", char=m.group(1), offset=int(m.group(2)))
+        elif type(cause) is jinja2.TemplateError:
+            out.update(kind="raise_exception", reason=str(cause))
+        elif isinstance(cause, jinja2.UndefinedError):
+            out.update(kind="undefined")
+        else:
+            out.update(kind="template")
+    else:
+        out.update(kind="exception")
+    return out
 
 
 def hexs(b: bytes) -> str:
@@ -226,6 +372,7 @@ def main() -> None:
         "template_sha256": hashlib.sha256(template_src.encode()).hexdigest(),
         "python": platform.python_version(),
         "regex": regex.__version__,
+        "unidata": __import__("unicodedata").unidata_version,
         "jinja2": jinja2.__version__,
         "generator": "crates/nagaya-text-qwen38/tools/make_fixtures.py",
     }
@@ -249,12 +396,10 @@ def main() -> None:
     refused = [{"name": f"reserved_U+{ord(c):04X}", "text": f"a{c}b"} for c in RESERVED]
     refused.append({"name": "reserved_only", "text": RESERVED[0]})
     refused.append({"name": "reserved_at_start", "text": RESERVED[5] + "text"})
+    # The offset counts characters, not bytes: two bytes, three bytes and four bytes come before the character.
+    refused.append({"name": "reserved_after_multibyte", "text": "\u00e9\u4e16\U0001f600" + RESERVED[3] + "z"})
     for r in refused:
-        try:
-            tok.encode(r["text"])
-        except ValueError:
-            continue
-        sys.exit(f"mk accepts {r['name']}: the fixture would be wrong")
+        r.update(refusal(lambda r=r: tok.encode(r["text"]), r["name"]))
 
     specials_sorted = sorted(tok.special_ids)
     escape_texts = [
@@ -275,11 +420,7 @@ def main() -> None:
         {"op": "encode_escaped", "text": RESERVED[-2]},
     ]
     for r in escape_refused:
-        try:
-            getattr(tok, r["op"])(r["text"])
-        except ValueError:
-            continue
-        sys.exit(f"mk accepts {r}")
+        r.update(refusal(lambda r=r: getattr(tok, r["op"])(r["text"]), r["op"]))
     # Each escape character, by itself, as encode_escaped reads it: the special token's text through BPE.
     escape_chars = [{"char": RESERVED[k], "special_id": i, "ids": tok.encode_escaped(RESERVED[k])}
                     for k, i in enumerate(specials_sorted)]
@@ -300,12 +441,6 @@ def main() -> None:
         {"name": "out_of_range", "ids": [len(tok.id_to_token)]},
         {"name": "far_out_of_range", "ids": [4000000000]},
     ]
-    for d in decode_errors:
-        try:
-            tok.decode(d["ids"])
-        except (RuntimeError, UnicodeDecodeError, IndexError):
-            continue
-        sys.exit(f"mk decodes {d['name']}")
     decode.append({"name": "all_bytes_ascii", "ids": byte_ids[:128], "text": tok.decode(byte_ids[:128])})
     decode.append({"name": "split_cjk", "ids": [single(b) for b in "世界".encode()],
                    "text": tok.decode([single(b) for b in "世界".encode()])})
@@ -355,6 +490,9 @@ def main() -> None:
         "reserved_count": len(RESERVED),
     }
 
+    for d in decode_errors:
+        d.update(decode_refusal(tok, d["ids"], d["name"]))
+
     dump_cases(OUT / "tokenizer.json", header, {
         "token_info": token_info,
         "encode": enc,
@@ -373,7 +511,7 @@ def main() -> None:
     # -------------------------------------------------------------- classes.json
     ranges = class_ranges()
     dump_cases(OUT / "classes.json", header, ranges)
-    write_tables(HERE.parent / "src" / "unicode_tables.rs", header, ranges)
+    write_tables(HERE.parent / "src" / "unicode_tables.rs", header, ranges, case_maps())
 
     # -------------------------------------------------------------- utf8.json
     def stream(chunks: list[bytes]):
@@ -415,6 +553,11 @@ def main() -> None:
         "lead_then_lead_split": [b"\xe4\xb8", b"\xe4\xb8\x96"],
         "nul_bytes": [b"a\x00b"],
         "bom": [b"\xef\xbb\xbfa"],
+        # CPython emits the replacement character at once for a prefix that no byte can finish. The three cases pin
+        # that timing (senpai's review of milestone 11, finding F2).
+        "invalid_prefix_e4_41": [b"\xe4A"],
+        "invalid_prefix_e0_80": [b"\xe0\x80"],
+        "invalid_prefix_f0_90_41": [b"\xf0\x90A"],
     }
     stream_cases = []
     for name, chunks in byte_streams.items():
@@ -453,11 +596,14 @@ def main() -> None:
     chat_out, chat_err = [], []
     for c in chat:
         kw = {k: c[k] for k in ("thinking", "generation_prompt", "reasoning_effort") if k in c}
+        for flag in ("thinking", "generation_prompt"):
+            if flag in kw and not isinstance(kw[flag], bool):
+                sys.exit(f"case {c['name']}: {flag} must be a bool")
         try:
             escaped, ids = render_messages(template, tok, c["messages"], c.get("tools"), kw.get("thinking", True),
                                            kw.get("generation_prompt", True), kw.get("reasoning_effort"))
-        except BadRequest as e:
-            chat_err.append({**c, "error": str(e)})
+        except Exception as e:  # noqa: BLE001 - every kind of refusal is a fixture
+            chat_err.append({**c, **chat_refusal(e)})
             continue
         chat_out.append({**c, "escaped": escaped, "text": tok.unescape(escaped), "ids": ids})
     # The filters of the template engine that the chat template uses, on their own.
@@ -472,6 +618,252 @@ def main() -> None:
         blocks.append({"source": source, "out": Template(source).render([])})
     dump_cases(OUT / "chat.json", header, {
         "render": chat_out, "render_refused": chat_err, "tojson": tojson, "trim": trim, "blocks": blocks})
+
+
+# ------------------------------------------------------------------ the methods of Python strings
+STR_CORPUS = [
+    "", "abc", "Hello World", "  padded  ", "\t\n x \r\n", "a,b,,c", "ab ab ab", "hello wORLD foo-bar 3rd o'clock",
+    "\u01c6ungla D\u017d \u01c4", "\u00df", "\u0149", "\ufb01", "\u0130", "\u0391\u03a3", "\u0391\u03a3 \u0392",
+    "\u0391\u03a3.", "A.\u03a3", "\u03a3", "\u0391\u03a3\u0391", "\u1fb3", "\u65e5\u672c\u8a9e", "\u0663\u0664 \u00b2\u00b3 \u00bd \u4e00",
+    "\uff41\uff42\uff43", "\u2028x\u2029", "\x1c\x1d x \x1e\x1f", "\ua7ce\ua7cf", "\U00016ea0", "\U0001e900\U0001e922",
+    "x\u0345y", "\u03c3\u03c2 \u03a3\u03a3", "dz\u01f3 \u01f1", "\u00e9cole \u00c9COLE", "i\u0307 \u0131 I", "ǅ", "ß ſ K",
+]
+
+
+def method_cases() -> list[dict]:
+    """Calls of the methods of strings, each in a template. Each case holds the method for the tests of the refusals."""
+    cases: list[dict] = []
+
+    def call(method, recv, *args):
+        cases.append({"m": method, "s": recv, "a": list(args)})
+
+    def literal(method, expression):
+        cases.append({"m": method, "src": "{{ (" + expression + ")|tojson }}"})
+
+    for method in ("startswith", "endswith"):
+        for recv in ("", "abc", "Hello", "\u65e5\u672c\u8a9e", "\u01c6abc"):
+            for arg in ("", "a", "abc", "abcd", "c", "\u65e5", "\u8a9e", "\u01c6", None, 1, True):
+                call(method, recv, arg)
+        for args in (("b", 1), ("b", 2), ("c", -1), ("ab", 0, 1), ("a", 5), ("", 3), ("", 4), ("c", -1, 3), ("c", 0, -1),
+                     ("b", None, None), ("b", 1, None), ("a", None, 1), ("a", "x"), ("a", 1.0), ("a", 0, 2.5), ("b", True),
+                     ("bc", 1, 3), ("abc", -10, 10), ("c", 10, 20), ("a", 0, 0), ("", 0, 0), ("", 2, 1)):
+            call(method, "abc", *args)
+        for tuple_ in ("('x', 'abc')", "('x', 'y')", "('x',)", "()", "('abc', 1)", "('', 'x')", "(1,)", "('a', 'b', 'c')"):
+            literal(method, f"'abc'.{method}({tuple_})")
+        literal(method, f"'abc'.{method}(('a', 'x'), 1)")
+        literal(method, f"'abc'.{method}(('c', 'x'), 1, 3)")
+        literal(method, f"'abc'.{method}()")
+        literal(method, f"'abc'.{method}('a', 1, 2, 3)")
+        literal(method, f"'abc'.{method}(prefix='a')")
+    for method in ("strip", "lstrip", "rstrip"):
+        for recv in ("  x  ", "\t\n x \r\n", "xxhixx", "", "   ", "\u3000a\u3000", "\x1c a \x1f", "abcba", "\u65e5\u672c\u8a9e",
+                     "\u00a0\u2007a\u200b"):
+            call(method, recv)
+            for arg in ("x", "ab", "", None, 1, "\u65e5", " ", "a b", True):
+                call(method, recv, arg)
+        call(method, "abc", "a", "b")
+        literal(method, f"'abc'.{method}(chars='a')")
+    for method in ("lower", "upper", "title", "capitalize"):
+        for recv in STR_CORPUS:
+            call(method, recv)
+        call(method, "abc", 1)
+        call(method, "abc", None)
+    for method in ("isdigit", "isalpha", "isspace"):
+        for recv in ("", "abc", "123", "a1", " ", "\t\n", "\u00b2", "\u0663", "\u00bd", "\u4e00", "\u65e5\u672c\u8a9e", "\u3000",
+                     "\x1c", "\u00e9", "\u01c6", "a b", "\u2167", "\ua7ce", "\u200b", "\u0345", "1\u00b2\u0663", "\U0001d7ce"):
+            call(method, recv)
+        call(method, "abc", 1)
+    for recv in ("banana", "aaa", "", "h\u00e9llo w\u00f6rld", "a\u65e5a"):
+        for old, new in (("a", "o"), ("a", ""), ("", "-"), ("an", "AN"), ("aa", "b"), ("x", "y"), ("", ""), ("\u00e9", "e"),
+                         ("\u65e5", "\u672c"), ("l", "\u00df")):
+            call("replace", recv, old, new)
+            for count in (-1, 0, 1, 2, 3, 100):
+                call("replace", recv, old, new, count)
+    for args in ((1, "a"), ("a", 1), ("a", None), (None, "a"), ("a", "b", "1"), ("a", "b", 1.0), ("a", "b", None),
+                 ("a", "b", True), ("a",), ("a", "b", 1, 2), ("a", "b", True)):
+        call("replace", "banana", *args)
+    literal("replace", "'banana'.replace('a', 'o', count=1)")
+    literal("replace", "'banana'.replace('a', 'o', 1, count=1)")
+    literal("replace", "'banana'.replace(old='a', new='o')")
+    for recv in ("a b  c", "  a b  ", "", " ", "a,b,,c", ",a,", "a, b, c", "ab", "a\u3000b\u2028c", "a\x1cb", " a  b  c  ",
+                 "a\u65e5b\u65e5c", "aXbxc"):
+        call("split", recv)
+        for sep in (None, ",", ", ", "", " ", "a", "ab", "\u65e5", "x", "X"):
+            call("split", recv, sep)
+            for maxsplit in (-1, 0, 1, 2, 10):
+                call("split", recv, sep, maxsplit)
+    for args in ((1,), (",", "1"), (",", 1.0), (",", None), ([","],), (True,), (",", True)):
+        call("split", "a,b,c", *args)
+    for expression in ("'a,b,c'.split(sep=',')", "'a,b,c'.split(',', maxsplit=1)", "'a b c'.split(maxsplit=1)",
+                       "'a b c'.split(None, 1)", "'a b c'.split(sep=None)", "'a,b'.split(',', sep=',')",
+                       "'a,b'.split(foo=1)", "'a,b'.split(',', 1, 2)", "'a,b,c'.split(maxsplit=1, sep=',')",
+                       "'a b c'.split(sep=None, maxsplit=0)"):
+        literal("split", expression)
+    for sep in ("", ",", ", ", "\u65e5"):
+        for items in ([], ["a"], ["a", "b", "c"], ["a", 1], [1, 2], [None], "abc", {"k": 1, "j": 2}, 5, None, [["a"]],
+                      ["", ""], [True], [1.5], "", "\u65e5\u672c"):
+            call("join", sep, items)
+    for source in ("{{ ','.join(messages[0].gone)|tojson }}", "{{ ','.join()|tojson }}",
+                   "{{ ','.join(['a'], ['b'])|tojson }}", "{{ ','.join(('a', 'b'))|tojson }}",
+                   "{{ ','.join(['a', 'b']) }}", "{{ ' '.join(['x'] * 3) }}", "{{ ''.join(range(3)|map('string')) }}"):
+        cases.append({"m": "join", "src": source})
+    for method in ("count", "find"):
+        for recv in ("banana", "aaaa", "", "\u65e5\u672c\u65e5\u672c", "a\u00e9a", "\u00e9a\u00e9a"):
+            for sub in ("a", "an", "aa", "", "x", "\u65e5", "\u672c", "\u00e9", "banana", "bananas"):
+                call(method, recv, sub)
+        for args in (("a", 1), ("a", 2), ("a", -1), ("a", 0, 2), ("a", 0, -1), ("an", 1, 4), ("", 3), ("", 4), ("", 1, 2),
+                     ("", -1), ("a", 10), ("a", None, 3), ("a", 1, None), ("a", -100, 100), ("a", "x"), ("a", 1.0),
+                     ("", 7), ("", 6), ("a", 5, 2), ("", 5, 2), (1,), (None,), ("a", True)):
+            call(method, "banana", *args)
+        literal(method, f"'banana'.{method}()")
+        literal(method, f"'banana'.{method}('a', 1, 2, 3)")
+        literal(method, f"'banana'.{method}(sub='a')")
+    for method in ("removeprefix", "removesuffix"):
+        for sub in ("prefix-", "-suffix", "", "x", "prefix-body-suffix-more", "prefix-body-suffix", "body"):
+            call(method, "prefix-body-suffix", sub)
+        for recv in ("", "a", "\u65e5\u672c"):
+            call(method, recv, "")
+            call(method, recv, "\u65e5")
+        for arg in (None, 1, True):
+            call(method, "abc", arg)
+        literal(method, f"'abc'.{method}()")
+        literal(method, f"'abc'.{method}('a', 'b')")
+        literal(method, f"'abc'.{method}(('a',))")
+    # Direct output of the results, without the filter that writes JSON.
+    for source in ("{{ 'abc'.startswith('a') }}", "{{ 'abc'.startswith('x') }}", "{{ 'abc'.find('b') }}",
+                   "{{ 'abc'.count('') }}", "{{ 'ab'.upper() }}", "{{ 'a b'.isalpha() }}", "{{ ' '.isspace() }}",
+                   "{{ 'x'.join(['a', 'b']) }}", "{{ 'abc'.removeprefix('a') }}",
+                   "{% if 'abc'.startswith('a') %}yes{% else %}no{% endif %}",
+                   "{{ 'abc'.find('x') + 1 }}", "{{ 'a-b'.replace('-', '+') ~ '!' }}",
+                   "{{ ('abc'.upper()).lower().title() }}", "{{ 'ab'.upper().lower() }}",
+                   "{{ messages[0].content.strip().upper() }}",
+                   "{% set t = messages[0].content.strip() %}[{{ t }}]",
+                   "{{ messages[0].content.split()|length }}",
+                   "{% for w in messages[0].content.split() %}<{{ w }}>{% endfor %}",
+                   "{{ messages[0].content.startswith('a') and messages[0].content.endswith('z') }}"):
+        cases.append({"m": "direct", "src": source, "msgs": [{"content": " a b z "}]})
+    return cases
+
+
+def case_template(c: dict) -> tuple[str, list]:
+    """The source and the messages of a case. A call case has the receiver in `s` and the arguments in `a`. The Rust
+    test builds them the same way."""
+    if "src" in c:
+        return c["src"], c.get("msgs", [])
+    arguments = ", ".join(f"messages[0].a{i}" for i in range(len(c["a"])))
+    source = "{{ messages[0].s." + c["m"] + "(" + arguments + ")|tojson }}"
+    return source, [{"s": c["s"], **{f"a{i}": a for i, a in enumerate(c["a"])}}]
+
+
+def run_cases(template_class, cases: list[dict]) -> list[dict]:
+    """Render each case with mk's template. A case that mk refuses holds the name of the exception."""
+    out = []
+    for c in cases:
+        source, messages = case_template(c)
+        try:
+            out.append({**c, "out": template_class(source).render(messages)})
+        except Exception as e:  # noqa: BLE001 - every kind of failure is a fixture
+            out.append({**c, "x": type(e).__name__, "error": str(e)})
+    return out
+
+
+# ------------------------------------------------------------------ how values are written
+FORMAT_VALUES = [
+    None, True, False, 0, 1, -7, 2.5, 1.0, 1e16, 1e15, 1e-5, 1e-4, 0.1, -0.0, 123456789.125, 10 ** 30, 1e22, 1e100,
+    5e-324, 1.7976931348623157e308, 0.30000000000000004, "s", "", " padded ", "a'b", 'a"b', "x\ny", "é世",
+    [], ["a", 1, None, True, 2.5], [[]], [[1, [2]]], {}, {"a": "b", "c": [1]}, {"é": 1, "k": None},
+    ["it's", 'q"d', "\n", "é", "​", "\x00", "\x7f", "\U0001f600", "", "￾", "\\"],
+    {"k": {"j": {"i": [1.5, True]}}},
+]
+
+
+def format_cases() -> list[dict]:
+    cases = []
+    for v in FORMAT_VALUES:
+        for src in ("{{ messages[0].v }}", "{{ messages[0].v|string }}", "{{ messages[0].v|trim }}",
+                    "{{ messages[0].v|trim('x') }}", "{{ raise_exception(messages[0].v) }}",
+                    "{{ messages[0].v|length }}"):
+            cases.append({"src": src, "msgs": [{"v": v}], "m": "format"})
+        # The operator ~ writes a float or a container in the form of the template engine, not in the form of Python.
+        # A test in jinja.rs pins that difference. The fixtures keep the values that agree.
+        if v is None or isinstance(v, (bool, int, str)):
+            for src in ("{{ 'a' ~ messages[0].v }}", "{{ messages[0].v ~ 'b' }}"):
+                cases.append({"src": src, "msgs": [{"v": v}], "m": "format"})
+    for src in ("{{ messages[0].gone }}", "{{ messages[0].gone|string }}", "{{ 'a' ~ messages[0].gone }}",
+                "{{ messages[0].gone|trim }}", "{{ messages[0].gone|trim('x') }}",
+                "{{ '  xx a xx  '|trim }}", "{{ '  xx a xx  '|trim('x ') }}", "{{ '  xx a xx  '|trim('') }}",
+                "{{ '  xx a xx  '|trim(None) }}", "{{ '  xx a xx  '|trim(1) }}", "{{ '  a  '|trim('x', 'y') }}",
+                "{{ '　a　'|trim }}", "{{ '　a　'|trim('　') }}",
+                "{{ raise_exception('plain') }}", "{{ raise_exception() }}", "{{ raise_exception('a', 'b') }}",
+                "{{ raise_exception(msg='by name') }}", "{{ raise_exception(1, msg='x') }}",
+                "{{ raise_exception(5) }}", "{{ raise_exception(none) }}", "{{ raise_exception(1.5) }}",
+                "{{ raise_exception(true) }}", "{{ raise_exception([1, 'a']) }}", "{{ raise_exception({'k': 'v'}) }}",
+                "{{ raise_exception('a' ~ 1 ~ 'b') }}", "{{ raise_exception(messages[0].gone) }}",
+                "{{ 1.5 }}", "{{ 1.0 }}", "{{ 1e16 }}", "{{ none }}", "{{ true }}", "{{ false }}", "{{ [1, 'a'] }}",
+                "{{ {'a': 1} }}", "{{ 'x' * 3 }}", "{{ 7 // 2 }}", "{{ 7 / 2 }}", "{{ 2 ** 10 }}",
+                "{{ 7 % 3 }}", "{{ 1 + 1.5 }}", "{{ 'a' + 'b' }}", "{{ 'a' + 1 }}", "{{ 1 + 'a' }}", "{{ [1] + [2] }}"):
+        cases.append({"src": src, "msgs": [{}], "m": "format"})
+    return cases
+
+
+# ------------------------------------------------------------------ tests and the undefined value
+TEST_VALUES = [None, True, False, 0, 1, -1, 2.5, 1e16, "", "abc", " ", [], [1], ["a"], {}, {"a": 1}]
+# The tests that the library follows. The tests lower, upper, odd, even, lt, ge, divisibleby, filter and test are left
+# out: the template engine answers them in its own way, the chat template calls none of them, and the note of spec 11.3
+# says so.
+TESTS = ["sequence", "number", "string", "mapping", "defined", "undefined", "none", "iterable", "true", "false",
+         "boolean", "integer", "float", "callable", "escaped", "eq(1)", "ne(1)", "sameas(true)", "sameas(none)",
+         "in([1, 'abc'])"]
+
+
+def test_cases() -> list[dict]:
+    cases = []
+    for test in TESTS:
+        for v in TEST_VALUES:
+            cases.append({"src": "{{ messages[0].v is " + test + " }}", "msgs": [{"v": v}], "m": "test"})
+        # A name that no variable has, an attribute that the object does not have, and an item that the list lacks.
+        for src in ("{{ nothing is " + test + " }}", "{{ messages[0].gone is " + test + " }}",
+                    "{{ messages[0].v.gone is " + test + " }}", "{{ messages[5] is " + test + " }}"):
+            cases.append({"src": src, "msgs": [{"v": {}}], "m": "test"})
+    for test in ("sequence", "number", "string", "mapping", "defined", "none", "iterable"):
+        cases.append({"src": "{{ messages[0].v is not " + test + " }}", "msgs": [{"v": "abc"}], "m": "test"})
+        cases.append({"src": "{{ messages[0].gone is not " + test + " }}", "msgs": [{}], "m": "test"})
+    return cases
+
+
+UNDEFINED_SOURCES = [
+    "{{ u }}", "{{ u.a }}", "{{ u.a.b }}", "{{ u[0] }}", "{{ u['a'] }}", "{{ u() }}", "{{ u.m() }}", "{{ u|length }}",
+    "{{ u|string }}", "{{ u|trim }}", "{{ u|tojson }}", "{{ u|default('d') }}", "{{ u|default('d', true) }}",
+    "{{ u|list }}", "{{ u|join(',') }}", "{{ u|upper }}", "{{ u|lower }}",
+    "{{ u|abs }}", "{{ u|sort }}",
+    "{{ u|sum }}", "{{ u|min }}", "{{ u|max }}",
+    "{% for x in u %}x{% else %}empty{% endfor %}", "{% for k, v in u|items %}x{% endfor %}",
+    "{% for x in u.a %}x{% endfor %}", "{% if u %}yes{% else %}no{% endif %}", "{{ not u }}", "{{ u and 1 }}",
+    "{{ u or 1 }}", "{{ u == '' }}", "{{ u == u }}", "{{ u != 1 }}", "{{ u == none }}", "{{ u is none }}",
+    "{{ u + 'a' }}", "{{ 'a' + u }}", "{{ u + 1 }}", "{{ 1 + u }}", "{{ u - 1 }}", "{{ u * 2 }}",
+    "{{ u / 2 }}", "{{ u ~ 'a' }}", "{{ 'a' ~ u }}", "{{ u in [1] }}", "{{ 1 in u }}", "{{ 'a' in u }}",
+    "{{ 'a' not in u }}", "{{ u.startswith('a') }}", "{{ 'abc'.startswith(u) }}", "{{ 'abc'.join(u) }}",
+    "{{ 'abc'.split(u) }}", "{{ 'abc'.replace(u, 'x') }}", "{{ 'abc'.count(u) }}", "{{ 'abc'.strip(u) }}",
+    "{{ [1, u] }}", "{{ [1, u]|tojson }}", "{{ {'a': u} }}", "{{ {'a': u}|tojson }}", "{{ u if u else 'else' }}",
+    "{% set y = u %}[{{ y }}]", "{% set y = u.a %}[{{ y }}]", "{% set y = u %}{{ y is defined }}",
+    "{% macro m(a) %}[{{ a }}]{% endmacro %}{{ m(u) }}", "{% macro m(a) %}{{ a is defined }}{% endmacro %}{{ m(u) }}",
+    "{% macro m(a) %}[{{ a }}]{% endmacro %}{{ m() }}", "{% macro m(a) %}{{ a is defined }}{% endmacro %}{{ m() }}",
+    "{% set ns = namespace(v=u) %}[{{ ns.v }}]", "{% set ns = namespace(v=1) %}{% set ns.v = u %}[{{ ns.v }}]",
+    "{{ messages[0].v }}", "{{ messages[0].v.a }}", "{{ messages[0].gone }}", "{{ messages[0].gone.a }}",
+    "{{ messages[0]['gone'] }}", "{{ messages[0]['gone'].a }}", "{{ messages[3] }}", "{{ messages[3].a }}",
+    "{{ messages|first }}", "{{ messages[0]|length }}", "{{ messages[0].v|length }}", "{{ messages[0].v|trim }}",
+    "{{ messages[0].gone|trim }}", "{{ 'x'|trim(u) }}", "{{ loop }}", "{{ loop.index }}", "{{ messages|length }}",
+    "{{ raise_exception(u) }}", "{{ caller }}", "{{ range(u) }}", "{{ range(2)|list }}",
+    "{{ u|attr('a') }}", "{{ ''.__class__ }}", "{{ [].append }}", "{{ 'a'.__len__ }}",
+    "{{ messages[0].__class__ }}", "{{ messages[0]._x }}",
+]
+
+
+def undefined_cases() -> list[dict]:
+    cases = []
+    for src in UNDEFINED_SOURCES:
+        cases.append({"src": src, "msgs": [{"v": "text"}, {"v": None}], "m": "undefined"})
+    return cases
 
 
 TOJSON_TEXTS = [
@@ -634,6 +1026,104 @@ def chat_cases() -> list[dict]:
         + [U("final")])
     add("ids_unicode_mix", [S("あいう ☃"), U("é \U0001f680 مرحبا")])
     add("extra_message_keys", [{"role": "user", "content": "x", "name": "bob", "extra": [1, 2]}])
+    # Input that the API does not promise, as mk's jinja2 reads it (review finding F7 of milestone 11). A role that is
+    # missing, a bare string for a message, a tool without parameters, numbers and bools in content, and nested values.
+    add("no_role_only", [{"content": "x"}])
+    add("no_role_between", [U("a"), {"content": "x"}, U("b")])
+    add("no_role_no_content", [{}])
+    add("role_none", [{"role": None, "content": "x"}])
+    add("role_int", [{"role": 5, "content": "x"}])
+    add("role_list", [{"role": ["user"], "content": "x"}])
+    add("role_uppercase", [{"role": "User", "content": "x"}])
+    add("bare_string_only", ["hi"])
+    add("bare_string_between", [U("a"), "bare", U("b")])
+    add("bare_string_first", ["bare", U("a")])
+    add("bare_int", [5])
+    add("bare_none", [None])
+    add("bare_list", [[1]])
+    add("bare_empty_dict", [{}])
+    add("tool_no_parameters", [U("x")], tools=[{"type": "function", "function": {"name": "f", "description": "d"}}])
+    add("tool_no_function", [U("x")], tools=[{"type": "function"}])
+    add("tool_null_parameters", [U("x")], tools=[{"type": "function", "function": {"name": "f", "parameters": None}}])
+    add("tool_bare_string", [U("x")], tools=["just a string"])
+    add("tool_bare_int", [U("x")], tools=[5])
+    add("tool_bare_none", [U("x")], tools=[None])
+    add("tool_bare_list", [U("x")], tools=[[1, "a"]])
+    add("tools_a_map", [U("x")], tools={"type": "function"})
+    add("tools_a_string", [U("x")], tools="abc")
+    add("tools_an_int", [U("x")], tools=5)
+    add("tools_a_true", [U("x")], tools=True)
+    add("tools_false", [U("x")], tools=False)
+    add("tools_none", [U("x")], tools=None)
+    add("tools_empty_string", [U("x")], tools="")
+    add("tools_empty_map", [U("x")], tools={})
+    add("content_float", [{"role": "user", "content": 1.5}])
+    add("content_float_big", [{"role": "user", "content": 1e16}])
+    add("content_int_zero", [{"role": "user", "content": 0}])
+    add("content_true", [{"role": "user", "content": True}])
+    add("content_false", [{"role": "user", "content": False}])
+    add("content_none_user", [{"role": "user", "content": None}, A("a")])
+    add("content_none_system", [{"role": "system", "content": None}, U("a")])
+    add("content_none_tool", [U("x"), {"role": "tool", "content": None}])
+    add("content_empty_list", [{"role": "user", "content": []}])
+    add("content_empty_dict", [{"role": "user", "content": {}}])
+    add("content_float_assistant", [U("q"), {"role": "assistant", "content": 2.5}])
+    add("content_bool_tool", [U("q"), {"role": "tool", "content": True}])
+    add("part_text_float", [{"role": "user", "content": [{"type": "text", "text": 1.5}]}])
+    add("part_text_float_big", [{"role": "user", "content": [{"text": 1e16}, {"text": 1e-5}]}])
+    add("part_text_bool", [{"role": "user", "content": [{"type": "text", "text": True}]}])
+    add("part_text_none", [{"role": "user", "content": [{"type": "text", "text": None}]}])
+    add("part_text_int", [{"role": "user", "content": [{"text": 7}]}])
+    add("part_text_list", [{"role": "user", "content": [{"text": [1, "a'b", None]}]}])
+    add("part_text_dict", [{"role": "user", "content": [{"text": {"k": "v", "n": [1.5]}}]}])
+    add("part_string_item", [{"role": "user", "content": ["bare part"]}])
+    add("part_string_item_with_image", [{"role": "user", "content": ["an image of x"]}])
+    add("part_string_item_with_video", [{"role": "user", "content": ["video here"]}])
+    add("part_string_item_with_text", [{"role": "user", "content": ["text"]}])
+    add("part_int_item", [{"role": "user", "content": [5]}])
+    add("part_none_item", [{"role": "user", "content": [None]}])
+    add("part_list_item", [{"role": "user", "content": [[{"text": "x"}]]}])
+    add("part_list_item_image", [{"role": "user", "content": [["image"]]}])
+    add("part_empty_dict", [{"role": "user", "content": [{}]}])
+    add("part_type_int", [{"role": "user", "content": [{"type": 5, "text": "x"}]}])
+    add("part_type_image_with_text", [{"role": "user", "content": [{"type": "image", "text": "x"}]}])
+    add("part_image_key_none", [{"role": "user", "content": [{"image": None}]}])
+    add("part_video_key_only", [{"role": "user", "content": [{"video": "v"}, {"text": "after"}]}])
+    add("part_text_empty_key", [{"role": "user", "content": [{"text": ""}, {"text": " "}]}])
+    add("parts_in_assistant", [U("q"), A([{"type": "text", "text": "part"}])])
+    add("parts_in_tool", [U("q"), {"role": "tool", "content": [{"type": "text", "text": "r"}, {"type": "image"}]}])
+    add("parts_in_system", [S([{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]), U("q")])
+    add("parts_image_in_system", [S([{"type": "image"}]), U("q")])
+    add("parts_video_in_system", [S([{"type": "video"}]), U("q")])
+    add("nested_arguments", [U("x"), A("", tool_calls=[{"function": {"name": "f", "arguments": {
+        "a": {"b": [1, {"c": None}]}, "d": [[1, 2], [3]], "e": {"f": {"g": "h"}}, "s": ["x", "y z"], "f": 1.5,
+        "big": 1e22, "u": "\u00e9\u4e16", "t": True, "n": None, "z": 0, "q": "it's \"q\""}}}])])
+    add("nested_arguments_empty", [U("x"), A("", tool_calls=[{"function": {"name": "f", "arguments": {
+        "a": {}, "b": [], "c": [[]], "d": [{}], "e": ""}}}])])
+    add("arguments_int", [U("x"), A("", tool_calls=[{"function": {"name": "f", "arguments": 5}}])])
+    add("arguments_true", [U("x"), A("", tool_calls=[{"function": {"name": "f", "arguments": True}}])])
+    add("arguments_false", [U("x"), A("", tool_calls=[{"function": {"name": "f", "arguments": False}}])])
+    add("arguments_zero", [U("x"), A("", tool_calls=[{"function": {"name": "f", "arguments": 0}}])])
+    add("arguments_empty_list", [U("x"), A("", tool_calls=[{"function": {"name": "f", "arguments": []}}])])
+    add("tool_call_name_int", [U("x"), A("", tool_calls=[{"function": {"name": 5, "arguments": {}}}])])
+    add("tool_call_name_bool", [U("x"), A("", tool_calls=[{"function": {"name": True, "arguments": {}}}])])
+    add("tool_call_name_list", [U("x"), A("", tool_calls=[{"function": {"name": ["f"], "arguments": {}}}])])
+    add("tool_call_name_empty", [U("x"), A("", tool_calls=[{"function": {"name": "", "arguments": {}}}])])
+    add("tool_calls_a_map", [U("x"), A("", tool_calls={"function": {"name": "f", "arguments": {}}})])
+    add("tool_calls_a_string", [U("x"), A("", tool_calls="abc")])
+    add("tool_calls_an_int", [U("x"), A("", tool_calls=5)])
+    add("tool_calls_none", [U("x"), A("", tool_calls=None)])
+    add("tool_call_not_a_map", [U("x"), A("", tool_calls=[5])])
+    add("tool_call_a_string", [U("x"), A("", tool_calls=["f"])])
+    add("tool_call_function_string", [U("x"), A("", tool_calls=[{"function": "f"}])])
+    add("tool_call_function_null", [U("x"), A("", tool_calls=[{"function": None}])])
+    add("tool_call_function_list", [U("x"), A("", tool_calls=[{"function": ["f"]}])])
+    add("tool_call_function_and_name", [U("x"), A("", tool_calls=[{"name": "outer", "function": {"name": "inner",
+                                                                                                "arguments": {}}}])])
+    add("reasoning_dict", [U("q"), A("a", reasoning_content={"k": 1}), U("q2")])
+    add("reasoning_none", [U("q"), A("a", reasoning_content=None), U("q2")])
+    add("reasoning_in_user", [{"role": "user", "content": "x", "reasoning_content": "r"}])
+    add("tool_calls_in_user", [{"role": "user", "content": "x", "tool_calls": [{"function": {"name": "f"}}]}])
     return cases
 
 

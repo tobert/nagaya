@@ -1,5 +1,5 @@
 {
-"header": {"generator": "crates/nagaya-text-qwen38/tools/make_fixtures.py", "gguf": "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf", "jinja2": "3.1.6", "mk_files": ["harness/tokenizer.py", "service/template.py", "service/common.py", "service/chatfmt.py"], "mk_rev": "555a2a3b01457eafbc64f3b9d14931df09ea0e02", "n_merges": 247587, "n_tokens": 248320, "python": "3.14.8", "regex": "2026.9.10", "template_sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce"},
+"header": {"generator": "crates/nagaya-text-qwen38/tools/make_fixtures.py", "gguf": "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf", "jinja2": "3.1.6", "mk_files": ["harness/tokenizer.py", "service/template.py", "service/common.py", "service/chatfmt.py"], "mk_rev": "555a2a3b01457eafbc64f3b9d14931df09ea0e02", "n_merges": 247587, "n_tokens": 248320, "python": "3.14.8", "regex": "2026.9.10", "template_sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce", "unidata": "16.0.0"},
 "streams": [
 {"name":"ascii","chunks":["6162","63"],"outputs":["ab","c"],"flush":""},
 {"name":"cjk_whole","chunks":["e4b896e7958c"],"outputs":["\u4e16\u754c"],"flush":""},
@@ -33,7 +33,10 @@
 {"name":"lead_then_lead","chunks":["e4b8e4b896"],"outputs":["\ufffd\u4e16"],"flush":""},
 {"name":"lead_then_lead_split","chunks":["e4b8","e4b896"],"outputs":["","\ufffd\u4e16"],"flush":""},
 {"name":"nul_bytes","chunks":["610062"],"outputs":["a\u0000b"],"flush":""},
-{"name":"bom","chunks":["efbbbf61"],"outputs":["\ufeffa"],"flush":""}
+{"name":"bom","chunks":["efbbbf61"],"outputs":["\ufeffa"],"flush":""},
+{"name":"invalid_prefix_e4_41","chunks":["e441"],"outputs":["\ufffdA"],"flush":""},
+{"name":"invalid_prefix_e0_80","chunks":["e080"],"outputs":["\ufffd\ufffd"],"flush":""},
+{"name":"invalid_prefix_f0_90_41","chunks":["f09041"],"outputs":["\ufffdA"],"flush":""}
 ],
 "token_streams": [
 {"name":"cjk_emoji_mixed","ids":[64,160,116,244,172,253,246,222,127,102,89],"outputs":["a","","","\u4e16","","","","\ud83d\ude00","","\u00e9","z"],"flush":""},

@@ -108,18 +108,33 @@ pub fn small_metadata(
     types: Option<&[i32]>,
     merges: &[&str],
 ) -> nagaya_text_qwen38::gguf::Metadata {
-    let mut texts = 8u32.to_le_bytes().to_vec();
-    texts.extend_from_slice(&(tokens.len() as u64).to_le_bytes());
-    for (t, _) in tokens {
-        texts.extend(gguf_string(t));
-    }
     let types: Vec<i32> = types
         .map(|t| t.to_vec())
         .unwrap_or_else(|| tokens.iter().map(|t| t.1).collect());
-    let mut kinds = 5u32.to_le_bytes().to_vec();
-    kinds.extend_from_slice(&(types.len() as u64).to_le_bytes());
-    for t in &types {
-        kinds.extend_from_slice(&t.to_le_bytes());
+    let values: Vec<Vec<u8>> = types.iter().map(|t| t.to_le_bytes().to_vec()).collect();
+    let texts: Vec<&str> = tokens.iter().map(|t| t.0).collect();
+    small_metadata_with_types(pre, model, &texts, 5, &values, merges)
+}
+
+/// Like `small_metadata`, but the array `tokenizer.ggml.token_type` has the GGUF element type `kind_type`, and
+/// `kind_values` holds the bytes of each element.
+pub fn small_metadata_with_types(
+    pre: &str,
+    model: &str,
+    tokens: &[&str],
+    kind_type: u32,
+    kind_values: &[Vec<u8>],
+    merges: &[&str],
+) -> nagaya_text_qwen38::gguf::Metadata {
+    let mut texts = 8u32.to_le_bytes().to_vec();
+    texts.extend_from_slice(&(tokens.len() as u64).to_le_bytes());
+    for t in tokens {
+        texts.extend(gguf_string(t));
+    }
+    let mut kinds = kind_type.to_le_bytes().to_vec();
+    kinds.extend_from_slice(&(kind_values.len() as u64).to_le_bytes());
+    for v in kind_values {
+        kinds.extend_from_slice(v);
     }
     let mut merge_list = 8u32.to_le_bytes().to_vec();
     merge_list.extend_from_slice(&(merges.len() as u64).to_le_bytes());

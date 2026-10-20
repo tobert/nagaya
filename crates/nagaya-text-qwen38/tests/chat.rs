@@ -21,12 +21,17 @@ fn chat_fixture() -> &'static Json {
 }
 
 fn options(case: &Json) -> RenderOptions {
+    // A flag that is not a bool is a mistake in the fixture. It must not turn into false.
+    let flag = |name: &str| match case.get(name) {
+        Json::Bool(b) => *b,
+        other => panic!("case {}: {name} is {other:?}, not a bool", case.get("name").str()),
+    };
     let mut o = RenderOptions::default();
     if case.has("thinking") {
-        o.thinking = matches!(case.get("thinking"), Json::Bool(true));
+        o.thinking = flag("thinking");
     }
     if case.has("generation_prompt") {
-        o.generation_prompt = matches!(case.get("generation_prompt"), Json::Bool(true));
+        o.generation_prompt = flag("generation_prompt");
     }
     if case.has("reasoning_effort") {
         o.reasoning_effort = Some(case.get("reasoning_effort").str().to_string());
@@ -68,7 +73,7 @@ fn the_template_in_the_gguf_is_the_one_that_made_the_fixtures() {
 #[test]
 fn render_gives_the_text_and_the_ids_of_mk() {
     let cases = chat_fixture().get("render").items();
-    assert!(cases.len() >= 83);
+    assert!(cases.len() >= 132);
     for case in cases {
         let name = case.get("name").str();
         let got = family()
@@ -101,17 +106,31 @@ fn render_gives_the_text_and_the_ids_of_mk() {
 }
 
 #[test]
-fn render_refuses_what_mk_refuses() {
+fn render_refuses_what_mk_refuses_and_says_why() {
     let cases = chat_fixture().get("render_refused").items();
-    assert_eq!(cases.len(), 16);
+    assert!(cases.len() >= 59, "{} cases", cases.len());
     for case in cases {
         let name = case.get("name").str();
+        let mk = case.get("error").str();
         let result = family().render(case.get("messages"), tools(case), &options(case));
-        let template_error = case.get("error").str().starts_with("the chat template refused");
-        match result {
-            Err(Error::Template(_)) if template_error => {}
-            Err(Error::Reserved { .. }) if !template_error => {}
-            other => panic!("case {name}: mk says {:?}; got {other:?}", case.get("error").str()),
+        match (case.get("kind").str(), result) {
+            // The message of raise_exception reaches the error.
+            ("raise_exception", Err(Error::Template(m))) => {
+                let reason = case.get("reason").str();
+                assert!(m.contains(reason), "case {name}: mk says {reason:?}; got {m:?}");
+            }
+            // The noncharacter and its offset in characters are those that mk names.
+            ("reserved", Err(Error::Reserved { ch, offset })) => {
+                let want = char::from_u32(u32::from_str_radix(case.get("char").str(), 16).unwrap()).unwrap();
+                assert_eq!(
+                    (ch, offset as i128),
+                    (want, case.get("offset").int()),
+                    "case {name}: mk says {mk:?}"
+                );
+            }
+            // Errors of the engine, and exceptions of Python that mk does not catch, have no message to compare.
+            ("undefined" | "template" | "exception", Err(Error::Template(_))) => {}
+            (kind, other) => panic!("case {name}: mk refuses ({kind}) with {mk:?}; got {other:?}"),
         }
     }
 }
@@ -208,23 +227,6 @@ fn a_template_with_bad_syntax_is_refused_when_it_loads() {
 }
 
 #[test]
-fn string_methods_of_python_work_in_the_template() {
-    assert_eq!(
-        small(
-            "{{ 'abc'.startswith('ab') }}{{ 'abc'.endswith('bc') }}{{ 'abc'.startswith('bc') }}",
-            "[]"
-        )
-        .unwrap(),
-        "TrueTrueFalse"
-    );
-}
-
-#[test]
-fn a_method_that_the_template_engine_lacks_is_an_error() {
-    assert!(matches!(small("{{ 'abc'.nonsense() }}", "[]"), Err(Error::Template(_))));
-}
-
-#[test]
 fn keys_keep_their_order_in_items() {
     assert_eq!(
         small(
@@ -274,4 +276,40 @@ fn block_settings_and_the_trailing_newline_are_the_ones_of_mk() {
         let source = case.get("source").str();
         assert_eq!(small(source, "[]").unwrap(), case.get("out").str(), "source {source:?}");
     }
+}
+
+#[test]
+fn trim_strips_exactly_the_code_points_that_python_isspace_accepts() {
+    let classes = fixture("classes.json");
+    let ranges: Vec<(u32, u32)> = classes
+        .get("isspace")
+        .items()
+        .iter()
+        .map(|r| (r.items()[0].int() as u32, r.items()[1].int() as u32))
+        .collect();
+    let t = ChatTemplate::from_source("[{{ messages[0].content|trim }}]").unwrap();
+    let mut wrong = Vec::new();
+    for cp in 0..=0x10FFFFu32 {
+        let Some(c) = char::from_u32(cp) else { continue };
+        let messages = Json::Array(vec![Json::Object(vec![("content".into(), Json::Str(c.to_string()))])]);
+        let out = t.render(&messages, None, &RenderOptions::default()).unwrap();
+        let space = ranges.iter().any(|&(a, b)| (a..=b).contains(&cp));
+        // A space leaves nothing between the brackets. Another character stays.
+        if (out == "[]") != space {
+            wrong.push(format!("U+{cp:04X}"));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "trim differs from str.strip at {} code points, first: {:?}",
+        wrong.len(),
+        &wrong[..wrong.len().min(10)]
+    );
+}
+
+#[test]
+#[should_panic(expected = "thinking is Str(\"false\"), not a bool")]
+fn a_fixture_flag_that_is_not_a_bool_stops_the_test() {
+    let case = Json::parse(r#"{"name": "bad", "thinking": "false"}"#).unwrap();
+    options(&case);
 }

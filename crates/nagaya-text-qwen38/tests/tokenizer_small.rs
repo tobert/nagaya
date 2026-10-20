@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::small_metadata;
+use common::{small_metadata, small_metadata_with_types};
 use nagaya_text_qwen38::{Error, Tokenizer};
 
 const NORMAL: i32 = 1;
@@ -182,4 +182,77 @@ fn sixty_six_special_tokens_use_the_noncharacters_in_order() {
     let all: String = expected.iter().collect();
     assert_eq!(t.unescape(&all).unwrap(), names.concat());
     assert_eq!(t.encode(&names.concat()).unwrap(), (0..66).collect::<Vec<u32>>());
+}
+
+/// The element types of GGUF that hold integers, each with a function that writes a value as its bytes.
+type Writer = fn(u8) -> Vec<u8>;
+
+fn integer_types() -> Vec<(&'static str, u32, Writer)> {
+    vec![
+        ("U8", 0, |v| vec![v]),
+        ("I8", 1, |v| vec![v]),
+        ("U16", 2, |v| (v as u16).to_le_bytes().to_vec()),
+        ("I16", 3, |v| (v as i16).to_le_bytes().to_vec()),
+        ("U32", 4, |v| (v as u32).to_le_bytes().to_vec()),
+        ("I32", 5, |v| (v as i32).to_le_bytes().to_vec()),
+        ("U64", 10, |v| (v as u64).to_le_bytes().to_vec()),
+        ("I64", 11, |v| (v as i64).to_le_bytes().to_vec()),
+    ]
+}
+
+#[test]
+fn reads_token_types_of_each_integer_type() {
+    let texts = ["a", "b", "<|s|>"];
+    for (name, kind, write) in integer_types() {
+        let values = [write(1), write(1), write(CONTROL as u8)];
+        let m = small_metadata_with_types("qwen35", "gpt2", &texts, kind, &values, &[]);
+        let t = Tokenizer::from_metadata(&m).unwrap_or_else(|e| panic!("token_type of {name}: {e}"));
+        assert_eq!(t.special_ids(), [2], "token_type of {name}");
+    }
+}
+
+#[test]
+fn refuses_token_types_that_are_floats_and_names_the_type() {
+    for (name, kind, bytes) in [
+        ("F32", 6u32, 1.0f32.to_le_bytes().to_vec()),
+        ("F64", 12, 1.0f64.to_le_bytes().to_vec()),
+    ] {
+        let values = [bytes.clone(), bytes];
+        let m = small_metadata_with_types("qwen35", "gpt2", &["a", "b"], kind, &values, &[]);
+        match Tokenizer::from_metadata(&m) {
+            Err(Error::Metadata(msg)) => {
+                assert!(msg.contains("tokenizer.ggml.token_type") && msg.contains(name), "{msg}");
+                assert!(msg.contains("float"), "{msg}");
+            }
+            other => panic!("token_type of {name}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn refuses_a_token_type_that_does_not_fit_a_signed_64_bit_integer() {
+    let values = [u64::MAX.to_le_bytes().to_vec()];
+    let m = small_metadata_with_types("qwen35", "gpt2", &["a"], 10, &values, &[]);
+    match Tokenizer::from_metadata(&m) {
+        Err(Error::Metadata(msg)) => assert!(msg.contains("does not fit"), "{msg}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn refuses_a_special_token_with_an_empty_text_and_names_its_id() {
+    // mk builds an empty alternative here and then splits the text at every position. This reader refuses it.
+    for kind in [CONTROL, USER_DEFINED] {
+        let tokens = [("a", NORMAL), ("<|s|>", CONTROL), ("", kind)];
+        match Tokenizer::from_metadata(&small_metadata("qwen35", "gpt2", &tokens, None, &[])) {
+            Err(Error::Vocab(m)) => assert!(m.contains("token 2") && m.contains("empty"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
+#[test]
+fn an_empty_text_is_fine_for_a_token_that_is_not_special() {
+    let tokens = [("a", NORMAL), ("", NORMAL)];
+    Tokenizer::from_metadata(&small_metadata("qwen35", "gpt2", &tokens, None, &[])).expect("a normal empty token");
 }

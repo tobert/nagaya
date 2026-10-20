@@ -1,6 +1,7 @@
 //! A reader for the metadata of a GGUF file (version 3). It reads the header and the key-value section only.
 
 use crate::Error;
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
 
@@ -26,10 +27,19 @@ pub enum Value {
 #[derive(Debug, Default)]
 pub struct Metadata {
     entries: Vec<(String, Value)>,
+    /// The place in `entries` of each key.
+    index: HashMap<String, usize>,
 }
 
 /// How deep an array may nest. The files that we read nest at most one level.
 const MAX_DEPTH: usize = 16;
+/// The longest string that the reader accepts: 16 MiB. The longest string in the files that we read is the chat
+/// template, which is some 10 KB.
+const MAX_STRING: u64 = 16 << 20;
+/// The reader asks for this many bytes at a time, so a false length cannot make it allocate more than the file gives.
+const CHUNK: usize = 64 << 10;
+/// An array starts with room for this many values and grows from there.
+const ARRAY_START: usize = 256;
 /// The magic bytes at the start of a GGUF file.
 const MAGIC: &[u8; 4] = b"GGUF";
 /// The one version of the format that this reader knows.
@@ -38,8 +48,9 @@ const VERSION: u32 = 3;
 impl Metadata {
     /// Read the header and the key-value section from `reader`, which holds `len` bytes in all.
     ///
-    /// The reader stops after the last entry. It never reads the tensor data. `len` bounds each length field, so a
-    /// damaged file cannot make the reader allocate more than the file holds.
+    /// The reader stops after the last entry. It never reads the tensor data. `len` bounds each length field. A string
+    /// is read in chunks, and an array grows with the values that it gives, so a damaged file cannot make the reader
+    /// allocate more than the bytes that it has read can fill.
     pub fn read(reader: impl Read, len: u64) -> Result<Metadata, Error> {
         let mut r = Reader {
             inner: reader,
@@ -61,18 +72,20 @@ impl Metadata {
         let _tensor_count = r.u64()?;
         let kv_count = r.u64()?;
         let mut entries: Vec<(String, Value)> = Vec::new();
+        let mut index: HashMap<String, usize> = HashMap::new();
         for _ in 0..kv_count {
             let key = r.string()?;
-            if entries.iter().any(|(k, _)| *k == key) {
+            if index.contains_key(&key) {
                 return Err(Error::Gguf(format!(
                     "the key {key:?} is in the file twice. Repair the file."
                 )));
             }
             let value_type = r.u32()?;
             let value = r.value(value_type, 0)?;
+            index.insert(key.clone(), entries.len());
             entries.push((key, value));
         }
-        Ok(Metadata { entries })
+        Ok(Metadata { entries, index })
     }
 
     /// Read the metadata of the GGUF file at `path`.
@@ -88,7 +101,7 @@ impl Metadata {
 
     /// The value of `key`, or `None` when the file has no such key.
     pub fn get(&self, key: &str) -> Option<&Value> {
-        self.entries.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+        self.index.get(key).map(|&at| &self.entries[at].1)
     }
 
     pub fn len(&self) -> usize {
@@ -145,14 +158,28 @@ impl<R: Read> Reader<R> {
 
     fn string(&mut self) -> Result<String, Error> {
         let n = self.u64()?;
+        if n > MAX_STRING {
+            return Err(Error::Gguf(format!(
+                "a string of {n} bytes is longer than the cap of 16 MiB. Repair the file."
+            )));
+        }
         if n > self.left() {
             return Err(Error::Gguf(format!(
                 "a string of {n} bytes is longer than the {} bytes that are left in the file",
                 self.left()
             )));
         }
-        String::from_utf8(self.take(n)?)
-            .map_err(|e| Error::Gguf(format!("a string is not UTF-8 ({e}). Repair the file.")))
+        let mut bytes: Vec<u8> = Vec::new();
+        while (bytes.len() as u64) < n {
+            let want = CHUNK.min((n - bytes.len() as u64) as usize);
+            let at = bytes.len();
+            bytes.resize(at + want, 0);
+            self.inner
+                .read_exact(&mut bytes[at..])
+                .map_err(|e| Error::Gguf(format!("a read failed at byte {}: {e}", self.pos + at as u64)))?;
+        }
+        self.pos += n;
+        String::from_utf8(bytes).map_err(|e| Error::Gguf(format!("a string is not UTF-8 ({e}). Repair the file.")))
     }
 
     fn value(&mut self, value_type: u32, depth: usize) -> Result<Value, Error> {
@@ -187,7 +214,8 @@ impl<R: Read> Reader<R> {
                         self.left()
                     )));
                 }
-                let mut items = Vec::with_capacity(n as usize);
+                let mut items = Vec::with_capacity((n as usize).min(ARRAY_START));
+                // The vector grows with the values that the file gives. A false count never sets its size.
                 for _ in 0..n {
                     items.push(self.value(element_type, depth + 1)?);
                 }
