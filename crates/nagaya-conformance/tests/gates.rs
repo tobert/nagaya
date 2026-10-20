@@ -150,6 +150,76 @@ impl Parts for SealsOnRead {
     }
 }
 
+/// An engine that reports the coverage of a state other than slot 0 under the wrong part.
+struct WrongPartCoverage {
+    inner: std::cell::RefCell<FakeAlways>,
+}
+
+impl WrongPartCoverage {
+    fn new() -> Self {
+        Self {
+            inner: std::cell::RefCell::new(FakeAlways::new()),
+        }
+    }
+}
+
+impl Engine for WrongPartCoverage {
+    fn identity(&self) -> Identity {
+        self.inner.borrow().identity()
+    }
+
+    fn limits(&self) -> Limits {
+        self.inner.borrow().limits()
+    }
+
+    fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
+        self.inner.get_mut().pass(segments, taps)
+    }
+
+    fn last_error(&self) -> Option<String> {
+        self.inner.borrow().last_error()
+    }
+
+    fn parts(&mut self) -> Option<&mut dyn Parts> {
+        self.inner.get_mut().parts()
+    }
+
+    fn coverage(&mut self) -> Option<&mut dyn Coverage> {
+        Some(self)
+    }
+
+    fn seal(&mut self) -> Option<&mut dyn nagaya_abi::Seal> {
+        self.inner.get_mut().seal()
+    }
+
+    fn slots(&mut self) -> Option<&mut dyn Slots> {
+        self.inner.get_mut().slots()
+    }
+}
+
+impl Coverage for WrongPartCoverage {
+    fn coverage(&self, state: State, part: PartId, bytes: &[u8]) -> CoverageSpan {
+        let mut engine = self.inner.borrow_mut();
+        let mut span = engine.coverage().unwrap().coverage(state, part, bytes);
+        if state != State::Slot(0) {
+            span.part = part + 1;
+        }
+        span
+    }
+
+    fn fits(&self, coverage: &CoverageSpan, slot: u32) -> Result<(), String> {
+        self.inner.borrow_mut().coverage().unwrap().fits(coverage, slot)
+    }
+}
+
+#[test]
+fn coverage_under_the_wrong_part_fails_park_and_restore() {
+    match park_and_restore(&mut WrongPartCoverage::new()) {
+        Outcome::Fail(failure) => assert!(failure.message.contains("part"), "{failure}"),
+        other => panic!("expected a failure, got {other}"),
+    }
+}
+
 #[test]
 fn a_seal_on_read_fails_the_seal_gate() {
     assert_pass(

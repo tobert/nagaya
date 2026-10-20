@@ -436,7 +436,16 @@ fn compare_spans(
             format!("the coverage counts differ: {} and {}", left.len(), right.len()),
         ));
     }
-    for ((id, left), (_, right)) in left.iter().zip(right) {
+    for ((id, left), (right_id, right)) in left.iter().zip(right) {
+        if id != right_id || left.part != *id || right.part != *right_id {
+            return Err(Failure::new(
+                gate,
+                format!(
+                    "the coverage is for different parts: asked for {id} and {right_id}, got {} and {}",
+                    left.part, right.part
+                ),
+            ));
+        }
         if left.start != right.start || left.end != right.end {
             return Err(Failure::new(
                 gate,
