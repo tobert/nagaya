@@ -446,3 +446,7 @@ impl Scheduler {
         Some(running)
     }
 }
+
+mod interval;
+
+pub use interval::{ContextId, CopyDue, IntervalCopies, IntervalError, IntervalPolicy};
