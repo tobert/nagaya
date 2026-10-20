@@ -1096,17 +1096,19 @@ milestones 11 and 11b).
 - The parsers for tool calls and thinking come in milestone 12. They match mk's `service/chatfmt.py`
   (`ReplyTracker`), and fixed outputs of mk's Python test them. Milestone 11 built the tokenizer, the template and
   the detokenizer.
-- **Proposed** (Claude Sonnet 5.5, 2026-10-20), the reply parser's `finish`. mk gives only `stop` and `length`.
-  The parser maps a stop token with one or more entries in `tool_calls` to `tool_use`, and a stop token with none to
-  `end_turn`. An entry that did not parse counts as a call, because the model tried one. The caller says whether a
-  cut came from `max_tokens` or from a full context. The parser makes no call ids: the server names each call.
-- **Proposed** (Claude Sonnet 5.5, 2026-10-20), the pieces of a stream. mk's `piece` is the text of the token. It
-  holds `</think>` in the reasoning pieces, and the letters of a marker that arrive in separate tokens. Thus gogi's rule
-  for pieces fails on mk's pieces in 64 of 211 cases of the fixture. The rule says that joined pieces equal the part,
-  up to `strip()`.
-- **Proposed** (Claude Sonnet 5.5, 2026-10-20), the same. The parser also gives the text that mk's tracker released
-  for each token (`released`). That text keeps the rule in every case, with the end of thinking left out. The server
-  writes `piece` from `released`.
+- **The finish.** mk gives only `stop` and `length`. The parser maps a stop token with one or more entries in
+  `tool_calls` to `tool_use`, and a stop token with none to `end_turn`. An entry that did not parse counts as a call,
+  because the model tried one. The caller says whether a cut came from `max_tokens` or from a full context. The
+  parser makes no call ids: the server names each call. Decided 2026-10-20 (reading, from a note by Sonnet 5.5).
+- **The pieces of a stream.** mk's `piece` is the text of the token. It holds `</think>` in the reasoning pieces, and
+  the letters of a marker that arrive in separate tokens. Thus gogi's rule for pieces fails on mk's pieces in 64 of
+  211 cases of the fixture. The rule says that joined pieces equal the part, up to `strip()`.
+
+  The parser also gives the text that mk's tracker released for each token (`released`). That text keeps the rule in
+  every case, with the end of thinking left out. The server writes `piece` from `released`. Decided 2026-10-20
+  (reading, from a note by Sonnet 5.5).
+- **Open:** one token can release text in two phases, but a gogi `token` event has one phase. This is rare, because
+  each Qwen3.8 marker is one token. The server counts each such token and logs it.
 
 **11.3a Council rendering.** A decision and a raw read put a spec, a case and a letter menu after each context. The
 nagaya renders them with mkviolet's rules (mkviolet `src/template.rs` and its council code), ported to each family.
