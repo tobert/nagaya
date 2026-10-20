@@ -984,6 +984,20 @@ Reason: a park, a restore or a fork then keeps the sampler's bits, with nothing 
 request again with the same seed gets the same tokens. A speculative draft (mkviolet's prompt-lookup drafts) has
 its own purpose, so it never moves a later draw. Thus the reported seed does not change when drafts are on.
 
+**The draw function.** These rules give the bits. Decided 2026-10-20 (reading).
+
+- The position is the token's position in the context, from 0. It is not its index in the reply.
+- The purposes are numbers: a sample is 0, a resample is 1, and the test of a draft is 2.
+- The value is the BLAKE3 hash of `nagaya draw v1`, then the seed, the position and the purpose. The seed and the
+  position are 8 bytes each, little-endian. The purpose is 1 byte.
+- The uniform value is the first 8 bytes of the hash, little-endian, shifted right by 11 and times 2^-53. It is in
+  [0, 1).
+- A child seed is the first 8 bytes, little-endian, of the BLAKE3 hash of `nagaya fork v1`, the parent seed and the
+  branch number, each 8 bytes little-endian.
+- The pick is mk's inverse CDF: the survivors in order of logit down and id up, in float64.
+
+Thus mk's own uniform value, put into the nagaya's pick, gives mk's token. The sampler's tests use that.
+
 mk's sampler draws from one PCG64 stream for each request (mk `service/sampling.py:106`, `:153`). The nagaya does
 not match those bits. It matches mk's filter order and its probabilities (milestone 12).
 
