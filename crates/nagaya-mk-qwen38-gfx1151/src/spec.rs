@@ -26,8 +26,9 @@ pub const CAPACITY_STEP: u32 = 256;
 /// The context capacity that this binding creates, in tokens.
 pub const CONTEXT_CAPACITY: u32 = 256;
 
-/// The number of contexts in the declared pool.
-pub const CONTEXT_COUNT: u32 = 2;
+/// The number of contexts in the declared pool. It equals `MAX_SEGMENTS`, so a pass can hold one segment for each
+/// context (Amy, 2026-10-20: "grow the pool"). The segments gate needs that many states.
+pub const CONTEXT_COUNT: u32 = 16;
 
 /// The longest quantum that mk declares, in milliseconds. mk's watchdog aborts a pass at 10 s (`engine.h:302-306`).
 pub const MAX_QUANTUM_MS: u32 = 10_000;
@@ -285,11 +286,12 @@ pub fn limits(arena_bytes: u64) -> Limits {
                     lifetime: Lifetime::Engine,
                     kinds: vec![Kind::Prefill, Kind::Decode],
                 },
+                // mk makes the whole pool at open, so the term holds every context and lives as long as the engine.
                 MandatoryTerm {
                     name: "context".to_owned(),
                     tier: Tier::Device(0),
-                    bytes: context_bytes(CONTEXT_CAPACITY),
-                    lifetime: Lifetime::Context,
+                    bytes: CONTEXT_COUNT as u64 * context_bytes(CONTEXT_CAPACITY),
+                    lifetime: Lifetime::Engine,
                     kinds: vec![Kind::Prefill, Kind::Decode],
                 },
             ],
@@ -479,7 +481,7 @@ mod tests {
     }
 
     #[test]
-    fn the_limits_declare_two_contexts_and_mk_parts() {
+    fn the_limits_declare_sixteen_contexts_and_mk_parts() {
         let limits = limits(94);
         let names: Vec<&str> = limits.parts.iter().map(|part| part.name.as_str()).collect();
         assert_eq!(
@@ -498,7 +500,8 @@ mod tests {
         assert_eq!(limits.parts[4].kind, PartKind::Cells);
         assert_eq!(limits.parts[6].kind, PartKind::Derived);
         assert_eq!(limits.slots.len(), 1);
-        assert_eq!(limits.slots[0].count, 2);
+        assert_eq!(limits.slots[0].count, 16);
+        assert_eq!(limits.slots[0].count, limits.max_segments);
         assert_eq!(limits.slots[0].bytes, context_bytes(256));
         assert_eq!(limits.max_segments, 16);
         assert_eq!(limits.max_quantum_ms, 10_000);
@@ -509,6 +512,20 @@ mod tests {
                 .iter()
                 .any(|term| term.name == "weights" && term.bytes == 94)
         );
+    }
+
+    #[test]
+    fn the_context_term_holds_the_whole_pool() {
+        // mk makes every context of the pool at open, and the ledger adds the bytes of each term once.
+        let limits = limits(0);
+        let term = limits
+            .memory
+            .mandatory
+            .iter()
+            .find(|term| term.name == "context")
+            .expect("a context term");
+        assert_eq!(term.bytes, 16 * context_bytes(256));
+        assert_eq!(term.lifetime, Lifetime::Engine);
     }
 
     #[test]

@@ -49,7 +49,7 @@ fn the_binding_opens_mk_and_declares_its_parts() {
     assert_eq!(limits.parts[5].name, "ple_hist");
     assert_eq!(limits.parts[6].name, "idx_pooled");
     assert_eq!(limits.slots.len(), 1);
-    assert_eq!(limits.slots[0].count, 2);
+    assert_eq!(limits.slots[0].count, 16);
     assert_eq!(limits.max_segments, 16);
     assert_eq!(limits.max_pass_inputs, 256);
     let weights = limits
@@ -65,7 +65,7 @@ fn the_binding_opens_mk_and_declares_its_parts() {
         .iter()
         .find(|term| term.name == "context")
         .expect("a context term");
-    assert_eq!(context.bytes, 132_587_520);
+    assert_eq!(context.bytes, 16 * 132_587_520);
     // The pass scratch term holds the device cost that the probe measured at open.
     let scratch = limits
         .memory
