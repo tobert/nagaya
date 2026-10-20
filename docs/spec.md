@@ -425,7 +425,7 @@ Reason: 6.1 gives the store its own tiers. An entry is host memory or a file, ne
 chain, the hash includes its parent's content id. A snapshot's recipe is a hash of these items:
 
 - the engine identity, which includes the tokenizer and the template;
-- the logical inputs: the rendered text or the bytes;
+- the logical inputs: the tokens, or the rows as bytes;
 - the boundaries;
 - the engine's `geometry_key`, if the engine declares one (D3);
 - the tags of each approximation;
@@ -453,6 +453,7 @@ The tag numbers are in this table. Decided 2026-10-20 (reading).
 | 5 | the previous recipe |
 | 6 | the tokens |
 | 7 | the boundary position |
+| 8 | "not sealed", with no bytes: only on an interval copy (6.13) |
 
 mk's `context_id` and mkviolet's `snap:<sha256>` are the input part of a recipe. They do not include the engine
 identity. mk's id is a SHA-256 of the tokens and boundaries with `|gdn-bf16-v1|`.
@@ -476,7 +477,13 @@ that they are the same state.
 - the reason for the store: anchor, interval, prefill done, evict, reclaim, or shutdown;
 - the provenance of an approximate entry;
 - the strength of the store's last check of the entry: `full` (every byte hashed), `spot` (a sample hashed) or `none`
-  yet.
+  yet;
+- the engine's rules for the entry: its determinism class, its bit dependence and its chain limits (D3, 6.5). The
+  put carries them, because one store serves every engine. The tripwire (6.7) and the chain checks read them from
+  the entry. Decided 2026-10-20.
+
+The index also holds two kinds of record that are not entries. They are the expected identity of each engine
+(12.1), and the cost curve of each engine identity (5.11). Decided 2026-10-20.
 
 **One `Check` enum.** The store's `Check` is `full | spot | none`, the same enum that the ABI uses for arenas and
 store entries (engine-abi "Capabilities"). Decided 2026-10-18.
@@ -493,9 +500,9 @@ A delta's `put` names its parent content id and its previous recipe. The store c
 
 1. The parent is live.
 2. The delta is no deeper than the chain limit.
-3. The size of the delta is within the delta fraction.
+3. The size of the delta is within the delta fraction of the chain's base, which is a full snapshot.
 4. The coverage of the delta starts at the end of the parent.
-5. The previous recipe equals the recipe of the parent entry, and the recipe of the delta is a later one.
+5. The previous recipe equals the recipe of the parent entry, and the recipe of the delta differs from it.
 
 The store does not have the tokens, so it cannot compute the recipe again. The caller holds the inputs that prove
 it. Decided 2026-10-20 (reading).
@@ -544,21 +551,30 @@ For other engines, the audit job (8.4) does the check.
 - refused, and nothing changed;
 - failed after a change. The state is poisoned (D6).
 
+A restore stops at the first write that is not ok, and it names the part that stopped it. A refusal of the first
+write is a refused restore: nothing changed. A refusal after an earlier write changed the state is a failed
+restore, and the state is poisoned (8.5). Decided 2026-10-20 (reading).
+
 The store quarantines an entry only when its content id or its identity fails verification. A refusal leaves the
 entry as it is. A failure never deletes content.
 
+A read error of a blob is not a quarantine. The lookup or the
+restore treats it as a miss, and the caller computes the state again. The entry stays in the index, the store logs
+the error, and the next use checks the entry again. Decided 2026-10-20.
+
 **6.9 Eviction.** The store chooses victims in this order:
 
-1. Interval copies go first (6.13).
+1. Interval copies go first, the least recently used first (6.13).
 2. Pinned entries are exempt.
 3. Thin the chains: interiors go before tips and roots.
-4. Remove whole entries by value per byte: recency, hits, and the cost to build them again.
+4. Remove the remaining entries by value per byte: recency, hits, and the cost to build them again. Tips, roots and
+   entries without a chain are in one ranking. Decided 2026-10-20 (reading).
 
 The formula for value per byte is a choice of the implementation. It never changes bits. The store chooses all
 victims before it deletes one. It also chooses them before it writes the new entry.
 
-Each owner has a quota, so one long conversation cannot remove the others (a ds4-recipe incident). If a pin alone
-is larger than a budget, the pin loses its protection, so eviction cannot deadlock.
+Each owner has a quota, so one long conversation cannot remove the others (a ds4-recipe incident). If the entries
+of one pin are larger than the tier's budget, the pin loses its protection, so eviction cannot deadlock.
 
 **An owner's quota is per store tier.** A put evicts the owner's entries in its own tier until the owner's total
 fits the quota and the tier's total fits the budget. Reason: memory and NVMe are separate budgets in 6.1. A byte in
@@ -567,6 +583,9 @@ one tier does not make room in the other. Decided 2026-10-18.
 **6.10 Pins.** A pin is a lease on a snapshot, with an owner and an expiry (mkviolet v2: one day at most). A request
 pin holds a snapshot from its lookup to the end of its load. Pins stay through a restart (mkviolet `pins.json`).
 
+**Many owners can pin one entry.** Each owner holds its own pin, with its own expiry. An entry is pinned while any
+pin on it is live. An unpin removes only the caller's own pin. Decided 2026-10-20.
+
 **The one-day maximum is for every pin.** The one-day maximum is a nagaya rule for every engine, not only for
 mkviolet. The store has no clock, so `pin` takes `now_ms` from the caller. It refuses an expiry more than one day
 (86,400,000 ms) after `now_ms` with `Invalid`. A refused pin changes nothing. Decided 2026-10-18.
@@ -574,7 +593,9 @@ mkviolet. The store has no clock, so `pin` takes `now_ms` from the caller. It re
 Reason: one store holds every engine, pins stay through a restart, and a lease with no bound can hold bytes
 forever. The mkviolet rule is the origin, not the scope.
 
-**6.11 Restart.** At start, the store loads its index again. It checks each entry when a lookup first uses it. It
+**6.11 Restart.** At start, the store loads its index again. It checks each entry when a lookup first uses it.
+Entries in the host tier do not survive a restart, so the store removes them from the index at start. Decided
+2026-10-20 (reading). It
 wakes pinned entries into slots when the profile asks for them. (mk wakes its pinned parked contexts before
 `READY=1`.)
 
@@ -583,28 +604,39 @@ or a steering vector. Such state goes into the recipe. Thus a steered or masked 
 
 **6.13 Interval copies.** An engine can declare a checkpoint grain in `limits()`, in tokens. Then, between quanta,
 the scheduler makes an interval copy (ontology) of each context that passed a multiple of the grain. Decided
-2026-10-20 (`docs/deepinfer.md` 3).
+2026-10-20 (`docs/deepinfer.md` 3), and reworked the same day after kaibo's review.
 
+- **A store entry that is not sealed.** The copy is a store put like any other: it has a content id, a recipe and
+  an entry (6.4) with the reason `interval`. Its recipe adds the item "not sealed" (6.2 tag 8), so a lookup for a
+  sealed snapshot never finds it.
 - **No seal.** The copy does not seal, so the live context keeps its bits. A seal would change every later token
   of every generation.
-- **Host memory only.** The store keeps interval copies in its host tier, charged to the store's host budget (4.1a).
-  They never go to NVMe, and a park of the context does not take them.
-- **The latest copy only.** The store keeps one copy for each context. A new copy replaces the old one.
-- **Evicted first.** Interval copies go before any entry in eviction (6.9). The profile caps their count, and the
-  store evicts the least recently used copy above the cap.
-- **Exact replay.** A restore writes the copy's parts, then replays the tokens after the copy. The replay uses the
-  same boundaries and the same pass boundaries as the first run. Thus it gives the bits of the first run.
+- **Whole parts.** The copy holds every part from position 0. It has no parent. A later step can make a copy a delta
+  of the context's last boundary entry.
+- **Host memory only.** The copy goes to the store's host tier, and the store makes room for it as for any put
+  (6.9). It never goes to NVMe. A restart loses it (6.11).
+- **The latest copy only.** When a new copy of a context is in the store, the scheduler removes that context's
+  previous copy.
+- **A cap and an order.** The `[store]` table of the profile has `interval_copies`, the most copies that the store
+  keeps (2.4). Above the cap, the store removes the least recently used copy at once. When a put needs bytes, copies
+  go first, the least recently used first (6.9).
+- **Any split replays.** An engine that declares a checkpoint grain must also declare `segments_exact`. Thus the row
+  count of a pass does not change its bits (5.7), and a replay can use any split into passes.
 
+A restore from a copy writes its parts, then replays the tokens after it, with the same boundaries. The result has
+the bits of the first run. The lookup is by recipe with tag 8, so any context with the same prefix can use a copy.
 The copy serves three uses: a branch from an earlier position, a truncate, and a recovery after the live state is
-lost. Amy, 2026-10-20: "I suspect we only want a few copies online and won't benefit as much as a commerical
-service does, but it is cool and we'll do it."
+lost. Amy, 2026-10-20: "I suspect we only want a few copies online and won't benefit as much as a commerical service
+does, but it is cool and we'll do it."
 
-For mk, one copy is about 112 MiB: the GDN state in f32 (108 MiB) and the conv state (4.3 MiB, mk `DESIGN.md`). A
-copy does not repeat K/V, because K/V rows are only appended. With a grain of 256 tokens, a decode makes a copy every
-10-15 s. A replay of up to 255 tokens takes up to about 13 s on mk, with one pass for each token (51 ms each).
+For mk, the fixed parts of a copy are about 112 MiB. They are the GDN state in f32 (108 MiB) and the conv state
+(4.3 MiB, mk `DESIGN.md`). The K/V adds about 27 KiB for each token. With a grain of 256 tokens, a decode makes a
+copy every 10-15 s.
 
-**Open:** does one pass of many tokens give the same bits on mk as one pass for each token? If it does, a
-replay can use one pass of up to 255 tokens, about 2 s. A measurement answers the question.
+On mk, the split of tokens into passes does not change bits. The probe `examples/split_bits.rs` in the mk crate
+(`427fdc3`) compared one pass, one pass for each token, and uneven chunks, at 64 and 200 tokens. Every part and all
+248,320 logits were equal. One pass of 200 tokens took 424 ms, and 200 passes of one token took 10,079 ms. Thus a
+replay of up to 255 tokens takes about 0.5 s on mk.
 
 ## 7. IO
 
@@ -1035,4 +1067,4 @@ The inventories found these items. We correct each one when its code moves. We d
 1. Do an idle engine's GPU queues slow the other engines on its device (3.3)? A measurement answers this.
 2. What makes `close()` safe for mk, so that engines can load and unload at runtime (3.3)?
 3. How long does the conversion to canonical safetensors take on mk and mkviolet (10.3, D10)?
-4. Does one pass of many tokens give the same bits on mk as one pass for each token (6.13)?
+4. Answered 2026-10-20: on mk, one pass of many tokens gives the same bits as one pass for each token (6.13).
