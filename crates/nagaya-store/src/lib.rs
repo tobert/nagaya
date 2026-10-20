@@ -1043,6 +1043,7 @@ impl Store {
             let quarantine = existing.quarantine;
             let recipe = existing.recipe;
             let parent = existing.parent;
+            let tier = existing.tier;
             if state == EntryState::Quarantined {
                 if quarantine == Some(Quarantine::Tripwire) {
                     return Err(self.tripwire_error(put.recipe));
@@ -1053,6 +1054,12 @@ impl Store {
                 return Err(StoreError::Invalid(
                     "the content id already has another recipe".to_owned(),
                 ));
+            }
+            if tier != put.tier {
+                return Err(StoreError::Invalid(format!(
+                    "the entry is in tier {tier:?}; the put asks for tier {:?}. Evict the entry first",
+                    put.tier
+                )));
             }
             return Ok(id);
         }
@@ -1115,6 +1122,7 @@ impl Store {
         prune_pins(&mut index, put.now_ms);
         for victim in &victims {
             index.entries.remove(victim);
+            index.pins.remove(victim);
         }
         index.entries.insert(
             id,
@@ -1621,6 +1629,7 @@ impl Store {
         prune_pins(&mut index, now_ms);
         for id in &victims {
             index.entries.remove(id);
+            index.pins.remove(id);
         }
         let previous = std::mem::replace(&mut self.index, index);
         if let Err(error) = self.persist() {

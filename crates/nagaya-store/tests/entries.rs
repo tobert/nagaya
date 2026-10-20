@@ -2643,3 +2643,57 @@ fn a_put_under_pressure_evicts_another_entry_and_keeps_the_chain_whole() {
     assert!(!store.entries().contains_key(&hot), "the other entry made room");
     assert_eq!(lookup(&mut store, d2_recipe).unwrap().len(), 3);
 }
+
+#[test]
+fn a_put_of_an_existing_id_in_another_tier_is_refused() {
+    // Kaibo job 2, finding 10: Ok for a host entry would be a lie to a put that asked for NVMe.
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let snapshot = base_snapshot(4);
+    let id = put_in(&mut store, &snapshot, recipe(170), 1, Tier::Host);
+    let before = store.entries().clone();
+    let error = try_put(&mut store, &snapshot, recipe(170), None, 1, Tier::Nvme, 20);
+    let Err(StoreError::Invalid(message)) = error else {
+        panic!("expected a refusal, got {error:?}");
+    };
+    assert!(message.contains("tier"), "{message}");
+    assert_eq!(store.entries(), &before);
+    assert_eq!(store.entries().get(&id).unwrap().tier, Tier::Host);
+    assert!(blob_names(dir.path()).is_empty(), "no file appeared");
+    // The same tier is still a no-op.
+    assert_eq!(
+        try_put(&mut store, &snapshot, recipe(170), None, 1, Tier::Host, 20).unwrap(),
+        id
+    );
+}
+
+/// A store with a pinned entry that lost its protection (it is larger than the budget).
+fn store_with_an_unprotected_pin(dir: &Path) -> (Store, ContentId) {
+    let mut store = Store::open_with_nvme_budget(dir, u64::MAX).unwrap();
+    let id = put(&mut store, &wide_snapshot(1), recipe(171), 1);
+    store.pin(id, 1, 100, 10).unwrap();
+    let size = store.entries().get(&id).unwrap().size;
+    store.set_budget(Tier::Nvme, size - 1);
+    (store, id)
+}
+
+#[test]
+fn an_eviction_by_a_put_removes_the_pins_of_its_victims() {
+    // Kaibo job 2, finding 11: a re-put of the same content id must not inherit a stale pin.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut store, victim) = store_with_an_unprotected_pin(dir.path());
+    put(&mut store, &base_snapshot(2), recipe(172), 1);
+    assert!(
+        !store.entries().contains_key(&victim),
+        "the put evicted the pinned entry"
+    );
+    assert!(!store.pins().contains_key(&victim));
+}
+
+#[test]
+fn evict_removes_the_pins_of_its_victims() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut store, victim) = store_with_an_unprotected_pin(dir.path());
+    assert_eq!(store.evict(1, Tier::Nvme, 1, 10).unwrap(), vec![victim]);
+    assert!(!store.pins().contains_key(&victim));
+}
