@@ -787,18 +787,58 @@ kaijutsu's semantic search and stuff"). Thus one renderer serves every engine of
 The rendering rules in gogi, such as where a boundary exists and where thinking renders, get one implementation and
 one set of conformance tests. mk's C ABI does not need a tokenizer.
 
-**Proposed** (Claude Sonnet 5.5, milestone 11): the Qwen3.8 library follows these rules.
+**Proposed** (Claude Sonnet 5.5, milestone 11 and 11b): the Qwen3.8 library follows these rules.
 
 - The library reads the template from the GGUF key `tokenizer.chat_template` and runs it with a Jinja interpreter.
   It does not hold a hand-written copy. The template is part of the identity, so a new template in a GGUF needs no
   new code.
-- The interpreter matches mk's Python on three points. `trim` strips what Python's `str.strip` strips, which includes
+- The interpreter matches mk's Python on four points. `trim` strips what Python's `str.strip` strips, which includes
   U+001C to U+001F. `tojson` writes what Python's `json.dumps` writes, with `ensure_ascii` off.
   A map keeps its key order.
+- A value in `{{ }}` and the `string` filter follow Python's `str`. Thus none is `None` and a bool is `True`. A float
+  is its `repr`, and a string in a list has quotes.
 - A render refuses the same input as mk. A template error is an error. A message that holds a Unicode noncharacter is
-  an error, because mk keeps those for its escapes (`harness/tokenizer.py`, `RESERVED`).
+  an error, because mk keeps those for its escapes (`harness/tokenizer.py`, `RESERVED`). The error names the
+  character and its offset in characters, as mk does. A message of `raise_exception` reaches the error.
+- mk lets some Python exceptions pass, such as a `TypeError`. The library gives a template error for those.
+- **String methods.** The engine has no Python methods. The library holds these methods of `str`, with the results of
+  Python 3.14:
+  - `startswith` and `endswith`, also with a tuple, `start` and `end`;
+  - `strip`, `lstrip` and `rstrip`, with optional characters;
+  - `lower`, `upper`, `title` and `capitalize`;
+  - `replace`, `split` (with `sep` and `maxsplit`, also by name) and `join`;
+  - `count`, `find`, `removeprefix` and `removesuffix`;
+  - `isdigit`, `isalpha` and `isspace`.
+
+  The real template calls `startswith` and `endswith` only. A template that needs another method fails when it
+  renders. The error names the method and lists the methods that exist. The Unicode tables come from Python 3.14.8
+  (Unicode 16.0.0), because the tables of Rust are of another version.
+- **Functions and filters.** `trim` takes the optional characters. `raise_exception` takes any value, by position or
+  as `msg=`, and writes it as Python's `str` does. `length` and `items` accept the undefined value.
+- **Tests and the undefined value.** The tests `sequence`, `number`, `string`, `mapping`, `iterable`, `defined`,
+  `undefined`, `none`, `true`, `false`, `boolean`, `integer`, `float` and `callable` give the answers of jinja2.
+  A string is a sequence, and a bool is a number. The undefined value writes nothing, it has no items, and a loop
+  over it is empty. An attribute of it is an error. This is the default `Undefined` of jinja2.
+- **Messages.** The library refuses a `messages` value that is not an array. This is a deliberate difference. mk
+  passes any value to jinja2. For a map or a string, the loop runs over keys or characters by accident. The API
+  takes a list of messages. A caller that sends another type has a bug, and the refusal shows it (8.5).
+- **Differences that stay.** Each one has a test that pins it. The chat template uses none of them.
+  - The operator `~` writes a float with an exponent, a list and a map in the form of the engine.
+  - The engine has no tuple. A tuple in a template is a list. Thus `startswith` takes a list, where Python refuses
+    it, and `(1, 2)` writes as `[1, 2]`.
+  - The tests `lower`, `upper`, `odd`, `even`, `lt`, `ge`, `divisibleby`, `filter` and `test` give the answers of the
+    engine.
+  - `nothing|int`, `nothing|float` and `nothing < 1` give a value, where Python raises. `nothing|first` raises,
+    where Python gives an undefined value.
+  - A key with the name of a method of a dict, such as `items`, reads as the key. Python reads the method.
 - The library takes JSON in its own type that keeps key order. It refuses `NaN`, `Infinity` and an integer of more
-  than 128 bits. Python accepts those, so this is stricter than mk.
+  than 128 bits. Python accepts those, so this is stricter than mk. It refuses nesting of more than 512 levels.
+  Python stops near 1000 levels.
+- The GGUF reader bounds its allocations. A string of more than 16 MiB is an error, and a string is read in chunks.
+  An array grows with the values that the file gives. A key twice in one file is an error.
+- The tokenizer reads `tokenizer.ggml.token_type` of any integer type. A value that does not fit a signed 64-bit
+  integer, and any float, is an error. A special token with an empty text is an error. mk builds an empty
+  alternative that splits the text at every position, so a file like that is a mistake.
 - The parsers for tool calls and thinking (`service/chatfmt.py`, `ReplyTracker`) are not in this milestone.
   The tokenizer, the template and the detokenizer come first.
 
