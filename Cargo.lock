@@ -477,7 +477,9 @@ dependencies = [
 name = "nagaya-text-qwen38"
 version = "0.1.0"
 dependencies = [
+ "gogi-proto",
  "minijinja",
+ "nagaya-council",
  "serde_json",
  "sha2",
 ]
