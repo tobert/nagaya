@@ -6,6 +6,8 @@
 pub mod chars;
 pub mod detok;
 mod error;
+pub mod family;
+pub mod template;
 pub mod tokenizer;
 #[rustfmt::skip]
 mod unicode_tables;
@@ -13,4 +15,6 @@ pub mod gguf;
 pub mod json;
 
 pub use error::Error;
+pub use family::{Qwen38, Rendered};
+pub use template::{ChatTemplate, RenderOptions};
 pub use tokenizer::Tokenizer;

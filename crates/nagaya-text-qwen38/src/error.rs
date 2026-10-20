@@ -19,6 +19,8 @@ pub enum Error {
     Vocab(String),
     /// Token bytes that do not make text.
     Bytes(String),
+    /// The chat template refused the messages, or failed to run.
+    Template(String),
 }
 
 impl fmt::Display for Error {
@@ -40,6 +42,7 @@ impl fmt::Display for Error {
                 )
             }
             Error::Vocab(m) => write!(f, "the vocabulary is not usable: {m}"),
+            Error::Template(m) => write!(f, "the chat template refused these messages: {m}"),
             Error::Bytes(m) => write!(f, "the token bytes are not text: {m}"),
         }
     }

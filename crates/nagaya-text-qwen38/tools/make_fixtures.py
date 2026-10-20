@@ -460,7 +460,49 @@ def main() -> None:
             chat_err.append({**c, "error": str(e)})
             continue
         chat_out.append({**c, "escaped": escaped, "text": tok.unescape(escaped), "ids": ids})
-    dump_cases(OUT / "chat.json", header, {"render": chat_out, "render_refused": chat_err})
+    # The filters of the template engine that the chat template uses, on their own.
+    from service.template import _tojson
+    tojson = []
+    for text in TOJSON_TEXTS:
+        tojson.append({"json": text, "out": _tojson(json.loads(text))})
+    trim_template = Template("[{{ messages[0].content|trim }}]")
+    trim = [{"text": t, "out": trim_template.render([{"content": t}])} for t in TRIM_TEXTS]
+    blocks = []
+    for source in BLOCK_SOURCES:
+        blocks.append({"source": source, "out": Template(source).render([])})
+    dump_cases(OUT / "chat.json", header, {
+        "render": chat_out, "render_refused": chat_err, "tojson": tojson, "trim": trim, "blocks": blocks})
+
+
+TOJSON_TEXTS = [
+    "null", "true", "false", "0", "-0", "1", "-1", "123456789012345678901234567890",
+    "170141183460469231731687303715884105727", "-170141183460469231731687303715884105728",
+    "1.0", "-0.0", "0.1", "0.5", "1e16", "1e15", "9999999999999998.0", "1e-4", "0.0001", "1e-5", "0.00001234", "1.5e-5",
+    "123456789.125", "1e22", "1e21", "1e100", "1.7976931348623157e308", "5e-324", "2.5e300", "0.30000000000000004",
+    "100.0", "1e2", "12345678901234567890.0", "[]", "{}", '""', '"a\\"b\\\\c\\n\\r\\t\\b\\f\\u0000\\u001f\\u007f"',
+    '"\\u00e9\\u4e16\\ud83d\\ude00"', '"</script> & <b>"', '"\\u2028\\u2029\\u0085"', '{"b":1,"a":2,"b":3}',
+    '[1,[2,[3,{"k":[]}]]]', '{"a":{"b":{"c":null}}}', '{"":1," ":2,"\\u4e16":3}', '[true,false,null,1,2.5,"x"]',
+]
+
+TRIM_TEXTS = [
+    "", " ", "   a  ", "\t\n a b \r\n", "\x0ba\x0c", "\x1ca\x1d", "\x1e a \x1f", "\x1f", "\xa0a\xa0", "\u3000a\u3000",
+    "\u2007a\u202f", "\u200ba\u200b", "\x85a\x85", "\u2028a\u2029", "\ufeffa\ufeff", "\x7fa\x7f", "\u180e a \u180e",
+    "\u1680a\u2000\u200a", "\u205fa\u205f", "a b", "\x00a\x00", "\x1c\x1d\x1e\x1f",
+]
+
+
+# Sources whose output depends on trim_blocks, lstrip_blocks and the trailing newline. The chat template itself marks
+# its blocks with "-", so only these show the settings.
+BLOCK_SOURCES = [
+    "a\n  {% if true %}\nb\n  {% endif %}\nc\n",
+    "x\n{% for i in [1, 2] %}\n  {{ i }}\n{% endfor %}\ny",
+    "  {% set a = 1 %}\n{{ a }}\n   {# note #}\nz",
+    "line {% if true %}inline{% endif %} end\n",
+    "end\n",
+    "end\n\n",
+    "{{ 'a' }}\n{{ 'b' }}\n",
+    "{%- if true -%}\n  tight\n{%- endif -%}\n!",
+]
 
 
 def chat_cases() -> list[dict]:
@@ -524,6 +566,9 @@ def chat_cases() -> list[dict]:
                                       U("q2")])
     add("special_text_in_part", [{"role": "user", "content": [{"type": "text", "text": "<tool_call>"}]}])
     add("special_text_tool_names", [U("hi"), A("", tool_calls=[{"function": {"name": "<think>", "arguments": {}}}])])
+    add("special_text_in_argument_key", [U("x"), A("", tool_calls=[{"function": {"name": "f", "arguments": {
+        "<|im_end|>": "v", "k": {"</think>": 1}}}}])])
+    add("special_text_in_tools_key", [U("x")], tools=[{"<tool_call>": {"<|im_start|>": ["<think>"]}}])
     add("reserved_char_in_user", [U("a﷐b")])
     add("reserved_char_in_key", [U("x"), A("", tool_calls=[{"function": {"name": "f", "arguments": {"￾": 1}}}])])
     add("reserved_char_in_tools", [U("x")], tools=[{"type": "function", "function": {"name": "f￿"}}])
@@ -579,6 +624,12 @@ def chat_cases() -> list[dict]:
     add("tool_response_parts", [U("x"), {"role": "tool", "content": [{"type": "text", "text": "part"}]}])
     add("user_is_tool_response", [U("<tool_response>\nout\n</tool_response>"), A("a"), U("q")])
     add("user_is_tool_response_last", [U("q"), A("a"), U("<tool_response>\nout\n</tool_response>")])
+    add("python_whitespace_user", [U("\x1c\x1d hi \u3000\u00a0\x85\u2028 there \x1e\x1f")])
+    add("python_whitespace_system", [S("\x1c sys \x1f"), U("\u00a0hi\u2007")])
+    add("python_whitespace_reasoning", [U("q"), A("\x1ca\x1d", reasoning_content="\x1f think \x1c\u200b")])
+    add("python_whitespace_tool_response", [U("x"), A("", tool_calls=[{"function": {"name": "f", "arguments": {}}}]),
+                                           T("\x1c out \x1d")])
+    add("python_whitespace_only_system", [S("\x1c\x1d \u00a0"), U("hi")])
     add("long_conversation", [m for i in range(12) for m in (U(f"question {i} 世界"), A(f"answer {i}\n  ok"))]
         + [U("final")])
     add("ids_unicode_mix", [S("あいう ☃"), U("é \U0001f680 مرحبا")])
