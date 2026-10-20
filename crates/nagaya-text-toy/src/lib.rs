@@ -7,7 +7,7 @@ mod plan;
 mod reply;
 mod test_set;
 
-use gogi_proto::context::Context;
+use gogi_proto::context::{Context, Tool};
 use gogi_toy as toy;
 use nagaya_council::family::{
     Boundary, ControlHit, DecisionInput, Family, FamilyError, RawRead, ReadPlan, Rendering, ReplyParser,
@@ -162,8 +162,9 @@ impl Family for ToyFamily {
         })
     }
 
-    fn reply_parser(&self, thinking: bool) -> Box<dyn ReplyParser> {
-        Box::new(reply::ToyReplyParser::new(thinking))
+    fn reply_parser(&self, thinking: bool, _tools: &[Tool]) -> Result<Box<dyn ReplyParser>, FamilyError> {
+        // The toy call format has no schema, so the tools do not change the parse.
+        Ok(Box::new(reply::ToyReplyParser::new(thinking)))
     }
 
     fn tokenize(&self, text: &str) -> Result<Vec<u32>, FamilyError> {

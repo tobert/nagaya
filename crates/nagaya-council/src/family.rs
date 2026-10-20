@@ -18,7 +18,7 @@
 use std::fmt;
 
 use gogi_proto::Invalid;
-use gogi_proto::context::Context;
+use gogi_proto::context::{Context, Tool};
 use gogi_proto::generation::Phase;
 use gogi_proto::spec::Spec;
 use serde_json::{Map, Value};
@@ -259,8 +259,10 @@ pub trait Family: Send + Sync {
     /// Tokenize the letters and the suffixes of a raw read.
     fn raw_read(&self, letters: &[String], suffixes: &[String]) -> Result<RawRead, FamilyError>;
 
-    /// Start a reply parser. `thinking` is true when the generation prompt opened a reasoning part.
-    fn reply_parser(&self, thinking: bool) -> Box<dyn ReplyParser>;
+    /// Start a reply parser. `thinking` is true when the generation prompt opened a reasoning part. `tools` are the
+    /// tools of the context: a family that reads a call against the schema of its tool needs them. A tool list that
+    /// the family cannot read is [`FamilyError::Client`].
+    fn reply_parser(&self, thinking: bool, tools: &[Tool]) -> Result<Box<dyn ReplyParser>, FamilyError>;
 
     /// Tokenize client text as content. Text that spells a control token stays text.
     fn tokenize(&self, text: &str) -> Result<Vec<u32>, FamilyError>;
