@@ -383,6 +383,8 @@ version = "0.1.0"
 dependencies = [
  "nagaya-abi",
  "nagaya-ledger",
+ "nagaya-store",
+ "tempfile",
 ]
 
 [[package]]
