@@ -213,10 +213,12 @@ impl Parts for ParkEngine {
     }
 
     fn cells_read(&mut self, state: State, part: usize, from: u64, n: u64, out: &mut [u8]) -> Result<(), PartError> {
+        self.record.lock().unwrap().events.push("cells_read".to_owned());
         self.inner.parts().unwrap().cells_read(state, part, from, n, out)
     }
 
     fn cells_write(&mut self, state: State, part: usize, from: u64, n: u64, bytes: &[u8]) -> WriteResult {
+        self.record.lock().unwrap().events.push("cells_write".to_owned());
         self.inner.parts().unwrap().cells_write(state, part, from, n, bytes)
     }
 
@@ -469,9 +471,18 @@ fn a_running_quantum_ends_before_the_park() {
         .iter()
         .position(|event| event == "quantum-end")
         .expect("the quantum ends");
+    let is_access = |event: &String| matches!(event.as_str(), "read" | "cells_read" | "cells_write");
     assert!(
-        events[end + 1..].iter().all(|event| event == "read"),
+        !events[..end].iter().any(is_access),
+        "the park touches a part during the quantum: {events:?}"
+    );
+    assert!(
+        events[end + 1..].iter().all(is_access),
         "the park reads only after the quantum: {events:?}"
+    );
+    assert!(
+        events[end + 1..].iter().any(|event| event == "cells_read"),
+        "the park reads the cells parts: {events:?}"
     );
     assert!(events[end + 1..].len() >= 2, "the park reads both states: {events:?}");
     drop(record);
