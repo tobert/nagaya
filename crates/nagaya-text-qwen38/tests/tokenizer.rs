@@ -73,14 +73,39 @@ fn encode_gives_the_ids_of_mk() {
     }
 }
 
+/// The error is `Reserved` with the character and the offset that mk names, and its message says them.
+fn assert_reserved(name: &str, error: &Error, case: &Json) {
+    let want_char = char::from_u32(u32::from_str_radix(case.get("char").str(), 16).unwrap()).unwrap();
+    let want_offset = case.get("offset").int() as usize;
+    match error {
+        Error::Reserved { ch, offset } => {
+            assert_eq!(
+                (*ch, *offset),
+                (want_char, want_offset),
+                "case {name}: mk says {:?}",
+                case.get("error").str()
+            );
+        }
+        other => panic!("case {name}: expected Reserved, got {other:?}"),
+    }
+    let text = error.to_string();
+    assert!(
+        text.contains(&format!(
+            "U+{} at offset {want_offset} is a Unicode noncharacter",
+            case.get("char").str()
+        )),
+        "case {name}: {text}"
+    );
+}
+
 #[test]
 fn encode_refuses_each_noncharacter() {
     let cases = tokenizer_fixture().get("encode_refused").items();
-    assert_eq!(cases.len(), 68);
+    assert_eq!(cases.len(), 69);
     for case in cases {
         let name = case.get("name").str();
         match tokenizer().encode(case.get("text").str()) {
-            Err(Error::Reserved { .. }) => {}
+            Err(e) => assert_reserved(name, &e, case),
             other => panic!("case {name}: expected a Reserved error, got {other:?}"),
         }
     }
@@ -153,7 +178,10 @@ fn escape_and_unescape_refuse_what_mk_refuses() {
             "encode_escaped" => tokenizer().encode_escaped(text).map(|_| ()),
             op => panic!("operation {op}"),
         };
-        assert!(matches!(result, Err(Error::Reserved { .. })), "{case:?}: {result:?}");
+        match result {
+            Err(e) => assert_reserved(case.get("op").str(), &e, case),
+            other => panic!("{case:?}: expected a Reserved error, got {other:?}"),
+        }
     }
 }
 
@@ -183,8 +211,38 @@ fn decode_refuses_what_mk_refuses() {
     assert_eq!(cases.len(), 6);
     for case in cases {
         let name = case.get("name").str();
-        let result = tokenizer().decode(&case.get("ids").ids());
-        assert!(result.is_err(), "case {name} gave {result:?}");
+        let error = match tokenizer().decode(&case.get("ids").ids()) {
+            Err(e) => e,
+            Ok(text) => panic!("case {name} gave {text:?}, and mk says {:?}", case.get("error").str()),
+        };
+        let mk = case.get("error").str();
+        match case.get("exception").str() {
+            // An id outside the vocabulary: the error names the id and the size of the vocabulary.
+            "IndexError" => match error {
+                Error::TokenId { id, count } => {
+                    assert_eq!(id as i128, case.get("bad_id").int(), "case {name}: mk says {mk:?}");
+                    assert_eq!(count, tokenizer().len(), "case {name}");
+                }
+                other => panic!("case {name}: mk says {mk:?}; got {other:?}"),
+            },
+            // Bytes that are not UTF-8: the message gives the index where mk's error starts.
+            "UnicodeDecodeError" => match &error {
+                Error::Bytes(m) => {
+                    let from = format!("from index {}", case.get("start").int());
+                    assert!(m.contains(&from), "case {name}: mk says {mk:?}; got {m:?}");
+                }
+                other => panic!("case {name}: mk says {mk:?}; got {other:?}"),
+            },
+            // A token with a character outside the byte table: the message names the token.
+            "RuntimeError" => match &error {
+                Error::Bytes(m) => {
+                    let token = format!("token {} (", case.get("token").int());
+                    assert!(m.contains(&token), "case {name}: mk says {mk:?}; got {m:?}");
+                }
+                other => panic!("case {name}: mk says {mk:?}; got {other:?}"),
+            },
+            other => panic!("case {name}: the exception {other} is not known"),
+        }
     }
 }
 

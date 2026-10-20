@@ -190,6 +190,36 @@ def write_tables(path: Path, header: dict, ranges: dict) -> None:
     path.write_text("\n".join(out).rstrip("\n") + "\n")
 
 
+def refusal(call, what: str) -> dict:
+    """Run `call`, which mk must refuse for a noncharacter. Give mk's message and the character and offset in it."""
+    import re
+    try:
+        call()
+    except ValueError as e:
+        m = re.match(r"U\+([0-9A-F]{4,6}) at offset (\d+) is a Unicode noncharacter", str(e))
+        if m is None:
+            sys.exit(f"mk refuses {what} with a message that has no character and offset: {e}")
+        return {"char": m.group(1), "offset": int(m.group(2)), "error": str(e)}
+    sys.exit(f"mk accepts {what}: the fixture would be wrong")
+
+
+def decode_refusal(tok, ids: list[int], what: str) -> dict:
+    """Run `tok.decode(ids)`, which mk must refuse. Give the kind of the failure and the facts that a message names."""
+    import re
+    try:
+        tok.decode(ids)
+    except UnicodeDecodeError as e:
+        return {"exception": "UnicodeDecodeError", "start": e.start, "error": str(e)}
+    except IndexError as e:
+        return {"exception": "IndexError", "error": str(e), "bad_id": next(i for i in ids if i >= len(tok.id_to_token))}
+    except RuntimeError as e:
+        m = re.match(r"token (\d+) ", str(e))
+        if m is None:
+            sys.exit(f"mk refuses {what} with a message that has no token id: {e}")
+        return {"exception": "RuntimeError", "error": str(e), "token": int(m.group(1))}
+    sys.exit(f"mk decodes {what}: the fixture would be wrong")
+
+
 def hexs(b: bytes) -> str:
     return b.hex()
 
@@ -249,12 +279,10 @@ def main() -> None:
     refused = [{"name": f"reserved_U+{ord(c):04X}", "text": f"a{c}b"} for c in RESERVED]
     refused.append({"name": "reserved_only", "text": RESERVED[0]})
     refused.append({"name": "reserved_at_start", "text": RESERVED[5] + "text"})
+    # The offset counts characters, not bytes: two bytes, three bytes and four bytes come before the character.
+    refused.append({"name": "reserved_after_multibyte", "text": "\u00e9\u4e16\U0001f600" + RESERVED[3] + "z"})
     for r in refused:
-        try:
-            tok.encode(r["text"])
-        except ValueError:
-            continue
-        sys.exit(f"mk accepts {r['name']}: the fixture would be wrong")
+        r.update(refusal(lambda r=r: tok.encode(r["text"]), r["name"]))
 
     specials_sorted = sorted(tok.special_ids)
     escape_texts = [
@@ -275,11 +303,7 @@ def main() -> None:
         {"op": "encode_escaped", "text": RESERVED[-2]},
     ]
     for r in escape_refused:
-        try:
-            getattr(tok, r["op"])(r["text"])
-        except ValueError:
-            continue
-        sys.exit(f"mk accepts {r}")
+        r.update(refusal(lambda r=r: getattr(tok, r["op"])(r["text"]), r["op"]))
     # Each escape character, by itself, as encode_escaped reads it: the special token's text through BPE.
     escape_chars = [{"char": RESERVED[k], "special_id": i, "ids": tok.encode_escaped(RESERVED[k])}
                     for k, i in enumerate(specials_sorted)]
@@ -300,12 +324,6 @@ def main() -> None:
         {"name": "out_of_range", "ids": [len(tok.id_to_token)]},
         {"name": "far_out_of_range", "ids": [4000000000]},
     ]
-    for d in decode_errors:
-        try:
-            tok.decode(d["ids"])
-        except (RuntimeError, UnicodeDecodeError, IndexError):
-            continue
-        sys.exit(f"mk decodes {d['name']}")
     decode.append({"name": "all_bytes_ascii", "ids": byte_ids[:128], "text": tok.decode(byte_ids[:128])})
     decode.append({"name": "split_cjk", "ids": [single(b) for b in "世界".encode()],
                    "text": tok.decode([single(b) for b in "世界".encode()])})
@@ -354,6 +372,9 @@ def main() -> None:
         "type_counts": {str(t): tok.token_type.count(t) for t in sorted(set(tok.token_type))},
         "reserved_count": len(RESERVED),
     }
+
+    for d in decode_errors:
+        d.update(decode_refusal(tok, d["ids"], d["name"]))
 
     dump_cases(OUT / "tokenizer.json", header, {
         "token_info": token_info,
