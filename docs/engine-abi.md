@@ -246,8 +246,8 @@ broken fake.
 
 ### Logit outputs
 
-**Proposed** (Claude Sonnet 5.5, 2026-10-20). The ABI does not say how a pass gives logits. The mk binding already
-does it one way, and the fake engine follows it. Amy decides later.
+The mk binding gives logits one way, and the fake engine follows it. Decided 2026-10-20 (reading, from a note by
+Sonnet 5.5 in milestone 12).
 
 - `logit_rows` holds positions that the segment feeds. A position outside `positions` is a refused pass.
 - A pass gives one output for each entry of `logit_rows`, named `logits`.
