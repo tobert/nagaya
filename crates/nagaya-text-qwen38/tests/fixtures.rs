@@ -4,7 +4,7 @@ mod common;
 
 use common::{JsonExt, fixture};
 
-const FILES: [&str; 4] = ["tokenizer.json", "chat.json", "utf8.json", "classes.json"];
+const FILES: [&str; 5] = ["tokenizer.json", "chat.json", "utf8.json", "classes.json", "jinja.json"];
 
 #[test]
 fn all_fixtures_come_from_one_run_of_one_revision_of_mk() {

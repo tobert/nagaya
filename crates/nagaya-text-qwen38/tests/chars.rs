@@ -18,12 +18,17 @@ fn in_ranges(ranges: &Json, cp: u32) -> bool {
 #[test]
 fn every_code_point_has_the_class_that_python_gives() {
     let classes = fixture("classes.json");
-    let tables: [(&str, Class); 5] = [
+    let tables: [(&str, Class); 10] = [
         ("L", chars::is_letter),
         ("M", chars::is_mark),
         ("N", chars::is_number),
         ("s", chars::is_space),
         ("isspace", chars::is_python_space),
+        ("isalpha", chars::is_python_alpha),
+        ("isdigit", chars::is_python_digit),
+        ("isprintable", chars::is_python_printable),
+        ("cased", chars::is_cased),
+        ("case_ignorable", chars::is_case_ignorable),
     ];
     for (name, predicate) in tables {
         let ranges = classes.get(name);
@@ -57,7 +62,18 @@ fn every_code_point_has_the_class_that_python_gives() {
 #[test]
 fn the_fixture_ranges_are_sorted_and_apart() {
     let classes = fixture("classes.json");
-    for name in ["L", "M", "N", "s", "isspace"] {
+    for name in [
+        "L",
+        "M",
+        "N",
+        "s",
+        "isspace",
+        "isalpha",
+        "isdigit",
+        "isprintable",
+        "cased",
+        "case_ignorable",
+    ] {
         let mut last_end: i128 = -2;
         for r in classes.get(name).items() {
             let (a, b) = (r.items()[0].int(), r.items()[1].int());

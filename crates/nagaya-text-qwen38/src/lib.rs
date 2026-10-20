@@ -13,6 +13,7 @@ pub mod tokenizer;
 mod unicode_tables;
 pub mod gguf;
 pub mod json;
+pub mod pystr;
 
 pub use error::Error;
 pub use family::{Qwen38, Rendered};
