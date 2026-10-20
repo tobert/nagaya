@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 nagaya-abi = { version = "0.1.0", path = "../nagaya-abi" }
 nagaya-ledger = { version = "0.1.0", path = "../nagaya-ledger" }
+nagaya-store = { version = "0.1.0", path = "../nagaya-store" }
+tempfile = "3.27.0"
 
 [dev-dependencies]
 nagaya-abi = { path = "../nagaya-abi", features = ["fake"] }

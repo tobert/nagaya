@@ -11,6 +11,7 @@ use nagaya_abi::{
     PassStatus, Segment, SegmentInputs, State, WriteResult,
 };
 use nagaya_ledger::{Admission, Ledger, LedgerError, Profile};
+use nagaya_store::{EngineFacts, Put, Reason, Restored, Snapshot, Store, StoreError, Tensor, Tier, recipe_root};
 
 use crate::{Failure, compare_bytes};
 
@@ -359,54 +360,89 @@ fn compare_filled(
     Ok(())
 }
 
-fn restore<E: Engine + ?Sized>(
-    engine: &mut E,
+/// Restore parked parts into a state through `Store::restore`, the path that production uses (spec 8.3).
+///
+/// The function puts the parts in a store in a temporary directory, then restores that entry. Thus the gate and the
+/// store cannot drift apart. `spans` gives the positions of each row part. Without it, a row part starts at 0.
+fn restore_through_store(
+    engine: &mut dyn Engine,
     state: State,
     limits: &Limits,
     parts: &[(PartId, Vec<u8>)],
     spans: Option<&[(PartId, CoverageSpan)]>,
     gate: &'static str,
 ) -> Result<(), Failure> {
-    let mut cells_rows = None;
+    let mut tensors = Vec::new();
     for (id, bytes) in parts {
         let part = &limits.parts[*id];
-        let result = match part.kind {
-            PartKind::Fixed => engine.parts().unwrap().part_write(state, *id, bytes),
-            PartKind::Cells | PartKind::Ring => {
-                let row = shape_bytes(part);
-                if row == 0 {
-                    return Err(Failure::new(gate, format!("part {} has a zero row", part.name)));
-                }
-                if !(bytes.len() as u64).is_multiple_of(row) {
-                    return Err(Failure::new(
-                        gate,
-                        format!("part {} ends with a partial row", part.name),
-                    ));
-                }
-                let count = bytes.len() as u64 / row;
-                if part.kind == PartKind::Cells {
-                    cells_rows = Some(count);
-                }
-                let from = spans
-                    .and_then(|spans| spans.iter().find(|(part, _)| part == id).map(|(_, span)| span.start))
-                    .unwrap_or(0);
-                engine.parts().unwrap().cells_write(state, *id, from, count, bytes)
+        let row = shape_bytes(part);
+        let (shape, coverage) = if part.is_row() {
+            if row == 0 {
+                return Err(Failure::new(gate, format!("part {} has a zero row", part.name)));
             }
-            PartKind::Derived => unreachable!("a derived part is not stored"),
+            if !(bytes.len() as u64).is_multiple_of(row) {
+                return Err(Failure::new(
+                    gate,
+                    format!("part {} ends with a partial row", part.name),
+                ));
+            }
+            let count = bytes.len() as u64 / row;
+            let start = spans
+                .and_then(|spans| {
+                    spans
+                        .iter()
+                        .find(|(span_part, _)| span_part == id)
+                        .map(|(_, span)| span.start)
+                })
+                .unwrap_or(0);
+            let mut shape = vec![count];
+            shape.extend(part.shape.iter().copied());
+            (shape, Some((start, start + count)))
+        } else {
+            (part.shape.clone(), None)
         };
-        if result != WriteResult::Ok {
-            return Err(Failure::new(
-                gate,
-                format!("the engine refused to restore part {}", part.name),
-            ));
-        }
+        tensors.push(Tensor {
+            name: part.name.clone(),
+            kind: part.kind,
+            dtype: part.dtype,
+            shape,
+            data: bytes.clone(),
+            coverage,
+            block_format: part.block_format.clone(),
+        });
     }
-    if let Some(rows) = cells_rows
-        && engine.parts().unwrap().set_n(state, rows) != WriteResult::Ok
+    let snapshot = Snapshot { tensors, parent: None };
+    let store_failure = |what: &str, error: StoreError| Failure::new(gate, format!("{what}: {error}"));
+    let dir = tempfile::tempdir().map_err(|error| Failure::new(gate, format!("no temporary directory: {error}")))?;
+    let mut store = Store::open_with_limits(dir.path(), u64::MAX, u64::MAX, u64::MAX, 0)
+        .map_err(|error| store_failure("the store did not open", error))?;
+    let identity = [0u8; 32];
+    let id = store
+        .put(Put {
+            snapshot: &snapshot,
+            recipe: recipe_root(&identity, b"", &[], b""),
+            previous_recipe: None,
+            engine: EngineFacts::of("conformance", limits),
+            identity,
+            owner: 0,
+            tier: Tier::Host,
+            reason: Reason::Anchor,
+            sealed_recipe: None,
+            provenance: None,
+            now_ms: 0,
+        })
+        .map_err(|error| store_failure("the store refused the parked parts", error))?;
+    match store
+        .restore(&id, engine, state, &identity, 0)
+        .map_err(|error| store_failure("the store refused the restore", error))?
     {
-        return Err(Failure::new(gate, "the engine refused to set n after the restore"));
+        Restored::Done => Ok(()),
+        Restored::Refused { part } => Err(Failure::new(gate, format!("the engine refused to restore part {part}"))),
+        Restored::Failed { part } => Err(Failure::new(
+            gate,
+            format!("the engine failed to restore part {part} and poisoned the state"),
+        )),
     }
-    Ok(())
 }
 
 fn coverage_spans<E: Engine + ?Sized>(
@@ -462,7 +498,7 @@ fn compare_spans(
 /// Park every stored part of one state, restore it into a second state, and compare every bit.
 ///
 /// The gate also checks the counts and the coverage spans. It is quantum condition 3.
-pub fn park_and_restore<E: Engine + ?Sized>(engine: &mut E) -> Outcome {
+pub fn park_and_restore<E: Engine>(engine: &mut E) -> Outcome {
     let limits = engine.limits();
     if engine.parts().is_none() {
         return Outcome::NotApplicable("the engine has no parts capability".to_owned());
@@ -478,11 +514,7 @@ pub fn park_and_restore<E: Engine + ?Sized>(engine: &mut E) -> Outcome {
     }
 }
 
-fn park_and_restore_inner<E: Engine + ?Sized>(
-    engine: &mut E,
-    limits: &Limits,
-    destination: u32,
-) -> Result<(), Failure> {
+fn park_and_restore_inner<E: Engine>(engine: &mut E, limits: &Limits, destination: u32) -> Result<(), Failure> {
     let gate = "park_and_restore";
     let source = State::Slot(0);
     let target = State::Slot(destination);
@@ -497,7 +529,7 @@ fn park_and_restore_inner<E: Engine + ?Sized>(
     compare_filled(gate, limits, &written, &parked)?;
     move_ring_window(engine, source, limits, &mut parked, gate)?;
     let source_spans = coverage_spans(engine, source, limits, &parked);
-    restore(engine, target, limits, &parked, source_spans.as_deref(), gate)?;
+    restore_through_store(engine, target, limits, &parked, source_spans.as_deref(), gate)?;
     let restored = read_filled(engine, target, limits, gate)?;
     compare_filled(gate, limits, &parked, &restored)?;
     if let (Some(source_spans), Some(restored_spans)) =
