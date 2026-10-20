@@ -375,7 +375,8 @@ impl Scheduler {
                 if segments.len() >= segment_limit {
                     break;
                 }
-                if candidate.engine == engine {
+                // A pass holds segments of one kind (spec 5.7).
+                if candidate.engine == engine && candidate.quanta.front() == Some(&kind) {
                     segments.push(candidate.id);
                 }
             }

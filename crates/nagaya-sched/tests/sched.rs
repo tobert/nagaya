@@ -617,3 +617,27 @@ fn an_engine_that_allows_no_segment_is_a_bug() {
     scheduler.engines = limited_engine(0);
     let _ = step(scheduler, Event::Tick { now_ms: 0 });
 }
+
+#[test]
+fn a_pass_holds_segments_of_one_kind() {
+    let jobs = vec![
+        job(1, Class::Batch, 0, 0, 0, &[Kind::Decode]),
+        job(2, Class::Batch, 0, 1, 0, &[Kind::Prefill]),
+        job(3, Class::Batch, 0, 2, 0, &[Kind::Decode]),
+    ];
+    let mut scheduler = state(jobs);
+    scheduler.engines = limited_engine(16);
+    let (scheduler, next) = step(scheduler, Event::Tick { now_ms: 0 });
+    assert_eq!(next, quantum(Class::Batch, Kind::Decode, &[1, 3]));
+    let (scheduler, _) = step(
+        scheduler,
+        Event::Complete {
+            now_ms: 1,
+            duration_ms: 1,
+            outcome: Completion::Done,
+        },
+    );
+    // The prefill job still has its own quantum, and it is still ready.
+    assert_eq!(scheduler.running, quantum(Class::Batch, Kind::Prefill, &[2]));
+    assert!(scheduler.jobs[1].quanta.is_empty());
+}
