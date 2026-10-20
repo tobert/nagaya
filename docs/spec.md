@@ -510,6 +510,10 @@ Decided 2026-10-18 evening.
 only when it is at most a quarter of a full snapshot.) A delta holds, for each cells part and ring part, the rows
 after its parent's end. It holds each fixed part whole. The store never evicts a base while a delta needs it.
 
+**Open** (kaibo, 2026-10-20): a ring part can wrap past its parent's end. Then the rows after the parent's end are
+gone, and check 4 refuses the delta. The refusal changes nothing, so nothing is corrupt. A rule for a wrapped ring,
+for example a ring part held whole, comes with the mkviolet port.
+
 A delta's `put` names its parent content id and its previous recipe. The store checks these facts:
 
 1. The parent is live.
@@ -942,7 +946,8 @@ milestones 11 and 11b).
   It does not hold a hand-written copy. The template is part of the identity, so a new template in a GGUF needs no
   new code.
 - The interpreter matches mk's Python on four points. `trim` strips what Python's `str.strip` strips, which includes
-  U+001C to U+001F. `tojson` writes what Python's `json.dumps` writes, with `ensure_ascii` off.
+  U+001C to U+001F. `tojson` writes what Python's `json.dumps` writes, with `ensure_ascii` off. A map
+  key that is an integer, a float, a bool or none becomes a string as in Python.
   A map keeps its key order.
 - A value in `{{ }}` and the `string` filter follow Python's `str`. Thus none is `None` and a bool is `True`. A float
   is its `repr`, and a string in a list has quotes.
@@ -1096,3 +1101,8 @@ The inventories found these items. We correct each one when its code moves. We d
 2. What makes `close()` safe for mk, so that engines can load and unload at runtime (3.3)?
 3. How long does the conversion to canonical safetensors take on mk and mkviolet (10.3, D10)?
 4. Answered 2026-10-20: on mk, one pass of many tokens gives the same bits as one pass for each token (6.13).
+5. How does a profile `PUT` work across machines (2.3, 2.4, 11.5)? The machine that takes the `PUT` cannot
+   return the target's 507, and 2.3 ignores an old version where 11.5 answers 409 (kaibo, 2026-10-20). Milestone 12
+   settles it with the routes.
+6. The template engine differs from jinja2 on integers past 2^127 and on a float key that is not finite (milestone
+   11.5 text step). The chat template uses none of them. Which ones do we match?

@@ -90,7 +90,7 @@ promises that no reduction order depends on the segment count or the row count o
 Reason: `segments_exact` now says what is true, but not what an engine must do to make it true. DeepInfer's rule is
 a test that a kernel author can check.
 
-### 3. Interval checkpoints at a fixed grain (spec 6.4, 6.5)
+### 3. Interval checkpoints at a fixed grain (spec 6.13)
 
 **Decided:** an interval copy that does not seal (spec 6.13, ontology "Interval copy"). The latest copy for each
 context stays in host memory, and eviction takes those copies first, with a cap.
@@ -106,8 +106,8 @@ Their replay of the window is approximate, and that part does not transfer. A GD
 prefix, so a short replay gives a different state, not a near one. Our replay must be exact: from the checkpoint to
 the position, with the same boundaries.
 
-Proposed: an engine can declare a checkpoint grain in `limits()`. The scheduler then makes an `interval` snapshot
-(6.4) at each multiple of the grain.
+Proposed: an engine can declare a checkpoint grain in `limits()`. The scheduler then makes an interval copy at each
+multiple of the grain. (The decision above replaces this text.)
 
 mk's seal rounds the GDN state to bf16 (ontology "Seal"), so a seal changes the bits that follow. There were two
 choices for an interval checkpoint:
@@ -122,7 +122,7 @@ store rule. This connects to the "shadow rounding points" from mk's goal 06.
 
 **Decided:** adopted (spec 5.11).
 
-Spec 5.11 records "no model yet" until a fit exists. DeepInfer measures a curve at start instead: five timed runs
+Spec 5.11 recorded "no model yet" until a fit exists. DeepInfer measures a curve at start instead: five timed runs
 for each batch size, a trimmed mean (`deepinfer/worker/model_runner.py:586-619`), saved under a hash
 (`decode_perf_cache.py:40-52`). It then corrects the curve
 online with the median of the recent errors, and keeps the slope at zero or more
