@@ -232,6 +232,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "gogi-fake"
+version = "0.1.0"
+source = "git+file:///home/atobey/src/gogi?rev=c6c9228009990863d6826d3b769c7d48edc2375e#c6c9228009990863d6826d3b769c7d48edc2375e"
+dependencies = [
+ "gogi-proto",
+ "gogi-toy",
+ "indexmap",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "gogi-proto"
 version = "0.1.0"
 source = "git+file:///home/atobey/src/gogi?rev=c6c9228009990863d6826d3b769c7d48edc2375e#c6c9228009990863d6826d3b769c7d48edc2375e"
@@ -241,6 +254,15 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror",
+]
+
+[[package]]
+name = "gogi-toy"
+version = "0.1.0"
+source = "git+file:///home/atobey/src/gogi?rev=c6c9228009990863d6826d3b769c7d48edc2375e#c6c9228009990863d6826d3b769c7d48edc2375e"
+dependencies = [
+ "gogi-proto",
+ "serde_json",
 ]
 
 [[package]]
@@ -456,6 +478,18 @@ dependencies = [
  "minijinja",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "nagaya-text-toy"
+version = "0.1.0"
+dependencies = [
+ "gogi-fake",
+ "gogi-proto",
+ "gogi-toy",
+ "nagaya-abi",
+ "nagaya-council",
+ "serde_json",
 ]
 
 [[package]]
