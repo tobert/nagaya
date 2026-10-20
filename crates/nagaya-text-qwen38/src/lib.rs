@@ -4,6 +4,7 @@
 //! Python front-end, byte for byte and id for id.
 
 pub mod chars;
+pub mod detok;
 mod error;
 pub mod tokenizer;
 #[rustfmt::skip]
