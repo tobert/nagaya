@@ -1043,6 +1043,7 @@ impl Store {
             let quarantine = existing.quarantine;
             let recipe = existing.recipe;
             let parent = existing.parent;
+            let tier = existing.tier;
             if state == EntryState::Quarantined {
                 if quarantine == Some(Quarantine::Tripwire) {
                     return Err(self.tripwire_error(put.recipe));
@@ -1053,6 +1054,12 @@ impl Store {
                 return Err(StoreError::Invalid(
                     "the content id already has another recipe".to_owned(),
                 ));
+            }
+            if tier != put.tier {
+                return Err(StoreError::Invalid(format!(
+                    "the entry is in tier {tier:?}; the put asks for tier {:?}. Evict the entry first",
+                    put.tier
+                )));
             }
             return Ok(id);
         }
@@ -1089,10 +1096,13 @@ impl Store {
 
         // 6.9: choose the victims before the store writes the new entry.
         let need = self.need_bytes(&put, size, &capped_set);
+        // 6.5: the new entry needs its whole chain. A victim is never an ancestor of the new entry.
+        let mut spared = capped_set.clone();
+        spared.extend(self.ancestors(put.snapshot.parent));
         let mut victims = if need == 0 {
             Vec::new()
         } else {
-            self.choose_victims(put.owner, put.tier, need, put.now_ms, &capped_set)
+            self.choose_victims(put.owner, put.tier, need, put.now_ms, &spared)
         };
         if need > 0 {
             let freed: u64 = victims
@@ -1112,6 +1122,7 @@ impl Store {
         prune_pins(&mut index, put.now_ms);
         for victim in &victims {
             index.entries.remove(victim);
+            index.pins.remove(victim);
         }
         index.entries.insert(
             id,
@@ -1350,10 +1361,11 @@ impl Store {
     ) -> Result<Vec<ContentId>, StoreError> {
         check_pin_lease(pin.expires_ms, now_ms)?;
         let chain = self.lookup(recipe, tolerance, engine, slot, now_ms)?;
+        let mut pins = self.index.pins.clone();
         for id in &chain {
-            set_pin(&mut self.index.pins, *id, pin.clone());
+            set_pin(&mut pins, *id, pin.clone());
         }
-        self.persist()?;
+        self.persist_pins(pins)?;
         Ok(chain)
     }
 
@@ -1424,6 +1436,8 @@ impl Store {
         }
 
         let mut written = 0usize;
+        // The rows that the snapshots hold: the end of the cells coverage. `set_n` takes them after the last part.
+        let mut cells_end: Option<(String, u64)> = None;
         for snapshot in &snapshots {
             for tensor in &snapshot.tensors {
                 let index = limits
@@ -1438,6 +1452,11 @@ impl Store {
                         .part_write(state, index, &tensor.data),
                     PartKind::Cells | PartKind::Ring => {
                         let (from, rows) = tensor.coverage.map_or((0, 0), |(start, end)| (start, end - start));
+                        if let (PartKind::Cells, Some((_, end))) = (tensor.kind, tensor.coverage)
+                            && cells_end.as_ref().is_none_or(|(_, seen)| end > *seen)
+                        {
+                            cells_end = Some((tensor.name.clone(), end));
+                        }
                         engine
                             .parts()
                             .ok_or_else(|| StoreError::Invalid("no parts".to_owned()))?
@@ -1453,6 +1472,17 @@ impl Store {
                     WriteResult::Refused if written == 0 => return Ok(Restored::Refused { part }),
                     WriteResult::Refused | WriteResult::Failed => return Ok(Restored::Failed { part }),
                 }
+            }
+        }
+        // The ABI: the caller calls `set_n` after it writes every part. The writes changed the state, so a refusal
+        // here is a failure (6.8).
+        if let Some((part, end)) = cells_end {
+            let result = engine
+                .parts()
+                .ok_or_else(|| StoreError::Invalid("no parts".to_owned()))?
+                .set_n(state, end);
+            if result != WriteResult::Ok {
+                return Ok(Restored::Failed { part });
             }
         }
         // 6.8: a refusal or a failure leaves the entry as it is.
@@ -1480,19 +1510,31 @@ impl Store {
         if entry.state != EntryState::Live {
             return Err(StoreError::Quarantined(id));
         }
-        set_pin(&mut self.index.pins, id, Pin { owner, expires_ms });
-        self.persist()
+        let mut pins = self.index.pins.clone();
+        set_pin(&mut pins, id, Pin { owner, expires_ms });
+        self.persist_pins(pins)
     }
 
     /// Remove the pin of one owner. The pins of other owners stay (spec 6.10).
     pub fn unpin(&mut self, id: &ContentId, owner: u64) -> Result<(), StoreError> {
-        if let Some(pins) = self.index.pins.get_mut(id) {
-            pins.retain(|pin| pin.owner != owner);
-            if pins.is_empty() {
-                self.index.pins.remove(id);
+        let mut pins = self.index.pins.clone();
+        if let Some(held) = pins.get_mut(id) {
+            held.retain(|pin| pin.owner != owner);
+            if held.is_empty() {
+                pins.remove(id);
             }
         }
-        self.persist()
+        self.persist_pins(pins)
+    }
+
+    /// Replace the pins and write the index. A failed write puts the old pins back.
+    fn persist_pins(&mut self, pins: BTreeMap<ContentId, Vec<Pin>>) -> Result<(), StoreError> {
+        let previous = std::mem::replace(&mut self.index.pins, pins);
+        if let Err(error) = self.persist() {
+            self.index.pins = previous;
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Clear a tripwire refusal after a person knows the cause.
@@ -1521,6 +1563,14 @@ impl Store {
                 moves.push((self.blob_path(id), to));
             }
         }
+        // Save the host bytes before the index forgets them. An error here leaves the index and the memory as they
+        // were, and the retry saves the bytes again.
+        for (bytes, to) in &saves {
+            write_synced(to, bytes).map_err(io_error)?;
+        }
+        if !saves.is_empty() {
+            sync_dir(&self.dir.join(QUARANTINE)).map_err(io_error)?;
+        }
         let mut index = self.index.clone();
         index.refused.remove(&recipe);
         for id in &bad {
@@ -1535,12 +1585,6 @@ impl Store {
         for id in &bad {
             self.checked.remove(id);
             self.host_blobs.remove(id);
-        }
-        for (bytes, to) in &saves {
-            write_synced(to, bytes).map_err(io_error)?;
-        }
-        if !saves.is_empty() {
-            sync_dir(&self.dir.join(QUARANTINE)).map_err(io_error)?;
         }
         self.move_blobs_to_quarantine(&moves)?;
         Ok(())
@@ -1567,13 +1611,19 @@ impl Store {
         if snapshot.parent != entry.parent || coverage_of(&snapshot) != entry.coverage {
             return Err(StoreError::Invalid("the index disagrees with the blob".to_owned()));
         }
-        if let Some(entry) = self.index.entries.get_mut(id) {
+        let mut index = self.index.clone();
+        if let Some(entry) = index.entries.get_mut(id) {
             entry.state = EntryState::Live;
             entry.quarantine = None;
             entry.check = Check::Full;
         }
+        let previous = std::mem::replace(&mut self.index, index);
+        if let Err(error) = self.persist() {
+            self.index = previous;
+            return Err(error);
+        }
         self.checked.insert(*id);
-        self.persist()
+        Ok(())
     }
 
     /// Choose and remove victims for an owner in one tier. A byte in one tier does not make room in the other (6.9).
@@ -1600,6 +1650,7 @@ impl Store {
         prune_pins(&mut index, now_ms);
         for id in &victims {
             index.entries.remove(id);
+            index.pins.remove(id);
         }
         let previous = std::mem::replace(&mut self.index, index);
         if let Err(error) = self.persist() {
@@ -1864,6 +1915,20 @@ impl Store {
             }
         }
         Ok(())
+    }
+
+    /// The ids from `parent` up to the root of its chain, in the entries that the index holds.
+    fn ancestors(&self, parent: Option<ContentId>) -> Vec<ContentId> {
+        let mut found = Vec::new();
+        let mut next = parent;
+        while let Some(id) = next {
+            if found.contains(&id) {
+                break;
+            }
+            found.push(id);
+            next = self.index.entries.get(&id).and_then(|entry| entry.parent);
+        }
+        found
     }
 
     fn descendants(&self, base: ContentId) -> Vec<ContentId> {

@@ -2471,3 +2471,346 @@ fn a_restart_loses_the_interval_copies() {
     let store = copy_store(dir.path(), 4);
     assert!(store.entries().is_empty());
 }
+
+/// An engine whose `cells_write` leaves the logical row count alone, as mk does. It records each `set_n`.
+struct CountSpy {
+    inner: Scripted,
+    set_n_calls: Vec<u64>,
+    set_n_answer: WriteResult,
+    log: Vec<&'static str>,
+}
+
+impl CountSpy {
+    fn new(set_n_answer: WriteResult) -> Self {
+        CountSpy {
+            inner: Scripted::new(usize::MAX, WriteResult::Ok),
+            set_n_calls: Vec::new(),
+            set_n_answer,
+            log: Vec::new(),
+        }
+    }
+}
+
+impl Engine for CountSpy {
+    fn identity(&self) -> Identity {
+        self.inner.identity()
+    }
+
+    fn limits(&self) -> Limits {
+        self.inner.limits()
+    }
+
+    fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
+        self.inner.pass(segments, taps)
+    }
+
+    fn last_error(&self) -> Option<String> {
+        self.inner.last_error()
+    }
+
+    fn parts(&mut self) -> Option<&mut dyn Parts> {
+        Some(self)
+    }
+}
+
+impl Parts for CountSpy {
+    fn part_read(&mut self, state: State, part: PartId, out: &mut [u8]) -> Result<(), PartError> {
+        self.inner.part_read(state, part, out)
+    }
+
+    fn part_write(&mut self, state: State, part: PartId, bytes: &[u8]) -> WriteResult {
+        self.log.push("part_write");
+        self.inner.part_write(state, part, bytes)
+    }
+
+    fn cells_read(&mut self, state: State, part: PartId, from: u64, n: u64, out: &mut [u8]) -> Result<(), PartError> {
+        self.inner.cells_read(state, part, from, n, out)
+    }
+
+    fn cells_write(&mut self, state: State, part: PartId, from: u64, n: u64, bytes: &[u8]) -> WriteResult {
+        self.log.push("cells_write");
+        self.inner.cells_write(state, part, from, n, bytes)
+    }
+
+    fn set_n(&mut self, _state: State, n: u64) -> WriteResult {
+        self.log.push("set_n");
+        self.set_n_calls.push(n);
+        self.set_n_answer
+    }
+}
+
+#[test]
+fn a_restore_sets_n_to_the_end_of_the_cells_after_every_part() {
+    // Kaibo job 2, finding 1 (spec 6.8, ABI): the caller calls `set_n` after it writes every part.
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let delta = chain_of_two(&mut store, 150);
+    let mut target = CountSpy::new(WriteResult::Ok);
+    let result = store
+        .restore(&delta, &mut target, State::Slot(0), &[1u8; 32], 20)
+        .unwrap();
+    assert_eq!(result, Restored::Done);
+    assert_eq!(
+        target.set_n_calls,
+        vec![4],
+        "the root covers 0..2 and the delta covers 2..4"
+    );
+    assert_eq!(target.log.last(), Some(&"set_n"), "set_n comes after every part write");
+    assert_eq!(target.log.iter().filter(|call| **call == "set_n").count(), 1);
+}
+
+#[test]
+fn a_refused_set_n_after_the_writes_is_a_failed_restore() {
+    // Every part is written, so the state changed. A refusal is a failure (6.8), and the entry is not touched.
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let delta = chain_of_two(&mut store, 151);
+    for answer in [WriteResult::Refused, WriteResult::Failed] {
+        let mut target = CountSpy::new(answer);
+        let result = store
+            .restore(&delta, &mut target, State::Slot(0), &[1u8; 32], 20)
+            .unwrap();
+        assert_eq!(
+            result,
+            Restored::Failed {
+                part: "cells".to_owned()
+            },
+            "{answer:?}"
+        );
+        assert_eq!(store.entries().get(&delta).unwrap().hits, 0);
+    }
+}
+
+/// Put a root and a delta in a store whose budget holds exactly them. Returns their ids and the budget.
+fn full_chain_of_two(dir: &Path, seed: u8) -> (Store, ContentId, ContentId, RecipeId) {
+    let mut store = Store::open(dir).unwrap();
+    let root_recipe = recipe(seed);
+    let root = put(&mut store, &base_snapshot(1), root_recipe, 1);
+    let delta_recipe = next_recipe(root_recipe, 2);
+    let d1 = put_delta(&mut store, &delta_at(root, 2), delta_recipe, root_recipe, 1);
+    let used = store.entries().get(&root).unwrap().size + store.entries().get(&d1).unwrap().size;
+    store.set_budget(Tier::Nvme, used);
+    (store, root, d1, delta_recipe)
+}
+
+#[test]
+fn a_put_never_evicts_the_ancestors_of_its_delta() {
+    // Kaibo job 2, finding 3 (6.5, 6.9): the only victims are the root and D1, which are the ancestors of D2.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut store, root, d1, d1_recipe) = full_chain_of_two(dir.path(), 160);
+    let d2_recipe = next_recipe(d1_recipe, 3);
+    let error = try_put(
+        &mut store,
+        &delta_at(d1, 4),
+        d2_recipe,
+        Some(d1_recipe),
+        1,
+        Tier::Nvme,
+        10,
+    );
+    assert!(matches!(error, Err(StoreError::NoSpace)), "{error:?}");
+    assert!(store.entries().contains_key(&root));
+    assert!(store.entries().contains_key(&d1));
+    assert_eq!(store.entries().len(), 2);
+}
+
+#[test]
+fn a_put_under_pressure_evicts_another_entry_and_keeps_the_chain_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut store, root, d1, d1_recipe) = full_chain_of_two(dir.path(), 161);
+    // A hot standalone entry. By value it ranks above the cold chain.
+    store.set_budget(Tier::Nvme, u64::MAX);
+    let hot = put(&mut store, &wide_snapshot(9), recipe(162), 1);
+    for time in 0..5 {
+        store.get(&hot, 10 + time).unwrap();
+    }
+    let used: u64 = store.entries().values().map(|entry| entry.size).sum();
+    store.set_budget(Tier::Nvme, used);
+    let d2_recipe = next_recipe(d1_recipe, 3);
+    let d2 = try_put(
+        &mut store,
+        &delta_at(d1, 4),
+        d2_recipe,
+        Some(d1_recipe),
+        1,
+        Tier::Nvme,
+        20,
+    )
+    .expect("put D2");
+    assert!(store.entries().contains_key(&root));
+    assert!(store.entries().contains_key(&d1));
+    assert!(store.entries().contains_key(&d2));
+    assert!(!store.entries().contains_key(&hot), "the other entry made room");
+    assert_eq!(lookup(&mut store, d2_recipe).unwrap().len(), 3);
+}
+
+#[test]
+fn a_put_of_an_existing_id_in_another_tier_is_refused() {
+    // Kaibo job 2, finding 10: Ok for a host entry would be a lie to a put that asked for NVMe.
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let snapshot = base_snapshot(4);
+    let id = put_in(&mut store, &snapshot, recipe(170), 1, Tier::Host);
+    let before = store.entries().clone();
+    let error = try_put(&mut store, &snapshot, recipe(170), None, 1, Tier::Nvme, 20);
+    let Err(StoreError::Invalid(message)) = error else {
+        panic!("expected a refusal, got {error:?}");
+    };
+    assert!(message.contains("tier"), "{message}");
+    assert_eq!(store.entries(), &before);
+    assert_eq!(store.entries().get(&id).unwrap().tier, Tier::Host);
+    assert!(blob_names(dir.path()).is_empty(), "no file appeared");
+    // The same tier is still a no-op.
+    assert_eq!(
+        try_put(&mut store, &snapshot, recipe(170), None, 1, Tier::Host, 20).unwrap(),
+        id
+    );
+}
+
+/// A store with a pinned entry that lost its protection (it is larger than the budget).
+fn store_with_an_unprotected_pin(dir: &Path) -> (Store, ContentId) {
+    let mut store = Store::open_with_nvme_budget(dir, u64::MAX).unwrap();
+    let id = put(&mut store, &wide_snapshot(1), recipe(171), 1);
+    store.pin(id, 1, 100, 10).unwrap();
+    let size = store.entries().get(&id).unwrap().size;
+    store.set_budget(Tier::Nvme, size - 1);
+    (store, id)
+}
+
+#[test]
+fn an_eviction_by_a_put_removes_the_pins_of_its_victims() {
+    // Kaibo job 2, finding 11: a re-put of the same content id must not inherit a stale pin.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut store, victim) = store_with_an_unprotected_pin(dir.path());
+    put(&mut store, &base_snapshot(2), recipe(172), 1);
+    assert!(
+        !store.entries().contains_key(&victim),
+        "the put evicted the pinned entry"
+    );
+    assert!(!store.pins().contains_key(&victim));
+}
+
+#[test]
+fn evict_removes_the_pins_of_its_victims() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut store, victim) = store_with_an_unprotected_pin(dir.path());
+    assert_eq!(store.evict(1, Tier::Nvme, 1, 10).unwrap(), vec![victim]);
+    assert!(!store.pins().contains_key(&victim));
+}
+
+#[test]
+fn a_failed_quarantine_write_loses_no_host_bytes() {
+    // Kaibo job 2, finding 4 (6.8): a failure never deletes content. A host entry has only its bytes in memory.
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let recipe = recipe(180);
+    let first = put_in(&mut store, &base_snapshot(1), recipe, 1, Tier::Host);
+    let error = try_put(&mut store, &base_snapshot(2), recipe, None, 1, Tier::Host, 10).unwrap_err();
+    assert!(matches!(error, StoreError::Tripwire { .. }));
+    let held = store.host_resident_bytes();
+    assert!(held > 0);
+    let quarantine = dir.path().join("quarantine");
+    std::fs::set_permissions(&quarantine, std::fs::Permissions::from_mode(0o500)).unwrap();
+    assert!(
+        std::fs::File::create(quarantine.join("probe")).is_err(),
+        "this test needs a directory that refuses writes; run it as a user other than root"
+    );
+    let result = store.clear_refusal(recipe);
+    std::fs::set_permissions(&quarantine, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(result.is_err(), "the write failed, so clear_refusal fails");
+    assert_eq!(store.host_resident_bytes(), held, "the bytes are still in memory");
+    assert!(store.entries().contains_key(&first));
+    assert!(store.refused().contains(&recipe));
+    // The retry saves both entries.
+    store.clear_refusal(recipe).unwrap();
+    assert_eq!(store.host_resident_bytes(), 0);
+    assert!(quarantine.join(first.hex()).exists());
+    assert_eq!(std::fs::read_dir(&quarantine).unwrap().count(), 2);
+}
+
+/// The index as a person sees it: the entries, the pins and the refused recipes.
+fn view(store: &Store) -> String {
+    format!("{:?} {:?} {:?}", store.entries(), store.pins(), store.refused())
+}
+
+#[test]
+fn a_failed_pin_changes_nothing() {
+    // Kaibo job 2, finding 5 (6.10): a refused pin changes nothing.
+    for point in [
+        nagaya_store::FailPoint::IndexWrite,
+        nagaya_store::FailPoint::IndexRename,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        let id = put(&mut store, &base_snapshot(1), recipe(181), 1);
+        let before = view(&store);
+        store.fail_next(point);
+        assert!(store.pin(id, 1, 100, 10).is_err());
+        assert_eq!(view(&store), before, "{point:?}");
+        assert!(store.pins().is_empty());
+    }
+}
+
+#[test]
+fn a_failed_unpin_changes_nothing() {
+    for point in [
+        nagaya_store::FailPoint::IndexWrite,
+        nagaya_store::FailPoint::IndexRename,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        let id = put(&mut store, &base_snapshot(1), recipe(182), 1);
+        store.pin(id, 1, 100, 10).unwrap();
+        store.pin(id, 2, 100, 10).unwrap();
+        let before = view(&store);
+        store.fail_next(point);
+        assert!(store.unpin(&id, 1).is_err());
+        assert_eq!(view(&store), before, "{point:?}");
+        assert_eq!(store.pins().get(&id).unwrap().len(), 2);
+    }
+}
+
+#[test]
+fn a_failed_lookup_and_pin_adds_no_pin() {
+    for point in [
+        nagaya_store::FailPoint::IndexWrite,
+        nagaya_store::FailPoint::IndexRename,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        let recipe = recipe(183);
+        put(&mut store, &base_snapshot(1), recipe, 1);
+        let mut engine = FakeAlways::new();
+        store.fail_next(point);
+        let pin = Pin {
+            owner: 1,
+            expires_ms: 100,
+        };
+        let result = store.lookup_and_pin(recipe, &Tolerance::Exact, &mut engine, 0, pin, 10);
+        assert!(result.is_err());
+        assert!(store.pins().is_empty(), "{point:?}");
+    }
+}
+
+#[test]
+fn a_failed_clear_entry_leaves_the_entry_quarantined() {
+    for point in [
+        nagaya_store::FailPoint::IndexWrite,
+        nagaya_store::FailPoint::IndexRename,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        let id = put(&mut store, &base_snapshot(1), recipe(184), 1);
+        let mut target = FakeAlways::new();
+        assert!(store.restore(&id, &mut target, State::Slot(0), &[9u8; 32], 10).is_err());
+        assert_eq!(store.entries().get(&id).unwrap().state, EntryState::Quarantined);
+        let before = view(&store);
+        store.fail_next(point);
+        assert!(store.clear_entry(&id).is_err());
+        assert_eq!(view(&store), before, "{point:?}");
+        // The entry is still quarantined, so a retry does the work.
+        store.clear_entry(&id).unwrap();
+        assert_eq!(store.entries().get(&id).unwrap().state, EntryState::Live);
+    }
+}
