@@ -229,51 +229,7 @@ impl Scheduler {
                 .collect();
             let count = present.len() as u128;
             if count > 0 {
-                let duration = duration_ms as u128;
-                let segment_count = running.segments.len() as u128;
-                let base = duration.checked_div(segment_count).unwrap_or(0);
-                let remainder = if segment_count == 0 {
-                    0
-                } else {
-                    duration % segment_count
-                };
-                let earliest_segment = running
-                    .segments
-                    .iter()
-                    .min_by_key(|id| {
-                        self.jobs
-                            .iter()
-                            .find(|job| job.id == **id)
-                            .map(|job| (job.arrival_ms, job.id))
-                            .unwrap_or((u64::MAX, **id))
-                    })
-                    .copied();
-                let mut deltas: Vec<(JobId, i64)> = Vec::new();
-                for (id, _) in &present {
-                    let delta = if running.segments.contains(id) {
-                        let charge = if Some(*id) == earliest_segment {
-                            base + remainder
-                        } else {
-                            base
-                        };
-                        -((charge * (count - 1)).checked_div(count).unwrap_or(0) as i64)
-                    } else {
-                        duration.checked_div(count).unwrap_or(0) as i64
-                    };
-                    deltas.push((*id, delta));
-                }
-                let total: i64 = deltas.iter().map(|(_, delta)| *delta).sum();
-                if total != 0
-                    && let Some((earliest, _)) = present.iter().min_by_key(|(id, arrival)| (*arrival, *id))
-                    && let Some((_, delta)) = deltas.iter_mut().find(|(id, _)| id == earliest)
-                {
-                    *delta -= total;
-                }
-                for (id, delta) in deltas {
-                    if let Some(job) = self.jobs.iter_mut().find(|job| job.id == id) {
-                        job.balance_ms = (job.balance_ms + delta).clamp(-30_000, 30_000);
-                    }
-                }
+                self.charge_segments(&running, duration_ms, &present);
             }
         }
 
@@ -290,6 +246,61 @@ impl Scheduler {
                 } else {
                     job.state = JobState::Ready;
                 }
+            }
+        }
+    }
+
+    /// Charge each segment of a pass on its own (spec 5.4).
+    ///
+    /// A segment with the share `c` lowers its balance by `c * (n - 1) / n` and raises the balance of each other
+    /// present job by `c / n`. Both round down. The rounding remainder goes to the earliest present job, so the sum
+    /// stays zero. Then each balance is clamped.
+    fn charge_segments(&mut self, running: &Quantum, duration_ms: u64, present: &[(JobId, u64)]) {
+        let count = present.len() as u128;
+        let duration = duration_ms as u128;
+        let segment_count = running.segments.len() as u128;
+        if segment_count == 0 {
+            return;
+        }
+        let base = duration / segment_count;
+        let remainder = duration % segment_count;
+        let earliest_segment = running
+            .segments
+            .iter()
+            .min_by_key(|id| {
+                self.jobs
+                    .iter()
+                    .find(|job| job.id == **id)
+                    .map(|job| (job.arrival_ms, job.id))
+                    .unwrap_or((u64::MAX, **id))
+            })
+            .copied();
+        let mut deltas: Vec<(JobId, i128)> = present.iter().map(|(id, _)| (*id, 0)).collect();
+        for segment in &running.segments {
+            let share = if Some(*segment) == earliest_segment {
+                base + remainder
+            } else {
+                base
+            };
+            let fall = (share * (count - 1) / count) as i128;
+            let rise = (share / count) as i128;
+            for (id, delta) in &mut deltas {
+                if id == segment {
+                    *delta -= fall;
+                } else {
+                    *delta += rise;
+                }
+            }
+        }
+        let total: i128 = deltas.iter().map(|(_, delta)| *delta).sum();
+        if let Some((earliest, _)) = present.iter().min_by_key(|(id, arrival)| (*arrival, *id))
+            && let Some((_, delta)) = deltas.iter_mut().find(|(id, _)| id == earliest)
+        {
+            *delta -= total;
+        }
+        for (id, delta) in deltas {
+            if let Some(job) = self.jobs.iter_mut().find(|job| job.id == id) {
+                job.balance_ms = (job.balance_ms as i128 + delta).clamp(-30_000, 30_000) as i64;
             }
         }
     }

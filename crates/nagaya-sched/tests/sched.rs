@@ -399,8 +399,8 @@ fn the_owed_remainder_goes_to_the_earliest() {
     assert_eq!(scheduler.jobs[2].balance_ms, 0);
 }
 
-#[test]
-fn a_shared_pass_splits_its_time() {
+/// Three present jobs. Jobs 1 and 2 run in one pass of `duration_ms`.
+fn two_segment_pass(duration_ms: u64) -> Scheduler {
     let mut first = job(1, Class::Interactive, 0, 0, 0, &[Kind::Prefill, Kind::Prefill]);
     first.state = JobState::Running;
     first.quanta.pop_front();
@@ -421,14 +421,33 @@ fn a_shared_pass_splits_its_time() {
     let (scheduler, _) = step(
         scheduler,
         Event::Complete {
-            now_ms: 5,
-            duration_ms: 5,
+            now_ms: duration_ms,
+            duration_ms,
             outcome: Completion::Done,
         },
     );
-    assert_eq!(scheduler.jobs[0].balance_ms, 0);
-    assert_eq!(scheduler.jobs[1].balance_ms, -1);
-    assert_eq!(scheduler.jobs[2].balance_ms, 1);
+    scheduler
+}
+
+fn balances(scheduler: &Scheduler) -> Vec<i64> {
+    scheduler.jobs.iter().map(|job| job.balance_ms).collect()
+}
+
+#[test]
+fn a_shared_pass_splits_its_time() {
+    // Segment charges: job 1 owes 3 ms, job 2 owes 2 ms.
+    // Job 1: falls 2, job 2 and job 3 rise 1 each.
+    // Job 2: falls 1, job 1 and job 3 rise 0 each (2 / 3 rounds down).
+    // The sum is -1. The remainder goes to the earliest job, job 1.
+    assert_eq!(balances(&two_segment_pass(5)), vec![-1, 0, 1]);
+}
+
+#[test]
+fn a_segment_job_rises_by_the_time_of_the_other_segments() {
+    // Segment charges: job 1 owes 4 ms, job 2 owes 3 ms.
+    // Job 1 falls 2 and job 2 falls 2. Each segment makes the other job and job 3 rise 1.
+    // The sum is zero, so no remainder moves.
+    assert_eq!(balances(&two_segment_pass(7)), vec![-1, -1, 2]);
 }
 
 #[test]
