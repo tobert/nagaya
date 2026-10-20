@@ -370,3 +370,46 @@ fn a_signal_during_the_tick_beats_a_planned_restart() {
 fn a_signal_during_the_tick_does_not_hide_a_crash() {
     assert_eq!(wait_with_tick(true, ExitCode::Crash), ExitCode::Crash);
 }
+
+struct SlowFactory {
+    limits: Limits,
+}
+
+impl Factory for SlowFactory {
+    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+        Ok(self.limits.clone())
+    }
+
+    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+        thread::sleep(Duration::from_millis(400));
+        Ok(Box::new(FakeAlways::new()))
+    }
+}
+
+#[test]
+fn an_open_that_outlasts_the_wait_is_a_crash_that_names_the_engine() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut registry = Registry::new();
+    registry.register(
+        "slow",
+        Box::new(SlowFactory {
+            limits: limits_on(&[0]),
+        }),
+    );
+    let error = lifecycle::start(
+        profile(vec![engine("slow-one", "slow", &[0])]),
+        registry,
+        inventory(&[0]),
+        directory.path(),
+        None,
+        Duration::from_millis(100),
+    )
+    .unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::Crash);
+    assert!(error.to_string().contains("slow-one"), "{error}");
+}
+
+#[test]
+fn closed_group_channels_are_a_crash() {
+    assert_eq!(lifecycle::LifecycleError::Disconnected.exit_code(), ExitCode::Crash);
+}

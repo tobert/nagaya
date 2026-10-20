@@ -26,17 +26,22 @@ pub enum LifecycleError {
     /// A group reported a failure before every engine opened.
     Event(Event),
     /// The engines did not open in time.
-    Timeout,
+    Timeout {
+        /// The engines that had not opened.
+        waiting: Vec<String>,
+    },
     /// The group channels closed.
     Disconnected,
 }
 
 impl LifecycleError {
-    /// The exit code of a failure to start. A worker panic is a crash (spec 8.5); the rest is exit 3.
+    /// The exit code of a failure to start (spec 10.4). A profile that does not fit, or an engine that refuses to
+    /// open, is exit 3. A timeout, a closed channel and a worker panic are crashes: exit 1.
     pub fn exit_code(&self) -> ExitCode {
         match self {
             LifecycleError::Event(event) => event.exit_code().unwrap_or(ExitCode::RefusedStart),
-            LifecycleError::Start(_) | LifecycleError::Timeout | LifecycleError::Disconnected => ExitCode::RefusedStart,
+            LifecycleError::Start(_) => ExitCode::RefusedStart,
+            LifecycleError::Timeout { .. } | LifecycleError::Disconnected => ExitCode::Crash,
         }
     }
 }
@@ -57,7 +62,9 @@ impl std::fmt::Display for LifecycleError {
             LifecycleError::Event(Event::Opened { group, .. }) => {
                 write!(formatter, "group {group} sent an open report during the start")
             }
-            LifecycleError::Timeout => write!(formatter, "the engines did not open in time"),
+            LifecycleError::Timeout { waiting } => {
+                write!(formatter, "engine {} did not open in time", waiting.join(", "))
+            }
             LifecycleError::Disconnected => write!(formatter, "the group threads stopped"),
         }
     }
@@ -67,7 +74,7 @@ impl std::error::Error for LifecycleError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             LifecycleError::Start(error) => Some(error),
-            LifecycleError::Event(_) | LifecycleError::Timeout | LifecycleError::Disconnected => None,
+            LifecycleError::Event(_) | LifecycleError::Timeout { .. } | LifecycleError::Disconnected => None,
         }
     }
 }
@@ -134,7 +141,7 @@ pub fn start(
             }
             Err(LifecycleError::Event(event))
         }
-        Err(WaitError::Timeout) => Err(LifecycleError::Timeout),
+        Err(WaitError::Timeout { waiting }) => Err(LifecycleError::Timeout { waiting }),
         Err(WaitError::Disconnected) => Err(LifecycleError::Disconnected),
     }
 }
