@@ -374,6 +374,12 @@ waits for jobs that are not ready. In v0 each window is 0 ms, so a pass takes on
 the scheduler chooses. The windows are in the bootstrap config (2.1), so a measurement can change them. Decided
 2026-10-18.
 
+**What `segments_exact` promises.** An engine that declares `segments_exact` promises that the order of each sum
+depends only on the shape of the problem. It never depends on the segment count, the row count of a pass, or the
+count of compute units. Thus the engine does not choose a split of a reduction by the size of a pass, and it adds
+no floats with atomics. Decided 2026-10-20 (`docs/deepinfer.md` 2). DeepInfer's batch-invariant mode keeps this
+rule: its gate GEMM never splits K, and its other splits have a fixed count.
+
 **5.8 Deadlines.** A job can have a deadline (council v2 `timeout_ms`). The scheduler checks it between quanta. A
 job after its deadline goes to the terminal state "expired", and its segments do not run again. On a status code,
 an expired job is a 504 `timeout`. On a stream that already sent its first event, the nagaya sends a terminal
@@ -391,8 +397,14 @@ expired. A release does not delete a snapshot. Only eviction (6.9) removes a sto
 
 **5.11 Cost model (D4).** The nagaya fits a robust affine cost from production quanta, keyed by engine, kind,
 segment count and context depth. Quanta that ran beside other work are not in the fit. The nagaya uses the fit for
-store eviction value-per-byte (6.9) and deadline checks between quanta (5.8). Before a fit exists, the nagaya records
-"no model yet". An engine can have its own private planner, which stays in the engine (mkviolet `council_server.rs`).
+store eviction value-per-byte (6.9) and deadline checks between quanta (5.8). An engine can have its own private
+planner, which stays in the engine (mkviolet `council_server.rs`).
+
+**A measured prior.** At the first start of an engine identity, the nagaya times a short curve for each kind. Each
+point is one warmup run and the trimmed mean of five runs. The curve goes into the plan table under the identity,
+and later starts read it. The fit starts from the curve and corrects it with production quanta. Decided
+2026-10-20 (`docs/deepinfer.md` 4). DeepInfer measures its decode curve in this way
+(`deepinfer/worker/model_runner.py:586-619`).
 
 ## 6. State and the store
 
@@ -537,9 +549,10 @@ entry as it is. A failure never deletes content.
 
 **6.9 Eviction.** The store chooses victims in this order:
 
-1. Pinned entries are exempt.
-2. Thin the chains: interiors go before tips and roots.
-3. Remove whole entries by value per byte: recency, hits, and the cost to build them again.
+1. Interval copies go first (6.13).
+2. Pinned entries are exempt.
+3. Thin the chains: interiors go before tips and roots.
+4. Remove whole entries by value per byte: recency, hits, and the cost to build them again.
 
 The formula for value per byte is a choice of the implementation. It never changes bits. The store chooses all
 victims before it deletes one. It also chooses them before it writes the new entry.
@@ -567,6 +580,31 @@ wakes pinned entries into slots when the profile asks for them. (mk wakes its pi
 
 **6.12 Steering and lab inputs.** Some state changes bits but is not an input, for example mk's attention cell mask
 or a steering vector. Such state goes into the recipe. Thus a steered or masked result never has a plain recipe.
+
+**6.13 Interval copies.** An engine can declare a checkpoint grain in `limits()`, in tokens. Then, between quanta,
+the scheduler makes an interval copy (ontology) of each context that passed a multiple of the grain. Decided
+2026-10-20 (`docs/deepinfer.md` 3).
+
+- **No seal.** The copy does not seal, so the live context keeps its bits. A seal would change every later token
+  of every generation.
+- **Host memory only.** The store keeps interval copies in its host tier, charged to the store's host budget (4.1a).
+  They never go to NVMe, and a park of the context does not take them.
+- **The latest copy only.** The store keeps one copy for each context. A new copy replaces the old one.
+- **Evicted first.** Interval copies go before any entry in eviction (6.9). The profile caps their count, and the
+  store evicts the least recently used copy above the cap.
+- **Exact replay.** A restore writes the copy's parts, then replays the tokens after the copy. The replay uses the
+  same boundaries and the same pass boundaries as the first run. Thus it gives the bits of the first run.
+
+The copy serves three uses: a branch from an earlier position, a truncate, and a recovery after the live state is
+lost. Amy, 2026-10-20: "I suspect we only want a few copies online and won't benefit as much as a commerical
+service does, but it is cool and we'll do it."
+
+For mk, one copy is about 112 MiB: the GDN state in f32 (108 MiB) and the conv state (4.3 MiB, mk `DESIGN.md`). A
+copy does not repeat K/V, because K/V rows are only appended. With a grain of 256 tokens, a decode makes a copy every
+10-15 s. A replay of up to 255 tokens takes up to about 13 s on mk, with one pass for each token (51 ms each).
+
+**Open:** does one pass of many tokens give the same bits on mk as one pass for each token? If it does, a
+replay can use one pass of up to 255 tokens, about 2 s. A measurement answers the question.
 
 ## 7. IO
 
@@ -621,7 +659,14 @@ poison. After a poison or a timeout, the nagaya does these steps:
 - park and restore keep every bit;
 - seal runs only at boundaries;
 - the quantum conditions hold (ontology "Quantum");
-- an admission refusal changes nothing.
+- an admission refusal changes nothing;
+- for an engine that declares `segments_exact`, a segment gives the same bits in passes with one, two and the
+  maximum count of segments (5.7).
+
+**One oracle for each family.** Each model family has one reference: today, fixed outputs of mk's Python. Every
+engine of that family passes its conformance against that reference, on any vendor's device. Decided 2026-10-20
+(`docs/deepinfer.md` 6). The engine crates stay one for each vendor and device (Amy: "we generate a megakernel per
+vendor/device and they get their own whole crate").
 
 The suite compares values by integer bit pattern. NaN or Inf fails, even when the bit patterns are equal. Counts
 must also match. Each gate keeps a broken variant that it must fail (ds4-recipe `01-correctness-and-measurement.md`).
@@ -786,6 +831,10 @@ the coordinator has the family libraries (11.3) and the engine's `identity()` fr
 and compute the recipe locally. It then schedules the job locally or forwards the work to the machine that holds the
 engine.
 
+Routing to the machine that holds the deepest chain is deferred. Amy, 2026-10-20: "it's more likely folks like me
+and my friend Gavin have a heterogeneous fleet, and will typically want sticky sessions with each model/gpu rig,
+and it's okay those can't move around easily" (`docs/deepinfer.md` 7).
+
 The API has contexts, specs, decisions, snapshots, pins, reads, and generations with riding decisions. In council v2
 responses, a snapshot `id` is its BLAKE3 content id (`blake3:<hex>`), and the store looks up prefixes by recipe
 (6.6). gogi sets these request rules:
@@ -802,10 +851,20 @@ Pooling and the decision numbers come from `gogi_proto::math`, which all engines
 (mk: `libmkengine:<sha>+numbers:<sha>`.)
 
 **11.2 Generation.** The nagaya runs one sampler for all engines. It applies top_k, top_p, min_p, then temperature.
-The draw is seeded, and the response reports the seed. Each engine has its own defaults.
+The draw is seeded, and the response reports the seed. Each engine has its own defaults. All engines share the SSE
+framing.
 
-All engines share the SSE framing. Speculative drafts change how the sampler uses the seed (mkviolet's
-prompt-lookup drafts). Thus a request says if drafts are on, and the reported seed includes that setting.
+**The draw keeps no state.** The random value for a token depends on three things: the seed, the position of the
+token, and the purpose of the draw. The purposes are a sample, a resample and the test of a draft.
+The sampler keeps no random state between tokens. A fork gets a child seed, a hash of the parent's seed and a branch
+number. Decided 2026-10-20 (`docs/deepinfer.md` 1).
+
+Reason: a park, a restore or a fork then keeps the sampler's bits, with nothing to save. A generation that resumes
+after a restart gives the same tokens. A speculative draft (mkviolet's prompt-lookup drafts) has its own purpose,
+so it never moves a later draw. Thus the reported seed does not change when drafts are on.
+
+mk's sampler draws from one PCG64 stream for each request (mk `service/sampling.py:106`, `:153`). The nagaya does
+not match those bits. It matches mk's filter order and its probabilities (milestone 12).
 
 **11.3 Text front-end.** Each model family has its own text rules. They are a tokenizer, a template, escapes for
 special tokens in client text, and parsers for tool calls and thinking. The nagaya holds one library per family
@@ -976,3 +1035,4 @@ The inventories found these items. We correct each one when its code moves. We d
 1. Do an idle engine's GPU queues slow the other engines on its device (3.3)? A measurement answers this.
 2. What makes `close()` safe for mk, so that engines can load and unload at runtime (3.3)?
 3. How long does the conversion to canonical safetensors take on mk and mkviolet (10.3, D10)?
+4. Does one pass of many tokens give the same bits on mk as one pass for each token (6.13)?

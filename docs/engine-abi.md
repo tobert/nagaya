@@ -80,7 +80,9 @@ limits() -> {
         elastic: [{name, tier, unit_bytes, minimum, maximum, kinds}],
     },                           tier: device(i) | host; i is an index into the device group
     chain: {max_depth, delta_fraction},   how the store may chain this engine's snapshots (spec 6.5)
-    segments_exact: bool,        segments that share a pass get the bits of a pass alone (spec 5.7)
+    segments_exact: bool,        segments that share a pass get the bits of a pass alone; no sum's order
+                                 depends on the segment count, the row count or the unit count (spec 5.7)
+    checkpoint_grain: tokens?,   the scheduler makes an interval copy at each multiple (spec 6.13)
     determinism: always | pinned | per-process,   and bit_dependence: [residency, ...] (D3)
     taps: [...], with the conditions each needs (mk: unfused, one segment)
 }
