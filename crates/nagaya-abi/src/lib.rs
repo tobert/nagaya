@@ -445,6 +445,8 @@ pub struct Tap {
 pub struct Output {
     /// The output name.
     pub name: String,
+    /// The element type of the bytes. A float output is compared as values (spec 8.3).
+    pub dtype: Dtype,
     /// The output bytes.
     pub bytes: Vec<u8>,
 }

@@ -255,6 +255,7 @@ impl Fake {
             }
             outputs.push(Output {
                 name: "state".to_owned(),
+                dtype: Dtype::U8,
                 bytes: state_bytes.to_vec(),
             });
         }

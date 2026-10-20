@@ -1415,3 +1415,59 @@ fn the_suite_fails_a_broken_engine() {
     assert!(!suite.passed(), "{suite}");
     assert!(suite.failures().any(|gate| gate.name == "park_and_restore"), "{suite}");
 }
+
+/// An engine whose pass returns the same NaN F32 row each time. The bits are equal in two runs. Spec 8.3 says that
+/// a NaN fails, even when the bit patterns are equal.
+struct NanOutput {
+    inner: FakeAlways,
+}
+
+impl Engine for NanOutput {
+    fn identity(&self) -> Identity {
+        self.inner.identity()
+    }
+
+    fn limits(&self) -> Limits {
+        self.inner.limits()
+    }
+
+    fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
+        let mut out = self.inner.pass(segments, taps)?;
+        for output in &mut out.outputs {
+            output.dtype = Dtype::F32;
+            output.bytes = f32::NAN.to_le_bytes().repeat(2);
+        }
+        Ok(out)
+    }
+
+    fn last_error(&self) -> Option<String> {
+        self.inner.last_error()
+    }
+
+    fn parts(&mut self) -> Option<&mut dyn Parts> {
+        self.inner.parts()
+    }
+
+    fn coverage(&mut self) -> Option<&mut dyn Coverage> {
+        self.inner.coverage()
+    }
+
+    fn seal(&mut self) -> Option<&mut dyn nagaya_abi::Seal> {
+        self.inner.seal()
+    }
+
+    fn slots(&mut self) -> Option<&mut dyn Slots> {
+        self.inner.slots()
+    }
+}
+
+#[test]
+fn a_nan_output_with_equal_bits_fails_same_boundaries() {
+    let mut make = || NanOutput {
+        inner: FakeAlways::new(),
+    };
+    match quantum_same_boundaries(&mut make) {
+        Outcome::Fail(failure) => assert!(failure.message.contains("not finite"), "{}", failure.message),
+        other => panic!("expected Fail, got {other}"),
+    }
+}

@@ -957,6 +957,15 @@ fn compare_outputs(gate: &'static str, left: &[Output], right: &[Output]) -> Res
                 format!("output {index} is named {} and {}", left.name, right.name),
             ));
         }
+        // Spec 8.3: a NaN or an infinity fails, even when the two bit patterns are equal.
+        for (side, output) in [("left", left), ("right", right)] {
+            if let Some(element) = non_finite(output.dtype, &output.bytes) {
+                return Err(Failure::new(
+                    gate,
+                    format!("output {} {side} index {element} is not finite", output.name),
+                ));
+            }
+        }
         if let Err(failure) = compare_bytes(gate, &left.bytes, &right.bytes) {
             return Err(Failure {
                 message: format!("output {}: {}", left.name, failure.message),

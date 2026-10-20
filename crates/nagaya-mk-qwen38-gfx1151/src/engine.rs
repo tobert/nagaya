@@ -3,8 +3,8 @@
 use std::sync::{Arc, OnceLock};
 
 use nagaya_abi::{
-    Coverage, Engine, Identity, Limits, Output, PartError, Parts, PassError, PassErrorKind, PassOut, PassStatus, Seal,
-    SealError, Segment, SegmentInputs, Slots, State, Tap, WriteResult,
+    Coverage, Dtype, Engine, Identity, Limits, Output, PartError, Parts, PassError, PassErrorKind, PassOut, PassStatus,
+    Seal, SealError, Segment, SegmentInputs, Slots, State, Tap, WriteResult,
 };
 
 use crate::spec;
@@ -144,6 +144,7 @@ fn logit_outputs(bytes: &[u8], wants: &[bool], row: usize) -> Result<Vec<Output>
         };
         outputs.push(Output {
             name: "logits".to_owned(),
+            dtype: Dtype::F32,
             bytes: slice.to_vec(),
         });
     }
