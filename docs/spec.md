@@ -271,12 +271,11 @@ thread priorities:
 
 **3.2a Control runtime first.** The control runtime (`tokio`) arrives with gossip, in milestone 10 step f. Gossip
 comes before the HTTP coordinator, which joins the runtime in milestone 12. The group threads, the ledger thread
-and the watchdog thread stay std threads. They do not use `tokio`. The thread start code does not apply the
-CPU sets yet (below).
+and the watchdog thread stay std threads. They do not use `tokio`. Milestone 14 applies the CPU sets (below).
 
-Milestone 10 does not apply `sched_setaffinity`, because the bootstrap config names no core sets. The step that
-applies isolation needs a test. The test reads the CPU mask of each thread with `sched_getaffinity`. It checks that
-the control threads do not use the group cores. Decided 2026-10-20 (reading).
+Milestone 10 did not apply `sched_setaffinity`, because the bootstrap config names no core sets. The isolation has a
+test. The test reads the CPU mask of each thread with `sched_getaffinity`. It checks that the control threads do not
+use the group cores. Decided 2026-10-20 (reading).
 
 **CPU sets (milestone 14).** The nagaya splits the online CPUs into a housekeeping set and a pool set. The bootstrap
 config names no core sets, so the split is one fixed rule.
@@ -292,8 +291,36 @@ config names no core sets, so the split is one fixed rule.
 
 Decided by senpai 2026-10-20 night (vetoable).
 
-**Open:** The group threads have no CPU set. The test above names the group cores, but no rule gives them a set. Also,
-the sets use logical CPUs. A housekeeping CPU can share a physical core with a pool CPU.
+**Where each thread pins (milestone 14).** Each thread pins itself to its set when it starts. A thread that cannot pin
+is an error: a worker thread panics, and the process exits 1 (8.5). A thread of the control runtime aborts the
+process. Reason: a hook of the runtime cannot return an error, and a thread that runs on the wrong cores breaks the
+isolation.
+
+- The control runtime (every worker and blocking thread, `nagaya-control`), the ledger thread (`nagaya-ledger`) and the
+  watchdog thread (`nagaya-watchdog`) pin to the housekeeping set.
+- The group threads (`nagaya-group-<index>`) pin to the pool set, with the normal scheduling policy.
+- The store thread (`nagaya-store`) pins to the pool set at `SCHED_BATCH`. It hashes and converts bytes, which is pool
+  work.
+- A start with no CPU sets pins no thread. Only a test starts that way. The binary always makes the sets (below).
+
+The binary reads the online CPUs through the file probe (2.1) and makes the sets before it starts gossip. A probe
+error or a split error is a refusal to start: exit 3 (10.4).
+
+Decided by senpai 2026-10-20 night (vetoable): the group threads run on the pool set. A group thread drives the GPU,
+and it does host work between passes: it builds segments, copies bytes and reads taps. The host work is the same kind
+of work as the pool does, and it needs whole cores. A group thread on the housekeeping set would compete with gossip
+and the HTTP coordinator. A stalled gossip round is worse than a slow pass.
+
+The pool has one thread for each pool CPU, and a group thread uses one more. This oversubscription is small. A
+measurement on gfx1151host can change it.
+
+Decided by senpai 2026-10-20 night (vetoable): the sets use logical CPUs, and the split does not know SMT siblings.
+A housekeeping CPU can share a physical core with a pool CPU. Reason: on gfx1151host, CPU 0 pairs with 16 and CPU 1 with
+17 (`thread_siblings_list`), so the two housekeeping CPUs sit on two physical cores. A rule for other machines would
+only guess before a measurement. The bootstrap config can name the sets later.
+
+**Open:** 3.2 asks for elevated priority on the control threads. Milestone 14 does not apply it. A raised priority
+needs `CAP_SYS_NICE` or a setting in the unit.
 
 **3.3 Engine lifecycle and profile swaps.** The nagaya opens each engine at start, from the profile. mk cannot close
 inside a process today: "the HIP runtime's own teardown segfaults" (mk `service/__main__.py`). Thus in v0, when
@@ -1307,5 +1334,5 @@ The inventories found these items. We correct each one when its code moves. We d
 8. What is the oracle gap at 2,000 tokens and more? The binding's contexts hold 256 tokens today, and mk allows
    32,768. The measurement needs larger contexts in the binding and a loop of passes (8.3). Amy, 2026-10-20: "we can
    save and do the measurement later".
-9. The group threads have no CPU set (3.2a). Should they run on the pool set, or stay unpinned? Also, should a
-   housekeeping CPU avoid the physical core of a pool CPU (SMT)? The bootstrap config could name the sets later.
+9. Should the control threads run at elevated priority (3.2, 3.2a)? A raised priority needs `CAP_SYS_NICE` or a
+   setting in the unit, such as `Nice=`. A measurement under load shows whether the pinned cores are enough.

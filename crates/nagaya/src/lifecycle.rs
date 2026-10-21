@@ -5,6 +5,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::admission::Registry;
+use crate::cpu_sets::CpuSets;
 use crate::exit::ExitCode;
 use crate::inventory::Inventory;
 use crate::notify::{EngineState, Notifier};
@@ -25,11 +26,12 @@ pub const DEFAULT_OPEN_TICK: Duration = crate::process::DEFAULT_HEARTBEAT;
 pub const DEFAULT_START_EXTEND: Duration = crate::process::DEFAULT_WATCHDOG_TIMEOUT;
 
 /// The timing of the start. The tests use short values.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Options {
     timeout: Duration,
     tick: Duration,
     extend: Duration,
+    cpu_sets: Option<CpuSets>,
 }
 
 impl Options {
@@ -39,12 +41,19 @@ impl Options {
             timeout,
             tick: DEFAULT_OPEN_TICK,
             extend: DEFAULT_START_EXTEND,
+            cpu_sets: None,
         }
     }
 
     /// Set how often the start tells systemd that the engines still open.
     pub fn tick(mut self, tick: Duration) -> Self {
         self.tick = tick;
+        self
+    }
+
+    /// Set the CPU sets that the threads pin to (spec 3.2a). With no sets, no thread pins.
+    pub fn cpu_sets(mut self, sets: CpuSets) -> Self {
+        self.cpu_sets = Some(sets);
         self
     }
 
@@ -212,10 +221,11 @@ fn start_engines(
         {
             tracing::warn!("cannot send STATUS= to systemd: {error}");
         }
-        Start::new(profile, registry, inventory)
-            .store(store_dir)
-            .start()
-            .map_err(LifecycleError::Start)?
+        let mut start = Start::new(profile, registry, inventory).store(store_dir);
+        if let Some(sets) = options.cpu_sets.clone() {
+            start = start.cpu_sets(sets);
+        }
+        start.start().map_err(LifecycleError::Start)?
     };
     let extend = |notifier: &Notifier| {
         if let Err(error) = notifier.extend_start(&names, options.extend) {
