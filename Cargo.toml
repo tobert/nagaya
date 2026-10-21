@@ -19,6 +19,7 @@ resolver = "3"
 gogi-proto = { git = "file:///home/atobey/src/gogi", rev = "c6c9228009990863d6826d3b769c7d48edc2375e" }
 gogi-fake = { git = "file:///home/atobey/src/gogi", rev = "c6c9228009990863d6826d3b769c7d48edc2375e" }
 gogi-toy = { git = "file:///home/atobey/src/gogi", rev = "c6c9228009990863d6826d3b769c7d48edc2375e" }
+gogi-conformance = { git = "file:///home/atobey/src/gogi", rev = "c6c9228009990863d6826d3b769c7d48edc2375e" }
 
 [profile.dev]
 debug = "line-tables-only"

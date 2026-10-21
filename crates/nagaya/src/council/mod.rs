@@ -164,6 +164,8 @@ pub struct Built {
     pub usage: Usage,
     /// The snapshots that the store holds at the boundaries when the build ends. A dry run lists none.
     pub snapshots: Vec<SnapshotInfo>,
+    /// The recipe of the head. A dry run that finds no held head names the head with it (spec 11.3c).
+    pub head_recipe: nagaya_store::RecipeId,
 }
 
 /// The pins of one owner (gogi "Snapshots and pins").
@@ -382,6 +384,18 @@ impl Service {
         &self.config
     }
 
+    /// What one token of a snapshot costs, in bytes: one row of each cells part (gogi "Identity, limits,
+    /// capabilities").
+    pub fn snapshot_bytes(&self) -> u64 {
+        self.shared
+            .limits
+            .parts
+            .iter()
+            .filter(|part| part.kind == nagaya_abi::PartKind::Cells)
+            .map(|part| part.dtype.element_bytes() * part.shape.iter().product::<u64>())
+            .sum()
+    }
+
     /// The number of slots that no build uses.
     pub fn free_slots(&self) -> usize {
         self.shared.pool.lock().expect("the slot pool lock is poisoned").free()
@@ -445,6 +459,7 @@ impl Service {
             self.infos(&held)
         };
         Ok(Built {
+            head_recipe: recipes.last().expect("a rendering has a boundary").recipe,
             head: outcome.held.last().copied().flatten().map(|id| snapshot_id(&id)),
             from: outcome.from.map(|id| snapshot_id(&id)),
             usage,
