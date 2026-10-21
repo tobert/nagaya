@@ -800,6 +800,40 @@ fn a_park_that_outlasts_its_budget_after_the_drain_is_a_crash() {
 }
 
 #[test]
+fn a_park_that_finished_while_an_earlier_group_used_the_budget_is_not_dropped() {
+    let record = Arc::new(Mutex::new(ParkRecord::default()));
+    let directory = tempfile::tempdir().unwrap();
+    let mut registry = Registry::new();
+    // The first group parks slowly and uses the budget. The second group parks at once and has its reply waiting.
+    registry.register(
+        "slow",
+        Box::new(ParkFactory::new("a", Arc::clone(&record)).slow(Duration::from_millis(300))),
+    );
+    let mut fast = ParkFactory::new("b", Arc::clone(&record));
+    fast.limits = limits_on(&[1]);
+    registry.register("fast", Box::new(fast));
+    let mut profile = profile(vec![engine("a", "slow", &[0]), engine("b", "fast", &[1])]);
+    profile.budgets.push(BudgetSpec {
+        tiers: vec![TierSpec::from(Tier::Device(1))],
+        bytes: 4096,
+    });
+    let mut process = Start::new(profile, registry, inventory(&[0, 1]))
+        .store(directory.path())
+        .heartbeat(Duration::from_millis(10))
+        .timeout(Duration::from_secs(2))
+        .start()
+        .unwrap();
+    let opened = process.wait_opens(Duration::from_secs(2)).unwrap();
+    let names: Vec<String> = opened.iter().map(|engine| engine.name.clone()).collect();
+    let report = process.stop(Duration::from_millis(100), &SignalFlag::new());
+    assert!(!report.complete, "the slow park outlasts its budget: {report:?}");
+    assert_eq!(report.exit_code(), ExitCode::Crash);
+    let (parked, unparked) = report.split_parked(&names);
+    assert_eq!(parked, ["b"], "the second group parked in time: {report:?}");
+    assert_eq!(unparked, ["a"], "{report:?}");
+}
+
+#[test]
 fn a_job_submitted_after_the_stop_is_refused() {
     let record = Arc::new(Mutex::new(ParkRecord::default()));
     let (mut process, _, _directory) = started(ParkFactory::new("a", record));

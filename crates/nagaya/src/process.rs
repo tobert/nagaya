@@ -1347,16 +1347,26 @@ impl Process {
                     };
                 }
                 let left = deadline.saturating_duration_since(Instant::now());
-                if left.is_zero() {
-                    complete = false;
-                    break;
-                }
-                match reply.recv_timeout(left.min(STOP_POLL)) {
+                // With no budget left, read only the replies that wait in the channel. A group that finished its
+                // park while an earlier group used the budget has its report there.
+                let reply_now = if left.is_zero() {
+                    reply.try_recv().map_err(|error| match error {
+                        TryRecvError::Empty => RecvTimeoutError::Timeout,
+                        TryRecvError::Disconnected => RecvTimeoutError::Disconnected,
+                    })
+                } else {
+                    reply.recv_timeout(left.min(STOP_POLL))
+                };
+                match reply_now {
                     Ok(ParkProgress::Parked(report)) => {
                         parked.merge(report);
                         break;
                     }
                     Ok(ParkProgress::Draining { .. }) => {}
+                    Err(RecvTimeoutError::Timeout) if left.is_zero() => {
+                        complete = false;
+                        break;
+                    }
                     Err(RecvTimeoutError::Timeout) => {}
                     Err(RecvTimeoutError::Disconnected) => {
                         complete = false;
