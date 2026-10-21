@@ -77,7 +77,7 @@ pub fn open_store(dir: &Path, budget: StoreBudget) -> Result<Store, StoreError> 
     Store::open_with_limits(dir, budget.host, budget.nvme, u64::MAX, budget.interval_copies)
 }
 
-/// Store one parked state for one engine, and add its counts or its failure to `report`.
+/// Store each state of one engine that holds tokens, and add its counts or its failure to `report`.
 pub(crate) fn park_engine(
     name: &str,
     engine: &mut dyn Engine,
@@ -90,10 +90,16 @@ pub(crate) fn park_engine(
         return;
     }
     let names = part_names(&stored);
+    let has_row = stored.iter().any(|part| part.is_row());
     let slots: u32 = limits.slots.iter().map(|slot| slot.count).sum();
     let identity = identity_digest(&engine.identity());
     for id in 0..slots {
         let state = State::Slot(id);
+        // A state with no token has nothing to keep (spec 10.3). Without the slots capability, `park_snapshot`
+        // reports that a row part has no row count.
+        if has_row && engine.slots().is_some_and(|slots| slots.slot_high(id) == 0) {
+            continue;
+        }
         let snapshot = match park_snapshot(engine, state) {
             Ok(snapshot) => snapshot,
             Err(message) => {

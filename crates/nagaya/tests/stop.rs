@@ -25,7 +25,7 @@ struct ParkRecord {
     events: Vec<String>,
 }
 
-/// A fake with two slots. A stop parks every slot, so these tests keep the count at two.
+/// A fake with two slots. A `ParkFactory` fills each slot with one token, so a stop parks both.
 fn two_slots() -> FakeAlways {
     FakeAlways::with_slots(vec![
         SlotLimit { bytes: 64, count: 1 },
@@ -105,6 +105,7 @@ struct ParkFactory {
     fail: bool,
     no_slots: bool,
     misfit: bool,
+    filled: bool,
 }
 
 impl ParkFactory {
@@ -117,7 +118,14 @@ impl ParkFactory {
             fail: false,
             no_slots: false,
             misfit: false,
+            filled: true,
         }
+    }
+
+    /// Leave every slot empty at open. A slot with no token has nothing for the park to keep (spec 10.3).
+    fn empty(mut self) -> Self {
+        self.filled = false;
+        self
     }
 
     /// Make the coverage capability refuse every span with `fits`.
@@ -152,8 +160,16 @@ impl Factory for ParkFactory {
     }
 
     fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+        let mut inner = two_slots();
+        if self.filled {
+            for slot in 0..2 {
+                inner
+                    .pass(&[segment(State::Slot(slot), &[slot + 1])], &[])
+                    .expect("the fill pass runs");
+            }
+        }
         Ok(Box::new(ParkEngine {
-            inner: two_slots(),
+            inner,
             limits: self.limits.clone(),
             name: self.name.clone(),
             record: Arc::clone(&self.record),
@@ -294,9 +310,15 @@ fn a_stop_parks_every_engine() {
     assert!(report.complete, "every group answered");
     assert_eq!(report.exit_code(), ExitCode::Clean);
     assert_eq!(report.parked.engines, 1);
-    assert_eq!(report.parked.states, 2, "the fake declares two slots");
+    assert_eq!(
+        report.parked.states, 2,
+        "the fake declares two slots, and each holds a token"
+    );
     assert_eq!(report.parked.parts, 6, "three stored parts in two states");
-    assert_eq!(report.parked.bytes, 32, "two fixed parts of 16 bytes");
+    assert_eq!(
+        report.parked.bytes, 64,
+        "in each state, a fixed part of 16 bytes, one cells row and one ring row of 8 bytes"
+    );
     assert!(report.parked.failures.is_empty());
     let record = record.lock().unwrap();
     assert_eq!(record.reads.len(), 2, "one fixed part is read in each state");
@@ -310,6 +332,49 @@ fn a_stop_parks_every_engine() {
         assert!(Instant::now() < deadline, "every worker ends after the stop");
         thread::sleep(Duration::from_millis(5));
     }
+}
+
+#[test]
+fn a_stop_parks_only_the_states_that_hold_tokens() {
+    let record = Arc::new(Mutex::new(ParkRecord::default()));
+    let (mut process, _, directory) = started(ParkFactory::new("a", Arc::clone(&record)).empty());
+    let (quantum, outcome) = Quantum::with_outcome(|engines| {
+        engines[0]
+            .pass(&[segment(State::Slot(1), &[5, 6])], &[])
+            .expect("the quantum runs its pass");
+    });
+    process.submit(0, quantum).unwrap();
+    assert_eq!(outcome.recv_timeout(Duration::from_secs(2)), Ok(QuantumOutcome::Ran));
+    let report = process.stop(Duration::from_secs(2), &SignalFlag::new());
+    assert_eq!(report.exit_code(), ExitCode::Clean, "{report:?}");
+    assert_eq!(report.parked.states, 1, "slot 0 holds no token: {report:?}");
+    assert_eq!(report.parked.entries, 1, "{report:?}");
+    assert!(report.parked.failures.is_empty(), "{report:?}");
+    let reads: Vec<State> = record.lock().unwrap().reads.iter().map(|read| read.1).collect();
+    assert_eq!(reads, vec![State::Slot(1)], "the park reads only the slot with tokens");
+
+    let mut seeded = two_slots();
+    seeded
+        .pass(&[segment(State::Slot(1), &[5, 6])], &[])
+        .expect("the seeded pass runs");
+    let snapshot = snapshot_from_engine(&mut seeded, State::Slot(1), &[(1, 0, 2), (2, 0, 2)]).unwrap();
+    let id = snapshot.content_id().unwrap();
+    drop(process);
+    let store = Store::open(directory.path()).unwrap();
+    assert_eq!(store.entries().len(), 1, "the store holds one entry");
+    assert!(store.entries().contains_key(&id), "the entry is the state of slot 1");
+}
+
+#[test]
+fn a_stop_with_only_empty_states_parks_nothing_and_is_clean() {
+    let record = Arc::new(Mutex::new(ParkRecord::default()));
+    let (mut process, _, _directory) = started(ParkFactory::new("a", Arc::clone(&record)).empty());
+    let report = process.stop(Duration::from_secs(2), &SignalFlag::new());
+    assert_eq!(report.exit_code(), ExitCode::Clean, "{report:?}");
+    assert_eq!(report.parked.states, 0, "{report:?}");
+    assert_eq!(report.parked.entries, 0, "{report:?}");
+    assert!(record.lock().unwrap().reads.is_empty(), "the park reads no empty slot");
+    assert!(report.log_line().contains("parked nothing"), "{}", report.log_line());
 }
 
 #[test]
@@ -545,7 +610,7 @@ fn a_running_quantum_ends_before_the_park() {
     let record = Arc::new(Mutex::new(ParkRecord::default()));
     let directory = tempfile::tempdir().unwrap();
     let mut registry = Registry::new();
-    registry.register("park", Box::new(ParkFactory::new("a", Arc::clone(&record))));
+    registry.register("park", Box::new(ParkFactory::new("a", Arc::clone(&record)).empty()));
     let mut process = Start::new(profile(vec![engine("a", "park", &[0])]), registry, inventory(&[0]))
         .store(directory.path())
         .heartbeat(Duration::from_millis(10))
@@ -595,7 +660,10 @@ fn a_running_quantum_ends_before_the_park() {
         events[end + 1..].iter().any(|event| event == "cells_read"),
         "the park reads the cells parts: {events:?}"
     );
-    assert!(events[end + 1..].len() >= 2, "the park reads both states: {events:?}");
+    assert!(
+        events[end + 1..].len() >= 2,
+        "the park reads the fixed and the row parts of slot 0: {events:?}"
+    );
     drop(record);
 
     let mut seeded = two_slots();

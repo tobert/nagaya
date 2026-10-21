@@ -10,8 +10,8 @@ use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, StoreSpec, 
 use nagaya::signal::SignalFlag;
 use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{
-    Coverage, Engine, Identity, Limits, PartError, Parts, PassError, PassOut, Seal, Segment, Slots, State, Tap, Tier,
-    WriteResult,
+    Coverage, Engine, Identity, Limits, OutputsWanted, PartError, Parts, PassError, PassOut, Seal, Segment,
+    SegmentInputs, Slots, State, Tap, Tier, WriteResult,
 };
 use nagaya_telemetry::testing::{Capture, SpanData};
 
@@ -57,6 +57,33 @@ fn inventory() -> Inventory {
             unified: false,
         }],
         host_bytes: 1024,
+    }
+}
+
+/// A fake whose slot 0 holds one token. A stop parks only a state with tokens (spec 10.3).
+fn fake_with_a_token() -> FakeAlways {
+    let mut fake = FakeAlways::new();
+    let segment = Segment {
+        state: State::Slot(0),
+        inputs: SegmentInputs::Tokens(vec![7]),
+        positions: vec![0],
+        meta: Vec::new(),
+        outputs: OutputsWanted::default(),
+    };
+    fake.pass(&[segment], &[]).expect("the fill pass runs");
+    fake
+}
+
+/// A factory whose engine holds one token, so a stop has a state to park.
+struct TokenFactory;
+
+impl Factory for TokenFactory {
+    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+        Ok(FakeAlways::new().limits())
+    }
+
+    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+        Ok(Box::new(fake_with_a_token()))
     }
 }
 
@@ -222,7 +249,17 @@ fn a_stop_that_cannot_park_records_fatal_and_marks_the_span_as_an_error() {
     let capture = Capture::start(Vec::new());
     let directory = tempfile::tempdir().unwrap();
     // The store has no room for the parked state.
-    let mut ready = start_fake(directory.path(), 1);
+    let mut registry = Registry::new();
+    registry.register("token", Box::new(TokenFactory));
+    let mut ready = lifecycle::start(
+        profile(vec![engine("fake-one", "token")], 1),
+        registry,
+        inventory(),
+        directory.path(),
+        None,
+        Duration::from_secs(2),
+    )
+    .unwrap();
     let report = lifecycle::stop(&mut ready, None, Duration::from_secs(2), &SignalFlag::new());
     assert_eq!(report.exit_code(), nagaya::exit::ExitCode::Crash, "{report:?}");
 
@@ -300,7 +337,7 @@ impl Factory for ParkGateFactory {
 
     fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
         Ok(Box::new(ParkGate {
-            inner: FakeAlways::new(),
+            inner: fake_with_a_token(),
             gate: std::sync::Arc::clone(&self.gate),
         }))
     }

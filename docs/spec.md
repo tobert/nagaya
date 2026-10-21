@@ -1128,6 +1128,19 @@ interrupts a stop, the process exits 1, unless every state was parked. Decided 2
 A park that runs past the park budget makes the process exit 1. A SIGTERM during a planned restart stops the
 process with exit 0. Decided 2026-10-20 (reading).
 
+**Which states the park keeps.** Decided by senpai 2026-10-20 night (vetoable).
+
+- The park stores each state that holds tokens. It skips a state with no token, because that state has nothing to
+  keep.
+- The park reads the row count of a state with `slot_high` (engine-abi "Capabilities"). A count of 0 means no token.
+- An engine with a cells or ring part needs the `slots` capability. Without it, the park cannot count the rows, so
+  the stop fails and the process exits 1.
+- An engine with no cells or ring part has no row count. The park keeps each of its states.
+
+Reason: step 3 parks pinned and wanted contexts. The process does not track pins or wants on live states yet, so
+it parks each state with tokens. An empty state of mk is 118,038,528 bytes of fixed parts ("v0 mk binding choices").
+A park of mk's 16 empty states would write about 1.9 GB and use most of the 10 s budget.
+
 The process catches SIGTERM with a handler that adds one to a static atomic counter. The handler is `signal(2)`,
 declared in `extern "C"`, because std has no signal API. The main loop reads the counter every 50 ms. Reason: this
 needs no new dependency. A later step can use a signal stream from `tokio` instead. Decided 2026-10-20 (reading).
