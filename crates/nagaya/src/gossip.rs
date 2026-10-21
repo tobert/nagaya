@@ -277,6 +277,11 @@ impl Gossip {
         self.handle.chitchat_id().generation_id
     }
 
+    /// A handle of the control runtime. The HTTP server runs on it (spec 3.2a).
+    pub fn runtime(&self) -> tokio::runtime::Handle {
+        self.runtime.handle().clone()
+    }
+
     /// The UDP address that gossip is bound to.
     pub fn local_addr(&self) -> SocketAddr {
         self.addr

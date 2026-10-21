@@ -21,6 +21,7 @@ pub mod placement;
 pub mod probe;
 pub mod process;
 pub mod profile;
+pub mod serving;
 pub mod signal;
 pub mod swap;
 pub mod telemetry;

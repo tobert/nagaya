@@ -11,6 +11,7 @@ mod spec;
 mod worker;
 
 pub use engine::{MkEngine, open};
+pub use spec::MAX_CONTEXT;
 pub use worker::{MkError, MkPaths};
 
 /// The limits that `open` gives for an arena of `weights_bytes`. It reads no weights and opens no device.
