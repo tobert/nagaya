@@ -286,7 +286,10 @@ get ran sometimes, perhaps just a bump in our AGENTS.md"
   Then an absent file fails the test.
 - Do this at least before each merge that touches the crates of that model.
 - gfx1151host holds the Qwen3.8 GGUF at the default path of `NAGAYA_QWEN38_GGUF`.
-- b70host holds Gemma 4 in `~/src/mkviolet/checkpoints/gemma-4-26B-A4B`. No test reads it yet.
+- b70host holds Gemma 4 in `~/src/mkviolet/checkpoints/gemma-4-26B-A4B`. The `xe` tests of
+  `nagaya-mk-gemma4-bmg` read it from `GEMMA4_MODEL_DIR`.
+- Those tests also read HF reference files from `target/gemma4-golden` or `GEMMA4_GOLDEN_DIR`. Write them with
+  `tools/gemma4_golden.sh`, with no GPU job. An absent reference file skips the test, as an absent model does.
 - The report of a check names how many tests skipped for a missing model.
 
 On gfx1151host, run the oracle bench with `MK_ENGINE_LIB` and `MK_SHARDS` set and both units inactive:
