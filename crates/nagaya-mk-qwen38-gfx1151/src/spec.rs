@@ -19,6 +19,9 @@ pub const MAX_CONTEXT: u32 = 32_768;
 
 /// The most tokens in one pass (mk `kMaxPassTokens`).
 pub const MAX_PASS_TOKENS: u32 = 256;
+/// The checkpoint grain in tokens (spec 6.13). On gfx1151, a copy at 512 tokens restored and replayed to the bits of
+/// the live context, and splits across 256 and 512 gave equal bits (`tests/hip.rs`).
+pub const CHECKPOINT_GRAIN: u64 = 256;
 
 /// A context capacity is a multiple of this many tokens (mk `check_capacity`).
 pub const CAPACITY_STEP: u32 = 256;
@@ -453,7 +456,7 @@ pub fn limits(arena_bytes: u64) -> Limits {
         determinism: Determinism::Always,
         bit_dependence: Vec::new(),
         taps: Vec::new(),
-        checkpoint_grain: None,
+        checkpoint_grain: Some(CHECKPOINT_GRAIN),
     }
 }
 
@@ -598,8 +601,16 @@ mod tests {
     }
 
     #[test]
-    fn mk_declares_no_checkpoint_grain() {
-        assert_eq!(limits(0).checkpoint_grain, None);
+    fn mk_declares_a_grain_of_256_and_segments_exact() {
+        // Spec 6.13: a grain needs `segments_exact`. The GPU tests `an_interval_copy_restores_and_replays_to_the_bits_of_
+        // the_live_context` and `a_split_across_256_does_not_change_the_bits_in_either_class` measured both.
+        let limits = limits(0);
+        assert_eq!(limits.checkpoint_grain, Some(256));
+        assert!(limits.segments_exact);
+        assert_eq!(
+            nagaya_sched::IntervalPolicy::from_limits(&limits, 1).map(|policy| policy.map(|p| p.grain())),
+            Ok(Some(256))
+        );
     }
 
     #[test]

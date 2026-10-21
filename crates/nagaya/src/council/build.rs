@@ -11,10 +11,10 @@ use nagaya_abi::{Engine, Kind, Limits, OutputsWanted, PassStatus, Segment, Segme
 use nagaya_council::build::{BoundaryRecipe, Step, plan_chunks, plan_steps};
 use nagaya_council::family::Boundary;
 use nagaya_council::read::logit_row;
-use nagaya_sched::JobState;
+use nagaya_sched::{IntervalCopies, JobState};
 use nagaya_store::{
-    ContentId, EngineFacts, Put, Reason, RecipeId, Restored, Snapshot, Store, StoreError, Tier, Tolerance,
-    write_snapshots,
+    ContentId, EngineFacts, EntryState, Put, Reason, RecipeId, Restored, Snapshot, Store, StoreError, Tier, Tolerance,
+    recipe_boundary, recipe_not_sealed, write_snapshots,
 };
 
 use super::Clock;
@@ -50,6 +50,11 @@ pub struct Shared {
     pub pool: Arc<Mutex<SlotPool>>,
     /// The time in milliseconds.
     pub clock: Clock,
+    /// The recipe of an empty context (spec 6.2).
+    pub root: RecipeId,
+    /// The interval copies of the contexts of the engine, by slot. `None` when the engine declares no grain or the
+    /// profile caps the copies at 0 (spec 6.13).
+    pub intervals: Option<Mutex<IntervalCopies<ContentId>>>,
 }
 
 /// What a lookup or a build found and made.
@@ -297,11 +302,16 @@ enum Unit {
     Mark,
     Rewind,
     Snapshot(RecipeId, Reason),
+    /// An interval copy of the state after the last pass (spec 6.13).
+    Interval,
 }
 
 /// A copy of the state of a slot that `Mark` kept in host memory. The charge ends when the copy drops.
 struct Marked {
     snapshot: Snapshot,
+    /// The last seal of the state, and the tokens that the slot held.
+    sealed: (RecipeId, usize),
+    fed: usize,
     /// The charge. It is the last field, so the copy is gone before the ledger gets the bytes back.
     _staging: Staging,
 }
@@ -331,6 +341,15 @@ pub struct ContextBody<T: Then> {
     held: Vec<Option<ContentId>>,
     from: Option<ContentId>,
     kept: usize,
+    /// The tokens that the slot holds, in order.
+    fed: Vec<u32>,
+    /// The recipe of the last seal of the state and its position. An interval copy names the recipe of a seal at its
+    /// own position, which chains from this one (spec 6.2, 6.13).
+    sealed: Option<(RecipeId, usize)>,
+    /// True while the interval tracker holds the slot of the job.
+    tracked: bool,
+    /// What the last pass gave, while the interval copy after it runs.
+    after_copy: Option<Got>,
     then: Option<T>,
     tx: Option<Sender<Result<Finished<T>, ServiceError>>>,
 }
@@ -386,6 +405,10 @@ impl<T: Then> ContextBody<T> {
             held: Vec::new(),
             from: None,
             kept: 0,
+            fed: Vec::new(),
+            sealed: None,
+            tracked: false,
+            after_copy: None,
             then: Some(then),
             tx: Some(tx),
         }
@@ -418,6 +441,18 @@ impl<T: Then> ContextBody<T> {
 
     /// Send the result to the caller. The slot is free before the caller hears, so the caller sees it free.
     fn send(&mut self, result: Result<Finished<T>, ServiceError>) {
+        // The store keeps the last copy after the context ends. The cap and eviction remove it (spec 6.13).
+        if self.tracked {
+            self.tracked = false;
+            let slot = u64::from(self.slot());
+            if let Some(intervals) = &self.shared.intervals {
+                intervals
+                    .lock()
+                    .expect("the interval lock is poisoned")
+                    .untrack(slot)
+                    .expect("a tracked slot is in the tracker");
+            }
+        }
         self.lease = None;
         // The mark is host memory. Free it and its charge before the caller hears the result.
         self.mark = None;
@@ -464,13 +499,19 @@ impl<T: Then> ContextBody<T> {
                 engine.last_error().unwrap_or_default()
             )));
         }
+        self.sealed = Some((self.shared.root, 0));
         if self.recipes.is_empty() {
+            self.track(engine)?;
             return self.next_want(engine, Got::Built(self.cut));
         }
         let (recipes, held, cut) = choose(&self.shared, engine, slot, &self.recipes, &self.cuts)?;
         (self.recipes, self.held, self.cut) = (recipes, held, cut);
         let last = self.recipes.len() - 1;
         let mut candidate = highest(&self.held);
+        let above = candidate.map_or(0, |index| self.recipes[index].boundary.tokens);
+        if self.restore_copy(engine, above)? {
+            candidate = None;
+        }
         while let Some(index) = candidate {
             let id = self.held[index].expect("the highest held boundary has an entry");
             let tokens = self.recipes[index].boundary.tokens;
@@ -494,6 +535,8 @@ impl<T: Then> ContextBody<T> {
                     }
                     self.from = Some(id);
                     self.kept = tokens;
+                    self.fed = self.tokens[..tokens].to_vec();
+                    self.sealed = Some((self.recipes[index].recipe, tokens));
                     break;
                 }
                 // A refused restore changed nothing (spec 6.8). The build tries the next shorter prefix.
@@ -515,6 +558,7 @@ impl<T: Then> ContextBody<T> {
                 }
             }
         }
+        self.track(engine)?;
         let boundaries: Vec<_> = self.recipes.iter().map(|recipe| recipe.boundary).collect();
         let steps = plan_steps(self.kept, &boundaries, self.shared.chunk);
         if steps.is_empty() {
@@ -584,7 +628,7 @@ impl<T: Then> ContextBody<T> {
         match unit {
             Unit::Build(step) => step.kind(),
             Unit::Feed { .. } => self.feeding.as_ref().expect("a pass belongs to a feed").kind,
-            Unit::Mark | Unit::Rewind | Unit::Snapshot(..) => Kind::Copy,
+            Unit::Mark | Unit::Rewind | Unit::Snapshot(..) | Unit::Interval => Kind::Copy,
         }
     }
 
@@ -596,6 +640,7 @@ impl<T: Then> ContextBody<T> {
             kind,
             "the scheduler gave a quantum of another kind than the unit"
         );
+        let fed = matches!(unit, Unit::Build(Step::Feed { .. }) | Unit::Feed { .. });
         let got = match unit {
             Unit::Build(Step::Feed { from, to }) => {
                 let tokens = self.tokens[from..to].to_vec();
@@ -639,6 +684,8 @@ impl<T: Then> ContextBody<T> {
                 })?;
                 self.mark = Some(Marked {
                     snapshot,
+                    sealed: self.sealed.expect("a job knows its last seal after its start"),
+                    fed: self.fed.len(),
                     _staging: staging,
                 });
                 Some(Got::Copied)
@@ -651,7 +698,18 @@ impl<T: Then> ContextBody<T> {
                 let id = self.snapshot(engine, recipe, reason, "the end of the reply")?;
                 Some(Got::Held(id))
             }
+            Unit::Interval => {
+                self.interval_copy(engine)?;
+                self.after_copy.take()
+            }
         };
+        // A copy is due after a pass that crossed a multiple of the grain, as the next quantum of the job. When the
+        // pass ends on a boundary, the snapshot there holds the state, so the copy is not made.
+        if fed && self.copy_due(engine)? && !matches!(self.units.front(), Some(Unit::Build(Step::Snapshot { .. }))) {
+            self.units.push_front(Unit::Interval);
+            self.after_copy = got;
+            return Ok(Ran::First(vec![Kind::Copy]));
+        }
         if !self.units.is_empty() {
             return Ok(Ran::Done);
         }
@@ -659,6 +717,218 @@ impl<T: Then> ContextBody<T> {
             Some(got) => self.next_want(engine, got),
             None if self.building => self.next_want(engine, Got::Built(self.cut)),
             None => unreachable!("the last unit of a want gives back what it did"),
+        }
+    }
+
+    /// Start to track the slot for interval copies at its row count (spec 6.13).
+    fn track(&mut self, engine: &mut dyn Engine) -> Result<(), ServiceError> {
+        let Some(intervals) = &self.shared.intervals else {
+            return Ok(());
+        };
+        let rows = self.rows(engine)?;
+        if rows != self.fed.len() {
+            return Err(ServiceError::internal(format!(
+                "slot {} holds {rows} rows, but the job knows {} tokens",
+                self.slot(),
+                self.fed.len()
+            )));
+        }
+        intervals
+            .lock()
+            .expect("the interval lock is poisoned")
+            .track(u64::from(self.slot()), rows as u64)
+            .map_err(|error| ServiceError::internal(format!("the interval tracker refused the slot: {error:?}")))?;
+        self.tracked = true;
+        Ok(())
+    }
+
+    /// Track the slot again after a rewind moved its rows back. The context keeps its copy.
+    fn retrack(&mut self, engine: &mut dyn Engine) -> Result<(), ServiceError> {
+        let shared = Arc::clone(&self.shared);
+        let Some(intervals) = &shared.intervals else {
+            return Ok(());
+        };
+        let copy = intervals
+            .lock()
+            .expect("the interval lock is poisoned")
+            .untrack(u64::from(self.slot()))
+            .map_err(|error| ServiceError::internal(format!("the interval tracker lost the slot: {error:?}")))?;
+        self.tracked = false;
+        self.track(engine)?;
+        if let Some(copy) = copy {
+            intervals
+                .lock()
+                .expect("the interval lock is poisoned")
+                .stored(u64::from(self.slot()), copy)
+                .expect("the slot is tracked");
+        }
+        Ok(())
+    }
+
+    /// Tell the tracker the rows after a pass. True when an interval copy is due (spec 6.13).
+    fn copy_due(&mut self, engine: &mut dyn Engine) -> Result<bool, ServiceError> {
+        let Some(intervals) = &self.shared.intervals else {
+            return Ok(false);
+        };
+        let rows = self.rows(engine)?;
+        if rows != self.fed.len() {
+            return Err(ServiceError::internal(format!(
+                "slot {} holds {rows} rows after a pass, but the job fed {} tokens",
+                self.slot(),
+                self.fed.len()
+            )));
+        }
+        let due = intervals
+            .lock()
+            .expect("the interval lock is poisoned")
+            .advance(u64::from(self.slot()), rows as u64)
+            .map_err(|error| ServiceError::internal(format!("the interval tracker refused the rows: {error:?}")))?;
+        Ok(due.is_some())
+    }
+
+    /// Put an interval copy of the state in the store, with no seal (spec 6.13). The store then removes the previous
+    /// copy of the context. A refused charge or a full store skips the copy: the next multiple tries again.
+    fn interval_copy(&mut self, engine: &mut dyn Engine) -> Result<(), ServiceError> {
+        let state = self.state();
+        let position = self.fed.len();
+        let (base, at) = self.sealed.expect("a job knows its last seal after its start");
+        let sealed = recipe_boundary(&base, &self.fed[at..position], position as u64);
+        let _staging = match self.stage(engine, state, "make an interval copy") {
+            Ok(staging) => staging,
+            Err(ServiceError::ContextRefused(error)) => {
+                tracing::warn!(
+                    "no interval copy at token {position} of slot {}: the ledger refused its host bytes: {error}",
+                    self.slot()
+                );
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
+        let snapshot = park::park_snapshot(engine, state).map_err(|message| {
+            ServiceError::internal(format!("cannot read the state for an interval copy: {message}"))
+        })?;
+        let facts = EngineFacts::of(&self.shared.engine_name, &self.shared.limits);
+        let now_ms = (self.shared.clock)();
+        let mut store = self.shared.store.lock().expect("the store lock is poisoned");
+        let put = store.put(Put {
+            snapshot: &snapshot,
+            recipe: recipe_not_sealed(&sealed),
+            previous_recipe: None,
+            engine: facts,
+            identity: self.shared.identity,
+            owner: COUNCIL_OWNER,
+            tier: Tier::Host,
+            reason: Reason::Interval,
+            sealed_recipe: Some(sealed),
+            provenance: None,
+            now_ms,
+        });
+        let id = match put {
+            Ok(id) => id,
+            Err(StoreError::NoSpace) => {
+                tracing::warn!(
+                    "no interval copy at token {position} of slot {}: the store has no room, or pins hold the cap",
+                    self.slot()
+                );
+                return Ok(());
+            }
+            Err(error) => {
+                return Err(ServiceError::internal(format!(
+                    "the store refused the interval copy at token {position}: {error}"
+                )));
+            }
+        };
+        let intervals = self.shared.intervals.as_ref().expect("a due copy has a tracker");
+        let previous = intervals
+            .lock()
+            .expect("the interval lock is poisoned")
+            .stored(u64::from(self.slot()), id)
+            .expect("the slot is tracked");
+        if let Some(previous) = previous.filter(|previous| *previous != id) {
+            store
+                .remove(&previous, now_ms)
+                .map_err(|error| ServiceError::internal(format!("cannot remove the previous copy: {error}")))?;
+        }
+        Ok(())
+    }
+
+    /// The recipe of an interval copy at a token of the context, with the last seal before it. A token on a boundary
+    /// has none: the sealed snapshot there serves a build (spec 6.13).
+    fn copy_recipe_at(&self, position: usize) -> Option<(RecipeId, RecipeId, usize)> {
+        if self.recipes.iter().any(|recipe| recipe.boundary.tokens == position) || position > self.tokens.len() {
+            return None;
+        }
+        let (base, at) = self
+            .recipes
+            .iter()
+            .rev()
+            .find(|recipe| recipe.boundary.tokens < position)
+            .map_or((self.shared.root, 0), |recipe| (recipe.recipe, recipe.boundary.tokens));
+        let sealed = recipe_boundary(&base, &self.tokens[at..position], position as u64);
+        Some((recipe_not_sealed(&sealed), base, at))
+    }
+
+    /// Restore the longest interval copy of the context above the token `above`, when the store holds one. A restore
+    /// writes the copy's parts, and the build replays the tokens after it (spec 6.13). It gives true on a restore.
+    fn restore_copy(&mut self, engine: &mut dyn Engine, above: usize) -> Result<bool, ServiceError> {
+        if self.shared.intervals.is_none() {
+            return Ok(false);
+        }
+        let best = {
+            let store = self.shared.store.lock().expect("the store lock is poisoned");
+            store
+                .entries()
+                .values()
+                .filter(|entry| {
+                    entry.reason == Reason::Interval
+                        && entry.state == EntryState::Live
+                        && entry.engine == self.shared.engine_name
+                        && entry.identity == self.shared.identity
+                })
+                .filter_map(|entry| {
+                    let position = entry.coverage.iter().map(|span| span.end).max()? as usize;
+                    if position <= above {
+                        return None;
+                    }
+                    let (recipe, base, at) = self.copy_recipe_at(position)?;
+                    (recipe == entry.recipe).then_some((position, entry.content_id, base, at))
+                })
+                .max_by_key(|(position, ..)| *position)
+        };
+        let Some((position, id, base, at)) = best else {
+            return Ok(false);
+        };
+        let slot = self.slot();
+        let restored = {
+            let mut store = self.shared.store.lock().expect("the store lock is poisoned");
+            store.restore(&id, engine, self.state(), &self.shared.identity, (self.shared.clock)())
+        };
+        match restored {
+            Ok(Restored::Done) => {
+                let rows = self.rows(engine)?;
+                if rows != position {
+                    return Err(ServiceError::internal(format!(
+                        "the interval copy {} in slot {slot} holds {rows} rows, but its position is {position}",
+                        id.hex()
+                    )));
+                }
+                self.from = Some(id);
+                self.kept = position;
+                self.fed = self.tokens[..position].to_vec();
+                self.sealed = Some((base, at));
+                Ok(true)
+            }
+            // A refused restore changed nothing (spec 6.8). The build uses the held boundaries.
+            Ok(Restored::Refused { .. }) => Ok(false),
+            Ok(Restored::Failed { part }) => Err(ServiceError::internal(format!(
+                "the restore of the interval copy {} stopped at part `{part}` and poisoned slot {slot}: {}",
+                id.hex(),
+                engine.last_error().unwrap_or_default()
+            ))),
+            Err(error) => Err(ServiceError::internal(format!(
+                "the restore of the interval copy {} failed: {error}",
+                id.hex()
+            ))),
         }
     }
 
@@ -679,6 +949,13 @@ impl<T: Then> ContextBody<T> {
         row: bool,
     ) -> Result<Option<Vec<f32>>, ServiceError> {
         let to = from + tokens.len();
+        if from != self.fed.len() {
+            return Err(ServiceError::internal(format!(
+                "a pass starts at token {from}, but the job knows {} tokens in the slot",
+                self.fed.len()
+            )));
+        }
+        let fed = tokens.clone();
         let segment = Segment {
             state: self.state(),
             inputs: SegmentInputs::Tokens(tokens),
@@ -689,7 +966,10 @@ impl<T: Then> ContextBody<T> {
             },
         };
         let out = match engine.pass(&[segment], &[]) {
-            Ok(out) if out.status == PassStatus::Ok => out,
+            Ok(out) if out.status == PassStatus::Ok => {
+                self.fed.extend_from_slice(&fed);
+                out
+            }
             Ok(out) => {
                 return Err(ServiceError::internal(format!(
                     "a pass over tokens {from} to {to} ended with {:?}: {}",
@@ -731,8 +1011,16 @@ impl<T: Then> ContextBody<T> {
                 engine.last_error().unwrap_or_default()
             )));
         }
+        let (sealed, fed) = {
+            let marked = self.mark.as_ref().expect("a rewind follows a mark");
+            (marked.sealed, marked.fed)
+        };
         match write_snapshots(engine, State::Slot(slot), std::slice::from_ref(mark)) {
-            Ok(Restored::Done) => Ok(()),
+            Ok(Restored::Done) => {
+                self.sealed = Some(sealed);
+                self.fed.truncate(fed);
+                self.retrack(engine)
+            }
             Ok(stopped) => Err(ServiceError::internal(format!(
                 "the rewind of slot {slot} stopped: {stopped:?}: {}",
                 engine.last_error().unwrap_or_default()
@@ -758,6 +1046,8 @@ impl<T: Then> ContextBody<T> {
             seal.seal(state)
                 .map_err(|error| ServiceError::internal(format!("the seal at {place} failed: {error:?}")))?;
         }
+        // The state is sealed now, so a later copy chains from this recipe.
+        self.sealed = Some((recipe, self.fed.len()));
         let snapshot = park::park_snapshot(engine, state)
             .map_err(|message| ServiceError::internal(format!("cannot read the state at {place}: {message}")))?;
         let facts = EngineFacts::of(&self.shared.engine_name, &self.shared.limits);

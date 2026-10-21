@@ -795,6 +795,40 @@ fn appended_quanta_keep_their_job_in_its_class_against_other_jobs() {
 }
 
 #[test]
+fn a_running_job_can_put_a_quantum_before_the_ones_that_it_has() {
+    // Spec 6.13: an interval copy holds the state at the end of the quantum that crossed the multiple. Thus the copy
+    // runs before the next quantum of the job.
+    let (mut scheduler, next) = step(
+        state(vec![job(
+            1,
+            Class::Interactive,
+            0,
+            0,
+            0,
+            &[Kind::Prefill, Kind::Prefill],
+        )]),
+        Event::Tick { now_ms: 0 },
+    );
+    assert_eq!(next, quantum(Class::Interactive, Kind::Prefill, &[1]));
+    scheduler.prepend_quanta(1, &[Kind::Copy]).unwrap();
+    let (scheduler, next) = step(
+        scheduler,
+        Event::Complete {
+            now_ms: 1,
+            duration_ms: 1,
+            outcome: Completion::Done,
+        },
+    );
+    assert_eq!(next, quantum(Class::Interactive, Kind::Copy, &[1]));
+    assert_eq!(scheduler.jobs[0].quanta, [Kind::Prefill]);
+    let mut idle = state(vec![job(2, Class::Batch, 0, 0, 0, &[Kind::Copy])]);
+    assert_eq!(
+        idle.prepend_quanta(2, &[Kind::Copy]),
+        Err(StepError::AppendToIdleJob(2, JobState::Ready))
+    );
+}
+
+#[test]
 fn appending_to_a_job_that_does_not_run_is_an_error() {
     let mut scheduler = state(vec![job(1, Class::Batch, 0, 0, 0, &[Kind::Copy])]);
     assert_eq!(

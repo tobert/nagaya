@@ -331,6 +331,10 @@ the ABI.
 - **A long prompt takes several passes.** A pass holds at most 256 tokens (`kMaxPassTokens`), so `max_pass_inputs`
   stays 256. The caller feeds a prompt in passes of at most 256 tokens. Each pass starts at the context's token
   count. mk gives the same bits for any split (spec 6.13).
+- **mk declares a checkpoint grain of 256 tokens.** Decided by senpai 2026-10-20 night (vetoable). The GPU tests
+  of spec 6.13 measured a copy round trip and pass splits across 256 tokens. mk also declares `segments_exact`,
+  which a grain needs. The grain is `CHECKPOINT_GRAIN` in `spec.rs`.
+  - A profile with `interval_copies = 0` makes no copies. The gfx1151host profile has 0.
 - **`max_quantum_ms` is 10000.** mk splits a pass at 256 tokens (`kMaxPassTokens`). A prefill chunk of that size takes
   about 2 s. mk's watchdog stops the program at a 10 s deadline (`engine.h:302-306`), so the declared bound is 10 s.
 - **`cells_write` writes `n` rows from `from`.** The binding refuses a `from` other than 0 and changes nothing. mk

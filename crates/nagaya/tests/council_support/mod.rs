@@ -64,6 +64,7 @@ pub struct WithContextTerm {
     delay: Duration,
     script: Script,
     vocab: usize,
+    grain: Option<u64>,
 }
 
 impl Engine for WithContextTerm {
@@ -73,6 +74,7 @@ impl Engine for WithContextTerm {
 
     fn limits(&self) -> Limits {
         let mut limits = self.inner.limits();
+        limits.checkpoint_grain = self.grain;
         if self.bytes > 0 {
             limits.memory.mandatory.push(MandatoryTerm {
                 name: "context".to_owned(),
@@ -126,6 +128,10 @@ pub struct TermFactory {
     pub delay: Duration,
     /// The tokens that the engine favors.
     pub script: Script,
+    /// The checkpoint grain that the engine declares (spec 6.13).
+    pub grain: Option<u64>,
+    /// The cap on interval copies in the `[store]` table of the profile.
+    pub interval_copies: u32,
 }
 
 impl TermFactory {
@@ -137,6 +143,8 @@ impl TermFactory {
             vocab: Some(gogi_toy::VOCAB),
             delay: Duration::ZERO,
             script: Script::default(),
+            grain: None,
+            interval_copies: 0,
         }
     }
 
@@ -151,6 +159,7 @@ impl TermFactory {
             delay: self.delay,
             script: self.script.clone(),
             vocab: self.vocab.unwrap_or(0),
+            grain: self.grain,
         }
     }
 }
@@ -171,6 +180,11 @@ pub fn roomy_slots(count: u32) -> Vec<SlotLimit> {
 }
 
 pub fn profile(host_budget: u64, nvme: u64, host_store: Option<u64>) -> PlacementProfile {
+    profile_with_copies(host_budget, nvme, host_store, 0)
+}
+
+/// The profile with a cap on interval copies (spec 6.13).
+pub fn profile_with_copies(host_budget: u64, nvme: u64, host_store: Option<u64>, copies: u32) -> PlacementProfile {
     PlacementProfile {
         engines: vec![EnginePlacement {
             name: ENGINE.to_owned(),
@@ -193,7 +207,7 @@ pub fn profile(host_budget: u64, nvme: u64, host_store: Option<u64>) -> Placemen
         store: Some(StoreSpec {
             nvme,
             host: host_store,
-            interval_copies: 0,
+            interval_copies: copies,
         }),
     }
 }
@@ -217,9 +231,11 @@ pub fn start(
     host_budget: u64,
     host_store: Option<u64>,
 ) -> (Process, Vec<OpenedEngine>) {
+    let copies = factory.interval_copies;
     let mut registry = Registry::new();
     registry.register("term", Box::new(factory));
-    let mut process = Start::new(profile(host_budget, 1 << 24, host_store), registry, inventory())
+    let profile = profile_with_copies(host_budget, 1 << 24, host_store, copies);
+    let mut process = Start::new(profile, registry, inventory())
         .store(directory)
         .heartbeat(Duration::from_millis(10))
         .timeout(Duration::from_secs(10))

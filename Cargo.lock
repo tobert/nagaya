@@ -926,6 +926,8 @@ dependencies = [
  "libloading",
  "nagaya-abi",
  "nagaya-conformance",
+ "nagaya-sched",
+ "nagaya-store",
  "nagaya-text-qwen38",
  "serde_json",
  "sha2",

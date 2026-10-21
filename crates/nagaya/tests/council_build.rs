@@ -515,6 +515,8 @@ fn a_job_frees_its_slot_before_its_caller_hears_the_result() {
         vocab: gogi_toy::VOCAB,
         pool: Arc::clone(&pool),
         clock: Arc::new(|| 1_000_000),
+        root: root_recipe(&[7; 32], b""),
+        intervals: None,
     });
     let rendering = ToyFamily::new().render(&context(&ctx(opening())), false).unwrap();
     let recipes = boundary_recipes(root_recipe(&[7; 32], b""), &rendering).unwrap();

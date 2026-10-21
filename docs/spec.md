@@ -773,9 +773,18 @@ or a steering vector. Such state goes into the recipe. Thus a steered or masked 
 
 **6.13 Interval copies.** An engine can declare a checkpoint grain in `limits()`, in tokens. Then, between quanta,
 the scheduler makes an interval copy (ontology) of each context that passed a multiple of the grain. Milestone 11.5
-built the store's part. The scheduler's part needs the recipe of each live context, so it comes with milestone 12.
-Until then, mk declares no grain. Decided
-2026-10-20 (`docs/deepinfer.md` 3), and reworked the same day after kaibo's review.
+built the store's part. Milestone 12 step 7 built the scheduler's part on the job path.
+Decided 2026-10-20 (`docs/deepinfer.md` 3), and reworked the same day after kaibo's review.
+
+mk declares a grain of 256 tokens. Decided by senpai 2026-10-20 night (vetoable). Two GPU tests in
+`crates/nagaya-mk-qwen38-gfx1151/tests/hip.rs` measured it on gfx1151:
+
+- `an_interval_copy_restores_and_replays_to_the_bits_of_the_live_context`: a copy at 512 tokens left the live
+  bits as they were. A context of 32,768 tokens restored the copy and replayed 188 tokens. Every part and all
+  248,320 logits were equal to the live context.
+- `a_split_across_256_does_not_change_the_bits_in_either_class`: four splits of 600 tokens crossed 256 and 512 at
+  different tokens. One split crossed 256 one token at a time. A context of 4,096 tokens and a context of 32,768
+  tokens gave equal parts and logits.
 
 - **A store entry that is not sealed.** The copy is a store put like any other: it has a content id, a recipe and
   an entry (6.4) with the reason `interval`. Its recipe adds the item "not sealed" (6.2 tag 8), so a lookup for a
@@ -823,6 +832,28 @@ Until then, mk declares no grain. Decided
   path of milestone 12 step 5 chooses it.
 
 Reason: these are the smallest rules that keep the text above true.
+
+**The job path.** Decided by senpai 2026-10-20 night (vetoable). The council jobs of milestone 12 step 5 make and
+use the copies (`crates/nagaya/src/council/build.rs`):
+
+- **A context is a slot.** The tracker of an engine keys each context by the slot of its job. A job tracks its slot
+  from its start to its end. A rewind moves the rows back, so the job tracks the slot again from the new rows. The
+  context keeps its copy through the rewind.
+- **The copy is the next quantum.** The copy is a quantum of the kind `copy` in the class of the job. It runs before
+  the job's other quanta, so it holds the state at the end of the pass (`Ran::First`).
+- **No copy on a boundary.** When a pass of a build ends on a boundary, the snapshot of that boundary is the next
+  quantum. That snapshot holds the state, so the job makes no copy there.
+- **The recipe.** The sealed recipe at a copy's position chains from the last seal of the state (6.2). Its items are
+  the recipe at the last seal, the tokens since that seal, and the position. A seal is a boundary snapshot or the
+  head of a reply.
+- **A build looks for a copy.** A build takes the live copies of its engine. It computes the recipe of a copy at each
+  copy's position from its own tokens. It restores the longest copy that matches above its highest held boundary,
+  and it feeds from there. A copy on a boundary position is never used. The build names the copy in `from`.
+- **A skip is not an error.** A charge that the ledger refuses and a put with no space skip the copy, with a warning
+  in the log. Any other error of the copy ends the job.
+- **No client pin on a copy.** The pin route reports an interval copy as not held, and it pins nothing. A pin would
+  stop the park (10.3) and the next copy from removing the copy. The store keeps its rules for a pinned copy, for
+  other callers.
 
 A restore from a copy writes its parts, then replays the tokens after it, with the same boundaries. The result has
 the bits of the first run. The lookup is by recipe with tag 8, so any context with the same prefix can use a copy.
@@ -1672,6 +1703,7 @@ The inventories found these items. We correct each one when its code moves. We d
 2. What makes `close()` safe for mk, so that engines can load and unload at runtime (3.3)?
 3. How long does the conversion to canonical safetensors take on mk and mkviolet (10.3, D10)?
 4. Answered 2026-10-20: on mk, one pass of many tokens gives the same bits as one pass for each token (6.13).
+   On 2026-10-21, splits across 256 and 512 tokens gave the same bits in both classes of context (6.13).
 5. How does a profile `PUT` work across machines (2.3, 2.4, 11.5)? The machine that takes the `PUT` cannot
    return the target's 507, and 2.3 ignores an old version where 11.5 answers 409 (kaibo, 2026-10-20). Milestone 12
    settles it with the routes.

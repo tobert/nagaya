@@ -27,7 +27,7 @@ use gogi_proto::spec::{HeldSpec, SpecRules};
 use nagaya_abi::{Capability, Engine, Limits};
 use nagaya_council::build::{boundary_recipes, recipes_with_cut, root_recipe};
 use nagaya_council::family::{Family, Rendering};
-use nagaya_sched::Class;
+use nagaya_sched::{Class, IntervalCopies, IntervalPolicy};
 use nagaya_store::{ContentId, EntryState, Store, Tier};
 use serde::Serialize;
 use serde_json::Value;
@@ -329,7 +329,20 @@ impl Service {
         }
         let digest = identity_digest(&identity);
         let pool = Arc::new(Mutex::new(SlotPool::new(&limits)));
+        let cap = store.lock().expect("the store lock is poisoned").interval_copies();
+        let intervals = IntervalPolicy::from_limits(&limits, cap)
+            .map_err(|error| {
+                ServiceError::internal(format!(
+                    "the engine `{}` declares a checkpoint grain that the scheduler cannot use: {error:?}; declare a \
+                     grain above 0, and `segments_exact` with it (spec 6.13)",
+                    config.engine
+                ))
+            })?
+            .map(|policy| Mutex::new(IntervalCopies::new(policy)));
+        let root = root_recipe(&digest, b"");
         let shared = Arc::new(Shared {
+            root,
+            intervals,
             ports: ports.clone(),
             store,
             engine_index: index,
@@ -348,7 +361,7 @@ impl Service {
             family,
             group,
             shared,
-            root: root_recipe(&digest, b""),
+            root,
             identity,
             specs: Mutex::new(specs),
             pins: Mutex::new(book),
@@ -598,7 +611,7 @@ impl Service {
     }
 
     /// Replace the pins of an owner (gogi "Snapshots and pins"). A snapshot that the store does not hold reports
-    /// `held: false` and pins nothing. A set past `pin_bytes` pins nothing and is `too_large`.
+    /// `held: false` and pins nothing. So does an interval copy. A set past `pin_bytes` pins nothing and is `too_large`.
     pub fn put_pins(&self, owner: &str, put: &PinsPut) -> Result<PinsPutResult, ServiceError> {
         validate_owner(owner)?;
         put.validate()?;
@@ -612,8 +625,11 @@ impl Service {
         for text in &put.snapshots {
             let content = {
                 let hex = text.strip_prefix("blake3:");
+                // A client cannot pin an interval copy (spec 6.13). A pin would stop the park and the next copy
+                // from removing it.
                 hex.and_then(|hex| ContentId::from_hex(hex).ok())
                     .filter(|content| self.is_ours(&store, content))
+                    .filter(|content| store.entries()[content].reason != nagaya_store::Reason::Interval)
             };
             report.push(PinHeld {
                 id: text.clone(),

@@ -577,3 +577,153 @@ fn a_slot_counts_its_tokens_and_a_clear_empties_it() {
     let again = feed(&mut engine, 0, &ids, 256);
     assert_eq!(first, again, "the cleared slot kept state from before the clear");
 }
+
+/// The bytes of each stored part of a slot, parts 0 to 5. A cells part gives its rows up to the token count.
+fn stored_parts(engine: &mut MkEngine, slot: u32) -> Vec<Vec<u8>> {
+    let state = State::Slot(slot);
+    let n = engine.n(state).unwrap() as u32;
+    (0..6u32)
+        .map(|part| {
+            let mut out = vec![0u8; engine.part_bytes(part, n).unwrap() as usize];
+            engine
+                .parts()
+                .unwrap()
+                .part_read(state, part as usize, &mut out)
+                .unwrap();
+            out
+        })
+        .collect()
+}
+
+/// Feed `ids` after the rows of the slot, in passes of the given sizes, and return the logits of the last token.
+fn feed_sizes(engine: &mut MkEngine, slot: u32, ids: &[u32], sizes: &[usize]) -> Vec<f32> {
+    assert_eq!(
+        sizes.iter().sum::<usize>(),
+        ids.len(),
+        "the pass sizes cover the tokens"
+    );
+    let state = State::Slot(slot);
+    let base = engine.n(state).unwrap() as usize;
+    let mut logits = Vec::new();
+    let mut done = 0;
+    for size in sizes {
+        let end = done + size;
+        let mut wanted = segment(state, &ids[done..end], (base + done) as u64);
+        if end == ids.len() {
+            wanted.outputs.logit_rows = vec![(base + end - 1) as u64];
+        }
+        let out = engine
+            .pass(std::slice::from_ref(&wanted), &[])
+            .unwrap_or_else(|error| panic!("the pass at token {} failed: {error:?}", base + done));
+        if end == ids.len() {
+            logits = floats(&out.outputs[0].bytes);
+        }
+        done = end;
+    }
+    assert_eq!(engine.n(state).unwrap() as usize, base + ids.len());
+    logits
+}
+
+/// Assert that two slots hold equal bits in every stored part. The message names the first part that differs.
+fn assert_parts_equal(what: &str, left: &[Vec<u8>], right: &[Vec<u8>]) {
+    let names = ["gdn_state", "gdn_conv", "ple_conv", "kv", "idx_keys", "ple_hist"];
+    for (part, name) in names.iter().enumerate() {
+        assert!(
+            left[part].len() == right[part].len() && left[part] == right[part],
+            "{what}: part {part} `{name}` differs ({} and {} bytes)",
+            left[part].len(),
+            right[part].len()
+        );
+    }
+}
+
+/// The logits as bit patterns, so that a compare finds a NaN and a signed zero.
+fn bits(logits: &[f32]) -> Vec<u32> {
+    logits.iter().map(|value| value.to_bits()).collect()
+}
+
+#[test]
+fn an_interval_copy_restores_and_replays_to_the_bits_of_the_live_context() {
+    // Spec 6.13: a copy at a multiple of the grain does not seal, so the live bits do not change. A restore of the
+    // copy, then a replay of the tokens after it, gives the bits of the live context.
+    const GRAIN: usize = 256;
+    let ids = synthetic_ids(700);
+    let at = 2 * GRAIN;
+    let mut engine = open().expect("open mk");
+    let live = State::Slot(0);
+    feed(&mut engine, 0, &ids[..at], 256);
+
+    let before = stored_parts(&mut engine, 0);
+    let rows = [(3usize, 0u64, at as u64), (4, 0, at as u64)];
+    let copy = nagaya_store::snapshot_from_engine(&mut engine, live, &rows).expect("the interval copy");
+    // The copy goes through the canonical bytes of the store (spec 6.3), as a store put and restore do.
+    let file = copy.encode().expect("encode the copy");
+    let copy = nagaya_store::Snapshot::decode(&file).expect("decode the copy");
+    let after = stored_parts(&mut engine, 0);
+    assert_parts_equal("the copy changed the live context", &before, &after);
+
+    // The live context goes on in passes of 100 tokens.
+    let tail = &ids[at..];
+    let live_logits = feed_sizes(&mut engine, 0, tail, &[100, 88]);
+    let live_parts = stored_parts(&mut engine, 0);
+
+    // A context of the large class takes the copy, and replays the tail in another split.
+    assert_eq!(engine.slots().unwrap().slot_clear(LARGE), WriteResult::Ok);
+    let restored =
+        nagaya_store::write_snapshots(&mut engine, State::Slot(LARGE), std::slice::from_ref(&copy)).expect("restore");
+    assert_eq!(restored, nagaya_store::Restored::Done);
+    assert_eq!(engine.n(State::Slot(LARGE)).unwrap(), at as u64);
+    let restored_at_copy = stored_parts(&mut engine, LARGE);
+    assert_parts_equal("the restore differs from the copy", &before, &restored_at_copy);
+    let replay_logits = feed_sizes(&mut engine, LARGE, tail, &[1, 63, 124]);
+    let replay_parts = stored_parts(&mut engine, LARGE);
+
+    assert_parts_equal("the replay differs from the live context", &live_parts, &replay_parts);
+    assert!(
+        bits(&live_logits) == bits(&replay_logits),
+        "the logits of the replay differ from the live context"
+    );
+
+    // A context that nobody copied has the bits of the live context too.
+    let plain_logits = feed(&mut engine, 1, &ids, 256);
+    let plain_parts = stored_parts(&mut engine, 1);
+    assert_parts_equal(
+        "the copy changed the later bits of the live context",
+        &plain_parts,
+        &live_parts,
+    );
+    assert!(
+        bits(&plain_logits) == bits(&live_logits),
+        "the copy changed the logits of the live context"
+    );
+}
+
+#[test]
+fn a_split_across_256_does_not_change_the_bits_in_either_class() {
+    // Spec 5.7 and 6.13: the split of the tokens into passes does not change bits. The splits cross the multiples
+    // 256 and 512 of the grain at different tokens. One of them crosses 256 one token at a time.
+    let ids = synthetic_ids(600);
+    let splits: [Vec<usize>; 4] = [
+        vec![256, 256, 88],
+        vec![100; 6],
+        vec![128, 127, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 128, 128, 79],
+        vec![255, 2, 254, 89],
+    ];
+    let mut engine = open().expect("open mk");
+    let mut first: Option<(Vec<Vec<u8>>, Vec<u32>)> = None;
+    for slot in [0u32, LARGE] {
+        for (index, sizes) in splits.iter().enumerate() {
+            assert_eq!(engine.slots().unwrap().slot_clear(slot), WriteResult::Ok);
+            let logits = bits(&feed_sizes(&mut engine, slot, &ids, sizes));
+            let parts = stored_parts(&mut engine, slot);
+            match &first {
+                None => first = Some((parts, logits)),
+                Some((parts0, logits0)) => {
+                    let what = format!("slot {slot}, split {index} {sizes:?}");
+                    assert_parts_equal(&what, parts0, &parts);
+                    assert!(*logits0 == logits, "{what}: the logits differ");
+                }
+            }
+        }
+    }
+}
