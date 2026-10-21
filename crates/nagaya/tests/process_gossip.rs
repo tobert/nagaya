@@ -18,8 +18,8 @@ const KEYS: &str = "engine:fake-one,inventory,profile:active";
 
 #[test]
 fn two_processes_see_the_keys_of_each_other() {
-    let mut one = Proc::spawn("host-one", "127.0.0.1:18081", &[]);
-    let mut two = Proc::spawn("host-two", "127.0.0.1:18082", &[one.gossip_addr]);
+    let mut one = Proc::spawn("host-one", &[]);
+    let mut two = Proc::spawn("host-two", &[one.gossip_addr]);
     let watcher = observer(one.gossip_addr);
 
     // The observer reads the values that each process wrote.
@@ -30,7 +30,7 @@ fn two_processes_see_the_keys_of_each_other() {
                 .any(|node| node.name == *name && node.keys.get("engine:fake-one").is_some_and(|v| v.contains("ready")))
         })
     });
-    for (name, http) in [("host-one", "127.0.0.1:18081"), ("host-two", "127.0.0.1:18082")] {
+    for (name, http) in [("host-one", one.http.as_str()), ("host-two", two.http.as_str())] {
         let node = view.live.iter().find(|node| node.name == name).unwrap();
         let names: Vec<&str> = node.keys.keys().map(String::as_str).collect();
         assert_eq!(names.join(","), KEYS, "{view}");
@@ -57,8 +57,8 @@ fn two_processes_see_the_keys_of_each_other() {
 
 #[test]
 fn a_stopped_process_is_marked_dead_by_the_other() {
-    let mut one = Proc::spawn("host-one", "127.0.0.1:18083", &[]);
-    let mut two = Proc::spawn("host-two", "127.0.0.1:18084", &[one.gossip_addr]);
+    let mut one = Proc::spawn("host-one", &[]);
+    let mut two = Proc::spawn("host-two", &[one.gossip_addr]);
     let watcher = observer(one.gossip_addr);
     wait_for_view(&watcher, "host-two live", |view| {
         view.live.iter().any(|node| node.name == "host-two")

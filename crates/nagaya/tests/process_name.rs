@@ -23,8 +23,8 @@ fn conflict(gossip: &Gossip, addr: std::net::SocketAddr) -> Option<Value> {
 
 #[test]
 fn two_processes_with_one_name_log_and_publish_the_conflict() {
-    let mut one = Proc::spawn("twin", "127.0.0.1:18095", &[]);
-    let mut two = Proc::spawn("twin", "127.0.0.1:18096", &[one.gossip_addr]);
+    let mut one = Proc::spawn("twin", &[]);
+    let mut two = Proc::spawn("twin", &[one.gossip_addr]);
     let watcher = observer("observer", one.gossip_addr);
 
     // Each process logs one error that names its own id and the id of the other.
