@@ -113,8 +113,24 @@ fn b70host_has_two_xe_cards_with_32_gib_each() {
     assert_eq!(
         machine.devices,
         vec![
-            facts(0, "xe-e223", 32 << 30, false, Vendor::Intel, "0000:03:00.0", "8086:e223"),
-            facts(1, "xe-e223", 32 << 30, false, Vendor::Intel, "0000:08:00.0", "8086:e223"),
+            facts(
+                0,
+                "xe-e223",
+                32 << 30,
+                false,
+                Vendor::Intel,
+                "0000:03:00.0",
+                "8086:e223"
+            ),
+            facts(
+                1,
+                "xe-e223",
+                32 << 30,
+                false,
+                Vendor::Intel,
+                "0000:08:00.0",
+                "8086:e223"
+            ),
             facts(
                 2,
                 "gfx1036",

@@ -41,6 +41,10 @@ fn profile(engines: Vec<EnginePlacement>) -> PlacementProfile {
                 bytes,
             },
             BudgetSpec {
+                tiers: vec![TierSpec::from(Tier::Device(1))],
+                bytes,
+            },
+            BudgetSpec {
                 tiers: vec![TierSpec::from(Tier::Host)],
                 bytes,
             },

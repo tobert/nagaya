@@ -1433,6 +1433,7 @@ fn profile(budget_bytes: u64, mandatory_bytes: u64) -> Profile {
         engines: vec![EnginePlan {
             name: "gate".to_owned(),
             limits: limits_with(mandatory_bytes),
+            devices: vec![0],
             share: 1,
         }],
     }
@@ -1460,6 +1461,7 @@ fn elastic_profile(budget_bytes: u64) -> Profile {
         engines: vec![EnginePlan {
             name: "gate".to_owned(),
             limits: elastic_limits(),
+            devices: vec![0],
             share: 1,
         }],
     }

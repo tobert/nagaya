@@ -313,6 +313,7 @@ pub fn admit(
         engines.push(EnginePlan {
             name: engine.name.clone(),
             limits,
+            devices: engine.devices.clone(),
             share: engine.share,
         });
     }
