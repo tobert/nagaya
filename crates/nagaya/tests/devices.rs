@@ -56,15 +56,25 @@ fn inventory(ids: &[DeviceId]) -> Inventory {
 }
 
 #[test]
-fn the_matching_devices_pass() {
+fn group_indexes_for_each_profile_device_pass() {
     let profile = profile(vec![engine("a", &[0])]);
     assert_eq!(check_devices(&profile, &[planned("a", &[0])], &inventory(&[0])), Ok(()));
+}
+
+/// The engine declares group indexes, so a profile on machine devices 1 and 2 takes a plan of [0, 1] (spec 2.4).
+#[test]
+fn a_plan_of_group_indexes_passes_on_other_machine_devices() {
+    let profile = profile(vec![engine("a", &[1, 2])]);
+    assert_eq!(
+        check_devices(&profile, &[planned("a", &[0, 1])], &inventory(&[0, 1, 2])),
+        Ok(())
+    );
 }
 
 #[test]
 fn a_device_that_the_inventory_lacks_is_refused() {
     let profile = profile(vec![engine("a", &[7])]);
-    let error = check_devices(&profile, &[planned("a", &[7])], &inventory(&[0])).unwrap_err();
+    let error = check_devices(&profile, &[planned("a", &[0])], &inventory(&[0])).unwrap_err();
     assert_eq!(
         error,
         DeviceError::Unknown {
@@ -78,48 +88,52 @@ fn a_device_that_the_inventory_lacks_is_refused() {
 }
 
 #[test]
-fn a_profile_device_that_the_plan_lacks_is_refused() {
+fn a_plan_with_fewer_devices_than_the_profile_is_refused() {
     let profile = profile(vec![engine("a", &[0, 1])]);
     let error = check_devices(&profile, &[planned("a", &[0])], &inventory(&[0, 1])).unwrap_err();
     assert_eq!(
         error,
-        DeviceError::NotPlanned {
+        DeviceError::GroupIndexes {
             engine: "a".to_owned(),
-            device: 1,
+            planned: vec![0],
+            count: 2,
         }
     );
     let message = error.to_string();
-    assert!(message.contains('a'), "{message}");
-    assert!(message.contains('1'), "{message}");
+    assert!(message.contains("`a`"), "{message}");
+    assert!(message.contains("[0]"), "{message}");
+    assert!(message.contains("0 to 1"), "{message}");
 }
 
 #[test]
-fn a_plan_device_that_the_profile_lacks_is_refused() {
+fn a_plan_with_more_devices_than_the_profile_is_refused() {
     let profile = profile(vec![engine("a", &[0])]);
     let error = check_devices(&profile, &[planned("a", &[0, 1])], &inventory(&[0, 1])).unwrap_err();
     assert_eq!(
         error,
-        DeviceError::NotInProfile {
+        DeviceError::GroupIndexes {
             engine: "a".to_owned(),
-            device: 1,
+            planned: vec![0, 1],
+            count: 1,
         }
     );
-    let message = error.to_string();
-    assert!(message.contains('a'), "{message}");
-    assert!(message.contains('1'), "{message}");
 }
 
+/// A plan of machine ids, or of indexes out of order, is not a list of group indexes.
 #[test]
-fn a_device_order_mismatch_is_refused() {
-    let profile = profile(vec![engine("a", &[1, 0])]);
-    let error = check_devices(&profile, &[planned("a", &[0, 1])], &inventory(&[0, 1])).unwrap_err();
-    assert_eq!(
-        error,
-        DeviceError::Order {
-            engine: "a".to_owned(),
-            device: 1,
-        }
-    );
+fn a_plan_that_is_not_the_group_indexes_in_order_is_refused() {
+    let profile = profile(vec![engine("a", &[1, 2])]);
+    for plan in [vec![1, 2], vec![1, 0]] {
+        let error = check_devices(&profile, &[planned("a", &plan)], &inventory(&[0, 1, 2])).unwrap_err();
+        assert_eq!(
+            error,
+            DeviceError::GroupIndexes {
+                engine: "a".to_owned(),
+                planned: plan.clone(),
+                count: 2,
+            }
+        );
+    }
 }
 
 #[test]

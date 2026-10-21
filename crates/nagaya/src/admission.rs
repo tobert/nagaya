@@ -152,12 +152,14 @@ impl Registry {
     }
 
     /// Make a registry with a factory for each engine kind that this build has: the mk engine with the feature
-    /// `hip`, and the fake kinds with the feature `fake`. A later vendor feature adds its line here.
+    /// `hip`, the Gemma 4 engine with the feature `xe`, and the fake kinds with the feature `fake`.
     pub fn compiled_in() -> Self {
         #[allow(unused_mut)]
         let mut registry = Self::new();
         #[cfg(feature = "hip")]
         registry.register(crate::mk::KIND, Box::new(crate::mk::MkFactory));
+        #[cfg(feature = "xe")]
+        registry.register(crate::gemma4::KIND, Box::new(crate::gemma4::Gemma4Factory));
         #[cfg(feature = "fake")]
         registry.register_fakes();
         registry

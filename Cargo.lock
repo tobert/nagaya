@@ -1072,10 +1072,12 @@ dependencies = [
  "nagaya-abi",
  "nagaya-council",
  "nagaya-ledger",
+ "nagaya-mk-gemma4-bmg",
  "nagaya-mk-qwen38-gfx1151",
  "nagaya-sched",
  "nagaya-store",
  "nagaya-telemetry",
+ "nagaya-text-gemma4",
  "nagaya-text-qwen38",
  "nagaya-text-toy",
  "opentelemetry",
@@ -1137,9 +1139,15 @@ dependencies = [
 name = "nagaya-mk-gemma4-bmg"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "nagaya-abi",
+ "nagaya-conformance",
+ "nagaya-store",
+ "nagaya-text-gemma4",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
 ]
 
 [[package]]

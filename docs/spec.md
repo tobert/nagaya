@@ -155,8 +155,8 @@ The tree for b70host is a capture of 2026-10-21. A Xe card reports the largest p
 standard BARs. The ranges after them hold the ROM and the SR-IOV functions, and they are not memory of the card.
 
 Decided by senpai 2026-10-20 night (vetoable): a build with the feature `fake` keeps a made-up inventory. It has one
-device and 1 GiB of host memory. Reason: the host tests need no real machine. A build with neither the feature
-`fake` nor the feature `hip` has no engine, so it refuses the start (exit 3, `engine_registry` in `main.rs`).
+device and 1 GiB of host memory. Reason: the host tests need no real machine. A build with none of the features
+`fake`, `hip` and `xe` has no engine, so it refuses the start (exit 3, `engine_registry` in `main.rs`).
 
 **The bootstrap config.** The bootstrap config is one TOML file, `nagaya.toml`. Its keys are `http_bind`,
 `gossip_bind`, `store_dir`, `seed_peers`, `park_budget_secs` and `ignore_devices`. The first three keys are required.
@@ -1883,9 +1883,11 @@ The nagaya does not copy that.
   an unknown kind, now keyed by the family.
 - The key `gguf` of `[engines.family]` names the GGUF file of the `qwen38` family. With no key, the library reads the
   first shard of `MK_SHARDS`, as before. The `toy` family needs no file and no tokenizer hash.
-- The registry of engine factories holds each kind that the build has: `mk-qwen38-gfx1151` with the feature `hip`,
-  and the fake kinds with the feature `fake`. A build with no kind refuses the start (exit 3). No feature `xe` exists
-  yet, because no xe engine exists.
+- The registry of engine factories holds each kind that the build has. The feature `hip` gives `mk-qwen38-gfx1151`,
+  `xe` gives `mk-gemma4-bmg`, and `fake` gives the fake kinds. A build with no kind refuses the start (exit 3).
+- The key `model_dir` of `[engines.family]` names the checkpoint directory of the `gemma4` family. With no key, the
+  library reads `GEMMA4_MODEL_DIR`. The engine config reads the checkpoint in the same way (engine-abi "The first
+  Gemma 4 binding").
 - `context_tokens` is `SlotLimit.tokens` of the largest slot, with no "less one". mk declares 32,768, the value
   that `MAX_CONTEXT` had.
 

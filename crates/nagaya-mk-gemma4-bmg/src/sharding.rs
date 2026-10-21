@@ -118,6 +118,12 @@ impl Checkpoint {
         Ok(&self.shards[e.shard].as_bytes()[e.range.clone()])
     }
 
+    /// The bytes, the dtype and the shape of `name`, of any dtype.
+    pub fn raw(&self, name: &str) -> Result<(&[u8], Dtype, &[usize]), String> {
+        let e = self.entry(name)?;
+        Ok((&self.shards[e.shard].as_bytes()[e.range.clone()], e.dtype, &e.shape))
+    }
+
     /// The values of an `F32` tensor and its shape.
     pub fn f32(&self, name: &str) -> Result<(Vec<f32>, Vec<usize>), String> {
         let e = self.entry(name)?;

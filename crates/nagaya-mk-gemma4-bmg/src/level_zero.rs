@@ -32,6 +32,9 @@ pub const ZE_STRUCTURE_TYPE_EXTERNAL_MEMORY_EXPORT_FD: u32 = 26;
 pub const ZE_STRUCTURE_TYPE_MODULE_DESC: u32 = 27;
 pub const ZE_STRUCTURE_TYPE_KERNEL_DESC: u32 = 29;
 
+pub const ZE_STRUCTURE_TYPE_DRIVER_PROPERTIES: u32 = 1;
+pub const ZE_STRUCTURE_TYPE_PCI_EXT_PROPERTIES: u32 = 0x10008;
+
 pub const ZE_EXTERNAL_MEMORY_TYPE_FLAG_DMA_BUF: u32 = 2;
 
 pub const ZE_MODULE_FORMAT_IL_SPIRV: u32 = 0;
@@ -63,6 +66,37 @@ pub struct ze_device_properties_t {
     pub kernelTimestampValidBits: u32,
     pub uuid: [u8; 16],
     pub name: [c_char; 256],
+}
+
+#[repr(C)]
+pub struct ze_driver_properties_t {
+    pub stype: u32,
+    pub pNext: *mut c_void,
+    pub uuid: [u8; 16],
+    pub driverVersion: u32,
+}
+
+#[repr(C)]
+pub struct ze_pci_address_ext_t {
+    pub domain: u32,
+    pub bus: u32,
+    pub device: u32,
+    pub function: u32,
+}
+
+#[repr(C)]
+pub struct ze_pci_speed_ext_t {
+    pub genVersion: i32,
+    pub width: i32,
+    pub maxBandwidth: i64,
+}
+
+#[repr(C)]
+pub struct ze_pci_ext_properties_t {
+    pub stype: u32,
+    pub pNext: *mut c_void,
+    pub address: ze_pci_address_ext_t,
+    pub maxSpeed: ze_pci_speed_ext_t,
 }
 
 #[repr(C)]
@@ -175,6 +209,14 @@ unsafe extern "C" {
     pub fn zeDeviceGetProperties(
         hDevice: ze_device_handle_t,
         pDeviceProperties: *mut ze_device_properties_t,
+    ) -> ze_result_t;
+    pub fn zeDriverGetProperties(
+        hDriver: ze_driver_handle_t,
+        pDriverProperties: *mut ze_driver_properties_t,
+    ) -> ze_result_t;
+    pub fn zeDevicePciGetPropertiesExt(
+        hDevice: ze_device_handle_t,
+        pPciProperties: *mut ze_pci_ext_properties_t,
     ) -> ze_result_t;
     pub fn zeDeviceCanAccessPeer(
         hDevice: ze_device_handle_t,
@@ -311,6 +353,11 @@ pub struct B70Card {
     pub context: ze_context_handle_t,
     pub handle: ze_device_handle_t,
     pub name: String,
+    /// The PCI address of the card, as `dddd:bb:dd.f` in lower-case hex (spec 2.1).
+    pub pci_address: String,
+    /// The PCI vendor id and device id of the card.
+    pub vendor_id: u32,
+    pub device_id: u32,
     pub slices: u32,
     pub subslices_per_slice: u32,
     pub eus_per_subslice: u32,
@@ -696,6 +743,33 @@ pub struct L0Cluster {
     pub cards: Vec<B70Card>,
 }
 
+impl L0Cluster {
+    /// The version of the Level Zero driver (`zeDriverGetProperties`), for the plan table lineage (spec 12.1).
+    pub fn driver_version(&self) -> u32 {
+        unsafe {
+            let mut props: ze_driver_properties_t = std::mem::zeroed();
+            props.stype = ZE_STRUCTURE_TYPE_DRIVER_PROPERTIES;
+            check_ze(zeDriverGetProperties(self.driver, &mut props), "zeDriverGetProperties");
+            props.driverVersion
+        }
+    }
+
+    /// The index in `cards` of the card at each PCI address, in the order of `addresses`.
+    ///
+    /// The order of `zeDeviceGet` can differ from the PCI order, so an engine finds its cards by address. An address
+    /// that no card has, or that two cards have, is an error. Two equal addresses in `addresses` are an error.
+    pub fn cards_at(&self, addresses: &[String]) -> Result<Vec<usize>, String> {
+        crate::spec::match_addresses(
+            &self
+                .cards
+                .iter()
+                .map(|card| card.pci_address.clone())
+                .collect::<Vec<_>>(),
+            addresses,
+        )
+    }
+}
+
 unsafe impl Send for L0Cluster {}
 unsafe impl Sync for L0Cluster {}
 
@@ -741,6 +815,16 @@ impl L0Cluster {
                 check_ze(zeDeviceGetProperties(dev, &mut props), "zeDeviceGetProperties");
 
                 let name = CStr::from_ptr(props.name.as_ptr()).to_string_lossy().into_owned();
+                let mut pci: ze_pci_ext_properties_t = std::mem::zeroed();
+                pci.stype = ZE_STRUCTURE_TYPE_PCI_EXT_PROPERTIES;
+                check_ze(
+                    zeDevicePciGetPropertiesExt(dev, &mut pci),
+                    "zeDevicePciGetPropertiesExt",
+                );
+                let pci_address = format!(
+                    "{:04x}:{:02x}:{:02x}.{:x}",
+                    pci.address.domain, pci.address.bus, pci.address.device, pci.address.function
+                );
 
                 let q_desc = ze_command_queue_desc_t {
                     stype: ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC,
@@ -824,6 +908,9 @@ impl L0Cluster {
                     context,
                     handle: dev,
                     name,
+                    pci_address,
+                    vendor_id: props.vendorId,
+                    device_id: props.deviceId,
                     slices: props.numSlices,
                     subslices_per_slice: props.numSubslicesPerSlice,
                     eus_per_subslice: props.numEUsPerSubslice,
