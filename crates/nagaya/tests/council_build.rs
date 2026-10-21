@@ -459,3 +459,57 @@ fn a_build_starts_from_an_empty_slot_even_when_an_earlier_context_used_it() {
     assert_eq!(after.usage.kept, 0);
     assert_eq!(after.snapshots, alone.snapshots);
 }
+
+/// Run every quantum of a job body in order, as the group thread does.
+fn run_body(body: &mut dyn nagaya::jobs::JobBody, engines: &mut [Box<dyn nagaya_abi::Engine>]) {
+    use nagaya::jobs::Ran;
+    let mut queue = std::collections::VecDeque::from([nagaya_abi::Kind::Copy]);
+    while let Some(kind) = queue.pop_front() {
+        match body.run(kind, engines) {
+            Ran::More(kinds) => queue.extend(kinds),
+            Ran::Done => {}
+            other => panic!("the job ended with {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_job_frees_its_slot_before_its_caller_hears_the_result() {
+    use std::sync::{Arc, Mutex, mpsc};
+
+    use nagaya::council::build::{BuildBody, Shared};
+    use nagaya::council::slots::SlotPool;
+    use nagaya_abi::Engine;
+    use nagaya_council::build::{boundary_recipes, root_recipe};
+    use nagaya_council::family::Family;
+
+    let directory = tempfile::tempdir().unwrap();
+    let engine = nagaya_abi::fake::FakeAlways::with_slots(council_support::roomy_slots(3)).with_vocab(gogi_toy::VOCAB);
+    let limits = engine.limits();
+    let pool = Arc::new(Mutex::new(SlotPool::new(&limits)));
+    let shared = Arc::new(Shared {
+        store: Arc::new(Mutex::new(nagaya_store::Store::open(directory.path()).unwrap())),
+        engine_index: 0,
+        engine_name: ENGINE.to_owned(),
+        identity: [7; 32],
+        limits: Arc::new(limits),
+        chunk: 64,
+        vocab: gogi_toy::VOCAB,
+        pool: Arc::clone(&pool),
+        clock: Arc::new(|| 1_000_000),
+    });
+    let rendering = ToyFamily::new().render(&context(&ctx(opening())), false).unwrap();
+    let recipes = boundary_recipes(root_recipe(&[7; 32], b""), &rendering).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut body = BuildBody::new(shared, rendering.tokens[..rendering.end].into(), recipes, tx);
+    let mut engines: Vec<Box<dyn Engine>> = vec![Box::new(engine)];
+    run_body(&mut body, &mut engines);
+    assert!(rx.try_recv().unwrap().is_ok());
+    // The body still exists, as it does on the group thread until the scheduler hears that the quantum ended.
+    assert_eq!(
+        pool.lock().unwrap().free(),
+        3,
+        "the slot is free when the caller hears the result"
+    );
+    drop(body);
+}

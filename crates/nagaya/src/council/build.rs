@@ -345,6 +345,14 @@ impl<T: Then> ContextBody<T> {
             .slot_high(self.slot()) as usize)
     }
 
+    /// Send the result to the caller. The slot is free before the caller hears, so the caller sees it free.
+    fn send(&mut self, result: Result<Finished<T>, ServiceError>) {
+        self.lease = None;
+        if let Some(tx) = self.tx.take() {
+            let _ = tx.send(result);
+        }
+    }
+
     fn finish(&mut self) -> Ran {
         let finished = Finished {
             outcome: Outcome {
@@ -354,9 +362,7 @@ impl<T: Then> ContextBody<T> {
             },
             then: self.then.take().expect("a job finishes once"),
         };
-        if let Some(tx) = self.tx.take() {
-            let _ = tx.send(Ok(finished));
-        }
+        self.send(Ok(finished));
         Ran::Done
     }
 
@@ -696,9 +702,7 @@ impl<T: Then> JobBody for ContextBody<T> {
         match result {
             Ok(ran) => ran,
             Err(error) => {
-                if let Some(tx) = self.tx.take() {
-                    let _ = tx.send(Err(error));
-                }
+                self.send(Err(error));
                 Ran::Failed
             }
         }
@@ -706,12 +710,10 @@ impl<T: Then> JobBody for ContextBody<T> {
 
     fn ended(&mut self, state: JobState) {
         // A job that ends with no result tells its caller why.
-        if let Some(tx) = self.tx.take() {
-            let error = match state {
-                JobState::Expired => ServiceError::Timeout,
-                _ => ServiceError::Cancelled,
-            };
-            let _ = tx.send(Err(error));
-        }
+        let error = match state {
+            JobState::Expired => ServiceError::Timeout,
+            _ => ServiceError::Cancelled,
+        };
+        self.send(Err(error));
     }
 }
