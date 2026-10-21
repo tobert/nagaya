@@ -94,8 +94,7 @@ root path is `/` on a machine, and a fixed tree in a test (`crates/nagaya/tests/
 - NVMe: each `nvme<C>n<N>` in `sys/block`. The size is the `size` file in 512-byte sectors.
 - Network: each interface in `sys/class/net` that has a `device` directory. Virtual interfaces have none.
 
-A device id is the position in the list: AMD GPUs first, then Intel, then NVIDIA, each in the order of the kernel
-number.
+A device id is the position in the list, in the order that the next paragraph decides.
 
 Decided 2026-10-21 (Amy, by interview): the device ids follow the PCI address, in the order of domain, bus, device
 and function, for every vendor. Reason: on b70host the vendor order makes the display iGPU device 0, and the
@@ -297,6 +296,12 @@ Each place uses one of two names, and this map joins them.
 - The ledger maps a term tier `device(i)` to the machine device `devices[i]` of the engine. Then it finds the budget
   of that machine device. Thus an engine never sees a machine device id, and a profile never sees a group index.
 - On gfx1151host, both names of the one device are 0.
+
+**Proposed** (claude-opus-5-5, 2026-10-21): `limits().devices` holds group indexes, `0` to `n - 1` in order. The
+process checks that `n` is the length of the profile's `devices` list, as `check_devices` checks the list today
+(`crates/nagaya/src/placement.rs`). The engine finds each physical card by the PCI address in the devices that
+`plan` and `open` get. Reason: today `limits().devices` holds machine ids, so an engine on machine device 1 must know
+its machine id. That breaks the rule above, and an engine plan would differ between machines for the same config.
 
 An engine name has letters, digits, `.`, `_` and `-`, and at most 128 bytes. A profile with another name does not
 parse. Reason: the name is part of the gossip key `engine:<name>` (2.3). Decided 2026-10-20.

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use nagaya::admission::{Factory, OpenError, OpenErrorKind, PlanError, Registry};
+use nagaya::admission::{Factory, GroupDevice, OpenError, OpenErrorKind, PlanError, Registry};
 use nagaya::exit::ExitCode;
 use nagaya::inventory::{Device, Inventory};
 use nagaya::lifecycle::{self, LifecycleError};
@@ -66,6 +66,7 @@ fn inventory(ids: &[DeviceId]) -> Inventory {
             .map(|id| Device {
                 id: *id,
                 name: format!("device-{id}"),
+                pci_address: "0000:00:00.0".to_owned(),
                 memory_bytes: 1024,
                 unified: false,
             })
@@ -205,11 +206,11 @@ struct FailingFactory {
 }
 
 impl Factory for FailingFactory {
-    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+    fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         Ok(self.limits.clone())
     }
 
-    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
         Err(OpenError {
             kind: self.kind,
             message: "the weights are absent".to_owned(),
@@ -277,11 +278,11 @@ struct PanicFactory {
 }
 
 impl Factory for PanicFactory {
-    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+    fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         Ok(self.limits.clone())
     }
 
-    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
         panic!("the engine cannot open")
     }
 }
@@ -387,11 +388,11 @@ struct SlowFactory {
 }
 
 impl Factory for SlowFactory {
-    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+    fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         Ok(self.limits.clone())
     }
 
-    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
         thread::sleep(Duration::from_millis(400));
         Ok(Box::new(FakeAlways::new()))
     }
@@ -430,12 +431,12 @@ fn an_engine_with_no_segments_exits_three_at_cold_start() {
     // Review finding 8.
     struct Zero;
     impl Factory for Zero {
-        fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+        fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
             let mut limits = limits_on(&[0]);
             limits.max_segments = 0;
             Ok(limits)
         }
-        fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+        fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
             panic!("an engine that admission refused is never opened")
         }
     }
@@ -477,11 +478,11 @@ struct OpenTimeFactory {
 }
 
 impl Factory for OpenTimeFactory {
-    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+    fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         Ok(self.limits.clone())
     }
 
-    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
         thread::sleep(self.open_time);
         Ok(Box::new(FakeAlways::new()))
     }

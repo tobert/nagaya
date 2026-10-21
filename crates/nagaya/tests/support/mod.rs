@@ -134,12 +134,23 @@ pub const ACTIVE_PROFILE: &str = "[[engines]]\nname = \"fake-one\"\nkind = \"fak
      [[budgets]]\ntiers = [\"host\"]\nbytes = 256\n\
      [store]\nnvme = 65536\n";
 
+/// A loopback address with a port that the system gave. Parallel runs of the tests do not share a port.
+fn free_http() -> String {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .to_string()
+}
+
 /// A nagaya process with its own directory. The process is killed when the value drops.
 pub struct Proc {
     _directory: tempfile::TempDir,
     child: Option<Child>,
     /// The lines that the process writes to stderr.
     pub lines: Lines,
+    /// The HTTP address of the process. The operating system gave the port.
+    pub http: String,
     /// The gossip address of the process.
     pub gossip_addr: SocketAddr,
     /// The store directory of the process.
@@ -147,8 +158,9 @@ pub struct Proc {
 }
 
 impl Proc {
-    /// Start a process and wait for its gossip address.
-    pub fn spawn(name: &str, http: &str, seeds: &[SocketAddr]) -> Self {
+    /// Start a process and wait for its gossip address. The process binds an HTTP port that the system gave.
+    pub fn spawn(name: &str, seeds: &[SocketAddr]) -> Self {
+        let http = free_http();
         let directory = tempfile::tempdir().unwrap();
         let store = directory.path().join("store");
         std::fs::create_dir_all(&store).unwrap();
@@ -182,6 +194,7 @@ impl Proc {
             _directory: directory,
             child: Some(child),
             lines,
+            http,
             gossip_addr,
             store,
         }

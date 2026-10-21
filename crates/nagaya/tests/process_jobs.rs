@@ -4,7 +4,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use nagaya::admission::{Factory, OpenError, PlanError, Registry};
+use nagaya::admission::{Factory, GroupDevice, OpenError, PlanError, Registry};
 use nagaya::inventory::{Device, Inventory};
 use nagaya::jobs::{JobBody, JobSpec, Ran};
 use nagaya::process::{OpenedEngine, Process, Quantum, Start, SubmitError};
@@ -32,11 +32,11 @@ fn two_slots() -> FakeAlways {
 struct Simple;
 
 impl Factory for Simple {
-    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+    fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         Ok(two_slots().limits())
     }
 
-    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
         Ok(Box::new(two_slots()))
     }
 }
@@ -77,6 +77,7 @@ fn start(directory: &std::path::Path) -> (Process, Vec<OpenedEngine>) {
         devices: vec![Device {
             id: 0,
             name: "device-0".to_owned(),
+            pci_address: "0000:00:00.0".to_owned(),
             memory_bytes: 1024,
             unified: false,
         }],

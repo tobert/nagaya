@@ -10,12 +10,14 @@ fn inventory() -> Inventory {
             Device {
                 id: 0,
                 name: "gfx1151".to_owned(),
+                pci_address: "0000:00:00.0".to_owned(),
                 memory_bytes: 1000,
                 unified: true,
             },
             Device {
                 id: 1,
                 name: "cpu".to_owned(),
+                pci_address: "0000:00:00.0".to_owned(),
                 memory_bytes: 24,
                 unified: false,
             },

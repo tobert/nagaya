@@ -11,6 +11,8 @@ pub struct Device {
     pub id: DeviceId,
     /// The device name from the probe.
     pub name: String,
+    /// The PCI address, for example `0000:03:00.0`. A made-up device has a made-up address.
+    pub pci_address: String,
     /// The device memory in bytes.
     pub memory_bytes: u64,
     /// True when device memory is the host's memory (gfx1151host, sm121host).

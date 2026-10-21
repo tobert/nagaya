@@ -7,7 +7,7 @@
 use nagaya_abi::{Engine, Limits};
 use nagaya_mk_qwen38_gfx1151::{MkError, MkPaths};
 
-use crate::admission::{Factory, OpenError, OpenErrorKind, PlanError};
+use crate::admission::{Factory, GroupDevice, OpenError, OpenErrorKind, PlanError};
 
 /// The engine kind in a placement profile.
 pub const KIND: &str = "mk-qwen38-gfx1151";
@@ -22,12 +22,17 @@ pub const WEIGHTS_KEY: &str = "weights_bytes";
 pub struct MkFactory;
 
 impl Factory for MkFactory {
-    fn plan(&self, config: &toml::Table) -> Result<Limits, PlanError> {
+    fn plan(&self, config: &toml::Table, devices: &[GroupDevice]) -> Result<Limits, PlanError> {
+        check_devices(devices)?;
         check_install()?;
         Ok(nagaya_mk_qwen38_gfx1151::plan(weights_bytes(config)?))
     }
 
-    fn open(&self, config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+    fn open(&self, config: &toml::Table, devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
+        check_devices(devices).map_err(|error| OpenError {
+            kind: OpenErrorKind::Other,
+            message: error.message,
+        })?;
         let planned = nagaya_mk_qwen38_gfx1151::plan(weights_bytes(config).map_err(|error| OpenError {
             kind: OpenErrorKind::Other,
             message: error.message,
@@ -36,6 +41,21 @@ impl Factory for MkFactory {
         weights_problem(&planned, &engine.limits())?;
         Ok(Box::new(engine))
     }
+}
+
+/// Refuse a group of any size but one device. The mk engine runs on the one HIP device of its thread.
+///
+/// The engine does not select the device by its PCI address yet (engine ABI "The factory gets its devices").
+fn check_devices(devices: &[GroupDevice]) -> Result<(), PlanError> {
+    if devices.len() == 1 {
+        return Ok(());
+    }
+    Err(PlanError {
+        message: format!(
+            "the mk engine runs on exactly one device, but its profile names {}: name one device in `devices`",
+            devices.len()
+        ),
+    })
 }
 
 /// Read the weights size from the engine config. The engine refuses a key that it does not know (ABI "Rust shape").
