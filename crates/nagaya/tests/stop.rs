@@ -79,6 +79,7 @@ fn inventory(ids: &[DeviceId]) -> Inventory {
             .map(|id| Device {
                 id: *id,
                 name: format!("device-{id}"),
+                pci_address: "0000:00:00.0".to_owned(),
                 memory_bytes: 1024,
                 unified: false,
             })

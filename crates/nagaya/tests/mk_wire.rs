@@ -113,6 +113,7 @@ fn a_missing_variable_refuses_the_start_with_exit_3_and_names_the_variable() {
         devices: vec![Device {
             id: 0,
             name: "gfx1151".to_owned(),
+            pci_address: "0000:00:00.0".to_owned(),
             memory_bytes: 133_143_986_176,
             unified: true,
         }],

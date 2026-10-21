@@ -26,8 +26,6 @@ pub struct DeviceFacts {
     pub device: Device,
     /// The vendor.
     pub vendor: Vendor,
-    /// The PCI address, for example `0000:c2:00.0`.
-    pub pci_address: String,
     /// The PCI vendor and device ids in lower case hex, for example `1002:1586`.
     pub pci_id: String,
 }
@@ -111,7 +109,7 @@ impl FileProbe {
         devices.extend(self.nvidia_devices(host_bytes)?);
         // A PCI address has fixed-width lower case hex fields, so the text order is the order of domain, bus, device
         // and function (spec 2.1).
-        devices.sort_by(|left, right| left.pci_address.cmp(&right.pci_address));
+        devices.sort_by(|left, right| left.device.pci_address.cmp(&right.device.pci_address));
         for (id, facts) in devices.iter_mut().enumerate() {
             facts.device.id = u32::try_from(id).expect("a machine has fewer than 2^32 devices");
         }
@@ -350,11 +348,11 @@ impl FileProbe {
             device: Device {
                 id: 0,
                 name,
+                pci_address,
                 memory_bytes: bank_bytes,
                 unified,
             },
             vendor: Vendor::Amd,
-            pci_address,
             pci_id,
         })
     }
@@ -391,11 +389,11 @@ impl FileProbe {
                 device: Device {
                     id: 0,
                     name: format!("xe-{id:04x}"),
+                    pci_address,
                     memory_bytes,
                     unified: false,
                 },
                 vendor: Vendor::Intel,
-                pci_address,
                 pci_id: format!("{vendor:04x}:{id:04x}"),
             });
         }
@@ -449,11 +447,11 @@ impl FileProbe {
                 device: Device {
                     id: 0,
                     name: model,
+                    pci_address: address,
                     memory_bytes: host_bytes,
                     unified: true,
                 },
                 vendor: Vendor::Nvidia,
-                pci_address: address,
                 pci_id: format!("{vendor:04x}:{id:04x}"),
             });
         }

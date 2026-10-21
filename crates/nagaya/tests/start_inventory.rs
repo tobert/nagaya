@@ -22,6 +22,7 @@ fn the_start_path_reads_the_inventory_of_gfx1151host_through_the_probe_trait() {
             devices: vec![Device {
                 id: 0,
                 name: "gfx1151".to_owned(),
+                pci_address: "0000:c2:00.0".to_owned(),
                 memory_bytes: 133_143_986_176,
                 unified: true,
             }],

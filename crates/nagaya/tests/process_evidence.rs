@@ -108,6 +108,7 @@ fn failure_lines(root: &Path) -> Vec<String> {
         devices: vec![Device {
             id: 0,
             name: "device-0".to_owned(),
+            pci_address: "0000:00:00.0".to_owned(),
             memory_bytes: 1024,
             unified: false,
         }],
