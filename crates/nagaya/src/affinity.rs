@@ -6,7 +6,7 @@ use std::io;
 use std::mem::size_of;
 
 /// The CPU number that a mask can hold. It is the size of `cpu_set_t` in bits.
-const MASK_CPUS: usize = libc::CPU_SETSIZE as usize;
+pub(crate) const MASK_CPUS: usize = libc::CPU_SETSIZE as usize;
 
 /// The calling thread. Linux takes pid 0 for it.
 const THIS_THREAD: libc::pid_t = 0;
