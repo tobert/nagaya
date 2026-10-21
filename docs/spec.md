@@ -16,6 +16,8 @@ question has the mark **Open**, and section 15 lists all of them.
 We change this spec before we change the code (Amy, 2026-10-20: "I want to keep updating the spec before the code so
 we could redo it all again if we decide to"). The mark "Decided 2026-10-20 (reading)" is on a rule that began as a
 **Proposed** reading of the text. Senpai wrote it as a rule, and Amy can veto it.
+The mark "Decided by senpai 2026-10-20 night (vetoable)" is on a rule that senpai chose where the spec left a choice
+open. Amy can veto it.
 
 ## 1. Scope
 
@@ -1169,10 +1171,10 @@ milestones 11 and 11b).
   211 cases of the fixture. The rule says that joined pieces equal the part, up to `strip()`.
 
   The parser also gives the text that mk's tracker released for each token (`released`). That text keeps the rule in
-  every case, with the end of thinking left out. The server writes `piece` from `released`. Decided 2026-10-20
-  (reading, from a note by Sonnet 5.5).
-- **Open:** one token can release text in two phases, but a gogi `token` event has one phase. This is rare, because
-  each Qwen3.8 marker is one token. The server counts each such token and logs it.
+  every case, with the end of thinking left out. The reply parser of the family library writes the pieces of a step
+  from `released`. Decided 2026-10-20 (reading, from a note by Sonnet 5.5).
+- One token can release text in two phases, but a gogi `token` event has one phase. This is rare, because each
+  Qwen3.8 marker is one token. 11.3a has the rule for the step of such a token.
 
 **11.3a Council rendering.** A decision and a raw read put a spec, a case and a letter menu after each context. The
 nagaya renders them with mkviolet's rules (mkviolet `src/template.rs` and its council code), ported to each family.
@@ -1190,6 +1192,64 @@ A served model's `template` in council identity has two parts: `nagaya-council:<
 - Each hash is the first 16 hex digits of a SHA-256.
 
 Decided 2026-10-20 (Amy chose the name `nagaya-council`).
+
+**The Qwen3.8 rendering.** The spec and gogi leave these choices open for Qwen3.8. Sonnet 5.5 proposed them on
+2026-10-20. Each rule has the mark "Decided by senpai 2026-10-20 night (vetoable)", and Amy can veto it.
+
+- Every render uses the reasoning effort `medium`, as mk's council does. The template then writes no effort line.
+  Decided by senpai 2026-10-20 night (vetoable).
+- Thinking follows the context: the render uses `thinks()` of the context. A context renders the same with thinking on
+  and off, except for the generation prompt. A past assistant message keeps its reasoning in both. A test compares the
+  two renders.
+  Decided by senpai 2026-10-20 night (vetoable).
+- A read closes the thinking. The case turn ends with the template's prompt for thinking off:
+  `<think>\n\n</think>\n\n`.
+  Decided by senpai 2026-10-20 night (vetoable).
+- A plain read keeps mkviolet's layout: spec turn, case turn, `Answer to question`, then ` N (stem):`. The letter
+  token has a leading space, as in mkviolet. A raw read uses the letters that the client sends.
+  Decided by senpai 2026-10-20 night (vetoable).
+- A plain read tokenizes the template text and the client text in one pass, as mk renders a chat. mkviolet tokenizes
+  the pieces one by one, and the two ways can differ at a join. The library checks that the tokens of the context
+  begin the tokens of the read. It also checks that each step begins with the tokens before it. A failed check is an
+  internal error (`council/read.rs`).
+  Decided by senpai 2026-10-20 night (vetoable).
+- A queue read writes the call in Qwen3.8's form, with the parameter `answers` as one JSON object. It reads a bare
+  letter after the opening quote of the value.
+  Decided by senpai 2026-10-20 night (vetoable).
+- A queue read asks the questions in the order of the properties of `answers` in the queue tool's schema. Qwen3.8's
+  template writes the keys in the order it gets them. mkviolet sorts by question id, because Gemma 4's template sorts.
+  A test pins the order.
+  Decided by senpai 2026-10-20 night (vetoable).
+- The workspace turns on the `serde_json` features `preserve_order` and `float_roundtrip` for all its crates, because
+  Cargo joins the features of one build. The queue read needs `preserve_order` to read the order of the schema.
+  Without it, the map sorts its keys, and the questions come in the wrong order. `float_roundtrip` keeps a float of a
+  schema or a call equal to the float that was sent. A build of one crate alone may lack both.
+  Decided by senpai 2026-10-20 night (vetoable).
+- The template has no form for a failed result. The library writes `Error: ` before the content of a tool message with
+  `is_error`.
+  Decided by senpai 2026-10-20 night (vetoable).
+- A system message after a message of another role renders in place as a system turn. gogi's `docs/council-api.md`
+  says "A system message may come later", and `gogi-conformance` sends one. The template refuses such a message, so
+  the library gives it a user message with stand-in text. Then the library swaps the user turn for a system turn with
+  the trimmed content. System messages at the start stay with the template, which merges them into one turn.
+  Decided by senpai 2026-10-20 night (vetoable).
+- A marked message is a boundary when the tokens of the rendering up to it begin the whole rendering. A tool message
+  inside a run of tool messages is not a boundary, because the template puts one user turn around the run. A later
+  system message ends the run.
+  Decided by senpai 2026-10-20 night (vetoable).
+- The template keeps the reasoning of every assistant message. No marked message loses its boundary for that reason.
+  Decided by senpai 2026-10-20 night (vetoable).
+- `rendered_sha256` is the SHA-256 of the text that the read was conditioned on (gogi's words). mkviolet hashes the
+  head's snapshot id. A plain read hashes the text through `Answer to question`, which all its questions share. A
+  queue read hashes its whole text at the end: the call through the last letter that the read chose, and its closing
+  quote.
+  Decided by senpai 2026-10-20 night (vetoable).
+- The reply parser takes the stop token as a pushed token (`<|im_end|>` or `<|endoftext|>`), and it adds no text for
+  it. A token has the phase of the last text that it released, and the text it released in that phase. The text that
+  the same token released in an earlier phase is in the fields of the whole reply, and in no step. The end of the
+  thinking is not part of the reasoning. A call that parses but holds an integer of more than 64 bits becomes a
+  malformed call with its text as written.
+  Decided by senpai 2026-10-20 night (vetoable).
 
 **11.3b The toy family.** The fake engine has no real tokenizer. For tests, it serves the toy family of gogi's
 `gogi-toy` crate. Its tokens are the 256 byte values and 14 template markers, and its template is the template of

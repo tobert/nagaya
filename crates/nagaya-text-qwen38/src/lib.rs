@@ -4,6 +4,7 @@
 //! Python front-end, byte for byte and id for id.
 
 pub mod chars;
+pub mod council;
 pub mod detok;
 mod error;
 pub mod family;
@@ -18,6 +19,7 @@ pub mod json;
 pub mod pystr;
 pub mod reply;
 
+pub use council::Qwen38Family;
 pub use error::Error;
 pub use family::{Qwen38, Rendered};
 pub use hash::tokenizer_hash;

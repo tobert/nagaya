@@ -479,7 +479,7 @@ fn a_letter_that_is_not_one_token_of_its_own_is_a_client_error() {
 #[test]
 fn a_reply_parser_labels_tokens_and_parses_the_reply() {
     let f = family();
-    let mut parser = f.reply_parser(true);
+    let mut parser = f.reply_parser(true, &[]).unwrap();
     let mut tokens: Vec<u32> = "hmm".bytes().map(u32::from).collect();
     tokens.push(toy::ENDTHINK);
     tokens.extend("ok".bytes().map(u32::from));
@@ -514,18 +514,37 @@ fn a_reply_parser_labels_tokens_and_parses_the_reply() {
 }
 
 #[test]
+fn the_tools_of_the_context_do_not_change_a_toy_reply() {
+    let f = family();
+    let tools = [gogi_proto::context::Tool::new("sh", json!({"type": "object"}))];
+    let parse = |tools: &[gogi_proto::context::Tool]| {
+        let mut parser = f.reply_parser(false, tools).unwrap();
+        for t in [toy::CALL]
+            .into_iter()
+            .chain(r#"sh({"b":1})"#.bytes().map(u32::from))
+            .chain([toy::ENDCALL, toy::END])
+        {
+            parser.push(t).unwrap();
+        }
+        parser.finish()
+    };
+    assert_eq!(parse(&tools), parse(&[]));
+}
+
+#[test]
 fn a_reply_without_thinking_is_content_and_a_reply_with_no_end_has_not_ended() {
     let f = family();
-    let mut parser = f.reply_parser(false);
+    let mut parser = f.reply_parser(false, &[]).unwrap();
     assert_eq!(parser.push(u32::from(b'x')).unwrap().phase, Phase::Content);
     let reply = parser.finish();
     assert_eq!((reply.content.as_str(), reply.ended), ("x", false));
+    assert!(reply.tail.is_empty(), "the toy parser holds nothing back");
 }
 
 #[test]
 fn a_reply_parser_refuses_a_token_outside_the_vocabulary_and_a_token_after_the_end() {
     let f = family();
-    let mut parser = f.reply_parser(false);
+    let mut parser = f.reply_parser(false, &[]).unwrap();
     assert!(matches!(
         parser.push(f.vocab_size() as u32),
         Err(FamilyError::Internal(_))
