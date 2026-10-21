@@ -1798,9 +1798,17 @@ these ways. Each served model declares the capability `continuation` (`crates/na
     (`build::Extension`, `ContextBody::restore_seam`). When the store holds it, the build restores it and the
     generation feeds the last token. The state keeps the seal of the seam, so the head after that reply has the seam
     among the boundaries of its recipe (`recipes_with_cuts`).
-  - A cut reply that the client sends back closed starts from the head too. The open rendering's tokens up to the
-    seam must begin the closed rendering's tokens. `Service::seam_cut` gives the seam of the last assistant message
-    as a cut. The end of the message before it must be a boundary. This costs two or three renders of the prefix.
+  - A cut reply that the client sends back closed starts from the head too, in any form. The open rendering's
+    tokens up to the seam must begin the closed rendering's tokens. `Service::held_cuts` scans the store's index for
+    sealed snapshots inside the context, away from its boundaries. A snapshot whose recipe is the context's recipe at
+    its position is a cut. The scan renders nothing.
+  - **Proposed (for Amy)** (Claude Opus 5.5, 2026-10-21), the cuts from the index. A build tries each sealed
+    snapshot that the scan finds, not only the ends of messages. Reason: the first rule tried the open forms of the
+    last assistant message. It missed a reply cut inside its thinking and sent back with `content: ""`. It also cost
+    three renders of the prefix: 103 ms against 32 ms for a dry run of 18026 tokens (release, host).
+  - The head after a continuation's reply chains through the seam of the cut reply. A context that sends that reply
+    back closed does not find it, and its build starts from the seam. Not built: a cut with two inserted boundaries.
+    The work after a build would need the recipes of the build, not only its cut.
   - **Proposed (for Amy)** (Claude Opus 5.5, 2026-10-21), the seam. The head is the seam of the open rendering, the
     position before the last sampled token, not its end. Reason: a snapshot holds no logit row. A continuation from a
     head at the end would have no first logit row, and it cannot feed the last token again. At the seam it feeds
