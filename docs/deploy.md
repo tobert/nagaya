@@ -28,8 +28,9 @@ These gaps were open on 2026-10-20 night. Check each one, because the cutover fa
   exits 3 with the message "this build has no engine". The feature registers the kind `mk-qwen38-gfx1151`.
 - The profile needs the real size of mk's weight arena. The file in `deploy/gfx1151host/` holds an estimate. Read "The
   weights size" below before the first start.
-- The `nagaya` binary needs the HTTP routes of council v2 (milestone 12 step 6). Without them, the identity check
-  below cannot pass.
+- The council service cannot attach to mk yet. A build needs the `parts` and `slots` capabilities, and the mk
+  binding declares no `slots` and no `coverage` (`crates/nagaya-mk-qwen38-gfx1151/src/engine.rs`). The process then
+  logs "cannot serve engine `mk`" and exits 3 (spec 11.7). A lane must add the slots of mk first.
 - The mk context sizes change in the `ctx-size` lane. The profile names no context count and no size, so it does not
   change. The pool bytes that the engine declares do change. Read "The memory budgets" below, and check the budgets.
 - mk's library must exist and be newer than mk's last commit (AGENTS.md "mk on gfx1151host"). Amy builds it.
@@ -123,7 +124,18 @@ Do these steps in this order. Stop at the first step that fails, and do the roll
 
    The reply is JSON. It lists the served model with its identity, limits, capabilities and status.
 
-6. Look for GPU errors in the kernel log.
+6. Run gogi's conformance suite against the process. It sends about 200 requests and needs no restart.
+
+   ```
+   cd ~/src/gogi
+   nice -n 10 cargo run --release -p gogi-conformance -- http://198.51.100.20:8090
+   ```
+
+   The last line counts the checks, such as `212 ok, 0 FAIL, 6 skip`. Each `FAIL` line names a check. Add
+   `--model <name>` to check one served model. The flag `--allow-restart <cmd>` also checks a restart, but pinned
+   snapshots do not survive one yet (spec 6.11), so leave it out.
+
+7. Look for GPU errors in the kernel log.
 
    ```
    journalctl -k -b --no-pager | grep -i -E 'amdgpu|kfd' | tail -20
