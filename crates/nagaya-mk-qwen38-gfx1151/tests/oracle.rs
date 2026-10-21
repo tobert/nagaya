@@ -7,8 +7,8 @@ use std::path::Path;
 
 use oracle::{Fixture, Prompt, QmmPath, TOP};
 
-/// The most tokens that one mk context takes (`spec.rs` `CONTEXT_CAPACITY`).
-const MAX_TOKENS: usize = 256;
+/// The most tokens that a small mk context takes (`spec.rs` `CONTEXT_CLASSES`).
+const MAX_TOKENS: usize = 4096;
 
 fn real() -> Fixture {
     oracle::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/oracle/qwen38.json"))

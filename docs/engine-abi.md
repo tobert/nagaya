@@ -286,10 +286,23 @@ Decided 2026-10-20 (reading). The milestone 8 binding needs these choices. Each 
 the ABI.
 
 - **A context is a state.** `State` is `Slot(u32)` in v0, so each mk context has a slot index. `limits().slots`
-  declares the pool that one handle creates at open: 16 contexts of 256 tokens (Amy, 2026-10-20: "grow the
-  pool"). The process opens one handle. The conformance suite opens a handle for each gate, so the engine holds
-  more contexts while the suite runs. This binding does not bind `mk_ctx_fork`.
-  `plan(config)` comes with the process crate, so this binding fixes the pool.
+  declares the pool that one handle creates at open, as two classes of slots. The small class comes first, as in
+  the fake engine.
+  - Slots 0 to 11 hold 4,096 tokens each. Slots 12 to 15 hold 32,768 tokens each.
+  - The process opens one handle. The conformance suite opens a handle for each gate.
+  - This binding does not bind `mk_ctx_fork`.
+  - `plan(config)` comes with the process crate, so this binding fixes the pool.
+- **The pool is 12 contexts of 4,096 tokens and 4 of 32,768.** Decided by senpai 2026-10-20 night (vetoable). The
+  pool had 16 contexts of 256 tokens (Amy, 2026-10-20: "grow the pool"). A kaijutsu context needs thousands of
+  tokens, so 256 cannot serve council v2.
+  - The count stays 16, which equals `max_segments`. A pass can hold one segment for each context.
+  - mk takes any capacity that is a multiple of 256, up to 32,768 (`check_capacity`).
+  - Two sizes keep the long contexts few and the short ones many.
+  - The measured bytes are in "The context term holds the pool", below.
+  - To change the classes, edit `CONTEXT_CLASSES` in `spec.rs`. The tests derive their numbers from it.
+- **A long prompt takes several passes.** A pass holds at most 256 tokens (`kMaxPassTokens`), so `max_pass_inputs`
+  stays 256. The caller feeds a prompt in passes of at most 256 tokens. Each pass starts at the context's token
+  count. mk gives the same bits for any split (spec 6.13).
 - **`max_quantum_ms` is 10000.** mk splits a pass at 256 tokens (`kMaxPassTokens`). A prefill chunk of that size takes
   about 2 s. mk's watchdog stops the program at a 10 s deadline (`engine.h:302-306`), so the declared bound is 10 s.
 - **`cells_write` writes `n` rows from `from`.** The binding refuses a `from` other than 0 and changes nothing. mk
@@ -310,7 +323,25 @@ the ABI.
 - **The template is the GGUF's text.** The identity's `template` is the text of `tokenizer.chat_template` in the
   first shard. A missing key, or a value that is not a string, is an error at open that names the key and the file.
 - **The context term holds the pool.** The mandatory term `context` has lifetime `engine` and holds all 16
-  contexts: 16 × 132,587,520 bytes, about 2.1 GB. A read of a poisoned context is an error.
+  contexts. A read of a poisoned context is an error. The bytes follow from mk's `new_context`:
+  - The fixed state is 4 × (36×48×128×128 + 36×3×10,240 + 9×10,240) = 118,038,528 bytes.
+  - Each token adds 4 × (12×2×2×256 + 12×128 + 12×128÷4) = 56,832 bytes.
+  - That is 49,152 bytes of K/V, 6,144 of index keys and 1,536 of pooled keys.
+  - A context of 4,096 tokens is 118,038,528 + 4,096 × 56,832 = 350,822,400 bytes.
+  - A context of 32,768 tokens is 118,038,528 + 32,768 × 56,832 = 1,980,309,504 bytes.
+  - The declared term adds 4 MiB (4,194,304 bytes) to each context for the allocator.
+  - The term is 12 × 350,822,400 + 4 × 1,980,309,504 + 16 × 4,194,304 = 12,198,215,680 bytes.
+
+  Measured on 2026-10-20 night on gfx1151 by `examples/context_pool.rs`. Three runs gave equal device numbers.
+  - `hipMemGetInfo` fell by 4,229,955,584 bytes for the 12 small contexts. That is 1,673,899 bytes above the state
+    bytes for each context.
+  - It fell by 7,929,331,712 bytes for the 4 large contexts. That is 2,023,424 bytes above for each context.
+  - Both are under the declared bytes. `open` reads both numbers and refuses a pool that takes more than it declares.
+
+  The host side (spec 4.7):
+  - The weights take 61 GiB. One handle leaves about 51 GB of MemAvailable. Each further handle takes about 12.2 GB.
+  - `open` refuses a pool that would leave less than the 12 GiB floor. Thus at most three handles are open at once.
+  - A gate of the conformance suite holds at most three handles.
 - **`canary_hash` is empty.** This binding does not run mk's canary. The process adds it in a later milestone.
 - **The identity carries `MK_FAST_QMM`, `MK_TILES` and `fused`.** They are `Approx`, `ReferenceDefining` and
   `Approx`. mk reads `MK_FAST_QMM` at each pass build (`engine.h:27-32`). `MK_TILES` chooses the tiled or the GGUF

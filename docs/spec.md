@@ -712,8 +712,8 @@ lost. Amy, 2026-10-20: "I suspect we only want a few copies online and won't ben
 does, but it is cool and we'll do it."
 
 For mk, the fixed parts of a copy are about 112 MiB. They are the GDN state in f32 (108 MiB) and the conv state
-(4.3 MiB, mk `DESIGN.md`). The K/V adds about 27 KiB for each token. With a grain of 256 tokens, a decode makes a
-copy every 10-15 s.
+(4.3 MiB, mk `DESIGN.md`). The K/V, the index keys and the pooled keys add 55.5 KiB (56,832 bytes) for each
+token. With a grain of 256 tokens, a decode makes a copy every 10-15 s.
 
 On mk, the split of tokens into passes does not change bits. The probe `examples/split_bits.rs` in the mk crate
 (`427fdc3`) compared one pass, one pass for each token, and uneven chunks, at 64 and 200 tokens. Every part and all
@@ -788,8 +788,8 @@ poison. After a poison or a timeout, the nagaya does these steps:
 engine of that family passes its conformance against that reference, on any vendor's device. The reference runs on
 the CPU, so it does not give the bits of a GPU. Thus the oracle has a tolerance, and a spike measures the gap first.
 
-**The Qwen3.8 oracle.** mk's Python reference (`tools/oracle_fixture.py`) writes the fixture. It holds four prompts
-of 5 to 249 tokens, with the top 64 logits and the logsumexp of the last position. The bench `oracle` in the mk
+**The Qwen3.8 oracle.** mk's Python reference (`tools/oracle_fixture.py`) writes the fixture. It holds five prompts
+of 5 to 596 tokens, with the top 64 logits and the logsumexp of the last position. The bench `oracle` in the mk
 crate compares mk with it. mk's exact path (`MK_FAST_QMM=0`) is the gate. Its largest gap was a logit difference
 of 1.7e-5 on 2026-10-20. Decided 2026-10-20 (reading).
 
@@ -1247,6 +1247,12 @@ The inventories found these items. We correct each one when its code moves. We d
    11.5 text step). The chat template uses none of them. Which ones do we match?
 7. How far does mk's fast path (`MK_FAST_QMM` unset) move council decisions? At 249 tokens it moved logits by up to
    1.03, and the argmax and the top 8 held (8.3). Amy, 2026-10-20: "we'll measure later".
-8. What is the oracle gap at 2,000 tokens and more? The binding's contexts hold 256 tokens today, and mk allows
-   32,768. The measurement needs larger contexts in the binding and a loop of passes (8.3). Amy, 2026-10-20: "we can
-   save and do the measurement later".
+8. What is the oracle gap at 2,000 tokens and more? The contexts hold 4,096 and 32,768 tokens now, and a long
+   prompt takes several passes. On the exact path, the findings are these:
+   - mk agrees with the oracle up to 630 tokens. The largest logit difference is 5.2e-5 at 478 tokens, 1.9e-5 at
+     604 and 1.5e-5 at 630 (diagnostic prompts).
+   - At 655 tokens the difference is 0.29. At 684 it is 0.16. At 721 it is 0.23.
+   - The split into passes does not change mk's bits, so the pass split is not the cause.
+   - The cause is not known: mk or the reference. The indexer is dense below about 2,050 tokens in both.
+
+   Amy, 2026-10-20: "we can save and do the measurement later".
