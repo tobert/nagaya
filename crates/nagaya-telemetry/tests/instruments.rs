@@ -54,7 +54,7 @@ fn quantum_durations_carry_engine_group_kind_and_class() {
 fn ledger_instruments_carry_tier_engine_and_term_or_gate() {
     let capture = Capture::start(Vec::new());
     instruments().ledger_bytes(TierLabel::Device(0), "qwen", "weights", 4096);
-    instruments().ledger_refusal(TierLabel::Host, "all", RefusalGate::Budget);
+    instruments().ledger_refusal(&[TierLabel::Host, TierLabel::Device(0)], "all", RefusalGate::Budget);
 
     let bytes = only(capture.metric("nagaya.ledger.bytes"));
     assert_eq!(bytes.unit, "By");
@@ -67,7 +67,7 @@ fn ledger_instruments_carry_tier_engine_and_term_or_gate() {
     assert_eq!(refusals.unit, "{refusal}");
     assert_eq!(
         attributes(&refusals),
-        [("engine", "all"), ("gate", "budget"), ("tier", "host")]
+        [("engine", "all"), ("gate", "budget"), ("tier", "device0+host")]
     );
 }
 

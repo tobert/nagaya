@@ -34,6 +34,15 @@ impl TierLabel {
     }
 }
 
+/// The attribute value for the tiers of one budget: the values in sorted order, joined with `+`.
+///
+/// A budget can cover more than one tier (spec 4.1). The set is fixed by the profile, so it is bounded.
+pub fn tier_set(tiers: &[TierLabel]) -> String {
+    let mut values: Vec<String> = tiers.iter().map(|tier| tier.value()).collect();
+    values.sort();
+    values.join("+")
+}
+
 /// Why the ledger refused (spec 9.4). The ledger has the gate `budget` only. The gates `floor` (4.7) and `resize` (4.5)
 /// come with the code that refuses at them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -283,12 +292,12 @@ impl Instruments {
         );
     }
 
-    /// Count one refusal of the ledger (spec 4.3).
-    pub fn ledger_refusal(&self, tier: TierLabel, engine: &str, gate: RefusalGate) {
+    /// Count one refusal of the ledger (spec 4.3). `tiers` are the tiers of the budget that was short.
+    pub fn ledger_refusal(&self, tiers: &[TierLabel], engine: &str, gate: RefusalGate) {
         self.ledger_refusals.add(
             1,
             &[
-                KeyValue::new("tier", tier.value()),
+                KeyValue::new("tier", tier_set(tiers)),
                 KeyValue::new("engine", engine.to_owned()),
                 KeyValue::new("gate", gate.value()),
             ],

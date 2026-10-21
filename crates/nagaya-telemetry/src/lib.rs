@@ -14,7 +14,7 @@ mod instruments;
 
 pub use instruments::{
     AlreadyInstalled, EngineState, EvictReason, Instruments, LookupOutcome, METER_NAME, QuantumLabels, RefusalGate,
-    RestoreResult, ScopeGuard, TierLabel, install, instruments, scope,
+    RestoreResult, ScopeGuard, TierLabel, install, instruments, scope, tier_set,
 };
 
 #[cfg(feature = "export")]

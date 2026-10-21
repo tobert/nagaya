@@ -688,6 +688,7 @@ name = "nagaya-ledger"
 version = "0.1.0"
 dependencies = [
  "nagaya-abi",
+ "nagaya-telemetry",
 ]
 
 [[package]]

@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use nagaya_abi::{Lifetime, Limits, Tier};
+use nagaya_telemetry::{RefusalGate, TierLabel, instruments};
 
 /// One budget: a byte target for a set of tiers.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -141,6 +142,14 @@ impl Ledger {
     /// The ledger charges every term of the engine with the lifetime `context` against the unassigned bytes of its
     /// budget. A refusal changes nothing.
     pub fn admit_context(&mut self, engine: &str) -> Result<(), LedgerError> {
+        let result = self.admit_context_unrecorded(engine);
+        if let Err(LedgerError::ContextRefused(refusal)) = &result {
+            record_refusal(engine, refusal);
+        }
+        result
+    }
+
+    fn admit_context_unrecorded(&mut self, engine: &str) -> Result<(), LedgerError> {
         let terms = self
             .context_terms
             .get(engine)
@@ -187,7 +196,19 @@ impl Ledger {
     }
 
     /// Admit a profile. A refusal changes nothing.
+    ///
+    /// The ledger records `nagaya.ledger.bytes` for each granted term, or `nagaya.ledger.refusals` (spec 9.4).
     pub fn admit(&mut self, profile: &Profile) -> Result<Admission, LedgerError> {
+        let result = self.admit_unrecorded(profile);
+        match &result {
+            Ok(admission) => record_admission(profile, admission),
+            Err(LedgerError::Refused(refusal)) => record_refusal(PROFILE_ENGINE, refusal),
+            Err(LedgerError::Invalid(_) | LedgerError::ContextRefused(_)) => {}
+        }
+        result
+    }
+
+    fn admit_unrecorded(&mut self, profile: &Profile) -> Result<Admission, LedgerError> {
         if profile.budgets.iter().any(|budget| budget.tiers.is_empty()) {
             return Err(LedgerError::Invalid("budget has no tiers".to_owned()));
         }
@@ -303,6 +324,43 @@ impl Ledger {
         self.context_terms = context_terms;
         self.contexts = BTreeMap::new();
         Ok(Admission { engines, unassigned })
+    }
+}
+
+/// The `engine` label of a refusal of a whole profile: no one engine is short, the budget is.
+const PROFILE_ENGINE: &str = "all";
+
+fn tier_label(tier: Tier) -> TierLabel {
+    match tier {
+        Tier::Device(id) => TierLabel::Device(id),
+        Tier::Host => TierLabel::Host,
+    }
+}
+
+/// Count one refusal for each short budget. The label `tier` names all the tiers of that budget.
+fn record_refusal(engine: &str, refusal: &Refusal) {
+    for (tiers, _) in &refusal.shortfall {
+        let labels: Vec<TierLabel> = tiers.iter().copied().map(tier_label).collect();
+        instruments().ledger_refusal(&labels, engine, RefusalGate::Budget);
+    }
+}
+
+/// Record the bytes of each term that the admission granted. A term of the lifetime `context` waits for `ctx_new`.
+fn record_admission(profile: &Profile, admission: &Admission) {
+    let instruments = instruments();
+    for (plan, allocation) in profile.engines.iter().zip(&admission.engines) {
+        let terms = plan
+            .limits
+            .memory
+            .mandatory
+            .iter()
+            .filter(|term| term.lifetime != Lifetime::Context);
+        for (term, (tier, bytes)) in terms.zip(&allocation.mandatory) {
+            instruments.ledger_bytes(tier_label(*tier), &plan.name, &term.name, *bytes);
+        }
+        for (term, (name, bytes)) in plan.limits.memory.elastic.iter().zip(&allocation.elastic) {
+            instruments.ledger_bytes(tier_label(term.tier), &plan.name, name, *bytes);
+        }
     }
 }
 
