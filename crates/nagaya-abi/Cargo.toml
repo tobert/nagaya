@@ -4,7 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-fake = []
+fake = ["dep:libc"]
+
+[dependencies]
+# The fake arena is a memfd (spec 10.2).
+libc = { version = "0.2.191", optional = true }
 
 [dev-dependencies]
 nagaya-abi = { path = ".", features = ["fake"] }
