@@ -6,12 +6,15 @@ edition = "2024"
 [features]
 # The fake engine is for tests only. A normal build leaves it out (AGENTS.md "Milestones" 10).
 fake = ["nagaya-abi/fake"]
+# The mk engine on the GPU. A normal build leaves it out, so a machine without mk builds and tests the workspace.
+hip = ["dep:nagaya-mk-qwen38-gfx1151", "nagaya-mk-qwen38-gfx1151/hip"]
 
 [dependencies]
 blake3 = "1.8.7"
 chitchat = "0.13.0"
 nagaya-abi = { version = "0.1.0", path = "../nagaya-abi" }
 nagaya-ledger = { version = "0.1.0", path = "../nagaya-ledger" }
+nagaya-mk-qwen38-gfx1151 = { version = "0.1.0", path = "../nagaya-mk-qwen38-gfx1151", optional = true }
 nagaya-store = { version = "0.1.0", path = "../nagaya-store" }
 libc = "0.2.191"
 serde = { version = "1.0.229", features = ["derive"] }
