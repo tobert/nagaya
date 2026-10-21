@@ -147,3 +147,36 @@ fn a_request_that_breaks_the_contract_is_a_client_error_and_runs_nothing() {
     assert_eq!(f.entries(), 0, "nothing was built");
     assert_eq!(f.service.free_slots(), 3);
 }
+
+/// A read whose context and longest suffix hold exactly `context_tokens` runs. One token more is a 413 `too_large`
+/// that names `context_tokens` (gogi "Errors").
+#[test]
+fn a_read_past_the_token_limit_is_too_large_and_one_at_it_runs() {
+    use nagaya_council::family::Family as _;
+    let value = ctx(other());
+    let end = nagaya_text_toy::ToyFamily::new()
+        .render(&context(&value), false)
+        .unwrap()
+        .end;
+    let longest = SUFFIXES
+        .iter()
+        .map(|s| gogi_toy::tokenize_suffix(s).len())
+        .max()
+        .unwrap();
+    let mut config = nagaya::council::ServiceConfig::new("toy", council_support::ENGINE);
+    config.context_tokens = end + longest - 1;
+    let f = Fixture::with(0, 1 << 20, None, config);
+    let error = f
+        .service
+        .read(&request(std::slice::from_ref(&value), Some(4)))
+        .unwrap_err();
+    assert!(
+        matches!(&error, ServiceError::TooLarge { param, .. } if param == "context_tokens"),
+        "{error:?}"
+    );
+    assert_eq!(f.entries(), 0, "nothing was built");
+    let mut config = nagaya::council::ServiceConfig::new("toy", council_support::ENGINE);
+    config.context_tokens = end + longest;
+    let f = Fixture::with(0, 1 << 20, None, config);
+    read(&f, &[value]);
+}
