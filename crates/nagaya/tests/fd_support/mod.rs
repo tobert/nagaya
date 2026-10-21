@@ -79,3 +79,54 @@ pub fn recv_with_fds(socket: &UnixDatagram) -> std::io::Result<(String, Vec<Owne
     }
     Ok((String::from_utf8(data[..count as usize].to_vec()).unwrap(), fds))
 }
+
+/// Make `command` start `program` as systemd starts a unit with stored fds: the fds at 3 and up, and `$LISTEN_PID`,
+/// `$LISTEN_FDS` and `$LISTEN_FDNAMES` set. A shell sets `$LISTEN_PID` to its own pid, which its `exec` keeps.
+///
+/// The fds wait at 200 and up with `FD_CLOEXEC`, so no other child of the test gets them. After the fork, the child
+/// moves them to 3 and up with dup2, which is safe after fork. The caller drops the result after the spawn.
+pub fn systemd_command(program: &std::path::Path, fds: &[(&str, &OwnedFd)]) -> (std::process::Command, Vec<OwnedFd>) {
+    use std::os::unix::process::CommandExt;
+    let high: Vec<OwnedFd> = fds
+        .iter()
+        .map(|(_, fd)| {
+            // SAFETY: `fd` is open; the call gives a new fd or -1.
+            let new = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 200) };
+            assert!(new >= 200, "F_DUPFD_CLOEXEC failed");
+            // SAFETY: the fd is new, and nothing else owns it.
+            unsafe { OwnedFd::from_raw_fd(new) }
+        })
+        .collect();
+    let names: Vec<&str> = fds.iter().map(|(name, _)| *name).collect();
+    let script = if fds.is_empty() {
+        "exec \"$0\" \"$@\"".to_owned()
+    } else {
+        format!(
+            "export LISTEN_PID=$$ LISTEN_FDS={} LISTEN_FDNAMES={}; exec \"$0\" \"$@\"",
+            fds.len(),
+            names.join(":")
+        )
+    };
+    let mut command = std::process::Command::new("/bin/sh");
+    command
+        .arg("-c")
+        .arg(script)
+        .arg(program)
+        .env_remove("LISTEN_PID")
+        .env_remove("LISTEN_FDS")
+        .env_remove("LISTEN_FDNAMES")
+        .env_remove("LISTEN_PIDFDID");
+    let raw: Vec<RawFd> = high.iter().map(AsRawFd::as_raw_fd).collect();
+    // SAFETY: the closure calls only dup2, which is safe after fork.
+    unsafe {
+        command.pre_exec(move || {
+            for (index, fd) in raw.iter().enumerate() {
+                if libc::dup2(*fd, 3 + index as RawFd) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
+    (command, high)
+}

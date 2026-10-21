@@ -1601,7 +1601,8 @@ it.
 
 Built: the process side (`crates/nagaya/src/arena.rs`, `crates/nagaya/src/process/handoff.rs`) and the arena of the
 Gemma 4 engine, with its head slab (`Loaded::attach`). On b70host on 2026-10-21, a cold `Loaded::load` took 7.1 s,
-and an attach from the 31 slabs took 1.2 s (`tests/xe_arena.rs`, release build). The unit sets no
+and an attach from the 31 slabs took 1.2 s (`tests/xe_arena.rs`, release build). A process restart took 7.1 s to
+`READY=1` cold and 1.2 s hot (`crates/nagaya/tests/xe_restart.rs`). The unit sets no
 `FileDescriptorStoreMax` yet, so each start loads the weights again (`docs/deploy.md`).
 
 **10.3 Stop.** On SIGTERM, the nagaya does these steps:

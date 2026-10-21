@@ -5,14 +5,13 @@
 mod fd_support;
 
 use std::collections::BTreeMap;
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixDatagram;
-use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use fd_support::{bytes_of, dup_at, inode, recv_with_fds};
+use fd_support::{bytes_of, dup_at, inode, recv_with_fds, systemd_command};
 
 const NAME: &str = "fake-one/device0/w";
 
@@ -77,53 +76,16 @@ impl Systemd {
 
     /// Start the process with the fd store, as systemd starts a unit with `FileDescriptorStoreMax=8`.
     fn spawn(&self) -> Child {
-        // Each stored fd goes to a high number with FD_CLOEXEC, so no other child of the test gets it.
-        let names: Vec<&str> = self.fds.keys().map(String::as_str).collect();
-        let high: Vec<i32> = self.fds.values().map(|fd| dup_cloexec_at(fd, 200)).collect();
-        // The shell moves the fds to 3 and up, and sets LISTEN_PID to its own pid, which `exec` keeps.
-        let mut moves = String::new();
-        for (index, fd) in high.iter().enumerate() {
-            moves.push_str(&format!("{}<&{fd} {fd}<&- ", 3 + index));
-        }
-        let script = if high.is_empty() {
-            "exec \"$0\"".to_owned()
-        } else {
-            format!(
-                "exec {moves}; export LISTEN_PID=$$ LISTEN_FDS={} LISTEN_FDNAMES={}; exec \"$0\"",
-                high.len(),
-                names.join(":")
-            )
-        };
-        let mut command = Command::new("/bin/sh");
+        let fds: Vec<(&str, &OwnedFd)> = self.fds.iter().map(|(name, fd)| (name.as_str(), fd)).collect();
+        let (mut command, high) = systemd_command(std::path::Path::new(env!("CARGO_BIN_EXE_nagaya")), &fds);
         command
-            .arg("-c")
-            .arg(script)
-            .arg(env!("CARGO_BIN_EXE_nagaya"))
             .env("NAGAYA_CONFIG", &self.config)
             .env("NOTIFY_SOCKET", self.directory.path().join("notify"))
             .env("FDSTORE", "8")
-            .env_remove("LISTEN_PID")
-            .env_remove("LISTEN_FDS")
-            .env_remove("LISTEN_FDNAMES")
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
-        let inherit = high.clone();
-        // SAFETY: the closure calls only fcntl, which is safe after fork.
-        unsafe {
-            command.pre_exec(move || {
-                for fd in &inherit {
-                    if libc::fcntl(*fd, libc::F_SETFD, 0) < 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                }
-                Ok(())
-            });
-        }
         let child = command.spawn().unwrap();
-        for fd in high {
-            // SAFETY: the parent made these duplicates and owns them.
-            unsafe { libc::close(fd) };
-        }
+        drop(high);
         child
     }
 
@@ -171,13 +133,6 @@ impl Systemd {
             self.fds.remove(&name.expect("FDSTOREREMOVE=1 with a name"));
         }
     }
-}
-
-fn dup_cloexec_at(fd: &OwnedFd, at: i32) -> i32 {
-    // SAFETY: `fd` is open; the call gives a new fd or -1.
-    let new = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, at) };
-    assert!(new >= at, "F_DUPFD_CLOEXEC failed");
-    new
 }
 
 fn stores(run: &Run) -> Vec<&str> {
