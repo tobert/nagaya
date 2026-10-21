@@ -311,3 +311,50 @@ fn a_snapshot_read_and_a_pin_write_do_not_deadlock() {
             .expect("a snapshot read and a pin write wait for each other: the locks are taken in two orders");
     }
 }
+
+/// Kaibo review 2026-10-20, finding 6: `snapshot` checked that the store holds the entry under one guard and read the
+/// entry under a second guard. An eviction between the two made the read panic on a client request.
+///
+/// The service reads its clock between those two guards. The clock of this test evicts the entry on one reading, so
+/// the eviction falls in the gap every time.
+#[test]
+fn a_snapshot_evicted_during_a_read_is_not_found_not_a_panic() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let f = Fixture::new();
+    let ports = f.process.ports();
+    let armed = Arc::new(AtomicBool::new(false));
+    let evict_on_reading: nagaya::council::Clock = {
+        let armed = Arc::clone(&armed);
+        let ports = ports.clone();
+        let reader = f.reader();
+        Arc::new(move || {
+            let now = reader();
+            if armed.swap(false, Ordering::SeqCst) {
+                let mut store = ports.store().unwrap().lock().unwrap();
+                let size = store.entries().values().map(|entry| entry.size).max().unwrap();
+                let gone = store.evict(1, nagaya_store::Tier::Host, size, now).unwrap();
+                assert!(!gone.is_empty(), "the clock evicts the snapshot");
+            }
+            now
+        })
+    };
+    let service = nagaya::council::Service::attach_with_clock(
+        ports.clone(),
+        Arc::new(nagaya_text_toy::ToyFamily::new()),
+        f.directory.path(),
+        ServiceConfig::new("toy", ENGINE),
+        evict_on_reading,
+    )
+    .unwrap();
+    let id = service
+        .build(&context("hello"), false, Schedule::default())
+        .unwrap()
+        .head
+        .unwrap();
+    armed.store(true, Ordering::SeqCst);
+    let result = service.snapshot(&id);
+    assert!(!armed.load(Ordering::SeqCst), "the eviction ran during the read");
+    assert!(matches!(result, Err(ServiceError::NotFound(_))), "{result:?}");
+}

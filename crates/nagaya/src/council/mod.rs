@@ -530,14 +530,19 @@ impl Service {
 
     /// A held snapshot: its served model, tokens, tier, size and the owners that pin it (gogi "Snapshots and pins").
     pub fn snapshot(&self, id: &SnapshotId) -> Result<SnapshotDetail, ServiceError> {
-        // Lock order: the pins, then the store (see the field `pins`).
-        let book = self.pins.lock().expect("the pin book lock is poisoned");
-        let content = self
-            .held_content_id(id.as_str())
-            .ok_or_else(|| ServiceError::NotFound(format!("no snapshot {id} is held: build the context to hold it")))?;
         let now = self.now();
+        // Lock order: the pins, then the store (see the field `pins`). One store guard covers the check and the read,
+        // so an eviction cannot fall between them.
+        let book = self.pins.lock().expect("the pin book lock is poisoned");
         let store = self.store();
-        let entry = store.entries().get(&content).expect("a held content id has an entry");
+        let not_held = || ServiceError::NotFound(format!("no snapshot {id} is held: build the context to hold it"));
+        let content = id
+            .as_str()
+            .strip_prefix("blake3:")
+            .and_then(|hex| ContentId::from_hex(hex).ok())
+            .filter(|content| self.is_ours(&store, content))
+            .ok_or_else(not_held)?;
+        let entry = store.entries().get(&content).ok_or_else(not_held)?;
         let tokens = entry.coverage.iter().map(|part| part.end).max().unwrap_or(0);
         let pins = store
             .pins()
@@ -562,13 +567,6 @@ impl Service {
             bytes: Some(entry.size),
             pins,
         })
-    }
-
-    /// The content id of a snapshot id that this service holds: a `blake3:` id, a live entry of this engine.
-    fn held_content_id(&self, id: &str) -> Option<ContentId> {
-        let hex = id.strip_prefix("blake3:")?;
-        let content = ContentId::from_hex(hex).ok()?;
-        self.is_ours(&self.store(), &content).then_some(content)
     }
 
     /// True when the store holds a live entry that this engine made.
