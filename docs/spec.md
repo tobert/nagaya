@@ -1816,9 +1816,10 @@ family (`if kind == crate::mk::KIND`, `crates/nagaya/src/serving.rs:24-40`). The
 
 Reason: the identity names what the engine computes, so it selects the text rules too (11.3). A new engine kind then
 needs no change in `serving.rs`. mkviolet gives `context_tokens` as the slot size less one (`council_server.rs:334`).
-The port checks why before it copies that.
+The nagaya does not copy that.
 
-**Registry choices.** **Proposed** (claude-sonnet-5-5, 2026-10-21). These choices fill what the rules above leave open:
+**Registry choices.** These choices fill what the rules above leave open. Decided 2026-10-21 (Amy: "seems fine",
+"good", "ok", for the digest, `context_tokens` and the key `gguf`):
 
 - The identity digest (12.1) does not cover `family`. The family follows from the model, the tokenizer hash and the
   template, which the digest already covers. A new digest would make every held entry of gfx1151host unusable.
@@ -1829,8 +1830,8 @@ The port checks why before it copies that.
 - The registry of engine factories holds each kind that the build has: `mk-qwen38-gfx1151` with the feature `hip`,
   and the fake kinds with the feature `fake`. A build with no kind refuses the start (exit 3). No feature `xe` exists
   yet, because no xe engine exists.
-- `context_tokens` is `SlotLimit.tokens` of the largest slot, with no "less one". mkviolet's "less one" is open
-  (see the Reason below). mk declares 32,768, the value that `MAX_CONTEXT` had.
+- `context_tokens` is `SlotLimit.tokens` of the largest slot, with no "less one". mk declares 32,768, the value
+  that `MAX_CONTEXT` had.
 
 **11.3a Council rendering.** A decision and a raw read put a spec, a case and a letter menu after each context. The
 nagaya renders them with mkviolet's rules (mkviolet `src/template.rs` and its council code), ported to each family.
