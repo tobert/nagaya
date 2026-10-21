@@ -58,8 +58,8 @@ impl Then for RawThen {
 
     fn next(&mut self, got: Got) -> Result<Want, ServiceError> {
         match got {
-            Got::Built if self.suffixes.len() > 1 => Ok(Want::Mark),
-            Got::Built | Got::Copied => Ok(self.feed()),
+            Got::Built(_) if self.suffixes.len() > 1 => Ok(Want::Mark),
+            Got::Built(_) | Got::Copied => Ok(self.feed()),
             Got::Fed(Some(row)) => {
                 let lp = log_probs(&row).map_err(|error| ServiceError::internal(error.to_string()))?;
                 let letters = self.letters.iter().map(|&letter| lp[letter as usize]).collect();
@@ -132,7 +132,9 @@ impl Service {
                 reads: Vec::new(),
             };
             let shared = Arc::clone(&self.shared);
-            let job = |tx| ContextBody::with(shared, tokens, recipes, end + longest, "context_tokens", then, tx);
+            let cuts = self.cuts(context, &rendering)?;
+            let job =
+                |tx| ContextBody::with(shared, tokens, recipes, end + longest, "context_tokens", then, tx).cuts(cuts);
             let finished = self.run_context(job, schedule, None)?;
             let head = finished
                 .outcome

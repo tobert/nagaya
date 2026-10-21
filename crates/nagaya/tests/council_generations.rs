@@ -123,6 +123,78 @@ fn the_head_after_the_reply_is_the_head_of_the_context_with_the_reply_appended()
 }
 
 #[test]
+fn the_next_request_starts_from_the_head_of_the_reply_and_keeps_its_boundary() {
+    // Thinking off: the template keeps the reply as it is when a user message follows.
+    let (f, script) = scripted();
+    let value = ctx(false, opening());
+    let mut reply = bytes("ok");
+    reply.push(gogi_toy::END);
+    script.set(prompt(&value), reply);
+    let done = generate(&f, &value, 50, json!({"temperature": 0}));
+    let head = done.head.clone().expect("the generation holds its head");
+    let head_tokens = done.snapshots.last().unwrap().tokens;
+    // The client sends the reply unmarked, then a new user message (gogi "Generations": head).
+    let mut messages = opening();
+    messages.push(serde_json::to_value(done.as_message().unwrap()).unwrap());
+    messages.push(json!({"role": "user", "content": "Now list what is left.", "snap": true}));
+    let next = ctx(false, messages);
+    let built = f.service.build(&context(&next), false, Default::default()).unwrap();
+    assert_eq!(built.from, Some(head), "the build starts from the held head");
+    assert!(built.usage.kept >= head_tokens, "{:?}", built.usage);
+    // The reply's end is not a boundary of the context, so it is not in the list (gogi "Terms": boundary).
+    assert!(
+        built.snapshots.iter().all(|snapshot| snapshot.message != 2),
+        "{:?}",
+        built.snapshots
+    );
+    // The state has the seal at the end of the reply, as the head was made. Thus it equals a straight build with the
+    // reply marked, and it differs from a straight build without the mark (gogi "Boundaries are content").
+    let mut marked = next.clone();
+    marked["messages"][2]["snap"] = json!(true);
+    let fresh = Fixture::new();
+    let with_mark = fresh
+        .service
+        .build(&context(&marked), false, Default::default())
+        .unwrap();
+    assert_eq!(with_mark.head, built.head);
+    let fresh = Fixture::new();
+    let without = fresh.service.build(&context(&next), false, Default::default()).unwrap();
+    assert_ne!(without.head, built.head);
+}
+
+#[test]
+fn a_generation_that_starts_from_a_cut_holds_its_head_and_a_dry_run_reports_the_cut() {
+    let (f, script) = scripted();
+    let value = ctx(false, opening());
+    let mut reply = bytes("ok");
+    reply.push(gogi_toy::END);
+    script.set(prompt(&value), reply.clone());
+    let first = generate(&f, &value, 50, json!({"temperature": 0}));
+    let mut messages = opening();
+    messages.push(serde_json::to_value(first.as_message().unwrap()).unwrap());
+    messages.push(json!({"role": "user", "content": "And then?", "snap": true}));
+    let next = ctx(false, messages.clone());
+    let dry = f.service.build(&context(&next), true, Default::default()).unwrap();
+    assert_eq!(dry.from, first.head, "a dry run starts from the cut, as a build does");
+    script.set(prompt(&next), reply);
+    let second = generate(&f, &next, 50, json!({"temperature": 0}));
+    assert_eq!(second.usage.kept, first.snapshots.last().unwrap().tokens);
+    let head = second.head.clone().expect("a generation from a cut holds its head");
+    messages.push(serde_json::to_value(second.as_message().unwrap()).unwrap());
+    // The store holds the head under the recipe of its own boundaries, the cut too. Thus the context with the first
+    // reply marked finds it at its end with nothing to feed.
+    let mut marked = ctx(false, messages.clone());
+    marked["messages"][2]["snap"] = json!(true);
+    let dry = f.service.build(&context(&marked), true, Default::default()).unwrap();
+    assert_eq!((dry.head, dry.usage.fed), (Some(head.clone()), 0));
+    let built = f
+        .service
+        .build(&context(&ctx(false, messages)), false, Default::default())
+        .unwrap();
+    assert_eq!((built.head, built.usage.fed), (Some(head), 0));
+}
+
+#[test]
 fn a_reply_with_a_call_names_the_call_and_ends_with_tool_use() {
     let (f, script) = scripted();
     let value = ctx(false, opening());

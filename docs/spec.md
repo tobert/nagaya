@@ -1427,6 +1427,14 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
 - A generation holds its head after the reply when two facts hold. The rendering of the context with the reply has
   the boundaries of the prompt before the reply. The slot holds a prefix of that rendering, at most 8 tokens short.
   Then the job feeds the rest and puts the snapshot. Otherwise `head` is null.
+- A build can start at a cut: the end of a message that the client did not mark, where the rendering keeps it. It
+  starts there when the store holds a snapshot at the cut and at no higher boundary. An earlier context made that
+  snapshot at a boundary of its own, such as the head of a generation after its reply. Reason: gogi's build starts
+  from the longest held snapshot whose tokens begin the context, and the next request sends the reply unmarked.
+- A seal changes bits, so a build from a cut keeps the cut among the boundaries of its state. Its later snapshots
+  have recipes with the cut, and the response lists no snapshot at the cut. Thus a snapshot never holds a seal
+  that its recipe does not name (gogi "Boundaries are content"). The service finds the cuts with a second render,
+  with every message marked.
 - A reply parser can release text after the last token, such as text that it held back as a possible marker. The
   service adds that text to the piece of the last token event. Thus the pieces of a part join to its text in
   `done` (gogi "Streams"). The text must have the phase of the last token. Text of another phase is an internal error,

@@ -11,8 +11,8 @@ use gogi_proto::generation::{
     Finish, GenerationDone, GenerationRequest, Phase, ReplyStats, ReplyToolCall, TokenEvent, TokenStats,
 };
 use nagaya_abi::Kind;
-use nagaya_council::build::{BoundaryRecipe, boundary_recipes};
-use nagaya_council::family::{Boundary, Family, FamilyError, ParsedReply, ReplyCall, ReplyParser};
+use nagaya_council::build::{BoundaryRecipe, boundary_recipes, recipes_with_cut};
+use nagaya_council::family::{Boundary, Family, FamilyError, ParsedReply, Rendering, ReplyCall, ReplyParser};
 use nagaya_council::sampler::{Settings, pick};
 use nagaya_store::{ContentId, Reason, RecipeId};
 
@@ -92,8 +92,12 @@ pub(crate) struct GenerateThen {
     family: Arc<dyn Family>,
     context: Context,
     root: RecipeId,
-    /// The recipes of the boundaries of the context.
+    /// The recipes of the boundaries of the context. A build that starts from a cut gives them the cut too.
     recipes: Vec<RecipeId>,
+    /// The rendering of the context, without the generation prompt.
+    rendering: Rendering,
+    /// The cut that the build started from.
+    cut: Option<Boundary>,
     /// The tokens of the prompt: the context, then the generation prompt.
     prompt: Vec<u32>,
     /// The tokens of the context, without the generation prompt.
@@ -219,7 +223,11 @@ impl GenerateThen {
             Err(FamilyError::Client(_)) => return Ok(self.done()),
             Err(error) => return Err(error.into()),
         };
-        let recipes = boundary_recipes(self.root, &rendering)?;
+        // The state has the boundaries of the build, the cut too.
+        let recipes = match self.cut {
+            Some(cut) => recipes_with_cut(self.root, &rendering, cut)?,
+            None => boundary_recipes(self.root, &rendering)?,
+        };
         // The slot holds the prompt and each sampled token but the last.
         let fed = self.prompt.len() + self.sampled.len() - 1;
         let tokens = &rendering.tokens[..rendering.end];
@@ -341,8 +349,15 @@ impl Then for GenerateThen {
 
     fn next(&mut self, got: Got) -> Result<Want, ServiceError> {
         match (&self.stage, got) {
-            (Stage::Building, Got::Built) => {
+            (Stage::Building, Got::Built(cut)) => {
                 self.stage = Stage::Sampling;
+                if let Some(cut) = cut {
+                    self.cut = Some(cut);
+                    self.recipes = recipes_with_cut(self.root, &self.rendering, cut)?
+                        .iter()
+                        .map(|recipe| recipe.recipe)
+                        .collect();
+                }
                 let tokens = self.prompt[self.end..].to_vec();
                 if tokens.is_empty() {
                     return Err(ServiceError::internal(
@@ -432,6 +447,13 @@ impl Service {
             context: context.clone(),
             root: self.root,
             recipes: recipes.iter().map(|recipe| recipe.recipe).collect(),
+            rendering: Rendering {
+                tokens: rendering.tokens[..end].to_vec(),
+                end,
+                boundaries: rendering.boundaries.clone(),
+                control_text: Vec::new(),
+            },
+            cut: None,
             prompt: rendering.tokens.clone(),
             end,
             settings,
@@ -451,17 +473,14 @@ impl Service {
         };
         let tokens: Arc<[u32]> = rendering.tokens[..end].into();
         let shared = Arc::clone(&self.shared);
-        let job = |tx| ContextBody::with(shared, tokens, recipes.clone(), room, "context_tokens", then, tx);
+        let cuts = self.cuts(context, &rendering)?;
+        let job = |tx| ContextBody::with(shared, tokens, recipes.clone(), room, "context_tokens", then, tx).cuts(cuts);
         let finished = self.run_context(job, Schedule::of(request.class, request.priority), None)?;
         let ids = finished
             .then
             .call_ids(finished.then.parsed.as_ref().map_or(0, |p| p.calls.len()));
         let reply = finished.then.reply();
-        let mut held: Vec<_> = recipes
-            .iter()
-            .zip(&finished.outcome.held)
-            .filter_map(|(recipe, id)| Some((recipe.boundary, (*id)?)))
-            .collect();
+        let mut held = super::held_boundaries(&finished.outcome);
         held.extend(reply.head);
         let kept = finished.outcome.kept as u64;
         Ok(GenerationDone {

@@ -24,14 +24,14 @@ use gogi_proto::decision::DecisionIdentity;
 use gogi_proto::pins::{PinHeld, PinOwner, PinsPut, PinsPutResult, SnapshotDetail, validate_owner};
 use gogi_proto::spec::{HeldSpec, SpecRules};
 use nagaya_abi::{Capability, Engine, Limits};
-use nagaya_council::build::{boundary_recipes, root_recipe};
-use nagaya_council::family::Family;
+use nagaya_council::build::{boundary_recipes, recipes_with_cut, root_recipe};
+use nagaya_council::family::{Family, Rendering};
 use nagaya_sched::Class;
 use nagaya_store::{ContentId, EntryState, Store, Tier};
 use serde::Serialize;
 use serde_json::Value;
 
-use self::build::{BuildBody, ContextBody, Finished, LookupBody, Outcome, Shared, Then};
+use self::build::{BuildBody, ContextBody, Cut, Finished, LookupBody, Outcome, Shared, Then};
 use self::error::ServiceError;
 use self::pins::{OwnerPins, PinBook, owner_key};
 use self::slots::SlotPool;
@@ -423,9 +423,10 @@ impl Service {
         }
         let recipes = boundary_recipes(self.root, &rendering)?;
         let tokens: Arc<[u32]> = rendering.tokens[..rendering.end].into();
+        let cuts = self.cuts(context, &rendering)?;
         let outcome = if dry_run {
             let (tx, rx) = mpsc::channel();
-            let body = LookupBody::new(Arc::clone(&self.shared), recipes.clone(), tokens.len(), tx);
+            let body = LookupBody::new(Arc::clone(&self.shared), recipes.clone(), tokens.len(), tx).cuts(cuts);
             submit(
                 &self.ports,
                 self.group,
@@ -437,7 +438,7 @@ impl Service {
             wait(&rx)?
         } else {
             let shared = Arc::clone(&self.shared);
-            let job = |tx| BuildBody::new(shared, tokens, recipes.clone(), tx);
+            let job = |tx| BuildBody::new(shared, tokens, recipes.clone(), tx).cuts(cuts);
             self.run_context(job, schedule, None)?.outcome
         };
         let prompt = rendering.end as u64;
@@ -451,20 +452,36 @@ impl Service {
         let snapshots = if dry_run {
             Vec::new()
         } else {
-            let held: Vec<_> = recipes
-                .iter()
-                .zip(&outcome.held)
-                .filter_map(|(recipe, id)| Some((recipe.boundary, (*id)?)))
-                .collect();
-            self.infos(&held)
+            self.infos(&held_boundaries(&outcome))
         };
         Ok(Built {
-            head_recipe: recipes.last().expect("a rendering has a boundary").recipe,
+            head_recipe: outcome.recipes.last().expect("a rendering has a boundary").recipe,
             head: outcome.held.last().copied().flatten().map(|id| snapshot_id(&id)),
             from: outcome.from.map(|id| snapshot_id(&id)),
             usage,
             snapshots,
         })
+    }
+
+    /// The cuts of a context: the end of each message that the client did not mark, where the rendering keeps it, from
+    /// the highest down. A build may start from a snapshot that an earlier context held there (spec 11.3c).
+    fn cuts(&self, context: &Context, rendering: &Rendering) -> Result<Vec<Cut>, ServiceError> {
+        if context.messages.iter().all(|message| message.snap) {
+            return Ok(Vec::new());
+        }
+        let mut all = context.clone();
+        for message in &mut all.messages {
+            message.snap = true;
+        }
+        let marked = self.family.render(&all, false)?;
+        let mut cuts = Vec::new();
+        for cut in marked.boundaries.iter().rev() {
+            let between = cut.tokens < rendering.end && rendering.boundaries.iter().all(|b| b.tokens != cut.tokens);
+            if between {
+                cuts.push((*cut, recipes_with_cut(self.root, rendering, *cut)?));
+            }
+        }
+        Ok(cuts)
     }
 
     /// Run a context job with the ledger charge of its context, and wait for its result (spec 4.2).
@@ -748,6 +765,18 @@ impl Service {
     pub fn drop_spec(&self, id: &str) -> Result<(), ServiceError> {
         self.specs.lock().expect("the spec lock is poisoned").drop_spec(id)
     }
+}
+
+/// The boundaries of a job's context that the store holds, with their entries. A cut is not a boundary of the context,
+/// so it is not in the list.
+pub(crate) fn held_boundaries(outcome: &Outcome) -> Vec<(nagaya_council::family::Boundary, ContentId)> {
+    outcome
+        .recipes
+        .iter()
+        .zip(&outcome.held)
+        .filter(|(recipe, _)| Some(recipe.boundary) != outcome.cut)
+        .filter_map(|(recipe, id)| Some((recipe.boundary, (*id)?)))
+        .collect()
 }
 
 /// The snapshot id of a content id (spec 11.1): `blake3:` and the 64 hex digits.
