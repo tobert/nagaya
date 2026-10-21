@@ -77,7 +77,7 @@ in a lock: one thread owns it (3.2).
 ### Milestones
 
 Do them in this order. Each milestone ends with all checks green and one or more commits. Milestones 1 to 14 are
-done. Milestone 15 is next.
+done. Milestone 15 is next on gfx1151host, and milestone 15s is next on b70host.
 
 1. **Workspace.** Make the workspace, the seven crates, and a `rustfmt.toml` with `max_width = 120`. Run each check
    once, with `--features hip` too, so that each one works before there is real code. In the workspace
@@ -190,6 +190,25 @@ done. Milestone 15 is next.
     - First copy the code with no change in behavior, and run the hip suite and the conformance gates on gfx1151.
       Then port host code to Rust one part at a time, each with the gates green. Start with the GGUF reader.
     - Before step one, interview Amy on the copy list and the order of the ports.
+15s. **mkviolet on b70host.** Replace `mkviolet.service` with the nagaya on b70host. Amy, 2026-10-21: "pull
+    the engine in now, you can stop mkviolet, our goal is to replace it." The branch is `b70host`. The milestone
+    number is **Proposed** (claude-opus-5-5). Do the steps in this order:
+    1. **Spec.** Write the b70host rules into the docs: engine-abi D1 and D11, spec 2.1-2.4, 3.2b, 6.14, 10.2, 11.3
+       and 12.1. Amy decides each Proposed note.
+    2. **Host code.** Build the engine registry (11.3) and the devices with PCI addresses in `Factory` (engine-abi
+       "The factory gets its devices"). Build the CPU sets for each card (3.2b) and the feed rule (6.14). Build the
+       stage scheduling in `nagaya-sched` and its threads, tested with a fake engine of two stages (engine-abi D1).
+    3. **Gemma 4 family.** Write `nagaya-text-gemma4` (11.3) and its oracle fixture (8.3).
+    4. **Copy the engine.** Copy mkviolet's engine into `nagaya-mk-gemma4-bmg`, with no change in behavior. Copy
+       branch blocks, prompt-lookup drafts and the long slots (65,536 positions, and the 262,144 work in mkviolet
+       `docs/07-long-context.md`). Do not copy the VNNI packer, the memfd stub, or other parts that nothing calls.
+       The host code stays Rust. The kernels stay OpenCL C, and `build.rs` compiles them with `ocloc` for
+       `bmg-g31` into `OUT_DIR`.
+    5. **The trait.** Implement the `Engine` trait with `stages` and `stage_pass` on the copy (engine-abi D1).
+    6. **Gates.** Run the conformance gates and the Gemma 4 oracle on the two B70 cards.
+    7. **Arenas.** Keep the arenas through a restart (10.2), with the head in a slab.
+    8. **Deploy.** Write the unit and the profile for b70host. The bootstrap config binds `198.51.100.10:8091`,
+       mkviolet's address. Do not start, stop or enable a service: senpai does the cutover with Amy.
 16. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
@@ -214,6 +233,20 @@ done. Milestone 15 is next.
 - mk's HIP device is the device that is current on the calling thread. Make every mk call from one thread.
 - Do not call `mk_engine_close` or free the engine in tests. HIP teardown in a process segfaults (spec 3.3).
 - GPU tests are behind the cargo feature `hip`, so `cargo test` with no features needs no GPU.
+
+### mkviolet on b70host
+
+- mkviolet is `~/src/mkviolet`. It is a reference: read it, and do not edit it.
+- The nagaya must be the only compute client of the B70 cards (spec 3.1). Amy stopped and disabled `mkviolet.service`
+  on 2026-10-21 ("cards and cpus are all yours"). Before you run GPU tests, check that it is inactive:
+  `systemctl --user is-active mkviolet.service nagaya.service`. If either one runs, stop and report.
+- The iGPU (gfx1036) drives the display. Do not run work on it.
+- GPU tests read the Gemma 4 checkpoint directory from `GEMMA4_MODEL_DIR` (**Proposed**, claude-opus-5-5). The
+  directory holds `config.json`, the safetensors shards and `tokenizer.json`. Do not put the path in code.
+- GPU tests are behind the cargo feature `xe` (**Proposed**, claude-opus-5-5), so `cargo test` with no features needs
+  no card. On b70host, also run `cargo clippy --workspace --all-targets --features xe -- -D warnings` and
+  `cargo test -p nagaya-mk-gemma4-bmg --tests --features xe -- --test-threads=1`.
+- The reference Python for the Gemma 4 oracle is `~/.venvs/nagaya-ref`. Do not run it with a GPU job.
 
 ### Checks
 
