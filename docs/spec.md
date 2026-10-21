@@ -2028,6 +2028,9 @@ rules are each "Decided by senpai 2026-10-20 night (vetoable)".
 - A stop first sets every served model to `draining`, so a new request is a 503 `model_unavailable`. Then the
   engines stop (10.3), and the server waits at most 2 s for its open requests.
 - The routes under `/nagaya/v1` (11.4a) and the status feed (9.7) are not built.
+- Continuations are not built. gogi proposes them (`docs/council-api.md`, "Continuations", branch
+  `continuation`), and Amy agreed on the rules on 2026-10-21. They replace mk's `prefill` field. The nagaya
+  declares capability `continuation` after gogi merges the section and its conformance checks pass.
 
 ## 12. Identity
 
@@ -2087,6 +2090,8 @@ rules apply:
 The inventories found these items. We correct each one when its code moves. We do not copy them.
 
 - mk splits a prefill in its Python service (`contexts._feed`). The split moves under `max_quantum_ms` (5.1).
+- mk's `prefill` field of `/mk/v1/generate` (`service/generate.py`, `_with_prefill`) becomes a gogi
+  continuation. Its prefix check at the seam moves with it. The new name keeps "prefill" for the prompt pass.
 - mk orders jobs first in, first out in its one high tier. The nagaya uses the order in 5.4.
 - mk's "park" writes through to disk and seals at each "hold". In nagaya terms, a hold is a declared boundary, and
   a write to disk is a park to NVMe (D7).
