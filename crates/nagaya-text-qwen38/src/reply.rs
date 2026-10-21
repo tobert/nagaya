@@ -53,6 +53,18 @@ pub enum Finish {
     ContextFull,
 }
 
+/// The ends of the reply that `ReplyParser::finish_keeping` keeps as they are. mk trims both ends of each part. gogi
+/// keeps two ends (gogi "Continuations").
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Keep {
+    /// Keep the white space at the start of the first part. A continuation joins its open text and the new text,
+    /// and the server trims nothing at the seam.
+    pub start: bool,
+    /// Keep the white space at the end of the part that the reply is in when it stops. A reply that ends with
+    /// `max_tokens` keeps it, so the client can send it back exactly.
+    pub end: bool,
+}
+
 /// A tool call of the reply. The caller adds the id.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolCall {
@@ -133,14 +145,19 @@ impl<T: Deref<Target = Tokenizer>> ReplyParser<T> {
     }
 
     /// End the reply. Bytes of a character that is not complete become U+FFFD.
-    pub fn finish(mut self, ending: Ending) -> Reply {
+    pub fn finish(self, ending: Ending) -> Reply {
+        self.finish_keeping(ending, Keep::default())
+    }
+
+    /// End the reply as `finish` does, but keep the ends that `keep` names.
+    pub fn finish_keeping(mut self, ending: Ending, keep: Keep) -> Reply {
         let flush = self.utf8.flush();
         let mut tail = if flush.is_empty() {
             Vec::new()
         } else {
             self.tracker.feed(&flush)
         };
-        let (reasoning, content, tool_calls, held) = self.tracker.finish();
+        let (reasoning, content, tool_calls, held) = self.tracker.finish(keep);
         tail.extend(held);
         let finish = match ending {
             Ending::StopToken if tool_calls.is_empty() => Finish::EndTurn,
@@ -687,19 +704,22 @@ impl Tracker {
         coalesce(out)
     }
 
-    /// The parts of the reply, and the text that was held back.
-    fn finish(self) -> (String, String, Vec<ToolCall>, Vec<(Phase, String)>) {
+    /// The parts of the reply, and the text that was held back. Each part loses the white space at its ends, but for
+    /// the ends that `keep` names.
+    fn finish(self, keep: Keep) -> (String, String, Vec<ToolCall>, Vec<(Phase, String)>) {
+        let phase = self.phase;
         let held = if self.held.is_empty() {
             Vec::new()
         } else {
             vec![(self.phase, self.held)]
         };
-        let trim = |s: &str| strip(s, None, true, true);
+        // `first` is true for the part that the reply started in, and `last` for the part it stopped in.
+        let trim = |s: &str, first: bool, last: bool| strip(s, None, !(first && keep.start), !(last && keep.end));
         let (reasoning, rest) = if self.thinking {
             let Some(i) = self.text.find(THINK_END) else {
-                return (trim(&self.text), String::new(), Vec::new(), held);
+                return (trim(&self.text, true, true), String::new(), Vec::new(), held);
             };
-            (trim(&self.text[..i]), &self.text[i + THINK_END.len()..])
+            (trim(&self.text[..i], true, false), &self.text[i + THINK_END.len()..])
         } else {
             (String::new(), self.text.as_str())
         };
@@ -711,6 +731,11 @@ impl Tracker {
             content = &rest[..c];
             calls = parse_calls(&rest[c..], specs);
         }
-        (reasoning, trim(content), calls, held)
+        (
+            reasoning,
+            trim(content, !self.thinking, phase == Phase::Content),
+            calls,
+            held,
+        )
     }
 }

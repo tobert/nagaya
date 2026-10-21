@@ -1724,8 +1724,10 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
   `kept + fed = prompt`.
 - The reads of a decision run one after another, in request order. The service checks `timeout_ms` before each
   read, and the scheduler checks it between quanta (5.8). Either one ends the decision with 504 `timeout`.
-- A raw read lists 8 top tokens when the request names no `top`, and at most 64. A larger `top` is a 400. A context
-  and its longest suffix that reach `context_tokens` are a 413 `context_full`, as in gogi-fake.
+- A raw read lists 8 top tokens when the request names no `top`, and at most 64. A larger `top` is a 400.
+- A build of more than `context_tokens` tokens is a 413 `too_large` that names `context_tokens`. So is a raw read
+  whose context and longest suffix have more. A context of exactly `context_tokens` tokens builds. `context_full` is
+  only for the prompt of a generation (gogi "Errors", gogi `a07d85e`).
 - The text of a top token is the detokenized token. A token that is not whole text alone, such as one byte of a
   longer character, has the text U+FFFD. Its `id` names it exactly.
 - The council identity's `engine` is `nagaya:` and the first 16 hex digits of the identity digest (6.2). The digest
@@ -1734,7 +1736,8 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
   - The rendering of the context with the reply has the boundaries of the prompt before the reply.
   - The slot holds a prefix of that rendering, at most 8 tokens short.
 
-  Then the job feeds the rest and puts the snapshot.
+  Then the job feeds the rest and puts the snapshot. A reply that ends with `max_tokens` holds no head (see
+  continuations below).
 - A build can start at a cut. A cut is the end of a message that the client did not mark, where the rendering keeps
   it. The build starts at a cut when the store holds a snapshot there and at no higher boundary. An earlier context
   made that snapshot at a boundary of its own, such as the head of a generation after its reply. Reason: gogi's build
@@ -1754,9 +1757,58 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
   system seeds.
 - The sample defaults of a served model are temperature 1 with no filter, until the profile names others.
 - A reply ends with `context_full` when the prompt and the reply reach `context_tokens`. When it also reaches
-  `max_tokens`, it ends with `max_tokens`.
+  `max_tokens`, it ends with `context_full` (gogi "Generations", `finish`, gogi `a07d85e`).
 - The decision limits are mkviolet's until the profile names others: `decision_context_tokens` 3072,
   `contexts_per_decision` 8, `case_bytes` 65536 and `default_timeout_ms` 30000.
+
+Continuations follow gogi's rules (`docs/council-api.md`, "Continuations", gogi `a07d85e`). The nagaya uses them in
+these ways. Each served model declares the capability `continuation` (`crates/nagaya/src/http/mod.rs`).
+
+- **The rendering.** `Family::render` renders an open last message as a reply up to its open text, without its end
+  and without a generation prompt. Thus `end` is the length of the tokens (`crates/nagaya-council/src/family.rs`).
+  The toy family takes the rendering of `gogi-toy`.
+- **The Qwen3.8 rendering.** The chat template renders a closed assistant message as `<|im_start|>assistant\n`,
+  `<think>\n`, the trimmed reasoning, `\n</think>\n\n`, the trimmed content and `<|im_end|>\n`.
+  `Qwen38Family::run_open` renders the message closed with stand-in text in its open field, and cuts at the
+  stand-in. Then it adds the open field as sent. Thus the text before the field is the template's own, and the field
+  keeps its white space (`crates/nagaya-text-qwen38/src/council/mod.rs`).
+- **The prefix.** The tokens of a Qwen3.8 open rendering begin the tokens of its closed rendering, unless the open
+  field ends with white space. The template trims that white space. The tokenizer keeps a newline apart from the text
+  before it, so the newline before `</think>` merges with no last token
+  (`crates/nagaya-text-qwen38/tests/continuation.rs`).
+- **The seam check.** The family checks each open field in `render`, with `gogi_proto::continuation::check_seam`. A
+  field that does not tokenize on its own is a 400 that names `continue`. This is the prefix check of mk's
+  `prefill` (`service/generate.py`, `_with_prefill`).
+- **The parse.** The reply parser starts in the phase that the open message sets (`ReplyStart::of`). It reads only
+  the sampled tokens. After an open message, the Qwen3.8 parser keeps the white space at the start of its first part.
+  At `max_tokens`, it keeps the white space at the end of its last part (`Keep` in
+  `crates/nagaya-text-qwen38/src/reply.rs`). The toy parser trims nothing.
+- **The reply.** `done` joins the open text as sent and the new text. `usage.prompt` counts the open text. `n` and
+  `usage.completion` count only the sampled tokens (`GenerateThen::finish`, `crates/nagaya/src/council/generations.rs`).
+- **Proposed (for Amy)** (Claude Opus 5.5, 2026-10-21), the build plan. A continuation builds the context before
+  its open message (`Service::open_plan`, `nagaya_council::continuation::open_plan`). Then it feeds the open
+  message as a generation feeds its generation prompt, with no seal.
+  - Reason: a seal changes bits (mk rounds the GDN state to bf16). A seal inside the open text makes a continuation
+    differ from the reply that it continues. The head after the reply is the end of its closed rendering, so the
+    next request starts there.
+  - The other choice was a seam boundary one token before the end of the open text. It failed gogi's check "a
+    continuation writes what the whole reply wrote".
+- **Proposed (for Amy)** (Claude Opus 5.5, 2026-10-21), no head for a cut reply. A reply that ends with
+  `max_tokens` has `head` null. gogi allows this ("when the server holds it").
+  - Reason: a head of the open rendering holds the state inside the open text, and it must not seal. The store takes
+    a put with no seal only as an interval copy (6.13). The deploy profile caps interval copies at 0.
+  - The next step is a new put with no seal, outside the interval cap, before the last sampled token. A continuation
+    then restores it and feeds one token. This needs a rule in 6.4 and 6.13.
+  - Until then, a continuation of a cut reply feeds the open text again. Three conformance checks skip for this
+    reason.
+- **Proposed (for Amy)** (Claude Opus 5.5, 2026-10-21), the dry run. A build with an open message and
+  `dry_run: true` looks up the plan of the continuation. Its `kept` and `fed` are what the generation keeps and
+  feeds. Its `head` is `recipe:` and the recipe of the open rendering, which the store never holds.
+- **Proposed (for Amy)** (Claude Opus 5.5, 2026-10-21), the template id. The test sets of the families have no open
+  message yet, so the open rendering is not in the template id (11.3a). Adding one changes the id of each family
+  once, and a fitted threshold does not carry over. Reason to wait: the deploy on gfx1151host keeps its id.
+- A riding `before` is not built, because the nagaya does not serve `ride`. A generation with `decisions` is a 400
+  that names `decisions`.
 
 **11.4 `/mk/v1`.** kaijutsu's mk provider uses `model`, `render` and `generate` (mkviolet `mk_api.rs`).
 
@@ -2028,9 +2080,8 @@ rules are each "Decided by senpai 2026-10-20 night (vetoable)".
 - A stop first sets every served model to `draining`, so a new request is a 503 `model_unavailable`. Then the
   engines stop (10.3), and the server waits at most 2 s for its open requests.
 - The routes under `/nagaya/v1` (11.4a) and the status feed (9.7) are not built.
-- Continuations are not built. gogi proposes them (`docs/council-api.md`, "Continuations", gogi `cc5d50e`), and
-  Amy agreed on the rules on 2026-10-21. They replace mk's `prefill` field. The nagaya declares capability
-  `continuation` after gogi's conformance checks for them pass.
+- Continuations are built (11.3c). `gogi-conformance` against the process with the fake engine gave 268 ok,
+  0 FAIL and 10 skip on 2026-10-21, at gogi `a07d85e`.
 
 ## 12. Identity
 
@@ -2091,7 +2142,8 @@ The inventories found these items. We correct each one when its code moves. We d
 
 - mk splits a prefill in its Python service (`contexts._feed`). The split moves under `max_quantum_ms` (5.1).
 - mk's `prefill` field of `/mk/v1/generate` (`service/generate.py`, `_with_prefill`) becomes a gogi
-  continuation. Its prefix check at the seam moves with it. The new name keeps "prefill" for the prompt pass.
+  continuation. Its prefix check at the seam moved with it (11.3c, the seam check). The new name keeps "prefill" for
+  the prompt pass.
 - mk orders jobs first in, first out in its one high tier. The nagaya uses the order in 5.4.
 - mk's "park" writes through to disk and seals at each "hold". In nagaya terms, a hold is a declared boundary, and
   a write to disk is a park to NVMe (D7).
@@ -2213,7 +2265,8 @@ night (vetoable)" in its section. Amy can veto any of them. Each line gives the 
 - 11.3c: the call ids are `call_<16 hex digits>_<index>`, from a hash of the prompt and the reply.
 - 11.3c: a generation with no seed takes one from the operating system.
 - 11.3c: the sample defaults are temperature 1 with no filter.
-- 11.3c: a reply that reaches the context size ends with `context_full`, unless it reached `max_tokens` too.
+- 11.3c: a reply that reaches the context size ends with `context_full`, also when it reached `max_tokens`. gogi
+  `a07d85e` changed this order on 2026-10-21.
 - 11.3c: the decision limits are mkviolet's until the profile names others.
 - 11.7: the process serves an engine only when its kind has a family library with the same tokenizer hash.
 - 11.7: the served model is the engine's `model`, with 4096 tokens of context, or mk's maximum.

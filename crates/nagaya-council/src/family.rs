@@ -7,7 +7,8 @@
 //! The routes use the interface in these ways:
 //!
 //! - **Contexts and snapshots.** [`Family::render`] gives the tokens of a context and the boundaries where a
-//!   snapshot may be kept.
+//!   snapshot may be kept. A context whose last message is open renders without the end of that message
+//!   (gogi "Continuations").
 //! - **Decisions.** [`Family::decision_read`] gives a [`ReadPlan`]. The caller feeds the plan's tokens, reads the
 //!   letter logits that the plan names, and gives them back until the plan is done.
 //! - **Raw reads.** [`Family::raw_read`] gives the letter token ids and the tokens of each suffix.
@@ -100,7 +101,8 @@ pub struct ControlHit {
 /// The tokens of a context.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rendering {
-    /// The tokens of the context, then the generation prompt when it was asked for.
+    /// The tokens of the context, then the generation prompt when it was asked for. An open last message takes the
+    /// place of the generation prompt, so the tokens end with its open text.
     pub tokens: Vec<u32>,
     /// The token count before the generation prompt. It equals `tokens.len()` when there is none.
     pub end: usize,
@@ -240,7 +242,38 @@ pub struct ParsedReply {
     pub tail: Vec<ReplyStep>,
 }
 
-/// Reads the tokens of one reply, in order, after the generation prompt.
+/// Where a reply starts (gogi "Continuations").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReplyStart {
+    /// True when the first token of the reply is in its reasoning: the generation prompt opened the thinking, or the
+    /// open message has no `content` member and the context thinks.
+    pub thinking: bool,
+    /// True when the reply goes on from an open message. The parser then trims nothing at the start of the reply,
+    /// because `done` joins the open text and the new text with nothing trimmed at the seam.
+    pub open: bool,
+}
+
+impl ReplyStart {
+    /// A reply after the generation prompt.
+    pub fn prompt(thinking: bool) -> Self {
+        ReplyStart { thinking, open: false }
+    }
+
+    /// Where the reply after a context starts. An open message without a `content` member continues inside the
+    /// thinking. A `content` member closes the thinking, even when it is empty.
+    pub fn of(context: &Context) -> Self {
+        match context.open() {
+            Some(open) => ReplyStart {
+                thinking: context.thinks() && open.content.is_none(),
+                open: true,
+            },
+            None => ReplyStart::prompt(context.thinks()),
+        }
+    }
+}
+
+/// Reads the tokens of one reply, in order, after the generation prompt or after an open message. It reads only the
+/// sampled tokens, so the text of an open message never changes a phase.
 pub trait ReplyParser: Send {
     /// Label one token. A token outside the vocabulary, or one after the end of the reply, is an internal error.
     fn push(&mut self, token: u32) -> Result<ReplyStep, FamilyError>;
@@ -249,14 +282,24 @@ pub trait ReplyParser: Send {
     /// later `push` is an internal error.
     fn ended(&self) -> bool;
 
-    /// End the reply and give its parts.
-    fn finish(self: Box<Self>) -> ParsedReply;
+    /// The phase that the next token would have: `call` inside a call, `reasoning` inside the thinking, else
+    /// `content`. A reply that ends with `max_tokens` reports it as `done.phase`.
+    fn phase(&self) -> Phase;
+
+    /// End the reply and give its parts. With `max_tokens` true, the reply reached `max_tokens`: the parser keeps
+    /// the white space at the end of the part that it was in, so the client can send the reply back exactly.
+    fn finish(self: Box<Self>, max_tokens: bool) -> ParsedReply;
 }
 
 /// The text rules of one model family. The trait is object safe: a coordinator holds a `dyn Family` for each served
 /// model.
 pub trait Family: Send + Sync {
     /// Render a context. A context that the family cannot render is [`FamilyError::Client`].
+    ///
+    /// An open last message (`continue: true`) renders as a reply up to its open text, without its end and without
+    /// a generation prompt. Thus `end` is the length of the tokens. The family checks that each open field tokenizes
+    /// on its own (gogi `continuation::seams`). A field that does not is [`FamilyError::Client`] that names
+    /// `continue`.
     fn render(&self, context: &Context, generation_prompt: bool) -> Result<Rendering, FamilyError>;
 
     /// Plan a decision read of one context, or of no context. A queue schema that does not match the asked
@@ -266,10 +309,10 @@ pub trait Family: Send + Sync {
     /// Tokenize the letters and the suffixes of a raw read.
     fn raw_read(&self, letters: &[String], suffixes: &[String]) -> Result<RawRead, FamilyError>;
 
-    /// Start a reply parser. `thinking` is true when the generation prompt opened a reasoning part. `tools` are the
-    /// tools of the context: a family that reads a call against the schema of its tool needs them. A tool list that
-    /// the family cannot read is [`FamilyError::Client`].
-    fn reply_parser(&self, thinking: bool, tools: &[Tool]) -> Result<Box<dyn ReplyParser>, FamilyError>;
+    /// Start a reply parser. `start` says where the reply starts. `tools` are the tools of the context: a family that
+    /// reads a call against the schema of its tool needs them. A tool list that the family cannot read is
+    /// [`FamilyError::Client`].
+    fn reply_parser(&self, start: ReplyStart, tools: &[Tool]) -> Result<Box<dyn ReplyParser>, FamilyError>;
 
     /// Tokenize client text as content. Text that spells a control token stays text.
     fn tokenize(&self, text: &str) -> Result<Vec<u32>, FamilyError>;

@@ -5,7 +5,7 @@ mod support;
 use gogi_fake::{Config, Server};
 use gogi_proto::generation::Phase;
 use gogi_toy::{self as toy, State, log_softmax};
-use nagaya_council::family::{Asked, Boundary, ControlHit, DecisionInput, Family, FamilyError, ReplyCall};
+use nagaya_council::family::{Asked, Boundary, ControlHit, DecisionInput, Family, FamilyError, ReplyCall, ReplyStart};
 use nagaya_text_toy::ToyFamily;
 use serde_json::{Value, json};
 use support::{SEED, context, drive, post, spec};
@@ -56,6 +56,69 @@ fn a_context_renders_to_the_tokens_and_boundaries_of_gogi_toy() {
         let without = f.render(&c, false).unwrap();
         assert!(with.tokens.len() > with.end, "the generation prompt adds tokens");
         assert_eq!(without.tokens.len(), without.end);
+    }
+}
+
+/// gogi "Continuations": an open last message renders as gogi-toy renders it, without its end and in place of the
+/// generation prompt. So nagaya and gogi-fake feed the same prompt.
+#[test]
+fn an_open_message_renders_to_the_tokens_of_gogi_toy_without_its_end() {
+    let f = family();
+    let u = json!({"role": "user", "content": "u", "snap": true});
+    for (thinking, open) in [
+        (
+            true,
+            json!({"role": "assistant", "reasoning": "plan", "continue": true}),
+        ),
+        (
+            true,
+            json!({"role": "assistant", "reasoning": "plan", "content": "", "continue": true}),
+        ),
+        (
+            true,
+            json!({"role": "assistant", "reasoning": "plan", "content": "fn ", "continue": true, "snap": true}),
+        ),
+        (false, json!({"role": "assistant", "content": "fn ", "continue": true})),
+        (false, json!({"role": "assistant", "content": "", "continue": true})),
+    ] {
+        let c = context(json!({"thinking": thinking, "messages": [u, open]}));
+        let want = toy::render_tokens(&c.tools, thinking, &c.messages, true);
+        let user = f
+            .render(&context(json!({"thinking": thinking, "messages": [u]})), false)
+            .unwrap()
+            .end;
+        for prompt in [false, true] {
+            let got = f.render(&c, prompt).unwrap();
+            assert_eq!(got.tokens, want, "{open}, prompt {prompt}");
+            assert_eq!(
+                got.end,
+                got.tokens.len(),
+                "{open}: an open message has no generation prompt after it"
+            );
+            assert_eq!(
+                got.boundaries,
+                [
+                    Boundary {
+                        message: 0,
+                        tokens: user
+                    },
+                    Boundary {
+                        message: 1,
+                        tokens: got.end
+                    }
+                ],
+                "{open}"
+            );
+        }
+        let mut ended = want.clone();
+        ended.extend(toy::end_open(thinking, &c.messages[1]));
+        let mut closed = c.clone();
+        closed.messages[1].open = false;
+        assert_eq!(
+            f.render(&closed, false).unwrap().tokens,
+            ended,
+            "{open}: the open rendering begins the closed one"
+        );
     }
 }
 
@@ -479,7 +542,7 @@ fn a_letter_that_is_not_one_token_of_its_own_is_a_client_error() {
 #[test]
 fn a_reply_parser_labels_tokens_and_parses_the_reply() {
     let f = family();
-    let mut parser = f.reply_parser(true, &[]).unwrap();
+    let mut parser = f.reply_parser(ReplyStart::prompt(true), &[]).unwrap();
     let mut tokens: Vec<u32> = "hmm".bytes().map(u32::from).collect();
     tokens.push(toy::ENDTHINK);
     tokens.extend("ok".bytes().map(u32::from));
@@ -497,7 +560,7 @@ fn a_reply_parser_labels_tokens_and_parses_the_reply() {
     assert_eq!(steps[3].piece, "");
     assert_eq!(steps[4].phase, Phase::Content);
     assert_eq!(steps[6].phase, Phase::Call);
-    let reply = parser.finish();
+    let reply = parser.finish(false);
     assert_eq!(
         (reply.reasoning.as_str(), reply.content.as_str(), reply.ended),
         ("hmm", "ok", true)
@@ -518,7 +581,7 @@ fn the_tools_of_the_context_do_not_change_a_toy_reply() {
     let f = family();
     let tools = [gogi_proto::context::Tool::new("sh", json!({"type": "object"}))];
     let parse = |tools: &[gogi_proto::context::Tool]| {
-        let mut parser = f.reply_parser(false, tools).unwrap();
+        let mut parser = f.reply_parser(ReplyStart::prompt(false), tools).unwrap();
         for t in [toy::CALL]
             .into_iter()
             .chain(r#"sh({"b":1})"#.bytes().map(u32::from))
@@ -526,7 +589,7 @@ fn the_tools_of_the_context_do_not_change_a_toy_reply() {
         {
             parser.push(t).unwrap();
         }
-        parser.finish()
+        parser.finish(false)
     };
     assert_eq!(parse(&tools), parse(&[]));
 }
@@ -534,17 +597,45 @@ fn the_tools_of_the_context_do_not_change_a_toy_reply() {
 #[test]
 fn a_reply_without_thinking_is_content_and_a_reply_with_no_end_has_not_ended() {
     let f = family();
-    let mut parser = f.reply_parser(false, &[]).unwrap();
+    let mut parser = f.reply_parser(ReplyStart::prompt(false), &[]).unwrap();
     assert_eq!(parser.push(u32::from(b'x')).unwrap().phase, Phase::Content);
-    let reply = parser.finish();
+    let reply = parser.finish(false);
     assert_eq!((reply.content.as_str(), reply.ended), ("x", false));
     assert!(reply.tail.is_empty(), "the toy parser holds nothing back");
+}
+
+/// gogi "Continuations": `done.phase` of a cut reply is the phase that its next token would have.
+#[test]
+fn a_reply_parser_names_the_phase_of_the_next_token() {
+    let f = family();
+    let mut parser = f.reply_parser(ReplyStart::prompt(true), &[]).unwrap();
+    assert_eq!(parser.phase(), Phase::Reasoning);
+    parser.push(u32::from(b'a')).unwrap();
+    assert_eq!(parser.phase(), Phase::Reasoning);
+    parser.push(gogi_toy::ENDTHINK).unwrap();
+    assert_eq!(
+        parser.phase(),
+        Phase::Content,
+        "a reply cut just after <endthink> resumes in its content"
+    );
+    parser.push(gogi_toy::CALL).unwrap();
+    assert_eq!(parser.phase(), Phase::Call);
+    let open = f
+        .reply_parser(
+            ReplyStart {
+                thinking: false,
+                open: true,
+            },
+            &[],
+        )
+        .unwrap();
+    assert_eq!(open.phase(), Phase::Content);
 }
 
 #[test]
 fn a_reply_parser_refuses_a_token_outside_the_vocabulary_and_a_token_after_the_end() {
     let f = family();
-    let mut parser = f.reply_parser(false, &[]).unwrap();
+    let mut parser = f.reply_parser(ReplyStart::prompt(false), &[]).unwrap();
     assert!(matches!(
         parser.push(f.vocab_size() as u32),
         Err(FamilyError::Internal(_))
@@ -688,7 +779,7 @@ fn the_fake_engine_gives_logit_rows_as_wide_as_the_vocabulary_of_the_family() {
 #[test]
 fn a_reply_parser_says_when_the_reply_ended() {
     let f = family();
-    let mut parser = f.reply_parser(true, &[]).unwrap();
+    let mut parser = f.reply_parser(ReplyStart::prompt(true), &[]).unwrap();
     for token in [u32::from(b'h'), toy::ENDTHINK, u32::from(b'o'), toy::CALL, toy::ENDCALL] {
         parser.push(token).unwrap();
         assert!(!parser.ended(), "token {token} does not end the reply");
@@ -717,11 +808,11 @@ fn the_speaking_bias_keeps_only_tokens_that_a_reply_renders_back() {
         let prompt = f.render(&c, true).unwrap().tokens;
         let mut reply: Vec<u32> = (0..0x80).collect();
         reply.push(toy::END);
-        let mut parser = f.reply_parser(thinking, &[]).unwrap();
+        let mut parser = f.reply_parser(ReplyStart::prompt(thinking), &[]).unwrap();
         for token in &reply {
             parser.push(*token).unwrap();
         }
-        let parsed = parser.finish();
+        let parsed = parser.finish(false);
         let mut message = json!({"role": "assistant"});
         if !parsed.content.is_empty() {
             message["content"] = json!(parsed.content);

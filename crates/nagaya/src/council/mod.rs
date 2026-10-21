@@ -19,6 +19,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use gogi_proto::Invalid;
 use gogi_proto::SnapshotId;
 use gogi_proto::context::{Context, SnapshotInfo, Tier as SnapshotTier, Usage};
 use gogi_proto::decision::DecisionIdentity;
@@ -439,15 +440,34 @@ impl Service {
 
     /// Build a context (gogi "Contexts"): render it, start from the longest held prefix, feed the rest, and hold a
     /// snapshot at each boundary. A dry run renders and looks up, and feeds and holds nothing.
+    ///
+    /// An open message builds only as a dry run (gogi "Continuations"). The dry run looks up the build plan of a
+    /// continuation: the context before the open message. Its `head` names the recipe of the open rendering, which
+    /// the store never holds.
     pub fn build(&self, context: &Context, dry_run: bool, schedule: Schedule) -> Result<Built, ServiceError> {
-        let rendering = self.family.render(context, false)?;
-        if rendering.end >= self.config.context_tokens {
-            return Err(ServiceError::ContextFull {
-                prompt_tokens: rendering.end as u64,
-                context_tokens: self.config.context_tokens as u64,
-            });
+        if context.open().is_some() && !dry_run {
+            return Err(Invalid::param(
+                "continue",
+                "nothing was built: a build reads an open message only with dry_run: true; send dry_run: true to test \
+                 a continuation, or send it to a generation",
+            )
+            .into());
         }
-        let recipes = boundary_recipes(self.root, &rendering)?;
+        let rendering = self.family.render(context, false)?;
+        if rendering.end > self.config.context_tokens {
+            return Err(ServiceError::past_context(rendering.end, self.config.context_tokens));
+        }
+        let rendering_end = rendering.end;
+        let head_recipe = boundary_recipes(self.root, &rendering)?
+            .last()
+            .expect("a rendering has a boundary")
+            .recipe;
+        let open = context.open().is_some();
+        let rendering = match open {
+            true => self.open_plan(context, &rendering)?,
+            false => rendering,
+        };
+        let recipes = plan_recipes(self.root, &rendering)?;
         let tokens: Arc<[u32]> = rendering.tokens[..rendering.end].into();
         let cuts = self.cuts(context, &rendering)?;
         let outcome = if dry_run {
@@ -467,7 +487,7 @@ impl Service {
             let job = |tx| BuildBody::new(shared, tokens, recipes.clone(), tx).cuts(cuts);
             self.run_context(job, schedule, None)?.outcome
         };
-        let prompt = rendering.end as u64;
+        let prompt = rendering_end as u64;
         let usage = Usage {
             prompt,
             kept: outcome.kept as u64,
@@ -481,12 +501,32 @@ impl Service {
             self.infos(&held_boundaries(&outcome))
         };
         Ok(Built {
-            head_recipe: outcome.recipes.last().expect("a rendering has a boundary").recipe,
-            head: outcome.held.last().copied().flatten().map(|id| snapshot_id(&id)),
+            head_recipe,
+            head: match open {
+                true => None,
+                false => outcome.held.last().copied().flatten().map(|id| snapshot_id(&id)),
+            },
             from: outcome.from.map(|id| snapshot_id(&id)),
             usage,
             snapshots,
         })
+    }
+
+    /// The build plan of an open context (gogi "Continuations", spec 11.3c): the rendering of the context before its
+    /// open message. `rendering` is the rendering of the open context.
+    pub(crate) fn open_plan(&self, context: &Context, rendering: &Rendering) -> Result<Rendering, ServiceError> {
+        let mut before = context.clone();
+        before.messages.pop();
+        let before = match before.messages.is_empty() {
+            true => Rendering {
+                tokens: Vec::new(),
+                end: 0,
+                boundaries: Vec::new(),
+                control_text: Vec::new(),
+            },
+            false => self.family.render(&before, false)?,
+        };
+        Ok(nagaya_council::continuation::open_plan(rendering, &before)?)
     }
 
     /// The cuts of a context: the end of each message that the client did not mark, where the rendering keeps it, from
@@ -805,6 +845,17 @@ pub(crate) fn held_boundaries(outcome: &Outcome) -> Vec<(nagaya_council::family:
         .filter(|(recipe, _)| Some(recipe.boundary) != outcome.cut)
         .filter_map(|(recipe, id)| Some((recipe.boundary, (*id)?)))
         .collect()
+}
+
+/// The recipes of a build plan. A plan with no boundary builds nothing: the job starts on an empty slot.
+pub(crate) fn plan_recipes(
+    root: nagaya_store::RecipeId,
+    plan: &Rendering,
+) -> Result<Vec<nagaya_council::build::BoundaryRecipe>, ServiceError> {
+    match plan.boundaries.is_empty() {
+        true => Ok(Vec::new()),
+        false => Ok(boundary_recipes(root, plan)?),
+    }
 }
 
 /// The snapshot id of a content id (spec 11.1): `blake3:` and the 64 hex digits.

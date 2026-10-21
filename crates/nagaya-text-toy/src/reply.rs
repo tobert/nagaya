@@ -1,5 +1,6 @@
 //! The reply parser of the toy family, on `gogi_toy::reply`.
 
+use gogi_proto::generation::Phase;
 use gogi_toy::VOCAB;
 use gogi_toy::reply::{Call, ReplyParser as Inner};
 use nagaya_council::family::{FamilyError, ParsedReply, ReplyCall, ReplyParser, ReplyStep};
@@ -46,7 +47,12 @@ impl ReplyParser for ToyReplyParser {
         self.ended
     }
 
-    fn finish(self: Box<Self>) -> ParsedReply {
+    fn phase(&self) -> Phase {
+        self.inner.phase()
+    }
+
+    /// The toy parser trims nothing, so a reply cut by `max_tokens` keeps its white space as any reply does.
+    fn finish(self: Box<Self>, _max_tokens: bool) -> ParsedReply {
         let reply = self.inner.finish();
         ParsedReply {
             content: reply.content,

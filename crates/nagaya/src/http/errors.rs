@@ -86,15 +86,12 @@ impl From<ServiceError> for Failure {
     }
 }
 
-/// Decode a request body. A missing or unknown member is a 400 that names it in `param` (gogi "Errors").
+/// Decode a request body. A missing or unknown member, or a `continue` that is not a boolean, is a 400 that names it
+/// in `param` (gogi "Errors", "Continuations").
 pub fn parse<T: serde::de::DeserializeOwned>(body: &[u8], what: &str) -> Result<T, Failure> {
     serde_json::from_slice(body).map_err(|error| {
         let text = error.to_string();
-        let field = ["missing field `", "unknown field `"].iter().find_map(|prefix| {
-            text.split_once(prefix)
-                .and_then(|(_, rest)| rest.split_once('`'))
-                .map(|(field, _)| field.to_owned())
-        });
+        let field = gogi_proto::error::decode_param(&text);
         let message = format!("nothing ran: the {what} body does not decode: {text}");
         let invalid = match field {
             Some(field) => gogi_proto::Invalid::param(field, message),
