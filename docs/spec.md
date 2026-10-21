@@ -1756,7 +1756,7 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
   system seeds.
 - The sample defaults of a served model are temperature 1 with no filter, until the profile names others.
 - A reply ends with `context_full` when the prompt and the reply reach `context_tokens`. When it also reaches
-  `max_tokens`, it ends with `max_tokens`.
+  `max_tokens`, it ends with `context_full` (gogi "Generations", `finish`, gogi `a07d85e`).
 - The decision limits are mkviolet's until the profile names others: `decision_context_tokens` 3072,
   `contexts_per_decision` 8, `case_bytes` 65536 and `default_timeout_ms` 30000.
 
@@ -2215,7 +2215,8 @@ night (vetoable)" in its section. Amy can veto any of them. Each line gives the 
 - 11.3c: the call ids are `call_<16 hex digits>_<index>`, from a hash of the prompt and the reply.
 - 11.3c: a generation with no seed takes one from the operating system.
 - 11.3c: the sample defaults are temperature 1 with no filter.
-- 11.3c: a reply that reaches the context size ends with `context_full`, unless it reached `max_tokens` too.
+- 11.3c: a reply that reaches the context size ends with `context_full`, also when it reached `max_tokens`. gogi
+  `a07d85e` changed this order on 2026-10-21.
 - 11.3c: the decision limits are mkviolet's until the profile names others.
 - 11.7: the process serves an engine only when its kind has a family library with the same tokenizer hash.
 - 11.7: the served model is the engine's `model`, with 4096 tokens of context, or mk's maximum.

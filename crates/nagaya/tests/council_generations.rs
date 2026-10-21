@@ -241,7 +241,11 @@ fn a_reply_stops_at_max_tokens_and_at_the_end_of_the_context() {
         (Finish::ContextFull, "ab", 2)
     );
     let done = generate(&small, &value, 2, json!({"temperature": 0}));
-    assert_eq!(done.finish, Finish::MaxTokens, "max_tokens goes first when both hold");
+    assert_eq!(
+        (done.finish, done.phase),
+        (Finish::ContextFull, None),
+        "context_full goes before max_tokens, and a context_full reply has no phase (gogi a07d85e)"
+    );
 }
 
 #[test]

@@ -158,13 +158,14 @@ impl GenerateThen {
             Phase::Call | Phase::Unknown => {}
         }
         let n = self.sampled.len();
-        // The reply ends at this token when the parser ended it, or when it reaches a limit.
+        // The reply ends at this token when the parser ended it, or when it reaches a limit. A full context goes
+        // before `max_tokens` (gogi "Generations", `finish`).
         let end = if ended {
             Some(None)
-        } else if n == self.max_tokens {
-            Some(Some(Finish::MaxTokens))
         } else if self.prompt.len() + n >= self.context_tokens {
             Some(Some(Finish::ContextFull))
+        } else if n == self.max_tokens {
+            Some(Some(Finish::MaxTokens))
         } else {
             None
         };
