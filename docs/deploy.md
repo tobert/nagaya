@@ -28,9 +28,8 @@ These gaps were open on 2026-10-20 night. Check each one, because the cutover fa
   exits 3 with the message "this build has no engine". The feature registers the kind `mk-qwen38-gfx1151`.
 - The profile needs the real size of mk's weight arena. The file in `deploy/gfx1151host/` holds an estimate. Read "The
   weights size" below before the first start.
-- The council service cannot attach to mk yet. A build needs the `parts` and `slots` capabilities, and the mk
-  binding declares no `slots` and no `coverage` (`crates/nagaya-mk-qwen38-gfx1151/src/engine.rs`). The process then
-  logs "cannot serve engine `mk`" and exits 3 (spec 11.7). A lane must add the slots of mk first.
+- The council service needs the `parts`, `slots` and `coverage` capabilities of mk. The `m14-stop` lane added them on
+  2026-10-20 night. A binary from before that merge logs "cannot serve engine `mk`" and exits 3 (spec 11.7).
 - The mk context sizes change in the `ctx-size` lane. The profile names no context count and no size, so it does not
   change. The pool bytes that the engine declares do change. Read "The memory budgets" below, and check the budgets.
 - mk's library must exist and be newer than mk's last commit (AGENTS.md "mk on gfx1151host"). Amy builds it.

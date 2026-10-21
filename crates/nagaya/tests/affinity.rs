@@ -34,3 +34,18 @@ fn a_cpu_past_the_mask_size_is_refused() {
     let error = result.expect_err("a CPU past CPU_SETSIZE is an error");
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
 }
+
+#[test]
+fn a_thread_that_a_pinned_thread_starts_keeps_the_mask() {
+    // The mk engine starts its worker thread inside `open`, on the pinned group thread. The worker relies on this
+    // rule to run on the pool set (spec 3.2a).
+    let inner = thread::spawn(|| {
+        pin_current_thread(&[0]).expect("CPU 0 is online on every test machine");
+        thread::spawn(|| current_affinity().expect("the mask reads back"))
+            .join()
+            .expect("the inner thread did not panic")
+    })
+    .join()
+    .expect("the thread did not panic");
+    assert_eq!(inner, vec![0]);
+}
