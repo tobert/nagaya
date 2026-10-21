@@ -2,6 +2,7 @@
 
 pub mod admission;
 pub mod bootstrap;
+pub mod cpu_sets;
 pub mod exit;
 pub mod gossip;
 pub mod inventory;
