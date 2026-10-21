@@ -1,8 +1,8 @@
 //! The test renders that the family keeps (spec 11.3a). The council hash of the template id is over their tokens.
 //!
-//! The set covers contexts with and without a generation prompt, thinking on and off, tools, reasoning, a failed
-//! tool result, and text that spells a control token. A change to a rendered token changes a render of the set. A
-//! change to a comment or to the code structure does not.
+//! The set covers contexts with and without a generation prompt, and thinking on and off. It covers tools, reasoning,
+//! a failed tool result, and text that spells a control token. A change to a rendered token changes a render of the
+//! set. A change to a comment or to the code structure does not.
 
 use gogi_proto::context::Context;
 use gogi_proto::spec::{SpecRules, parse_spec};

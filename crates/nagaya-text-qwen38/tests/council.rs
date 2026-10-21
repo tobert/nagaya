@@ -127,8 +127,8 @@ fn the_reasoning_of_an_assistant_message_stays_and_so_does_its_boundary() {
     assert!(text(&r.tokens).contains("<think>\ndeep thought\n</think>\n\nanswer<|im_end|>\n<|im_start|>user\nnext"));
 }
 
-/// The template puts one user turn around a run of tool messages. The part of the run up to one message is not
-/// the start of the whole run, so only the last message of a run is a boundary.
+/// The template puts one user turn around a run of tool messages. The part of the run up to one message does not
+/// start the whole run. Thus only the last message of a run is a boundary.
 #[test]
 fn a_tool_message_inside_a_run_is_not_a_boundary() {
     let c = context(
@@ -940,7 +940,7 @@ fn a_queue_read_reads_bare_letters_and_goes_on_from_the_likeliest() {
 }
 
 /// Qwen3.8's template writes the keys of an object in the order it gets them. The read asks the questions in
-/// the order of the schema, not in the order of the ids, and not in the order of the spec.
+/// the order of the schema. That order is not the order of the ids or the order of the spec.
 #[test]
 fn a_queue_read_asks_the_questions_in_the_order_of_the_schema() {
     let spec = fixture_spec();
