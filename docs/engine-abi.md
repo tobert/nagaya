@@ -444,19 +444,19 @@ check.
 |---|---|---|
 | open / attach | `load_slots(cluster, model_dir, slot_seqs, max_block)`, `load_slots_stored` | slot sizes and `max_block` are load-time config |
 | device group | both B70 cards | one nagaya thread; `run_card0`, `run_card1` and `pipeline_stage` stay inside the pass |
-| arena | 60 DMA-BUF slabs (`slab_fd_name(l, card)`), `verify_stored_slab` | spot check: first and last 64 bytes per tensor |
+| arena | 30 DMA-BUF slabs, one for each layer on its card (`slab_fd_name(l, card)`, `main.rs:76-108`), `verify_stored_slab` | spot check: first and last 64 bytes per tensor; the head has no slab today |
 | slots | `set_slot`, `kv_high`, `slot_clear` | no contexts, no stored token count, no fork |
 | parts | `save_kv_layer_from` (a range read), `load_kv`, `load_kv_layer` | `state` is the slot index; KV only: cells on global layers, ring on sliding layers |
-| geometry / coverage | slot size, ring rows (`kv_ring`, `kv_keep_from`); `KvSnapshot::join` is the fit check | changes rows held, not bits, so no `geometry_key`; today's id is a recipe (`held.rs:312-325`) |
+| geometry / coverage | slot size, ring rows (`kv_ring`, `kv_keep_from`); `KvSnapshot::join` is the fit check | changes rows held, not bits, so no `geometry_key`; today's id is a recipe (`snapshot_id`, `held.rs:329-342`) |
 | pass | `run_card0` then `run_card1`; `pipeline_stage` for jobs in flight on both cards | two stages |
 | segments | `PipeJob`; `branch_block` with per-token `meta` | a branch block is atomic and is not a snapshot |
-| inputs | `write_embeddings` puts rows into `Buf::X` | rows today, made from tokens in the nagaya |
+| inputs | tokens; `write_embeddings` looks up the rows on the host and puts them into `Buf::X` (`gemma4.rs:1376-1384`) | tokens (D2) |
 | class | `CardLock`, `GpuLock` | moves out of the engine into the nagaya scheduler |
 | determinism | not yet known | the first port runs one recipe in two starts and compares content ids |
 
 ## Decisions
 
-Decided: D1, D3-D10. D2 is narrowed and waits for the first port.
+Decided: D1-D10.
 
 **D1. Engines that span devices.** There are two options:
 
@@ -483,11 +483,15 @@ group of one card: a smaller Gemma, "or probably a qwen and lfm".
 embeddings (PLE) hash the token ids, and its PLE history is a fixed part (`engine.h:75`, `ple_rows`). gmk's audio rows
 and diffusion latents have no tokens. Proposed: `inputs = tokens | rows | tokens+rows`, declared per engine.
 
-Deferred 2026-10-17 (Amy: "sort it out with the first engine"). mkviolet's Gemma 4 is the first port. Today it takes
-rows that the nagaya makes from tokens.
+Deferred 2026-10-17 (Amy: "sort it out with the first engine"). mkviolet's Gemma 4 is the first port.
 
 Settled the same day: an engine never takes text. The family library in the nagaya turns text into tokens (spec
-11.3). Only the choice between tokens, rows, or both waits for the first port.
+11.3).
+
+Settled 2026-10-21 by the code of the first port, as Amy asked. mkviolet takes token ids. It looks up each
+embedding row on the host, scales it, and writes it into card 0's residual (`write_embeddings`,
+`gemma4.rs:1376-1384`). Thus mkviolet declares `inputs = tokens`, as mk does. The embedding stays inside the
+engine. The ABI keeps `rows` and `tokens+rows` for gmk's audio rows and diffusion latents.
 
 **D3. Snapshots are named by content ids.** Decided 2026-10-17 (Amy: "yeah, 1, cas is awesome"). There are two keys:
 

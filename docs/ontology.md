@@ -57,9 +57,9 @@ append-only: the engine times a new shape once and keeps its pick. A new library
 **lineage**, which is a new identity (`docs/engine-abi.md` D3). mk has no library GEMMs and needs no plan table.
 
 **Arena.** The memory that holds an engine's weights and can outlive the process: a set of named file descriptors.
-An arena records how strong its check is. mk has one arena, with a full check (`mk_arena_check`). mkviolet has 60
-DMA-BUF slabs, with a spot check of the first and last 64 bytes of each tensor (`gemma4.rs:284-287`). An inference
-engine opens its arena read-only, and a training engine writes it.
+An arena records how strong its check is. mk has one arena, with a full check (`mk_arena_check`). mkviolet has 30
+DMA-BUF slabs, one for each layer, with a spot check of the first and last 64 bytes of each tensor
+(`gemma4.rs:284-287`). An inference engine opens its arena read-only, and a training engine writes it.
 
 **State object.** Everything that a pass reads besides its inputs, made of parts. There are three kinds:
 
@@ -103,7 +103,7 @@ the content id. Whether a snapshot fits a slot is a check on coverage, not part 
 **Recipe.** What a snapshot was made from: a hash of the engine identity, the inputs and the boundaries. For an
 engine that declares a geometry key, the recipe holds that key too. The store maps a recipe to the content ids made
 from it, so the nagaya can ask "do we already have this?" before it builds. mkviolet's `snapshot_id` is the input
-part of a recipe (`held.rs:312-325`).
+part of a recipe (`held.rs:329-342`).
 
 **Tolerance.** What a served model accepts in place of exact bits: `exact`, or named approximations. Each
 approximation has a quality budget that its approver measured once. A snapshot made by an approximation has its own
