@@ -134,3 +134,108 @@ fn a_machine_with_no_online_list_refuses_the_start() {
     assert_eq!(error.exit_code(), ExitCode::RefusedStart);
     assert!(error.to_string().contains("sys/devices/system/cpu/online"), "{error}");
 }
+
+// Spec 3.2b: the CPU set of each device.
+
+use nagaya::cpu_sets::{device_sets, for_machine_with_devices};
+
+fn fixture(machine: &str) -> FileProbe {
+    FileProbe::new(format!("{}/tests/fixtures/probe/{machine}", env!("CARGO_MANIFEST_DIR")))
+}
+
+/// The two L3 domains of the 9950X on b70host.
+fn ccds() -> Vec<Vec<u32>> {
+    vec![
+        [0..8, 16..24].into_iter().flatten().collect(),
+        [8..16, 24..32].into_iter().flatten().collect(),
+    ]
+}
+
+#[test]
+fn two_cards_with_no_locality_take_one_l3_domain_each_less_the_housekeeping_cpus() {
+    let online: Vec<u32> = (0..32).collect();
+    let pool: Vec<u32> = (2..32).collect();
+    let sets = device_sets(&pool, &online, &ccds(), &[online.clone(), online.clone()]).unwrap();
+    assert_eq!(sets[0], [2..8, 16..24].into_iter().flatten().collect::<Vec<u32>>());
+    assert_eq!(sets[1], [8..16, 24..32].into_iter().flatten().collect::<Vec<u32>>());
+}
+
+#[test]
+fn more_cards_than_domains_take_the_domains_in_turn() {
+    let online: Vec<u32> = (0..32).collect();
+    let pool: Vec<u32> = (2..32).collect();
+    let all = vec![online.clone(); 3];
+    let sets = device_sets(&pool, &online, &ccds(), &all).unwrap();
+    assert_eq!(sets[2], sets[0]);
+    assert_ne!(sets[1], sets[0]);
+}
+
+#[test]
+fn a_card_with_a_local_list_takes_the_local_cpus_in_the_pool() {
+    let online: Vec<u32> = (0..32).collect();
+    let pool: Vec<u32> = (2..32).collect();
+    let local = vec![(0..8).collect::<Vec<u32>>(), (8..16).collect()];
+    let sets = device_sets(&pool, &online, &ccds(), &local).unwrap();
+    assert_eq!(sets[0], (2..8).collect::<Vec<u32>>());
+    assert_eq!(sets[1], (8..16).collect::<Vec<u32>>());
+}
+
+#[test]
+fn one_card_keeps_the_pool_set() {
+    let online: Vec<u32> = (0..32).collect();
+    let pool: Vec<u32> = (2..32).collect();
+    let sets = device_sets(&pool, &online, &ccds(), std::slice::from_ref(&online)).unwrap();
+    assert_eq!(sets, vec![pool]);
+}
+
+#[test]
+fn a_local_list_with_no_pool_cpu_is_an_error() {
+    let online: Vec<u32> = (0..32).collect();
+    let pool: Vec<u32> = (2..32).collect();
+    let local = vec![vec![0, 1], vec![8, 9]];
+    let error = device_sets(&pool, &online, &ccds(), &local).unwrap_err();
+    assert_eq!(error, CpuSetError::NoPoolCpu { device: 0 });
+}
+
+#[test]
+fn a_domain_with_no_pool_cpu_is_an_error() {
+    let online: Vec<u32> = (0..4).collect();
+    let pool = vec![2, 3];
+    let domains = vec![vec![0, 1], vec![2, 3]];
+    let error = device_sets(&pool, &online, &domains, &[online.clone(), online.clone()]).unwrap_err();
+    assert_eq!(error, CpuSetError::NoPoolCpu { device: 0 });
+}
+
+#[test]
+fn b70host_gives_card_0_and_card_1_one_ccd_each() {
+    let sets = for_machine_with_devices(&fixture("b70host")).unwrap();
+    assert_eq!(sets.housekeeping, vec![0, 1]);
+    assert_eq!(
+        sets.device(0),
+        [2..8, 16..24].into_iter().flatten().collect::<Vec<u32>>()
+    );
+    assert_eq!(
+        sets.device(1),
+        [8..16, 24..32].into_iter().flatten().collect::<Vec<u32>>()
+    );
+}
+
+#[test]
+fn gfx1151host_has_one_device_and_it_keeps_the_pool_set() {
+    let sets = for_machine_with_devices(&fixture("gfx1151host")).unwrap();
+    let plain = for_machine(&fixture("gfx1151host")).unwrap();
+    assert_eq!((&sets.housekeeping, &sets.pool), (&plain.housekeeping, &plain.pool));
+    assert_eq!(sets.devices, vec![sets.pool.clone()]);
+}
+
+#[test]
+fn sm121host_has_one_device_and_it_keeps_the_pool_set() {
+    let sets = for_machine_with_devices(&fixture("sm121host")).unwrap();
+    assert_eq!(sets.device(0), sets.pool);
+}
+
+#[test]
+fn a_set_made_by_the_plain_split_gives_each_device_the_pool() {
+    let sets = split(&[0, 1, 2, 3]).unwrap();
+    assert_eq!(sets.device(7), vec![2, 3]);
+}

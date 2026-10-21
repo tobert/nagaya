@@ -27,6 +27,7 @@ use nagaya_telemetry::{QuantumLabels, instruments};
 use tracing::Span;
 
 use super::{Event, GroupMessage, OpenedEngine, ParkProgress, WatchMessage, guard, park_group, pin, spawn_named};
+use crate::cpu_sets::CpuSets;
 use crate::jobs::{JobBody, JobSpec, Ran};
 use crate::park::StoreMessage;
 
@@ -40,7 +41,8 @@ pub(super) struct StagedLinks {
     pub(super) own: Sender<GroupMessage>,
     pub(super) store: Option<Sender<StoreMessage>>,
     pub(super) accepting: Arc<AtomicBool>,
-    pub(super) cpus: Option<Vec<u32>>,
+    /// The CPU sets, when the process makes them (spec 3.2b).
+    pub(super) sets: Option<CpuSets>,
 }
 
 /// A call that a stage thread makes on its handle for the group thread.
@@ -97,7 +99,7 @@ impl StageThreads {
             let events = links.events.clone();
             let done = links.own.clone();
             let heartbeats = links.heartbeats.clone();
-            let cpus = links.cpus.clone();
+            let cpus = links.sets.as_ref().map(|sets| sets.device(device).to_vec());
             let _ = heartbeats.send(WatchMessage::StartStage {
                 group,
                 stage,
@@ -105,8 +107,7 @@ impl StageThreads {
             });
             let thread = spawn_named(format!("nagaya-stg-{group}-{stage}"), move || {
                 guard("stage", &events, || {
-                    // Spec 3.2b gives each card the CPUs near it. That split is not built, so a stage thread takes the
-                    // pool set of its group thread (spec 3.2a).
+                    // A stage thread takes the CPUs of its card (spec 3.2b).
                     pin("stage", cpus.as_deref());
                     stage_thread(group, stage, handle, work_rx, done, heartbeats, interval);
                 });

@@ -209,6 +209,35 @@ impl FileProbe {
         parse_cpu_list(text.trim()).ok_or_else(|| malformed(&self.path(relative), &expected, &text))
     }
 
+    /// The CPUs near a PCI device, from its `local_cpulist` (spec 3.2b).
+    pub fn local_cpus(&self, pci_address: &str) -> Result<Vec<u32>, ProbeError> {
+        let relative = format!("sys/bus/pci/devices/{pci_address}/local_cpulist");
+        let text = self.read(&relative)?;
+        let expected = format!("a CPU list like `0-7,9` with CPU numbers below {MASK_CPUS}");
+        parse_cpu_list(text.trim()).ok_or_else(|| malformed(&self.path(&relative), &expected, &text))
+    }
+
+    /// The L3 cache domains of the `online` CPUs, from `cache/index3/shared_cpu_list` (spec 3.2b).
+    ///
+    /// Each domain is a sorted CPU list. The domains come in the order of their lowest CPU.
+    pub fn l3_domains(&self, online: &[u32]) -> Result<Vec<Vec<u32>>, ProbeError> {
+        let mut domains: Vec<Vec<u32>> = Vec::new();
+        for &cpu in online {
+            let relative = format!("sys/devices/system/cpu/cpu{cpu}/cache/index3/shared_cpu_list");
+            let text = self.read(&relative)?;
+            let expected = format!("a CPU list like `0-7,9` that holds CPU {cpu}");
+            let mut list = parse_cpu_list(text.trim())
+                .filter(|list| list.contains(&cpu))
+                .ok_or_else(|| malformed(&self.path(&relative), &expected, &text))?;
+            list.sort_unstable();
+            if !domains.contains(&list) {
+                domains.push(list);
+            }
+        }
+        domains.sort();
+        Ok(domains)
+    }
+
     fn nvme(&self) -> Result<Vec<Nvme>, ProbeError> {
         let mut found = Vec::new();
         for name in self.list("sys/block")? {

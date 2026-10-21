@@ -416,6 +416,13 @@ pool set. A stage thread (3.2) drives one card, so it gets a set of its own.
 - On b70host, card 0 gets CPUs 2-7 and 16-23, and card 1 gets CPUs 8-15 and 24-31. CPUs 0 and 1 are the
   housekeeping set.
 - The group thread, the CPU pool and the store thread keep the pool set (3.2a).
+- A machine with one card has nothing to separate. Its card keeps the pool set, and the nagaya reads no CPU list.
+  **Proposed** (claude-sonnet-5-5, 2026-10-21). Reason: on gfx1151host the behavior of 3.2a stays as it was.
+- A card with a `local_cpulist` that holds a part of the online CPUs takes that part, less the housekeeping set.
+  **Proposed** (claude-sonnet-5-5, 2026-10-21).
+- A card whose set holds no pool CPU is an error. The start is refused: exit 3 (10.4).
+  **Proposed** (claude-sonnet-5-5, 2026-10-21). Reason: a stage thread on the wrong CPUs breaks the isolation.
+- The L3 domains come in the order of their lowest CPU. **Proposed** (claude-sonnet-5-5, 2026-10-21).
 
 Reason: the two CCDs of the 9950X have their own L3. A stage thread that stays on one CCD keeps its host buffers in
 one cache.
