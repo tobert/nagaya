@@ -113,9 +113,11 @@ Decided by senpai 2026-10-20 night (vetoable): the rules of "What the file probe
 cannot see". Reason: the probe must give a true size or stop. A heuristic that guesses wrong without a sign would
 corrupt the ledger (8.5).
 
-Decided by senpai 2026-10-20 night (vetoable): the trees for b70host and sm121host are made by hand, not captured.
-The coder could not read those machines. The README in the fixture directory marks each guessed value. Capture the
-real trees when we port to those machines.
+Decided by senpai 2026-10-20 night (vetoable): the tree for sm121host is made by hand, not captured. The coder could not
+read that machine. The README in the fixture directory marks each guessed value. Capture the real tree when we port.
+
+The tree for b70host is a capture of 2026-10-21. A Xe card reports the largest prefetchable range among its six
+standard BARs. The ranges after them hold the ROM and the SR-IOV functions, and they are not memory of the card.
 
 Decided by senpai 2026-10-20 night (vetoable): a build with the feature `fake` keeps a made-up inventory. It has one
 device and 1 GiB of host memory. Reason: the host tests need no real machine. A build with neither the feature
@@ -2157,7 +2159,7 @@ night (vetoable)" in its section. Amy can veto any of them. Each line gives the 
 
 - 2.1: a CPU number of 1024 or more is a probe error.
 - 2.1: the probe gives a true size or stops, and it refuses a model or a driver that it cannot size.
-- 2.1: the file trees for b70host and sm121host are made by hand, and each guessed value is marked.
+- 2.1: the file tree for sm121host is made by hand, and each guessed value is marked. The tree for b70host is real.
 - 2.1: a build with the feature `fake` keeps a made-up inventory.
 - 2.1: a probe error at start exits 3, and a build with no `fake` probes the files of `/`.
 - 3.2a: the housekeeping set is the two lowest online CPUs, and the pool set is the others.
