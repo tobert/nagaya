@@ -25,6 +25,7 @@ fn inventory() -> Inventory {
             pci_address: "0000:03:00.0".to_owned(),
             memory_bytes: 1 << 30,
             unified: false,
+            ignored: false,
         }],
         host_bytes: 1 << 30,
     }
@@ -160,7 +161,7 @@ fn a_peer_sees_the_keys_of_a_node() {
     assert!(node.keys.contains_key("profile:active"), "{view}");
     assert_eq!(
         node.value(&Key::Inventory).unwrap(),
-        json!({"devices": [{"id": 0, "name": "fake-0", "pci_address": "0000:03:00.0", "memory_bytes": 1u64 << 30, "unified": false}], "host_bytes": 1u64 << 30})
+        json!({"devices": [{"id": 0, "name": "fake-0", "pci_address": "0000:03:00.0", "memory_bytes": 1u64 << 30, "unified": false, "ignored": false}], "host_bytes": 1u64 << 30})
     );
     let active = node.value(&Key::ProfileActive).unwrap();
     assert_eq!(active["engines"][0]["name"], "fake-one");
@@ -237,4 +238,32 @@ fn the_inventory_key_holds_the_pci_address_of_each_device() {
     let value = node.gossip().view().live[0].keys[&Key::Inventory.name()].clone();
     let value: serde_json::Value = serde_json::from_str(&value).unwrap();
     assert_eq!(value["devices"][0]["pci_address"], "0000:03:00.0");
+}
+
+#[test]
+fn the_inventory_key_marks_an_ignored_device() {
+    let gossip = Gossip::start(config("solo")).unwrap();
+    let node = Node::new(gossip, "127.0.0.1:8090".parse().unwrap());
+    let mut inventory = inventory();
+    inventory.devices[0].ignored = true;
+    node.publish_machine(&inventory, &profile()).unwrap();
+    wait_for_view(node.gossip(), "the inventory key", |view| {
+        view.live[0].keys.contains_key(&Key::Inventory.name())
+    });
+    let value = node.gossip().view().live[0].keys[&Key::Inventory.name()].clone();
+    let value: serde_json::Value = serde_json::from_str(&value).unwrap();
+    assert_eq!(value["devices"][0]["ignored"], true);
+}
+
+#[test]
+fn the_inventory_key_marks_a_device_that_is_not_ignored_as_false() {
+    let gossip = Gossip::start(config("solo")).unwrap();
+    let node = Node::new(gossip, "127.0.0.1:8090".parse().unwrap());
+    node.publish_machine(&inventory(), &profile()).unwrap();
+    wait_for_view(node.gossip(), "the inventory key", |view| {
+        view.live[0].keys.contains_key(&Key::Inventory.name())
+    });
+    let value = node.gossip().view().live[0].keys[&Key::Inventory.name()].clone();
+    let value: serde_json::Value = serde_json::from_str(&value).unwrap();
+    assert_eq!(value["devices"][0]["ignored"], false);
 }

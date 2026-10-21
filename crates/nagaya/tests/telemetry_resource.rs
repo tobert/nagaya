@@ -13,6 +13,7 @@ fn inventory() -> Inventory {
                 pci_address: "0000:00:00.0".to_owned(),
                 memory_bytes: 1000,
                 unified: true,
+                ignored: false,
             },
             Device {
                 id: 1,
@@ -20,6 +21,7 @@ fn inventory() -> Inventory {
                 pci_address: "0000:00:00.0".to_owned(),
                 memory_bytes: 24,
                 unified: false,
+                ignored: false,
             },
         ],
         host_bytes: 5000,

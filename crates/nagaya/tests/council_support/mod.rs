@@ -225,6 +225,7 @@ pub fn inventory() -> Inventory {
             pci_address: "0000:00:00.0".to_owned(),
             memory_bytes: 1024,
             unified: false,
+            ignored: false,
         }],
         host_bytes: 1 << 20,
     }
