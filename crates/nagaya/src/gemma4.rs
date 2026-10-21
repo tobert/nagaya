@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use nagaya_abi::{Identity, Limits};
+use nagaya_abi::{ArenaPart, Identity, Limits};
 use nagaya_mk_gemma4_bmg::spec::{self, Config};
 
 use crate::admission::{GroupDevice, PlanError};
@@ -110,6 +110,13 @@ pub fn plan(table: &toml::Table, devices: &[GroupDevice]) -> Result<Limits, Plan
     spec::plan(&config).map_err(|message| PlanError { message })
 }
 
+/// The parts of the arena of the engine: a slab for each layer on the card of its stage, and the head slab on the
+/// second card (spec 10.2). It reads no weight bytes.
+pub fn arena_parts(devices: &[GroupDevice]) -> Result<Vec<ArenaPart>, PlanError> {
+    check_devices(devices)?;
+    Ok(spec::arena_parts())
+}
+
 /// The Gemma 4 family from the checkpoint directory: the key `model_dir` of `[engines.family]`, else
 /// `GEMMA4_MODEL_DIR`. The registry compares its tokenizer hash with the identity (spec 11.3).
 pub fn open_family(identity: &Identity, table: &toml::Table) -> Result<OpenedFamily, String> {
@@ -129,10 +136,13 @@ pub use factory::Gemma4Factory;
 
 #[cfg(feature = "xe")]
 mod factory {
-    use nagaya_abi::{Engine, Limits};
+    use std::os::fd::OwnedFd;
+
+    use nagaya_abi::{ArenaFd, ArenaPart, CheckStrength, Engine, Limits};
+    use nagaya_mk_gemma4_bmg::engine::{LoadError, Loaded};
 
     use super::{KIND, check_devices, config};
-    use crate::admission::{Factory, GroupDevice, OpenError, OpenErrorKind, PlanError};
+    use crate::admission::{AttachError, Attached, Factory, GroupDevice, OpenError, OpenErrorKind, PlanError};
 
     /// The factory of the Gemma 4 engine.
     pub struct Gemma4Factory;
@@ -154,11 +164,45 @@ mod factory {
             check_devices(devices).map_err(|error| open_error(error.message))?;
             let config = config(table).map_err(|error| open_error(error.message))?;
             let addresses: Vec<String> = devices.iter().map(|device| device.pci_address.clone()).collect();
-            let loaded = nagaya_mk_gemma4_bmg::engine::Loaded::load(&config.model_dir, &addresses)
+            let loaded = Loaded::load(&config.model_dir, &addresses)
                 .map_err(|message| open_error(format!("`{KIND}` cannot load: {message}")))?;
             let engine = nagaya_mk_gemma4_bmg::engine::open(&loaded, &config)
                 .map_err(|message| open_error(format!("`{KIND}` cannot open: {message}")))?;
             Ok(Box::new(engine))
+        }
+
+        fn arena_parts(&self, _table: &toml::Table, devices: &[GroupDevice]) -> Result<Vec<ArenaPart>, PlanError> {
+            super::arena_parts(devices)
+        }
+
+        /// Spot-check the stored slabs on the cards of the group, and open one engine on them (spec 10.2).
+        fn attach(
+            &self,
+            table: &toml::Table,
+            devices: &[GroupDevice],
+            arenas: Vec<ArenaFd>,
+        ) -> Result<Attached, AttachError> {
+            let fail = |message: String| AttachError::Open(open_error(message));
+            check_devices(devices).map_err(|error| fail(error.message))?;
+            let config = config(table).map_err(|error| fail(error.message))?;
+            let addresses: Vec<String> = devices.iter().map(|device| device.pci_address.clone()).collect();
+            let mut stored: [Vec<(String, OwnedFd)>; 2] = [Vec::new(), Vec::new()];
+            for arena in arenas {
+                let stage = stored
+                    .get_mut(arena.device)
+                    .ok_or_else(|| AttachError::Mismatch(format!("a slab is on device {} of two", arena.device)))?;
+                stage.push((arena.part, arena.fd));
+            }
+            let loaded = Loaded::attach(&config.model_dir, &addresses, stored).map_err(|error| match error {
+                LoadError::Mismatch(why) => AttachError::Mismatch(why),
+                LoadError::Other(message) => fail(format!("`{KIND}` cannot attach: {message}")),
+            })?;
+            let engine = nagaya_mk_gemma4_bmg::engine::open(&loaded, &config)
+                .map_err(|message| fail(format!("`{KIND}` cannot open: {message}")))?;
+            Ok(Attached {
+                engine: Box::new(engine),
+                check: CheckStrength::Spot,
+            })
         }
     }
 }

@@ -332,9 +332,18 @@ pub(crate) fn layer_layout(ckpt: &Checkpoint, l: usize) -> Result<LayerLayout<'_
     })
 }
 
-/// The systemd fd-store name of layer `l`'s slab on card `card`.
-pub fn slab_fd_name(l: usize, card: usize) -> String {
-    format!("mkviolet-w{:02}-c{}", l, card)
+/// The head slab: the final norm at offset 0, then the embedding table at the next multiple of 64 bytes. The port
+/// gives the head a slab, so that a restart keeps it (spec 10.2). mkviolet uploads the head again at each start.
+pub(crate) fn head_layout(ckpt: &Checkpoint) -> Result<LayerLayout<'_>, String> {
+    let norm = ckpt.bf16(&format!("{}norm.weight", PREFIX), &[HIDDEN])?;
+    let embed = ckpt.bf16(&format!("{}embed_tokens.weight", PREFIX), &[VOCAB, HIDDEN])?;
+    let embed_at = align64(norm.len());
+    Ok(LayerLayout {
+        groups: vec![("final_norm", vec![norm]), ("embed", vec![embed])],
+        offsets: vec![0, embed_at],
+        total: embed_at + embed.len(),
+        layer_scalar: 0.0,
+    })
 }
 
 /// Checks that a stored slab (a DMA-BUF fd from systemd's fd store) holds layer `l` of this
@@ -342,7 +351,20 @@ pub fn slab_fd_name(l: usize, card: usize) -> String {
 /// checkpoint, and frees the import.
 #[cfg(feature = "xe")]
 pub fn verify_stored_slab(card: &B70Card, ckpt: &Checkpoint, l: usize, fd: i32) -> Result<(), String> {
-    let lay = layer_layout(ckpt, l)?;
+    verify_layout(card, &layer_layout(ckpt, l)?, &format!("layer {l}"), fd)
+}
+
+/// Checks that a stored head slab holds the final norm and the embedding table of this checkpoint, with the spot
+/// check of `verify_stored_slab`.
+#[cfg(feature = "xe")]
+pub fn verify_stored_head(card: &B70Card, ckpt: &Checkpoint, fd: i32) -> Result<(), String> {
+    verify_layout(card, &head_layout(ckpt)?, "the head", fd)
+}
+
+/// Import a stored slab of the layout `lay`, compare the first and last 64 bytes of each tensor, and free the
+/// import.
+#[cfg(feature = "xe")]
+fn verify_layout(card: &B70Card, lay: &LayerLayout<'_>, what: &str, fd: i32) -> Result<(), String> {
     let base = card.try_import_vram_from_dmabuf_fd::<u8>(card.context, fd, lay.total)? as u64;
     let mut bad = None;
     'groups: for ((name, parts), &off) in lay.groups.iter().zip(&lay.offsets) {
@@ -356,7 +378,7 @@ pub fn verify_stored_slab(card: &B70Card, ckpt: &Checkpoint, l: usize, fd: i32) 
                     got.len(),
                 );
                 if got != bytes[range] {
-                    bad = Some(format!("layer {} {} differs from the checkpoint", l, name));
+                    bad = Some(format!("{what} {name} differs from the checkpoint"));
                     break 'groups;
                 }
             }
@@ -444,6 +466,8 @@ pub struct CardWeights {
     pub weights: Vec<LayerWeights>,
     /// The final norm and the embedding table on the device, when the card holds the head.
     pub head: Option<(u64, u64)>,
+    /// The DMA-BUF fd of the head slab, when the card holds the head.
+    pub head_fd: Option<i32>,
     pub vram_bytes: usize,
 }
 
@@ -454,8 +478,8 @@ unsafe impl Sync for CardWeights {}
 
 #[cfg(feature = "xe")]
 impl CardWeights {
-    /// Upload the layers `layers` of the checkpoint to `card`, and the head when `with_head`. A layer whose slab fd
-    /// `stored` holds (by `slab_fd_name`) is imported instead.
+    /// Upload the layers `layers` of the checkpoint to `card`, and the head when `with_head`. A slab whose fd
+    /// `stored` holds by its part name (`spec::layer_part`, `spec::HEAD_PART`) is imported instead.
     pub fn upload(
         card: &B70Card,
         ckpt: &Checkpoint,
@@ -480,28 +504,37 @@ impl CardWeights {
         let mut weights = Vec::new();
         let mut vram = 0usize;
         for l in layers.clone() {
-            let w = upload_layer(card, up, ckpt, l, stored.get(&slab_fd_name(l, card.index)).copied())?;
+            let w = upload_layer(card, up, ckpt, l, stored.get(&crate::spec::layer_part(l)).copied())?;
             vram += w.slab_bytes;
             weights.push(w);
         }
-        let head = if with_head {
-            let d = HIDDEN;
-            let norm_bytes = ckpt.bf16(&format!("{}norm.weight", PREFIX), &[d])?;
-            let embed_bytes = ckpt.bf16(&format!("{}embed_tokens.weight", PREFIX), &[VOCAB, d])?;
-            let final_norm = card.alloc_device_usm::<u8>(norm_bytes.len());
-            up.copy(card, final_norm as u64, norm_bytes);
-            let embed = card.alloc_device_usm::<u8>(embed_bytes.len());
-            up.copy(card, embed as u64, embed_bytes);
-            vram += norm_bytes.len() + embed_bytes.len();
-            Some((final_norm as u64, embed as u64))
+        let (head, head_fd) = if with_head {
+            let lay = head_layout(ckpt)?;
+            let (base, fd) = match stored.get(crate::spec::HEAD_PART).copied() {
+                Some(fd) => (
+                    card.import_vram_from_dmabuf_fd::<u8>(card.context, fd, lay.total) as u64,
+                    fd,
+                ),
+                None => {
+                    let (slab, fd) = card.alloc_exportable_vram_dmabuf::<u8>(lay.total);
+                    let base = slab as u64;
+                    for ((_, parts), &off) in lay.groups.iter().zip(&lay.offsets) {
+                        up.copy(card, base + off as u64, parts[0]);
+                    }
+                    (base, fd)
+                }
+            };
+            vram += lay.total;
+            (Some((base, base + lay.offsets[1] as u64)), Some(fd))
         } else {
-            None
+            (None, None)
         };
         Ok(Self {
             card: card.index,
             layers,
             weights,
             head,
+            head_fd,
             vram_bytes: vram,
         })
     }
@@ -515,10 +548,7 @@ pub fn weights_device_bytes(ckpt: &Checkpoint, layers: Range<usize>, with_head: 
         bytes += layer_layout(ckpt, l)?.total as u64;
     }
     if with_head {
-        bytes += ckpt.bf16(&format!("{}norm.weight", PREFIX), &[HIDDEN])?.len() as u64;
-        bytes += ckpt
-            .bf16(&format!("{}embed_tokens.weight", PREFIX), &[VOCAB, HIDDEN])?
-            .len() as u64;
+        bytes += head_layout(ckpt)?.total as u64;
     }
     Ok(bytes)
 }
@@ -1671,7 +1701,7 @@ impl Gemma4Engine {
         Self::load_slots_stored(cluster, model_dir, slot_seqs, max_block, &HashMap::new())
     }
 
-    /// `load_slots`, importing each layer whose slab fd `stored` holds (by `slab_fd_name`)
+    /// `load_slots`, importing each slab whose fd `stored` holds (by its part name, for both cards)
     /// instead of uploading it. The caller checks them first with `verify_stored_slab`.
     /// Returns how many layers it imported in `imported`.
     pub fn load_slots_stored(

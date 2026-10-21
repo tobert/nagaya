@@ -8,8 +8,9 @@ use std::ops::Range;
 use std::path::PathBuf;
 
 use nagaya_abi::{
-    Capability, ChainLimits, CoverageSpan, Determinism, Dtype, FeedRule, Inputs, Kind, Lifetime, Limits, MandatoryTerm,
-    MemoryLimits, PartId, PartKind, PartLimits, RESIDUAL_TERM, Segment, SegmentInputs, SlotLimit, Stage, State, Tier,
+    ArenaPart, Capability, ChainLimits, CoverageSpan, Determinism, Dtype, FeedRule, Inputs, Kind, Lifetime, Limits,
+    MandatoryTerm, MemoryLimits, PartId, PartKind, PartLimits, RESIDUAL_TERM, Segment, SegmentInputs, SlotLimit, Stage,
+    State, Tier,
 };
 
 use crate::gemma4::{
@@ -45,6 +46,30 @@ pub const MAX_SEGMENTS: u32 = 1;
 
 /// The bytes of the `meta` of one token: four little-endian u32 values (position, gap start, gap end, 0).
 pub const META_BYTES: usize = 16;
+
+/// The part name of the head slab in the arena: the final norm and the embedding table (spec 10.2).
+pub const HEAD_PART: &str = "head";
+
+/// The part name of the slab of layer `l` in the arena: `w` and two digits (spec 10.2).
+pub fn layer_part(l: usize) -> String {
+    format!("w{l:02}")
+}
+
+/// The parts of the arena: the slab of each layer on the card of its stage, and the head slab on the second card.
+pub fn arena_parts() -> Vec<ArenaPart> {
+    let mut parts = Vec::new();
+    for (card, layers) in CARD_LAYERS.iter().enumerate() {
+        parts.extend(layers.clone().map(|l| ArenaPart {
+            device: card,
+            part: layer_part(l),
+        }));
+    }
+    parts.push(ArenaPart {
+        device: 1,
+        part: HEAD_PART.to_owned(),
+    });
+    parts
+}
 
 /// The config of one engine. The factory of the process reads it from the profile.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -194,6 +219,7 @@ pub fn limits(config: &Config, weights: [u64; 2]) -> Limits {
             Capability::Slots,
             Capability::Coverage,
             Capability::Stages,
+            Capability::Arena,
         ],
         parts: parts(),
         inputs: Inputs::Tokens,

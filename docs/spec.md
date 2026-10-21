@@ -1599,9 +1599,10 @@ mkviolet restarts in 0.9 to 1.2 s from its stored slabs, and a cold start takes 
 Thus 10.2 moves into the b70host milestone (`AGENTS.md`), because mkviolet has it now and the port must not lose
 it.
 
-Built: the process side, with the fake arena (`crates/nagaya/src/arena.rs`, `crates/nagaya/src/process/handoff.rs`).
-Not built: the arena of the Gemma 4 engine. The unit sets no `FileDescriptorStoreMax` yet, so each start loads the
-weights again (`docs/deploy.md`).
+Built: the process side (`crates/nagaya/src/arena.rs`, `crates/nagaya/src/process/handoff.rs`) and the arena of the
+Gemma 4 engine, with its head slab (`Loaded::attach`). On b70host on 2026-10-21, a cold `Loaded::load` took 7.1 s,
+and an attach from the 31 slabs took 1.2 s (`tests/xe_arena.rs`, release build). The unit sets no
+`FileDescriptorStoreMax` yet, so each start loads the weights again (`docs/deploy.md`).
 
 **10.3 Stop.** On SIGTERM, the nagaya does these steps:
 
