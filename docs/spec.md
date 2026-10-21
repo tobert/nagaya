@@ -1615,7 +1615,8 @@ rules are each "Decided by senpai 2026-10-20 night (vetoable)".
 - A request id is `req_<start time in hex>_<count>`. It differs between requests and between runs.
 - A ledger that refuses the charge of a context or of a staging copy (4.2) is a 429 `busy`. A job that a stop
   cancelled is a 503 `unavailable`.
-- An internal error is a 500. The process then stops with exit 1 (8.5).
+- An internal error is a 500. The process then stops with exit 1 (8.5). This holds for an error that comes while the
+  process stops: the stop path reads the failure again, and a clean stop becomes exit 1.
 - A stream waits for its first event before it sends the status. Thus a request that fails before its first token
   gets a status response. A later failure is an `error` event. At most 256 events wait for a slow client. A full
   queue holds the generation back, and it drops no event.
