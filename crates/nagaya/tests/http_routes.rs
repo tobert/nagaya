@@ -384,3 +384,31 @@ fn a_closed_stream_cancels_the_generation() {
 fn council_free(council: &Arc<Council>) -> usize {
     council.free_slots()
 }
+
+/// Kaibo review 2026-10-20, unverified items. `Service::read` takes the longest suffix with `.expect`, and the Qwen3.8
+/// queue read takes the queue name with `.expect`. gogi's `validate` and `Context::check` must refuse the bad request
+/// first. These requests reach no `.expect`: each is a 400 that names the parameter.
+#[test]
+fn a_read_with_no_suffix_is_a_400_before_any_family_code_runs() {
+    let f = Fixture::new();
+    let council = council(&f);
+    for (suffixes, param) in [(json!([]), "suffixes"), (json!([""]), "suffixes")] {
+        let body = json!({"model": "toy", "contexts": [context()], "suffixes": suffixes, "letters": ["A", "B"]});
+        let (status, _, value) = send(&council, "POST", "/council/v2/reads", Some(body));
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{value}");
+        assert_eq!(value["error"]["param"], param, "{value}");
+    }
+}
+
+#[test]
+fn a_decision_context_whose_queue_names_no_tool_is_a_400() {
+    let f = Fixture::new();
+    let council = council(&f);
+    let mut queued = context();
+    queued["queue"] = json!("next_command");
+    let body = json!({"model": "toy", "spec_id": format!("sha256:{}", "0".repeat(64)), "case": "x",
+        "contexts": [queued]});
+    let (status, _, value) = send(&council, "POST", "/council/v2/decisions", Some(body));
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{value}");
+    assert_eq!(value["error"]["param"], "contexts", "{value}");
+}
