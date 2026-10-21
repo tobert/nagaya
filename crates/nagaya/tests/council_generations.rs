@@ -811,3 +811,146 @@ fn an_open_message_builds_only_as_a_dry_run() {
         (prompt(&value) as u64, 0, prompt(&value) as u64)
     );
 }
+
+/// The head after a continuation's reply chains through the seam of the cut reply. A context that sends that reply
+/// back closed follows the store's index through the seam to that head, and starts there (spec 11.3c).
+#[test]
+fn a_continued_reply_sent_back_closed_starts_from_its_head() {
+    let (f, script) = scripted();
+    let value = ctx(false, opening());
+    let mut reply = bytes("okay");
+    reply.push(gogi_toy::END);
+    script.set(prompt(&value), reply);
+    let cut = generate(&f, &value, 2, json!({"temperature": 0}));
+    let seam = cut.snapshots.last().unwrap().tokens;
+    let resumed = with_open(&value, serde_json::to_value(cut.as_open_message().unwrap()).unwrap());
+    let done = generate(&f, &resumed, 10, json!({"temperature": 0}));
+    assert_eq!((done.content.as_str(), done.usage.kept), ("okay", seam));
+    let mut messages = opening();
+    messages.push(serde_json::to_value(done.as_message().unwrap()).unwrap());
+    messages.push(json!({"role": "user", "content": "Go on.", "snap": true}));
+    let dry = f
+        .service
+        .build(&context(&ctx(false, messages)), true, Default::default())
+        .unwrap();
+    let head = done.snapshots.last().unwrap();
+    assert_eq!(done.head.as_ref(), Some(&head.id));
+    assert_eq!(
+        (dry.from, dry.usage.kept),
+        (done.head.clone(), head.tokens),
+        "{:?}",
+        dry.usage
+    );
+}
+
+/// kaibo job-5 item 3: the generation of a cut reply started from a cut, the unmarked end of an earlier reply. The
+/// head chains through that cut and through the end of the context before the reply. A context that sends the cut
+/// reply back closed, with neither end marked, still starts from the head.
+#[test]
+fn a_cut_reply_whose_generation_started_from_a_cut_goes_back_closed_and_starts_from_its_head() {
+    let (f, script) = scripted();
+    let value = ctx(false, opening());
+    let mut first = bytes("ok");
+    first.push(gogi_toy::END);
+    script.set(prompt(&value), first);
+    let reply = generate(&f, &value, 10, json!({"temperature": 0}));
+    let mut messages = opening();
+    messages.push(serde_json::to_value(reply.as_message().unwrap()).unwrap());
+    messages.push(json!({"role": "user", "content": "Again."}));
+    let again = ctx(false, messages.clone());
+    let mut second = bytes("okay");
+    second.push(gogi_toy::END);
+    script.set(prompt(&again), second);
+    let cut = generate(&f, &again, 3, json!({"temperature": 0}));
+    assert_eq!(
+        cut.usage.kept,
+        reply.snapshots.last().unwrap().tokens,
+        "the generation started from the cut"
+    );
+    let head = cut.head.clone().expect("a cut reply holds a sealed head");
+    let tokens = cut.snapshots.last().unwrap().tokens;
+    messages.push(serde_json::to_value(cut.as_message().unwrap()).unwrap());
+    messages.push(json!({"role": "user", "content": "Go on."}));
+    let dry = f
+        .service
+        .build(&context(&ctx(false, messages.clone())), true, Default::default())
+        .unwrap();
+    assert_eq!(
+        (dry.from, dry.usage.kept),
+        (Some(head.clone()), tokens),
+        "{:?}",
+        dry.usage
+    );
+    // A build from the head lists no snapshot at the cuts that it chains through.
+    let built = f
+        .service
+        .build(&context(&ctx(false, messages)), false, Default::default())
+        .unwrap();
+    assert_eq!(built.usage.kept, tokens);
+    assert!(
+        built.snapshots.iter().all(|s| s.message == 1 || s.message == 5),
+        "{:?}",
+        built.snapshots
+    );
+}
+
+/// kaibo job-5 item 4: a cut chain must not hide a seam held on another chain. The cut reply's generation started
+/// from the context's own boundary. Later the store holds a snapshot at the unmarked end of the earlier reply. A
+/// continuation still starts from the head.
+#[test]
+fn a_held_cut_does_not_hide_the_head_of_a_cut_reply() {
+    let (f, script) = scripted();
+    let value = ctx(false, opening());
+    let mut messages = opening();
+    messages.push(json!({"role": "assistant", "content": "ok"}));
+    messages.push(json!({"role": "user", "content": "Again.", "snap": true}));
+    let again = ctx(false, messages);
+    let mut second = bytes("okay");
+    second.push(gogi_toy::END);
+    script.set(prompt(&again), second);
+    let cut = generate(&f, &again, 3, json!({"temperature": 0}));
+    let tokens = cut.snapshots.last().unwrap().tokens;
+    // A generation of the opening writes the earlier reply, so the store holds a snapshot at its unmarked end.
+    let mut first = bytes("ok");
+    first.push(gogi_toy::END);
+    script.set(prompt(&value), first);
+    let reply = generate(&f, &value, 10, json!({"temperature": 0}));
+    assert_eq!(reply.content, "ok");
+    script.set(prompt(&again), {
+        let mut second = bytes("okay");
+        second.push(gogi_toy::END);
+        second
+    });
+    let resumed = with_open(&again, serde_json::to_value(cut.as_open_message().unwrap()).unwrap());
+    let dry = f.service.build(&context(&resumed), true, Default::default()).unwrap();
+    assert_eq!(
+        (dry.from, dry.usage.kept),
+        (cut.head.clone(), tokens),
+        "{:?}",
+        dry.usage
+    );
+    let done = generate(&f, &resumed, 10, json!({"temperature": 0}));
+    assert_eq!((done.usage.kept, done.usage.fed), (tokens, 1));
+}
+
+/// kaibo job-5 item 6: a dry run of an open context needs a slot for the whole open rendering, as its generation does.
+/// When no slot holds it, both are a 413 that names context_tokens.
+#[test]
+fn a_dry_run_of_an_open_context_that_no_slot_holds_is_too_large() {
+    let f = Fixture::new();
+    let open = json!({"role": "assistant", "content": "x".repeat(3000), "continue": true});
+    let value = with_open(&ctx(false, opening()), open);
+    let generation = f
+        .service
+        .generate(&request(&value, 4, json!({"temperature": 0})), None)
+        .unwrap_err();
+    assert!(
+        matches!(&generation, ServiceError::TooLarge { param, .. } if param == "context_tokens"),
+        "{generation:?}"
+    );
+    let dry = f.service.build(&context(&value), true, Default::default()).unwrap_err();
+    assert!(
+        matches!(&dry, ServiceError::TooLarge { param, .. } if param == "context_tokens"),
+        "{dry:?}"
+    );
+}

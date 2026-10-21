@@ -543,3 +543,104 @@ fn a_job_frees_its_slot_before_its_caller_hears_the_result() {
     );
     drop(body);
 }
+
+/// kaibo job-5 item 5: on an engine with no seal, a build from a cut makes the same bytes as a build without it, under
+/// another recipe. The store refuses a second recipe for one content id. The build then holds no snapshot there, and
+/// it does not fail.
+#[test]
+fn a_snapshot_whose_bytes_the_store_holds_under_another_recipe_is_not_an_error() {
+    let factory = council_support::TermFactory {
+        seal: false,
+        ..council_support::TermFactory::toy()
+    };
+    let f = Fixture::with_factory(factory, 1 << 20, None, ServiceConfig::new("toy", ENGINE));
+    let mut messages = opening();
+    messages.push(json!({"role": "assistant", "content": "I will look first."}));
+    messages.push(json!({"role": "user", "content": "Go ahead."}));
+    build(&f, &ctx(messages.clone()));
+    messages[2]["snap"] = json!(true);
+    let marked = f.service.build(&context(&ctx(messages)), false, Schedule::default());
+    let built = marked.expect("the build holds no snapshot where the store has the bytes under another recipe");
+    assert_eq!(
+        built.head, None,
+        "the store holds the end of the context only under the recipe with no mark"
+    );
+    assert!(built.snapshots.iter().all(|s| s.message != 3), "{:?}", built.snapshots);
+}
+
+/// kaibo job-5 item 5: a held entry that the store quarantines at its restore, here for bytes that changed on disk,
+/// is a miss. The build computes the state again. It does not fail, and the process does not stop.
+#[test]
+fn a_held_entry_that_the_store_quarantines_at_its_restore_is_a_miss() {
+    let f = fixture();
+    let value = ctx(opening());
+    let first = build(&f, &value);
+    let ports = f.process.ports();
+    let ids: Vec<ContentId> = {
+        let mut store = ports.store().unwrap().lock().unwrap();
+        let ids: Vec<ContentId> = store.entries().keys().copied().collect();
+        for id in &ids {
+            store.park(id, 1).unwrap();
+        }
+        ids
+    };
+    for id in &ids {
+        let path = walk(f.directory.path())
+            .into_iter()
+            .find(|p| p.ends_with(id.hex()))
+            .expect("a parked blob");
+        let mut bytes = std::fs::read(&path).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
+        std::fs::write(&path, bytes).unwrap();
+    }
+    let again = f
+        .service
+        .build(&context(&value), false, Schedule::default())
+        .expect("a quarantined entry is a miss");
+    assert_eq!((again.usage.kept, again.usage.prompt), (0, first.usage.prompt));
+}
+
+fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            out.extend(walk(&path));
+        } else {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// A store whose pins hold all its host tier has no room for a snapshot. The build then holds none there, as an
+/// interval copy does, and it does not fail (kaibo job-5 item 5: a store result is not a stop).
+#[test]
+fn a_snapshot_that_the_store_has_no_room_for_is_not_an_error() {
+    let probe = fixture();
+    let one = build(
+        &probe,
+        &ctx(vec![json!({"role": "user", "content": "probe 0", "snap": true})]),
+    );
+    let size = probe.service.snapshot(&one.head.unwrap()).unwrap().bytes.unwrap();
+    let f = fixture_with(0, 1 << 20, Some(size * 3 / 2));
+    let a = build(
+        &f,
+        &ctx(vec![json!({"role": "user", "content": "probe a", "snap": true})]),
+    );
+    let put = gogi_proto::pins::PinsPut {
+        snapshots: vec![a.head.unwrap().to_string()],
+        ttl_s: 3600,
+    };
+    f.service.put_pins("owner", &put).unwrap();
+    let b = f
+        .service
+        .build(
+            &context(&ctx(vec![json!({"role": "user", "content": "probe b", "snap": true})])),
+            false,
+            Schedule::default(),
+        )
+        .expect("a full store is not an error");
+    assert_eq!((b.head, b.snapshots.len()), (None, 0));
+}

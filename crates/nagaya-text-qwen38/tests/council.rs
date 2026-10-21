@@ -1108,3 +1108,21 @@ fn equal_letter_log_probabilities_go_on_from_the_first_letter() {
     };
     assert_eq!(text(&second.feed), "A\", \"undo\": \"");
 }
+
+/// A marked message that renders no token, such as an empty system message, is no boundary. A boundary must come
+/// after the one before it, and after token 0.
+#[test]
+fn a_marked_message_that_renders_no_token_is_no_boundary() {
+    let c = context(json!({"messages": [
+        {"role": "system", "content": "", "snap": true},
+        {"role": "user", "content": "one", "snap": true},
+        {"role": "system", "content": "", "snap": true},
+        {"role": "user", "content": "two"}]}));
+    let r = family().render(&c, false).unwrap();
+    let tokens: Vec<usize> = r.boundaries.iter().map(|b| b.tokens).collect();
+    assert!(
+        tokens[0] > 0 && tokens.windows(2).all(|w| w[0] < w[1]),
+        "{:?}",
+        r.boundaries
+    );
+}

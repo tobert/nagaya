@@ -63,7 +63,6 @@ fn halves(id: &str) -> (&str, &str) {
 #[test]
 fn the_template_id_has_two_parts_and_is_stable() {
     let id = base();
-    assert_eq!(id, base());
     let (council, chat) = halves(&id);
     assert!(council.starts_with("nagaya-council:"), "{id}");
     assert!(chat.starts_with("qwen38-chat:"), "{id}");

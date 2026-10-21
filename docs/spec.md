@@ -1738,15 +1738,19 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
 
   Then the job feeds the rest and puts the snapshot. The head of a reply that ends with `max_tokens` is the seam
   of its open rendering (see continuations below).
-- A build can start at a cut. A cut is the end of a message that the client did not mark, where the rendering keeps
-  it. The build starts at a cut when the store holds a snapshot there and at no higher boundary. An earlier context
-  made that snapshot at a boundary of its own, such as the head of a generation after its reply. Reason: gogi's build
-  starts from the longest held snapshot whose tokens begin the context, and the next request sends the reply
-  unmarked.
-- A seal changes bits, so a build from a cut keeps the cut among the boundaries of its state. Its later snapshots
-  have recipes with the cut, and the response lists no snapshot at the cut. Thus a snapshot never holds a seal
-  that its recipe does not name (gogi "Boundaries are content"). The service finds the cuts with a second render,
-  with every message marked.
+- A build can start at a cut. A cut is a held snapshot that is not at a boundary of the context. Examples are the end
+  of a message that the client did not mark, and the head of a cut reply. The build starts at a cut when the store holds
+  no higher boundary. An earlier context made that snapshot at a seal of its own. Reason: gogi's build starts from
+  the longest held snapshot whose tokens begin the context, and the next request sends the reply unmarked.
+- A seal changes bits. So a build from a cut keeps the cut and each seal of its chain among the boundaries of its
+  state (`Outcome::inserted`). Its later snapshots have recipes with them, and the response lists no snapshot at
+  them. Thus a snapshot never holds a seal that its recipe does not name (gogi "Boundaries are content").
+- The service finds the cuts in the store's index by `chains_from`, the recipe of the seal that a snapshot's recipe
+  chains from (`Service::starts`, `Store::chained_from`). From each seal, starting at the root, it goes to the next
+  boundary of the plan. It also goes to each held entry that chains from the seal, when the context's tokens give
+  its recipe. It reads only the
+  entries that chain from the context, and it renders nothing. The store makes the index again from its entries at
+  a load (`Index::rechain`).
 - A reply parser can release text after the last token, such as text that it held back as a possible marker. The
   service adds that text to the piece of the last token event. Thus the pieces of a part join to its text in
   `done` (gogi "Streams"). The text must have the phase of the last token. Text of another phase is an internal error,
@@ -1798,9 +1802,24 @@ these ways. Each served model declares the capability `continuation` (`crates/na
     (`build::Extension`, `ContextBody::restore_seam`). When the store holds it, the build restores it and the
     generation feeds the last token. The state keeps the seal of the seam, so the head after that reply has the seam
     among the boundaries of its recipe (`recipes_with_cuts`).
-  - A cut reply that the client sends back closed starts from the head too. The open rendering's tokens up to the
-    seam must begin the closed rendering's tokens. `Service::seam_cut` gives the seam of the last assistant message
-    as a cut. The end of the message before it must be a boundary. This costs two or three renders of the prefix.
+  - A cut reply that the client sends back closed starts from the head too, in any form. The open rendering's
+    tokens up to the seam must begin the closed rendering's tokens. The search of the store's index finds the head
+    (see the cuts above). So does a context that sends back the reply of a continuation from a head: that reply's
+    head chains through the seam.
+  - **Proposed (for Amy)** (Claude Opus 5.5, 2026-10-21), the cuts from the index. A build tries each sealed
+    snapshot that the search of the index finds, not only the ends of messages. Reason: the first rule tried the
+    open forms of the last assistant message. It missed a reply cut inside its thinking and sent back with
+    `content: ""`, and it cost three renders of the prefix. The search also replaces the second render of the cuts at
+    message ends.
+  - The timings of a dry run come from a release host test (`crates/nagaya/tests/council_heads.rs`). For 18026
+    tokens with an assistant message: 103 ms with the open forms, then 38 ms with a pass over the index. It is 16 ms
+    with one render. The same context without the message takes 16 ms. With 10,000 unrelated entries in the store: 85 ms
+    with a pass over the index, then 0.22 ms (0.16 ms when empty).
+  - A dry run reports the interval copy that a build would restore. For a continuation, it asks for a slot of the
+    open rendering, as the generation does.
+  - A continuation whose reply's closed tokens differ from its prompt and sampled tokens holds no head after the
+    reply. Two causes: the template trims white space at the end of the reply, and a token at the seam merges in
+    the closed rendering. The slot holds the other tokens, so no head can name them.
   - **Proposed (for Amy)** (Claude Opus 5.5, 2026-10-21), the seam. The head is the seam of the open rendering, the
     position before the last sampled token, not its end. Reason: a snapshot holds no logit row. A continuation from a
     head at the end would have no first logit row, and it cannot feed the last token again. At the seam it feeds

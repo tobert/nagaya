@@ -250,6 +250,7 @@ fn a_snapshot_of_another_engine_is_not_held_by_this_service() {
                 snapshot: &snapshot,
                 recipe: recipe_root(&[9; 32], b"", &[], b""),
                 previous_recipe: None,
+                chains_from: None,
                 engine: EngineFacts::of("another-engine", &limits),
                 identity: [9; 32],
                 owner: 1,

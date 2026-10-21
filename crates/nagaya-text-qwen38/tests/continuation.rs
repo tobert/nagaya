@@ -280,3 +280,42 @@ fn a_cut_reply_keeps_the_white_space_at_the_end_of_the_part_it_was_in() {
         ("plan", "", Phase::Content)
     );
 }
+
+/// The SHA-256 of tokens as 32-bit little-endian words.
+fn digest(ids: &[u32]) -> String {
+    use sha2::{Digest, Sha256};
+    let bytes: Vec<u8> = ids.iter().flat_map(|i| i.to_le_bytes()).collect();
+    Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The open renderings of the test GGUF, pinned. The template id does not cover an open message (Amy, 2026-10-21:
+/// the id stays), so this test sees a change to `run_open` instead (kaibo job-5). Change a value only when the
+/// rendering of an open message changes on purpose, and say so in the commit message.
+#[test]
+fn the_open_renderings_of_the_test_gguf_are_the_golden_ones() {
+    let cases = [
+        (true, open(Some("I should list the files"), None)),
+        (true, open(Some("plan"), Some(""))),
+        (true, open(Some("plan"), Some("fn main() {"))),
+        (false, open(None, Some("Plan: "))),
+    ];
+    let got: Vec<String> = cases
+        .iter()
+        .map(|(thinking, last)| {
+            digest(
+                &family()
+                    .render(&context(Some(*thinking), last.clone()), true)
+                    .unwrap()
+                    .tokens,
+            )
+        })
+        .collect();
+    assert_eq!(got, GOLDEN_OPEN);
+}
+
+const GOLDEN_OPEN: [&str; 4] = [
+    "4b12d92690fc86c76885084bd5c07708114d3e1e97af194c098d970760732f0a",
+    "a45581ef04f51365737ebda2bbdbc0c2175b0d0ee924b392979d2d6acf2f3024",
+    "51c6705f5eb7fdc4338144b0ff5db08041c59705a46a68b4ca67ada9776ca16a",
+    "c0ca686c21ae8c7151a7fbd65df874ddc97b482e1f6a26c6ae942415911821fd",
+];
