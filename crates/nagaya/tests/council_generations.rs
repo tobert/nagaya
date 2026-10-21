@@ -666,6 +666,34 @@ fn a_cut_reply_holds_a_sealed_head_and_a_continuation_starts_from_it() {
     );
 }
 
+/// A cut reply sent back closed starts from its head when the open rendering's tokens begin the closed rendering's.
+/// The toy template drops the reasoning of a reply when a user message follows, so the reply has none.
+#[test]
+fn a_cut_reply_sent_back_closed_starts_from_its_head() {
+    let (f, script) = scripted();
+    let value = ctx(false, opening());
+    let mut reply = bytes("okay");
+    reply.push(gogi_toy::END);
+    script.set(prompt(&value), reply);
+    let cut = generate(&f, &value, 3, json!({"temperature": 0}));
+    assert_eq!((cut.content.as_str(), cut.finish), ("oka", Finish::MaxTokens));
+    let head = cut.head.clone().expect("a cut reply holds a sealed head");
+    let tokens = cut.snapshots.last().unwrap().tokens;
+    let mut messages = opening();
+    messages.push(serde_json::to_value(cut.as_message().unwrap()).unwrap());
+    messages.push(json!({"role": "user", "content": "Go on.", "snap": true}));
+    let next = ctx(false, messages);
+    let dry = f.service.build(&context(&next), true, Default::default()).unwrap();
+    assert_eq!((dry.from, dry.usage.kept), (Some(head), tokens), "{:?}", dry.usage);
+    let built = f.service.build(&context(&next), false, Default::default()).unwrap();
+    assert_eq!(built.usage.kept, tokens);
+    // The state keeps the seal of the head, so the build equals a straight build that seals there too. It differs
+    // from a straight build without that seal (gogi "Boundaries are content").
+    let fresh = Fixture::new();
+    let straight = fresh.service.build(&context(&next), false, Default::default()).unwrap();
+    assert_ne!(straight.head, built.head);
+}
+
 /// A continuation that does not start from a head seals nothing inside the open text, so it writes what the whole
 /// reply wrote, bit for bit. The fake engine's logits differ after a seal. The engine speaks the toy language, so the
 /// reply renders back as its tokens.

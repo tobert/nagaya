@@ -23,11 +23,12 @@ use gogi_proto::Invalid;
 use gogi_proto::SnapshotId;
 use gogi_proto::context::{Context, SnapshotInfo, Tier as SnapshotTier, Usage};
 use gogi_proto::decision::DecisionIdentity;
+use gogi_proto::message::{Message, Role};
 use gogi_proto::pins::{PinHeld, PinOwner, PinsPut, PinsPutResult, SnapshotDetail, validate_owner};
 use gogi_proto::spec::{HeldSpec, SpecRules};
 use nagaya_abi::{Capability, Engine, Limits};
 use nagaya_council::build::{boundary_recipes, recipes_with_cut, root_recipe};
-use nagaya_council::family::{Family, Rendering};
+use nagaya_council::family::{Boundary, Family, FamilyError, Rendering};
 use nagaya_sched::{Class, IntervalCopies, IntervalPolicy};
 use nagaya_store::{ContentId, EntryState, Store, Tier};
 use serde::Serialize;
@@ -538,23 +539,88 @@ impl Service {
 
     /// The cuts of a context: the end of each message that the client did not mark, where the rendering keeps it, from
     /// the highest down. A build may start from a snapshot that an earlier context held there (spec 11.3c).
+    ///
+    /// The seam of the last assistant message is a cut too, where a cut reply that went back closed holds its head.
     fn cuts(&self, context: &Context, rendering: &Rendering) -> Result<Vec<Cut>, ServiceError> {
-        if context.messages.iter().all(|message| message.snap) {
-            return Ok(Vec::new());
-        }
-        let mut all = context.clone();
-        for message in &mut all.messages {
-            message.snap = true;
-        }
-        let marked = self.family.render(&all, false)?;
-        let mut cuts = Vec::new();
-        for cut in marked.boundaries.iter().rev() {
-            let between = cut.tokens < rendering.end && rendering.boundaries.iter().all(|b| b.tokens != cut.tokens);
-            if between {
-                cuts.push((*cut, recipes_with_cut(self.root, rendering, *cut)?));
+        let mut cuts: Vec<Cut> = self.seam_cut(context, rendering)?.into_iter().collect();
+        if context.messages.iter().any(|message| !message.snap) {
+            let mut all = context.clone();
+            for message in &mut all.messages {
+                message.snap = true;
+            }
+            let marked = self.family.render(&all, false)?;
+            for cut in marked.boundaries.iter().rev() {
+                let between = cut.tokens < rendering.end && rendering.boundaries.iter().all(|b| b.tokens != cut.tokens);
+                if between {
+                    cuts.push((*cut, recipes_with_cut(self.root, rendering, *cut)?));
+                }
             }
         }
+        cuts.sort_by_key(|(cut, _)| std::cmp::Reverse(cut.tokens));
         Ok(cuts)
+    }
+
+    /// The seam of the last assistant message, as a cut: the place where the head of a cut reply is, when the client
+    /// sent that reply back closed (spec 11.3c). The tokens of the message's open rendering up to its seam must begin
+    /// the tokens of `rendering`. The end of the message before it must be a boundary, so the seam's recipe chains as
+    /// the head's did. A message with no content member gives two open forms: inside its thinking, and after it.
+    fn seam_cut(&self, context: &Context, rendering: &Rendering) -> Result<Option<Cut>, ServiceError> {
+        let Some(index) = context
+            .messages
+            .iter()
+            .rposition(|message| message.role == Role::Assistant && !message.open)
+        else {
+            return Ok(None);
+        };
+        let message = &context.messages[index];
+        if index == 0 || !message.tool_calls.is_empty() {
+            return Ok(None);
+        }
+        let mut before = context.clone();
+        before.messages.truncate(index);
+        let start = match self.family.render(&before, false) {
+            Ok(before) => before.end,
+            Err(FamilyError::Client(_)) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        if !rendering.boundaries.iter().any(|boundary| boundary.tokens == start) {
+            return Ok(None);
+        }
+        let mut forms = vec![message.clone().opened()];
+        if message.content.is_none() {
+            forms.push(
+                Message {
+                    content: Some(String::new()),
+                    ..message.clone()
+                }
+                .opened(),
+            );
+        }
+        for form in forms {
+            let mut open = before.clone();
+            open.messages.push(form);
+            let open = match self.family.render(&open, false) {
+                Ok(open) => open,
+                // A form that fails its seam check never held a head.
+                Err(FamilyError::Client(_)) => continue,
+                Err(error) => return Err(error.into()),
+            };
+            let Some(seam) = open.tokens.len().checked_sub(1) else {
+                continue;
+            };
+            let inside = seam > start
+                && seam < rendering.end
+                && rendering.tokens[..seam] == open.tokens[..seam]
+                && rendering.boundaries.iter().all(|boundary| boundary.tokens != seam);
+            if inside {
+                let cut = Boundary {
+                    message: index,
+                    tokens: seam,
+                };
+                return Ok(Some((cut, recipes_with_cut(self.root, rendering, cut)?)));
+            }
+        }
+        Ok(None)
     }
 
     /// Run a context job with the ledger charge of its context, and wait for its result (spec 4.2).
