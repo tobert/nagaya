@@ -340,3 +340,15 @@ fn the_b70host_unit_reads_its_config_and_the_checkpoint_and_hides_no_card() {
         "b70host has no mk engine"
     );
 }
+
+#[test]
+fn the_b70host_unit_keeps_the_arenas_through_a_restart() {
+    // Spec 10.2: systemd keeps the stored fds through a restart. The ceiling holds the 31 Gemma 4 slabs.
+    let unit = b70host_unit();
+    let ceiling: usize = unit_value(&unit, "FileDescriptorStoreMax").parse().unwrap();
+    assert!(
+        ceiling >= 31,
+        "the ceiling {ceiling} is smaller than the 31 slabs of the Gemma 4 engine"
+    );
+    assert_eq!(unit_value(&unit, "FileDescriptorStorePreserve"), "restart");
+}

@@ -36,8 +36,10 @@ Environment=GEMMA4_MODEL_DIR=%h/src/mkviolet/checkpoints/gemma-4-26B-A4B
 # The store directory must exist before the process reads its profile.
 ExecStartPre=/usr/bin/mkdir -p %h/.local/share/nagaya/store
 ExecStart=%h/src/nagaya/target/release/nagaya
-# Arenas through a restart (spec 10.2) come later, in lane sg-arenas. Then this unit sets FileDescriptorStoreMax=512
-# and FileDescriptorStorePreserve=restart. Today the process stores no fd, so it sets neither.
+# Arenas through a restart (spec 10.2). systemd keeps the 31 Gemma 4 slabs through a restart, and the process reads
+# the ceiling from $FDSTORE. `systemctl stop` clears the store.
+FileDescriptorStoreMax=512
+FileDescriptorStorePreserve=restart
 # SIGTERM: the running quantum ends (at most 2 s on the B70s), then the park runs (10 s by default). A second signal
 # ends it now.
 KillSignal=SIGTERM

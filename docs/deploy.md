@@ -251,9 +251,9 @@ The unit leaves two mk settings unset. Set one with a drop-in file: `systemctl -
 
 ## Arenas through a restart
 
-The unit does not keep arenas through a restart yet (spec 10.2). Each restart loads the weights again. Later, the
-unit sets `FileDescriptorStoreMax=512` and `FileDescriptorStorePreserve=restart`, and the process stores its fds.
-The unit file has a comment at that place.
+On gfx1151host, the unit does not keep arenas through a restart yet (spec 10.2). Each restart loads the weights again.
+Later, the unit sets `FileDescriptorStoreMax=512` and `FileDescriptorStorePreserve=restart`, and the process
+stores its fds. The unit file has a comment at that place.
 
 ## Decided by senpai 2026-10-20 night (vetoable)
 
@@ -301,6 +301,8 @@ checkpoint, so run it with `GEMMA4_MODEL_DIR` set.
   the checkpoint there.
 - The unit sets no Level Zero variable. `ZE_AFFINITY_MASK` would hide a card, and the engine finds its cards by PCI
   address.
+- The unit keeps the 31 Gemma 4 slabs through a restart (spec 10.2). `systemctl --user restart` reaches `READY=1`
+  in about 1.2 s. `systemctl --user stop` clears the store, so the next start loads cold in about 7.1 s.
 - The OTLP line of the unit is a comment. No collector listened on b70host on 2026-10-21. Remove the `#` when one
   runs on port 4317.
 
@@ -408,6 +410,6 @@ answers when mkviolet has loaded its weights. Nothing in the store directory nee
 - Do not run work on the iGPU. It drives the display.
 - Exit code 3 is a refusal to start. Read the log, fix the cause, and run
   `systemctl --user reset-failed nagaya.service`. Then start it.
-- The unit does not keep arenas through a restart yet (spec 10.2). Each restart loads the weights again. Lane
+- On gfx1151host, the unit does not keep arenas through a restart yet (spec 10.2). Each restart loads the weights again. Lane
   sg-arenas adds `FileDescriptorStoreMax=512` and `FileDescriptorStorePreserve=restart` at the comment in the unit.
 
