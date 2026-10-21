@@ -146,10 +146,10 @@ fn a_reply_cut_inside_its_thinking_and_sent_back_closed_starts_from_its_head() {
     assert_eq!((dry.from, dry.usage.kept), (Some(head), head_tokens), "{:?}", dry.usage);
 }
 
-/// A build of a context with an assistant message renders the context and, for the cuts, the context with every
-/// message marked. The store holds no head inside the assistant message, so the build renders nothing more.
+/// kaibo job-5 (cost): a request renders its context once. The cuts come from the store's index, not from a second
+/// render with every message marked. Each generation, read and decision renders once more for its own work.
 #[test]
-fn a_context_with_an_assistant_message_and_no_held_head_renders_twice() {
+fn a_dry_run_renders_its_context_once() {
     let renders = Arc::new(AtomicUsize::new(0));
     let family = Arc::new(Counting {
         inner: Arc::new(nagaya_text_toy::ToyFamily::new()),
@@ -160,9 +160,10 @@ fn a_context_with_an_assistant_message_and_no_held_head_renders_twice() {
         {"role": "user", "content": "Read this.", "snap": true},
         {"role": "assistant", "content": "Noted."},
         {"role": "user", "content": "Summarize."}]});
+    f.service.build(&context(&value), false, Default::default()).unwrap();
     renders.store(0, Ordering::SeqCst);
     f.service.build(&context(&value), true, Default::default()).unwrap();
-    assert_eq!(renders.load(Ordering::SeqCst), 2);
+    assert_eq!(renders.load(Ordering::SeqCst), 1);
 }
 
 /// senpai's timing on 8090: an 18k-token context with an assistant message took 132 ms for a dry run, and 42 ms

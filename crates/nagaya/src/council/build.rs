@@ -66,17 +66,29 @@ pub struct Outcome {
     pub kept: usize,
     /// For each boundary, the entry that the store holds at the end of the job.
     pub held: Vec<Option<ContentId>>,
-    /// The recipes of the boundaries, in the order of `held`. With a cut, they have the cut too.
+    /// The recipes of the boundaries, in the order of `held`. With a cut, they have the cut and the seals that it
+    /// chains through too.
     pub recipes: Vec<BoundaryRecipe>,
-    /// The cut that the build started from, when it started from one. It is not a boundary of the context.
-    pub cut: Option<Boundary>,
+    /// The boundaries of `recipes` that are not boundaries of the context: the cut that the build started from and the
+    /// seals that it chains through. A response lists no snapshot there.
+    pub inserted: Vec<Boundary>,
 }
 
-/// A cut: the end of a message that the client did not mark, and the recipes of the context with a boundary there.
+/// A cut: a held snapshot that is not at a boundary of the context, and the recipes of the context with the seals of
+/// its chain inserted (spec 11.3c).
 pub type Cut = (Boundary, Vec<BoundaryRecipe>);
 
-/// Where a job starts: the recipes of its boundaries, the held entry of each, and the cut that it starts from.
-type Start = (Vec<BoundaryRecipe>, Vec<Option<ContentId>>, Option<Boundary>);
+/// Where a job starts: the recipes of its boundaries, the held entry of each, and the boundaries that a cut inserted.
+type Start = (Vec<BoundaryRecipe>, Vec<Option<ContentId>>, Vec<Boundary>);
+
+/// The boundaries of `chain` that `plan` does not have.
+fn inserted(plan: &[BoundaryRecipe], chain: &[BoundaryRecipe]) -> Vec<Boundary> {
+    chain
+        .iter()
+        .map(|recipe| recipe.boundary)
+        .filter(|boundary| plan.iter().all(|recipe| recipe.boundary.tokens != boundary.tokens))
+        .collect()
+}
 
 /// Choose where a job starts. Give the recipes, the held entry of each, and the cut that the job starts from.
 ///
@@ -99,10 +111,10 @@ fn choose(
             .expect("the recipes of a cut have the cut");
         if lookup_all(shared, engine, slot, &with_cut[at..=at])?[0].is_some() {
             let held = lookup_all(shared, engine, slot, with_cut)?;
-            return Ok((with_cut.clone(), held, Some(*cut)));
+            return Ok((with_cut.clone(), held, inserted(recipes, with_cut)));
         }
     }
-    Ok((recipes.to_vec(), held, None))
+    Ok((recipes.to_vec(), held, Vec::new()))
 }
 
 /// Look up the entry of each boundary. A miss and an ambiguous lookup give `None` (spec 6.6).
@@ -131,39 +143,17 @@ fn lookup_all(
     Ok(held)
 }
 
-/// The open text of a continuation after its build plan, up to its seam: the position before the last token of the
-/// open text (spec 11.3c). The head of a cut reply is a snapshot at the seam of its open rendering. A continuation of
-/// that reply starts from it when the store holds it, and feeds the last token.
+/// The open text of a continuation after its build plan, up to a held seal inside it (spec 11.3c). The head of a cut
+/// reply is a snapshot at the seam of its open rendering. A continuation of that reply starts from it when the store
+/// holds it, and feeds the rest of the open text.
 #[derive(Clone, Debug)]
 pub struct Extension {
-    /// The tokens after the end of the plan, up to the seam.
+    /// The tokens after the end of the plan, up to the last seal.
     pub tokens: Vec<u32>,
-    /// The index of the open message.
-    pub message: usize,
-}
-
-impl Extension {
-    /// The seam and its recipe, after a plan whose last seal is `base` at the token `at`. `None` with no tokens.
-    fn seam(&self, base: RecipeId, at: usize) -> Option<BoundaryRecipe> {
-        if self.tokens.is_empty() {
-            return None;
-        }
-        let tokens = at + self.tokens.len();
-        Some(BoundaryRecipe {
-            boundary: Boundary {
-                message: self.message,
-                tokens,
-            },
-            recipe: recipe_boundary(&base, &self.tokens, tokens as u64),
-        })
-    }
-}
-
-/// The last seal of a plan: the recipe of its last boundary and the token count there, or the root at token 0.
-fn last_seal(root: RecipeId, recipes: &[BoundaryRecipe]) -> (RecipeId, usize) {
-    recipes
-        .last()
-        .map_or((root, 0), |recipe| (recipe.recipe, recipe.boundary.tokens))
+    /// The recipes of the plan's boundaries, with the seals of the chain that the plan part holds.
+    pub chain: Vec<BoundaryRecipe>,
+    /// The seals after the end of the plan, in order. The job looks up the last one.
+    pub seals: Vec<BoundaryRecipe>,
 }
 
 /// Look up one recipe. A miss and an ambiguous lookup give `None` (spec 6.6).
@@ -227,26 +217,29 @@ impl LookupBody {
             return Err(too_large(self.tokens));
         };
         drop(pool);
-        let (recipes, held, cut) = choose(&self.shared, engine, slot, &self.recipes, &self.cuts)?;
-        let (base, at) = last_seal(self.shared.root, &recipes);
-        if let Some(seam) = self.extension.as_ref().and_then(|extension| extension.seam(base, at))
-            && let Some(id) = lookup_one(&self.shared, engine, slot, &seam)?
+        if let Some(extension) = &self.extension
+            && let Some(seam) = extension.seals.last()
+            && let Some(id) = lookup_one(&self.shared, engine, slot, seam)?
         {
+            let held = lookup_all(&self.shared, engine, slot, &extension.chain)?;
+            let mut inserted = inserted(&self.recipes, &extension.chain);
+            inserted.extend(extension.seals.iter().map(|seal| seal.boundary));
             return Ok(Outcome {
                 from: Some(id),
                 kept: seam.boundary.tokens,
                 held,
-                recipes,
-                cut,
+                recipes: extension.chain.clone(),
+                inserted,
             });
         }
+        let (recipes, held, inserted) = choose(&self.shared, engine, slot, &self.recipes, &self.cuts)?;
         let start = highest(&held);
         Ok(Outcome {
             from: start.and_then(|index| held[index]),
             kept: start.map_or(0, |index| recipes[index].boundary.tokens),
             held,
             recipes,
-            cut,
+            inserted,
         })
     }
 }
@@ -311,15 +304,13 @@ pub enum Want {
 /// What the slot gives back for the last want.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Got {
-    /// The build is complete. The slot holds the context when the work needs its state. The build started from the
-    /// cut, when it names one: then the boundaries of the state have the cut too.
-    Built(Option<Boundary>),
-    /// The build restored the head of a cut reply at the seam of a continuation (see [`Extension`]). The slot holds the
-    /// plan and the open text but its last token. The state has the seal of the seam, and the cut when there is one.
-    Resumed {
-        cut: Option<Boundary>,
-        seam: BoundaryRecipe,
-    },
+    /// The build is complete. The slot holds the context when the work needs its state. The recipes are the seals of
+    /// the state: the boundaries of the context, and the cut and the seals of its chain when the build started from a
+    /// cut.
+    Built(Vec<BoundaryRecipe>),
+    /// The build restored a held seal inside the open text of a continuation (see [`Extension`]), such as the head of
+    /// a cut reply. The slot holds the tokens to the last of the recipes, which are the seals of the state.
+    Resumed(Vec<BoundaryRecipe>),
     /// The feed is complete. The row is there when the feed asked for it.
     Fed(Option<Vec<f32>>),
     /// The mark or the rewind is complete.
@@ -402,12 +393,12 @@ pub struct ContextBody<T: Then> {
     recipes: Vec<BoundaryRecipe>,
     /// The cuts where the job may start, from the highest down.
     cuts: Vec<Cut>,
-    /// The open text of a continuation after the plan. The job may start from a held seam in it.
+    /// The open text of a continuation after the plan. The job may start from a held seal in it.
     extension: Option<Extension>,
-    /// The seam that the job started from.
-    resumed: Option<BoundaryRecipe>,
-    /// The cut that the job started from.
-    cut: Option<Boundary>,
+    /// True when the job started from a seal of the extension.
+    resumed: bool,
+    /// The boundaries of `recipes` that are not boundaries of the context.
+    inserted: Vec<Boundary>,
     /// The tokens that the slot must hold when the job takes it: the context, and what the work feeds after it when
     /// the job knows that.
     room: usize,
@@ -477,8 +468,8 @@ impl<T: Then> ContextBody<T> {
             recipes,
             cuts: Vec::new(),
             extension: None,
-            resumed: None,
-            cut: None,
+            resumed: false,
+            inserted: Vec::new(),
             room,
             lease: None,
             started: false,
@@ -515,25 +506,26 @@ impl<T: Then> ContextBody<T> {
 
     /// What the build gives the work when it is complete.
     fn built(&self) -> Got {
-        match self.resumed {
-            Some(seam) => Got::Resumed { cut: self.cut, seam },
-            None => Got::Built(self.cut),
+        let mut recipes = self.recipes.clone();
+        match &self.extension {
+            Some(extension) if self.resumed => {
+                recipes.extend(&extension.seals);
+                Got::Resumed(recipes)
+            }
+            _ => Got::Built(recipes),
         }
     }
 
-    /// Restore the head of a cut reply at the seam of the extension, when the store holds it. It gives true on a
-    /// restore. A refused restore changed nothing (spec 6.8), and the build goes on from the held boundaries.
+    /// Restore the last seal of the extension, when the store holds it: the head of a cut reply, for example. It gives
+    /// true on a restore. A refused restore changed nothing (spec 6.8), and the build goes on from the held
+    /// boundaries.
     fn restore_seam(&mut self, engine: &mut dyn Engine) -> Result<bool, ServiceError> {
-        let (base, at) = last_seal(self.shared.root, &self.recipes);
-        let Some(seam) = self.extension.as_ref().and_then(|extension| extension.seam(base, at)) else {
+        let Some(extension) = self.extension.clone() else {
             return Ok(false);
         };
-        if at != self.tokens.len() {
-            return Err(ServiceError::internal(format!(
-                "the plan of a continuation ends at token {}, but its last boundary is at token {at}",
-                self.tokens.len()
-            )));
-        }
+        let Some(seam) = extension.seals.last().copied() else {
+            return Ok(false);
+        };
         let slot = self.slot();
         let Some(id) = lookup_one(&self.shared, engine, slot, &seam)? else {
             return Ok(false);
@@ -548,26 +540,29 @@ impl<T: Then> ContextBody<T> {
                 let rows = self.rows(engine)?;
                 if rows != tokens {
                     return Err(ServiceError::internal(format!(
-                        "the restored seam of slot {slot} holds {rows} rows, but the seam is at token {tokens}"
+                        "the restored seal of slot {slot} holds {rows} rows, but the seal is at token {tokens}"
                     )));
                 }
+                self.held = lookup_all(&self.shared, engine, slot, &extension.chain)?;
+                self.inserted = inserted(&self.recipes, &extension.chain);
+                self.inserted.extend(extension.seals.iter().map(|seal| seal.boundary));
+                self.recipes = extension.chain;
                 self.from = Some(id);
                 self.kept = tokens;
                 self.fed = self.tokens.to_vec();
-                self.fed
-                    .extend(&self.extension.as_ref().expect("a seam has an extension").tokens);
+                self.fed.extend(&extension.tokens);
                 self.sealed = Some((seam.recipe, tokens));
-                self.resumed = Some(seam);
+                self.resumed = true;
                 Ok(true)
             }
             Ok(Restored::Refused { .. }) => Ok(false),
             Ok(Restored::Failed { part }) => Err(ServiceError::internal(format!(
-                "the restore of the seam {} stopped at part `{part}` and poisoned slot {slot}: {}",
+                "the restore of the seal {} stopped at part `{part}` and poisoned slot {slot}: {}",
                 id.hex(),
                 engine.last_error().unwrap_or_default()
             ))),
             Err(error) => Err(ServiceError::internal(format!(
-                "the restore of the seam {} failed: {error}",
+                "the restore of the seal {} failed: {error}",
                 id.hex()
             ))),
         }
@@ -620,7 +615,7 @@ impl<T: Then> ContextBody<T> {
                 kept: self.kept,
                 held: std::mem::take(&mut self.held),
                 recipes: std::mem::take(&mut self.recipes),
-                cut: self.cut,
+                inserted: std::mem::take(&mut self.inserted),
             },
             then: self.then.take().expect("a job finishes once"),
         };
@@ -652,18 +647,23 @@ impl<T: Then> ContextBody<T> {
             )));
         }
         self.sealed = Some((self.shared.root, 0));
-        if self.recipes.is_empty() {
-            self.restore_seam(engine)?;
+        // The longest held snapshot wins: a seal inside the open text of a continuation is after every boundary.
+        if self.restore_seam(engine)? {
             self.track(engine)?;
             let got = self.built();
             return self.next_want(engine, got);
         }
-        let (recipes, held, cut) = choose(&self.shared, engine, slot, &self.recipes, &self.cuts)?;
-        (self.recipes, self.held, self.cut) = (recipes, held, cut);
+        if self.recipes.is_empty() {
+            self.track(engine)?;
+            let got = self.built();
+            return self.next_want(engine, got);
+        }
+        let (recipes, held, inserted) = choose(&self.shared, engine, slot, &self.recipes, &self.cuts)?;
+        (self.recipes, self.held, self.inserted) = (recipes, held, inserted);
         let last = self.recipes.len() - 1;
         let mut candidate = highest(&self.held);
         let above = candidate.map_or(0, |index| self.recipes[index].boundary.tokens);
-        if self.restore_seam(engine)? || self.restore_copy(engine, above)? {
+        if self.restore_copy(engine, above)? {
             candidate = None;
         }
         while let Some(index) = candidate {

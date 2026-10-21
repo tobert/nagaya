@@ -12,7 +12,7 @@ use gogi_proto::generation::{
 };
 use gogi_proto::message::Message;
 use nagaya_abi::Kind;
-use nagaya_council::build::{BoundaryRecipe, recipes_with_cut, recipes_with_cuts};
+use nagaya_council::build::{BoundaryRecipe, recipes_with_cuts};
 use nagaya_council::family::{
     Boundary, Family, FamilyError, ParsedReply, Rendering, ReplyCall, ReplyParser, ReplyStart,
 };
@@ -99,15 +99,12 @@ pub(crate) struct GenerateThen {
     /// The open message of the context, for a continuation (gogi "Continuations").
     open: Option<Message>,
     root: RecipeId,
-    /// The recipes of the boundaries of the build. A build that starts from a cut gives them the cut too.
+    /// The seals of the state after the build: the boundaries of the build, and the cut and the seals of its chain
+    /// when the build started from one.
     recipes: Vec<BoundaryRecipe>,
     /// The rendering that the build makes: the context without the generation prompt, or the context before the open
     /// message of a continuation.
     rendering: Rendering,
-    /// The cut that the build started from.
-    cut: Option<Boundary>,
-    /// The seam of the head of a cut reply that the build started from. The state keeps its seal.
-    resumed: Option<Boundary>,
     /// The tokens of the prompt: the context, then the generation prompt or the open text.
     prompt: Vec<u32>,
     /// The tokens that the build makes. The generation feeds the rest of the prompt for its first logit row.
@@ -266,8 +263,13 @@ impl GenerateThen {
             return Ok(self.cut_head(&rendering, context.messages.len() - 1));
         }
         // The state has the boundaries of the build, the cut and the seam that it started from too.
-        let cuts: Vec<Boundary> = self.cut.into_iter().chain(self.resumed).collect();
-        let recipes = recipes_with_cuts(self.root, &rendering, &cuts)?;
+        let inserted: Vec<Boundary> = self
+            .recipes
+            .iter()
+            .map(|recipe| recipe.boundary)
+            .filter(|boundary| self.rendering.boundaries.iter().all(|b| b.tokens != boundary.tokens))
+            .collect();
+        let recipes = recipes_with_cuts(self.root, &rendering, &inserted)?;
         // The slot holds the prompt and each sampled token but the last.
         let fed = self.prompt.len() + self.sampled.len() - 1;
         let tokens = &rendering.tokens[..rendering.end];
@@ -335,6 +337,21 @@ impl GenerateThen {
             logits: false,
             kind: Kind::Prefill,
         }
+    }
+
+    /// Feed the prompt after the build: the generation prompt, or the open message of a continuation.
+    fn feed_prompt(&mut self) -> Result<Want, ServiceError> {
+        let tokens = self.prompt[self.end..].to_vec();
+        if tokens.is_empty() {
+            return Err(ServiceError::internal(
+                "the family rendered no generation prompt, so the reply has no first logit row",
+            ));
+        }
+        Ok(Want::Feed {
+            tokens,
+            logits: true,
+            kind: Kind::Prefill,
+        })
     }
 
     fn done(&mut self) -> Want {
@@ -431,35 +448,17 @@ impl Then for GenerateThen {
 
     fn next(&mut self, got: Got) -> Result<Want, ServiceError> {
         match (&self.stage, got) {
-            (Stage::Building, got @ (Got::Built(_) | Got::Resumed { .. })) => {
+            (Stage::Building, Got::Built(recipes)) => {
                 self.stage = Stage::Sampling;
-                let (cut, seam) = match got {
-                    Got::Resumed { cut, seam } => (cut, Some(seam)),
-                    Got::Built(cut) => (cut, None),
-                    _ => unreachable!("the arm matches only a build"),
-                };
-                if let Some(cut) = cut {
-                    self.cut = Some(cut);
-                    self.recipes = recipes_with_cut(self.root, &self.rendering, cut)?;
-                }
-                // A continuation from the head of a cut reply starts at the seam, and feeds the last token.
-                if let Some(seam) = seam {
-                    self.resumed = Some(seam.boundary);
-                    self.recipes.push(seam);
-                    self.end = seam.boundary.tokens;
-                }
-                // The generation prompt, or the open message of a continuation.
-                let tokens = self.prompt[self.end..].to_vec();
-                if tokens.is_empty() {
-                    return Err(ServiceError::internal(
-                        "the family rendered no generation prompt, so the reply has no first logit row",
-                    ));
-                }
-                Ok(Want::Feed {
-                    tokens,
-                    logits: true,
-                    kind: Kind::Prefill,
-                })
+                self.recipes = recipes;
+                self.feed_prompt()
+            }
+            // A continuation from a held seal in its open text, such as the head of a cut reply, feeds the rest.
+            (Stage::Building, Got::Resumed(recipes)) => {
+                self.stage = Stage::Sampling;
+                self.end = recipes.last().expect("a resumed build has a seal").boundary.tokens;
+                self.recipes = recipes;
+                self.feed_prompt()
             }
             (Stage::Sampling, Got::Fed(Some(row))) => self.sample(&row),
             (Stage::Head { recipe, .. }, Got::Fed(None)) => Ok(Want::Snapshot {
@@ -548,8 +547,10 @@ impl Service {
         let end = built.end;
         let room = (prompt + max_tokens + HEAD_FEED).min(context_tokens);
         let tokens: Arc<[u32]> = built.tokens[..end].into();
-        let cuts = self.cuts(context, &built)?;
-        let extension = super::extension(context, &rendering, &built);
+        let (cuts, extension) = match context.open() {
+            Some(_) => self.starts(context, &rendering.tokens, &built)?,
+            None => (self.cuts(context, &built)?, None),
+        };
         let then = GenerateThen {
             family: Arc::clone(&self.family),
             context: context.clone(),
@@ -557,8 +558,6 @@ impl Service {
             root: self.root,
             recipes: recipes.clone(),
             rendering: built,
-            cut: None,
-            resumed: None,
             prompt: rendering.tokens.clone(),
             end,
             settings,

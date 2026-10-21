@@ -130,7 +130,9 @@ impl Then for DecisionThen {
                 self.advance(None)
             }
             // A decision reads no open message, so its build has no extension.
-            Got::Resumed { .. } => Err(ServiceError::internal("a decision build restored a seam")),
+            Got::Resumed(_) => Err(ServiceError::internal(
+                "a decision build restored a seal of an open text",
+            )),
             Got::Copied => {
                 self.at_prefix = true;
                 let step = self.waiting.take().expect("a mark or a rewind has a step that waits");

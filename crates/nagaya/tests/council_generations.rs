@@ -812,10 +812,10 @@ fn an_open_message_builds_only_as_a_dry_run() {
     );
 }
 
-/// The head after a continuation's reply chains through the seam of the cut reply, so a context that sends that reply
-/// back closed does not find it. It finds the seam, which the store still holds, and starts there (spec 11.3c).
+/// The head after a continuation's reply chains through the seam of the cut reply. A context that sends that reply
+/// back closed follows the store's index through the seam to that head, and starts there (spec 11.3c).
 #[test]
-fn a_continued_reply_sent_back_closed_starts_from_the_seam_of_the_cut_reply() {
+fn a_continued_reply_sent_back_closed_starts_from_its_head() {
     let (f, script) = scripted();
     let value = ctx(false, opening());
     let mut reply = bytes("okay");
@@ -833,5 +833,102 @@ fn a_continued_reply_sent_back_closed_starts_from_the_seam_of_the_cut_reply() {
         .service
         .build(&context(&ctx(false, messages)), true, Default::default())
         .unwrap();
-    assert_eq!((dry.from, dry.usage.kept), (cut.head, seam), "{:?}", dry.usage);
+    let head = done.snapshots.last().unwrap();
+    assert_eq!(done.head.as_ref(), Some(&head.id));
+    assert_eq!(
+        (dry.from, dry.usage.kept),
+        (done.head.clone(), head.tokens),
+        "{:?}",
+        dry.usage
+    );
+}
+
+/// kaibo job-5 item 3: the generation of a cut reply started from a cut, the unmarked end of an earlier reply. The
+/// head chains through that cut and through the end of the context before the reply. A context that sends the cut
+/// reply back closed, with neither end marked, still starts from the head.
+#[test]
+fn a_cut_reply_whose_generation_started_from_a_cut_goes_back_closed_and_starts_from_its_head() {
+    let (f, script) = scripted();
+    let value = ctx(false, opening());
+    let mut first = bytes("ok");
+    first.push(gogi_toy::END);
+    script.set(prompt(&value), first);
+    let reply = generate(&f, &value, 10, json!({"temperature": 0}));
+    let mut messages = opening();
+    messages.push(serde_json::to_value(reply.as_message().unwrap()).unwrap());
+    messages.push(json!({"role": "user", "content": "Again."}));
+    let again = ctx(false, messages.clone());
+    let mut second = bytes("okay");
+    second.push(gogi_toy::END);
+    script.set(prompt(&again), second);
+    let cut = generate(&f, &again, 3, json!({"temperature": 0}));
+    assert_eq!(
+        cut.usage.kept,
+        reply.snapshots.last().unwrap().tokens,
+        "the generation started from the cut"
+    );
+    let head = cut.head.clone().expect("a cut reply holds a sealed head");
+    let tokens = cut.snapshots.last().unwrap().tokens;
+    messages.push(serde_json::to_value(cut.as_message().unwrap()).unwrap());
+    messages.push(json!({"role": "user", "content": "Go on."}));
+    let dry = f
+        .service
+        .build(&context(&ctx(false, messages.clone())), true, Default::default())
+        .unwrap();
+    assert_eq!(
+        (dry.from, dry.usage.kept),
+        (Some(head.clone()), tokens),
+        "{:?}",
+        dry.usage
+    );
+    // A build from the head lists no snapshot at the cuts that it chains through.
+    let built = f
+        .service
+        .build(&context(&ctx(false, messages)), false, Default::default())
+        .unwrap();
+    assert_eq!(built.usage.kept, tokens);
+    assert!(
+        built.snapshots.iter().all(|s| s.message == 1 || s.message == 5),
+        "{:?}",
+        built.snapshots
+    );
+}
+
+/// kaibo job-5 item 4: a cut chain must not hide a seam held on another chain. The cut reply's generation started
+/// from the context's own boundary. Later the store holds a snapshot at the unmarked end of the earlier reply. A
+/// continuation still starts from the head.
+#[test]
+fn a_held_cut_does_not_hide_the_head_of_a_cut_reply() {
+    let (f, script) = scripted();
+    let value = ctx(false, opening());
+    let mut messages = opening();
+    messages.push(json!({"role": "assistant", "content": "ok"}));
+    messages.push(json!({"role": "user", "content": "Again.", "snap": true}));
+    let again = ctx(false, messages);
+    let mut second = bytes("okay");
+    second.push(gogi_toy::END);
+    script.set(prompt(&again), second);
+    let cut = generate(&f, &again, 3, json!({"temperature": 0}));
+    let tokens = cut.snapshots.last().unwrap().tokens;
+    // A generation of the opening writes the earlier reply, so the store holds a snapshot at its unmarked end.
+    let mut first = bytes("ok");
+    first.push(gogi_toy::END);
+    script.set(prompt(&value), first);
+    let reply = generate(&f, &value, 10, json!({"temperature": 0}));
+    assert_eq!(reply.content, "ok");
+    script.set(prompt(&again), {
+        let mut second = bytes("okay");
+        second.push(gogi_toy::END);
+        second
+    });
+    let resumed = with_open(&again, serde_json::to_value(cut.as_open_message().unwrap()).unwrap());
+    let dry = f.service.build(&context(&resumed), true, Default::default()).unwrap();
+    assert_eq!(
+        (dry.from, dry.usage.kept),
+        (cut.head.clone(), tokens),
+        "{:?}",
+        dry.usage
+    );
+    let done = generate(&f, &resumed, 10, json!({"temperature": 0}));
+    assert_eq!((done.usage.kept, done.usage.fed), (tokens, 1));
 }
