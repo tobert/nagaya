@@ -612,6 +612,27 @@ the engine, `residual`, with lifetime `engine`. It has two buffers for each boun
 block for stage s + 1, while stage s writes the next block. Each buffer holds `feed.block` rows. mkviolet's term is 2 ×
 512 × 11,264 = 11,534,336 bytes.
 
+**The stage path in v0.** **Proposed** (claude-opus-5-5, 2026-10-21). The rules above leave these choices open. The
+first build of the stage path takes the simplest choice for each.
+
+- **A free residual buffer is a ready condition.** A block holds a residual buffer from the start of stage s to the
+  end of stage s + 1. Stage s of a block is ready only when a buffer at its boundary is free. Reason: rules 1 and 2
+  alone let three blocks wait at one boundary, and the term holds two.
+- **The residual of a pass.** A stage pass with several segments puts their rows in the residual in segment order. A
+  pass never holds more rows than one buffer.
+- **Other copy quanta hold the group.** A copy quantum that is not a restore reads or writes the parts of every
+  stage, for example a snapshot, a mark or a lookup. It starts only when every device of the group is free and no
+  block of its job waits. A free device does not start a quantum of a lower rank before it. Reason: one path into the
+  store for every engine, and a wait of at most one quantum (D8).
+- **Filler on each device.** A filler stage quantum runs on a device that has no ready quantum of a higher class. This
+  is the reading of 5.5 for a group with stages. Reason: D1 fills an idle card.
+- **A stage handle has slots and coverage.** `StageHandle` also has `slots()` and `coverage()`, for the parts of its
+  stage. A slot clear and the base position of a ring are device state of each stage. After `take_handles`, the
+  `Engine` gives `None` for `parts`, `slots`, `coverage` and `seal`.
+- **What the first build refuses.** An engine with stages must not declare `seal` or a checkpoint grain. Each stage
+  has its own device. The `residual` term holds 2 × (stages − 1) × rows × `residual_row_bytes` bytes. The rows are
+  `feed.block`, or `max_pass_inputs` for an engine with no feed rule. The process refuses other limits at open.
+
 Amy may stop running one model across both B70 cards and use them independently, "since they're the fastest memory
 we have at home". Today's Gemma 4 does not fit on one card. Thus per-card work means smaller engines, each with a
 group of one card: a smaller Gemma, "or probably a qwen and lfm".
