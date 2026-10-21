@@ -1137,9 +1137,15 @@ dependencies = [
 name = "nagaya-mk-gemma4-bmg"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "nagaya-abi",
+ "nagaya-conformance",
+ "nagaya-store",
+ "nagaya-text-gemma4",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
 ]
 
 [[package]]

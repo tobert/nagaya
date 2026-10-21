@@ -1,7 +1,9 @@
 //! The Gemma 4 26B-A4B engine on two Arc Pro B70 cards: a copy of mkviolet's engine (milestone 15s, step 4).
 //!
-//! Amy, 2026-10-21: "copy code in, we own all of it 100%". The copy keeps mkviolet's behavior. The `Engine` trait
-//! comes in step 5. The kernels are OpenCL C in `kernels/`, and `build.rs` compiles them with `ocloc` for `bmg-g31`.
+//! Amy, 2026-10-21: "copy code in, we own all of it 100%". The copy keeps mkviolet's bits. `engine` holds the `Engine`
+//! trait with two stages (step 5), and `spec` holds its limits and rules. The nagaya's stage threads take the place of
+//! mkviolet's card locks and `pipeline_stage`. The kernels are OpenCL C in `kernels/`, and `build.rs` compiles them
+//! with `ocloc` for `bmg-g31`.
 //! The parts that touch a card need the feature `xe`. With no feature, the crate builds and tests with no card.
 
 // The copy keeps mkviolet's code as it was, so these lints wait for the port of each part.
@@ -16,12 +18,15 @@
     clippy::type_complexity
 )]
 
+#[cfg(feature = "xe")]
+pub mod engine;
 pub mod gemma4;
 #[cfg(feature = "xe")]
 pub mod level_zero;
 pub mod protocol;
 pub mod safetensors;
 pub mod sharding;
+pub mod spec;
 
 /// The kernel binary for `bmg-g31` that `build.rs` compiled from `kernels/megakernel.cl`.
 #[cfg(feature = "xe")]

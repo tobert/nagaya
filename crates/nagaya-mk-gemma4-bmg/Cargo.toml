@@ -12,3 +12,12 @@ serde = { version = "1.0.229", features = ["derive"] }
 # mkviolet builds serde_json with `preserve_order`. The workspace build has it too (nagaya-text-qwen38).
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 sha2 = "0.10.9"
+blake3 = "1.8.7"
+nagaya-abi = { version = "0.1.0", path = "../nagaya-abi" }
+# The identity holds the template of the family library and its tokenizer hash (spec 11.3, 12.1).
+nagaya-text-gemma4 = { version = "0.1.0", path = "../nagaya-text-gemma4" }
+
+[dev-dependencies]
+nagaya-conformance = { version = "0.1.0", path = "../nagaya-conformance" }
+nagaya-store = { version = "0.1.0", path = "../nagaya-store" }
+tempfile = "3"

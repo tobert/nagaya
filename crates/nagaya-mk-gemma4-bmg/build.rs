@@ -27,6 +27,28 @@ fn main() {
         "ocloc did not compile {} for bmg-g31: {status}",
         source.display()
     );
+    // The compiler is in the plan table lineage of the identity (spec 12.1).
+    let version = Command::new("ocloc")
+        .arg("--version")
+        .output()
+        .unwrap_or_else(|e| panic!("cannot run ocloc --version: {e}"));
+    let version = String::from_utf8_lossy(&version.stdout).trim().to_owned();
+    assert!(!version.is_empty(), "ocloc --version printed no version");
+    println!("cargo:rustc-env=GEMMA4_OCLOC_VERSION={version}");
+    // `ocloc query` writes its answer to a file of that name in the working directory.
+    let status = Command::new("ocloc")
+        .args(["query", "IGC_REVISION"])
+        .current_dir(&out)
+        .status()
+        .unwrap_or_else(|e| panic!("cannot run ocloc query: {e}"));
+    assert!(status.success(), "ocloc query IGC_REVISION failed: {status}");
+    let igc = std::fs::read_to_string(out.join("IGC_REVISION"))
+        .unwrap_or_else(|e| panic!("ocloc query wrote no IGC_REVISION: {e}"));
+    let igc = match igc.trim_matches(|c: char| c == '\0' || c.is_whitespace()) {
+        "" => "unknown".to_owned(),
+        revision => revision.to_owned(),
+    };
+    println!("cargo:rustc-env=GEMMA4_IGC_REVISION={igc}");
     let binary = out.join("megakernel_bmg.bin");
     assert!(
         binary.is_file(),

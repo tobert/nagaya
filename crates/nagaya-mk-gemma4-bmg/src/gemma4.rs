@@ -89,6 +89,8 @@ pub fn kv_high_after_load(need: usize, len: usize, ring: usize) -> usize {
 /// Most rows one block can take logits for: one per continuation in `forward_branches`.
 pub const MAX_LOGIT_ROWS: usize = 16;
 const PREFIX: &str = "model.language_model.";
+/// The name of the embedding table in the checkpoint.
+pub const EMBED_TENSOR: &str = "model.language_model.embed_tokens.weight";
 
 /// Layer split: card 0 holds `CARD_LAYERS[0]`, card 1 holds `CARD_LAYERS[1]` and the head.
 pub const CARD_LAYERS: [Range<usize>; 2] = [0..15, 15..30];
@@ -214,6 +216,11 @@ impl Uploader {
         }
     }
 
+    /// Free the staging buffer. The weights are on the card, so the engine needs it no more.
+    fn free(self, card: &B70Card) {
+        card.free(self.staging as *mut c_void);
+    }
+
     fn copy(&self, card: &B70Card, dst: u64, src: &[u8]) {
         for (i, chunk) in src.chunks(STAGING_BYTES).enumerate() {
             unsafe { std::ptr::copy_nonoverlapping(chunk.as_ptr(), self.staging, chunk.len()) };
@@ -230,14 +237,14 @@ impl Uploader {
 /// within a group are contiguous (the kernels index gate/up and the router pack that way).
 /// Layer `l`'s slab: each group of tensors (checkpoint bytes) at its offset, the slab's size,
 /// and the layer scalar.
-struct LayerLayout<'a> {
+pub(crate) struct LayerLayout<'a> {
     groups: Vec<(&'static str, Vec<&'a [u8]>)>,
     offsets: Vec<usize>,
-    total: usize,
+    pub(crate) total: usize,
     layer_scalar: f32,
 }
 
-fn layer_layout(ckpt: &Checkpoint, l: usize) -> Result<LayerLayout<'_>, String> {
+pub(crate) fn layer_layout(ckpt: &Checkpoint, l: usize) -> Result<LayerLayout<'_>, String> {
     let g = layer_geom(l);
     let p = format!("{}layers.{}.", PREFIX, l);
     let (d, hd, kv) = (HIDDEN, g.head_dim, g.kv_heads);
@@ -428,6 +435,131 @@ pub struct Head {
     pub logits: *mut f32,
 }
 
+/// The weights of one card's layers, and of the head on the card that holds it. Engines on the same cards share them.
+#[cfg(feature = "xe")]
+pub struct CardWeights {
+    /// The index of the card in its `L0Cluster`.
+    pub card: usize,
+    pub layers: Range<usize>,
+    pub weights: Vec<LayerWeights>,
+    /// The final norm and the embedding table on the device, when the card holds the head.
+    pub head: Option<(u64, u64)>,
+    pub vram_bytes: usize,
+}
+
+#[cfg(feature = "xe")]
+unsafe impl Send for CardWeights {}
+#[cfg(feature = "xe")]
+unsafe impl Sync for CardWeights {}
+
+#[cfg(feature = "xe")]
+impl CardWeights {
+    /// Upload the layers `layers` of the checkpoint to `card`, and the head when `with_head`. A layer whose slab fd
+    /// `stored` holds (by `slab_fd_name`) is imported instead.
+    pub fn upload(
+        card: &B70Card,
+        ckpt: &Checkpoint,
+        layers: Range<usize>,
+        with_head: bool,
+        stored: &HashMap<String, i32>,
+    ) -> Result<Self, String> {
+        let up = Uploader::new(card);
+        let result = Self::upload_with(card, &up, ckpt, layers, with_head, stored);
+        up.free(card);
+        result
+    }
+
+    fn upload_with(
+        card: &B70Card,
+        up: &Uploader,
+        ckpt: &Checkpoint,
+        layers: Range<usize>,
+        with_head: bool,
+        stored: &HashMap<String, i32>,
+    ) -> Result<Self, String> {
+        let mut weights = Vec::new();
+        let mut vram = 0usize;
+        for l in layers.clone() {
+            let w = upload_layer(card, up, ckpt, l, stored.get(&slab_fd_name(l, card.index)).copied())?;
+            vram += w.slab_bytes;
+            weights.push(w);
+        }
+        let head = if with_head {
+            let d = HIDDEN;
+            let norm_bytes = ckpt.bf16(&format!("{}norm.weight", PREFIX), &[d])?;
+            let embed_bytes = ckpt.bf16(&format!("{}embed_tokens.weight", PREFIX), &[VOCAB, d])?;
+            let final_norm = card.alloc_device_usm::<u8>(norm_bytes.len());
+            up.copy(card, final_norm as u64, norm_bytes);
+            let embed = card.alloc_device_usm::<u8>(embed_bytes.len());
+            up.copy(card, embed as u64, embed_bytes);
+            vram += norm_bytes.len() + embed_bytes.len();
+            Some((final_norm as u64, embed as u64))
+        } else {
+            None
+        };
+        Ok(Self {
+            card: card.index,
+            layers,
+            weights,
+            head,
+            vram_bytes: vram,
+        })
+    }
+}
+
+/// The device bytes of the weights of the layers `layers`, and of the head when `with_head`, from the tensor headers
+/// of the checkpoint. It reads no weight bytes.
+pub fn weights_device_bytes(ckpt: &Checkpoint, layers: Range<usize>, with_head: bool) -> Result<u64, String> {
+    let mut bytes = 0u64;
+    for l in layers {
+        bytes += layer_layout(ckpt, l)?.total as u64;
+    }
+    if with_head {
+        bytes += ckpt.bf16(&format!("{}norm.weight", PREFIX), &[HIDDEN])?.len() as u64;
+        bytes += ckpt
+            .bf16(&format!("{}embed_tokens.weight", PREFIX), &[VOCAB, HIDDEN])?
+            .len() as u64;
+    }
+    Ok(bytes)
+}
+
+/// The device bytes of the K and V planes of one slot of `seq` positions, for the layers `layers`.
+pub fn slot_device_bytes(seq: usize, layers: Range<usize>) -> u64 {
+    layers
+        .map(|l| (2 * kv_plane_rows(seq, l) * layer_geom(l).kv_heads * layer_geom(l).head_dim * 4) as u64)
+        .sum()
+}
+
+/// The device bytes of one card's work buffers for blocks of `max_block` tokens and slots of up to `max_seq`
+/// positions. They are the device allocations of `CardShard::with_weights` that are not KV.
+pub fn work_device_bytes(max_block: usize, max_seq: usize, with_head: bool) -> u64 {
+    let (b, d) = (max_block, HIDDEN);
+    let floats = b * d // x
+        + 2 * b * d // norm and pre2
+        + 2 * b * HEADS * 512 // q and attn
+        + b * d // tmp
+        + b * SHARED_I // mlp
+        + b * TOP_K * MOE_I // moe_inter
+        + 2 * b * TOP_K * d // moe_x and moe_out
+        + b * NUM_EXPERTS // router_logits
+        + attn_scratch_floats(max_seq)
+        + HEADS * b * attn_row_floats(max_seq)
+        + if with_head { MAX_LOGIT_ROWS * d } else { 0 };
+    (floats * 4 + MOE_PLAN_BYTES + NUM_SCOREBOARD_EVENTS * 4) as u64
+}
+
+/// The host bytes of one card's pinned buffers for blocks of `max_block` tokens over `n_layers` layers. They are the
+/// host allocations of `CardShard::with_weights`.
+pub fn work_host_bytes(n_layers: usize, max_block: usize, with_head: bool) -> u64 {
+    let bytes = n_layers * max_block * std::mem::size_of::<MoERouteDecision>()
+        + max_block * 16
+        + MAX_TASKS_PER_CARD * std::mem::size_of::<MkTaskDescriptor>()
+        + STAGE_FLOATS * 4
+        + 32 * std::mem::size_of::<XeCoreStats>()
+        + if with_head { MAX_LOGIT_ROWS * VOCAB * 4 } else { 0 };
+    bytes as u64
+}
+
 /// One card's layers, KV caches, and work buffers.
 #[cfg(feature = "xe")]
 pub struct CardShard {
@@ -533,16 +665,34 @@ impl CardShard {
         max_block: usize,
         stored: &HashMap<String, i32>,
     ) -> Result<Self, String> {
+        if max_block == 0 || max_block > MAX_PLAN_TOKENS {
+            return Err(format!("max_block is {max_block}; it must be 1 to {MAX_PLAN_TOKENS}"));
+        }
+        let weights = CardWeights::upload(cluster_card, ckpt, layers, with_head, stored)?;
+        Self::with_weights(cluster_card, &weights, slot_seqs, max_block)
+    }
+
+    /// A shard on weights that are on the card already, with one KV slot of `slot_seqs[i]` positions per entry.
+    pub fn with_weights(
+        cluster_card: &B70Card,
+        w: &CardWeights,
+        slot_seqs: &[usize],
+        max_block: usize,
+    ) -> Result<Self, String> {
         let card = cluster_card;
-        assert!(max_block <= MAX_PLAN_TOKENS);
-        let mut weights = Vec::new();
+        if max_block == 0 || max_block > MAX_PLAN_TOKENS {
+            return Err(format!("max_block is {max_block}; it must be 1 to {MAX_PLAN_TOKENS}"));
+        }
+        if card.index != w.card {
+            return Err(format!(
+                "the weights are on card {}, not on card {}",
+                w.card, card.index
+            ));
+        }
+        let layers = w.layers.clone();
         let mut slots: Vec<Vec<u64>> = vec![Vec::new(); slot_seqs.len()];
-        let mut vram = 0usize;
-        let up = Uploader::new(card);
+        let mut vram = w.vram_bytes;
         for l in layers.clone() {
-            let w = upload_layer(card, &up, ckpt, l, stored.get(&slab_fd_name(l, card.index)).copied())?;
-            vram += w.slab_bytes;
-            weights.push(w);
             let g = layer_geom(l);
             for (si, &seq) in slot_seqs.iter().enumerate() {
                 let kv_elems = 2 * kv_plane_rows(seq, l) * g.kv_heads * g.head_dim;
@@ -559,29 +709,18 @@ impl CardShard {
         let d = HIDDEN;
         let b = max_block;
         let dev = |n: usize| card.alloc_device_usm::<f32>(n);
-        let head = if with_head {
-            let norm_bytes = ckpt.bf16(&format!("{}norm.weight", PREFIX), &[d])?;
-            let embed_bytes = ckpt.bf16(&format!("{}embed_tokens.weight", PREFIX), &[VOCAB, d])?;
-            let final_norm = card.alloc_device_usm::<u8>(norm_bytes.len());
-            up.copy(card, final_norm as u64, norm_bytes);
-            let embed = card.alloc_device_usm::<u8>(embed_bytes.len());
-            up.copy(card, embed as u64, embed_bytes);
-            vram += norm_bytes.len() + embed_bytes.len();
-            Some(Head {
-                final_norm: final_norm as u64,
-                embed: embed as u64,
-                normed: dev(MAX_LOGIT_ROWS * d),
-                logits: card.alloc_host_usm_cached::<f32>(MAX_LOGIT_ROWS * VOCAB),
-            })
-        } else {
-            None
-        };
+        let head = w.head.map(|(final_norm, embed)| Head {
+            final_norm,
+            embed,
+            normed: dev(MAX_LOGIT_ROWS * d),
+            logits: card.alloc_host_usm_cached::<f32>(MAX_LOGIT_ROWS * VOCAB),
+        });
         let n_layers = layers.len();
         // OP_ATTN_OUT writes both pre-FFN norms: pre2 sits b * d floats after norm.
         let norm = dev(2 * b * d);
         Ok(Self {
             card: card.index,
-            weights,
+            weights: w.weights.clone(),
             slots,
             slot_seq: slot_seqs.to_vec(),
             kv_high: slot_seqs
@@ -617,6 +756,46 @@ impl CardShard {
         })
     }
 
+    /// Free the KV slots and the work buffers of the shard. The weights stay, because other shards can share them.
+    ///
+    /// # Safety
+    ///
+    /// No kernel may run on the buffers, and the shard must not be used after this call.
+    pub unsafe fn free(&self, card: &B70Card) {
+        for slot in &self.slots {
+            for &kv in slot {
+                card.free(kv as *mut c_void);
+            }
+        }
+        if let Some(h) = &self.head {
+            card.free(h.normed as *mut c_void);
+            card.free(h.logits as *mut c_void);
+        }
+        for ptr in [
+            self.x as *mut c_void,
+            self.norm as *mut c_void,
+            self.q as *mut c_void,
+            self.attn as *mut c_void,
+            self.tmp as *mut c_void,
+            self.mlp as *mut c_void,
+            self.moe_inter as *mut c_void,
+            self.moe_x as *mut c_void,
+            self.moe_out as *mut c_void,
+            self.router_logits as *mut c_void,
+            self.plan as *mut c_void,
+            self.routes as *mut c_void,
+            self.meta as *mut c_void,
+            self.ring as *mut c_void,
+            self.scoreboard as *mut c_void,
+            self.scratch as *mut c_void,
+            self.scores as *mut c_void,
+            self.stage as *mut c_void,
+            self.stats as *mut c_void,
+        ] {
+            card.free(ptr);
+        }
+    }
+
     pub fn slot(&self) -> usize {
         self.slot.load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -629,6 +808,40 @@ impl CardShard {
     /// Positions the current KV slot holds.
     pub fn max_seq(&self) -> usize {
         self.slot_seq[self.slot()]
+    }
+
+    /// The position after the last row that the rings of `slot` hold (`kv_high`).
+    pub fn kv_high(&self, slot: usize) -> usize {
+        self.kv_high[slot].load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Set the position after the last row that the rings of `slot` hold, after a restore or a clear.
+    pub fn set_kv_high(&self, slot: usize, high: usize) {
+        self.kv_high[slot].store(high, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Copy the K or V rows of positions `first..len` of layer `l` in the current slot into `out`.
+    pub fn read_rows(&self, card: &B70Card, l: usize, value: bool, first: usize, len: usize, out: &mut [u8]) {
+        let li = l - self.layers.start;
+        let row = layer_geom(l).kv_heads * layer_geom(l).head_dim * 4;
+        assert_eq!(out.len(), (len - first) * row, "the buffer holds the rows");
+        let mut at = 0;
+        for (src, n) in self.kv_runs(li, first, len, value) {
+            card.memcpy_sync(out[at..].as_mut_ptr() as *mut c_void, src as *const c_void, n * row);
+            at += n * row;
+        }
+    }
+
+    /// Copy `bytes`, the K or V rows of positions `first..len` of layer `l`, into the current slot.
+    pub fn write_rows(&self, card: &B70Card, l: usize, value: bool, first: usize, len: usize, bytes: &[u8]) {
+        let li = l - self.layers.start;
+        let row = layer_geom(l).kv_heads * layer_geom(l).head_dim * 4;
+        assert_eq!(bytes.len(), (len - first) * row, "the bytes hold the rows");
+        let mut at = 0;
+        for (dst, n) in self.kv_runs(li, first, len, value) {
+            self.upload_bytes(card, dst, &bytes[at..at + n * row]);
+            at += n * row;
+        }
     }
 
     fn kv_base(&self, li: usize) -> u64 {
@@ -1213,14 +1426,26 @@ impl CardShard {
     /// Copies host values to device address `dst`, through the pinned staging buffer when they
     /// fit: staging takes 1 MB in 62 us instead of 305, but 64 MB in 3.8 ms instead of 3.1.
     fn upload(&self, card: &B70Card, dst: u64, values: &[f32]) {
-        if values.len() > STAGE_FLOATS {
-            card.memcpy_sync(dst as *mut c_void, values.as_ptr() as *const c_void, values.len() * 4);
+        self.upload_bytes(card, dst, f32_bytes(values));
+    }
+
+    /// `upload` for the bytes of f32 values.
+    pub(crate) fn upload_bytes(&self, card: &B70Card, dst: u64, bytes: &[u8]) {
+        if bytes.len() > STAGE_FLOATS * 4 {
+            card.memcpy_sync(dst as *mut c_void, bytes.as_ptr() as *const c_void, bytes.len());
             return;
         }
         unsafe {
-            std::ptr::copy_nonoverlapping(values.as_ptr(), self.stage, values.len());
-            card.memcpy_sync(dst as *mut c_void, self.stage as *const c_void, values.len() * 4);
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), self.stage as *mut u8, bytes.len());
+            card.memcpy_sync(dst as *mut c_void, self.stage as *const c_void, bytes.len());
         }
+    }
+
+    /// The logits of the `i`-th logit row of the last block, in the head's host buffer.
+    pub fn logits_row(&self, i: usize) -> &[f32] {
+        assert!(i < MAX_LOGIT_ROWS, "logit row {i} of {MAX_LOGIT_ROWS}");
+        let logits = self.head.as_ref().expect("logits from a card without the head").logits;
+        unsafe { std::slice::from_raw_parts(logits.add(i * VOCAB), VOCAB) }
     }
 }
 
@@ -1418,83 +1643,8 @@ pub struct PassTiming {
     pub wall_us: u128,
 }
 
-/// Serializes one card's GPU jobs. A waiting high-priority job (a council decision) goes before
-/// any waiting low-priority one (a generation's next stage); within a class, whoever the OS
-/// wakes first.
-pub struct CardLock {
-    state: std::sync::Mutex<(bool, usize)>,
-    cv: std::sync::Condvar,
-}
-
-pub struct CardGuard<'a>(&'a CardLock);
-
-impl Drop for CardGuard<'_> {
-    fn drop(&mut self) {
-        self.0.state.lock().unwrap().0 = false;
-        self.0.cv.notify_all();
-    }
-}
-
-impl CardLock {
-    fn new() -> Self {
-        Self {
-            state: std::sync::Mutex::new((false, 0)),
-            cv: std::sync::Condvar::new(),
-        }
-    }
-
-    fn high(&self) -> CardGuard<'_> {
-        let mut st = self.state.lock().unwrap();
-        st.1 += 1;
-        while st.0 {
-            st = self.cv.wait(st).unwrap();
-        }
-        st.0 = true;
-        st.1 -= 1;
-        CardGuard(self)
-    }
-
-    fn low(&self) -> CardGuard<'_> {
-        let mut st = self.state.lock().unwrap();
-        while st.0 || st.1 > 0 {
-            st = self.cv.wait(st).unwrap();
-        }
-        st.0 = true;
-        CardGuard(self)
-    }
-}
-
-/// The cards' locks. The council takes both at high priority for a request (`high`);
-/// a generation takes the card each pipeline stage runs on (`low`), so two
-/// generations can run half a step apart.
-pub struct GpuLock {
-    cards: [CardLock; 2],
-}
-
-pub struct GpuGuard<'a>(CardGuard<'a>, CardGuard<'a>);
-
-impl GpuLock {
-    fn new() -> Self {
-        Self {
-            cards: [CardLock::new(), CardLock::new()],
-        }
-    }
-
-    /// Both cards, card 0 first.
-    pub fn high(&self) -> GpuGuard<'_> {
-        let c0 = self.cards[0].high();
-        GpuGuard(c0, self.cards[1].high())
-    }
-
-    /// Card `card` at low priority.
-    pub fn low(&self, card: usize) -> CardGuard<'_> {
-        self.cards[card].low()
-    }
-}
-
 #[cfg(feature = "xe")]
 pub struct Gemma4Engine {
-    pub gpu: GpuLock,
     pub ckpt: Checkpoint,
     pub shards: Vec<CardShard>,
     pub load_ms: u128,
@@ -1547,7 +1697,6 @@ impl Gemma4Engine {
             )?);
         }
         Ok(Self {
-            gpu: GpuLock::new(),
             ckpt,
             shards,
             load_ms: t0.elapsed().as_millis(),
@@ -1640,9 +1789,9 @@ impl Gemma4Engine {
     }
 
     /// Writes layer `l` of a snapshot back to the current KV slot: the positions the slot needs
-    /// to go on from `snap.len`. Panics when the snapshot does not hold them, a ring's snapshot
-    /// written to a slot without a ring.
-    pub fn load_kv_layer(&self, cluster: &L0Cluster, l: usize, snap: &KvSnapshot) {
+    /// to go on from `snap.len`. A snapshot that does not hold them, a ring's snapshot for a slot
+    /// without a ring, is refused before any write.
+    pub fn load_kv_layer(&self, cluster: &L0Cluster, l: usize, snap: &KvSnapshot) -> Result<(), String> {
         let shard = &self.shards[self.card_of(l)];
         let dev = &cluster.cards[shard.card];
         let li = l - shard.layers.start;
@@ -1652,12 +1801,20 @@ impl Gemma4Engine {
         let have = snap.len - held;
         let ring = kv_ring(shard.max_seq(), l);
         let need = kv_keep_from(shard.max_seq(), l, snap.len).max(have);
-        assert!(
-            ring > 0 || have == 0,
-            "layer {}: the snapshot holds positions {}.., the slot needs all of them",
-            l,
-            have
-        );
+        if ring == 0 && have != 0 {
+            return Err(format!(
+                "layer {}: the snapshot holds positions {}.., the slot needs all of them",
+                l, have
+            ));
+        }
+        if snap.len > shard.max_seq() {
+            return Err(format!(
+                "layer {}: the snapshot holds {} positions, the slot {}",
+                l,
+                snap.len,
+                shard.max_seq()
+            ));
+        }
         if ring > 0 {
             shard.kv_high[shard.slot()].store(
                 kv_high_after_load(need, snap.len, ring),
@@ -1671,19 +1828,21 @@ impl Gemma4Engine {
                 at += n * row;
             }
         }
+        Ok(())
     }
 
     /// Writes a snapshot's KV rows back to the current slot on both cards.
-    pub fn load_kv(&self, cluster: &L0Cluster, snap: &KvSnapshot) {
-        self.load_kv_card(cluster, 0, snap);
-        self.load_kv_card(cluster, 1, snap);
+    pub fn load_kv(&self, cluster: &L0Cluster, snap: &KvSnapshot) -> Result<(), String> {
+        self.load_kv_card(cluster, 0, snap)?;
+        self.load_kv_card(cluster, 1, snap)
     }
 
     /// Writes a snapshot's KV rows for one card's layers.
-    pub fn load_kv_card(&self, cluster: &L0Cluster, card: usize, snap: &KvSnapshot) {
+    pub fn load_kv_card(&self, cluster: &L0Cluster, card: usize, snap: &KvSnapshot) -> Result<(), String> {
         for l in self.shards[card].layers.clone() {
-            self.load_kv_layer(cluster, l, snap);
+            self.load_kv_layer(cluster, l, snap)?;
         }
+        Ok(())
     }
 
     pub fn max_seq(&self) -> usize {
@@ -1723,16 +1882,6 @@ impl Gemma4Engine {
             .expect("checked at load")
     }
 
-    /// Writes `embed_tokens[id] * sqrt(hidden_size)` for each token into card 0's residual.
-    fn write_embeddings(&self, cluster: &L0Cluster, tokens: &[u32]) {
-        let scale = (HIDDEN as f32).sqrt();
-        let mut rows = Vec::with_capacity(tokens.len() * HIDDEN);
-        for &t in tokens {
-            rows.extend(embedding_row_f32(self.embed_bytes(), HIDDEN, t, scale));
-        }
-        self.shards[0].write(&cluster.cards[0], Buf::X, 0, &rows);
-    }
-
     /// Runs `tokens` at positions `pos0..` through both cards in blocks of `max_block`, writing
     /// every layer's KV cache. Returns the softcapped logits at the last token.
     pub fn forward(&self, cluster: &L0Cluster, tokens: &[u32], pos0: usize) -> Result<(Vec<f32>, PassTiming), String> {
@@ -1749,14 +1898,12 @@ impl Gemma4Engine {
         meta: Option<&[[u32; 4]]>,
     ) -> (Vec<f32>, u128) {
         let n = tokens.len();
-        self.write_embeddings(cluster, tokens);
         let s0 = &self.shards[0];
-        let us = unsafe {
-            let tasks = s0.build_ring(n, pos0, &[], meta).len();
-            s0.run(&cluster.cards[0], tasks)
-        };
+        let mut residual = vec![0.0f32; n * HIDDEN];
+        let out = unsafe { std::slice::from_raw_parts_mut(residual.as_mut_ptr() as *mut u8, n * HIDDEN * 4) };
+        let us = unsafe { run_first_stage(s0, &cluster.cards[0], self.embed_bytes(), tokens, pos0, meta, out) };
         self.count_routes(s0, n, pos0);
-        (s0.read(&cluster.cards[0], Buf::X, 0, n * HIDDEN), us)
+        (residual, us)
     }
 
     /// Runs one block's residual through card 1's layers and the head. Returns the logits of
@@ -1771,106 +1918,30 @@ impl Gemma4Engine {
     ) -> (Vec<Vec<f32>>, u128) {
         let n = residual.len() / HIDDEN;
         let s1 = &self.shards[1];
-        s1.write(&cluster.cards[1], Buf::X, 0, residual);
-        let us = unsafe {
-            let tasks = s1.build_ring(n, pos0, logit_rows, meta).len();
-            s1.run(&cluster.cards[1], tasks)
-        };
+        let us = unsafe { run_last_stage(s1, &cluster.cards[1], f32_bytes(residual), pos0, meta, logit_rows) };
         self.count_routes(s1, n, pos0);
-        let logits = s1.head.as_ref().unwrap().logits;
-        let out = (0..logit_rows.len())
-            .map(|i| unsafe { std::slice::from_raw_parts(logits.add(i * VOCAB), VOCAB).to_vec() })
-            .collect();
+        let out = (0..logit_rows.len()).map(|i| s1.logits_row(i).to_vec()).collect();
         (out, us)
     }
 
-    /// Stage `s` of running `jobs` through both cards, for s in 0..=jobs.len(): card 0 runs
-    /// job s while card 1 runs job s - 1 from `residual`, card 0's output for it at stage s - 1,
-    /// each card on its own thread. A job with `kv` first restores each card's layers from it.
-    /// Returns job s's residual and job s - 1's logits.
+    /// Runs `jobs` through both cards, one block after the other: card 0, then card 1. A job with `kv` first
+    /// restores each card's layers from it. Returns each job's logits.
     ///
-    /// With `slot`, each card's thread takes that card's lock at low priority and runs in KV
-    /// slot `slot`, so another generation can use the other card meanwhile; without, the caller
-    /// holds both cards (the council, `forward`).
-    pub fn pipeline_stage(
-        &self,
-        cluster: &L0Cluster,
-        jobs: &[PipeJob],
-        s: usize,
-        residual: Option<Vec<f32>>,
-        timing: &mut PassTiming,
-        slot: Option<usize>,
-    ) -> (Option<Vec<f32>>, Option<Vec<Vec<f32>>>) {
-        // With one card busy, the other is touched every few ms so it is awake for the next
-        // stage.
-        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-        let (r0, r1) = std::thread::scope(|sc| {
-            let idle = match (jobs.get(s).is_some(), residual.is_some()) {
-                (true, false) => Some(1),
-                (false, true) => Some(0),
-                _ => None,
-            };
-            if let Some(c) = idle {
-                sc.spawn(move || {
-                    let card = &cluster.cards[self.shards[c].card];
-                    loop {
-                        card.wake();
-                        if done_rx.recv_timeout(std::time::Duration::from_millis(3))
-                            != Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-                        {
-                            break;
-                        }
-                    }
-                });
-            }
-            let take = move |c: usize| {
-                slot.map(|sl| {
-                    let g = self.gpu.low(c);
-                    self.shards[c].set_slot(sl);
-                    g
-                })
-            };
-            let h0 = jobs.get(s).map(|job| {
-                sc.spawn(move || {
-                    let _gpu = take(0);
-                    if let Some(kv) = job.kv {
-                        self.load_kv_card(cluster, 0, kv);
-                    }
-                    self.run_card0(cluster, job.tokens, job.pos0, job.meta)
-                })
-            });
-            let h1 = residual.map(|res| {
-                let job = &jobs[s - 1];
-                sc.spawn(move || {
-                    let _gpu = take(1);
-                    if let Some(kv) = job.kv {
-                        self.load_kv_card(cluster, 1, kv);
-                    }
-                    self.run_card1(cluster, &res, job.pos0, job.meta, &job.logit_rows)
-                })
-            });
-            let out = (h0.map(|h| h.join().unwrap()), h1.map(|h| h.join().unwrap()));
-            drop(done_tx);
-            out
-        });
-        if let Some((_, us)) = &r0 {
-            timing.card_us[0] += us;
-            timing.blocks += 1;
-        }
-        if let Some((_, us)) = &r1 {
-            timing.card_us[1] += us;
-        }
-        (r0.map(|r| r.0), r1.map(|r| r.0))
-    }
-
-    /// Runs `jobs` through both cards with `pipeline_stage`. Returns each job's logits.
+    /// The two cards do not overlap here. The nagaya's stage threads run the two stages of the `Engine` at the same
+    /// time (engine-abi D1), and they give the same bits, because each card runs the same task ring.
     pub fn run_jobs(&self, cluster: &L0Cluster, jobs: &[PipeJob], timing: &mut PassTiming) -> Vec<Vec<Vec<f32>>> {
         let mut out = Vec::with_capacity(jobs.len());
-        let mut residual = None;
-        for s in 0..=jobs.len() {
-            let (res, logits) = self.pipeline_stage(cluster, jobs, s, residual, timing, None);
-            residual = res;
-            out.extend(logits);
+        for job in jobs {
+            if let Some(kv) = job.kv {
+                self.load_kv(cluster, kv)
+                    .expect("the caller gives a snapshot that fits the slot");
+            }
+            let (residual, us0) = self.run_card0(cluster, job.tokens, job.pos0, job.meta);
+            let (logits, us1) = self.run_card1(cluster, &residual, job.pos0, job.meta, &job.logit_rows);
+            timing.card_us[0] += us0;
+            timing.card_us[1] += us1;
+            timing.blocks += 1;
+            out.push(logits);
         }
         out
     }
@@ -2022,6 +2093,77 @@ impl Gemma4Engine {
             at += n;
         }
         jobs
+    }
+}
+
+/// The bytes of f32 values, little-endian.
+#[cfg(feature = "xe")]
+pub(crate) fn f32_bytes(values: &[f32]) -> &[u8] {
+    unsafe { std::slice::from_raw_parts(values.as_ptr() as *const u8, values.len() * 4) }
+}
+
+/// Runs one block through the layers of the first card: writes `embed_tokens[id] * sqrt(hidden_size)` for each token
+/// into the card's residual, runs the card's ring, and copies the residual that leaves its last layer into `out`.
+/// Returns the card time in microseconds.
+///
+/// The `Engine` stages and `Gemma4Engine` both run a block through this function, so they give the same bits.
+///
+/// # Safety
+///
+/// The caller checked the block: `tokens` fit `max_block`, the positions fit the current slot, and `out` holds one
+/// row of `HIDDEN` values for each token.
+#[cfg(feature = "xe")]
+pub(crate) unsafe fn run_first_stage(
+    shard: &CardShard,
+    card: &B70Card,
+    embed: &[u8],
+    tokens: &[u32],
+    pos0: usize,
+    meta: Option<&[[u32; 4]]>,
+    out: &mut [u8],
+) -> u128 {
+    let n = tokens.len();
+    assert_eq!(out.len(), n * HIDDEN * 4, "the residual holds one row for each token");
+    let scale = (HIDDEN as f32).sqrt();
+    let mut rows = Vec::with_capacity(n * HIDDEN);
+    for &t in tokens {
+        rows.extend(embedding_row_f32(embed, HIDDEN, t, scale));
+    }
+    shard.write(card, Buf::X, 0, &rows);
+    let us = unsafe {
+        let tasks = shard.build_ring(n, pos0, &[], meta).len();
+        shard.run(card, tasks)
+    };
+    card.memcpy_sync(
+        out.as_mut_ptr() as *mut c_void,
+        shard.buf_ptr(Buf::X, 0) as *const c_void,
+        n * HIDDEN * 4,
+    );
+    us
+}
+
+/// Runs one block through the layers of the last card and the head: copies `residual` (little-endian f32 rows of
+/// `HIDDEN` values) into the card's residual and runs the card's ring. The logits of each `logit_rows` row are then in
+/// `CardShard::logits_row`. Returns the card time in microseconds.
+///
+/// # Safety
+///
+/// As for `run_first_stage`, and the shard holds the head.
+#[cfg(feature = "xe")]
+pub(crate) unsafe fn run_last_stage(
+    shard: &CardShard,
+    card: &B70Card,
+    residual: &[u8],
+    pos0: usize,
+    meta: Option<&[[u32; 4]]>,
+    logit_rows: &[usize],
+) -> u128 {
+    let n = residual.len() / (HIDDEN * 4);
+    assert_eq!(residual.len(), n * HIDDEN * 4, "the residual holds whole rows");
+    shard.upload_bytes(card, shard.buf_ptr(Buf::X, 0), residual);
+    unsafe {
+        let tasks = shard.build_ring(n, pos0, logit_rows, meta).len();
+        shard.run(card, tasks)
     }
 }
 

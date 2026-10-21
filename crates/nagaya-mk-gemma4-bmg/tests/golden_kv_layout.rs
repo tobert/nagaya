@@ -52,7 +52,7 @@ fn golden_kv_layout_matches_baseline() {
     let l = decode(l, 6500, 8, &mut rows);
     let snap = engine.save_kv(&cl, 6508);
     rows.push(engine.forward(&cl, &toks(9, 7000), 0).unwrap().0);
-    engine.load_kv(&cl, &snap);
+    engine.load_kv(&cl, &snap).unwrap();
     decode(l, 6508, 8, &mut rows);
     // Feed to 8186, then decode across row 8192.
     let l2 = engine.forward(&cl, &toks(13, 1670), 6516).unwrap().0;
