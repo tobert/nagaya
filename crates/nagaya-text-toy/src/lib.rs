@@ -1,7 +1,7 @@
 //! The toy family library: nagaya's family interface on gogi's `gogi-toy` (spec 11.3b).
 //!
-//! The tokens, the template, the boundaries and the council read come from `gogi_toy`, so they equal the tokens of
-//! `gogi-fake`. The fake engine gives logits over `gogi_toy::VOCAB` tokens (engine-abi, "Logit outputs").
+//! The tokens, the template, the boundaries, the rendering of an open message and the council read come from
+//! `gogi_toy`, so they equal the tokens of `gogi-fake`. The fake engine gives logits over `gogi_toy::VOCAB` tokens (engine-abi, "Logit outputs").
 
 mod plan;
 mod reply;
@@ -132,6 +132,9 @@ pub(crate) fn hits(place: &str, text: &str) -> Vec<ControlHit> {
 impl Family for ToyFamily {
     fn render(&self, context: &Context, generation_prompt: bool) -> Result<Rendering, FamilyError> {
         context.check()?;
+        // An open message renders without its end (gogi-toy). Each open field must tokenize on its own. A toy token
+        // is a byte, so the check never refuses, but it is the check that every family makes.
+        toy::check_open(&context.tools, context.thinks(), &context.messages)?;
         let r = toy::render(&context.tools, context.thinks(), &context.messages, generation_prompt);
         let mut tokens = r.tokens;
         self.tweak(Site::Context, &mut tokens);

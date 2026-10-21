@@ -59,6 +59,69 @@ fn a_context_renders_to_the_tokens_and_boundaries_of_gogi_toy() {
     }
 }
 
+/// gogi "Continuations": an open last message renders as gogi-toy renders it, without its end and in place of the
+/// generation prompt. So nagaya and gogi-fake feed the same prompt.
+#[test]
+fn an_open_message_renders_to_the_tokens_of_gogi_toy_without_its_end() {
+    let f = family();
+    let u = json!({"role": "user", "content": "u", "snap": true});
+    for (thinking, open) in [
+        (
+            true,
+            json!({"role": "assistant", "reasoning": "plan", "continue": true}),
+        ),
+        (
+            true,
+            json!({"role": "assistant", "reasoning": "plan", "content": "", "continue": true}),
+        ),
+        (
+            true,
+            json!({"role": "assistant", "reasoning": "plan", "content": "fn ", "continue": true, "snap": true}),
+        ),
+        (false, json!({"role": "assistant", "content": "fn ", "continue": true})),
+        (false, json!({"role": "assistant", "content": "", "continue": true})),
+    ] {
+        let c = context(json!({"thinking": thinking, "messages": [u, open]}));
+        let want = toy::render_tokens(&c.tools, thinking, &c.messages, true);
+        let user = f
+            .render(&context(json!({"thinking": thinking, "messages": [u]})), false)
+            .unwrap()
+            .end;
+        for prompt in [false, true] {
+            let got = f.render(&c, prompt).unwrap();
+            assert_eq!(got.tokens, want, "{open}, prompt {prompt}");
+            assert_eq!(
+                got.end,
+                got.tokens.len(),
+                "{open}: an open message has no generation prompt after it"
+            );
+            assert_eq!(
+                got.boundaries,
+                [
+                    Boundary {
+                        message: 0,
+                        tokens: user
+                    },
+                    Boundary {
+                        message: 1,
+                        tokens: got.end
+                    }
+                ],
+                "{open}"
+            );
+        }
+        let mut ended = want.clone();
+        ended.extend(toy::end_open(thinking, &c.messages[1]));
+        let mut closed = c.clone();
+        closed.messages[1].open = false;
+        assert_eq!(
+            f.render(&closed, false).unwrap().tokens,
+            ended,
+            "{open}: the open rendering begins the closed one"
+        );
+    }
+}
+
 #[test]
 fn a_boundary_goes_when_a_later_user_message_changes_the_rendering() {
     let f = family();
