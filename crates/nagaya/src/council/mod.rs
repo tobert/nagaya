@@ -12,6 +12,7 @@ pub mod pins;
 pub mod reads;
 pub mod slots;
 pub mod specs;
+pub(crate) mod staging;
 
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -254,6 +255,8 @@ pub struct Service {
     root: nagaya_store::RecipeId,
     identity: nagaya_abi::Identity,
     specs: Mutex<Specs>,
+    /// The pin book. Lock order: take `pins` before the store (`shared.store`), never the store before `pins`. A
+    /// method that needs both locks `pins` first. Two methods that lock in two orders can wait for each other for ever.
     pins: Mutex<PinBook>,
 }
 
@@ -327,6 +330,7 @@ impl Service {
         let digest = identity_digest(&identity);
         let pool = Arc::new(Mutex::new(SlotPool::new(&limits)));
         let shared = Arc::new(Shared {
+            ports: ports.clone(),
             store,
             engine_index: index,
             engine_name: config.engine.clone(),
@@ -528,14 +532,20 @@ impl Service {
 
     /// A held snapshot: its served model, tokens, tier, size and the owners that pin it (gogi "Snapshots and pins").
     pub fn snapshot(&self, id: &SnapshotId) -> Result<SnapshotDetail, ServiceError> {
-        let content = self
-            .held_content_id(id.as_str())
-            .ok_or_else(|| ServiceError::NotFound(format!("no snapshot {id} is held: build the context to hold it")))?;
         let now = self.now();
-        let store = self.store();
-        let entry = store.entries().get(&content).expect("a held content id has an entry");
-        let tokens = entry.coverage.iter().map(|part| part.end).max().unwrap_or(0);
+        // Lock order: the pins, then the store (see the field `pins`). One store guard covers the check and the read,
+        // so an eviction cannot fall between them.
         let book = self.pins.lock().expect("the pin book lock is poisoned");
+        let store = self.store();
+        let not_held = || ServiceError::NotFound(format!("no snapshot {id} is held: build the context to hold it"));
+        let content = id
+            .as_str()
+            .strip_prefix("blake3:")
+            .and_then(|hex| ContentId::from_hex(hex).ok())
+            .filter(|content| self.is_ours(&store, content))
+            .ok_or_else(not_held)?;
+        let entry = store.entries().get(&content).ok_or_else(not_held)?;
+        let tokens = entry.coverage.iter().map(|part| part.end).max().unwrap_or(0);
         let pins = store
             .pins()
             .get(&content)
@@ -559,13 +569,6 @@ impl Service {
             bytes: Some(entry.size),
             pins,
         })
-    }
-
-    /// The content id of a snapshot id that this service holds: a `blake3:` id, a live entry of this engine.
-    fn held_content_id(&self, id: &str) -> Option<ContentId> {
-        let hex = id.strip_prefix("blake3:")?;
-        let content = ContentId::from_hex(hex).ok()?;
-        self.is_ours(&self.store(), &content).then_some(content)
     }
 
     /// True when the store holds a live entry that this engine made.

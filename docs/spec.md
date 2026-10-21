@@ -75,7 +75,9 @@ and sm121host. Decided 2026-10-20 (`docs/deepinfer.md` 5).
 root path is `/` on a machine, and a fixed tree in a test (`crates/nagaya/tests/fixtures/probe/`).
 
 - Host memory: `MemTotal` in `proc/meminfo`.
-- CPUs: the list in `sys/devices/system/cpu/online`.
+- CPUs: the list in `sys/devices/system/cpu/online`. Each CPU number is below 1024, the CPUs that one `cpu_set_t` mask
+  holds (3.2a). A list with a larger number is a probe error that names the file. Decided by senpai 2026-10-20 night
+  (vetoable).
 - AMD GPUs: the nodes of `sys/class/kfd/kfd/topology/nodes`. A node with `gpu_id` 0 is a CPU node. The device name
   comes from `gfx_target_version`, so 110501 gives `gfx1151`. The PCI address comes from `location_id` and `domain`.
 - Intel GPUs: each `sys/class/drm/card<N>` whose `device/uevent` says `DRIVER=xe`.
@@ -383,6 +385,21 @@ warning (Amy, 2026-10-19). The owner quota is unbounded, and the chain limit is 
 
 The nagaya declares its own terms in the ledger: staging, store buffers and IO. The ledger charges every allocation.
 Bytes without a charge are a defect. (ds4-recipe: vision weights without a charge "show up as untracked bytes".)
+
+**Staging.** A copy of engine state in host memory is a staging charge. The copies are the mark of a read or a
+decision, and the buffer that holds a snapshot before the store takes it. Decided by senpai 2026-10-20 night
+(vetoable).
+
+- The size is the stored bytes of one slot. A fixed part counts whole. A cells part and a ring part count their rows
+  up to the highest row of the slot. A 32,768-token mk context is about 1.93 GB.
+- The job asks the ledger for the bytes before it reads the state. The tier is `host`. The bytes come from the
+  unassigned bytes of its budget (4.4 step 4), as the bytes of a new context do.
+- A refusal reads nothing and changes nothing (4.3). The client gets 429 `busy` (11.5), with the shortfall in bytes.
+- The charge ends when the copy drops. A job drops its mark before its caller hears the result.
+- The store's own bytes are in the store's budget (4.1a). The charge covers the transient buffer only.
+
+Reason: the copy is the largest transient allocation of the nagaya, and no term charged it (kaibo review,
+2026-10-20, finding 3).
 
 **4.3 Admission.** The ledger thread admits each call that allocates before the call runs. These calls are `open`,
 `attach`, `ctx_new`, `ctx_fork`, `ctx_copy`, `part_write`, and each resize. The check includes transient peaks. A
@@ -1545,7 +1562,8 @@ rules are each "Decided by senpai 2026-10-20 night (vetoable)".
 - A request body has at most 16 MiB. A larger body is a 413 `too_large` that names `body`.
 - A route that does not exist is a 404 `not_found`, also for a known path with another method.
 - A request id is `req_<start time in hex>_<count>`. It differs between requests and between runs.
-- A ledger that refuses the charge of a context is a 429 `busy`. A job that a stop cancelled is a 503 `unavailable`.
+- A ledger that refuses the charge of a context or of a staging copy (4.2) is a 429 `busy`. A job that a stop
+  cancelled is a 503 `unavailable`.
 - An internal error is a 500. The process then stops with exit 1 (8.5).
 - A stream waits for its first event before it sends the status. Thus a request that fails before its first token
   gets a status response. A later failure is an `error` event. At most 256 events wait for a slow client. A full

@@ -384,3 +384,55 @@ fn a_closed_stream_cancels_the_generation() {
 fn council_free(council: &Arc<Council>) -> usize {
     council.free_slots()
 }
+
+/// Kaibo review 2026-10-20, unverified items. `Service::read` takes the longest suffix with `.expect`, and the Qwen3.8
+/// queue read takes the queue name with `.expect`. gogi's `validate` and `Context::check` must refuse the bad request
+/// first. These requests reach no `.expect`: each is a 400 that names the parameter.
+#[test]
+fn a_read_with_no_suffix_is_a_400_before_any_family_code_runs() {
+    let f = Fixture::new();
+    let council = council(&f);
+    for (suffixes, param) in [(json!([]), "suffixes"), (json!([""]), "suffixes")] {
+        let body = json!({"model": "toy", "contexts": [context()], "suffixes": suffixes, "letters": ["A", "B"]});
+        let (status, _, value) = send(&council, "POST", "/council/v2/reads", Some(body));
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{value}");
+        assert_eq!(value["error"]["param"], param, "{value}");
+    }
+}
+
+#[test]
+fn a_decision_context_whose_queue_names_no_tool_is_a_400() {
+    let f = Fixture::new();
+    let council = council(&f);
+    let mut queued = context();
+    queued["queue"] = json!("next_command");
+    let body = json!({"model": "toy", "spec_id": format!("sha256:{}", "0".repeat(64)), "case": "x",
+        "contexts": [queued]});
+    let (status, _, value) = send(&council, "POST", "/council/v2/decisions", Some(body));
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{value}");
+    assert_eq!(value["error"]["param"], "contexts", "{value}");
+}
+
+#[test]
+fn a_build_whose_snapshot_copy_the_ledger_refuses_is_a_429_busy_that_names_the_shortfall() {
+    use nagaya_abi::Tier;
+
+    let f = Fixture::new();
+    let council = council(&f);
+    let ports = f.process.ports();
+    let free = ports
+        .unassigned()
+        .into_iter()
+        .find(|(tiers, _)| tiers.contains(&Tier::Host))
+        .map(|(_, bytes)| bytes)
+        .unwrap();
+    ports.admit_staging("toy", Tier::Host, free - 100).unwrap();
+    let body = json!({"model": "toy", "context": context()});
+    let (status, _, value) = send(&council, "POST", "/council/v2/contexts", Some(body));
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{value}");
+    assert_eq!(value["error"]["type"], "busy", "{value}");
+    assert!(
+        value["error"]["message"].as_str().unwrap().contains("short by"),
+        "{value}"
+    );
+}

@@ -410,3 +410,72 @@ fn a_context_that_fits_exactly_is_admitted() {
     assert_eq!(ledger.unassigned(), vec![(vec![Tier::Host], 0)]);
     assert!(ledger.admit_context("a").is_err());
 }
+
+#[test]
+fn staging_takes_bytes_from_the_unassigned_bytes_and_the_release_gives_them_back() {
+    let mut ledger = Ledger::new();
+    ledger.admit(&context_profile()).unwrap();
+    ledger.admit_staging("a", Tier::Host, 60).unwrap();
+    assert_eq!(ledger.unassigned(), vec![(vec![Tier::Host], 10)]);
+    ledger.release_staging(Tier::Host, 60).unwrap();
+    assert_eq!(ledger.unassigned(), vec![(vec![Tier::Host], 70)]);
+}
+
+#[test]
+fn a_refused_staging_names_the_shortfall_and_changes_nothing() {
+    let mut ledger = Ledger::new();
+    ledger.admit(&context_profile()).unwrap();
+    ledger.admit_staging("a", Tier::Host, 60).unwrap();
+    let before = ledger.clone();
+    let error = ledger.admit_staging("a", Tier::Host, 20).unwrap_err();
+    assert_eq!(
+        error,
+        LedgerError::StagingRefused(Refusal {
+            shortfall: vec![(vec![Tier::Host], 10)],
+        })
+    );
+    assert_eq!(ledger, before);
+    assert!(error.to_string().contains("short by 10 bytes"), "{error}");
+}
+
+#[test]
+fn staging_that_fits_exactly_is_admitted() {
+    let mut ledger = Ledger::new();
+    ledger.admit(&context_profile()).unwrap();
+    ledger.admit_staging("a", Tier::Host, 70).unwrap();
+    assert_eq!(ledger.unassigned(), vec![(vec![Tier::Host], 0)]);
+}
+
+#[test]
+fn staging_and_new_contexts_share_the_unassigned_bytes() {
+    let mut ledger = Ledger::new();
+    ledger.admit(&context_profile()).unwrap();
+    ledger.admit_staging("a", Tier::Host, 30).unwrap();
+    // The context needs 50 bytes, and 40 are left.
+    assert!(matches!(ledger.admit_context("a"), Err(LedgerError::ContextRefused(_))));
+    ledger.release_staging(Tier::Host, 30).unwrap();
+    ledger.admit_context("a").unwrap();
+}
+
+#[test]
+fn a_release_of_more_staging_than_was_charged_is_an_error_and_changes_nothing() {
+    let mut ledger = Ledger::new();
+    ledger.admit(&context_profile()).unwrap();
+    ledger.admit_staging("a", Tier::Host, 10).unwrap();
+    let before = ledger.clone();
+    assert!(matches!(
+        ledger.release_staging(Tier::Host, 11),
+        Err(LedgerError::Invalid(_))
+    ));
+    assert_eq!(ledger, before);
+}
+
+#[test]
+fn staging_for_an_engine_that_is_not_admitted_is_an_error() {
+    let mut ledger = Ledger::new();
+    ledger.admit(&context_profile()).unwrap();
+    assert!(matches!(
+        ledger.admit_staging("b", Tier::Host, 1),
+        Err(LedgerError::Invalid(_))
+    ));
+}

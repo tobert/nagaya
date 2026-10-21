@@ -474,7 +474,7 @@ impl Service {
         let tokens: Arc<[u32]> = rendering.tokens[..end].into();
         let shared = Arc::clone(&self.shared);
         let cuts = self.cuts(context, &rendering)?;
-        let job = |tx| ContextBody::with(shared, tokens, recipes.clone(), room, "context_tokens", then, tx).cuts(cuts);
+        let job = |tx| ContextBody::with(shared, tokens, recipes.clone(), room, then, tx).cuts(cuts);
         let finished = self.run_context(job, Schedule::of(request.class, request.priority), None)?;
         let ids = finished
             .then
