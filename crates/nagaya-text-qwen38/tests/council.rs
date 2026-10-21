@@ -171,6 +171,36 @@ fn the_generation_prompt_follows_the_end_and_opens_or_closes_the_thinking() {
     assert_eq!(a.boundaries.last().unwrap().tokens, a.end);
 }
 
+/// Thinking follows the context (spec 11.3a). A past assistant message keeps its reasoning with thinking on or off,
+/// so the two renders differ in the generation prompt and nowhere else.
+#[test]
+fn thinking_changes_the_generation_prompt_and_not_the_reasoning_of_a_past_message() {
+    let build = |thinking: bool| {
+        context(json!({"thinking": thinking, "messages": [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "answer", "reasoning": "deep thought"},
+            {"role": "user", "content": "next"}]}))
+    };
+    let (on, off) = (build(true), build(false));
+    let (a, b) = (
+        family().render(&on, true).unwrap(),
+        family().render(&off, true).unwrap(),
+    );
+    assert_eq!(a.end, b.end);
+    assert_eq!(a.tokens[..a.end], b.tokens[..b.end], "the context renders the same");
+    assert_ne!(a.tokens[a.end..], b.tokens[b.end..], "the generation prompt differs");
+    let context_text = text(&a.tokens[..a.end]);
+    assert!(
+        context_text.contains("<think>\ndeep thought\n</think>\n\nanswer<|im_end|>\n"),
+        "{context_text:?}"
+    );
+    // Without a generation prompt the two renders are the same tokens.
+    assert_eq!(
+        family().render(&on, false).unwrap().tokens,
+        family().render(&off, false).unwrap().tokens
+    );
+}
+
 /// The reasoning effort is `medium`, so the template writes no effort line, with thinking on or off.
 #[test]
 fn a_context_renders_with_no_effort_line() {
