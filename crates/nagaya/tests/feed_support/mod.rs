@@ -268,11 +268,20 @@ impl FeedFixture {
 
     /// A fixture with this factory and this watchdog timeout.
     pub fn with(factory: FeedFactory, timeout: Duration) -> Self {
+        Self::with_sets(factory, timeout, None)
+    }
+
+    /// A fixture with this factory, this watchdog timeout and these CPU sets.
+    pub fn with_sets(factory: FeedFactory, timeout: Duration, sets: Option<nagaya::cpu_sets::CpuSets>) -> Self {
         let stages = factory.stages;
         let directory = tempfile::tempdir().unwrap();
         let mut registry = Registry::new();
         registry.register("feed", Box::new(factory.clone()));
-        let mut process = Start::new(profile(stages), registry, inventory(stages))
+        let mut start = Start::new(profile(stages), registry, inventory(stages));
+        if let Some(sets) = sets {
+            start = start.cpu_sets(sets);
+        }
+        let mut process = start
             .store(directory.path())
             .heartbeat(Duration::from_millis(10))
             .timeout(timeout)

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nagaya::bootstrap::Bootstrap;
-use nagaya::cpu_sets::{self, CpuSets};
+use nagaya::cpu_sets::{CpuSets, for_machine_with_devices};
 use nagaya::exit::{ExitCode, after_stop, leave, panic_text};
 use nagaya::gossip::{Gossip, GossipConfig, PublishError};
 use nagaya::lifecycle;
@@ -122,8 +122,8 @@ fn run(machine: Machine) -> ExitCode {
             return ExitCode::RefusedStart;
         }
     };
-    // The CPU sets come from the online CPUs of the file probe. A machine that cannot split them refuses the start.
-    let cpu_sets = match cpu_sets::for_machine(&FileProbe::new("/")) {
+    // The CPU sets come from the CPU lists of the file probe (spec 3.2a, 3.2b). A machine that cannot split them refuses the start.
+    let cpu_sets = match for_machine_with_devices(&FileProbe::new("/")) {
         Ok(sets) => sets,
         Err(error) => {
             tracing::error!("{error}");
@@ -136,6 +136,7 @@ fn run(machine: Machine) -> ExitCode {
         cpu_sets.pool.len(),
         cpu_sets.pool_size()
     );
+    tracing::info!("device CPUs {:?}", cpu_sets.devices);
     let mut gossip_config = GossipConfig::new(&node_name, config.gossip_bind);
     gossip_config.seeds = config.seed_peers.clone();
     gossip_config.housekeeping = Some(cpu_sets.housekeeping.clone());
