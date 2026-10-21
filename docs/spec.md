@@ -1173,6 +1173,18 @@ a part size or the weight arena size is a refusal to start: exit 3. Any other fa
 process exits 1, and systemd restarts it within its start limit. A message on stderr names the engine and the
 reason. Decided 2026-10-20 (reading).
 
+**One exit path.** Decided by senpai 2026-10-20 night (vetoable).
+
+- The binary ends through one function, `nagaya::exit::leave`, for every code.
+- First the process drops the telemetry, so the OTLP batches flush (9.1). Then `leave` flushes stdout, stderr and the
+  C output streams.
+- Then `leave` calls `_exit(2)`. It runs no `atexit` handler and no static destructor.
+- The fake build takes the same path, so the host tests run the path of the GPU build.
+
+Reason: mk's HIP runtime stops the program in its static destructors, as its teardown does (3.3). On gfx1151 on
+2026-10-20, a clean stop with `exit(3)` printed "pure virtual method called" and ended with SIGABRT (status 134) and
+a core dump. Nothing in the process needs an `atexit` handler.
+
 ## 11. Client API
 
 **11.1 Council and coordinator routing.** The nagaya serves council v2 for all engines in the cluster. It does not
