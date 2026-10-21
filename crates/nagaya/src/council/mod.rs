@@ -254,6 +254,8 @@ pub struct Service {
     root: nagaya_store::RecipeId,
     identity: nagaya_abi::Identity,
     specs: Mutex<Specs>,
+    /// The pin book. Lock order: take `pins` before the store (`shared.store`), never the store before `pins`. A
+    /// method that needs both locks `pins` first. Two methods that lock in two orders can wait for each other for ever.
     pins: Mutex<PinBook>,
 }
 
@@ -528,6 +530,8 @@ impl Service {
 
     /// A held snapshot: its served model, tokens, tier, size and the owners that pin it (gogi "Snapshots and pins").
     pub fn snapshot(&self, id: &SnapshotId) -> Result<SnapshotDetail, ServiceError> {
+        // Lock order: the pins, then the store (see the field `pins`).
+        let book = self.pins.lock().expect("the pin book lock is poisoned");
         let content = self
             .held_content_id(id.as_str())
             .ok_or_else(|| ServiceError::NotFound(format!("no snapshot {id} is held: build the context to hold it")))?;
@@ -535,7 +539,6 @@ impl Service {
         let store = self.store();
         let entry = store.entries().get(&content).expect("a held content id has an entry");
         let tokens = entry.coverage.iter().map(|part| part.end).max().unwrap_or(0);
-        let book = self.pins.lock().expect("the pin book lock is poisoned");
         let pins = store
             .pins()
             .get(&content)

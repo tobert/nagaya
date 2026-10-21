@@ -267,3 +267,47 @@ fn a_snapshot_of_another_engine_is_not_held_by_this_service() {
     assert!(!result.snapshots[0].held);
     assert_eq!(pinned_by_the_store(&f, &id), 0);
 }
+
+/// Kaibo review 2026-10-20, finding 5: `snapshot` locked the store and then the pins, and the writers of pins
+/// locked the pins and then the store. Two threads that meet in the middle wait for each other for ever.
+#[test]
+fn a_snapshot_read_and_a_pin_write_do_not_deadlock() {
+    use std::sync::Arc;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    const THREADS: usize = 4;
+    const ROUNDS: usize = 3000;
+    let f = Fixture::new();
+    let service = Arc::new(f.attach_again());
+    let id = service
+        .build(&context("hello"), false, Schedule::default())
+        .unwrap()
+        .head
+        .unwrap();
+    let (done, finished) = mpsc::channel();
+    for n in 0..THREADS {
+        for writer in [false, true] {
+            let service = Arc::clone(&service);
+            let id = id.clone();
+            let done = done.clone();
+            std::thread::spawn(move || {
+                for _ in 0..ROUNDS {
+                    if writer {
+                        service.put_pins(&format!("owner-{n}"), &put(&[&id], 86_400)).unwrap();
+                        service.delete_pins(&format!("owner-{n}")).unwrap();
+                    } else {
+                        // The snapshot can be gone from no thread here, so a miss is a defect.
+                        service.snapshot(&id).unwrap();
+                    }
+                }
+                done.send(()).unwrap();
+            });
+        }
+    }
+    for _ in 0..THREADS * 2 {
+        finished
+            .recv_timeout(Duration::from_secs(30))
+            .expect("a snapshot read and a pin write wait for each other: the locks are taken in two orders");
+    }
+}
