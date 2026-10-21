@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use nagaya::bootstrap::Bootstrap;
 use nagaya::cpu_sets::{self, CpuSets};
-use nagaya::exit::{ExitCode, leave, panic_text};
+use nagaya::exit::{ExitCode, after_stop, leave, panic_text};
 use nagaya::gossip::{Gossip, GossipConfig, PublishError};
 use nagaya::lifecycle;
 use nagaya::node::Node;
@@ -263,13 +263,9 @@ fn serve(
         tracing::error!("the park failed: {failure}");
     }
     tracing::info!("{}", report.log_line());
-    let stop_code = report.exit_code();
-    // A planned restart stops as in 10.3, then exits 4 (spec 3.3). A failed stop is still a crash.
-    let code = if code == ExitCode::PlannedRestart && stop_code == ExitCode::Clean {
-        ExitCode::PlannedRestart
-    } else {
-        stop_code
-    };
+    // A planned restart stops as in 10.3, then exits 4 (spec 3.3). A failed stop is still a crash. A route can fail
+    // after the last wait tick, so the stop path checks the council again (spec 8.5, 11.7).
+    let code = after_stop(code, report.exit_code(), council.failure().is_some());
     // Spec 10.3: exit after the park budget. Do not join a group that is still parking.
     std::mem::forget(ready.process);
     code

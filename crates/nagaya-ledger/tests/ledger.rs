@@ -479,3 +479,53 @@ fn staging_for_an_engine_that_is_not_admitted_is_an_error() {
         Err(LedgerError::Invalid(_))
     ));
 }
+
+/// The profile of `context_profile` with a host budget of `bytes`.
+fn context_profile_of(bytes: u64) -> Profile {
+    let mut profile = context_profile();
+    profile.budgets = vec![budget(&[Tier::Host], bytes)];
+    profile
+}
+
+#[test]
+fn live_staging_stays_charged_when_a_profile_is_admitted() {
+    let mut ledger = Ledger::new();
+    ledger.admit(&context_profile()).unwrap();
+    ledger.admit_staging("a", Tier::Host, 30).unwrap();
+    // The new budget is 200 bytes. The engine term takes 30 and the live copy takes 30.
+    ledger.admit(&context_profile_of(200)).unwrap();
+    assert_eq!(ledger.unassigned(), vec![(vec![Tier::Host], 140)]);
+    // The release of the live copy is valid, and it gives the bytes back.
+    ledger.release_staging(Tier::Host, 30).unwrap();
+    assert_eq!(ledger.unassigned(), vec![(vec![Tier::Host], 170)]);
+}
+
+#[test]
+fn a_live_context_stays_charged_when_a_profile_is_admitted() {
+    let mut ledger = Ledger::new();
+    ledger.admit(&context_profile()).unwrap();
+    ledger.admit_context("a").unwrap();
+    ledger.admit(&context_profile_of(200)).unwrap();
+    assert_eq!(ledger.unassigned(), vec![(vec![Tier::Host], 120)]);
+    ledger.release_context("a").unwrap();
+    assert_eq!(ledger.unassigned(), vec![(vec![Tier::Host], 170)]);
+    assert!(matches!(ledger.release_context("a"), Err(LedgerError::Invalid(_))));
+}
+
+#[test]
+fn a_profile_that_does_not_fit_the_live_charges_is_refused_and_changes_nothing() {
+    let mut ledger = Ledger::new();
+    ledger.admit(&context_profile()).unwrap();
+    ledger.admit_staging("a", Tier::Host, 60).unwrap();
+    let before = ledger.clone();
+    // The budget is 80 bytes. The engine term takes 30, and 50 are left for 60 live bytes.
+    let error = ledger.admit(&context_profile_of(80)).unwrap_err();
+    assert_eq!(
+        error,
+        LedgerError::Refused(Refusal {
+            shortfall: vec![(vec![Tier::Host], 10)],
+        })
+    );
+    assert_eq!(ledger, before);
+    ledger.release_staging(Tier::Host, 60).unwrap();
+}

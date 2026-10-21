@@ -349,23 +349,17 @@ impl Ledger {
             });
         }
 
-        let left: Vec<u128> = (0..profile.budgets.len())
+        let mut left: Vec<u128> = (0..profile.budgets.len())
             .map(|index| {
                 (profile.budgets[index].bytes as u128)
                     .saturating_sub(mandatory[index])
                     .saturating_sub(allocated[index])
             })
             .collect();
-        let unassigned: Vec<(Vec<Tier>, u64)> = profile
-            .budgets
-            .iter()
-            .zip(&left)
-            .map(|(budget, left)| (budget.tiers.clone(), (*left).min(u64::MAX as u128) as u64))
-            .collect();
 
         let mut context_terms = BTreeMap::new();
         for engine in &profile.engines {
-            let terms = engine
+            let terms: Vec<(Tier, u64)> = engine
                 .limits
                 .memory
                 .mandatory
@@ -375,12 +369,57 @@ impl Ledger {
                 .collect();
             context_terms.insert(engine.name.clone(), terms);
         }
+
+        // The charges that live now stay charged. A later release finds its charge, and the unassigned bytes stay
+        // true. Decided by senpai 2026-10-20 night (vetoable); see spec 4.2 "Staging".
+        let mut live = vec![0u128; profile.budgets.len()];
+        for (engine, count) in &self.contexts {
+            for (tier, bytes) in context_terms.get(engine).into_iter().flatten() {
+                live[budget_index(profile, *tier)?] += *bytes as u128 * *count as u128;
+            }
+        }
+        let mut staged = BTreeMap::new();
+        for (old, bytes) in &self.staged {
+            let mut target = None;
+            for tier in &self.budgets[*old].tiers {
+                let index = budget_index(profile, *tier)?;
+                if target.is_some_and(|found| found != index) {
+                    return Err(LedgerError::Invalid(
+                        "a budget with live staging would split across two budgets: end the staging, or keep the budget"
+                            .to_owned(),
+                    ));
+                }
+                target = Some(index);
+            }
+            let index = target.expect("an admitted budget has a tier");
+            live[index] += *bytes;
+            *staged.entry(index).or_insert(0) += *bytes;
+        }
+        let shortfall: Vec<(Vec<Tier>, u64)> = (0..profile.budgets.len())
+            .filter(|index| live[*index] > left[*index])
+            .map(|index| {
+                let bytes = (live[index] - left[index]).min(u64::MAX as u128) as u64;
+                (profile.budgets[index].tiers.clone(), bytes)
+            })
+            .collect();
+        if !shortfall.is_empty() {
+            return Err(LedgerError::Refused(Refusal { shortfall }));
+        }
+        for (index, bytes) in live.iter().enumerate() {
+            left[index] -= bytes;
+        }
+        let unassigned: Vec<(Vec<Tier>, u64)> = profile
+            .budgets
+            .iter()
+            .zip(&left)
+            .map(|(budget, left)| (budget.tiers.clone(), (*left).min(u64::MAX as u128) as u64))
+            .collect();
+
         self.budgets = profile.budgets.clone();
         self.engines = engines.clone();
         self.unassigned = left;
         self.context_terms = context_terms;
-        self.contexts = BTreeMap::new();
-        self.staged = BTreeMap::new();
+        self.staged = staged;
         Ok(Admission { engines, unassigned })
     }
 }

@@ -859,6 +859,7 @@ dependencies = [
  "gogi-fake",
  "gogi-proto",
  "gogi-toy",
+ "http-body-util",
  "indexmap",
  "libc",
  "nagaya",

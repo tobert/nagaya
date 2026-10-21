@@ -705,6 +705,7 @@ impl Start {
                 })
                 .collect(),
             accepting,
+            failure: Arc::new(Mutex::new(None)),
             stopped: false,
         })
     }
@@ -1070,9 +1071,31 @@ pub struct Ports {
     group_engines: Arc<Vec<Vec<String>>>,
     store: Option<Arc<Mutex<Store>>>,
     accepting: Arc<AtomicBool>,
+    /// The first failure that a service saw outside a call. The main loop reads it (spec 8.5).
+    failure: Arc<Mutex<Option<String>>>,
 }
 
 impl Ports {
+    /// Record a failed release of a ledger charge. The ledger is wrong now, so the process must stop (spec 4.2, 8.5).
+    ///
+    /// A stopped ledger has no charge left to release, so a stop is not a failure. The first failure stays.
+    pub fn release_failed(&self, what: &str, error: &ContextChargeError) {
+        if matches!(error, ContextChargeError::Stopping) {
+            return;
+        }
+        let mut failure = self.failure.lock().expect("the failure lock is poisoned");
+        if failure.is_none() {
+            let message = format!("the release of {what} failed: {error}");
+            tracing::error!("{message}; the process stops (spec 8.5)");
+            *failure = Some(message);
+        }
+    }
+
+    /// The first failure that a service saw outside a call, or `None`.
+    pub fn failure(&self) -> Option<String> {
+        self.failure.lock().expect("the failure lock is poisoned").clone()
+    }
+
     /// Charge a new context of an engine with the ledger, and wait for the answer (spec 4.2, 4.3).
     ///
     /// A refusal changes nothing. The engine name is the name in the profile.
@@ -1185,6 +1208,8 @@ pub struct Process {
     /// The engine names of each group, in profile order.
     group_engines: Vec<Vec<String>>,
     accepting: Arc<AtomicBool>,
+    /// The first failure that a service saw outside a call. [`Ports::release_failed`] sets it.
+    failure: Arc<Mutex<Option<String>>>,
     stopped: bool,
 }
 
@@ -1225,6 +1250,7 @@ impl Process {
             group_engines: Arc::new(self.group_engines.clone()),
             store: self.store_handle.clone(),
             accepting: Arc::clone(&self.accepting),
+            failure: Arc::clone(&self.failure),
         }
     }
 
@@ -1347,16 +1373,26 @@ impl Process {
                     };
                 }
                 let left = deadline.saturating_duration_since(Instant::now());
-                if left.is_zero() {
-                    complete = false;
-                    break;
-                }
-                match reply.recv_timeout(left.min(STOP_POLL)) {
+                // With no budget left, read only the replies that wait in the channel. A group that finished its
+                // park while an earlier group used the budget has its report there.
+                let reply_now = if left.is_zero() {
+                    reply.try_recv().map_err(|error| match error {
+                        TryRecvError::Empty => RecvTimeoutError::Timeout,
+                        TryRecvError::Disconnected => RecvTimeoutError::Disconnected,
+                    })
+                } else {
+                    reply.recv_timeout(left.min(STOP_POLL))
+                };
+                match reply_now {
                     Ok(ParkProgress::Parked(report)) => {
                         parked.merge(report);
                         break;
                     }
                     Ok(ParkProgress::Draining { .. }) => {}
+                    Err(RecvTimeoutError::Timeout) if left.is_zero() => {
+                        complete = false;
+                        break;
+                    }
                     Err(RecvTimeoutError::Timeout) => {}
                     Err(RecvTimeoutError::Disconnected) => {
                         complete = false;

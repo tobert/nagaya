@@ -400,6 +400,9 @@ buffer that holds a snapshot until the store takes it. Decided by senpai 2026-10
 - A refusal reads nothing and changes nothing (4.3). The client gets 429 `busy` (11.5), with the shortfall in bytes.
 - The charge ends when the copy drops. A job drops its copy before its caller hears the result.
 - The store's own bytes are in the store's budget (4.1a). The charge covers the transient buffer only.
+- A release that the ledger refuses leaves the ledger wrong. This holds for a staging charge and for a context charge.
+  The service records a failure, the main loop sees it, and the process stops with exit 1 (8.5). A release in a
+  stopping process is no failure, because the ledger has no charge left.
 
 Reason: the copy is the largest transient allocation of the nagaya, and no term charged it (kaibo review,
 2026-10-20, finding 3).
@@ -409,6 +412,19 @@ Reason: the copy is the largest transient allocation of the nagaya, and no term 
 refusal charges nothing and changes nothing.
 
 `pass` never allocates. Its scratch for each kind is a mandatory term, which the ledger charges at `open`.
+
+Admission of a profile keeps the charges that live now. Decided by senpai 2026-10-20 night (vetoable).
+
+- A live context and a live staging copy stay charged when the ledger admits a profile. A later release finds its
+  charge.
+- The ledger takes the live charges from the unassigned bytes of the new budgets. It charges a live context with the
+  context terms of the new profile.
+- If the live charges do not fit the new budgets, the ledger refuses the profile and changes nothing. The shortfall
+  is in bytes (4.3).
+
+Reason: a profile swap (3.3) admits a profile while requests run. A reset of the charges made a later release fail.
+The failed release stops the process (4.2), so a planned restart would have become a crash. The alternative, a
+refusal of every admission while a charge lives, would make a transient request refuse a profile for good (2.3).
 
 When the ledger refuses a quantum's call, the quantum waits in the scheduler and keeps its place. A request that can
 never fit, even with all reclaim done (4.6), gets 413 `too_large`. Its `param` names the limit that it is over.
@@ -1659,12 +1675,15 @@ rules are each "Decided by senpai 2026-10-20 night (vetoable)".
   a 503 `unavailable`.
 - A service call blocks, so each call runs on a call thread of its own, on the pool CPUs (3.2a). At most 64 calls
   run at once. A request past that is a 429 `busy`. A panic in a call is a 500 `internal`.
+  A call thread that cannot pin panics before it runs the call, which is also a 500 `internal` (3.2a).
 - A request body has at most 16 MiB. A larger body is a 413 `too_large` that names `body`.
+  A body that does not arrive whole is a 400 `invalid_request` that names `body`.
 - A route that does not exist is a 404 `not_found`, also for a known path with another method.
 - A request id is `req_<start time in hex>_<count>`. It differs between requests and between runs.
 - A ledger that refuses the charge of a context or of a staging copy (4.2) is a 429 `busy`. A job that a stop
   cancelled is a 503 `unavailable`.
-- An internal error is a 500. The process then stops with exit 1 (8.5).
+- An internal error is a 500. The process then stops with exit 1 (8.5). This holds for an error that comes while the
+  process stops: the stop path reads the failure again, and a clean stop becomes exit 1.
 - A stream waits for its first event before it sends the status. Thus a request that fails before its first token
   gets a status response. A later failure is an `error` event. At most 256 events wait for a slow client. A full
   queue holds the generation back, and it drops no event.

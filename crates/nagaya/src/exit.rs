@@ -40,6 +40,21 @@ impl ExitCode {
     }
 }
 
+/// The exit code after the stop path ran (spec 10.3, 10.4).
+///
+/// `wait_code` is why the wait ended, and `stop_code` is the result of the stop. A planned restart stays a planned
+/// restart when the stop is clean. `failed` is true when a route recorded an internal error. That error can come
+/// after the last wait tick, so the stop path checks again. An internal error is a crash (spec 8.5, 11.7).
+pub fn after_stop(wait_code: ExitCode, stop_code: ExitCode, failed: bool) -> ExitCode {
+    if stop_code == ExitCode::Clean && failed {
+        ExitCode::Crash
+    } else if wait_code == ExitCode::PlannedRestart && stop_code == ExitCode::Clean {
+        ExitCode::PlannedRestart
+    } else {
+        stop_code
+    }
+}
+
 /// End the process with `code`. Every exit of the binary goes through here, for every code and every build.
 ///
 /// mk's HIP runtime stops the program in its static destructors ("pure virtual method called", spec 3.3). Then a
