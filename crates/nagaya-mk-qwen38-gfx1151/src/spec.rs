@@ -23,12 +23,67 @@ pub const MAX_PASS_TOKENS: u32 = 256;
 /// A context capacity is a multiple of this many tokens (mk `check_capacity`).
 pub const CAPACITY_STEP: u32 = 256;
 
-/// The context capacity that this binding creates, in tokens.
-pub const CONTEXT_CAPACITY: u32 = 256;
+/// One class of contexts in the pool: the number of contexts and the capacity of each, in tokens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContextClass {
+    /// The number of contexts of this class.
+    pub count: u32,
+    /// The capacity of each context, in tokens.
+    pub capacity: u32,
+}
 
-/// The number of contexts in the declared pool. It equals `MAX_SEGMENTS`, so a pass can hold one segment for each
-/// context (Amy, 2026-10-20: "grow the pool"). The segments gate needs that many states.
-pub const CONTEXT_COUNT: u32 = 16;
+/// The pool that a handle creates at open. The small class comes first, so slot 0 is the cheapest to fill.
+///
+/// Decided by senpai 2026-10-20 night (vetoable): 12 contexts of 4096 tokens and 4 of 32 768 tokens. A real
+/// kaijutsu context needs thousands of tokens. The count of 16 equals `MAX_SEGMENTS`, so a pass can hold one segment
+/// for each context (Amy, 2026-10-20: "grow the pool"). The bytes are in `context_bytes`.
+pub const CONTEXT_CLASSES: [ContextClass; 2] = [
+    ContextClass {
+        count: 12,
+        capacity: 4096,
+    },
+    ContextClass {
+        count: 4,
+        capacity: MAX_CONTEXT,
+    },
+];
+
+/// The capacity of the context that the pass scratch probe uses, in tokens. The probe runs 256 tokens in two passes.
+/// The pool does not grow with a context's capacity (mk sizes each buffer at `kMaxPassTokens`).
+pub const PROBE_CAPACITY: u32 = CAPACITY_STEP;
+
+/// The device bytes that the allocator adds to each context, over the state bytes of `context_bytes`.
+///
+/// Measured on 2026-10-20 night on gfx1151 by `examples/context_pool.rs`: 12 contexts of 4096 tokens took 20 086 784
+/// bytes more than their state bytes (1 673 899 each), and 4 contexts of 32 768 took 8 093 696 more (2 023 424 each).
+/// The declared value is 4 MiB, twice the larger reading, so a page of drift does not refuse a sound library.
+pub const CONTEXT_ALLOCATION_BYTES: u64 = 4 << 20;
+
+/// The bytes that the ledger holds for one context of this capacity: its state bytes and the allocator's bytes.
+pub fn context_declared_bytes(capacity: u32) -> u64 {
+    context_bytes(capacity) + CONTEXT_ALLOCATION_BYTES
+}
+
+/// The bytes that the ledger holds for the whole declared pool.
+pub fn pool_bytes() -> u64 {
+    CONTEXT_CLASSES
+        .iter()
+        .map(|class| u64::from(class.count) * context_declared_bytes(class.capacity))
+        .sum()
+}
+
+/// The reason that a class took more device memory than this binding declares for it, or `Ok` when it fits.
+pub fn class_problem(class: ContextClass, measured: u64) -> Result<(), String> {
+    let declared = u64::from(class.count) * context_declared_bytes(class.capacity);
+    if measured > declared {
+        return Err(format!(
+            "{} contexts of {} tokens took {measured} bytes of device memory; this binding declares {declared}. \
+             Use the mk commit that the pool was measured on, or measure again and raise the constant",
+            class.count, class.capacity
+        ));
+    }
+    Ok(())
+}
 
 /// The longest quantum that mk declares, in milliseconds. mk's watchdog aborts a pass at 10 s (`engine.h:302-306`).
 pub const MAX_QUANTUM_MS: u32 = 10_000;
@@ -265,10 +320,13 @@ pub fn limits(arena_bytes: u64) -> Limits {
         max_segments: MAX_SEGMENTS,
         max_pass_inputs: MAX_PASS_TOKENS,
         max_logit_rows: MAX_SEGMENTS,
-        slots: vec![SlotLimit {
-            bytes: context_bytes(CONTEXT_CAPACITY),
-            count: CONTEXT_COUNT,
-        }],
+        slots: CONTEXT_CLASSES
+            .iter()
+            .map(|class| SlotLimit {
+                bytes: context_bytes(class.capacity),
+                count: class.count,
+            })
+            .collect(),
         max_quantum_ms: MAX_QUANTUM_MS,
         memory: MemoryLimits {
             mandatory: vec![
@@ -290,7 +348,7 @@ pub fn limits(arena_bytes: u64) -> Limits {
                 MandatoryTerm {
                     name: "context".to_owned(),
                     tier: Tier::Device(0),
-                    bytes: CONTEXT_COUNT as u64 * context_bytes(CONTEXT_CAPACITY),
+                    bytes: pool_bytes(),
                     lifetime: Lifetime::Engine,
                     kinds: vec![Kind::Prefill, Kind::Decode],
                 },
@@ -482,7 +540,18 @@ mod tests {
     }
 
     #[test]
-    fn the_limits_declare_sixteen_contexts_and_mk_parts() {
+    fn a_context_of_each_class_has_the_bytes_that_the_arithmetic_gives() {
+        // fixed = 4 * (36*48*128*128 + 36*3*10240 + 9*10240) = 4 * 29 509 632 = 118 038 528 bytes.
+        // per token = 4 * (12*2*2*256 + 12*128 + 12*128/4) = 4 * 14 208 = 56 832 bytes.
+        assert_eq!(context_bytes(0), 118_038_528);
+        // 4096 tokens: 118 038 528 + 4096 * 56 832 = 118 038 528 + 232 783 872.
+        assert_eq!(context_bytes(4096), 350_822_400);
+        // 32 768 tokens: 118 038 528 + 32 768 * 56 832 = 118 038 528 + 1 862 270 976.
+        assert_eq!(context_bytes(32_768), 1_980_309_504);
+    }
+
+    #[test]
+    fn the_limits_declare_two_context_sizes_and_mk_parts() {
         let limits = limits(94);
         let names: Vec<&str> = limits.parts.iter().map(|part| part.name.as_str()).collect();
         assert_eq!(
@@ -500,10 +569,25 @@ mod tests {
         assert_eq!(limits.parts[3].kind, PartKind::Cells);
         assert_eq!(limits.parts[4].kind, PartKind::Cells);
         assert_eq!(limits.parts[6].kind, PartKind::Derived);
-        assert_eq!(limits.slots.len(), 1);
-        assert_eq!(limits.slots[0].count, 16);
-        assert_eq!(limits.slots[0].count, limits.max_segments);
-        assert_eq!(limits.slots[0].bytes, context_bytes(256));
+        // The small class comes first, as in the fake engine. Slots 0-11 hold 4096 tokens; slots 12-15 hold 32 768.
+        assert_eq!(
+            limits.slots,
+            vec![
+                SlotLimit {
+                    bytes: 350_822_400,
+                    count: 12
+                },
+                SlotLimit {
+                    bytes: 1_980_309_504,
+                    count: 4
+                },
+            ]
+        );
+        assert_eq!(
+            limits.slots.iter().map(|class| class.count).sum::<u32>(),
+            limits.max_segments,
+            "a pass can hold one segment for each context"
+        );
         assert_eq!(limits.max_segments, 16);
         assert_eq!(limits.max_quantum_ms, 10_000);
         assert!(
@@ -518,6 +602,8 @@ mod tests {
     #[test]
     fn the_context_term_holds_the_whole_pool() {
         // mk makes every context of the pool at open, and the ledger adds the bytes of each term once.
+        // The state bytes are 12 * 350 822 400 + 4 * 1 980 309 504 = 4 209 868 800 + 7 921 238 016. Each of the 16
+        // contexts adds 4 MiB for the allocator: 16 * 4 194 304 = 67 108 864.
         let limits = limits(0);
         let term = limits
             .memory
@@ -525,8 +611,34 @@ mod tests {
             .iter()
             .find(|term| term.name == "context")
             .expect("a context term");
-        assert_eq!(term.bytes, 16 * context_bytes(256));
+        assert_eq!(term.bytes, 12_131_106_816 + 67_108_864);
         assert_eq!(term.lifetime, Lifetime::Engine);
+        assert_eq!(
+            term.bytes,
+            limits
+                .slots
+                .iter()
+                .map(|c| (c.bytes + CONTEXT_ALLOCATION_BYTES) * u64::from(c.count))
+                .sum::<u64>()
+        );
+    }
+
+    #[test]
+    fn a_class_that_takes_more_than_it_declares_is_refused() {
+        // The measured device cost on gfx1151, 2026-10-20 night: 4 229 955 584 bytes for 12 contexts of 4096 tokens,
+        // and 7 929 331 712 bytes for 4 contexts of 32 768. Each is under its declared bytes.
+        let small = CONTEXT_CLASSES[0];
+        let large = CONTEXT_CLASSES[1];
+        assert_eq!(class_problem(small, 4_229_955_584), Ok(()));
+        assert_eq!(class_problem(large, 7_929_331_712), Ok(()));
+        // 12 * (350 822 400 + 4 194 304) = 4 260 200 448.
+        let declared = u64::from(small.count) * context_declared_bytes(small.capacity);
+        assert_eq!(declared, 4_260_200_448);
+        assert_eq!(class_problem(small, declared), Ok(()));
+        let error = class_problem(small, declared + 1).expect_err("one byte over the declared bytes must refuse");
+        assert!(error.contains("12 contexts of 4096 tokens"), "{error}");
+        assert!(error.contains(&(declared + 1).to_string()), "{error}");
+        assert!(error.contains(&declared.to_string()), "{error}");
     }
 
     #[test]

@@ -8,7 +8,7 @@ use nagaya_abi::{
 };
 
 use crate::spec;
-use crate::worker::{Call, MkError, MkPaths, PassProblem, PassRequest, Worker, start};
+use crate::worker::{Call, ClassReading, MkError, MkPaths, PassProblem, PassRequest, Worker, start};
 
 /// The one engine in this process. mk aborts on close, so the engine stays open until the process exits (spec 3.3).
 static WORKER: OnceLock<Result<Arc<Worker>, MkError>> = OnceLock::new();
@@ -28,10 +28,11 @@ pub fn open() -> Result<MkEngine, MkError> {
             "MK_ENGINE_LIB or MK_SHARDS changed after the engine opened".to_owned(),
         ));
     }
-    let states = worker.open_states(spec::CONTEXT_COUNT, spec::CONTEXT_CAPACITY)?;
+    let pool = worker.open_states(&spec::CONTEXT_CLASSES)?;
     Ok(MkEngine {
         worker,
-        states,
+        states: pool.ids,
+        readings: pool.readings,
         last_error: None,
     })
 }
@@ -40,6 +41,7 @@ pub fn open() -> Result<MkEngine, MkError> {
 pub struct MkEngine {
     worker: Arc<Worker>,
     states: Vec<u64>,
+    readings: Vec<ClassReading>,
     last_error: Option<String>,
 }
 
@@ -93,6 +95,11 @@ impl MkEngine {
     /// The pass scratch that the probe measured at open, in bytes (milestone 9c).
     pub fn pass_scratch(&self) -> u64 {
         self.worker.spec().pass_scratch
+    }
+
+    /// What each class of contexts took when mk made it, in the order of `spec::CONTEXT_CLASSES`.
+    pub fn pool_readings(&self) -> &[ClassReading] {
+        &self.readings
     }
 
     /// Record one refused pass and return its error. No context changed.

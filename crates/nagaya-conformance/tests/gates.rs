@@ -6,7 +6,8 @@ use nagaya_abi::fake::{FakeAlways, FakeBroken, FakeRingBase, FakeRowCount, FakeS
 use nagaya_abi::{
     Capability, ChainLimits, Coverage, CoverageSpan, Determinism, Dtype, ElasticTerm, Engine, Identity, Inputs,
     Lifetime, Limits, MandatoryTerm, MemoryLimits, PartError, PartId, PartKind, PartLimits, Parts, PassError,
-    PassErrorKind, PassOut, PassStatus, Segment, SegmentInputs, SlotLimit, Slots, Stage, State, Tap, Tier, WriteResult,
+    PassErrorKind, PassOut, PassStatus, Seal, Segment, SegmentInputs, SlotLimit, Slots, Stage, State, Tap, Tier,
+    WriteResult,
 };
 use nagaya_conformance::{
     Admit, Outcome, admission_refusal_changes_nothing, park_and_restore, quantum_identity, quantum_isolation,
@@ -1847,4 +1848,69 @@ impl Engine for NotExact {
     fn slots(&mut self) -> Option<&mut dyn Slots> {
         self.inner.slots()
     }
+}
+
+/// A fake engine that counts the engines alive. It counts a handle from its making to its drop.
+struct Counted {
+    inner: FakeAlways,
+    alive: std::rc::Rc<std::cell::Cell<usize>>,
+}
+
+impl Drop for Counted {
+    fn drop(&mut self) {
+        self.alive.set(self.alive.get() - 1);
+    }
+}
+
+impl Engine for Counted {
+    fn identity(&self) -> Identity {
+        self.inner.identity()
+    }
+
+    fn limits(&self) -> Limits {
+        self.inner.limits()
+    }
+
+    fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
+        self.inner.pass(segments, taps)
+    }
+
+    fn last_error(&self) -> Option<String> {
+        self.inner.last_error()
+    }
+
+    fn parts(&mut self) -> Option<&mut dyn Parts> {
+        self.inner.parts()
+    }
+
+    fn coverage(&mut self) -> Option<&mut dyn Coverage> {
+        self.inner.coverage()
+    }
+
+    fn seal(&mut self) -> Option<&mut dyn Seal> {
+        self.inner.seal()
+    }
+
+    fn slots(&mut self) -> Option<&mut dyn Slots> {
+        self.inner.slots()
+    }
+}
+
+#[test]
+fn the_suite_holds_at_most_three_engines_at_once() {
+    // An engine with a large pool (mk: 12 GiB each) fits three next to its weights and the host floor, not four.
+    let alive = std::rc::Rc::new(std::cell::Cell::new(0usize));
+    let most = std::rc::Rc::new(std::cell::Cell::new(0usize));
+    let mut make = || {
+        alive.set(alive.get() + 1);
+        most.set(most.get().max(alive.get()));
+        Counted {
+            inner: FakeAlways::new(),
+            alive: alive.clone(),
+        }
+    };
+    let suite = run_all(&mut make);
+    assert!(suite.passed(), "{suite}");
+    assert_eq!(alive.get(), 0, "an engine outlived the suite");
+    assert!(most.get() <= 3, "the suite held {} engines at once", most.get());
 }

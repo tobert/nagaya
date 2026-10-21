@@ -58,38 +58,49 @@ impl fmt::Display for Suite {
 
 /// Run every gate of spec 8.3 on fresh engines from `make`.
 pub fn run_all<E: Engine>(make: &mut dyn FnMut() -> E) -> Suite {
+    // A temporary in a `vec![...]` lives until the end of the whole statement. Each gate that takes one engine gets
+    // its own statement, so that its engine is dropped before the next gate. An engine with a large pool (mk: 12
+    // GiB) cannot hold the engines of all gates at once.
+    let park = park_and_restore(&mut make());
+    let seal = seal_only_at_boundaries(&mut make());
+    let identity = quantum_identity(make);
+    let isolation = quantum_isolation(make);
+    let boundaries = quantum_same_boundaries(make);
+    let resume_fit = quantum_resume_fit(&mut make());
+    let admission = admission_gate();
+    let segments = segments_exact_bits(make);
     let gates = vec![
         GateResult {
             name: "park_and_restore",
-            outcome: park_and_restore(&mut make()),
+            outcome: park,
         },
         GateResult {
             name: "seal_only_at_boundaries",
-            outcome: seal_only_at_boundaries(&mut make()),
+            outcome: seal,
         },
         GateResult {
             name: "quantum_identity",
-            outcome: quantum_identity(make),
+            outcome: identity,
         },
         GateResult {
             name: "quantum_isolation",
-            outcome: quantum_isolation(make),
+            outcome: isolation,
         },
         GateResult {
             name: "quantum_same_boundaries",
-            outcome: quantum_same_boundaries(make),
+            outcome: boundaries,
         },
         GateResult {
             name: "quantum_resume_fit",
-            outcome: quantum_resume_fit(&mut make()),
+            outcome: resume_fit,
         },
         GateResult {
             name: "admission_refusal_changes_nothing",
-            outcome: admission_gate(),
+            outcome: admission,
         },
         GateResult {
             name: "segments_exact_bits",
-            outcome: segments_exact_bits(make),
+            outcome: segments,
         },
     ];
     Suite { gates }
