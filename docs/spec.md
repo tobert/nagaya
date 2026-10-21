@@ -2159,6 +2159,22 @@ The nagaya keeps each engine's expected identity in the store's index. At start,
 `identity()` with the expected one. A mismatch makes the old entries of that engine unusable. It is a refusal to
 start only when the profile pins the identity.
 
+**A GPU binary in the identity.** **Proposed** (claude-opus-5-5, 2026-10-21). A GPU compiler makes the kernel binary
+of an engine, ahead of time or at load. mkviolet's `build.rs` runs `ocloc` for `bmg-g31`, and `main.rs` embeds the
+binary (`megakernel_bmg.bin`). These rules cover such an engine:
+
+- `numbers` holds the SHA-256 of each kernel binary that the engine loads. Thus a new compiler output is a new
+  identity, also when the source did not change.
+- The plan table lineage holds the compiler version (`ocloc` and its IGC), the driver version, and the device. The
+  device is its PCI vendor id, device id and revision. A change of any one is a new lineage, and so a new identity
+  (ontology "Plan table").
+- A Level Zero engine reads the driver version with `zeDriverGetProperties`. A HIP engine reads the HIP runtime
+  version.
+- A kernel that compiles at load is hashed after the compile, so the hash names the bytes that run.
+
+Reason: the bits come from the binary that runs, not from its source. The binary depends on the compiler, the
+driver and the device.
+
 **12.2 Two weight ids.** The checkpoint digest is logical. It hashes the canonical config and each tensor's payload,
 so a new packing does not change it. The arena id is the content id of the packed bytes that the engine runs.
 `arena_export` returns it.
@@ -2169,9 +2185,16 @@ identity labels them as spot checks until we replace them.
 
 **12.3 Identity defects to correct in the port.**
 
-- mkviolet loads EmbeddingGemma 2's `tokenizer.json` for Gemma 4. The file "differs ... by a few hundred bytes;
-  which entries differ is not yet checked" (`tokenizer.rs`). Thus its tokenizer hash names the wrong file.
-- mkviolet's metrics label card 1 `google/embeddinggemma-2`.
+- mkviolet loads EmbeddingGemma 2's `tokenizer.json` for Gemma 4 (`main.rs:132`). The file "differs ... by a few
+  hundred bytes; which entries differ is not yet checked" (`tokenizer.rs:4-5`). Thus its tokenizer hash names the
+  wrong file. The port loads the `tokenizer.json` of the Gemma 4 checkpoint (`checkpoints/gemma-4-26B-A4B/`).
+- mkviolet's `tokenizer_hash` is the first 16 hex digits of the SHA-256 of the file (`tokenizer.rs:22`). **Proposed**
+  (claude-opus-5-5, 2026-10-21): the port hashes the whole file and writes `sha256:` and 64 hex digits, as the
+  Qwen3.8 library does. Reason: one form for every family.
+- mkviolet's `weight_hash` hashes the shard headers only (`main.rs:216`). The port labels it `spot-sha256:`, as the mk
+  binding does (12.2).
+- mkviolet's metrics label card 1 `google/embeddinggemma-2` (`telemetry.rs:492`, `:523`). The port takes the label
+  from the identity.
 
 ## 13. Taps, lenses and composition
 
