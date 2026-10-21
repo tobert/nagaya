@@ -803,3 +803,27 @@ fn an_open_message_builds_only_as_a_dry_run() {
         (prompt(&value) as u64, 0, prompt(&value) as u64)
     );
 }
+
+/// The head after a continuation's reply chains through the seam of the cut reply, so a context that sends that reply
+/// back closed does not find it. It finds the seam, which the store still holds, and starts there (spec 11.3c).
+#[test]
+fn a_continued_reply_sent_back_closed_starts_from_the_seam_of_the_cut_reply() {
+    let (f, script) = scripted();
+    let value = ctx(false, opening());
+    let mut reply = bytes("okay");
+    reply.push(gogi_toy::END);
+    script.set(prompt(&value), reply);
+    let cut = generate(&f, &value, 2, json!({"temperature": 0}));
+    let seam = cut.snapshots.last().unwrap().tokens;
+    let resumed = with_open(&value, serde_json::to_value(cut.as_open_message().unwrap()).unwrap());
+    let done = generate(&f, &resumed, 10, json!({"temperature": 0}));
+    assert_eq!((done.content.as_str(), done.usage.kept), ("okay", seam));
+    let mut messages = opening();
+    messages.push(serde_json::to_value(done.as_message().unwrap()).unwrap());
+    messages.push(json!({"role": "user", "content": "Go on.", "snap": true}));
+    let dry = f
+        .service
+        .build(&context(&ctx(false, messages)), true, Default::default())
+        .unwrap();
+    assert_eq!((dry.from, dry.usage.kept), (cut.head, seam), "{:?}", dry.usage);
+}

@@ -35,6 +35,8 @@ tracing = "0.1.44"
 
 [dev-dependencies]
 gogi-conformance.workspace = true
+# The Qwen3.8 family in host tests of the job path, with the real tokenizer and chat template. It needs no GPU.
+nagaya-text-qwen38 = { version = "0.1.0", path = "../nagaya-text-qwen38" }
 gogi-fake.workspace = true
 tower = { version = "0.5.3", features = ["util"] }
 gogi-toy.workspace = true
