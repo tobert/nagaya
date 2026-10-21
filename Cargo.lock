@@ -649,11 +649,14 @@ dependencies = [
  "nagaya-abi",
  "nagaya-ledger",
  "nagaya-store",
+ "nagaya-telemetry",
+ "opentelemetry",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "toml",
+ "tracing",
 ]
 
 [[package]]
