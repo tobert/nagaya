@@ -157,10 +157,27 @@ fn gogi_conformance_passes_against_the_process_with_the_fake_engine() {
         failed
     );
     assert!(report.checks.len() > 150, "{}", report.summary());
-    // The generation checks ran: none of them is a skip.
+    eprintln!("{}\nskipped: {skipped:#?}", report.summary());
+    // The generation and continuation checks ran: none of them is a skip.
     for name in [
         "generation holds its head",
         "stream reasoning and content pieces join to done's text",
+        "a cut reply names the phase of its next token",
+        "a build without dry_run refuses an open message, naming continue",
+        "a dry run of a cut reply sent back open reports a dry run",
+        "a continuation's done starts with the open text",
+        "a continuation writes what the whole reply wrote",
+        "a continuation's completion counts only the sampled tokens",
+        "a continuation's stream counts n from 1 over the sampled tokens",
+        "a continuation's pieces join to done's text after the open text",
+        "an empty content after reasoning closes the thinking",
+        "a continuation of open content the client wrote starts with it",
+        "a dry run of an open message the client wrote reports what it would feed",
+        "an open message with reasoning and thinking absent is a 400 naming continue",
+        "continue that is a string is a 400 naming continue",
+        "a decision with an open context is a 400 naming continue",
+        "raw reads of an open context are a 400 naming continue",
+        "continue: false on the last message is a closed message",
     ] {
         assert!(
             report

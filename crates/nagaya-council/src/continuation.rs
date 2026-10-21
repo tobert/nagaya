@@ -1,48 +1,52 @@
 //! Continuations (gogi "Continuations", spec 11.3c): the build plan of a context whose last message is open.
 //!
-//! The engine gives a logit row only for a token that it feeds (engine-abi, "Logit outputs"). A snapshot holds no
-//! logit row. Thus a generation after an open message builds all the tokens but the last, and then feeds the last
-//! token for the first logit row. The seam boundary marks the end of that build. Its snapshot holds the model state
-//! before the last token of the open text.
+//! A generation builds the context before the open message, as it builds a context before its generation prompt.
+//! Then it feeds the tokens of the open message, as it feeds a generation prompt, and the last of them gives the first
+//! logit row. The build seals only at boundaries before the open message. A seal changes bits, so a seal inside the
+//! open text would make a continuation differ from the reply that it continues.
 
-use crate::family::{Boundary, FamilyError, Rendering};
+use crate::family::{FamilyError, Rendering};
 
-/// The rendering that a build of an open context makes: the tokens of `open` but the last, with the seam boundary in
-/// place of the end boundary. The seam boundary has the index of the open message.
+/// The build plan of an open context: the rendering `before` of the context without its open message, when its
+/// tokens begin the tokens of `open`. Its end is a boundary, as the end of a context always is.
 ///
-/// `open` must be the rendering of an open context: no generation prompt, and a last boundary at its end that is
-/// more than one token after the boundary before it. Any other rendering is a defect of the family library: the
-/// result is [`FamilyError::Internal`].
-pub fn seam_rendering(open: &Rendering) -> Result<Rendering, FamilyError> {
+/// When `before` is not a prefix of `open`, the plan is the boundaries of `open` before the open message, and it may
+/// be empty. `open` must be the rendering of an open context: no generation prompt after it, and its last boundary at
+/// its end. Any other rendering is a defect of the family library: the result is [`FamilyError::Internal`].
+pub fn open_plan(open: &Rendering, before: &Rendering) -> Result<Rendering, FamilyError> {
     let len = open.tokens.len();
-    let (last, before) = match open.boundaries.split_last() {
-        Some((last, before)) if open.end == len && last.tokens == len => (last, before),
-        _ => {
-            return Err(FamilyError::internal(format!(
-                "the rendering of an open context ends at token {} of {len}, with its last boundary at {:?}; an open \
-                 message renders in place of the generation prompt, and the end of the context is its last boundary",
-                open.end,
-                open.boundaries.last().map(|b| b.tokens)
-            )));
-        }
-    };
-    let seam = len.saturating_sub(1);
-    if seam == 0 || before.last().is_some_and(|b| b.tokens >= seam) {
+    let Some((last, marked)) = open
+        .boundaries
+        .split_last()
+        .filter(|(last, _)| open.end == len && last.tokens == len)
+    else {
         return Err(FamilyError::internal(format!(
-            "the open message of {len} tokens starts at token {}; an open message renders its start of turn and \
-             its open text, so it has at least two tokens",
-            before.last().map_or(0, |b| b.tokens)
+            "the rendering of an open context ends at token {} of {len}, with its last boundary at {:?}; an open \
+             message renders in place of the generation prompt, and the end of the context is its last boundary",
+            open.end,
+            open.boundaries.last().map(|b| b.tokens)
+        )));
+    };
+    let start = marked.last().map_or(0, |b| b.tokens);
+    if start >= last.tokens {
+        return Err(FamilyError::internal(format!(
+            "the open message ends at token {} but starts at token {start}",
+            last.tokens
         )));
     }
-    let mut boundaries = before.to_vec();
-    boundaries.push(Boundary {
-        message: last.message,
-        tokens: seam,
-    });
+    let prefix = &before.tokens[..before.end];
+    if before.end >= start && before.end < len && open.tokens.starts_with(prefix) && !before.boundaries.is_empty() {
+        return Ok(Rendering {
+            tokens: prefix.to_vec(),
+            end: before.end,
+            boundaries: before.boundaries.clone(),
+            control_text: Vec::new(),
+        });
+    }
     Ok(Rendering {
-        tokens: open.tokens[..seam].to_vec(),
-        end: seam,
-        boundaries,
-        control_text: open.control_text.clone(),
+        tokens: open.tokens[..start].to_vec(),
+        end: start,
+        boundaries: marked.to_vec(),
+        control_text: Vec::new(),
     })
 }

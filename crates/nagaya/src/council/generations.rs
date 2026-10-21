@@ -10,6 +10,7 @@ use gogi_proto::context::{Context, Usage};
 use gogi_proto::generation::{
     Finish, GenerationDone, GenerationRequest, Phase, ReplyStats, ReplyToolCall, TokenEvent, TokenStats,
 };
+use gogi_proto::message::Message;
 use nagaya_abi::Kind;
 use nagaya_council::build::{BoundaryRecipe, boundary_recipes, recipes_with_cut};
 use nagaya_council::family::{
@@ -86,6 +87,8 @@ pub(crate) struct Reply {
     pub content_stats: Option<TokenStats>,
     /// The head after the reply, when the job held it.
     pub head: Option<(Boundary, ContentId)>,
+    /// The phase of the next token, for a reply that ended with `max_tokens`.
+    pub phase: Option<Phase>,
 }
 
 /// The work of a generation after its build: feed the generation prompt, sample each token, and hold the head
@@ -93,16 +96,19 @@ pub(crate) struct Reply {
 pub(crate) struct GenerateThen {
     family: Arc<dyn Family>,
     context: Context,
+    /// The open message of the context, for a continuation (gogi "Continuations").
+    open: Option<Message>,
     root: RecipeId,
-    /// The recipes of the boundaries of the context. A build that starts from a cut gives them the cut too.
+    /// The recipes of the boundaries of the build. A build that starts from a cut gives them the cut too.
     recipes: Vec<RecipeId>,
-    /// The rendering of the context, without the generation prompt.
+    /// The rendering that the build makes: the context without the generation prompt, or the context before the open
+    /// message of a continuation.
     rendering: Rendering,
     /// The cut that the build started from.
     cut: Option<Boundary>,
-    /// The tokens of the prompt: the context, then the generation prompt.
+    /// The tokens of the prompt: the context, then the generation prompt or the open text.
     prompt: Vec<u32>,
-    /// The tokens of the context, without the generation prompt.
+    /// The tokens that the build makes. The generation feeds the rest of the prompt for its first logit row.
     end: usize,
     settings: Settings,
     max_tokens: usize,
@@ -119,6 +125,8 @@ pub(crate) struct GenerateThen {
     finish: Option<Finish>,
     parsed: Option<ParsedReply>,
     head: Option<(Boundary, ContentId)>,
+    /// The phase of the next token after the last sampled token.
+    next_phase: Option<Phase>,
 }
 
 impl GenerateThen {
@@ -136,6 +144,7 @@ impl GenerateThen {
             reasoning_stats: self.stats[0].finish(),
             content_stats: self.stats[1].finish(),
             head: self.head,
+            phase: self.next_phase.filter(|_| self.finish == Some(Finish::MaxTokens)),
         }
     }
 
@@ -175,7 +184,9 @@ impl GenerateThen {
         let parsed = match end {
             Some(cut) => {
                 let max_tokens = cut == Some(Finish::MaxTokens);
-                let parsed = self.parser.take().expect("a reply finishes once").finish(max_tokens);
+                let parser = self.parser.take().expect("a reply finishes once");
+                self.next_phase = Some(parser.phase());
+                let parsed = parser.finish(max_tokens);
                 piece.push_str(&tail_text(&parsed, step.phase)?);
                 Some(parsed)
             }
@@ -207,19 +218,36 @@ impl GenerateThen {
         }
     }
 
-    /// End the reply. `cut` names why a reply that did not end its turn stopped. `parsed` is the whole reply.
-    fn finish(&mut self, cut: Option<Finish>, parsed: ParsedReply) -> Result<Want, ServiceError> {
-        self.finish = Some(match cut {
+    /// End the reply. `cut` names why a reply that did not end its turn stopped. `parsed` is the reply that the
+    /// parser read.
+    ///
+    /// The reply of a continuation is the whole message: the open text as sent, then the new text, with nothing
+    /// trimmed at the seam (gogi "Continuations"). The head after a reply is the end of its closed rendering. A reply
+    /// that ended with `max_tokens` has no head: the head of its open rendering would hold the state inside the open
+    /// text, which needs a put that does not seal (spec 11.3c, Proposed).
+    fn finish(&mut self, cut: Option<Finish>, mut parsed: ParsedReply) -> Result<Want, ServiceError> {
+        let finish = match cut {
             Some(cut) => cut,
             None if parsed.calls.is_empty() => Finish::EndTurn,
             None => Finish::ToolUse,
-        });
-        let reply = reply_message(&parsed, &self.call_ids(parsed.calls.len()));
+        };
+        self.finish = Some(finish);
+        if let Some(open) = &self.open {
+            parsed.reasoning.insert_str(0, open.reasoning.as_deref().unwrap_or(""));
+            parsed.content.insert_str(0, open.content.as_deref().unwrap_or(""));
+        }
+        let reply = match finish {
+            Finish::MaxTokens => None,
+            _ => reply_done(&parsed, &self.call_ids(parsed.calls.len())).as_message(),
+        };
         self.parsed = Some(parsed);
         let Some(reply) = reply else {
             return Ok(self.done());
         };
         let mut context = self.context.clone();
+        if self.open.is_some() {
+            context.messages.pop();
+        }
         context.messages.push(reply);
         let rendering = match self.family.render(&context, false) {
             Ok(rendering) => rendering,
@@ -235,11 +263,11 @@ impl GenerateThen {
         // The slot holds the prompt and each sampled token but the last.
         let fed = self.prompt.len() + self.sampled.len() - 1;
         let tokens = &rendering.tokens[..rendering.end];
-        let same_boundaries =
-            recipes.len() == self.recipes.len() + 1 && recipes.iter().zip(&self.recipes).all(|(a, b)| a.recipe == *b);
         let in_slot = tokens.len() >= fed
             && tokens[..self.prompt.len()] == self.prompt[..]
             && tokens[self.prompt.len()..fed] == self.sampled[..self.sampled.len() - 1];
+        let same_boundaries =
+            recipes.len() == self.recipes.len() + 1 && recipes.iter().zip(&self.recipes).all(|(a, b)| a.recipe == *b);
         if !same_boundaries || !in_slot || tokens.len() - fed > HEAD_FEED || tokens.len() > self.room {
             return Ok(self.done());
         }
@@ -305,10 +333,11 @@ fn tail_text(parsed: &ParsedReply, phase: Phase) -> Result<String, ServiceError>
     Ok(text)
 }
 
-/// The reply as the assistant message that a client appends. A reply with a call that did not parse has none: a
-/// client sends that call back as text.
-fn reply_message(parsed: &ParsedReply, ids: &[String]) -> Option<gogi_proto::message::Message> {
-    let done = GenerationDone {
+/// The reply in gogi's shape, with the defaults of the fields that the caller sets. Its message form is the assistant
+/// message that a client appends. A reply with a call that did not parse has none: a client sends that call back as
+/// text.
+fn reply_done(parsed: &ParsedReply, ids: &[String]) -> GenerationDone {
+    GenerationDone {
         model: String::new(),
         content: parsed.content.clone(),
         reasoning: parsed.reasoning.clone(),
@@ -321,8 +350,7 @@ fn reply_message(parsed: &ParsedReply, ids: &[String]) -> Option<gogi_proto::mes
         decisions: Vec::new(),
         seed: None,
         phase: None,
-    };
-    done.as_message()
+    }
 }
 
 /// The calls of a reply in gogi's shape, with their ids.
@@ -364,6 +392,7 @@ impl Then for GenerateThen {
                         .map(|recipe| recipe.recipe)
                         .collect();
                 }
+                // The generation prompt, or the open message of a continuation.
                 let tokens = self.prompt[self.end..].to_vec();
                 if tokens.is_empty() {
                     return Err(ServiceError::internal(
@@ -420,13 +449,6 @@ impl Service {
             )
             .into());
         }
-        if request.context.open().is_some() {
-            return Err(Invalid::param(
-                "continue",
-                "an open message needs the continuation capability, which this model does not have; send it closed",
-            )
-            .into());
-        }
         let context_tokens = self.config.context_tokens;
         let max_tokens = request.max_tokens as usize;
         if max_tokens > context_tokens {
@@ -445,6 +467,7 @@ impl Service {
             .validate()
             .map_err(|error| Invalid::param("sample", error.to_string()))?;
         let context = &request.context;
+        // An open message renders in place of the generation prompt, and the family checks its seams.
         let rendering = self.family.render(context, true)?;
         let prompt = rendering.tokens.len();
         if prompt >= context_tokens {
@@ -453,20 +476,30 @@ impl Service {
                 context_tokens: context_tokens as u64,
             });
         }
-        let recipes = boundary_recipes(self.root, &rendering)?;
-        let end = rendering.end;
-        let room = (prompt + max_tokens + HEAD_FEED).min(context_tokens);
-        let then = GenerateThen {
-            family: Arc::clone(&self.family),
-            context: context.clone(),
-            root: self.root,
-            recipes: recipes.iter().map(|recipe| recipe.recipe).collect(),
-            rendering: Rendering {
-                tokens: rendering.tokens[..end].to_vec(),
-                end,
+        // The build makes the context and the generation feeds the generation prompt. A continuation builds the
+        // context before its open message and feeds the open message (spec 11.3c).
+        let built = match context.open() {
+            Some(_) => self.open_plan(context, &rendering)?,
+            None => Rendering {
+                tokens: rendering.tokens[..rendering.end].to_vec(),
+                end: rendering.end,
                 boundaries: rendering.boundaries.clone(),
                 control_text: Vec::new(),
             },
+        };
+        // A plan with no boundary builds nothing, and the generation feeds the whole prompt.
+        let recipes = super::plan_recipes(self.root, &built)?;
+        let end = built.end;
+        let room = (prompt + max_tokens + HEAD_FEED).min(context_tokens);
+        let tokens: Arc<[u32]> = built.tokens[..end].into();
+        let cuts = self.cuts(context, &built)?;
+        let then = GenerateThen {
+            family: Arc::clone(&self.family),
+            context: context.clone(),
+            open: context.open().cloned(),
+            root: self.root,
+            recipes: recipes.iter().map(|recipe| recipe.recipe).collect(),
+            rendering: built,
             cut: None,
             prompt: rendering.tokens.clone(),
             end,
@@ -484,10 +517,9 @@ impl Service {
             finish: None,
             parsed: None,
             head: None,
+            next_phase: None,
         };
-        let tokens: Arc<[u32]> = rendering.tokens[..end].into();
         let shared = Arc::clone(&self.shared);
-        let cuts = self.cuts(context, &rendering)?;
         let job = |tx| ContextBody::with(shared, tokens, recipes.clone(), room, then, tx).cuts(cuts);
         let finished = self.run_context(job, Schedule::of(request.class, request.priority), None)?;
         let ids = finished
@@ -518,7 +550,7 @@ impl Service {
             }),
             decisions: Vec::new(),
             seed: Some(settings.seed),
-            phase: None,
+            phase: reply.phase,
         })
     }
 }

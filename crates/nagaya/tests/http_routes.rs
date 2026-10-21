@@ -90,9 +90,11 @@ fn identity_lists_the_served_model_with_its_limits_capabilities_and_status() {
         Capability::Generate,
         Capability::DryRun,
         Capability::LeaveOneOut,
+        Capability::Continuation,
     ] {
         assert!(model.has(capability), "{capability:?}");
     }
+    assert!(!model.has(Capability::Ride), "riding decisions are not built");
     assert!(identity.has(Capability::Pins) && identity.has(Capability::Classes));
     assert!(identity.limits.pin_bytes.is_some());
 }

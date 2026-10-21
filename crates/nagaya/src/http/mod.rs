@@ -179,9 +179,12 @@ impl Council {
                 default_timeout_ms: config.default_timeout_ms,
                 text_tokens: None,
             },
+            // Each family library renders an open message and checks its seams, so each served model continues a
+            // reply (gogi "Continuations"). Riding decisions are not built, so no model declares `ride`.
             capabilities: vec![
                 Capability::Reads,
                 Capability::Generate,
+                Capability::Continuation,
                 Capability::DryRun,
                 Capability::LeaveOneOut,
             ],

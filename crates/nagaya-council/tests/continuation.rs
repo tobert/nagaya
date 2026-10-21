@@ -2,7 +2,7 @@
 //! context.
 
 use gogi_proto::context::Context;
-use nagaya_council::continuation::seam_rendering;
+use nagaya_council::continuation::open_plan;
 use nagaya_council::family::{Boundary, FamilyError, Rendering, ReplyStart};
 use serde_json::json;
 
@@ -81,24 +81,49 @@ fn rendering(len: u32, end: usize, boundaries: &[(usize, usize)]) -> Rendering {
     }
 }
 
+/// The open context renders 10 tokens: a marked message to token 4, the message before the open one to token 7, and
+/// the open message to token 10.
 #[test]
-fn an_open_context_builds_all_but_its_last_token_and_feeds_that_token_for_the_first_logit_row() {
-    let seam = seam_rendering(&rendering(10, 10, &[(0, 4), (2, 10)])).unwrap();
-    assert_eq!(seam.tokens, (1..=9).collect::<Vec<u32>>());
-    assert_eq!(seam.end, 9);
+fn an_open_context_builds_the_context_before_its_open_message() {
+    let open = rendering(10, 10, &[(0, 4), (2, 10)]);
+    let before = rendering(7, 7, &[(0, 4), (1, 7)]);
+    let plan = open_plan(&open, &before).unwrap();
+    assert_eq!(plan.tokens, (1..=7).collect::<Vec<u32>>());
+    assert_eq!(plan.end, 7);
     assert_eq!(
-        seam.boundaries,
-        [Boundary { message: 0, tokens: 4 }, Boundary { message: 2, tokens: 9 }],
-        "the seam boundary takes the place of the end, with the index of the open message"
+        plan.boundaries, before.boundaries,
+        "the end of the context before the open message is a boundary"
     );
+}
+
+#[test]
+fn a_context_before_the_open_message_that_is_not_a_prefix_keeps_only_the_boundaries_of_the_open_rendering() {
+    let open = rendering(10, 10, &[(0, 4), (2, 10)]);
+    let mut before = rendering(7, 7, &[(0, 4), (1, 7)]);
+    before.tokens[6] = 99;
+    let plan = open_plan(&open, &before).unwrap();
+    assert_eq!((plan.tokens.len(), plan.end), (4, 4));
+    assert_eq!(plan.boundaries, [Boundary { message: 0, tokens: 4 }]);
+    let alone = rendering(10, 10, &[(1, 10)]);
+    let plan = open_plan(&alone, &before).unwrap();
+    assert_eq!(
+        (plan.tokens.len(), plan.end, plan.boundaries.len()),
+        (0, 0, 0),
+        "nothing to build: feed it all"
+    );
+}
+
+#[test]
+fn an_open_rendering_with_a_generation_prompt_is_a_family_defect() {
+    let before = rendering(7, 7, &[(1, 7)]);
     for bad in [
-        rendering(10, 8, &[(0, 4), (2, 8)]),
-        rendering(10, 10, &[(0, 9), (2, 10)]),
-        rendering(1, 1, &[(0, 1)]),
+        rendering(10, 8, &[(2, 8)]),
+        rendering(10, 10, &[(2, 9)]),
+        rendering(10, 10, &[(0, 10), (2, 10)]),
     ] {
         assert!(
-            matches!(seam_rendering(&bad), Err(FamilyError::Internal(_))),
-            "{bad:?}: a family defect, not a client error"
+            matches!(open_plan(&bad, &before), Err(FamilyError::Internal(_))),
+            "{bad:?}"
         );
     }
 }

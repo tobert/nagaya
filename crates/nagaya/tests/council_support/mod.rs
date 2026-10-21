@@ -132,6 +132,8 @@ pub struct TermFactory {
     pub grain: Option<u64>,
     /// The cap on interval copies in the `[store]` table of the profile.
     pub interval_copies: u32,
+    /// True when the engine speaks the toy language: its logits get the speaking bias of `nagaya-text-toy`.
+    pub speaking: bool,
 }
 
 impl TermFactory {
@@ -145,6 +147,7 @@ impl TermFactory {
             script: Script::default(),
             grain: None,
             interval_copies: 0,
+            speaking: false,
         }
     }
 
@@ -152,6 +155,9 @@ impl TermFactory {
         let mut inner = FakeAlways::with_slots(self.slots.clone());
         if let Some(vocab) = self.vocab {
             inner = inner.with_vocab(vocab);
+        }
+        if self.speaking {
+            inner = inner.with_logit_bias(nagaya_text_toy::speaking_bias());
         }
         WithContextTerm {
             inner,

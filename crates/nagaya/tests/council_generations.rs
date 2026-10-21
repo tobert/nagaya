@@ -547,3 +547,210 @@ fn text_released_after_the_last_token_in_another_phase_is_an_internal_error() {
         "{err:?}"
     );
 }
+
+// ---------------------------------------------------------------- continuations (gogi "Continuations")
+
+/// The context `value` with its last message replaced by `open`.
+fn with_open(value: &Value, open: Value) -> Value {
+    let mut value = value.clone();
+    value["messages"].as_array_mut().unwrap().push(open);
+    value
+}
+
+fn think_then_answer_long() -> Vec<u32> {
+    let mut reply = bytes("hi");
+    reply.push(gogi_toy::ENDTHINK);
+    reply.extend(bytes("okay"));
+    reply.push(gogi_toy::END);
+    reply
+}
+
+#[test]
+fn a_continuation_goes_on_from_the_open_text_and_counts_only_the_sampled_tokens() {
+    let (f, script) = scripted();
+    f.service
+        .build(&context(&ctx(false, opening())), false, Default::default())
+        .unwrap();
+    let value = with_open(
+        &ctx(false, opening()),
+        json!({"role": "assistant", "content": "Plan:", "continue": true}),
+    );
+    let mut reply = bytes(" ls");
+    reply.push(gogi_toy::END);
+    script.set(prompt(&value), reply);
+    let (tx, rx) = mpsc::sync_channel(1 << 16);
+    let done = f
+        .service
+        .generate(&request(&value, 50, json!({"temperature": 0})), Some(tx))
+        .unwrap();
+    assert_eq!((done.content.as_str(), done.finish), ("Plan: ls", Finish::EndTurn));
+    assert_eq!(done.phase, None, "only a reply cut by max_tokens names its phase");
+    let u = done.usage;
+    assert_eq!((u.prompt, u.completion, u.reasoning), (prompt(&value) as u64, 4, 0));
+    assert_eq!(u.kept + u.fed, u.prompt);
+    assert!(
+        u.fed >= 1,
+        "the last token of the open text gives the first logit row: {u:?}"
+    );
+    let events: Vec<TokenEvent> = rx.try_iter().collect();
+    assert_eq!(events.iter().map(|e| e.n).collect::<Vec<_>>(), [1, 2, 3, 4]);
+    let open = context(&value).messages.last().unwrap().clone();
+    gogi_proto::generation::check_pieces_after(&events, &done, &open).unwrap();
+    // The build sealed only the boundaries before the open message, so the reply goes back closed and the next
+    // request starts from the head after it.
+    let user = ToyFamily::new()
+        .render(&context(&ctx(false, opening())), false)
+        .unwrap()
+        .end as u64;
+    assert_eq!(
+        u.kept, user,
+        "the continuation builds the context before its open message: {u:?}"
+    );
+    let head = done.head.clone().expect("a continuation holds the head of its reply");
+    let mut messages = opening();
+    messages.push(serde_json::to_value(done.as_message().unwrap()).unwrap());
+    messages[2]["snap"] = json!(true);
+    let built = f
+        .service
+        .build(&context(&ctx(false, messages)), true, Default::default())
+        .unwrap();
+    assert_eq!((built.head, built.usage.fed), (Some(head), 0));
+}
+
+/// A seal changes bits (spec 11.3c), so a continuation seals nothing inside the open text. It then writes what the
+/// whole reply wrote, bit for bit.
+#[test]
+fn a_continuation_of_a_cut_reply_writes_what_the_whole_reply_wrote() {
+    let (f, script) = scripted();
+    let value = ctx(true, opening());
+    script.set(prompt(&value), think_then_answer_long());
+    let whole = generate(&f, &value, 50, json!({"temperature": 0}));
+    assert_eq!((whole.reasoning.as_str(), whole.content.as_str()), ("hi", "okay"));
+    let cut = generate(&f, &value, 4, json!({"temperature": 0}));
+    assert_eq!(
+        (cut.reasoning.as_str(), cut.content.as_str(), cut.finish),
+        ("hi", "o", Finish::MaxTokens)
+    );
+    assert_eq!(cut.phase, Some(Phase::Content));
+    assert_eq!(cut.head, None, "a cut reply holds no head (spec 11.3c, Proposed)");
+    let open = cut.as_open_message().unwrap();
+    let resumed = with_open(&value, serde_json::to_value(&open).unwrap());
+    assert_eq!(
+        prompt(&resumed),
+        prompt(&value) + 4,
+        "the open rendering is the prompt and the sampled tokens"
+    );
+    let user = ToyFamily::new().render(&context(&value), false).unwrap().end as u64;
+    let dry = f.service.build(&context(&resumed), true, Default::default()).unwrap();
+    assert_eq!((dry.usage.kept, dry.usage.fed), (user, prompt(&resumed) as u64 - user));
+    assert_eq!(dry.head, None, "the store never holds an open rendering");
+    let done = generate(&f, &resumed, 46, json!({"temperature": 0}));
+    assert_eq!(
+        done.usage.kept, user,
+        "the build starts from the context before the open message"
+    );
+    assert_eq!(
+        (done.reasoning.as_str(), done.content.as_str(), done.finish),
+        ("hi", "okay", Finish::EndTurn),
+        "the continuation writes what the whole reply wrote"
+    );
+    assert_eq!(done.usage.completion, 4);
+    assert_eq!(
+        done.head, whole.head,
+        "the head after the reply is the head after the whole reply"
+    );
+}
+
+/// The fake engine's logits, with no script, differ after a seal. A continuation that sealed inside its open text
+/// would write another reply. The engine speaks the toy language, so the reply renders back as its tokens.
+#[test]
+fn a_continuation_without_a_script_writes_what_the_whole_reply_wrote() {
+    let factory = TermFactory {
+        speaking: true,
+        ..TermFactory::toy()
+    };
+    let f = Fixture::with_factory(
+        factory,
+        1 << 20,
+        None,
+        ServiceConfig::new("toy", council_support::ENGINE),
+    );
+    let value = ctx(true, opening());
+    let whole = generate(&f, &value, 30, json!({"temperature": 0}));
+    let cut = generate(&f, &value, 3, json!({"temperature": 0}));
+    let Some(open) = cut.as_open_message() else {
+        panic!("the cut reply goes back open: {cut:?}")
+    };
+    let done = generate(
+        &f,
+        &with_open(&value, serde_json::to_value(&open).unwrap()),
+        27,
+        json!({"temperature": 0}),
+    );
+    assert_eq!(
+        (
+            done.reasoning.as_str(),
+            done.content.as_str(),
+            done.finish,
+            done.usage.completion + 3
+        ),
+        (
+            whole.reasoning.as_str(),
+            whole.content.as_str(),
+            whole.finish,
+            whole.usage.completion
+        )
+    );
+}
+
+#[test]
+fn a_reply_cut_inside_its_thinking_resumes_inside_it() {
+    let (f, script) = scripted();
+    let value = ctx(true, opening());
+    script.set(prompt(&value), think_then_answer_long());
+    let cut = generate(&f, &value, 1, json!({"temperature": 0}));
+    assert_eq!((cut.reasoning.as_str(), cut.phase), ("h", Some(Phase::Reasoning)));
+    let open = cut.as_open_message().unwrap();
+    assert_eq!(open.content, None);
+    let done = generate(
+        &f,
+        &with_open(&value, serde_json::to_value(&open).unwrap()),
+        49,
+        json!({"temperature": 0}),
+    );
+    assert_eq!((done.reasoning.as_str(), done.content.as_str()), ("hi", "okay"));
+    assert_eq!(done.usage.reasoning, 2, "the rest of the thought and <endthink>");
+}
+
+#[test]
+fn a_reply_cut_inside_a_call_names_the_call_phase_and_holds_no_head() {
+    let (f, script) = scripted();
+    let value = ctx(false, opening());
+    let mut reply = vec![gogi_toy::CALL];
+    reply.extend(bytes(r#"sh({"cmd":"ls"})"#));
+    reply.extend([gogi_toy::ENDCALL, gogi_toy::END]);
+    script.set(prompt(&value), reply);
+    let cut = generate(&f, &value, 3, json!({"temperature": 0}));
+    assert_eq!((cut.finish, cut.phase), (Finish::MaxTokens, Some(Phase::Call)));
+    assert_eq!(cut.head, None, "a cut reply holds no head");
+    assert_eq!(cut.as_open_message(), None);
+}
+
+#[test]
+fn an_open_message_builds_only_as_a_dry_run() {
+    let f = Fixture::new();
+    let value = with_open(
+        &ctx(false, opening()),
+        json!({"role": "assistant", "content": "Plan:", "continue": true}),
+    );
+    let Err(ServiceError::Invalid(invalid)) = f.service.build(&context(&value), false, Default::default()) else {
+        panic!("a build of an open message is refused")
+    };
+    assert_eq!(invalid.param.as_deref(), Some("continue"));
+    assert_eq!(f.entries(), 0);
+    let dry = f.service.build(&context(&value), true, Default::default()).unwrap();
+    assert_eq!(
+        (dry.usage.prompt, dry.usage.kept, dry.usage.fed),
+        (prompt(&value) as u64, 0, prompt(&value) as u64)
+    );
+}
