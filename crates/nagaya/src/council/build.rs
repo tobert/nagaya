@@ -7,11 +7,13 @@ use std::collections::VecDeque;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
-use nagaya_abi::{Engine, Kind, Limits, OutputsWanted, PassStatus, Segment, SegmentInputs, State, WriteResult};
+use nagaya_abi::{
+    Engine, Kind, Limits, OutputsWanted, PassError, PassOut, PassStatus, Segment, SegmentInputs, State, WriteResult,
+};
 use nagaya_council::build::{BoundaryRecipe, Step, plan_chunks, plan_steps};
 use nagaya_council::family::Boundary;
 use nagaya_council::read::logit_row;
-use nagaya_sched::{IntervalCopies, JobState};
+use nagaya_sched::{IntervalCopies, Item, JobState};
 use nagaya_store::{
     ContentId, EngineFacts, EntryState, Put, Reason, RecipeId, Restored, Snapshot, Store, StoreError, Tier, Tolerance,
     recipe_boundary, recipe_not_sealed, write_snapshots,
@@ -315,6 +317,16 @@ enum Unit {
     Interval,
 }
 
+/// A pass that began: its tokens, the position of its first token, and what its end gives.
+struct Pending {
+    tokens: Vec<u32>,
+    from: usize,
+    /// True when the pass gives the row of its last token.
+    row: bool,
+    /// True for a pass of the build, false for a pass of a feed of the work.
+    build: bool,
+}
+
 /// A copy of the state of a slot that `Mark` kept in host memory. The charge ends when the copy drops.
 struct Marked {
     snapshot: Snapshot,
@@ -359,6 +371,9 @@ pub struct ContextBody<T: Then> {
     tracked: bool,
     /// What the last pass gave, while the interval copy after it runs.
     after_copy: Option<Got>,
+    /// The passes that began and have not ended, in order. On an engine with stages, a block can begin before the
+    /// block before it ends (engine-abi D1).
+    in_flight: VecDeque<Pending>,
     then: Option<T>,
     tx: Option<Sender<Result<Finished<T>, ServiceError>>>,
 }
@@ -418,6 +433,7 @@ impl<T: Then> ContextBody<T> {
             sealed: None,
             tracked: false,
             after_copy: None,
+            in_flight: VecDeque::new(),
             then: Some(then),
             tx: Some(tx),
         }
@@ -649,13 +665,14 @@ impl<T: Then> ContextBody<T> {
             kind,
             "the scheduler gave a quantum of another kind than the unit"
         );
-        let fed = matches!(unit, Unit::Build(Step::Feed { .. }) | Unit::Feed { .. });
+        if matches!(unit, Unit::Build(Step::Feed { .. }) | Unit::Feed { .. }) {
+            let segment = self.begin(unit)?;
+            let result = engine.pass(&[segment], &[]);
+            let last_error = engine.last_error();
+            return self.passed(result, last_error, engine);
+        }
         let got = match unit {
-            Unit::Build(Step::Feed { from, to }) => {
-                let tokens = self.tokens[from..to].to_vec();
-                self.pass(engine, tokens, from, false)?;
-                None
-            }
+            Unit::Build(Step::Feed { .. }) | Unit::Feed { .. } => unreachable!("a pass begins above"),
             Unit::Build(Step::Snapshot { boundary }) => {
                 let recipe = self.recipes[boundary].recipe;
                 let reason = if boundary + 1 == self.recipes.len() {
@@ -667,21 +684,6 @@ impl<T: Then> ContextBody<T> {
                 let id = self.snapshot(engine, recipe, reason, &format!("the boundary of message {message}"))?;
                 self.held[boundary] = Some(id);
                 None
-            }
-            Unit::Feed { start, end, row } => {
-                let feeding = self.feeding.as_ref().expect("a pass belongs to a feed");
-                let tokens = feeding.tokens[start..end].to_vec();
-                let from = feeding.base + start;
-                let logits = self.pass(engine, tokens, from, row)?;
-                if row {
-                    self.row = logits;
-                }
-                if self.units.is_empty() {
-                    self.feeding = None;
-                    Some(Got::Fed(self.row.take()))
-                } else {
-                    None
-                }
             }
             Unit::Mark => {
                 // A second mark replaces the first. Release the first before the charge of the second.
@@ -712,6 +714,101 @@ impl<T: Then> ContextBody<T> {
                 self.after_copy.take()
             }
         };
+        self.after(got, false, engine)
+    }
+
+    /// Begin the pass of a feed unit: check its first position and make its segment.
+    fn begin(&mut self, unit: Unit) -> Result<Segment, ServiceError> {
+        let pending = match unit {
+            Unit::Build(Step::Feed { from, to }) => Pending {
+                tokens: self.tokens[from..to].to_vec(),
+                from,
+                row: false,
+                build: true,
+            },
+            Unit::Feed { start, end, row } => {
+                let feeding = self.feeding.as_ref().expect("a pass belongs to a feed");
+                Pending {
+                    tokens: feeding.tokens[start..end].to_vec(),
+                    from: feeding.base + start,
+                    row,
+                    build: false,
+                }
+            }
+            _ => unreachable!("only a feed unit begins a pass"),
+        };
+        let expected = self.fed.len() + self.in_flight.iter().map(|pending| pending.tokens.len()).sum::<usize>();
+        if pending.from != expected {
+            return Err(ServiceError::internal(format!(
+                "a pass starts at token {}, but the job knows {expected} tokens in the slot",
+                pending.from
+            )));
+        }
+        let to = pending.from + pending.tokens.len();
+        let segment = Segment {
+            state: self.state(),
+            inputs: SegmentInputs::Tokens(pending.tokens.clone()),
+            positions: (pending.from as u64..to as u64).collect(),
+            meta: Vec::new(),
+            outputs: OutputsWanted {
+                logit_rows: if pending.row { vec![to as u64 - 1] } else { Vec::new() },
+            },
+        };
+        self.in_flight.push_back(pending);
+        Ok(segment)
+    }
+
+    /// The end of the oldest pass that began. `last_error` is the engine's message when the pass failed.
+    fn passed(
+        &mut self,
+        result: Result<PassOut, PassError>,
+        last_error: Option<String>,
+        engine: &mut dyn Engine,
+    ) -> Result<Ran, ServiceError> {
+        let pending = self.in_flight.pop_front().expect("a pass that ends began");
+        let (from, to) = (pending.from, pending.from + pending.tokens.len());
+        let out = match result {
+            Ok(out) if out.status == PassStatus::Ok => {
+                self.fed.extend_from_slice(&pending.tokens);
+                out
+            }
+            Ok(out) => {
+                return Err(ServiceError::internal(format!(
+                    "a pass over tokens {from} to {to} ended with {:?}: {}",
+                    out.status,
+                    last_error.unwrap_or_default()
+                )));
+            }
+            Err(error) => {
+                return Err(ServiceError::internal(format!(
+                    "a pass over tokens {from} to {to} failed: {} ({:?})",
+                    error.message, error.kind
+                )));
+            }
+        };
+        if pending.row {
+            let mut rows = out.outputs.iter().filter(|output| output.name == "logits");
+            let (Some(output), None) = (rows.next(), rows.next()) else {
+                return Err(ServiceError::internal(format!(
+                    "a pass over tokens {from} to {to} asked for one logit row and did not give exactly one"
+                )));
+            };
+            let row = logit_row(&output.bytes, self.shared.vocab)
+                .map_err(|error| ServiceError::internal(format!("the pass over tokens {from} to {to}: {error}")))?;
+            self.row = Some(row);
+        }
+        let got = if !pending.build && self.units.is_empty() && self.in_flight.is_empty() {
+            self.feeding = None;
+            Some(Got::Fed(self.row.take()))
+        } else {
+            None
+        };
+        self.after(got, true, engine)
+    }
+
+    /// What follows a unit: an interval copy after a pass that crossed a multiple of the grain, the next unit, or the
+    /// next want of the work.
+    fn after(&mut self, got: Option<Got>, fed: bool, engine: &mut dyn Engine) -> Result<Ran, ServiceError> {
         // A copy is due after a pass that crossed a multiple of the grain, as the next quantum of the job. When the
         // pass ends on a boundary, the snapshot there holds the state, so the copy is not made.
         if fed && self.copy_due(engine)? && !matches!(self.units.front(), Some(Unit::Build(Step::Snapshot { .. }))) {
@@ -719,7 +816,7 @@ impl<T: Then> ContextBody<T> {
             self.after_copy = got;
             return Ok(Ran::First(vec![Kind::Copy]));
         }
-        if !self.units.is_empty() {
+        if !self.units.is_empty() || !self.in_flight.is_empty() {
             return Ok(Ran::Done);
         }
         match got {
@@ -949,64 +1046,6 @@ impl<T: Then> ContextBody<T> {
         Staging::take(&self.shared.ports, &self.shared.engine_name, bytes)
     }
 
-    /// Run one pass over `tokens` at positions from `from`. With `row`, give the logit row of the last token.
-    fn pass(
-        &mut self,
-        engine: &mut dyn Engine,
-        tokens: Vec<u32>,
-        from: usize,
-        row: bool,
-    ) -> Result<Option<Vec<f32>>, ServiceError> {
-        let to = from + tokens.len();
-        if from != self.fed.len() {
-            return Err(ServiceError::internal(format!(
-                "a pass starts at token {from}, but the job knows {} tokens in the slot",
-                self.fed.len()
-            )));
-        }
-        let fed = tokens.clone();
-        let segment = Segment {
-            state: self.state(),
-            inputs: SegmentInputs::Tokens(tokens),
-            positions: (from as u64..to as u64).collect(),
-            meta: Vec::new(),
-            outputs: OutputsWanted {
-                logit_rows: if row { vec![to as u64 - 1] } else { Vec::new() },
-            },
-        };
-        let out = match engine.pass(&[segment], &[]) {
-            Ok(out) if out.status == PassStatus::Ok => {
-                self.fed.extend_from_slice(&fed);
-                out
-            }
-            Ok(out) => {
-                return Err(ServiceError::internal(format!(
-                    "a pass over tokens {from} to {to} ended with {:?}: {}",
-                    out.status,
-                    engine.last_error().unwrap_or_default()
-                )));
-            }
-            Err(error) => {
-                return Err(ServiceError::internal(format!(
-                    "a pass over tokens {from} to {to} failed: {} ({:?})",
-                    error.message, error.kind
-                )));
-            }
-        };
-        if !row {
-            return Ok(None);
-        }
-        let mut rows = out.outputs.iter().filter(|output| output.name == "logits");
-        let (Some(output), None) = (rows.next(), rows.next()) else {
-            return Err(ServiceError::internal(format!(
-                "a pass over tokens {from} to {to} asked for one logit row and did not give exactly one"
-            )));
-        };
-        logit_row(&output.bytes, self.shared.vocab)
-            .map(Some)
-            .map_err(|error| ServiceError::internal(format!("the pass over tokens {from} to {to}: {error}")))
-    }
-
     /// Put the state that `Mark` kept back into the slot.
     fn rewind(&mut self, engine: &mut dyn Engine) -> Result<(), ServiceError> {
         let slot = self.slot();
@@ -1096,6 +1135,45 @@ impl<T: Then> JobBody for ContextBody<T> {
             self.start(engine)
         };
         match result {
+            Ok(ran) => ran,
+            Err(error) => {
+                self.send(Err(error));
+                Ran::Failed
+            }
+        }
+    }
+
+    fn item(&self, kind: Kind) -> Item {
+        match kind {
+            Kind::Copy => Item::Whole(kind),
+            _ => Item::Block(kind),
+        }
+    }
+
+    fn begin_pass(&mut self, kind: Kind, _engines: &mut [Box<dyn Engine>]) -> Result<Vec<Segment>, Ran> {
+        let unit = self.units.pop_front().expect("a pass has a unit");
+        assert_eq!(
+            self.kind_of(&unit),
+            kind,
+            "the scheduler gave a quantum of another kind than the unit"
+        );
+        assert!(
+            matches!(unit, Unit::Build(Step::Feed { .. }) | Unit::Feed { .. }),
+            "a pass of a context job is a feed unit"
+        );
+        match self.begin(unit) {
+            Ok(segment) => Ok(vec![segment]),
+            Err(error) => {
+                self.send(Err(error));
+                Err(Ran::Failed)
+            }
+        }
+    }
+
+    fn end_pass(&mut self, _kind: Kind, result: Result<PassOut, PassError>, engines: &mut [Box<dyn Engine>]) -> Ran {
+        let engine = engines[self.shared.engine_index].as_mut();
+        let last_error = engine.last_error();
+        match self.passed(result, last_error, engine) {
             Ok(ran) => ran,
             Err(error) => {
                 self.send(Err(error));

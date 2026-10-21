@@ -5,7 +5,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use nagaya::admission::{Factory, GroupDevice, OpenError, PlanError, Registry};
 use nagaya::council::{Clock, Service, ServiceConfig};
@@ -13,7 +13,10 @@ use nagaya::inventory::{Device, Inventory};
 use nagaya::process::{Process, Start};
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, StoreSpec, TierSpec};
 use nagaya_abi::fake::FakeFeed;
-use nagaya_abi::{Engine, Limits, OutputsWanted, SegmentInputs, SlotLimit, State, Tier};
+use nagaya_abi::{
+    Engine, Limits, OutputsWanted, PassError, PassOut, Residual, SegmentInputs, SlotLimit, StageHandle, StageOut,
+    Stages, State, Tier,
+};
 use nagaya_council::family::{Boundary, Family};
 use nagaya_store::{ContentId, Snapshot, snapshot_from_engine};
 use nagaya_text_toy::ToyFamily;
@@ -33,14 +36,116 @@ pub struct FeedFactory {
     pub stages: usize,
     /// The devices that each `open` got, in order.
     pub opened_on: Arc<Mutex<Vec<Vec<GroupDevice>>>>,
+    /// The time that each stage quantum takes, in milliseconds.
+    pub delay_ms: Arc<AtomicU64>,
+    /// The stage, the start and the end of each stage quantum.
+    pub log: StageLog,
 }
+
+/// The stage, the start and the end of each stage quantum.
+pub type StageLog = Arc<Mutex<Vec<(usize, Instant, Instant)>>>;
 
 impl FeedFactory {
     pub fn new(stages: usize) -> Self {
         Self {
             stages,
             opened_on: Arc::default(),
+            delay_ms: Arc::default(),
+            log: Arc::default(),
         }
+    }
+}
+
+/// The fake, with a delay and a log on each stage quantum.
+pub struct Traced {
+    inner: FakeFeed,
+    delay_ms: Arc<AtomicU64>,
+    log: StageLog,
+}
+
+impl Engine for Traced {
+    fn identity(&self) -> nagaya_abi::Identity {
+        self.inner.identity()
+    }
+
+    fn limits(&self) -> Limits {
+        self.inner.limits()
+    }
+
+    fn pass(&mut self, segments: &[nagaya_abi::Segment], taps: &[nagaya_abi::Tap]) -> Result<PassOut, PassError> {
+        self.inner.pass(segments, taps)
+    }
+
+    fn last_error(&self) -> Option<String> {
+        self.inner.last_error()
+    }
+
+    fn parts(&mut self) -> Option<&mut dyn nagaya_abi::Parts> {
+        self.inner.parts()
+    }
+
+    fn slots(&mut self) -> Option<&mut dyn nagaya_abi::Slots> {
+        self.inner.slots()
+    }
+
+    fn coverage(&mut self) -> Option<&mut dyn nagaya_abi::Coverage> {
+        self.inner.coverage()
+    }
+
+    fn stages(&mut self) -> Option<&mut dyn Stages> {
+        self.inner.stages()?;
+        Some(self)
+    }
+}
+
+impl Stages for Traced {
+    fn take_handles(&mut self) -> Vec<Box<dyn StageHandle + Send>> {
+        let handles = self
+            .inner
+            .stages()
+            .map(|stages| stages.take_handles())
+            .unwrap_or_default();
+        handles
+            .into_iter()
+            .enumerate()
+            .map(|(stage, inner)| {
+                Box::new(TracedStage {
+                    stage,
+                    inner,
+                    delay_ms: Arc::clone(&self.delay_ms),
+                    log: Arc::clone(&self.log),
+                }) as Box<dyn StageHandle + Send>
+            })
+            .collect()
+    }
+}
+
+struct TracedStage {
+    stage: usize,
+    inner: Box<dyn StageHandle + Send>,
+    delay_ms: Arc<AtomicU64>,
+    log: StageLog,
+}
+
+impl StageHandle for TracedStage {
+    fn stage_pass(&mut self, segments: &[nagaya_abi::Segment], residual: &mut Residual) -> Result<StageOut, PassError> {
+        let start = Instant::now();
+        std::thread::sleep(Duration::from_millis(self.delay_ms.load(Ordering::SeqCst)));
+        let out = self.inner.stage_pass(segments, residual);
+        self.log.lock().unwrap().push((self.stage, start, Instant::now()));
+        out
+    }
+
+    fn parts(&mut self) -> Option<&mut dyn nagaya_abi::Parts> {
+        self.inner.parts()
+    }
+
+    fn slots(&mut self) -> Option<&mut dyn nagaya_abi::Slots> {
+        self.inner.slots()
+    }
+
+    fn coverage(&mut self) -> Option<&mut dyn nagaya_abi::Coverage> {
+        self.inner.coverage()
     }
 }
 
@@ -82,7 +187,11 @@ impl Factory for FeedFactory {
 
     fn open(&self, _config: &toml::Table, devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
         self.opened_on.lock().unwrap().push(devices.to_vec());
-        Ok(Box::new(engine(self.stages)))
+        Ok(Box::new(Traced {
+            inner: engine(self.stages),
+            delay_ms: Arc::clone(&self.delay_ms),
+            log: Arc::clone(&self.log),
+        }))
     }
 }
 
@@ -141,14 +250,19 @@ pub struct FeedFixture {
 
 impl FeedFixture {
     pub fn new(stages: usize) -> Self {
+        Self::with(FeedFactory::new(stages), Duration::from_secs(10))
+    }
+
+    /// A fixture with this factory and this watchdog timeout.
+    pub fn with(factory: FeedFactory, timeout: Duration) -> Self {
+        let stages = factory.stages;
         let directory = tempfile::tempdir().unwrap();
-        let factory = FeedFactory::new(stages);
         let mut registry = Registry::new();
         registry.register("feed", Box::new(factory.clone()));
         let mut process = Start::new(profile(stages), registry, inventory(stages))
             .store(directory.path())
             .heartbeat(Duration::from_millis(10))
-            .timeout(Duration::from_secs(10))
+            .timeout(timeout)
             .start()
             .unwrap();
         process.wait_opens(Duration::from_secs(10)).unwrap();

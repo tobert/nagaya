@@ -10,8 +10,8 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use nagaya_abi::{Engine, Kind};
-use nagaya_sched::{Class, Completion, Event, Job, JobId, JobState, ObservedScheduler, Scheduler};
+use nagaya_abi::{Engine, Kind, PassError, PassOut, Segment};
+use nagaya_sched::{Class, Completion, Event, Item, Job, JobId, JobState, ObservedScheduler, Scheduler};
 use tracing::Span;
 
 use crate::evidence::{self, Machine};
@@ -45,6 +45,24 @@ pub trait JobBody: Send {
     /// The kind of request that the job serves, for the span `nagaya.job` (spec 9.2). The set of values is bounded.
     fn request(&self) -> &'static str {
         "job"
+    }
+
+    /// The item of a quantum of `kind` on an engine with stages (engine-abi D1). A `Block` is a pass that the group
+    /// runs stage by stage through [`JobBody::begin_pass`] and [`JobBody::end_pass`]. The default is a `Whole` copy
+    /// quantum, which [`JobBody::run`] runs while it holds every device.
+    fn item(&self, kind: Kind) -> Item {
+        Item::Whole(kind)
+    }
+
+    /// Begin a pass of `kind` on an engine with stages: give its segments. A body whose `item` gives a `Block`
+    /// implements it. An error is `Ran::Failed` or `Ran::Cancelled`, and the body told its caller why.
+    fn begin_pass(&mut self, kind: Kind, _engines: &mut [Box<dyn Engine>]) -> Result<Vec<Segment>, Ran> {
+        panic!("a {kind:?} quantum of this job is not a pass; its item must not be a Block")
+    }
+
+    /// End the oldest pass that began, with what its last stage gave. The passes of one job end in order.
+    fn end_pass(&mut self, kind: Kind, _result: Result<PassOut, PassError>, _engines: &mut [Box<dyn Engine>]) -> Ran {
+        panic!("a {kind:?} quantum of this job is not a pass; its item must not be a Block")
     }
 }
 
