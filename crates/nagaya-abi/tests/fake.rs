@@ -616,3 +616,38 @@ fn a_logit_row_outside_the_segment_is_refused_and_changes_nothing() {
     assert_eq!(error.kind, PassErrorKind::Refused, "{}", error.message);
     assert_eq!(state_snapshot(&mut engine), before);
 }
+
+#[test]
+fn a_logit_bias_adds_to_each_value_of_each_row() {
+    let floats = |bytes: &[u8]| -> Vec<f32> {
+        bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
+            .collect()
+    };
+    let bias: Vec<f32> = (0..64).map(|token| if token % 2 == 0 { -40.0 } else { 1.0 }).collect();
+    let mut plain = FakeAlways::new().with_vocab(64);
+    let mut biased = FakeAlways::new().with_vocab(64).with_logit_bias(bias.clone());
+    let segment = logit_segment(0, &[4, 5, 6], &[0, 2]);
+    let want = logits_of(&plain.pass(std::slice::from_ref(&segment), &[]).unwrap())
+        .iter()
+        .map(|row| floats(&row.bytes))
+        .collect::<Vec<_>>();
+    let got = logits_of(&biased.pass(&[segment], &[]).unwrap())
+        .iter()
+        .map(|row| floats(&row.bytes))
+        .collect::<Vec<_>>();
+    assert_eq!(got.len(), 2);
+    for (got, want) in got.iter().zip(&want) {
+        let sums: Vec<f32> = want.iter().zip(&bias).map(|(value, bias)| value + bias).collect();
+        assert_eq!(got, &sums);
+    }
+}
+
+#[test]
+#[should_panic(expected = "one bias for each token")]
+fn a_logit_bias_of_the_wrong_length_is_refused() {
+    let _ = FakeAlways::new().with_vocab(64).with_logit_bias(vec![0.0; 63]);
+}
