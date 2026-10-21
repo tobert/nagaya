@@ -362,57 +362,23 @@ impl Scheduler {
         }
     }
 
-    /// Charge each segment of a pass on its own (spec 5.4).
-    ///
-    /// A segment with the share `c` lowers its balance by `c * (n - 1) / n` and raises the balance of each other
-    /// present job by `c / n`. Both round down. The rounding remainder goes to the earliest present job, so the sum
-    /// stays zero. Then each balance is clamped.
+    /// Charge each segment of a pass on its own (spec 5.4). See [`charges`].
     fn charge_segments(&mut self, running: &Quantum, duration_ms: u64, present: &[(JobId, u64)]) {
-        let count = present.len() as u128;
-        let duration = duration_ms as u128;
-        let segment_count = running.segments.len() as u128;
-        if segment_count == 0 {
-            return;
-        }
-        let base = duration / segment_count;
-        let remainder = duration % segment_count;
-        let earliest_segment = running
+        let segments: Vec<(JobId, u64)> = running
             .segments
             .iter()
-            .min_by_key(|id| {
-                self.jobs
+            .map(|id| {
+                let arrival = self
+                    .jobs
                     .iter()
-                    .find(|job| job.id == **id)
-                    .map(|job| (job.arrival_ms, job.id))
-                    .unwrap_or((u64::MAX, **id))
+                    .find(|job| job.id == *id)
+                    .map_or(u64::MAX, |job| job.arrival_ms);
+                (*id, arrival)
             })
-            .copied();
-        let mut deltas: Vec<(JobId, i128)> = present.iter().map(|(id, _)| (*id, 0)).collect();
-        for segment in &running.segments {
-            let share = if Some(*segment) == earliest_segment {
-                base + remainder
-            } else {
-                base
-            };
-            let fall = (share * (count - 1) / count) as i128;
-            let rise = (share / count) as i128;
-            for (id, delta) in &mut deltas {
-                if id == segment {
-                    *delta -= fall;
-                } else {
-                    *delta += rise;
-                }
-            }
-        }
-        let total: i128 = deltas.iter().map(|(_, delta)| *delta).sum();
-        if let Some((earliest, _)) = present.iter().min_by_key(|(id, arrival)| (*arrival, *id))
-            && let Some((_, delta)) = deltas.iter_mut().find(|(id, _)| id == earliest)
-        {
-            *delta -= total;
-        }
-        for (id, delta) in deltas {
+            .collect();
+        for (id, delta) in charges(&segments, duration_ms, present) {
             if let Some(job) = self.jobs.iter_mut().find(|job| job.id == id) {
-                job.balance_ms = (job.balance_ms as i128 + delta).clamp(-30_000, 30_000) as i64;
+                job.balance_ms = clamp_balance(job.balance_ms, delta);
             }
         }
     }
@@ -446,22 +412,13 @@ impl Scheduler {
                 Class::Filler
             };
             let mut candidates: Vec<&Job> = ready.into_iter().filter(|job| job.class == class).collect();
-            if class == Class::Interactive {
-                candidates.sort_by(|left, right| {
-                    right
-                        .priority
-                        .cmp(&left.priority)
-                        .then(right.balance_ms.cmp(&left.balance_ms))
-                        .then(left.arrival_ms.cmp(&right.arrival_ms))
-                });
-            } else {
-                candidates.sort_by(|left, right| {
-                    right
-                        .priority
-                        .cmp(&left.priority)
-                        .then(left.arrival_ms.cmp(&right.arrival_ms))
-                });
-            }
+            candidates.sort_by(|left, right| {
+                order_in_class(
+                    class,
+                    (left.priority, left.balance_ms, left.arrival_ms),
+                    (right.priority, right.balance_ms, right.arrival_ms),
+                )
+            });
             let best = candidates.first().copied()?;
             let engine = best.engine;
             // An engine that is not listed takes one segment in a pass.
@@ -510,9 +467,75 @@ impl Scheduler {
     }
 }
 
+/// The order of two jobs of one class: the one that runs first is `Less` (spec 5.4). A key is the priority, the owed
+/// balance and the arrival. The balance counts only in `interactive`.
+pub(crate) fn order_in_class(class: Class, left: (i64, i64, u64), right: (i64, i64, u64)) -> std::cmp::Ordering {
+    let by_priority = right.0.cmp(&left.0);
+    if class == Class::Interactive {
+        by_priority.then(right.1.cmp(&left.1)).then(left.2.cmp(&right.2))
+    } else {
+        by_priority.then(left.2.cmp(&right.2))
+    }
+}
+
+/// The changes of the owed balances for one quantum of `duration_ms` (spec 5.4).
+///
+/// `segments` are the jobs of the quantum with their arrivals, and `present` are the present interactive jobs. Each
+/// segment gets an equal share, and the rounding remainder goes to the segment that arrived first. A segment with the
+/// share `c` lowers its balance by `c * (n - 1) / n` and raises the balance of each other present job by `c / n`. Both
+/// round down. The rounding remainder goes to the earliest present job, so the changes sum to zero.
+pub(crate) fn charges(segments: &[(JobId, u64)], duration_ms: u64, present: &[(JobId, u64)]) -> Vec<(JobId, i128)> {
+    let count = present.len() as u128;
+    let segment_count = segments.len() as u128;
+    if count == 0 || segment_count == 0 {
+        return Vec::new();
+    }
+    let duration = duration_ms as u128;
+    let base = duration / segment_count;
+    let remainder = duration % segment_count;
+    let earliest_segment = segments
+        .iter()
+        .min_by_key(|(id, arrival)| (*arrival, *id))
+        .map(|(id, _)| *id);
+    let mut deltas: Vec<(JobId, i128)> = present.iter().map(|(id, _)| (*id, 0)).collect();
+    for (segment, _) in segments {
+        let share = if Some(*segment) == earliest_segment {
+            base + remainder
+        } else {
+            base
+        };
+        let fall = (share * (count - 1) / count) as i128;
+        let rise = (share / count) as i128;
+        for (id, delta) in &mut deltas {
+            if id == segment {
+                *delta -= fall;
+            } else {
+                *delta += rise;
+            }
+        }
+    }
+    let total: i128 = deltas.iter().map(|(_, delta)| *delta).sum();
+    if let Some((earliest, _)) = present.iter().min_by_key(|(id, arrival)| (*arrival, *id))
+        && let Some((_, delta)) = deltas.iter_mut().find(|(id, _)| id == earliest)
+    {
+        *delta -= total;
+    }
+    deltas
+}
+
+/// A balance after a change, between -30 s and +30 s (spec 5.4).
+pub(crate) fn clamp_balance(balance_ms: i64, delta: i128) -> i64 {
+    (balance_ms as i128 + delta).clamp(-30_000, 30_000) as i64
+}
+
 mod interval;
 
 mod observed;
 
+mod stages;
+
 pub use interval::{ContextId, CopyDue, IntervalCopies, IntervalError, IntervalPolicy};
 pub use observed::ObservedScheduler;
+pub use stages::{
+    Device, Item, StageError, StageEvent, StageJob, StageQuantum, StageScheduler, StagedEngine, Work, stage_step,
+};
