@@ -5,12 +5,12 @@ use std::sync::Arc;
 
 #[cfg(feature = "fake")]
 use nagaya_abi::fake::FakeAlways;
-use nagaya_abi::{Engine, Limits, Tier};
+use nagaya_abi::{DeviceId, Engine, Limits, Tier};
 use nagaya_ledger::{Admission, Budget, EnginePlan, Ledger, LedgerError, Profile};
 
-use crate::inventory::Inventory;
+use crate::inventory::{Device, Inventory};
 use crate::placement::{DeviceError, check_devices};
-use crate::profile::PlacementProfile;
+use crate::profile::{EnginePlacement, PlacementProfile};
 
 /// Why an engine cannot give its limits before it opens.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,13 +64,56 @@ impl std::fmt::Display for OpenError {
 
 impl std::error::Error for OpenError {}
 
+/// A machine device of an engine, as the factory sees it (engine ABI "The factory gets its devices").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupDevice {
+    /// The machine device id (spec 2.1).
+    pub id: DeviceId,
+    /// The device name from the probe.
+    pub name: String,
+    /// The PCI address, for example `0000:03:00.0`.
+    pub pci_address: String,
+    /// The device memory in bytes.
+    pub memory_bytes: u64,
+}
+
+impl From<&Device> for GroupDevice {
+    fn from(device: &Device) -> Self {
+        Self {
+            id: device.id,
+            name: device.name.clone(),
+            pci_address: device.pci_address.clone(),
+            memory_bytes: device.memory_bytes,
+        }
+    }
+}
+
+/// The devices of an engine, in the order of the profile's `devices` list.
+///
+/// The position in the result is the group index (spec 2.4). A device that the inventory lacks is an error.
+pub fn group_devices(engine: &EnginePlacement, inventory: &Inventory) -> Result<Vec<GroupDevice>, DeviceError> {
+    engine
+        .devices
+        .iter()
+        .map(|id| {
+            inventory
+                .device(*id)
+                .map(GroupDevice::from)
+                .ok_or_else(|| DeviceError::Unknown {
+                    engine: engine.name.clone(),
+                    device: *id,
+                })
+        })
+        .collect()
+}
+
 /// The factory of one engine kind (ABI "Rust shape").
 pub trait Factory {
-    /// Give the engine's limits for a config.
-    fn plan(&self, config: &toml::Table) -> Result<Limits, PlanError>;
+    /// Give the engine's limits for a config. `devices` are the machine devices of the engine.
+    fn plan(&self, config: &toml::Table, devices: &[GroupDevice]) -> Result<Limits, PlanError>;
 
     /// Open the engine on the calling thread. The process calls this on the group thread.
-    fn open(&self, config: &toml::Table) -> Result<Box<dyn Engine>, OpenError>;
+    fn open(&self, config: &toml::Table, devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError>;
 }
 
 /// The factories by engine kind.
@@ -233,11 +276,11 @@ pub struct FakeFactory;
 
 #[cfg(feature = "fake")]
 impl Factory for FakeFactory {
-    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+    fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         Ok(FakeAlways::new().limits())
     }
 
-    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
         Ok(Box::new(FakeAlways::new()))
     }
 }
@@ -275,11 +318,11 @@ fn gogi_toy_vocab() -> usize {
 
 #[cfg(feature = "fake")]
 impl Factory for FakeToyFactory {
-    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+    fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         Ok(Self::engine().limits())
     }
 
-    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
         Ok(Box::new(Self::engine()))
     }
 }
@@ -290,11 +333,11 @@ pub struct PanicFactory;
 
 #[cfg(feature = "fake")]
 impl Factory for PanicFactory {
-    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+    fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         Ok(FakeAlways::new().limits())
     }
 
-    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
         panic!("the fake engine cannot open")
     }
 }
@@ -321,10 +364,13 @@ pub fn admit(
             engine: engine.name.clone(),
             kind: engine.kind.clone(),
         })?;
-        let limits = factory.plan(&engine.config).map_err(|error| AdmitError::Plan {
-            engine: engine.name.clone(),
-            message: error.to_string(),
-        })?;
+        let devices = group_devices(engine, inventory).map_err(AdmitError::Device)?;
+        let limits = factory
+            .plan(&engine.config, &devices)
+            .map_err(|error| AdmitError::Plan {
+                engine: engine.name.clone(),
+                message: error.to_string(),
+            })?;
         // The scheduler asserts this value, so a zero is refused here, before any thread starts.
         if limits.max_segments == 0 {
             return Err(AdmitError::Limits {
@@ -340,6 +386,7 @@ pub fn admit(
         engines.push(EnginePlan {
             name: engine.name.clone(),
             limits,
+            devices: engine.devices.clone(),
             share: engine.share,
         });
     }

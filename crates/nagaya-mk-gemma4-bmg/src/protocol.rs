@@ -1,0 +1,119 @@
+//! Structures shared between the host and `kernels/megakernel.cl`. Field meanings per op are
+//! documented in the kernel; keep both sides in step.
+
+#![allow(dead_code)]
+
+/// Task ring capacity per card, including the trailing `OP_HALT`.
+pub const MAX_TASKS_PER_CARD: usize = 2048;
+/// Task `i` waits on event `i` and signals event `i + 1`.
+pub const NUM_SCOREBOARD_EVENTS: usize = MAX_TASKS_PER_CARD + 1;
+
+pub const OP_NOP: u16 = 0;
+pub const OP_RMSNORM: u16 = 1;
+pub const OP_MATMUL: u16 = 2;
+pub const OP_GEGLU: u16 = 3;
+pub const OP_ATTN: u16 = 5;
+pub const OP_ROUTER: u16 = 6;
+pub const OP_MOE_PLAN: u16 = 7;
+pub const OP_MOE_GATE_UP: u16 = 8;
+pub const OP_MOE_DOWN: u16 = 9;
+pub const OP_MEAN_POOL_L2: u16 = 11;
+pub const OP_ROUTER_LOGITS: u16 = 12;
+pub const OP_ATTN_OUT: u16 = 13;
+pub const OP_FFN_OUT: u16 = 14;
+pub const OP_ATTN_COMBINE: u16 = 15;
+pub const OP_ATTN_SCORES: u16 = 16;
+pub const OP_ATTN_SOFTMAX: u16 = 17;
+pub const OP_ATTN_PV: u16 = 18;
+pub const OP_ATTN_PV_SUM: u16 = 19;
+pub const OP_MOE_GATHER: u16 = 20;
+pub const OP_COPY: u16 = 21;
+pub const OP_HALT: u16 = 255;
+
+pub const FLAG_ACCUMULATE: u16 = 1 << 0;
+pub const FLAG_SOFTCAP_30: u16 = 1 << 2;
+pub const FLAG_ROPE_GLOBAL: u16 = 1 << 3;
+pub const FLAG_ROPE: u16 = 1 << 5;
+
+pub const NO_EVENT: u32 = u32::MAX;
+pub const NUM_EXPERTS: usize = 128;
+pub const TOP_K: usize = 8;
+/// Most tokens one block may hold; sized by `MoEPlan` in the kernel.
+pub const MAX_PLAN_TOKENS: usize = 1024;
+
+/// Bytes of the kernel's `MoEPlan`: count[128], offset[129], n_active, active[128], then
+/// MAX_PLAN_TOKENS * TOP_K slots and weights.
+pub const MOE_PLAN_BYTES: usize = (NUM_EXPERTS + NUM_EXPERTS + 1 + 1 + NUM_EXPERTS) * 4 + MAX_PLAN_TOKENS * TOP_K * 8;
+
+/// 64-byte task descriptor in host USM. Before running, each work-group waits for
+/// `scoreboard[wait_event]` to reach the work-group count; after, it adds 1 to
+/// `scoreboard[signal_event]`. `NO_EVENT` skips either step.
+#[repr(C, align(64))]
+#[derive(Clone, Copy, Debug)]
+pub struct MkTaskDescriptor {
+    pub opcode: u16,
+    pub flags: u16,
+    pub layer: u32,
+    pub wait_event: u32,
+    pub signal_event: u32,
+    pub a: u64,
+    pub b: u64,
+    pub c: u64,
+    pub m: u32,
+    pub n: u32,
+    pub k: u32,
+    pub p0: u32,
+    pub x: u64,
+}
+
+impl Default for MkTaskDescriptor {
+    fn default() -> Self {
+        Self {
+            opcode: OP_NOP,
+            flags: 0,
+            layer: 0,
+            wait_event: NO_EVENT,
+            signal_event: NO_EVENT,
+            a: 0,
+            b: 0,
+            c: 0,
+            m: 0,
+            n: 0,
+            k: 0,
+            p0: 0,
+            x: 0,
+        }
+    }
+}
+
+const _: () = assert!(std::mem::size_of::<MkTaskDescriptor>() == 64);
+
+/// One token's routing, written by `OP_ROUTER`.
+#[repr(C, align(64))]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MoERouteDecision {
+    pub top_k_indices: [u32; 8],
+    /// Renormalized top-8 router probabilities times `per_expert_scale`
+    pub top_k_weights: [f32; 8],
+    pub router_entropy: f32,
+    pub router_lse: f32,
+    pub layer_idx: u32,
+    pub token: u32,
+    pub reserved: [u32; 4],
+}
+
+const _: () = assert!(std::mem::size_of::<MoERouteDecision>() == 128);
+
+/// Per-Xe2-core execution statistics written at the end of each launch
+#[repr(C, align(64))]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct XeCoreStats {
+    pub core_id: u32,
+    pub tasks_executed: u32,
+    pub spin_polls: u32,
+    pub last_opcode: u32,
+    pub xmx_tiles_executed: u32,
+    pub reserved: [u32; 11],
+}
+
+const _: () = assert!(std::mem::size_of::<XeCoreStats>() == 64);

@@ -15,7 +15,7 @@ use nagaya_store::Store;
 use nagaya_telemetry::Inherit;
 use tracing::Span;
 
-use crate::admission::{AdmitError, Admitted, Factory, OpenErrorKind, Registry, admit};
+use crate::admission::{AdmitError, Admitted, Factory, GroupDevice, OpenErrorKind, Registry, admit, group_devices};
 use crate::affinity::{pin_current_thread, set_batch_policy};
 use crate::cpu_sets::CpuSets;
 use crate::evidence::Machine;
@@ -673,7 +673,7 @@ impl Start {
         let mut group_threads = Vec::with_capacity(groups.len());
         let mut group_stops = Vec::with_capacity(groups.len());
         for (index, group) in groups.iter().enumerate() {
-            let jobs = group_jobs(&profile, &admitted, &registry, group);
+            let jobs = group_jobs(&profile, &admitted, &registry, &inventory, group);
             let _ = watch_tx.send(WatchMessage::Start {
                 group: index,
                 devices: group.devices.clone(),
@@ -737,6 +737,7 @@ impl Start {
 struct GroupJob {
     placement: EnginePlacement,
     limits: Limits,
+    devices: Vec<GroupDevice>,
     factory: Arc<dyn Factory + Send + Sync>,
 }
 
@@ -744,6 +745,7 @@ fn group_jobs(
     profile: &PlacementProfile,
     admitted: &Admitted,
     registry: &Registry,
+    inventory: &Inventory,
     group: &DeviceGroup,
 ) -> Vec<GroupJob> {
     group
@@ -755,9 +757,12 @@ fn group_jobs(
             let factory = registry
                 .factory(&placement.kind)
                 .expect("the admitted kind has no factory");
+            let devices = group_devices(placement, inventory)
+                .unwrap_or_else(|error| panic!("the admitted profile has a device that the inventory lacks: {error}"));
             GroupJob {
                 placement: placement.clone(),
                 limits,
+                devices,
                 factory,
             }
         })
@@ -792,7 +797,7 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
     // An open can take minutes, and it blocks this thread. The guard beats for the group until the open ends (7.4).
     let open_beat = OpenBeat::start(group, heartbeats.clone(), interval);
     for job in jobs {
-        let engine = match job.factory.open(&job.placement.config) {
+        let engine = match job.factory.open(&job.placement.config, &job.devices) {
             Ok(engine) => engine,
             Err(error) => {
                 let _ = events.send(Event::OpenFailed {
