@@ -243,9 +243,9 @@ impl Qwen38Family {
     }
 }
 
-/// The tokens of the letters `A` to `Z`, with a leading space and bare. The run stops at the first letter that is
-/// not one token of its own in both forms, or whose token an earlier letter has. A run of fewer than two letters is
-/// an error.
+/// The tokens of the letters `A` to `Z`, with a leading space and bare. The run stops at the first letter that fails.
+/// A letter fails when it is not one token in both forms, or when an earlier letter has its token. A run of fewer
+/// than two letters is an error.
 fn letter_tokens(tokenizer: &Tokenizer) -> Result<(Vec<u32>, Vec<u32>), Error> {
     let one = |text: &str| -> Result<Option<u32>, Error> {
         let ids = tokenizer.encode_escaped(&tokenizer.escape(text)?)?;

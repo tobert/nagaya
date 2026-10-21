@@ -2,9 +2,10 @@
 """Write `tests/fixtures/council.json`: fixed renders of the Qwen3.8 council rendering, from mk's Python front-end.
 
 The chat template and the tokenizer are mk's (`service/common.py` `render_messages`, `harness/tokenizer.py`). The
-layout of a council read (spec layer, case turn, letter menu, queue call) is written out again below in Python. It is
-the port of mkviolet's `src/template.rs` to Qwen3.8's chat format. The Rust library must give the same text and the
-same token ids. The script runs no service and uses no GPU. It only reads mk and the GGUF file.
+layout of a council read (spec layer, case turn, letter menu, queue call) is written out again below in Python. That
+text is a second port of mkviolet's `src/template.rs` to Qwen3.8's chat format. It was checked by hand against
+mkviolet's `template.rs` on 2026-10-20. The script does not take it from mkviolet. The Rust library must give the same
+text and the same token ids. The script runs no service and uses no GPU. It only reads mk and the GGUF file.
 
     MEGAKERNEL_LLAMA_CPP=~/src/wt/llama.cpp-master-0924 \
     ~/src/megakernel-qwen38-flashnext-strixhalo/.venv/bin/python \

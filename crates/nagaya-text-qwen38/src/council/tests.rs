@@ -128,8 +128,8 @@ fn each_site_of_the_hook_changes_the_renders_that_use_it() {
     }
 }
 
-/// A change to the code does not keep the id unless the set keeps its meaning: it holds a plain read, a read
-/// after a context, a queue read and a raw read.
+/// The test set must keep its meaning, or a change to the code can hide a change to the id. The set holds a plain
+/// read, a read after a context, a queue read and a raw read.
 #[test]
 fn the_test_set_holds_each_kind_of_read() {
     let family = Qwen38Family::from_metadata(metadata()).unwrap();

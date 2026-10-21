@@ -226,8 +226,8 @@ impl Cursor {
     }
 }
 
-/// Check the asked questions against the spec. A question with no option to read, and a question with more options
-/// than the model has letters, are the client's mistakes. The rest are mistakes of the caller.
+/// Check the asked questions against the spec. The client is at fault for a question with no option to read, or with
+/// more options than the model has letters. Any other fault is the caller's.
 fn check_asked(family: &Qwen38Family, spec: &Spec, asked: &[Asked]) -> Result<(), FamilyError> {
     if asked.is_empty() {
         return Err(FamilyError::internal("a decision read asks at least one question"));
