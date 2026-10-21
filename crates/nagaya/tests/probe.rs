@@ -108,37 +108,21 @@ fn gfx1151host_has_one_unified_gfx1151() {
 #[test]
 fn b70host_has_two_xe_cards_with_32_gib_each() {
     let machine = machine("b70host");
-    // The tree is a capture of b70host on 2026-10-21. The display GPU (the AMD iGPU at 0000:80:00.0) is listed as the
-    // probe lists it today, as device 0. Its numbering waits for the spec.
+    // The tree is a capture of b70host on 2026-10-21. The ids follow the PCI address (spec 2.1): the two cards are
+    // devices 0 and 1, and the display GPU (the AMD iGPU at 0000:80:00.0) is device 2.
     assert_eq!(
         machine.devices,
         vec![
+            facts(0, "xe-e223", 32 << 30, false, Vendor::Intel, "0000:03:00.0", "8086:e223"),
+            facts(1, "xe-e223", 32 << 30, false, Vendor::Intel, "0000:08:00.0", "8086:e223"),
             facts(
-                0,
+                2,
                 "gfx1036",
                 66_277_081_088,
                 true,
                 Vendor::Amd,
                 "0000:80:00.0",
                 "1002:13c0"
-            ),
-            facts(
-                1,
-                "xe-e223",
-                32 << 30,
-                false,
-                Vendor::Intel,
-                "0000:03:00.0",
-                "8086:e223"
-            ),
-            facts(
-                2,
-                "xe-e223",
-                32 << 30,
-                false,
-                Vendor::Intel,
-                "0000:08:00.0",
-                "8086:e223"
             ),
         ]
     );

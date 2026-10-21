@@ -109,6 +109,9 @@ impl FileProbe {
         let mut devices = self.amd_devices()?;
         devices.extend(self.xe_devices()?);
         devices.extend(self.nvidia_devices(host_bytes)?);
+        // A PCI address has fixed-width lower case hex fields, so the text order is the order of domain, bus, device
+        // and function (spec 2.1).
+        devices.sort_by(|left, right| left.pci_address.cmp(&right.pci_address));
         for (id, facts) in devices.iter_mut().enumerate() {
             facts.device.id = u32::try_from(id).expect("a machine has fewer than 2^32 devices");
         }
