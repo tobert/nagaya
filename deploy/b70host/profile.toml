@@ -1,0 +1,45 @@
+# The placement profile of b70host (docs/spec.md 2.4). The nagaya reads the accepted profile from
+# `<store_dir>/profile.toml`, so docs/deploy.md says to copy this file there once. The loader is
+# `crates/nagaya/src/profile.rs`, and `crates/nagaya/tests/deploy.rs` reads this file.
+
+# The Gemma 4 engine on the two B70 cards (docs/engine-abi.md "How mkviolet maps"). Machine devices 0 and 1 are the
+# cards at 0000:03:00.0 and 0000:08:00.0; device 2 is the ignored iGPU (spec 2.1). Stage 0 runs on device 0, and
+# stage 1 on device 1. The checkpoint directory comes from the unit's environment (`GEMMA4_MODEL_DIR`), and not from
+# this table, as the shards of mk do on gfx1151host.
+[[engines]]
+name = "gemma"
+kind = "mk-gemma4-bmg"
+devices = [0, 1]
+share = 1
+pin_identity = false
+
+# The slots that mkviolet serves (mkviolet `src/main.rs`: `MAX_SEQ`, `GEN_SEQ`): one of 4,096 positions and one of
+# 65,536. The block is mkviolet's `MAX_BLOCK`, 512 tokens, and the engine's default.
+[engines.config]
+slots = [4096, 65536]
+max_block = 512
+
+# One budget for each card's device memory, and one for host memory (spec 4.1). Each B70 has 32 GiB of GDDR6
+# (BAR 2 of `resource`, spec 2.1). The budget of a card is all of it: the device has no safety floor. The plan of
+# this profile gives 29,964,945,932 bytes of mandatory terms on device 0 and 31,889,794,060 on device 1, and
+# 1,515,343,872 in host memory (`crates/nagaya/tests/deploy.rs`, 2026-10-21). Card 1 has about 2.3 GB left.
+[[budgets]]
+tiers = ["device(0)"]
+bytes = 34359738368
+
+[[budgets]]
+tiers = ["device(1)"]
+bytes = 34359738368
+
+# The host has 129,447,428 kB (about 123.5 GiB, `proc/meminfo` of 2026-10-21), and the safety floor of spec 4.7 is
+# 12 GiB. The host budget takes 96 GiB = 103,079,215,104 bytes, which leaves about 15.5 GiB above the floor.
+[[budgets]]
+tiers = ["host"]
+bytes = 103079215104
+
+# The store (spec 4.1a): 16 GiB in host memory and 50 GiB on NVMe, as on gfx1151host. The host budget of the store takes
+# its bytes from the host budget above.
+[store]
+nvme = 53687091200
+host = 17179869184
+interval_copies = 0
