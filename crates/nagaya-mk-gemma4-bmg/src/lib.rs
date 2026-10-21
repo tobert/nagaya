@@ -4,6 +4,25 @@
 //! comes in step 5. The kernels are OpenCL C in `kernels/`, and `build.rs` compiles them with `ocloc` for `bmg-g31`.
 //! The parts that touch a card need the feature `xe`. With no feature, the crate builds and tests with no card.
 
+// The copy keeps mkviolet's code as it was, so these lints wait for the port of each part.
+#![allow(
+    clippy::chunks_exact_to_as_chunks,
+    clippy::len_without_is_empty,
+    clippy::manual_div_ceil,
+    clippy::manual_is_multiple_of,
+    clippy::missing_safety_doc,
+    clippy::not_unsafe_ptr_arg_deref,
+    clippy::too_many_arguments,
+    clippy::type_complexity
+)]
+
+pub mod gemma4;
+#[cfg(feature = "xe")]
+pub mod level_zero;
+pub mod protocol;
+pub mod safetensors;
+pub mod sharding;
+
 /// The kernel binary for `bmg-g31` that `build.rs` compiled from `kernels/megakernel.cl`.
 #[cfg(feature = "xe")]
 pub const MEGAKERNEL_BIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_bmg.bin"));
