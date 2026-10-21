@@ -2814,3 +2814,107 @@ fn a_failed_clear_entry_leaves_the_entry_quarantined() {
         assert_eq!(store.entries().get(&id).unwrap().state, EntryState::Live);
     }
 }
+
+// A park moves a host entry to NVMe, bit for bit (spec 10.3, ontology "Park").
+
+#[test]
+fn a_park_moves_a_host_entry_to_nvme_and_a_restart_keeps_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let id = put_in(&mut store, &base_snapshot(1), recipe(170), 7, Tier::Host);
+    let before = store.entries()[&id].clone();
+    store.park(&id, 20).unwrap();
+    let after = store.entries()[&id].clone();
+    assert_eq!(after.tier, Tier::Nvme);
+    assert_eq!(
+        (after.recipe, after.owner, after.reason, after.size),
+        (before.recipe, before.owner, before.reason, before.size),
+        "a park changes only the tier"
+    );
+    assert_eq!(blob_names(dir.path()), vec![id.hex()]);
+    assert_eq!(store.host_resident_bytes(), 0, "the host tier frees the bytes");
+    drop(store);
+
+    let mut store = Store::open(dir.path()).unwrap();
+    assert_eq!(store.entries()[&id].tier, Tier::Nvme, "6.11 removes host entries only");
+    assert_eq!(lookup(&mut store, recipe(170)).unwrap(), vec![id]);
+}
+
+#[test]
+fn a_park_of_an_nvme_entry_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let id = put_in(&mut store, &base_snapshot(1), recipe(171), 1, Tier::Nvme);
+    let before = store.entries().clone();
+    store.park(&id, 20).unwrap();
+    assert_eq!(store.entries(), &before);
+}
+
+#[test]
+fn a_park_refuses_an_interval_copy_and_an_absent_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = copy_store(dir.path(), 4);
+    let copy = put_copy(&mut store, &base_snapshot(1), recipe(172), 1, 10).unwrap();
+    let before = store.entries().clone();
+    let error = store.park(&copy, 20).unwrap_err();
+    assert!(matches!(error, StoreError::Invalid(_)), "{error:?}");
+    assert!(error.to_string().contains("6.13"), "{error}");
+    assert_eq!(store.entries(), &before, "a refused park changes nothing");
+    let absent = base_snapshot(2).content_id().unwrap();
+    assert!(matches!(store.park(&absent, 20), Err(StoreError::Invalid(_))));
+}
+
+#[test]
+fn a_park_with_no_room_on_nvme_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let size = base_snapshot(1).encode().unwrap().len() as u64;
+    let mut store = Store::open_with_limits(dir.path(), u64::MAX, size - 1, u64::MAX, 0).unwrap();
+    let id = put_in(&mut store, &base_snapshot(1), recipe(173), 1, Tier::Host);
+    let before = store.entries().clone();
+    assert!(matches!(store.park(&id, 20), Err(StoreError::NoSpace)));
+    assert_eq!(store.entries(), &before);
+    assert!(blob_names(dir.path()).is_empty());
+    assert_eq!(store.host_resident_bytes(), size);
+}
+
+#[test]
+fn a_park_evicts_an_nvme_entry_of_the_same_owner_for_room() {
+    let dir = tempfile::tempdir().unwrap();
+    let size = base_snapshot(1).encode().unwrap().len() as u64;
+    let mut store = Store::open_with_limits(dir.path(), u64::MAX, size, u64::MAX, 0).unwrap();
+    let old = put_in(&mut store, &base_snapshot(2), recipe(174), 1, Tier::Nvme);
+    let id = put_in(&mut store, &base_snapshot(1), recipe(175), 1, Tier::Host);
+    store.park(&id, 20).unwrap();
+    assert!(!store.entries().contains_key(&old), "6.9: the park made room");
+    assert_eq!(store.entries()[&id].tier, Tier::Nvme);
+    assert_eq!(blob_names(dir.path()), vec![id.hex()]);
+}
+
+#[test]
+fn a_park_refuses_a_delta_whose_parent_is_in_the_host_tier() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let base = put_in(&mut store, &base_snapshot(1), recipe(176), 1, Tier::Host);
+    let next = next_recipe(recipe(176), 1);
+    let delta = try_put(
+        &mut store,
+        &delta_at(base, 2),
+        next,
+        Some(recipe(176)),
+        1,
+        Tier::Host,
+        10,
+    )
+    .unwrap();
+    let before = store.entries().clone();
+    let error = store.park(&delta, 20).unwrap_err();
+    assert!(error.to_string().contains("park the parent first"), "{error}");
+    assert_eq!(store.entries(), &before);
+    store.park(&base, 20).unwrap();
+    store.park(&delta, 20).unwrap();
+    assert_eq!(
+        store.entries()[&delta].tier,
+        Tier::Nvme,
+        "a parked parent lets its delta park"
+    );
+}

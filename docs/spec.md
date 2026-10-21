@@ -1205,6 +1205,21 @@ Reason: step 3 parks pinned and wanted contexts. The process does not track pins
 it parks each state with tokens. An empty state of mk is 118,038,528 bytes of fixed parts ("v0 mk binding choices").
 A park of mk's 16 empty states would write about 1.9 GB and use most of the 10 s budget.
 
+**A park of bytes that the store holds.** Decided by senpai 2026-10-20 night (vetoable).
+
+- The index has one entry for each content id, so a content id has one recipe. The store refuses a put that gives a
+  held content id another recipe. That refusal is not the tripwire, which is two content ids under one recipe (6.7).
+- A slot can hold the bytes of a held entry, for example the head that a build put in the host tier (11.3c). Then
+  the park does not put. It parks that entry to NVMe (`Store::park`), and the entry keeps its recipe, owner and reason.
+- Thus a lookup after a restart finds the parked state by the recipe of the build, and the build restores it.
+- An entry on NVMe stays as it is. An interval copy never goes to NVMe (6.13). Thus the park removes the copy, and it
+  puts the state under the park recipe.
+- A park of an entry makes room on NVMe as a put does (6.9). A delta parks only when its parent is on NVMe.
+- A quarantined entry with the same bytes makes the park fail, and the process exits 1.
+
+Reason: on gfx1151 on 2026-10-21 at 00:44, the park of one mk state failed with "the content id already has another
+recipe". The stop exited 1. The recipe of a build names the inputs, so it is a better key than the park recipe.
+
 **Open:** the park's copy of a state in host memory has no staging charge (4.2 "Staging"). The park holds one copy
 at a time, on the group thread. A copy of a 32,768-token mk context is about 1.93 GB. The charge path
 (`Ports::admit_staging`) refuses while the process stops, and the group thread holds no `Ports`. A charge for the park
