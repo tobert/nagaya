@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::inventory::is_pci_address;
+
 /// The default for the stop park's time budget (spec 10.3, ds4-recipe: 10 s).
 const DEFAULT_PARK_BUDGET_SECS: u64 = 10;
 
@@ -74,6 +76,9 @@ pub struct Bootstrap {
     /// The node name: the `<host>` of the gossip keys (spec 2.1 note, 2.3). Without it, the host name.
     #[serde(default)]
     pub node_name: Option<String>,
+    /// The PCI addresses of the devices that get no work (spec 2.1, "Ignored devices"). By default, none.
+    #[serde(default)]
+    pub ignore_devices: Vec<String>,
 }
 
 impl Bootstrap {
@@ -93,6 +98,15 @@ impl Bootstrap {
         }
         if let Some(name) = &config.node_name {
             check_node_name(name)?;
+        }
+        for address in &config.ignore_devices {
+            if !is_pci_address(address) {
+                return Err(BootstrapError::Parse {
+                    message: format!(
+                        "ignore_devices holds `{address}`, which is not a PCI address; write it as `dddd:bb:dd.f` in hex, for example `0000:80:00.0`"
+                    ),
+                });
+            }
         }
         Ok(config)
     }

@@ -69,6 +69,15 @@ pub enum DeviceError {
         /// The device id.
         device: DeviceId,
     },
+    /// The profile names a device that `ignore_devices` ignores (spec 2.1).
+    Ignored {
+        /// The engine name.
+        engine: String,
+        /// The device id.
+        device: DeviceId,
+        /// The PCI address of the device.
+        pci_address: String,
+    },
     /// The plan's `devices` are not the group indexes 0 to n - 1 in order, for the n devices of the profile (spec 2.4).
     GroupIndexes {
         /// The engine name.
@@ -89,6 +98,17 @@ impl std::fmt::Display for DeviceError {
                     "engine `{engine}` names device {device}, but the inventory does not have it"
                 )
             }
+            DeviceError::Ignored {
+                engine,
+                device,
+                pci_address,
+            } => {
+                write!(
+                    formatter,
+                    "engine `{engine}` names device {device} at PCI address {pci_address}, but the bootstrap config \
+                     ignores that device; name another device in the profile, or remove the address from ignore_devices"
+                )
+            }
             DeviceError::GroupIndexes { engine, planned, count } => {
                 write!(
                     formatter,
@@ -102,6 +122,22 @@ impl std::fmt::Display for DeviceError {
 }
 
 impl std::error::Error for DeviceError {}
+
+/// Refuse a profile that names an ignored device (spec 2.1). Call it before `check_devices`.
+pub fn check_ignored(profile: &PlacementProfile, inventory: &Inventory) -> Result<(), DeviceError> {
+    for engine in &profile.engines {
+        for id in &engine.devices {
+            if let Some(device) = inventory.device(*id).filter(|device| device.ignored) {
+                return Err(DeviceError::Ignored {
+                    engine: engine.name.clone(),
+                    device: *id,
+                    pci_address: device.pci_address.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Check each engine's devices against the inventory, and check that its plan gives one group index for each device.
 pub fn check_devices(

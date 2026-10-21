@@ -42,6 +42,7 @@ fn inventory(ids: &[nagaya_abi::DeviceId]) -> Inventory {
                 pci_address: "0000:00:00.0".to_owned(),
                 memory_bytes: 1024,
                 unified: false,
+                ignored: false,
             })
             .collect(),
         host_bytes: 1024,
@@ -215,6 +216,29 @@ fn a_device_refusal_changes_nothing() {
         matches!(error, AdmitError::Device(DeviceError::Unknown { .. })),
         "{error:?}"
     );
+    assert_eq!(ledger, before);
+}
+
+#[test]
+fn a_profile_that_names_an_ignored_device_is_refused_and_changes_nothing() {
+    let mut placement = engine("igpu", "fake", 1);
+    placement.devices = vec![0];
+    let profile = PlacementProfile {
+        engines: vec![placement],
+        budgets: vec![host_budget(100)],
+        store: None,
+    };
+    let mut inventory = inventory(&[0]);
+    inventory.devices[0].pci_address = "0000:80:00.0".to_owned();
+    inventory.devices[0].ignored = true;
+    let mut ledger = Ledger::new();
+    let before = ledger.clone();
+    let error = admit(&profile, &Registry::with_fake(), &inventory, &mut ledger).unwrap_err();
+    assert!(
+        matches!(error, AdmitError::Device(DeviceError::Ignored { .. })),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("0000:80:00.0"), "{error}");
     assert_eq!(ledger, before);
 }
 

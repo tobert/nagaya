@@ -72,6 +72,7 @@ fn facts(
             pci_address: address.to_owned(),
             memory_bytes,
             unified,
+            ignored: false,
         },
         vendor,
         pci_id: pci_id.to_owned(),
@@ -203,6 +204,7 @@ fn the_probe_trait_gives_the_inventory_of_the_machine() {
                 pci_address: "0000:c2:00.0".to_owned(),
                 memory_bytes: 133_143_986_176,
                 unified: true,
+                ignored: false,
             }],
             host_bytes: 131_156_408 * 1024,
         }

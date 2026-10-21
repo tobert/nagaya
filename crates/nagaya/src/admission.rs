@@ -9,7 +9,7 @@ use nagaya_abi::{DeviceId, Engine, Limits, Tier};
 use nagaya_ledger::{Admission, Budget, EnginePlan, Ledger, LedgerError, Profile};
 
 use crate::inventory::{Device, Inventory};
-use crate::placement::{DeviceError, check_devices};
+use crate::placement::{DeviceError, check_devices, check_ignored};
 use crate::profile::{EnginePlacement, PlacementProfile};
 
 /// Why an engine cannot give its limits before it opens.
@@ -351,6 +351,8 @@ pub fn admit(
     inventory: &Inventory,
     ledger: &mut Ledger,
 ) -> Result<Admitted, AdmitError> {
+    // An ignored device gets no work (spec 2.1), so refuse before any plan runs.
+    check_ignored(profile, inventory).map_err(AdmitError::Device)?;
     let budgets: Vec<Budget> = profile
         .budgets
         .iter()

@@ -6,7 +6,7 @@
 use std::fmt;
 
 use crate::exit::ExitCode;
-use crate::inventory::ProbeError;
+use crate::inventory::{ProbeError, ignored_flags};
 use crate::probe::FileProbe;
 
 /// The number of online CPUs in the housekeeping set (spec 3.2a).
@@ -23,6 +23,7 @@ pub struct CpuSets {
     /// Every other online CPU. The CPU worker pool runs here.
     pub pool: Vec<u32>,
     /// The set of each machine device, by device id (spec 3.2b). Empty when no device rule was built.
+    /// The set of an ignored device is empty: it gets no CPU set (spec 2.1).
     pub devices: Vec<Vec<u32>>,
 }
 
@@ -30,14 +31,18 @@ impl CpuSets {
     /// The set of the stage thread of a machine device (spec 3.2b).
     ///
     /// The plain split (`split`) builds no device rule, and then each device has the pool set. A set that has a device
-    /// rule and no entry for `id` is a defect, and this call panics.
+    /// rule and no entry for `id` is a defect, and this call panics. An ignored device has no set, and asking for it
+    /// is a defect too.
     pub fn device(&self, id: u32) -> &[u32] {
         if self.devices.is_empty() {
             return &self.pool;
         }
-        self.devices
+        let set = self
+            .devices
             .get(id as usize)
-            .unwrap_or_else(|| panic!("the CPU sets have no entry for device {id}"))
+            .unwrap_or_else(|| panic!("the CPU sets have no entry for device {id}"));
+        assert!(!set.is_empty(), "device {id} is ignored and has no CPU set");
+        set
     }
 
     /// The number of threads in the CPU worker pool. It is one for each CPU in the pool set.
@@ -102,8 +107,10 @@ pub fn split(online: &[u32]) -> Result<CpuSets, CpuSetError> {
 }
 
 /// Make the set of each device (spec 3.2b). `local` holds the `local_cpulist` of each device, by device id.
+/// An ignored device has `None` (spec 2.1). It gets an empty set, and it takes no L3 domain in turn.
 ///
-/// - A machine with fewer than two devices has nothing to separate, so the device keeps the pool set.
+/// - A machine with fewer than two devices that are not ignored has nothing to separate, so the device keeps the
+///   pool set.
 /// - A device whose local list holds every online CPU has no locality. It takes one L3 domain, in the order of the
 ///   device ids. With more such devices than domains, the devices take the domains in turn.
 /// - Another device takes the CPUs of its local list.
@@ -113,14 +120,21 @@ pub fn device_sets(
     pool: &[u32],
     online: &[u32],
     domains: &[Vec<u32>],
-    local: &[Vec<u32>],
+    local: &[Option<Vec<u32>>],
 ) -> Result<Vec<Vec<u32>>, CpuSetError> {
-    if local.len() < 2 {
-        return Ok(local.iter().map(|_| pool.to_vec()).collect());
+    if local.iter().flatten().count() < 2 {
+        return Ok(local
+            .iter()
+            .map(|cpus| if cpus.is_some() { pool.to_vec() } else { Vec::new() })
+            .collect());
     }
     let mut without_locality = 0;
     let mut sets = Vec::with_capacity(local.len());
     for (device, cpus) in local.iter().enumerate() {
+        let Some(cpus) = cpus else {
+            sets.push(Vec::new());
+            continue;
+        };
         let near: &[u32] = if online.iter().all(|cpu| cpus.contains(cpu)) && !domains.is_empty() {
             let domain = &domains[without_locality % domains.len()];
             without_locality += 1;
@@ -170,22 +184,43 @@ pub fn for_machine(probe: &FileProbe) -> Result<CpuSets, CpuSetupError> {
     split(&online).map_err(CpuSetupError::Split)
 }
 
+/// Make the CPU sets, and the set of each device, from the file probe (spec 3.2a, 3.2b). No device is ignored.
+pub fn for_machine_with_devices(probe: &FileProbe) -> Result<CpuSets, CpuSetupError> {
+    for_machine_with_devices_ignoring(probe, &[])
+}
+
 /// Make the CPU sets, and the set of each device, from the file probe (spec 3.2a, 3.2b).
 ///
-/// The probe lists the devices and reads their CPU lists only when the machine has two or more. A machine with one
-/// device needs no separation, so its files are not read.
-pub fn for_machine_with_devices(probe: &FileProbe) -> Result<CpuSets, CpuSetupError> {
+/// `ignore` holds the PCI addresses of `ignore_devices` (spec 2.1). An ignored device gets no set, and its files are
+/// not read. An address that the probe does not find is an error.
+///
+/// The probe reads the CPU lists only when two or more devices are not ignored. One device needs no separation.
+pub fn for_machine_with_devices_ignoring(probe: &FileProbe, ignore: &[String]) -> Result<CpuSets, CpuSetupError> {
     let mut sets = for_machine(probe)?;
     let machine = probe.machine().map_err(CpuSetupError::Probe)?;
-    let count = machine.devices.len();
-    if count < 2 {
-        sets.devices = vec![sets.pool.clone(); count];
+    let ignored = ignored_flags(
+        machine.devices.iter().map(|facts| facts.device.pci_address.as_str()),
+        ignore,
+    )
+    .map_err(CpuSetupError::Probe)?;
+    if ignored.iter().filter(|ignored| !**ignored).count() < 2 {
+        sets.devices = ignored
+            .iter()
+            .map(|ignored| if *ignored { Vec::new() } else { sets.pool.clone() })
+            .collect();
         return Ok(sets);
     }
     let local = machine
         .devices
         .iter()
-        .map(|facts| probe.local_cpus(&facts.device.pci_address))
+        .zip(&ignored)
+        .map(|(facts, ignored)| {
+            if *ignored {
+                Ok(None)
+            } else {
+                probe.local_cpus(&facts.device.pci_address).map(Some)
+            }
+        })
         .collect::<Result<Vec<_>, _>>()
         .map_err(CpuSetupError::Probe)?;
     let domains = probe.l3_domains(&machine.cpus).map_err(CpuSetupError::Probe)?;
