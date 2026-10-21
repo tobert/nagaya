@@ -187,6 +187,10 @@ impl LookupBody {
 }
 
 impl JobBody for LookupBody {
+    fn request(&self) -> &'static str {
+        "dry_run"
+    }
+
     fn run(&mut self, kind: Kind, engines: &mut [Box<dyn Engine>]) -> Ran {
         assert_eq!(kind, Kind::Read, "a dry run has one quantum, of the kind read");
         let result = self.look(engines[self.shared.engine_index].as_mut());
@@ -259,6 +263,9 @@ pub trait Then: Send + 'static {
     /// restores the head.
     const NEEDS_STATE: bool;
 
+    /// The kind of request that the work serves, for the span `nagaya.job` (spec 9.2).
+    const REQUEST: &'static str;
+
     /// Give the next want, from what the last want gave.
     fn next(&mut self, got: Got) -> Result<Want, ServiceError>;
 }
@@ -268,6 +275,7 @@ pub struct NoThen;
 
 impl Then for NoThen {
     const NEEDS_STATE: bool = false;
+    const REQUEST: &'static str = "build";
 
     fn next(&mut self, _got: Got) -> Result<Want, ServiceError> {
         Ok(Want::Done)
@@ -1073,6 +1081,10 @@ impl<T: Then> ContextBody<T> {
 }
 
 impl<T: Then> JobBody for ContextBody<T> {
+    fn request(&self) -> &'static str {
+        T::REQUEST
+    }
+
     fn run(&mut self, kind: Kind, engines: &mut [Box<dyn Engine>]) -> Ran {
         let engine = engines[self.shared.engine_index].as_mut();
         let result = if self.started {

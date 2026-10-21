@@ -9,22 +9,26 @@ use nagaya_abi::Kind;
 use nagaya_telemetry::{QuantumLabels, instruments};
 use tracing::Span;
 
-use crate::{Class, Completion, EngineId, Event, JobId, JobState, Quantum, Scheduler, StepError, step};
+use crate::{Completion, EngineId, Event, JobId, JobState, Quantum, Scheduler, StepError, step};
 
 /// A scheduler that records the metrics and the spans of its quanta.
 ///
 /// Use it in place of [`step`] on the path that runs a device group. It gives the same states and the same quanta.
+/// The caller may change the state between two steps through [`ObservedScheduler::state_mut`]: it may add quanta to
+/// the job that runs, and drop the jobs that ended. The caller changes no job state, because the next step reads it.
 ///
 /// The wait of a quantum is the time from the moment its lead segment became ready to the moment the quantum started.
 /// The lead segment is the first of `Quantum::segments`. A job is ready when it arrives, and again when a quantum
 /// of it ends and more quanta remain. A job that the ledger has not admitted yet is ready, so its wait includes the
 /// time until the admission.
 ///
-/// Spec 9.2: a decode quantum makes metrics only. Every other kind makes the span `nagaya.quantum`.
+/// Spec 9.2: a decode quantum makes metrics only. Every other kind makes the span `nagaya.quantum`. The span of a
+/// quantum is the child of the span of its lead job, when the caller gave one ([`ObservedScheduler::set_job_span`]).
 pub struct ObservedScheduler {
     state: Scheduler,
     engines: BTreeMap<EngineId, String>,
     ready_since: BTreeMap<JobId, u64>,
+    job_spans: BTreeMap<JobId, Span>,
     span: Option<Span>,
 }
 
@@ -43,6 +47,7 @@ impl ObservedScheduler {
             state,
             engines,
             ready_since,
+            job_spans: BTreeMap::new(),
             span: None,
         }
     }
@@ -52,12 +57,45 @@ impl ObservedScheduler {
         &self.state
     }
 
+    /// The scheduler state, to change between two steps (see the type).
+    pub fn state_mut(&mut self) -> &mut Scheduler {
+        &mut self.state
+    }
+
+    /// Make `span` the parent of the quantum spans of `job`. The scheduler drops its copy when the job ends.
+    pub fn set_job_span(&mut self, job: JobId, span: Span) {
+        self.job_spans.insert(job, span);
+    }
+
+    /// The span of the quantum that runs. A decode quantum has none. The caller runs the quantum inside this span, so
+    /// that the spans of the engine nest under it (spec 9.2).
+    pub fn running_span(&self) -> Option<&Span> {
+        self.span.as_ref()
+    }
+
+    /// Drop every job, and the quantum that runs, with no event. The caller does this when the group stops.
+    ///
+    /// `finished` is the run time and the outcome of the quantum that ran, when it ended and the scheduler has not
+    /// heard of it yet. The scheduler records that end, so that a quantum that ran is never lost.
+    pub fn abandon(&mut self, finished: Option<(u64, Completion)>) {
+        if let (Some(quantum), Some((duration_ms, outcome))) = (self.state.running.clone(), finished) {
+            self.record_end(&quantum, duration_ms, outcome);
+        }
+        self.state = Scheduler::default();
+        self.ready_since.clear();
+        self.job_spans.clear();
+        self.span = None;
+    }
+
     /// Take one step, as [`step`] does, and record it.
+    ///
+    /// An event that does not fit the state is a [`StepError`]. The state is gone then, as it is with [`step`]. The
+    /// caller treats the error as a defect.
     ///
     /// # Panics
     ///
     /// Panics when a quantum runs on a device group that `new` gave no engine name. That is a defect in the caller.
-    pub fn step(mut self, event: Event) -> Result<(Self, Option<Quantum>), StepError> {
+    pub fn step(&mut self, event: Event) -> Result<Option<Quantum>, StepError> {
         let now = event_time(&event);
         let finished = match &event {
             Event::Complete {
@@ -70,7 +108,7 @@ impl ObservedScheduler {
             _ => None,
         };
 
-        let (state, next) = step(self.state, event)?;
+        let (state, next) = step(std::mem::take(&mut self.state), event)?;
         self.state = state;
 
         if let Some((quantum, duration_ms, outcome)) = finished {
@@ -88,7 +126,9 @@ impl ObservedScheduler {
         let jobs = &self.state.jobs;
         self.ready_since
             .retain(|id, _| jobs.iter().any(|job| job.id == *id && job.state == JobState::Ready));
-        Ok((self, next))
+        self.job_spans
+            .retain(|id, _| jobs.iter().any(|job| job.id == *id && !job.state.is_terminal()));
+        Ok(next)
     }
 
     fn engine_name(&self, group: EngineId) -> &str {
@@ -107,19 +147,26 @@ impl ObservedScheduler {
         let wait_ms = now.saturating_sub(*ready);
         let engine = self.engine_name(quantum.engine).to_owned();
         instruments().quantum_wait(&labels(&engine, quantum), wait_ms as f64);
+        let parent = self.job_spans.get(lead);
         self.span = (quantum.kind != Kind::Decode).then(|| {
-            tracing::info_span!(
-                "nagaya.quantum",
-                engine = engine.as_str(),
-                device_group = quantum.engine,
-                kind = kind_label(quantum.kind),
-                class = class_label(quantum.class),
-                segments = quantum.segments.len(),
-                wait_ms,
-                run_ms = tracing::field::Empty,
-                outcome = tracing::field::Empty,
-                otel.status_code = tracing::field::Empty,
-            )
+            let make = || {
+                tracing::info_span!(
+                    "nagaya.quantum",
+                    engine = engine.as_str(),
+                    device_group = quantum.engine,
+                    kind = kind_label(quantum.kind),
+                    class = quantum.class.label(),
+                    segments = quantum.segments.len(),
+                    wait_ms,
+                    run_ms = tracing::field::Empty,
+                    outcome = tracing::field::Empty,
+                    otel.status_code = tracing::field::Empty,
+                )
+            };
+            match parent {
+                Some(parent) => parent.in_scope(make),
+                None => make(),
+            }
         });
     }
 
@@ -144,7 +191,7 @@ fn labels<'a>(engine: &'a str, quantum: &Quantum) -> QuantumLabels<'a> {
         engine,
         device_group: quantum.engine,
         kind: kind_label(quantum.kind),
-        class: class_label(quantum.class),
+        class: quantum.class.label(),
     }
 }
 
@@ -168,14 +215,5 @@ fn kind_label(kind: Kind) -> &'static str {
         Kind::Copy => "copy",
         Kind::Step => "step",
         Kind::Train => "train",
-    }
-}
-
-/// The attribute value for a class.
-fn class_label(class: Class) -> &'static str {
-    match class {
-        Class::Interactive => "interactive",
-        Class::Batch => "batch",
-        Class::Filler => "filler",
     }
 }

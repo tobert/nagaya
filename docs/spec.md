@@ -1066,16 +1066,35 @@ context goes to the group thread with the job. The nagaya gives it to the engine
 and the engine adds its own spans under the quantum. Today, neither engine carries it onto GPU work.
 
 Built: the spans `nagaya.process` (the run, with `exit_code`), `nagaya.start` and `nagaya.stop` (with `engines` and
-`outcome`), and `nagaya.quantum` (from `ObservedScheduler`). A failure marks its span as an error. The function
+`outcome`), `nagaya.job` and `nagaya.quantum`. The group thread opens the last two (`GroupJobs` in
+`crates/nagaya/src/jobs.rs`, through `ObservedScheduler`). A failure marks its span as an error. The function
 `adopt_parent` makes a span the child of the caller's span from `traceparent` and `tracestate`. It records an invalid
 header in the attribute `nagaya.traceparent.invalid`.
 
 The HTTP server span is built in `observe` (`crates/nagaya/src/http/mod.rs`). It calls `adopt_parent` for each
-request. Not built: `nagaya.job`. The job path does not open it yet.
+request.
 
-**Open:** the job path does not use `ObservedScheduler`. `GroupJobs` calls `nagaya_sched::step` directly
-(`crates/nagaya/src/jobs.rs`). Thus the process records no `nagaya.quantum` span and no quantum duration. The tests of
-`ObservedScheduler` pass, and the process still lacks the call.
+The group thread records each quantum that it runs. `GroupJobs` holds an `ObservedScheduler` and steps it for every
+event. The span `nagaya.job` has the attributes `engine`, `class` and `request`, and `outcome` when the job ends. It
+is the parent of the quantum spans of the job. The body of a quantum runs inside the span of the quantum, so the spans
+of the engine nest under it.
+
+A new thread enters the telemetry of its starter (`Inherit`). Thus a test on its own thread reads what the group
+thread records.
+
+**Open:** the span `nagaya.job` is the child of the span that is current when the request submits the job
+(`Ports::submit_job` reads `Span::current()`). The council routes call the service on the council's own thread
+(`council.call` in `crates/nagaya/src/http/routes.rs`), and that thread does not carry the span of the request. Thus a
+job from an HTTP request starts a trace of its own today. A test shows the parent when the caller's span is current
+(`crates/nagaya/tests/quantum_telemetry.rs`).
+
+Decided by senpai 2026-10-20 night (vetoable):
+
+- The attribute `engine` of a group is the names of its engines in profile order, joined with `+`. A group with one
+  engine has the name of the engine.
+- The attribute `request` of `nagaya.job` has one of these values: `attach`, `build`, `dry_run`, `read`, `decision`,
+  `generation` or `job`. A body names its value with `JobBody::request`. The value `job` is for a body that gives none.
+- The job span ends when the job reaches a terminal state, or when a stop cancels it. Its `outcome` is the job state.
 
 Decided by senpai 2026-10-20 night (vetoable). The route template is axum's, such as `/council/v2/pins/{owner}`. A
 request that matches no route has the span `<METHOD>` alone, and the `http.route` value `unmatched`. The span has the
@@ -1153,15 +1172,17 @@ code defines an instrument in the commit that adds its call site. The table show
 
 | Instrument | Call site | Test |
 |---|---|---|
-| `nagaya.quantum.wait.duration`, `nagaya.quantum.run.duration` | `ObservedScheduler::step` in `crates/nagaya-sched/src/observed.rs` | `crates/nagaya-sched/tests/observed.rs` |
+| `nagaya.quantum.wait.duration`, `nagaya.quantum.run.duration` | `ObservedScheduler::step`, called by `GroupJobs::run_one` on the group thread (`crates/nagaya-sched/src/observed.rs`, `crates/nagaya/src/jobs.rs`) | `crates/nagaya-sched/tests/observed.rs`, `crates/nagaya/tests/quantum_telemetry.rs` |
 | `nagaya.ledger.bytes`, `nagaya.ledger.refusals` | `Ledger::admit` and `Ledger::admit_context` in `crates/nagaya-ledger/src/lib.rs` | `crates/nagaya-ledger/tests/telemetry.rs` |
 | `nagaya.store.bytes`, `nagaya.store.entries`, `nagaya.store.lookups`, `nagaya.store.evictions`, `nagaya.store.restores` | `Store::open`, `put`, `evict`, `remove`, `lookup` and `restore` in `crates/nagaya-store/src/lib.rs` | `crates/nagaya-store/tests/telemetry.rs` |
 | `nagaya.engine.state` | `lifecycle::start` and `lifecycle::stop` in `crates/nagaya/src/lifecycle.rs` | `crates/nagaya/tests/telemetry.rs` |
 | `http.server.request.duration` | `observe` in `crates/nagaya/src/http/mod.rs` | `crates/nagaya/tests/http_telemetry.rs` |
 
 These instruments have no definition yet, because they have no call site: `nagaya.quantum.tokens`, `nagaya.io.bytes`,
-`nagaya.arena.handoff` and the device sensors. Each one comes with its call site. The first row of the table above has
-its call site in `nagaya-sched`, and the process does not call it yet (9.2).
+`nagaya.arena.handoff` and the device sensors. Each one comes with its call site.
+
+The first row has its call site on the path that it describes. The test `quantum_telemetry` runs a council build and a
+generation on the fake engine through the process. It reads the spans and both durations from memory.
 
 `http.server.request.duration` runs from the start of a request to its response head. Its `status` is the HTTP status
 as a number. A stream ends later than its response head, so the point does not cover the reply. Decided by senpai
@@ -1172,9 +1193,15 @@ the change with the failure. mk reads these counters: KFD evicted ms, MemAvailab
 compaction stalls, migrations, swap-outs and direct scans.
 
 Built as `nagaya::evidence` in `crates/nagaya/src/evidence.rs`, with fixed trees in the tests. The code that runs a
-quantum must call `Machine::watch` before the quantum and `Watch::failed` in its error branch. The job path
-(`GroupJobs`) does not call them yet, so this module has no call site in the process. A read costs four files, so the
-caller may skip `watch` for decode quanta.
+quantum calls `Machine::watch` before the quantum and `Watch::failed` in its error branch. `GroupJobs::run_one` does
+this on the group thread. The tests are `crates/nagaya/tests/job_evidence.rs` and
+`crates/nagaya/tests/process_evidence.rs`.
+A read costs four files, so the group thread skips `watch` for decode quanta.
+
+Decided by senpai 2026-10-20 night (vetoable). A decode quantum that fails still logs the failure. The line says
+`evidence unavailable (not read before a decode quantum)` (`evidence::failed_unwatched`). The failure text names the
+kind of the quantum, the kind of request and the engine. `Start::machine` gives the process a machine with a fixed tree
+of files for a test.
 
 Evidence never hides its failure. A counter that cannot be read, or that went back, is named in the line as
 `evidence unavailable`. The failure is logged all the same. The sources are `/proc/meminfo`, `/proc/vmstat`,
@@ -1190,8 +1217,8 @@ summed over the devices, and it is absent on a machine with no amdgpu device.
 The feed disconnects a slow subscriber. It does not skip events for it. A subscriber that wants less volume asks for
 a filter by engine or kind when it connects.
 
-Not built. The HTTP server exists (11.7), and it has no status route. `ObservedScheduler` sees every quantum, so it
-can feed the bus when the job path uses it (9.2).
+Not built. The HTTP server exists (11.7), and it has no status route. `ObservedScheduler` sees every quantum, and
+the job path uses it now (9.2), so it can feed the bus.
 
 ## 10. Lifecycle
 
@@ -1804,8 +1831,9 @@ The inventories found these items. We correct each one when its code moves. We d
     mask of both is 0-31 on gfx1151.
 15. Should the template id (11.3a) cover more than the tokens of the test renders? A change in how the family parses a
     reply keeps the id today.
-16. When does the job path use `ObservedScheduler` and the evidence module (9.2, 9.6)? Today the process records no
-    `nagaya.quantum` span and no quantum duration, and it reads no evidence on a failure.
+16. Answered 2026-10-21: the job path uses `ObservedScheduler` and the evidence module (9.2, 9.6). Two things stay
+    open (9.2). The council thread loses the parent of `nagaya.job` for an HTTP request. The engine receives no trace
+    context.
 
 ## 16. Decided by senpai on 2026-10-20 night
 
@@ -1836,6 +1864,8 @@ night (vetoable)" in its section. Amy can veto any of them. Each line gives the 
 - 9.1: the process drops the telemetry before it exits, and the drop waits at most 2 s for each signal.
 - 9.1: the exporters run on a runtime of their own with one worker.
 - 9.2: the HTTP span is named by axum's route template, and a status of 500 or more marks an error.
+- 9.2: the `engine` of a group with several engines is the names joined with `+`, and `request` has a fixed set.
+- 9.6: a decode quantum is not watched, and its failure line says so.
 - 9.4: the labels of the metrics that exist (device group, tier, wait, gauges, lookups, restores, state).
 - 9.5: `http.server.request.duration` runs from the request to the response head.
 - 10.1: during the open, the process extends the start timeout by 30 s every 5 s.
