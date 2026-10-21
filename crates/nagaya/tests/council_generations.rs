@@ -248,7 +248,7 @@ fn a_reply_stops_at_max_tokens_and_at_the_end_of_the_context() {
 fn the_sampled_tokens_are_the_picks_of_a_direct_run() {
     let f = Fixture::new();
     let value = ctx(true, opening());
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::sync_channel(1 << 16);
     let done = f
         .service
         .generate(&request(&value, 12, json!({"temperature": 1.0, "seed": 42})), Some(tx))
@@ -287,7 +287,7 @@ fn a_stream_sends_one_event_for_each_token_and_its_pieces_join_to_the_reply() {
     let (f, script) = scripted();
     let value = ctx(true, opening());
     script.set(prompt(&value), think_then_answer());
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::sync_channel(1 << 16);
     let done = f
         .service
         .generate(&request(&value, 50, json!({"temperature": 0})), Some(tx))
@@ -307,7 +307,7 @@ fn a_closed_stream_cancels_the_reply_and_holds_no_head() {
     script.set(prompt(&value), think_then_answer());
     let built = f.service.build(&context(&value), false, Default::default()).unwrap();
     let entries = f.entries();
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::sync_channel(1 << 16);
     drop(rx);
     let err = f
         .service
@@ -491,7 +491,7 @@ fn holding(flip: bool) -> (Fixture, Script) {
 
 /// Stream a generation, and give its token events and its reply.
 fn stream(f: &Fixture, value: &Value, max_tokens: u32) -> (Vec<TokenEvent>, GenerationDone) {
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::sync_channel(1 << 16);
     let done = f
         .service
         .generate(&request(value, max_tokens, json!({"temperature": 0})), Some(tx))
@@ -529,7 +529,7 @@ fn text_released_after_the_last_token_in_another_phase_is_an_internal_error() {
     let (f, script) = holding(true);
     let value = ctx(true, opening());
     script.set(prompt(&value), think_then_answer());
-    let (tx, _rx) = mpsc::channel();
+    let (tx, _rx) = mpsc::sync_channel(1 << 16);
     let err = f
         .service
         .generate(&request(&value, 50, json!({"temperature": 0})), Some(tx))

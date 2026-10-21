@@ -12,7 +12,7 @@ pub mod pins;
 pub mod reads;
 pub mod slots;
 pub mod specs;
-pub(crate) mod staging;
+pub mod staging;
 
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -234,12 +234,11 @@ impl<'a> Charge<'a> {
 impl Drop for Charge<'_> {
     fn drop(&mut self) {
         if self.held {
-            // The caller went away without `release`, for example on a panic. Release the bytes, and say so.
+            // The caller went away without `release`, for example on a panic. Release the bytes. A release that
+            // fails leaves the ledger wrong, and the process stops (spec 4.2, 8.5).
             if let Err(error) = self.ports.release_context(self.engine) {
-                eprintln!(
-                    "the release of a context charge for engine `{}` failed: {error}",
-                    self.engine
-                );
+                self.ports
+                    .release_failed(&format!("a context charge for engine `{}`", self.engine), &error);
             }
         }
     }
@@ -261,6 +260,11 @@ pub struct Service {
 }
 
 impl Service {
+    /// The first failure that the service saw outside a call, or `None`: a release of a ledger charge that failed.
+    pub fn failure(&self) -> Option<String> {
+        self.ports.failure()
+    }
+
     /// Attach a service to an engine of the process.
     ///
     /// The engine must have the parts and slots capabilities, and its limits must name slots and pass inputs. The

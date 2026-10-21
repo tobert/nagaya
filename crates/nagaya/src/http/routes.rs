@@ -65,16 +65,26 @@ fn empty(id: &RequestId, result: Result<(), Failure>) -> Response {
     }
 }
 
-/// The bytes of a request body. A body past [`MAX_BODY_BYTES`] is a 413 `too_large`.
+/// The bytes of a request body. A body past [`MAX_BODY_BYTES`] is a 413 `too_large`. A body that does not arrive whole
+/// is a 400 `invalid_request`, because the body is outside the schema (gogi "Errors").
 async fn bytes(body: Body) -> Result<Bytes, Failure> {
-    axum::body::to_bytes(body, MAX_BODY_BYTES).await.map_err(|_| {
-        let mut failure = Failure::new(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            ErrorType::TooLarge,
-            format!("nothing ran: the body is past {MAX_BODY_BYTES} bytes, or it did not arrive whole; send less"),
-        );
-        failure.body.error.param = Some("body".to_owned());
-        failure
+    axum::body::to_bytes(body, MAX_BODY_BYTES).await.map_err(|error| {
+        let limit =
+            std::error::Error::source(&error).is_some_and(|source| source.is::<http_body_util::LengthLimitError>());
+        if limit {
+            let mut failure = Failure::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                ErrorType::TooLarge,
+                format!("nothing ran: the body is past {MAX_BODY_BYTES} bytes; send less"),
+            );
+            failure.body.error.param = Some("body".to_owned());
+            failure
+        } else {
+            Failure::from(ServiceError::Invalid(gogi_proto::Invalid::param(
+                "body",
+                format!("nothing ran: the body did not arrive whole ({error}); send the request again"),
+            )))
+        }
     })
 }
 

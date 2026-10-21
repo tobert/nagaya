@@ -13,7 +13,7 @@ use super::error::ServiceError;
 use crate::process::{ContextChargeError, Ports};
 
 /// A charge of staging bytes on the host tier of the ledger. The charge ends when the value drops.
-pub(crate) struct Staging {
+pub struct Staging {
     ports: Ports,
     engine: String,
     bytes: u64,
@@ -22,7 +22,7 @@ pub(crate) struct Staging {
 impl Staging {
     /// Charge `bytes` for a copy of a state of `engine`. A refusal changes nothing and is an error that the client
     /// sees: the ledger could not hold the copy (spec 4.3).
-    pub(crate) fn take(ports: &Ports, engine: &str, bytes: u64) -> Result<Self, ServiceError> {
+    pub fn take(ports: &Ports, engine: &str, bytes: u64) -> Result<Self, ServiceError> {
         ports
             .admit_staging(engine, Tier::Host, bytes)
             .map_err(|error| match error {
@@ -42,15 +42,13 @@ impl Staging {
 
 impl Drop for Staging {
     fn drop(&mut self) {
-        match self.ports.release_staging(Tier::Host, self.bytes) {
-            Ok(()) => {}
-            // A stopped ledger has no charge left to release.
-            Err(ContextChargeError::Stopping) => {}
-            // The copy is gone, so the bytes cannot stay charged. Say so: the ledger is wrong now.
-            Err(error) => eprintln!(
-                "the release of {} staging bytes for engine `{}` failed: {error}",
-                self.bytes, self.engine
-            ),
+        // The copy is gone, so the bytes cannot stay charged. A release that fails leaves the ledger wrong, and the
+        // process stops (spec 4.2, 8.5). A stopped ledger has no charge left to release.
+        if let Err(error) = self.ports.release_staging(Tier::Host, self.bytes) {
+            self.ports.release_failed(
+                &format!("{} staging bytes for engine `{}`", self.bytes, self.engine),
+                &error,
+            );
         }
     }
 }

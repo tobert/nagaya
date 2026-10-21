@@ -7,6 +7,7 @@ use council_support::{ENGINE, Fixture};
 use gogi_proto::context::Context;
 use gogi_proto::reads::ReadsRequest;
 use nagaya::council::error::ServiceError;
+use nagaya::council::staging::Staging;
 use nagaya::council::{Schedule, ServiceConfig};
 use nagaya_abi::Tier;
 use nagaya_ledger::LedgerError;
@@ -95,4 +96,30 @@ fn a_read_releases_its_copies() {
         f.service.read(&two_suffix_read(text)).unwrap();
         assert_eq!(host_unassigned(&f), free, "the read of {text} released its copies");
     }
+}
+
+/// A release that the ledger refuses leaves the ledger wrong. The service records it as a failure, which stops the
+/// process with exit 1 (spec 4.2, 8.5).
+#[test]
+fn a_staging_whose_release_fails_is_a_failure_that_the_service_reports() {
+    let f = Fixture::new();
+    let ports = f.process.ports();
+    assert_eq!(f.service.failure(), None);
+    let staging = Staging::take(&ports, ENGINE, 10).unwrap();
+    // Another owner gives the 10 bytes back. The drop then releases bytes that the ledger does not hold.
+    ports.release_staging(Tier::Host, 10).unwrap();
+    drop(staging);
+    let failure = f.service.failure().expect("the failed release is a failure");
+    assert!(failure.contains("10 staging bytes"), "{failure}");
+}
+
+#[test]
+fn a_staging_that_drops_in_a_stopping_process_is_no_failure() {
+    let mut f = Fixture::new();
+    let ports = f.process.ports();
+    let staging = Staging::take(&ports, ENGINE, 10).unwrap();
+    f.process
+        .stop(std::time::Duration::from_secs(5), &nagaya::signal::SignalFlag::new());
+    drop(staging);
+    assert_eq!(f.service.failure(), None);
 }

@@ -58,3 +58,24 @@ fn a_thread_panic_is_a_crash() {
     };
     assert_eq!(event.exit_code(), Some(ExitCode::Crash));
 }
+
+#[test]
+fn an_internal_error_after_the_last_tick_is_a_crash_at_every_clean_stop() {
+    use nagaya::exit::after_stop;
+    assert_eq!(after_stop(ExitCode::Clean, ExitCode::Clean, true), ExitCode::Crash);
+    assert_eq!(
+        after_stop(ExitCode::PlannedRestart, ExitCode::Clean, true),
+        ExitCode::Crash
+    );
+    assert_eq!(after_stop(ExitCode::Clean, ExitCode::Clean, false), ExitCode::Clean);
+    assert_eq!(
+        after_stop(ExitCode::PlannedRestart, ExitCode::Clean, false),
+        ExitCode::PlannedRestart
+    );
+    // A failed stop is a crash, and a failure does not hide it.
+    assert_eq!(after_stop(ExitCode::Clean, ExitCode::Crash, false), ExitCode::Crash);
+    assert_eq!(
+        after_stop(ExitCode::PlannedRestart, ExitCode::Crash, true),
+        ExitCode::Crash
+    );
+}
