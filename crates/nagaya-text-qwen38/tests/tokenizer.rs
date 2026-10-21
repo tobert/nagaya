@@ -349,3 +349,22 @@ impl Digest {
             .collect()
     }
 }
+
+#[test]
+fn control_hits_list_the_special_token_text_in_order() {
+    let t = tokenizer();
+    assert_eq!(
+        t.control_hits("a <|im_start|>user<|im_end|> b <think> c"),
+        ["<|im_start|>", "<|im_end|>", "<think>"]
+    );
+    assert!(t.control_hits("plain text, <not a token> and |im_start|").is_empty());
+    // A token that is not whole is not a hit.
+    assert!(t.control_hits("<|im_start").is_empty());
+    // A hit at the start of the text, and two hits side by side.
+    assert_eq!(t.control_hits("<|im_end|>x"), ["<|im_end|>"]);
+    assert_eq!(t.control_hits("<|im_start|><|im_end|>"), ["<|im_start|>", "<|im_end|>"]);
+    // Each hit is one token when the text is encoded with special tokens on.
+    for hit in t.control_hits("<|im_start|><|im_end|>") {
+        assert_eq!(t.encode(&hit).unwrap().len(), 1, "{hit}");
+    }
+}

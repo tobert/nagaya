@@ -386,7 +386,7 @@ impl Gossip {
     pub fn shutdown(self) {
         let Gossip { runtime, handle, .. } = self;
         if let Err(error) = runtime.block_on(handle.shutdown()) {
-            eprintln!("gossip stopped with an error: {error}");
+            tracing::error!("gossip stopped with an error: {error}");
         }
         runtime.shutdown_timeout(RUNTIME_STOP);
     }

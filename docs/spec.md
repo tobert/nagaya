@@ -16,6 +16,8 @@ question has the mark **Open**, and section 15 lists all of them.
 We change this spec before we change the code (Amy, 2026-10-20: "I want to keep updating the spec before the code so
 we could redo it all again if we decide to"). The mark "Decided 2026-10-20 (reading)" is on a rule that began as a
 **Proposed** reading of the text. Senpai wrote it as a rule, and Amy can veto it.
+The mark "Decided by senpai 2026-10-20 night (vetoable)" is on a rule that senpai chose where the spec left a choice
+open. Amy can veto it.
 
 ## 1. Scope
 
@@ -68,6 +70,52 @@ store tier.
 It does not open a GPU runtime to count devices. A call into a vendor library is allowed only when it opens no device
 context. (DeepInfer reads NVML through `ctypes`.) The tests run the probe against fixed trees for gfx1151host, b70host
 and sm121host. Decided 2026-10-20 (`docs/deepinfer.md` 5).
+
+**What the file probe reads.** `FileProbe` in `crates/nagaya/src/probe.rs` reads these files under its root path. The
+root path is `/` on a machine, and a fixed tree in a test (`crates/nagaya/tests/fixtures/probe/`).
+
+- Host memory: `MemTotal` in `proc/meminfo`.
+- CPUs: the list in `sys/devices/system/cpu/online`.
+- AMD GPUs: the nodes of `sys/class/kfd/kfd/topology/nodes`. A node with `gpu_id` 0 is a CPU node. The device name
+  comes from `gfx_target_version`, so 110501 gives `gfx1151`. The PCI address comes from `location_id` and `domain`.
+- Intel GPUs: each `sys/class/drm/card<N>` whose `device/uevent` says `DRIVER=xe`.
+- NVIDIA GPUs: each directory of `proc/driver/nvidia/gpus`, and its `information` file.
+- NVMe: each `nvme<C>n<N>` in `sys/block`. The size is the `size` file in 512-byte sectors.
+- Network: each interface in `sys/class/net` that has a `device` directory. Virtual interfaces have none.
+
+A device id is the position in the list: AMD GPUs first, then Intel, then NVIDIA, each in the order of the kernel
+number. A missing directory that lists one kind of GPU means that the machine has no GPU of that kind. This is how a
+coordinator machine joins with no GPU (2.1). Any other missing or malformed file is an error that names the file
+(8.5).
+
+**Proposed:** a probe error at start refuses the start and exits 3 (10.4). The table of 10.4 does not list it yet.
+Reason: the machine, and not a config, is wrong, so a restart cannot help. Claude Sonnet 5.5.
+
+**What the file probe cannot see.** A probe that opens no GPU runtime has these limits.
+
+- NVIDIA: `proc/driver/nvidia` gives the model, the bus location and the minor number. It does not give the memory
+  size. NVML gives it. Thus the probe accepts only the models in a short list whose memory is unified, and it reads
+  their memory as the host memory. Any other model is an error.
+- Xe: sysfs has no file for the size of the device memory. The probe reads the largest prefetchable memory BAR in
+  the `resource` file. With resizable BAR off, the BAR is small, so the probe refuses the card.
+- AMD: the probe cannot tell unified memory from dedicated memory by one flag. It compares the KFD framebuffer
+  memory with `mem_info_gtt_total` and `mem_info_vram_total` of the PCI device. Equal to the first means unified.
+  Equal to the second means dedicated. Equal to neither is an error.
+- Free memory, device clocks and temperatures. Telemetry reads those (section 9).
+- The measured edges of 2.2. The probe gives devices and sizes only.
+- The NVMe namespace that holds `store_dir`. The probe lists all namespaces.
+- Intel cards with the `i915` driver, and any other driver. They are not devices of the nagaya.
+
+Decided by senpai 2026-10-20 night (vetoable): the rules of the two lists above. Reason: the probe must give a true
+size or stop. A guess from a heuristic that fails without a sign would corrupt the ledger (8.5).
+
+Decided by senpai 2026-10-20 night (vetoable): the trees for b70host and sm121host are made by hand, not captured.
+The coder could not read those machines. The README in the fixture directory marks each guessed value. Capture the
+real trees when we port to those machines.
+
+Decided by senpai 2026-10-20 night (vetoable): the probe is not yet in the start path. `main.rs` still uses the fake
+inventory, and the real wiring is one call, `FileProbe::new("/").probe()`. Reason: the start path takes its engines
+from the same function (milestone 14), so the wiring belongs with the mk engine.
 
 **The bootstrap config.** The bootstrap config is one TOML file, `nagaya.toml`. Its keys are `http_bind`,
 `gossip_bind`, `store_dir`, `seed_peers` and `park_budget_secs`. The first three keys are required. By default,
@@ -222,11 +270,29 @@ thread priorities:
 
 **3.2a Control runtime first.** The control runtime (`tokio`) arrives with gossip, in milestone 10 step f. Gossip
 comes before the HTTP coordinator, which joins the runtime in milestone 12. The group threads, the ledger thread
-and the watchdog thread stay std threads. They do not use `tokio`. The `sched_setaffinity` isolation stays deferred.
+and the watchdog thread stay std threads. They do not use `tokio`. The thread start code does not apply the
+CPU sets yet (below).
 
 Milestone 10 does not apply `sched_setaffinity`, because the bootstrap config names no core sets. The step that
 applies isolation needs a test. The test reads the CPU mask of each thread with `sched_getaffinity`. It checks that
 the control threads do not use the group cores. Decided 2026-10-20 (reading).
+
+**CPU sets (milestone 14).** The nagaya splits the online CPUs into a housekeeping set and a pool set. The bootstrap
+config names no core sets, so the split is one fixed rule.
+
+- The housekeeping set holds the two lowest-numbered online CPUs.
+- The pool set holds every other online CPU.
+- The two sets do not overlap. Together they hold every online CPU.
+- The pool size is the number of CPUs in the pool set. The pool has one thread for each CPU in the set.
+- Offline CPUs are in neither set. CPU numbers can have holes, so the nagaya does not assume `0` to `N-1`.
+- A machine with fewer than three online CPUs cannot split the sets. The process exits 3 (10.4) when it
+  applies the split.
+- The online CPU list must be sorted and strictly increasing. Another list is an error.
+
+Decided by senpai 2026-10-20 night (vetoable).
+
+**Open:** The group threads have no CPU set. The test above names the group cores, but no rule gives them a set. Also,
+the sets use logical CPUs. A housekeeping CPU can share a physical core with a pool CPU.
 
 **3.3 Engine lifecycle and profile swaps.** The nagaya opens each engine at start, from the profile. mk cannot close
 inside a process today: "the HIP runtime's own teardown segfaults" (mk `service/__main__.py`). Thus in v0, when
@@ -831,6 +897,26 @@ The nagaya follows kaijutsu's conventions (`~/src/kaijutsu/docs/telemetry.md`). 
 `OTEL_SDK_DISABLED=true` stops all export. The `service.name` is `nagaya`. The resource attributes carry
 `host.name` and the hardware from the inventory.
 
+Built: the log, and the OTLP gRPC export of spans and metrics. Not built: the JSON-lines file export and the OTLP
+export of logs. The nagaya warns at the start when `NAGAYA_OTEL_FILE_DIR` or `KAIJUTSU_OTEL_FILE_DIR` is set, so that
+a missing export is never silent. The code is in `crates/nagaya-telemetry`.
+
+Decided by senpai 2026-10-20 night (vetoable):
+
+- A log line is the message, then the fields as `key=value`. A warning or an error ends with `level=warn` or
+  `level=error`. A line has no time, no level prefix and no span name. The journal adds the time. The tests of the
+  process read a line by the start of its message.
+- `RUST_LOG` sets the log filter. The default is `info`. A filter that does not parse refuses the start (exit 3).
+  The filter does not change the export.
+- The nagaya starts the telemetry before it reads the config, so that a config error reaches the log. It reads the
+  inventory first, because the resource carries the hardware.
+- The resource attributes are `host.name`, `nagaya.device.count`, `nagaya.device.names`, `nagaya.device.memory_bytes`
+  and `nagaya.host.memory_bytes`. The nagaya leaves out an attribute that it cannot read, and it warns.
+- The process drops the telemetry before it exits, because `std::process::exit` runs no destructor. The drop waits at
+  most 2 s for each signal. A collector that is gone does not stop the process.
+- The exporters run on a Tokio runtime of their own with one worker. The telemetry owns it, and the nagaya does not
+  leak it (compare mkviolet, section 14).
+
 **9.2 Traces.** When a request has a W3C `traceparent` and `tracestate`, its span is a child of the caller's span.
 The nagaya records an invalid header as an attribute, not an error. The spans nest in this order:
 
@@ -842,26 +928,57 @@ Decode quanta make metrics only: "one span per generated token would bury a gene
 context goes to the group thread with the job. The nagaya gives it to the engine through the telemetry capability,
 and the engine adds its own spans under the quantum. Today, neither engine carries it onto GPU work.
 
+Built: the spans `nagaya.process` (the run, with `exit_code`), `nagaya.start` and `nagaya.stop` (with `engines` and
+`outcome`), and `nagaya.quantum` (from `ObservedScheduler`). A failure marks its span as an error. The function
+`adopt_parent` makes a span the child of the caller's span from `traceparent` and `tracestate`. It records an invalid
+header in the attribute `nagaya.traceparent.invalid`. Not built: the HTTP server span and `nagaya.job`. The HTTP code
+and the job path add them, and they call `adopt_parent` for each request.
+
 **9.3 Sampling.** The nagaya uses kaijutsu's rule. It always keeps errors and spans whose parent is sampled. It
 keeps 100% of the spans in some dot-qualified prefixes and 10% of the others. `nagaya.` and `council.` are 100%
 prefixes, so `nagaya.job` and `nagaya.quantum` are always kept. Decode quanta make no spans, so the volume stays low.
+
+A prefix carries its dot, so a span named `nagaya_x` has the default rate. The error test reads the attributes at the
+start of a span. Thus a span that fails later is kept only through its prefix or its parent.
 
 **9.4 Metrics.** The nagaya keeps each metric attribute to a bounded set of values. Context, trace and job ids are
 never attributes.
 
 | Metric | Unit | Attributes |
 |---|---|---|
-| `nagaya.quantum.wait.duration`, `nagaya.quantum.run.duration` | ms | engine, device group, kind, class |
+| `nagaya.quantum.wait.duration`, `nagaya.quantum.run.duration` | ms | engine, device_group, kind, class |
 | `nagaya.quantum.tokens` | {token} | engine, kind |
 | `nagaya.ledger.bytes` | By | tier, engine, term |
 | `nagaya.ledger.refusals` | {refusal} | tier, engine, gate (budget, floor, resize) |
 | `nagaya.store.bytes`, `nagaya.store.entries` | By, {entry} | tier, engine |
 | `nagaya.store.lookups` | {lookup} | engine, outcome (exact, approx, miss, refused) |
-| `nagaya.store.evictions` | {entry} | tier, reason |
+| `nagaya.store.evictions` | {entry} | tier, reason (evict, put_room, interval_cap, interval_replaced) |
+| `nagaya.store.restores` | {restore} | engine, result (done, refused, failed, error) |
 | `nagaya.io.bytes` | By | edge, path (direct, staged), class |
 | `nagaya.arena.handoff` | {handoff} | engine, status (hot, cold) |
 | `nagaya.engine.state` | 1 | engine, state (loading, ready, draining, unloaded, fatal) |
 | `http.server.request.duration` | s | http.route, status |
+
+Decided by senpai 2026-10-20 night (vetoable). These rules fix the labels of the metrics that exist:
+
+- The attribute `device_group` holds the id of the device group. The attribute `tier` holds `host`, `nvme` or
+  `device<id>`. A budget that covers several tiers has the sorted tiers joined with `+`, for example `device0+host`.
+- The wait of a quantum runs from the moment its lead segment became ready to the moment the quantum started. The lead
+  segment is the first one. A job is ready when it arrives, and again when a quantum of it ends and more remain. A job
+  that the ledger has not admitted yet is ready, so its wait includes the time until the admission.
+- `nagaya.ledger.bytes` is a gauge with one point for each engine term. It holds the bytes of the last admission. A term
+  of the lifetime `context` has no point, because the ledger charges it at `ctx_new`.
+- `nagaya.ledger.refusals` counts one refusal for each short budget. The engine is `all` for a refused profile, and the
+  engine name for a refused context. The ledger has the gate `budget` only. The gates `floor` and `resize` come with the
+  code that refuses at them.
+- `nagaya.store.bytes` and `nagaya.store.entries` are gauges. The store reports them after `open`, `put`, `evict` and
+  `remove`. A series that empties reports zero once. The engine is the name in the entry.
+- `nagaya.store.lookups` counts every `lookup`. The engine is the model name of the engine that asks, because the store
+  does not know the profile name. An outcome is `approx` when an entry of the chain has a provenance. A lookup that
+  returns an error counts as `refused`.
+- `nagaya.store.restores` is new in this table. It counts every `restore`. The engine is the model name. The result
+  `error` means that the store refused before any write.
+- `nagaya.engine.state` is a gauge. A change of state records one for the new state and zero for the other four.
 
 Each GPU vendor has a sensor provider: amdgpu (the SMU `gpu_metrics` table and KFD counters), Intel Xe, and NVIDIA
 NVML. Each provider maps its values onto shared names:
@@ -883,9 +1000,32 @@ spread, confidence) belong to the council layer (11.1).
 smoke test. It calls `record_council_decision` only in tests. Its docs name instruments for routing entropy and
 J-Lens drift that do not exist. Thus a test shows that each instrument records on the path that it describes.
 
+A test runs the real call site and reads the points through an in-memory exporter (`nagaya_telemetry::testing`). The
+code defines an instrument in the commit that adds its call site. The table shows each instrument that exists.
+
+| Instrument | Call site | Test |
+|---|---|---|
+| `nagaya.quantum.wait.duration`, `nagaya.quantum.run.duration` | `ObservedScheduler::step` in `crates/nagaya-sched/src/observed.rs` | `crates/nagaya-sched/tests/observed.rs` |
+| `nagaya.ledger.bytes`, `nagaya.ledger.refusals` | `Ledger::admit` and `Ledger::admit_context` in `crates/nagaya-ledger/src/lib.rs` | `crates/nagaya-ledger/tests/telemetry.rs` |
+| `nagaya.store.bytes`, `nagaya.store.entries`, `nagaya.store.lookups`, `nagaya.store.evictions`, `nagaya.store.restores` | `Store::open`, `put`, `evict`, `remove`, `lookup` and `restore` in `crates/nagaya-store/src/lib.rs` | `crates/nagaya-store/tests/telemetry.rs` |
+| `nagaya.engine.state` | `lifecycle::start` and `lifecycle::stop` in `crates/nagaya/src/lifecycle.rs` | `crates/nagaya/tests/telemetry.rs` |
+
+These instruments have no definition yet, because they have no call site: `nagaya.quantum.tokens`, `nagaya.io.bytes`,
+`nagaya.arena.handoff`, `http.server.request.duration` and the device sensors. The job path, the HTTP code and the
+IO code add each one with its call site.
+
 **9.6 Evidence on failure.** Before and after a quantum that fails, the nagaya reads the machine's counters. It logs
 the change with the failure. mk reads these counters: KFD evicted ms, MemAvailable, GTT, and from `/proc/vmstat`
 compaction stalls, migrations, swap-outs and direct scans.
+
+Built as `nagaya::evidence` in `crates/nagaya/src/evidence.rs`, with fixed trees in the tests. The code that runs a
+quantum calls `Machine::watch` before the quantum and `Watch::failed` in its error branch. Until the job path exists,
+this module has no call site in the process. A read costs four files, so the caller may skip `watch` for decode quanta.
+
+Evidence never hides its failure. A counter that cannot be read, or that went back, is named in the line as
+`evidence unavailable`. The failure is logged all the same. The sources are `/proc/meminfo`, `/proc/vmstat`,
+`/sys/class/kfd/kfd/proc/<pid>/stats_*/evicted_ms` and `/sys/class/drm/card*/device/mem_info_gtt_used`. The GTT is
+summed over the devices, and it is absent on a machine with no amdgpu device.
 
 **9.7 Status feed.** Each machine has one SSE status feed (mk `/mk/v1/status`, mkviolet `PassBus`):
 
@@ -895,6 +1035,9 @@ compaction stalls, migrations, swap-outs and direct scans.
 
 The feed disconnects a slow subscriber. It does not skip events for it. A subscriber that wants less volume asks for
 a filter by engine or kind when it connects.
+
+Not built. The feed needs the HTTP server (milestone 12 step 6). The scheduler side is ready: `ObservedScheduler` sees
+every quantum, so it can feed the bus.
 
 ## 10. Lifecycle
 
@@ -1105,10 +1248,10 @@ milestones 11 and 11b).
   211 cases of the fixture. The rule says that joined pieces equal the part, up to `strip()`.
 
   The parser also gives the text that mk's tracker released for each token (`released`). That text keeps the rule in
-  every case, with the end of thinking left out. The server writes `piece` from `released`. Decided 2026-10-20
-  (reading, from a note by Sonnet 5.5).
-- **Open:** one token can release text in two phases, but a gogi `token` event has one phase. This is rare, because
-  each Qwen3.8 marker is one token. The server counts each such token and logs it.
+  every case, with the end of thinking left out. The reply parser of the family library writes the pieces of a step
+  from `released`. Decided 2026-10-20 (reading, from a note by Sonnet 5.5).
+- One token can release text in two phases, but a gogi `token` event has one phase. This is rare, because each
+  Qwen3.8 marker is one token. 11.3a has the rule for the step of such a token.
 
 **11.3a Council rendering.** A decision and a raw read put a spec, a case and a letter menu after each context. The
 nagaya renders them with mkviolet's rules (mkviolet `src/template.rs` and its council code), ported to each family.
@@ -1126,6 +1269,64 @@ A served model's `template` in council identity has two parts: `nagaya-council:<
 - Each hash is the first 16 hex digits of a SHA-256.
 
 Decided 2026-10-20 (Amy chose the name `nagaya-council`).
+
+**The Qwen3.8 rendering.** The spec and gogi leave these choices open for Qwen3.8. Sonnet 5.5 proposed them on
+2026-10-20. Each rule has the mark "Decided by senpai 2026-10-20 night (vetoable)", and Amy can veto it.
+
+- Every render uses the reasoning effort `medium`, as mk's council does. The template then writes no effort line.
+  Decided by senpai 2026-10-20 night (vetoable).
+- Thinking follows the context: the render uses `thinks()` of the context. A context renders the same with thinking on
+  and off, except for the generation prompt. A past assistant message keeps its reasoning in both. A test compares the
+  two renders.
+  Decided by senpai 2026-10-20 night (vetoable).
+- A read closes the thinking. The case turn ends with the template's prompt for thinking off:
+  `<think>\n\n</think>\n\n`.
+  Decided by senpai 2026-10-20 night (vetoable).
+- A plain read keeps mkviolet's layout: spec turn, case turn, `Answer to question`, then ` N (stem):`. The letter
+  token has a leading space, as in mkviolet. A raw read uses the letters that the client sends.
+  Decided by senpai 2026-10-20 night (vetoable).
+- A plain read tokenizes the template text and the client text in one pass, as mk renders a chat. mkviolet tokenizes
+  the pieces one by one, and the two ways can differ at a join. The library checks that the tokens of the context
+  begin the tokens of the read. It also checks that each step begins with the tokens before it. A failed check is an
+  internal error (`council/read.rs`).
+  Decided by senpai 2026-10-20 night (vetoable).
+- A queue read writes the call in Qwen3.8's form, with the parameter `answers` as one JSON object. It reads a bare
+  letter after the opening quote of the value.
+  Decided by senpai 2026-10-20 night (vetoable).
+- A queue read asks the questions in the order of the properties of `answers` in the queue tool's schema. Qwen3.8's
+  template writes the keys in the order it gets them. mkviolet sorts by question id, because Gemma 4's template sorts.
+  A test pins the order.
+  Decided by senpai 2026-10-20 night (vetoable).
+- The workspace turns on the `serde_json` features `preserve_order` and `float_roundtrip` for all its crates, because
+  Cargo joins the features of one build. The queue read needs `preserve_order` to read the order of the schema.
+  Without it, the map sorts its keys, and the questions come in the wrong order. `float_roundtrip` keeps a float of a
+  schema or a call equal to the float that was sent. A build of one crate alone may lack both.
+  Decided by senpai 2026-10-20 night (vetoable).
+- The template has no form for a failed result. The library writes `Error: ` before the content of a tool message with
+  `is_error`.
+  Decided by senpai 2026-10-20 night (vetoable).
+- A system message after a message of another role renders in place as a system turn. gogi's `docs/council-api.md`
+  says "A system message may come later", and `gogi-conformance` sends one. The template refuses such a message, so
+  the library gives it a user message with stand-in text. Then the library swaps the user turn for a system turn with
+  the trimmed content. System messages at the start stay with the template, which merges them into one turn.
+  Decided by senpai 2026-10-20 night (vetoable).
+- A marked message is a boundary when the tokens of the rendering up to it begin the whole rendering. A tool message
+  inside a run of tool messages is not a boundary, because the template puts one user turn around the run. A later
+  system message ends the run.
+  Decided by senpai 2026-10-20 night (vetoable).
+- The template keeps the reasoning of every assistant message. No marked message loses its boundary for that reason.
+  Decided by senpai 2026-10-20 night (vetoable).
+- `rendered_sha256` is the SHA-256 of the text that the read was conditioned on (gogi's words). mkviolet hashes the
+  head's snapshot id. A plain read hashes the text through `Answer to question`, which all its questions share. A
+  queue read hashes its whole text at the end: the call through the last letter that the read chose, and its closing
+  quote.
+  Decided by senpai 2026-10-20 night (vetoable).
+- The reply parser takes the stop token as a pushed token (`<|im_end|>` or `<|endoftext|>`), and it adds no text for
+  it. A token has the phase of the last text that it released, and the text it released in that phase. The text that
+  the same token released in an earlier phase is in the fields of the whole reply, and in no step. The end of the
+  thinking is not part of the reasoning. A call that parses but holds an integer of more than 64 bits becomes a
+  malformed call with its text as written.
+  Decided by senpai 2026-10-20 night (vetoable).
 
 **11.3b The toy family.** The fake engine has no real tokenizer. For tests, it serves the toy family of gogi's
 `gogi-toy` crate. Its tokens are the 256 byte values and 14 template markers, and its template is the template of
@@ -1276,3 +1477,5 @@ The inventories found these items. We correct each one when its code moves. We d
 8. What is the oracle gap at 2,000 tokens and more? The binding's contexts hold 256 tokens today, and mk allows
    32,768. The measurement needs larger contexts in the binding and a loop of passes (8.3). Amy, 2026-10-20: "we can
    save and do the measurement later".
+9. The group threads have no CPU set (3.2a). Should they run on the pool set, or stay unpinned? Also, should a
+   housekeeping CPU avoid the physical core of a pool CPU (SMT)? The bootstrap config could name the sets later.

@@ -196,7 +196,7 @@ fn the_sampled_tokens_are_the_picks_of_a_direct_run() {
         seed: 42,
     };
     let mut want = Vec::new();
-    let mut parser = ToyFamily::new().reply_parser(true);
+    let mut parser = ToyFamily::new().reply_parser(true, &[]).unwrap();
     for (k, event) in events.iter().enumerate() {
         let chosen = pick(&row, &settings, (rendering.tokens.len() + k) as u64).unwrap();
         want.push(chosen.token);

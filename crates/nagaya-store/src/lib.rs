@@ -9,6 +9,7 @@ use std::sync::Arc;
 use nagaya_abi::{
     BitDependence, ChainLimits, CoverageSpan, Determinism, Dtype, Engine, PartKind, SlotLimit, State, WriteResult,
 };
+use nagaya_telemetry::{EvictReason, LookupOutcome, RestoreResult, TierLabel, instruments};
 use safetensors::{Dtype as SafeDtype, SafeTensors};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -899,6 +900,27 @@ const RANK_BY_VALUE: u8 = 2;
 /// The directory under the store that holds the blobs of cleared tripwires. No budget counts it.
 const QUARANTINE: &str = "quarantine";
 
+/// Entries that left one tier for one reason, for `nagaya.store.evictions`.
+struct Evicted {
+    tier: Tier,
+    reason: EvictReason,
+    entries: u64,
+}
+
+fn tier_label(tier: Tier) -> TierLabel {
+    match tier {
+        Tier::Host => TierLabel::Host,
+        Tier::Nvme => TierLabel::Nvme,
+    }
+}
+
+fn record_evicted(evicted: &[Evicted]) {
+    let instruments = instruments();
+    for item in evicted {
+        instruments.store_eviction(tier_label(item.tier), item.reason, item.entries);
+    }
+}
+
 /// The content-addressed store.
 #[derive(Debug)]
 pub struct Store {
@@ -916,6 +938,9 @@ pub struct Store {
     /// The largest serial in a quarantine name. `open` sets the maximum; a unit test sets a smaller one.
     quarantine_serials: u32,
     fail_point: Cell<Option<FailPoint>>,
+    /// The series of `nagaya.store.bytes` and `nagaya.store.entries` that the store reported (spec 9.4). A series that
+    /// empties reports zero once, so that a dashboard does not keep the last value.
+    reported: BTreeSet<(Tier, String)>,
 }
 
 /// The result of a restore that reached the engine.
@@ -1005,7 +1030,7 @@ impl Store {
         for entry in index.entries.values_mut() {
             entry.check = Check::None;
         }
-        let store = Store {
+        let mut store = Store {
             dir,
             index,
             checked: BTreeSet::new(),
@@ -1015,8 +1040,10 @@ impl Store {
             interval_copies,
             quarantine_serials: u32::MAX,
             fail_point: Cell::new(None),
+            reported: BTreeSet::new(),
         };
         store.persist()?;
+        store.record_held();
         Ok(store)
     }
 
@@ -1053,12 +1080,15 @@ impl Store {
         let mut index = self.index.clone();
         prune_pins(&mut index, now_ms);
         index.entries.remove(id);
+        let leaving = self.evicted(&[*id], EvictReason::IntervalReplaced);
         let previous = std::mem::replace(&mut self.index, index);
         if let Err(error) = self.persist() {
             self.index = previous;
             return Err(error);
         }
         // The index no longer names the copy, so its bytes can go.
+        record_evicted(&leaving);
+        self.record_held();
         self.remove_blobs(&[*id])?;
         Ok(true)
     }
@@ -1094,7 +1124,16 @@ impl Store {
     }
 
     /// Put a snapshot in the store.
+    ///
+    /// The store records what it holds (spec 9.4), and the entries that the put removed.
     pub fn put(&mut self, put: Put<'_>) -> Result<ContentId, StoreError> {
+        let result = self.put_unrecorded(put);
+        // A failed put can still have changed the index: the tripwire stores both entries.
+        self.record_held();
+        result
+    }
+
+    fn put_unrecorded(&mut self, put: Put<'_>) -> Result<ContentId, StoreError> {
         self.check_reason(&put)?;
         let bytes = put.snapshot.encode()?;
         let id = content_id(&bytes);
@@ -1174,6 +1213,10 @@ impl Store {
                 return Err(StoreError::NoSpace);
             }
         }
+        let leaving = [
+            self.evicted(&victims, EvictReason::PutRoom),
+            self.evicted(&capped, EvictReason::IntervalCap),
+        ];
         victims.extend(capped);
 
         self.store_bytes(put.tier, &bytes, &id)?;
@@ -1219,6 +1262,9 @@ impl Store {
             return Err(self.rollback_blob(&id, put.tier, error));
         }
         // The index no longer names the victims, so their bytes can go.
+        for leaving in &leaving {
+            record_evicted(leaving);
+        }
         self.remove_blobs(&victims)?;
         Ok(id)
     }
@@ -1301,7 +1347,41 @@ impl Store {
     }
 
     /// Look up a chain by recipe. A miss is an empty result, not an error.
+    ///
+    /// The store counts the lookup in `nagaya.store.lookups` (spec 9.4). The label `engine` is the model name of
+    /// `engine`, because the store does not know the name of the engine in the profile. Any error counts as `refused`.
     pub fn lookup(
+        &mut self,
+        recipe: RecipeId,
+        tolerance: &Tolerance,
+        engine: &mut dyn Engine,
+        slot: u32,
+        now_ms: u64,
+    ) -> Result<Vec<ContentId>, StoreError> {
+        let model = engine.identity().model;
+        let result = self.lookup_unrecorded(recipe, tolerance, engine, slot, now_ms);
+        let outcome = match &result {
+            Err(_) => LookupOutcome::Refused,
+            Ok(chain) if chain.is_empty() => LookupOutcome::Miss,
+            Ok(chain) => {
+                let approximate = chain.iter().any(|id| {
+                    self.index
+                        .entries
+                        .get(id)
+                        .is_some_and(|entry| entry.provenance.is_some())
+                });
+                if approximate {
+                    LookupOutcome::Approx
+                } else {
+                    LookupOutcome::Exact
+                }
+            }
+        };
+        instruments().store_lookup(&model, outcome);
+        result
+    }
+
+    fn lookup_unrecorded(
         &mut self,
         recipe: RecipeId,
         tolerance: &Tolerance,
@@ -1430,7 +1510,29 @@ impl Store {
     }
 
     /// Restore an entry and its chain into an engine state.
+    ///
+    /// The store counts the restore in `nagaya.store.restores`. The label `engine` is the model name of `engine`.
     pub fn restore(
+        &mut self,
+        id: &ContentId,
+        engine: &mut dyn Engine,
+        state: State,
+        identity: &[u8; 32],
+        now_ms: u64,
+    ) -> Result<Restored, StoreError> {
+        let model = engine.identity().model;
+        let result = self.restore_unrecorded(id, engine, state, identity, now_ms);
+        let kind = match &result {
+            Ok(Restored::Done) => RestoreResult::Done,
+            Ok(Restored::Refused { .. }) => RestoreResult::Refused,
+            Ok(Restored::Failed { .. }) => RestoreResult::Failed,
+            Err(_) => RestoreResult::Error,
+        };
+        instruments().store_restore(&model, kind);
+        result
+    }
+
+    fn restore_unrecorded(
         &mut self,
         id: &ContentId,
         engine: &mut dyn Engine,
@@ -1666,12 +1768,15 @@ impl Store {
             index.entries.remove(id);
             index.pins.remove(id);
         }
+        let leaving = self.evicted(&victims, EvictReason::Evict);
         let previous = std::mem::replace(&mut self.index, index);
         if let Err(error) = self.persist() {
             self.index = previous;
             return Err(error);
         }
         // 6.9 and the banto: persist the index first, then delete the blobs.
+        record_evicted(&leaving);
+        self.record_held();
         self.remove_blobs(&victims)?;
         Ok(victims)
     }
@@ -1999,6 +2104,36 @@ impl Store {
         Ok(chain)
     }
 
+    /// The entries of `ids` by tier, as they leave for `reason`. Call it while the index still holds them.
+    fn evicted(&self, ids: &[ContentId], reason: EvictReason) -> Vec<Evicted> {
+        let mut counts: BTreeMap<Tier, u64> = BTreeMap::new();
+        for entry in ids.iter().filter_map(|id| self.index.entries.get(id)) {
+            *counts.entry(entry.tier).or_insert(0) += 1;
+        }
+        counts
+            .into_iter()
+            .map(|(tier, entries)| Evicted { tier, reason, entries })
+            .collect()
+    }
+
+    /// Record what the store holds, for each tier and engine (spec 9.4).
+    fn record_held(&mut self) {
+        let mut held: BTreeMap<(Tier, String), (u64, u64)> = BTreeMap::new();
+        for entry in self.index.entries.values() {
+            let slot = held.entry((entry.tier, entry.engine.clone())).or_insert((0, 0));
+            slot.0 += entry.size;
+            slot.1 += 1;
+        }
+        let instruments = instruments();
+        for ((tier, engine), (bytes, entries)) in &held {
+            instruments.store_held(tier_label(*tier), engine, *bytes, *entries);
+        }
+        for (tier, engine) in self.reported.iter().filter(|key| !held.contains_key(*key)) {
+            instruments.store_held(tier_label(*tier), engine, 0, 0);
+        }
+        self.reported = held.into_keys().collect();
+    }
+
     fn tripwire_error(&self, recipe: RecipeId) -> StoreError {
         let ids = self
             .index
@@ -2228,7 +2363,7 @@ impl Entry {
 /// A blob read error is not a verification failure (spec 6.8). The entry stays in the index and the next use
 /// reads the blob again. The caller sees an error, and a lookup treats it as a miss.
 fn read_failed(id: &ContentId, error: std::io::Error) -> StoreError {
-    eprintln!(
+    tracing::warn!(
         "nagaya-store: cannot read the blob of {}: {error}; the entry stays and the next use checks it again",
         id.hex()
     );

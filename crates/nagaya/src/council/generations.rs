@@ -403,7 +403,7 @@ impl Service {
             max_tokens,
             context_tokens,
             room,
-            parser: Some(self.family.reply_parser(context.thinks())),
+            parser: Some(self.family.reply_parser(context.thinks(), &context.tools)?),
             events,
             started: Instant::now(),
             stage: Stage::Building,

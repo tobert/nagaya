@@ -75,7 +75,7 @@ fn same_error(got: &str, want: &str) {
 
 fn same_call(got: &ToolCall, want: &Json, name: &str) {
     match got {
-        ToolCall::Parsed { name: n, input } => {
+        ToolCall::Parsed { name: n, input, .. } => {
             assert!(!want.has("error"), "{name}: parsed a call that mk refused: {want:?}");
             assert_eq!(n, want.get("name").str(), "name in {name}");
             assert_eq!(input, want.get("arguments"), "input in {name}");
