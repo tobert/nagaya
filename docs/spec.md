@@ -1812,8 +1812,8 @@ these ways. Each served model declares the capability `continuation` (`crates/na
     `content: ""`, and it cost three renders of the prefix. The search also replaces the second render of the cuts at
     message ends.
   - The timings of a dry run come from a release host test (`crates/nagaya/tests/council_heads.rs`). For 18026
-    tokens with an assistant message: 103 ms with the open forms, 38 ms with a pass over the index, and 16 ms with
-    one render. The same context without the message takes 16 ms. With 10,000 unrelated entries in the store: 85 ms
+    tokens with an assistant message: 103 ms with the open forms, then 38 ms with a pass over the index. It is 16 ms
+    with one render. The same context without the message takes 16 ms. With 10,000 unrelated entries in the store: 85 ms
     with a pass over the index, then 0.22 ms (0.16 ms when empty).
   - A dry run reports the interval copy that a build would restore. For a continuation, it asks for a slot of the
     open rendering, as the generation does.
