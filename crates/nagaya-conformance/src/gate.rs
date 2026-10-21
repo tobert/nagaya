@@ -771,6 +771,9 @@ fn same_boundaries_inner<E: Engine>(mut first: E, make: &mut dyn FnMut() -> E, l
     seal_state(&mut first, state, gate, "the first engine")?;
     seal_state(&mut second, state, gate, "the second engine")?;
     compare_fixed(gate, &mut first, &mut second, state, limits)?;
+    // The next check makes two more engines. An engine that holds a large pool (mk: 11 GiB) needs these two freed.
+    drop(first);
+    drop(second);
     if limits.bit_dependence.is_empty()
         && let Some(other) = second_slot(limits)
     {

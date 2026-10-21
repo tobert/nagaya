@@ -11,6 +11,10 @@ name = "pass_scratch"
 required-features = ["hip"]
 
 [[example]]
+name = "context_pool"
+required-features = ["hip"]
+
+[[example]]
 name = "split_bits"
 required-features = ["hip"]
 

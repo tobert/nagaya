@@ -9,7 +9,18 @@ use nagaya_abi::{
     Engine, OutputsWanted, PartError, PassErrorKind, SealError, Segment, SegmentInputs, State, Tap, WriteResult,
 };
 use nagaya_conformance::{compare_f32_rows, run_all};
-use nagaya_mk_qwen38_gfx1151::open;
+use nagaya_mk_qwen38_gfx1151::{MkEngine, open};
+
+#[path = "support/oracle.rs"]
+mod oracle;
+
+/// The first slot of the large class: slots 0-11 hold 4096 tokens, and slots 12-15 hold 32 768 (`spec.rs`).
+const LARGE: u32 = 12;
+
+/// The state bytes of one context: the fixed parts and 56 832 bytes for each token (`spec.rs` `context_bytes`).
+fn context_bytes_of(capacity: u32) -> u64 {
+    118_038_528 + 56_832 * u64::from(capacity)
+}
 
 /// A finite f32 pattern as bytes.
 fn finite_bytes(len: usize, seed: f32) -> Vec<u8> {
@@ -48,8 +59,9 @@ fn the_binding_opens_mk_and_declares_its_parts() {
     assert_eq!(limits.parts[3].name, "kv");
     assert_eq!(limits.parts[5].name, "ple_hist");
     assert_eq!(limits.parts[6].name, "idx_pooled");
-    assert_eq!(limits.slots.len(), 1);
-    assert_eq!(limits.slots[0].count, 16);
+    assert_eq!(limits.slots.len(), 2);
+    assert_eq!(limits.slots[0].count, 12);
+    assert_eq!(limits.slots[1].count, 4);
     assert_eq!(limits.max_segments, 16);
     assert_eq!(limits.max_pass_inputs, 256);
     let weights = limits
@@ -65,7 +77,22 @@ fn the_binding_opens_mk_and_declares_its_parts() {
         .iter()
         .find(|term| term.name == "context")
         .expect("a context term");
-    assert_eq!(context.bytes, 16 * 132_587_520);
+    // The state bytes: 12 * 350 822 400 + 4 * 1 980 309 504 = 4 209 868 800 + 7 921 238 016 = 12 131 106 816.
+    // Each of the 16 contexts adds 4 MiB for the allocator (spec.rs `CONTEXT_ALLOCATION_BYTES`).
+    assert_eq!(context.bytes, 12_131_106_816 + 16 * 4_194_304);
+    // The device cost of each class is at least its state bytes, and the declared bytes hold it. A cost below the
+    // state bytes would mean that mk made less than the formula says, and the formula would be wrong.
+    for reading in engine.pool_readings() {
+        let states = u64::from(reading.class.count) * context_bytes_of(reading.class.capacity);
+        assert!(
+            reading.device >= states,
+            "{} contexts of {} tokens took {} bytes; the state bytes are {states}",
+            reading.class.count,
+            reading.class.capacity,
+            reading.device
+        );
+        assert!(reading.device <= reading.declared, "{reading:?}");
+    }
     // The pass scratch term holds the device cost that the probe measured at open.
     let scratch = limits
         .memory
@@ -123,7 +150,14 @@ fn the_binding_opens_mk_and_declares_its_parts() {
     assert_eq!(identity.numbers.get("fast_qmm").map(String::as_str), Some("1"));
 
     assert_eq!(engine.n(State::Slot(0)).unwrap(), 0);
-    assert_eq!(engine.capacity(State::Slot(0)).unwrap(), 256);
+    // The pool holds 12 contexts of 4096 tokens, then 4 of 32 768.
+    for slot in 0..LARGE {
+        assert_eq!(engine.capacity(State::Slot(slot)).unwrap(), 4096, "slot {slot}");
+    }
+    for slot in LARGE..16 {
+        assert_eq!(engine.capacity(State::Slot(slot)).unwrap(), 32_768, "slot {slot}");
+    }
+    assert!(engine.capacity(State::Slot(16)).is_err(), "the pool holds 16 contexts");
     assert!(engine.owns_kv(State::Slot(0)).unwrap());
 }
 
@@ -300,28 +334,30 @@ fn a_pass_runs_and_refuses_a_wrong_position() {
     assert_eq!(out.outputs[0].bytes.len(), 248_320 * 4);
     assert!(floats(&out.outputs[0].bytes).iter().all(|value| value.is_finite()));
 
-    // The same pass in two more contexts gives the same bits.
-    let mut second = open().expect("open mk");
-    let mut third = open().expect("open mk");
+    // The same pass in two more handles gives the same bits. One handle lives at a time besides the first: the
+    // weights and three pools do not fit in 125 GiB with the host floor (spec 4.7).
     let mut fresh = segment(State::Slot(0), &[11, 12, 13], 0);
     fresh.outputs.logit_rows = vec![2];
+    let first = floats(&out.outputs[0].bytes);
+    let mut second = open().expect("open mk");
     let other = second.pass(std::slice::from_ref(&fresh), &[]).expect("second pass");
-    let again = third.pass(std::slice::from_ref(&fresh), &[]).expect("third pass");
     compare_f32_rows(
         "a_pass_runs_and_refuses_a_wrong_position",
-        &floats(&out.outputs[0].bytes),
+        &first,
         &floats(&other.outputs[0].bytes),
-        248_320,
-    )
-    .unwrap();
-    compare_f32_rows(
-        "a_pass_runs_and_refuses_a_wrong_position",
-        &floats(&other.outputs[0].bytes),
-        &floats(&again.outputs[0].bytes),
         248_320,
     )
     .unwrap();
     drop(second);
+    let mut third = open().expect("open mk");
+    let again = third.pass(std::slice::from_ref(&fresh), &[]).expect("third pass");
+    compare_f32_rows(
+        "a_pass_runs_and_refuses_a_wrong_position",
+        &first,
+        &floats(&again.outputs[0].bytes),
+        248_320,
+    )
+    .unwrap();
     drop(third);
 
     // A position that is not the context's n is refused, and the context stays as it was.
@@ -390,4 +426,102 @@ fn the_conformance_suite_passes_on_mk() {
     assert_eq!(suite.failures().count(), 0, "{suite}");
     let not_applicable: Vec<&str> = suite.not_applicable().map(|gate| gate.name).collect();
     assert_eq!(not_applicable, ["quantum_resume_fit"]);
+}
+
+/// The ids of a synthetic prompt: `count` token ids that spread over the vocabulary, the same each time.
+fn synthetic_ids(count: usize) -> Vec<u32> {
+    (0..count).map(|index| ((index * 7919 + 13) % 248_320) as u32).collect()
+}
+
+/// Feed `ids` to the context in passes of at most `chunk` tokens, and return the logits of the last token.
+///
+/// Each pass starts at the context's token count. Only the last pass asks for logits.
+fn feed(engine: &mut MkEngine, slot: u32, ids: &[u32], chunk: usize) -> Vec<f32> {
+    let state = State::Slot(slot);
+    let mut logits = Vec::new();
+    let mut done = 0;
+    while done < ids.len() {
+        let end = (done + chunk).min(ids.len());
+        let mut wanted = segment(state, &ids[done..end], engine.n(state).unwrap());
+        if end == ids.len() {
+            wanted.outputs.logit_rows = vec![(end - 1) as u64];
+        }
+        let out = engine
+            .pass(std::slice::from_ref(&wanted), &[])
+            .unwrap_or_else(|error| panic!("the pass at token {done} failed: {error:?}"));
+        if end == ids.len() {
+            logits = floats(&out.outputs[0].bytes);
+        }
+        done = end;
+    }
+    assert_eq!(engine.n(state).unwrap(), ids.len() as u64);
+    logits
+}
+
+fn longer_prompt() -> oracle::Prompt {
+    let fixture =
+        oracle::load(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/oracle/qwen38.json"));
+    fixture
+        .prompts
+        .into_iter()
+        .find(|prompt| prompt.name == "longer")
+        .expect("the fixture holds the longer prompt")
+}
+
+#[test]
+fn a_prompt_past_one_pass_runs_in_several_passes_and_matches_the_oracle() {
+    let prompt = longer_prompt();
+    assert!(
+        prompt.ids.len() > 512,
+        "the prompt takes three passes: {} tokens",
+        prompt.ids.len()
+    );
+    let path = oracle::QmmPath::from_env();
+    let mut engine = open().expect("open mk");
+
+    // A small context: 4096 tokens. Three passes of 256, 256 and the rest.
+    let small = feed(&mut engine, 0, &prompt.ids, 256);
+    let gap = oracle::measure(&prompt, &small);
+    println!("small slot, {} tokens: {gap:?}", prompt.ids.len());
+    assert_eq!(oracle::breaches(&gap, path), Vec::<String>::new(), "{gap:?}");
+
+    // A large context: 32 768 tokens. The capacity does not change the bits.
+    let large = feed(&mut engine, LARGE, &prompt.ids, 256);
+    assert_eq!(small, large, "the logits depend on the context capacity");
+}
+
+#[test]
+fn the_pass_size_does_not_change_the_logits() {
+    let prompt = longer_prompt();
+    let mut engine = open().expect("open mk");
+    // mk gives the same bits for any split of the tokens into passes (spec 6.13). 100-token passes share no
+    // boundary with 256-token passes except the start.
+    let whole = feed(&mut engine, 0, &prompt.ids, 256);
+    let split = feed(&mut engine, 1, &prompt.ids, 100);
+    assert_eq!(whole, split, "the logits depend on the split into passes");
+}
+
+#[test]
+fn a_small_context_takes_its_capacity_and_refuses_the_next_token() {
+    let mut engine = open().expect("open mk");
+    let state = State::Slot(2);
+    let ids = synthetic_ids(4096);
+    let logits = feed(&mut engine, 2, &ids, 256);
+    assert!(logits.iter().all(|value| value.is_finite()));
+    assert_eq!(engine.n(state).unwrap(), 4096);
+    let next = segment(state, &[1], 4096);
+    let error = engine.pass(std::slice::from_ref(&next), &[]).unwrap_err();
+    assert_eq!(error.kind, PassErrorKind::Refused, "{:?}", error.kind);
+    assert_eq!(engine.n(state).unwrap(), 4096, "a refused pass changed the context");
+}
+
+#[test]
+fn a_large_context_takes_more_tokens_than_a_small_one() {
+    let mut engine = open().expect("open mk");
+    let state = State::Slot(LARGE);
+    // 5000 tokens are past the small class's 4096 and fill 20 passes.
+    let ids = synthetic_ids(5000);
+    let logits = feed(&mut engine, LARGE, &ids, 256);
+    assert!(logits.iter().all(|value| value.is_finite()));
+    assert_eq!(engine.n(state).unwrap(), 5000);
 }

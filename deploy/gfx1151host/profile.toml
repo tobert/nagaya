@@ -13,11 +13,11 @@ share = 1
 pin_identity = false
 
 # `weights_bytes` is the size of mk's weight arena. mk knows it only after the weights load, and the plan reads no
-# weights (spec 2.4). The value below is an ESTIMATE: 61 GiB, from mk's notes (`probes/RESULTS-2026-09-26.md`). The
-# first start loads the weights, finds another size, and exits 3 with the real size in its message. Write that size
-# here and in the copy in the store directory (docs/deploy.md, "The weights size").
+# weights (spec 2.4). The value below is measured: the first start on gfx1151 (2026-10-20, about 23:26) loaded 60.99 GiB and
+# gave this size in its exit-3 message. After a change to mk or its weights, a start exits 3 with the new size. Write
+# that size here and in the copy in the store directory (docs/deploy.md, "The weights size").
 [engines.config]
-weights_bytes = 65498251264
+weights_bytes = 65490227200
 
 # gfx1151host has one pool for device(0) and host (spec 4.1): the unified memory.
 # 112 GiB = 120,259,084,288 bytes. The host has 131,156,408 kB (about 125.1 GiB, `proc/meminfo`), and the safety

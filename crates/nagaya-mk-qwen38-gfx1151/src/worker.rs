@@ -199,12 +199,35 @@ struct Context {
     restored_ple: bool,
 }
 
+/// What one class of contexts took when mk made it. The host readings are `None` when `/proc/meminfo` fails.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClassReading {
+    /// The class.
+    pub class: spec::ContextClass,
+    /// The bytes that this binding declares for the class.
+    pub declared: u64,
+    /// The device free bytes that the class took (`hipMemGetInfo` before minus after).
+    pub device: u64,
+    /// The host's MemAvailable before the class, in bytes.
+    pub available_before: Option<u64>,
+    /// The host's MemAvailable after the class, in bytes.
+    pub available_after: Option<u64>,
+}
+
+/// The contexts that one handle made, and what each class took.
+#[derive(Clone, Debug)]
+pub struct Pool {
+    /// The context ids, in the order of the classes.
+    pub ids: Vec<u64>,
+    /// One reading for each class.
+    pub readings: Vec<ClassReading>,
+}
+
 /// One command for the worker thread.
 enum Command {
     Open {
-        count: u32,
-        capacity: u32,
-        reply: mpsc::Sender<Result<Vec<u64>, String>>,
+        classes: Vec<spec::ContextClass>,
+        reply: mpsc::Sender<Result<Pool, String>>,
     },
     Free {
         ids: Vec<u64>,
@@ -292,9 +315,10 @@ impl Worker {
         answer.recv().ok()
     }
 
-    /// Create a context pool for one handle.
-    pub fn open_states(&self, count: u32, capacity: u32) -> Result<Vec<u64>, MkError> {
-        self.ask(|reply| Command::Open { count, capacity, reply })
+    /// Create a context pool for one handle. The ids follow the order of the classes.
+    pub fn open_states(&self, classes: &[spec::ContextClass]) -> Result<Pool, MkError> {
+        let classes = classes.to_vec();
+        self.ask(|reply| Command::Open { classes, reply })
             .unwrap_or_else(|| Err("the mk worker stopped".to_owned()))
             .map_err(MkError::from)
     }
@@ -471,29 +495,32 @@ fn fast_qmm_from(value: Option<&str>) -> Result<bool, MkError> {
 /// The host safety floor. mk keeps 12 GiB of MemAvailable free (spec 4.7; mk `service/contexts.py`, `FLOOR_BYTES`).
 const MEMORY_FLOOR: u64 = 12 << 30;
 
-/// Refuse a load that leaves less than the floor free.
-fn memory_problem(available: u64, needed: u64) -> Result<(), String> {
+/// Refuse an allocation of `needed` bytes that leaves less than the floor free. `what` names the allocation.
+fn memory_problem(what: &str, available: u64, needed: u64) -> Result<(), String> {
     if available < needed.saturating_add(MEMORY_FLOOR) {
         return Err(format!(
-            "the shards take {needed} bytes and mk loads them into memory; \
+            "{what} takes {needed} bytes and mk puts them in memory; \
              {available} bytes are available and the floor is {MEMORY_FLOOR}"
         ));
     }
     Ok(())
 }
 
-/// Refuse a load that cannot fit in the free memory. mk allocates the weight arena in full, and the floor stays free.
-fn check_memory(needed: u64) -> Result<(), MkError> {
+/// The host's MemAvailable in bytes.
+fn mem_available() -> Result<u64, MkError> {
     let text =
         std::fs::read_to_string("/proc/meminfo").map_err(|error| MkError::new(format!("/proc/meminfo: {error}")))?;
-    let available = text
-        .lines()
+    text.lines()
         .find_map(|line| line.strip_prefix("MemAvailable:"))
         .and_then(|rest| rest.split_whitespace().next())
         .and_then(|value| value.parse::<u64>().ok())
         .map(|kilobytes| kilobytes * 1024)
-        .ok_or_else(|| MkError::new("/proc/meminfo has no MemAvailable"))?;
-    memory_problem(available, needed).map_err(MkError::new)
+        .ok_or_else(|| MkError::new("/proc/meminfo has no MemAvailable"))
+}
+
+/// Refuse a load that cannot fit in the free memory. mk allocates the weight arena in full, and the floor stays free.
+fn check_memory(needed: u64) -> Result<(), MkError> {
+    memory_problem("the shards", mem_available()?, needed).map_err(MkError::new)
 }
 
 /// The SHA-256 of a file, as lowercase hex.
@@ -696,11 +723,11 @@ impl ThreadState {
     /// mk keeps the pool for the engine's life. The probe context is freed before the second reading.
     fn measure_pass_scratch(&self) -> Result<u64, String> {
         let before = self.free_device_bytes()?;
-        let context = unsafe { (self.binding.ctx_new)(self.engine, spec::CONTEXT_CAPACITY) };
+        let context = unsafe { (self.binding.ctx_new)(self.engine, spec::PROBE_CAPACITY) };
         if context.is_null() {
             return Err(format!(
                 "mk_ctx_new({}) returned no context for the pass scratch probe",
-                spec::CONTEXT_CAPACITY
+                spec::PROBE_CAPACITY
             ));
         }
         let result = self.probe_passes(context);
@@ -714,9 +741,9 @@ impl ThreadState {
 
     /// Run the two probe passes on one context: 1 token, then the rest, with logits.
     fn probe_passes(&self, context: *mut c_void) -> Result<(), String> {
-        let tokens: Vec<i32> = (1..=spec::CONTEXT_CAPACITY as i32).collect();
+        let tokens: Vec<i32> = (1..=spec::PROBE_CAPACITY as i32).collect();
         let mut start = 0;
-        for (count, want_logits) in probe_shapes(spec::CONTEXT_CAPACITY) {
+        for (count, want_logits) in probe_shapes(spec::PROBE_CAPACITY) {
             let end = start + count as usize;
             self.probe_pass(context, &tokens[start..end], want_logits)?;
             start = end;
@@ -770,15 +797,11 @@ impl ThreadState {
 
     fn handle(&mut self, command: Command) {
         match command {
-            Command::Open { count, capacity, reply } => {
-                let _ = reply.send(self.open_states(count, capacity));
+            Command::Open { classes, reply } => {
+                let _ = reply.send(self.open_pool(&classes));
             }
             Command::Free { ids, reply } => {
-                for id in ids {
-                    if let Some(context) = self.contexts.remove(&id) {
-                        unsafe { (self.binding.ctx_free)(self.engine, context.ptr) };
-                    }
-                }
+                self.free_ids(&ids);
                 let _ = reply.send(());
             }
             Command::N { id, reply } => {
@@ -829,7 +852,69 @@ impl ThreadState {
         }
     }
 
-    fn open_states(&mut self, count: u32, capacity: u32) -> Result<Vec<u64>, String> {
+    /// Create the contexts of every class, in order, and read what each class took.
+    ///
+    /// A later class that fails frees the contexts of the earlier ones. The pool is whole or not made.
+    fn open_pool(&mut self, classes: &[spec::ContextClass]) -> Result<Pool, String> {
+        // Admit the whole pool before mk makes any of it (spec 4.3, 4.7).
+        let needed: u64 = classes
+            .iter()
+            .map(|class| u64::from(class.count) * spec::context_declared_bytes(class.capacity))
+            .sum();
+        memory_problem(
+            "the context pool",
+            mem_available().map_err(|error| error.to_string())?,
+            needed,
+        )?;
+        let mut ids = Vec::new();
+        let mut readings = Vec::new();
+        for class in classes {
+            let free_before = self.free_device_bytes();
+            let available_before = mem_available();
+            let made = self.open_states(*class);
+            let free_after = self.free_device_bytes();
+            let available_after = mem_available();
+            match made {
+                Ok(made) => ids.extend(made),
+                Err(error) => {
+                    self.free_ids(&ids);
+                    return Err(error);
+                }
+            }
+            // The ledger holds the declared bytes. A class that takes more is a defect, so refuse the pool.
+            let device = match (free_before, free_after) {
+                (Ok(before), Ok(after)) => before.saturating_sub(after),
+                (Err(error), _) | (_, Err(error)) => {
+                    self.free_ids(&ids);
+                    return Err(error);
+                }
+            };
+            if let Err(problem) = spec::class_problem(*class, device) {
+                self.free_ids(&ids);
+                return Err(problem);
+            }
+            readings.push(ClassReading {
+                class: *class,
+                declared: u64::from(class.count) * spec::context_declared_bytes(class.capacity),
+                device,
+                available_before: available_before.ok(),
+                available_after: available_after.ok(),
+            });
+        }
+        Ok(Pool { ids, readings })
+    }
+
+    /// Free the contexts with these ids.
+    fn free_ids(&mut self, ids: &[u64]) {
+        for id in ids {
+            if let Some(context) = self.contexts.remove(id) {
+                unsafe { (self.binding.ctx_free)(self.engine, context.ptr) };
+            }
+        }
+    }
+
+    fn open_states(&mut self, class: spec::ContextClass) -> Result<Vec<u64>, String> {
+        let spec::ContextClass { count, capacity } = class;
         if count == 0 {
             return Err("a handle needs at least one context".to_owned());
         }
@@ -1366,7 +1451,7 @@ mod tests {
         // A pass of 1 token asks for qmm_part2 (mk engine.hip:1187). The second pass asks for the rest, with logits.
         assert_eq!(probe_shapes(256), [(1, false), (255, true)]);
         let total: u32 = probe_shapes(256).iter().map(|(tokens, _)| tokens).sum();
-        assert_eq!(total, crate::spec::CONTEXT_CAPACITY);
+        assert_eq!(total, crate::spec::PROBE_CAPACITY);
     }
 
     #[test]
@@ -1446,10 +1531,25 @@ mod tests {
     fn a_load_that_leaves_less_than_the_floor_is_refused() {
         // spec 4.7: mk keeps 12 GiB of MemAvailable free (mk service/contexts.py, FLOOR_BYTES).
         let floor: u64 = 12 << 30;
-        assert_eq!(memory_problem(floor, 0), Ok(()));
-        assert!(memory_problem(floor - 1, 0).is_err());
-        assert!(memory_problem(floor, 1).is_err());
-        assert_eq!(memory_problem(floor + 1, 1), Ok(()));
+        assert_eq!(memory_problem("the shards", floor, 0), Ok(()));
+        assert!(memory_problem("the shards", floor - 1, 0).is_err());
+        assert!(memory_problem("the shards", floor, 1).is_err());
+        assert_eq!(memory_problem("the shards", floor + 1, 1), Ok(()));
+    }
+
+    #[test]
+    fn a_pool_that_leaves_less_than_the_floor_is_refused_and_the_message_names_the_pool() {
+        // The pool is 12 198 215 680 bytes (spec.rs). With 20 GiB available, 12 GiB of floor leaves 8 GiB.
+        let pool = crate::spec::pool_bytes();
+        assert_eq!(pool, 12_131_106_816 + 67_108_864);
+        let floor: u64 = 12 << 30;
+        assert_eq!(memory_problem("the context pool", floor + pool, pool), Ok(()));
+        let error = memory_problem("the context pool", floor + pool - 1, pool).expect_err("one byte short must refuse");
+        assert!(error.contains("the context pool takes 12198215680 bytes"), "{error}");
+        assert!(
+            error.contains(&format!("{} bytes are available", floor + pool - 1)),
+            "{error}"
+        );
     }
 
     #[test]
