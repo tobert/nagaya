@@ -21,8 +21,8 @@ inventory, active profile, and engine identities through `chitchat` (`docs/spec.
 **Device.** One thing that runs quanta: a GPU, or the CPU when an engine runs work there (mkviolet's AVX-512 lens).
 A **device group** is the set of devices that one or more engines use. Each device group has one long-lived nagaya
 thread, and every engine call for the group comes from that thread. Two engines that use one device share one group.
-mkviolet's Gemma 4 spans both B70 cards, so its group is the two cards. It runs its own work for each card inside a
-pass (`docs/engine-abi.md` D1).
+mkviolet's Gemma 4 spans both B70 cards, so its group is the two cards. Each card runs one stage, on a stage thread
+of its own (`docs/engine-abi.md` D1).
 
 **Placement profile.** The list of a machine's engines, their devices, their config, the budgets, the shares, the
 store's budgets and pinned identities (`docs/spec.md` 2.4). It is one TOML file in the store directory.

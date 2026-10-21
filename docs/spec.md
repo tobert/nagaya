@@ -309,7 +309,11 @@ thread priorities:
   have one device, and mkviolet's group has both B70 cards. Engines whose device sets share a device, also through
   a chain of shared devices, are in one group with the union of their devices. A group has one thread and one
   scheduler. Every engine call for a group comes from its thread, and the call
-  is synchronous. Inside a pass, the engine runs its own work on each of its devices (D1).
+  is synchronous.
+- **One stage thread per device of a staged engine.** An engine that declares `stages` gets one more thread for
+  each device of its stages (D1). The group thread runs the scheduler and sends each stage quantum to the thread of
+  its device. Each call that touches a device comes from the stage thread of that device. Decided 2026-10-21 (Amy:
+  "move stage_pass up"). The thread layout is **Proposed** (claude-opus-5-5) in engine-abi D1.
 - **A bounded CPU worker pool.** Rendering, tokenization, hashing, safetensors conversion, and CPU device passes
   (13.2) run on a bounded pool pinned to the remaining cores at `SCHED_BATCH`. Long CPU work yields between chunks
   to obey `max_quantum_ms`. On unified-memory machines (`gfx1151host` and `sm121host`), the scheduler pauses background CPU
@@ -510,6 +514,10 @@ opens (engine-abi, "The context term holds the pool").
 
 **5.1 Units.** A job is the quanta of one request, in order, with a class (ontology). A quantum is one pass or one
 stage. It runs to its end, and the nagaya chooses what runs next only between quanta.
+
+For an engine with stages, the nagaya chooses between quanta on each device apart. A stage quantum of a block is
+ready after the stage before it ends. The job's lease keeps every other job from the slot until the job ends
+(engine-abi D1, "The hold of the slot"). Decided 2026-10-21.
 
 An engine meets its `max_quantum_ms` (D8) when it chooses the size of each unit of work. The engine knows its own
 speed, so it picks the size from its own measurements. (mk splits a prefill into 256-token chunks in its Python
@@ -1004,6 +1012,9 @@ because the group thread is blocked in the pass.
 A device group that stops its heartbeat is a failure. The process exits with code 1, the crash code of 10.4, and
 systemd restarts it. Reason: a stalled engine can hold a device, and the process stops before it continues in a bad
 state (8.5).
+
+A group with stages has one heartbeat for each stage thread, and the watchdog watches each one (engine-abi D1). A
+stall of one stage thread is a stall of the group.
 
 The timeout is 30 s, three times the longest declared quantum bound (mk: 10 s). It has no key in the
 bootstrap config. The code takes it as a start parameter, so the tests use a short value.

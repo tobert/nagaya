@@ -23,8 +23,9 @@ Each engine runs on a **device group**: the set of devices that one or more engi
 nagaya thread. Calls for the engines in the group come only from that thread, and they are synchronous. A pass
 blocks the thread.
 
-An engine that spans devices runs its own work for each device inside the pass. mk already works this way,
-with a group of one device. mkviolet's group is both B70 cards; its `pipeline_stage` threads stay inside its pass.
+An engine that spans devices declares stages (D1). The group then has one stage thread for each device of its
+stages, and each stage quantum runs on the thread of its device. mk has a group of one device and no stages.
+mkviolet's group is both B70 cards, with two stages.
 
 ### Rust shape
 
@@ -72,7 +73,7 @@ limits() -> {
                                  fixed: the whole shape; cells and ring: row_shape, one row per position
     inputs: tokens | rows | tokens+rows, row width and dtype,
     devices: [...],              the device group
-    stages: [{device, layers, head: bool}],
+    stages: [{device, layers, head: bool}],   device is a group index (spec 2.4); residual_row_bytes for a boundary
     max_segments, max_pass_inputs, max_logit_rows, slots per device and their sizes,
     max_quantum_ms,              the longest a quantum may hold its device group (D8)
     memory: {                    the engine's ledger terms (spec 4.2), keyed by kind of quantum
@@ -120,7 +121,7 @@ coverage     coverage(part bytes) -> positions held; fits(coverage, slot) -> ok 
 resize       resize(term, units) -> ok | why   an elastic term, only between quanta (spec 4.5)
 poison       poisoned(state) -> bool
 pass_check   pass_problem(segments) -> ok | why   the engine's own check of a pass; not the ledger's admission
-stages       stage_pass(stage, segments, residual_in) -> residual_out | outputs
+stages       stage_pass(stage, segments, residual_in) -> residual_out | outputs   (D1)
 io           io_submit(IO requests [(file, offset, len, dest)], class) -> ticket; io_wait(ticket, prefix | all)
              dest is a device-buffer handle that the engine gives; the nagaya's IO service does the reads
 telemetry    op_times(), dispatches(), ...; pass(…, trace_context) so engine spans nest under the quantum span
@@ -444,15 +445,16 @@ check.
 | ABI | mkviolet (`gemma4.rs` unless named) | Notes |
 |---|---|---|
 | open / attach | `load_slots(cluster, model_dir, slot_seqs, max_block)`, `load_slots_stored` | slot sizes and `max_block` are load-time config |
-| device group | both B70 cards | one nagaya thread; `run_card0`, `run_card1` and `pipeline_stage` stay inside the pass |
+| device group | both B70 cards | one group thread and one stage thread for each card (D1) |
+| stages | `run_card0`, `run_card1` (`gemma4.rs:1393-1436`) | stage 0: layers 0-14 on card 0; stage 1: layers 15-29 and the head on card 1 (`CARD_LAYERS`, `gemma4.rs:84`); the residual is F32 rows of 2,816 values, through host memory |
 | arena | 30 DMA-BUF slabs, one for each layer on its card (`slab_fd_name(l, card)`, `main.rs:76-108`), `verify_stored_slab` | spot check: first and last 64 bytes per tensor; the head has no slab today |
 | slots | `set_slot`, `kv_high`, `slot_clear` | no contexts, no stored token count, no fork |
 | parts | `save_kv_layer_from` (a range read), `load_kv`, `load_kv_layer` | `state` is the slot index; KV only: cells on global layers, ring on sliding layers |
 | geometry / coverage | slot size, ring rows (`kv_ring`, `kv_keep_from`); `KvSnapshot::join` is the fit check | changes rows held, not bits, so no `geometry_key`; today's id is a recipe (`snapshot_id`, `held.rs:329-342`) |
-| pass | `run_card0` then `run_card1`; `pipeline_stage` for jobs in flight on both cards | two stages |
+| pass | `run_card0` then `run_card1`; `pipeline_stage` for jobs in flight on both cards (`gemma4.rs:1438-1505`) | the nagaya's scheduler takes the place of `pipeline_stage` (D1) |
 | segments | `PipeJob`; `branch_block` with per-token `meta` | a branch block is atomic and is not a snapshot |
 | inputs | tokens; `write_embeddings` looks up the rows on the host and puts them into `Buf::X` (`gemma4.rs:1376-1384`) | tokens (D2) |
-| class | `CardLock`, `GpuLock` | moves out of the engine into the nagaya scheduler |
+| class | `CardLock`, `GpuLock` | moves out of the engine into the nagaya scheduler, one choice for each device (D1) |
 | determinism | `always`, with a feed rule (D11) | bits depend on the token count of a pass; the first port runs one recipe in two starts and compares content ids |
 
 ## Decisions
@@ -472,9 +474,88 @@ stages.
 Decided 2026-10-17 (Amy: "yeah that sound reasonable"): mkviolet starts with (a). Option (b) comes when the segment
 shape is settled, and first for splits across machines.
 
-Under (a), the engine's devices are one device group with one nagaya thread (Shape). Decided 2026-10-17: "one thread
-per device group". A group can serve more than one engine: two engines that use one device share one group, one
-thread and one scheduler.
+Decided 2026-10-21 (Amy: "I want the dual card architecture in place sooner than later to make sure it fits in the
+overall nagaya architecture well: move stage_pass up"). Option (b) comes in the first port of mkviolet. This replaces
+the start with (a). The rules below settle the segment shape and the hold of the slot.
+
+A group can serve more than one engine: two engines that use one device share one group, one thread and one
+scheduler. Decided 2026-10-17: "one thread per device group". With stages, that thread runs the scheduler, and it has
+stage threads under it.
+
+**The stage segment.** A stage pass takes segments. Each segment has these members:
+
+- `state`: the slot. Every stage of a block names the same slot.
+- `positions` and `meta`: the first position and the per-token `meta` (mkviolet `pos0` and `meta`, `PipeJob`,
+  `gemma4.rs:998-1004`). A plain block has no `meta`.
+- `inputs`: the tokens, on the first stage only (D2). A later stage reads the residual.
+- `logit_rows`: the rows of the block whose logits the last stage gives. mkviolet takes at most 16
+  (`MAX_LOGIT_ROWS`).
+- the residual: a host buffer that the nagaya owns (D5). Stage s writes it, and stage s + 1 reads it. A row is
+  `limits().residual_row_bytes`: 2,816 F32 values (11,264 bytes) for mkviolet.
+
+**Proposed** (claude-opus-5-5, 2026-10-21): a restore is not a member of the segment. mkviolet restores a held
+snapshot into the slot inside a pipelined pass: each card writes its layers first (`PipeJob.kv`,
+`gemma4.rs:1477-1490`, `council_server.rs:859-874`). In the nagaya, a restore is a `copy` quantum on the device of a
+stage. It writes only the parts of that stage, through `Store::restore` (spec 8.3). It runs on that device just before
+the first stage quantum of the block. Reason: one restore path for every engine, with the same overlap of cards.
+
+**Proposed** (claude-opus-5-5, 2026-10-21): each part names its stage, `limits().parts[].stage`. A stage handle reads
+and writes only the parts of its stage. mkviolet's parts are the KV of one layer, so each part has one card.
+
+**Proposed** (claude-opus-5-5, 2026-10-21): the Rust shape of `stages`.
+
+```rust
+trait Stages {
+    // Once, after open: one handle for each stage, in stage order. Each handle moves to the thread of its device.
+    fn take_handles(&mut self) -> Vec<Box<dyn StageHandle + Send>>;
+}
+trait StageHandle {
+    fn stage_pass(&mut self, segments: &[Segment], residual: &mut Residual) -> Result<StageOut, PassError>;
+    fn parts(&mut self) -> Option<&mut dyn Parts> { None }   // the parts of this stage only
+}
+```
+
+- `Engine::pass` runs every stage in order on the calling thread. The conformance gates compare it with the stage
+  path.
+- After `take_handles`, `Engine::pass` and the `parts` calls of the `Engine` refuse (`PassErrorKind::Refused`). Each
+  call that touches a device then goes through the handle of that device.
+- `identity`, `limits` and `last_error` stay on the `Engine`, on the group thread.
+
+**Proposed** (claude-opus-5-5, 2026-10-21): the threads of a group with stages.
+
+- The group thread runs the one scheduler of the group (spec 5.5). It sends each stage quantum to the stage thread
+  of its device, and it gets the end back.
+- A stage thread holds the handle of its device. It runs one quantum at a time, and it makes every call to its
+  device.
+- The ledger stays on its own thread (spec 3.2). The group thread asks it by message, as now.
+
+Reason: one scheduler sees both cards, so it can fill an idle card. One thread for each device keeps each card busy
+while the other runs, as mkviolet's `pipeline_stage` does with a scoped thread for each card.
+
+**The hold of the slot.** A job holds its slot with a lease from its first quantum to its end (spec 5.6). The
+scheduler orders the stage quanta of the slot:
+
+1. Stage s + 1 of a block is ready only after stage s of that block ends and writes the residual.
+2. Stage s of block k + 1 is ready only after stage s of block k ends.
+3. No quantum of another job writes the slot while the lease lives. This is quantum condition 5 (ontology).
+
+Thus two blocks of one job run at the same time on the two cards, as mkviolet's `run_jobs` and `feed` do
+(`gemma4.rs:1507-1516`, `mk_api.rs:697-714`). Each stage writes the rows of its own layers only, so the two stages
+never write the same bytes.
+
+**Classes for each device.** Between quanta on each device, the scheduler runs the ready stage quantum of the highest
+class for that device (spec 5.3, 5.4). A stage quantum charges its run time to its job, as a pass does. Thus a
+council read takes card 0 while a generation's stage 1 runs on card 1. mkviolet does this with `CardLock` and
+`GpuLock` at low priority (`pipeline_stage` with `slot`).
+
+**Bounds and the watchdog.** A stage quantum is a quantum (spec 5.1). `max_quantum_ms` bounds each stage quantum, and
+the engine chooses its `feed.block` to fit it. Each stage thread beats a heartbeat of its own. The watchdog reports a
+stage quantum past the bound, and a stall of any stage thread stops the process (spec 7.4).
+
+**The residual term.** **Proposed** (claude-opus-5-5, 2026-10-21). The residual buffers are a mandatory host term of
+the engine, `residual`, with lifetime `engine`. It has two buffers for each boundary between stages. One holds a
+block for stage s + 1, while stage s writes the next block. Each buffer holds `feed.block` rows. mkviolet's term is 2 ×
+512 × 11,264 = 11,534,336 bytes.
 
 Amy may stop running one model across both B70 cards and use them independently, "since they're the fastest memory
 we have at home". Today's Gemma 4 does not fit on one card. Thus per-card work means smaller engines, each with a
