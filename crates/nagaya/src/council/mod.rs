@@ -7,6 +7,7 @@
 pub mod build;
 pub mod decisions;
 pub mod error;
+pub mod generations;
 pub mod pins;
 pub mod reads;
 pub mod slots;
@@ -436,22 +437,12 @@ impl Service {
         let snapshots = if dry_run {
             Vec::new()
         } else {
-            let store = self.store();
-            recipes
+            let held: Vec<_> = recipes
                 .iter()
                 .zip(&outcome.held)
-                .filter_map(|(recipe, id)| {
-                    let id = (*id)?;
-                    let entry = store.entries().get(&id)?;
-                    Some(SnapshotInfo {
-                        id: snapshot_id(&id),
-                        message: recipe.boundary.message as u64,
-                        tokens: recipe.boundary.tokens as u64,
-                        tier: Some(snapshot_tier(entry.tier)),
-                        bytes: Some(entry.size),
-                    })
-                })
-                .collect()
+                .filter_map(|(recipe, id)| Some((recipe.boundary, (*id)?)))
+                .collect();
+            self.infos(&held)
         };
         Ok(Built {
             head: outcome.held.last().copied().flatten().map(|id| snapshot_id(&id)),
@@ -481,6 +472,24 @@ impl Service {
         .and_then(|()| rx.recv().map_err(|_| ServiceError::Cancelled)?);
         charge.release()?;
         result
+    }
+
+    /// The snapshots that the store holds at boundaries, as a response lists them. A boundary whose entry eviction
+    /// removed is not in the list (spec 11.3c).
+    fn infos(&self, held: &[(nagaya_council::family::Boundary, ContentId)]) -> Vec<SnapshotInfo> {
+        let store = self.store();
+        held.iter()
+            .filter_map(|(boundary, id)| {
+                let entry = store.entries().get(id)?;
+                Some(SnapshotInfo {
+                    id: snapshot_id(id),
+                    message: boundary.message as u64,
+                    tokens: boundary.tokens as u64,
+                    tier: Some(snapshot_tier(entry.tier)),
+                    bytes: Some(entry.size),
+                })
+            })
+            .collect()
     }
 
     // ---- snapshots and pins
