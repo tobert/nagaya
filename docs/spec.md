@@ -1177,6 +1177,11 @@ Reason: step 3 parks pinned and wanted contexts. The process does not track pins
 it parks each state with tokens. An empty state of mk is 118,038,528 bytes of fixed parts ("v0 mk binding choices").
 A park of mk's 16 empty states would write about 1.9 GB and use most of the 10 s budget.
 
+**Open:** the park's copy of a state in host memory has no staging charge (4.2 "Staging"). The park holds one copy
+at a time, on the group thread. A copy of a 32,768-token mk context is about 1.93 GB. The charge path
+(`Ports::admit_staging`) refuses while the process stops, and the group thread holds no `Ports`. A charge for the park
+needs a ledger path that the stop keeps open.
+
 The process catches SIGTERM with a handler that adds one to a static atomic counter. The handler is `signal(2)`,
 declared in `extern "C"`, because std has no signal API. The main loop reads the counter every 50 ms. Reason: this
 needs no new dependency. A later step can use a signal stream from `tokio` instead. Decided 2026-10-20 (reading).
