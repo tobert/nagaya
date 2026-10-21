@@ -12,6 +12,7 @@ pub mod node;
 pub mod notify;
 pub mod park;
 pub mod placement;
+pub mod probe;
 pub mod process;
 pub mod profile;
 pub mod signal;

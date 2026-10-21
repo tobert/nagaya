@@ -69,6 +69,52 @@ It does not open a GPU runtime to count devices. A call into a vendor library is
 context. (DeepInfer reads NVML through `ctypes`.) The tests run the probe against fixed trees for gfx1151host, b70host
 and sm121host. Decided 2026-10-20 (`docs/deepinfer.md` 5).
 
+**What the file probe reads.** `FileProbe` in `crates/nagaya/src/probe.rs` reads these files under its root path. The
+root path is `/` on a machine, and a fixed tree in a test (`crates/nagaya/tests/fixtures/probe/`).
+
+- Host memory: `MemTotal` in `proc/meminfo`.
+- CPUs: the list in `sys/devices/system/cpu/online`.
+- AMD GPUs: the nodes of `sys/class/kfd/kfd/topology/nodes`. A node with `gpu_id` 0 is a CPU node. The device name
+  comes from `gfx_target_version`, so 110501 gives `gfx1151`. The PCI address comes from `location_id` and `domain`.
+- Intel GPUs: each `sys/class/drm/card<N>` whose `device/uevent` says `DRIVER=xe`.
+- NVIDIA GPUs: each directory of `proc/driver/nvidia/gpus`, and its `information` file.
+- NVMe: each `nvme<C>n<N>` in `sys/block`. The size is the `size` file in 512-byte sectors.
+- Network: each interface in `sys/class/net` that has a `device` directory. Virtual interfaces have none.
+
+A device id is the position in the list: AMD GPUs first, then Intel, then NVIDIA, each in the order of the kernel
+number. A missing directory that lists one kind of GPU means that the machine has no GPU of that kind. This is how a
+coordinator machine joins with no GPU (2.1). Any other missing or malformed file is an error that names the file
+(8.5).
+
+**Proposed:** a probe error at start refuses the start and exits 3 (10.4). The table of 10.4 does not list it yet.
+Reason: the machine, and not a config, is wrong, so a restart cannot help. Claude Sonnet 5.5.
+
+**What the file probe cannot see.** A probe that opens no GPU runtime has these limits.
+
+- NVIDIA: `proc/driver/nvidia` gives the model, the bus location and the minor number. It does not give the memory
+  size. NVML gives it. Thus the probe accepts only the models in a short list whose memory is unified, and it reads
+  their memory as the host memory. Any other model is an error.
+- Xe: sysfs has no file for the size of the device memory. The probe reads the largest prefetchable memory BAR in
+  the `resource` file. With resizable BAR off, the BAR is small, so the probe refuses the card.
+- AMD: the probe cannot tell unified memory from dedicated memory by one flag. It compares the KFD framebuffer
+  memory with `mem_info_gtt_total` and `mem_info_vram_total` of the PCI device. Equal to the first means unified.
+  Equal to the second means dedicated. Equal to neither is an error.
+- Free memory, device clocks and temperatures. Telemetry reads those (section 9).
+- The measured edges of 2.2. The probe gives devices and sizes only.
+- The NVMe namespace that holds `store_dir`. The probe lists all namespaces.
+- Intel cards with the `i915` driver, and any other driver. They are not devices of the nagaya.
+
+Decided by senpai 2026-10-20 night (vetoable): the rules of the two lists above. Reason: the probe must give a true
+size or stop. A guess from a heuristic that fails without a sign would corrupt the ledger (8.5).
+
+Decided by senpai 2026-10-20 night (vetoable): the trees for b70host and sm121host are made by hand, not captured.
+The coder could not read those machines. The README in the fixture directory marks each guessed value. Capture the
+real trees when we port to those machines.
+
+Decided by senpai 2026-10-20 night (vetoable): the probe is not yet in the start path. `main.rs` still uses the fake
+inventory, and the real wiring is one call, `FileProbe::new("/").probe()`. Reason: the start path takes its engines
+from the same function (milestone 14), so the wiring belongs with the mk engine.
+
 **The bootstrap config.** The bootstrap config is one TOML file, `nagaya.toml`. Its keys are `http_bind`,
 `gossip_bind`, `store_dir`, `seed_peers` and `park_budget_secs`. The first three keys are required. By default,
 `seed_peers` is an empty list, and `park_budget_secs` is 10 (10.3, ds4-recipe).
