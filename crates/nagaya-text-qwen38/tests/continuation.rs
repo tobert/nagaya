@@ -10,7 +10,8 @@ mod common;
 
 use common::{gguf_path, tokenizer};
 use gogi_proto::context::Context;
-use nagaya_council::family::{Family, FamilyError};
+use gogi_proto::generation::Phase;
+use nagaya_council::family::{Family, FamilyError, ReplyStart};
 use nagaya_text_qwen38::Qwen38Family;
 use serde_json::{Value, json};
 use std::sync::OnceLock;
@@ -217,4 +218,65 @@ fn snap_on_the_open_message_changes_nothing() {
         .unwrap();
     let b = family().render(&context(Some(false), marked), true).unwrap();
     assert_eq!(a, b);
+}
+
+fn parse(start: ReplyStart, reply: &str, max_tokens: bool) -> (String, String, Phase) {
+    let mut parser = family().reply_parser(start, &[]).unwrap();
+    for id in tokenizer().encode(reply).unwrap() {
+        parser.push(id).unwrap();
+    }
+    let phase = parser.phase();
+    let parsed = parser.finish(max_tokens);
+    (parsed.reasoning, parsed.content, phase)
+}
+
+/// gogi "Continuations": `done` joins the open text and the new text, and the server trims nothing at the seam. The
+/// parser trims the ends only as for any reply.
+#[test]
+fn a_continuation_keeps_the_white_space_at_the_start_of_its_first_part() {
+    let open = ReplyStart {
+        thinking: false,
+        open: true,
+    };
+    assert_eq!(
+        parse(open, " {}\n", false),
+        (String::new(), " {}".to_owned(), Phase::Content)
+    );
+    assert_eq!(
+        parse(ReplyStart::prompt(false), " {}\n", false).1,
+        "{}",
+        "a reply after the prompt trims"
+    );
+    let thought = ReplyStart {
+        thinking: true,
+        open: true,
+    };
+    let (reasoning, content, _) = parse(thought, " more\n</think>\n\nok", false);
+    assert_eq!(
+        (reasoning.as_str(), content.as_str()),
+        (" more", "ok"),
+        "the content after </think> is a new part"
+    );
+}
+
+/// gogi "Continuations": a reply that ends with `max_tokens` keeps its trailing white space, so the client can send
+/// it back exactly. The part before a later part is trimmed as for any reply.
+#[test]
+fn a_cut_reply_keeps_the_white_space_at_the_end_of_the_part_it_was_in() {
+    let start = ReplyStart::prompt(true);
+    assert_eq!(
+        parse(start, "I list ", true),
+        ("I list ".to_owned(), String::new(), Phase::Reasoning)
+    );
+    assert_eq!(parse(start, "I list ", false).0, "I list");
+    let (reasoning, content, phase) = parse(start, "plan \n</think>\n\nfn main() ", true);
+    assert_eq!(
+        (reasoning.as_str(), content.as_str(), phase),
+        ("plan", "fn main() ", Phase::Content)
+    );
+    let (reasoning, content, phase) = parse(start, "plan\n</think>\n\n", true);
+    assert_eq!(
+        (reasoning.as_str(), content.as_str(), phase),
+        ("plan", "", Phase::Content)
+    );
 }

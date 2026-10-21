@@ -14,7 +14,7 @@ use serde_json::{Map, Number, Value};
 use super::messages::tools_json;
 use super::{Qwen38Family, internal, refusal};
 use crate::json::Json;
-use crate::reply::{Ending, Phase as RawPhase, ReplyParser as Raw, TokenEvent, ToolCall};
+use crate::reply::{Ending, Keep, Phase as RawPhase, ReplyParser as Raw, TokenEvent, ToolCall};
 use crate::{Error, Tokenizer};
 
 /// The end of the thinking. The raw parser releases it as the last text of the reasoning.
@@ -29,6 +29,7 @@ pub(crate) fn reply_parser(
     let raw = Raw::new(family.shared_tokenizer(), start.thinking, tools_json(tools).as_ref()).map_err(refusal)?;
     Ok(Box::new(Qwen38ReplyParser {
         raw,
+        open: start.open,
         stop: family.stop_ids().to_vec(),
         vocab: family.tokenizer().len(),
         ended: false,
@@ -37,6 +38,8 @@ pub(crate) fn reply_parser(
 
 struct Qwen38ReplyParser {
     raw: Raw<Arc<Tokenizer>>,
+    /// True when the reply goes on from an open message: the start of its first part stays as it is.
+    open: bool,
     stop: Vec<u32>,
     vocab: usize,
     ended: bool,
@@ -110,7 +113,11 @@ impl ReplyParser for Qwen38ReplyParser {
             (false, false) => Ending::ContextFull,
         };
         let ended = self.ended;
-        let reply = self.raw.finish(ending);
+        let keep = Keep {
+            start: self.open,
+            end: ending == Ending::MaxTokens,
+        };
+        let reply = self.raw.finish_keeping(ending, keep);
         let tail = reply
             .tail
             .iter()
