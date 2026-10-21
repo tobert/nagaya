@@ -20,14 +20,18 @@ use nagaya_store::{
 use super::Clock;
 use super::error::ServiceError;
 use super::slots::{self, NoSlot, SlotLease, SlotPool};
+use super::staging::{self, Staging};
 use crate::jobs::{JobBody, Ran};
 use crate::park;
+use crate::process::Ports;
 
 /// The owner of the entries that builds put. A client pin has its own owner key (spec 11.3c).
 pub const COUNCIL_OWNER: u64 = 1;
 
 /// What every body of one build or read shares.
 pub struct Shared {
+    /// The ways into the process. A copy of engine state charges the ledger through them (spec 4.2).
+    pub ports: Ports,
     /// The machine's store.
     pub store: Arc<Mutex<Store>>,
     /// The index of the engine in its group.
@@ -162,7 +166,7 @@ impl LookupBody {
     fn look(&self, engine: &mut dyn Engine) -> Result<Outcome, ServiceError> {
         let pool = self.shared.pool.lock().expect("the slot pool lock is poisoned");
         let Some(slot) = slots::lowest_fitting(engine, &self.shared.limits, &pool, self.tokens) else {
-            return Err(too_large(self.tokens, "context_tokens"));
+            return Err(too_large(self.tokens));
         };
         drop(pool);
         let (recipes, held, cut) = choose(&self.shared, engine, slot, &self.recipes, &self.cuts)?;
@@ -189,9 +193,11 @@ impl JobBody for LookupBody {
     }
 }
 
-fn too_large(tokens: usize, param: &str) -> ServiceError {
+/// The error of a context that no slot holds. The limit that breaks is the capacity of the slot, which identity gives
+/// as `context_tokens` (spec 4.3), whatever kind of job asks.
+fn too_large(tokens: usize) -> ServiceError {
     ServiceError::TooLarge {
-        param: param.to_owned(),
+        param: "context_tokens".to_owned(),
         message: format!(
             "no slot of the engine holds {tokens} tokens; shorten the context, or serve a model with larger slots"
         ),
@@ -293,6 +299,13 @@ enum Unit {
     Snapshot(RecipeId, Reason),
 }
 
+/// A copy of the state of a slot that `Mark` kept in host memory. The charge ends when the copy drops.
+struct Marked {
+    snapshot: Snapshot,
+    /// The charge. It is the last field, so the copy is gone before the ledger gets the bytes back.
+    _staging: Staging,
+}
+
 /// The job of a context: a build, then the work of a [`Then`].
 pub struct ContextBody<T: Then> {
     shared: Arc<Shared>,
@@ -305,8 +318,6 @@ pub struct ContextBody<T: Then> {
     /// The tokens that the slot must hold when the job takes it: the context, and what the work feeds after it when
     /// the job knows that.
     room: usize,
-    /// The limit that a job breaks when its slot cannot hold it, for the error.
-    room_param: &'static str,
     lease: Option<SlotLease>,
     started: bool,
     /// True while the build runs, before its work starts.
@@ -315,8 +326,8 @@ pub struct ContextBody<T: Then> {
     feeding: Option<Feeding>,
     /// The row that the last pass of the feed gave.
     row: Option<Vec<f32>>,
-    /// The state that `Mark` kept.
-    mark: Option<Snapshot>,
+    /// The state that `Mark` kept, with the ledger charge of its bytes.
+    mark: Option<Marked>,
     held: Vec<Option<ContentId>>,
     from: Option<ContentId>,
     kept: usize,
@@ -336,20 +347,19 @@ impl BuildBody {
         tx: Sender<Result<Finished<NoThen>, ServiceError>>,
     ) -> Self {
         let room = tokens.len();
-        ContextBody::with(shared, tokens, recipes, room, "context_tokens", NoThen, tx)
+        ContextBody::with(shared, tokens, recipes, room, NoThen, tx)
     }
 }
 
 impl<T: Then> ContextBody<T> {
     /// Make the body of a context and its work. The job takes the lowest free slot that holds `room` tokens. A job
-    /// that no slot holds, or a feed past what its slot holds, is `too_large` and names `room_param`. With no recipe,
+    /// that no slot holds, or a feed past what its slot holds, is `too_large` and names `context_tokens`. With no recipe,
     /// the job builds nothing: the work starts on an empty slot.
     pub fn with(
         shared: Arc<Shared>,
         tokens: Arc<[u32]>,
         recipes: Vec<BoundaryRecipe>,
         room: usize,
-        room_param: &'static str,
         then: T,
         tx: Sender<Result<Finished<T>, ServiceError>>,
     ) -> Self {
@@ -366,7 +376,6 @@ impl<T: Then> ContextBody<T> {
             cuts: Vec::new(),
             cut: None,
             room,
-            room_param,
             lease: None,
             started: false,
             building: true,
@@ -410,6 +419,8 @@ impl<T: Then> ContextBody<T> {
     /// Send the result to the caller. The slot is free before the caller hears, so the caller sees it free.
     fn send(&mut self, result: Result<Finished<T>, ServiceError>) {
         self.lease = None;
+        // The mark is host memory. Free it and its charge before the caller hears the result.
+        self.mark = None;
         if let Some(tx) = self.tx.take() {
             let _ = tx.send(result);
         }
@@ -434,7 +445,7 @@ impl<T: Then> ContextBody<T> {
     fn start(&mut self, engine: &mut dyn Engine) -> Result<Ran, ServiceError> {
         let lease =
             slots::take(&self.shared.pool, engine, &self.shared.limits, self.room).map_err(|reason| match reason {
-                NoSlot::TooLarge => too_large(self.room, self.room_param),
+                NoSlot::TooLarge => too_large(self.room),
                 NoSlot::Busy => ServiceError::Busy(format!(
                     "every slot that holds {} tokens is in use; try again, or send the request as batch",
                     self.room
@@ -547,7 +558,7 @@ impl<T: Then> ContextBody<T> {
                 let base = self.rows(engine)?;
                 let end = base + tokens.len();
                 if !slots::fits(engine, &self.shared.limits, self.slot(), end) {
-                    return Err(too_large(end, self.room_param));
+                    return Err(too_large(end));
                 }
                 let wanted: Vec<usize> = if logits { vec![tokens.len() - 1] } else { Vec::new() };
                 let max_rows = self.shared.limits.max_logit_rows as usize;
@@ -619,10 +630,17 @@ impl<T: Then> ContextBody<T> {
                 }
             }
             Unit::Mark => {
-                let snapshot = park::park_snapshot(engine, self.state()).map_err(|message| {
+                // A second mark replaces the first. Release the first before the charge of the second.
+                self.mark = None;
+                let state = self.state();
+                let staging = self.stage(engine, state, "keep the state of the slot")?;
+                let snapshot = park::park_snapshot(engine, state).map_err(|message| {
                     ServiceError::internal(format!("cannot keep the state of the slot: {message}"))
                 })?;
-                self.mark = Some(snapshot);
+                self.mark = Some(Marked {
+                    snapshot,
+                    _staging: staging,
+                });
                 Some(Got::Copied)
             }
             Unit::Rewind => {
@@ -642,6 +660,14 @@ impl<T: Then> ContextBody<T> {
             None if self.building => self.next_want(engine, Got::Built(self.cut)),
             None => unreachable!("the last unit of a want gives back what it did"),
         }
+    }
+
+    /// Charge the host bytes of a copy of the state, before the copy runs (spec 4.2). A refusal is an error that the
+    /// client sees, and the engine is as it was.
+    fn stage(&self, engine: &mut dyn Engine, state: State, what: &str) -> Result<Staging, ServiceError> {
+        let bytes = staging::state_bytes(engine, &self.shared.limits, state)
+            .map_err(|message| ServiceError::internal(format!("cannot size the copy to {what}: {message}")))?;
+        Staging::take(&self.shared.ports, &self.shared.engine_name, bytes)
     }
 
     /// Run one pass over `tokens` at positions from `from`. With `row`, give the logit row of the last token.
@@ -695,7 +721,7 @@ impl<T: Then> ContextBody<T> {
     /// Put the state that `Mark` kept back into the slot.
     fn rewind(&mut self, engine: &mut dyn Engine) -> Result<(), ServiceError> {
         let slot = self.slot();
-        let mark = self.mark.as_ref().expect("a rewind follows a mark");
+        let mark = &self.mark.as_ref().expect("a rewind follows a mark").snapshot;
         let slots = engine
             .slots()
             .ok_or_else(|| ServiceError::internal("the engine lost its slot capability"))?;
@@ -726,6 +752,8 @@ impl<T: Then> ContextBody<T> {
         place: &str,
     ) -> Result<ContentId, ServiceError> {
         let state = self.state();
+        // The buffer of the copy is host memory. The charge stays until the store has taken the snapshot.
+        let _staging = self.stage(engine, state, &format!("read the state at {place}"))?;
         if let Some(seal) = engine.seal() {
             seal.seal(state)
                 .map_err(|error| ServiceError::internal(format!("the seal at {place} failed: {error:?}")))?;

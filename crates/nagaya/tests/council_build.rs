@@ -202,22 +202,38 @@ fn a_dry_run_feeds_nothing_and_holds_nothing() {
 
 #[test]
 fn a_refused_context_charge_changes_nothing() {
-    // The context term takes all the unassigned host bytes (2048 of 4096), so one context fits.
-    let f = fixture_with(2048, 4096, Some(1 << 20));
+    use nagaya_abi::Tier;
+    use nagaya_ledger::LedgerError;
+
+    // Each context takes 2048 host bytes. A build also needs host bytes for the copy of a snapshot (spec 4.2), so the
+    // budget is roomy. The test takes the rest of the unassigned bytes but 2047, so that one context charge is
+    // short and the copy is not the refusal.
+    let f = fixture_with(2048, 1 << 20, Some(1 << 20));
     let ports = f.process.ports();
     let initial = ports.unassigned();
     // Hold the only charge, as a build in flight does.
     ports.admit_context(ENGINE).unwrap();
+    let free = ports
+        .unassigned()
+        .into_iter()
+        .find(|(tiers, _)| tiers.contains(&Tier::Host))
+        .map(|(_, bytes)| bytes)
+        .unwrap();
+    ports.admit_staging(ENGINE, Tier::Host, free - 2047).unwrap();
     let held = ports.unassigned();
     let error = f
         .service
         .build(&context(&ctx(longer())), false, Schedule::default())
         .unwrap_err();
-    assert!(matches!(error, ServiceError::ContextRefused(_)), "{error:?}");
+    assert!(
+        matches!(error, ServiceError::ContextRefused(LedgerError::ContextRefused(_))),
+        "{error:?}"
+    );
     assert_eq!(ports.unassigned(), held, "the ledger is as it was");
     assert_eq!(entries(&f), 0, "no snapshot");
     assert_eq!(f.service.free_slots(), 3, "no slot");
     // The charge of a build is released: after the holder lets go, one build works, and so does the next.
+    ports.release_staging(Tier::Host, free - 2047).unwrap();
     ports.release_context(ENGINE).unwrap();
     build(&f, &ctx(longer()));
     build(&f, &ctx(opening()));
@@ -487,7 +503,9 @@ fn a_job_frees_its_slot_before_its_caller_hears_the_result() {
     let engine = nagaya_abi::fake::FakeAlways::with_slots(council_support::roomy_slots(3)).with_vocab(gogi_toy::VOCAB);
     let limits = engine.limits();
     let pool = Arc::new(Mutex::new(SlotPool::new(&limits)));
+    let process = fixture();
     let shared = Arc::new(Shared {
+        ports: process.process.ports(),
         store: Arc::new(Mutex::new(nagaya_store::Store::open(directory.path()).unwrap())),
         engine_index: 0,
         engine_name: ENGINE.to_owned(),

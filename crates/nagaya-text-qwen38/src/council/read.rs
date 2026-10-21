@@ -456,6 +456,8 @@ fn queue_plan(
     let rendered = family.run(&messages, tools.as_ref(), false, true)?;
     let mut escaped = rendered.escaped;
     escaped.push_str("<tool_call>\n<function=");
+    // The one caller takes this path only when `queue_call(c)` is `Some`, and that needs `c.queue` (gogi `decision.rs`).
+    // `Context::check` has refused a queue that names no tool, as `DecisionRequest::validate` calls it.
     escaped.push_str(&family.content(c.queue.as_deref().expect("a queue context names its queue"))?);
     escaped.push_str(">\n<parameter=answers>\n");
     let tokens = family.encode(&escaped)?;

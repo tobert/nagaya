@@ -944,9 +944,9 @@ where
             gate,
             format!("the profile is invalid, not refused: {message}"),
         )),
-        Err(LedgerError::ContextRefused(_)) => Outcome::Fail(Failure::new(
+        Err(LedgerError::ContextRefused(_) | LedgerError::StagingRefused(_)) => Outcome::Fail(Failure::new(
             gate,
-            "the ledger refused a context while it admitted a profile: a profile admission must not do that",
+            "the ledger refused a context or a copy while it admitted a profile: a profile admission must not do that",
         )),
         Err(LedgerError::Refused(refusal)) => {
             if refusal.shortfall.iter().all(|(_, bytes)| *bytes == 0) {

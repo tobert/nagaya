@@ -95,3 +95,50 @@ fn a_stopping_process_charges_no_context() {
     process.stop(std::time::Duration::from_secs(5), &nagaya::signal::SignalFlag::new());
     assert!(matches!(ports.admit_context(ENGINE), Err(ContextChargeError::Stopping)));
 }
+
+#[test]
+fn staging_takes_host_bytes_until_it_is_released_and_a_refusal_changes_nothing() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, _) = start(
+        directory.path(),
+        TermFactory {
+            slots: roomy_slots(2),
+            vocab: None,
+            ..TermFactory::toy()
+        },
+        4096,
+        None,
+    );
+    let ports = process.ports();
+    let free = host_unassigned(&ports);
+    ports.admit_staging(ENGINE, Tier::Host, free - 10).unwrap();
+    assert_eq!(host_unassigned(&ports), 10);
+
+    let before = ports.unassigned();
+    match ports.admit_staging(ENGINE, Tier::Host, 15) {
+        Err(ContextChargeError::Ledger(LedgerError::StagingRefused(refusal))) => {
+            assert_eq!(refusal.shortfall.iter().map(|(_, bytes)| *bytes).sum::<u64>(), 5);
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert_eq!(ports.unassigned(), before, "a refusal changes nothing");
+
+    ports.release_staging(Tier::Host, free - 10).unwrap();
+    assert_eq!(host_unassigned(&ports), free);
+    assert!(matches!(
+        ports.release_staging(Tier::Host, 1),
+        Err(ContextChargeError::Ledger(LedgerError::Invalid(_)))
+    ));
+}
+
+#[test]
+fn a_stopping_process_charges_no_staging() {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut process, _) = start(directory.path(), TermFactory::toy(), 4096, None);
+    let ports = process.ports();
+    process.stop(std::time::Duration::from_secs(5), &nagaya::signal::SignalFlag::new());
+    assert!(matches!(
+        ports.admit_staging(ENGINE, Tier::Host, 1),
+        Err(ContextChargeError::Stopping)
+    ));
+}

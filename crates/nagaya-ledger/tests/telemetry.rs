@@ -201,3 +201,32 @@ fn an_invalid_profile_is_no_refusal() {
     assert!(matches!(error, LedgerError::Invalid(_)), "{error:?}");
     assert!(capture.metric("nagaya.ledger.refusals").is_empty());
 }
+
+#[test]
+fn a_refused_staging_counts_a_refusal_for_its_engine() {
+    let capture = Capture::start(Vec::new());
+    let profile = Profile {
+        budgets: vec![Budget {
+            tiers: vec![Tier::Host],
+            bytes: 100,
+        }],
+        engines: vec![plan(
+            "qwen",
+            MemoryLimits {
+                mandatory: Vec::new(),
+                elastic: Vec::new(),
+            },
+        )],
+    };
+    let mut ledger = Ledger::new();
+    ledger.admit(&profile).unwrap();
+    ledger.admit_staging("qwen", Tier::Host, 100).unwrap();
+    assert!(capture.metric("nagaya.ledger.refusals").is_empty());
+    let error = ledger.admit_staging("qwen", Tier::Host, 1).unwrap_err();
+    assert!(matches!(error, LedgerError::StagingRefused(_)), "{error:?}");
+    let refusals = capture.metric("nagaya.ledger.refusals");
+    assert_eq!(refusals.len(), 1, "{refusals:?}");
+    assert_eq!(refusals[0].attributes["engine"], "qwen");
+    assert_eq!(refusals[0].attributes["tier"], "host");
+    assert_eq!(refusals[0].attributes["gate"], "budget");
+}

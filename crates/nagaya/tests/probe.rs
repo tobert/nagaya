@@ -304,6 +304,19 @@ fn a_malformed_cpu_list_is_an_error() {
     assert!(message.contains("sys/devices/system/cpu/online"), "{message}");
 }
 
+/// Kaibo review 2026-10-20, finding 10: a range like `0-4294967295` made the probe allocate 16 GB. The probe refuses a
+/// CPU number that one mask (`cpu_set_t`, 1024 CPUs) cannot hold, before it expands the range.
+#[test]
+fn a_cpu_list_past_the_size_of_a_mask_is_an_error() {
+    for list in ["0-1024", "0-50000000", "0-4294967295", "1024", "0-7,2000"] {
+        let (_dir, root) = broken_copy("gfx1151host");
+        fs::write(root.join("sys/devices/system/cpu/online"), format!("{list}\n")).unwrap();
+        let message = probe_error(&root);
+        assert!(message.contains("sys/devices/system/cpu/online"), "{list}: {message}");
+        assert!(message.contains("1024"), "{list}: {message}");
+    }
+}
+
 #[test]
 fn a_malformed_nvme_size_is_an_error() {
     let (_dir, root) = broken_copy("gfx1151host");

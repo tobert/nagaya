@@ -5,6 +5,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::affinity::MASK_CPUS;
 use crate::inventory::{Device, Inventory, Probe, ProbeError};
 
 /// The vendor of a GPU.
@@ -203,7 +204,8 @@ impl FileProbe {
     pub fn online_cpus(&self) -> Result<Vec<u32>, ProbeError> {
         let relative = "sys/devices/system/cpu/online";
         let text = self.read(relative)?;
-        parse_cpu_list(text.trim()).ok_or_else(|| malformed(&self.path(relative), "a CPU list like `0-7,9`", &text))
+        let expected = format!("a CPU list like `0-7,9` with CPU numbers below {MASK_CPUS}");
+        parse_cpu_list(text.trim()).ok_or_else(|| malformed(&self.path(relative), &expected, &text))
     }
 
     fn nvme(&self) -> Result<Vec<Nvme>, ProbeError> {
@@ -541,18 +543,22 @@ fn parse_hex(text: &str) -> Option<u64> {
 }
 
 /// Parse a kernel CPU list like `0-3,8,10-11`.
+///
+/// A CPU number must be below [`MASK_CPUS`], the CPUs that one mask holds (spec 3.2a). The check comes before the range
+/// grows, so a malformed file like `0-4294967295` cannot make the probe allocate.
 fn parse_cpu_list(text: &str) -> Option<Vec<u32>> {
+    let below_mask = |cpu: u32| (cpu as usize) < MASK_CPUS;
     let mut cpus = Vec::new();
     for part in text.split(',') {
         match part.split_once('-') {
             Some((first, last)) => {
                 let (first, last): (u32, u32) = (first.parse().ok()?, last.parse().ok()?);
-                if first > last {
+                if first > last || !below_mask(last) {
                     return None;
                 }
                 cpus.extend(first..=last);
             }
-            None => cpus.push(part.parse().ok()?),
+            None => cpus.push(part.parse().ok().filter(|cpu| below_mask(*cpu))?),
         }
     }
     Some(cpus)

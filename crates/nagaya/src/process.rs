@@ -205,6 +205,18 @@ impl OwnedLedger {
         self.ledger.release_context(engine)
     }
 
+    /// Charge staging bytes of an engine (spec 4.2). Only the owner thread may call this.
+    pub fn admit_staging(&mut self, engine: &str, tier: Tier, bytes: u64) -> Result<(), LedgerError> {
+        self.check_owner();
+        self.ledger.admit_staging(engine, tier, bytes)
+    }
+
+    /// Release staging bytes. Only the owner thread may call this.
+    pub fn release_staging(&mut self, tier: Tier, bytes: u64) -> Result<(), LedgerError> {
+        self.check_owner();
+        self.ledger.release_staging(tier, bytes)
+    }
+
     fn check_owner(&self) {
         assert_eq!(
             thread::current().id(),
@@ -531,6 +543,12 @@ impl Start {
                         }
                         LedgerMessage::ReleaseContext(engine, reply) => {
                             let _ = reply.send(ledger.release_context(&engine));
+                        }
+                        LedgerMessage::AdmitStaging(engine, tier, bytes, reply) => {
+                            let _ = reply.send(ledger.admit_staging(&engine, tier, bytes));
+                        }
+                        LedgerMessage::ReleaseStaging(tier, bytes, reply) => {
+                            let _ = reply.send(ledger.release_staging(tier, bytes));
                         }
                         LedgerMessage::Unassigned(reply) => {
                             let _ = reply.send(ledger.ledger().unassigned());
@@ -982,6 +1000,10 @@ enum LedgerMessage {
     AdmitContext(String, Sender<Result<(), LedgerError>>),
     /// Release the charge of an ended context of the named engine.
     ReleaseContext(String, Sender<Result<(), LedgerError>>),
+    /// Charge staging bytes of the named engine in one tier (spec 4.2).
+    AdmitStaging(String, Tier, u64, Sender<Result<(), LedgerError>>),
+    /// Release staging bytes in one tier.
+    ReleaseStaging(Tier, u64, Sender<Result<(), LedgerError>>),
     /// Read the unassigned bytes of each budget.
     Unassigned(Sender<Vec<(Vec<Tier>, u64)>>),
     Stop,
@@ -1073,6 +1095,36 @@ impl Ports {
         let (reply_tx, reply_rx) = mpsc::channel();
         self.ledger
             .send(LedgerMessage::ReleaseContext(engine.to_owned(), reply_tx))
+            .map_err(|_| ContextChargeError::Stopping)?;
+        reply_rx
+            .recv()
+            .map_err(|_| ContextChargeError::Stopping)?
+            .map_err(ContextChargeError::Ledger)
+    }
+
+    /// Charge staging bytes of an engine with the ledger, and wait for the answer (spec 4.2, 4.3).
+    ///
+    /// Staging is a copy of engine state in host memory. A refusal changes nothing. A release must follow each
+    /// charge, also after a failure.
+    pub fn admit_staging(&self, engine: &str, tier: Tier, bytes: u64) -> Result<(), ContextChargeError> {
+        if !self.accepting.load(Ordering::SeqCst) {
+            return Err(ContextChargeError::Stopping);
+        }
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.ledger
+            .send(LedgerMessage::AdmitStaging(engine.to_owned(), tier, bytes, reply_tx))
+            .map_err(|_| ContextChargeError::Stopping)?;
+        reply_rx
+            .recv()
+            .map_err(|_| ContextChargeError::Stopping)?
+            .map_err(ContextChargeError::Ledger)
+    }
+
+    /// Release staging bytes that `admit_staging` charged.
+    pub fn release_staging(&self, tier: Tier, bytes: u64) -> Result<(), ContextChargeError> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.ledger
+            .send(LedgerMessage::ReleaseStaging(tier, bytes, reply_tx))
             .map_err(|_| ContextChargeError::Stopping)?;
         reply_rx
             .recv()

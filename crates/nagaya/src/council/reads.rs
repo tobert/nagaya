@@ -108,6 +108,8 @@ impl Service {
         if let Some(index) = raw.suffixes.iter().position(Vec::is_empty) {
             return Err(Invalid::param("suffixes", format!("suffix {index} has no token")).into());
         }
+        // `request.validate()` above refuses an empty `suffixes` (gogi `ReadsRequest::validate`), and a family gives one
+        // token list for each suffix. The test `a_read_with_no_suffix_is_a_400_before_any_family_code_runs` checks it.
         let longest = raw.suffixes.iter().map(Vec::len).max().expect("a request has a suffix");
         let suffixes = Arc::new(raw.suffixes);
         let letters = Arc::new(raw.letters);
@@ -133,8 +135,7 @@ impl Service {
             };
             let shared = Arc::clone(&self.shared);
             let cuts = self.cuts(context, &rendering)?;
-            let job =
-                |tx| ContextBody::with(shared, tokens, recipes, end + longest, "context_tokens", then, tx).cuts(cuts);
+            let job = |tx| ContextBody::with(shared, tokens, recipes, end + longest, then, tx).cuts(cuts);
             let finished = self.run_context(job, schedule, None)?;
             let head = finished
                 .outcome
