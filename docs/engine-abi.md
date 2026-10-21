@@ -89,7 +89,7 @@ open(config) -> engine           config: devices, weights, engine-specific setti
 attach(config, arena_set)        the same, on an existing arena set
 identity() -> {
     model, checkpoint_digest,    the logical digest of the weights (spec 12.2)
-    tokenizer_hash, template, family, numbers, plan table,   family: Proposed (spec 11.3)
+    tokenizer_hash, template, family, numbers, plan table,   family: toy | qwen38 | gemma4 (spec 11.3)
     bit settings: [{name, value, class}],   class: reference-defining | approx | policy
     canary_hash,
 }
@@ -199,7 +199,8 @@ This section gives the simplest shapes that fit the decisions.
 - `State` is `Slot(u32)` in v0. A context handle arrives with the `contexts` capability.
 - `PartLimits` holds one `shape` vector. A fixed or derived part uses the whole shape. A cells or ring part
   uses its row shape.
-- `SlotLimit` is `{bytes, count}`. The fake engine declares two sizes: 64 bytes and 256 bytes.
+- `SlotLimit` is `{bytes, count, tokens}`. `tokens` is the most tokens that a slot of this size holds. The fake engine
+  declares two sizes: 64 bytes and 256 bytes, both with 4096 tokens. The fake does not tie bytes to tokens.
 - `Capability` is an enum. `Limits::capabilities` is a `Vec<Capability>`. The fake engine declares `Parts`,
   `Coverage`, `Seal` and `Slots`.
 - A write returns `WriteResult`: `Ok`, `Refused` or `Failed`. A read returns `Result<(), PartError>`.

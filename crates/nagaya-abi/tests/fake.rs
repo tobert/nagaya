@@ -651,3 +651,16 @@ fn a_logit_bias_adds_to_each_value_of_each_row() {
 fn a_logit_bias_of_the_wrong_length_is_refused() {
     let _ = FakeAlways::new().with_vocab(64).with_logit_bias(vec![0.0; 63]);
 }
+
+#[test]
+fn a_fake_engine_names_its_family() {
+    // The default family has no library, so the process does not serve a plain fake as a model (spec 11.3).
+    assert_eq!(FakeAlways::new().identity().family, "fake");
+    assert_eq!(FakeAlways::new().with_family("toy").identity().family, "toy");
+}
+
+#[test]
+fn a_slot_class_declares_its_tokens() {
+    let limits = FakeAlways::new().limits();
+    assert!(limits.slots.iter().all(|class| class.tokens > 0));
+}

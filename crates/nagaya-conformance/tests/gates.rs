@@ -69,7 +69,13 @@ fn a_ring_that_loses_its_base_fails_park_and_restore() {
 
 #[test]
 fn a_one_slot_engine_gets_not_applicable() {
-    let mut one_slot = || FakeAlways::with_slots(vec![SlotLimit { bytes: 256, count: 1 }]);
+    let mut one_slot = || {
+        FakeAlways::with_slots(vec![SlotLimit {
+            bytes: 256,
+            count: 1,
+            tokens: 4096,
+        }])
+    };
     assert!(matches!(park_and_restore(&mut one_slot()), Outcome::NotApplicable(_)));
     assert!(matches!(quantum_isolation(&mut one_slot), Outcome::NotApplicable(_)));
     assert!(run_all(&mut one_slot).passed());
@@ -580,6 +586,7 @@ impl Engine for CellsOnlyConstantRead {
         Identity {
             model: "cells-only".to_owned(),
             checkpoint_digest: "cells-only:0".to_owned(),
+            family: "fake".to_owned(),
             tokenizer_hash: "cells-only:0".to_owned(),
             template: "cells-only".to_owned(),
             numbers: std::collections::BTreeMap::new(),
@@ -610,7 +617,11 @@ impl Engine for CellsOnlyConstantRead {
             max_segments: 1,
             max_pass_inputs: 1,
             max_logit_rows: 0,
-            slots: vec![SlotLimit { bytes: 64, count: 2 }],
+            slots: vec![SlotLimit {
+                bytes: 64,
+                count: 2,
+                tokens: 4096,
+            }],
             max_quantum_ms: 10,
             memory: MemoryLimits::default(),
             chain: ChainLimits {
@@ -1257,7 +1268,18 @@ impl NanAfterAPass {
             max_segments: 1,
             max_pass_inputs: 1,
             max_logit_rows: 1,
-            slots: vec![SlotLimit { bytes: 64, count: 1 }, SlotLimit { bytes: 256, count: 1 }],
+            slots: vec![
+                SlotLimit {
+                    bytes: 64,
+                    count: 1,
+                    tokens: 4096,
+                },
+                SlotLimit {
+                    bytes: 256,
+                    count: 1,
+                    tokens: 4096,
+                },
+            ],
             max_quantum_ms: 10,
             memory: MemoryLimits::default(),
             chain: ChainLimits {
@@ -1291,6 +1313,7 @@ impl Engine for NanAfterAPass {
         Identity {
             model: "nan-after-a-pass".to_owned(),
             checkpoint_digest: "fake:0".to_owned(),
+            family: "fake".to_owned(),
             tokenizer_hash: "fake:0".to_owned(),
             template: String::new(),
             numbers: std::collections::BTreeMap::new(),
@@ -1682,7 +1705,13 @@ fn an_engine_that_does_not_declare_segments_exact_gets_not_applicable() {
 
 #[test]
 fn an_engine_with_fewer_slots_than_segments_gets_not_applicable() {
-    let mut make = || FakeAlways::with_slots(vec![SlotLimit { bytes: 256, count: 2 }]);
+    let mut make = || {
+        FakeAlways::with_slots(vec![SlotLimit {
+            bytes: 256,
+            count: 2,
+            tokens: 4096,
+        }])
+    };
     match segments_exact_bits(&mut make) {
         Outcome::NotApplicable(reason) => assert!(reason.contains("slots"), "{reason}"),
         other => panic!("expected NotApplicable, got {other}"),

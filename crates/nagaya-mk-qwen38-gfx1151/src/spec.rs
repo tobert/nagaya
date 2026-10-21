@@ -425,6 +425,7 @@ pub fn limits(arena_bytes: u64) -> Limits {
             .map(|class| SlotLimit {
                 bytes: context_bytes(class.capacity),
                 count: class.count,
+                tokens: u64::from(class.capacity),
             })
             .collect(),
         max_quantum_ms: MAX_QUANTUM_MS,
@@ -522,6 +523,7 @@ pub fn identity(
     numbers.insert("canary".to_owned(), "not run".to_owned());
     Identity {
         model: model_name(shards.first().map(std::path::PathBuf::as_path)),
+        family: "qwen38".to_owned(),
         checkpoint_digest: format!("spot-sha256:{checkpoint_digest}"),
         tokenizer_hash: text.tokenizer_hash.clone(),
         template: text.template.clone(),
@@ -685,11 +687,13 @@ mod tests {
             vec![
                 SlotLimit {
                     bytes: 350_822_400,
-                    count: 12
+                    count: 12,
+                    tokens: 4096
                 },
                 SlotLimit {
                     bytes: 1_980_309_504,
-                    count: 4
+                    count: 4,
+                    tokens: 32_768
                 },
             ]
         );

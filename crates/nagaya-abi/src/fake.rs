@@ -49,6 +49,12 @@ impl FakeAlways {
 }
 
 impl FakeAlways {
+    /// Name the family library that the engine needs. The default is `fake`, which has no library (spec 11.3).
+    pub fn with_family(mut self, family: &str) -> Self {
+        self.0.family = family.to_owned();
+        self
+    }
+
     /// Give the engine logits over a vocabulary of `vocab` tokens (engine-abi, "Logit outputs").
     ///
     /// Each requested logit row is a function of the fixed state after the tokens up to its position.
@@ -110,7 +116,18 @@ impl FakeRowCount {
 
 /// Slot 0 is small. The gate for several segments needs one slot for each segment of the largest pass.
 fn default_slots() -> Vec<SlotLimit> {
-    vec![SlotLimit { bytes: 64, count: 1 }, SlotLimit { bytes: 256, count: 7 }]
+    vec![
+        SlotLimit {
+            bytes: 64,
+            count: 1,
+            tokens: 4096,
+        },
+        SlotLimit {
+            bytes: 256,
+            count: 7,
+            tokens: 4096,
+        },
+    ]
 }
 
 /// A defect in which the bits of a segment depend on the shape of the pass.
@@ -159,6 +176,8 @@ pub(crate) struct Fake {
     count_defect: CountDefect,
     /// The vocabulary size, when the engine gives logits.
     vocab: Option<usize>,
+    /// The family library that the engine needs (spec 11.3).
+    family: String,
     /// The bias that each logit row adds, one value for each token.
     logit_bias: Option<Vec<f32>>,
     limits: Limits,
@@ -273,6 +292,7 @@ impl Fake {
             ignore_ring_from,
             count_defect: CountDefect::None,
             vocab: None,
+            family: "fake".to_owned(),
             logit_bias: None,
             limits,
             slots,
@@ -287,6 +307,7 @@ impl Fake {
     fn identity(&self) -> Identity {
         Identity {
             model: self.model.clone(),
+            family: self.family.clone(),
             checkpoint_digest: "fake:0".to_owned(),
             tokenizer_hash: "fake:0".to_owned(),
             template: "fake".to_owned(),

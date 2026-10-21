@@ -289,8 +289,16 @@ fn a_huge_shape_is_an_error() {
 #[test]
 fn a_slot_id_maps_through_the_size_classes() {
     let mut engine = FakeAlways::with_slots(vec![
-        SlotLimit { bytes: 64, count: 4 },
-        SlotLimit { bytes: 256, count: 2 },
+        SlotLimit {
+            bytes: 64,
+            count: 4,
+            tokens: 4096,
+        },
+        SlotLimit {
+            bytes: 256,
+            count: 2,
+            tokens: 4096,
+        },
     ]);
     engine.pass(&[segment(3, &[1, 2, 3, 4, 5, 6])], &[]).unwrap();
     engine.pass(&[segment(4, &[1, 2, 3, 4, 5, 6])], &[]).unwrap();
@@ -322,6 +330,7 @@ impl Engine for TestEngine {
         Identity {
             model: "test".to_owned(),
             checkpoint_digest: String::new(),
+            family: "fake".to_owned(),
             tokenizer_hash: String::new(),
             template: String::new(),
             numbers: Default::default(),
@@ -362,7 +371,11 @@ impl Engine for TestEngine {
             max_segments: 1,
             max_pass_inputs: 1,
             max_logit_rows: 1,
-            slots: vec![SlotLimit { bytes: 64, count: 1 }],
+            slots: vec![SlotLimit {
+                bytes: 64,
+                count: 1,
+                tokens: 4096,
+            }],
             max_quantum_ms: 10,
             memory: MemoryLimits::default(),
             chain: ChainLimits {
@@ -510,7 +523,12 @@ fn feed_at(engine: &mut FakeAlways, slot: u32, from: u64, tokens: &[u32]) -> Vec
 #[test]
 fn written_snapshots_put_a_state_back_in_a_slot() {
     let tokens: Vec<u32> = (1..=20).collect();
-    let mut engine = FakeAlways::with_slots(vec![SlotLimit { bytes: 16384, count: 1 }]).with_vocab(16);
+    let mut engine = FakeAlways::with_slots(vec![SlotLimit {
+        bytes: 16384,
+        count: 1,
+        tokens: 4096,
+    }])
+    .with_vocab(16);
     feed_at(&mut engine, 0, 0, &tokens);
     let snapshot = snapshot_from_engine(&mut engine, State::Slot(0), &[(1, 0, 20), (2, 16, 4)]).unwrap();
     // The slot moves on, and then it is cleared.
@@ -519,7 +537,12 @@ fn written_snapshots_put_a_state_back_in_a_slot() {
     let written = nagaya_store::write_snapshots(&mut engine, State::Slot(0), std::slice::from_ref(&snapshot)).unwrap();
     assert_eq!(written, nagaya_store::Restored::Done);
     assert_eq!(engine.slots().unwrap().slot_high(0), 20);
-    let mut straight = FakeAlways::with_slots(vec![SlotLimit { bytes: 16384, count: 1 }]).with_vocab(16);
+    let mut straight = FakeAlways::with_slots(vec![SlotLimit {
+        bytes: 16384,
+        count: 1,
+        tokens: 4096,
+    }])
+    .with_vocab(16);
     feed_at(&mut straight, 0, 0, &tokens);
     assert_eq!(feed_at(&mut engine, 0, 20, &[9]), feed_at(&mut straight, 0, 20, &[9]));
 }

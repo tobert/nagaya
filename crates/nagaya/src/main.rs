@@ -207,7 +207,14 @@ fn serve(
     tracing::info!("ready with {} engines", ready.opened.len());
     // The council routes serve after READY (spec 11.1, 11.6). A failure here refuses the start (spec 10.4).
     let ports = ready.process.ports();
-    let council = match serving::council(&served_profile, &ready.opened, &ports, &config.store_dir, call_cpus) {
+    let council = match serving::council(
+        &serving::FamilyRegistry::compiled_in(),
+        &served_profile,
+        &ready.opened,
+        &ports,
+        &config.store_dir,
+        call_cpus,
+    ) {
         Ok(council) => Arc::new(council),
         Err(error) => {
             tracing::error!("{error}");
@@ -361,17 +368,15 @@ fn engine_machine() -> Machine {
     }
 }
 
-/// The engine factories of a build with the mk engine.
-#[cfg(all(feature = "hip", not(feature = "fake")))]
+/// The engine factories of this build. A build with no engine kind refuses to start (spec 10.4).
+#[cfg(not(feature = "fake"))]
 fn engine_registry() -> Result<nagaya::admission::Registry, Refusal> {
-    Ok(nagaya::admission::Registry::with_mk())
-}
-
-/// A build without an engine refuses to start.
-#[cfg(all(not(feature = "hip"), not(feature = "fake")))]
-fn engine_registry() -> Result<nagaya::admission::Registry, Refusal> {
-    Err(Refusal {
-        code: ExitCode::RefusedStart,
-        message: "this build has no engine; build with the feature `hip` for the mk engine".to_owned(),
-    })
+    let registry = nagaya::admission::Registry::compiled_in();
+    if registry.is_empty() {
+        return Err(Refusal {
+            code: ExitCode::RefusedStart,
+            message: "this build has no engine; build with the feature `hip` for the mk engine".to_owned(),
+        });
+    }
+    Ok(registry)
 }

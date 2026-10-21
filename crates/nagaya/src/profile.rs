@@ -112,6 +112,10 @@ pub struct EnginePlacement {
     /// The engine's own config (ABI "Rust shape").
     #[serde(default)]
     pub config: toml::Table,
+    /// The files of the engine's family library (spec 11.3, "The engine registry"). The family opens from this
+    /// table and from the engine identity.
+    #[serde(default)]
+    pub family: toml::Table,
     /// The engine's share of the spare memory (D9).
     pub share: u64,
     /// True when the profile pins the engine's identity (spec 12.1).

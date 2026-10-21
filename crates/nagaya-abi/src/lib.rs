@@ -48,6 +48,8 @@ pub struct Identity {
     pub model: String,
     /// The digest of the checkpoint.
     pub checkpoint_digest: String,
+    /// The name of the family library that the engine needs: `toy`, `qwen38` or `gemma4` (spec 11.3).
+    pub family: String,
     /// The hash of the tokenizer.
     pub tokenizer_hash: String,
     /// The chat template.
@@ -171,6 +173,8 @@ pub struct SlotLimit {
     pub bytes: u64,
     /// The number of slots with this size.
     pub count: u32,
+    /// The most tokens that a slot of this size holds.
+    pub tokens: u64,
 }
 
 /// What an engine takes as input.
