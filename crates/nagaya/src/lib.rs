@@ -7,6 +7,7 @@ pub mod council;
 pub mod cpu_sets;
 pub mod evidence;
 pub mod exit;
+pub mod gemma4;
 pub mod gossip;
 pub mod http;
 pub mod inventory;

@@ -248,8 +248,7 @@ done. Milestone 15 is next on gfx1151host, and milestone 15s is next on b70host.
 - GPU tests read the Gemma 4 checkpoint directory from `GEMMA4_MODEL_DIR` (**Proposed**, claude-opus-5-5). The
   directory holds `config.json`, the safetensors shards and `tokenizer.json`. Do not put the path in code.
 - GPU tests are behind the cargo feature `xe` (**Proposed**, claude-opus-5-5), so `cargo test` with no features needs
-  no card. On b70host, also run `cargo clippy --workspace --all-targets --features xe -- -D warnings` and
-  `cargo test -p nagaya-mk-gemma4-bmg --tests --features xe -- --test-threads=1`.
+  no card. On b70host, also run `cargo test -p nagaya-mk-gemma4-bmg --tests --features xe -- --test-threads=1`.
 - The reference Python for the Gemma 4 oracle is `~/.venvs/nagaya-ref`. Do not run it with a GPU job.
 
 ### Checks
@@ -260,13 +259,15 @@ Run these before each commit. Each one must pass.
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy --workspace --all-targets --features hip -- -D warnings
+cargo clippy --workspace --all-targets --features xe -- -D warnings
 cargo test --workspace --tests
 cargo test --workspace --tests --no-default-features
 python3 tools/ste_check.py README.md AGENTS.md docs/*.md
 awk 'length > 120 && !/^\|/ {print FILENAME":"FNR; bad = 1} END {exit bad}' README.md AGENTS.md docs/*.md
 ```
 
-Run `cargo fmt --all` often, not only before a commit. On gfx1151host, after a change to
+The check with `--features xe` needs `ocloc`, because `build.rs` compiles the kernels. Run it on b70host, and skip it
+on a machine with no `ocloc`. Run `cargo fmt --all` often, not only before a commit. On gfx1151host, after a change to
 `nagaya-mk-qwen38-gfx1151`, also run this:
 
 ```
