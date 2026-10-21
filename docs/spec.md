@@ -1526,6 +1526,11 @@ recorder of metrics and spans.
 **10.1 systemd.** The unit is `Type=notify`. The process sends `READY=1` when every engine in the profile has
 opened, passed its canary, and woken its pinned state. `STATUS=` gives the state of each engine.
 
+**One unit file for each machine.** **Proposed** (claude-opus-5-5, 2026-10-21). gfx1151host's unit stays at
+`deploy/nagaya.service`. b70host's unit is `deploy/b70host/nagaya.service`, next to its config and profile.
+Reason: the units differ in the engine variables, the cargo feature of the build and the OTLP line. One shared unit
+needs a drop-in file on each machine, and a drop-in is not in the repository.
+
 When `<store_dir>/profile.toml` does not exist, the process starts with an empty profile. An empty profile is valid,
 because a machine with no engine can serve as a coordinator or hold a store tier (2.1). A process with an empty
 profile sends `READY=1` when admission passes. Decided 2026-10-20 (reading).
@@ -2018,8 +2023,10 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
   `kept + fed = prompt`.
 - The reads of a decision run one after another, in request order. The service checks `timeout_ms` before each
   read, and the scheduler checks it between quanta (5.8). Either one ends the decision with 504 `timeout`.
-- A raw read lists 8 top tokens when the request names no `top`, and at most 64. A larger `top` is a 400. A context
-  and its longest suffix that reach `context_tokens` are a 413 `context_full`, as in gogi-fake.
+- A raw read lists 8 top tokens when the request names no `top`, and at most 64. A larger `top` is a 400.
+- **Proposed** (claude-opus-5-5, 2026-10-21). A build or a raw read holds at most `context_tokens`, the suffix
+  included. A longer one is a 413 `too_large` that names `context_tokens`. Reason: gogi `d79d22d` changed gogi-fake
+  to the gogi Errors table, and `context_full` stays for a generation's prompt with no room.
 - The text of a top token is the detokenized token. A token that is not whole text alone, such as one byte of a
   longer character, has the text U+FFFD. Its `id` names it exactly.
 - The council identity's `engine` is `nagaya:` and the first 16 hex digits of the identity digest (6.2). The digest
@@ -2047,8 +2054,9 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
 - A generation that sends no seed takes one from the hash keys of the Rust standard library, which the operating
   system seeds.
 - The sample defaults of a served model are temperature 1 with no filter, until the profile names others.
-- A reply ends with `context_full` when the prompt and the reply reach `context_tokens`. When it also reaches
-  `max_tokens`, it ends with `max_tokens`.
+- A reply ends with `context_full` when the prompt and the reply reach `context_tokens`. **Proposed**
+  (claude-opus-5-5, 2026-10-21): when it also reaches `max_tokens`, it ends with `context_full`. Reason: gogi
+  "Generations" puts `context_full` before `max_tokens` since `bd3901c`.
 - The decision limits are mkviolet's until the profile names others: `decision_context_tokens` 3072,
   `contexts_per_decision` 8, `case_bytes` 65536 and `default_timeout_ms` 30000.
 
@@ -2326,7 +2334,8 @@ rules are each "Decided by senpai 2026-10-20 night (vetoable)".
 - The routes under `/nagaya/v1` (11.4a) and the status feed (9.7) are not built.
 - Continuations are not built. gogi proposes them (`docs/council-api.md`, "Continuations", gogi `cc5d50e`), and
   Amy agreed on the rules on 2026-10-21. They replace mk's `prefill` field. The nagaya declares capability
-  `continuation` after gogi's conformance checks for them pass.
+  `continuation` after gogi's conformance checks for them pass. Until then, an open message is a 400 that names
+  `continue`, and `done` has no `phase`.
 
 ## 12. Identity
 
@@ -2548,7 +2557,7 @@ night (vetoable)" in its section. Amy can veto any of them. Each line gives the 
 - 11.3c: the call ids are `call_<16 hex digits>_<index>`, from a hash of the prompt and the reply.
 - 11.3c: a generation with no seed takes one from the operating system.
 - 11.3c: the sample defaults are temperature 1 with no filter.
-- 11.3c: a reply that reaches the context size ends with `context_full`, unless it reached `max_tokens` too.
+- 11.3c: a reply that reaches the context size ends with `context_full`, even when it reached `max_tokens`.
 - 11.3c: the decision limits are mkviolet's until the profile names others.
 - 11.7: the process serves an engine only when its kind has a family library with the same tokenizer hash.
 - 11.7: the served model is the engine's `model`, with 4096 tokens of context, or mk's maximum.

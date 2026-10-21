@@ -443,12 +443,10 @@ impl Service {
     /// Build a context (gogi "Contexts"): render it, start from the longest held prefix, feed the rest, and hold a
     /// snapshot at each boundary. A dry run renders and looks up, and feeds and holds nothing.
     pub fn build(&self, context: &Context, dry_run: bool, schedule: Schedule) -> Result<Built, ServiceError> {
+        refuse_open(context)?;
         let rendering = self.family.render(context, false)?;
-        if rendering.end >= self.config.context_tokens {
-            return Err(ServiceError::ContextFull {
-                prompt_tokens: rendering.end as u64,
-                context_tokens: self.config.context_tokens as u64,
-            });
+        if rendering.end > self.config.context_tokens {
+            return Err(past_context_tokens(rendering.end, self.config.context_tokens));
         }
         let recipes = boundary_recipes(self.root, &rendering)?;
         let tokens: Arc<[u32]> = rendering.tokens[..rendering.end].into();
@@ -849,4 +847,26 @@ fn submit(
 
 fn wait(rx: &Receiver<Result<Outcome, ServiceError>>) -> Result<Outcome, ServiceError> {
     rx.recv().map_err(|_| ServiceError::Cancelled)?
+}
+
+/// Refuse an open message (`continue: true`). This model does not declare the capability `continuation`, so gogi
+/// "Continuations" makes an open message a 400 that names `continue`. The check comes before a family renders it.
+pub(crate) fn refuse_open(context: &Context) -> Result<(), ServiceError> {
+    if context.open().is_some() {
+        return Err(gogi_proto::Invalid::param(
+            "continue",
+            "this model does not declare the continuation capability; send the last message without continue: true",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// The error of a context, or a context and its longest suffix, that is longer than `context_tokens`. gogi "Errors"
+/// makes it a 413 `too_large` that names `context_tokens`. `context_full` is only for a generation's prompt.
+pub(crate) fn past_context_tokens(tokens: usize, context_tokens: usize) -> ServiceError {
+    ServiceError::TooLarge {
+        param: "context_tokens".to_owned(),
+        message: format!("the context has {tokens} tokens, and the served model holds {context_tokens}; shorten it"),
+    }
 }

@@ -262,19 +262,46 @@ fn a_context_that_fits_no_slot_is_too_large() {
     assert_eq!(f.process.ports().unassigned().len(), 2);
 }
 
+/// A context of exactly `context_tokens` builds. One token more is a 413 `too_large` that names `context_tokens`
+/// (gogi "Errors"). `context_full` is only for a generation's prompt.
 #[test]
-fn a_context_at_the_token_limit_is_context_full() {
+fn a_context_past_the_token_limit_is_too_large_and_one_at_it_builds() {
+    let tokens = build(&fixture(), &ctx(longer())).usage.prompt as usize;
     let mut config = ServiceConfig::new("toy", ENGINE);
-    config.context_tokens = 30;
+    config.context_tokens = tokens - 1;
     let f = fixture_config(0, 1 << 20, None, config);
     let error = f
         .service
         .build(&context(&ctx(longer())), false, Schedule::default())
         .unwrap_err();
     assert!(
-        matches!(&error, ServiceError::ContextFull { context_tokens: 30, .. }),
+        matches!(&error, ServiceError::TooLarge { param, .. } if param == "context_tokens"),
         "{error:?}"
     );
+    assert_eq!(entries(&f), 0);
+    let mut config = ServiceConfig::new("toy", ENGINE);
+    config.context_tokens = tokens;
+    let f = fixture_config(0, 1 << 20, None, config);
+    assert_eq!(build(&f, &ctx(longer())).usage.prompt as usize, tokens);
+}
+
+/// This model does not declare `continuation`, so an open message is a 400 that names `continue`, in a dry run too
+/// (gogi "Continuations").
+#[test]
+fn an_open_message_is_refused_without_the_continuation_capability() {
+    let f = fixture();
+    let mut messages = opening();
+    messages.push(json!({"role": "assistant", "content": "Plan:", "continue": true}));
+    for dry_run in [false, true] {
+        let error = f
+            .service
+            .build(&context(&ctx(messages.clone())), dry_run, Schedule::default())
+            .unwrap_err();
+        assert!(
+            matches!(&error, ServiceError::Invalid(invalid) if invalid.param.as_deref() == Some("continue")),
+            "dry_run {dry_run}: {error:?}"
+        );
+    }
     assert_eq!(entries(&f), 0);
 }
 

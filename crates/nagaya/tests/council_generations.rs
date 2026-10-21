@@ -241,7 +241,11 @@ fn a_reply_stops_at_max_tokens_and_at_the_end_of_the_context() {
         (Finish::ContextFull, "ab", 2)
     );
     let done = generate(&small, &value, 2, json!({"temperature": 0}));
-    assert_eq!(done.finish, Finish::MaxTokens, "max_tokens goes first when both hold");
+    assert_eq!(
+        done.finish,
+        Finish::ContextFull,
+        "context_full goes before max_tokens (gogi \"Generations\")"
+    );
 }
 
 #[test]
@@ -366,6 +370,14 @@ fn each_refused_generation_names_its_field_and_runs_nothing() {
             prompt_tokens: prompt(&value) as u64,
             context_tokens: prompt(&value) as u64
         }
+    );
+    let mut open = opening();
+    open.push(json!({"role": "assistant", "content": "Plan:", "continue": true}));
+    let refused = generate(request(&ctx(false, open), 5, json!({})));
+    assert_eq!(
+        invalid_param(refused),
+        "continue",
+        "this model does not declare continuation"
     );
     assert_eq!(f.entries() + full.entries(), 0, "nothing was built");
 }

@@ -160,13 +160,14 @@ impl GenerateThen {
             Phase::Call | Phase::Unknown => {}
         }
         let n = self.sampled.len();
-        // The reply ends at this token when the parser ended it, or when it reaches a limit.
+        // The reply ends at this token when the parser ended it, or when it reaches a limit. When both limits hold,
+        // `context_full` goes first (gogi "Generations").
         let end = if ended {
             Some(None)
-        } else if n == self.max_tokens {
-            Some(Some(Finish::MaxTokens))
         } else if self.prompt.len() + n >= self.context_tokens {
             Some(Some(Finish::ContextFull))
+        } else if n == self.max_tokens {
+            Some(Some(Finish::MaxTokens))
         } else {
             None
         };
@@ -322,6 +323,7 @@ fn reply_message(parsed: &ParsedReply, ids: &[String]) -> Option<gogi_proto::mes
         stats: None,
         decisions: Vec::new(),
         seed: None,
+        phase: None,
     };
     done.as_message()
 }
@@ -414,6 +416,7 @@ impl Service {
         events: Option<SyncSender<TokenEvent>>,
     ) -> Result<GenerationDone, ServiceError> {
         request.validate()?;
+        super::refuse_open(&request.context)?;
         if !request.decisions.is_empty() {
             return Err(Invalid::param(
                 "decisions",
@@ -513,6 +516,9 @@ impl Service {
             }),
             decisions: Vec::new(),
             seed: Some(settings.seed),
+            // gogi gives a cut reply the phase of its next token, for a continuation. This model does not declare
+            // `continuation`, and a reply parser does not tell that phase yet, so the reply gives none.
+            phase: None,
         })
     }
 }
