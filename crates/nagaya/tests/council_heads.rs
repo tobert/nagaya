@@ -237,3 +237,68 @@ fn ten_thousand_unrelated_entries_do_not_slow_a_build() {
         "{full:?} against {empty:?}"
     );
 }
+
+/// Build a cut reply with the Qwen3.8 family: the engine writes `reply` after the prompt, and the generation stops
+/// `short` tokens before its end. Give the fixture, the context, the cut reply and its head's tokens.
+fn cut_reply(reply: &str, short: usize) -> (Fixture, Value, GenerationDone, u64) {
+    let family = qwen();
+    let (f, script) = fixture(family.clone());
+    let user = json!({"role": "user", "content": QUESTION, "snap": true});
+    let value = json!({"thinking": true, "messages": [user]});
+    let prompt = family.render(&context(&value), true).unwrap().tokens.len();
+    let mut tokens = family.tokenize_special(reply).unwrap();
+    tokens.push(family.tokenize_special("<|im_end|>").unwrap()[0]);
+    script.set(prompt, tokens.clone());
+    let cut = generate(&f, &value, (tokens.len() - short) as u32);
+    assert_eq!(cut.finish, Finish::MaxTokens, "{cut:?}");
+    let head = cut.snapshots.last().unwrap().tokens;
+    assert_eq!(cut.head.as_ref(), Some(&cut.snapshots.last().unwrap().id));
+    (f, value, cut, head)
+}
+
+/// The kept tokens of a dry run of the context, the cut reply sent back as `closed`, and one more user message.
+fn kept_after(f: &Fixture, value: &Value, closed: Value) -> u64 {
+    let mut next = value.clone();
+    let messages = next["messages"].as_array_mut().unwrap();
+    messages.push(closed);
+    messages.push(json!({"role": "user", "content": "Thanks."}));
+    f.service
+        .build(&context(&next), true, Default::default())
+        .unwrap()
+        .usage
+        .kept
+}
+
+/// kaibo job-5 item 2: the open field is rendered as sent, and the template trims the closed reasoning. A reasoning
+/// cut that ends with white space still starts from its head, because the head is the seam before the last token.
+#[test]
+fn a_reasoning_cut_that_ends_with_white_space_goes_back_closed_in_both_forms() {
+    let (f, value, cut, head) = cut_reply("First I list the files.\n\nThen", 2);
+    assert_eq!(cut.phase, Some(Phase::Reasoning));
+    assert!(cut.reasoning.ends_with(char::is_whitespace), "{:?}", cut.reasoning);
+    let reasoning = cut.reasoning.clone();
+    assert_eq!(
+        kept_after(
+            &f,
+            &value,
+            json!({"role": "assistant", "reasoning": reasoning, "content": ""})
+        ),
+        head
+    );
+    assert_eq!(
+        kept_after(&f, &value, json!({"role": "assistant", "reasoning": reasoning})),
+        head
+    );
+}
+
+/// A content cut goes back closed with its reasoning, and starts from its head.
+#[test]
+fn a_content_cut_goes_back_closed_and_starts_from_its_head() {
+    let (f, value, cut, head) = cut_reply(
+        "I list the files.\n</think>\n\nSnapshots keep the state of the model.",
+        4,
+    );
+    assert_eq!(cut.phase, Some(Phase::Content));
+    let closed = json!({"role": "assistant", "reasoning": cut.reasoning, "content": cut.content});
+    assert_eq!(kept_after(&f, &value, closed), head);
+}
