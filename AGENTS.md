@@ -238,6 +238,22 @@ cargo test -p nagaya-mk-qwen38-gfx1151 --tests --features hip -- --test-threads=
 
 `cargo test --lib` does not compile integration tests. Name `--tests`.
 
+#### Tests that need a model file
+
+Amy, 2026-10-21: "adjust the tests so they don't break our tests when we don't have a model downloaded locally. we
+won't replicate all models to all machines so this state is normal. we should figure out a way to ensure the tests
+get ran sometimes, perhaps just a bump in our AGENTS.md"
+
+- A host test that needs a model file skips when the file is absent. It prints one line to stderr.
+- A path that exists but cannot be read fails the test. Only absence skips.
+- The helper is `crates/nagaya-text-qwen38/tests/common/model.rs`. Call `absent()` first in each such test.
+- On a machine that holds a model, run the checks with `NAGAYA_REQUIRE_MODELS=1` and the model variables set.
+  Then an absent file fails the test.
+- Do this at least before each merge that touches the crates of that model.
+- gfx1151host holds the Qwen3.8 GGUF at the default path of `NAGAYA_QWEN38_GGUF`.
+- b70host holds Gemma 4 in `~/src/mkviolet/checkpoints/gemma-4-26B-A4B`. No test reads it yet.
+- The report of a check names how many tests skipped for a missing model.
+
 On gfx1151host, run the oracle bench with `MK_ENGINE_LIB` and `MK_SHARDS` set and both units inactive:
 `cargo bench -p nagaya-mk-qwen38-gfx1151 --features hip --bench oracle`. It exits with 1 when a gate breaks.
 Set `MK_FAST_QMM=0` for the gate: the exact path must match the reference. Leave it unset to measure the fast path.
