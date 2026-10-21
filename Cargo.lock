@@ -721,10 +721,12 @@ dependencies = [
  "blake3",
  "nagaya-abi",
  "nagaya-store",
+ "nagaya-telemetry",
  "safetensors",
  "serde",
  "serde_json",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]
