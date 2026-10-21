@@ -363,3 +363,68 @@ fn the_park_recipe_has_a_fixed_test_vector() {
         "5dfd383a409537f237e3b81e34a85e7e33964978f7574ecf5e446848cfcd863a"
     );
 }
+
+/// The put of a park of `copy_snapshot(seed)`, as the store thread makes it.
+fn park_put(snapshot: &Snapshot) -> Put<'_> {
+    let identity = [1u8; 32];
+    Put {
+        snapshot,
+        recipe: nagaya::park::park_recipe(&identity, &snapshot.content_id().unwrap()),
+        previous_recipe: None,
+        engine: EngineFacts::of("fake", &FakeAlways::new().limits()),
+        identity,
+        owner: nagaya::park::PARK_OWNER,
+        tier: StoreTier::Nvme,
+        reason: Reason::Shutdown,
+        sealed_recipe: None,
+        provenance: None,
+        now_ms: 20,
+    }
+}
+
+#[test]
+fn a_park_of_the_bytes_of_an_interval_copy_replaces_the_copy_with_a_park_entry() {
+    // Spec 6.13: an interval copy never goes to NVMe. The park removes it and puts the state under the park recipe.
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = open_store(
+        dir.path(),
+        StoreBudget {
+            host: 1 << 20,
+            nvme: 1 << 20,
+            interval_copies: 4,
+        },
+    )
+    .unwrap();
+    let sealed = recipe_root(&[1u8; 32], b"", &[], b"");
+    let copy = put_copy(&mut store, sealed, 3).unwrap();
+    let snapshot = copy_snapshot(3);
+    let put = park_put(&snapshot);
+    let recipe = put.recipe;
+    let parked = nagaya::park::store_park(&mut store, put, copy).unwrap();
+    assert_eq!(parked, copy, "the same bytes give the same content id");
+    let entry = &store.entries()[&copy];
+    assert_eq!(
+        (entry.tier, entry.reason, entry.recipe),
+        (StoreTier::Nvme, Reason::Shutdown, recipe)
+    );
+}
+
+#[test]
+fn a_park_of_the_bytes_of_a_held_snapshot_parks_that_entry_with_its_recipe() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let snapshot = copy_snapshot(4);
+    let built = recipe_root(&[1u8; 32], b"geometry", &[], b"");
+    let mut first = park_put(&snapshot);
+    (first.recipe, first.tier, first.reason, first.owner) = (built, StoreTier::Host, Reason::PrefillDone, 1);
+    let id = store.put(first).unwrap();
+    let parked = nagaya::park::store_park(&mut store, park_put(&snapshot), id).unwrap();
+    assert_eq!(parked, id);
+    let entry = &store.entries()[&id];
+    assert_eq!(
+        (entry.tier, entry.reason, entry.recipe, entry.owner),
+        (StoreTier::Nvme, Reason::PrefillDone, built, 1),
+        "the park changes only the tier"
+    );
+    assert_eq!(store.entries().len(), 1);
+}
