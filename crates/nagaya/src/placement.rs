@@ -69,26 +69,14 @@ pub enum DeviceError {
         /// The device id.
         device: DeviceId,
     },
-    /// The profile names a device that the plan does not.
-    NotPlanned {
+    /// The plan's `devices` are not the group indexes 0 to n - 1 in order, for the n devices of the profile (spec 2.4).
+    GroupIndexes {
         /// The engine name.
         engine: String,
-        /// The device id.
-        device: DeviceId,
-    },
-    /// The plan names a device that the profile does not.
-    NotInProfile {
-        /// The engine name.
-        engine: String,
-        /// The device id.
-        device: DeviceId,
-    },
-    /// The profile and the plan name the same device at different positions.
-    Order {
-        /// The engine name.
-        engine: String,
-        /// The device id.
-        device: DeviceId,
+        /// The devices of the plan.
+        planned: Vec<DeviceId>,
+        /// The count of devices in the profile.
+        count: usize,
     },
 }
 
@@ -101,22 +89,12 @@ impl std::fmt::Display for DeviceError {
                     "engine `{engine}` names device {device}, but the inventory does not have it"
                 )
             }
-            DeviceError::NotPlanned { engine, device } => {
+            DeviceError::GroupIndexes { engine, planned, count } => {
                 write!(
                     formatter,
-                    "engine `{engine}` names device {device}, but its plan does not"
-                )
-            }
-            DeviceError::NotInProfile { engine, device } => {
-                write!(
-                    formatter,
-                    "engine `{engine}` plans device {device}, but the profile does not name it"
-                )
-            }
-            DeviceError::Order { engine, device } => {
-                write!(
-                    formatter,
-                    "engine `{engine}` names device {device} at another position than its plan does"
+                    "engine `{engine}` plans the devices {planned:?}, but its profile names {count} devices; \
+                     the plan must give the group indexes 0 to {} in order",
+                    count.saturating_sub(1)
                 )
             }
         }
@@ -125,7 +103,7 @@ impl std::fmt::Display for DeviceError {
 
 impl std::error::Error for DeviceError {}
 
-/// Check each engine's devices against the inventory and against its planned limits.
+/// Check each engine's devices against the inventory, and check that its plan gives one group index for each device.
 pub fn check_devices(
     profile: &PlacementProfile,
     planned: &[AdmittedEngine],
@@ -151,29 +129,14 @@ pub fn check_devices(
                 });
             }
         }
-        for device in &engine.devices {
-            if !planned.limits.devices.contains(device) {
-                return Err(DeviceError::NotPlanned {
-                    engine: engine.name.clone(),
-                    device: *device,
-                });
-            }
-        }
-        for device in &planned.limits.devices {
-            if !engine.devices.contains(device) {
-                return Err(DeviceError::NotInProfile {
-                    engine: engine.name.clone(),
-                    device: *device,
-                });
-            }
-        }
-        for (index, device) in engine.devices.iter().enumerate() {
-            if planned.limits.devices.get(index) != Some(device) {
-                return Err(DeviceError::Order {
-                    engine: engine.name.clone(),
-                    device: *device,
-                });
-            }
+        // The engine declares group indexes, so it never sees a machine device id (spec 2.4).
+        let indexes: Vec<DeviceId> = (0..engine.devices.len() as DeviceId).collect();
+        if planned.limits.devices != indexes {
+            return Err(DeviceError::GroupIndexes {
+                engine: engine.name.clone(),
+                planned: planned.limits.devices.clone(),
+                count: engine.devices.len(),
+            });
         }
     }
     Ok(())

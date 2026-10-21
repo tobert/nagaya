@@ -16,7 +16,8 @@ type Record = Arc<Mutex<Vec<(String, ThreadId)>>>;
 
 fn limits_on(devices: &[DeviceId]) -> Limits {
     let mut limits = FakeAlways::new().limits();
-    limits.devices = devices.to_vec();
+    // The engine declares group indexes, one for each machine device of the profile (spec 2.4).
+    limits.devices = (0..devices.len() as DeviceId).collect();
     limits
 }
 
