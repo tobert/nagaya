@@ -166,3 +166,36 @@ fn collect(name: &str, unit: &str, data: &AggregatedMetrics, points: &mut Vec<Po
         AggregatedMetrics::I64(data) => walk!(data),
     }
 }
+
+#[derive(Clone, Default)]
+struct Sink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Sink {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Sink {
+    type Writer = Sink;
+
+    fn make_writer(&'a self) -> Sink {
+        self.clone()
+    }
+}
+
+/// Run `run` with the stderr format of the nagaya on this thread, and give the lines that it wrote.
+pub fn log_lines(run: impl FnOnce()) -> Vec<String> {
+    let sink = Sink::default();
+    let layer = tracing_subscriber::fmt::layer()
+        .with_writer(sink.clone())
+        .event_format(crate::StderrFormat);
+    tracing::subscriber::with_default(tracing_subscriber::registry().with(layer), run);
+    let text = String::from_utf8(sink.0.lock().unwrap().clone()).expect("the log is text");
+    text.lines().map(str::to_owned).collect()
+}
