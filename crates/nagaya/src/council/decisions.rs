@@ -235,8 +235,7 @@ impl Service {
             };
             let then = DecisionThen::new(plan, asked.len());
             let shared = Arc::clone(&self.shared);
-            let job =
-                |tx| ContextBody::with(shared, tokens, recipes, room, "decision_context_tokens", then, tx).cuts(cuts);
+            let job = |tx| ContextBody::with(shared, tokens, recipes, room, then, tx).cuts(cuts);
             let finished = self.run_context(job, schedule, Some(deadline))?;
             let then = finished.then;
             let kept = finished.outcome.kept;

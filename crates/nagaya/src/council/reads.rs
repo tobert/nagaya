@@ -133,8 +133,7 @@ impl Service {
             };
             let shared = Arc::clone(&self.shared);
             let cuts = self.cuts(context, &rendering)?;
-            let job =
-                |tx| ContextBody::with(shared, tokens, recipes, end + longest, "context_tokens", then, tx).cuts(cuts);
+            let job = |tx| ContextBody::with(shared, tokens, recipes, end + longest, then, tx).cuts(cuts);
             let finished = self.run_context(job, schedule, None)?;
             let head = finished
                 .outcome

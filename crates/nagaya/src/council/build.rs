@@ -162,7 +162,7 @@ impl LookupBody {
     fn look(&self, engine: &mut dyn Engine) -> Result<Outcome, ServiceError> {
         let pool = self.shared.pool.lock().expect("the slot pool lock is poisoned");
         let Some(slot) = slots::lowest_fitting(engine, &self.shared.limits, &pool, self.tokens) else {
-            return Err(too_large(self.tokens, "context_tokens"));
+            return Err(too_large(self.tokens));
         };
         drop(pool);
         let (recipes, held, cut) = choose(&self.shared, engine, slot, &self.recipes, &self.cuts)?;
@@ -189,9 +189,11 @@ impl JobBody for LookupBody {
     }
 }
 
-fn too_large(tokens: usize, param: &str) -> ServiceError {
+/// The error of a context that no slot holds. The limit that breaks is the capacity of the slot, which identity gives
+/// as `context_tokens` (spec 4.3), whatever kind of job asks.
+fn too_large(tokens: usize) -> ServiceError {
     ServiceError::TooLarge {
-        param: param.to_owned(),
+        param: "context_tokens".to_owned(),
         message: format!(
             "no slot of the engine holds {tokens} tokens; shorten the context, or serve a model with larger slots"
         ),
@@ -305,8 +307,6 @@ pub struct ContextBody<T: Then> {
     /// The tokens that the slot must hold when the job takes it: the context, and what the work feeds after it when
     /// the job knows that.
     room: usize,
-    /// The limit that a job breaks when its slot cannot hold it, for the error.
-    room_param: &'static str,
     lease: Option<SlotLease>,
     started: bool,
     /// True while the build runs, before its work starts.
@@ -336,20 +336,19 @@ impl BuildBody {
         tx: Sender<Result<Finished<NoThen>, ServiceError>>,
     ) -> Self {
         let room = tokens.len();
-        ContextBody::with(shared, tokens, recipes, room, "context_tokens", NoThen, tx)
+        ContextBody::with(shared, tokens, recipes, room, NoThen, tx)
     }
 }
 
 impl<T: Then> ContextBody<T> {
     /// Make the body of a context and its work. The job takes the lowest free slot that holds `room` tokens. A job
-    /// that no slot holds, or a feed past what its slot holds, is `too_large` and names `room_param`. With no recipe,
+    /// that no slot holds, or a feed past what its slot holds, is `too_large` and names `context_tokens`. With no recipe,
     /// the job builds nothing: the work starts on an empty slot.
     pub fn with(
         shared: Arc<Shared>,
         tokens: Arc<[u32]>,
         recipes: Vec<BoundaryRecipe>,
         room: usize,
-        room_param: &'static str,
         then: T,
         tx: Sender<Result<Finished<T>, ServiceError>>,
     ) -> Self {
@@ -366,7 +365,6 @@ impl<T: Then> ContextBody<T> {
             cuts: Vec::new(),
             cut: None,
             room,
-            room_param,
             lease: None,
             started: false,
             building: true,
@@ -434,7 +432,7 @@ impl<T: Then> ContextBody<T> {
     fn start(&mut self, engine: &mut dyn Engine) -> Result<Ran, ServiceError> {
         let lease =
             slots::take(&self.shared.pool, engine, &self.shared.limits, self.room).map_err(|reason| match reason {
-                NoSlot::TooLarge => too_large(self.room, self.room_param),
+                NoSlot::TooLarge => too_large(self.room),
                 NoSlot::Busy => ServiceError::Busy(format!(
                     "every slot that holds {} tokens is in use; try again, or send the request as batch",
                     self.room
@@ -547,7 +545,7 @@ impl<T: Then> ContextBody<T> {
                 let base = self.rows(engine)?;
                 let end = base + tokens.len();
                 if !slots::fits(engine, &self.shared.limits, self.slot(), end) {
-                    return Err(too_large(end, self.room_param));
+                    return Err(too_large(end));
                 }
                 let wanted: Vec<usize> = if logits { vec![tokens.len() - 1] } else { Vec::new() };
                 let max_rows = self.shared.limits.max_logit_rows as usize;

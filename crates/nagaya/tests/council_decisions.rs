@@ -379,6 +379,22 @@ fn a_context_past_the_decision_limit_is_too_large() {
     );
 }
 
+/// Kaibo review 2026-10-20, finding 8: a context that fits the decision limit can still fit no slot with its prefix.
+/// The limit that breaks is then the slot, which identity gives as `context_tokens` (spec 4.3).
+#[test]
+fn a_context_that_fits_the_decision_limit_but_no_slot_names_the_slot_limit() {
+    let f = Fixture::new();
+    let id = held(&f);
+    // 16384 bytes of cells in a slot hold 2048 rows. The decision limit is 3072 tokens.
+    let long = plain(&"x".repeat(2100));
+    let err = f.service.decide(&request(&id, &[long], json!({}))).unwrap_err();
+    assert!(
+        matches!(&err, ServiceError::TooLarge { param, .. } if param == "context_tokens"),
+        "{err:?}"
+    );
+    assert_eq!(f.service.free_slots(), 3);
+}
+
 #[test]
 fn a_decision_past_its_timeout_is_a_timeout_and_frees_its_slot() {
     let factory = TermFactory {
