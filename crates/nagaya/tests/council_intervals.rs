@@ -210,3 +210,46 @@ fn a_read_that_rewinds_across_the_grain_gives_the_numbers_of_an_engine_with_no_g
         serde_json::to_value(&want.reads).unwrap()
     );
 }
+
+#[test]
+fn a_client_cannot_pin_a_copy_so_a_stop_parks_a_slot_that_holds_the_bytes_of_a_copy() {
+    // A read with one suffix ends on its last pass. With a grain of 4, that pass crosses a multiple, so the copy after
+    // it holds the bytes of the slot. A pin on that copy would stop the park from removing it (spec 10.3), and the
+    // stop would exit 1.
+    let f = fixture(Some(4), 4);
+    let body = json!({"model": "toy", "contexts": [long(WORDS)], "suffixes": ["\nAnswer at some length: "],
+        "letters": ["A", "B", "C"], "top": 4});
+    let request: gogi_proto::reads::ReadsRequest = serde_json::from_value(body).unwrap();
+    f.service.read(&request).unwrap();
+    let held = copies(&f);
+    assert_eq!(held.len(), 1, "{held:?}");
+    let id = nagaya::council::snapshot_id(&held[0].content_id);
+
+    let pins = gogi_proto::pins::PinsPut {
+        snapshots: vec![id.as_str().to_owned()],
+        ttl_s: 3600,
+    };
+    // The park reads the system clock, so the pin must use it too.
+    let system = nagaya::council::Service::attach(
+        f.process.ports(),
+        std::sync::Arc::new(ToyFamily::new()),
+        f.directory.path(),
+        ServiceConfig::new("toy", council_support::ENGINE),
+    )
+    .unwrap();
+    let result = system.put_pins("kernel-1", &pins).unwrap();
+    drop(system);
+    assert!(
+        !result.snapshots[0].held,
+        "a client pinned an interval copy: {result:?}"
+    );
+
+    let Fixture {
+        service, mut process, ..
+    } = f;
+    drop(service);
+    let report = process.stop(std::time::Duration::from_secs(5), &nagaya::signal::SignalFlag::new());
+    assert!(report.parked.failures.is_empty(), "{:?}", report.parked.failures);
+    assert_eq!(report.exit_code(), nagaya::exit::ExitCode::Clean, "{report:?}");
+    assert_eq!(report.parked.states, 1, "{report:?}");
+}

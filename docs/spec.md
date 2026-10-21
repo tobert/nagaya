@@ -851,6 +851,9 @@ use the copies (`crates/nagaya/src/council/build.rs`):
   and it feeds from there. A copy on a boundary position is never used. The build names the copy in `from`.
 - **A skip is not an error.** A charge that the ledger refuses and a put with no space skip the copy, with a warning
   in the log. Any other error of the copy ends the job.
+- **No client pin on a copy.** The pin route reports an interval copy as not held, and it pins nothing. A pin would
+  stop the park (10.3) and the next copy from removing the copy. The store keeps its rules for a pinned copy, for
+  other callers.
 
 A restore from a copy writes its parts, then replays the tokens after it, with the same boundaries. The result has
 the bits of the first run. The lookup is by recipe with tag 8, so any context with the same prefix can use a copy.
