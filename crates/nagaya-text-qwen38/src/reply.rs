@@ -15,6 +15,7 @@ use crate::json::Json;
 use crate::pystr::{repr, strip};
 use crate::{Error, Tokenizer, chars, detok::Utf8Stream, template::truthy};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Deref;
 
 const THINK_END: &str = "</think>";
 const CALL_OPEN: &str = "<tool_call>";
@@ -55,8 +56,9 @@ pub enum Finish {
 /// A tool call of the reply. The caller adds the id.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolCall {
-    /// A call that parsed. `input` is a `Json::Object` with the members in the order of the text.
-    Parsed { name: String, input: Json },
+    /// A call that parsed. `input` is a `Json::Object` with the members in the order of the text. `raw` is the call
+    /// as written.
+    Parsed { name: String, input: Json, raw: String },
     /// A call that did not parse, as written. `name` is `None` when the text has no readable function tag.
     Malformed {
         name: Option<String>,
@@ -94,16 +96,17 @@ pub struct Reply {
 
 /// The parser of one reply. Push the token ids in order, then call `finish`.
 #[derive(Debug)]
-pub struct ReplyParser<'t> {
-    tokenizer: &'t Tokenizer,
+pub struct ReplyParser<T> {
+    tokenizer: T,
     utf8: Utf8Stream,
     tracker: Tracker,
 }
 
-impl<'t> ReplyParser<'t> {
-    /// Start a reply. `thinking` is true when the prompt ends inside the thinking. `tools` is the list of tools of
-    /// the request, in the form of the chat API. With no tools or an empty list, `<tool_call>` is plain text.
-    pub fn new(tokenizer: &'t Tokenizer, thinking: bool, tools: Option<&Json>) -> Result<ReplyParser<'t>, Error> {
+impl<T: Deref<Target = Tokenizer>> ReplyParser<T> {
+    /// Start a reply. `tokenizer` is a reference to the tokenizer, or a shared handle that outlives the parser.
+    /// `thinking` is true when the prompt ends inside the thinking. `tools` is the list of tools of the request, in
+    /// the form of the chat API. With no tools or an empty list, `<tool_call>` is plain text.
+    pub fn new(tokenizer: T, thinking: bool, tools: Option<&Json>) -> Result<ReplyParser<T>, Error> {
         let specs = match tools.filter(|t| truthy(t)) {
             Some(tools) => Some(ToolSpecs::from_tools(tools)?),
             None => None,
@@ -454,7 +457,14 @@ fn parse_one(text: &str, pos: usize, specs: &ToolSpecs) -> (usize, ToolCall) {
     };
     let raw = &text[pos..end];
     match check_call(&name, &params, specs) {
-        Ok(input) => (end, ToolCall::Parsed { name, input }),
+        Ok(input) => (
+            end,
+            ToolCall::Parsed {
+                name,
+                input,
+                raw: raw.to_string(),
+            },
+        ),
         Err(error) => (
             end,
             ToolCall::Malformed {

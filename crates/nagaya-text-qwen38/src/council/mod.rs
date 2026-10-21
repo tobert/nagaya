@@ -74,6 +74,8 @@ pub struct Qwen38Family {
     letters: Vec<u32>,
     /// The token of each bare letter, `A` first. A queue read uses these: its letter follows an opening quote.
     bare_letters: Vec<u32>,
+    /// The tokens that end a reply (`<|im_end|>` and `<|endoftext|>`).
+    stop: Vec<u32>,
     template_id: String,
     #[cfg(test)]
     pub(crate) hook: Option<HookFn>,
@@ -126,10 +128,12 @@ impl Qwen38Family {
         };
         let model = Qwen38::from_metadata(m)?;
         let (letters, bare_letters) = letter_tokens(model.tokenizer())?;
+        let stop = reply::stop_tokens(model.tokenizer())?;
         let mut family = Qwen38Family {
             model,
             letters,
             bare_letters,
+            stop,
             template_id: String::new(),
             #[cfg(test)]
             hook,
