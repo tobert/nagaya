@@ -2,6 +2,7 @@
 
 pub mod admission;
 pub mod affinity;
+pub mod arena;
 pub mod bootstrap;
 pub mod council;
 pub mod cpu_sets;
