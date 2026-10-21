@@ -5,6 +5,10 @@
 
 use std::fmt;
 
+use crate::exit::ExitCode;
+use crate::inventory::ProbeError;
+use crate::probe::FileProbe;
+
 /// The number of online CPUs in the housekeeping set (spec 3.2a).
 pub const HOUSEKEEPING_CPUS: usize = 2;
 
@@ -12,7 +16,7 @@ pub const HOUSEKEEPING_CPUS: usize = 2;
 pub const MIN_ONLINE_CPUS: usize = HOUSEKEEPING_CPUS + 1;
 
 /// The two sets of CPU numbers. The sets do not overlap.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CpuSets {
     /// The lowest-numbered online CPUs. Control threads run here.
     pub housekeeping: Vec<u32>,
@@ -73,4 +77,37 @@ pub fn split(online: &[u32]) -> Result<CpuSets, CpuSetError> {
         housekeeping: housekeeping.to_vec(),
         pool: pool.to_vec(),
     })
+}
+
+/// Why the process cannot make its CPU sets at start.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CpuSetupError {
+    /// The probe could not read the online CPU list.
+    Probe(ProbeError),
+    /// The online CPUs cannot make two sets.
+    Split(CpuSetError),
+}
+
+impl CpuSetupError {
+    /// The exit code of the failure (spec 3.2a, 10.4). A restart cannot change the machine, so the start is refused.
+    pub fn exit_code(&self) -> ExitCode {
+        ExitCode::RefusedStart
+    }
+}
+
+impl fmt::Display for CpuSetupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Probe(error) => write!(f, "cannot read the online CPUs: {error}"),
+            Self::Split(error) => write!(f, "cannot make the CPU sets: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for CpuSetupError {}
+
+/// Make the CPU sets of this machine from the online CPU list of the file probe (spec 3.2a, 2.1).
+pub fn for_machine(probe: &FileProbe) -> Result<CpuSets, CpuSetupError> {
+    let online = probe.online_cpus().map_err(CpuSetupError::Probe)?;
+    split(&online).map_err(CpuSetupError::Split)
 }

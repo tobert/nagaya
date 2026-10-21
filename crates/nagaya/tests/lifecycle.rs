@@ -87,10 +87,19 @@ fn receive(socket: &UnixDatagram) -> String {
 }
 
 #[test]
-fn the_open_wait_outlasts_the_watchdog() {
+fn the_open_wait_is_no_shorter_than_the_unit_start_timeout() {
+    // A group beats while its engine opens, so the watchdog cannot end a hung open. The wait is the backstop (7.4).
+    let unit =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/nagaya.service")).unwrap();
+    let seconds: u64 = unit
+        .lines()
+        .find_map(|line| line.strip_prefix("TimeoutStartSec="))
+        .expect("the unit sets TimeoutStartSec")
+        .parse()
+        .unwrap();
     assert!(
-        lifecycle::DEFAULT_OPEN_TIMEOUT > nagaya::process::DEFAULT_WATCHDOG_TIMEOUT,
-        "the watchdog must report a stalled open before the wait gives up"
+        lifecycle::DEFAULT_OPEN_TIMEOUT >= Duration::from_secs(seconds),
+        "the wait for the opens ends before the unit's start timeout"
     );
 }
 
@@ -447,4 +456,107 @@ fn an_engine_with_no_segments_exits_three_at_cold_start() {
         text.contains("`no-passes`") && text.contains("`max_segments`"),
         "{text}"
     );
+}
+
+fn slow_registry(open_time: Duration) -> Registry {
+    let mut registry = Registry::new();
+    registry.register(
+        "slow",
+        Box::new(OpenTimeFactory {
+            limits: limits_on(&[0]),
+            open_time,
+        }),
+    );
+    registry
+}
+
+struct OpenTimeFactory {
+    limits: Limits,
+    open_time: Duration,
+}
+
+impl Factory for OpenTimeFactory {
+    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+        Ok(self.limits.clone())
+    }
+
+    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+        thread::sleep(self.open_time);
+        Ok(Box::new(FakeAlways::new()))
+    }
+}
+
+#[test]
+fn a_slow_open_extends_the_start_timeout_with_a_status() {
+    let directory = tempfile::tempdir().unwrap();
+    let (socket, path) = bound(directory.path());
+    let notifier = Notifier::at(&path).unwrap();
+    let options = lifecycle::Options::new(Duration::from_secs(5))
+        .tick(Duration::from_millis(40))
+        .extend(Duration::from_secs(30));
+    let mut ready = lifecycle::start_with(
+        profile(vec![engine("slow-one", "slow", &[0])]),
+        slow_registry(Duration::from_millis(300)),
+        inventory(&[0]),
+        directory.path(),
+        Some(&notifier),
+        options,
+    )
+    .unwrap();
+    assert_eq!(receive(&socket), "STATUS=engine slow-one loading");
+    let mut extensions = 0;
+    loop {
+        let text = receive(&socket);
+        if text.starts_with("READY=1") {
+            assert_eq!(text, "READY=1\nSTATUS=engine slow-one ready");
+            break;
+        }
+        assert_eq!(text, "EXTEND_TIMEOUT_USEC=30000000\nSTATUS=engine slow-one loading");
+        extensions += 1;
+    }
+    assert!(
+        extensions >= 3,
+        "a 300 ms open with a 40 ms tick extended {extensions} times"
+    );
+    ready.process.stop(Duration::from_secs(2), &SignalFlag::new());
+}
+
+#[test]
+fn a_fast_open_sends_no_extension() {
+    let directory = tempfile::tempdir().unwrap();
+    let (socket, path) = bound(directory.path());
+    let notifier = Notifier::at(&path).unwrap();
+    let options = lifecycle::Options::new(Duration::from_secs(5)).tick(Duration::from_secs(1));
+    let mut ready = lifecycle::start_with(
+        fake_profile(),
+        Registry::with_fake(),
+        inventory(&[0]),
+        directory.path(),
+        Some(&notifier),
+        options,
+    )
+    .unwrap();
+    assert_eq!(receive(&socket), "STATUS=engine fake-one loading");
+    assert_eq!(receive(&socket), "READY=1\nSTATUS=engine fake-one ready");
+    ready.process.stop(Duration::from_secs(2), &SignalFlag::new());
+}
+
+#[test]
+fn a_start_timeout_sends_a_status_that_names_the_engine() {
+    let directory = tempfile::tempdir().unwrap();
+    let (socket, path) = bound(directory.path());
+    let notifier = Notifier::at(&path).unwrap();
+    let options = lifecycle::Options::new(Duration::from_millis(150)).tick(Duration::from_secs(1));
+    let error = lifecycle::start_with(
+        profile(vec![engine("slow-one", "slow", &[0])]),
+        slow_registry(Duration::from_millis(600)),
+        inventory(&[0]),
+        directory.path(),
+        Some(&notifier),
+        options,
+    )
+    .unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::Crash);
+    assert_eq!(receive(&socket), "STATUS=engine slow-one loading");
+    assert_eq!(receive(&socket), "STATUS=engine slow-one did not open in time");
 }

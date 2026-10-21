@@ -271,12 +271,11 @@ thread priorities:
 
 **3.2a Control runtime first.** The control runtime (`tokio`) arrives with gossip, in milestone 10 step f. Gossip
 comes before the HTTP coordinator, which joins the runtime in milestone 12. The group threads, the ledger thread
-and the watchdog thread stay std threads. They do not use `tokio`. The thread start code does not apply the
-CPU sets yet (below).
+and the watchdog thread stay std threads. They do not use `tokio`. Milestone 14 applies the CPU sets (below).
 
-Milestone 10 does not apply `sched_setaffinity`, because the bootstrap config names no core sets. The step that
-applies isolation needs a test. The test reads the CPU mask of each thread with `sched_getaffinity`. It checks that
-the control threads do not use the group cores. Decided 2026-10-20 (reading).
+Milestone 10 did not apply `sched_setaffinity`, because the bootstrap config names no core sets. The isolation has a
+test. The test reads the CPU mask of each thread with `sched_getaffinity`. It checks that the control threads do not
+use the group cores. Decided 2026-10-20 (reading).
 
 **CPU sets (milestone 14).** The nagaya splits the online CPUs into a housekeeping set and a pool set. The bootstrap
 config names no core sets, so the split is one fixed rule.
@@ -292,8 +291,36 @@ config names no core sets, so the split is one fixed rule.
 
 Decided by senpai 2026-10-20 night (vetoable).
 
-**Open:** The group threads have no CPU set. The test above names the group cores, but no rule gives them a set. Also,
-the sets use logical CPUs. A housekeeping CPU can share a physical core with a pool CPU.
+**Where each thread pins (milestone 14).** Each thread pins itself to its set when it starts. A thread that cannot pin
+is an error: a worker thread panics, and the process exits 1 (8.5). A thread of the control runtime aborts the
+process. Reason: a hook of the runtime cannot return an error, and a thread that runs on the wrong cores breaks the
+isolation.
+
+- The control runtime (every worker and blocking thread, `nagaya-control`), the ledger thread (`nagaya-ledger`) and the
+  watchdog thread (`nagaya-watchdog`) pin to the housekeeping set.
+- The group threads (`nagaya-group-<index>`) pin to the pool set, with the normal scheduling policy.
+- The store thread (`nagaya-store`) pins to the pool set at `SCHED_BATCH`. It hashes and converts bytes, which is pool
+  work.
+- A start with no CPU sets pins no thread. Only a test starts that way. The binary always makes the sets (below).
+
+The binary reads the online CPUs through the file probe (2.1) and makes the sets before it starts gossip. A probe
+error or a split error is a refusal to start: exit 3 (10.4).
+
+Decided by senpai 2026-10-20 night (vetoable): the group threads run on the pool set. A group thread drives the GPU,
+and it does host work between passes: it builds segments, copies bytes and reads taps. The host work is the same kind
+of work as the pool does, and it needs whole cores. A group thread on the housekeeping set would compete with gossip
+and the HTTP coordinator. A stalled gossip round is worse than a slow pass.
+
+The pool has one thread for each pool CPU, and a group thread uses one more. This oversubscription is small. A
+measurement on gfx1151host can change it.
+
+Decided by senpai 2026-10-20 night (vetoable): the sets use logical CPUs, and the split does not know SMT siblings.
+A housekeeping CPU can share a physical core with a pool CPU. Reason: on gfx1151host, CPU 0 pairs with 16 and CPU 1 with
+17 (`thread_siblings_list`), so the two housekeeping CPUs sit on two physical cores. A rule for other machines would
+only guess before a measurement. The bootstrap config can name the sets later.
+
+**Open:** 3.2 asks for elevated priority on the control threads. Milestone 14 does not apply it. A raised priority
+needs `CAP_SYS_NICE` or a setting in the unit.
 
 **3.3 Engine lifecycle and profile swaps.** The nagaya opens each engine at start, from the profile. mk cannot close
 inside a process today: "the HIP runtime's own teardown segfaults" (mk `service/__main__.py`). Thus in v0, when
@@ -817,228 +844,16 @@ bootstrap config. The code takes it as a start parameter, so the tests use a sho
 Decided 2026-10-20 (reading).
 
 **The watchdog during an open.** An engine's open can take longer than the timeout: mk loaded in 24-50 s on
-2026-10-20. A group beats its heartbeat while its engine opens, so a long open is not a stall. Milestone 14 builds
-this (Amy, 2026-10-20).
+2026-10-20. A group beats its heartbeat while its engine opens, so a long open is not a stall. Amy, 2026-10-20: the
+heartbeat during an open is part of milestone 14. The group thread is blocked in the open. Thus a helper thread sends
+the beats, at the heartbeat interval, until the open ends. The helper stops when the group thread leaves the open
+for any reason.
 
-## 8. Correctness at runtime
+The beat hides a hung open from the watchdog. The wait for the opens is the backstop (10.1). It ends a hung open
+after 300 s, and the process exits 1 (10.4). The 300 s equals `TimeoutStartSec` in the unit.
 
-**8.1 Canary.** The nagaya records a canary for each engine: fixed inputs and the exact outputs that the engine gave
-for them. The nagaya runs the canary through the engine, with its own sampler and decision code. mk's canary has
-pilot reads and an 8-step greedy decode (mk `service/canary.py`). It keeps letter logits as f32 bit patterns, the
-top 5, and a SHA-256 of all logits. The canary's hash is part of the engine identity.
-
-The nagaya runs the canary again before the engine is ready, with no tolerance. At start, a mismatch makes the
-nagaya exit with code 3, "do not restart" (10.4). After start, a mismatch marks the engine fatal (8.2), and the
-process continues with its other engines.
-
-**8.2 Pass failures.** A pass returns ok, poison (D6), or timeout. The nagaya treats outputs that are not finite as
-poison. After a poison or a timeout, the nagaya does these steps:
-
-1. Fail the jobs in that pass. Free their contexts, or mark their slots dirty until a job clears them (`slot_clear`),
-   overwrites them from position 0, or writes them through `part_write`.
-2. Run the canary again on the group thread, before any other work.
-3. If the canary does not match, or if this is the engine's fourth timeout in the last 600 s, mark the engine fatal.
-   Refuse every later job for it.
-
-(mk `service/gpu.py` does this.)
-
-**8.3 Conformance.** Each engine has a conformance suite in the nagaya's tests. It checks these properties:
-
-- park and restore keep every bit;
-- seal runs only at boundaries;
-- the quantum conditions hold (ontology "Quantum");
-- an admission refusal changes nothing;
-- for an engine that declares `segments_exact`, a segment gives the same bits in passes with one, two and the
-  maximum count of segments (5.7).
-
-**One oracle for each family.** Each model family has one reference: today, fixed outputs of mk's Python. Every
-engine of that family passes its conformance against that reference, on any vendor's device. The reference runs on
-the CPU, so it does not give the bits of a GPU. Thus the oracle has a tolerance, and a spike measures the gap first.
-
-**The Qwen3.8 oracle.** mk's Python reference (`tools/oracle_fixture.py`) writes the fixture. It holds four prompts
-of 5 to 249 tokens, with the top 64 logits and the logsumexp of the last position. The bench `oracle` in the mk
-crate compares mk with it. mk's exact path (`MK_FAST_QMM=0`) is the gate. Its largest gap was a logit difference
-of 1.7e-5 on 2026-10-20. Decided 2026-10-20 (reading).
-
-- On the exact path, the argmax agrees when the reference's top two differ by more than 0.25. The reference's top 8
-  are in the engine's top 16. The largest logit difference is at most 1e-3, the KL at most 1e-8, and the logsumexp
-  difference at most 1e-3.
-- The fast path (`MK_FAST_QMM` unset) is an approximation (12.1). It keeps only the argmax and top-8 rules, and the
-  bench reports its other numbers. At 249 tokens its largest logit difference was 1.03.
-
-A family with no reference has no oracle yet: the first port of mkviolet builds the Gemma reference. Decided 2026-10-20
-(`docs/deepinfer.md` 6). The engine crates stay one for each vendor and device (Amy: "we generate a megakernel per
-vendor/device and they get their own whole crate").
-
-A gate that restores state restores it through `Store::restore`, the path that production uses. Thus a gate and
-the store cannot drift apart. Decided 2026-10-20 (reading, kaibo job-2 finding 1).
-
-The suite compares values by integer bit pattern. NaN or Inf fails, even when the bit patterns are equal. Counts
-must also match. Each gate keeps a broken variant that it must fail (ds4-recipe `01-correctness-and-measurement.md`).
-
-**8.4 Audit.** For some engines the tripwire is not reliable, because of their determinism class. For them, the
-nagaya runs an audit after each start, as a filler job in the same process. The audit builds a sample of stored
-recipes again and compares the content ids (D3). A restart is the fresh process that the audit needs, so the audit
-needs no second GPU client.
-
-**8.5 Crash over corruption.** An unexpected failure in the nagaya stops the process (exit 1). The process does not
-continue in a bad state. An event that does not fit the scheduler's state, such as a cancel of an unknown job, is
-an error that its caller sees. A cancel of a job that already ended is not an error, because a client can race the
-end of a job. Decided 2026-10-20 (reading).
-
-## 9. Observability
-
-The nagaya follows kaijutsu's conventions (`~/src/kaijutsu/docs/telemetry.md`). mkviolet already follows them.
-
-**9.1 Activation.** The nagaya always logs to stderr. It also exports in these cases:
-
-- OTLP over gRPC to the machine's collector, when `OTEL_EXPORTER_OTLP_ENDPOINT` is set;
-- OTLP JSON-lines files, when `NAGAYA_OTEL_FILE_DIR` or `KAIJUTSU_OTEL_FILE_DIR` is set.
-
-`OTEL_SDK_DISABLED=true` stops all export. The `service.name` is `nagaya`. The resource attributes carry
-`host.name` and the hardware from the inventory.
-
-Built: the log, and the OTLP gRPC export of spans and metrics. Not built: the JSON-lines file export and the OTLP
-export of logs. The nagaya warns at the start when `NAGAYA_OTEL_FILE_DIR` or `KAIJUTSU_OTEL_FILE_DIR` is set, so that
-a missing export is never silent. The code is in `crates/nagaya-telemetry`.
-
-Decided by senpai 2026-10-20 night (vetoable):
-
-- A log line is the message, then the fields as `key=value`. A warning or an error ends with `level=warn` or
-  `level=error`. A line has no time, no level prefix and no span name. The journal adds the time. The tests of the
-  process read a line by the start of its message.
-- `RUST_LOG` sets the log filter. The default is `info`. A filter that does not parse refuses the start (exit 3).
-  The filter does not change the export.
-- The nagaya starts the telemetry before it reads the config, so that a config error reaches the log. It reads the
-  inventory first, because the resource carries the hardware.
-- The resource attributes are `host.name`, `nagaya.device.count`, `nagaya.device.names`, `nagaya.device.memory_bytes`
-  and `nagaya.host.memory_bytes`. The nagaya leaves out an attribute that it cannot read, and it warns.
-- The process drops the telemetry before it exits, because `std::process::exit` runs no destructor. The drop waits at
-  most 2 s for each signal. A collector that is gone does not stop the process.
-- The exporters run on a Tokio runtime of their own with one worker. The telemetry owns it, and the nagaya does not
-  leak it (compare mkviolet, section 14).
-
-**9.2 Traces.** When a request has a W3C `traceparent` and `tracestate`, its span is a child of the caller's span.
-The nagaya records an invalid header as an attribute, not an error. The spans nest in this order:
-
-1. the HTTP server span, `<METHOD> <route template>`;
-2. `nagaya.job`, with engine, class and request kind;
-3. `nagaya.quantum` for each quantum, with engine, device group, kind, class, segments, and wait and run times in ms.
-
-Decode quanta make metrics only: "one span per generated token would bury a generation's trace" (mk). The trace
-context goes to the group thread with the job. The nagaya gives it to the engine through the telemetry capability,
-and the engine adds its own spans under the quantum. Today, neither engine carries it onto GPU work.
-
-Built: the spans `nagaya.process` (the run, with `exit_code`), `nagaya.start` and `nagaya.stop` (with `engines` and
-`outcome`), and `nagaya.quantum` (from `ObservedScheduler`). A failure marks its span as an error. The function
-`adopt_parent` makes a span the child of the caller's span from `traceparent` and `tracestate`. It records an invalid
-header in the attribute `nagaya.traceparent.invalid`. Not built: the HTTP server span and `nagaya.job`. The HTTP code
-and the job path add them, and they call `adopt_parent` for each request.
-
-**9.3 Sampling.** The nagaya uses kaijutsu's rule. It always keeps errors and spans whose parent is sampled. It
-keeps 100% of the spans in some dot-qualified prefixes and 10% of the others. `nagaya.` and `council.` are 100%
-prefixes, so `nagaya.job` and `nagaya.quantum` are always kept. Decode quanta make no spans, so the volume stays low.
-
-A prefix carries its dot, so a span named `nagaya_x` has the default rate. The error test reads the attributes at the
-start of a span. Thus a span that fails later is kept only through its prefix or its parent.
-
-**9.4 Metrics.** The nagaya keeps each metric attribute to a bounded set of values. Context, trace and job ids are
-never attributes.
-
-| Metric | Unit | Attributes |
-|---|---|---|
-| `nagaya.quantum.wait.duration`, `nagaya.quantum.run.duration` | ms | engine, device_group, kind, class |
-| `nagaya.quantum.tokens` | {token} | engine, kind |
-| `nagaya.ledger.bytes` | By | tier, engine, term |
-| `nagaya.ledger.refusals` | {refusal} | tier, engine, gate (budget, floor, resize) |
-| `nagaya.store.bytes`, `nagaya.store.entries` | By, {entry} | tier, engine |
-| `nagaya.store.lookups` | {lookup} | engine, outcome (exact, approx, miss, refused) |
-| `nagaya.store.evictions` | {entry} | tier, reason (evict, put_room, interval_cap, interval_replaced) |
-| `nagaya.store.restores` | {restore} | engine, result (done, refused, failed, error) |
-| `nagaya.io.bytes` | By | edge, path (direct, staged), class |
-| `nagaya.arena.handoff` | {handoff} | engine, status (hot, cold) |
-| `nagaya.engine.state` | 1 | engine, state (loading, ready, draining, unloaded, fatal) |
-| `http.server.request.duration` | s | http.route, status |
-
-Decided by senpai 2026-10-20 night (vetoable). These rules fix the labels of the metrics that exist:
-
-- The attribute `device_group` holds the id of the device group. The attribute `tier` holds `host`, `nvme` or
-  `device<id>`. A budget that covers several tiers has the sorted tiers joined with `+`, for example `device0+host`.
-- The wait of a quantum runs from the moment its lead segment became ready to the moment the quantum started. The lead
-  segment is the first one. A job is ready when it arrives, and again when a quantum of it ends and more remain. A job
-  that the ledger has not admitted yet is ready, so its wait includes the time until the admission.
-- `nagaya.ledger.bytes` is a gauge with one point for each engine term. It holds the bytes of the last admission. A term
-  of the lifetime `context` has no point, because the ledger charges it at `ctx_new`.
-- `nagaya.ledger.refusals` counts one refusal for each short budget. The engine is `all` for a refused profile, and the
-  engine name for a refused context. The ledger has the gate `budget` only. The gates `floor` and `resize` come with the
-  code that refuses at them.
-- `nagaya.store.bytes` and `nagaya.store.entries` are gauges. The store reports them after `open`, `put`, `evict` and
-  `remove`. A series that empties reports zero once. The engine is the name in the entry.
-- `nagaya.store.lookups` counts every `lookup`. The engine is the model name of the engine that asks, because the store
-  does not know the profile name. An outcome is `approx` when an entry of the chain has a provenance. A lookup that
-  returns an error counts as `refused`.
-- `nagaya.store.restores` is new in this table. It counts every `restore`. The engine is the model name. The result
-  `error` means that the store refused before any write.
-- `nagaya.engine.state` is a gauge. A change of state records one for the new state and zero for the other four.
-
-Each GPU vendor has a sensor provider: amdgpu (the SMU `gpu_metrics` table and KFD counters), Intel Xe, and NVIDIA
-NVML. Each provider maps its values onto shared names:
-
-| Metric | Unit | Attributes |
-|---|---|---|
-| `nagaya.device.clock` | MHz | device, clock |
-| `nagaya.device.power` | mW | device, rail |
-| `nagaya.device.temperature` | Cel | device, sensor |
-| `nagaya.device.activity` | % | device |
-| `nagaya.device.memory.used` | By | device, domain |
-| `nagaya.device.throttle` | {event} | device, reason |
-| `nagaya.device.evicted` | ms | device (amdgpu KFD only) |
-
-mk's `mk.gpu.*` names and mkviolet's `mkviolet.*` names map onto these names. Council decision metrics (count,
-spread, confidence) belong to the council layer (11.1).
-
-**9.5 Each instrument has a call site under test.** mkviolet defines `record_gpu_pass` but calls it only from its
-smoke test. It calls `record_council_decision` only in tests. Its docs name instruments for routing entropy and
-J-Lens drift that do not exist. Thus a test shows that each instrument records on the path that it describes.
-
-A test runs the real call site and reads the points through an in-memory exporter (`nagaya_telemetry::testing`). The
-code defines an instrument in the commit that adds its call site. The table shows each instrument that exists.
-
-| Instrument | Call site | Test |
-|---|---|---|
-| `nagaya.quantum.wait.duration`, `nagaya.quantum.run.duration` | `ObservedScheduler::step` in `crates/nagaya-sched/src/observed.rs` | `crates/nagaya-sched/tests/observed.rs` |
-| `nagaya.ledger.bytes`, `nagaya.ledger.refusals` | `Ledger::admit` and `Ledger::admit_context` in `crates/nagaya-ledger/src/lib.rs` | `crates/nagaya-ledger/tests/telemetry.rs` |
-| `nagaya.store.bytes`, `nagaya.store.entries`, `nagaya.store.lookups`, `nagaya.store.evictions`, `nagaya.store.restores` | `Store::open`, `put`, `evict`, `remove`, `lookup` and `restore` in `crates/nagaya-store/src/lib.rs` | `crates/nagaya-store/tests/telemetry.rs` |
-| `nagaya.engine.state` | `lifecycle::start` and `lifecycle::stop` in `crates/nagaya/src/lifecycle.rs` | `crates/nagaya/tests/telemetry.rs` |
-
-These instruments have no definition yet, because they have no call site: `nagaya.quantum.tokens`, `nagaya.io.bytes`,
-`nagaya.arena.handoff`, `http.server.request.duration` and the device sensors. The job path, the HTTP code and the
-IO code add each one with its call site.
-
-**9.6 Evidence on failure.** Before and after a quantum that fails, the nagaya reads the machine's counters. It logs
-the change with the failure. mk reads these counters: KFD evicted ms, MemAvailable, GTT, and from `/proc/vmstat`
-compaction stalls, migrations, swap-outs and direct scans.
-
-Built as `nagaya::evidence` in `crates/nagaya/src/evidence.rs`, with fixed trees in the tests. The code that runs a
-quantum calls `Machine::watch` before the quantum and `Watch::failed` in its error branch. Until the job path exists,
-this module has no call site in the process. A read costs four files, so the caller may skip `watch` for decode quanta.
-
-Evidence never hides its failure. A counter that cannot be read, or that went back, is named in the line as
-`evidence unavailable`. The failure is logged all the same. The sources are `/proc/meminfo`, `/proc/vmstat`,
-`/sys/class/kfd/kfd/proc/<pid>/stats_*/evicted_ms` and `/sys/class/drm/card*/device/mem_info_gtt_used`. The GTT is
-summed over the devices, and it is absent on a machine with no amdgpu device.
-
-**9.7 Status feed.** Each machine has one SSE status feed (mk `/mk/v1/status`, mkviolet `PassBus`):
-
-- a snapshot when a client connects;
-- one `quantum` event for each quantum, with engine, device group, kind, ms, and queue length by class;
-- a keepalive every 15 s.
-
-The feed disconnects a slow subscriber. It does not skip events for it. A subscriber that wants less volume asks for
-a filter by engine or kind when it connects.
-
-Not built. The feed needs the HTTP server (milestone 12 step 6). The scheduler side is ready: `ObservedScheduler` sees
-every quantum, so it can feed the bus.
+Decided by senpai 2026-10-20 night (vetoable). Reason: mk waits up to 60 s for free memory, then loads for about
+35 s. The old wait of 60 s ended a slow open that was not hung.
 
 ## 10. Lifecycle
 
@@ -1048,6 +863,16 @@ opened, passed its canary, and woken its pinned state. `STATUS=` gives the state
 When `<store_dir>/profile.toml` does not exist, the process starts with an empty profile. An empty profile is valid,
 because a machine with no engine can serve as a coordinator or hold a store tier (2.1). A process with an empty
 profile sends `READY=1` when admission passes. Decided 2026-10-20 (reading).
+
+While the engines open, the process tells systemd that the start goes on. Every 5 s (the heartbeat interval), it
+sends one datagram. The datagram holds `EXTEND_TIMEOUT_USEC=` and a `STATUS=` line that says `loading` for each
+engine. The extension is 30 s, the watchdog timeout (7.4). systemd sets the start deadline to 30 s after each
+datagram, so a slow open does not time the start out. A process that stops sending the datagram times out within 30 s.
+
+Decided by senpai 2026-10-20 night (vetoable).
+
+When the wait for the opens ends (7.4), the process sends `STATUS=` with the name of each engine that did not open.
+Then it exits 1.
 
 **10.2 Arenas through a restart.** systemd's file-descriptor store keeps the arenas (`FDSTORE=1`). Each fd has the
 name `<engine>/<device>/<part>`. systemd reads `FileDescriptorStoreMax` from the unit file before the process starts.
@@ -1509,5 +1334,5 @@ The inventories found these items. We correct each one when its code moves. We d
 8. What is the oracle gap at 2,000 tokens and more? The binding's contexts hold 256 tokens today, and mk allows
    32,768. The measurement needs larger contexts in the binding and a loop of passes (8.3). Amy, 2026-10-20: "we can
    save and do the measurement later".
-9. The group threads have no CPU set (3.2a). Should they run on the pool set, or stay unpinned? Also, should a
-   housekeeping CPU avoid the physical core of a pool CPU (SMT)? The bootstrap config could name the sets later.
+9. Should the control threads run at elevated priority (3.2, 3.2a)? A raised priority needs `CAP_SYS_NICE` or a
+   setting in the unit, such as `Nice=`. A measurement under load shows whether the pinned cores are enough.

@@ -114,7 +114,7 @@ impl FileProbe {
         Ok(Machine {
             devices,
             host_bytes,
-            cpus: self.cpus()?,
+            cpus: self.online_cpus()?,
             nvme: self.nvme()?,
             nics: self.nics()?,
         })
@@ -198,7 +198,9 @@ impl FileProbe {
     }
 
     /// The online CPUs, from the list in `/sys/devices/system/cpu/online`.
-    fn cpus(&self) -> Result<Vec<u32>, ProbeError> {
+    ///
+    /// The list keeps the order of the file. The CPU sets (spec 3.2a) check the order.
+    pub fn online_cpus(&self) -> Result<Vec<u32>, ProbeError> {
         let relative = "sys/devices/system/cpu/online";
         let text = self.read(relative)?;
         parse_cpu_list(text.trim()).ok_or_else(|| malformed(&self.path(relative), "a CPU list like `0-7,9`", &text))

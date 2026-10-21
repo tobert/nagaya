@@ -88,3 +88,17 @@ fn each_engine_state_has_its_word() {
         assert_eq!(state.as_str(), word);
     }
 }
+
+#[test]
+fn an_extension_carries_the_microseconds_and_the_status_in_one_datagram() {
+    let directory = tempfile::tempdir().unwrap();
+    let (socket, path) = bound(directory.path());
+    let notifier = Notifier::at(&path).unwrap();
+    notifier
+        .extend_start(&["a".to_owned(), "b".to_owned()], Duration::from_secs(30))
+        .unwrap();
+    assert_eq!(
+        receive(&socket),
+        "EXTEND_TIMEOUT_USEC=30000000\nSTATUS=engine a loading; engine b loading"
+    );
+}

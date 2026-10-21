@@ -14,6 +14,8 @@ use nagaya_ledger::{Ledger, LedgerError};
 use nagaya_store::Store;
 
 use crate::admission::{AdmitError, Admitted, Factory, OpenErrorKind, Registry, admit};
+use crate::affinity::{pin_current_thread, set_batch_policy};
+use crate::cpu_sets::CpuSets;
 use crate::exit::{ExitCode, panic_text};
 use crate::inventory::Inventory;
 use crate::jobs::{GroupJobs, JobSpec};
@@ -132,6 +134,24 @@ impl StopReport {
             "the stop wrote {} states and {} parts, then failed {failed} part(s){cancelled}",
             self.parked.states, self.parked.parts
         )
+    }
+}
+
+/// Start a worker thread with a name. The name shows in `ps`, in `top` and in the CPU mask test (spec 3.2a).
+fn spawn_named(name: String, body: impl FnOnce() + Send + 'static) -> JoinHandle<()> {
+    thread::Builder::new()
+        .name(name)
+        .spawn(body)
+        .expect("cannot start a worker thread")
+}
+
+/// Pin the calling thread to `cpus` (spec 3.2a). With no CPUs, the thread keeps the mask that it inherited.
+///
+/// A failure panics. The `guard` of the thread turns the panic into an event, and the process exits 1 (spec 8.5).
+fn pin(thread: &str, cpus: Option<&[u32]>) {
+    if let Some(cpus) = cpus {
+        pin_current_thread(cpus)
+            .unwrap_or_else(|error| panic!("cannot pin the {thread} thread to CPUs {cpus:?}: {error}"));
     }
 }
 
@@ -416,6 +436,7 @@ pub struct Start {
     timeout: Duration,
     store_dir: Option<PathBuf>,
     store_budget: Option<StoreBudget>,
+    cpu_sets: Option<CpuSets>,
 }
 
 impl Start {
@@ -429,7 +450,14 @@ impl Start {
             timeout: DEFAULT_WATCHDOG_TIMEOUT,
             store_dir: None,
             store_budget: None,
+            cpu_sets: None,
         }
+    }
+
+    /// Set the CPU sets. Each thread pins itself to its set when it starts (spec 3.2a). With no sets, no thread pins.
+    pub fn cpu_sets(mut self, sets: CpuSets) -> Self {
+        self.cpu_sets = Some(sets);
+        self
     }
 
     /// Set the store directory. The process opens the machine's store there (spec 6.1).
@@ -469,6 +497,7 @@ impl Start {
             timeout,
             store_dir,
             store_budget,
+            cpu_sets,
         } = self;
         assert!(
             heartbeat < timeout,
@@ -484,8 +513,12 @@ impl Start {
         let ledger_registry = Arc::clone(&registry);
         let ledger_inventory = Arc::clone(&inventory);
         let ledger_events = events_tx.clone();
-        let ledger_thread = thread::spawn(move || {
+        let housekeeping = cpu_sets.as_ref().map(|sets| sets.housekeeping.clone());
+        let pool = cpu_sets.as_ref().map(|sets| sets.pool.clone());
+        let ledger_cpus = housekeeping.clone();
+        let ledger_thread = spawn_named("nagaya-ledger".to_owned(), move || {
             guard("ledger", &ledger_events, || {
+                pin("ledger", ledger_cpus.as_deref());
                 let mut ledger = OwnedLedger::new();
                 while let Ok(message) = ledger_rx.recv() {
                     match message {
@@ -511,8 +544,9 @@ impl Start {
         // The watchdog thread. It watches the group threads from outside (spec 3.2, 7.4).
         let watchdog_events = events_tx.clone();
         let watchdog_body = watchdog_events.clone();
-        let watchdog_thread = thread::spawn(move || {
+        let watchdog_thread = spawn_named("nagaya-watchdog".to_owned(), move || {
             guard("watchdog", &watchdog_events, || {
+                pin("watchdog", housekeeping.as_deref());
                 watchdog(watch_rx, watchdog_body, timeout);
             });
         });
@@ -579,8 +613,15 @@ impl Start {
             Some(store_for_thread) => {
                 let (messages, replies) = mpsc::channel();
                 let store_events = events_tx.clone();
-                let handle = thread::spawn(move || {
+                let store_cpus = pool.clone();
+                let handle = spawn_named("nagaya-store".to_owned(), move || {
                     guard("store", &store_events, || {
+                        // The store hashes and converts bytes. It is pool work (spec 3.2).
+                        if store_cpus.is_some() {
+                            pin("store", store_cpus.as_deref());
+                            set_batch_policy()
+                                .unwrap_or_else(|error| panic!("cannot set SCHED_BATCH on the store thread: {error}"));
+                        }
                         park::store_thread(&store_for_thread, replies);
                     });
                 });
@@ -605,8 +646,10 @@ impl Start {
             let group_watch = watch_tx.clone();
             let group_store = store_tx.clone();
             let group_accepting = Arc::clone(&accepting);
-            let handle = thread::spawn(move || {
+            let group_cpus = pool.clone();
+            let handle = spawn_named(format!("nagaya-group-{index}"), move || {
                 guard("group", &group_guard, || {
+                    pin("group", group_cpus.as_deref());
                     let links = GroupLinks {
                         events: group_events,
                         heartbeats: group_watch,
@@ -703,6 +746,8 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
     });
     let mut engines: Vec<Box<dyn Engine>> = Vec::with_capacity(jobs.len());
     let mut opened = Vec::with_capacity(jobs.len());
+    // An open can take minutes, and it blocks this thread. The guard beats for the group until the open ends (7.4).
+    let open_beat = OpenBeat::start(group, heartbeats.clone(), interval);
     for job in jobs {
         let engine = match job.factory.open(&job.placement.config) {
             Ok(engine) => engine,
@@ -745,6 +790,7 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
         });
         engines.push(engine);
     }
+    drop(open_beat);
     let names: Vec<String> = opened.iter().map(|engine| engine.name.clone()).collect();
     let _ = events.send(Event::Opened { group, engines: opened });
     let mut cancelled = 0;
@@ -820,6 +866,49 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
         }
     }
     drop(engines);
+}
+
+/// The heartbeat of a group while its engine opens (spec 7.4).
+///
+/// The open blocks the group thread, so a helper thread sends the beats. The helper stops when this guard drops,
+/// also when the group thread panics or returns early. A hung open is not a stall: the wait for the opens ends it.
+struct OpenBeat {
+    stop: Option<Sender<()>>,
+    helper: Option<JoinHandle<()>>,
+}
+
+impl OpenBeat {
+    fn start(group: usize, heartbeats: Sender<WatchMessage>, interval: Duration) -> Self {
+        let (stop, stopped) = mpsc::channel();
+        let helper = thread::Builder::new()
+            .name(format!("nagaya-open-{group}"))
+            .spawn(move || {
+                // A timeout is a beat due. A message or a closed channel means the open ended.
+                while let Err(RecvTimeoutError::Timeout) = stopped.recv_timeout(interval) {
+                    let beat = WatchMessage::Beat {
+                        group,
+                        at: Instant::now(),
+                    };
+                    if heartbeats.send(beat).is_err() {
+                        return;
+                    }
+                }
+            })
+            .expect("cannot start the open heartbeat thread");
+        Self {
+            stop: Some(stop),
+            helper: Some(helper),
+        }
+    }
+}
+
+impl Drop for OpenBeat {
+    fn drop(&mut self) {
+        drop(self.stop.take());
+        if let Some(helper) = self.helper.take() {
+            let _ = helper.join();
+        }
+    }
 }
 
 /// Park every engine of one group. A part that the engine cannot read or write is a failure.
@@ -1102,6 +1191,18 @@ impl Process {
 
     /// Wait for every group to open its engines, or for a failure.
     pub fn wait_opens(&mut self, timeout: Duration) -> Result<Vec<OpenedEngine>, WaitError> {
+        self.wait_opens_with(timeout, timeout, || {})
+    }
+
+    /// Wait as `wait_opens` does, and call `tick` each time `every` passes with no event (spec 10.1, 7.4).
+    ///
+    /// The caller uses the tick to tell systemd that a long open goes on. The tick does not run after the timeout.
+    pub fn wait_opens_with(
+        &mut self,
+        timeout: Duration,
+        every: Duration,
+        mut tick: impl FnMut(),
+    ) -> Result<Vec<OpenedEngine>, WaitError> {
         let deadline = Instant::now() + timeout;
         let mut opened = Vec::new();
         let mut done = vec![false; self.group_count];
@@ -1110,7 +1211,7 @@ impl Process {
             let event = if left.is_zero() {
                 Err(RecvTimeoutError::Timeout)
             } else {
-                self.events.recv_timeout(left)
+                self.events.recv_timeout(left.min(every))
             };
             match event {
                 Ok(Event::Opened { group, engines }) => {
@@ -1118,6 +1219,7 @@ impl Process {
                     opened.extend(engines);
                 }
                 Ok(event) => return Err(WaitError::Event(event)),
+                Err(RecvTimeoutError::Timeout) if Instant::now() < deadline => tick(),
                 Err(RecvTimeoutError::Timeout) => {
                     let waiting = (0..self.group_count)
                         .filter(|&group| !done[group])

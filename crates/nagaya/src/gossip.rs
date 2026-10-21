@@ -30,6 +30,8 @@ pub struct GossipConfig {
     pub interval: Duration,
     /// The failure detector (spec 2.3, phi-accrual).
     pub failure_detector: FailureDetectorConfig,
+    /// The housekeeping CPUs. Each thread of the control runtime pins itself to them (spec 3.2a). `None` pins nothing.
+    pub housekeeping: Option<Vec<u32>>,
 }
 
 impl GossipConfig {
@@ -44,6 +46,7 @@ impl GossipConfig {
                 initial_interval: DEFAULT_INTERVAL * 2,
                 ..FailureDetectorConfig::default()
             },
+            housekeeping: None,
         }
     }
 }
@@ -240,9 +243,11 @@ impl Gossip {
             extra_liveness_predicate: None,
             protocol_version: ProtocolVersion::V0,
         };
+        let housekeeping = config.housekeeping.clone();
         let runtime = Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("nagaya-control")
+            .on_thread_start(move || pin_control_thread(housekeeping.as_deref()))
             .enable_all()
             .build()
             .map_err(|source| error(format!("cannot start the control runtime: {source}")))?;
@@ -389,6 +394,18 @@ impl Gossip {
             tracing::error!("gossip stopped with an error: {error}");
         }
         runtime.shutdown_timeout(RUNTIME_STOP);
+    }
+}
+
+/// Pin a thread of the control runtime to the housekeeping CPUs (spec 3.2a).
+///
+/// A hook cannot return an error to the runtime. A thread that cannot pin would run beside the group threads, so the
+/// process aborts (spec 8.5).
+fn pin_control_thread(housekeeping: Option<&[u32]>) {
+    let Some(cpus) = housekeeping else { return };
+    if let Err(error) = crate::affinity::pin_current_thread(cpus) {
+        eprintln!("cannot pin a control thread to CPUs {cpus:?}: {error}");
+        std::process::abort();
     }
 }
 

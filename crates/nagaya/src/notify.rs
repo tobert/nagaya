@@ -4,6 +4,7 @@ use std::ffi::OsString;
 use std::io;
 use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// The environment variable that names the systemd notify socket.
 pub const NOTIFY_SOCKET: &str = "NOTIFY_SOCKET";
@@ -67,6 +68,21 @@ impl Notifier {
             return Ok(());
         }
         self.notify(&status_text(engines, state))
+    }
+
+    /// Extend the start timeout by `extend` and report that every engine is `loading` (spec 10.1, 7.4).
+    ///
+    /// systemd sets the start deadline to `extend` from now, so a long open does not time the start out. An empty list
+    /// sends nothing.
+    pub fn extend_start(&self, engines: &[String], extend: Duration) -> io::Result<()> {
+        if engines.is_empty() {
+            return Ok(());
+        }
+        self.notify(&format!(
+            "EXTEND_TIMEOUT_USEC={}\n{}",
+            extend.as_micros(),
+            status_text(engines, EngineState::Loading)
+        ))
     }
 
     /// Report that every engine opened (spec 10.1). One datagram holds `READY=1` and `STATUS=`.
