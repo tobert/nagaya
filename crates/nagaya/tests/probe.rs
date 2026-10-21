@@ -108,11 +108,22 @@ fn gfx1151host_has_one_unified_gfx1151() {
 #[test]
 fn b70host_has_two_xe_cards_with_32_gib_each() {
     let machine = machine("b70host");
+    // The tree is a capture of b70host on 2026-10-21. The display GPU (the AMD iGPU at 0000:80:00.0) is listed as the
+    // probe lists it today, as device 0. Its numbering waits for the spec.
     assert_eq!(
         machine.devices,
         vec![
             facts(
                 0,
+                "gfx1036",
+                66_277_081_088,
+                true,
+                Vendor::Amd,
+                "0000:80:00.0",
+                "1002:13c0"
+            ),
+            facts(
+                1,
                 "xe-e223",
                 32 << 30,
                 false,
@@ -121,27 +132,28 @@ fn b70host_has_two_xe_cards_with_32_gib_each() {
                 "8086:e223"
             ),
             facts(
-                1,
+                2,
                 "xe-e223",
                 32 << 30,
                 false,
                 Vendor::Intel,
-                "0000:84:00.0",
+                "0000:08:00.0",
                 "8086:e223"
             ),
         ]
     );
-    assert_eq!(machine.host_bytes, 131_912_348 * 1024);
-    assert_eq!(machine.cpus, (0..24).collect::<Vec<u32>>());
+    assert_eq!(machine.host_bytes, 129_447_428 * 1024);
+    assert_eq!(machine.cpus, (0..32).collect::<Vec<u32>>());
     assert_eq!(
         machine.nvme,
-        vec![nvme("nvme0n1", "Samsung SSD 990 PRO 4TB", 7_814_037_168)]
+        vec![nvme("nvme0n1", "Samsung SSD 9100 PRO with Heatsink 4TB", 7_814_037_168)]
     );
     assert_eq!(
         machine.nics,
         vec![
-            nic("enp1s0f0np0", "mlx5_core", "15b3:a2d6", Some(100_000)),
-            nic("enp1s0f1np1", "mlx5_core", "15b3:a2d6", None),
+            nic("enp17s0", "igc", "8086:125c", None),
+            nic("enp18s0", "atlantic", "1d6a:04c0", Some(1000)),
+            nic("wlp16s0", "ath12k_wifi7_pci", "17cb:1107", None),
         ]
     );
 }
@@ -276,8 +288,8 @@ fn an_xe_card_with_a_small_bar_is_an_error() {
     let (_dir, root) = broken_copy("b70host");
     let path = root.join("sys/class/drm/card0/device/resource");
     let text = fs::read_to_string(&path).unwrap().replace(
-        "0x0000004000000000 0x00000047ffffffff",
-        "0x0000004000000000 0x000000400fffffff",
+        "0x000000e000000000 0x000000e7ffffffff",
+        "0x000000e000000000 0x000000e00fffffff",
     );
     fs::write(path, text).unwrap();
     let message = probe_error(&root);

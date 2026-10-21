@@ -399,11 +399,13 @@ impl FileProbe {
         Ok(devices)
     }
 
-    /// The size of the largest prefetchable memory range in a PCI `resource` file.
+    /// The size of the largest prefetchable memory range among the standard BARs of a PCI `resource` file.
+    ///
+    /// The lines after the sixth hold the ROM and the SR-IOV ranges. They are not memory of the card.
     fn largest_memory_bar(&self, relative: &str) -> Result<u64, ProbeError> {
         let text = self.read(relative)?;
         let mut largest = 0;
-        for line in text.lines() {
+        for line in text.lines().take(STANDARD_BARS) {
             let fields: Vec<Option<u64>> = line.split_whitespace().map(parse_hex).collect();
             let [Some(start), Some(end), Some(flags)] = fields[..] else {
                 return Err(malformed(&self.path(relative), "lines of three hex numbers", line));
@@ -464,6 +466,9 @@ impl Probe for FileProbe {
 
 /// The size of a sector in `/sys/block/*/size`. The kernel counts it in units of 512 bytes, whatever the device.
 const SECTOR_BYTES: u64 = 512;
+
+/// The count of standard BARs at the start of a PCI `resource` file (`PCI_STD_NUM_BARS` in the kernel).
+const STANDARD_BARS: usize = 6;
 
 /// A memory BAR smaller than this is a window and not the device memory.
 const MIN_DEVICE_BAR_BYTES: u64 = 1 << 30;
