@@ -178,7 +178,7 @@ impl Swap {
                 (_, Err(reason)) | (Err(reason), _) => {
                     // One entry for each peer id: the last malformed value. A new value is logged once.
                     if self.reported.insert(node.id.clone(), text.clone()).as_ref() != Some(text) {
-                        eprintln!("ignoring the desired profile from peer {}: {reason}", node.id);
+                        tracing::warn!("ignoring the desired profile from peer {}: {reason}", node.id);
                     }
                     continue;
                 }

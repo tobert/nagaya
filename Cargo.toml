@@ -8,6 +8,7 @@ members = [
     "crates/nagaya-text-qwen38",
     "crates/nagaya-council",
     "crates/nagaya-text-toy",
+    "crates/nagaya-telemetry",
     "crates/nagaya-conformance",
     "crates/nagaya",
 ]

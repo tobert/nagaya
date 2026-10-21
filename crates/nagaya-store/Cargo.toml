@@ -10,13 +10,16 @@ testing = []
 [dependencies]
 blake3 = "1.8.7"
 nagaya-abi = { version = "0.1.0", path = "../nagaya-abi" }
+nagaya-telemetry = { version = "0.1.0", path = "../nagaya-telemetry" }
 safetensors = "0.8.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0"
+tracing = "0.1.44"
 
 [dev-dependencies]
 # The tests turn on the `testing` feature of this crate. A dev-dependency on the crate itself does this.
 nagaya-store = { path = ".", features = ["testing"] }
 nagaya-abi = { path = "../nagaya-abi", features = ["fake"] }
+nagaya-telemetry = { path = "../nagaya-telemetry", features = ["testing"] }
 serde_json = "1.0"
 tempfile = "3.27.0"

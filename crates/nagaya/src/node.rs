@@ -163,7 +163,7 @@ impl Node {
         let peers = duplicate_names(&view, name, self.gossip.local_addr(), self.gossip.generation());
         for peer in &peers {
             if self.logged_names.insert(peer.clone()) {
-                eprintln!("error: duplicate node name `{name}`: peer {peer} and this node {own} have one name");
+                tracing::error!("error: duplicate node name `{name}`: peer {peer} and this node {own} have one name");
             }
         }
         if peers == self.conflict {
@@ -174,7 +174,7 @@ impl Node {
         } else {
             let value = json!({"own": own, "peers": peers});
             if let Err(error) = self.gossip.publish(&Key::NameConflict, &value) {
-                eprintln!("cannot publish to gossip: {error}");
+                tracing::warn!("cannot publish to gossip: {error}");
                 return;
             }
         }

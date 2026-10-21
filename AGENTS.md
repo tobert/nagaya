@@ -50,7 +50,7 @@ unified memory. The first engine is mk (`~/src/megakernel-qwen38-flashnext-strix
 
 ### Layout
 
-The ten crates live in directories under `crates/`. Use these crates:
+The eleven crates live in directories under `crates/`. Use these crates:
 
 | Crate | Holds | Spec |
 |---|---|---|
@@ -63,6 +63,7 @@ The ten crates live in directories under `crates/`. Use these crates:
 | `nagaya-text-qwen38` | the Qwen3.8 family library: tokenizer, templates, detokenizer, reply parser | 11.3, 11.3a |
 | `nagaya-text-toy` | the toy family library on gogi's `gogi-toy`, for tests with the fake engine | 11.3b |
 | `nagaya-conformance` | the conformance suite (8.3), generic over the `Engine` trait | 8.3 |
+| `nagaya-telemetry` | the instruments, the stderr log, the OTLP export and the sampler | 9 |
 | `nagaya` | the process: bootstrap config, threads, HTTP, gossip, systemd | 2, 3, 9-11 |
 
 Crate names follow `nagaya-<kind>-<model>-<target>`. The kind `mk` is a megakernel engine. The model is the family

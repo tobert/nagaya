@@ -449,4 +449,7 @@ impl Scheduler {
 
 mod interval;
 
+mod observed;
+
 pub use interval::{ContextId, CopyDue, IntervalCopies, IntervalError, IntervalPolicy};
+pub use observed::ObservedScheduler;
