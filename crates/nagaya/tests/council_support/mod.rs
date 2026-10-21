@@ -10,7 +10,7 @@ use std::time::Duration;
 use nagaya::council::{Clock, Service, ServiceConfig};
 use nagaya_text_toy::ToyFamily;
 
-use nagaya::admission::{Factory, OpenError, PlanError, Registry};
+use nagaya::admission::{Factory, GroupDevice, OpenError, PlanError, Registry};
 use nagaya::inventory::{Device, Inventory};
 use nagaya::process::{OpenedEngine, Process, Start};
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, StoreSpec, TierSpec};
@@ -165,18 +165,22 @@ impl TermFactory {
 }
 
 impl Factory for TermFactory {
-    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+    fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         Ok(self.engine().limits())
     }
 
-    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
         Ok(Box::new(self.engine()))
     }
 }
 
 /// Slots that are big enough for the toy contexts of the tests.
 pub fn roomy_slots(count: u32) -> Vec<SlotLimit> {
-    vec![SlotLimit { bytes: 16384, count }]
+    vec![SlotLimit {
+        bytes: 16384,
+        count,
+        tokens: 4096,
+    }]
 }
 
 pub fn profile(host_budget: u64, nvme: u64, host_store: Option<u64>) -> PlacementProfile {
@@ -191,6 +195,7 @@ pub fn profile_with_copies(host_budget: u64, nvme: u64, host_store: Option<u64>,
             kind: "term".to_owned(),
             devices: vec![0],
             config: toml::Table::new(),
+            family: toml::Table::new(),
             share: 1,
             pin_identity: false,
         }],
@@ -217,6 +222,7 @@ pub fn inventory() -> Inventory {
         devices: vec![Device {
             id: 0,
             name: "device-0".to_owned(),
+            pci_address: "0000:00:00.0".to_owned(),
             memory_bytes: 1024,
             unified: false,
         }],
@@ -369,7 +375,12 @@ impl Direct {
     /// An engine with one empty slot.
     pub fn empty() -> Self {
         Self {
-            engine: FakeAlways::with_slots(vec![SlotLimit { bytes: 16384, count: 1 }]).with_vocab(gogi_toy::VOCAB),
+            engine: FakeAlways::with_slots(vec![SlotLimit {
+                bytes: 16384,
+                count: 1,
+                tokens: 4096,
+            }])
+            .with_vocab(gogi_toy::VOCAB),
             rows: 0,
         }
     }

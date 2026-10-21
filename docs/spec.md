@@ -94,8 +94,7 @@ root path is `/` on a machine, and a fixed tree in a test (`crates/nagaya/tests/
 - NVMe: each `nvme<C>n<N>` in `sys/block`. The size is the `size` file in 512-byte sectors.
 - Network: each interface in `sys/class/net` that has a `device` directory. Virtual interfaces have none.
 
-A device id is the position in the list: AMD GPUs first, then Intel, then NVIDIA, each in the order of the kernel
-number.
+A device id is the position in the list, in the order that the next paragraph decides.
 
 Decided 2026-10-21 (Amy, by interview): the device ids follow the PCI address, in the order of domain, bus, device
 and function, for every vendor. Reason: on b70host the vendor order makes the display iGPU device 0, and the
@@ -297,6 +296,12 @@ Each place uses one of two names, and this map joins them.
 - The ledger maps a term tier `device(i)` to the machine device `devices[i]` of the engine. Then it finds the budget
   of that machine device. Thus an engine never sees a machine device id, and a profile never sees a group index.
 - On gfx1151host, both names of the one device are 0.
+
+**Proposed** (claude-opus-5-5, 2026-10-21): `limits().devices` holds group indexes, `0` to `n - 1` in order. The
+process checks that `n` is the length of the profile's `devices` list, as `check_devices` checks the list today
+(`crates/nagaya/src/placement.rs`). The engine finds each physical card by the PCI address in the devices that
+`plan` and `open` get. Reason: today `limits().devices` holds machine ids, so an engine on machine device 1 must know
+its machine id. That breaks the rule above, and an engine plan would differ between machines for the same config.
 
 An engine name has letters, digits, `.`, `_` and `-`, and at most 128 bytes. A profile with another name does not
 parse. Reason: the name is part of the gossip key `engine:<name>` (2.3). Decided 2026-10-20.
@@ -1816,7 +1821,22 @@ family (`if kind == crate::mk::KIND`, `crates/nagaya/src/serving.rs:24-40`). The
 
 Reason: the identity names what the engine computes, so it selects the text rules too (11.3). A new engine kind then
 needs no change in `serving.rs`. mkviolet gives `context_tokens` as the slot size less one (`council_server.rs:334`).
-The port checks why before it copies that.
+The nagaya does not copy that.
+
+**Registry choices.** These choices fill what the rules above leave open. Decided 2026-10-21 (Amy: "seems fine",
+"good", "ok", for the digest, `context_tokens` and the key `gguf`):
+
+- The identity digest (12.1) does not cover `family`. The family follows from the model, the tokenizer hash and the
+  template, which the digest already covers. A new digest would make every held entry of gfx1151host unusable.
+- An engine whose family has no library is not a served model, and the log says so. This is the rule of 11.7 for
+  an unknown kind, now keyed by the family.
+- The key `gguf` of `[engines.family]` names the GGUF file of the `qwen38` family. With no key, the library reads the
+  first shard of `MK_SHARDS`, as before. The `toy` family needs no file and no tokenizer hash.
+- The registry of engine factories holds each kind that the build has: `mk-qwen38-gfx1151` with the feature `hip`,
+  and the fake kinds with the feature `fake`. A build with no kind refuses the start (exit 3). No feature `xe` exists
+  yet, because no xe engine exists.
+- `context_tokens` is `SlotLimit.tokens` of the largest slot, with no "less one". mk declares 32,768, the value
+  that `MAX_CONTEXT` had.
 
 **11.3a Council rendering.** A decision and a raw read put a spec, a case and a letter menu after each context. The
 nagaya renders them with mkviolet's rules (mkviolet `src/template.rs` and its council code), ported to each family.
@@ -2219,7 +2239,8 @@ has a tailnet address in its code.)
 (`crates/nagaya/src/http`). It starts the server after `READY=1`, and it logs `http listening on <address>`. These
 rules are each "Decided by senpai 2026-10-20 night (vetoable)".
 
-- The engine registry of 11.3 (**Proposed**) replaces the first two rules below.
+- The engine registry of 11.3 (**Proposed**) replaces the first two rules below. The code builds it
+  (`crates/nagaya/src/serving.rs`, `FamilyRegistry`).
 - The process serves an opened engine when its kind has a family library. The kind `fake-toy` has the toy family
   (11.3b). The kind `mk-qwen38-gfx1151` has the Qwen3.8 family, from the first shard of `MK_SHARDS`. The tokenizer
   hash of that family must equal the `tokenizer_hash` of the engine identity. Thus the identity selects the library

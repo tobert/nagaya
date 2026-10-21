@@ -78,6 +78,7 @@ impl Node {
                 json!({
                     "id": device.id,
                     "name": device.name,
+                    "pci_address": device.pci_address,
                     "memory_bytes": device.memory_bytes,
                     "unified": device.unified,
                 })

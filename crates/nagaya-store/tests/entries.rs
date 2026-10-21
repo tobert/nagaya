@@ -784,7 +784,11 @@ fn a_failed_fit_does_not_touch_the_entry() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(dir.path()).unwrap();
     let id = put(&mut store, &base_snapshot(1), recipe(123), 1);
-    let mut target = FakeAlways::with_slots(vec![SlotLimit { bytes: 8, count: 1 }]);
+    let mut target = FakeAlways::with_slots(vec![SlotLimit {
+        bytes: 8,
+        count: 1,
+        tokens: 4096,
+    }]);
     assert!(matches!(
         store.restore(&id, &mut target, State::Slot(0), &[1u8; 32], 30),
         Err(StoreError::Fit(_))
@@ -855,7 +859,11 @@ fn a_restore_checks_the_chain_fit() {
     let root = put(&mut store, &base_snapshot(1), root_recipe, 1);
     let delta_recipe = next_recipe(root_recipe, 2);
     let delta = put_delta(&mut store, &delta_at(root, 2), delta_recipe, root_recipe, 1);
-    let mut target = FakeAlways::with_slots(vec![SlotLimit { bytes: 24, count: 1 }]);
+    let mut target = FakeAlways::with_slots(vec![SlotLimit {
+        bytes: 24,
+        count: 1,
+        tokens: 4096,
+    }]);
     assert!(
         store
             .restore(&root, &mut target, State::Slot(0), &[1u8; 32], 20)
@@ -875,7 +883,11 @@ fn a_lookup_keeps_only_chains_that_fit_the_slot() {
     let root = put(&mut store, &base_snapshot(1), root_recipe, 1);
     let delta_recipe = next_recipe(root_recipe, 2);
     let delta = put_delta(&mut store, &delta_at(root, 2), delta_recipe, root_recipe, 1);
-    let mut small = FakeAlways::with_slots(vec![SlotLimit { bytes: 24, count: 1 }]);
+    let mut small = FakeAlways::with_slots(vec![SlotLimit {
+        bytes: 24,
+        count: 1,
+        tokens: 4096,
+    }]);
     assert_eq!(
         store.lookup(root_recipe, &Tolerance::Exact, &mut small, 0, 10).unwrap(),
         vec![root]

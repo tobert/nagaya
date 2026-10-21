@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use nagaya_abi::{Lifetime, Limits, Tier};
+use nagaya_abi::{DeviceId, Lifetime, Limits, Tier};
 use nagaya_telemetry::{RefusalGate, TierLabel, instruments};
 
 /// One budget: a byte target for a set of tiers.
@@ -21,6 +21,10 @@ pub struct EnginePlan {
     pub name: String,
     /// The result of `plan(config)`.
     pub limits: Limits,
+    /// The machine devices of the engine, in the order of the profile's `devices` list (spec 2.4).
+    ///
+    /// A term tier `device(i)` names the position `i` in this list.
+    pub devices: Vec<DeviceId>,
     /// The engine's share of spare memory.
     pub share: u64,
 }
@@ -280,14 +284,14 @@ impl Ledger {
                 .iter()
                 .filter(|term| term.lifetime != Lifetime::Context)
             {
-                let index = budget_index(profile, term.tier)?;
+                let index = budget_index(profile, machine_tier(engine, term.tier)?)?;
                 mandatory[index] += term.bytes as u128;
             }
             for term in &engine.limits.memory.elastic {
                 if term.unit_bytes == 0 || term.minimum > term.maximum {
                     return Err(LedgerError::Invalid(format!("bad elastic term {}", term.name)));
                 }
-                let index = budget_index(profile, term.tier)?;
+                let index = budget_index(profile, machine_tier(engine, term.tier)?)?;
                 minimums[index] += term.minimum as u128 * term.unit_bytes as u128;
             }
         }
@@ -312,23 +316,18 @@ impl Ledger {
         let mut engines = Vec::new();
         let mut allocated = vec![0u128; profile.budgets.len()];
         for engine in &profile.engines {
-            let mandatory_allocation: Vec<(Tier, u64)> = engine
-                .limits
-                .memory
-                .mandatory
-                .iter()
-                .filter(|term| term.lifetime != Lifetime::Context)
-                .map(|term| (term.tier, term.bytes))
-                .collect();
+            let mandatory_allocation = machine_terms(engine, |lifetime| lifetime != Lifetime::Context)?;
             let mut elastic_allocation = Vec::new();
             for term in &engine.limits.memory.elastic {
-                let index = budget_index(profile, term.tier)?;
+                let index = budget_index(profile, machine_tier(engine, term.tier)?)?;
                 let engine_minimum: u128 = engine
                     .limits
                     .memory
                     .elastic
                     .iter()
-                    .filter(|other| budget_index(profile, other.tier) == Ok(index))
+                    .filter(|other| {
+                        machine_tier(engine, other.tier).and_then(|tier| budget_index(profile, tier)) == Ok(index)
+                    })
                     .map(|other| other.minimum as u128 * other.unit_bytes as u128)
                     .sum();
                 let engine_part = (spare[index] * engine.share as u128)
@@ -359,14 +358,7 @@ impl Ledger {
 
         let mut context_terms = BTreeMap::new();
         for engine in &profile.engines {
-            let terms: Vec<(Tier, u64)> = engine
-                .limits
-                .memory
-                .mandatory
-                .iter()
-                .filter(|term| term.lifetime == Lifetime::Context)
-                .map(|term| (term.tier, term.bytes))
-                .collect();
+            let terms = machine_terms(engine, |lifetime| lifetime == Lifetime::Context)?;
             context_terms.insert(engine.name.clone(), terms);
         }
 
@@ -456,9 +448,43 @@ fn record_admission(profile: &Profile, admission: &Admission) {
             instruments.ledger_bytes(tier_label(*tier), &plan.name, &term.name, *bytes);
         }
         for (term, (name, bytes)) in plan.limits.memory.elastic.iter().zip(&allocation.elastic) {
-            instruments.ledger_bytes(tier_label(term.tier), &plan.name, name, *bytes);
+            let tier =
+                machine_tier(plan, term.tier).expect("the ledger checked each tier when it admitted the profile");
+            instruments.ledger_bytes(tier_label(tier), &plan.name, name, *bytes);
         }
     }
+}
+
+/// Map the tier of a term to the machine tier (spec 2.4). A term names `device(i)`, a group index.
+///
+/// The machine device is `devices[i]` of the engine. A group index beyond the list is an error.
+fn machine_tier(engine: &EnginePlan, tier: Tier) -> Result<Tier, LedgerError> {
+    match tier {
+        Tier::Host => Ok(Tier::Host),
+        Tier::Device(index) => engine
+            .devices
+            .get(index as usize)
+            .map(|device| Tier::Device(*device))
+            .ok_or_else(|| {
+                LedgerError::Invalid(format!(
+                    "engine {} has a term on device({index}), but it has {} devices: fix the engine's limits or its profile",
+                    engine.name,
+                    engine.devices.len()
+                ))
+            }),
+    }
+}
+
+/// The mandatory terms of an engine whose lifetime the filter accepts, with machine tiers.
+fn machine_terms(engine: &EnginePlan, accept: impl Fn(Lifetime) -> bool) -> Result<Vec<(Tier, u64)>, LedgerError> {
+    engine
+        .limits
+        .memory
+        .mandatory
+        .iter()
+        .filter(|term| accept(term.lifetime))
+        .map(|term| Ok((machine_tier(engine, term.tier)?, term.bytes)))
+        .collect()
 }
 
 fn budget_index(profile: &Profile, tier: Tier) -> Result<usize, LedgerError> {

@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use nagaya::admission::{Factory, OpenError, PlanError, Registry};
+use nagaya::admission::{Factory, GroupDevice, OpenError, PlanError, Registry};
 use nagaya::evidence::Machine;
 use nagaya::inventory::{Device, Inventory};
 use nagaya::jobs::{JobBody, JobSpec, Ran};
@@ -20,17 +20,21 @@ use nagaya_telemetry::testing::log_lines;
 const PID: u32 = 7;
 
 fn fake() -> FakeAlways {
-    FakeAlways::with_slots(vec![SlotLimit { bytes: 256, count: 1 }])
+    FakeAlways::with_slots(vec![SlotLimit {
+        bytes: 256,
+        count: 1,
+        tokens: 4096,
+    }])
 }
 
 struct Simple;
 
 impl Factory for Simple {
-    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+    fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         Ok(fake().limits())
     }
 
-    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
         Ok(Box::new(fake()))
     }
 }
@@ -42,6 +46,7 @@ fn profile() -> PlacementProfile {
             kind: "simple".to_owned(),
             devices: vec![0],
             config: toml::Table::new(),
+            family: toml::Table::new(),
             share: 1,
             pin_identity: false,
         }],
@@ -108,6 +113,7 @@ fn failure_lines(root: &Path) -> Vec<String> {
         devices: vec![Device {
             id: 0,
             name: "device-0".to_owned(),
+            pci_address: "0000:00:00.0".to_owned(),
             memory_bytes: 1024,
             unified: false,
         }],

@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, ThreadId};
 use std::time::{Duration, Instant};
 
-use nagaya::admission::{AdmitError, Factory, OpenError, PlanError, Registry};
+use nagaya::admission::{AdmitError, Factory, GroupDevice, OpenError, PlanError, Registry};
 use nagaya::exit::ExitCode;
 use nagaya::inventory::{Device, Inventory};
 use nagaya::lifecycle;
@@ -28,8 +28,16 @@ struct ParkRecord {
 /// A fake with two slots. A `ParkFactory` fills each slot with one token, so a stop parks both.
 fn two_slots() -> FakeAlways {
     FakeAlways::with_slots(vec![
-        SlotLimit { bytes: 64, count: 1 },
-        SlotLimit { bytes: 256, count: 1 },
+        SlotLimit {
+            bytes: 64,
+            count: 1,
+            tokens: 4096,
+        },
+        SlotLimit {
+            bytes: 256,
+            count: 1,
+            tokens: 4096,
+        },
     ])
 }
 
@@ -45,6 +53,7 @@ fn engine(name: &str, kind: &str, devices: &[DeviceId]) -> EnginePlacement {
         kind: kind.to_owned(),
         devices: devices.to_vec(),
         config: toml::Table::new(),
+        family: toml::Table::new(),
         share: 1,
         pin_identity: false,
     }
@@ -79,6 +88,7 @@ fn inventory(ids: &[DeviceId]) -> Inventory {
             .map(|id| Device {
                 id: *id,
                 name: format!("device-{id}"),
+                pci_address: "0000:00:00.0".to_owned(),
                 memory_bytes: 1024,
                 unified: false,
             })
@@ -155,11 +165,11 @@ impl ParkFactory {
 }
 
 impl Factory for ParkFactory {
-    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+    fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         Ok(self.limits.clone())
     }
 
-    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
         let mut inner = two_slots();
         if self.filled {
             for slot in 0..2 {

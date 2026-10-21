@@ -11,6 +11,7 @@ fn engine(name: &str, devices: &[DeviceId]) -> EnginePlacement {
         kind: "fake".to_owned(),
         devices: devices.to_vec(),
         config: toml::Table::new(),
+        family: toml::Table::new(),
         share: 1,
         pin_identity: false,
     }
@@ -44,6 +45,7 @@ fn inventory(ids: &[DeviceId]) -> Inventory {
             .map(|id| Device {
                 id: *id,
                 name: format!("device-{id}"),
+                pci_address: "0000:00:00.0".to_owned(),
                 memory_bytes: 1024,
                 unified: false,
             })

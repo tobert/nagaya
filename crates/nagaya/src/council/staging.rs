@@ -128,7 +128,11 @@ mod tests {
 
     /// Feed `rows` tokens to slot 0 of a fake engine.
     fn fed(rows: u64) -> FakeAlways {
-        let mut engine = FakeAlways::with_slots(vec![SlotLimit { bytes: 16384, count: 1 }]);
+        let mut engine = FakeAlways::with_slots(vec![SlotLimit {
+            bytes: 16384,
+            count: 1,
+            tokens: 4096,
+        }]);
         // The fake takes 64 tokens in a pass.
         for from in (0..rows).step_by(64) {
             let to = rows.min(from + 64);
