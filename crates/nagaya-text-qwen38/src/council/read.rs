@@ -407,7 +407,6 @@ struct QueuePlan {
     bare_letters: Vec<u32>,
     /// The steps, in the order of the properties of `answers` in the queue tool's schema.
     steps: Vec<QueueStep>,
-    rendered_sha256: String,
     cursor: Cursor,
     control_text: Vec<ControlHit>,
 }
@@ -484,7 +483,6 @@ fn queue_plan(
         #[cfg(test)]
         hook: family.hook,
         prefix,
-        rendered_sha256: sha_of_escaped(family.tokenizer(), &escaped)?,
         escaped,
         tokens,
         bare_letters: family.bare_letters.clone(),
@@ -526,7 +524,9 @@ impl ReadPlan for QueuePlan {
             chosen = Some(self.bare_letters[before.options[best]]);
         }
         let Some(step) = self.steps.get(self.cursor.given) else {
-            return Ok(self.cursor.done(self.rendered_sha256.clone()));
+            // The hash covers all the text the read was conditioned on, up to the last letter and its quote (gogi).
+            let sha256 = sha_of_escaped(&self.tokenizer, &self.escaped)?;
+            return Ok(self.cursor.done(sha256));
         };
         self.escaped
             .push_str(if self.cursor.given == 0 { "{\"" } else { ", \"" });

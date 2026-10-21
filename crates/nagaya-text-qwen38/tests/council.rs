@@ -782,11 +782,6 @@ fn a_queue_read_has_the_tokens_of_the_call_that_the_template_writes() {
     assert_eq!(all.len() as u64, q["n_tokens"].as_u64().unwrap());
     assert_eq!(digest(&all), q["ids_sha256"].as_str().unwrap());
     assert_eq!(text(&run.prefix), q["tail"].as_str().unwrap());
-    assert_eq!(
-        run.sha256,
-        sha256_text(&text(&all)),
-        "the hash covers the text through the start of the call"
-    );
     assert_eq!(run.steps.len(), 2);
     let keys = q["key_texts"].as_array().unwrap();
     for (i, step) in run.steps.iter().enumerate() {
@@ -804,6 +799,9 @@ fn a_queue_read_has_the_tokens_of_the_call_that_the_template_writes() {
         // A queue read goes on from the step before, the first step too.
         assert_eq!((step.question, step.continues), (i, Continues::PreviousStep));
     }
+    // The hash covers all the text that the read was conditioned on: the call through the last letter that the read
+    // chose, which is the first letter here, and its closing quote (gogi "Decisions").
+    assert_eq!(run.sha256, sha256_text(&format!("{}A\"", text(&all))));
 }
 
 #[test]
