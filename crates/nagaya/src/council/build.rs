@@ -42,7 +42,8 @@ pub struct Shared {
     pub identity: [u8; 32],
     /// The limits of the engine.
     pub limits: Arc<Limits>,
-    /// The most tokens of one feed.
+    /// The most tokens of one pass of a feed. With a feed rule it is the block, and each span starts its passes at
+    /// its own start (spec 6.14).
     pub chunk: usize,
     /// The tokens of the vocabulary of the family. A logit row has this many values.
     pub vocab: usize,

@@ -86,6 +86,16 @@ impl FakeFeed {
         self
     }
 
+    /// Let a pass hold up to `inputs` tokens, more than one block. A feed that breaks the rule then fits a pass, so a
+    /// test can see it. A pass of an engine with stages still holds at most one residual buffer of rows.
+    pub fn with_max_pass_inputs(mut self, inputs: u32) -> Self {
+        self.limits.max_pass_inputs = inputs;
+        if let Err(message) = self.limits.check() {
+            panic!("the fake with a feed rule breaks a rule of its limits: {message}");
+        }
+        self
+    }
+
     /// Name the family library that the engine needs (spec 11.3).
     pub fn with_family(mut self, family: &str) -> Self {
         self.identity.family = family.to_owned();

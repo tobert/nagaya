@@ -1032,6 +1032,10 @@ Its `head` is null (11.3c). The reply rows come from decode quanta. The next bui
 prompt, and it feeds the reply by the rule. Reason: a head would need a second feed of the reply now. The next build
 does that feed only when a client asks for it.
 
+**The job path.** The council jobs take passes of `block` for an engine with a feed rule (`council/mod.rs`, the
+`chunk` of a build). A build starts each span at a held boundary or at 0, and a generation holds no head. Thus no job
+continues a span today, and rule 7 has no code yet. The tests are in `crates/nagaya/tests/council_feed.rs`.
+
 **Proposed** (claude-opus-5-5, 2026-10-21): drafts are a setting of the served model, not a bit setting of the
 engine. The nagaya's generation job makes the prompt-lookup drafts, as mkviolet does (`draft`, `mk_api.rs:336-347`,
 keys of 4 and 3 tokens, at most 7 drafts). Reason: drafts change no row that the store keeps. Thus a change of the

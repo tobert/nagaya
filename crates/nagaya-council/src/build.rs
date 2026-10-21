@@ -118,7 +118,8 @@ impl Step {
 
 /// The steps that bring a context from `kept` tokens to its end.
 ///
-/// A feed has at most `chunk` tokens and never crosses a boundary. A snapshot follows the feed that reaches each
+/// A feed has at most `chunk` tokens and never crosses a boundary. Each span starts its feeds at its own start, so an
+/// engine with a feed rule gets its split when `chunk` is the block (spec 6.14). A snapshot follows the feed that reaches each
 /// boundary after `kept`. A boundary at or before `kept` is held already and has no step.
 pub fn plan_steps(kept: usize, boundaries: &[Boundary], chunk: usize) -> Vec<Step> {
     assert!(chunk > 0, "a chunk has at least one token");
