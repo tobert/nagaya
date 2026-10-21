@@ -11,8 +11,8 @@ use gogi_proto::generation::{
     Finish, GenerationDone, GenerationRequest, Phase, ReplyStats, ReplyToolCall, TokenEvent, TokenStats,
 };
 use nagaya_abi::Kind;
-use nagaya_council::build::{BoundaryRecipe, boundary_recipes};
-use nagaya_council::family::{Boundary, Family, FamilyError, ParsedReply, ReplyCall, ReplyParser};
+use nagaya_council::build::{BoundaryRecipe, boundary_recipes, recipes_with_cut};
+use nagaya_council::family::{Boundary, Family, FamilyError, ParsedReply, Rendering, ReplyCall, ReplyParser};
 use nagaya_council::sampler::{Settings, pick};
 use nagaya_store::{ContentId, Reason, RecipeId};
 
@@ -92,8 +92,12 @@ pub(crate) struct GenerateThen {
     family: Arc<dyn Family>,
     context: Context,
     root: RecipeId,
-    /// The recipes of the boundaries of the context.
+    /// The recipes of the boundaries of the context. A build that starts from a cut gives them the cut too.
     recipes: Vec<RecipeId>,
+    /// The rendering of the context, without the generation prompt.
+    rendering: Rendering,
+    /// The cut that the build started from.
+    cut: Option<Boundary>,
     /// The tokens of the prompt: the context, then the generation prompt.
     prompt: Vec<u32>,
     /// The tokens of the context, without the generation prompt.
@@ -154,11 +158,30 @@ impl GenerateThen {
             Phase::Call | Phase::Unknown => {}
         }
         let n = self.sampled.len();
+        // The reply ends at this token when the parser ended it, or when it reaches a limit.
+        let end = if ended {
+            Some(None)
+        } else if n == self.max_tokens {
+            Some(Some(Finish::MaxTokens))
+        } else if self.prompt.len() + n >= self.context_tokens {
+            Some(Some(Finish::ContextFull))
+        } else {
+            None
+        };
+        let mut piece = step.piece;
+        let parsed = match end {
+            Some(_) => {
+                let parsed = self.parser.take().expect("a reply finishes once").finish();
+                piece.push_str(&tail_text(&parsed, step.phase)?);
+                Some(parsed)
+            }
+            None => None,
+        };
         if let Some(events) = &self.events {
             let seconds = self.started.elapsed().as_secs_f64();
             let event = TokenEvent {
                 id: chosen.token,
-                piece: step.piece,
+                piece,
                 phase: step.phase,
                 p: chosen.p,
                 h: chosen.h,
@@ -170,25 +193,18 @@ impl GenerateThen {
                 return Ok(Want::Cancel);
             }
         }
-        if ended {
-            return self.finish(None);
+        match (end, parsed) {
+            (Some(cut), Some(parsed)) => self.finish(cut, parsed),
+            _ => Ok(Want::Feed {
+                tokens: vec![chosen.token],
+                logits: true,
+                kind: Kind::Decode,
+            }),
         }
-        if n == self.max_tokens {
-            return self.finish(Some(Finish::MaxTokens));
-        }
-        if self.prompt.len() + n >= self.context_tokens {
-            return self.finish(Some(Finish::ContextFull));
-        }
-        Ok(Want::Feed {
-            tokens: vec![chosen.token],
-            logits: true,
-            kind: Kind::Decode,
-        })
     }
 
-    /// End the reply. `cut` names why a reply that did not end its turn stopped.
-    fn finish(&mut self, cut: Option<Finish>) -> Result<Want, ServiceError> {
-        let parsed = self.parser.take().expect("a reply finishes once").finish();
+    /// End the reply. `cut` names why a reply that did not end its turn stopped. `parsed` is the whole reply.
+    fn finish(&mut self, cut: Option<Finish>, parsed: ParsedReply) -> Result<Want, ServiceError> {
         self.finish = Some(match cut {
             Some(cut) => cut,
             None if parsed.calls.is_empty() => Finish::EndTurn,
@@ -207,7 +223,11 @@ impl GenerateThen {
             Err(FamilyError::Client(_)) => return Ok(self.done()),
             Err(error) => return Err(error.into()),
         };
-        let recipes = boundary_recipes(self.root, &rendering)?;
+        // The state has the boundaries of the build, the cut too.
+        let recipes = match self.cut {
+            Some(cut) => recipes_with_cut(self.root, &rendering, cut)?,
+            None => boundary_recipes(self.root, &rendering)?,
+        };
         // The slot holds the prompt and each sampled token but the last.
         let fed = self.prompt.len() + self.sampled.len() - 1;
         let tokens = &rendering.tokens[..rendering.end];
@@ -258,6 +278,29 @@ impl GenerateThen {
     }
 }
 
+/// The text that a parser released after the last token, for the step of that token.
+///
+/// gogi: "A part's pieces join to its text in done". A token event has one phase, so the tail joins the last step
+/// only in the phase of that step. Each marker of a family is one token, so a family never releases text of
+/// another phase after the last token. Such text is a defect of the family library (spec 8.5).
+fn tail_text(parsed: &ParsedReply, phase: Phase) -> Result<String, ServiceError> {
+    let mut text = String::new();
+    for step in &parsed.tail {
+        if step.piece.is_empty() {
+            continue;
+        }
+        if step.phase != phase {
+            return Err(ServiceError::internal(format!(
+                "the reply parser released {:?} in the phase {:?} after a last token of the phase {phase:?}; \
+                 a token event has one phase",
+                step.piece, step.phase
+            )));
+        }
+        text.push_str(&step.piece);
+    }
+    Ok(text)
+}
+
 /// The reply as the assistant message that a client appends. A reply with a call that did not parse has none: a
 /// client sends that call back as text.
 fn reply_message(parsed: &ParsedReply, ids: &[String]) -> Option<gogi_proto::message::Message> {
@@ -306,8 +349,15 @@ impl Then for GenerateThen {
 
     fn next(&mut self, got: Got) -> Result<Want, ServiceError> {
         match (&self.stage, got) {
-            (Stage::Building, Got::Built) => {
+            (Stage::Building, Got::Built(cut)) => {
                 self.stage = Stage::Sampling;
+                if let Some(cut) = cut {
+                    self.cut = Some(cut);
+                    self.recipes = recipes_with_cut(self.root, &self.rendering, cut)?
+                        .iter()
+                        .map(|recipe| recipe.recipe)
+                        .collect();
+                }
                 let tokens = self.prompt[self.end..].to_vec();
                 if tokens.is_empty() {
                     return Err(ServiceError::internal(
@@ -397,6 +447,13 @@ impl Service {
             context: context.clone(),
             root: self.root,
             recipes: recipes.iter().map(|recipe| recipe.recipe).collect(),
+            rendering: Rendering {
+                tokens: rendering.tokens[..end].to_vec(),
+                end,
+                boundaries: rendering.boundaries.clone(),
+                control_text: Vec::new(),
+            },
+            cut: None,
             prompt: rendering.tokens.clone(),
             end,
             settings,
@@ -416,17 +473,14 @@ impl Service {
         };
         let tokens: Arc<[u32]> = rendering.tokens[..end].into();
         let shared = Arc::clone(&self.shared);
-        let job = |tx| ContextBody::with(shared, tokens, recipes.clone(), room, "context_tokens", then, tx);
+        let cuts = self.cuts(context, &rendering)?;
+        let job = |tx| ContextBody::with(shared, tokens, recipes.clone(), room, "context_tokens", then, tx).cuts(cuts);
         let finished = self.run_context(job, Schedule::of(request.class, request.priority), None)?;
         let ids = finished
             .then
             .call_ids(finished.then.parsed.as_ref().map_or(0, |p| p.calls.len()));
         let reply = finished.then.reply();
-        let mut held: Vec<_> = recipes
-            .iter()
-            .zip(&finished.outcome.held)
-            .filter_map(|(recipe, id)| Some((recipe.boundary, (*id)?)))
-            .collect();
+        let mut held = super::held_boundaries(&finished.outcome);
         held.extend(reply.head);
         let kept = finished.outcome.kept as u64;
         Ok(GenerationDone {

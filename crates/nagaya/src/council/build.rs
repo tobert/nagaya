@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use nagaya_abi::{Engine, Kind, Limits, OutputsWanted, PassStatus, Segment, SegmentInputs, State, WriteResult};
 use nagaya_council::build::{BoundaryRecipe, Step, plan_chunks, plan_steps};
+use nagaya_council::family::Boundary;
 use nagaya_council::read::logit_row;
 use nagaya_sched::JobState;
 use nagaya_store::{
@@ -56,6 +57,43 @@ pub struct Outcome {
     pub kept: usize,
     /// For each boundary, the entry that the store holds at the end of the job.
     pub held: Vec<Option<ContentId>>,
+    /// The recipes of the boundaries, in the order of `held`. With a cut, they have the cut too.
+    pub recipes: Vec<BoundaryRecipe>,
+    /// The cut that the build started from, when it started from one. It is not a boundary of the context.
+    pub cut: Option<Boundary>,
+}
+
+/// A cut: the end of a message that the client did not mark, and the recipes of the context with a boundary there.
+pub type Cut = (Boundary, Vec<BoundaryRecipe>);
+
+/// Where a job starts: the recipes of its boundaries, the held entry of each, and the cut that it starts from.
+type Start = (Vec<BoundaryRecipe>, Vec<Option<ContentId>>, Option<Boundary>);
+
+/// Choose where a job starts. Give the recipes, the held entry of each, and the cut that the job starts from.
+///
+/// The job starts from the highest held boundary, or from a held cut above it (gogi "Terms": build, the longest
+/// held snapshot whose tokens begin the context). A cut holds a snapshot only when an earlier context had a
+/// boundary there, such as the head of a generation after its reply. `cuts` run from the highest down.
+fn choose(
+    shared: &Shared,
+    engine: &mut dyn Engine,
+    slot: u32,
+    recipes: &[BoundaryRecipe],
+    cuts: &[Cut],
+) -> Result<Start, ServiceError> {
+    let held = lookup_all(shared, engine, slot, recipes)?;
+    let reached = highest(&held).map_or(0, |index| recipes[index].boundary.tokens);
+    for (cut, with_cut) in cuts.iter().filter(|(cut, _)| cut.tokens > reached) {
+        let at = with_cut
+            .iter()
+            .position(|recipe| recipe.boundary == *cut)
+            .expect("the recipes of a cut have the cut");
+        if lookup_all(shared, engine, slot, &with_cut[at..=at])?[0].is_some() {
+            let held = lookup_all(shared, engine, slot, with_cut)?;
+            return Ok((with_cut.clone(), held, Some(*cut)));
+        }
+    }
+    Ok((recipes.to_vec(), held, None))
 }
 
 /// Look up the entry of each boundary. A miss and an ambiguous lookup give `None` (spec 6.6).
@@ -93,6 +131,7 @@ fn highest(held: &[Option<ContentId>]) -> Option<usize> {
 pub struct LookupBody {
     shared: Arc<Shared>,
     recipes: Vec<BoundaryRecipe>,
+    cuts: Vec<Cut>,
     tokens: usize,
     tx: Option<Sender<Result<Outcome, ServiceError>>>,
 }
@@ -108,9 +147,16 @@ impl LookupBody {
         Self {
             shared,
             recipes,
+            cuts: Vec::new(),
             tokens,
             tx: Some(tx),
         }
+    }
+
+    /// Let the lookup start from a held cut (see [`ContextBody::cuts`]).
+    pub fn cuts(mut self, cuts: Vec<Cut>) -> Self {
+        self.cuts = cuts;
+        self
     }
 
     fn look(&self, engine: &mut dyn Engine) -> Result<Outcome, ServiceError> {
@@ -119,12 +165,14 @@ impl LookupBody {
             return Err(too_large(self.tokens, "context_tokens"));
         };
         drop(pool);
-        let held = lookup_all(&self.shared, engine, slot, &self.recipes)?;
+        let (recipes, held, cut) = choose(&self.shared, engine, slot, &self.recipes, &self.cuts)?;
         let start = highest(&held);
         Ok(Outcome {
             from: start.and_then(|index| held[index]),
-            kept: start.map_or(0, |index| self.recipes[index].boundary.tokens),
+            kept: start.map_or(0, |index| recipes[index].boundary.tokens),
             held,
+            recipes,
+            cut,
         })
     }
 }
@@ -183,8 +231,9 @@ pub enum Want {
 /// What the slot gives back for the last want.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Got {
-    /// The build is complete. The slot holds the context when the work needs its state.
-    Built,
+    /// The build is complete. The slot holds the context when the work needs its state. The build started from the
+    /// cut, when it names one: then the boundaries of the state have the cut too.
+    Built(Option<Boundary>),
     /// The feed is complete. The row is there when the feed asked for it.
     Fed(Option<Vec<f32>>),
     /// The mark or the rewind is complete.
@@ -249,6 +298,10 @@ pub struct ContextBody<T: Then> {
     shared: Arc<Shared>,
     tokens: Arc<[u32]>,
     recipes: Vec<BoundaryRecipe>,
+    /// The cuts where the job may start, from the highest down.
+    cuts: Vec<Cut>,
+    /// The cut that the job started from.
+    cut: Option<Boundary>,
     /// The tokens that the slot must hold when the job takes it: the context, and what the work feeds after it when
     /// the job knows that.
     room: usize,
@@ -310,6 +363,8 @@ impl<T: Then> ContextBody<T> {
             shared,
             tokens,
             recipes,
+            cuts: Vec::new(),
+            cut: None,
             room,
             room_param,
             lease: None,
@@ -325,6 +380,13 @@ impl<T: Then> ContextBody<T> {
             then: Some(then),
             tx: Some(tx),
         }
+    }
+
+    /// Let the job start from a held cut above its highest held boundary. A cut is the end of a message that the
+    /// client did not mark. `cuts` run from the highest down.
+    pub fn cuts(mut self, cuts: Vec<Cut>) -> Self {
+        self.cuts = cuts;
+        self
     }
 
     fn slot(&self) -> u32 {
@@ -359,6 +421,8 @@ impl<T: Then> ContextBody<T> {
                 from: self.from,
                 kept: self.kept,
                 held: std::mem::take(&mut self.held),
+                recipes: std::mem::take(&mut self.recipes),
+                cut: self.cut,
             },
             then: self.then.take().expect("a job finishes once"),
         };
@@ -390,9 +454,10 @@ impl<T: Then> ContextBody<T> {
             )));
         }
         if self.recipes.is_empty() {
-            return self.next_want(engine, Got::Built);
+            return self.next_want(engine, Got::Built(self.cut));
         }
-        self.held = lookup_all(&self.shared, engine, slot, &self.recipes)?;
+        let (recipes, held, cut) = choose(&self.shared, engine, slot, &self.recipes, &self.cuts)?;
+        (self.recipes, self.held, self.cut) = (recipes, held, cut);
         let last = self.recipes.len() - 1;
         let mut candidate = highest(&self.held);
         while let Some(index) = candidate {
@@ -442,7 +507,7 @@ impl<T: Then> ContextBody<T> {
         let boundaries: Vec<_> = self.recipes.iter().map(|recipe| recipe.boundary).collect();
         let steps = plan_steps(self.kept, &boundaries, self.shared.chunk);
         if steps.is_empty() {
-            return self.next_want(engine, Got::Built);
+            return self.next_want(engine, Got::Built(self.cut));
         }
         let kinds = steps.iter().map(Step::kind).collect();
         self.units = steps.into_iter().map(Unit::Build).collect();
@@ -574,7 +639,7 @@ impl<T: Then> ContextBody<T> {
         }
         match got {
             Some(got) => self.next_want(engine, got),
-            None if self.building => self.next_want(engine, Got::Built),
+            None if self.building => self.next_want(engine, Got::Built(self.cut)),
             None => unreachable!("the last unit of a want gives back what it did"),
         }
     }

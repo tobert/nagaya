@@ -967,8 +967,15 @@ and the engine adds its own spans under the quantum. Today, neither engine carri
 Built: the spans `nagaya.process` (the run, with `exit_code`), `nagaya.start` and `nagaya.stop` (with `engines` and
 `outcome`), and `nagaya.quantum` (from `ObservedScheduler`). A failure marks its span as an error. The function
 `adopt_parent` makes a span the child of the caller's span from `traceparent` and `tracestate`. It records an invalid
-header in the attribute `nagaya.traceparent.invalid`. Not built: the HTTP server span and `nagaya.job`. The HTTP code
-and the job path add them, and they call `adopt_parent` for each request.
+header in the attribute `nagaya.traceparent.invalid`.
+
+The HTTP server span is built in `observe` (`crates/nagaya/src/http/mod.rs`). It calls `adopt_parent` for each
+request. Not built: `nagaya.job`. The job path adds it.
+
+Decided by senpai 2026-10-20 night (vetoable). The route template is axum's, such as `/council/v2/pins/{owner}`. A
+request that matches no route has the span `<METHOD>` alone, and the `http.route` value `unmatched`. The span has the
+attributes `http.request.method`, `http.route`, `http.response.status_code` and `request_id`. A status of 500 or more
+marks the span as an error. The span name has no `nagaya.` prefix, so it has the default rate of 9.3.
 
 **9.3 Sampling.** The nagaya uses kaijutsu's rule. It always keeps errors and spans whose parent is sampled. It
 keeps 100% of the spans in some dot-qualified prefixes and 10% of the others. `nagaya.` and `council.` are 100%
@@ -1045,10 +1052,14 @@ code defines an instrument in the commit that adds its call site. The table show
 | `nagaya.ledger.bytes`, `nagaya.ledger.refusals` | `Ledger::admit` and `Ledger::admit_context` in `crates/nagaya-ledger/src/lib.rs` | `crates/nagaya-ledger/tests/telemetry.rs` |
 | `nagaya.store.bytes`, `nagaya.store.entries`, `nagaya.store.lookups`, `nagaya.store.evictions`, `nagaya.store.restores` | `Store::open`, `put`, `evict`, `remove`, `lookup` and `restore` in `crates/nagaya-store/src/lib.rs` | `crates/nagaya-store/tests/telemetry.rs` |
 | `nagaya.engine.state` | `lifecycle::start` and `lifecycle::stop` in `crates/nagaya/src/lifecycle.rs` | `crates/nagaya/tests/telemetry.rs` |
+| `http.server.request.duration` | `observe` in `crates/nagaya/src/http/mod.rs` | `crates/nagaya/tests/http_telemetry.rs` |
 
 These instruments have no definition yet, because they have no call site: `nagaya.quantum.tokens`, `nagaya.io.bytes`,
-`nagaya.arena.handoff`, `http.server.request.duration` and the device sensors. The job path, the HTTP code and the
-IO code add each one with its call site.
+`nagaya.arena.handoff` and the device sensors. The job path and the IO code add each one with its call site.
+
+`http.server.request.duration` runs from the start of a request to its response head. Its `status` is the HTTP status
+as a number. A stream ends later than its response head, so the point does not cover the reply. Decided by senpai
+2026-10-20 night (vetoable).
 
 **9.6 Evidence on failure.** Before and after a quantum that fails, the nagaya reads the machine's counters. It logs
 the change with the failure. mk reads these counters: KFD evicted ms, MemAvailable, GTT, and from `/proc/vmstat`
@@ -1151,7 +1162,7 @@ needs no new dependency. A later step can use a signal stream from `tokio` inste
 |---|---|---|
 | 0 | a clean stop | no restart |
 | 1 | a crash | restart |
-| 3 | a refusal to start: a bad bootstrap config (2.1), a probe error (2.1), a profile that does not fit, a canary mismatch at start, a mismatch of a pinned identity (12.1), of the library pin, of a part size or of the weight arena size, a store that does not open, or a gossip bind that fails | `RestartPreventExitStatus=3` |
+| 3 | a refusal to start: a bad bootstrap config (2.1), a probe error (2.1), a profile that does not fit, a canary mismatch at start, a mismatch of a pinned identity (12.1), of the library pin, of a part size or of the weight arena size, a store that does not open, a gossip bind or an HTTP bind that fails, or a council service that does not attach (11.7) | `RestartPreventExitStatus=3` |
 | 4 | a planned restart: a new profile (2.3, 3.3) | `RestartForceExitStatus=4` |
 
 The restart policy follows mk's unit: `Restart=on-failure`, `RestartSec=30`, and at most 3 starts in 600 s.
@@ -1412,9 +1423,12 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
 - **Proposed** (Claude Sonnet 5.5, 2026-10-20), what a build lists. The response lists the boundaries that the
   store holds when the build ends. A boundary that eviction removed, below the start of the build, is not made
   again. A dry run feeds nothing and lists no snapshot.
-- **Proposed** (Claude Sonnet 5.5, 2026-10-20), the head of a dry run. A dry run reports the head only when the
-  store holds it. Otherwise the head is null. gogi types `head` as required, so step 6 needs Amy to choose: change
-  gogi, or name the recipe.
+- The head of a dry run. A dry run reports the held head when the store holds it. Otherwise the head is `recipe:` and
+  the hex of the head's recipe. It names the state that a build would make. No store entry has the id, so a snapshot
+  read or a pin of it finds nothing.
+
+  Reason: gogi types `head` as required, and gogi is the contract. This settles a note of Claude Sonnet 5.5.
+  Decided by senpai 2026-10-20 night (vetoable).
 - **Proposed** (Claude Sonnet 5.5, 2026-10-20), the pin owner. gogi names an owner with text, and the store names
   it with a `u64`. The service keeps the text and gives the store the first 8 bytes of the BLAKE3 hash of the text. A
   restart keeps the text in `pins.json` in the store directory. Entries that builds put have the owner 1.
@@ -1440,6 +1454,18 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
 - A generation holds its head after the reply when two facts hold. The rendering of the context with the reply has
   the boundaries of the prompt before the reply. The slot holds a prefix of that rendering, at most 8 tokens short.
   Then the job feeds the rest and puts the snapshot. Otherwise `head` is null.
+- A build can start at a cut: the end of a message that the client did not mark, where the rendering keeps it. It
+  starts there when the store holds a snapshot at the cut and at no higher boundary. An earlier context made that
+  snapshot at a boundary of its own, such as the head of a generation after its reply. Reason: gogi's build starts
+  from the longest held snapshot whose tokens begin the context, and the next request sends the reply unmarked.
+- A seal changes bits, so a build from a cut keeps the cut among the boundaries of its state. Its later snapshots
+  have recipes with the cut, and the response lists no snapshot at the cut. Thus a snapshot never holds a seal
+  that its recipe does not name (gogi "Boundaries are content"). The service finds the cuts with a second render,
+  with every message marked.
+- A reply parser can release text after the last token, such as text that it held back as a possible marker. The
+  service adds that text to the piece of the last token event. Thus the pieces of a part join to its text in
+  `done` (gogi "Streams"). The text must have the phase of the last token. Text of another phase is an internal error,
+  because each marker of a family is one token.
 - The service names the calls of a reply `call_<16 hex digits>_<index>`. The digits come from a BLAKE3 hash of the
   prompt and the reply. Thus a greedy replay gives the same ids.
 - A generation that sends no seed takes one from the hash keys of the Rust standard library, which the operating
@@ -1479,6 +1505,37 @@ An unexpected failure is a 500 `internal`, and the process stops (8.5).
 
 **11.6 Binding.** The HTTP and gossip listen addresses and seed peers are in the bootstrap config (2.1). (mkviolet
 has a tailnet address in its code.)
+
+**11.7 The HTTP routes.** The process serves the council routes with `axum` on the control runtime
+(`crates/nagaya/src/http`). It starts the server after `READY=1`, and it logs `http listening on <address>`. These
+rules are each "Decided by senpai 2026-10-20 night (vetoable)".
+
+- The process serves an opened engine when its kind has a family library. The kind `fake-toy` has the toy family
+  (11.3b). The kind `mk-qwen38-gfx1151` has the Qwen3.8 family, from the first shard of `MK_SHARDS`. The tokenizer
+  hash of that family must equal the `tokenizer_hash` of the engine identity. Thus the identity selects the library
+  (11.3). Another kind is not a served model, and the log says so.
+- The served model is the `model` of the engine identity, as gossip publishes it (2.3). It has no alias and no
+  `device` yet. Its `context_tokens` is 4096, or mk's `MAX_CONTEXT` for mk.
+- A process serves at most one model in milestone 12. The specs and the pins of a service are files in the store
+  directory, and two services would write one file. A profile with two served engines refuses the start (exit 3).
+- Specs, pins and snapshots belong to the server. Their routes use the one service. With no served model, they are
+  a 503 `unavailable`.
+- A service call blocks, so each call runs on a call thread of its own, on the pool CPUs (3.2a). At most 64 calls
+  run at once. A request past that is a 429 `busy`. A panic in a call is a 500 `internal`.
+- A request body has at most 16 MiB. A larger body is a 413 `too_large` that names `body`.
+- A route that does not exist is a 404 `not_found`, also for a known path with another method.
+- A request id is `req_<start time in hex>_<count>`. It differs between requests and between runs.
+- A ledger that refuses the charge of a context is a 429 `busy`. A job that a stop cancelled is a 503 `unavailable`.
+- An internal error is a 500. The process then stops with exit 1 (8.5).
+- A stream waits for its first event before it sends the status. Thus a request that fails before its first token
+  gets a status response. A later failure is an `error` event. At most 256 events wait for a slow client. A full
+  queue holds the generation back, and it drops no event.
+- A closed stream ends the forward thread, so the generation stops at its next token and holds no head.
+- A control text hit in a message of a context, `message:<i>`, is not in a response. gogi names only the places
+  `case`, `spec` and `suffix:<i>` (gogi rule 2).
+- A stop first sets every served model to `draining`, so a new request is a 503 `model_unavailable`. Then the
+  engines stop (10.3), and the server waits at most 2 s for its open requests.
+- The routes `/nagaya/v1` (11.4a) and the status feed (9.7) are not built yet.
 
 ## 12. Identity
 

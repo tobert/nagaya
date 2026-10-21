@@ -1,0 +1,206 @@
+//! gogi's conformance suite against the nagaya process with the fake engine (milestone 12 step 6, spec 11.1).
+//!
+//! The process is the binary, built with the feature `fake`. Its profile has one engine of the kind `fake-toy`: the
+//! fake engine over the toy vocabulary, which the process serves with the toy family (spec 11.3b).
+
+mod support;
+
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+use gogi_conformance::{Opts, Report, Status, run};
+use support::Lines;
+
+const PROFILE: &str = "[[engines]]\nname = \"toy\"\nkind = \"fake-toy\"\ndevices = [0]\nshare = 1\n\
+     [[budgets]]\ntiers = [\"device(0)\"]\nbytes = 4096\n\
+     [[budgets]]\ntiers = [\"host\"]\nbytes = 33554432\n\
+     [store]\nnvme = 67108864\nhost = 16777216\n";
+
+/// A free TCP port on loopback. The port stays the same through a restart.
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// A nagaya process with the fake-toy engine, and its directory.
+struct Nagaya {
+    directory: tempfile::TempDir,
+    port: u16,
+    child: Option<Child>,
+    lines: Option<Lines>,
+}
+
+impl Nagaya {
+    fn start() -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        let store = directory.path().join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(store.join("profile.toml"), PROFILE).unwrap();
+        let mut nagaya = Self {
+            directory,
+            port: free_port(),
+            child: None,
+            lines: None,
+        };
+        nagaya.spawn();
+        nagaya
+    }
+
+    fn config(&self) -> PathBuf {
+        let path = self.directory.path().join("nagaya.toml");
+        let store: &Path = &self.directory.path().join("store");
+        std::fs::write(
+            &path,
+            format!(
+                "http_bind = \"127.0.0.1:{}\"\ngossip_bind = \"127.0.0.1:0\"\nstore_dir = \"{}\"\n\
+                 node_name = \"conformance\"\npark_budget_secs = 1\n",
+                self.port,
+                store.display()
+            ),
+        )
+        .unwrap();
+        path
+    }
+
+    fn spawn(&mut self) {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_nagaya"))
+            .env("NAGAYA_CONFIG", self.config())
+            .env_remove("NOTIFY_SOCKET")
+            .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut lines = Lines::new(child.stderr.take().unwrap());
+        let addr = lines.wait_for("http listening on ", Duration::from_secs(60));
+        assert_eq!(addr, format!("127.0.0.1:{}", self.port));
+        self.child = Some(child);
+        self.lines = Some(lines);
+    }
+
+    fn url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    /// Send SIGTERM and wait for the exit. Give the exit code.
+    fn terminate(&mut self) -> Option<i32> {
+        let mut child = self.child.take().unwrap();
+        // SAFETY: the child pid is live, and SIGTERM is the stop signal of spec 10.3.
+        assert_eq!(unsafe { kill(child.id() as i32, 15) }, 0);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                return status.code();
+            }
+            if Instant::now() > deadline {
+                let seen = self
+                    .lines
+                    .as_mut()
+                    .map(|lines| lines.drain().join("\n"))
+                    .unwrap_or_default();
+                panic!("the process did not exit after SIGTERM; its stderr:\n{seen}");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+impl Drop for Nagaya {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+unsafe extern "C" {
+    fn kill(pid: i32, signal: i32) -> i32;
+}
+
+fn failures(report: &Report) -> Vec<String> {
+    report
+        .checks
+        .iter()
+        .filter(|check| check.status == Status::Fail)
+        .map(|check| format!("{}: {}", check.name, check.detail))
+        .collect()
+}
+
+#[test]
+fn gogi_conformance_passes_against_the_process_with_the_fake_engine() {
+    let mut nagaya = Nagaya::start();
+    let report = run(
+        Opts {
+            url: nagaya.url(),
+            restart: None,
+            model: None,
+        },
+        false,
+    );
+    let failed = failures(&report);
+    let skipped: Vec<String> = report
+        .checks
+        .iter()
+        .filter(|check| check.status == Status::Skip)
+        .map(|check| format!("{}: {}", check.name, check.detail))
+        .collect();
+    let stderr = nagaya.lines.as_mut().unwrap().drain().join("\n");
+    assert!(
+        failed.is_empty(),
+        "{} failed:\n{:#?}\nskipped: {skipped:#?}\nstderr:\n{stderr}",
+        failed.len(),
+        failed
+    );
+    assert!(report.checks.len() > 150, "{}", report.summary());
+    // The generation checks ran: none of them is a skip.
+    for name in [
+        "generation holds its head",
+        "stream reasoning and content pieces join to done's text",
+    ] {
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|check| check.name == name && check.status == Status::Ok),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        nagaya.terminate(),
+        Some(0),
+        "a SIGTERM stops the process cleanly (spec 10.3)"
+    );
+}
+
+#[test]
+fn an_http_bind_that_fails_refuses_the_start() {
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let store = directory.path().join("store");
+    std::fs::create_dir_all(&store).unwrap();
+    std::fs::write(store.join("profile.toml"), PROFILE).unwrap();
+    let config = directory.path().join("nagaya.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "http_bind = \"{}\"\ngossip_bind = \"127.0.0.1:0\"\nstore_dir = \"{}\"\nnode_name = \"taken\"\n",
+            taken.local_addr().unwrap(),
+            store.display()
+        ),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_nagaya"))
+        .env("NAGAYA_CONFIG", &config)
+        .env_remove("NOTIFY_SOCKET")
+        .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(3), "{stderr}");
+    assert!(stderr.contains("cannot bind the HTTP address"), "{stderr}");
+}

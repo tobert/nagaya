@@ -262,19 +262,23 @@ impl Fixture {
         host_store: Option<u64>,
         config: ServiceConfig,
     ) -> Self {
+        Self::with_family(factory, Arc::new(ToyFamily::new()), host_budget, host_store, config)
+    }
+
+    /// A fixture whose engines come from `factory`, and whose service uses `family`.
+    pub fn with_family(
+        factory: TermFactory,
+        family: Arc<dyn nagaya_council::family::Family>,
+        host_budget: u64,
+        host_store: Option<u64>,
+        config: ServiceConfig,
+    ) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let (process, _) = start(directory.path(), factory, host_budget, host_store);
         let clock = Arc::new(AtomicU64::new(1_000_000));
         let reader = Arc::clone(&clock);
         let read: Clock = Arc::new(move || reader.fetch_add(TICK_MS, Ordering::SeqCst));
-        let service = Service::attach_with_clock(
-            process.ports(),
-            Arc::new(ToyFamily::new()),
-            directory.path(),
-            config,
-            read,
-        )
-        .unwrap();
+        let service = Service::attach_with_clock(process.ports(), family, directory.path(), config, read).unwrap();
         Self {
             service,
             process,
