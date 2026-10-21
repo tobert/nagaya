@@ -59,3 +59,12 @@ impl std::error::Error for Error {
         }
     }
 }
+
+impl From<nagaya_jinja::Error> for Error {
+    fn from(e: nagaya_jinja::Error) -> Self {
+        match e {
+            nagaya_jinja::Error::Json(m) => Error::Json(m),
+            nagaya_jinja::Error::Template(m) => Error::Template(m),
+        }
+    }
+}

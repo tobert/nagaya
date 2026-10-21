@@ -913,6 +913,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nagaya-jinja"
+version = "0.1.0"
+dependencies = [
+ "minijinja",
+]
+
+[[package]]
 name = "nagaya-ledger"
 version = "0.1.0"
 dependencies = [
@@ -980,8 +987,8 @@ name = "nagaya-text-qwen38"
 version = "0.1.0"
 dependencies = [
  "gogi-proto",
- "minijinja",
  "nagaya-council",
+ "nagaya-jinja",
  "serde_json",
  "sha2",
 ]
