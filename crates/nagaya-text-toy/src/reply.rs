@@ -42,6 +42,10 @@ impl ReplyParser for ToyReplyParser {
         })
     }
 
+    fn ended(&self) -> bool {
+        self.ended
+    }
+
     fn finish(self: Box<Self>) -> ParsedReply {
         let reply = self.inner.finish();
         ParsedReply {

@@ -665,3 +665,15 @@ fn the_fake_engine_gives_logit_rows_as_wide_as_the_vocabulary_of_the_family() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].bytes.len(), f.vocab_size() * 4);
 }
+
+#[test]
+fn a_reply_parser_says_when_the_reply_ended() {
+    let f = family();
+    let mut parser = f.reply_parser(true);
+    for token in [u32::from(b'h'), toy::ENDTHINK, u32::from(b'o'), toy::CALL, toy::ENDCALL] {
+        parser.push(token).unwrap();
+        assert!(!parser.ended(), "token {token} does not end the reply");
+    }
+    parser.push(toy::END).unwrap();
+    assert!(parser.ended(), "<end> ends the reply");
+}
