@@ -137,6 +137,8 @@ fn gate_limits(mandatory_bytes: u64) -> Limits {
         bit_dependence: Vec::new(),
         taps: Vec::new(),
         checkpoint_grain: None,
+        feed: None,
+        residual_row_bytes: 0,
     }
 }
 

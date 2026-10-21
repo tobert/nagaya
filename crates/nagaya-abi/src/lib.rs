@@ -148,6 +148,8 @@ pub struct PartLimits {
     pub shape: Vec<u64>,
     /// The name of the block format, when the dtype is `U8` for a block format. `None` otherwise.
     pub block_format: Option<String>,
+    /// The stage that holds the part (engine-abi D1). An engine with no stages gives 0.
+    pub stage: u32,
 }
 
 impl PartLimits {
@@ -381,6 +383,94 @@ pub struct Limits {
     pub taps: Vec<TapLimit>,
     /// The token count at which an engine keeps a state that it can copy, or `None` when it keeps none (spec 6.13).
     pub checkpoint_grain: Option<u64>,
+    /// The bytes of one residual row at a boundary between two stages (engine-abi D1). An engine with no stages
+    /// gives 0.
+    pub residual_row_bytes: u64,
+    /// The feed rule, when the bits of the engine depend on the token count of a pass (engine-abi D11).
+    pub feed: Option<FeedRule>,
+}
+
+/// The feed rule of an engine (engine-abi D11, spec 6.14).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FeedRule {
+    /// The tokens of each pass from the start of a span. The last pass of a span holds the remainder.
+    pub block: u64,
+}
+
+/// The name of the mandatory host term that holds the residual buffers (engine-abi D1).
+pub const RESIDUAL_TERM: &str = "residual";
+
+impl Limits {
+    /// The rows of one residual buffer: `feed.block`, or `max_pass_inputs` for an engine with no feed rule.
+    pub fn residual_rows(&self) -> u64 {
+        self.feed.map_or(u64::from(self.max_pass_inputs), |feed| feed.block)
+    }
+
+    /// The bytes of the residual term: two buffers at each boundary between stages (engine-abi D1).
+    pub fn residual_bytes(&self) -> u64 {
+        let boundaries = self.stages.len().saturating_sub(1) as u64;
+        2 * boundaries * self.residual_rows() * self.residual_row_bytes
+    }
+
+    /// Check the rules of the stages and the feed rule (engine-abi D1, D11). The message says which rule breaks.
+    pub fn check(&self) -> Result<(), String> {
+        if let Some(feed) = self.feed {
+            if feed.block == 0 || feed.block > u64::from(self.max_pass_inputs) {
+                return Err(format!(
+                    "the feed block is {} tokens; it must be above 0 and at most max_pass_inputs ({})",
+                    feed.block, self.max_pass_inputs
+                ));
+            }
+            if self.segments_exact || self.checkpoint_grain.is_some() {
+                return Err("an engine with a feed rule declares no segments_exact and no checkpoint grain".to_owned());
+            }
+        }
+        let staged = self.capabilities.contains(&Capability::Stages);
+        let stages = if staged { self.stages.len() } else { 1 };
+        if let Some(part) = self.parts.iter().find(|part| part.stage as usize >= stages) {
+            return Err(format!(
+                "the part `{}` names stage {}, but the engine has {stages} stages",
+                part.name, part.stage
+            ));
+        }
+        if !staged {
+            return Ok(());
+        }
+        if self.stages.len() < 2 {
+            return Err(format!(
+                "an engine with stages declares at least two, not {}",
+                self.stages.len()
+            ));
+        }
+        for (index, stage) in self.stages.iter().enumerate() {
+            if self.stages[..index].iter().any(|other| other.device == stage.device) {
+                return Err(format!(
+                    "two stages run on device {}; each stage has its own device",
+                    stage.device
+                ));
+            }
+        }
+        if self.capabilities.contains(&Capability::Seal) || self.checkpoint_grain.is_some() {
+            return Err("an engine with stages declares no seal and no checkpoint grain in v0".to_owned());
+        }
+        if self.residual_row_bytes == 0 {
+            return Err("an engine with stages declares residual_row_bytes above 0".to_owned());
+        }
+        let expected = self.residual_bytes();
+        let term = self
+            .memory
+            .mandatory
+            .iter()
+            .find(|term| term.name == RESIDUAL_TERM)
+            .ok_or_else(|| format!("an engine with stages declares the mandatory term `{RESIDUAL_TERM}`"))?;
+        if term.tier != Tier::Host || term.lifetime != Lifetime::Engine || term.bytes != expected {
+            return Err(format!(
+                "the term `{RESIDUAL_TERM}` is {} bytes in {:?} for {:?}; it must be {expected} host bytes for the engine",
+                term.bytes, term.tier, term.lifetime
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// The result of a pass.
@@ -562,6 +652,101 @@ pub trait Seal {
     fn seal(&mut self, state: State) -> Result<(), SealError>;
 }
 
+/// A host buffer of residual rows between two stages (engine-abi D1). The nagaya owns it, so a stage never allocates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Residual {
+    row_bytes: usize,
+    capacity: usize,
+    rows: usize,
+    bytes: Vec<u8>,
+}
+
+impl Residual {
+    /// Make a buffer of `capacity` rows of `row_bytes` bytes. It holds no row.
+    pub fn new(row_bytes: usize, capacity: usize) -> Self {
+        Self {
+            row_bytes,
+            capacity,
+            rows: 0,
+            bytes: vec![0; row_bytes * capacity],
+        }
+    }
+
+    /// The bytes of one row.
+    pub fn row_bytes(&self) -> usize {
+        self.row_bytes
+    }
+
+    /// The most rows that the buffer holds.
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// The rows that the last stage wrote.
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+
+    /// The bytes of the rows that the last stage wrote.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes[..self.rows * self.row_bytes]
+    }
+
+    /// Hold `rows` rows, and give their bytes to write. A count above the capacity is refused and changes nothing.
+    pub fn write(&mut self, rows: usize) -> Result<&mut [u8], String> {
+        if rows > self.capacity {
+            return Err(format!(
+                "a stage writes {rows} residual rows; the buffer holds {}",
+                self.capacity
+            ));
+        }
+        self.rows = rows;
+        Ok(&mut self.bytes[..rows * self.row_bytes])
+    }
+}
+
+/// What a stage pass gives (engine-abi D1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StageOut {
+    /// A stage before the last one wrote the residual.
+    Residual {
+        /// The pass status.
+        status: PassStatus,
+        /// The elapsed milliseconds.
+        ms: u64,
+    },
+    /// The last stage gave the outputs of the pass.
+    Last(PassOut),
+}
+
+/// The handle of one stage. It moves to the thread of its device, and it makes every call to that device.
+pub trait StageHandle {
+    /// Run this stage of one pass. A stage after the first reads `residual`, and a stage before the last writes it.
+    fn stage_pass(&mut self, segments: &[Segment], residual: &mut Residual) -> Result<StageOut, PassError>;
+
+    /// The part capability for the parts of this stage only. A part of another stage is refused.
+    fn parts(&mut self) -> Option<&mut dyn Parts> {
+        None
+    }
+
+    /// The slot capability for the parts of this stage only.
+    fn slots(&mut self) -> Option<&mut dyn Slots> {
+        None
+    }
+
+    /// The coverage capability for the parts of this stage only.
+    fn coverage(&mut self) -> Option<&mut dyn Coverage> {
+        None
+    }
+}
+
+/// The stage capability (engine-abi D1).
+pub trait Stages {
+    /// Give one handle for each stage, in stage order. The first call gives them all, and a later call gives none.
+    /// After it, `Engine::pass` refuses, and the `Engine` gives no parts, slots, coverage or seal.
+    fn take_handles(&mut self) -> Vec<Box<dyn StageHandle + Send>>;
+}
+
 /// The core trait that every engine implements.
 pub trait Engine {
     /// The identity of the engine and its weights.
@@ -593,6 +778,11 @@ pub trait Engine {
 
     /// The slot capability, when the engine has it.
     fn slots(&mut self) -> Option<&mut dyn Slots> {
+        None
+    }
+
+    /// The stage capability, when the engine has it.
+    fn stages(&mut self) -> Option<&mut dyn Stages> {
         None
     }
 }

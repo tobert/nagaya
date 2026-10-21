@@ -598,6 +598,7 @@ impl Engine for CellsOnlyConstantRead {
                 dtype: Dtype::U8,
                 shape: vec![Self::ROW as u64],
                 block_format: None,
+                stage: 0,
             }],
             inputs: Inputs::Tokens,
             devices: vec![0],
@@ -621,6 +622,8 @@ impl Engine for CellsOnlyConstantRead {
             bit_dependence: Vec::new(),
             taps: Vec::new(),
             checkpoint_grain: None,
+            feed: None,
+            residual_row_bytes: 0,
         }
     }
 
@@ -1233,6 +1236,7 @@ impl NanAfterAPass {
                     dtype: Dtype::F32,
                     shape: vec![4],
                     block_format: None,
+                    stage: 0,
                 },
                 PartLimits {
                     name: "rows".to_owned(),
@@ -1240,6 +1244,7 @@ impl NanAfterAPass {
                     dtype: Dtype::U8,
                     shape: vec![8],
                     block_format: None,
+                    stage: 0,
                 },
             ],
             inputs: Inputs::Tokens,
@@ -1264,6 +1269,8 @@ impl NanAfterAPass {
             bit_dependence: Vec::new(),
             taps: Vec::new(),
             checkpoint_grain: None,
+            feed: None,
+            residual_row_bytes: 0,
         };
         Self {
             limits,
@@ -1421,6 +1428,8 @@ fn limits_with(mandatory_bytes: u64) -> Limits {
         bit_dependence: Vec::new(),
         taps: Vec::new(),
         checkpoint_grain: None,
+        feed: None,
+        residual_row_bytes: 0,
     }
 }
 

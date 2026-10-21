@@ -188,6 +188,7 @@ impl Fake {
                 dtype: Dtype::U8,
                 shape: vec![16],
                 block_format: None,
+                stage: 0,
             },
             PartLimits {
                 name: "cells".to_owned(),
@@ -195,6 +196,7 @@ impl Fake {
                 dtype: Dtype::U8,
                 shape: vec![8],
                 block_format: None,
+                stage: 0,
             },
             PartLimits {
                 name: "ring".to_owned(),
@@ -202,6 +204,7 @@ impl Fake {
                 dtype: Dtype::U8,
                 shape: vec![8],
                 block_format: None,
+                stage: 0,
             },
             PartLimits {
                 name: "pooled".to_owned(),
@@ -209,6 +212,7 @@ impl Fake {
                 dtype: Dtype::U8,
                 shape: vec![8],
                 block_format: None,
+                stage: 0,
             },
         ];
         let limits = Limits {
@@ -257,6 +261,8 @@ impl Fake {
             bit_dependence: Vec::new(),
             taps: Vec::new(),
             checkpoint_grain: None,
+            feed: None,
+            residual_row_bytes: 0,
         };
         let slots = (0..limits.slots.iter().map(|slot| slot.count).sum())
             .map(|_| SlotData::new(&parts))

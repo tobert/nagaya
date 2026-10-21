@@ -133,6 +133,7 @@ pub fn parts() -> Vec<PartLimits> {
             dtype: Dtype::F32,
             shape: vec![36, 48, 128, 128],
             block_format: None,
+            stage: 0,
         },
         PartLimits {
             name: "gdn_conv".to_owned(),
@@ -140,6 +141,7 @@ pub fn parts() -> Vec<PartLimits> {
             dtype: Dtype::F32,
             shape: vec![36, 3, 10_240],
             block_format: None,
+            stage: 0,
         },
         PartLimits {
             name: "ple_conv".to_owned(),
@@ -147,6 +149,7 @@ pub fn parts() -> Vec<PartLimits> {
             dtype: Dtype::F32,
             shape: vec![9, 10_240],
             block_format: None,
+            stage: 0,
         },
         PartLimits {
             name: "kv".to_owned(),
@@ -154,6 +157,7 @@ pub fn parts() -> Vec<PartLimits> {
             dtype: Dtype::F32,
             shape: vec![12, 2, 2, 256],
             block_format: None,
+            stage: 0,
         },
         PartLimits {
             name: "idx_keys".to_owned(),
@@ -161,6 +165,7 @@ pub fn parts() -> Vec<PartLimits> {
             dtype: Dtype::F32,
             shape: vec![12, 128],
             block_format: None,
+            stage: 0,
         },
         PartLimits {
             name: "ple_hist".to_owned(),
@@ -168,6 +173,7 @@ pub fn parts() -> Vec<PartLimits> {
             dtype: Dtype::U32,
             shape: vec![2],
             block_format: None,
+            stage: 0,
         },
         PartLimits {
             name: "idx_pooled".to_owned(),
@@ -175,6 +181,7 @@ pub fn parts() -> Vec<PartLimits> {
             dtype: Dtype::F32,
             shape: vec![12, 128],
             block_format: None,
+            stage: 0,
         },
     ]
 }
@@ -457,6 +464,8 @@ pub fn limits(arena_bytes: u64) -> Limits {
         bit_dependence: Vec::new(),
         taps: Vec::new(),
         checkpoint_grain: Some(CHECKPOINT_GRAIN),
+        feed: None,
+        residual_row_bytes: 0,
     }
 }
 
