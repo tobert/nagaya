@@ -47,6 +47,7 @@ fn opened() -> OpenedEngine {
         thread: std::thread::current().id(),
         identity: FakeAlways::new().identity(),
         limits: FakeAlways::new().limits(),
+        handoff: None,
     }
 }
 

@@ -81,6 +81,36 @@ trait Factory {
 
 Reason: the profile names the devices, so the engine must run on those devices and no others.
 
+**Arena calls in v0.** **Proposed** (claude-opus-5-5, 2026-10-21). These are the Rust shapes of the `arena`
+capability and of `attach` (spec 10.2).
+
+```rust
+struct ArenaFd { device: usize, part: String, fd: OwnedFd }   // device is a group index
+enum CheckStrength { Full, Spot, None }
+trait Arena { fn arena_export(&mut self) -> Result<Vec<ArenaFd>, String>; }   // Engine::arena()
+
+trait Factory {
+    // ... plan and open as above
+    fn arena_parts(&self, config: &toml::Table, devices: &[GroupDevice]) -> Result<Vec<ArenaPart>, PlanError>;
+    fn attach(&self, config: &toml::Table, devices: &[GroupDevice], arenas: Vec<ArenaFd>)
+        -> Result<Attached, AttachError>;
+}
+struct ArenaPart { device: usize, part: String }
+struct Attached { engine: Box<dyn Engine>, check: CheckStrength }
+enum AttachError { Mismatch(String), Open(OpenError) }
+```
+
+- `arena_parts` reads no weights, as `plan` does. A kind with no arena gives no part, and that is the default.
+- `attach` does `arena_check` first, on the devices of the group. A mismatch returns `AttachError::Mismatch` and
+  leaves nothing open. Then the process drops the fds and calls `open`.
+- `arena_export` gives a new fd for each part. The engine keeps its own fds. The process sends each new fd to systemd
+  and then closes it.
+- The process gives `attach` a duplicate of each stored fd (spec 10.2 step 3), and `attach` owns it.
+- v0 has no `arena_id`, because nothing reads it. The check compares the arena with the build.
+
+Reason: mkviolet checks its slabs on the open cards (`verify_stored_slab`), so the check and the attach share one
+open of the cards. After a mismatch, `open` opens the cards again.
+
 ## Core (every engine)
 
 ```

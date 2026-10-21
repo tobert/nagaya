@@ -751,6 +751,54 @@ pub trait Stages {
     fn take_handles(&mut self) -> Vec<Box<dyn StageHandle + Send>>;
 }
 
+/// The strength of a check. Arenas and store entries use one enum (engine-abi "Capabilities").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckStrength {
+    /// The check compared every byte.
+    Full,
+    /// The check compared some bytes.
+    Spot,
+    /// Nothing was checked.
+    None,
+}
+
+impl CheckStrength {
+    /// The word for the strength in a log line and an attribute.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CheckStrength::Full => "full",
+            CheckStrength::Spot => "spot",
+            CheckStrength::None => "none",
+        }
+    }
+}
+
+/// One part of an arena, before the open: its device and its name (engine-abi "Arena calls in v0").
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ArenaPart {
+    /// The device of the part, as a group index (spec 2.4).
+    pub device: usize,
+    /// The name that the engine gives the part, for example `w15`.
+    pub part: String,
+}
+
+/// One fd of an arena. The holder of the value owns the fd.
+#[derive(Debug)]
+pub struct ArenaFd {
+    /// The device of the part, as a group index (spec 2.4).
+    pub device: usize,
+    /// The name that the engine gives the part.
+    pub part: String,
+    /// The fd of the memory that holds the part.
+    pub fd: std::os::fd::OwnedFd,
+}
+
+/// The arena capability (spec 10.2).
+pub trait Arena {
+    /// Give a new fd for each part of the arena. The engine keeps its own fds, and the caller owns the new ones.
+    fn arena_export(&mut self) -> Result<Vec<ArenaFd>, String>;
+}
+
 /// The core trait that every engine implements.
 pub trait Engine {
     /// The identity of the engine and its weights.
@@ -787,6 +835,11 @@ pub trait Engine {
 
     /// The stage capability, when the engine has it.
     fn stages(&mut self) -> Option<&mut dyn Stages> {
+        None
+    }
+
+    /// The arena capability, when the engine has it. Call it before `Stages::take_handles`.
+    fn arena(&mut self) -> Option<&mut dyn Arena> {
         None
     }
 }

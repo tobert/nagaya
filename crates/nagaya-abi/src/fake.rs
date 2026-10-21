@@ -6,12 +6,20 @@ mod feed;
 
 pub use feed::FakeFeed;
 
+use std::fs::File;
+use std::io::Write;
+use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::unix::fs::FileExt;
+
 use crate::{
-    Capability, ChainLimits, Coverage, CoverageSpan, Determinism, Dtype, ElasticTerm, Engine, Identity, Inputs, Kind,
-    Lifetime, Limits, MandatoryTerm, MemoryLimits, Output, PartError, PartKind, PartLimits, Parts, PassError,
-    PassErrorKind, PassOut, PassStatus, Seal, SealError, Segment, SegmentInputs, SlotId, SlotLimit, Slots, Stage,
-    State, Tap, Tier, WriteResult,
+    Arena, ArenaFd, ArenaPart, Capability, ChainLimits, CheckStrength, Coverage, CoverageSpan, Determinism, Dtype,
+    ElasticTerm, Engine, Identity, Inputs, Kind, Lifetime, Limits, MandatoryTerm, MemoryLimits, Output, PartError,
+    PartKind, PartLimits, Parts, PassError, PassErrorKind, PassOut, PassStatus, Seal, SealError, Segment,
+    SegmentInputs, SlotId, SlotLimit, Slots, Stage, State, Tap, Tier, WriteResult,
 };
+
+/// The name of the one part of the fake arena, on device 0 (spec 10.2).
+pub const FAKE_ARENA_PART: &str = "w";
 
 /// The ring window in rows.
 const RING_WINDOW: usize = 4;
@@ -49,6 +57,77 @@ impl FakeAlways {
     /// Make the engine with the given slot size classes.
     pub fn with_slots(slots: Vec<SlotLimit>) -> Self {
         FakeAlways(Fake::new("fake-always", false, slots, false))
+    }
+}
+
+impl FakeAlways {
+    /// Make the engine with an arena that holds `bytes`, in a memfd (spec 10.2).
+    pub fn with_arena(bytes: &[u8]) -> Self {
+        let mut file = memfd("nagaya-fake-arena");
+        file.write_all(bytes).expect("cannot write the fake arena");
+        Self::new().arena_from(file)
+    }
+
+    /// The parts of the fake arena: one part on device 0.
+    pub fn arena_parts() -> Vec<ArenaPart> {
+        vec![ArenaPart {
+            device: 0,
+            part: FAKE_ARENA_PART.to_owned(),
+        }]
+    }
+
+    /// Make the engine on a stored arena. The check compares every byte with `bytes`. A mismatch opens nothing.
+    pub fn attach_arena(arenas: Vec<ArenaFd>, bytes: &[u8]) -> Result<(Self, CheckStrength), String> {
+        let [arena] = <[ArenaFd; 1]>::try_from(arenas)
+            .map_err(|arenas| format!("the fake arena has one fd, and the attach got {}", arenas.len()))?;
+        if arena.device != 0 || arena.part != FAKE_ARENA_PART {
+            return Err(format!(
+                "the fake arena has the part `{FAKE_ARENA_PART}` on device 0, and the attach got `{}` on device {}",
+                arena.part, arena.device
+            ));
+        }
+        let file = File::from(arena.fd);
+        let size = file
+            .metadata()
+            .map_err(|error| format!("cannot read the size of the stored arena: {error}"))?
+            .len();
+        let mut stored = vec![0u8; size as usize];
+        file.read_exact_at(&mut stored, 0)
+            .map_err(|error| format!("cannot read the stored arena: {error}"))?;
+        if stored != bytes {
+            return Err("the stored arena differs from the build of the fake".to_owned());
+        }
+        Ok((Self::new().arena_from(file), CheckStrength::Full))
+    }
+
+    fn arena_from(mut self, file: File) -> Self {
+        self.0.arena = Some(file);
+        self.0.limits.capabilities.push(Capability::Arena);
+        self
+    }
+}
+
+/// A new memfd with no bytes.
+fn memfd(name: &str) -> File {
+    let name = std::ffi::CString::new(name).expect("a memfd name has no NUL");
+    // SAFETY: `name` is a valid C string, and the call gives a new fd or -1.
+    let fd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
+    assert!(fd >= 0, "memfd_create failed: {}", std::io::Error::last_os_error());
+    // SAFETY: the fd is new, and nothing else owns it.
+    File::from(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+impl Arena for Fake {
+    fn arena_export(&mut self) -> Result<Vec<ArenaFd>, String> {
+        let file = self.arena.as_ref().ok_or("the fake has no arena")?;
+        let fd = file
+            .try_clone()
+            .map_err(|error| format!("cannot duplicate the fake arena fd: {error}"))?;
+        Ok(vec![ArenaFd {
+            device: 0,
+            part: FAKE_ARENA_PART.to_owned(),
+            fd: fd.into(),
+        }])
     }
 }
 
@@ -184,6 +263,8 @@ pub(crate) struct Fake {
     family: String,
     /// The bias that each logit row adds, one value for each token.
     logit_bias: Option<Vec<f32>>,
+    /// The memory of the arena, when the engine has one (spec 10.2).
+    arena: Option<File>,
     limits: Limits,
     slots: Vec<SlotData>,
     last_error: Option<String>,
@@ -298,6 +379,7 @@ impl Fake {
             vocab: None,
             family: "fake".to_owned(),
             logit_bias: None,
+            arena: None,
             limits,
             slots,
             last_error: None,
@@ -720,6 +802,14 @@ macro_rules! engine_impl {
 
             fn slots(&mut self) -> Option<&mut dyn Slots> {
                 Some(&mut self.0)
+            }
+
+            fn arena(&mut self) -> Option<&mut dyn Arena> {
+                if self.0.arena.is_some() {
+                    Some(&mut self.0)
+                } else {
+                    None
+                }
             }
         }
     };

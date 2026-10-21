@@ -127,6 +127,7 @@ fn the_kind_and_the_family_exist_only_with_the_feature_xe() {
         thread: std::thread::current().id(),
         identity: engine.identity(),
         limits: engine.limits(),
+        handoff: None,
     };
     let planned = families.plan(&opened, &table("model_dir = \"/nonexistent\""));
     if cfg!(feature = "xe") {
@@ -137,4 +138,13 @@ fn the_kind_and_the_family_exist_only_with_the_feature_xe() {
             "a build with no feature xe has no gemma4 library"
         );
     }
+}
+
+#[test]
+fn the_arena_parts_are_the_slabs_of_the_engine_on_two_cards() {
+    let parts = nagaya::gemma4::arena_parts(&two_cards()).expect("the parts of two cards");
+    assert_eq!(parts, nagaya_mk_gemma4_bmg::spec::arena_parts());
+    assert_eq!(parts.len(), 31);
+    let error = nagaya::gemma4::arena_parts(&two_cards()[..1]).unwrap_err();
+    assert!(error.message.contains("two cards"), "{}", error.message);
 }

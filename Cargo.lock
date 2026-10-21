@@ -1094,6 +1094,7 @@ dependencies = [
 name = "nagaya-abi"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "nagaya-abi",
 ]
 

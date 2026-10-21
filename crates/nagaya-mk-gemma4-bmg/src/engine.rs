@@ -7,23 +7,26 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use nagaya_abi::{
-    BitClass, BitSetting, Coverage, CoverageSpan, Dtype, Engine, Identity, Limits, Output, PartError, PartId, Parts,
-    PassError, PassErrorKind, PassOut, PassStatus, Residual, Segment, SlotId, Slots, StageHandle, StageOut, Stages,
-    State, Tap, WriteResult,
+    Arena, ArenaFd, BitClass, BitSetting, Coverage, CoverageSpan, Dtype, Engine, Identity, Limits, Output, PartError,
+    PartId, Parts, PassError, PassErrorKind, PassOut, PassStatus, Residual, Segment, SlotId, Slots, StageHandle,
+    StageOut, Stages, State, Tap, WriteResult,
 };
 
 use crate::gemma4::{
     CARD_LAYERS, CardShard, CardWeights, EMBED_TENSOR, HIDDEN, NUM_LAYERS, VOCAB, check_config, kv_can_rewind,
-    kv_high_after_load, kv_keep_from, kv_ring, run_first_stage, run_last_stage,
+    kv_high_after_load, kv_keep_from, kv_ring, run_first_stage, run_last_stage, verify_stored_head, verify_stored_slab,
 };
 use crate::level_zero::{B70Card, L0Cluster};
 use crate::sharding::Checkpoint;
-use crate::spec::{self, Block, Config, Lineage, SlotView, layer_of, row_floats, stage_of_layer};
+use crate::spec::{
+    self, Block, Config, HEAD_PART, Lineage, SlotView, layer_of, layer_part, row_floats, stage_of_layer,
+};
 use crate::{MEGAKERNEL_BIN, MEGAKERNEL_ENTRY};
 
 /// The cards of one group, the checkpoint and the weights on the cards. Engines on these cards share it.
@@ -33,6 +36,8 @@ pub struct Loaded {
     /// The index in `cluster.cards` of the card of each stage.
     cards: [usize; 2],
     weights: [CardWeights; 2],
+    /// The DMA-BUF fd of each slab of each stage, by part name (spec 10.2). `Loaded` owns them.
+    slabs: [Vec<(String, OwnedFd)>; 2],
     checkpoint_digest: String,
     tokenizer_hash: String,
     lineage: Lineage,
@@ -44,34 +49,83 @@ impl Loaded {
     /// The engine finds each card by its PCI address, because the order of `zeDeviceGet` can differ from the order
     /// of the profile (engine-abi "The factory gets its devices").
     pub fn load(model_dir: &Path, pci: &[String]) -> Result<Arc<Self>, String> {
+        Self::load_with(model_dir, pci, None).map_err(|error| match error {
+            LoadError::Mismatch(why) | LoadError::Other(why) => why,
+        })
+    }
+
+    /// Open the cards as `load` does, and import the slabs of a stored arena (spec 10.2). `stored` holds the slab
+    /// fds of each stage by part name, and `Loaded` owns them after a load.
+    ///
+    /// The spot check of each slab runs first: the first and last 64 bytes of each tensor (`verify_stored_slab`). A
+    /// missing slab, an extra slab or a slab that differs from the checkpoint is a mismatch, and nothing stays
+    /// imported.
+    pub fn attach(
+        model_dir: &Path,
+        pci: &[String],
+        stored: [Vec<(String, OwnedFd)>; 2],
+    ) -> Result<Arc<Self>, LoadError> {
+        Self::load_with(model_dir, pci, Some(stored))
+    }
+
+    fn load_with(
+        model_dir: &Path,
+        pci: &[String],
+        stored: Option<[Vec<(String, OwnedFd)>; 2]>,
+    ) -> Result<Arc<Self>, LoadError> {
+        let other = LoadError::Other;
         if pci.len() != 2 {
-            return Err(format!(
+            return Err(other(format!(
                 "the Gemma 4 engine runs on two cards, but its group has {}",
                 pci.len()
-            ));
+            )));
         }
-        check_config(model_dir)?;
-        let ckpt = Checkpoint::open_dir(model_dir)?;
+        check_config(model_dir).map_err(other)?;
+        let ckpt = Checkpoint::open_dir(model_dir).map_err(other)?;
         let tokenizer = model_dir.join("tokenizer.json");
         let bytes = std::fs::read(&tokenizer).map_err(|e| {
-            format!(
+            other(format!(
                 "cannot read {}: {e}; the checkpoint holds its tokenizer",
                 tokenizer.display()
-            )
+            ))
         })?;
         // The family library hashes the file in the same way (spec 12.3).
         let tokenizer_hash = nagaya_text_gemma4::tokenizer::sha256_of(&bytes);
         let cluster = L0Cluster::init(MEGAKERNEL_BIN, MEGAKERNEL_ENTRY);
-        let found = cluster.cards_at(pci)?;
+        let found = cluster.cards_at(pci).map_err(other)?;
         let cards = [found[0], found[1]];
-        let checkpoint_digest = checkpoint_digest(model_dir, &ckpt)?;
-        let stored = HashMap::new();
-        let w0 = CardWeights::upload(&cluster.cards[cards[0]], &ckpt, CARD_LAYERS[0].clone(), false, &stored)?;
-        let w1 = CardWeights::upload(&cluster.cards[cards[1]], &ckpt, CARD_LAYERS[1].clone(), true, &stored)?;
+        if let Some(stored) = &stored {
+            for stage in 0..2 {
+                check_stored(&cluster.cards[cards[stage]], &ckpt, stage, &stored[stage])
+                    .map_err(LoadError::Mismatch)?;
+            }
+        }
+        let checkpoint_digest = checkpoint_digest(model_dir, &ckpt).map_err(other)?;
+        let raw = |stage: usize| -> HashMap<String, i32> {
+            stored.as_ref().map_or_else(HashMap::new, |stored| {
+                stored[stage]
+                    .iter()
+                    .map(|(part, fd)| (part.clone(), fd.as_raw_fd()))
+                    .collect()
+            })
+        };
+        let w0 = CardWeights::upload(&cluster.cards[cards[0]], &ckpt, CARD_LAYERS[0].clone(), false, &raw(0))
+            .map_err(other)?;
+        let w1 = CardWeights::upload(&cluster.cards[cards[1]], &ckpt, CARD_LAYERS[1].clone(), true, &raw(1))
+            .map_err(other)?;
+        let slabs = match stored {
+            Some(stored) => stored,
+            // A cold load owns the fds that the export of each new slab gave.
+            None => [slab_fds(&w0), slab_fds(&w1)],
+        };
         let mut devices = Vec::new();
         for &card in &cards {
             let card = &cluster.cards[card];
-            devices.push((card.vendor_id, card.device_id, pci_revision(&card.pci_address)?));
+            devices.push((
+                card.vendor_id,
+                card.device_id,
+                pci_revision(&card.pci_address).map_err(other)?,
+            ));
         }
         let lineage = Lineage {
             kernel_sha256: nagaya_text_gemma4::tokenizer::sha256_of(MEGAKERNEL_BIN),
@@ -85,10 +139,28 @@ impl Loaded {
             ckpt,
             cards,
             weights: [w0, w1],
+            slabs,
             checkpoint_digest,
             tokenizer_hash,
             lineage,
         }))
+    }
+
+    /// A new fd for each slab of the arena, with the stage as its device (spec 10.2).
+    pub fn arena_export(&self) -> Result<Vec<ArenaFd>, String> {
+        let mut out = Vec::new();
+        for (stage, slabs) in self.slabs.iter().enumerate() {
+            for (part, fd) in slabs {
+                out.push(ArenaFd {
+                    device: stage,
+                    part: part.clone(),
+                    fd: fd
+                        .try_clone()
+                        .map_err(|error| format!("cannot duplicate the slab fd of `{part}`: {error}"))?,
+                });
+            }
+        }
+        Ok(out)
     }
 
     fn card(&self, stage: usize) -> &B70Card {
@@ -130,6 +202,61 @@ impl Loaded {
             canary_hash: String::new(),
         }
     }
+}
+
+/// Why `Loaded::attach` did not load.
+#[derive(Debug)]
+pub enum LoadError {
+    /// The stored arena does not match the checkpoint. Nothing is imported.
+    Mismatch(String),
+    /// Any other failure.
+    Other(String),
+}
+
+/// The fds of the slabs of a cold load, by part name. The export of a new slab gave each fd, and nothing else owns it.
+fn slab_fds(weights: &CardWeights) -> Vec<(String, OwnedFd)> {
+    let mut out: Vec<(String, OwnedFd)> = weights
+        .layers
+        .clone()
+        .zip(&weights.weights)
+        // SAFETY: `alloc_exportable_vram_dmabuf` gave the fd, and no other value owns it.
+        .map(|(l, w)| (layer_part(l), unsafe { OwnedFd::from_raw_fd(w.dmabuf_fd) }))
+        .collect();
+    if let Some(fd) = weights.head_fd {
+        // SAFETY: as above, for the head slab.
+        out.push((HEAD_PART.to_owned(), unsafe { OwnedFd::from_raw_fd(fd) }));
+    }
+    out
+}
+
+/// Check the stored slabs of one stage: the part names of the stage, each once, and the spot check of each slab.
+fn check_stored(card: &B70Card, ckpt: &Checkpoint, stage: usize, stored: &[(String, OwnedFd)]) -> Result<(), String> {
+    let mut expected: Vec<String> = CARD_LAYERS[stage].clone().map(layer_part).collect();
+    if stage == 1 {
+        expected.push(HEAD_PART.to_owned());
+    }
+    let mut names: Vec<String> = stored.iter().map(|(part, _)| part.clone()).collect();
+    names.sort();
+    expected.sort();
+    if names != expected {
+        return Err(format!(
+            "stage {stage} has the stored slabs [{}], and it needs [{}]",
+            names.join(", "),
+            expected.join(", ")
+        ));
+    }
+    for (part, fd) in stored {
+        if part == HEAD_PART {
+            verify_stored_head(card, ckpt, fd.as_raw_fd())?;
+        } else {
+            let l = CARD_LAYERS[stage]
+                .clone()
+                .find(|l| layer_part(*l) == *part)
+                .expect("the names were checked");
+            verify_stored_slab(card, ckpt, l, fd.as_raw_fd())?;
+        }
+    }
+    Ok(())
 }
 
 /// The PCI revision of the device at `address`, from sysfs.
@@ -603,6 +730,8 @@ impl Coverage for StageShard {
 
 /// The Gemma 4 engine on two cards, with two stages.
 pub struct Gemma4 {
+    /// The cards and the weights. The arena export reads the slab fds here.
+    loaded: Arc<Loaded>,
     limits: Limits,
     identity: Identity,
     /// The stages, until `take_handles` moves them out.
@@ -619,6 +748,7 @@ pub fn open(loaded: &Arc<Loaded>, config: &Config) -> Result<Gemma4, String> {
     limits.check()?;
     let stages = vec![StageShard::new(loaded, 0, config)?, StageShard::new(loaded, 1, config)?];
     Ok(Gemma4 {
+        loaded: Arc::clone(loaded),
         identity: loaded.identity(config.max_block),
         residual: Residual::new(HIDDEN * 4, config.max_block),
         limits,
@@ -700,6 +830,16 @@ impl Engine for Gemma4 {
 
     fn stages(&mut self) -> Option<&mut dyn Stages> {
         Some(self)
+    }
+
+    fn arena(&mut self) -> Option<&mut dyn Arena> {
+        Some(self)
+    }
+}
+
+impl Arena for Gemma4 {
+    fn arena_export(&mut self) -> Result<Vec<ArenaFd>, String> {
+        self.loaded.arena_export()
     }
 }
 

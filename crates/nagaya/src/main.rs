@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use nagaya::arena::{ArenaSet, FdStore};
 use nagaya::bootstrap::Bootstrap;
 use nagaya::cpu_sets::{CpuSets, for_machine_with_devices_ignoring};
 use nagaya::exit::{ExitCode, after_stop, leave, panic_text};
@@ -32,6 +33,9 @@ const HTTP_STOP: Duration = Duration::from_secs(2);
 static SIGNALS: SignalFlag = SignalFlag::new();
 
 fn main() {
+    // The stored arenas come first: the read changes the environment, so no thread may run yet (spec 10.2).
+    // SAFETY: no thread runs yet, and nothing else owns the fds from 3 up.
+    let arenas = unsafe { ArenaSet::from_env() };
     // The inventory is known before the config, so that the resource of the telemetry can carry its hardware.
     let machine = engine_machine();
     let telemetry = match start_telemetry(machine.as_ref().ok().map(|(_, inventory)| inventory)) {
@@ -48,7 +52,7 @@ fn main() {
         otel.status_code = tracing::field::Empty
     );
     let code = span.in_scope(|| {
-        let code = match catch_unwind(AssertUnwindSafe(|| run(machine))) {
+        let code = match catch_unwind(AssertUnwindSafe(|| run(machine, arenas))) {
             Ok(code) => code,
             Err(payload) => {
                 tracing::error!("the process panicked: {}", panic_text(payload.as_ref()));
@@ -85,7 +89,33 @@ fn start_telemetry(
     Ok(telemetry)
 }
 
-fn run(machine: Machine) -> ExitCode {
+/// The fds that systemd passed back, or why the process cannot read them.
+type Arenas = Result<ArenaSet, nagaya::arena::ArenaError>;
+
+fn run(machine: Machine, arenas: Arenas) -> ExitCode {
+    // A store that the process cannot read refuses the start, and systemd keeps each fd (spec 10.2, 10.4).
+    let arenas = match arenas {
+        Ok(arenas) => arenas,
+        Err(error) => {
+            tracing::error!("cannot read the fds that systemd passed: {error}");
+            return ExitCode::RefusedStart;
+        }
+    };
+    let fd_store = match FdStore::from_env() {
+        Ok(store) => store,
+        Err(error) => {
+            tracing::error!("{error}");
+            return ExitCode::RefusedStart;
+        }
+    };
+    match &fd_store {
+        Some(store) => tracing::info!(
+            "the fd store keeps {} fds; systemd passed {} stored fds",
+            store.ceiling(),
+            arenas.len()
+        ),
+        None => tracing::info!("no fd store: the process keeps no arena through a restart"),
+    }
     let path = config_path();
     let config = match Bootstrap::read(&path) {
         Ok(config) => config,
@@ -169,7 +199,12 @@ fn run(machine: Machine) -> ExitCode {
     tracing::info!("gossip listening on {}", gossip.local_addr());
     gossip.watch_peers(|line| tracing::info!("{line}"));
     let mut node = Node::new(gossip, config.http_bind);
-    let code = serve(&config, &node_name, profile, registry, inventory, cpu_sets, &mut node);
+    let opening = Opening {
+        cpu_sets,
+        arenas,
+        fd_store,
+    };
+    let code = serve(&config, &node_name, profile, registry, inventory, opening, &mut node);
     node.shutdown();
     code
 }
@@ -181,6 +216,13 @@ fn published(result: Result<(), PublishError>) {
     }
 }
 
+/// What the opens of the engines use: the CPU sets (spec 3.2a) and the stored arenas (spec 10.2).
+struct Opening {
+    cpu_sets: CpuSets,
+    arenas: ArenaSet,
+    fd_store: Option<FdStore>,
+}
+
 /// Open the engines, run until a stop, and stop (spec 10.1, 10.3).
 fn serve(
     config: &Bootstrap,
@@ -188,9 +230,14 @@ fn serve(
     profile: nagaya::profile::PlacementProfile,
     registry: nagaya::admission::Registry,
     inventory: nagaya::inventory::Inventory,
-    cpu_sets: CpuSets,
+    opening: Opening,
     node: &mut Node,
 ) -> ExitCode {
+    let Opening {
+        cpu_sets,
+        arenas,
+        fd_store,
+    } = opening;
     let notifier = match Notifier::from_env() {
         Ok(notifier) => notifier,
         Err(error) => {
@@ -210,7 +257,9 @@ fn serve(
     let call_cpus = Some(cpu_sets.pool.clone());
     published(node.publish_machine(&inventory, &profile));
     published(node.engines_loading(&names));
-    let options = lifecycle::Options::new(lifecycle::DEFAULT_OPEN_TIMEOUT).cpu_sets(cpu_sets);
+    let options = lifecycle::Options::new(lifecycle::DEFAULT_OPEN_TIMEOUT)
+        .cpu_sets(cpu_sets)
+        .arenas(arenas, fd_store);
     let mut ready = match lifecycle::start_with(
         profile,
         registry,
