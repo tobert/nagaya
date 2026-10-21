@@ -277,6 +277,10 @@ enum Command {
         id: u64,
         reply: mpsc::Sender<Call>,
     },
+    Clear {
+        id: u64,
+        reply: mpsc::Sender<Call>,
+    },
     Pass {
         request: PassRequest,
         reply: mpsc::Sender<Result<PassReply, PassProblem>>,
@@ -402,6 +406,12 @@ impl Worker {
     /// Run mk's boundary rule.
     pub fn seal(&self, id: u64) -> Call {
         self.ask(|reply| Command::Seal { id, reply })
+            .unwrap_or_else(|| Call::Failed("the mk worker stopped".to_owned()))
+    }
+
+    /// Empty the context: free it and make a new one of the same capacity under the same id.
+    pub fn clear(&self, id: u64) -> Call {
+        self.ask(|reply| Command::Clear { id, reply })
             .unwrap_or_else(|| Call::Failed("the mk worker stopped".to_owned()))
     }
 
@@ -574,6 +584,44 @@ fn pin_problem(pin: Option<&str>, library: &Path, digest: &str) -> Result<(), St
         ));
     }
     Ok(())
+}
+
+/// The device bytes that `what` took: the free bytes before minus the free bytes after.
+///
+/// Free memory that grew is an error with both readings. A saturating difference would read 0 bytes, and the class
+/// check would pass (kaibo review, finding 7).
+fn taken_bytes(before: u64, after: u64, what: &str) -> Result<u64, String> {
+    before
+        .checked_sub(after)
+        .ok_or_else(|| format!("the free device memory grew from {before} to {after} bytes while mk made {what}"))
+}
+
+/// Free one context, then make a new one of `capacity` tokens. mk has no call that empties a context.
+///
+/// The free comes first, because the pool term holds the bytes of one context and not two (spec 4.2). When the new
+/// context fails, the old one is already gone, and the error says so.
+fn remake_context(
+    old: *mut c_void,
+    capacity: u32,
+    free: impl Fn(*mut c_void),
+    new: impl FnOnce(u32) -> *mut c_void,
+    max: impl FnOnce(*mut c_void) -> u32,
+) -> Result<*mut c_void, String> {
+    free(old);
+    let ptr = new(capacity);
+    if ptr.is_null() {
+        return Err(format!(
+            "mk_ctx_new({capacity}) returned no context; the slot has no context now"
+        ));
+    }
+    let made = max(ptr);
+    if made != capacity {
+        free(ptr);
+        return Err(format!(
+            "mk_ctx_new({capacity}) made a context of {made} tokens; the slot has no context now"
+        ));
+    }
+    Ok(ptr)
 }
 
 /// Create `count` contexts of `capacity`, or free the ones that were made when a later call fails.
@@ -843,6 +891,9 @@ impl ThreadState {
             Command::Seal { id, reply } => {
                 let _ = reply.send(self.seal(id));
             }
+            Command::Clear { id, reply } => {
+                let _ = reply.send(self.clear(id));
+            }
             Command::Pass { request, reply } => {
                 let _ = reply.send(self.pass(request));
             }
@@ -882,9 +933,17 @@ impl ThreadState {
                 }
             }
             // The ledger holds the declared bytes. A class that takes more is a defect, so refuse the pool.
-            let device = match (free_before, free_after) {
-                (Ok(before), Ok(after)) => before.saturating_sub(after),
-                (Err(error), _) | (_, Err(error)) => {
+            let taken = match (free_before, free_after) {
+                (Ok(before), Ok(after)) => taken_bytes(
+                    before,
+                    after,
+                    &format!("{} contexts of {}", class.count, class.capacity),
+                ),
+                (Err(error), _) | (_, Err(error)) => Err(error),
+            };
+            let device = match taken {
+                Ok(device) => device,
+                Err(error) => {
                     self.free_ids(&ids);
                     return Err(error);
                 }
@@ -1152,6 +1211,40 @@ impl ThreadState {
         Call::Ok
     }
 
+    /// Empty one context. A poisoned context can be cleared: a clear is how a slot leaves the poisoned state (8.2).
+    fn clear(&mut self, id: u64) -> Call {
+        let Some(context) = self.contexts.get(&id) else {
+            return Call::Refused(format!("context {id} is not in this engine"));
+        };
+        let (old, capacity) = (context.ptr, context.capacity);
+        let made = remake_context(
+            old,
+            capacity,
+            |ptr| unsafe { (self.binding.ctx_free)(self.engine, ptr) },
+            |capacity| unsafe { (self.binding.ctx_new)(self.engine, capacity) },
+            |ptr| unsafe { (self.binding.ctx_max)(ptr) },
+        );
+        match made {
+            Ok(ptr) => {
+                self.contexts.insert(
+                    id,
+                    Context {
+                        ptr,
+                        capacity,
+                        restored_kv: 0,
+                        restored_idx: 0,
+                        restored_ple: false,
+                    },
+                );
+                Call::Ok
+            }
+            Err(message) => {
+                self.contexts.remove(&id);
+                Call::Failed(message)
+            }
+        }
+    }
+
     fn seal(&mut self, id: u64) -> Call {
         let context = match self.context(id) {
             Ok(context) => context,
@@ -1379,7 +1472,7 @@ mod tests {
 
     use super::{
         Aligned, Call, Context, ThreadState, Word, fast_qmm_from, memory_problem, open_contexts, parse_shards,
-        pin_problem, probe_shapes, rounds_to_finite, tiles_from,
+        pin_problem, probe_shapes, remake_context, rounds_to_finite, taken_bytes, tiles_from,
     };
 
     /// A worker state with one stub context, id 1.
@@ -1478,6 +1571,56 @@ mod tests {
             vec![1usize, 2],
             "the made contexts were not all freed"
         );
+    }
+
+    #[test]
+    fn a_clear_frees_the_context_and_then_makes_one_of_the_same_capacity() {
+        let calls = RefCell::new(Vec::new());
+        let made = remake_context(
+            16usize as *mut c_void,
+            4096,
+            |ptr| calls.borrow_mut().push(format!("free {}", ptr as usize)),
+            |capacity| {
+                calls.borrow_mut().push(format!("new {capacity}"));
+                2usize as *mut c_void
+            },
+            |_ptr| 4096,
+        );
+        assert_eq!(made, Ok(2usize as *mut c_void));
+        // The free comes first: the pool term holds the bytes of one context, not two (spec 4.2).
+        assert_eq!(calls.into_inner(), ["free 16", "new 4096"]);
+    }
+
+    #[test]
+    fn a_clear_whose_new_fails_names_the_lost_context() {
+        let error = remake_context(16usize as *mut c_void, 4096, |_| {}, |_| std::ptr::null_mut(), |_| 4096)
+            .expect_err("a null context is an error");
+        assert!(error.contains("mk_ctx_new(4096)"), "{error}");
+        assert!(error.contains("no context"), "{error}");
+    }
+
+    #[test]
+    fn a_clear_that_gets_another_capacity_frees_it_and_fails() {
+        let freed = RefCell::new(Vec::new());
+        let error = remake_context(
+            16usize as *mut c_void,
+            4096,
+            |ptr| freed.borrow_mut().push(ptr as usize),
+            |_| 2usize as *mut c_void,
+            |_| 256,
+        )
+        .expect_err("another capacity is an error");
+        assert!(error.contains("256"), "{error}");
+        assert_eq!(freed.into_inner(), [16, 2]);
+    }
+
+    #[test]
+    fn a_class_that_freed_device_memory_is_an_error_with_both_readings() {
+        assert_eq!(taken_bytes(1000, 400, "the class of 12 contexts"), Ok(600));
+        assert_eq!(taken_bytes(1000, 1000, "the class of 12 contexts"), Ok(0));
+        let error = taken_bytes(400, 1000, "the class of 12 contexts").expect_err("free memory grew");
+        assert!(error.contains("400") && error.contains("1000"), "{error}");
+        assert!(error.contains("the class of 12 contexts"), "{error}");
     }
 
     #[test]

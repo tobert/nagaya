@@ -304,6 +304,10 @@ isolation.
 - The store thread (`nagaya-store`) pins to the pool set at `SCHED_BATCH`. It hashes and converts bytes, which is pool
   work.
 - A start with no CPU sets pins no thread. Only a test starts that way. The binary always makes the sets (below).
+- An engine's own threads keep the mask of the group thread that starts them. Linux gives a new thread the mask of
+  the thread that starts it. mk starts its worker thread (`mk-engine`) in `open`, on the group thread, so the worker
+  runs on the pool set. Decided by senpai 2026-10-20 night (vetoable). Reason: the process crate makes the sets, and
+  the group thread is pinned before it opens an engine. So the factory needs no CPU argument.
 
 The binary reads the online CPUs through the file probe (2.1) and makes the sets before it starts gossip. A probe
 error or a split error is a refusal to start: exit 3 (10.4).
@@ -320,6 +324,10 @@ Decided by senpai 2026-10-20 night (vetoable): the sets use logical CPUs, and th
 A housekeeping CPU can share a physical core with a pool CPU. Reason: on gfx1151host, CPU 0 pairs with 16 and CPU 1 with
 17 (`thread_siblings_list`), so the two housekeeping CPUs sit on two physical cores. A rule for other machines would
 only guess before a measurement. The bootstrap config can name the sets later.
+
+**Open:** on gfx1151 on 2026-10-20, two of the four `mk-engine` threads had the mask 0-31. The worker and one other
+thread had the pool set, 2-31. The HIP runtime starts the two other threads and sets their masks itself. The nagaya
+does not pin threads that a runtime starts.
 
 **Open:** 3.2 asks for elevated priority on the control threads. Milestone 14 does not apply it. A raised priority
 needs `CAP_SYS_NICE` or a setting in the unit.
@@ -1156,6 +1164,24 @@ interrupts a stop, the process exits 1, unless every state was parked. Decided 2
 A park that runs past the park budget makes the process exit 1. A SIGTERM during a planned restart stops the
 process with exit 0. Decided 2026-10-20 (reading).
 
+**Which states the park keeps.** Decided by senpai 2026-10-20 night (vetoable).
+
+- The park stores each state that holds tokens. It skips a state with no token, because that state has nothing to
+  keep.
+- The park reads the row count of a state with `slot_high` (engine-abi "Capabilities"). A count of 0 means no token.
+- An engine with a cells or ring part needs the `slots` capability. Without it, the park cannot count the rows, so
+  the stop fails and the process exits 1.
+- An engine with no cells or ring part has no row count. The park keeps each of its states.
+
+Reason: step 3 parks pinned and wanted contexts. The process does not track pins or wants on live states yet, so
+it parks each state with tokens. An empty state of mk is 118,038,528 bytes of fixed parts ("v0 mk binding choices").
+A park of mk's 16 empty states would write about 1.9 GB and use most of the 10 s budget.
+
+**Open:** the park's copy of a state in host memory has no staging charge (4.2 "Staging"). The park holds one copy
+at a time, on the group thread. A copy of a 32,768-token mk context is about 1.93 GB. The charge path
+(`Ports::admit_staging`) refuses while the process stops, and the group thread holds no `Ports`. A charge for the park
+needs a ledger path that the stop keeps open.
+
 The process catches SIGTERM with a handler that adds one to a static atomic counter. The handler is `signal(2)`,
 declared in `extern "C"`, because std has no signal API. The main loop reads the counter every 50 ms. Reason: this
 needs no new dependency. A later step can use a signal stream from `tokio` instead. Decided 2026-10-20 (reading).
@@ -1176,6 +1202,18 @@ An engine that does not open at start stops the process. A mismatch of a pinned 
 a part size or the weight arena size is a refusal to start: exit 3. Any other failure to open is a crash. The
 process exits 1, and systemd restarts it within its start limit. A message on stderr names the engine and the
 reason. Decided 2026-10-20 (reading).
+
+**One exit path.** Decided by senpai 2026-10-20 night (vetoable).
+
+- The binary ends through one function, `nagaya::exit::leave`, for every code.
+- First the process drops the telemetry, so the OTLP batches flush (9.1). Then `leave` flushes stdout, stderr and the
+  C output streams.
+- Then `leave` calls `_exit(2)`. It runs no `atexit` handler and no static destructor.
+- The fake build takes the same path, so the host tests run the path of the GPU build.
+
+Reason: mk's HIP runtime stops the program in its static destructors, as its teardown does (3.3). On gfx1151 on
+2026-10-20, a clean stop with `exit(3)` printed "pure virtual method called" and ended with SIGABRT (status 134) and
+a core dump. Nothing in the process needs an `atexit` handler.
 
 ## 11. Client API
 

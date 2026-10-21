@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use nagaya::bootstrap::Bootstrap;
 use nagaya::cpu_sets::{self, CpuSets};
-use nagaya::exit::{ExitCode, panic_text};
+use nagaya::exit::{ExitCode, leave, panic_text};
 use nagaya::gossip::{Gossip, GossipConfig, PublishError};
 use nagaya::lifecycle;
 use nagaya::node::Node;
@@ -39,7 +39,7 @@ fn main() {
         Err(error) => {
             // The log is not up, so the message goes to stderr by hand.
             eprintln!("cannot start the telemetry: {error}");
-            std::process::exit(ExitCode::RefusedStart.code());
+            leave(ExitCode::RefusedStart);
         }
     };
     let span = tracing::info_span!(
@@ -67,9 +67,9 @@ fn main() {
         span.record("otel.status_code", "ERROR");
     }
     drop(span);
-    // `exit` runs no destructor, so the telemetry flushes here (spec 9.1).
+    // `leave` runs no destructor, so the telemetry flushes here (spec 9.1).
     drop(telemetry);
-    std::process::exit(code.code());
+    leave(code);
 }
 
 /// Start the stderr log and, when the environment asks for it, the OTLP export (spec 9.1).

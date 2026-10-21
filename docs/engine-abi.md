@@ -269,7 +269,9 @@ Reason: the fake engine must serve a family with a vocabulary, and the output ro
 | arena | `mk_engine_arena`, `mk_arena_check` | one fd; full check |
 | identity | built in the Python service | moves into the engine; must include `fused` and `MK_FAST_QMM` |
 | contexts | `mk_ctx_new`, `mk_ctx_fork`, `mk_ctx_copy`, `mk_ctx_free`, `mk_ctx_n` | a fork shares its parent's K/V and index keys |
-| parts | `mk_ctx_state_read`, `mk_ctx_state_write`, `mk_ctx_cells_write`, `mk_ctx_set_n` | parts 0-2 and 5 fixed, 3-4 cells; `idx_pooled` derived. No `cells_read` range yet: snapshots are stored whole (about 316 MB at n = 3584, ontology "Part") |
+| parts | `mk_ctx_state_read`, `mk_ctx_state_write`, `mk_ctx_cells_write`, `mk_ctx_set_n` | parts 0-2 and 5 fixed, 3-4 cells; `idx_pooled` derived. `cells_read` takes only rows 0 to n, the whole part: snapshots are stored whole (about 316 MB at n = 3584, ontology "Part") |
+| slots | `mk_ctx_n`, `mk_ctx_free` then `mk_ctx_new` | `slot_high` is the token count; `slot_clear` makes a new context of the same capacity |
+| coverage | none | rows 0 to n of each cells part; `fits` compares the rows with the slot's capacity |
 | seal | `mk_ctx_round_gdn_bf16` | changes bits in place |
 | poison / last_error | `mk_ctx_poisoned`, `mk_last_error` | |
 | part writes | `mk_ctx_state_write`, `mk_ctx_cells_write`, `mk_ctx_set_n` | return nothing and abort on input they refuse; the wrapper checks every precondition first (part index, bytes, an empty context that owns its K/V for parts 3-5, n within `max`, not poisoned) and returns refused; a write to a context that is already poisoned is refused, because this call changes nothing; after the call, `mk_ctx_poisoned` gives failed (decided 2026-10-18) |
@@ -291,6 +293,22 @@ the ABI.
   - Slots 0 to 11 hold 4,096 tokens each. Slots 12 to 15 hold 32,768 tokens each.
   - The process opens one handle. The conformance suite opens a handle for each gate.
   - This binding does not bind `mk_ctx_fork`.
+- **mk declares `slots` and `coverage`.** Decided by senpai 2026-10-20 night (vetoable). The park on stop (spec 10.3)
+  and the council build (spec 11.3c) need both.
+  - `slot_high(slot)` is the context's token count (`mk_ctx_n`). A slot with no context gives 0.
+  - `slot_clear(slot)` frees the context and makes a new one of the same capacity, under the same slot. mk has no
+    call that empties a context. The free comes first, because the context term holds one context for each slot.
+  - A clear also empties a poisoned context (spec 8.2). `mk_ctx_free` does not check the poison.
+  - When mk makes a context of another capacity, the slot has no context, and the clear gives `Failed`.
+  - `coverage` gives rows 0 to n for part 3 (`kv`) and part 4 (`idx_keys`), from the byte count of the rows. It
+    gives no position for a fixed part.
+  - `fits` accepts a span of a cells part that starts at 0 and ends at or below the slot's capacity in tokens.
+  - `cells_read` takes `from` 0 and `n` equal to the token count. Then it is a whole read. It refuses every other
+    range, because mk has no range read.
+
+  **Open:** `mk_ctx_new` stops the program when `hipMalloc` fails (`MK_CHECK`, `engine.hip:561-569`). Thus a clear
+  that cannot allocate ends the process, and the binding never sees a null context. The free comes first, so the
+  allocator holds the bytes. mk needs a reset call that keeps the buffers, so that a clear does not allocate.
   - `plan(config)` comes with the process crate, so this binding fixes the pool.
 - **The factory plans from `weights_bytes`.** Decided by senpai 2026-10-20 night (vetoable).
   - mk knows the size of its weight arena only after the weights load (`mk_engine_arena`). The arena is a repacked

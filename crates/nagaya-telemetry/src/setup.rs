@@ -140,7 +140,7 @@ impl std::error::Error for SetupError {}
 
 /// The providers of one process, and what keeps them alive.
 ///
-/// Drop it to flush the batches. A process that leaves through `std::process::exit` must drop it first.
+/// Drop it to flush the batches. A process that ends with no destructor run (`_exit`, `exit`) must drop it first.
 pub struct Telemetry {
     instruments: Arc<Instruments>,
     tracer_provider: Option<SdkTracerProvider>,
