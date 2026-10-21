@@ -297,6 +297,12 @@ Each place uses one of two names, and this map joins them.
   of that machine device. Thus an engine never sees a machine device id, and a profile never sees a group index.
 - On gfx1151host, both names of the one device are 0.
 
+**Proposed** (claude-opus-5-5, 2026-10-21): `limits().devices` holds group indexes, `0` to `n - 1` in order. The
+process checks that `n` is the length of the profile's `devices` list, as `check_devices` checks the list today
+(`crates/nagaya/src/placement.rs`). The engine finds each physical card by the PCI address in the devices that
+`plan` and `open` get. Reason: today `limits().devices` holds machine ids, so an engine on machine device 1 must know
+its machine id. That breaks the rule above, and an engine plan would differ between machines for the same config.
+
 An engine name has letters, digits, `.`, `_` and `-`, and at most 128 bytes. A profile with another name does not
 parse. Reason: the name is part of the gossip key `engine:<name>` (2.3). Decided 2026-10-20.
 
