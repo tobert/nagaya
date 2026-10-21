@@ -13,7 +13,7 @@ use gogi_proto::generation::{
 };
 use nagaya::council::ServiceConfig;
 use nagaya::council::error::ServiceError;
-use nagaya_council::family::Family;
+use nagaya_council::family::{Family, ReplyStart};
 use nagaya_council::sampler::{Settings, pick};
 use nagaya_text_toy::ToyFamily;
 use serde_json::{Value, json};
@@ -272,7 +272,7 @@ fn the_sampled_tokens_are_the_picks_of_a_direct_run() {
         seed: 42,
     };
     let mut want = Vec::new();
-    let mut parser = ToyFamily::new().reply_parser(true, &[]).unwrap();
+    let mut parser = ToyFamily::new().reply_parser(ReplyStart::prompt(true), &[]).unwrap();
     for (k, event) in events.iter().enumerate() {
         let chosen = pick(&row, &settings, (rendering.tokens.len() + k) as u64).unwrap();
         want.push(chosen.token);
@@ -409,9 +409,13 @@ impl nagaya_council::family::ReplyParser for HoldingParser {
         self.inner.ended()
     }
 
-    fn finish(self: Box<Self>) -> nagaya_council::family::ParsedReply {
+    fn phase(&self) -> Phase {
+        self.inner.phase()
+    }
+
+    fn finish(self: Box<Self>, max_tokens: bool) -> nagaya_council::family::ParsedReply {
         let this = *self;
-        let mut parsed = this.inner.finish();
+        let mut parsed = this.inner.finish(max_tokens);
         let phase = if parsed.content.is_empty() != this.flip {
             Phase::Reasoning
         } else {
@@ -451,11 +455,11 @@ impl Family for Holding {
 
     fn reply_parser(
         &self,
-        thinking: bool,
+        start: nagaya_council::family::ReplyStart,
         tools: &[gogi_proto::context::Tool],
     ) -> Result<Box<dyn nagaya_council::family::ReplyParser>, nagaya_council::family::FamilyError> {
         Ok(Box::new(HoldingParser {
-            inner: self.toy.reply_parser(thinking, tools)?,
+            inner: self.toy.reply_parser(start, tools)?,
             held: String::new(),
             flip: self.flip,
         }))

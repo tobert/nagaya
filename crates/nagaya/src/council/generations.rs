@@ -12,7 +12,9 @@ use gogi_proto::generation::{
 };
 use nagaya_abi::Kind;
 use nagaya_council::build::{BoundaryRecipe, boundary_recipes, recipes_with_cut};
-use nagaya_council::family::{Boundary, Family, FamilyError, ParsedReply, Rendering, ReplyCall, ReplyParser};
+use nagaya_council::family::{
+    Boundary, Family, FamilyError, ParsedReply, Rendering, ReplyCall, ReplyParser, ReplyStart,
+};
 use nagaya_council::sampler::{Settings, pick};
 use nagaya_store::{ContentId, Reason, RecipeId};
 
@@ -171,8 +173,9 @@ impl GenerateThen {
         };
         let mut piece = step.piece;
         let parsed = match end {
-            Some(_) => {
-                let parsed = self.parser.take().expect("a reply finishes once").finish();
+            Some(cut) => {
+                let max_tokens = cut == Some(Finish::MaxTokens);
+                let parsed = self.parser.take().expect("a reply finishes once").finish(max_tokens);
                 piece.push_str(&tail_text(&parsed, step.phase)?);
                 Some(parsed)
             }
@@ -471,7 +474,7 @@ impl Service {
             max_tokens,
             context_tokens,
             room,
-            parser: Some(self.family.reply_parser(context.thinks(), &context.tools)?),
+            parser: Some(self.family.reply_parser(ReplyStart::of(context), &context.tools)?),
             events,
             started: Instant::now(),
             stage: Stage::Building,

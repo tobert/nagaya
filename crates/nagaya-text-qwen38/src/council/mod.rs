@@ -36,7 +36,7 @@ mod tests;
 
 use gogi_proto::context::{Context, Tool};
 use nagaya_council::family::{
-    Boundary, ControlHit, DecisionInput, Family, FamilyError, RawRead, ReadPlan, Rendering, ReplyParser,
+    Boundary, ControlHit, DecisionInput, Family, FamilyError, RawRead, ReadPlan, Rendering, ReplyParser, ReplyStart,
 };
 use nagaya_council::template_id::{hash16, template_id};
 
@@ -342,8 +342,8 @@ impl Family for Qwen38Family {
         read::raw_read(self, letters, suffixes)
     }
 
-    fn reply_parser(&self, thinking: bool, tools: &[Tool]) -> Result<Box<dyn ReplyParser>, FamilyError> {
-        reply::reply_parser(self, thinking, tools)
+    fn reply_parser(&self, start: ReplyStart, tools: &[Tool]) -> Result<Box<dyn ReplyParser>, FamilyError> {
+        reply::reply_parser(self, start, tools)
     }
 
     fn tokenize(&self, text: &str) -> Result<Vec<u32>, FamilyError> {

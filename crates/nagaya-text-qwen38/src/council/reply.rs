@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use gogi_proto::context::Tool;
 use gogi_proto::generation::Phase;
-use nagaya_council::family::{FamilyError, ParsedReply, ReplyCall, ReplyParser, ReplyStep};
+use nagaya_council::family::{FamilyError, ParsedReply, ReplyCall, ReplyParser, ReplyStart, ReplyStep};
 use serde_json::{Map, Number, Value};
 
 use super::messages::tools_json;
@@ -22,11 +22,11 @@ const THINK_END: &str = "</think>";
 
 pub(crate) fn reply_parser(
     family: &Qwen38Family,
-    thinking: bool,
+    start: ReplyStart,
     tools: &[Tool],
 ) -> Result<Box<dyn ReplyParser>, FamilyError> {
     // A tool list that mk's parser refuses is the client's: the same tools made the context.
-    let raw = Raw::new(family.shared_tokenizer(), thinking, tools_json(tools).as_ref()).map_err(refusal)?;
+    let raw = Raw::new(family.shared_tokenizer(), start.thinking, tools_json(tools).as_ref()).map_err(refusal)?;
     Ok(Box::new(Qwen38ReplyParser {
         raw,
         stop: family.stop_ids().to_vec(),
@@ -99,11 +99,15 @@ impl ReplyParser for Qwen38ReplyParser {
         self.ended
     }
 
-    fn finish(self: Box<Self>) -> ParsedReply {
-        let ending = if self.ended {
-            Ending::StopToken
-        } else {
-            Ending::MaxTokens
+    fn phase(&self) -> Phase {
+        phase_of(self.raw.phase())
+    }
+
+    fn finish(self: Box<Self>, max_tokens: bool) -> ParsedReply {
+        let ending = match (self.ended, max_tokens) {
+            (true, _) => Ending::StopToken,
+            (false, true) => Ending::MaxTokens,
+            (false, false) => Ending::ContextFull,
         };
         let ended = self.ended;
         let reply = self.raw.finish(ending);

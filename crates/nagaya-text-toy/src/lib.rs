@@ -10,7 +10,7 @@ mod test_set;
 use gogi_proto::context::{Context, Tool};
 use gogi_toy as toy;
 use nagaya_council::family::{
-    Boundary, ControlHit, DecisionInput, Family, FamilyError, RawRead, ReadPlan, Rendering, ReplyParser,
+    Boundary, ControlHit, DecisionInput, Family, FamilyError, RawRead, ReadPlan, Rendering, ReplyParser, ReplyStart,
 };
 use nagaya_council::template_id::{hash16, template_id};
 
@@ -179,9 +179,10 @@ impl Family for ToyFamily {
         })
     }
 
-    fn reply_parser(&self, thinking: bool, _tools: &[Tool]) -> Result<Box<dyn ReplyParser>, FamilyError> {
-        // The toy call format has no schema, so the tools do not change the parse.
-        Ok(Box::new(reply::ToyReplyParser::new(thinking)))
+    fn reply_parser(&self, start: ReplyStart, _tools: &[Tool]) -> Result<Box<dyn ReplyParser>, FamilyError> {
+        // The toy call format has no schema, so the tools do not change the parse. The toy parser trims nothing, so
+        // a continuation needs no other parse.
+        Ok(Box::new(reply::ToyReplyParser::new(start.thinking)))
     }
 
     fn tokenize(&self, text: &str) -> Result<Vec<u32>, FamilyError> {
