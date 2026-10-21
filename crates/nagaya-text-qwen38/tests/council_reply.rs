@@ -112,6 +112,9 @@ fn want_step(event: &Value) -> ReplyStep {
 
 #[test]
 fn each_token_has_the_phase_and_the_released_text_of_mk() {
+    if common::absent() {
+        return;
+    }
     for case in cases() {
         let name = &case["name"];
         let (steps, _) = run(case);
@@ -127,6 +130,9 @@ fn each_token_has_the_phase_and_the_released_text_of_mk() {
 
 #[test]
 fn the_stop_token_adds_no_text_and_keeps_the_phase() {
+    if common::absent() {
+        return;
+    }
     let mut parser = family().reply_parser(false, &[]).unwrap();
     for id in tokenizer().encode("Hello").unwrap() {
         parser.push(id).unwrap();
@@ -180,6 +186,9 @@ fn same_call(got: &ReplyCall, want: &Value, name: &Value) {
 
 #[test]
 fn the_reply_is_the_reply_of_mk() {
+    if common::absent() {
+        return;
+    }
     for case in cases() {
         let name = &case["name"];
         let (_, reply) = run(case);
@@ -202,6 +211,9 @@ fn the_reply_is_the_reply_of_mk() {
 
 #[test]
 fn the_tail_is_the_text_mk_held_back() {
+    if common::absent() {
+        return;
+    }
     let mut with_tail = 0;
     for case in cases() {
         let name = &case["name"];
@@ -225,6 +237,9 @@ fn the_tail_is_the_text_mk_held_back() {
 /// tail pieces belong to the parts too.
 #[test]
 fn the_pieces_of_a_part_join_to_the_part() {
+    if common::absent() {
+        return;
+    }
     use nagaya_text_qwen38::pystr::strip;
     for case in cases() {
         let name = &case["name"];
@@ -253,6 +268,9 @@ fn the_pieces_of_a_part_join_to_the_part() {
 /// The reply of a model that thinks and then calls a tool: the case the first kaijutsu run has.
 #[test]
 fn a_thinking_block_then_a_tool_call() {
+    if common::absent() {
+        return;
+    }
     let tools = vec![Tool::new(
         "read_file",
         json!({"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer"}}}),
@@ -295,6 +313,9 @@ fn a_thinking_block_then_a_tool_call() {
 
 #[test]
 fn the_other_stop_token_ends_the_turn_too() {
+    if common::absent() {
+        return;
+    }
     let mut parser = family().reply_parser(false, &[]).unwrap();
     parser.push(tokenizer().encode("Hi").unwrap()[0]).unwrap();
     parser.push(END_OF_TEXT).unwrap();
@@ -303,6 +324,9 @@ fn the_other_stop_token_ends_the_turn_too() {
 
 #[test]
 fn the_parser_says_that_the_reply_ended_after_a_stop_token() {
+    if common::absent() {
+        return;
+    }
     for stop in [IM_END, END_OF_TEXT] {
         let mut parser = family().reply_parser(false, &[]).unwrap();
         parser.push(tokenizer().encode("Hi").unwrap()[0]).unwrap();
@@ -314,6 +338,9 @@ fn the_parser_says_that_the_reply_ended_after_a_stop_token() {
 
 #[test]
 fn a_cut_reply_has_not_ended() {
+    if common::absent() {
+        return;
+    }
     let mut parser = family().reply_parser(false, &[]).unwrap();
     for id in tokenizer().encode("Hi th").unwrap() {
         parser.push(id).unwrap();
@@ -324,6 +351,9 @@ fn a_cut_reply_has_not_ended() {
 
 #[test]
 fn a_token_after_the_stop_token_is_an_internal_error() {
+    if common::absent() {
+        return;
+    }
     let mut parser = family().reply_parser(false, &[]).unwrap();
     parser.push(IM_END).unwrap();
     let e = parser.push(tokenizer().encode("x").unwrap()[0]).unwrap_err();
@@ -332,6 +362,9 @@ fn a_token_after_the_stop_token_is_an_internal_error() {
 
 #[test]
 fn an_id_outside_the_vocabulary_is_an_internal_error() {
+    if common::absent() {
+        return;
+    }
     let mut parser = family().reply_parser(false, &[]).unwrap();
     let id = u32::try_from(family().vocab_size()).unwrap();
     let e = parser.push(id).unwrap_err();
@@ -343,6 +376,9 @@ fn an_id_outside_the_vocabulary_is_an_internal_error() {
 
 #[test]
 fn a_tool_list_the_parser_cannot_read_is_a_client_error() {
+    if common::absent() {
+        return;
+    }
     let tools = vec![Tool::new("f", json!({"properties": {"p": {"type": "text"}}}))];
     match family().reply_parser(false, &tools) {
         Err(FamilyError::Client(invalid)) => assert!(invalid.message.contains("unsupported"), "{}", invalid.message),
@@ -353,6 +389,9 @@ fn a_tool_list_the_parser_cannot_read_is_a_client_error() {
 
 #[test]
 fn an_integer_that_json_numbers_cannot_hold_makes_a_malformed_call() {
+    if common::absent() {
+        return;
+    }
     let tools = vec![Tool::new("f", json!({"properties": {"n": {"type": "integer"}}}))];
     let mut parser = family().reply_parser(false, &tools).unwrap();
     let text = "<tool_call>\n<function=f>\n<parameter=n>\n123456789012345678901234567890\n</parameter>\n</function>\n</tool_call>";

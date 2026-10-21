@@ -1,23 +1,15 @@
 //! Tests that need the test hook, so they live in the crate. They read the GGUF file as the other tests do.
+//! A machine with no copy of the file skips them (see `tests/common/model.rs`).
 
 use super::*;
 
-const GGUF_VARIABLE: &str = "NAGAYA_QWEN38_GGUF";
-const GGUF_DEFAULT: &str =
-    "/tank/ml/models/llama.cpp/Qwen3.8-Flash-Next-GGUF/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf";
+#[path = "../../tests/common/model.rs"]
+mod model;
 
-/// The metadata of the model file. A missing file fails the test: the tests never skip.
+/// The metadata of the model file. A test that calls it has called `model::absent` before.
 fn metadata() -> &'static Metadata {
     static M: std::sync::OnceLock<Metadata> = std::sync::OnceLock::new();
-    M.get_or_init(|| {
-        let path = std::path::PathBuf::from(std::env::var(GGUF_VARIABLE).unwrap_or_else(|_| GGUF_DEFAULT.to_string()));
-        assert!(
-            path.is_file(),
-            "the Qwen3.8 GGUF file {} does not exist. Put the file there, or set {GGUF_VARIABLE} to its path.",
-            path.display()
-        );
-        Metadata::open(&path).unwrap_or_else(|e| panic!("cannot read the metadata: {e}"))
-    })
+    M.get_or_init(|| Metadata::open(&model::gguf_path()).unwrap_or_else(|e| panic!("cannot read the metadata: {e}")))
 }
 
 fn base() -> String {
@@ -62,6 +54,9 @@ fn halves(id: &str) -> (&str, &str) {
 
 #[test]
 fn the_template_id_has_two_parts_and_is_stable() {
+    if model::absent() {
+        return;
+    }
     let id = base();
     assert_eq!(id, base());
     let (council, chat) = halves(&id);
@@ -83,11 +78,17 @@ const GOLDEN_TEMPLATE_ID: &str = "nagaya-council:b66d022efb4d4e48+qwen38-chat:12
 
 #[test]
 fn the_template_id_of_the_test_gguf_is_the_golden_id() {
+    if model::absent() {
+        return;
+    }
     assert_eq!(base(), GOLDEN_TEMPLATE_ID);
 }
 
 #[test]
 fn a_hook_that_changes_nothing_keeps_the_template_id() {
+    if model::absent() {
+        return;
+    }
     assert_eq!(
         Qwen38Family::with_hook(metadata(), unchanged).unwrap().template_id(),
         base()
@@ -96,6 +97,9 @@ fn a_hook_that_changes_nothing_keeps_the_template_id() {
 
 #[test]
 fn a_change_to_one_rendered_token_changes_the_council_hash_and_not_the_chat_hash() {
+    if model::absent() {
+        return;
+    }
     let base = base();
     for (name, hook) in [
         ("context", change_context as HookFn),
@@ -114,6 +118,9 @@ fn a_change_to_one_rendered_token_changes_the_council_hash_and_not_the_chat_hash
 /// contexts (the odd ones have a generation prompt), three decisions, and the letters and two suffixes of a raw read.
 #[test]
 fn each_site_of_the_hook_changes_the_renders_that_use_it() {
+    if model::absent() {
+        return;
+    }
     let base = test_set::renders(&Qwen38Family::from_metadata(metadata()).unwrap());
     assert_eq!(base.len(), 14);
     for (name, hook, want) in [
@@ -132,6 +139,9 @@ fn each_site_of_the_hook_changes_the_renders_that_use_it() {
 /// read, a read after a context, a queue read and a raw read.
 #[test]
 fn the_test_set_holds_each_kind_of_read() {
+    if model::absent() {
+        return;
+    }
     let family = Qwen38Family::from_metadata(metadata()).unwrap();
     let set = test_set::renders(&family);
     let text = |i: usize| family.tokenizer().decode(&set[i]).unwrap();

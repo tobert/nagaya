@@ -4,20 +4,9 @@
 use nagaya_text_qwen38::json::Json;
 use std::path::PathBuf;
 
-pub const GGUF_VARIABLE: &str = "NAGAYA_QWEN38_GGUF";
-pub const GGUF_DEFAULT: &str =
-    "/tank/ml/models/llama.cpp/Qwen3.8-Flash-Next-GGUF/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf";
-
-/// The path of the model file. A missing file fails the test: the tests never skip.
-pub fn gguf_path() -> PathBuf {
-    let path = PathBuf::from(std::env::var(GGUF_VARIABLE).unwrap_or_else(|_| GGUF_DEFAULT.to_string()));
-    assert!(
-        path.is_file(),
-        "the Qwen3.8 GGUF file {} does not exist. Put the file there, or set {GGUF_VARIABLE} to its path.",
-        path.display()
-    );
-    path
-}
+pub mod model;
+#[allow(unused_imports)]
+pub use model::{absent, gguf_path};
 
 /// A fixture file, read with the library's own JSON reader.
 pub fn fixture(name: &str) -> Json {

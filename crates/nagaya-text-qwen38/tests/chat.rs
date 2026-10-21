@@ -59,6 +59,9 @@ fn first_difference(got: &str, want: &str) -> String {
 
 #[test]
 fn the_template_in_the_gguf_is_the_one_that_made_the_fixtures() {
+    if common::absent() {
+        return;
+    }
     let m = Metadata::open(&gguf_path()).unwrap();
     let Some(Value::Str(source)) = m.get("tokenizer.chat_template") else {
         panic!("no chat template in the GGUF")
@@ -72,6 +75,9 @@ fn the_template_in_the_gguf_is_the_one_that_made_the_fixtures() {
 
 #[test]
 fn render_gives_the_text_and_the_ids_of_mk() {
+    if common::absent() {
+        return;
+    }
     let cases = chat_fixture().get("render").items();
     assert!(cases.len() >= 132);
     for case in cases {
@@ -107,6 +113,9 @@ fn render_gives_the_text_and_the_ids_of_mk() {
 
 #[test]
 fn render_refuses_what_mk_refuses_and_says_why() {
+    if common::absent() {
+        return;
+    }
     let cases = chat_fixture().get("render_refused").items();
     assert!(cases.len() >= 59, "{} cases", cases.len());
     for case in cases {
@@ -137,6 +146,9 @@ fn render_refuses_what_mk_refuses_and_says_why() {
 
 #[test]
 fn special_token_text_in_content_is_plain_text_in_the_ids() {
+    if common::absent() {
+        return;
+    }
     let tok = family().tokenizer();
     let case = chat_fixture()
         .get("render")
@@ -271,6 +283,9 @@ fn messages_must_be_an_array() {
 
 #[test]
 fn an_empty_tools_list_is_no_tools() {
+    if common::absent() {
+        return;
+    }
     let empty = Json::parse("[]").unwrap();
     let with = family()
         .render(
