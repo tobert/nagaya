@@ -154,11 +154,30 @@ impl GenerateThen {
             Phase::Call | Phase::Unknown => {}
         }
         let n = self.sampled.len();
+        // The reply ends at this token when the parser ended it, or when it reaches a limit.
+        let end = if ended {
+            Some(None)
+        } else if n == self.max_tokens {
+            Some(Some(Finish::MaxTokens))
+        } else if self.prompt.len() + n >= self.context_tokens {
+            Some(Some(Finish::ContextFull))
+        } else {
+            None
+        };
+        let mut piece = step.piece;
+        let parsed = match end {
+            Some(_) => {
+                let parsed = self.parser.take().expect("a reply finishes once").finish();
+                piece.push_str(&tail_text(&parsed, step.phase)?);
+                Some(parsed)
+            }
+            None => None,
+        };
         if let Some(events) = &self.events {
             let seconds = self.started.elapsed().as_secs_f64();
             let event = TokenEvent {
                 id: chosen.token,
-                piece: step.piece,
+                piece,
                 phase: step.phase,
                 p: chosen.p,
                 h: chosen.h,
@@ -170,25 +189,18 @@ impl GenerateThen {
                 return Ok(Want::Cancel);
             }
         }
-        if ended {
-            return self.finish(None);
+        match (end, parsed) {
+            (Some(cut), Some(parsed)) => self.finish(cut, parsed),
+            _ => Ok(Want::Feed {
+                tokens: vec![chosen.token],
+                logits: true,
+                kind: Kind::Decode,
+            }),
         }
-        if n == self.max_tokens {
-            return self.finish(Some(Finish::MaxTokens));
-        }
-        if self.prompt.len() + n >= self.context_tokens {
-            return self.finish(Some(Finish::ContextFull));
-        }
-        Ok(Want::Feed {
-            tokens: vec![chosen.token],
-            logits: true,
-            kind: Kind::Decode,
-        })
     }
 
-    /// End the reply. `cut` names why a reply that did not end its turn stopped.
-    fn finish(&mut self, cut: Option<Finish>) -> Result<Want, ServiceError> {
-        let parsed = self.parser.take().expect("a reply finishes once").finish();
+    /// End the reply. `cut` names why a reply that did not end its turn stopped. `parsed` is the whole reply.
+    fn finish(&mut self, cut: Option<Finish>, parsed: ParsedReply) -> Result<Want, ServiceError> {
         self.finish = Some(match cut {
             Some(cut) => cut,
             None if parsed.calls.is_empty() => Finish::EndTurn,
@@ -256,6 +268,29 @@ impl GenerateThen {
         let stem: String = hash.as_bytes()[..8].iter().map(|byte| format!("{byte:02x}")).collect();
         (0..count).map(|index| format!("call_{stem}_{index}")).collect()
     }
+}
+
+/// The text that a parser released after the last token, for the step of that token.
+///
+/// gogi: "A part's pieces join to its text in done". A token event has one phase, so the tail joins the last step
+/// only in the phase of that step. Each marker of a family is one token, so a family never releases text of
+/// another phase after the last token. Such text is a defect of the family library (spec 8.5).
+fn tail_text(parsed: &ParsedReply, phase: Phase) -> Result<String, ServiceError> {
+    let mut text = String::new();
+    for step in &parsed.tail {
+        if step.piece.is_empty() {
+            continue;
+        }
+        if step.phase != phase {
+            return Err(ServiceError::internal(format!(
+                "the reply parser released {:?} in the phase {:?} after a last token of the phase {phase:?}; \
+                 a token event has one phase",
+                step.piece, step.phase
+            )));
+        }
+        text.push_str(&step.piece);
+    }
+    Ok(text)
 }
 
 /// The reply as the assistant message that a client appends. A reply with a call that did not parse has none: a

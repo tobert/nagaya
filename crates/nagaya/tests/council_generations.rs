@@ -297,3 +297,173 @@ fn each_refused_generation_names_its_field_and_runs_nothing() {
     );
     assert_eq!(f.entries() + full.entries(), 0, "nothing was built");
 }
+
+/// A family that holds back the last character of a part, as a parser holds text that may begin a marker. A marker
+/// token releases the held text in its own step, except the stop token: after it, the held text is in the tail.
+/// With `flip`, the parser gives its tail the other phase, which is a defect of a family.
+struct Holding {
+    toy: ToyFamily,
+    flip: bool,
+}
+
+struct HoldingParser {
+    inner: Box<dyn nagaya_council::family::ReplyParser>,
+    held: String,
+    flip: bool,
+}
+
+impl nagaya_council::family::ReplyParser for HoldingParser {
+    fn push(&mut self, token: u32) -> Result<nagaya_council::family::ReplyStep, nagaya_council::family::FamilyError> {
+        let mut step = self.inner.push(token)?;
+        if step.piece.is_empty() {
+            if token != gogi_toy::END {
+                step.piece = std::mem::take(&mut self.held);
+            }
+        } else {
+            self.held.push_str(&step.piece);
+            let last = self.held.chars().last().unwrap();
+            let cut = self.held.len() - last.len_utf8();
+            step.piece = self.held[..cut].to_owned();
+            self.held = last.to_string();
+        }
+        Ok(step)
+    }
+
+    fn ended(&self) -> bool {
+        self.inner.ended()
+    }
+
+    fn finish(self: Box<Self>) -> nagaya_council::family::ParsedReply {
+        let this = *self;
+        let mut parsed = this.inner.finish();
+        let phase = if parsed.content.is_empty() != this.flip {
+            Phase::Reasoning
+        } else {
+            Phase::Content
+        };
+        parsed.tail = vec![nagaya_council::family::ReplyStep {
+            phase,
+            piece: this.held,
+        }];
+        parsed
+    }
+}
+
+impl Family for Holding {
+    fn render(
+        &self,
+        context: &Context,
+        generation_prompt: bool,
+    ) -> Result<nagaya_council::family::Rendering, nagaya_council::family::FamilyError> {
+        self.toy.render(context, generation_prompt)
+    }
+
+    fn decision_read(
+        &self,
+        input: &nagaya_council::family::DecisionInput<'_>,
+    ) -> Result<Box<dyn nagaya_council::family::ReadPlan>, nagaya_council::family::FamilyError> {
+        self.toy.decision_read(input)
+    }
+
+    fn raw_read(
+        &self,
+        letters: &[String],
+        suffixes: &[String],
+    ) -> Result<nagaya_council::family::RawRead, nagaya_council::family::FamilyError> {
+        self.toy.raw_read(letters, suffixes)
+    }
+
+    fn reply_parser(
+        &self,
+        thinking: bool,
+        tools: &[gogi_proto::context::Tool],
+    ) -> Result<Box<dyn nagaya_council::family::ReplyParser>, nagaya_council::family::FamilyError> {
+        Ok(Box::new(HoldingParser {
+            inner: self.toy.reply_parser(thinking, tools)?,
+            held: String::new(),
+            flip: self.flip,
+        }))
+    }
+
+    fn tokenize(&self, text: &str) -> Result<Vec<u32>, nagaya_council::family::FamilyError> {
+        self.toy.tokenize(text)
+    }
+
+    fn detokenize(&self, tokens: &[u32]) -> Result<String, nagaya_council::family::FamilyError> {
+        self.toy.detokenize(tokens)
+    }
+
+    fn template_id(&self) -> &str {
+        self.toy.template_id()
+    }
+
+    fn vocab_size(&self) -> usize {
+        self.toy.vocab_size()
+    }
+}
+
+/// A fixture with the holding family, and the script of its engine.
+fn holding(flip: bool) -> (Fixture, Script) {
+    let script = Script::default();
+    let factory = TermFactory {
+        script: script.clone(),
+        ..TermFactory::toy()
+    };
+    let config = ServiceConfig::new("toy", council_support::ENGINE);
+    let family = std::sync::Arc::new(Holding {
+        toy: ToyFamily::new(),
+        flip,
+    });
+    (Fixture::with_family(factory, family, 1 << 20, None, config), script)
+}
+
+/// Stream a generation, and give its token events and its reply.
+fn stream(f: &Fixture, value: &Value, max_tokens: u32) -> (Vec<TokenEvent>, GenerationDone) {
+    let (tx, rx) = mpsc::channel();
+    let done = f
+        .service
+        .generate(&request(value, max_tokens, json!({"temperature": 0})), Some(tx))
+        .unwrap();
+    (rx.try_iter().collect(), done)
+}
+
+#[test]
+fn the_text_that_a_parser_releases_after_the_last_token_joins_the_last_piece() {
+    // A reply that ends its turn: the held `k` comes after the stop token.
+    let (f, script) = holding(false);
+    let value = ctx(true, opening());
+    script.set(prompt(&value), think_then_answer());
+    let (events, done) = stream(&f, &value, 50);
+    assert_eq!((done.reasoning.as_str(), done.content.as_str()), ("hi", "ok"));
+    assert_eq!(events.len() as u64, done.usage.completion);
+    check_pieces(&events, &done).unwrap();
+    assert_eq!(
+        events.last().unwrap().piece,
+        "k",
+        "the stop token carries the held text"
+    );
+
+    // A reply that max_tokens cuts in its reasoning: the held `l` comes after the last token.
+    let (f, script) = holding(false);
+    script.set(prompt(&value), bytes("hello"));
+    let (events, done) = stream(&f, &value, 3);
+    assert_eq!((done.reasoning.as_str(), done.finish), ("hel", Finish::MaxTokens));
+    assert_eq!(events.len(), 3);
+    check_pieces(&events, &done).unwrap();
+}
+
+#[test]
+fn text_released_after_the_last_token_in_another_phase_is_an_internal_error() {
+    let (f, script) = holding(true);
+    let value = ctx(true, opening());
+    script.set(prompt(&value), think_then_answer());
+    let (tx, _rx) = mpsc::channel();
+    let err = f
+        .service
+        .generate(&request(&value, 50, json!({"temperature": 0})), Some(tx))
+        .unwrap_err();
+    assert!(
+        matches!(&err, ServiceError::Internal(message) if message.contains("a token event has one phase")),
+        "{err:?}"
+    );
+}

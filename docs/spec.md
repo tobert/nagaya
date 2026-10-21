@@ -1382,6 +1382,10 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
 - A generation holds its head after the reply when two facts hold. The rendering of the context with the reply has
   the boundaries of the prompt before the reply. The slot holds a prefix of that rendering, at most 8 tokens short.
   Then the job feeds the rest and puts the snapshot. Otherwise `head` is null.
+- A reply parser can release text after the last token, such as text that it held back as a possible marker. The
+  service adds that text to the piece of the last token event. Thus the pieces of a part join to its text in
+  `done` (gogi "Streams"). The text must have the phase of the last token. Text of another phase is an internal error,
+  because each marker of a family is one token.
 - The service names the calls of a reply `call_<16 hex digits>_<index>`. The digits come from a BLAKE3 hash of the
   prompt and the reply. Thus a greedy replay gives the same ids.
 - A generation that sends no seed takes one from the hash keys of the Rust standard library, which the operating
