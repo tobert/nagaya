@@ -302,3 +302,34 @@ fn a_content_cut_goes_back_closed_and_starts_from_its_head() {
     let closed = json!({"role": "assistant", "reasoning": cut.reasoning, "content": cut.content});
     assert_eq!(kept_after(&f, &value, closed), head);
 }
+
+/// kaibo job-5 item 9: the Qwen3.8 template renders an empty system message as nothing, so its end is at token 0.
+/// The cuts came from the ends of the messages, and a cut at token 0 was a 500. The search of the store's index gives
+/// no cut there.
+#[test]
+fn a_message_that_renders_no_token_gives_no_cut_at_token_zero() {
+    let (f, _) = fixture(qwen());
+    let value = json!({"messages": [{"role": "system", "content": ""}, {"role": "user", "content": "Hi."}]});
+    f.service.build(&context(&value), false, Default::default()).unwrap();
+    let mut next = value.clone();
+    next["messages"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"role": "assistant", "content": "Hello."}));
+    next["messages"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"role": "user", "content": "Bye."}));
+    let dry = f.service.build(&context(&next), true, Default::default()).unwrap();
+    assert!(dry.usage.kept > 0, "{:?}", dry.usage);
+}
+
+/// A marked message that renders no token is no boundary: a boundary at token 0 would hold an empty state.
+#[test]
+fn a_marked_message_that_renders_no_token_is_no_boundary() {
+    let (f, _) = fixture(qwen());
+    let value =
+        json!({"messages": [{"role": "system", "content": "", "snap": true}, {"role": "user", "content": "Hi."}]});
+    let built = f.service.build(&context(&value), false, Default::default()).unwrap();
+    assert!(built.snapshots.iter().all(|s| s.tokens > 0), "{:?}", built.snapshots);
+}

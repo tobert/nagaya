@@ -376,15 +376,17 @@ impl Family for Qwen38Family {
         } else {
             base.ids.clone()
         };
-        // A marked message is a boundary when its rendering is a prefix of the whole (gogi "Contexts").
+        // A marked message is a boundary when its rendering is a prefix of the whole (gogi "Contexts"). It must also
+        // add tokens: an empty system message renders none, and a boundary comes after the one before it.
         let last = messages.len() - 1;
-        let mut boundaries = Vec::new();
+        let mut boundaries: Vec<Boundary> = Vec::new();
         for (i, message) in context.messages.iter().enumerate().take(last) {
             if !message.snap {
                 continue;
             }
             let part = self.run(&messages[..=i], tools.as_ref(), thinking, false)?;
-            if base.ids.starts_with(&part.ids) {
+            let after = boundaries.last().map_or(0, |b| b.tokens);
+            if base.ids.starts_with(&part.ids) && part.ids.len() > after && part.ids.len() < end {
                 boundaries.push(Boundary {
                     message: i,
                     tokens: part.ids.len(),
