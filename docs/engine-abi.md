@@ -309,7 +309,7 @@ the ABI.
   **Open:** `mk_ctx_new` stops the program when `hipMalloc` fails (`MK_CHECK`, `engine.hip:561-569`). Thus a clear
   that cannot allocate ends the process, and the binding never sees a null context. The free comes first, so the
   allocator holds the bytes. mk needs a reset call that keeps the buffers, so that a clear does not allocate.
-  - `plan(config)` comes with the process crate, so this binding fixes the pool.
+  - The factory of the process crate gives `plan(config)` (next rule), and this binding fixes the pool.
 - **The factory plans from `weights_bytes`.** Decided by senpai 2026-10-20 night (vetoable).
   - mk knows the size of its weight arena only after the weights load (`mk_engine_arena`). The arena is a repacked
     copy of the tensors, so `plan` cannot compute the size.
@@ -374,7 +374,7 @@ the ABI.
   - The weights take 61 GiB. One handle leaves about 51 GB of MemAvailable. Each further handle takes about 12.2 GB.
   - `open` refuses a pool that would leave less than the 12 GiB floor. Thus at most three handles are open at once.
   - A gate of the conformance suite holds at most three handles.
-- **`canary_hash` is empty.** This binding does not run mk's canary. The process adds it in a later milestone.
+- **`canary_hash` is empty.** This binding does not run mk's canary. The process does not run it yet (spec 8.1).
 - **The identity carries `MK_FAST_QMM`, `MK_TILES` and `fused`.** They are `Approx`, `ReferenceDefining` and
   `Approx`. mk reads `MK_FAST_QMM` at each pass build (`engine.h:27-32`). `MK_TILES` chooses the tiled or the GGUF
   layout at load (`engine.h:139-146`). The binding has not measured whether the two give equal bits. A change after

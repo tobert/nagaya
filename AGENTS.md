@@ -76,7 +76,8 @@ in a lock: one thread owns it (3.2).
 
 ### Milestones
 
-Do them in this order. Each milestone ends with all checks green and one or more commits.
+Do them in this order. Each milestone ends with all checks green and one or more commits. Milestones 1 to 14 are
+done. Milestone 15 is next.
 
 1. **Workspace.** Make the workspace, the seven crates, and a `rustfmt.toml` with `max_width = 120`. Run each check
    once, with `--features hip` too, so that each one works before there is real code. In the workspace
@@ -140,8 +141,20 @@ Do them in this order. Each milestone ends with all checks green and one or more
        Restore through `Store::restore` in the conformance gates (8.3), and refuse an interval copy as a parent
        (6.13). The ledger counts per-context terms when it admits `ctx_new` (4.2). This step does not wait for the
        others.
+
+    Done on 2026-10-20 night. Step 1 is in gogi (`gogi-toy`). Step 7 declares mk's grain of 256 tokens. The merges:
+
+    - step 2: `cf81337`;
+    - step 3: `3dcaea2`;
+    - step 4: `960484e` and `40e21f0`;
+    - step 5: `766d5bd`;
+    - step 6: `9c99735`;
+    - step 7: `0b45c95` and `6121891`.
 13. **Observability.** Log to stderr. Export traces and metrics over OTLP when the endpoint is set (9.1-9.5). Each
     instrument has a call site under test.
+
+    Done on 2026-10-20 night, merge `4bdd501`. The crate is `nagaya-telemetry`. Not built: the JSON-lines file
+    export, the OTLP export of logs, and the instruments that have no call site yet (spec 9.5).
 14. **Deploy on gfx1151host.** Write a systemd user unit in `deploy/` (10.1). The bootstrap config binds
     `198.51.100.20:8090`, mk's address now (Amy, 2026-10-18). Run `gogi-conformance` against the process on gfx1151
     with the mk engine. Then drive one kaijutsu context against it: kaijutsu speaks council v2 through gogi. Write
@@ -153,6 +166,18 @@ Do them in this order. Each milestone ends with all checks green and one or more
     - the inventory probe that reads files under a root path, with fixed trees for three machines (2.1);
     - CPU isolation with `sched_setaffinity`, and its test of the CPU masks (3.2a);
     - the heartbeat of a group while its engine opens (7.4).
+
+    Done on 2026-10-20 night. Senpai and Amy did the cutover at 00:24 on 2026-10-21. `nagaya.service` serves
+    council v2 on `198.51.100.20:8090` with mk on gfx1151, and `megakernel.service` is stopped and disabled.
+    `gogi-conformance` gave 215 ok, 0 FAIL and 5 skip. Arenas through a restart (10.2) are not built. The merges:
+
+    - the unit, the config and `docs/deploy.md`: `ec87a36`;
+    - the file probe: `010ae47`;
+    - the CPU sets: `7927da9`;
+    - the mk factory and the probe at start: `b89b014`;
+    - the heartbeat during an open: `cee227d`;
+    - the stop path: `9a79c3a`;
+    - the park of held bytes: `5c5dd88`.
 15. **Import mk.** Copy mk's engine into `nagaya-mk-qwen38-gfx1151`, after the cutover. We own the copy, and the old
     repository stays an archive (Amy, 2026-10-19: "copy code in, we own all of it 100%"). The rules:
     - The HIP device kernels stay HIP. The host code is Rust.
@@ -178,10 +203,12 @@ Do them in this order. Each milestone ends with all checks green and one or more
 - `mk_engine_attach` takes a path, not an fd. For an fd from systemd's store, give `/proc/self/fd/<n>`.
 - `mk_ctx_state_write` returns nothing. The wrapper maps mk's result onto the three write results (ABI
   "Capabilities") through `mk_ctx_poisoned`.
-- The nagaya must be the only GPU client (spec 3.1). Before you run GPU tests, check that mk's service is inactive:
-  `systemctl --user is-active megakernel.service`. It is a user unit, so the command without `--user` says
-  "inactive" while it runs. If it runs, stop and report. Do not stop the service yourself. In a container with no
-  systemd, ask your reviewer to check it.
+- The nagaya must be the only GPU client (spec 3.1). Since 2026-10-21, `nagaya.service` serves council v2 on gfx1151host.
+  Before you run GPU tests, check that both units are inactive:
+  `systemctl --user is-active megakernel.service nagaya.service`.
+  - They are user units. The command without `--user` says "inactive" while they run.
+  - If either one runs, stop and report. Do not stop a service yourself.
+  - In a container with no systemd, ask your reviewer to check it.
 - mk aborts the process on some bad arguments (`MK_DIE` in `src/engine/capi.hip`). Call `mk_segments_problem`
   before `mk_pass_segments`.
 - mk's HIP device is the device that is current on the calling thread. Make every mk call from one thread.
@@ -195,7 +222,9 @@ Run these before each commit. Each one must pass.
 ```
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --features hip -- -D warnings
 cargo test --workspace --tests
+cargo test --workspace --tests --no-default-features
 python3 tools/ste_check.py README.md AGENTS.md docs/*.md
 awk 'length > 120 && !/^\|/ {print FILENAME":"FNR; bad = 1} END {exit bad}' README.md AGENTS.md docs/*.md
 ```
@@ -209,7 +238,7 @@ cargo test -p nagaya-mk-qwen38-gfx1151 --tests --features hip -- --test-threads=
 
 `cargo test --lib` does not compile integration tests. Name `--tests`.
 
-On gfx1151host, run the oracle bench with `MK_ENGINE_LIB` and `MK_SHARDS` set and the service inactive:
+On gfx1151host, run the oracle bench with `MK_ENGINE_LIB` and `MK_SHARDS` set and both units inactive:
 `cargo bench -p nagaya-mk-qwen38-gfx1151 --features hip --bench oracle`. It exits with 1 when a gate breaks.
 Set `MK_FAST_QMM=0` for the gate: the exact path must match the reference. Leave it unset to measure the fast path.
 Make the fixture again with `PYTHONDONTWRITEBYTECODE=1 nice -n 19 ionice -c3 <mk venv python> -I tools/oracle_fixture.py

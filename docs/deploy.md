@@ -3,6 +3,9 @@
 This doc tells how to build the nagaya and install its systemd user unit on gfx1151host. It tells how to move the service
 on port 8090 from mk to the nagaya, and how to go back. The rules are in `docs/spec.md` 2.1, 2.4, 3.3 and 10.1-10.4.
 
+The cutover ran at 00:24 on 2026-10-21. `nagaya.service` serves council v2 on port 8090 with mk on gfx1151, and
+`megakernel.service` is stopped and disabled. Use "Cut over from mk" again only after a rollback.
+
 Run each command as `atobey` on gfx1151host. The unit is a user unit, so every `systemctl` command has `--user`. A command
 without `--user` talks to the system manager and says "inactive" for a user unit.
 
@@ -20,19 +23,24 @@ The bootstrap config binds HTTP to `198.51.100.20:8090`, the address of mk's ser
 gossip to UDP port 8091 on the same address. It has no seed peers, because gfx1151host is one machine. The store directory
 is `/home/atobey/.local/share/nagaya/store`.
 
+The unit sets `OTEL_EXPORTER_OTLP_ENDPOINT` to `http://127.0.0.1:4317`, the host collector. The nagaya exports OTLP
+over gRPC (spec 9.1). Without a collector, the log still works.
+
 ## Before you start
 
-These gaps were open on 2026-10-20 night. Check each one, because the cutover fails while one is open.
+The gaps of 2026-10-20 night are closed. Check these items before each start, because a start fails when one is
+wrong.
 
-- The `nagaya` binary needs the mk engine. Build it with `--features hip` (see "Build"). A build without the feature
-  exits 3 with the message "this build has no engine". The feature registers the kind `mk-qwen38-gfx1151`.
-- The profile needs the real size of mk's weight arena. The file in `deploy/gfx1151host/` holds an estimate. Read "The
-  weights size" below before the first start.
-- The council service needs the `parts`, `slots` and `coverage` capabilities of mk. The `m14-stop` lane added them on
-  2026-10-20 night. A binary from before that merge logs "cannot serve engine `mk`" and exits 3 (spec 11.7).
-- The mk context sizes change in the `ctx-size` lane. The profile names no context count and no size, so it does not
-  change. The pool bytes that the engine declares do change. Read "The memory budgets" below, and check the budgets.
+- Build the `nagaya` binary with `--features hip` (see "Build"). The feature registers the kind
+  `mk-qwen38-gfx1151`. A build without it exits 3 with the message "this build has no engine".
+- Build the binary from a commit at or after `9a79c3a`. Before that merge, mk did not declare `slots` and
+  `coverage`. The old binary logs "cannot serve engine `mk`" and exits 3 (spec 11.7).
 - mk's library must exist and be newer than mk's last commit (AGENTS.md "mk on gfx1151host"). Amy builds it.
+- The profile must hold the real size of mk's weight arena. The file in `deploy/gfx1151host/` holds the measured size.
+  A new mk or new weights can change it. Read "The weights size" below.
+- The context pool is 12 contexts of 4,096 tokens and 4 of 32,768. The binding fixes it, and the profile names no
+  context count. Read "The memory budgets" below when mk or the pool changes.
+- Nothing else may hold the GPU, and `megakernel.service` must stay inactive (see "Rules for every restart").
 
 ## Build
 
@@ -123,14 +131,14 @@ Do these steps in this order. Stop at the first step that fails, and do the roll
 
    The reply is JSON. It lists the served model with its identity, limits, capabilities and status.
 
-6. Run gogi's conformance suite against the process. It sends about 200 requests and needs no restart.
+6. Run gogi's conformance suite against the process. It needs no restart.
 
    ```
    cd ~/src/gogi
    nice -n 10 cargo run --release -p gogi-conformance -- http://198.51.100.20:8090
    ```
 
-   The last line counts the checks, such as `212 ok, 0 FAIL, 6 skip`. Each `FAIL` line names a check. Add
+   The last line counts the checks. On 2026-10-21 it was `215 ok, 0 FAIL, 5 skip`. Each `FAIL` line names a check. Add
    `--model <name>` to check one served model. The flag `--allow-restart <cmd>` also checks a restart, but pinned
    snapshots do not survive one yet (spec 6.11), so leave it out.
 
@@ -190,6 +198,8 @@ identity (gogi `docs/council-api.md`). Do these steps after each cutover and eac
 2. Compare its `weight_hash`, `engine`, `tokenizer_hash` and `template` with each `[[council.threshold]]` entry.
 3. If one differs, the gate has no threshold for that identity. Ask Amy before you change the file.
 
+On 2026-10-21, a throwaway kaijutsu kernel drove a generation and gate council decisions through the nagaya.
+
 ## The memory budgets
 
 The profile has one pool for `device(0)` and `host` (spec 4.1): 112 GiB, or 120,259,084,288 bytes. The host has
@@ -197,12 +207,19 @@ about 125.1 GiB. The host safety floor is 12 GiB (spec 4.7). That leaves 113.1 G
 below it. The store takes 16 GiB of host memory from the pool, and 50 GiB of NVMe. These are mk's defaults for its
 parked contexts.
 
-The mk engine declares its terms in `limits().memory`. When the ctx-size lane lands, the context term grows from
-about 2.1 GB to about 4 x 32768 + 12 x 4096 tokens of context. Add the new terms to the weights and to the pass
-scratch. If the sum plus 16 GiB is over 112 GiB, the process refuses the profile and exits 3. The log gives the
-shortfall in bytes.
+The mk engine declares its terms in `limits().memory`. The terms are these:
 
-Then raise the pool in `profile.toml`, or lower `store.host`. Keep the pool 12 GiB below `MemTotal`.
+- the weights: 65,490,227,200 bytes (`weights_bytes` in the profile);
+- the context pool of 12 contexts of 4,096 tokens and 4 of 32,768: 12,198,215,680 bytes;
+- the pass scratch: 324,009,984 bytes.
+
+The sum is 78,012,452,864 bytes. With the store's 17,179,869,184 bytes of host memory, it is 95,192,322,048 bytes.
+The pool has 120,259,084,288 bytes, so about 25.1 GB stay free. A new context and a staging copy (spec 4.2) take
+their bytes from that room. A copy of a 32,768-token context is about 1.93 GB.
+
+If a change makes the sum larger than the pool, the process refuses the profile and exits 3. The log gives the
+shortfall in bytes. Then raise the pool in `profile.toml`, or lower `store.host`. Keep the pool 12 GiB below
+`MemTotal`.
 
 ## The weights size
 
@@ -210,7 +227,8 @@ The engine config in `profile.toml` has one key, `weights_bytes`: the size of mk
 `docs/engine-abi.md` "v0 mk binding choices"). The plan reads no weights, so the profile must give the size. The
 ledger holds these bytes for the weights term.
 
-The file in `deploy/gfx1151host/` holds an estimate of 61 GiB, from mk's notes. Do this at the first start:
+The file in `deploy/gfx1151host/` holds the measured size: 65,490,227,200 bytes, or 60.99 GiB. The first start on gfx1151
+gave it on 2026-10-20. After a new mk or new weights, a start can exit 3 with another size. Do these steps then:
 
 1. Start the unit. mk loads its weights, which takes about 35 s.
 2. The process finds another arena size and exits 3. The log says: "mk's weight arena is N bytes, and the profile
@@ -246,10 +264,11 @@ These rules fill gaps in the spec. Each one is the simplest choice that works.
   the store.
 - The gossip port is 8091, next to the HTTP port 8090.
 - The pool is 112 GiB, the store's host budget is 16 GiB and its NVMe budget is 50 GiB (see "The memory budgets").
-- `interval_copies` is 0 (spec 6.13), so the store refuses interval copies until a lane builds them.
+- `interval_copies` is 0 (spec 6.13), so the scheduler makes no interval copy. A larger value turns the copies on.
+  A change of it restarts the process (spec 2.3).
 - The library pin and `MK_FAST_QMM` stay unset.
 - The profile is copied into the store directory once. It is not a link.
 - The release binary is built with `--features hip`. The plain build has no engine and exits 3.
-- `weights_bytes` in the engine config is the size of mk's weight arena. The file holds an estimate until the first
-  start gives the real size (see "The weights size"). A wrong size exits 3.
+- `weights_bytes` in the engine config is the size of mk's weight arena. The file holds the measured size (see "The
+  weights size"). A wrong size exits 3.
 - A probe error at start exits 3 (spec 2.1, 10.4).

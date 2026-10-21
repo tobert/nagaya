@@ -205,6 +205,8 @@ probes of free memory (ds4-recipe's memory ledger).
 - **Admission** is only the ledger's check of a call that allocates, or of a profile, before it runs
   (`docs/spec.md` 4.3, 2.4). The client API's limit on requests in flight is the **door limit**, not admission
   (`docs/spec.md` 5.10).
+- A **staging charge** is the ledger's charge for a copy of engine state in host memory. It lasts from the start of
+  the copy to its drop (`docs/spec.md` 4.2). It is not the staged path of an IO request (`docs/spec.md` 7.2).
 
 The **safety floor** is a different check. It watches the host's free memory for what the ledger cannot see
 (`docs/spec.md` 4.7).
