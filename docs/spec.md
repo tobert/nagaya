@@ -1220,6 +1220,108 @@ a filter by engine or kind when it connects.
 Not built. The HTTP server exists (11.7), and it has no status route. `ObservedScheduler` sees every quantum, and
 the job path uses it now (9.2), so it can feed the bus.
 
+**9.7a The events.** The route is `GET /nagaya/v1/status` (11.4a). The feed is `text/event-stream`. Each event has an
+`event:` line and a `data:` line of one JSON object. These rules are **Proposed (for Amy)**, by Claude Sonnet 5.5 on
+2026-10-21.
+
+| Event | When | `data` |
+|---|---|---|
+| `snapshot` | First, once, when a client connects. | The state of the machine, below. |
+| `quantum` | After each quantum that a group thread runs. | The quantum, below. |
+
+The keepalive is a comment line, `: keepalive`. It is not an event.
+
+The `data` of `snapshot`:
+
+| Member | Type | Meaning |
+|---|---|---|
+| `t_ms` | integer | Milliseconds since the process started. |
+| `machine` | string | The `host.name` resource attribute (9.1). |
+| `engines` | array | One entry for each engine group on the machine. |
+| `engines[].engine` | string | The `engine` attribute of 9.2: the engine names of the group, joined with `+`. |
+| `engines[].device_group` | integer | The id of the device group. |
+| `engines[].state` | string | `loading`, `ready`, `draining`, `unloaded` or `fatal`. It is `EngineState` of `nagaya-telemetry`. |
+| `engines[].queue` | object | The jobs that wait, by class: `interactive`, `batch` and `filler`. |
+| `engines[].jobs` | integer | The jobs that have not ended, with the one that runs. |
+
+The `data` of `quantum`:
+
+| Member | Type | Meaning |
+|---|---|---|
+| `t_ms` | integer | Milliseconds since the process started, at the end of the quantum. |
+| `engine` | string | As in the snapshot. |
+| `device_group` | integer | As in the snapshot. |
+| `kind` | string | `read`, `prefill`, `decode`, `embed`, `copy`, `step` or `train`. |
+| `class` | string | `interactive`, `batch` or `filler`. |
+| `request` | string | The kind of request: the `request` attribute of `nagaya.job` (9.2). |
+| `ms` | integer | The run time of the quantum. It is the value of `nagaya.quantum.run.duration` (9.4). |
+| `outcome` | string | `done` or `failed`. It uses the words of the `outcome` of the span `nagaya.quantum`. |
+| `queue` | object | As in the snapshot. It counts the jobs that are `Ready` when the quantum ends. |
+| `evidence` | string | Only when `outcome` is `failed`. It is the line that 9.6 logs, with the counters. |
+
+```
+event: snapshot
+data: {"t_ms": 91234, "machine": "gfx1151host", "engines": [{"engine": "mk-qwen38-gfx1151", "device_group": 0,
+  "state": "ready", "queue": {"interactive": 0, "batch": 0, "filler": 0}, "jobs": 0}]}
+
+event: quantum
+data: {"t_ms": 91790, "engine": "mk-qwen38-gfx1151", "device_group": 0, "kind": "prefill", "class": "interactive",
+  "request": "generation", "ms": 412, "outcome": "done", "queue": {"interactive": 1, "batch": 0, "filler": 0}}
+
+: keepalive
+```
+
+In a real event, the `data` is one line.
+
+- **Proposed (for Amy).** A decode quantum makes an event too, as mk's `pass` does. Decode makes metrics only in 9.2,
+  but a feed is for a person, and a client that wants less volume filters by `kind`.
+- **Proposed (for Amy).** The events of one group are in order. The events of two groups have no order, and `t_ms`
+  tells the client which came first.
+- **Proposed (for Amy).** A filter is the query `engine` and the query `kind` of the connect request. Each takes
+  values joined with commas. A name that is not an engine of the machine, or a kind that does not exist, is a 400
+  `invalid_request` that names the query. An empty result from a typo would hide the fault.
+- **Proposed (for Amy).** The `kind` filter drops quantum events only. The `engine` filter also drops entries of the
+  snapshot.
+- **Proposed (for Amy).** The keepalive comes every 15 s without an event, as in mk. A machine with no engine sends a
+  snapshot with an empty `engines`, and then the keepalive.
+- **Proposed (for Amy).** At most 16 feeds are open at once. A request past that is a 429 `busy`. A feed does not
+  count toward the 64 calls of 11.7, because it holds no call thread.
+- **Proposed (for Amy).** A stop ends each feed after the `draining` state (10.3). A client reconnects and gets a new
+  snapshot.
+
+**9.7b Where the events come from.** **Proposed (for Amy).** The group thread produces them, and a bus delivers them.
+The code from the obs-wire merge (532eb28) already holds each value.
+
+- A new type `StatusBus` in `crates/nagaya/src/status.rs` holds the subscribers and the last state of each group. The
+  process makes one bus and gives it to the council and to each group.
+- `GroupJobs::run_one` (`crates/nagaya/src/jobs.rs`) sends the `quantum` event after the outcome is known. A builder
+  method `GroupJobs::status`, next to `GroupJobs::machine`, gives the group its bus. `GroupJobs::add_under` and
+  `GroupJobs::cancel_all` update the state of the group, because they change the queue.
+- `engine` and `device_group` are fields of `GroupJobs`. `request` is `JobBody::request`. `kind` and `class` come from
+  the `Quantum` in `ObservedScheduler::state().running`, which `run_one` already clones. The function `kind_label` in
+  `crates/nagaya-sched/src/observed.rs` becomes public, so that spans and events use one spelling.
+- `ms` is the `duration_ms` that `run_one` measures. It is the value that `ObservedScheduler::step` records as
+  `nagaya.quantum.run.duration` when it hears the `Complete` event. Thus the feed and the metric agree.
+- `queue` counts the jobs of `ObservedScheduler::state` whose state is `Ready`, by `Class`. `jobs` counts the jobs that
+  are not terminal.
+- `evidence` is the line that `Watch::failed` returns (`crates/nagaya/src/evidence.rs`). For a decode quantum it is
+  the line of `failed_unwatched`. Both functions already give the line, so no new read of the counters happens.
+- The `state` of an engine comes from the call that records `nagaya.engine.state` in
+  `crates/nagaya/src/lifecycle.rs`. That call also updates the bus.
+- Each subscriber has a `tokio::sync::mpsc` channel for 256 events. The bus sends with `try_send` from the group
+  thread, so a slow subscriber never blocks a group. A full channel removes the subscriber, and its stream ends. The
+  nagaya logs `status feed dropped a slow subscriber` as a warning.
+- The route is a handler in `crates/nagaya/src/http/extensions.rs`. It subscribes before it reads the snapshot, so no
+  quantum falls between them (as mk's `gpu.subscribe` does).
+
+Tests that can fail: a fake engine runs a build and a failing quantum, and the test reads the events from a
+subscriber. It checks each member of 9.7a against the metric and the span. A subscriber that never reads must be
+dropped, and the group must go on.
+
+Other option for the source: emit from inside `ObservedScheduler::record_end`, so that no caller can forget an event.
+That type then needs a sink, and it does not know the request kind or the evidence. The pick keeps the scheduler a pure
+recorder of metrics and spans.
+
 ## 10. Lifecycle
 
 **10.1 systemd.** The unit is `Type=notify`. The process sends `READY=1` when every engine in the profile has
@@ -1876,6 +1978,18 @@ does not ask for it.
 | 507 | `no_memory` | a profile that does not fit its budgets (2.4) |
 
 An unexpected failure is a 500 `internal`, and the process stops (8.5).
+
+**Proposed (for Amy).** The routes of 11.4b to 11.4d, and the status feed of 9.7a, need no new code in this table.
+They use the codes that the table and gogi's table already hold:
+
+| Code | `error.type` | When, on these routes |
+|---|---|---|
+| 400 | `invalid_request` | A missing `model`, an unknown member, a bad context, text or tokens, or a bad `engine` or `kind` query. |
+| 413 | `too_large` | A body past 16 MiB (11.7). |
+| 429 | `busy` | More than 64 calls (11.7), or more than 16 open feeds (9.7a). |
+| 500 | `internal` | A family library defect. The process stops (8.5). |
+| 503 | `model_unavailable` | The served model is not `ready`. The text routes only. |
+| 503 | `unavailable` | The process is stopping. |
 
 **11.6 Binding.** The HTTP and gossip listen addresses and seed peers are in the bootstrap config (2.1). (mkviolet
 has a tailnet address in its code.)
