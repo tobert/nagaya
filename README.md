@@ -14,9 +14,12 @@ v0 covers three kinds of work: inference, image batch, and training as filler. A
 Clients speak council v2 to the nagaya. The contract is gogi (`~/src/gogi`). The nagaya speaks
 the engine ABI (`docs/engine-abi.md`) to its engines.
 
-Status: design only. Written 2026-10-17 from a conversation with Amy that began with renting a GPU for a weekend and
-ended with a common host for our megakernels. The code starts on gfx1151host, with mk's engine first (2026-10-18).
-`AGENTS.md` gives the milestones.
+Status: running on gfx1151host. The design came on 2026-10-17 from a conversation with Amy. It began with renting a GPU for
+a weekend and ended with a common host for our megakernels. The code began with mk's engine on 2026-10-18.
+
+Since 00:24 on 2026-10-21, `nagaya.service` serves council v2 on `198.51.100.20:8090` with mk's engine on gfx1151.
+`megakernel.service` is stopped and disabled. `gogi-conformance` gave 215 ok, 0 FAIL and 5 skip against it.
+`AGENTS.md` gives the milestones. Milestones 1 to 14 are done. `docs/deploy.md` tells how to run it.
 
 ## Why a new repo
 
@@ -37,6 +40,7 @@ tempted to come up with a new name and port all the code into a fresh repo and c
 - `docs/spec.md`: the spec. Read it after this file.
 - `docs/ontology.md`: the nouns, defined once, with where each one already exists in mk and mkviolet.
 - `docs/engine-abi.md`: the draft engine ABI v0, how mk and mkviolet map onto it, and its decisions.
+- `docs/deploy.md`: how to build the nagaya, install its unit on gfx1151host, cut over from mk, and roll back.
 - `docs/reviews.md`: reviews of these documents and what we did with each finding.
 - `docs/prior-art.md`: what ds4-recipe and Ai2's scheduler teach us, as proposals.
 - `docs/deepinfer.md`: what DeepSeek's DeepInfer teaches us, as proposals.
