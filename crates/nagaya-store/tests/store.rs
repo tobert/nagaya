@@ -354,6 +354,7 @@ impl Engine for TestEngine {
                     dtype: self.dtype,
                     shape: vec![8],
                     block_format: self.block_format.clone(),
+                    stage: 0,
                 },
                 PartLimits {
                     name: "fixed".to_owned(),
@@ -361,6 +362,7 @@ impl Engine for TestEngine {
                     dtype: self.dtype,
                     shape: vec![4],
                     block_format: self.block_format.clone(),
+                    stage: 0,
                 },
             ],
             inputs: Inputs::Tokens,
@@ -385,6 +387,8 @@ impl Engine for TestEngine {
             bit_dependence: Vec::new(),
             taps: Vec::new(),
             checkpoint_grain: None,
+            feed: None,
+            residual_row_bytes: 0,
         }
     }
 

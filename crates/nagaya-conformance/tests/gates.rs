@@ -605,6 +605,7 @@ impl Engine for CellsOnlyConstantRead {
                 dtype: Dtype::U8,
                 shape: vec![Self::ROW as u64],
                 block_format: None,
+                stage: 0,
             }],
             inputs: Inputs::Tokens,
             devices: vec![0],
@@ -632,6 +633,8 @@ impl Engine for CellsOnlyConstantRead {
             bit_dependence: Vec::new(),
             taps: Vec::new(),
             checkpoint_grain: None,
+            feed: None,
+            residual_row_bytes: 0,
         }
     }
 
@@ -1244,6 +1247,7 @@ impl NanAfterAPass {
                     dtype: Dtype::F32,
                     shape: vec![4],
                     block_format: None,
+                    stage: 0,
                 },
                 PartLimits {
                     name: "rows".to_owned(),
@@ -1251,6 +1255,7 @@ impl NanAfterAPass {
                     dtype: Dtype::U8,
                     shape: vec![8],
                     block_format: None,
+                    stage: 0,
                 },
             ],
             inputs: Inputs::Tokens,
@@ -1286,6 +1291,8 @@ impl NanAfterAPass {
             bit_dependence: Vec::new(),
             taps: Vec::new(),
             checkpoint_grain: None,
+            feed: None,
+            residual_row_bytes: 0,
         };
         Self {
             limits,
@@ -1444,6 +1451,8 @@ fn limits_with(mandatory_bytes: u64) -> Limits {
         bit_dependence: Vec::new(),
         taps: Vec::new(),
         checkpoint_grain: None,
+        feed: None,
+        residual_row_bytes: 0,
     }
 }
 
@@ -1596,11 +1605,15 @@ fn the_suite_runs_every_gate_and_fake_always_passes() {
             "quantum_resume_fit",
             "admission_refusal_changes_nothing",
             "segments_exact_bits",
+            "stage_path_bits",
+            "feed_rule_bits",
         ]
     );
     assert!(suite.passed(), "{suite}");
     assert_eq!(suite.failures().count(), 0);
-    assert_eq!(suite.not_applicable().count(), 0);
+    // FakeAlways has no stages and no feed rule (engine-abi D1, D11).
+    let not_applicable: Vec<&str> = suite.not_applicable().map(|gate| gate.name).collect();
+    assert_eq!(not_applicable, vec!["stage_path_bits", "feed_rule_bits"]);
 }
 
 #[test]

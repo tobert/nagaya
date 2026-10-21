@@ -1032,6 +1032,10 @@ Its `head` is null (11.3c). The reply rows come from decode quanta. The next bui
 prompt, and it feeds the reply by the rule. Reason: a head would need a second feed of the reply now. The next build
 does that feed only when a client asks for it.
 
+**The job path.** The council jobs take passes of `block` for an engine with a feed rule (`council/mod.rs`, the
+`chunk` of a build). A build starts each span at a held boundary or at 0, and a generation holds no head. Thus no job
+continues a span today, and rule 7 has no code yet. The tests are in `crates/nagaya/tests/council_feed.rs`.
+
 **Proposed** (claude-opus-5-5, 2026-10-21): drafts are a setting of the served model, not a bit setting of the
 engine. The nagaya's generation job makes the prompt-lookup drafts, as mkviolet does (`draft`, `mk_api.rs:336-347`,
 keys of 4 and 3 tokens, at most 7 drafts). Reason: drafts change no row that the store keeps. Thus a change of the
@@ -1118,7 +1122,9 @@ poison. After a poison or a timeout, the nagaya does these steps:
 - the quantum conditions hold (ontology "Quantum");
 - an admission refusal changes nothing;
 - for an engine that declares `segments_exact`, a segment gives the same bits in passes with one, two and the
-  maximum count of segments (5.7).
+  maximum count of segments (5.7);
+- for an engine with stages, `Engine::pass` and the stage path give the same outputs and parts (engine-abi D1);
+- for an engine with a feed rule, a span fed by the rule after a restore gives the bits of one job (6.14).
 
 **One oracle for each family.** Each model family has one reference: today, fixed outputs of mk's Python. Every
 engine of that family passes its conformance against that reference, on any vendor's device. The reference runs on

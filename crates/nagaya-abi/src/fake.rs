@@ -2,6 +2,10 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
+mod feed;
+
+pub use feed::FakeFeed;
+
 use crate::{
     Capability, ChainLimits, Coverage, CoverageSpan, Determinism, Dtype, ElasticTerm, Engine, Identity, Inputs, Kind,
     Lifetime, Limits, MandatoryTerm, MemoryLimits, Output, PartError, PartKind, PartLimits, Parts, PassError,
@@ -207,6 +211,7 @@ impl Fake {
                 dtype: Dtype::U8,
                 shape: vec![16],
                 block_format: None,
+                stage: 0,
             },
             PartLimits {
                 name: "cells".to_owned(),
@@ -214,6 +219,7 @@ impl Fake {
                 dtype: Dtype::U8,
                 shape: vec![8],
                 block_format: None,
+                stage: 0,
             },
             PartLimits {
                 name: "ring".to_owned(),
@@ -221,6 +227,7 @@ impl Fake {
                 dtype: Dtype::U8,
                 shape: vec![8],
                 block_format: None,
+                stage: 0,
             },
             PartLimits {
                 name: "pooled".to_owned(),
@@ -228,6 +235,7 @@ impl Fake {
                 dtype: Dtype::U8,
                 shape: vec![8],
                 block_format: None,
+                stage: 0,
             },
         ];
         let limits = Limits {
@@ -276,6 +284,8 @@ impl Fake {
             bit_dependence: Vec::new(),
             taps: Vec::new(),
             checkpoint_grain: None,
+            feed: None,
+            residual_row_bytes: 0,
         };
         let slots = (0..limits.slots.iter().map(|slot| slot.count).sum())
             .map(|_| SlotData::new(&parts))
@@ -637,7 +647,7 @@ fn fold_token(state: &mut [u8; 16], token: u32, position: u64) {
 
 /// One logit row: `vocab` little-endian F32 values between -6 and 6, a function of the state bytes only. A bias adds
 /// its value for each token.
-fn logit_row(state: &[u8; 16], vocab: usize, bias: Option<&[f32]>) -> Vec<u8> {
+pub(crate) fn logit_row(state: &[u8; 16], vocab: usize, bias: Option<&[f32]>) -> Vec<u8> {
     let seed = state
         .iter()
         .fold(0x6C6F_6769_7473_u64, |hash, byte| mix(hash ^ u64::from(*byte)));
@@ -652,7 +662,7 @@ fn logit_row(state: &[u8; 16], vocab: usize, bias: Option<&[f32]>) -> Vec<u8> {
 }
 
 /// A 64-bit mixing function (splitmix64).
-fn mix(value: u64) -> u64 {
+pub(crate) fn mix(value: u64) -> u64 {
     let mut z = value.wrapping_add(0x9E37_79B9_7F4A_7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);

@@ -215,9 +215,37 @@ fn ready_segments_of_one_class_share_a_pass() {
         id: 0,
         segments_exact: true,
         max_segments: 16,
+        joins_reads: false,
     }];
     let (_, next) = step(scheduler, Event::Tick { now_ms: 0 });
     assert_eq!(next, quantum(Class::Batch, Kind::Prefill, &[1, 2]));
+}
+
+#[test]
+fn an_engine_with_a_feed_rule_joins_reads_only() {
+    let feed = Engine {
+        id: 0,
+        segments_exact: false,
+        max_segments: 16,
+        joins_reads: true,
+    };
+    let reads = vec![
+        job(1, Class::Batch, 0, 0, 0, &[Kind::Read]),
+        job(2, Class::Batch, 0, 1, 0, &[Kind::Read]),
+    ];
+    let mut scheduler = state(reads);
+    scheduler.engines = vec![feed];
+    let (_, next) = step(scheduler, Event::Tick { now_ms: 0 });
+    assert_eq!(next, quantum(Class::Batch, Kind::Read, &[1, 2]));
+    // The rows of a prefill are kept, so a prefill has a pass alone (engine-abi D11 rule 6).
+    let prefills = vec![
+        job(1, Class::Batch, 0, 0, 0, &[Kind::Prefill]),
+        job(2, Class::Batch, 0, 1, 0, &[Kind::Prefill]),
+    ];
+    let mut scheduler = state(prefills);
+    scheduler.engines = vec![feed];
+    let (_, next) = step(scheduler, Event::Tick { now_ms: 0 });
+    assert_eq!(next, quantum(Class::Batch, Kind::Prefill, &[1]));
 }
 
 #[test]
@@ -475,11 +503,13 @@ fn two_engines_get_their_own_passes() {
             id: 0,
             segments_exact: true,
             max_segments: 16,
+            joins_reads: false,
         },
         Engine {
             id: 1,
             segments_exact: true,
             max_segments: 16,
+            joins_reads: false,
         },
     ];
     let (scheduler, next) = step(scheduler, Event::Tick { now_ms: 0 });
@@ -586,6 +616,7 @@ fn limited_engine(max_segments: u32) -> Vec<Engine> {
         id: 0,
         segments_exact: true,
         max_segments,
+        joins_reads: false,
     }]
 }
 

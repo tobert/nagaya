@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 
-use nagaya_abi::{DeviceId, Engine, Identity, Limits, Tier};
+use nagaya_abi::{Capability, DeviceId, Engine, Identity, Limits, Tier};
 use nagaya_ledger::{Ledger, LedgerError};
 use nagaya_store::Store;
 use nagaya_telemetry::Inherit;
@@ -26,6 +26,8 @@ use crate::park::{self, StoreBudget, StoreMessage};
 use crate::placement::{self, DeviceGroup};
 use crate::profile::{EnginePlacement, PlacementProfile};
 use crate::signal::SignalFlag;
+
+mod staged;
 
 /// The default watchdog timeout. Three times the longest declared quantum bound (mk: 10 s).
 pub const DEFAULT_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(30);
@@ -686,6 +688,7 @@ impl Start {
             let group_accepting = Arc::clone(&accepting);
             let group_cpus = pool.clone();
             let group_machine = machine.clone();
+            let group_own = stop_tx.clone();
             let handle = spawn_named(format!("nagaya-group-{index}"), move || {
                 guard("group", &group_guard, || {
                     pin("group", group_cpus.as_deref());
@@ -693,9 +696,11 @@ impl Start {
                         events: group_events,
                         heartbeats: group_watch,
                         messages: stop_rx,
+                        own: group_own,
                         store: group_store,
                         accepting: group_accepting,
                         machine: group_machine,
+                        cpus: group_cpus,
                     };
                     group_thread(index, jobs, links, heartbeat);
                 });
@@ -774,9 +779,13 @@ struct GroupLinks {
     events: Sender<Event>,
     heartbeats: Sender<WatchMessage>,
     messages: Receiver<GroupMessage>,
+    /// A sender to the group's own channel. The stage threads send the end of each stage quantum on it.
+    own: Sender<GroupMessage>,
     store: Option<Sender<StoreMessage>>,
     accepting: Arc<AtomicBool>,
     machine: Machine,
+    /// The pool set, which the group thread and its stage threads pin to (spec 3.2a).
+    cpus: Option<Vec<u32>>,
 }
 
 fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: Duration) {
@@ -784,9 +793,11 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
         events,
         heartbeats,
         messages: stop,
+        own,
         store,
         accepting,
         machine,
+        cpus,
     } = links;
     let _ = heartbeats.send(WatchMessage::Beat {
         group,
@@ -796,6 +807,11 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
     let mut opened = Vec::with_capacity(jobs.len());
     // An open can take minutes, and it blocks this thread. The guard beats for the group until the open ends (7.4).
     let open_beat = OpenBeat::start(group, heartbeats.clone(), interval);
+    // The machine devices of the first engine, in the order of its profile entry. A stage names its device by index.
+    let first_devices: Vec<DeviceId> = jobs
+        .first()
+        .map(|job| job.devices.iter().map(|device| device.id).collect())
+        .unwrap_or_default();
     for job in jobs {
         let engine = match job.factory.open(&job.placement.config, &job.devices) {
             Ok(engine) => engine,
@@ -831,6 +847,16 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
             });
             return;
         }
+        // The rules of the stages and the feed rule (engine-abi D1, D11). An engine that breaks one does not serve.
+        if let Err(message) = opened_limits.check() {
+            let _ = events.send(Event::OpenFailed {
+                group,
+                engine: job.placement.name.clone(),
+                kind: OpenErrorKind::Other,
+                message: format!("the limits of the engine break a rule: {message}"),
+            });
+            return;
+        }
         opened.push(OpenedEngine {
             name: job.placement.name.clone(),
             thread: thread::current().id(),
@@ -841,6 +867,23 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
     }
     drop(open_beat);
     let names: Vec<String> = opened.iter().map(|engine| engine.name.clone()).collect();
+    let staged = engines
+        .iter()
+        .any(|engine| engine.limits().capabilities.contains(&Capability::Stages));
+    if staged {
+        let links = staged::StagedLinks {
+            devices: first_devices,
+            events,
+            heartbeats,
+            messages: stop,
+            own,
+            store,
+            accepting,
+            cpus,
+        };
+        staged::serve(group, engines, opened, links, interval);
+        return;
+    }
     let _ = events.send(Event::Opened { group, engines: opened });
     let mut cancelled = 0;
     let mut jobs = GroupJobs::new(group as u32, names.join("+")).machine(machine);
@@ -888,6 +931,7 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
                     break 'serve;
                 }
                 Ok(GroupMessage::Stop) | Err(RecvTimeoutError::Disconnected) => break 'serve,
+                Ok(GroupMessage::StageDone(_)) => unreachable!("a group with no stages gets no end of a stage quantum"),
                 Err(RecvTimeoutError::Timeout) => {
                     if jobs.idle() && heartbeats.send(beat()).is_err() {
                         break 'serve;
@@ -976,13 +1020,23 @@ fn park_group(names: &[String], engines: &mut [Box<dyn Engine>], store: Option<&
 }
 
 fn watchdog(messages: Receiver<WatchMessage>, events: Sender<Event>, timeout: Duration) {
-    let mut watches: BTreeMap<usize, Watch> = BTreeMap::new();
+    // The key is the group, and the stage for a stage thread.
+    let mut watches: BTreeMap<(usize, Option<usize>), Watch> = BTreeMap::new();
     let poll = (timeout / 4).clamp(Duration::from_millis(5), Duration::from_millis(250));
     loop {
         match messages.recv_timeout(poll) {
             Ok(WatchMessage::Start { group, devices }) => {
                 watches.insert(
-                    group,
+                    (group, None),
+                    Watch {
+                        devices,
+                        last: Instant::now(),
+                    },
+                );
+            }
+            Ok(WatchMessage::StartStage { group, stage, devices }) => {
+                watches.insert(
+                    (group, Some(stage)),
                     Watch {
                         devices,
                         last: Instant::now(),
@@ -990,7 +1044,12 @@ fn watchdog(messages: Receiver<WatchMessage>, events: Sender<Event>, timeout: Du
                 );
             }
             Ok(WatchMessage::Beat { group, at }) => {
-                if let Some(watch) = watches.get_mut(&group) {
+                if let Some(watch) = watches.get_mut(&(group, None)) {
+                    watch.last = at;
+                }
+            }
+            Ok(WatchMessage::BeatStage { group, stage, at }) => {
+                if let Some(watch) = watches.get_mut(&(group, Some(stage))) {
                     watch.last = at;
                 }
             }
@@ -998,15 +1057,15 @@ fn watchdog(messages: Receiver<WatchMessage>, events: Sender<Event>, timeout: Du
             Err(RecvTimeoutError::Timeout) => {}
         }
         let now = Instant::now();
-        let stalled: Vec<usize> = watches
+        let stalled: Vec<(usize, Option<usize>)> = watches
             .iter()
             .filter(|(_, watch)| now.duration_since(watch.last) > timeout)
-            .map(|(group, _)| *group)
+            .map(|(key, _)| *key)
             .collect();
-        for group in stalled {
-            if let Some(watch) = watches.remove(&group) {
+        for key in stalled {
+            if let Some(watch) = watches.remove(&key) {
                 let _ = events.send(Event::Stalled {
-                    group,
+                    group: key.0,
                     devices: watch.devices,
                 });
             }
@@ -1020,8 +1079,25 @@ struct Watch {
 }
 
 enum WatchMessage {
-    Start { group: usize, devices: Vec<DeviceId> },
-    Beat { group: usize, at: Instant },
+    Start {
+        group: usize,
+        devices: Vec<DeviceId>,
+    },
+    Beat {
+        group: usize,
+        at: Instant,
+    },
+    /// Watch the stage thread of one stage of a group (spec 7.4). A stall of it is a stall of the group.
+    StartStage {
+        group: usize,
+        stage: usize,
+        devices: Vec<DeviceId>,
+    },
+    BeatStage {
+        group: usize,
+        stage: usize,
+        at: Instant,
+    },
     Stop,
 }
 
@@ -1070,6 +1146,8 @@ enum GroupMessage {
     Park(Sender<ParkProgress>),
     /// Stop the thread without a park. `Process::drop` uses it.
     Stop,
+    /// A stage thread ended a stage quantum (engine-abi D1).
+    StageDone(staged::StageDone),
 }
 
 /// Why a context charge did not happen.

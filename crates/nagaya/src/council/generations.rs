@@ -117,6 +117,8 @@ pub(crate) struct GenerateThen {
     finish: Option<Finish>,
     parsed: Option<ParsedReply>,
     head: Option<(Boundary, ContentId)>,
+    /// False on an engine with a feed rule: the reply rows come from decode quanta, so no head is kept (spec 6.14).
+    keeps_head: bool,
 }
 
 impl GenerateThen {
@@ -212,6 +214,10 @@ impl GenerateThen {
         });
         let reply = reply_message(&parsed, &self.call_ids(parsed.calls.len()));
         self.parsed = Some(parsed);
+        // Decided 2026-10-21 (spec 6.14): a generation on an engine with a feed rule holds no head after its reply.
+        if !self.keeps_head {
+            return Ok(self.done());
+        }
         let Some(reply) = reply else {
             return Ok(self.done());
         };
@@ -472,6 +478,7 @@ impl Service {
             finish: None,
             parsed: None,
             head: None,
+            keeps_head: self.shared.limits.feed.is_none(),
         };
         let tokens: Arc<[u32]> = rendering.tokens[..end].into();
         let shared = Arc::clone(&self.shared);

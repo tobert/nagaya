@@ -11,6 +11,7 @@ use crate::gate::{
     Outcome, admission_refusal_changes_nothing, park_and_restore, quantum_identity, quantum_isolation,
     quantum_resume_fit, quantum_same_boundaries, seal_only_at_boundaries, segments_exact_bits,
 };
+use crate::stages::{feed_rule_bits, stage_path_bits};
 
 /// One gate in a suite run.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,6 +70,8 @@ pub fn run_all<E: Engine>(make: &mut dyn FnMut() -> E) -> Suite {
     let resume_fit = quantum_resume_fit(&mut make());
     let admission = admission_gate();
     let segments = segments_exact_bits(make);
+    let stages = stage_path_bits(make);
+    let feed = feed_rule_bits(make);
     let gates = vec![
         GateResult {
             name: "park_and_restore",
@@ -101,6 +104,14 @@ pub fn run_all<E: Engine>(make: &mut dyn FnMut() -> E) -> Suite {
         GateResult {
             name: "segments_exact_bits",
             outcome: segments,
+        },
+        GateResult {
+            name: "stage_path_bits",
+            outcome: stages,
+        },
+        GateResult {
+            name: "feed_rule_bits",
+            outcome: feed,
         },
     ];
     Suite { gates }
@@ -137,6 +148,8 @@ fn gate_limits(mandatory_bytes: u64) -> Limits {
         bit_dependence: Vec::new(),
         taps: Vec::new(),
         checkpoint_grain: None,
+        feed: None,
+        residual_row_bytes: 0,
     }
 }
 

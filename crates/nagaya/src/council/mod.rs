@@ -357,7 +357,10 @@ impl Service {
             engine_index: index,
             engine_name: config.engine.clone(),
             identity: digest,
-            chunk: limits.max_pass_inputs as usize,
+            // An engine with a feed rule gets passes of its block from the start of each span (spec 6.14).
+            chunk: limits
+                .feed
+                .map_or(limits.max_pass_inputs as usize, |feed| feed.block as usize),
             vocab: family.vocab_size(),
             limits: Arc::new(limits),
             pool,
