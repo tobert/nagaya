@@ -9,7 +9,7 @@ use nagaya_ledger::Admission;
 
 use crate::profile::StoreSpec;
 use nagaya_store::{
-    ContentId, EngineFacts, Put, Reason, RecipeId, Snapshot, Store, StoreError, Tensor, Tier, recipe_root,
+    ContentId, EngineFacts, EntryState, Put, Reason, RecipeId, Snapshot, Store, StoreError, Tensor, Tier, recipe_root,
 };
 
 use crate::process::ParkReport;
@@ -55,6 +55,8 @@ pub(crate) enum StoreMessage {
     Put {
         /// The canonical snapshot.
         snapshot: Snapshot,
+        /// The content id of the snapshot.
+        content: ContentId,
         /// The recipe of the state.
         recipe: RecipeId,
         /// The engine name, its class and its chain limits.
@@ -130,6 +132,7 @@ pub(crate) fn park_engine(
         let (reply, answer) = std::sync::mpsc::channel();
         let message = StoreMessage::Put {
             snapshot,
+            content,
             recipe: park_recipe(&identity, &content),
             engine: Box::new(EngineFacts::of(name, &limits)),
             identity,
@@ -157,6 +160,27 @@ pub(crate) fn park_engine(
                 "engine `{name}` state {id} parts {names} were not stored: the store thread stopped"
             )),
         }
+    }
+}
+
+/// Store one parked state (spec 10.3 step 3). `content` is the content id of the put's snapshot.
+///
+/// The store can hold those bytes already under another recipe, for example the head that a build put (11.3c). Then
+/// the park does not put. It parks that entry to NVMe and keeps its recipe. An interval copy never goes to NVMe
+/// (6.13), so the park removes the copy and puts the state under the park recipe.
+pub fn store_park(store: &mut Store, put: Put<'_>, content: ContentId) -> Result<ContentId, StoreError> {
+    let held = store
+        .entries()
+        .get(&content)
+        .filter(|entry| entry.state == EntryState::Live && entry.recipe != put.recipe)
+        .map(|entry| entry.reason);
+    match held {
+        None => store.put(put),
+        Some(Reason::Interval) => {
+            store.remove(&content, put.now_ms)?;
+            store.put(put)
+        }
+        Some(_) => store.park(&content, put.now_ms).map(|()| content),
     }
 }
 
@@ -368,6 +392,7 @@ pub(crate) fn store_thread(store: &std::sync::Mutex<Store>, messages: Receiver<S
         match message {
             StoreMessage::Put {
                 snapshot,
+                content,
                 recipe,
                 engine,
                 identity,
@@ -375,7 +400,8 @@ pub(crate) fn store_thread(store: &std::sync::Mutex<Store>, messages: Receiver<S
                 now_ms,
                 reply,
             } => {
-                let result = store.lock().expect("the store lock is poisoned").put(Put {
+                let mut store = store.lock().expect("the store lock is poisoned");
+                let put = Put {
                     snapshot: &snapshot,
                     recipe,
                     previous_recipe: None,
@@ -387,7 +413,8 @@ pub(crate) fn store_thread(store: &std::sync::Mutex<Store>, messages: Receiver<S
                     sealed_recipe: None,
                     provenance: None,
                     now_ms,
-                });
+                };
+                let result = store_park(&mut store, put, content);
                 let _ = reply.send(result);
             }
             StoreMessage::Stop => break,
