@@ -101,11 +101,20 @@ and function, for every vendor. Reason: on b70host the vendor order makes the di
 B70 cards devices 1 and 2. The PCI order gives the cards 0 and 1, and the iGPU 2. A device id then does not change
 when a driver loads in another order. gfx1151host has one device, so it keeps id 0.
 
-**Proposed** (claude-opus-5-5, 2026-10-21): a display GPU. The probe lists every GPU that it can size, also a GPU
-that drives the display, such as b70host's iGPU. A device that no engine of the profile names gets no budget, no
-group thread and no work. The nagaya is the only compute client of each device that its profile names (3.1). The
-display server keeps a device that the profile does not name. Reason: the simplest rule needs no list of excluded
-devices in the bootstrap config.
+**Ignored devices.** Decided 2026-10-21 (Amy: "I think we should keep visibility of igpus, but mostly ignore them,
+maybe a config sets them as ignored/disabled"). The probe lists every GPU that it can size, also a GPU that drives
+the display, such as b70host's iGPU. The bootstrap config key `ignore_devices` lists PCI addresses (2.1, "The
+bootstrap config"). These rules apply to an ignored device:
+
+- It keeps its device id, so the ids of the other devices do not change.
+- The inventory and the gossip key `inventory` keep it, marked `ignored: true`. Thus a person still sees it.
+- It gets no CPU set (3.2b), no budget, no group thread and no work.
+- A profile that names it is refused, and the message names its PCI address.
+- An address in `ignore_devices` that the probe does not find stops the process with exit 3. Reason: a stale or
+  misspelled address must not hide a device silently.
+
+A device that is not ignored and that no engine of the profile names also gets no budget, no group thread and no
+work. The nagaya is the only compute client of each device that its profile names (3.1).
 
 A missing directory that lists one kind of GPU means that the machine has no GPU of that kind. This is how a
 coordinator machine joins with no GPU (2.1). Any other missing or malformed file is an error that names the file
@@ -150,8 +159,9 @@ device and 1 GiB of host memory. Reason: the host tests need no real machine. A 
 `fake`, `hip` and `xe` has no engine, so it refuses the start (exit 3, `engine_registry` in `main.rs`).
 
 **The bootstrap config.** The bootstrap config is one TOML file, `nagaya.toml`. Its keys are `http_bind`,
-`gossip_bind`, `store_dir`, `seed_peers` and `park_budget_secs`. The first three keys are required. By default,
-`seed_peers` is an empty list, and `park_budget_secs` is 10 (10.3, ds4-recipe).
+`gossip_bind`, `store_dir`, `seed_peers`, `park_budget_secs` and `ignore_devices`. The first three keys are required.
+By default, `seed_peers` is an empty list, `park_budget_secs` is 10 (10.3, ds4-recipe), and `ignore_devices` is an
+empty list of PCI addresses (2.1, "Ignored devices"). b70host's config sets `ignore_devices = ["0000:80:00.0"]`.
 
 An unknown key is an error, so a misspelled key stops the process. There are no flags for these values, and the file
 is the only source. Reason: two sources for one value can disagree. Decided 2026-10-20 (reading).
@@ -314,8 +324,8 @@ check.
 ## 3. Process
 
 **3.1 One process per machine.** The nagaya owns every GPU on the machine (Amy: "we'd do 1 process per host that
-owns the gpus"). The nagaya is the only GPU client. A display GPU that the profile does not name is the one exception
-(2.1, Proposed). A tool that needs a device sends its work through the nagaya, or
+owns the gpus"). The nagaya is the only GPU client. An ignored device, such as a display GPU, is the one exception
+(2.1, "Ignored devices"). A tool that needs a device sends its work through the nagaya, or
 stops the nagaya first. (ds4-recipe: a shader fault with a second GPU client made the SMU stop responding.)
 
 **3.2 Threads and CPU isolation.** The nagaya isolates control work from compute work with `sched_setaffinity` and OS
