@@ -406,6 +406,11 @@ impl Service {
         &self.config.model
     }
 
+    /// The family library of the served model. The text routes under `/nagaya/v1` use it (spec 11.4b).
+    pub fn family(&self) -> &dyn Family {
+        &*self.family
+    }
+
     /// The config of the service: its limits and its defaults.
     pub fn config(&self) -> &ServiceConfig {
         &self.config

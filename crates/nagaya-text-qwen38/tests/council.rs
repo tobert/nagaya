@@ -459,6 +459,63 @@ fn tokenize_makes_text_of_a_marker_and_detokenize_undoes_it() {
     assert_eq!(f.vocab_size(), tokenizer().len());
 }
 
+#[test]
+fn tokenize_special_makes_one_token_of_the_text_of_a_marker() {
+    let f = family();
+    let ids = f.tokenize_special("<|im_start|>user").unwrap();
+    assert_eq!(ids[0], special("<|im_start|>"));
+    assert_eq!(ids, tokenizer().encode("<|im_start|>user").unwrap());
+    // The same text without `special` stays text, so the two differ (gogi rule 2).
+    assert_ne!(ids, f.tokenize("<|im_start|>user").unwrap());
+    // Text with no marker tokenizes the same way in both modes.
+    assert_eq!(
+        f.tokenize_special("Hello world").unwrap(),
+        f.tokenize("Hello world").unwrap()
+    );
+    assert_eq!(f.tokenize_special("").unwrap(), Vec::<u32>::new());
+}
+
+#[test]
+fn tokenize_special_refuses_a_noncharacter_as_a_client_error() {
+    let e = family().tokenize_special("a\u{fdd0}b").unwrap_err();
+    assert!(e.is_client(), "{e:?}");
+}
+
+#[test]
+fn pieces_are_the_text_of_each_token_and_a_marker_is_its_text() {
+    let f = family();
+    let ids = f.tokenize("Hello world").unwrap();
+    assert_eq!(f.pieces(&ids).unwrap(), ["Hello", " world"]);
+    assert_eq!(f.pieces(&[special("<|im_end|>")]).unwrap(), ["<|im_end|>"]);
+    assert_eq!(f.pieces(&[]).unwrap(), Vec::<String>::new());
+}
+
+#[test]
+fn a_piece_that_is_not_whole_text_has_the_replacement_character() {
+    let f = family();
+    // A token that holds bytes which are not UTF-8 alone, such as the first byte of a long character.
+    let split = (0..f.vocab_size() as u32)
+        .find(|&id| {
+            tokenizer()
+                .token_piece(id, true)
+                .is_ok_and(|b| std::str::from_utf8(&b).is_err())
+        })
+        .expect("the vocabulary has a token that is not whole text");
+    let pieces = f.pieces(&[split]).unwrap();
+    assert!(pieces[0].contains('\u{fffd}'), "{:?}", pieces[0]);
+    // The text of the same token is a client error: detokenize is strict.
+    assert!(f.detokenize(&[split]).is_err());
+}
+
+#[test]
+fn pieces_of_a_token_outside_the_vocabulary_is_a_client_error_that_names_tokens() {
+    let f = family();
+    let FamilyError::Client(invalid) = f.pieces(&[1, f.vocab_size() as u32]).unwrap_err() else {
+        panic!("want a client error")
+    };
+    assert_eq!(invalid.param.as_deref(), Some("tokens"));
+}
+
 // ---------------------------------------------------------------- letters and raw reads
 
 fn raw(letters: &[&str], suffixes: &[&str]) -> Result<nagaya_council::family::RawRead, FamilyError> {

@@ -41,6 +41,8 @@ gogi-fake.workspace = true
 tower = { version = "0.5.3", features = ["util"] }
 gogi-toy.workspace = true
 nagaya-text-toy = { path = "../nagaya-text-toy" }
+# The Qwen3.8 tests of the text routes read the tokenizer and the template of the GGUF file.
+nagaya-text-qwen38 = { path = "../nagaya-text-qwen38" }
 # The tests turn on the `fake` feature of this crate. A dev-dependency on the crate itself does this.
 nagaya = { path = ".", features = ["fake"] }
 tempfile = "3"
