@@ -518,6 +518,50 @@ holds each layer's K and V as F32 planes. These parts follow from that layout:
 - `fits` follows `KvSnapshot::join` (`gemma4.rs:940-978`). A ring part that starts after position 0 fits only a slot
   with a ring.
 
+### The first Gemma 4 binding
+
+**Proposed** (claude-opus-5-5, 2026-10-21). The trait on the copy (`crates/nagaya-mk-gemma4-bmg/src/engine.rs`) needs
+these choices. Each is the simplest choice that fits the rules above.
+
+- **The config.** The kind is `mk-gemma4-bmg`. Its config has three keys. `slots` lists the positions of each slot.
+  `max_block` is the feed block, 512 when the key is absent. `model_dir` names the checkpoint, else
+  `GEMMA4_MODEL_DIR` names it. A slot holds 1 to 65,536 positions.
+- **One segment in a pass.** One task ring runs one block of one slot, so `max_segments` is 1.
+- **Positions.** A plain segment starts at the token count of its slot or before it. A start before it goes back,
+  and the rings must still hold the window before the start (`kv_can_rewind`).
+- **A branch block is a segment with `meta`.** The meta has 16 bytes for each token: the position, the gap start,
+  the gap end and 0, as little-endian u32 values. Token `t` writes the row `pos0 + t`, and `pos0` is its first
+  position. `logit_rows` names these rows. For a plain segment, a row is its position.
+- **A branch block holds no row.** After it, the token count of the slot is `pos0` (spec 6.14).
+- **A write empties the slot until `set_n`.** `cells_write` puts the token count of its slot at 0. Then `set_n(n)`
+  takes the count when each part of the stage got rows that end at `n` and fit the slot. Without such writes,
+  `set_n` only goes back, as a pass does.
+- **A whole read reads rows from the base.** `part_read` reads as many rows as its buffer holds, from the first
+  position that the part holds. The engine has no fixed part, so `part_write` is refused.
+- **The memory terms.** `weights.<i>`, `kv.<i>` and `work.<i>` are on `device(i)`. `pinned.<i>` holds the pinned
+  host buffers of card `i`. `embed` holds the embedding table that the host reads, and `residual` holds the two
+  residual buffers. Each is the sum of the sizes that the code asks for. No driver measurement checks them yet.
+- **`max_quantum_ms` is 2000.** The slowest stage quantum was the last block of 512 tokens in a slot of 65,536
+  positions. It took 1,184 ms on card 1 and 920 ms on card 0. Measured on 2026-10-21 by
+  `profile_longest_stage_quantum` in `tests/xe.rs`.
+- **The checkpoint digest.** It is `blake3:` and a BLAKE3 hash with the key `nagaya gemma4 checkpoint v1`. The hash
+  covers the canonical `config.json` (sorted keys, no whitespace), then each tensor in bytewise order of its name.
+  A tensor adds its name, its dtype, its shape and the BLAKE3 hash of its bytes. The engine computes it at open.
+- **The numbers and the lineage.** `numbers` holds the SHA-256 of the kernel binary, the versions of `ocloc` and IGC,
+  the driver version and `max_block`. The plan table names the compiler, the driver and the PCI vendor, device and
+  revision of each card (spec 12.1).
+
+Reason: the code must not guess, and each choice keeps the bits of the copy. A test compares the logits of the trait
+with the logits of the copy before the trait, bit for bit (`the_trait_gives_the_bits_of_the_copy`).
+
+**Open:** the stage threads lose about 2% of decode speed. mkviolet's `pipeline_stage` keeps the idle card awake.
+A card that idles for 10 ms or more waits 100-550 us at its next command (`B70Card::wake`). The stage threads do not
+wake it.
+
+On 2026-10-21, decode after 20 tokens gave 46.1 tokens/s on the stage threads and 47.1 on the copy. A test thread
+that woke both cards each 3 ms gave 47.6. A fix needs a call on the stage thread between quanta. That is a change
+of the ABI, so Amy decides.
+
 ## Decisions
 
 Decided: D1-D11.
