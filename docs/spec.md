@@ -97,8 +97,8 @@ root path is `/` on a machine, and a fixed tree in a test (`crates/nagaya/tests/
 A device id is the position in the list: AMD GPUs first, then Intel, then NVIDIA, each in the order of the kernel
 number.
 
-**Proposed** (claude-opus-5-5, 2026-10-21): the device ids follow the PCI address, in the order of domain, bus,
-device and function, for every vendor. Reason: on b70host the vendor order makes the display iGPU device 0, and the
+Decided 2026-10-21 (Amy, by interview): the device ids follow the PCI address, in the order of domain, bus, device
+and function, for every vendor. Reason: on b70host the vendor order makes the display iGPU device 0, and the
 B70 cards devices 1 and 2. The PCI order gives the cards 0 and 1, and the iGPU 2. A device id then does not change
 when a driver loads in another order. gfx1151host has one device, so it keeps id 0.
 
@@ -1022,8 +1022,8 @@ the rule made each of its rows. These rules follow:
 - **A continued span.** The last pass of a span can hold fewer than `block` tokens. Then a job that continues the
   span feeds that pass again (engine-abi D11 rule 7).
 
-**Proposed** (claude-opus-5-5, 2026-10-21): on an engine with a feed rule, a generation holds no head after its reply,
-and `head` is null (11.3c). The reply rows come from decode quanta. The next build finds the last held boundary of the
+Decided 2026-10-21 (Amy, by interview): a generation on an engine with a feed rule holds no head after its reply.
+Its `head` is null (11.3c). The reply rows come from decode quanta. The next build finds the last held boundary of the
 prompt, and it feeds the reply by the rule. Reason: a head would need a second feed of the reply now. The next build
 does that feed only when a client asks for it.
 
@@ -1785,8 +1785,9 @@ milestones 11 and 11b).
 
 - **Tokenizer.** The library reads the `tokenizer.json` of the checkpoint with the `tokenizers` crate, as mkviolet
   does (`tokenizer.rs:27-48`). The tokenizer hash is of that file (12.3).
-- **Template.** The library runs Google's chat template (`assets/gemma4_chat_template.jinja` in mkviolet) with
-  `minijinja`, `trim_blocks` and `lstrip_blocks`, as `chat.rs` does. The identity's `template` is the text of that
+- **Template.** The library runs Google's chat template (`assets/gemma4_chat_template.jinja` in mkviolet) with the
+  nagaya's own Jinja interpreter, with `trim_blocks` and `lstrip_blocks`, as `chat.rs` does. Decided 2026-10-21
+  (Amy, by interview): not `minijinja`. The identity's `template` is the text of that
   file. The variables that the library sets, such as `PRESERVE_THINKING`, are code, so the test renders of 11.3a
   cover them.
 - **Escapes.** Client text that spells a marker is content. mkviolet swaps each marker text for a sentinel of
@@ -1795,8 +1796,12 @@ milestones 11 and 11b).
   layout. The template id follows 11.3a.
 - **Reply parser.** The library ports `parse_tool_call` and the thought channel of `chat.rs`.
 
-Reason for `tokenizers` and `minijinja`: the port copies code that its Python fixtures already check. A move to the
-Jinja interpreter of the Qwen3.8 library is a later choice.
+Reason for `tokenizers`: the port copies code that its Python fixtures already check.
+
+**Proposed** (claude-opus-5-5, 2026-10-21): the Jinja interpreter moves out of `nagaya-text-qwen38` into a crate
+`nagaya-jinja`, which both family libraries use. The move changes no behavior, and the Qwen3.8 fixtures stay green
+through it. A feature that Gemma 4's template needs and the interpreter lacks is a step with a test that fails first.
+Reason: one template engine for every family, as Amy chose, with no second copy of it.
 
 **The engine registry.** **Proposed** (claude-opus-5-5, 2026-10-21). Today a hard map from the engine kind picks the
 family (`if kind == crate::mk::KIND`, `crates/nagaya/src/serving.rs:24-40`). These rules replace it:

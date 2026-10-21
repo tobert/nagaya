@@ -67,7 +67,8 @@ The eleven crates live in directories under `crates/`. Use these crates:
 | `nagaya` | the process: bootstrap config, threads, HTTP, gossip, systemd | 2, 3, 9-11 |
 
 Crate names follow `nagaya-<kind>-<model>-<target>`. The kind `mk` is a megakernel engine. The model is the family
-and version without dots. The target is the compiler's device target, for example `gfx1151`. The device count is the
+and version without dots. The target is the compiler's device target, for example `gfx1151`. The Intel target is
+`bmg`, so the Gemma 4 engine is `nagaya-mk-gemma4-bmg` (Amy, 2026-10-21, by interview). The device count is the
 profile's business.
 
 Keep pure logic out of `nagaya-mk-qwen38-gfx1151` and `nagaya`. The ledger, the store, the scheduler and the
