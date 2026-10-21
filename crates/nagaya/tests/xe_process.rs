@@ -205,8 +205,8 @@ fn the_process_serves_gemma4_on_both_cards() {
     let signals = SignalFlag::new();
     let stopped = lifecycle::stop(&mut ready, None, Duration::from_secs(30), &signals);
     println!("stop: {}", stopped.log_line());
-    // Spec 6.14 (decided 2026-10-21): a generation on an engine with a feed rule holds no head. gogi's check of the
-    // head expects one, so it is the one failure that the spec allows.
+    // Spec 6.14 (decided 2026-10-21): a generation on an engine with a feed rule holds no head. Since gogi a07d85e,
+    // gogi's check of the head skips a null head, so no check may fail.
     let failed: Vec<&str> = report
         .checks
         .iter()
@@ -215,7 +215,7 @@ fn the_process_serves_gemma4_on_both_cards() {
         .collect();
     assert_eq!(
         failed,
-        vec!["generation holds its head"],
+        Vec::<&str>::new(),
         "gogi-conformance failed; the lines above name each check"
     );
     assert!(generation["head"].is_null(), "{generation}");
