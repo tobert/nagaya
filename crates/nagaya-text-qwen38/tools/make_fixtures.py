@@ -511,7 +511,7 @@ def main() -> None:
     # -------------------------------------------------------------- classes.json
     ranges = class_ranges()
     dump_cases(OUT / "classes.json", header, ranges)
-    write_tables(HERE.parent / "src" / "unicode_tables.rs", header, ranges, case_maps())
+    write_tables(HERE.parent.parent / "nagaya-jinja" / "src" / "unicode_tables.rs", header, ranges, case_maps())
 
     # -------------------------------------------------------------- utf8.json
     def stream(chunks: list[bytes]):

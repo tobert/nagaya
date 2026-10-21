@@ -7,7 +7,7 @@ edition = "2024"
 # The features of serde_json hold for the whole workspace build (spec 11.3a): `preserve_order` gives the queue read the
 # order of the schema, and `float_roundtrip` keeps floats equal.
 gogi-proto.workspace = true
-minijinja = { version = "2.24.0", features = ["preserve_order"] }
 nagaya-council = { version = "0.1.0", path = "../nagaya-council" }
+nagaya-jinja = { version = "0.1.0", path = "../nagaya-jinja" }
 serde_json = { version = "1.0.154", features = ["float_roundtrip", "preserve_order"] }
 sha2 = "0.10.9"

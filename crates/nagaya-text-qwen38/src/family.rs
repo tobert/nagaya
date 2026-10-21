@@ -7,8 +7,9 @@
 use crate::Error;
 use crate::gguf::Metadata;
 use crate::json::Json;
-use crate::template::{ChatTemplate, RenderOptions, truthy};
+use crate::template::{ChatTemplate, RenderOptions};
 use crate::tokenizer::Tokenizer;
+use nagaya_jinja::truthy;
 use std::path::Path;
 use std::sync::Arc;
 
