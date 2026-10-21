@@ -380,6 +380,86 @@ fn a_closed_stream_cancels_the_generation() {
     server.stop(Duration::from_secs(1));
 }
 
+/// A stop cuts the requests that are still open after its wait. No connection is served after the budget (spec 11.7).
+#[test]
+fn a_stop_cuts_a_stream_that_is_open_after_its_wait() {
+    // Each pass takes 20 ms, so a reply of 400 tokens would take 8 s.
+    let factory = TermFactory {
+        delay: Duration::from_millis(20),
+        ..TermFactory::toy()
+    };
+    let f = Fixture::with_factory(factory, 1 << 20, None, ServiceConfig::new("toy", ENGINE));
+    let service = Service::attach(
+        f.process.ports(),
+        Arc::new(ToyFamily::new()),
+        f.directory.path(),
+        ServiceConfig::new("toy", ENGINE),
+    )
+    .unwrap();
+    let council = Arc::new(
+        Council::new(
+            vec![Served {
+                service,
+                aliases: Vec::new(),
+                device: None,
+            }],
+            None,
+        )
+        .unwrap(),
+    );
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let server = Server::start(runtime.handle(), "127.0.0.1:0".parse().unwrap(), council).unwrap();
+    let address = server.local_addr();
+    let body =
+        json!({"model": "toy", "context": context(), "max_tokens": 400, "sample": {"temperature": 0}, "stream": true})
+            .to_string();
+    let mut connection = std::net::TcpStream::connect(address).unwrap();
+    connection.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    write!(
+        connection,
+        "POST /council/v2/generations HTTP/1.1\r\nhost: x\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut reader = BufReader::new(connection.try_clone().unwrap());
+    let mut line = String::new();
+    while !line.starts_with("event: token") {
+        line.clear();
+        assert_ne!(
+            reader.read_line(&mut line).unwrap(),
+            0,
+            "the stream ended before a token"
+        );
+    }
+    let stopped = Instant::now();
+    server.stop(Duration::from_millis(100));
+    // The reply would run for 8 s. The connection must end soon after the stop.
+    let mut ended = false;
+    let deadline = stopped + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => {
+                ended = true;
+                break;
+            }
+            Ok(_) => {}
+        }
+    }
+    assert!(
+        ended,
+        "the stream was still served {:?} after the stop",
+        stopped.elapsed()
+    );
+    assert!(
+        std::net::TcpStream::connect(address).is_err(),
+        "the server accepts a connection after the stop"
+    );
+}
+
 /// The free slots of the served model of a council, read through identity's served model.
 fn council_free(council: &Arc<Council>) -> usize {
     council.free_slots()

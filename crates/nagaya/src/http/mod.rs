@@ -287,6 +287,47 @@ pub fn router(council: Arc<Council>) -> Router {
         .with_state(council)
 }
 
+/// The router of a server: the council routes, and a layer that cuts every open request when `cut` turns true.
+fn served_router(council: Arc<Council>, cut: tokio::sync::watch::Receiver<bool>) -> Router {
+    routes::routes()
+        .layer(axum::middleware::from_fn_with_state(cut, cut_open_requests))
+        .layer(axum::middleware::from_fn(observe))
+        .with_state(council)
+}
+
+/// Wait until the server cuts its open requests. A sender that is gone also cuts: nothing holds the requests open.
+async fn cut_signal(mut cut: tokio::sync::watch::Receiver<bool>) {
+    let _ = cut.wait_for(|cut| *cut).await;
+}
+
+/// End a request when the server cuts. Aborting the server task does not end a connection, because axum runs each
+/// connection as a task of its own. A handler that still runs gives a 503 `unavailable`. A response body that still
+/// streams ends at once, so the generation behind it sees a closed stream (spec 11.7).
+async fn cut_open_requests(
+    axum::extract::State(cut): axum::extract::State<tokio::sync::watch::Receiver<bool>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    use futures_util::StreamExt;
+
+    let id = request
+        .extensions()
+        .get::<RequestId>()
+        .cloned()
+        .expect("the observe layer sets the request id");
+    let response = tokio::select! {
+        response = next.run(request) => response,
+        () = cut_signal(cut.clone()) => {
+            return Failure::from(ServiceError::Stopping)
+                .with_message("nothing ran: the server is stopping and cut this request")
+                .respond(&id);
+        }
+    };
+    let (parts, body) = response.into_parts();
+    let body = axum::body::Body::from_stream(body.into_data_stream().take_until(cut_signal(cut)));
+    Response::from_parts(parts, body)
+}
+
 /// Give each request its id, its span and its duration (spec 9.2, 9.4, 11.5).
 ///
 /// The span is `<METHOD> <route template>`, and a child of the caller's span when the request has a `traceparent`.
@@ -344,6 +385,8 @@ pub struct Server {
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<std::io::Result<()>>,
     runtime: tokio::runtime::Handle,
+    /// Turns true when the server cuts the requests that are still open.
+    cut: tokio::sync::watch::Sender<bool>,
 }
 
 impl Server {
@@ -353,9 +396,10 @@ impl Server {
         listener.set_nonblocking(true)?;
         let addr = listener.local_addr()?;
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let (cut, cut_rx) = tokio::sync::watch::channel(false);
         let task = runtime.spawn(async move {
             let listener = tokio::net::TcpListener::from_std(listener)?;
-            axum::serve(listener, router(council))
+            axum::serve(listener, served_router(council, cut_rx))
                 .with_graceful_shutdown(async {
                     let _ = stopped.await;
                 })
@@ -366,6 +410,7 @@ impl Server {
             stop: Some(stop),
             task,
             runtime: runtime.clone(),
+            cut,
         })
     }
 
@@ -374,19 +419,28 @@ impl Server {
         self.addr
     }
 
-    /// Stop the server: accept no connection, and wait at most `wait` for the open requests to end. A request that
-    /// is still open after `wait` is dropped.
+    /// Stop the server: accept no connection, and wait at most `wait` for the open requests to end. After `wait`, abort
+    /// the server task and cut every request that is still open. No connection is served after the budget.
     pub fn stop(mut self, wait: std::time::Duration) {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
         }
-        let task = self.task;
-        let ended = self.runtime.block_on(async { tokio::time::timeout(wait, task).await });
+        let mut task = self.task;
+        let ended = self
+            .runtime
+            .block_on(async { tokio::time::timeout(wait, &mut task).await });
         match ended {
             Ok(Ok(Ok(()))) => {}
             Ok(Ok(Err(error))) => tracing::error!("the HTTP server stopped with an error: {error}"),
             Ok(Err(error)) => tracing::error!("the HTTP server task failed: {error}"),
-            Err(_) => tracing::warn!("the HTTP server had open requests after {wait:?}; they are dropped"),
+            Err(_) => {
+                // The task owns the accept loop. Each connection is a task of its own, so the cut ends them.
+                task.abort();
+                self.cut.send_replace(true);
+                // Wait for the abort, so that the listener is closed when this returns.
+                let _ = self.runtime.block_on(task);
+                tracing::warn!("the HTTP server had open requests after {wait:?}; they are cut");
+            }
         }
     }
 }
