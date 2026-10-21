@@ -1569,6 +1569,31 @@ At start, the nagaya does these steps for each engine:
 - The engine opens its stored fds through `Factory::attach` (engine-abi "The factory gets its devices"). The check is
   `spot`: the first and last 64 bytes of each tensor (`verify_stored_slab`, `gemma4.rs:287-307`).
 
+**The ceiling and the start steps.** **Proposed** (claude-opus-5-5, 2026-10-21).
+
+- The process reads the ceiling from `$FDSTORE`. systemd sets it to `FileDescriptorStoreMax` (systemd.exec(5),
+  version 254 and later).
+- When `$FDSTORE` is unset or 0, the process keeps no arena. It sends no `FDSTORE=1`, and admission counts no fd.
+  systemd ignores `FDSTORE=1` from such a unit (sd_notify(3)).
+- Each factory gives the names of its arena fds before the open, with `arena_parts` (engine-abi "Arena calls in
+  v0"). Admission adds the counts of the profile. A sum above the ceiling refuses the profile, and the process exits 3.
+- The process reads `$LISTEN_PID`, `$LISTEN_FDS` and `$LISTEN_FDNAMES` once, before it starts a thread. It obeys
+  sd_listen_fds(3). The fds start at 3, `$LISTEN_PID` must be its own pid, and it removes the variables after it
+  reads them.
+- When `$LISTEN_PIDFDID` is set, it must be the inode of the pidfd of the process. Else the process uses no fd.
+- A cold load fits the ledger when the admission of the profile passes (step 2). Thus the process drops no fd before
+  admission passes. A refused profile exits 3 and keeps each fd.
+- After admission, the process drops each fd whose name breaks the name rule or names an engine that is not in the
+  profile. It logs one warning for each. Reason: such an fd holds device memory, and no engine can use it.
+- The fds of an engine go to `attach` only when their names equal the names of its `arena_parts`. Else the process
+  drops them and loads the engine cold.
+- After a cold load, the process exports the arena and sends each fd with `FDSTORE=1` and its `FDNAME=`. After an
+  attach, it sends nothing, because systemd still holds the fds.
+- `FDNAME=` takes ASCII with no control character and no `:`, at most 255 characters (sd_notify(3)). Thus the `/` of
+  the name rule is legal.
+
+Reason: the unit file is the one source of the ceiling. A bootstrap key can differ from the unit.
+
 mkviolet restarts in 0.9 to 1.2 s from its stored slabs, and a cold start takes 7.4 s (mkviolet `docs/README.md`).
 Thus 10.2 moves into the b70host milestone (`AGENTS.md`), because mkviolet has it now and the port must not lose
 it.
