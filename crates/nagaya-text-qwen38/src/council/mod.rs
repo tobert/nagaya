@@ -434,6 +434,10 @@ impl Family for Qwen38Family {
         self.encode(&self.content(text)?)
     }
 
+    fn tokenize_special(&self, text: &str) -> Result<Vec<u32>, FamilyError> {
+        self.tokenizer().encode(text).map_err(refusal)
+    }
+
     fn detokenize(&self, tokens: &[u32]) -> Result<String, FamilyError> {
         self.tokenizer().decode(tokens).map_err(|e| match e {
             Error::TokenId { .. } => FamilyError::client_param("tokens", e.to_string()),
@@ -442,6 +446,19 @@ impl Family for Qwen38Family {
             }
             other => internal(other),
         })
+    }
+
+    fn pieces(&self, tokens: &[u32]) -> Result<Vec<String>, FamilyError> {
+        tokens
+            .iter()
+            .map(|&id| {
+                let bytes = self.tokenizer().token_piece(id, true).map_err(|e| match e {
+                    Error::TokenId { .. } | Error::Bytes(_) => FamilyError::client_param("tokens", e.to_string()),
+                    other => internal(other),
+                })?;
+                Ok(String::from_utf8_lossy(&bytes).into_owned())
+            })
+            .collect()
     }
 
     fn template_id(&self) -> &str {

@@ -13,7 +13,8 @@
 //!   letter logits that the plan names, and gives them back until the plan is done.
 //! - **Raw reads.** [`Family::raw_read`] gives the letter token ids and the tokens of each suffix.
 //! - **Generations.** [`Family::reply_parser`] labels the tokens of a reply and parses the whole reply.
-//! - **Extensions.** [`Family::tokenize`] and [`Family::detokenize`] serve the `/nagaya/v1` routes (spec 11.4a).
+//! - **Extensions.** [`Family::tokenize`], [`Family::tokenize_special`], [`Family::detokenize`] and [`Family::pieces`]
+//!   serve the `/nagaya/v1` routes (spec 11.4a).
 //! - **Identity.** [`Family::template_id`] and [`Family::vocab_size`] go in the council identity.
 
 use std::fmt;
@@ -317,8 +318,18 @@ pub trait Family: Send + Sync {
     /// Tokenize client text as content. Text that spells a control token stays text.
     fn tokenize(&self, text: &str) -> Result<Vec<u32>, FamilyError>;
 
-    /// Turn tokens into text. A token outside the vocabulary is [`FamilyError::Client`].
+    /// Tokenize text in which the text of a marker is the marker token. This is the rule of a raw-read suffix (gogi
+    /// "Raw reads"). A text that the family cannot tokenize is [`FamilyError::Client`].
+    fn tokenize_special(&self, text: &str) -> Result<Vec<u32>, FamilyError>;
+
+    /// Turn tokens into text. A token outside the vocabulary, or tokens that do not make whole text, are
+    /// [`FamilyError::Client`] with the `param` `tokens`.
     fn detokenize(&self, tokens: &[u32]) -> Result<String, FamilyError>;
+
+    /// The text of each token alone, in order. A piece is the bytes of one token, and a token can end inside a
+    /// character. Then the piece has U+FFFD in place of the bad bytes. The piece of a marker is its text. A token
+    /// outside the vocabulary is [`FamilyError::Client`] with the `param` `tokens`.
+    fn pieces(&self, tokens: &[u32]) -> Result<Vec<String>, FamilyError>;
 
     /// The template id: `nagaya-council:<hash>+<family>-chat:<hash>` (spec 11.3a).
     fn template_id(&self) -> &str;
