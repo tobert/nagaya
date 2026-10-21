@@ -1014,8 +1014,8 @@ the rule made each of its rows. These rules follow:
 - **Branch blocks.** A branch block is a read. It feeds the tail of a case and each branch in one pass with
   per-token `meta` (`branch_block`, `gemma4.rs:1521-1554`). No row of it is kept, also the rows of the tail. No build
   continues from the slot after it. The job restores a held snapshot, or feeds again from a boundary.
-- **The bits of a branch.** A branch in a branch block gave the same logits as a plain pass of the prefix and that
-  branch, a difference of 0 (`golden_branches_match_separate_passes`, mkviolet `golden.rs:264-287`, on 2026-10-21).
+- **The bits of a branch.** On 2026-10-21, a branch in a branch block gave the logits of a plain pass of the prefix
+  and that branch. The difference was 0 (`golden_branches_match_separate_passes`, mkviolet `golden.rs:264-287`).
   The rows stay unkept all the same, because the rule did not make them.
 - **Reads.** The reads of a decision keep no state. mkviolet splits a case into chunks that it picks for speed
   (`council_server.rs:822-848`). The nagaya may do the same for a read on such an engine.
