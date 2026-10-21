@@ -220,3 +220,29 @@ fn rows_that_do_not_increase_are_a_defect() {
 fn a_row_past_the_last_token_is_a_defect() {
     let _ = plan_chunks(10, &[10], 4, 4);
 }
+
+/// A continuation that starts from the head of a cut reply keeps the seal of that head, inside its reply. A build may
+/// also start from a cut. The state of the reply has both among its boundaries (spec 11.3c).
+#[test]
+fn the_recipes_with_cuts_have_each_cut_among_the_boundaries() {
+    use nagaya_council::build::recipes_with_cuts;
+    let plain = rendering(vec![1, 2, 3, 4, 5, 6], &[(0, 3), (2, 6)]);
+    let cuts = [Boundary { message: 1, tokens: 4 }, Boundary { message: 1, tokens: 2 }];
+    let want = boundary_recipes(
+        root(),
+        &rendering(vec![1, 2, 3, 4, 5, 6], &[(1, 2), (0, 3), (1, 4), (2, 6)]),
+    )
+    .unwrap();
+    assert_eq!(recipes_with_cuts(root(), &plain, &cuts).unwrap(), want);
+    assert_eq!(
+        recipes_with_cuts(root(), &plain, &[]).unwrap(),
+        boundary_recipes(root(), &plain).unwrap()
+    );
+    for tokens in [0, 3, 6, 7] {
+        let bad = [Boundary { message: 1, tokens }];
+        assert!(
+            matches!(recipes_with_cuts(root(), &plain, &bad), Err(FamilyError::Internal(_))),
+            "a cut at token {tokens}"
+        );
+    }
+}

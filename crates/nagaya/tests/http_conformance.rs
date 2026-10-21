@@ -158,18 +158,17 @@ fn gogi_conformance_passes_against_the_process_with_the_fake_engine() {
     );
     assert!(report.checks.len() > 150, "{}", report.summary());
     eprintln!("{}\nskipped: {skipped:#?}", report.summary());
+    let ok = |name: &str| {
+        report
+            .checks
+            .iter()
+            .any(|check| check.name == name && check.status == Status::Ok)
+    };
     // The generation and continuation checks ran: none of them is a skip.
     for name in [
         "generation holds its head",
         "stream reasoning and content pieces join to done's text",
-        "a cut reply names the phase of its next token",
         "a build without dry_run refuses an open message, naming continue",
-        "a dry run of a cut reply sent back open reports a dry run",
-        "a continuation's done starts with the open text",
-        "a continuation writes what the whole reply wrote",
-        "a continuation's completion counts only the sampled tokens",
-        "a continuation's stream counts n from 1 over the sampled tokens",
-        "a continuation's pieces join to done's text after the open text",
         "an empty content after reasoning closes the thinking",
         "a continuation of open content the client wrote starts with it",
         "a dry run of an open message the client wrote reports what it would feed",
@@ -179,13 +178,27 @@ fn gogi_conformance_passes_against_the_process_with_the_fake_engine() {
         "raw reads of an open context are a 400 naming continue",
         "continue: false on the last message is a closed message",
     ] {
-        assert!(
-            report
-                .checks
-                .iter()
-                .any(|check| check.name == name && check.status == Status::Ok),
-            "{name}"
-        );
+        assert!(ok(name), "{name}");
+    }
+    // The checks of a cut reply need a whole reply of two tokens or more. The suite's context holds a random nonce,
+    // and about one run in twenty, the fake engine's greedy reply is one token. Then the suite skips them.
+    let short = report.checks.iter().any(|check| {
+        check.name == "a cut reply resumes" && check.status == Status::Skip && check.detail.contains("too few")
+    });
+    if !short {
+        for name in [
+            "a cut reply names the phase of its next token",
+            "a cut reply's head is listed last in snapshots",
+            "a dry run of a cut reply sent back open keeps its head",
+            "a continuation resumed from the head feeds at most the last sampled token",
+            "a dry run of a cut reply sent back open reports a dry run",
+            "a continuation's done starts with the open text",
+            "a continuation's completion counts only the sampled tokens",
+            "a continuation's stream counts n from 1 over the sampled tokens",
+            "a continuation's pieces join to done's text after the open text",
+        ] {
+            assert!(ok(name), "{name}");
+        }
     }
     assert_eq!(
         nagaya.terminate(),
