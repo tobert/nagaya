@@ -291,6 +291,23 @@ impl Scheduler {
         Ok(())
     }
 
+    /// Put quanta before the quanta that a running job has, in the given order. An interval copy uses it: the copy
+    /// holds the state at the end of the quantum that ran (spec 6.13).
+    pub fn prepend_quanta(&mut self, job: JobId, kinds: &[Kind]) -> Result<(), StepError> {
+        let held = self
+            .jobs
+            .iter_mut()
+            .find(|candidate| candidate.id == job)
+            .ok_or(StepError::UnknownJob(job))?;
+        if held.state != JobState::Running {
+            return Err(StepError::AppendToIdleJob(job, held.state));
+        }
+        for kind in kinds.iter().rev() {
+            held.quanta.push_front(*kind);
+        }
+        Ok(())
+    }
+
     fn complete(&mut self, running: Quantum, duration_ms: u64, outcome: Completion) {
         if running.class == Class::Interactive {
             let present: Vec<(JobId, u64)> = self
