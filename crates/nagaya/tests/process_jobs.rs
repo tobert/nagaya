@@ -16,8 +16,16 @@ use nagaya_sched::Class;
 
 fn two_slots() -> FakeAlways {
     FakeAlways::with_slots(vec![
-        SlotLimit { bytes: 64, count: 1 },
-        SlotLimit { bytes: 256, count: 1 },
+        SlotLimit {
+            bytes: 64,
+            count: 1,
+            tokens: 4096,
+        },
+        SlotLimit {
+            bytes: 256,
+            count: 1,
+            tokens: 4096,
+        },
     ])
 }
 
@@ -40,6 +48,7 @@ fn profile() -> PlacementProfile {
             kind: "simple".to_owned(),
             devices: vec![0],
             config: toml::Table::new(),
+            family: toml::Table::new(),
             share: 1,
             pin_identity: false,
         }],

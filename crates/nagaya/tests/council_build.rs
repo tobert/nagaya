@@ -405,7 +405,12 @@ fn direct_ids(value: &Value) -> Vec<String> {
     use nagaya_abi::{Engine, OutputsWanted, Segment, SegmentInputs, SlotLimit, State};
     use nagaya_council::family::Family;
     let rendering = ToyFamily::new().render(&context(value), false).unwrap();
-    let mut engine = FakeAlways::with_slots(vec![SlotLimit { bytes: 16384, count: 1 }]).with_vocab(gogi_toy::VOCAB);
+    let mut engine = FakeAlways::with_slots(vec![SlotLimit {
+        bytes: 16384,
+        count: 1,
+        tokens: 4096,
+    }])
+    .with_vocab(gogi_toy::VOCAB);
     let state = State::Slot(0);
     let mut position = 0;
     let mut ids = Vec::new();

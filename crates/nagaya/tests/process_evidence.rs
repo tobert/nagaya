@@ -20,7 +20,11 @@ use nagaya_telemetry::testing::log_lines;
 const PID: u32 = 7;
 
 fn fake() -> FakeAlways {
-    FakeAlways::with_slots(vec![SlotLimit { bytes: 256, count: 1 }])
+    FakeAlways::with_slots(vec![SlotLimit {
+        bytes: 256,
+        count: 1,
+        tokens: 4096,
+    }])
 }
 
 struct Simple;
@@ -42,6 +46,7 @@ fn profile() -> PlacementProfile {
             kind: "simple".to_owned(),
             devices: vec![0],
             config: toml::Table::new(),
+            family: toml::Table::new(),
             share: 1,
             pin_identity: false,
         }],

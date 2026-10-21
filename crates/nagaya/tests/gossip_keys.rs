@@ -45,6 +45,7 @@ fn opened() -> OpenedEngine {
         name: "fake-one".to_owned(),
         thread: std::thread::current().id(),
         identity: FakeAlways::new().identity(),
+        limits: FakeAlways::new().limits(),
     }
 }
 

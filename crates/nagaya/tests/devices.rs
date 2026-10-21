@@ -11,6 +11,7 @@ fn engine(name: &str, devices: &[DeviceId]) -> EnginePlacement {
         kind: "fake".to_owned(),
         devices: devices.to_vec(),
         config: toml::Table::new(),
+        family: toml::Table::new(),
         share: 1,
         pin_identity: false,
     }

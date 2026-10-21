@@ -138,7 +138,12 @@ impl Registry {
         self.factories.get(kind).cloned()
     }
 
-    /// Make a registry with the mk engine. A build with the feature `hip` uses it.
+    /// True when the registry holds no factory.
+    pub fn is_empty(&self) -> bool {
+        self.factories.is_empty()
+    }
+
+    /// Make a registry with the mk engine only. The tests of the mk engine use it.
     #[cfg(feature = "hip")]
     pub fn with_mk() -> Self {
         let mut registry = Self::new();
@@ -146,14 +151,31 @@ impl Registry {
         registry
     }
 
+    /// Make a registry with a factory for each engine kind that this build has: the mk engine with the feature
+    /// `hip`, and the fake kinds with the feature `fake`. A later vendor feature adds its line here.
+    pub fn compiled_in() -> Self {
+        #[allow(unused_mut)]
+        let mut registry = Self::new();
+        #[cfg(feature = "hip")]
+        registry.register(crate::mk::KIND, Box::new(crate::mk::MkFactory));
+        #[cfg(feature = "fake")]
+        registry.register_fakes();
+        registry
+    }
+
     /// Make a registry with the fake engine and the fake that panics on open. The tests use it.
     #[cfg(feature = "fake")]
     pub fn with_fake() -> Self {
         let mut registry = Self::new();
-        registry.register("fake", Box::new(FakeFactory));
-        registry.register("fake-panic", Box::new(PanicFactory));
-        registry.register(FAKE_TOY_KIND, Box::new(FakeToyFactory));
+        registry.register_fakes();
         registry
+    }
+
+    #[cfg(feature = "fake")]
+    fn register_fakes(&mut self) {
+        self.register("fake", Box::new(FakeFactory));
+        self.register("fake-panic", Box::new(PanicFactory));
+        self.register(FAKE_TOY_KIND, Box::new(FakeToyFactory));
     }
 }
 
@@ -276,8 +298,13 @@ pub struct FakeToyFactory;
 impl FakeToyFactory {
     fn engine() -> FakeAlways {
         // A cells row of the fake has 8 bytes, so 32768 bytes hold 4096 tokens.
-        let slots = vec![nagaya_abi::SlotLimit { bytes: 32768, count: 4 }];
+        let slots = vec![nagaya_abi::SlotLimit {
+            bytes: 32768,
+            count: 4,
+            tokens: 4096,
+        }];
         FakeAlways::with_slots(slots)
+            .with_family("toy")
             .with_vocab(gogi_toy_vocab())
             .with_logit_bias(nagaya_text_toy::speaking_bias())
     }

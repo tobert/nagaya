@@ -28,8 +28,16 @@ struct ParkRecord {
 /// A fake with two slots. A `ParkFactory` fills each slot with one token, so a stop parks both.
 fn two_slots() -> FakeAlways {
     FakeAlways::with_slots(vec![
-        SlotLimit { bytes: 64, count: 1 },
-        SlotLimit { bytes: 256, count: 1 },
+        SlotLimit {
+            bytes: 64,
+            count: 1,
+            tokens: 4096,
+        },
+        SlotLimit {
+            bytes: 256,
+            count: 1,
+            tokens: 4096,
+        },
     ])
 }
 
@@ -45,6 +53,7 @@ fn engine(name: &str, kind: &str, devices: &[DeviceId]) -> EnginePlacement {
         kind: kind.to_owned(),
         devices: devices.to_vec(),
         config: toml::Table::new(),
+        family: toml::Table::new(),
         share: 1,
         pin_identity: false,
     }
