@@ -88,6 +88,23 @@ impl Default for ToyFamily {
     }
 }
 
+/// A logit bias that makes a fake engine speak the toy language, for tests (spec 11.3b).
+///
+/// The fake engine's logits look random, so a greedy reply holds bytes of 0x80 and up and markers. The template does
+/// not render those back as the same tokens: a byte of 0x80 and up becomes U+FFFD, and a marker in a part adds no
+/// text. The bias keeps the ASCII bytes and `<end>` at their values, and moves each other token down by 40. Thus a
+/// reply is ASCII text that the template renders back, and a generation can hold its head (gogi "Generations").
+/// `<end>` gets 1 more, so that a greedy reply ends after about ten tokens. gogi-fake picks from the same set.
+pub fn speaking_bias() -> Vec<f32> {
+    (0..toy::VOCAB as u32)
+        .map(|token| match token {
+            0..0x80 => 0.0,
+            toy::END => 1.0,
+            _ => -40.0,
+        })
+        .collect()
+}
+
 /// The text of the toy chat template: its name and its marker table. A change to a marker changes the digest.
 fn chat_template_text() -> String {
     let mut text = String::from("gogi-toy chat template\n");

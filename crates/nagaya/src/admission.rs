@@ -109,6 +109,7 @@ impl Registry {
         let mut registry = Self::new();
         registry.register("fake", Box::new(FakeFactory));
         registry.register("fake-panic", Box::new(PanicFactory));
+        registry.register(FAKE_TOY_KIND, Box::new(FakeToyFactory));
         registry
     }
 }
@@ -216,6 +217,43 @@ impl Factory for FakeFactory {
 
     fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
         Ok(Box::new(FakeAlways::new()))
+    }
+}
+
+/// The kind of the fake engine that speaks the toy family (spec 11.3b). The process serves it as a council model.
+#[cfg(feature = "fake")]
+pub const FAKE_TOY_KIND: &str = "fake-toy";
+
+/// The factory of the fake engine that speaks the toy family. Its logits cover the toy vocabulary with the speaking
+/// bias of `nagaya-text-toy`. It has four slots of 4096 tokens: the context limit of a served model.
+#[cfg(feature = "fake")]
+pub struct FakeToyFactory;
+
+#[cfg(feature = "fake")]
+impl FakeToyFactory {
+    fn engine() -> FakeAlways {
+        // A cells row of the fake has 8 bytes, so 32768 bytes hold 4096 tokens.
+        let slots = vec![nagaya_abi::SlotLimit { bytes: 32768, count: 4 }];
+        FakeAlways::with_slots(slots)
+            .with_vocab(gogi_toy_vocab())
+            .with_logit_bias(nagaya_text_toy::speaking_bias())
+    }
+}
+
+/// The size of the toy vocabulary.
+#[cfg(feature = "fake")]
+fn gogi_toy_vocab() -> usize {
+    nagaya_text_toy::speaking_bias().len()
+}
+
+#[cfg(feature = "fake")]
+impl Factory for FakeToyFactory {
+    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+        Ok(Self::engine().limits())
+    }
+
+    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+        Ok(Box::new(Self::engine()))
     }
 }
 

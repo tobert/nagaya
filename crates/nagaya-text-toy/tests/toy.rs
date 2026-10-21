@@ -696,3 +696,48 @@ fn a_reply_parser_says_when_the_reply_ended() {
     parser.push(toy::END).unwrap();
     assert!(parser.ended(), "<end> ends the reply");
 }
+
+#[test]
+fn the_speaking_bias_keeps_only_tokens_that_a_reply_renders_back() {
+    let bias = nagaya_text_toy::speaking_bias();
+    assert_eq!(bias.len(), toy::VOCAB);
+    // The fake's values lie between -6 and 6. A kept token beats every other token by more than 12.
+    let kept: Vec<u32> = (0..toy::VOCAB as u32).filter(|t| bias[*t as usize] > -12.0).collect();
+    let mut want: Vec<u32> = (0..0x80).collect();
+    want.push(toy::END);
+    assert_eq!(kept, want);
+    assert!(bias.iter().all(|b| *b >= -40.0 || *b == 0.0));
+
+    // A reply of kept tokens, in each phase, renders back as the prompt, the reply but its stop token, and at most
+    // two markers.
+    let f = family();
+    for thinking in [true, false] {
+        let value = json!({"thinking": thinking, "messages": [{"role": "user", "content": "go", "snap": true}]});
+        let c = context(value.clone());
+        let prompt = f.render(&c, true).unwrap().tokens;
+        let mut reply: Vec<u32> = (0..0x80).collect();
+        reply.push(toy::END);
+        let mut parser = f.reply_parser(thinking, &[]).unwrap();
+        for token in &reply {
+            parser.push(*token).unwrap();
+        }
+        let parsed = parser.finish();
+        let mut message = json!({"role": "assistant"});
+        if !parsed.content.is_empty() {
+            message["content"] = json!(parsed.content);
+        }
+        if !parsed.reasoning.is_empty() {
+            message["reasoning"] = json!(parsed.reasoning);
+        }
+        let mut with_reply = value.clone();
+        with_reply["messages"].as_array_mut().unwrap().push(message);
+        let rendered = f.render(&context(with_reply), false).unwrap().tokens;
+        let fed: Vec<u32> = prompt.iter().chain(&reply[..reply.len() - 1]).copied().collect();
+        assert!(rendered.starts_with(&fed), "thinking {thinking}");
+        assert!(
+            rendered.len() - fed.len() <= 2,
+            "thinking {thinking}: {:?}",
+            &rendered[fed.len()..]
+        );
+    }
+}

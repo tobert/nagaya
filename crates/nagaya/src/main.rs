@@ -2,6 +2,7 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use nagaya::bootstrap::Bootstrap;
@@ -15,6 +16,7 @@ use nagaya::probe::FileProbe;
 use nagaya::signal::{SignalFlag, install_terminate};
 use nagaya::swap::{Outcome, Swap};
 use nagaya::telemetry::{host_name, resource};
+use nagaya::{http, serving};
 use nagaya_telemetry::{Config, Telemetry};
 
 /// The environment variable that names the bootstrap config (`docs/spec.md` 2.1).
@@ -22,6 +24,9 @@ const CONFIG_ENV: &str = "NAGAYA_CONFIG";
 
 /// The bootstrap config file when the variable is unset (`docs/spec.md` 2.1).
 const DEFAULT_CONFIG: &str = "nagaya.toml";
+
+/// How long a stop waits for the open HTTP requests to end, after the engines stopped.
+const HTTP_STOP: Duration = Duration::from_secs(2);
 
 /// The SIGTERM flag of the process (spec 10.3).
 static SIGNALS: SignalFlag = SignalFlag::new();
@@ -181,6 +186,8 @@ fn serve(
         }
     };
     let names: Vec<String> = profile.engines.iter().map(|engine| engine.name.clone()).collect();
+    let served_profile = profile.clone();
+    let call_cpus = Some(cpu_sets.pool.clone());
     published(node.publish_machine(&inventory, &profile));
     published(node.engines_loading(&names));
     let options = lifecycle::Options::new(lifecycle::DEFAULT_OPEN_TIMEOUT).cpu_sets(cpu_sets);
@@ -198,11 +205,40 @@ fn serve(
     };
     published(node.engines_ready(&ready.opened));
     tracing::info!("ready with {} engines", ready.opened.len());
+    // The council routes serve after READY (spec 11.1, 11.6). A failure here refuses the start (spec 10.4).
+    let ports = ready.process.ports();
+    let council = match serving::council(&served_profile, &ready.opened, &ports, &config.store_dir, call_cpus) {
+        Ok(council) => Arc::new(council),
+        Err(error) => {
+            tracing::error!("{error}");
+            ready.process.abort();
+            std::mem::forget(ready.process);
+            return ExitCode::RefusedStart;
+        }
+    };
+    let server = match http::Server::start(&node.gossip().runtime(), config.http_bind, Arc::clone(&council)) {
+        Ok(server) => server,
+        Err(error) => {
+            tracing::error!(
+                "cannot bind the HTTP address {}: {error}; check `http_bind`",
+                config.http_bind
+            );
+            ready.process.abort();
+            std::mem::forget(ready.process);
+            return ExitCode::RefusedStart;
+        }
+    };
+    tracing::info!("http listening on {}", server.local_addr());
     let code = {
         // A desired profile from a peer arrives through gossip (spec 2.4 note, 3.3).
         let process = &ready.process;
+        let council = &council;
         let mut tick = || {
             node.check_name();
+            // An internal error of a route stops the process (spec 8.5, 11.5).
+            if council.failure().is_some() {
+                return Some(ExitCode::Crash);
+            }
             desired_profile(&mut swap, node, process)
         };
         lifecycle::wait_with(process, &SIGNALS, notifier.as_ref(), lifecycle::WAIT_POLL, &mut tick)
@@ -216,7 +252,10 @@ fn serve(
     let budget = Duration::from_secs(config.park_budget_secs);
     let opened: Vec<String> = ready.opened.iter().map(|engine| engine.name.clone()).collect();
     published(node.engines_state(&opened, EngineState::Draining));
+    // Spec 10.3 step 1: accept no new job. A request now gets a 503, and a job that the stop cancels ends its request.
+    council.drain();
     let report = lifecycle::stop(&mut ready, notifier.as_ref(), budget, &SIGNALS);
+    server.stop(HTTP_STOP);
     let (parked, unparked) = report.split_parked(&opened);
     published(node.engines_state(&parked, EngineState::Unloaded));
     published(node.engines_state(&unparked, EngineState::Fatal));

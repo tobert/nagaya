@@ -57,6 +57,23 @@ impl FakeAlways {
         self.0.vocab = Some(vocab);
         self
     }
+
+    /// Add `bias` to each logit row: the value of token `t` gets `bias[t]`. Call it after [`FakeAlways::with_vocab`].
+    ///
+    /// A family's test can make the fake favor the tokens that its template renders back.
+    pub fn with_logit_bias(mut self, bias: Vec<f32>) -> Self {
+        let vocab = self
+            .0
+            .vocab
+            .expect("a logit bias needs a vocabulary; call with_vocab first");
+        assert_eq!(
+            bias.len(),
+            vocab,
+            "a logit bias has one bias for each token of the vocabulary"
+        );
+        self.0.logit_bias = Some(bias);
+        self
+    }
 }
 
 impl FakeBroken {
@@ -142,6 +159,8 @@ pub(crate) struct Fake {
     count_defect: CountDefect,
     /// The vocabulary size, when the engine gives logits.
     vocab: Option<usize>,
+    /// The bias that each logit row adds, one value for each token.
+    logit_bias: Option<Vec<f32>>,
     limits: Limits,
     slots: Vec<SlotData>,
     last_error: Option<String>,
@@ -248,6 +267,7 @@ impl Fake {
             ignore_ring_from,
             count_defect: CountDefect::None,
             vocab: None,
+            logit_bias: None,
             limits,
             slots,
             last_error: None,
@@ -378,7 +398,7 @@ impl Fake {
                     let position = segment.positions.get(index).copied().unwrap_or(index as u64);
                     fold_token(&mut folded, *token, position);
                     if segment.outputs.logit_rows.contains(&position) {
-                        rows.insert(position, logit_row(&folded, vocab));
+                        rows.insert(position, logit_row(&folded, vocab, self.logit_bias.as_deref()));
                     }
                 }
                 // The output order is the request order.
@@ -594,8 +614,9 @@ fn fold_token(state: &mut [u8; 16], token: u32, position: u64) {
     }
 }
 
-/// One logit row: `vocab` little-endian F32 values between -6 and 6, a function of the state bytes only.
-fn logit_row(state: &[u8; 16], vocab: usize) -> Vec<u8> {
+/// One logit row: `vocab` little-endian F32 values between -6 and 6, a function of the state bytes only. A bias adds
+/// its value for each token.
+fn logit_row(state: &[u8; 16], vocab: usize, bias: Option<&[f32]>) -> Vec<u8> {
     let seed = state
         .iter()
         .fold(0x6C6F_6769_7473_u64, |hash, byte| mix(hash ^ u64::from(*byte)));
@@ -603,7 +624,8 @@ fn logit_row(state: &[u8; 16], vocab: usize) -> Vec<u8> {
     for token in 0..vocab as u64 {
         // 24 bits fill an F32 mantissa, so the value is exact.
         let unit = (mix(seed ^ mix(token + 1)) >> 40) as f32 / (1u32 << 24) as f32;
-        bytes.extend_from_slice(&(unit * 12.0 - 6.0).to_le_bytes());
+        let offset = bias.map_or(0.0, |bias| bias[token as usize]);
+        bytes.extend_from_slice(&(unit * 12.0 - 6.0 + offset).to_le_bytes());
     }
     bytes
 }

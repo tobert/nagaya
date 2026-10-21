@@ -205,6 +205,7 @@ pub struct Instruments {
     store_evictions: Counter<u64>,
     store_restores: Counter<u64>,
     engine_state: Gauge<u64>,
+    http_duration: Histogram<f64>,
 }
 
 impl Instruments {
@@ -260,6 +261,11 @@ impl Instruments {
                 .u64_gauge("nagaya.engine.state")
                 .with_unit("1")
                 .with_description("One for the state that an engine is in, and zero for the other states.")
+                .build(),
+            http_duration: meter
+                .f64_histogram("http.server.request.duration")
+                .with_unit("s")
+                .with_description("The time from the start of an HTTP request to its response head.")
                 .build(),
         }
     }
@@ -343,6 +349,17 @@ impl Instruments {
             &[
                 KeyValue::new("engine", engine.to_owned()),
                 KeyValue::new("result", result.value()),
+            ],
+        );
+    }
+
+    /// Record the duration of one HTTP request, in seconds (spec 9.4). `route` is the route template, a bounded set.
+    pub fn http_request(&self, route: &str, status: u16, seconds: f64) {
+        self.http_duration.record(
+            seconds,
+            &[
+                KeyValue::new("http.route", route.to_owned()),
+                KeyValue::new("status", i64::from(status)),
             ],
         );
     }

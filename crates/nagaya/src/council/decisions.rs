@@ -111,7 +111,7 @@ impl Then for DecisionThen {
 
     fn next(&mut self, got: Got) -> Result<Want, ServiceError> {
         match got {
-            Got::Built => {
+            Got::Built(_) => {
                 let prefix = self.plan.prefix().to_vec();
                 if prefix.is_empty() {
                     self.at_prefix = true;
@@ -225,13 +225,18 @@ impl Service {
                 control = Some(signals(plan.control_text()));
             }
             let room = end + plan.prefix().len();
-            let (tokens, recipes): (Arc<[u32]>, _) = match &rendering {
-                Some(r) => (r.tokens[..r.end].into(), boundary_recipes(self.root, r)?),
-                None => (Arc::from(Vec::new()), Vec::new()),
+            let (tokens, recipes, cuts): (Arc<[u32]>, _, _) = match (&rendering, context) {
+                (Some(r), Some(c)) => (
+                    r.tokens[..r.end].into(),
+                    boundary_recipes(self.root, r)?,
+                    self.cuts(c, r)?,
+                ),
+                _ => (Arc::from(Vec::new()), Vec::new(), Vec::new()),
             };
             let then = DecisionThen::new(plan, asked.len());
             let shared = Arc::clone(&self.shared);
-            let job = |tx| ContextBody::with(shared, tokens, recipes, room, "decision_context_tokens", then, tx);
+            let job =
+                |tx| ContextBody::with(shared, tokens, recipes, room, "decision_context_tokens", then, tx).cuts(cuts);
             let finished = self.run_context(job, schedule, Some(deadline))?;
             let then = finished.then;
             let kept = finished.outcome.kept;

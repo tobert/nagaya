@@ -66,6 +66,29 @@ pub fn boundary_recipes(root: RecipeId, rendering: &Rendering) -> Result<Vec<Bou
     Ok(recipes)
 }
 
+/// The recipes of a rendering with one more boundary, at `cut` (spec 11.3c).
+///
+/// A cut is the end of a message that the client did not mark. A build that starts from a snapshot at a cut goes on
+/// with the boundaries that the snapshot was made with, so its later recipes have the cut too. The cut must lie
+/// before the end, and on no boundary. Any other cut is a defect of the caller: the result is
+/// [`FamilyError::Internal`].
+pub fn recipes_with_cut(
+    root: RecipeId,
+    rendering: &Rendering,
+    cut: Boundary,
+) -> Result<Vec<BoundaryRecipe>, FamilyError> {
+    if cut.tokens == 0 || cut.tokens >= rendering.end || rendering.boundaries.iter().any(|b| b.tokens == cut.tokens) {
+        return Err(FamilyError::internal(format!(
+            "a cut at token {} is not inside the context of {} tokens, between its boundaries",
+            cut.tokens, rendering.end
+        )));
+    }
+    let mut with_cut = rendering.clone();
+    let at = with_cut.boundaries.partition_point(|b| b.tokens < cut.tokens);
+    with_cut.boundaries.insert(at, cut);
+    boundary_recipes(root, &with_cut)
+}
+
 /// One step of a build after its restore.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
