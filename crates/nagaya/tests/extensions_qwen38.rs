@@ -274,16 +274,14 @@ fn special_turns_the_text_of_a_marker_into_one_token() {
     let (_, plain) = post(&q, "tokenize", json!({"model": MODEL, "text": "<|im_start|>"}));
     assert!(plain["n_tokens"].as_u64().unwrap() > 1, "{plain}");
     assert!(!ids(&plain["tokens"]).contains(&marker));
-    for special in [json!(true)] {
-        let (status, body) = post(
-            &q,
-            "tokenize",
-            json!({"model": MODEL, "text": "<|im_start|>", "special": special, "pieces": true}),
-        );
-        assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(ids(&body["tokens"]), [marker]);
-        assert_eq!(body["pieces"], json!(["<|im_start|>"]));
-    }
+    let (status, body) = post(
+        &q,
+        "tokenize",
+        json!({"model": MODEL, "text": "<|im_start|>", "special": true, "pieces": true}),
+    );
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(ids(&body["tokens"]), [marker]);
+    assert_eq!(body["pieces"], json!(["<|im_start|>"]));
     // The text of a rendering without control text, tokenized with `special`, gives the tokens of the rendering.
     let context = json!({"thinking": false, "messages": [{"role": "user", "content": "Say hi."}]});
     let (_, rendered) = post(&q, "render", json!({"model": MODEL, "context": context}));
