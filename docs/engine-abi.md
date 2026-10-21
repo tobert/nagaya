@@ -281,6 +281,11 @@ and gate 8.3 (park and restore) must fail it.
 fail it. `FakeAlways::with_slots` makes a `FakeAlways` with other slot sizes. Each new gate of spec 8.3 adds its own
 broken fake.
 
+`FakeFeed` has a feed rule (D11), in one stage or in two (D1). It has two layers, and each layer has one cells part.
+A row is a hash of the row before it, the input of the layer, the position and the token count of the pass. Thus a
+wrong split gives other bits, as in mkviolet. The residual is the output of layer 0, so one stage and two stages give
+the same bits. `FakeFeed::reverse_residual` breaks the stage path, and `FakeFeed::history` breaks the feed rule.
+
 ### Logit outputs
 
 The mk binding gives logits one way, and the fake engine follows it. Decided 2026-10-20 (reading, from a note by
