@@ -37,6 +37,7 @@ fn example_profile() -> PlacementProfile {
                 kind: "fake".to_owned(),
                 devices: vec![0],
                 config: "slots = 2\n".parse::<toml::Table>().unwrap(),
+                family: toml::Table::new(),
                 share: 1,
                 pin_identity: true,
             },
@@ -45,6 +46,7 @@ fn example_profile() -> PlacementProfile {
                 kind: "fake".to_owned(),
                 devices: vec![0],
                 config: toml::Table::new(),
+                family: toml::Table::new(),
                 share: 3,
                 pin_identity: false,
             },
@@ -119,6 +121,18 @@ fn the_optional_engine_fields_have_defaults() {
     let profile = PlacementProfile::parse(EXAMPLE).unwrap();
     assert_eq!(profile.engines[1].config, toml::Table::new());
     assert!(!profile.engines[1].pin_identity);
+    assert_eq!(profile.engines[1].family, toml::Table::new());
+}
+
+#[test]
+fn an_engine_entry_names_the_files_of_its_family() {
+    let text = EXAMPLE.replace(
+        "[engines.config]",
+        "[engines.family]\ngguf = \"/models/a.gguf\"\n\n[engines.config]",
+    );
+    let profile = PlacementProfile::parse(&text).unwrap();
+    assert_eq!(profile.engines[0].family["gguf"].as_str(), Some("/models/a.gguf"));
+    assert_eq!(profile.engines[1].family, toml::Table::new());
 }
 
 #[test]

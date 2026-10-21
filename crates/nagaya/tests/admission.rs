@@ -12,6 +12,7 @@ fn engine(name: &str, kind: &str, share: u64) -> EnginePlacement {
         kind: kind.to_owned(),
         devices: vec![0],
         config: toml::Table::new(),
+        family: toml::Table::new(),
         share,
         pin_identity: false,
     }
@@ -271,4 +272,13 @@ fn one_segment_is_admitted() {
     };
     let mut ledger = Ledger::new();
     admit(&profile, &registry, &inventory(&[0]), &mut ledger).unwrap();
+}
+
+#[test]
+fn a_registry_of_the_compiled_in_kinds_holds_the_fake_kinds_of_this_build() {
+    let registry = nagaya::admission::Registry::compiled_in();
+    assert!(!registry.is_empty());
+    assert!(registry.factory("fake-toy").is_some());
+    assert!(registry.factory("no-such-kind").is_none());
+    assert!(nagaya::admission::Registry::new().is_empty());
 }

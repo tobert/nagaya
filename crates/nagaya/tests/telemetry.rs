@@ -21,6 +21,7 @@ fn engine(name: &str, kind: &str) -> EnginePlacement {
         kind: kind.to_owned(),
         devices: vec![0],
         config: toml::Table::new(),
+        family: toml::Table::new(),
         share: 1,
         pin_identity: false,
     }
