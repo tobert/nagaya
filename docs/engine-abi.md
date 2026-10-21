@@ -762,6 +762,9 @@ mkviolet chooses the reduction of a matmul by the token count of the pass (`mega
 - 9 to 15 tokens: XMX work items of 16 rows by 32 tokens;
 - 16 tokens or more: a work-group takes 64 tiles and shares the tokens' x in local memory.
 
+A measurement on the B70s on 2026-10-21 showed that the split changes bits. The same 32 tokens in 1 block, in blocks
+of 5 and in blocks of 1 gave largest logit differences from HF of 5.8e-5, 3.4e-5 and 3.2e-5 (mkviolet `golden.rs`).
+
 The same split gives the same bits. Five runs of a 600-token prefill in blocks of 256, then 24 one-token steps, gave
 equal logits (`golden.rs:431-458`). mkviolet's `snapshot_id` hashes the identity, the tokens and the boundaries
 (`held.rs:329-342`). It feeds in `max_block` passes (`Gemma4Engine::block_jobs`, `gemma4.rs:1624-1635`).

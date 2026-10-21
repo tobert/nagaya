@@ -1014,6 +1014,9 @@ the rule made each of its rows. These rules follow:
 - **Branch blocks.** A branch block is a read. It feeds the tail of a case and each branch in one pass with
   per-token `meta` (`branch_block`, `gemma4.rs:1521-1554`). No row of it is kept, also the rows of the tail. No build
   continues from the slot after it. The job restores a held snapshot, or feeds again from a boundary.
+- **The bits of a branch.** A branch in a branch block gave the same logits as a plain pass of the prefix and that
+  branch, a difference of 0 (`golden_branches_match_separate_passes`, mkviolet `golden.rs:264-287`, on 2026-10-21).
+  The rows stay unkept all the same, because the rule did not make them.
 - **Reads.** The reads of a decision keep no state. mkviolet splits a case into chunks that it picks for speed
   (`council_server.rs:822-848`). The nagaya may do the same for a read on such an engine.
 - **A continued span.** The last pass of a span can hold fewer than `block` tokens. Then a job that continues the
@@ -2309,6 +2312,17 @@ identity labels them as spot checks until we replace them.
 **13.1 Taps.** An engine declares its taps in `limits()`, with the conditions that each tap needs (mk: unfused, one
 segment). A tap gives one of these outputs: a residual at a layer (rows), routes, or gates. The store keeps large
 tap outputs as content-addressed artifacts, with an owner and a budget. (mk keeps traces as per-layer `.npy` files.)
+
+**mkviolet's taps, for later.** These taps are not in the first port. They are noted here so that the port does not
+close a door.
+
+- **Routes.** mkviolet writes each layer's expert picks (`MoERouteDecision`, 128 bytes) into host memory
+  (`gemma4.rs:521`), and `count_routes` reads them after each stage (`gemma4.rs:1219-1230`). A route tap costs no
+  copy.
+- **Residuals.** A J-Lens reads the residual at layer l (13.2). The residual after layer 14 already crosses host
+  memory between the stages (D1).
+- **Steering.** A steering vector is an input that changes bits. Thus it goes into the recipe (6.12), and a steered
+  state never has a plain recipe.
 
 **13.2 Lenses.** A lens (mkviolet J-Lens) is a state object of its own. It belongs to one model, has a content id,
 and runs on a CPU device (2.1). Two models cannot share a lens. Models are compared in the lens's concept
