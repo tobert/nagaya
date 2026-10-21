@@ -75,7 +75,9 @@ and sm121host. Decided 2026-10-20 (`docs/deepinfer.md` 5).
 root path is `/` on a machine, and a fixed tree in a test (`crates/nagaya/tests/fixtures/probe/`).
 
 - Host memory: `MemTotal` in `proc/meminfo`.
-- CPUs: the list in `sys/devices/system/cpu/online`.
+- CPUs: the list in `sys/devices/system/cpu/online`. Each CPU number is below 1024, the CPUs that one `cpu_set_t` mask
+  holds (3.2a). A list with a larger number is a probe error that names the file. Decided by senpai 2026-10-20 night
+  (vetoable).
 - AMD GPUs: the nodes of `sys/class/kfd/kfd/topology/nodes`. A node with `gpu_id` 0 is a CPU node. The device name
   comes from `gfx_target_version`, so 110501 gives `gfx1151`. The PCI address comes from `location_id` and `domain`.
 - Intel GPUs: each `sys/class/drm/card<N>` whose `device/uevent` says `DRIVER=xe`.
