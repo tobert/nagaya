@@ -31,8 +31,10 @@ pub enum ServiceError {
     ContextRefused(LedgerError),
     /// The process is stopping. The route answers 503 `unavailable`.
     Stopping,
-    /// The job ended before it gave a result: a stop cancelled it.
+    /// The job ended before it gave a result: a stop cancelled it, or its client went away.
     Cancelled,
+    /// The deadline of the request passed before the job ended (spec 5.8). The route answers 504 `timeout`.
+    Timeout,
     /// A defect or a failed engine call. The route answers 500, and the process stops (spec 8.5, 11.5).
     Internal(String),
 }
@@ -60,7 +62,11 @@ impl std::fmt::Display for ServiceError {
             ServiceError::Busy(message) => write!(formatter, "{message}"),
             ServiceError::ContextRefused(error) => write!(formatter, "{error}"),
             ServiceError::Stopping => write!(formatter, "the process is stopping"),
-            ServiceError::Cancelled => write!(formatter, "a stop cancelled the job before it gave a result"),
+            ServiceError::Cancelled => write!(formatter, "the job was cancelled before it gave a result"),
+            ServiceError::Timeout => write!(
+                formatter,
+                "nothing was returned: the request passed its timeout_ms; send a longer timeout_ms, or fewer contexts"
+            ),
             ServiceError::Internal(message) => write!(formatter, "internal error: {message}"),
         }
     }

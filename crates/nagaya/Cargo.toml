@@ -11,6 +11,7 @@ fake = ["nagaya-abi/fake"]
 blake3 = "1.8.7"
 chitchat = "0.13.0"
 gogi-proto.workspace = true
+indexmap = "2.14"
 nagaya-abi = { version = "0.1.0", path = "../nagaya-abi" }
 nagaya-council = { version = "0.1.0", path = "../nagaya-council" }
 nagaya-ledger = { version = "0.1.0", path = "../nagaya-ledger" }

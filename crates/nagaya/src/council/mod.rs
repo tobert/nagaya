@@ -7,13 +7,14 @@
 pub mod build;
 pub mod error;
 pub mod pins;
+pub mod reads;
 pub mod slots;
 pub mod specs;
 
 use std::path::Path;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use gogi_proto::SnapshotId;
 use gogi_proto::context::{Context, SnapshotInfo, Tier as SnapshotTier, Usage};
@@ -27,7 +28,7 @@ use nagaya_store::{ContentId, EntryState, Store, Tier};
 use serde::Serialize;
 use serde_json::Value;
 
-use self::build::{BuildBody, LookupBody, Outcome, Shared};
+use self::build::{BuildBody, ContextBody, Finished, LookupBody, Outcome, Shared, Then};
 use self::error::ServiceError;
 use self::pins::{OwnerPins, PinBook, owner_key};
 use self::slots::SlotPool;
@@ -252,6 +253,7 @@ impl Service {
             &ports,
             group,
             Schedule::default(),
+            None,
             nagaya_abi::Kind::Read,
             Box::new(Once {
                 work: Some(Box::new(work)),
@@ -283,6 +285,7 @@ impl Service {
             engine_name: config.engine.clone(),
             identity: digest,
             chunk: limits.max_pass_inputs as usize,
+            vocab: family.vocab_size(),
             limits: Arc::new(limits),
             pool,
             clock,
@@ -330,30 +333,22 @@ impl Service {
         }
         let recipes = boundary_recipes(self.root, &rendering)?;
         let tokens: Arc<[u32]> = rendering.tokens[..rendering.end].into();
-        let (tx, rx) = mpsc::channel();
         let outcome = if dry_run {
+            let (tx, rx) = mpsc::channel();
             let body = LookupBody::new(Arc::clone(&self.shared), recipes.clone(), tokens.len(), tx);
             submit(
                 &self.ports,
                 self.group,
                 schedule,
+                None,
                 nagaya_abi::Kind::Read,
                 Box::new(body),
             )?;
             wait(&rx)?
         } else {
-            let charge = Charge::take(&self.ports, &self.config.engine)?;
-            let body = BuildBody::new(Arc::clone(&self.shared), Arc::clone(&tokens), recipes.clone(), tx);
-            let outcome = submit(
-                &self.ports,
-                self.group,
-                schedule,
-                nagaya_abi::Kind::Copy,
-                Box::new(body),
-            )
-            .and_then(|()| wait(&rx));
-            charge.release()?;
-            outcome?
+            let shared = Arc::clone(&self.shared);
+            let job = |tx| BuildBody::new(shared, tokens, recipes.clone(), tx);
+            self.run_context(job, schedule, None)?.outcome
         };
         let prompt = rendering.end as u64;
         let usage = Usage {
@@ -389,6 +384,28 @@ impl Service {
             usage,
             snapshots,
         })
+    }
+
+    /// Run a context job with the ledger charge of its context, and wait for its result (spec 4.2).
+    fn run_context<T: Then>(
+        &self,
+        job: impl FnOnce(Sender<Result<Finished<T>, ServiceError>>) -> ContextBody<T>,
+        schedule: Schedule,
+        deadline: Option<Instant>,
+    ) -> Result<Finished<T>, ServiceError> {
+        let charge = Charge::take(&self.ports, &self.config.engine)?;
+        let (tx, rx) = mpsc::channel();
+        let result = submit(
+            &self.ports,
+            self.group,
+            schedule,
+            deadline,
+            nagaya_abi::Kind::Copy,
+            Box::new(job(tx)),
+        )
+        .and_then(|()| rx.recv().map_err(|_| ServiceError::Cancelled)?);
+        charge.release()?;
+        result
     }
 
     // ---- snapshots and pins
@@ -650,6 +667,7 @@ fn submit(
     ports: &Ports,
     group: usize,
     schedule: Schedule,
+    deadline: Option<Instant>,
     first: nagaya_abi::Kind,
     body: Box<dyn JobBody>,
 ) -> Result<(), ServiceError> {
@@ -659,7 +677,7 @@ fn submit(
             JobSpec {
                 class: schedule.class,
                 priority: i64::from(schedule.priority),
-                deadline: None,
+                deadline,
                 first,
                 body,
             },

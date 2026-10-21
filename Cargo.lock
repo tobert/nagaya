@@ -398,6 +398,7 @@ dependencies = [
  "gogi-fake",
  "gogi-proto",
  "gogi-toy",
+ "indexmap",
  "nagaya",
  "nagaya-abi",
  "nagaya-council",

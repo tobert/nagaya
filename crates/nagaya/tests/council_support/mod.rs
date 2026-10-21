@@ -252,3 +252,75 @@ impl Default for Fixture {
         Self::new()
     }
 }
+
+/// A direct run of the fake engine, with no process and no store: the oracle of the council tests.
+pub struct Direct {
+    pub engine: FakeAlways,
+    /// The rows of slot 0.
+    pub rows: usize,
+}
+
+impl Direct {
+    /// An engine with one slot that holds `context` as a build leaves it: fed in passes of 64 tokens, and sealed at
+    /// each boundary.
+    pub fn built(context: &gogi_proto::context::Context) -> Self {
+        use nagaya_council::family::Family;
+        let rendering = ToyFamily::new().render(context, false).unwrap();
+        let mut direct = Self::empty();
+        let mut position = 0;
+        for boundary in &rendering.boundaries {
+            for from in (position..boundary.tokens).step_by(64) {
+                let to = boundary.tokens.min(from + 64);
+                direct.feed(&rendering.tokens[from..to], false);
+            }
+            position = boundary.tokens;
+            direct.engine.seal().unwrap().seal(nagaya_abi::State::Slot(0)).unwrap();
+        }
+        direct
+    }
+
+    /// An engine with one empty slot.
+    pub fn empty() -> Self {
+        Self {
+            engine: FakeAlways::with_slots(vec![SlotLimit { bytes: 16384, count: 1 }]).with_vocab(gogi_toy::VOCAB),
+            rows: 0,
+        }
+    }
+
+    /// Feed tokens in one pass. With `row`, give the logit row of the last token.
+    pub fn feed(&mut self, tokens: &[u32], row: bool) -> Option<Vec<f32>> {
+        use nagaya_abi::{OutputsWanted, SegmentInputs, State};
+        let from = self.rows as u64;
+        let to = from + tokens.len() as u64;
+        let out = self
+            .engine
+            .pass(
+                &[Segment {
+                    state: State::Slot(0),
+                    inputs: SegmentInputs::Tokens(tokens.to_vec()),
+                    positions: (from..to).collect(),
+                    meta: Vec::new(),
+                    outputs: OutputsWanted {
+                        logit_rows: if row { vec![to - 1] } else { Vec::new() },
+                    },
+                }],
+                &[],
+            )
+            .unwrap();
+        self.rows += tokens.len();
+        row.then(|| {
+            let bytes = &out.outputs.iter().find(|output| output.name == "logits").unwrap().bytes;
+            nagaya_council::read::logit_row(bytes, gogi_toy::VOCAB).unwrap()
+        })
+    }
+
+    /// Feed tokens in passes of at most 64, and give the row of the last token.
+    pub fn feed_all(&mut self, tokens: &[u32]) -> Vec<f32> {
+        let chunks: Vec<&[u32]> = tokens.chunks(64).collect();
+        let mut row = None;
+        for (i, chunk) in chunks.iter().enumerate() {
+            row = self.feed(chunk, i + 1 == chunks.len());
+        }
+        row.unwrap()
+    }
+}
