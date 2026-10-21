@@ -66,7 +66,11 @@ impl Install {
     }
 
     fn export(&self) {
-        let shards = self.shards.iter().map(|path| path.to_str().unwrap()).collect::<Vec<_>>();
+        let shards = self
+            .shards
+            .iter()
+            .map(|path| path.to_str().unwrap())
+            .collect::<Vec<_>>();
         set(LIB, Some(&self.library));
         set(SHARDS, Some(Path::new(&shards.join(":"))));
     }
@@ -75,8 +79,15 @@ impl Install {
 #[test]
 fn a_hip_build_registers_the_mk_kind() {
     let registry = Registry::with_mk();
-    assert!(registry.factory(mk::KIND).is_some(), "the registry has no factory for `{}`", mk::KIND);
-    assert!(registry.factory("fake").is_none(), "the mk registry holds the real kind only");
+    assert!(
+        registry.factory(mk::KIND).is_some(),
+        "the registry has no factory for `{}`",
+        mk::KIND
+    );
+    assert!(
+        registry.factory("fake").is_none(),
+        "the mk registry holds the real kind only"
+    );
 }
 
 #[test]
@@ -85,7 +96,11 @@ fn the_registered_kind_is_the_kind_in_the_gfx1151host_profile() {
     assert_eq!(profile.engines[0].kind, mk::KIND);
     let registry = Registry::with_mk();
     for engine in &profile.engines {
-        assert!(registry.factory(&engine.kind).is_some(), "no factory for `{}`", engine.kind);
+        assert!(
+            registry.factory(&engine.kind).is_some(),
+            "no factory for `{}`",
+            engine.kind
+        );
     }
 }
 
@@ -119,7 +134,10 @@ fn a_missing_variable_refuses_the_start_with_exit_3_and_names_the_variable() {
             Err(error) => error,
         };
         assert_eq!(error.exit_code(), ExitCode::RefusedStart, "{error}");
-        assert!(error.to_string().contains(missing), "the message does not name {missing}: {error}");
+        assert!(
+            error.to_string().contains(missing),
+            "the message does not name {missing}: {error}"
+        );
     }
 }
 
@@ -174,7 +192,9 @@ fn plan_refuses_a_config_without_a_usable_weights_size_or_with_an_unknown_key() 
 
 #[test]
 fn a_pin_refusal_refuses_the_start_and_any_other_open_error_is_a_crash() {
-    let pin = mk::open_error(MkError::pin("the mk engine library /x has SHA-256 aa; MK_ENGINE_LIB_SHA256 pins bb"));
+    let pin = mk::open_error(MkError::pin(
+        "the mk engine library /x has SHA-256 aa; MK_ENGINE_LIB_SHA256 pins bb",
+    ));
     assert_eq!(pin.kind, OpenErrorKind::Pin);
     assert!(pin.kind.refuses_start());
     assert!(pin.message.contains("MK_ENGINE_LIB_SHA256"));
@@ -192,8 +212,16 @@ fn an_arena_that_differs_from_the_plan_refuses_the_start_and_gives_the_real_size
     let error = mk::weights_problem(&planned, &opened).unwrap_err();
     assert_eq!(error.kind, OpenErrorKind::PartSize);
     assert!(error.kind.refuses_start());
-    assert!(error.message.contains("65000000000"), "the message gives the real size: {}", error.message);
-    assert!(error.message.contains("65498251264"), "the message gives the planned size: {}", error.message);
+    assert!(
+        error.message.contains("65000000000"),
+        "the message gives the real size: {}",
+        error.message
+    );
+    assert!(
+        error.message.contains("65498251264"),
+        "the message gives the planned size: {}",
+        error.message
+    );
     assert!(error.message.contains("weights_bytes"), "{}", error.message);
 }
 

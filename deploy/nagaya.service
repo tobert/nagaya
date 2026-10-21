@@ -3,7 +3,8 @@
 #          systemctl --user daemon-reload
 # It follows mk's unit (`megakernel.service`): one process, restarted. It takes mk's address, 198.51.100.20:8090,
 # so it and megakernel.service must never run together. The nagaya is the only GPU client (spec 3.1).
-# Rebuild the release binary before each restart: the unit runs the file in `target/release`.
+# Rebuild the release binary before each restart, with `--features hip`: the unit runs the file in `target/release`.
+# `cargo build --release -p nagaya --features hip`. A build without the feature has no engine and exits 3.
 [Unit]
 Description=nagaya: the engines of gfx1151host behind council v2 (tailnet, port 8090)
 After=network-online.target tailscaled.service

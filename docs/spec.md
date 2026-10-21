@@ -88,8 +88,9 @@ number. A missing directory that lists one kind of GPU means that the machine ha
 coordinator machine joins with no GPU (2.1). Any other missing or malformed file is an error that names the file
 (8.5).
 
-**Proposed:** a probe error at start refuses the start and exits 3 (10.4). The table of 10.4 does not list it yet.
-Reason: the machine, and not a config, is wrong, so a restart cannot help. Claude Sonnet 5.5.
+A probe error at start refuses the start and exits 3 (10.4). Reason: the machine, and not a config, is wrong, so a
+restart cannot help. A build without the fake engine runs `FileProbe::new("/")` through the `Probe` trait when it
+starts. Decided by senpai 2026-10-20 night (vetoable).
 
 **What the file probe cannot see.** A probe that opens no GPU runtime has these limits.
 
@@ -1015,16 +1016,16 @@ needs no new dependency. A later step can use a signal stream from `tokio` inste
 |---|---|---|
 | 0 | a clean stop | no restart |
 | 1 | a crash | restart |
-| 3 | a refusal to start: a bad bootstrap config (2.1), a profile that does not fit, a canary mismatch at start, a mismatch of a pinned identity (12.1), of the library pin or of a part size, a store that does not open, or a gossip bind that fails | `RestartPreventExitStatus=3` |
+| 3 | a refusal to start: a bad bootstrap config (2.1), a probe error (2.1), a profile that does not fit, a canary mismatch at start, a mismatch of a pinned identity (12.1), of the library pin, of a part size or of the weight arena size, a store that does not open, or a gossip bind that fails | `RestartPreventExitStatus=3` |
 | 4 | a planned restart: a new profile (2.3, 3.3) | `RestartForceExitStatus=4` |
 
 The restart policy follows mk's unit: `Restart=on-failure`, `RestartSec=30`, and at most 3 starts in 600 s.
 systemd counts each start against that limit, also a start after code 4. Thus a fourth profile swap in 600 s fails.
 
-An engine that does not open at start stops the process. A mismatch of a pinned identity (12.1), the library pin
-or a part size is a refusal to start: exit 3. Any other failure to open is a crash. The process exits 1, and systemd
-restarts it within its start limit. A message on stderr names the engine and the reason. Decided 2026-10-20
-(reading).
+An engine that does not open at start stops the process. A mismatch of a pinned identity (12.1), the library pin,
+a part size or the weight arena size is a refusal to start: exit 3. Any other failure to open is a crash. The
+process exits 1, and systemd restarts it within its start limit. A message on stderr names the engine and the
+reason. Decided 2026-10-20 (reading).
 
 ## 11. Client API
 

@@ -290,6 +290,16 @@ the ABI.
   pool"). The process opens one handle. The conformance suite opens a handle for each gate, so the engine holds
   more contexts while the suite runs. This binding does not bind `mk_ctx_fork`.
   `plan(config)` comes with the process crate, so this binding fixes the pool.
+- **The factory plans from `weights_bytes`.** Decided by senpai 2026-10-20 night (vetoable).
+  - mk knows the size of its weight arena only after the weights load (`mk_engine_arena`). The arena is a repacked
+    copy of the tensors, so `plan` cannot compute the size.
+  - The config of the engine has one key, `weights_bytes`. The factory refuses any other key.
+  - `plan` returns the limits of the pool with this size in the weights term.
+  - `open` loads the weights and compares the real arena with the key. A difference refuses the start (exit 3,
+    spec 10.4). The message gives the real size for the profile.
+  - The factory reads `MK_ENGINE_LIB`, `MK_SHARDS` and the optional pin `MK_ENGINE_LIB_SHA256` from the environment.
+  - `plan` refuses a missing variable, or a library or a shard that is not a file. The message names the variable.
+  - The kind in the profile is `mk-qwen38-gfx1151`. A build with the feature `hip` registers it.
 - **`max_quantum_ms` is 10000.** mk splits a pass at 256 tokens (`kMaxPassTokens`). A prefill chunk of that size takes
   about 2 s. mk's watchdog stops the program at a 10 s deadline (`engine.h:302-306`), so the declared bound is 10 s.
 - **`cells_write` writes `n` rows from `from`.** The binding refuses a `from` other than 0 and changes nothing. mk
