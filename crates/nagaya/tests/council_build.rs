@@ -613,3 +613,34 @@ fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     }
     out
 }
+
+/// A store whose pins hold all its host tier has no room for a snapshot. The build then holds none there, as an
+/// interval copy does, and it does not fail (kaibo job-5 item 5: a store result is not a stop).
+#[test]
+fn a_snapshot_that_the_store_has_no_room_for_is_not_an_error() {
+    let probe = fixture();
+    let one = build(
+        &probe,
+        &ctx(vec![json!({"role": "user", "content": "probe 0", "snap": true})]),
+    );
+    let size = probe.service.snapshot(&one.head.unwrap()).unwrap().bytes.unwrap();
+    let f = fixture_with(0, 1 << 20, Some(size * 3 / 2));
+    let a = build(
+        &f,
+        &ctx(vec![json!({"role": "user", "content": "probe a", "snap": true})]),
+    );
+    let put = gogi_proto::pins::PinsPut {
+        snapshots: vec![a.head.unwrap().to_string()],
+        ttl_s: 3600,
+    };
+    f.service.put_pins("owner", &put).unwrap();
+    let b = f
+        .service
+        .build(
+            &context(&ctx(vec![json!({"role": "user", "content": "probe b", "snap": true})])),
+            false,
+            Schedule::default(),
+        )
+        .expect("a full store is not an error");
+    assert_eq!((b.head, b.snapshots.len()), (None, 0));
+}

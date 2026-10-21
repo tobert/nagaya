@@ -519,9 +519,16 @@ impl Service {
         };
         Ok(Built {
             head_recipe,
+            // The store can evict the head before the list is read. A build names only a head that it lists.
             head: match open {
                 true => None,
-                false => outcome.held.last().copied().flatten().map(|id| snapshot_id(&id)),
+                false => outcome
+                    .held
+                    .last()
+                    .copied()
+                    .flatten()
+                    .map(|id| snapshot_id(&id))
+                    .filter(|head| dry_run || snapshots.iter().any(|snapshot| snapshot.id == *head)),
             },
             from: outcome.from.map(|id| snapshot_id(&id)),
             usage,

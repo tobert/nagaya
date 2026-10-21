@@ -318,7 +318,7 @@ impl GenerateThen {
         let in_slot = seam >= fed
             && tokens[..self.prompt.len()] == self.prompt[..]
             && tokens[self.prompt.len()..fed] == self.sampled[..self.sampled.len() - 1];
-        if !in_slot || seam - fed > HEAD_FEED || seam > self.room || at >= seam {
+        if !in_slot || seam - fed > HEAD_FEED || at >= seam {
             return self.done();
         }
         let recipe = recipe_boundary(&base, &tokens[at..seam], seam as u64);
@@ -590,6 +590,12 @@ impl Service {
         let mut held = super::held_boundaries(&finished.outcome);
         held.extend(reply.head);
         let kept = finished.outcome.kept as u64;
+        let snapshots = self.infos(&held);
+        // The store can evict the head before the list is read. A response names only a head that it lists.
+        let head = reply
+            .head
+            .map(|(_, id)| snapshot_id(&id))
+            .filter(|head| snapshots.iter().any(|snapshot| snapshot.id == *head));
         Ok(GenerationDone {
             model: self.config.model.clone(),
             content: reply.parsed.content.clone(),
@@ -603,8 +609,8 @@ impl Service {
                 completion: reply.tokens.len() as u64,
                 reasoning: reply.reasoning,
             },
-            head: reply.head.map(|(_, id)| snapshot_id(&id)),
-            snapshots: self.infos(&held),
+            head,
+            snapshots,
             stats: Some(ReplyStats {
                 reasoning: reply.reasoning_stats,
                 content: reply.content_stats,

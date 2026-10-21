@@ -1290,7 +1290,16 @@ impl<T: Then> ContextBody<T> {
                 now_ms: (self.shared.clock)(),
             })
             .map(Some)
-            .map_err(|error| ServiceError::internal(format!("the store refused the snapshot at {place}: {error}")))
+            .or_else(|error| match error {
+                // Pins hold the room of the tier. The boundary holds no snapshot, as an interval copy does (6.13).
+                StoreError::NoSpace => {
+                    tracing::warn!("no snapshot at {place}: the store has no room, and pins hold the rest");
+                    Ok(None)
+                }
+                error => Err(ServiceError::internal(format!(
+                    "the store refused the snapshot at {place}: {error}"
+                ))),
+            })
     }
 }
 
