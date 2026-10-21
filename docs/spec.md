@@ -187,6 +187,24 @@ path. Decided 2026-10-20 (reading).
 The nagaya measures edges at install, stores the result in its local store index, and can measure them again. Each
 measurement is data with a date.
 
+**The edges of a machine with discrete cards.** **Proposed** (claude-opus-5-5, 2026-10-21). b70host has these
+edges, and the install measures each one:
+
+- host to `device(i)`, and `device(i)` to host. Each B70 links at PCIe 5.0 x8. mkviolet measured about 21.6 GB/s for
+  a copy from host to device (mkviolet `docs/07-long-context.md`).
+- `device(i)` to `device(j)`. mkviolet copies the residual through host memory (`run_card0`, `run_card1`). A peer
+  copy is a separate edge with its own measurement.
+- NVMe to `device(i)`, through host memory or direct. The edge records which path works (7.2).
+
+The probe reads the link of a card from the upstream port of the card's own PCIe switch. On b70host the ports are
+01:00.0 and 06:00.0, and each reports 32 GT/s x8. The card's endpoint reports 2.5 GT/s x1, because it sits behind
+that switch. Thus a probe that reads the endpoint gives a false rate.
+
+**Pinned host memory.** **Proposed** (claude-opus-5-5, 2026-10-21). A copy over PCIe is fastest from pinned host
+memory. Thus a mandatory host term may set `pinned: true`. The ledger charges its bytes in the host budget, as any
+host bytes. `nagaya.ledger.bytes` reports the term, so the pinned bytes are visible. mkviolet pins a staging buffer
+of 4 MiB for uploads (`STAGE_FLOATS`, `gemma4.rs:172`), and host buffers for the routes (`gemma4.rs:521`).
+
 Not built. The nagaya measures no edge yet.
 
 **2.3 Gossip (`chitchat`).** The nagaya processes form a cluster over UDP with `chitchat` (Scuttlebutt reconciliation
@@ -318,6 +336,9 @@ thread priorities:
   (13.2) run on a bounded pool pinned to the remaining cores at `SCHED_BATCH`. Long CPU work yields between chunks
   to obey `max_quantum_ms`. On unified-memory machines (`gfx1151host` and `sm121host`), the scheduler pauses background CPU
   memory work during a GPU pass to protect GPU memory bandwidth.
+- **No pause on a discrete card.** **Proposed** (claude-opus-5-5, 2026-10-21): a machine whose cards have their own
+  memory, such as b70host, has no pause rule. A pass there reads GDDR6, not host memory. The host traffic of a
+  pass is the residual and the uploads, about 11 MB for a block of mkviolet. A measurement under load can add a rule.
 
 **3.2a Control runtime first.** The control runtime (`tokio`) arrived with gossip, in milestone 10 step f. The HTTP
 server joined the runtime in milestone 12 step 6. The group threads, the ledger thread and the watchdog thread stay
@@ -379,6 +400,25 @@ does not pin threads that a runtime starts.
 
 **Open:** 3.2 asks for elevated priority on the control threads. Milestone 14 does not apply it. A raised priority
 needs `CAP_SYS_NICE` or a setting in the unit.
+
+**3.2b CPU sets for each device.** **Proposed** (claude-opus-5-5, 2026-10-21). 3.2a puts every group thread in one
+pool set. A stage thread (3.2) drives one card, so it gets a set of its own.
+
+- A stage thread pins to the CPUs of the card's `local_cpulist` that are in the pool set.
+- A card whose `local_cpulist` holds every online CPU has no locality. Then the nagaya gives each such card one L3
+  domain (`cpu*/cache/index3/shared_cpu_list`), in the order of the device ids. With more cards than domains, the
+  cards take the domains in turn.
+- On b70host, card 0 gets CPUs 2-7 and 16-23, and card 1 gets CPUs 8-15 and 24-31. CPUs 0 and 1 are the
+  housekeeping set.
+- The group thread, the CPU pool and the store thread keep the pool set (3.2a).
+
+Reason: the two CCDs of the 9950X have their own L3. A stage thread that stays on one CCD keeps its host buffers in
+one cache.
+
+The Level Zero runtime and IGC start threads of their own, as the HIP runtime does (15 item 14). Linux gives a new
+thread the mask of the thread that starts it. **Proposed** (claude-opus-5-5, 2026-10-21): the engine calls `zeInit` on
+the group thread, so those threads start with the pool set. The nagaya does not pin a thread that a runtime starts.
+**Open:** measure the masks of the Level Zero threads on b70host, as on gfx1151.
 
 **3.3 Engine lifecycle and profile swaps.** The nagaya opens each engine at start, from the profile. mk cannot close
 inside a process today: "the HIP runtime's own teardown segfaults" (mk `service/__main__.py`). Thus in v0, when
@@ -1262,6 +1302,17 @@ NVML. Each provider maps its values onto shared names:
 | `nagaya.device.throttle` | {event} | device, reason |
 | `nagaya.device.evicted` | ms | device (amdgpu KFD only) |
 
+**The Xe provider.** **Proposed** (claude-opus-5-5, 2026-10-21). Each card has these files under
+`/sys/class/drm/card<N>/device`, as the b70host tree shows:
+
+- clock: `tile0/gt<N>/freq0/act_freq` and `cur_freq`;
+- power: the change of `hwmon/hwmon*/energy1_input` over time, and `power1_cap`;
+- temperature: `hwmon/hwmon*/temp*_input`, with each `temp*_label` as the sensor;
+- activity: the change of `tile0/gt<N>/gtidle/idle_residency_ms` over time;
+- throttle: `tile0/gt<N>/freq0/throttle/reason_*`, with the reason in the file name.
+
+`nagaya.device.evicted` stays amdgpu only.
+
 mk's `mk.gpu.*` names and mkviolet's `mkviolet.*` names map onto these names. Council decision metrics (count,
 spread, confidence) belong to the council layer (11.1).
 
@@ -1309,6 +1360,17 @@ Evidence never hides its failure. A counter that cannot be read, or that went ba
 `evidence unavailable`. The failure is logged all the same. The sources are `/proc/meminfo`, `/proc/vmstat`,
 `/sys/class/kfd/kfd/proc/<pid>/stats_*/evicted_ms` and `/sys/class/drm/card*/device/mem_info_gtt_used`. The GTT is
 summed over the devices, and it is absent on a machine with no amdgpu device.
+
+**Evidence on Xe.** **Proposed** (claude-opus-5-5, 2026-10-21). Xe has no counter of evicted ms, and no GTT in the
+amdgpu sense. Thus a Xe machine reads these sources in their place:
+
+- the memory of the nagaya's own DRM clients: the `drm-total-*` and `drm-resident-*` keys in `/proc/self/fdinfo/<fd>`
+  of each `xe` fd;
+- the throttle state of each GT: `device/tile0/gt<N>/freq0/throttle/status` and `reasons`;
+- `MemAvailable` and `/proc/vmstat`, as on any machine.
+
+The exact fdinfo keys need a check on b70host before the code reads them. A source that is absent is
+`evidence unavailable`, as above.
 
 **9.7 Status feed.** Each machine has one SSE status feed (mk `/mk/v1/status`, mkviolet `PassBus`):
 
@@ -2322,6 +2384,8 @@ The inventories found these items. We correct each one when its code moves. We d
 16. Answered 2026-10-21: the job path uses `ObservedScheduler` and the evidence module (9.2, 9.6). Two things stay
     open (9.2). The council thread loses the parent of `nagaya.job` for an HTTP request. The engine receives no trace
     context.
+17. Which masks do the threads of the Level Zero runtime and IGC get on b70host (3.2b)? The nagaya does not pin
+    them, so a measurement shows whether they leave the pool set.
 
 ## 16. Decided by senpai on 2026-10-20 night
 

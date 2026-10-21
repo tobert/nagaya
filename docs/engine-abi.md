@@ -103,7 +103,7 @@ limits() -> {
     max_segments, max_pass_inputs, max_logit_rows, slots per device and their sizes,
     max_quantum_ms,              the longest a quantum may hold its device group (D8)
     memory: {                    the engine's ledger terms (spec 4.2), keyed by kind of quantum
-        mandatory: [{name, tier, bytes, lifetime: engine | context | loan, kinds}],
+        mandatory: [{name, tier, bytes, lifetime: engine | context | loan, kinds, pinned?}],   pinned: spec 2.2
         elastic: [{name, tier, unit_bytes, minimum, maximum, kinds}],
     },                           tier: device(i) | host; i is an index into the device group
     chain: {max_depth, delta_fraction},   how the store may chain this engine's snapshots (spec 6.5)
