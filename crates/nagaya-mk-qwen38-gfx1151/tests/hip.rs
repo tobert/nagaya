@@ -425,8 +425,9 @@ fn the_conformance_suite_passes_on_mk() {
     println!("{suite}");
     assert!(suite.passed(), "{suite}");
     assert_eq!(suite.failures().count(), 0, "{suite}");
+    // mk declares `coverage`, so every gate applies, also `quantum_resume_fit`.
     let not_applicable: Vec<&str> = suite.not_applicable().map(|gate| gate.name).collect();
-    assert_eq!(not_applicable, ["quantum_resume_fit"]);
+    assert_eq!(not_applicable, Vec::<&str>::new());
 }
 
 /// The ids of a synthetic prompt: `count` token ids that spread over the vocabulary, the same each time.
