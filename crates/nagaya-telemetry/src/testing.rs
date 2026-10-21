@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use opentelemetry_sdk::metrics::InMemoryMetricExporter;
 use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
-use opentelemetry_sdk::trace::{InMemorySpanExporter, SpanData};
+use opentelemetry_sdk::trace::InMemorySpanExporter;
+pub use opentelemetry_sdk::trace::SpanData;
 use tracing_subscriber::layer::SubscriberExt;
 
 use crate::instruments::{ScopeGuard, scope};

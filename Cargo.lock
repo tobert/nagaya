@@ -709,6 +709,9 @@ name = "nagaya-sched"
 version = "0.1.0"
 dependencies = [
  "nagaya-abi",
+ "nagaya-telemetry",
+ "opentelemetry",
+ "tracing",
 ]
 
 [[package]]
