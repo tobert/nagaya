@@ -469,8 +469,16 @@ impl Family for Holding {
         self.toy.tokenize(text)
     }
 
+    fn tokenize_special(&self, text: &str) -> Result<Vec<u32>, nagaya_council::family::FamilyError> {
+        self.toy.tokenize_special(text)
+    }
+
     fn detokenize(&self, tokens: &[u32]) -> Result<String, nagaya_council::family::FamilyError> {
         self.toy.detokenize(tokens)
+    }
+
+    fn pieces(&self, tokens: &[u32]) -> Result<Vec<String>, nagaya_council::family::FamilyError> {
+        self.toy.pieces(tokens)
     }
 
     fn template_id(&self) -> &str {

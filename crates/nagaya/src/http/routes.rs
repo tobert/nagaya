@@ -42,6 +42,7 @@ pub fn routes() -> Router<Arc<Council>> {
         .route("/council/v2/decisions", post(decisions))
         .route("/council/v2/reads", post(reads))
         .route("/council/v2/generations", post(generations))
+        .merge(super::extensions::routes())
         .fallback(unknown)
         .method_not_allowed_fallback(unknown)
 }
@@ -51,7 +52,7 @@ pub(super) fn json<T: Serialize>(status: StatusCode, value: &T) -> Response {
     (status, axum::Json(value)).into_response()
 }
 
-fn answer<T: Serialize>(id: &RequestId, result: Result<T, Failure>) -> Response {
+pub(super) fn answer<T: Serialize>(id: &RequestId, result: Result<T, Failure>) -> Response {
     match result {
         Ok(value) => json(StatusCode::OK, &value),
         Err(failure) => failure.respond(id),
@@ -67,7 +68,7 @@ fn empty(id: &RequestId, result: Result<(), Failure>) -> Response {
 
 /// The bytes of a request body. A body past [`MAX_BODY_BYTES`] is a 413 `too_large`. A body that does not arrive whole
 /// is a 400 `invalid_request`, because the body is outside the schema (gogi "Errors").
-async fn bytes(body: Body) -> Result<Bytes, Failure> {
+pub(super) async fn bytes(body: Body) -> Result<Bytes, Failure> {
     axum::body::to_bytes(body, MAX_BODY_BYTES).await.map_err(|error| {
         let limit =
             std::error::Error::source(&error).is_some_and(|source| source.is::<http_body_util::LengthLimitError>());

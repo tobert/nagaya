@@ -157,6 +157,46 @@ fn text_that_spells_a_marker_in_a_message_is_a_control_hit_and_stays_content() {
 }
 
 #[test]
+fn tokenize_special_makes_one_token_of_the_text_of_a_marker() {
+    let f = family();
+    assert_eq!(
+        f.tokenize_special("a<end>b").unwrap(),
+        [u32::from(b'a'), toy::END, u32::from(b'b')]
+    );
+    assert_eq!(f.tokenize_special("a<end>b").unwrap(), toy::tokenize_suffix("a<end>b"));
+    // Without `special` the marker text is bytes.
+    assert_eq!(f.tokenize("<end>").unwrap().len(), 5);
+    assert_eq!(f.tokenize_special("").unwrap(), Vec::<u32>::new());
+}
+
+#[test]
+fn pieces_are_the_text_of_each_token() {
+    let f = family();
+    let tokens = f.tokenize_special("hi<end>").unwrap();
+    assert_eq!(f.pieces(&tokens).unwrap(), ["h", "i", "<end>"]);
+    assert_eq!(f.pieces(&[]).unwrap(), Vec::<String>::new());
+}
+
+#[test]
+fn a_byte_that_is_not_whole_text_is_a_replacement_character_in_its_piece() {
+    let f = family();
+    // The first byte of a two-byte character is not text alone.
+    let bytes = "é".as_bytes().iter().map(|&b| u32::from(b)).collect::<Vec<_>>();
+    assert_eq!(f.pieces(&bytes).unwrap(), ["\u{fffd}", "\u{fffd}"]);
+    assert!(f.detokenize(&bytes[..1]).is_err());
+    assert_eq!(f.detokenize(&bytes).unwrap(), "é");
+}
+
+#[test]
+fn pieces_of_a_token_outside_the_vocabulary_is_a_client_error_that_names_tokens() {
+    let f = family();
+    let FamilyError::Client(invalid) = f.pieces(&[0, f.vocab_size() as u32]).unwrap_err() else {
+        panic!("want a client error")
+    };
+    assert_eq!(invalid.param.as_deref(), Some("tokens"));
+}
+
+#[test]
 fn a_context_with_no_message_is_a_client_error() {
     let err = family().render(&context(json!({"messages": []})), false).unwrap_err();
     assert!(err.is_client(), "{err:?}");
