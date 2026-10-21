@@ -7,6 +7,7 @@
 
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::sync::mpsc::{SyncSender, sync_channel};
 
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
@@ -17,12 +18,30 @@ use super::{Council, Failure, RequestId, Served, guarded};
 use crate::council::error::ServiceError;
 
 /// The token events that wait for a slow client. A full queue holds the generation back. It does not drop events.
+/// The forward thread and the response channel hold two more, which are in flight.
 const QUEUE: usize = 256;
 
 /// What the generation gives the response.
 enum Item {
     Token(TokenEvent),
     End(Box<Result<GenerationDone, ServiceError>>),
+}
+
+/// Start the forward thread. The call thread sends each token event to the returned sender. The forward thread moves
+/// it to `out`, and ends when the client goes away or when the generation drops the sender.
+fn relay(out: mpsc::Sender<Item>) -> std::io::Result<(SyncSender<TokenEvent>, std::thread::JoinHandle<()>)> {
+    let (tokens, events) = sync_channel::<TokenEvent>(QUEUE);
+    let forwarder = std::thread::Builder::new()
+        .name("nagaya-stream".to_owned())
+        .spawn(move || {
+            for event in events {
+                if out.blocking_send(Item::Token(event)).is_err() {
+                    // The client went away. Dropping `events` closes the stream of the generation.
+                    return;
+                }
+            }
+        })?;
+    Ok((tokens, forwarder))
 }
 
 /// Stream a generation.
@@ -36,22 +55,10 @@ pub async fn generation(
         Ok(permit) => permit,
         Err(failure) => return failure.respond(&id),
     };
-    let (out, mut items) = mpsc::channel::<Item>(QUEUE);
+    let (out, mut items) = mpsc::channel::<Item>(1);
     let started = council.spawn(move || {
-        let (tokens, events) = std::sync::mpsc::channel::<TokenEvent>();
-        let forward = out.clone();
-        let forwarder = std::thread::Builder::new()
-            .name("nagaya-stream".to_owned())
-            .spawn(move || {
-                for event in events {
-                    if forward.blocking_send(Item::Token(event)).is_err() {
-                        // The client went away. Dropping `events` closes the stream of the generation.
-                        return;
-                    }
-                }
-            });
-        let result = match forwarder {
-            Ok(forwarder) => {
+        let result = match relay(out.clone()) {
+            Ok((tokens, forwarder)) => {
                 let result = guarded(|| served.service.generate(&request, Some(tokens)));
                 // The sender of the token events dropped with the generation, so the forward thread ends.
                 let _ = forwarder.join();
@@ -111,4 +118,67 @@ pub async fn generation(
 fn error_event(council: &Council, error: ServiceError, id: &RequestId) -> StreamEvent {
     let failure: Failure = council.failed(error);
     StreamEvent::Error((*failure.body).with_request_id(id.0.clone()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use gogi_proto::generation::Phase;
+
+    use super::*;
+
+    fn event(n: u64) -> TokenEvent {
+        TokenEvent {
+            id: n as u32,
+            piece: format!("t{n}"),
+            phase: Phase::Content,
+            p: 1.0,
+            h: 0.0,
+            n,
+            tps: None,
+        }
+    }
+
+    /// A client that reads nothing holds the generation back, and the generation drops no event (spec 11.7).
+    #[test]
+    fn a_reader_that_stops_holds_the_generation_back_and_loses_no_event() {
+        let total = QUEUE * 4;
+        // The response channel is the one that the route makes.
+        let (out, mut items) = mpsc::channel::<Item>(1);
+        let (tokens, forwarder) = relay(out).unwrap();
+        let sent = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&sent);
+        let generation = std::thread::spawn(move || {
+            for n in 0..total as u64 {
+                tokens.send(event(n)).unwrap();
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        // The client reads nothing. The generation must stop within the queue and the two events in flight.
+        std::thread::sleep(Duration::from_millis(300));
+        let waiting = sent.load(Ordering::SeqCst);
+        assert!(
+            !generation.is_finished(),
+            "the generation ran on past a client that reads nothing"
+        );
+        assert!(
+            waiting <= QUEUE + 2,
+            "{waiting} events wait for a client that reads nothing"
+        );
+        // The client reads again. Each event arrives, in order.
+        for n in 0..total as u64 {
+            match items.blocking_recv() {
+                Some(Item::Token(token)) => assert_eq!(token.n, n),
+                _ => panic!("the stream lost the event {n}"),
+            }
+        }
+        generation.join().unwrap();
+        forwarder.join().unwrap();
+        assert!(
+            items.blocking_recv().is_none(),
+            "the stream has an event after the last one"
+        );
+    }
 }

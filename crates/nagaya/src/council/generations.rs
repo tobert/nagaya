@@ -2,7 +2,7 @@
 
 use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::SyncSender;
 use std::time::Instant;
 
 use gogi_proto::Invalid;
@@ -108,7 +108,7 @@ pub(crate) struct GenerateThen {
     /// The most tokens that the slot of the job holds.
     room: usize,
     parser: Option<Box<dyn ReplyParser>>,
-    events: Option<Sender<TokenEvent>>,
+    events: Option<SyncSender<TokenEvent>>,
     started: Instant,
     stage: Stage,
     sampled: Vec<u32>,
@@ -399,11 +399,12 @@ impl Service {
     ///
     /// The route chose this service by the request's `model`. The generation builds its context, as a build does,
     /// and samples from the head. Each sampled token goes to `events` as it is sampled, when the caller streams. A
-    /// closed receiver cancels the reply: the call gives [`ServiceError::Cancelled`] and holds no head.
+    /// full channel holds the reply back, and the reply drops no event. A closed receiver cancels the reply: the call
+    /// gives [`ServiceError::Cancelled`] and holds no head.
     pub fn generate(
         &self,
         request: &GenerationRequest,
-        events: Option<Sender<TokenEvent>>,
+        events: Option<SyncSender<TokenEvent>>,
     ) -> Result<GenerationDone, ServiceError> {
         request.validate()?;
         if !request.decisions.is_empty() {
