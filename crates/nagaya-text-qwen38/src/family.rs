@@ -10,6 +10,7 @@ use crate::json::Json;
 use crate::template::{ChatTemplate, RenderOptions, truthy};
 use crate::tokenizer::Tokenizer;
 use std::path::Path;
+use std::sync::Arc;
 
 /// The result of a render.
 #[derive(Debug)]
@@ -25,7 +26,7 @@ pub struct Rendered {
 /// The text rules of one Qwen3.8 model.
 #[derive(Debug)]
 pub struct Qwen38 {
-    tokenizer: Tokenizer,
+    tokenizer: Arc<Tokenizer>,
     template: ChatTemplate,
 }
 
@@ -37,13 +38,18 @@ impl Qwen38 {
 
     pub fn from_metadata(m: &Metadata) -> Result<Qwen38, Error> {
         Ok(Qwen38 {
-            tokenizer: Tokenizer::from_metadata(m)?,
+            tokenizer: Arc::new(Tokenizer::from_metadata(m)?),
             template: ChatTemplate::from_metadata(m)?,
         })
     }
 
     pub fn tokenizer(&self) -> &Tokenizer {
         &self.tokenizer
+    }
+
+    /// The tokenizer, shared. A reply parser that outlives a borrow holds this.
+    pub fn shared_tokenizer(&self) -> Arc<Tokenizer> {
+        Arc::clone(&self.tokenizer)
     }
 
     pub fn template(&self) -> &ChatTemplate {

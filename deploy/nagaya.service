@@ -1,0 +1,49 @@
+# The nagaya as a systemd user unit on gfx1151host (docs/spec.md 10.1; docs/deploy.md has the install and the cutover).
+# Install: ln -s ~/src/nagaya/deploy/nagaya.service ~/.config/systemd/user/
+#          systemctl --user daemon-reload
+# It follows mk's unit (`megakernel.service`): one process, restarted. It takes mk's address, 198.51.100.20:8090,
+# so it and megakernel.service must never run together. The nagaya is the only GPU client (spec 3.1).
+# Rebuild the release binary before each restart: the unit runs the file in `target/release`.
+[Unit]
+Description=nagaya: the engines of gfx1151host behind council v2 (tailnet, port 8090)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+# A crash loop must not hit the GPU again and again: three starts in 10 minutes, and the unit stays down.
+# systemd counts a start after exit 4 too, so a fourth profile swap in 600 s fails (spec 10.4).
+StartLimitIntervalSec=600
+StartLimitBurst=3
+
+[Service]
+Type=notify
+NotifyAccess=main
+# The process sends READY=1 when mk has loaded its weights. mk's own unit allows 300 s: a load waits up to 60 s for
+# free memory, then takes about 35 s.
+TimeoutStartSec=300
+WorkingDirectory=%h/src/nagaya
+# The bootstrap config (spec 2.1). It names the bind addresses and the store directory.
+Environment=NAGAYA_CONFIG=%h/src/nagaya/deploy/gfx1151host/nagaya.toml
+# The mk library and its three GGUF shards (AGENTS.md "mk on gfx1151host"). Amy builds the library in mk's repository. The
+# shards are `SHARDS` in mk's `harness/paths.py`, with : between them.
+Environment=MK_ENGINE_LIB=%h/src/megakernel-qwen38-flashnext-strixhalo/build/src/engine/libmkengine.so
+Environment="MK_SHARDS=/tank/ml/models/llama.cpp/Qwen3.8-Flash-Next-GGUF/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf:/tank/ml/models/llama.cpp/Qwen3.8-Flash-Next-GGUF/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf:/tank/ml/models/llama.cpp/Qwen3.8-Flash-Next-GGUF/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf"
+# Unset on purpose: MK_ENGINE_LIB_SHA256 (the library pin) and MK_FAST_QMM (the fast path).
+# docs/deploy.md says how to set them.
+# OpenTelemetry: OTLP/HTTP to the host collector, as mk's unit does. The process logs to stderr without it.
+Environment=OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+# The store directory must exist before the process reads its profile.
+ExecStartPre=/usr/bin/mkdir -p %h/.local/share/nagaya/store
+ExecStart=%h/src/nagaya/target/release/nagaya
+# Arenas through a restart (spec 10.2) come later. Then this unit sets FileDescriptorStoreMax=512 and
+# FileDescriptorStorePreserve=restart, as megakernel.service does. Today the process stores no fd, so it sets neither.
+# SIGTERM: the running quantum ends (at most 10 s), then the park runs (10 s by default). A second signal ends it now.
+KillSignal=SIGTERM
+TimeoutStopSec=60
+# Spec 10.4. Exit 1 is a crash: start again, but not in a tight loop. Exit 3 is a refusal that repeats on every
+# start, so the unit stays down. Exit 4 is a planned restart after a profile swap (spec 3.3), and it always restarts.
+Restart=on-failure
+RestartSec=30
+RestartPreventExitStatus=3
+RestartForceExitStatus=4
+
+[Install]
+WantedBy=default.target

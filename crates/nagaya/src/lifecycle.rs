@@ -11,6 +11,7 @@ use crate::notify::{EngineState, Notifier};
 use crate::process::{Event, OpenedEngine, Process, Start, StartError, StopReport, WaitError};
 use crate::profile::{PlacementProfile, ProfileError};
 use crate::signal::SignalFlag;
+use nagaya_telemetry::instruments;
 
 /// The backstop wait for every engine to open. It is two watchdog timeouts (spec 7.4).
 pub const DEFAULT_OPEN_TIMEOUT: Duration = Duration::from_secs(60);
@@ -102,7 +103,44 @@ pub fn active_profile(store_dir: &Path) -> Result<PlacementProfile, ProfileError
 }
 
 /// Start the threads, wait for every engine to open, then send `READY=1` (spec 10.1).
+///
+/// The start makes the span `nagaya.start`. It records the state of each engine in `nagaya.engine.state` (spec 9.4).
 pub fn start(
+    profile: PlacementProfile,
+    registry: Registry,
+    inventory: Inventory,
+    store_dir: &Path,
+    notifier: Option<&Notifier>,
+    timeout: Duration,
+) -> Result<Ready, LifecycleError> {
+    let span = tracing::info_span!(
+        "nagaya.start",
+        engines = profile.engines.len(),
+        outcome = tracing::field::Empty,
+        otel.status_code = tracing::field::Empty,
+    );
+    let _entered = span.enter();
+    let result = start_engines(profile, registry, inventory, store_dir, notifier, timeout);
+    match &result {
+        Ok(_) => span.record("outcome", "ready"),
+        Err(error) => {
+            tracing::error!("{error}");
+            span.record("outcome", "failed");
+            span.record("otel.status_code", "ERROR")
+        }
+    };
+    result
+}
+
+/// Record that each engine in `names` entered `state`.
+fn record_states<'a>(names: impl IntoIterator<Item = &'a String>, state: EngineState) {
+    let instruments = instruments();
+    for name in names {
+        instruments.engine_state(name, state);
+    }
+}
+
+fn start_engines(
     profile: PlacementProfile,
     registry: Registry,
     inventory: Inventory,
@@ -112,10 +150,14 @@ pub fn start(
 ) -> Result<Ready, LifecycleError> {
     let mut process = {
         let names: Vec<String> = profile.engines.iter().map(|engine| engine.name.clone()).collect();
+        record_states(&names, EngineState::Loading);
+        if !names.is_empty() {
+            tracing::info!(engines = names.join(", "), "opening engines");
+        }
         if let Some(notifier) = notifier
             && let Err(error) = notifier.states(&names, EngineState::Loading)
         {
-            eprintln!("cannot send STATUS= to systemd: {error}");
+            tracing::warn!("cannot send STATUS= to systemd: {error}");
         }
         Start::new(profile, registry, inventory)
             .store(store_dir)
@@ -126,22 +168,29 @@ pub fn start(
         Ok(opened) => {
             let mut names: Vec<String> = opened.iter().map(|engine| engine.name.clone()).collect();
             names.sort();
+            record_states(&names, EngineState::Ready);
             if let Some(notifier) = notifier
                 && let Err(error) = notifier.ready(&names)
             {
-                eprintln!("cannot send READY=1 to systemd: {error}");
+                tracing::warn!("cannot send READY=1 to systemd: {error}");
             }
             Ok(Ready { process, opened })
         }
         Err(WaitError::Event(event)) => {
+            if let Event::OpenFailed { engine, .. } = &event {
+                instruments().engine_state(engine, EngineState::Fatal);
+            }
             if let Some(notifier) = notifier
                 && let Err(error) = notifier.notify(&status(&event))
             {
-                eprintln!("cannot send STATUS= to systemd: {error}");
+                tracing::warn!("cannot send STATUS= to systemd: {error}");
             }
             Err(LifecycleError::Event(event))
         }
-        Err(WaitError::Timeout { waiting }) => Err(LifecycleError::Timeout { waiting }),
+        Err(WaitError::Timeout { waiting }) => {
+            record_states(&waiting, EngineState::Fatal);
+            Err(LifecycleError::Timeout { waiting })
+        }
         Err(WaitError::Disconnected) => Err(LifecycleError::Disconnected),
     }
 }
@@ -192,21 +241,38 @@ pub fn wait_with(
 /// Stop the process and report each engine's state: draining, then unloaded or fatal (spec 10.1, 10.3).
 ///
 /// An engine that parked every state is `unloaded`. An engine that did not park is `fatal`.
+/// The stop makes the span `nagaya.stop` and records each state in `nagaya.engine.state` (spec 9.4).
 pub fn stop(ready: &mut Ready, notifier: Option<&Notifier>, budget: Duration, signals: &SignalFlag) -> StopReport {
     let names: Vec<String> = ready.opened.iter().map(|engine| engine.name.clone()).collect();
+    let span = tracing::info_span!(
+        "nagaya.stop",
+        engines = names.len(),
+        outcome = tracing::field::Empty,
+        otel.status_code = tracing::field::Empty,
+    );
+    let _entered = span.enter();
+    record_states(&names, EngineState::Draining);
     if let Some(notifier) = notifier
         && let Err(error) = notifier.states(&names, EngineState::Draining)
     {
-        eprintln!("cannot send STATUS= to systemd: {error}");
+        tracing::warn!("cannot send STATUS= to systemd: {error}");
     }
     let report = ready.process.stop(budget, signals);
+    let (parked, unparked) = report.split_parked(&names);
+    record_states(&parked, EngineState::Unloaded);
+    record_states(&unparked, EngineState::Fatal);
     if let Some(notifier) = notifier {
-        let (parked, unparked) = report.split_parked(&names);
         for (engines, state) in [(parked, EngineState::Unloaded), (unparked, EngineState::Fatal)] {
             if let Err(error) = notifier.states(&engines, state) {
-                eprintln!("cannot send STATUS= to systemd: {error}");
+                tracing::warn!("cannot send STATUS= to systemd: {error}");
             }
         }
+    }
+    if report.exit_code() == ExitCode::Clean {
+        span.record("outcome", "clean");
+    } else {
+        span.record("outcome", "failed");
+        span.record("otel.status_code", "ERROR");
     }
     report
 }

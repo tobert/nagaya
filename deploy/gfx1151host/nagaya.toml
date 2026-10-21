@@ -1,0 +1,20 @@
+# The bootstrap config of the nagaya on gfx1151host (docs/spec.md 2.1, 11.6). The unit points NAGAYA_CONFIG at this file.
+# The loader (`crates/nagaya/src/bootstrap.rs`) refuses an unknown key. `crates/nagaya/tests/deploy.rs` reads this file.
+
+# The HTTP address of mk's service (Amy, 2026-10-18). kaijutsu's gate config names it.
+http_bind = "198.51.100.20:8090"
+
+# The gossip address. It is a UDP port on the same tailnet address, and the node advertises it to peers (spec 2.3).
+# The loader refuses 0.0.0.0, because no peer can reach it.
+gossip_bind = "198.51.100.20:8091"
+
+# The store directory. It holds the accepted profile (`profile.toml`), its version and the store's NVMe tier.
+# It is under the XDG data directory, which is on the root volume, the NVMe disk of gfx1151host. A user unit can write it,
+# and `systemctl stop` leaves it. The loader does not expand `~`, so the path is absolute.
+store_dir = "/home/atobey/.local/share/nagaya/store"
+
+# One machine, so no seeds (spec 2.1).
+seed_peers = []
+
+# The time budget of the stop park, in seconds (spec 10.3). This is the default, and it is written here on purpose.
+park_budget_secs = 10

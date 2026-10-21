@@ -8,33 +8,9 @@ use std::path::{Path, PathBuf};
 /// The environment variable that names the systemd notify socket.
 pub const NOTIFY_SOCKET: &str = "NOTIFY_SOCKET";
 
-/// The state of one engine, for systemd's `STATUS=` (spec 10.1, 2.3).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EngineState {
-    /// The engine is opening.
-    Loading,
-    /// The engine opened and serves work.
-    Ready,
-    /// The engine takes no new work, and its running quantum ends.
-    Draining,
-    /// The engine closed its state.
-    Unloaded,
-    /// The engine failed.
-    Fatal,
-}
-
-impl EngineState {
-    /// The word that `STATUS=` uses.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            EngineState::Loading => "loading",
-            EngineState::Ready => "ready",
-            EngineState::Draining => "draining",
-            EngineState::Unloaded => "unloaded",
-            EngineState::Fatal => "fatal",
-        }
-    }
-}
+/// The state of one engine, for systemd's `STATUS=` (spec 10.1, 2.3). The telemetry crate owns the type, so that
+/// `nagaya.engine.state` and `STATUS=` use one word for one state.
+pub use nagaya_telemetry::EngineState;
 
 /// The `STATUS=` text for the engines and their states. An empty list gives the empty-profile text.
 fn status_text(engines: &[String], state: EngineState) -> String {

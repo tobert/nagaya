@@ -331,6 +331,23 @@ impl Tokenizer {
         out
     }
 
+    /// The special token texts that `text` spells, in order of position. At one position the longest text wins.
+    ///
+    /// A family library reports these as control text. It tokenizes the text as content, so no hit is a token.
+    pub fn control_hits(&self, text: &str) -> Vec<String> {
+        let mut hits = Vec::new();
+        let mut at = 0;
+        while at < text.len() {
+            if let Some((len, _)) = self.special_at(text, at) {
+                hits.push(text[at..at + len].to_string());
+                at += len;
+            } else {
+                at += text[at..].chars().next().expect("at is inside the text").len_utf8();
+            }
+        }
+        hits
+    }
+
     /// The special token whose text starts at byte `at`: the length of its text and the index of its escape.
     fn special_at(&self, text: &str, at: usize) -> Option<(usize, usize)> {
         let rest = &text.as_bytes()[at..];
