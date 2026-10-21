@@ -299,7 +299,12 @@ fn b70host_with_one_card_left_gives_it_the_pool_set() {
     let ignore = ["0000:80:00.0".to_owned(), "0000:08:00.0".to_owned()];
     let probe = fixture("b70host");
     let machine = probe.machine().unwrap();
-    assert!(machine.devices.iter().any(|facts| facts.device.pci_address == ignore[1]));
+    assert!(
+        machine
+            .devices
+            .iter()
+            .any(|facts| facts.device.pci_address == ignore[1])
+    );
     let sets = for_machine_with_devices_ignoring(&probe, &ignore).unwrap();
     assert_eq!(sets.devices.iter().filter(|set| !set.is_empty()).count(), 1);
     assert_eq!(sets.devices[0], sets.pool);

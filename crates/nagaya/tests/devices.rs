@@ -1,6 +1,6 @@
 use nagaya::admission::AdmittedEngine;
 use nagaya::inventory::{Device, Inventory};
-use nagaya::placement::{DeviceError, check_devices, device_groups};
+use nagaya::placement::{DeviceError, check_devices, check_ignored, device_groups};
 use nagaya::profile::{EnginePlacement, PlacementProfile};
 use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{DeviceId, Engine, Limits};
@@ -188,4 +188,35 @@ fn disjoint_device_sets_stay_apart_beside_an_overlap() {
     assert_eq!(groups[0].engines, vec![0]);
     assert_eq!(groups[1].devices, vec![1, 2]);
     assert_eq!(groups[1].engines, vec![1, 2]);
+}
+
+fn inventory_with_ignored(ignored: DeviceId) -> Inventory {
+    let mut inventory = inventory(&[0, 1, 2]);
+    for device in &mut inventory.devices {
+        device.pci_address = format!("0000:0{}:00.0", device.id + 3);
+        device.ignored = device.id == ignored;
+    }
+    inventory
+}
+
+#[test]
+fn a_profile_that_names_no_ignored_device_passes_the_ignore_check() {
+    let profile = profile(vec![engine("a", &[0, 1])]);
+    assert_eq!(check_ignored(&profile, &inventory_with_ignored(2)), Ok(()));
+}
+
+#[test]
+fn a_profile_that_names_an_ignored_device_is_refused_with_its_pci_address() {
+    let profile = profile(vec![engine("a", &[0]), engine("b", &[1, 2])]);
+    let error = check_ignored(&profile, &inventory_with_ignored(2)).unwrap_err();
+    assert_eq!(
+        error,
+        DeviceError::Ignored {
+            engine: "b".to_owned(),
+            device: 2,
+            pci_address: "0000:05:00.0".to_owned(),
+        }
+    );
+    let message = error.to_string();
+    assert!(message.contains("0000:05:00.0") && message.contains("`b`"), "{message}");
 }
