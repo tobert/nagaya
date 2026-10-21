@@ -166,6 +166,33 @@ fn lookup_one(
     Ok(lookup_all(shared, engine, slot, std::slice::from_ref(recipe))?[0])
 }
 
+/// Restore an entry into `state`. An entry that left the store since its lookup, or that the store quarantines at
+/// the restore, is a miss: the result is `Refused`, and the state is as it was. The store checks the entry before it
+/// writes a part.
+fn restore_entry(
+    shared: &Shared,
+    id: &ContentId,
+    engine: &mut dyn Engine,
+    state: State,
+) -> Result<Restored, StoreError> {
+    let mut store = shared.store.lock().expect("the store lock is poisoned");
+    let live = store
+        .entries()
+        .get(id)
+        .is_some_and(|entry| entry.state == EntryState::Live);
+    if !live {
+        return Ok(Restored::Refused {
+            part: "the entry left the store or is quarantined".to_owned(),
+        });
+    }
+    match store.restore(id, engine, state, &shared.identity, (shared.clock)()) {
+        Err(StoreError::Quarantined(_)) => Ok(Restored::Refused {
+            part: "the store quarantined the entry".to_owned(),
+        }),
+        other => other,
+    }
+}
+
 /// The highest boundary that the store holds.
 fn highest(held: &[Option<ContentId>]) -> Option<usize> {
     held.iter().rposition(Option::is_some)
@@ -315,8 +342,8 @@ pub enum Got {
     Fed(Option<Vec<f32>>),
     /// The mark or the rewind is complete.
     Copied,
-    /// The store holds the snapshot.
-    Held(ContentId),
+    /// The store holds the snapshot, or holds its bytes under another recipe (`None`).
+    Held(Option<ContentId>),
 }
 
 /// The work after a build, as a state machine with no I/O. The body drives it on the group thread.
@@ -530,10 +557,7 @@ impl<T: Then> ContextBody<T> {
         let Some(id) = lookup_one(&self.shared, engine, slot, &seam)? else {
             return Ok(false);
         };
-        let restored = {
-            let mut store = self.shared.store.lock().expect("the store lock is poisoned");
-            store.restore(&id, engine, self.state(), &self.shared.identity, (self.shared.clock)())
-        };
+        let restored = restore_entry(&self.shared, &id, engine, self.state());
         match restored {
             Ok(Restored::Done) => {
                 let tokens = seam.boundary.tokens;
@@ -675,10 +699,7 @@ impl<T: Then> ContextBody<T> {
                 self.kept = tokens;
                 break;
             }
-            let restored = {
-                let mut store = self.shared.store.lock().expect("the store lock is poisoned");
-                store.restore(&id, engine, state, &self.shared.identity, (self.shared.clock)())
-            };
+            let restored = restore_entry(&self.shared, &id, engine, state);
             match restored {
                 Ok(Restored::Done) => {
                     let rows = self.rows(engine)?;
@@ -811,7 +832,7 @@ impl<T: Then> ContextBody<T> {
                 };
                 let message = self.recipes[boundary].boundary.message;
                 let id = self.snapshot(engine, recipe, reason, &format!("the boundary of message {message}"))?;
-                self.held[boundary] = Some(id);
+                self.held[boundary] = id;
                 None
             }
             Unit::Feed { start, end, row } => {
@@ -1058,10 +1079,7 @@ impl<T: Then> ContextBody<T> {
             return Ok(false);
         };
         let slot = self.slot();
-        let restored = {
-            let mut store = self.shared.store.lock().expect("the store lock is poisoned");
-            store.restore(&id, engine, self.state(), &self.shared.identity, (self.shared.clock)())
-        };
+        let restored = restore_entry(&self.shared, &id, engine, self.state());
         match restored {
             Ok(Restored::Done) => {
                 let rows = self.rows(engine)?;
@@ -1197,7 +1215,7 @@ impl<T: Then> ContextBody<T> {
         recipe: RecipeId,
         reason: Reason,
         place: &str,
-    ) -> Result<ContentId, ServiceError> {
+    ) -> Result<Option<ContentId>, ServiceError> {
         let state = self.state();
         // The buffer of the copy is host memory. The charge stays until the store has taken the snapshot.
         let _staging = self.stage(engine, state, &format!("read the state at {place}"))?;
@@ -1212,10 +1230,24 @@ impl<T: Then> ContextBody<T> {
         let snapshot = park::park_snapshot(engine, state)
             .map_err(|message| ServiceError::internal(format!("cannot read the state at {place}: {message}")))?;
         let facts = EngineFacts::of(&self.shared.engine_name, &self.shared.limits);
-        self.shared
-            .store
-            .lock()
-            .expect("the store lock is poisoned")
+        let id = snapshot
+            .content_id()
+            .map_err(|error| ServiceError::internal(format!("cannot hash the state at {place}: {error}")))?;
+        let mut store = self.shared.store.lock().expect("the store lock is poisoned");
+        // The store can hold the same bytes under another recipe: on an engine with no seal, a build with and a build
+        // without a boundary make the same state. The store keeps one recipe for each content id, so this boundary
+        // holds no snapshot. The state is the same, so nothing is lost. The store can also hold the bytes as a
+        // quarantined entry, which it never replaces (spec 6.7).
+        if let Some(entry) = store.entries().get(&id)
+            && (entry.state != EntryState::Live || entry.recipe != recipe)
+        {
+            tracing::debug!(
+                "no snapshot at {place}: the store holds its bytes {} under another recipe or in quarantine",
+                id.hex()
+            );
+            return Ok(None);
+        }
+        store
             .put(Put {
                 snapshot: &snapshot,
                 recipe,
@@ -1230,6 +1262,7 @@ impl<T: Then> ContextBody<T> {
                 provenance: None,
                 now_ms: (self.shared.clock)(),
             })
+            .map(Some)
             .map_err(|error| ServiceError::internal(format!("the store refused the snapshot at {place}: {error}")))
     }
 }

@@ -466,7 +466,7 @@ impl Then for GenerateThen {
                 reason: Reason::PrefillDone,
             }),
             (Stage::Head { boundary, .. }, Got::Held(id)) => {
-                self.head = Some((*boundary, id));
+                self.head = id.map(|id| (*boundary, id));
                 Ok(self.done())
             }
             (_, got) => Err(ServiceError::internal(format!(
