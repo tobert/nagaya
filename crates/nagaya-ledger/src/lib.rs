@@ -70,6 +70,8 @@ pub enum LedgerError {
     Invalid(String),
     /// A new context does not fit. The shortfall is in bytes for each short budget.
     ContextRefused(Refusal),
+    /// A staging copy does not fit (spec 4.2). The shortfall is in bytes for each short budget.
+    StagingRefused(Refusal),
 }
 
 impl std::fmt::Display for LedgerError {
@@ -82,6 +84,10 @@ impl std::fmt::Display for LedgerError {
             LedgerError::Invalid(message) => write!(formatter, "{message}"),
             LedgerError::ContextRefused(refusal) => {
                 write!(formatter, "the new context does not fit: ")?;
+                write_shortfall(formatter, refusal)
+            }
+            LedgerError::StagingRefused(refusal) => {
+                write!(formatter, "the copy of the state does not fit in memory: ")?;
                 write_shortfall(formatter, refusal)
             }
         }
@@ -120,6 +126,8 @@ pub struct Ledger {
     context_terms: BTreeMap<String, Vec<(Tier, u64)>>,
     /// The live contexts of each engine.
     contexts: BTreeMap<String, u64>,
+    /// The staging bytes that are charged now, by the index of the budget (spec 4.2).
+    staged: BTreeMap<usize, u128>,
 }
 
 impl Ledger {
@@ -195,6 +203,51 @@ impl Ledger {
         Ok(())
     }
 
+    /// Charge staging bytes of an engine in one tier (spec 4.2).
+    ///
+    /// Staging is a copy of engine state in host memory, for example a mark or the buffer of a snapshot. The ledger
+    /// takes the bytes from the unassigned bytes of the budget of the tier. A refusal changes nothing. The caller
+    /// releases the same bytes with [`Ledger::release_staging`] when it drops the copy.
+    pub fn admit_staging(&mut self, engine: &str, tier: Tier, bytes: u64) -> Result<(), LedgerError> {
+        let result = self.admit_staging_unrecorded(engine, tier, bytes);
+        if let Err(LedgerError::StagingRefused(refusal)) = &result {
+            record_refusal(engine, refusal);
+        }
+        result
+    }
+
+    fn admit_staging_unrecorded(&mut self, engine: &str, tier: Tier, bytes: u64) -> Result<(), LedgerError> {
+        if !self.context_terms.contains_key(engine) {
+            return Err(LedgerError::Invalid(format!(
+                "engine {engine} is not admitted: admit its profile first"
+            )));
+        }
+        let index = budget_index_in(&self.budgets, tier)?;
+        if u128::from(bytes) > self.unassigned[index] {
+            let short = (u128::from(bytes) - self.unassigned[index]).min(u64::MAX as u128) as u64;
+            return Err(LedgerError::StagingRefused(Refusal {
+                shortfall: vec![(self.budgets[index].tiers.clone(), short)],
+            }));
+        }
+        self.unassigned[index] -= u128::from(bytes);
+        *self.staged.entry(index).or_insert(0) += u128::from(bytes);
+        Ok(())
+    }
+
+    /// Release staging bytes. The bytes must be charged now: a release of more is an error that changes nothing.
+    pub fn release_staging(&mut self, tier: Tier, bytes: u64) -> Result<(), LedgerError> {
+        let index = budget_index_in(&self.budgets, tier)?;
+        let staged = self.staged.get(&index).copied().unwrap_or(0);
+        if u128::from(bytes) > staged {
+            return Err(LedgerError::Invalid(format!(
+                "a release of {bytes} staging bytes is more than the {staged} bytes that are charged: release what was charged"
+            )));
+        }
+        self.unassigned[index] += u128::from(bytes);
+        self.staged.insert(index, staged - u128::from(bytes));
+        Ok(())
+    }
+
     /// Admit a profile. A refusal changes nothing.
     ///
     /// The ledger records `nagaya.ledger.bytes` for each granted term, or `nagaya.ledger.refusals` (spec 9.4).
@@ -203,7 +256,7 @@ impl Ledger {
         match &result {
             Ok(admission) => record_admission(profile, admission),
             Err(LedgerError::Refused(refusal)) => record_refusal(PROFILE_ENGINE, refusal),
-            Err(LedgerError::Invalid(_) | LedgerError::ContextRefused(_)) => {}
+            Err(LedgerError::Invalid(_) | LedgerError::ContextRefused(_) | LedgerError::StagingRefused(_)) => {}
         }
         result
     }
@@ -323,6 +376,7 @@ impl Ledger {
         self.unassigned = left;
         self.context_terms = context_terms;
         self.contexts = BTreeMap::new();
+        self.staged = BTreeMap::new();
         Ok(Admission { engines, unassigned })
     }
 }
