@@ -158,6 +158,8 @@ path. Decided 2026-10-20 (reading).
 The nagaya measures edges at install, stores the result in its local store index, and can measure them again. Each
 measurement is data with a date.
 
+Not built. The nagaya measures no edge yet.
+
 **2.3 Gossip (`chitchat`).** The nagaya processes form a cluster over UDP with `chitchat` (Scuttlebutt reconciliation
 and phi-accrual failure detection). Gossip data stays small and write-light. Each machine writes only its own node
 state:
@@ -444,6 +446,9 @@ the event.
 
 On machines with unified memory, RSS and the OOM scorer do not show GTT. Thus the nagaya sets its own OOM score.
 
+Not built. The ledger checks no floor, and the process sets no OOM score. The mk binding checks the floor when it
+opens (engine-abi, "The context term holds the pool").
+
 ## 5. Scheduling
 
 **5.1 Units.** A job is the quanta of one request, in order, with a class (ontology). A quantum is one pass or one
@@ -542,6 +547,9 @@ expired. A release does not delete a snapshot. Only eviction (6.9) removes a sto
 **5.10 The door limit.** The client API accepts a limited number of requests in flight for each engine (mk:
 16). Above that limit it answers 429 with `Retry-After`.
 
+Milestone 12 step 6 limits the calls in another way (11.7). It allows 64 calls at once for the process, and it answers
+429 `busy` with no `Retry-After`. The limit for each engine is not built.
+
 **5.11 Cost model (D4).** The nagaya fits a robust affine cost from production quanta, keyed by engine, kind,
 segment count and context depth. Quanta that ran beside other work are not in the fit. The nagaya uses the fit for
 store eviction value-per-byte (6.9) and deadline checks between quanta (5.8). An engine can have its own private
@@ -552,6 +560,8 @@ point is one warmup run and the trimmed mean of five runs. The curve goes into t
 digest, and later starts read it. The fit starts from the curve and corrects it with production quanta. Decided
 2026-10-20 (`docs/deepinfer.md` 4). DeepInfer measures its decode curve in this way
 (`deepinfer/worker/model_runner.py:586-619`).
+
+Not built. The nagaya fits no cost curve yet, and it times no measured prior.
 
 ## 6. State and the store
 
@@ -887,6 +897,8 @@ replay of up to 255 tokens takes about 0.5 s on mk.
 
 An IO request holds a lease on its destination until its final wait ends. This is also true after an error.
 
+Not built: the IO service of 7.1 to 7.3. The store does its own file IO.
+
 **7.2 Direct and staged bytes.** The service counts direct bytes and staged bytes separately. Thus a change from
 direct IO to staged IO is visible.
 
@@ -986,6 +998,8 @@ must also match. Each gate keeps a broken variant that it must fail (ds4-recipe 
 nagaya runs an audit after each start, as a filler job in the same process. The audit builds a sample of stored
 recipes again and compares the content ids (D3). A restart is the fresh process that the audit needs, so the audit
 needs no second GPU client.
+
+Not built. The nagaya runs no audit yet.
 
 **8.5 Crash over corruption.** An unexpected failure in the nagaya stops the process (exit 1). The process does not
 continue in a bad state. An event that does not fit the scheduler's state, such as a cancel of an unknown job, is
@@ -1746,8 +1760,9 @@ The inventories found these items. We correct each one when its code moves. We d
    11.5 text step). The chat template uses none of them. Which ones do we match?
 7. How far does mk's fast path (`MK_FAST_QMM` unset) move council decisions? At 249 tokens it moved logits by up to
    1.03, and the argmax and the top 8 held (8.3). Amy, 2026-10-20: "we'll measure later".
-8. What is the oracle gap at 2,000 tokens and more? The contexts hold 4,096 and 32,768 tokens now, and a long
-   prompt takes several passes. On the exact path, the findings are these:
+8. What causes the oracle gap past about 640 tokens, and how large is it at 2,000 tokens and more? The contexts
+   hold 4,096 and 32,768 tokens now, and a long prompt takes several passes. On the exact path, the findings are
+   these:
    - mk agrees with the oracle up to 630 tokens. The largest logit difference is 5.2e-5 at 478 tokens, 1.9e-5 at
      604 and 1.5e-5 at 630 (diagnostic prompts).
    - At 655 tokens the difference is 0.29. At 684 it is 0.16. At 721 it is 0.23.
@@ -1757,3 +1772,118 @@ The inventories found these items. We correct each one when its code moves. We d
    Amy, 2026-10-20: "we can save and do the measurement later".
 9. Should the control threads run at elevated priority (3.2, 3.2a)? A raised priority needs `CAP_SYS_NICE` or a
    setting in the unit, such as `Nice=`. A measurement under load shows whether the pinned cores are enough.
+
+10. Can a restart keep a pinned entry of the host tier (6.11)? Today the index drops the entry and its pin at start.
+    The restart check of `gogi-conformance` needs the stop to park such an entry to NVMe.
+11. How does the park charge the host copy of a state (10.3 "Open", 4.2 "Staging")? The copy has no staging charge
+    today. The charge path refuses while the process stops.
+12. Can a copy quantum run past the 30 s watchdog timeout on a slow NVMe (7.4)? We have not measured it (kaibo review
+    job-1, finding 4).
+13. How does mk reset a context without a new allocation (engine-abi "v0 mk binding choices")? `slot_clear` frees the
+    context and allocates a new one. A `hipMalloc` that fails stops the process. mk needs a reset call.
+14. Can the nagaya pin the two HIP runtime threads of mk (3.2a)? The HIP runtime starts them and sets their masks. The
+    mask of both is 0-31 on gfx1151.
+15. Should the template id (11.3a) cover more than the tokens of the test renders? A change in how the family parses a
+    reply keeps the id today.
+16. When does the job path use `ObservedScheduler` and the evidence module (9.2, 9.6)? Today the process records no
+    `nagaya.quantum` span and no quantum duration, and it reads no evidence on a failure.
+
+## 16. Decided by senpai on 2026-10-20 night
+
+Senpai chose each rule below where the spec left a choice open. Each rule has the mark "Decided by senpai 2026-10-20
+night (vetoable)" in its section. Amy can veto any of them. Each line gives the section and the rule in a few words.
+
+**In this spec**
+
+- 2.1: a CPU number of 1024 or more is a probe error.
+- 2.1: the probe gives a true size or stops, and it refuses a model or a driver that it cannot size.
+- 2.1: the file trees for b70host and sm121host are made by hand, and each guessed value is marked.
+- 2.1: a build with the feature `fake` keeps a made-up inventory.
+- 2.1: a probe error at start exits 3, and a build with no `fake` probes the files of `/`.
+- 3.2a: the housekeeping set is the two lowest online CPUs, and the pool set is the others.
+- 3.2a: mk's worker thread keeps the pool set of its group thread.
+- 3.2a: the group threads run on the pool set.
+- 3.2a: the sets use logical CPUs and do not know SMT siblings.
+- 4.2: a staging charge covers each host copy of engine state, up to one slot.
+- 6.13: mk declares a checkpoint grain of 256 tokens.
+- 6.13: the job path makes the interval copy as the next quantum, and a build restores the longest copy.
+- 6.13: a refused charge or a put with no space skips the copy, and a client cannot pin a copy.
+- 7.4: the wait for the opens is 300 s.
+- 9.1: a log line is the message and `key=value` fields, with no time and no prefix.
+- 9.1: `RUST_LOG` sets the log filter, and a filter that does not parse refuses the start.
+- 9.1: the telemetry starts before the config is read, and after the inventory.
+- 9.1: the resource attributes are five fixed names, and an unreadable one is left out with a warning.
+- 9.1: the process drops the telemetry before it exits, and the drop waits at most 2 s for each signal.
+- 9.1: the exporters run on a runtime of their own with one worker.
+- 9.2: the HTTP span is named by axum's route template, and a status of 500 or more marks an error.
+- 9.4: the labels of the metrics that exist (device group, tier, wait, gauges, lookups, restores, state).
+- 9.5: `http.server.request.duration` runs from the request to the response head.
+- 10.1: during the open, the process extends the start timeout by 30 s every 5 s.
+- 10.3: the stop parks each state that holds tokens, and it needs the `slots` capability for rows.
+- 10.3: the stop parks a held entry to NVMe with its own recipe, and it replaces an interval copy.
+- 10.4: the binary ends through one function that calls `_exit(2)` after the flushes.
+- 11.3a: every render uses the reasoning effort `medium`.
+- 11.3a: thinking follows the context, and the renders differ only in the generation prompt.
+- 11.3a: a read closes the thinking with the template's prompt for thinking off.
+- 11.3a: a plain read keeps mkviolet's layout, with a leading space on the letter.
+- 11.3a: a plain read tokenizes in one pass and checks that the tokens begin as the context does.
+- 11.3a: a queue read writes the call in Qwen3.8's form with one `answers` object.
+- 11.3a: a queue read asks the questions in the order of the schema.
+- 11.3a: the workspace turns on `preserve_order` and `float_roundtrip` of `serde_json`.
+- 11.3a: a failed tool result gets the prefix `Error: `.
+- 11.3a: a system message after another role renders as a system turn.
+- 11.3a: a marked message is a boundary, but a tool message inside a run is not.
+- 11.3a: the template keeps the reasoning of every assistant message.
+- 11.3a: `rendered_sha256` hashes the text that the read was conditioned on.
+- 11.3a: the reply parser takes the stop token as a pushed token and puts early-phase text in no step.
+- 11.3c: a dry run reports `recipe:` and the hex of the head's recipe when the store does not hold the head.
+- 11.3c: a raw read, a decision read and a generation are each one job for each context.
+- 11.3c: a decision read feeds its prefix once and writes a kept copy back for each later question.
+- 11.3c: the usage of a read counts the shared prefix once.
+- 11.3c: the reads of a decision run in request order, and `timeout_ms` is checked before each.
+- 11.3c: a raw read lists 8 top tokens by default and at most 64.
+- 11.3c: the text of a top token is its detokenized text, or U+FFFD for part of a character.
+- 11.3c: the council `engine` is `nagaya:` and 16 hex digits of the identity digest.
+- 11.3c: a generation holds its head after the reply when the slot is at most 8 tokens short.
+- 11.3c: a build can start at a cut, and the cut stays among the boundaries of its state.
+- 11.3c: the service adds the text a parser held back to the piece of the last token.
+- 11.3c: the call ids are `call_<16 hex digits>_<index>`, from a hash of the prompt and the reply.
+- 11.3c: a generation with no seed takes one from the operating system.
+- 11.3c: the sample defaults are temperature 1 with no filter.
+- 11.3c: a reply that reaches the context size ends with `context_full`, unless it reached `max_tokens` too.
+- 11.3c: the decision limits are mkviolet's until the profile names others.
+- 11.7: the process serves an engine only when its kind has a family library with the same tokenizer hash.
+- 11.7: the served model is the engine's `model`, with 4096 tokens of context, or mk's maximum.
+- 11.7: a process serves at most one model.
+- 11.7: the specs, pins and snapshots routes use the one service, or give 503.
+- 11.7: each service call runs on its own thread, at most 64 at once, and the 65th gets 429.
+- 11.7: a request body has at most 16 MiB.
+- 11.7: an unknown route is a 404, also for a known path with another method.
+- 11.7: a request id is `req_<start time in hex>_<count>`.
+- 11.7: a refused charge is 429 `busy`, and a job that a stop cancelled is 503.
+- 11.7: an internal error is a 500, and the process stops with exit 1.
+- 11.7: a stream waits for its first event before the status, and its queue holds 256 events.
+- 11.7: a closed stream stops the generation, which holds no head.
+- 11.7: a response does not report a control-text hit in a message of a context.
+- 11.7: a stop sets every served model to `draining`, and the server waits at most 2 s for open requests.
+
+**In `docs/engine-abi.md`**
+
+- "v0 mk binding choices": mk declares `slots` and `coverage`, and `slot_clear` frees and allocates a context.
+- "v0 mk binding choices": the factory plans from the config key `weights_bytes`, and a wrong size exits 3.
+- "v0 mk binding choices": the pool is 12 contexts of 4,096 tokens and 4 of 32,768.
+- "v0 mk binding choices": mk declares a checkpoint grain of 256 tokens.
+
+**In `docs/deploy.md`, section "Decided by senpai 2026-10-20 night"**
+
+- The engine kind in the profile is `mk-qwen38-gfx1151`, and the engine is named `mk`.
+- `TimeoutStopSec` is 60 s.
+- The unit makes the store directory with `ExecStartPre`.
+- The gossip port is 8091, next to the HTTP port 8090.
+- The pool is 112 GiB, the store's host budget is 16 GiB, and its NVMe budget is 50 GiB.
+- `interval_copies` is 0, so the scheduler makes no interval copy.
+- The library pin and `MK_FAST_QMM` stay unset.
+- The profile is copied into the store directory once, and it is not a link.
+- The release binary is built with `--features hip`.
+- `weights_bytes` is the size of mk's weight arena, and a wrong size exits 3.
+- A probe error at start exits 3.
