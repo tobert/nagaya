@@ -1795,6 +1795,10 @@ milestones 11 and 11b).
 - **Council rendering.** The library ports `src/template.rs` (`mkv-letters-1`), the origin of 11.3a, with its Gemma 4
   layout. The template id follows 11.3a.
 - **Reply parser.** The library ports `parse_tool_call` and the thought channel of `chat.rs`.
+- **The method `get` of a dict.** Google's template calls `message.get(...)`. The interpreter holds `get` with the
+  results of Python: a missing key gives the default, which is none. It refuses a keyword argument, as Python does.
+  The other methods of a dict stay refused. **Proposed** (claude-opus-5-5, 2026-10-21). Reason: the template needs
+  it, and transformers renders it so (`crates/nagaya-jinja/tests/dict_get.rs`).
 
 Reason for `tokenizers`: the port copies code that its Python fixtures already check.
 

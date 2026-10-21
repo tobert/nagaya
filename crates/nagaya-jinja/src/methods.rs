@@ -34,6 +34,30 @@ fn refuse(method: &str, what: impl std::fmt::Display) -> Error {
     Error::new(ErrorKind::InvalidOperation, format!("str.{method}(): {what}"))
 }
 
+/// `dict.get(key, default=None)` of Python. A missing key gives the default, which is none and not the undefined
+/// value. Python takes no keyword arguments here.
+fn dict_get(map: &Value, args: &[Value]) -> Result<Value, Error> {
+    if args.iter().any(Value::is_kwargs) {
+        return Err(Error::new(
+            ErrorKind::InvalidOperation,
+            "dict.get() takes no keyword arguments",
+        ));
+    }
+    let (key, default) = match args {
+        [key] => (key, Value::from(())),
+        [key, default] => (key, default.clone()),
+        _ => {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                format!("dict.get() takes 1 or 2 arguments, and got {}", args.len()),
+            ));
+        }
+    };
+    // A map from JSON holds no undefined value, so an undefined item is a missing key.
+    let item = map.get_item(key)?;
+    Ok(if item.is_undefined() { default } else { item })
+}
+
 /// The name of a kind of value, as Python names the type.
 pub(crate) fn type_name(v: &Value) -> &'static str {
     match v.kind() {
@@ -145,12 +169,15 @@ fn strings(parts: Vec<String>) -> Value {
 
 /// Call the method `method` of a string. The engine calls this for every method that it does not have itself.
 pub fn string_method(_state: &State, value: &Value, method: &str, args: &[Value]) -> Result<Value, Error> {
+    if value.kind() == ValueKind::Map && method == "get" {
+        return dict_get(value, args);
+    }
     let Some(text) = value.as_str() else {
         return Err(Error::new(
             ErrorKind::InvalidOperation,
             format!(
                 "the method {method:?} is not implemented for a value of type {}. This library implements \
-                 methods of strings only, and only these: {}. Change the template.",
+                 the method get of a dict, and these methods of strings only: {}. Change the template.",
                 type_name(value),
                 METHODS.join(", ")
             ),
