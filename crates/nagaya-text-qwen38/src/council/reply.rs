@@ -95,6 +95,10 @@ impl ReplyParser for Qwen38ReplyParser {
         Ok(step_of(&event))
     }
 
+    fn ended(&self) -> bool {
+        self.ended
+    }
+
     fn finish(self: Box<Self>) -> ParsedReply {
         let ending = if self.ended {
             Ending::StopToken

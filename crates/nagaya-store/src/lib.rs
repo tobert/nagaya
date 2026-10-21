@@ -301,6 +301,66 @@ pub fn content_id(bytes: &[u8]) -> ContentId {
     ContentId(*blake3::hash(bytes).as_bytes())
 }
 
+/// Write snapshots into a state, base first, then set its row count (spec 6.8).
+///
+/// The writes stop at the first one that is not ok, and the result names its part. A refusal of the first write
+/// changed nothing. Any later stop poisoned the state. The caller checks the content id, the identity and the fit
+/// first: [`Store::restore`] does so for an entry.
+pub fn write_snapshots(engine: &mut dyn Engine, state: State, snapshots: &[Snapshot]) -> Result<Restored, StoreError> {
+    let limits = engine.limits();
+    let mut written = 0usize;
+    // The rows that the snapshots hold: the end of the cells coverage. `set_n` takes them after the last part.
+    let mut cells_end: Option<(String, u64)> = None;
+    for snapshot in snapshots {
+        for tensor in &snapshot.tensors {
+            let index = limits
+                .parts
+                .iter()
+                .position(|candidate| candidate.name == tensor.name)
+                .ok_or_else(|| StoreError::Invalid(format!("unknown part {}", tensor.name)))?;
+            let result = match tensor.kind {
+                PartKind::Fixed => engine
+                    .parts()
+                    .ok_or_else(|| StoreError::Invalid("no parts".to_owned()))?
+                    .part_write(state, index, &tensor.data),
+                PartKind::Cells | PartKind::Ring => {
+                    let (from, rows) = tensor.coverage.map_or((0, 0), |(start, end)| (start, end - start));
+                    if let (PartKind::Cells, Some((_, end))) = (tensor.kind, tensor.coverage)
+                        && cells_end.as_ref().is_none_or(|(_, seen)| end > *seen)
+                    {
+                        cells_end = Some((tensor.name.clone(), end));
+                    }
+                    engine
+                        .parts()
+                        .ok_or_else(|| StoreError::Invalid("no parts".to_owned()))?
+                        .cells_write(state, index, from, rows, &tensor.data)
+                }
+                PartKind::Derived => continue,
+            };
+            // 6.8: stop at the first write that is not ok. A later part must not land on a bad base.
+            let part = tensor.name.clone();
+            match result {
+                WriteResult::Ok => written += 1,
+                // A refusal changes nothing, but only when no earlier write changed the state.
+                WriteResult::Refused if written == 0 => return Ok(Restored::Refused { part }),
+                WriteResult::Refused | WriteResult::Failed => return Ok(Restored::Failed { part }),
+            }
+        }
+    }
+    // The ABI: the caller calls `set_n` after it writes every part. The writes changed the state, so a refusal
+    // here is a failure (6.8).
+    if let Some((part, end)) = cells_end {
+        let result = engine
+            .parts()
+            .ok_or_else(|| StoreError::Invalid("no parts".to_owned()))?
+            .set_n(state, end);
+        if result != WriteResult::Ok {
+            return Ok(Restored::Failed { part });
+        }
+    }
+    Ok(Restored::Done)
+}
+
 /// Make a snapshot from one engine state. `rows` gives the start and count of each row part.
 pub fn snapshot_from_engine(
     engine: &mut dyn Engine,
@@ -1537,55 +1597,9 @@ impl Store {
             }
         }
 
-        let mut written = 0usize;
-        // The rows that the snapshots hold: the end of the cells coverage. `set_n` takes them after the last part.
-        let mut cells_end: Option<(String, u64)> = None;
-        for snapshot in &snapshots {
-            for tensor in &snapshot.tensors {
-                let index = limits
-                    .parts
-                    .iter()
-                    .position(|candidate| candidate.name == tensor.name)
-                    .ok_or_else(|| StoreError::Invalid(format!("unknown part {}", tensor.name)))?;
-                let result = match tensor.kind {
-                    PartKind::Fixed => engine
-                        .parts()
-                        .ok_or_else(|| StoreError::Invalid("no parts".to_owned()))?
-                        .part_write(state, index, &tensor.data),
-                    PartKind::Cells | PartKind::Ring => {
-                        let (from, rows) = tensor.coverage.map_or((0, 0), |(start, end)| (start, end - start));
-                        if let (PartKind::Cells, Some((_, end))) = (tensor.kind, tensor.coverage)
-                            && cells_end.as_ref().is_none_or(|(_, seen)| end > *seen)
-                        {
-                            cells_end = Some((tensor.name.clone(), end));
-                        }
-                        engine
-                            .parts()
-                            .ok_or_else(|| StoreError::Invalid("no parts".to_owned()))?
-                            .cells_write(state, index, from, rows, &tensor.data)
-                    }
-                    PartKind::Derived => continue,
-                };
-                // 6.8: stop at the first write that is not ok. A later part must not land on a bad base.
-                let part = tensor.name.clone();
-                match result {
-                    WriteResult::Ok => written += 1,
-                    // A refusal changes nothing, but only when no earlier write changed the state.
-                    WriteResult::Refused if written == 0 => return Ok(Restored::Refused { part }),
-                    WriteResult::Refused | WriteResult::Failed => return Ok(Restored::Failed { part }),
-                }
-            }
-        }
-        // The ABI: the caller calls `set_n` after it writes every part. The writes changed the state, so a refusal
-        // here is a failure (6.8).
-        if let Some((part, end)) = cells_end {
-            let result = engine
-                .parts()
-                .ok_or_else(|| StoreError::Invalid("no parts".to_owned()))?
-                .set_n(state, end);
-            if result != WriteResult::Ok {
-                return Ok(Restored::Failed { part });
-            }
+        let written = write_snapshots(engine, state, &snapshots)?;
+        if written != Restored::Done {
+            return Ok(written);
         }
         // 6.8: a refusal or a failure leaves the entry as it is.
         self.touch(id, now_ms);

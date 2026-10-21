@@ -355,8 +355,9 @@ fn now_ms() -> u64 {
     elapsed.as_millis() as u64
 }
 
-/// The store thread: the one owner of the store (spec 6.1).
-pub(crate) fn store_thread(mut store: Store, messages: Receiver<StoreMessage>) {
+/// The store thread: it writes the parks of the group threads (spec 6.1). The lock is shared with the group threads,
+/// because a build runs `lookup` and `restore` on its group thread (spec 11.3c).
+pub(crate) fn store_thread(store: &std::sync::Mutex<Store>, messages: Receiver<StoreMessage>) {
     while let Ok(message) = messages.recv() {
         match message {
             StoreMessage::Put {
@@ -368,7 +369,7 @@ pub(crate) fn store_thread(mut store: Store, messages: Receiver<StoreMessage>) {
                 now_ms,
                 reply,
             } => {
-                let result = store.put(Put {
+                let result = store.lock().expect("the store lock is poisoned").put(Put {
                     snapshot: &snapshot,
                     recipe,
                     previous_recipe: None,

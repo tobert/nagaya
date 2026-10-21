@@ -3,18 +3,20 @@
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 
-use nagaya_abi::{DeviceId, Engine, Identity, Limits};
-use nagaya_ledger::Ledger;
+use nagaya_abi::{DeviceId, Engine, Identity, Limits, Tier};
+use nagaya_ledger::{Ledger, LedgerError};
+use nagaya_store::Store;
 
 use crate::admission::{AdmitError, Admitted, Factory, OpenErrorKind, Registry, admit};
 use crate::exit::{ExitCode, panic_text};
 use crate::inventory::Inventory;
+use crate::jobs::{GroupJobs, JobSpec};
 use crate::park::{self, StoreBudget, StoreMessage};
 use crate::placement::{self, DeviceGroup};
 use crate::profile::{EnginePlacement, PlacementProfile};
@@ -169,6 +171,26 @@ impl OwnedLedger {
             "the ledger is written off its thread"
         );
         admit(profile, registry, inventory, &mut self.ledger)
+    }
+
+    /// Charge a new context of an engine (spec 4.2). Only the owner thread may call this.
+    pub fn admit_context(&mut self, engine: &str) -> Result<(), LedgerError> {
+        self.check_owner();
+        self.ledger.admit_context(engine)
+    }
+
+    /// Release the charge of an ended context. Only the owner thread may call this.
+    pub fn release_context(&mut self, engine: &str) -> Result<(), LedgerError> {
+        self.check_owner();
+        self.ledger.release_context(engine)
+    }
+
+    fn check_owner(&self) {
+        assert_eq!(
+            thread::current().id(),
+            self.owner,
+            "the ledger is written off its thread"
+        );
     }
 
     /// The ledger's state.
@@ -471,6 +493,15 @@ impl Start {
                             let result = ledger.admit(&profile, &ledger_registry, &ledger_inventory);
                             let _ = reply.send(result);
                         }
+                        LedgerMessage::AdmitContext(engine, reply) => {
+                            let _ = reply.send(ledger.admit_context(&engine));
+                        }
+                        LedgerMessage::ReleaseContext(engine, reply) => {
+                            let _ = reply.send(ledger.release_context(&engine));
+                        }
+                        LedgerMessage::Unassigned(reply) => {
+                            let _ = reply.send(ledger.ledger().unassigned());
+                        }
                         LedgerMessage::Stop => break,
                     }
                 }
@@ -542,13 +573,15 @@ impl Start {
             }
             None => None,
         };
+        let store = store.map(|store| Arc::new(Mutex::new(store)));
+        let store_handle = store.clone();
         let (store_tx, store_thread) = match store {
-            Some(store) => {
+            Some(store_for_thread) => {
                 let (messages, replies) = mpsc::channel();
                 let store_events = events_tx.clone();
                 let handle = thread::spawn(move || {
                     guard("store", &store_events, || {
-                        park::store_thread(store, replies);
+                        park::store_thread(&store_for_thread, replies);
                     });
                 });
                 (Some(messages), Some(handle))
@@ -594,6 +627,7 @@ impl Start {
             watchdog_stop: Some(watch_tx),
             watchdog_thread: Some(watchdog_thread),
             store: store_tx,
+            store_handle,
             store_thread,
             groups: group_threads,
             group_stops,
@@ -714,43 +748,74 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
     let names: Vec<String> = opened.iter().map(|engine| engine.name.clone()).collect();
     let _ = events.send(Event::Opened { group, engines: opened });
     let mut cancelled = 0;
-    loop {
-        match stop.recv_timeout(interval) {
-            Ok(GroupMessage::Quantum(quantum)) => {
-                // A stop cancels each queued quantum that has not started. The running quantum went to its end
-                // before this receive (spec 10.3 step 2).
-                if accepting.load(Ordering::SeqCst) {
-                    quantum.finish(&mut engines);
-                } else {
-                    quantum.cancel();
-                    cancelled += 1;
+    let mut jobs = GroupJobs::new(group as u32);
+    let beat = || WatchMessage::Beat {
+        group,
+        at: Instant::now(),
+    };
+    'serve: loop {
+        // A group with a job to run takes the messages that wait and does not sleep. An idle group waits (spec 7.4).
+        let mut message = if jobs.idle() {
+            stop.recv_timeout(interval)
+        } else {
+            stop.try_recv().map_err(|error| match error {
+                TryRecvError::Empty => RecvTimeoutError::Timeout,
+                TryRecvError::Disconnected => RecvTimeoutError::Disconnected,
+            })
+        };
+        loop {
+            match message {
+                Ok(GroupMessage::Quantum(quantum)) => {
+                    // A stop cancels each queued quantum that has not started. The running quantum went to its end
+                    // before this receive (spec 10.3 step 2).
+                    if accepting.load(Ordering::SeqCst) {
+                        quantum.finish(&mut engines);
+                    } else {
+                        quantum.cancel();
+                        cancelled += 1;
+                    }
+                    // A group with steady work never waits out the interval, so it beats after each quantum (spec 7.4).
+                    if heartbeats.send(beat()).is_err() {
+                        break 'serve;
+                    }
                 }
-                // A group with steady work never waits out the interval, so it beats after each quantum (spec 7.4).
-                let beat = WatchMessage::Beat {
-                    group,
-                    at: Instant::now(),
-                };
-                if heartbeats.send(beat).is_err() {
-                    break;
+                // A job that arrives after the stop began is cancelled below, before it runs.
+                Ok(GroupMessage::Job(spec)) => {
+                    jobs.add(spec);
+                }
+                Ok(GroupMessage::Park(reply)) => {
+                    cancelled += jobs.cancel_all();
+                    // The drain ends here. The park budget of the group starts now.
+                    let _ = reply.send(ParkProgress::Draining { ended: Instant::now() });
+                    let mut report = park_group(&names, &mut engines, store.as_ref());
+                    report.cancelled = cancelled;
+                    let _ = reply.send(ParkProgress::Parked(report));
+                    break 'serve;
+                }
+                Ok(GroupMessage::Stop) | Err(RecvTimeoutError::Disconnected) => break 'serve,
+                Err(RecvTimeoutError::Timeout) => {
+                    if jobs.idle() && heartbeats.send(beat()).is_err() {
+                        break 'serve;
+                    }
                 }
             }
-            Ok(GroupMessage::Park(reply)) => {
-                // The drain ends here. The park budget of the group starts now.
-                let _ = reply.send(ParkProgress::Draining { ended: Instant::now() });
-                let mut report = park_group(&names, &mut engines, store.as_ref());
-                report.cancelled = cancelled;
-                let _ = reply.send(ParkProgress::Parked(report));
+            // Take every message that waits, so that the scheduler sees each arrival before it chooses.
+            message = stop.try_recv().map_err(|error| match error {
+                TryRecvError::Empty => RecvTimeoutError::Timeout,
+                TryRecvError::Disconnected => RecvTimeoutError::Disconnected,
+            });
+            if matches!(message, Err(RecvTimeoutError::Timeout)) {
                 break;
             }
-            Ok(GroupMessage::Stop) | Err(RecvTimeoutError::Disconnected) => break,
-            Err(RecvTimeoutError::Timeout) => {
-                let beat = WatchMessage::Beat {
-                    group,
-                    at: Instant::now(),
-                };
-                if heartbeats.send(beat).is_err() {
+        }
+        if !jobs.idle() {
+            if accepting.load(Ordering::SeqCst) {
+                jobs.run_one(&mut engines);
+                if heartbeats.send(beat()).is_err() {
                     break;
                 }
+            } else {
+                cancelled += jobs.cancel_all();
             }
         }
     }
@@ -824,6 +889,12 @@ enum WatchMessage {
 
 enum LedgerMessage {
     Admit(PlacementProfile, Sender<Result<Admitted, AdmitError>>),
+    /// Charge a new context of the named engine (spec 4.2).
+    AdmitContext(String, Sender<Result<(), LedgerError>>),
+    /// Release the charge of an ended context of the named engine.
+    ReleaseContext(String, Sender<Result<(), LedgerError>>),
+    /// Read the unassigned bytes of each budget.
+    Unassigned(Sender<Vec<(Vec<Tier>, u64)>>),
     Stop,
 }
 
@@ -849,10 +920,109 @@ enum Drain {
 enum GroupMessage {
     /// Run one quantum to its end.
     Quantum(Quantum),
+    /// Add a job. The scheduler of the group chooses when its quanta run (spec 5).
+    Job(JobSpec),
     /// Park every engine, then stop the thread (spec 10.3).
     Park(Sender<ParkProgress>),
     /// Stop the thread without a park. `Process::drop` uses it.
     Stop,
+}
+
+/// Why a context charge did not happen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContextChargeError {
+    /// The process is stopping and takes no new work (spec 10.3).
+    Stopping,
+    /// The ledger refused, or the call was wrong.
+    Ledger(LedgerError),
+}
+
+impl std::fmt::Display for ContextChargeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ContextChargeError::Stopping => write!(formatter, "the process is stopping"),
+            ContextChargeError::Ledger(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for ContextChargeError {}
+
+/// The ways into the process that a service needs: the ledger, the groups and the store.
+///
+/// A copy holds only channels, so it can outlive a borrow of the [`Process`]. A stop makes each call refuse.
+#[derive(Clone)]
+pub struct Ports {
+    ledger: Sender<LedgerMessage>,
+    groups: Vec<Sender<GroupMessage>>,
+    /// The engine names of each group, in profile order.
+    group_engines: Arc<Vec<Vec<String>>>,
+    store: Option<Arc<Mutex<Store>>>,
+    accepting: Arc<AtomicBool>,
+}
+
+impl Ports {
+    /// Charge a new context of an engine with the ledger, and wait for the answer (spec 4.2, 4.3).
+    ///
+    /// A refusal changes nothing. The engine name is the name in the profile.
+    pub fn admit_context(&self, engine: &str) -> Result<(), ContextChargeError> {
+        if !self.accepting.load(Ordering::SeqCst) {
+            return Err(ContextChargeError::Stopping);
+        }
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.ledger
+            .send(LedgerMessage::AdmitContext(engine.to_owned(), reply_tx))
+            .map_err(|_| ContextChargeError::Stopping)?;
+        reply_rx
+            .recv()
+            .map_err(|_| ContextChargeError::Stopping)?
+            .map_err(ContextChargeError::Ledger)
+    }
+
+    /// Release the charge of an ended context. A release must follow each charge, also after a failure.
+    pub fn release_context(&self, engine: &str) -> Result<(), ContextChargeError> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.ledger
+            .send(LedgerMessage::ReleaseContext(engine.to_owned(), reply_tx))
+            .map_err(|_| ContextChargeError::Stopping)?;
+        reply_rx
+            .recv()
+            .map_err(|_| ContextChargeError::Stopping)?
+            .map_err(ContextChargeError::Ledger)
+    }
+
+    /// The bytes that no term holds, for each budget. New contexts take from them (spec 4.4 step 4).
+    pub fn unassigned(&self) -> Vec<(Vec<Tier>, u64)> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.ledger
+            .send(LedgerMessage::Unassigned(reply_tx))
+            .expect("the ledger thread stopped");
+        reply_rx.recv().expect("the ledger thread stopped")
+    }
+
+    /// Send one job to a group thread, as [`Process::submit_job`] does.
+    pub fn submit_job(&self, group: usize, job: JobSpec) -> Result<(), SubmitError> {
+        if !self.accepting.load(Ordering::SeqCst) {
+            return Err(SubmitError::Stopping);
+        }
+        let Some(stop) = self.groups.get(group) else {
+            return Err(SubmitError::UnknownGroup);
+        };
+        stop.send(GroupMessage::Job(job)).map_err(|_| SubmitError::Stopped)
+    }
+
+    /// The group and the place in the group of the engine with this name in the profile.
+    pub fn locate(&self, engine: &str) -> Option<(usize, usize)> {
+        self.group_engines
+            .iter()
+            .enumerate()
+            .find_map(|(group, names)| names.iter().position(|name| name == engine).map(|index| (group, index)))
+    }
+
+    /// The machine's store, when the process has one. Run `lookup` and `restore` on a group thread (spec 11.3c).
+    pub fn store(&self) -> Option<&Arc<Mutex<Store>>> {
+        self.store.as_ref()
+    }
 }
 
 /// The started process threads.
@@ -863,6 +1033,9 @@ pub struct Process {
     watchdog_stop: Option<Sender<WatchMessage>>,
     watchdog_thread: Option<JoinHandle<()>>,
     store: Option<Sender<StoreMessage>>,
+    /// The store, shared with the group threads. A lookup and a restore need an engine, which lives on its group
+    /// thread (spec 11.3c).
+    store_handle: Option<Arc<Mutex<Store>>>,
     store_thread: Option<JoinHandle<()>>,
     groups: Vec<JoinHandle<()>>,
     group_stops: Vec<Sender<GroupMessage>>,
@@ -901,6 +1074,30 @@ impl Process {
         };
         stop.send(GroupMessage::Quantum(quantum))
             .map_err(|_| SubmitError::Stopped)
+    }
+
+    /// The ways into the process for a service. A copy can outlive this borrow.
+    pub fn ports(&self) -> Ports {
+        Ports {
+            ledger: self.ledger.clone(),
+            groups: self.group_stops.clone(),
+            group_engines: Arc::new(self.group_engines.clone()),
+            store: self.store_handle.clone(),
+            accepting: Arc::clone(&self.accepting),
+        }
+    }
+
+    /// Send one job to a group thread. A stop refuses every later job (spec 10.3 step 1).
+    ///
+    /// The scheduler of the group chooses when the quanta of the job run, by class and priority (spec 5.3, 5.4).
+    pub fn submit_job(&self, group: usize, job: JobSpec) -> Result<(), SubmitError> {
+        if !self.accepting.load(Ordering::SeqCst) {
+            return Err(SubmitError::Stopping);
+        }
+        let Some(stop) = self.group_stops.get(group) else {
+            return Err(SubmitError::UnknownGroup);
+        };
+        stop.send(GroupMessage::Job(job)).map_err(|_| SubmitError::Stopped)
     }
 
     /// Wait for every group to open its engines, or for a failure.

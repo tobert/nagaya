@@ -302,6 +302,17 @@ fn the_other_stop_token_ends_the_turn_too() {
 }
 
 #[test]
+fn the_parser_says_that_the_reply_ended_after_a_stop_token() {
+    for stop in [IM_END, END_OF_TEXT] {
+        let mut parser = family().reply_parser(false, &[]).unwrap();
+        parser.push(tokenizer().encode("Hi").unwrap()[0]).unwrap();
+        assert!(!parser.ended(), "text does not end the reply");
+        parser.push(stop).unwrap();
+        assert!(parser.ended(), "stop token {stop} ends the reply");
+    }
+}
+
+#[test]
 fn a_cut_reply_has_not_ended() {
     let mut parser = family().reply_parser(false, &[]).unwrap();
     for id in tokenizer().encode("Hi th").unwrap() {

@@ -245,6 +245,10 @@ pub trait ReplyParser: Send {
     /// Label one token. A token outside the vocabulary, or one after the end of the reply, is an internal error.
     fn push(&mut self, token: u32) -> Result<ReplyStep, FamilyError>;
 
+    /// True when the last token ended the reply, such as a stop token. The caller samples no more tokens, and a
+    /// later `push` is an internal error.
+    fn ended(&self) -> bool;
+
     /// End the reply and give its parts.
     fn finish(self: Box<Self>) -> ParsedReply;
 }

@@ -729,3 +729,81 @@ fn a_job_expires_at_its_deadline_and_not_before() {
     assert_eq!(next, None);
     assert_eq!(scheduler.jobs[0].state, JobState::Expired);
 }
+
+#[test]
+fn a_running_job_can_append_quanta_and_then_runs_them() {
+    let (scheduler, next) = step(
+        state(vec![job(1, Class::Interactive, 0, 0, 0, &[Kind::Copy])]),
+        Event::Tick { now_ms: 0 },
+    );
+    assert_eq!(next, quantum(Class::Interactive, Kind::Copy, &[1]));
+    let mut scheduler = scheduler;
+    scheduler.append_quanta(1, &[Kind::Prefill, Kind::Copy]).unwrap();
+    let (scheduler, next) = step(
+        scheduler,
+        Event::Complete {
+            now_ms: 1,
+            duration_ms: 1,
+            outcome: Completion::Done,
+        },
+    );
+    assert_eq!(next, quantum(Class::Interactive, Kind::Prefill, &[1]));
+    let (scheduler, _) = step(
+        scheduler,
+        Event::Complete {
+            now_ms: 2,
+            duration_ms: 1,
+            outcome: Completion::Done,
+        },
+    );
+    assert_eq!(scheduler.running.as_ref().map(|q| q.kind), Some(Kind::Copy));
+    let (scheduler, next) = step(
+        scheduler,
+        Event::Complete {
+            now_ms: 3,
+            duration_ms: 1,
+            outcome: Completion::Done,
+        },
+    );
+    assert_eq!(next, None);
+    assert_eq!(scheduler.jobs[0].state, JobState::Done);
+}
+
+#[test]
+fn appended_quanta_keep_their_job_in_its_class_against_other_jobs() {
+    let jobs = vec![
+        job(1, Class::Batch, 0, 0, 0, &[Kind::Copy]),
+        job(2, Class::Interactive, 0, 1, 0, &[Kind::Prefill, Kind::Prefill]),
+    ];
+    let mut scheduler = state(jobs);
+    scheduler.jobs[1].admitted = false;
+    let (mut scheduler, next) = step(scheduler, Event::Tick { now_ms: 0 });
+    assert_eq!(next, quantum(Class::Batch, Kind::Copy, &[1]));
+    scheduler.append_quanta(1, &[Kind::Prefill]).unwrap();
+    let (scheduler, _) = step(scheduler, Event::Admit { now_ms: 1, job: 2 });
+    let (scheduler, next) = step(
+        scheduler,
+        Event::Complete {
+            now_ms: 2,
+            duration_ms: 1,
+            outcome: Completion::Done,
+        },
+    );
+    // The interactive job goes first, and the batch job keeps its appended quantum.
+    assert_eq!(next, quantum(Class::Interactive, Kind::Prefill, &[2]));
+    assert_eq!(scheduler.jobs[0].quanta.len(), 1);
+}
+
+#[test]
+fn appending_to_a_job_that_does_not_run_is_an_error() {
+    let mut scheduler = state(vec![job(1, Class::Batch, 0, 0, 0, &[Kind::Copy])]);
+    assert_eq!(
+        scheduler.append_quanta(1, &[Kind::Prefill]),
+        Err(StepError::AppendToIdleJob(1, JobState::Ready))
+    );
+    assert_eq!(
+        scheduler.append_quanta(9, &[Kind::Prefill]),
+        Err(StepError::UnknownJob(9))
+    );
+    assert_eq!(scheduler.jobs[0].quanta.len(), 1, "a refusal changes nothing");
+}

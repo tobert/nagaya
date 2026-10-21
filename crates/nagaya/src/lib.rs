@@ -3,11 +3,13 @@
 pub mod admission;
 pub mod affinity;
 pub mod bootstrap;
+pub mod council;
 pub mod cpu_sets;
 pub mod evidence;
 pub mod exit;
 pub mod gossip;
 pub mod inventory;
+pub mod jobs;
 pub mod lifecycle;
 #[cfg(feature = "hip")]
 pub mod mk;

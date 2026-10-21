@@ -1335,6 +1335,63 @@ Decided 2026-10-20 (Amy chose the name `nagaya-council`).
 engine gives logits over the toy vocabulary. Thus `gogi-conformance` runs against the process with the fake engine, and
 needs no GPU and no GGUF. Decided 2026-10-20 (Amy: "extend gogi to have what we need").
 
+**11.3c The job path of a build.** A build renders a context, finds the longest held prefix, restores it, feeds the
+rest, and holds a snapshot at each boundary. These notes fix the choices that the text above leaves open.
+
+- **Proposed** (Claude Sonnet 5.5, 2026-10-20), the store and the group thread. `lookup` and `restore` take the
+  engine, and the engine lives on its group thread (3.2). Thus a build runs them on the group thread, and the store
+  sits behind a mutex that the group threads and the park thread share. The ledger stays on its own thread. A build
+  asks it by message.
+- **Proposed** (Claude Sonnet 5.5, 2026-10-20), the quanta of a build. The first quantum has the kind `copy`. It
+  chooses a slot, looks up the prefixes and restores the longest one. It then adds the other quanta to the job.
+- **Proposed** (Claude Sonnet 5.5, 2026-10-20), the same. A feed of at most `max_pass_inputs` tokens is `prefill`.
+  A seal and a put at a boundary is `copy`. A feed never crosses a boundary.
+- **Proposed** (Claude Sonnet 5.5, 2026-10-20), the seal. A build calls `seal` at each boundary that it passes,
+  before it reads the parts. A snapshot is a context sealed at a boundary (ontology). An engine without `seal` skips
+  the call.
+- **Proposed** (Claude Sonnet 5.5, 2026-10-20), the slot. A build takes the lowest free slot where the prompt fits
+  (`fits` on each cells part). A build that fits no slot is `too_large`. A build with no free slot is `busy`.
+- **Proposed** (Claude Sonnet 5.5, 2026-10-20), what a build lists. The response lists the boundaries that the
+  store holds when the build ends. A boundary that eviction removed, below the start of the build, is not made
+  again. A dry run feeds nothing and lists no snapshot.
+- **Proposed** (Claude Sonnet 5.5, 2026-10-20), the head of a dry run. A dry run reports the head only when the
+  store holds it. Otherwise the head is null. gogi types `head` as required, so step 6 needs Amy to choose: change
+  gogi, or name the recipe.
+- **Proposed** (Claude Sonnet 5.5, 2026-10-20), the pin owner. gogi names an owner with text, and the store names
+  it with a `u64`. The service keeps the text and gives the store the first 8 bytes of the BLAKE3 hash of the text. A
+  restart keeps the text in `pins.json` in the store directory. Entries that builds put have the owner 1.
+
+**Reads and generations on the job path.** The rules below are each "Decided by senpai 2026-10-20 night (vetoable)".
+
+- A raw read, a decision read and a generation are each one job for each context. The job builds the context, as a
+  build does, and its work goes on in the same slot. When the store holds the head, the job restores it.
+- A decision read feeds the prefix of its plan once. The first question that starts after the prefix keeps a copy of
+  the state in memory. Each later question of that kind writes the copy back into the slot first. A raw read does
+  the same for each suffix after the first.
+- The usage of a read counts the tokens that it fed: the shared prefix once, and no letter after the last question.
+  gogi-fake counts the prefix once for each question, and the last letter of a queue read. Both keep
+  `kept + fed = prompt`.
+- The reads of a decision run one after another, in request order. The service checks `timeout_ms` before each
+  read, and the scheduler checks it between quanta (5.8). Either one ends the decision with 504 `timeout`.
+- A raw read lists 8 top tokens when the request names no `top`, and at most 64. A larger `top` is a 400. A context
+  and its longest suffix that reach `context_tokens` are a 413 `context_full`, as in gogi-fake.
+- The text of a top token is the detokenized token. A token that is not whole text alone, such as one byte of a
+  longer character, has the text U+FFFD. Its `id` names it exactly.
+- The council identity's `engine` is `nagaya:` and the first 16 hex digits of the identity digest (6.2). The digest
+  covers each field of `identity()`, `numbers` too.
+- A generation holds its head after the reply when two facts hold. The rendering of the context with the reply has
+  the boundaries of the prompt before the reply. The slot holds a prefix of that rendering, at most 8 tokens short.
+  Then the job feeds the rest and puts the snapshot. Otherwise `head` is null.
+- The service names the calls of a reply `call_<16 hex digits>_<index>`. The digits come from a BLAKE3 hash of the
+  prompt and the reply. Thus a greedy replay gives the same ids.
+- A generation that sends no seed takes one from the hash keys of the Rust standard library, which the operating
+  system seeds.
+- The sample defaults of a served model are temperature 1 with no filter, until the profile names others.
+- A reply ends with `context_full` when the prompt and the reply reach `context_tokens`. When it also reaches
+  `max_tokens`, it ends with `max_tokens`.
+- The decision limits are mkviolet's until the profile names others: `decision_context_tokens` 3072,
+  `contexts_per_decision` 8, `case_bytes` 65536 and `default_timeout_ms` 30000.
+
 **11.4 `/mk/v1`.** kaijutsu's mk provider uses `model`, `render` and `generate` (mkviolet `mk_api.rs`).
 
 Decided 2026-10-17: the nagaya does not serve `/mk/v1`. kaijutsu moves to council v2 and uses the gogi reference
