@@ -1820,10 +1820,10 @@ these ways. Each served model declares the capability `continuation` (`crates/na
   - A continuation whose reply's closed tokens differ from its prompt and sampled tokens holds no head after the
     reply. Two causes: the template trims white space at the end of the reply, and a token at the seam merges in
     the closed rendering. The slot holds the other tokens, so no head can name them.
-  - **Proposed (for Amy)** (Claude Opus 5.5, 2026-10-21), the seam. The head is the seam of the open rendering, the
-    position before the last sampled token, not its end. Reason: a snapshot holds no logit row. A continuation from a
-    head at the end would have no first logit row, and it cannot feed the last token again. At the seam it feeds
-    that token (`fed` 1). gogi allows a head before or after the last sampled token.
+  - The seam. The head is the seam of the open rendering, the position before the last sampled token, not its end.
+    Reason: a snapshot holds no logit row. A continuation from a head at the end would have no first logit row, and
+    it cannot feed the last token again. At the seam it feeds that token (`fed` 1), which gogi allows. Proposed by
+    Claude Opus 5.5; decided by Amy 2026-10-21.
 - The dry run: a build with an open message and `dry_run: true` looks up the plan of the continuation and its seam.
   Its `kept` and `fed` are what the generation keeps and feeds. Its `head` is `recipe:` and the recipe of the open
   rendering, which the store never holds. Decided by Amy 2026-10-21.
