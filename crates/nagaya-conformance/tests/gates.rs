@@ -1605,11 +1605,15 @@ fn the_suite_runs_every_gate_and_fake_always_passes() {
             "quantum_resume_fit",
             "admission_refusal_changes_nothing",
             "segments_exact_bits",
+            "stage_path_bits",
+            "feed_rule_bits",
         ]
     );
     assert!(suite.passed(), "{suite}");
     assert_eq!(suite.failures().count(), 0);
-    assert_eq!(suite.not_applicable().count(), 0);
+    // FakeAlways has no stages and no feed rule (engine-abi D1, D11).
+    let not_applicable: Vec<&str> = suite.not_applicable().map(|gate| gate.name).collect();
+    assert_eq!(not_applicable, vec!["stage_path_bits", "feed_rule_bits"]);
 }
 
 #[test]

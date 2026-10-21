@@ -1122,7 +1122,9 @@ poison. After a poison or a timeout, the nagaya does these steps:
 - the quantum conditions hold (ontology "Quantum");
 - an admission refusal changes nothing;
 - for an engine that declares `segments_exact`, a segment gives the same bits in passes with one, two and the
-  maximum count of segments (5.7).
+  maximum count of segments (5.7);
+- for an engine with stages, `Engine::pass` and the stage path give the same outputs and parts (engine-abi D1);
+- for an engine with a feed rule, a span fed by the rule after a restore gives the bits of one job (6.14).
 
 **One oracle for each family.** Each model family has one reference: today, fixed outputs of mk's Python. Every
 engine of that family passes its conformance against that reference, on any vendor's device. The reference runs on

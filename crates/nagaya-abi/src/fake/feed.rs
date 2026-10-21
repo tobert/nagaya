@@ -484,9 +484,14 @@ impl StageHandle for FakeStage {
 }
 
 impl Parts for FakeStage {
-    fn part_read(&mut self, _state: State, _part: PartId, _out: &mut [u8]) -> Result<(), PartError> {
-        self.last_error = Some("the fake with a feed rule has no fixed part".to_owned());
-        Err(PartError::Refused)
+    /// Read every row of a cells part, as `FakeAlways` does. The fake has no fixed part.
+    fn part_read(&mut self, state: State, part: PartId, out: &mut [u8]) -> Result<(), PartError> {
+        let (Some(slot), Some(layer)) = (self.slot(state), self.layer(part)) else {
+            self.last_error = Some(format!("stage has no part {part} or no slot {state:?}"));
+            return Err(PartError::Refused);
+        };
+        let rows = self.rows[slot][layer].len() as u64;
+        self.cells_read(state, part, 0, rows, out)
     }
 
     fn part_write(&mut self, _state: State, _part: PartId, _bytes: &[u8]) -> WriteResult {

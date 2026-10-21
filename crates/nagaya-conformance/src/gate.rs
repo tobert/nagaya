@@ -1132,7 +1132,7 @@ fn run_pass_of<E: Engine + ?Sized>(
     }
 }
 
-fn compare_outputs(gate: &'static str, left: &[Output], right: &[Output]) -> Result<(), Failure> {
+pub(crate) fn compare_outputs(gate: &'static str, left: &[Output], right: &[Output]) -> Result<(), Failure> {
     if left.len() != right.len() {
         return Err(Failure::new(
             gate,
