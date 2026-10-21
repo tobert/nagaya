@@ -412,3 +412,27 @@ fn a_decision_context_whose_queue_names_no_tool_is_a_400() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{value}");
     assert_eq!(value["error"]["param"], "contexts", "{value}");
 }
+
+#[test]
+fn a_build_whose_snapshot_copy_the_ledger_refuses_is_a_429_busy_that_names_the_shortfall() {
+    use nagaya_abi::Tier;
+
+    let f = Fixture::new();
+    let council = council(&f);
+    let ports = f.process.ports();
+    let free = ports
+        .unassigned()
+        .into_iter()
+        .find(|(tiers, _)| tiers.contains(&Tier::Host))
+        .map(|(_, bytes)| bytes)
+        .unwrap();
+    ports.admit_staging("toy", Tier::Host, free - 100).unwrap();
+    let body = json!({"model": "toy", "context": context()});
+    let (status, _, value) = send(&council, "POST", "/council/v2/contexts", Some(body));
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{value}");
+    assert_eq!(value["error"]["type"], "busy", "{value}");
+    assert!(
+        value["error"]["message"].as_str().unwrap().contains("short by"),
+        "{value}"
+    );
+}

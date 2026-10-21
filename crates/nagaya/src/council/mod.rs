@@ -12,6 +12,7 @@ pub mod pins;
 pub mod reads;
 pub mod slots;
 pub mod specs;
+pub(crate) mod staging;
 
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -329,6 +330,7 @@ impl Service {
         let digest = identity_digest(&identity);
         let pool = Arc::new(Mutex::new(SlotPool::new(&limits)));
         let shared = Arc::new(Shared {
+            ports: ports.clone(),
             store,
             engine_index: index,
             engine_name: config.engine.clone(),

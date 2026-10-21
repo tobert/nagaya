@@ -20,14 +20,18 @@ use nagaya_store::{
 use super::Clock;
 use super::error::ServiceError;
 use super::slots::{self, NoSlot, SlotLease, SlotPool};
+use super::staging::{self, Staging};
 use crate::jobs::{JobBody, Ran};
 use crate::park;
+use crate::process::Ports;
 
 /// The owner of the entries that builds put. A client pin has its own owner key (spec 11.3c).
 pub const COUNCIL_OWNER: u64 = 1;
 
 /// What every body of one build or read shares.
 pub struct Shared {
+    /// The ways into the process. A copy of engine state charges the ledger through them (spec 4.2).
+    pub ports: Ports,
     /// The machine's store.
     pub store: Arc<Mutex<Store>>,
     /// The index of the engine in its group.
@@ -295,6 +299,13 @@ enum Unit {
     Snapshot(RecipeId, Reason),
 }
 
+/// A copy of the state of a slot that `Mark` kept in host memory. The charge ends when the copy drops.
+struct Marked {
+    snapshot: Snapshot,
+    /// The charge. It is the last field, so the copy is gone before the ledger gets the bytes back.
+    _staging: Staging,
+}
+
 /// The job of a context: a build, then the work of a [`Then`].
 pub struct ContextBody<T: Then> {
     shared: Arc<Shared>,
@@ -315,8 +326,8 @@ pub struct ContextBody<T: Then> {
     feeding: Option<Feeding>,
     /// The row that the last pass of the feed gave.
     row: Option<Vec<f32>>,
-    /// The state that `Mark` kept.
-    mark: Option<Snapshot>,
+    /// The state that `Mark` kept, with the ledger charge of its bytes.
+    mark: Option<Marked>,
     held: Vec<Option<ContentId>>,
     from: Option<ContentId>,
     kept: usize,
@@ -408,6 +419,8 @@ impl<T: Then> ContextBody<T> {
     /// Send the result to the caller. The slot is free before the caller hears, so the caller sees it free.
     fn send(&mut self, result: Result<Finished<T>, ServiceError>) {
         self.lease = None;
+        // The mark is host memory. Free it and its charge before the caller hears the result.
+        self.mark = None;
         if let Some(tx) = self.tx.take() {
             let _ = tx.send(result);
         }
@@ -617,10 +630,17 @@ impl<T: Then> ContextBody<T> {
                 }
             }
             Unit::Mark => {
-                let snapshot = park::park_snapshot(engine, self.state()).map_err(|message| {
+                // A second mark replaces the first. Release the first before the charge of the second.
+                self.mark = None;
+                let state = self.state();
+                let staging = self.stage(engine, state, "keep the state of the slot")?;
+                let snapshot = park::park_snapshot(engine, state).map_err(|message| {
                     ServiceError::internal(format!("cannot keep the state of the slot: {message}"))
                 })?;
-                self.mark = Some(snapshot);
+                self.mark = Some(Marked {
+                    snapshot,
+                    _staging: staging,
+                });
                 Some(Got::Copied)
             }
             Unit::Rewind => {
@@ -640,6 +660,14 @@ impl<T: Then> ContextBody<T> {
             None if self.building => self.next_want(engine, Got::Built(self.cut)),
             None => unreachable!("the last unit of a want gives back what it did"),
         }
+    }
+
+    /// Charge the host bytes of a copy of the state, before the copy runs (spec 4.2). A refusal is an error that the
+    /// client sees, and the engine is as it was.
+    fn stage(&self, engine: &mut dyn Engine, state: State, what: &str) -> Result<Staging, ServiceError> {
+        let bytes = staging::state_bytes(engine, &self.shared.limits, state)
+            .map_err(|message| ServiceError::internal(format!("cannot size the copy to {what}: {message}")))?;
+        Staging::take(&self.shared.ports, &self.shared.engine_name, bytes)
     }
 
     /// Run one pass over `tokens` at positions from `from`. With `row`, give the logit row of the last token.
@@ -693,7 +721,7 @@ impl<T: Then> ContextBody<T> {
     /// Put the state that `Mark` kept back into the slot.
     fn rewind(&mut self, engine: &mut dyn Engine) -> Result<(), ServiceError> {
         let slot = self.slot();
-        let mark = self.mark.as_ref().expect("a rewind follows a mark");
+        let mark = &self.mark.as_ref().expect("a rewind follows a mark").snapshot;
         let slots = engine
             .slots()
             .ok_or_else(|| ServiceError::internal("the engine lost its slot capability"))?;
@@ -724,6 +752,8 @@ impl<T: Then> ContextBody<T> {
         place: &str,
     ) -> Result<ContentId, ServiceError> {
         let state = self.state();
+        // The buffer of the copy is host memory. The charge stays until the store has taken the snapshot.
+        let _staging = self.stage(engine, state, &format!("read the state at {place}"))?;
         if let Some(seal) = engine.seal() {
             seal.seal(state)
                 .map_err(|error| ServiceError::internal(format!("the seal at {place} failed: {error:?}")))?;

@@ -89,7 +89,10 @@ impl std::fmt::Display for LedgerError {
             LedgerError::StagingRefused(refusal) => {
                 write!(formatter, "the copy of the state does not fit in memory: ")?;
                 write_shortfall(formatter, refusal)?;
-                write!(formatter, "; try again when other requests end, or ask for a smaller context")
+                write!(
+                    formatter,
+                    "; try again when other requests end, or ask for a smaller context"
+                )
             }
         }
     }

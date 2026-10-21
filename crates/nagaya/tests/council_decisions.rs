@@ -395,6 +395,17 @@ fn a_context_that_fits_the_decision_limit_but_no_slot_names_the_slot_limit() {
     assert_eq!(f.service.free_slots(), 3);
 }
 
+/// A decision marks the state of its context and rewinds to it. The copy is host memory that the ledger charges, and
+/// the charge ends with the decision (spec 4.2).
+#[test]
+fn a_decision_gives_its_copy_bytes_back() {
+    let f = Fixture::new();
+    let before = f.process.ports().unassigned();
+    decide(&f, &[plain("Commands wait in a queue.")], json!({}));
+    assert_eq!(f.process.ports().unassigned(), before);
+    assert_eq!(f.service.free_slots(), 3);
+}
+
 #[test]
 fn a_decision_past_its_timeout_is_a_timeout_and_frees_its_slot() {
     let factory = TermFactory {
