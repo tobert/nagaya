@@ -237,7 +237,9 @@ impl Council {
         })?;
         match rx.await {
             Ok(result) => result.map_err(|error| self.failed(error)),
-            Err(_) => Err(self.failed(ServiceError::internal("a call thread ended with no result"))),
+            Err(_) => Err(self.failed(ServiceError::internal(
+                "a call thread ended with no result; the log has its panic",
+            ))),
         }
     }
 
@@ -259,8 +261,10 @@ impl Council {
                 if let Some(cpus) = cpus
                     && let Err(error) = crate::affinity::pin_current_thread(&cpus)
                 {
-                    eprintln!("cannot pin a call thread to CPUs {cpus:?}: {error}");
-                    std::process::abort();
+                    // The thread ends before it runs the call. The route sees a call with no result, which is an
+                    // internal error, and the process stops with exit 1. Only a control-runtime thread aborts
+                    // (spec 3.2a).
+                    panic!("cannot pin a call thread to CPUs {cpus:?}: {error}");
                 }
                 work();
             })

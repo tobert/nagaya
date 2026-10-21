@@ -465,6 +465,38 @@ fn council_free(council: &Arc<Council>) -> usize {
     council.free_slots()
 }
 
+/// A call thread that cannot pin to its CPUs panics, and the route turns the panic into a 500 `internal`. The council
+/// records the failure, so the process stops with exit 1 (spec 3.2a, 8.5). It does not abort.
+#[test]
+fn a_call_thread_that_cannot_pin_is_a_500_that_the_council_records() {
+    let f = Fixture::new();
+    // CPU 1023 is the last bit of a mask. No machine has it online, so `sched_setaffinity` refuses the mask.
+    let council = Arc::new(
+        Council::new(
+            vec![Served {
+                service: f.attach_again(),
+                aliases: Vec::new(),
+                device: None,
+            }],
+            Some(vec![1023]),
+        )
+        .unwrap(),
+    );
+    assert!(council.failure().is_none());
+    let (status, _, value) = send(
+        &council,
+        "POST",
+        "/council/v2/contexts",
+        Some(json!({"model": "toy", "context": context()})),
+    );
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{value}");
+    assert_eq!(value["error"]["type"], "internal", "{value}");
+    assert!(council.failure().is_some(), "the council did not record the failure");
+    let streamed = json!({"model": "toy", "context": context(), "max_tokens": 5, "stream": true});
+    let (status, _, value) = send(&council, "POST", "/council/v2/generations", Some(streamed));
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{value}");
+}
+
 /// Send one request with a body that the test builds, and give the status and the error body.
 fn send_body(council: &Arc<Council>, body: Body) -> (StatusCode, Value) {
     let runtime = tokio::runtime::Builder::new_current_thread()
