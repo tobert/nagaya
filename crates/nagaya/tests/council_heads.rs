@@ -61,8 +61,16 @@ impl Family for Counting {
         self.inner.tokenize(text)
     }
 
+    fn tokenize_special(&self, text: &str) -> Result<Vec<u32>, FamilyError> {
+        self.inner.tokenize_special(text)
+    }
+
     fn detokenize(&self, tokens: &[u32]) -> Result<String, FamilyError> {
         self.inner.detokenize(tokens)
+    }
+
+    fn pieces(&self, tokens: &[u32]) -> Result<Vec<String>, FamilyError> {
+        self.inner.pieces(tokens)
     }
 
     fn template_id(&self) -> &str {
