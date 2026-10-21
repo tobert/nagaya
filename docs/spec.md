@@ -578,6 +578,9 @@ the scheduler chooses. Decided 2026-10-18.
 In v0 the windows have no key in the bootstrap config. A measurement that
 changes them adds the key (2.1). Decided 2026-10-20 (reading).
 
+An engine with a feed rule (6.14) declares no `segments_exact`. The scheduler joins its segments only when no
+segment writes rows that the store keeps, as for reads and branch blocks. Decided 2026-10-21 (engine-abi D11).
+
 A pass holds segments of one kind only (5.2), and at most the engine's `max_segments`.
 The scheduler joins a ready job only when its next quantum has the
 kind of the first segment. Decided 2026-10-20 (reading).
@@ -942,6 +945,38 @@ On mk, the split of tokens into passes does not change bits. The probe `examples
 (`427fdc3`) compared one pass, one pass for each token, and uneven chunks, at 64 and 200 tokens. Every part and all
 248,320 logits were equal. One pass of 200 tokens took 424 ms, and 200 passes of one token took 10,079 ms. Thus a
 replay of up to 255 tokens takes about 0.5 s on mk.
+
+**6.14 The feed rule.** Decided 2026-10-21 (Amy, engine-abi D11). An engine can declare a feed rule, `{block}`. The
+scheduler feeds each span between boundaries in passes of `block` tokens from the start of the span. mkviolet
+declares it, because its bits depend on the token count of a pass.
+
+This is the reading of 6.2 for such an engine. A recipe names the identity, the tokens and the boundaries. The bits
+of a state follow from them only when the rule made every row. Thus the store keeps a state under a recipe only when
+the rule made each of its rows. These rules follow:
+
+- **Decode.** A decode quantum feeds one token, or one token and its drafts. Its rows do not follow the rule. The job
+  path never puts a state with decode rows under a recipe of 6.2. The park recipe (6.2) names bytes, so a park of
+  such a state is still exact.
+- **Drafts.** A draft test feeds one token and k drafts in one pass, with k + 1 logit rows (mkviolet
+  `mk_api.rs:1187-1222`). The rows of a rejected draft stay past the token count, and the next pass writes over them.
+  The logits fall under the tolerance of the served model.
+- **Branch blocks.** A branch block is a read. It feeds the tail of a case and each branch in one pass with
+  per-token `meta` (`branch_block`, `gemma4.rs:1521-1554`). No row of it is kept, also the rows of the tail. No build
+  continues from the slot after it. The job restores a held snapshot, or feeds again from a boundary.
+- **Reads.** The reads of a decision keep no state. mkviolet splits a case into chunks that it picks for speed
+  (`council_server.rs:822-848`). The nagaya may do the same for a read on such an engine.
+- **A continued span.** The last pass of a span can hold fewer than `block` tokens. Then a job that continues the
+  span feeds that pass again (engine-abi D11 rule 7).
+
+**Proposed** (claude-opus-5-5, 2026-10-21): on an engine with a feed rule, a generation holds no head after its reply,
+and `head` is null (11.3c). The reply rows come from decode quanta. The next build finds the last held boundary of the
+prompt, and it feeds the reply by the rule. Reason: a head would need a second feed of the reply now. The next build
+does that feed only when a client asks for it.
+
+**Proposed** (claude-opus-5-5, 2026-10-21): drafts are a setting of the served model, not a bit setting of the
+engine. The nagaya's generation job makes the prompt-lookup drafts, as mkviolet does (`draft`, `mk_api.rs:336-347`,
+keys of 4 and 3 tokens, at most 7 drafts). Reason: drafts change no row that the store keeps. Thus a change of the
+setting must not change the identity and lose the store.
 
 ## 7. IO
 
@@ -2143,9 +2178,8 @@ The inventories found these items. We correct each one when its code moves. We d
   in its code.
 - mkviolet has instruments without call sites (9.5) and wrong model labels (12.3).
 - mkviolet's README gives `GEN_SEQ` 16384 and its `main.rs` gives 65536. Its `docs/07` is out of date.
-- mkviolet's determinism class is not known. The first port runs one recipe in two processes and compares the
-  content ids (engine-abi, "How mkviolet maps"). The rule that our engines are `always` or `pinned` (README) is a
-  requirement on the port. The test shows if mkviolet meets it.
+- mkviolet declares `always` with a feed rule (6.14, engine-abi D11). The first port runs one recipe in two
+  processes and compares the content ids. The test shows if mkviolet meets the class.
 
 ## 15. Open questions
 

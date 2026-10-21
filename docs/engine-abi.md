@@ -83,6 +83,7 @@ limits() -> {
     segments_exact: bool,        segments that share a pass get the bits of a pass alone; no sum's order
                                  depends on the segment count, the row count or the unit count (spec 5.7)
     checkpoint_grain: tokens?,   the scheduler makes an interval copy at each multiple (spec 6.13)
+    feed: {block: tokens}?,      the feed rule (D11): each span between boundaries goes in passes of `block`
     determinism: always | pinned | per-process,   and bit_dependence: [residency, ...] (D3)
     taps: [...], with the conditions each needs (mk: unfused, one segment)
 }
@@ -452,11 +453,11 @@ check.
 | segments | `PipeJob`; `branch_block` with per-token `meta` | a branch block is atomic and is not a snapshot |
 | inputs | tokens; `write_embeddings` looks up the rows on the host and puts them into `Buf::X` (`gemma4.rs:1376-1384`) | tokens (D2) |
 | class | `CardLock`, `GpuLock` | moves out of the engine into the nagaya scheduler |
-| determinism | not yet known | the first port runs one recipe in two starts and compares content ids |
+| determinism | `always`, with a feed rule (D11) | bits depend on the token count of a pass; the first port runs one recipe in two starts and compares content ids |
 
 ## Decisions
 
-Decided: D1-D10.
+Decided: D1-D11.
 
 **D1. Engines that span devices.** There are two options:
 
@@ -613,6 +614,42 @@ cells by capacity (`engine.h:169`). For mkviolet, the conversion unrolls each ri
 A park from device memory to host memory can keep the engine's native bytes, if the conversion is too slow for short
 parks. Such a park has no content id. It gets one when it goes into the store. **Open:** measure the conversion on
 both engines before we use this exception.
+
+**D11. A feed rule.** Decided 2026-10-21 (Amy, interview: "we should do what mkviolet does now? maybe change nagaya
+if we have a better approach."). An engine whose bits depend on the token count of a pass declares a feed rule. The
+scheduler then feeds every kept span in one fixed split, so the bits depend only on the inputs.
+
+mkviolet chooses the reduction of a matmul by the token count of the pass (`megakernel.cl:54-57`, `:478-760`):
+
+- 1 token: `SPLIT_K` = 4 subgroups share the K of one row;
+- 2 to 8 tokens: XMX tiles of 16 rows, with K split over `KSPLIT` = 8 subgroups;
+- 9 to 15 tokens: XMX work items of 16 rows by 32 tokens;
+- 16 tokens or more: a work-group takes 64 tiles and shares the tokens' x in local memory.
+
+The same split gives the same bits. Five runs of a 600-token prefill in blocks of 256, then 24 one-token steps, gave
+equal logits (`golden.rs:431-458`). mkviolet's `snapshot_id` hashes the identity, the tokens and the boundaries
+(`held.rs:329-342`). It feeds in `max_block` passes (`Gemma4Engine::block_jobs`, `gemma4.rs:1624-1635`).
+
+The rules:
+
+1. `limits().feed` is `{block}`, in tokens. The scheduler feeds each span in passes of `block` tokens from the start
+   of the span. The last pass holds the remainder.
+2. A span starts at position 0 or at a boundary. It ends at the next boundary, or at the end of the fed tokens.
+3. `block` is a bit setting with the class `reference-defining`. Thus it is in the identity and in every recipe
+   (spec 6.2). mkviolet's `block` is its `max_block`, 512 (`MAX_BLOCK`, `main.rs:35`).
+4. An engine with a feed rule declares `segments_exact: false` and no checkpoint grain (spec 6.13).
+5. Its `determinism` stays `always`. The rule fixes the split, so the same identity and inputs give the same bits in
+   any process.
+6. A pass that writes rows that the store keeps has one segment. Segments whose rows no one keeps may share a pass,
+   such as reads and branch blocks. Their outputs fall under the tolerance of the served model.
+7. A slot can hold a span in part, when its last pass held fewer than `block` tokens. A job that continues the span
+   feeds that last pass again, with the new tokens after it.
+
+Spec 6.14 gives how decode steps, drafts and branch blocks meet the rule.
+
+Reason: this is what mkviolet does now, and it keeps the recipe as tokens plus boundaries. The other way is a kernel
+whose reductions do not depend on the token count (spec 5.7). That costs speed on the one-token path, and it is a
+change inside mkviolet's kernels.
 
 ## Training
 
