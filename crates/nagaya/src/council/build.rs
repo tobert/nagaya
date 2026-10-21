@@ -193,6 +193,56 @@ fn restore_entry(
     }
 }
 
+/// The recipe of an interval copy at a token of a context with `tokens` and boundaries `recipes`, with the last seal
+/// before it. A token on a boundary has none: the sealed snapshot there serves a build (spec 6.13).
+fn copy_recipe_at(
+    root: RecipeId,
+    recipes: &[BoundaryRecipe],
+    tokens: &[u32],
+    position: usize,
+) -> Option<(RecipeId, RecipeId, usize)> {
+    if recipes.iter().any(|recipe| recipe.boundary.tokens == position) || position > tokens.len() {
+        return None;
+    }
+    let (base, at) = recipes
+        .iter()
+        .rev()
+        .find(|recipe| recipe.boundary.tokens < position)
+        .map_or((root, 0), |recipe| (recipe.recipe, recipe.boundary.tokens));
+    let sealed = recipe_boundary(&base, &tokens[at..position], position as u64);
+    Some((recipe_not_sealed(&sealed), base, at))
+}
+
+/// The longest interval copy of a context above the token `above`, when the store holds one: its position, its
+/// content id, and the last seal before it with its position (spec 6.13). A build and a dry run use it.
+fn best_copy(
+    shared: &Shared,
+    recipes: &[BoundaryRecipe],
+    tokens: &[u32],
+    above: usize,
+) -> Option<(usize, ContentId, RecipeId, usize)> {
+    shared.intervals.as_ref()?;
+    let store = shared.store.lock().expect("the store lock is poisoned");
+    store
+        .entries()
+        .values()
+        .filter(|entry| {
+            entry.reason == Reason::Interval
+                && entry.state == EntryState::Live
+                && entry.engine == shared.engine_name
+                && entry.identity == shared.identity
+        })
+        .filter_map(|entry| {
+            let position = entry.coverage.iter().map(|span| span.end).max()? as usize;
+            if position <= above {
+                return None;
+            }
+            let (recipe, base, at) = copy_recipe_at(shared.root, recipes, tokens, position)?;
+            (recipe == entry.recipe).then_some((position, entry.content_id, base, at))
+        })
+        .max_by_key(|(position, ..)| *position)
+}
+
 /// The highest boundary that the store holds.
 fn highest(held: &[Option<ContentId>]) -> Option<usize> {
     held.iter().rposition(Option::is_some)
@@ -204,16 +254,21 @@ pub struct LookupBody {
     recipes: Vec<BoundaryRecipe>,
     cuts: Vec<Cut>,
     extension: Option<Extension>,
-    tokens: usize,
+    /// The tokens of the plan.
+    tokens: Arc<[u32]>,
+    /// The tokens that the slot of the job would hold: the context, or all the open rendering of a continuation.
+    room: usize,
     tx: Option<Sender<Result<Outcome, ServiceError>>>,
 }
 
 impl LookupBody {
     /// Make the body. The result goes to `tx`.
+    /// Make the body. `room` is the tokens that the job's slot would hold. The result goes to `tx`.
     pub fn new(
         shared: Arc<Shared>,
         recipes: Vec<BoundaryRecipe>,
-        tokens: usize,
+        tokens: Arc<[u32]>,
+        room: usize,
         tx: Sender<Result<Outcome, ServiceError>>,
     ) -> Self {
         Self {
@@ -222,6 +277,7 @@ impl LookupBody {
             cuts: Vec::new(),
             extension: None,
             tokens,
+            room,
             tx: Some(tx),
         }
     }
@@ -240,8 +296,8 @@ impl LookupBody {
 
     fn look(&self, engine: &mut dyn Engine) -> Result<Outcome, ServiceError> {
         let pool = self.shared.pool.lock().expect("the slot pool lock is poisoned");
-        let Some(slot) = slots::lowest_fitting(engine, &self.shared.limits, &pool, self.tokens) else {
-            return Err(too_large(self.tokens));
+        let Some(slot) = slots::lowest_fitting(engine, &self.shared.limits, &pool, self.room) else {
+            return Err(too_large(self.room));
         };
         drop(pool);
         if let Some(extension) = &self.extension
@@ -261,9 +317,20 @@ impl LookupBody {
         }
         let (recipes, held, inserted) = choose(&self.shared, engine, slot, &self.recipes, &self.cuts)?;
         let start = highest(&held);
+        let above = start.map_or(0, |index| recipes[index].boundary.tokens);
+        // A build restores an interval copy above the highest held boundary, so a dry run reports it (spec 6.13).
+        if let Some((position, id, ..)) = best_copy(&self.shared, &recipes, &self.tokens, above) {
+            return Ok(Outcome {
+                from: Some(id),
+                kept: position,
+                held,
+                recipes,
+                inserted,
+            });
+        }
         Ok(Outcome {
             from: start.and_then(|index| held[index]),
-            kept: start.map_or(0, |index| recipes[index].boundary.tokens),
+            kept: above,
             held,
             recipes,
             inserted,
@@ -1032,50 +1099,10 @@ impl<T: Then> ContextBody<T> {
         Ok(())
     }
 
-    /// The recipe of an interval copy at a token of the context, with the last seal before it. A token on a boundary
-    /// has none: the sealed snapshot there serves a build (spec 6.13).
-    fn copy_recipe_at(&self, position: usize) -> Option<(RecipeId, RecipeId, usize)> {
-        if self.recipes.iter().any(|recipe| recipe.boundary.tokens == position) || position > self.tokens.len() {
-            return None;
-        }
-        let (base, at) = self
-            .recipes
-            .iter()
-            .rev()
-            .find(|recipe| recipe.boundary.tokens < position)
-            .map_or((self.shared.root, 0), |recipe| (recipe.recipe, recipe.boundary.tokens));
-        let sealed = recipe_boundary(&base, &self.tokens[at..position], position as u64);
-        Some((recipe_not_sealed(&sealed), base, at))
-    }
-
     /// Restore the longest interval copy of the context above the token `above`, when the store holds one. A restore
     /// writes the copy's parts, and the build replays the tokens after it (spec 6.13). It gives true on a restore.
     fn restore_copy(&mut self, engine: &mut dyn Engine, above: usize) -> Result<bool, ServiceError> {
-        if self.shared.intervals.is_none() {
-            return Ok(false);
-        }
-        let best = {
-            let store = self.shared.store.lock().expect("the store lock is poisoned");
-            store
-                .entries()
-                .values()
-                .filter(|entry| {
-                    entry.reason == Reason::Interval
-                        && entry.state == EntryState::Live
-                        && entry.engine == self.shared.engine_name
-                        && entry.identity == self.shared.identity
-                })
-                .filter_map(|entry| {
-                    let position = entry.coverage.iter().map(|span| span.end).max()? as usize;
-                    if position <= above {
-                        return None;
-                    }
-                    let (recipe, base, at) = self.copy_recipe_at(position)?;
-                    (recipe == entry.recipe).then_some((position, entry.content_id, base, at))
-                })
-                .max_by_key(|(position, ..)| *position)
-        };
-        let Some((position, id, base, at)) = best else {
+        let Some((position, id, base, at)) = best_copy(&self.shared, &self.recipes, &self.tokens, above) else {
             return Ok(false);
         };
         let slot = self.slot();

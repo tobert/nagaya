@@ -932,3 +932,25 @@ fn a_held_cut_does_not_hide_the_head_of_a_cut_reply() {
     let done = generate(&f, &resumed, 10, json!({"temperature": 0}));
     assert_eq!((done.usage.kept, done.usage.fed), (tokens, 1));
 }
+
+/// kaibo job-5 item 6: a dry run of an open context needs a slot for the whole open rendering, as its generation does.
+/// When no slot holds it, both are a 413 that names context_tokens.
+#[test]
+fn a_dry_run_of_an_open_context_that_no_slot_holds_is_too_large() {
+    let f = Fixture::new();
+    let open = json!({"role": "assistant", "content": "x".repeat(3000), "continue": true});
+    let value = with_open(&ctx(false, opening()), open);
+    let generation = f
+        .service
+        .generate(&request(&value, 4, json!({"temperature": 0})), None)
+        .unwrap_err();
+    assert!(
+        matches!(&generation, ServiceError::TooLarge { param, .. } if param == "context_tokens"),
+        "{generation:?}"
+    );
+    let dry = f.service.build(&context(&value), true, Default::default()).unwrap_err();
+    assert!(
+        matches!(&dry, ServiceError::TooLarge { param, .. } if param == "context_tokens"),
+        "{dry:?}"
+    );
+}

@@ -253,3 +253,15 @@ fn a_client_cannot_pin_a_copy_so_a_stop_parks_a_slot_that_holds_the_bytes_of_a_c
     assert_eq!(report.exit_code(), nagaya::exit::ExitCode::Clean, "{report:?}");
     assert_eq!(report.parked.states, 1, "{report:?}");
 }
+
+/// kaibo job-5 item 6: a dry run reports what a build would keep, an interval copy too.
+#[test]
+fn a_dry_run_starts_from_the_copy_as_a_build_does() {
+    let f = fixture(Some(GRAIN), 4);
+    build(&f, &long(WORDS));
+    let at = position(&copies(&f)[0]);
+    let longer = long(&format!("{WORDS} Then run the tests twice."));
+    let dry = f.service.build(&context(&longer), true, Schedule::default()).unwrap();
+    assert_eq!(dry.usage.kept, at, "{:?}", dry.usage);
+    assert_eq!(build(&f, &longer).usage.kept, at);
+}

@@ -481,7 +481,13 @@ impl Service {
         };
         let outcome = if dry_run {
             let (tx, rx) = mpsc::channel();
-            let body = LookupBody::new(Arc::clone(&self.shared), recipes.clone(), tokens.len(), tx)
+            // A continuation's slot holds all its open rendering, and a dry run reports what the generation would.
+            let room = if open {
+                open_rendering.tokens.len()
+            } else {
+                tokens.len()
+            };
+            let body = LookupBody::new(Arc::clone(&self.shared), recipes.clone(), Arc::clone(&tokens), room, tx)
                 .cuts(cuts)
                 .extension(extension);
             submit(
