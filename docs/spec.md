@@ -115,6 +115,7 @@ corrupt the ledger (8.5).
 
 Decided by senpai 2026-10-20 night (vetoable): the tree for sm121host is made by hand, not captured. The coder could not
 read that machine. The README in the fixture directory marks each guessed value. Capture the real tree when we port.
+
 The tree for b70host is a capture of 2026-10-21. A Xe card reports the largest prefetchable range among its six
 standard BARs. The ranges after them hold the ROM and the SR-IOV functions, and they are not memory of the card.
 
