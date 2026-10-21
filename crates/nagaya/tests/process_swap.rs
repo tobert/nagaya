@@ -47,7 +47,7 @@ fn ready(poster: &Gossip) {
 
 #[test]
 fn a_desired_profile_that_changes_the_engines_stops_the_process_with_exit_four() {
-    let mut process = Proc::spawn("host-x", "127.0.0.1:18090", &[]);
+    let mut process = Proc::spawn("host-x", &[]);
     let poster = poster("poster", process.gossip_addr);
     ready(&poster);
     let wanted = profile(&["fake-one", "fake-two"], 8192);
@@ -71,7 +71,7 @@ fn a_desired_profile_that_changes_the_engines_stops_the_process_with_exit_four()
 
 #[test]
 fn a_desired_profile_that_does_not_fit_is_refused_and_an_equal_one_clears_it() {
-    let mut process = Proc::spawn("host-x", "127.0.0.1:18091", &[]);
+    let mut process = Proc::spawn("host-x", &[]);
     let poster = poster("poster", process.gossip_addr);
     ready(&poster);
     let key = Key::ProfileDesired("host-x".to_owned());
@@ -138,7 +138,7 @@ fn a_desired_profile_that_does_not_fit_is_refused_and_an_equal_one_clears_it() {
 
 #[test]
 fn a_desired_profile_that_changes_only_a_budget_stops_the_process_with_exit_four() {
-    let mut process = Proc::spawn("host-x", "127.0.0.1:18093", &[]);
+    let mut process = Proc::spawn("host-x", &[]);
     let poster = poster("poster", process.gossip_addr);
     ready(&poster);
     let wanted = profile(&["fake-one"], 8192);
@@ -153,7 +153,7 @@ fn a_desired_profile_that_changes_only_a_budget_stops_the_process_with_exit_four
 
 #[test]
 fn an_older_version_from_a_second_peer_does_not_replace_a_newer_one() {
-    let mut process = Proc::spawn("host-x", "127.0.0.1:18092", &[]);
+    let mut process = Proc::spawn("host-x", &[]);
     let newer = poster("poster-a", process.gossip_addr);
     let older = poster("poster-b", process.gossip_addr);
     ready(&newer);
