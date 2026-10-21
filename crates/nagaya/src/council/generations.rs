@@ -316,6 +316,7 @@ fn reply_message(parsed: &ParsedReply, ids: &[String]) -> Option<gogi_proto::mes
         stats: None,
         decisions: Vec::new(),
         seed: None,
+        phase: None,
     };
     done.as_message()
 }
@@ -415,6 +416,13 @@ impl Service {
             )
             .into());
         }
+        if request.context.open().is_some() {
+            return Err(Invalid::param(
+                "continue",
+                "an open message needs the continuation capability, which this model does not have; send it closed",
+            )
+            .into());
+        }
         let context_tokens = self.config.context_tokens;
         let max_tokens = request.max_tokens as usize;
         if max_tokens > context_tokens {
@@ -506,6 +514,7 @@ impl Service {
             }),
             decisions: Vec::new(),
             seed: Some(settings.seed),
+            phase: None,
         })
     }
 }
