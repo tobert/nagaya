@@ -33,8 +33,9 @@ fn observed() -> ObservedScheduler {
     ObservedScheduler::new(Scheduler::default(), names())
 }
 
-fn step(scheduler: ObservedScheduler, event: Event) -> (ObservedScheduler, Option<Quantum>) {
-    scheduler.step(event).expect("the event fits the state")
+fn step(mut scheduler: ObservedScheduler, event: Event) -> (ObservedScheduler, Option<Quantum>) {
+    let next = scheduler.step(event).expect("the event fits the state");
+    (scheduler, next)
 }
 
 fn arrive(scheduler: ObservedScheduler, now_ms: u64, job: Job) -> ObservedScheduler {
@@ -278,11 +279,10 @@ fn the_wrapped_step_gives_the_state_and_the_quantum_of_the_plain_step() {
     let mut wrapped = observed();
     for event in events {
         let (next_plain, quantum_plain) = nagaya_sched::step(plain, event.clone()).unwrap();
-        let (next_wrapped, quantum_wrapped) = wrapped.step(event).unwrap();
+        let quantum_wrapped = wrapped.step(event).unwrap();
         assert_eq!(quantum_plain, quantum_wrapped);
-        assert_eq!(&next_plain, next_wrapped.state());
+        assert_eq!(&next_plain, wrapped.state());
         plain = next_plain;
-        wrapped = next_wrapped;
     }
 }
 
@@ -295,7 +295,6 @@ fn an_event_that_does_not_fit_is_an_error_and_records_nothing() {
             duration_ms: 1,
             outcome: Completion::Done,
         })
-        .map(|_| ())
         .unwrap_err();
     assert_eq!(error, StepError::NothingRunning);
     assert!(capture.points().is_empty());
@@ -304,8 +303,93 @@ fn an_event_that_does_not_fit_is_an_error_and_records_nothing() {
 #[test]
 #[should_panic(expected = "device group 7")]
 fn a_quantum_on_a_group_with_no_engine_name_is_a_defect() {
-    let scheduler = observed();
+    let mut scheduler = observed();
     let mut stray = job(1, Class::Batch, 0, 7, &[Kind::Prefill]);
     stray.admitted = true;
     scheduler.step(Event::Arrive { now_ms: 0, job: stray }).unwrap();
+}
+
+fn admitted(id: JobId, class: Class, quanta: &[Kind]) -> Job {
+    let mut held = job(id, class, 0, 0, quanta);
+    held.admitted = true;
+    held
+}
+
+#[test]
+fn a_caller_that_changes_the_state_between_steps_keeps_the_waits_right() {
+    let capture = Capture::start(Vec::new());
+    let scheduler = arrive(observed(), 0, admitted(1, Class::Batch, &[Kind::Copy]));
+    assert!(scheduler.state().running.is_some(), "the job started at its arrival");
+    let mut scheduler = scheduler;
+    // The body of the job adds a quantum while its first quantum runs, as the group thread does.
+    scheduler.state_mut().append_quanta(1, &[Kind::Prefill]).unwrap();
+    let (scheduler, next) = complete(scheduler, 10, 10);
+    assert_eq!(next.map(|quantum| quantum.kind), Some(Kind::Prefill));
+    // A job that the caller drops leaves no trace, and the next step does not fail.
+    let mut scheduler = scheduler;
+    scheduler.state_mut().running = None;
+    scheduler.state_mut().jobs.clear();
+    let (scheduler, _) = step(scheduler, Event::Tick { now_ms: 12 });
+    assert!(scheduler.state().jobs.is_empty());
+
+    let waits = capture.metric("nagaya.quantum.wait.duration");
+    assert_eq!(waits.iter().map(|point| point.count).sum::<u64>(), 2, "{waits:?}");
+    assert_eq!(
+        waits.iter().map(|point| point.value).sum::<f64>(),
+        0.0,
+        "the second quantum started when its job became ready"
+    );
+}
+
+#[test]
+fn the_caller_can_enter_the_span_of_the_running_quantum_and_a_decode_quantum_has_none() {
+    let _capture = Capture::start(Vec::new());
+    let scheduler = arrive(observed(), 0, admitted(1, Class::Batch, &[Kind::Prefill, Kind::Decode]));
+    assert!(scheduler.running_span().is_some(), "a prefill quantum has a span");
+    let (scheduler, _) = complete(scheduler, 5, 5);
+    assert!(scheduler.state().running.is_some());
+    assert!(scheduler.running_span().is_none(), "a decode quantum has no span");
+    let (scheduler, _) = complete(scheduler, 9, 4);
+    assert!(scheduler.running_span().is_none(), "nothing runs");
+}
+
+#[test]
+fn a_quantum_span_is_the_child_of_the_span_of_its_job() {
+    let capture = Capture::start(Vec::new());
+    let job_span = tracing::info_span!("nagaya.job");
+    let mut scheduler = observed();
+    scheduler.set_job_span(1, job_span.clone());
+    let scheduler = arrive(scheduler, 0, admitted(1, Class::Batch, &[Kind::Prefill]));
+    complete(scheduler, 5, 5);
+    drop(job_span);
+
+    let spans = capture.spans();
+    let parent = spans.iter().find(|span| span.name == "nagaya.job").expect("a job span");
+    let child = spans
+        .iter()
+        .find(|span| span.name == "nagaya.quantum")
+        .expect("a quantum span");
+    assert_eq!(child.parent_span_id, parent.span_context.span_id());
+}
+
+#[test]
+fn abandon_records_the_run_of_the_quantum_that_ran_and_empties_the_scheduler() {
+    let capture = Capture::start(Vec::new());
+    let mut scheduler = arrive(
+        observed(),
+        0,
+        admitted(1, Class::Batch, &[Kind::Prefill, Kind::Prefill]),
+    );
+    scheduler.abandon(Some((17, Completion::Done)));
+
+    assert_eq!(scheduler.state(), &Scheduler::default());
+    let run = capture.metric("nagaya.quantum.run.duration");
+    assert_eq!(run.len(), 1, "{run:?}");
+    assert_eq!((run[0].count, run[0].value), (1, 17.0));
+    let spans = capture.spans();
+    let span = spans
+        .iter()
+        .find(|span| span.name == "nagaya.quantum")
+        .expect("the span ended");
+    assert_eq!(attribute(span, "run_ms").as_deref(), Some("17"));
 }
