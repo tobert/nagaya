@@ -62,6 +62,7 @@ The crates live in directories under `crates/`. Use these crates:
 | `nagaya-council` | council v2 logic with no I/O: the family interface, the sampler, request checks | 11 |
 | `nagaya-jinja` | the Jinja interpreter of the chat templates, with the results of Python's jinja2 | 11.3 |
 | `nagaya-text-qwen38` | the Qwen3.8 family library: tokenizer, templates, detokenizer, reply parser | 11.3, 11.3a |
+| `nagaya-text-gemma4` | the Gemma 4 family library: tokenizer, template, escapes, council rendering, reply parser | 11.3, 11.3a |
 | `nagaya-text-toy` | the toy family library on gogi's `gogi-toy`, for tests with the fake engine | 11.3b |
 | `nagaya-conformance` | the conformance suite (8.3), generic over the `Engine` trait | 8.3 |
 | `nagaya-telemetry` | the instruments, the stderr log, the OTLP export and the sampler | 9 |
@@ -286,7 +287,8 @@ get ran sometimes, perhaps just a bump in our AGENTS.md"
   Then an absent file fails the test.
 - Do this at least before each merge that touches the crates of that model.
 - gfx1151host holds the Qwen3.8 GGUF at the default path of `NAGAYA_QWEN38_GGUF`.
-- b70host holds Gemma 4 in `~/src/mkviolet/checkpoints/gemma-4-26B-A4B`. No test reads it yet.
+- b70host holds Gemma 4 in `~/src/mkviolet/checkpoints/gemma-4-26B-A4B`. The tests of `nagaya-text-gemma4` read it
+  from `GEMMA4_MODEL_DIR`. The variable has no default, so they skip when it is unset.
 - The report of a check names how many tests skipped for a missing model.
 
 On gfx1151host, run the oracle bench with `MK_ENGINE_LIB` and `MK_SHARDS` set and both units inactive:
