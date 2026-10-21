@@ -11,4 +11,5 @@ mod spec;
 mod worker;
 
 pub use engine::{MkEngine, open};
-pub use worker::{MkError, MkPaths};
+pub use spec::{CONTEXT_CLASSES, ContextClass};
+pub use worker::{ClassReading, MkError, MkPaths};
