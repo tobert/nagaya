@@ -1437,7 +1437,8 @@ Then it exits 1.
 **10.2 Arenas through a restart.** systemd's file-descriptor store keeps the arenas (`FDSTORE=1`). Each fd has the
 name `<engine>/<device>/<part>`. systemd reads `FileDescriptorStoreMax` from the unit file before the process starts.
 The unit file sets a generous ceiling (`FileDescriptorStoreMax=512`), and profile admission (2.4) refuses a profile
-that needs more arena fds than the ceiling. (mkviolet keeps 61 fds under a limit of 64, `systemd/mkviolet.service`.)
+that needs more arena fds than the ceiling. (mkviolet keeps 30 slab fds under a limit of 64,
+`systemd/mkviolet.service`.)
 
 At start, the nagaya does these steps for each engine:
 
@@ -1448,6 +1449,21 @@ At start, the nagaya does these steps for each engine:
    loop.)
 
 `systemctl stop` clears the store. A restart keeps it.
+
+**The names of the fds.** **Proposed** (claude-opus-5-5, 2026-10-21).
+
+- `<engine>` is the engine name in the profile. `<device>` is `device<id>`, with the machine device id (2.4).
+  `<part>` is a name that the engine gives in `arena_export`.
+- mkviolet's parts are `w<ll>` for the slab of layer `ll`, and `head` for the head on card 1. Thus its arena has 31
+  fds, such as `gemma/device1/w15`.
+- mkviolet stores no head today, so a restart uploads the head again. The head is about 1.5 GB: 262,144 rows of 2,816
+  BF16 values. The port gives it a slab.
+- The engine opens its stored fds through `Factory::attach` (engine-abi "The factory gets its devices"). The check is
+  `spot`: the first and last 64 bytes of each tensor (`verify_stored_slab`, `gemma4.rs:287-307`).
+
+mkviolet restarts in 0.9 to 1.2 s from its stored slabs, and a cold start takes 7.4 s (mkviolet `docs/README.md`).
+Thus 10.2 moves into the b70host milestone (`AGENTS.md`), because mkviolet has it now and the port must not lose
+it.
 
 Not built. The unit sets no `FileDescriptorStoreMax`, and the process stores no fd. Each start loads the weights again
 (`docs/deploy.md`).

@@ -48,12 +48,38 @@ trait Engine {
 trait Factory {                  // in the `nagaya` crate, crates/nagaya/src/admission.rs
     fn plan(&self, config: &toml::Table) -> Result<Limits, PlanError>;
     fn open(&self, config: &toml::Table) -> Result<Box<dyn Engine>, OpenError>;
-    // attach(config, arena_set) arrives with arenas through a restart (spec 10.2)
+    // attach(config, arena_set) arrives with arenas through a restart (spec 10.2); see the next section
 }
 ```
 
 The config is a TOML table from the placement profile. The engine parses it and refuses a field that it does not
 know. Thus the nagaya holds every engine as `Box<dyn Engine>`.
+
+**The factory gets its devices.** **Proposed** (claude-opus-5-5, 2026-10-21). Today `open` takes only the config
+(`crates/nagaya/src/admission.rs:73`). mk uses the HIP device that is current on the calling thread.
+
+```rust
+struct GroupDevice { id: DeviceId, name: String, pci_address: String, memory_bytes: u64 }
+
+trait Factory {
+    fn plan(&self, config: &toml::Table, devices: &[GroupDevice]) -> Result<Limits, PlanError>;
+    fn open(&self, config: &toml::Table, devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError>;
+    fn attach(&self, config: &toml::Table, devices: &[GroupDevice], arenas: ArenaSet)
+        -> Result<Box<dyn Engine>, OpenError>;
+}
+```
+
+- `devices` holds the machine devices of the engine, in the order of the profile's `devices` list. The position in
+  the slice is the group index (spec 2.4). `id` is the machine device id.
+- The inventory keeps the PCI address of each device for this. Today `Machine::inventory` drops it
+  (`crates/nagaya/src/probe.rs:76-81`).
+- A Level Zero engine maps each PCI address to its Level Zero device with `zeDevicePciGetPropertiesExt`. It refuses
+  an address that it does not find, and an address that two devices give. mkviolet takes the cards in the order of
+  `zeDeviceGet` (`L0Cluster::init`, `level_zero.rs:745-790`), and that order can differ from the PCI order.
+- A HIP engine selects its device with `hipDeviceGetByPCIBusId` on the thread of its device.
+- An engine that gets the wrong count of devices refuses with `PlanError`.
+
+Reason: the profile names the devices, so the engine must run on those devices and no others.
 
 ## Core (every engine)
 
