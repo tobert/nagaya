@@ -15,7 +15,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use gogi_conformance::{Opts, Status, run};
 use nagaya::admission::Registry;
-use nagaya::cpu_sets::for_machine_with_devices;
+use nagaya::cpu_sets::for_machine_with_devices_ignoring;
 use nagaya::http::{Council, Server, router};
 use nagaya::inventory::Probe;
 use nagaya::lifecycle::{self, Options};
@@ -27,6 +27,9 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 const MODEL: &str = "gemma-4-26b-a4b";
+
+/// The iGPU of b70host drives the display. The b70host config ignores it (spec 2.1, `ignore_devices`).
+const IGNORE: &str = "0000:80:00.0";
 
 fn checkpoint() -> Option<PathBuf> {
     match std::env::var_os("GEMMA4_MODEL_DIR") {
@@ -103,14 +106,17 @@ fn the_process_serves_gemma4_on_both_cards() {
         return;
     };
     let probe = FileProbe::new("/");
-    let inventory = Probe::probe(&probe).expect("the inventory of this machine");
+    let mut inventory = Probe::probe(&probe).expect("the inventory of this machine");
+    let ignore = vec![IGNORE.to_owned()];
+    inventory.ignore(&ignore).expect("the machine has the iGPU");
     for id in [0, 1] {
         let device = inventory.device(id).expect("devices 0 and 1");
         println!("device {id}: {} at {}", device.name, device.pci_address);
+        assert!(!device.ignored, "device {id} is a B70 card, not the ignored iGPU");
     }
     let store = tempfile::tempdir().unwrap();
     let profile = profile(&dir);
-    let sets = for_machine_with_devices(&probe).expect("the CPU sets of this machine");
+    let sets = for_machine_with_devices_ignoring(&probe, &ignore).expect("the CPU sets of this machine");
     let start = Instant::now();
     let mut ready = lifecycle::start_with(
         profile.clone(),
