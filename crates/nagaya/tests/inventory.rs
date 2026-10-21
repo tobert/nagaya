@@ -5,6 +5,7 @@ fn gfx1151host_inventory() -> Inventory {
         devices: vec![Device {
             id: 0,
             name: "gfx1151".to_owned(),
+            pci_address: "0000:00:00.0".to_owned(),
             memory_bytes: 128 << 30,
             unified: true,
         }],

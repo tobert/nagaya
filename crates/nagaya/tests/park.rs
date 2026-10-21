@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use nagaya::admission::{Factory, OpenError, PlanError, Registry};
+use nagaya::admission::{Factory, GroupDevice, OpenError, PlanError, Registry};
 use nagaya::exit::ExitCode;
 use nagaya::inventory::{Device, Inventory};
 use nagaya::park::{StoreBudget, identity_digest, open_store};
@@ -22,11 +22,11 @@ struct SeedFactory {
 }
 
 impl Factory for SeedFactory {
-    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+    fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         Ok(self.limits.clone())
     }
 
-    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
         Ok(Box::new(seeded()))
     }
 }
@@ -111,6 +111,7 @@ fn inventory(ids: &[DeviceId]) -> Inventory {
             .map(|id| Device {
                 id: *id,
                 name: format!("device-{id}"),
+                pci_address: "0000:00:00.0".to_owned(),
                 memory_bytes: 1024,
                 unified: false,
             })
@@ -313,10 +314,10 @@ fn equal_coverage(second: &[u32]) -> FakeAlways {
 fn stop_with(engine: fn() -> FakeAlways) -> (nagaya::process::StopReport, tempfile::TempDir) {
     struct Factory2(fn() -> FakeAlways);
     impl Factory for Factory2 {
-        fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+        fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
             Ok(limits_on(&[0]))
         }
-        fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+        fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
             Ok(Box::new((self.0)()))
         }
     }

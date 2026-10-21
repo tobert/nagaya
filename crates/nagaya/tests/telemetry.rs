@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use nagaya::admission::{Factory, OpenError, OpenErrorKind, PlanError, Registry};
+use nagaya::admission::{Factory, GroupDevice, OpenError, OpenErrorKind, PlanError, Registry};
 use nagaya::inventory::{Device, Inventory};
 use nagaya::lifecycle;
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, StoreSpec, TierSpec};
@@ -54,6 +54,7 @@ fn inventory() -> Inventory {
         devices: vec![Device {
             id: 0,
             name: "device-0".to_owned(),
+            pci_address: "0000:00:00.0".to_owned(),
             memory_bytes: 1024,
             unified: false,
         }],
@@ -79,11 +80,11 @@ fn fake_with_a_token() -> FakeAlways {
 struct TokenFactory;
 
 impl Factory for TokenFactory {
-    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+    fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         Ok(FakeAlways::new().limits())
     }
 
-    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
         Ok(Box::new(fake_with_a_token()))
     }
 }
@@ -91,11 +92,11 @@ impl Factory for TokenFactory {
 struct FailingFactory;
 
 impl Factory for FailingFactory {
-    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+    fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         Ok(FakeAlways::new().limits())
     }
 
-    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
         Err(OpenError {
             kind: OpenErrorKind::Other,
             message: "the weights are absent".to_owned(),
@@ -109,11 +110,11 @@ struct GatedFactory {
 }
 
 impl Factory for GatedFactory {
-    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+    fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         Ok(FakeAlways::new().limits())
     }
 
-    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
         self.gate.lock().unwrap().recv().expect("the test opens the gate");
         Ok(Box::new(FakeAlways::new()))
     }
@@ -332,11 +333,11 @@ struct ParkGateFactory {
 }
 
 impl Factory for ParkGateFactory {
-    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+    fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         Ok(FakeAlways::new().limits())
     }
 
-    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
         Ok(Box::new(ParkGate {
             inner: fake_with_a_token(),
             gate: std::sync::Arc::clone(&self.gate),
@@ -454,11 +455,11 @@ fn an_engine_that_is_still_parking_is_draining() {
 struct SlowFactory;
 
 impl Factory for SlowFactory {
-    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+    fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         Ok(FakeAlways::new().limits())
     }
 
-    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
         std::thread::sleep(Duration::from_millis(400));
         Ok(Box::new(FakeAlways::new()))
     }

@@ -94,8 +94,7 @@ root path is `/` on a machine, and a fixed tree in a test (`crates/nagaya/tests/
 - NVMe: each `nvme<C>n<N>` in `sys/block`. The size is the `size` file in 512-byte sectors.
 - Network: each interface in `sys/class/net` that has a `device` directory. Virtual interfaces have none.
 
-A device id is the position in the list: AMD GPUs first, then Intel, then NVIDIA, each in the order of the kernel
-number.
+A device id is the position in the list, in the order that the next paragraph decides.
 
 Decided 2026-10-21 (Amy, by interview): the device ids follow the PCI address, in the order of domain, bus, device
 and function, for every vendor. Reason: on b70host the vendor order makes the display iGPU device 0, and the

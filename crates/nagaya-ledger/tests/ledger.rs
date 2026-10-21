@@ -36,6 +36,7 @@ fn plan(name: &str, share: u64, memory: MemoryLimits) -> EnginePlan {
     EnginePlan {
         name: name.to_owned(),
         limits,
+        devices: vec![0],
         share,
     }
 }
@@ -147,6 +148,7 @@ fn the_fake_limits_admit() {
         engines: vec![EnginePlan {
             name: "fake".to_owned(),
             limits,
+            devices: vec![0],
             share: 1,
         }],
     };
@@ -205,7 +207,7 @@ fn two_short_budgets_report_two_entries() {
             budget(&[Tier::Host, Tier::Device(0)], 100),
             budget(&[Tier::Device(1)], 100),
         ],
-        engines: vec![plan("a", 1, memory)],
+        engines: vec![plan_on("a", &[0, 1], memory)],
     };
     let mut ledger = Ledger::new();
     let error = ledger.admit(&profile).unwrap_err();
@@ -528,4 +530,124 @@ fn a_profile_that_does_not_fit_the_live_charges_is_refused_and_changes_nothing()
     );
     assert_eq!(ledger, before);
     ledger.release_staging(Tier::Host, 60).unwrap();
+}
+
+// The group index and the machine device (spec 2.4, 4.2): a term names `device(i)`, a position in the devices of the
+// engine. The budget names a machine device.
+
+fn plan_on(name: &str, devices: &[u32], memory: MemoryLimits) -> EnginePlan {
+    EnginePlan {
+        devices: devices.to_vec(),
+        ..plan(name, 1, memory)
+    }
+}
+
+fn two_device_budgets() -> Vec<Budget> {
+    vec![budget(&[Tier::Device(0)], 100), budget(&[Tier::Device(1)], 100)]
+}
+
+#[test]
+fn a_mandatory_term_is_charged_to_the_budget_of_the_machine_device() {
+    let memory = MemoryLimits {
+        mandatory: vec![mandatory("m", Tier::Device(0), 60)],
+        elastic: Vec::new(),
+    };
+    let profile = Profile {
+        budgets: two_device_budgets(),
+        engines: vec![plan_on("a", &[1], memory)],
+    };
+    let mut ledger = Ledger::new();
+    let admission = ledger.admit(&profile).unwrap();
+    assert_eq!(
+        admission.unassigned,
+        vec![(vec![Tier::Device(0)], 100), (vec![Tier::Device(1)], 40)]
+    );
+    assert_eq!(admission.engines[0].mandatory, vec![(Tier::Device(1), 60)]);
+}
+
+#[test]
+fn a_term_that_is_too_big_for_the_machine_device_is_refused_with_that_device() {
+    let memory = MemoryLimits {
+        mandatory: vec![mandatory("m", Tier::Device(0), 130)],
+        elastic: Vec::new(),
+    };
+    let profile = Profile {
+        budgets: two_device_budgets(),
+        engines: vec![plan_on("a", &[1], memory)],
+    };
+    let error = Ledger::new().admit(&profile).unwrap_err();
+    assert_eq!(
+        error,
+        LedgerError::Refused(Refusal {
+            shortfall: vec![(vec![Tier::Device(1)], 30)],
+        })
+    );
+}
+
+#[test]
+fn an_elastic_term_gets_the_spare_bytes_of_the_machine_device() {
+    let memory = MemoryLimits {
+        mandatory: Vec::new(),
+        elastic: vec![elastic("e", Tier::Device(0), 10, 1, 4)],
+    };
+    let profile = Profile {
+        budgets: two_device_budgets(),
+        engines: vec![plan_on("a", &[1], memory)],
+    };
+    let admission = Ledger::new().admit(&profile).unwrap();
+    assert_eq!(admission.engines[0].elastic, vec![("e".to_owned(), 40)]);
+    assert_eq!(
+        admission.unassigned,
+        vec![(vec![Tier::Device(0)], 100), (vec![Tier::Device(1)], 60)]
+    );
+}
+
+#[test]
+fn a_context_term_is_charged_to_the_budget_of_the_machine_device() {
+    let memory = MemoryLimits {
+        mandatory: vec![term_with("context", Tier::Device(0), 30, Lifetime::Context)],
+        elastic: Vec::new(),
+    };
+    let profile = Profile {
+        budgets: two_device_budgets(),
+        engines: vec![plan_on("a", &[1], memory)],
+    };
+    let mut ledger = Ledger::new();
+    ledger.admit(&profile).unwrap();
+    ledger.admit_context("a").unwrap();
+    assert_eq!(
+        ledger.unassigned(),
+        vec![(vec![Tier::Device(0)], 100), (vec![Tier::Device(1)], 70)]
+    );
+    ledger.release_context("a").unwrap();
+    assert_eq!(
+        ledger.unassigned(),
+        vec![(vec![Tier::Device(0)], 100), (vec![Tier::Device(1)], 100)]
+    );
+}
+
+#[test]
+fn a_group_index_beyond_the_devices_of_the_engine_is_invalid() {
+    let memory = MemoryLimits {
+        mandatory: vec![mandatory("m", Tier::Device(1), 10)],
+        elastic: Vec::new(),
+    };
+    let profile = Profile {
+        budgets: two_device_budgets(),
+        engines: vec![plan_on("a", &[1], memory)],
+    };
+    assert!(matches!(Ledger::new().admit(&profile), Err(LedgerError::Invalid(_))));
+}
+
+#[test]
+fn a_machine_device_with_no_budget_is_invalid() {
+    let memory = MemoryLimits {
+        mandatory: vec![mandatory("m", Tier::Device(0), 10)],
+        elastic: Vec::new(),
+    };
+    let profile = Profile {
+        budgets: vec![budget(&[Tier::Device(0)], 100)],
+        engines: vec![plan_on("a", &[1], memory)],
+    };
+    assert!(matches!(Ledger::new().admit(&profile), Err(LedgerError::Invalid(_))));
 }

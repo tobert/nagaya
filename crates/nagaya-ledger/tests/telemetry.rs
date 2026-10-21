@@ -11,6 +11,7 @@ fn plan(name: &str, memory: MemoryLimits) -> EnginePlan {
     EnginePlan {
         name: name.to_owned(),
         limits,
+        devices: vec![0],
         share: 1,
     }
 }

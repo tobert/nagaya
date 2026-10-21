@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use nagaya::admission::{Factory, OpenErrorKind, Registry, admit};
+use nagaya::admission::{Factory, GroupDevice, OpenErrorKind, Registry, admit};
 use nagaya::exit::ExitCode;
 use nagaya::inventory::{Device, Inventory, Probe};
 use nagaya::lifecycle;
@@ -113,6 +113,7 @@ fn a_missing_variable_refuses_the_start_with_exit_3_and_names_the_variable() {
         devices: vec![Device {
             id: 0,
             name: "gfx1151".to_owned(),
+            pci_address: "0000:c2:00.0".to_owned(),
             memory_bytes: 133_143_986_176,
             unified: true,
         }],
@@ -148,11 +149,11 @@ fn plan_refuses_a_library_or_a_shard_that_is_not_a_file() {
     let table = config("weights_bytes = 1000");
     install.export();
     set(LIB, Some(&install.library.with_extension("gone")));
-    let message = MkFactory.plan(&table).unwrap_err().to_string();
+    let message = MkFactory.plan(&table, &[gfx1151host_device()]).unwrap_err().to_string();
     assert!(message.contains(LIB) && message.contains("gone"), "{message}");
     install.export();
     std::fs::remove_file(&install.shards[1]).unwrap();
-    let message = MkFactory.plan(&table).unwrap_err().to_string();
+    let message = MkFactory.plan(&table, &[gfx1151host_device()]).unwrap_err().to_string();
     assert!(message.contains(SHARDS) && message.contains("two.gguf"), "{message}");
 }
 
@@ -161,7 +162,9 @@ fn plan_declares_the_weights_term_from_the_config() {
     let _env = ENV.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let install = Install::new();
     install.export();
-    let limits = MkFactory.plan(&config("weights_bytes = 65498251264")).unwrap();
+    let limits = MkFactory
+        .plan(&config("weights_bytes = 65498251264"), &[gfx1151host_device()])
+        .unwrap();
     let weights = limits
         .memory
         .mandatory
@@ -185,7 +188,10 @@ fn plan_refuses_a_config_without_a_usable_weights_size_or_with_an_unknown_key() 
         ("weights_bytes = \"big\"", "weights_bytes"),
         ("weights_bytes = 1000\nslots = 4", "slots"),
     ] {
-        let message = MkFactory.plan(&config(text)).unwrap_err().to_string();
+        let message = MkFactory
+            .plan(&config(text), &[gfx1151host_device()])
+            .unwrap_err()
+            .to_string();
         assert!(message.contains(needle), "config `{text}` gave `{message}`");
     }
 }
@@ -238,4 +244,31 @@ fn the_gfx1151host_profile_admits_on_the_probed_gfx1151host_with_the_mk_factory(
     let admitted = admit(&profile, &Registry::with_mk(), &inventory, &mut Ledger::new()).expect("gfx1151host admits");
     assert_eq!(admitted.engines.len(), 1);
     assert_eq!(admitted.engines[0].name, "mk");
+}
+
+fn gfx1151host_device() -> GroupDevice {
+    GroupDevice {
+        id: 0,
+        name: "gfx1151".to_owned(),
+        pci_address: "0000:c2:00.0".to_owned(),
+        memory_bytes: 133_143_986_176,
+    }
+}
+
+#[test]
+fn plan_and_open_refuse_a_group_of_any_size_but_one() {
+    let _env = ENV.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let install = Install::new();
+    install.export();
+    let table = config("weights_bytes = 1000");
+    for devices in [vec![], vec![gfx1151host_device(), gfx1151host_device()]] {
+        let message = MkFactory.plan(&table, &devices).unwrap_err().to_string();
+        assert!(message.contains("exactly one device"), "{message}");
+        let message = MkFactory
+            .open(&table, &devices)
+            .err()
+            .expect("open refuses")
+            .to_string();
+        assert!(message.contains("exactly one device"), "{message}");
+    }
 }
