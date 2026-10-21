@@ -44,8 +44,16 @@ fn segment(state: State, tokens: &[u32]) -> Segment {
 /// A fake with two slots. The park writes every slot, so the test keeps the count at two.
 fn two_slots() -> FakeAlways {
     FakeAlways::with_slots(vec![
-        SlotLimit { bytes: 64, count: 1 },
-        SlotLimit { bytes: 256, count: 1 },
+        SlotLimit {
+            bytes: 64,
+            count: 1,
+            tokens: 4096,
+        },
+        SlotLimit {
+            bytes: 256,
+            count: 1,
+            tokens: 4096,
+        },
     ])
 }
 
@@ -69,6 +77,7 @@ fn engine(name: &str, kind: &str, devices: &[DeviceId]) -> EnginePlacement {
         kind: kind.to_owned(),
         devices: devices.to_vec(),
         config: toml::Table::new(),
+        family: toml::Table::new(),
         share: 1,
         pin_identity: false,
     }
