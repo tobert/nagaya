@@ -1,6 +1,7 @@
 //! The process crate: bootstrap config, inventory, placement, admission, threads and lifecycle.
 
 pub mod admission;
+pub mod affinity;
 pub mod bootstrap;
 pub mod cpu_sets;
 pub mod exit;
