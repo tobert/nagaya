@@ -5,9 +5,10 @@ use std::sync::Arc;
 
 #[cfg(feature = "fake")]
 use nagaya_abi::fake::FakeAlways;
-use nagaya_abi::{DeviceId, Engine, Limits, Tier};
+use nagaya_abi::{ArenaFd, ArenaPart, CheckStrength, DeviceId, Engine, Limits, Tier};
 use nagaya_ledger::{Admission, Budget, EnginePlan, Ledger, LedgerError, Profile};
 
+use crate::arena::FdName;
 use crate::inventory::{Device, Inventory};
 use crate::placement::{DeviceError, check_devices, check_ignored};
 use crate::profile::{EnginePlacement, PlacementProfile};
@@ -107,13 +108,47 @@ pub fn group_devices(engine: &EnginePlacement, inventory: &Inventory) -> Result<
         .collect()
 }
 
-/// The factory of one engine kind (ABI "Rust shape").
+/// An engine that opened on a stored arena, and the strength of the check of that arena (spec 10.2).
+pub struct Attached {
+    /// The engine.
+    pub engine: Box<dyn Engine>,
+    /// How much of the arena the check compared with the build.
+    pub check: CheckStrength,
+}
+
+/// Why an engine did not open on a stored arena.
+#[derive(Debug)]
+pub enum AttachError {
+    /// The arena does not match the build. Nothing is open, and the process can load the engine cold.
+    Mismatch(String),
+    /// The arena matched, and the open failed.
+    Open(OpenError),
+}
+
+/// The factory of one engine kind (ABI "Rust shape", "Arena calls in v0").
 pub trait Factory {
     /// Give the engine's limits for a config. `devices` are the machine devices of the engine.
     fn plan(&self, config: &toml::Table, devices: &[GroupDevice]) -> Result<Limits, PlanError>;
 
     /// Open the engine on the calling thread. The process calls this on the group thread.
     fn open(&self, config: &toml::Table, devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError>;
+
+    /// Give the parts of the arena that `arena_export` gives after an open. It reads no weights, as `plan` does. A
+    /// kind with no arena gives no part.
+    fn arena_parts(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Vec<ArenaPart>, PlanError> {
+        Ok(Vec::new())
+    }
+
+    /// Check a stored arena against the build, and open the engine on it. The process calls this on the group
+    /// thread. A mismatch opens nothing. A kind with no arena refuses each arena.
+    fn attach(
+        &self,
+        _config: &toml::Table,
+        _devices: &[GroupDevice],
+        _arenas: Vec<ArenaFd>,
+    ) -> Result<Attached, AttachError> {
+        Err(AttachError::Mismatch("the engine kind keeps no arena".to_owned()))
+    }
 }
 
 /// The factories by engine kind.
@@ -178,6 +213,7 @@ impl Registry {
         self.register("fake", Box::new(FakeFactory));
         self.register("fake-panic", Box::new(PanicFactory));
         self.register(FAKE_TOY_KIND, Box::new(FakeToyFactory));
+        self.register(FAKE_ARENA_KIND, Box::new(FakeArenaFactory));
     }
 }
 
@@ -211,6 +247,13 @@ pub enum AdmitError {
     Ledger(LedgerError),
     /// A profile device is missing or differs from the plan.
     Device(DeviceError),
+    /// The profile needs more arena fds than the fd store keeps (spec 10.2).
+    ArenaFds {
+        /// The arena fds of the profile.
+        needed: usize,
+        /// The ceiling of the fd store, from `$FDSTORE`.
+        ceiling: usize,
+    },
     /// The process is stopping and takes no new work (spec 10.3).
     Stopping,
 }
@@ -236,6 +279,11 @@ impl std::fmt::Display for AdmitError {
             AdmitError::Device(error) => {
                 write!(formatter, "the profile cannot be admitted: {error}")
             }
+            AdmitError::ArenaFds { needed, ceiling } => write!(
+                formatter,
+                "the profile needs {needed} arena fds, and the fd store keeps {ceiling}; raise \
+                 FileDescriptorStoreMax in the unit, or remove an engine"
+            ),
             AdmitError::Stopping => write!(formatter, "the process is stopping"),
         }
     }
@@ -249,6 +297,7 @@ impl std::error::Error for AdmitError {
             AdmitError::UnknownKind { .. }
             | AdmitError::Plan { .. }
             | AdmitError::Limits { .. }
+            | AdmitError::ArenaFds { .. }
             | AdmitError::Stopping => None,
         }
     }
@@ -261,6 +310,8 @@ pub struct AdmittedEngine {
     pub name: String,
     /// The result of `plan(config)` that the ledger admitted.
     pub limits: Limits,
+    /// The parts of the arena of the engine, from `arena_parts` (spec 10.2).
+    pub arena_parts: Vec<ArenaPart>,
 }
 
 /// The result of admitting a profile.
@@ -329,6 +380,57 @@ impl Factory for FakeToyFactory {
     }
 }
 
+/// The kind of the fake engine with an arena in a memfd (spec 10.2). The config key `arena` gives its bytes.
+#[cfg(feature = "fake")]
+pub const FAKE_ARENA_KIND: &str = "fake-arena";
+
+/// The factory of the fake engine with an arena. The tests of the fd store use it.
+#[cfg(feature = "fake")]
+pub struct FakeArenaFactory;
+
+#[cfg(feature = "fake")]
+impl FakeArenaFactory {
+    /// The bytes of the arena: the config key `arena`, or a fixed text.
+    fn bytes(config: &toml::Table) -> Vec<u8> {
+        match config.get("arena") {
+            Some(value) => value
+                .as_str()
+                .expect("the key `arena` of the fake is a string")
+                .as_bytes()
+                .to_vec(),
+            None => b"the arena of the fake".to_vec(),
+        }
+    }
+}
+
+#[cfg(feature = "fake")]
+impl Factory for FakeArenaFactory {
+    fn plan(&self, config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
+        Ok(FakeAlways::with_arena(&Self::bytes(config)).limits())
+    }
+
+    fn open(&self, config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
+        Ok(Box::new(FakeAlways::with_arena(&Self::bytes(config))))
+    }
+
+    fn arena_parts(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Vec<ArenaPart>, PlanError> {
+        Ok(FakeAlways::arena_parts())
+    }
+
+    fn attach(
+        &self,
+        config: &toml::Table,
+        _devices: &[GroupDevice],
+        arenas: Vec<ArenaFd>,
+    ) -> Result<Attached, AttachError> {
+        let (engine, check) = FakeAlways::attach_arena(arenas, &Self::bytes(config)).map_err(AttachError::Mismatch)?;
+        Ok(Attached {
+            engine: Box::new(engine),
+            check,
+        })
+    }
+}
+
 /// The factory of a fake engine that panics on open. The tests use it for the panic path (spec 8.5).
 #[cfg(feature = "fake")]
 pub struct PanicFactory;
@@ -344,12 +446,52 @@ impl Factory for PanicFactory {
     }
 }
 
-/// Admit a placement profile with the ledger, before any engine opens.
+/// Admit a placement profile with the ledger, before any engine opens. A process with no fd store counts no arena
+/// fd (spec 10.2).
 pub fn admit(
     profile: &PlacementProfile,
     registry: &Registry,
     inventory: &Inventory,
     ledger: &mut Ledger,
+) -> Result<Admitted, AdmitError> {
+    admit_with_fd_ceiling(profile, registry, inventory, ledger, None)
+}
+
+/// The names of the stored fds of an engine's arena parts. A name that systemd refuses, or a part on a device
+/// that the group lacks, is a plan error.
+fn arena_names(
+    engine: &EnginePlacement,
+    parts: &[ArenaPart],
+    devices: &[GroupDevice],
+) -> Result<Vec<FdName>, AdmitError> {
+    let fail = |message: String| AdmitError::Plan {
+        engine: engine.name.clone(),
+        message,
+    };
+    parts
+        .iter()
+        .map(|part| {
+            let device = devices.get(part.device).ok_or_else(|| {
+                fail(format!(
+                    "the arena part `{}` is on device {} of the group, and the group has {} devices",
+                    part.part,
+                    part.device,
+                    devices.len()
+                ))
+            })?;
+            FdName::new(&engine.name, device.id, &part.part).map_err(fail)
+        })
+        .collect()
+}
+
+/// Admit a placement profile as [`admit`] does. When `fd_ceiling` is given, refuse a profile whose arena fds are
+/// more than the ceiling (spec 10.2).
+pub fn admit_with_fd_ceiling(
+    profile: &PlacementProfile,
+    registry: &Registry,
+    inventory: &Inventory,
+    ledger: &mut Ledger,
+    fd_ceiling: Option<usize>,
 ) -> Result<Admitted, AdmitError> {
     // An ignored device gets no work (spec 2.1), so refuse before any plan runs.
     check_ignored(profile, inventory).map_err(AdmitError::Device)?;
@@ -383,9 +525,17 @@ pub fn admit(
                 why: "no pass can run with zero segments",
             });
         }
+        let arena_parts = factory
+            .arena_parts(&engine.config, &devices)
+            .map_err(|error| AdmitError::Plan {
+                engine: engine.name.clone(),
+                message: error.to_string(),
+            })?;
+        arena_names(engine, &arena_parts, &devices)?;
         planned.push(AdmittedEngine {
             name: engine.name.clone(),
             limits: limits.clone(),
+            arena_parts,
         });
         engines.push(EnginePlan {
             name: engine.name.clone(),
@@ -395,6 +545,12 @@ pub fn admit(
         });
     }
     check_devices(profile, &planned, inventory).map_err(AdmitError::Device)?;
+    let needed: usize = planned.iter().map(|engine| engine.arena_parts.len()).sum();
+    if let Some(ceiling) = fd_ceiling
+        && needed > ceiling
+    {
+        return Err(AdmitError::ArenaFds { needed, ceiling });
+    }
     let admission = ledger
         .admit(&Profile { budgets, engines })
         .map_err(AdmitError::Ledger)?;
