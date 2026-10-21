@@ -132,8 +132,16 @@ close        close()                     frees the engine in the process
 An engine without `close` stays open until the process exits. The nagaya changes such an engine only through a
 planned restart (spec 3.3, exit code 4). Its `Drop` does not free it, and a comment says why. Decided 2026-10-18.
 
-**Open:** the park uses one row count, `slot_high`, for every row part of a slot, so an engine whose row parts differ
-needs per-part coverage.
+**Per-part coverage.** **Proposed** (claude-opus-5-5, 2026-10-21). This closes the old note: the park used one row
+count, `slot_high`, for every row part of a slot.
+
+- The park and the staging charge (spec 4.2) read `coverage(state, part)` for each cells part and each ring part.
+  They store and count the rows of that coverage.
+- `slot_high` stays the token count of the slot. A count of 0 means that the slot holds no token (spec 10.3).
+- An engine whose row parts hold different rows must declare `coverage`. mkviolet's do (below).
+
+Reason: in a long slot, a sliding layer of Gemma 4 holds the last 4,096 positions, and a global layer holds every
+position. One count cannot give both.
 
 `parts` works on any `state` (a context handle or a slot index). `part_write` and `cells_write` return one of three
 results (spec 6.8):
@@ -450,12 +458,33 @@ check.
 | arena | 30 DMA-BUF slabs, one for each layer on its card (`slab_fd_name(l, card)`, `main.rs:76-108`), `verify_stored_slab` | spot check: first and last 64 bytes per tensor; the head has no slab today |
 | slots | `set_slot`, `kv_high`, `slot_clear` | no contexts, no stored token count, no fork |
 | parts | `save_kv_layer_from` (a range read), `load_kv`, `load_kv_layer` | `state` is the slot index; KV only: cells on global layers, ring on sliding layers |
+| part names | the K and V planes of each layer (`KvSnapshot`) | `k.<ll>` and `v.<ll>`, F32, two digits for the layer; see "mkviolet's parts" |
 | geometry / coverage | slot size, ring rows (`kv_ring`, `kv_keep_from`); `KvSnapshot::join` is the fit check | changes rows held, not bits, so no `geometry_key`; today's id is a recipe (`snapshot_id`, `held.rs:329-342`) |
 | pass | `run_card0` then `run_card1`; `pipeline_stage` for jobs in flight on both cards (`gemma4.rs:1438-1505`) | the nagaya's scheduler takes the place of `pipeline_stage` (D1) |
 | segments | `PipeJob`; `branch_block` with per-token `meta` | a branch block is atomic and is not a snapshot |
 | inputs | tokens; `write_embeddings` looks up the rows on the host and puts them into `Buf::X` (`gemma4.rs:1376-1384`) | tokens (D2) |
 | class | `CardLock`, `GpuLock` | moves out of the engine into the nagaya scheduler, one choice for each device (D1) |
 | determinism | `always`, with a feed rule (D11) | bits depend on the token count of a pass; the first port runs one recipe in two starts and compares content ids |
+
+### mkviolet's parts
+
+**Proposed** (claude-opus-5-5, 2026-10-21). mkviolet keeps only KV (`new_slots`, `gemma4.rs:444-475`). The device
+holds each layer's K and V as F32 planes. These parts follow from that layout:
+
+- Each layer has two parts, `k.<ll>` and `v.<ll>`, with `ll` the layer in two digits. The dtype is F32, so the store
+  converts no value.
+- A global layer is a layer `l` with `l % 6 == 5`: 5, 11, 17, 23 and 29 (`layer_geom`, `gemma4.rs:93-99`). Its parts
+  are cells, with the row shape [2, 512]. Its coverage is positions 0 to n.
+- Each other layer is a sliding layer. Its parts are rings of 4,096 rows (`KV_RING_ROWS`), with the row shape
+  [8, 256]. In a slot of 4,096 positions or fewer the ring never wraps, so the coverage is 0 to n. In a longer slot
+  it is the last 4,096 positions (`kv_ring`, `kv_keep_from`, `gemma4.rs:30-65`).
+- A ring plane has 1,024 more rows of spill (`KV_RING_SPILL`), which `OP_COPY` moves to the start of the ring. The
+  spill is a device layout, so the canonical file never holds it.
+- The canonical file (D10) unrolls each ring into position order. A token costs 450,560 bytes in all parts
+  (`kv_bytes_per_token`).
+- Each part names its stage (D1): layers 0-14 are stage 0 on card 0, and layers 15-29 are stage 1 on card 1.
+- `fits` follows `KvSnapshot::join` (`gemma4.rs:940-978`). A ring part that starts after position 0 fits only a slot
+  with a ring.
 
 ## Decisions
 

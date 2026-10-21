@@ -732,9 +732,12 @@ Decided 2026-10-18 evening.
 only when it is at most a quarter of a full snapshot.) A delta holds, for each cells part and ring part, the rows
 after its parent's end. It holds each fixed part whole. The store never evicts a base while a delta needs it.
 
-**Open** (kaibo, 2026-10-20): a ring part can wrap past its parent's end. Then the rows after the parent's end are
-gone, and check 4 refuses the delta. The refusal changes nothing, so nothing is corrupt. A rule for a wrapped ring,
-for example a ring part held whole, comes with the mkviolet port.
+A ring part can wrap past its parent's end (kaibo, 2026-10-20). Then the rows after the parent's end are gone, and
+check 4 refuses the delta. The refusal changes nothing, so nothing is corrupt.
+
+**Proposed** (claude-opus-5-5, 2026-10-21): a ring part can start after the end of the parent. Then the build puts a
+whole snapshot with no parent. Check 4 stays as it is. Reason: the store needs no new rule. A ring held whole in the
+delta holds 4,096 rows of each sliding layer of mkviolet. That is close to the size of a whole snapshot.
 
 A delta's `put` names its parent content id and its previous recipe. The store checks these facts:
 
