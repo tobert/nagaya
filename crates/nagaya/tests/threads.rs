@@ -485,9 +485,11 @@ fn an_open_that_never_ends_reaches_the_wait_timeout() {
     }
 }
 
+type Seen = Arc<Mutex<Vec<(&'static str, Vec<GroupDevice>)>>>;
+
 /// A factory that keeps the devices that `plan` and `open` get.
 struct DevicesFactory {
-    seen: Arc<Mutex<Vec<(&'static str, Vec<GroupDevice>)>>>,
+    seen: Seen,
 }
 
 impl Factory for DevicesFactory {
