@@ -3,7 +3,7 @@
 
 #![allow(dead_code)]
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -40,7 +40,12 @@ pub struct FeedFactory {
     pub delay_ms: Arc<AtomicU64>,
     /// The stage, the start and the end of each stage quantum.
     pub log: StageLog,
+    /// The stage whose next quantum panics, or `NO_STAGE`.
+    pub panic_stage: Arc<AtomicUsize>,
 }
+
+/// The value of `panic_stage` when no stage panics.
+pub const NO_STAGE: usize = usize::MAX;
 
 /// The stage, the start and the end of each stage quantum.
 pub type StageLog = Arc<Mutex<Vec<(usize, Instant, Instant)>>>;
@@ -52,6 +57,7 @@ impl FeedFactory {
             opened_on: Arc::default(),
             delay_ms: Arc::default(),
             log: Arc::default(),
+            panic_stage: Arc::new(AtomicUsize::new(NO_STAGE)),
         }
     }
 }
@@ -61,6 +67,7 @@ pub struct Traced {
     inner: FakeFeed,
     delay_ms: Arc<AtomicU64>,
     log: StageLog,
+    panic_stage: Arc<AtomicUsize>,
 }
 
 impl Engine for Traced {
@@ -114,6 +121,7 @@ impl Stages for Traced {
                     inner,
                     delay_ms: Arc::clone(&self.delay_ms),
                     log: Arc::clone(&self.log),
+                    panic_stage: Arc::clone(&self.panic_stage),
                 }) as Box<dyn StageHandle + Send>
             })
             .collect()
@@ -125,10 +133,14 @@ struct TracedStage {
     inner: Box<dyn StageHandle + Send>,
     delay_ms: Arc<AtomicU64>,
     log: StageLog,
+    panic_stage: Arc<AtomicUsize>,
 }
 
 impl StageHandle for TracedStage {
     fn stage_pass(&mut self, segments: &[nagaya_abi::Segment], residual: &mut Residual) -> Result<StageOut, PassError> {
+        if self.panic_stage.load(Ordering::SeqCst) == self.stage {
+            panic!("stage {} breaks on purpose", self.stage);
+        }
         let start = Instant::now();
         std::thread::sleep(Duration::from_millis(self.delay_ms.load(Ordering::SeqCst)));
         let out = self.inner.stage_pass(segments, residual);
@@ -191,6 +203,7 @@ impl Factory for FeedFactory {
             inner: engine(self.stages),
             delay_ms: Arc::clone(&self.delay_ms),
             log: Arc::clone(&self.log),
+            panic_stage: Arc::clone(&self.panic_stage),
         }))
     }
 }
@@ -255,11 +268,20 @@ impl FeedFixture {
 
     /// A fixture with this factory and this watchdog timeout.
     pub fn with(factory: FeedFactory, timeout: Duration) -> Self {
+        Self::with_sets(factory, timeout, None)
+    }
+
+    /// A fixture with this factory, this watchdog timeout and these CPU sets.
+    pub fn with_sets(factory: FeedFactory, timeout: Duration, sets: Option<nagaya::cpu_sets::CpuSets>) -> Self {
         let stages = factory.stages;
         let directory = tempfile::tempdir().unwrap();
         let mut registry = Registry::new();
         registry.register("feed", Box::new(factory.clone()));
-        let mut process = Start::new(profile(stages), registry, inventory(stages))
+        let mut start = Start::new(profile(stages), registry, inventory(stages));
+        if let Some(sets) = sets {
+            start = start.cpu_sets(sets);
+        }
+        let mut process = start
             .store(directory.path())
             .heartbeat(Duration::from_millis(10))
             .timeout(timeout)

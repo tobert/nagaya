@@ -22,9 +22,24 @@ pub struct CpuSets {
     pub housekeeping: Vec<u32>,
     /// Every other online CPU. The CPU worker pool runs here.
     pub pool: Vec<u32>,
+    /// The set of each machine device, by device id (spec 3.2b). Empty when no device rule was built.
+    pub devices: Vec<Vec<u32>>,
 }
 
 impl CpuSets {
+    /// The set of the stage thread of a machine device (spec 3.2b).
+    ///
+    /// The plain split (`split`) builds no device rule, and then each device has the pool set. A set that has a device
+    /// rule and no entry for `id` is a defect, and this call panics.
+    pub fn device(&self, id: u32) -> &[u32] {
+        if self.devices.is_empty() {
+            return &self.pool;
+        }
+        self.devices
+            .get(id as usize)
+            .unwrap_or_else(|| panic!("the CPU sets have no entry for device {id}"))
+    }
+
     /// The number of threads in the CPU worker pool. It is one for each CPU in the pool set.
     pub fn pool_size(&self) -> usize {
         self.pool.len()
@@ -38,6 +53,8 @@ pub enum CpuSetError {
     TooFewCpus { online: usize, needed: usize },
     /// The list is not sorted, or a CPU number repeats. `index` is the first position that breaks the order.
     NotIncreasing { index: usize },
+    /// The CPUs near a device hold no pool CPU. The device cannot get a set (spec 3.2b).
+    NoPoolCpu { device: usize },
 }
 
 impl fmt::Display for CpuSetError {
@@ -51,6 +68,10 @@ impl fmt::Display for CpuSetError {
             Self::NotIncreasing { index } => write!(
                 f,
                 "The online CPU list breaks the order at index {index}. Pass each CPU number once, in increasing order."
+            ),
+            Self::NoPoolCpu { device } => write!(
+                f,
+                "Device {device} has no pool CPU near it. Check the CPU lists of the device and of the L3 caches."
             ),
         }
     }
@@ -76,7 +97,44 @@ pub fn split(online: &[u32]) -> Result<CpuSets, CpuSetError> {
     Ok(CpuSets {
         housekeeping: housekeeping.to_vec(),
         pool: pool.to_vec(),
+        devices: Vec::new(),
     })
+}
+
+/// Make the set of each device (spec 3.2b). `local` holds the `local_cpulist` of each device, by device id.
+///
+/// - A machine with fewer than two devices has nothing to separate, so the device keeps the pool set.
+/// - A device whose local list holds every online CPU has no locality. It takes one L3 domain, in the order of the
+///   device ids. With more such devices than domains, the devices take the domains in turn.
+/// - Another device takes the CPUs of its local list.
+///
+/// Each set holds only pool CPUs. A set with none is an error.
+pub fn device_sets(
+    pool: &[u32],
+    online: &[u32],
+    domains: &[Vec<u32>],
+    local: &[Vec<u32>],
+) -> Result<Vec<Vec<u32>>, CpuSetError> {
+    if local.len() < 2 {
+        return Ok(local.iter().map(|_| pool.to_vec()).collect());
+    }
+    let mut without_locality = 0;
+    let mut sets = Vec::with_capacity(local.len());
+    for (device, cpus) in local.iter().enumerate() {
+        let near: &[u32] = if online.iter().all(|cpu| cpus.contains(cpu)) && !domains.is_empty() {
+            let domain = &domains[without_locality % domains.len()];
+            without_locality += 1;
+            domain
+        } else {
+            cpus
+        };
+        let set: Vec<u32> = pool.iter().copied().filter(|cpu| near.contains(cpu)).collect();
+        if set.is_empty() {
+            return Err(CpuSetError::NoPoolCpu { device });
+        }
+        sets.push(set);
+    }
+    Ok(sets)
 }
 
 /// Why the process cannot make its CPU sets at start.
@@ -110,4 +168,27 @@ impl std::error::Error for CpuSetupError {}
 pub fn for_machine(probe: &FileProbe) -> Result<CpuSets, CpuSetupError> {
     let online = probe.online_cpus().map_err(CpuSetupError::Probe)?;
     split(&online).map_err(CpuSetupError::Split)
+}
+
+/// Make the CPU sets, and the set of each device, from the file probe (spec 3.2a, 3.2b).
+///
+/// The probe lists the devices and reads their CPU lists only when the machine has two or more. A machine with one
+/// device needs no separation, so its files are not read.
+pub fn for_machine_with_devices(probe: &FileProbe) -> Result<CpuSets, CpuSetupError> {
+    let mut sets = for_machine(probe)?;
+    let machine = probe.machine().map_err(CpuSetupError::Probe)?;
+    let count = machine.devices.len();
+    if count < 2 {
+        sets.devices = vec![sets.pool.clone(); count];
+        return Ok(sets);
+    }
+    let local = machine
+        .devices
+        .iter()
+        .map(|facts| probe.local_cpus(&facts.device.pci_address))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(CpuSetupError::Probe)?;
+    let domains = probe.l3_domains(&machine.cpus).map_err(CpuSetupError::Probe)?;
+    sets.devices = device_sets(&sets.pool, &machine.cpus, &domains, &local).map_err(CpuSetupError::Split)?;
+    Ok(sets)
 }

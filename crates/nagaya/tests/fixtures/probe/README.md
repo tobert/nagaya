@@ -13,6 +13,10 @@ The b70host tree is real. The capture copied only the files that the probe reads
 three lines. Each symlink was resolved, and the files sit at the path of the link. A network speed that the kernel
 refuses to read (a down link) is stored as `-1`. The tree holds the two Xe cards, the AMD display GPU and three NICs.
 
+The b70host tree also holds the files of the device CPU sets (spec 3.2b): `local_cpulist` of the three GPUs, and
+`cache/index3/shared_cpu_list` of each CPU. The capture copied them from the machine. The gfx1151host and sm121host trees
+have none of them, because a machine with one card reads no CPU list.
+
 The tree for sm121host is made by hand. The coder could not read that machine. The values come from the kernel docs for
 the NVIDIA layout, and from the spec table (2.1). Treat each number in it as a guess. These are guesses:
 

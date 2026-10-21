@@ -687,6 +687,7 @@ impl Start {
             let group_store = store_tx.clone();
             let group_accepting = Arc::clone(&accepting);
             let group_cpus = pool.clone();
+            let group_sets = cpu_sets.clone();
             let group_machine = machine.clone();
             let group_own = stop_tx.clone();
             let handle = spawn_named(format!("nagaya-group-{index}"), move || {
@@ -700,7 +701,7 @@ impl Start {
                         store: group_store,
                         accepting: group_accepting,
                         machine: group_machine,
-                        cpus: group_cpus,
+                        sets: group_sets,
                     };
                     group_thread(index, jobs, links, heartbeat);
                 });
@@ -784,8 +785,8 @@ struct GroupLinks {
     store: Option<Sender<StoreMessage>>,
     accepting: Arc<AtomicBool>,
     machine: Machine,
-    /// The pool set, which the group thread and its stage threads pin to (spec 3.2a).
-    cpus: Option<Vec<u32>>,
+    /// The CPU sets, from which each stage thread takes the set of its device (spec 3.2b).
+    sets: Option<CpuSets>,
 }
 
 fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: Duration) {
@@ -797,7 +798,7 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
         store,
         accepting,
         machine,
-        cpus,
+        sets,
     } = links;
     let _ = heartbeats.send(WatchMessage::Beat {
         group,
@@ -879,7 +880,7 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
             own,
             store,
             accepting,
-            cpus,
+            sets,
         };
         staged::serve(group, engines, opened, links, interval);
         return;
