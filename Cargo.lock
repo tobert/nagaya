@@ -921,6 +921,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nagaya-mk-gemma4-bmg"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "nagaya-mk-qwen38-gfx1151"
 version = "0.1.0"
 dependencies = [

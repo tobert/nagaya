@@ -1,0 +1,14 @@
+[package]
+name = "nagaya-mk-gemma4-bmg"
+version = "0.1.0"
+edition = "2024"
+
+# The feature `xe` builds the kernels with `ocloc` and links Level Zero. With no feature, the crate needs no card.
+[features]
+xe = []
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+# mkviolet builds serde_json with `preserve_order`. The workspace build has it too (nagaya-text-qwen38).
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+sha2 = "0.10.9"
