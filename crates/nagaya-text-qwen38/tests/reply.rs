@@ -122,6 +122,9 @@ fn the_fixture_holds_many_kinds_of_reply() {
 
 #[test]
 fn each_token_has_the_phase_and_the_piece_of_mk() {
+    if common::absent() {
+        return;
+    }
     let (f, cases) = cases();
     for case in &cases {
         let name = case.get("name").str();
@@ -140,6 +143,9 @@ fn each_token_has_the_phase_and_the_piece_of_mk() {
 
 #[test]
 fn the_reply_is_the_reply_of_mk() {
+    if common::absent() {
+        return;
+    }
     let (f, cases) = cases();
     for case in &cases {
         let name = case.get("name").str();
@@ -162,6 +168,9 @@ fn the_reply_is_the_reply_of_mk() {
 
 #[test]
 fn the_finish_follows_how_the_reply_ended() {
+    if common::absent() {
+        return;
+    }
     let (f, cases) = cases();
     let mut tool_use = 0;
     let mut end_turn = 0;
@@ -189,6 +198,9 @@ fn the_finish_follows_how_the_reply_ended() {
 
 #[test]
 fn a_full_context_is_its_own_finish() {
+    if common::absent() {
+        return;
+    }
     let (f, cases) = cases();
     let case = &cases[0];
     let tools = toolset(&f, case.get("tools"));
@@ -204,6 +216,9 @@ fn a_full_context_is_its_own_finish() {
 /// keeps the rule in every case. The `piece` of a token does not: it holds the marker text (see the report).
 #[test]
 fn the_released_text_follows_the_piece_rule_of_gogi() {
+    if common::absent() {
+        return;
+    }
     use nagaya_text_qwen38::pystr::strip;
     let (f, cases) = cases();
     for case in &cases {
@@ -228,6 +243,9 @@ fn the_released_text_follows_the_piece_rule_of_gogi() {
 
 #[test]
 fn the_phase_now_is_the_phase_after_everything_pushed() {
+    if common::absent() {
+        return;
+    }
     let t = tokenizer();
     let tools = Json::parse(r#"[{"type":"function","function":{"name":"f"}}]"#).unwrap();
     let mut p = ReplyParser::new(t, true, Some(&tools)).unwrap();
@@ -247,6 +265,9 @@ fn the_phase_now_is_the_phase_after_everything_pushed() {
 
 #[test]
 fn an_id_outside_the_vocabulary_is_an_error() {
+    if common::absent() {
+        return;
+    }
     let mut p = ReplyParser::new(tokenizer(), false, None).unwrap();
     let id = u32::try_from(tokenizer().len()).unwrap();
     let e = p.push(id).unwrap_err();
@@ -263,6 +284,9 @@ fn tools_error(tools: &str) -> String {
 
 #[test]
 fn a_tool_list_that_mk_refuses_is_an_error() {
+    if common::absent() {
+        return;
+    }
     // Each text is a ValueError in mk's `_specs` or `_types_of`.
     assert!(tools_error(r#"[1]"#).contains("needs a function with a name"));
     assert!(tools_error(r#"[{"function":{"name":3}}]"#).contains("needs a function with a name"));
@@ -282,6 +306,9 @@ fn a_tool_list_that_mk_refuses_is_an_error() {
 
 #[test]
 fn an_empty_tool_list_means_no_tools() {
+    if common::absent() {
+        return;
+    }
     let t = tokenizer();
     let empty = Json::parse("[]").unwrap();
     let mut p = ReplyParser::new(t, false, Some(&empty)).unwrap();

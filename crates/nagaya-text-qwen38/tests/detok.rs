@@ -40,6 +40,9 @@ fn a_stream_of_bytes_gives_the_text_of_mk() {
 
 #[test]
 fn a_stream_of_token_pieces_gives_the_text_of_mk() {
+    if common::absent() {
+        return;
+    }
     let f = fixture("utf8.json");
     let cases = f.get("token_streams").items();
     assert!(cases.len() >= 9);

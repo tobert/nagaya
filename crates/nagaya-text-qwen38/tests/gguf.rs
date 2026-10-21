@@ -203,6 +203,9 @@ fn a_missing_file_names_its_path() {
 
 #[test]
 fn reads_the_model_file() {
+    if common::absent() {
+        return;
+    }
     let m = Metadata::open(&gguf_path()).expect("the model file");
     let header = fixture("tokenizer.json");
     let header = header.get("header");
