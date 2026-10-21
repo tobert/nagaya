@@ -249,9 +249,10 @@ pub struct ContextBody<T: Then> {
     shared: Arc<Shared>,
     tokens: Arc<[u32]>,
     recipes: Vec<BoundaryRecipe>,
-    /// The tokens that the slot must hold: the context and what the work feeds after it.
+    /// The tokens that the slot must hold when the job takes it: the context, and what the work feeds after it when
+    /// the job knows that.
     room: usize,
-    /// The limit that a job past `room` breaks, for the error.
+    /// The limit that a job breaks when its slot cannot hold it, for the error.
     room_param: &'static str,
     lease: Option<SlotLease>,
     started: bool,
@@ -287,8 +288,9 @@ impl BuildBody {
 }
 
 impl<T: Then> ContextBody<T> {
-    /// Make the body of a context and its work. The slot must hold `room` tokens, or the job is `too_large` and
-    /// names `room_param`. With no recipe, the job builds nothing: the work starts on an empty slot.
+    /// Make the body of a context and its work. The job takes the lowest free slot that holds `room` tokens. A job
+    /// that no slot holds, or a feed past what its slot holds, is `too_large` and names `room_param`. With no recipe,
+    /// the job builds nothing: the work starts on an empty slot.
     pub fn with(
         shared: Arc<Shared>,
         tokens: Arc<[u32]>,
@@ -473,7 +475,7 @@ impl<T: Then> ContextBody<T> {
                 }
                 let base = self.rows(engine)?;
                 let end = base + tokens.len();
-                if end > self.room {
+                if !slots::fits(engine, &self.shared.limits, self.slot(), end) {
                     return Err(too_large(end, self.room_param));
                 }
                 let wanted: Vec<usize> = if logits { vec![tokens.len() - 1] } else { Vec::new() };

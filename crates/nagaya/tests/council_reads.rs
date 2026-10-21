@@ -3,10 +3,7 @@
 
 mod council_support;
 
-use std::io::{Read as _, Write as _};
-use std::net::TcpStream;
-
-use council_support::{Direct, Fixture};
+use council_support::{Direct, Fixture, post};
 use gogi_fake::{Config, Server};
 use gogi_proto::context::{Context, Usage};
 use gogi_proto::math::log_sum_exp;
@@ -99,23 +96,6 @@ fn a_read_from_a_held_head_gives_the_same_numbers_and_feeds_only_the_suffixes() 
     let suffix_tokens: u64 = SUFFIXES.iter().map(|s| gogi_toy::tokenize_suffix(s).len() as u64).sum();
     assert_eq!(again.usage.fed, suffix_tokens, "{:?}", again.usage);
     assert!(first.usage.fed > again.usage.fed);
-}
-
-fn post(server: &Server, path: &str, body: Value) -> Value {
-    let addr = server.url().trim_start_matches("http://").to_string();
-    let mut c = TcpStream::connect(&addr).unwrap();
-    let b = body.to_string();
-    write!(
-        c,
-        "POST {path} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{b}",
-        b.len()
-    )
-    .unwrap();
-    let mut raw = String::new();
-    c.read_to_string(&mut raw).unwrap();
-    let (head, body) = raw.split_once("\r\n\r\n").unwrap();
-    assert!(head.contains(" 200 "), "{head}\n{body}");
-    serde_json::from_str(body).unwrap()
 }
 
 #[test]

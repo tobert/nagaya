@@ -3,8 +3,8 @@
 #![allow(dead_code)]
 
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use nagaya::council::{Clock, Service, ServiceConfig};
@@ -23,10 +23,47 @@ use nagaya_abi::{
 /// The name of the engine in the profile.
 pub const ENGINE: &str = "toy";
 
+/// The tokens that a scripted engine favors: from the position `base`, the token at `base + k` is `tokens[k]`.
+#[derive(Clone, Debug, Default)]
+pub struct Script(Arc<Mutex<Option<Scripted>>>);
+
+/// The first position of a script, and its tokens.
+type Scripted = (u64, Vec<u32>);
+
+impl Script {
+    /// Favor `tokens` from the position `base`.
+    pub fn set(&self, base: usize, tokens: Vec<u32>) {
+        *self.0.lock().unwrap() = Some((base as u64, tokens));
+    }
+
+    /// The logit that a scripted token gets. The fake's logits lie between -6 and 6, so the token wins by far.
+    pub const LOGIT: f32 = 40.0;
+
+    fn apply(&self, positions: &[u64], outputs: &mut [nagaya_abi::Output], vocab: usize) {
+        let script = self.0.lock().unwrap();
+        let Some((base, tokens)) = script.as_ref() else {
+            return;
+        };
+        let rows = outputs.iter_mut().filter(|output| output.name == "logits");
+        for (position, output) in positions.iter().zip(rows) {
+            // The row at a position gives the token after it.
+            let Some(&token) = (position + 1).checked_sub(*base).and_then(|k| tokens.get(k as usize)) else {
+                continue;
+            };
+            assert!((token as usize) < vocab, "a script names a token of the vocabulary");
+            let at = token as usize * 4;
+            output.bytes[at..at + 4].copy_from_slice(&Self::LOGIT.to_le_bytes());
+        }
+    }
+}
+
 /// A fake engine that declares a mandatory term for each context.
 pub struct WithContextTerm {
     inner: FakeAlways,
     bytes: u64,
+    delay: Duration,
+    script: Script,
+    vocab: usize,
 }
 
 impl Engine for WithContextTerm {
@@ -49,7 +86,14 @@ impl Engine for WithContextTerm {
     }
 
     fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
-        self.inner.pass(segments, taps)
+        std::thread::sleep(self.delay);
+        let mut out = self.inner.pass(segments, taps)?;
+        assert!(segments.len() <= 1, "the council jobs run one segment in a pass");
+        if let Some(segment) = segments.first() {
+            self.script
+                .apply(&segment.outputs.logit_rows, &mut out.outputs, self.vocab);
+        }
+        Ok(out)
     }
 
     fn last_error(&self) -> Option<String> {
@@ -78,9 +122,24 @@ pub struct TermFactory {
     pub bytes: u64,
     pub slots: Vec<SlotLimit>,
     pub vocab: Option<usize>,
+    /// The time that each pass takes.
+    pub delay: Duration,
+    /// The tokens that the engine favors.
+    pub script: Script,
 }
 
 impl TermFactory {
+    /// A factory of engines with the toy vocabulary, roomy slots and no term.
+    pub fn toy() -> Self {
+        Self {
+            bytes: 0,
+            slots: roomy_slots(3),
+            vocab: Some(gogi_toy::VOCAB),
+            delay: Duration::ZERO,
+            script: Script::default(),
+        }
+    }
+
     fn engine(&self) -> WithContextTerm {
         let mut inner = FakeAlways::with_slots(self.slots.clone());
         if let Some(vocab) = self.vocab {
@@ -89,6 +148,9 @@ impl TermFactory {
         WithContextTerm {
             inner,
             bytes: self.bytes,
+            delay: self.delay,
+            script: self.script.clone(),
+            vocab: self.vocab.unwrap_or(0),
         }
     }
 }
@@ -186,17 +248,22 @@ impl Fixture {
     }
 
     pub fn with(term: u64, host_budget: u64, host_store: Option<u64>, config: ServiceConfig) -> Self {
+        let factory = TermFactory {
+            bytes: term,
+            ..TermFactory::toy()
+        };
+        Self::with_factory(factory, host_budget, host_store, config)
+    }
+
+    /// A fixture whose engines come from `factory`.
+    pub fn with_factory(
+        factory: TermFactory,
+        host_budget: u64,
+        host_store: Option<u64>,
+        config: ServiceConfig,
+    ) -> Self {
         let directory = tempfile::tempdir().unwrap();
-        let (process, _) = start(
-            directory.path(),
-            TermFactory {
-                bytes: term,
-                slots: roomy_slots(3),
-                vocab: Some(gogi_toy::VOCAB),
-            },
-            host_budget,
-            host_store,
-        );
+        let (process, _) = start(directory.path(), factory, host_budget, host_store);
         let clock = Arc::new(AtomicU64::new(1_000_000));
         let reader = Arc::clone(&clock);
         let read: Clock = Arc::new(move || reader.fetch_add(TICK_MS, Ordering::SeqCst));
@@ -323,4 +390,23 @@ impl Direct {
         }
         row.unwrap()
     }
+}
+
+/// Post a JSON body to gogi-fake, and give the JSON of its 200 response.
+pub fn post(server: &gogi_fake::Server, path: &str, body: serde_json::Value) -> serde_json::Value {
+    use std::io::{Read as _, Write as _};
+    let addr = server.url().trim_start_matches("http://").to_string();
+    let mut c = std::net::TcpStream::connect(&addr).unwrap();
+    let b = body.to_string();
+    write!(
+        c,
+        "POST {path} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{b}",
+        b.len()
+    )
+    .unwrap();
+    let mut raw = String::new();
+    c.read_to_string(&mut raw).unwrap();
+    let (head, body) = raw.split_once("\r\n\r\n").unwrap();
+    assert!(head.contains(" 200 "), "{head}\n{body}");
+    serde_json::from_str(body).unwrap()
 }

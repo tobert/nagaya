@@ -5,6 +5,7 @@
 //! calls on a blocking thread.
 
 pub mod build;
+pub mod decisions;
 pub mod error;
 pub mod pins;
 pub mod reads;
@@ -18,6 +19,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use gogi_proto::SnapshotId;
 use gogi_proto::context::{Context, SnapshotInfo, Tier as SnapshotTier, Usage};
+use gogi_proto::decision::DecisionIdentity;
 use gogi_proto::pins::{PinHeld, PinOwner, PinsPut, PinsPutResult, SnapshotDetail, validate_owner};
 use gogi_proto::spec::{HeldSpec, SpecRules};
 use nagaya_abi::{Capability, Engine, Limits};
@@ -90,19 +92,60 @@ pub struct ServiceConfig {
     pub engine: String,
     /// The most tokens of a context, or of a prompt and its reply (gogi "Identity, limits, capabilities").
     pub context_tokens: usize,
+    /// The most tokens of a context that a decision reads, not counting the spec and the case after it.
+    pub decision_context_tokens: usize,
+    /// The most contexts of one decision, at most 8.
+    pub contexts_per_decision: usize,
+    /// The most bytes of a case.
+    pub case_bytes: usize,
+    /// The `timeout_ms` of a decision that sends none.
+    pub default_timeout_ms: u64,
+    /// The sample settings of a generation that does not send them (spec 11.2).
+    pub sample: SampleDefaults,
     /// The most snapshot bytes that all pins keep together.
     pub pin_bytes: u64,
     /// What a spec may hold.
     pub spec_rules: SpecRules,
 }
 
+/// The sample settings that a generation takes when its request does not name them. Each engine has its own
+/// (spec 11.2).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SampleDefaults {
+    /// The temperature. 0 is greedy.
+    pub temperature: f64,
+    /// The top_p filter. 1 is off.
+    pub top_p: f64,
+    /// The top_k filter. 0 is off.
+    pub top_k: u64,
+    /// The min_p filter. 0 is off.
+    pub min_p: f64,
+}
+
+impl Default for SampleDefaults {
+    /// No filter, at temperature 1.
+    fn default() -> Self {
+        Self {
+            temperature: 1.0,
+            top_p: 1.0,
+            top_k: 0,
+            min_p: 0.0,
+        }
+    }
+}
+
 impl ServiceConfig {
-    /// A config with the default limits.
+    /// A config with the default limits: mkviolet's decision limits (gogi "Identity, limits, capabilities").
     pub fn new(model: &str, engine: &str) -> Self {
         Self {
             model: model.to_owned(),
             engine: engine.to_owned(),
             context_tokens: 4096,
+            decision_context_tokens: 3072,
+            contexts_per_decision: gogi_proto::decision::MAX_CONTEXTS,
+            case_bytes: 65536,
+            default_timeout_ms: 30_000,
+            sample: SampleDefaults::default(),
             pin_bytes: 1 << 30,
             spec_rules: SpecRules::default(),
         }
@@ -206,6 +249,7 @@ pub struct Service {
     group: usize,
     shared: Arc<Shared>,
     root: nagaya_store::RecipeId,
+    identity: nagaya_abi::Identity,
     specs: Mutex<Specs>,
     pins: Mutex<PinBook>,
 }
@@ -298,12 +342,43 @@ impl Service {
             group,
             shared,
             root: root_recipe(&digest, b""),
+            identity,
             specs: Mutex::new(specs),
             pins: Mutex::new(book),
             config,
         };
         service.settle_pins()?;
         Ok(service)
+    }
+
+    /// The identity fields that a number depends on, with no spec (gogi "Identity, limits, capabilities").
+    ///
+    /// The weight hash is the checkpoint digest (spec 12.2). The template is the template id of the family (spec
+    /// 11.3a). The engine is `nagaya:` and the first 16 hex digits of the identity digest. The digest covers each
+    /// field of the engine identity, its `numbers` too (spec 6.2, 12.1).
+    pub fn identity(&self) -> DecisionIdentity {
+        let digest: String = self.shared.identity[..8]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        DecisionIdentity {
+            model: self.config.model.clone(),
+            weight_hash: self.identity.checkpoint_digest.clone(),
+            tokenizer_hash: self.identity.tokenizer_hash.clone(),
+            template: self.family.template_id().to_owned(),
+            engine: format!("nagaya:{digest}"),
+            spec_id: None,
+        }
+    }
+
+    /// The served model: the `model` of the council identity.
+    pub fn model(&self) -> &str {
+        &self.config.model
+    }
+
+    /// The config of the service: its limits and its defaults.
+    pub fn config(&self) -> &ServiceConfig {
+        &self.config
     }
 
     /// The number of slots that no build uses.

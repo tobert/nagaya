@@ -27,6 +27,7 @@ fn a_context_takes_bytes_until_it_is_released_and_a_refusal_changes_nothing() {
             bytes: term,
             slots: roomy_slots(2),
             vocab: None,
+            ..TermFactory::toy()
         },
         4096,
         None,
@@ -64,6 +65,7 @@ fn a_release_with_no_live_context_is_an_error() {
             bytes: 100,
             slots: roomy_slots(2),
             vocab: None,
+            ..TermFactory::toy()
         },
         4096,
         None,
@@ -84,6 +86,7 @@ fn a_stopping_process_charges_no_context() {
             bytes: 100,
             slots: roomy_slots(2),
             vocab: None,
+            ..TermFactory::toy()
         },
         4096,
         None,

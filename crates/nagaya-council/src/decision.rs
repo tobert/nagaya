@@ -231,3 +231,11 @@ pub fn answers(spec: &Spec, asked: &[Asked], logprobs: &[Vec<Vec<f64>>], pool: &
         },
     })
 }
+
+/// The text of a case: a string verbatim, and an object or an array as JSON in request order (gogi "Decisions").
+pub fn case_text(case: &Value) -> String {
+    match case {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
+}
