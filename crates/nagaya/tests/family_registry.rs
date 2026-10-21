@@ -16,6 +16,7 @@ fn opened(family: &str, slots: Vec<SlotLimit>) -> OpenedEngine {
         thread: std::thread::current().id(),
         identity: engine.identity(),
         limits: engine.limits(),
+        handoff: None,
     }
 }
 

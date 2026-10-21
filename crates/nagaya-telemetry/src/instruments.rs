@@ -205,6 +205,7 @@ pub struct Instruments {
     store_evictions: Counter<u64>,
     store_restores: Counter<u64>,
     engine_state: Gauge<u64>,
+    arena_handoff: Counter<u64>,
     http_duration: Histogram<f64>,
 }
 
@@ -261,6 +262,11 @@ impl Instruments {
                 .u64_gauge("nagaya.engine.state")
                 .with_unit("1")
                 .with_description("One for the state that an engine is in, and zero for the other states.")
+                .build(),
+            arena_handoff: meter
+                .u64_counter("nagaya.arena.handoff")
+                .with_unit("{handoff}")
+                .with_description("The engines that attached a stored arena (hot) or loaded cold at start.")
                 .build(),
             http_duration: meter
                 .f64_histogram("http.server.request.duration")
@@ -360,6 +366,21 @@ impl Instruments {
             &[
                 KeyValue::new("http.route", route.to_owned()),
                 KeyValue::new("status", i64::from(status)),
+            ],
+        );
+    }
+
+    /// Count one start of an engine with an arena (spec 10.2). `status` is `hot` or `cold`.
+    pub fn arena_handoff(&self, engine: &str, status: &'static str) {
+        assert!(
+            matches!(status, "hot" | "cold"),
+            "the status of an arena handoff is hot or cold, not {status}"
+        );
+        self.arena_handoff.add(
+            1,
+            &[
+                KeyValue::new("engine", engine.to_owned()),
+                KeyValue::new("status", status),
             ],
         );
     }

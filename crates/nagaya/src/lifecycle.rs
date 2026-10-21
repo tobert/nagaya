@@ -5,6 +5,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::admission::Registry;
+use crate::arena::{ArenaSet, FdStore};
 use crate::cpu_sets::CpuSets;
 use crate::exit::ExitCode;
 use crate::inventory::Inventory;
@@ -25,13 +26,15 @@ pub const DEFAULT_OPEN_TICK: Duration = crate::process::DEFAULT_HEARTBEAT;
 /// How far each tick moves the start deadline of systemd. It equals the watchdog timeout (spec 10.1).
 pub const DEFAULT_START_EXTEND: Duration = crate::process::DEFAULT_WATCHDOG_TIMEOUT;
 
-/// The timing of the start. The tests use short values.
-#[derive(Clone, Debug)]
+/// The timing of the start, and the stored arenas. The tests use short values.
+#[derive(Debug)]
 pub struct Options {
     timeout: Duration,
     tick: Duration,
     extend: Duration,
     cpu_sets: Option<CpuSets>,
+    stored: ArenaSet,
+    fd_store: Option<FdStore>,
 }
 
 impl Options {
@@ -42,7 +45,16 @@ impl Options {
             tick: DEFAULT_OPEN_TICK,
             extend: DEFAULT_START_EXTEND,
             cpu_sets: None,
+            stored: ArenaSet::empty(),
+            fd_store: None,
         }
+    }
+
+    /// Set the fds that systemd passed back, and the fd store (spec 10.2).
+    pub fn arenas(mut self, stored: ArenaSet, fd_store: Option<FdStore>) -> Self {
+        self.stored = stored;
+        self.fd_store = fd_store;
+        self
     }
 
     /// Set how often the start tells systemd that the engines still open.
@@ -221,7 +233,9 @@ fn start_engines(
         {
             tracing::warn!("cannot send STATUS= to systemd: {error}");
         }
-        let mut start = Start::new(profile, registry, inventory).store(store_dir);
+        let mut start = Start::new(profile, registry, inventory)
+            .store(store_dir)
+            .arenas(options.stored, options.fd_store);
         if let Some(sets) = options.cpu_sets.clone() {
             start = start.cpu_sets(sets);
         }
@@ -241,6 +255,12 @@ fn start_engines(
             let mut names: Vec<String> = opened.iter().map(|engine| engine.name.clone()).collect();
             names.sort();
             record_states(&names, EngineState::Ready);
+            let instruments = instruments();
+            for engine in &opened {
+                if let Some(handoff) = engine.handoff {
+                    instruments.arena_handoff(&engine.name, handoff.status());
+                }
+            }
             if let Some(notifier) = notifier
                 && let Err(error) = notifier.ready(&names)
             {

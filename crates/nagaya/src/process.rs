@@ -9,14 +9,17 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 
-use nagaya_abi::{Capability, DeviceId, Engine, Identity, Limits, Tier};
+use nagaya_abi::{ArenaPart, Capability, CheckStrength, DeviceId, Engine, Identity, Limits, Tier};
 use nagaya_ledger::{Ledger, LedgerError};
 use nagaya_store::Store;
 use nagaya_telemetry::Inherit;
 use tracing::Span;
 
-use crate::admission::{AdmitError, Admitted, Factory, GroupDevice, OpenErrorKind, Registry, admit, group_devices};
+use crate::admission::{
+    AdmitError, Admitted, Factory, GroupDevice, OpenErrorKind, Registry, admit_with_fd_ceiling, group_devices,
+};
 use crate::affinity::{pin_current_thread, set_batch_policy};
+use crate::arena::{ArenaSet, FdName, FdStore};
 use crate::cpu_sets::CpuSets;
 use crate::evidence::Machine;
 use crate::exit::{ExitCode, panic_text};
@@ -27,6 +30,7 @@ use crate::placement::{self, DeviceGroup};
 use crate::profile::{EnginePlacement, PlacementProfile};
 use crate::signal::SignalFlag;
 
+mod handoff;
 mod staged;
 
 /// The default watchdog timeout. Three times the longest declared quantum bound (mk: 10 s).
@@ -177,14 +181,22 @@ fn guard(thread: &'static str, events: &Sender<Event>, body: impl FnOnce()) {
 pub struct OwnedLedger {
     ledger: Ledger,
     owner: ThreadId,
+    fd_ceiling: Option<usize>,
 }
 
 impl OwnedLedger {
     /// Make a ledger for the current thread.
     pub fn new() -> Self {
+        Self::with_fd_ceiling(None)
+    }
+
+    /// Make a ledger for the current thread that refuses a profile with more arena fds than `fd_ceiling`
+    /// (spec 10.2).
+    pub fn with_fd_ceiling(fd_ceiling: Option<usize>) -> Self {
         Self {
             ledger: Ledger::new(),
             owner: thread::current().id(),
+            fd_ceiling,
         }
     }
 
@@ -200,7 +212,7 @@ impl OwnedLedger {
             self.owner,
             "the ledger is written off its thread"
         );
-        admit(profile, registry, inventory, &mut self.ledger)
+        admit_with_fd_ceiling(profile, registry, inventory, &mut self.ledger, self.fd_ceiling)
     }
 
     /// Charge a new context of an engine (spec 4.2). Only the owner thread may call this.
@@ -258,6 +270,27 @@ pub struct OpenedEngine {
     pub identity: Identity,
     /// The limits that the engine reported after it opened (spec 11.3: the slot sizes give the context limit).
     pub limits: Limits,
+    /// How the engine got its weights, when its kind keeps an arena (spec 10.2).
+    pub handoff: Option<Handoff>,
+}
+
+/// How an engine with an arena got its weights at start (spec 10.2, 9.4 `nagaya.arena.handoff`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Handoff {
+    /// The engine attached a stored arena, and the check had this strength.
+    Hot(CheckStrength),
+    /// The engine loaded its weights from the checkpoint.
+    Cold,
+}
+
+impl Handoff {
+    /// The value of the attribute `status` of `nagaya.arena.handoff`.
+    pub fn status(self) -> &'static str {
+        match self {
+            Handoff::Hot(_) => "hot",
+            Handoff::Cold => "cold",
+        }
+    }
 }
 
 /// The work of one quantum: the group's engines, in profile order.
@@ -462,6 +495,8 @@ pub struct Start {
     store_budget: Option<StoreBudget>,
     cpu_sets: Option<CpuSets>,
     machine: Machine,
+    stored: ArenaSet,
+    fd_store: Option<FdStore>,
 }
 
 impl Start {
@@ -477,7 +512,17 @@ impl Start {
             store_budget: None,
             cpu_sets: None,
             machine: Machine::real(),
+            stored: ArenaSet::empty(),
+            fd_store: None,
         }
+    }
+
+    /// Set the fds that systemd passed back, and the fd store (spec 10.2). With no store, no engine exports its
+    /// arena, and admission counts no arena fd.
+    pub fn arenas(mut self, stored: ArenaSet, fd_store: Option<FdStore>) -> Self {
+        self.stored = stored;
+        self.fd_store = fd_store;
+        self
     }
 
     /// Set the machine whose counters a group reads when a quantum fails (spec 9.6). The default is the real machine.
@@ -532,6 +577,8 @@ impl Start {
             store_budget,
             cpu_sets,
             machine,
+            stored,
+            fd_store,
         } = self;
         assert!(
             heartbeat < timeout,
@@ -550,10 +597,11 @@ impl Start {
         let housekeeping = cpu_sets.as_ref().map(|sets| sets.housekeeping.clone());
         let pool = cpu_sets.as_ref().map(|sets| sets.pool.clone());
         let ledger_cpus = housekeeping.clone();
+        let fd_ceiling = fd_store.as_ref().map(FdStore::ceiling);
         let ledger_thread = spawn_named("nagaya-ledger".to_owned(), move || {
             guard("ledger", &ledger_events, || {
                 pin("ledger", ledger_cpus.as_deref());
-                let mut ledger = OwnedLedger::new();
+                let mut ledger = OwnedLedger::with_fd_ceiling(fd_ceiling);
                 while let Ok(message) = ledger_rx.recv() {
                     match message {
                         LedgerMessage::Admit(profile, reply) => {
@@ -670,12 +718,17 @@ impl Start {
             None => (None, None),
         };
 
+        // The profile fits, so a cold load fits too. Only now may the process drop a stored fd (spec 10.2 step 2).
+        let names: Vec<String> = profile.engines.iter().map(|engine| engine.name.clone()).collect();
+        let mut split = stored.split(&names);
+        handoff::drop_orphans(split.orphans, fd_store.as_ref());
+
         let accepting = Arc::new(AtomicBool::new(true));
         let groups = placement::device_groups(&profile);
         let mut group_threads = Vec::with_capacity(groups.len());
         let mut group_stops = Vec::with_capacity(groups.len());
         for (index, group) in groups.iter().enumerate() {
-            let jobs = group_jobs(&profile, &admitted, &registry, &inventory, group);
+            let jobs = group_jobs(&profile, &admitted, &registry, &inventory, group, &mut split.engines);
             let _ = watch_tx.send(WatchMessage::Start {
                 group: index,
                 devices: group.devices.clone(),
@@ -690,6 +743,7 @@ impl Start {
             let group_sets = cpu_sets.clone();
             let group_machine = machine.clone();
             let group_own = stop_tx.clone();
+            let group_fd_store = fd_store.clone();
             let handle = spawn_named(format!("nagaya-group-{index}"), move || {
                 guard("group", &group_guard, || {
                     pin("group", group_cpus.as_deref());
@@ -702,6 +756,7 @@ impl Start {
                         accepting: group_accepting,
                         machine: group_machine,
                         sets: group_sets,
+                        fd_store: group_fd_store,
                     };
                     group_thread(index, jobs, links, heartbeat);
                 });
@@ -745,6 +800,10 @@ struct GroupJob {
     limits: Limits,
     devices: Vec<GroupDevice>,
     factory: Arc<dyn Factory + Send + Sync>,
+    /// The admitted parts of the arena (spec 10.2).
+    arena_parts: Vec<ArenaPart>,
+    /// The stored fds of the engine that systemd passed back.
+    stored: Vec<(FdName, std::os::fd::OwnedFd)>,
 }
 
 fn group_jobs(
@@ -753,6 +812,7 @@ fn group_jobs(
     registry: &Registry,
     inventory: &Inventory,
     group: &DeviceGroup,
+    stored: &mut BTreeMap<String, Vec<(FdName, std::os::fd::OwnedFd)>>,
 ) -> Vec<GroupJob> {
     group
         .engines
@@ -770,6 +830,8 @@ fn group_jobs(
                 limits,
                 devices,
                 factory,
+                arena_parts: admitted.engines[index].arena_parts.clone(),
+                stored: stored.remove(&placement.name).unwrap_or_default(),
             }
         })
         .collect()
@@ -787,6 +849,8 @@ struct GroupLinks {
     machine: Machine,
     /// The CPU sets, from which each stage thread takes the set of its device (spec 3.2b).
     sets: Option<CpuSets>,
+    /// The fd store of systemd, when the process keeps arenas (spec 10.2).
+    fd_store: Option<FdStore>,
 }
 
 fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: Duration) {
@@ -799,6 +863,7 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
         accepting,
         machine,
         sets,
+        fd_store,
     } = links;
     let _ = heartbeats.send(WatchMessage::Beat {
         group,
@@ -813,9 +878,9 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
         .first()
         .map(|job| job.devices.iter().map(|device| device.id).collect())
         .unwrap_or_default();
-    for job in jobs {
-        let engine = match job.factory.open(&job.placement.config, &job.devices) {
-            Ok(engine) => engine,
+    for mut job in jobs {
+        let (engine, handoff) = match handoff::open(&mut job, fd_store.as_ref()) {
+            Ok(opened) => opened,
             Err(error) => {
                 let _ = events.send(Event::OpenFailed {
                     group,
@@ -863,6 +928,7 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
             thread: thread::current().id(),
             identity: engine.identity(),
             limits: opened_limits,
+            handoff,
         });
         engines.push(engine);
     }

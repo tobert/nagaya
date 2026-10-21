@@ -127,6 +127,7 @@ fn the_kind_and_the_family_exist_only_with_the_feature_xe() {
         thread: std::thread::current().id(),
         identity: engine.identity(),
         limits: engine.limits(),
+        handoff: None,
     };
     let planned = families.plan(&opened, &table("model_dir = \"/nonexistent\""));
     if cfg!(feature = "xe") {

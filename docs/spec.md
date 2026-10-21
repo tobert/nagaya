@@ -1364,10 +1364,11 @@ code defines an instrument in the commit that adds its call site. The table show
 | `nagaya.ledger.bytes`, `nagaya.ledger.refusals` | `Ledger::admit` and `Ledger::admit_context` in `crates/nagaya-ledger/src/lib.rs` | `crates/nagaya-ledger/tests/telemetry.rs` |
 | `nagaya.store.bytes`, `nagaya.store.entries`, `nagaya.store.lookups`, `nagaya.store.evictions`, `nagaya.store.restores` | `Store::open`, `put`, `evict`, `remove`, `lookup` and `restore` in `crates/nagaya-store/src/lib.rs` | `crates/nagaya-store/tests/telemetry.rs` |
 | `nagaya.engine.state` | `lifecycle::start` and `lifecycle::stop` in `crates/nagaya/src/lifecycle.rs` | `crates/nagaya/tests/telemetry.rs` |
+| `nagaya.arena.handoff` | `lifecycle::start` in `crates/nagaya/src/lifecycle.rs`, from the handoff of each opened engine | `crates/nagaya/tests/arena_start.rs` |
 | `http.server.request.duration` | `observe` in `crates/nagaya/src/http/mod.rs` | `crates/nagaya/tests/http_telemetry.rs` |
 
-These instruments have no definition yet, because they have no call site: `nagaya.quantum.tokens`, `nagaya.io.bytes`,
-`nagaya.arena.handoff` and the device sensors. Each one comes with its call site.
+These instruments have no definition yet, because they have no call site: `nagaya.quantum.tokens`, `nagaya.io.bytes`
+and the device sensors. Each one comes with its call site.
 
 The first row has its call site on the path that it describes. The test `quantum_telemetry` runs a council build and a
 generation on the fake engine through the process. It reads the spans and both durations from memory.
