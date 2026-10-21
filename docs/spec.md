@@ -1724,8 +1724,10 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
   `kept + fed = prompt`.
 - The reads of a decision run one after another, in request order. The service checks `timeout_ms` before each
   read, and the scheduler checks it between quanta (5.8). Either one ends the decision with 504 `timeout`.
-- A raw read lists 8 top tokens when the request names no `top`, and at most 64. A larger `top` is a 400. A context
-  and its longest suffix that reach `context_tokens` are a 413 `context_full`, as in gogi-fake.
+- A raw read lists 8 top tokens when the request names no `top`, and at most 64. A larger `top` is a 400.
+- A build of more than `context_tokens` tokens is a 413 `too_large` that names `context_tokens`. So is a raw read
+  whose context and longest suffix have more. A context of exactly `context_tokens` tokens builds. `context_full` is
+  only for the prompt of a generation (gogi "Errors", gogi `a07d85e`).
 - The text of a top token is the detokenized token. A token that is not whole text alone, such as one byte of a
   longer character, has the text U+FFFD. Its `id` names it exactly.
 - The council identity's `engine` is `nagaya:` and the first 16 hex digits of the identity digest (6.2). The digest

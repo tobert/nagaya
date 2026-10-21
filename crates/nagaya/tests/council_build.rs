@@ -12,6 +12,7 @@ use gogi_proto::SnapshotId;
 use gogi_proto::context::{Context, Usage};
 use nagaya::council::error::ServiceError;
 use nagaya::council::{Built, Schedule, ServiceConfig};
+use nagaya_council::family::Family as _;
 use nagaya_store::{ContentId, Reason};
 use nagaya_text_toy::ToyFamily;
 use serde_json::{Value, json};
@@ -262,20 +263,29 @@ fn a_context_that_fits_no_slot_is_too_large() {
     assert_eq!(f.process.ports().unassigned().len(), 2);
 }
 
+/// gogi "Errors": a build past `context_tokens` is a 413 `too_large` that names `context_tokens`. `context_full` is
+/// only for the prompt of a generation. A context of exactly `context_tokens` tokens builds.
 #[test]
-fn a_context_at_the_token_limit_is_context_full() {
+fn a_context_past_the_token_limit_is_too_large_and_one_at_the_limit_builds() {
+    let tokens = ToyFamily::new().render(&context(&ctx(longer())), false).unwrap().end;
     let mut config = ServiceConfig::new("toy", ENGINE);
-    config.context_tokens = 30;
-    let f = fixture_config(0, 1 << 20, None, config);
-    let error = f
-        .service
-        .build(&context(&ctx(longer())), false, Schedule::default())
-        .unwrap_err();
-    assert!(
-        matches!(&error, ServiceError::ContextFull { context_tokens: 30, .. }),
-        "{error:?}"
-    );
+    config.context_tokens = tokens - 1;
+    let f = fixture_config(0, 1 << 20, None, config.clone());
+    for dry_run in [false, true] {
+        let error = f
+            .service
+            .build(&context(&ctx(longer())), dry_run, Schedule::default())
+            .unwrap_err();
+        assert!(
+            matches!(&error, ServiceError::TooLarge { param, .. } if param == "context_tokens"),
+            "dry run {dry_run}: {error:?}"
+        );
+    }
     assert_eq!(entries(&f), 0);
+    config.context_tokens = tokens;
+    let f = fixture_config(0, 1 << 20, None, config);
+    let built = build(&f, &ctx(longer()));
+    assert_eq!(built.usage.prompt, tokens as u64);
 }
 
 #[test]

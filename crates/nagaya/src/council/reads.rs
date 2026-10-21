@@ -120,11 +120,8 @@ impl Service {
         for (index, context) in request.contexts.iter().enumerate() {
             let rendering = self.family.render(context, false)?;
             let end = rendering.end;
-            if end + longest >= self.config.context_tokens {
-                return Err(ServiceError::ContextFull {
-                    prompt_tokens: (end + longest) as u64,
-                    context_tokens: self.config.context_tokens as u64,
-                });
+            if end + longest > self.config.context_tokens {
+                return Err(ServiceError::past_context(end + longest, self.config.context_tokens));
             }
             let recipes = boundary_recipes(self.root, &rendering)?;
             let tokens: Arc<[u32]> = rendering.tokens[..end].into();

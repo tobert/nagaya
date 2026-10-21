@@ -441,11 +441,8 @@ impl Service {
     /// snapshot at each boundary. A dry run renders and looks up, and feeds and holds nothing.
     pub fn build(&self, context: &Context, dry_run: bool, schedule: Schedule) -> Result<Built, ServiceError> {
         let rendering = self.family.render(context, false)?;
-        if rendering.end >= self.config.context_tokens {
-            return Err(ServiceError::ContextFull {
-                prompt_tokens: rendering.end as u64,
-                context_tokens: self.config.context_tokens as u64,
-            });
+        if rendering.end > self.config.context_tokens {
+            return Err(ServiceError::past_context(rendering.end, self.config.context_tokens));
         }
         let recipes = boundary_recipes(self.root, &rendering)?;
         let tokens: Arc<[u32]> = rendering.tokens[..rendering.end].into();
