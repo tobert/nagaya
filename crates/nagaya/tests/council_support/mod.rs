@@ -176,7 +176,11 @@ impl Factory for TermFactory {
 
 /// Slots that are big enough for the toy contexts of the tests.
 pub fn roomy_slots(count: u32) -> Vec<SlotLimit> {
-    vec![SlotLimit { bytes: 16384, count }]
+    vec![SlotLimit {
+        bytes: 16384,
+        count,
+        tokens: 4096,
+    }]
 }
 
 pub fn profile(host_budget: u64, nvme: u64, host_store: Option<u64>) -> PlacementProfile {
@@ -191,6 +195,7 @@ pub fn profile_with_copies(host_budget: u64, nvme: u64, host_store: Option<u64>,
             kind: "term".to_owned(),
             devices: vec![0],
             config: toml::Table::new(),
+            family: toml::Table::new(),
             share: 1,
             pin_identity: false,
         }],
@@ -369,7 +374,12 @@ impl Direct {
     /// An engine with one empty slot.
     pub fn empty() -> Self {
         Self {
-            engine: FakeAlways::with_slots(vec![SlotLimit { bytes: 16384, count: 1 }]).with_vocab(gogi_toy::VOCAB),
+            engine: FakeAlways::with_slots(vec![SlotLimit {
+                bytes: 16384,
+                count: 1,
+                tokens: 4096,
+            }])
+            .with_vocab(gogi_toy::VOCAB),
             rows: 0,
         }
     }
