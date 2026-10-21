@@ -2028,9 +2028,9 @@ rules are each "Decided by senpai 2026-10-20 night (vetoable)".
 - A stop first sets every served model to `draining`, so a new request is a 503 `model_unavailable`. Then the
   engines stop (10.3), and the server waits at most 2 s for its open requests.
 - The routes under `/nagaya/v1` (11.4a) and the status feed (9.7) are not built.
-- Continuations are not built. gogi proposes them (`docs/council-api.md`, "Continuations", branch
-  `continuation`), and Amy agreed on the rules on 2026-10-21. They replace mk's `prefill` field. The nagaya
-  declares capability `continuation` after gogi merges the section and its conformance checks pass.
+- Continuations are not built. gogi proposes them (`docs/council-api.md`, "Continuations", gogi `cc5d50e`), and
+  Amy agreed on the rules on 2026-10-21. They replace mk's `prefill` field. The nagaya declares capability
+  `continuation` after gogi's conformance checks for them pass.
 
 ## 12. Identity
 
