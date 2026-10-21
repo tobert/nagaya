@@ -129,7 +129,7 @@ fn the_unit_reads_the_config_in_deploy() {
         .expect("the unit sets NAGAYA_CONFIG under the repository");
     assert_eq!(config, "deploy/gfx1151host/nagaya.toml");
     assert!(repo().join(config).is_file(), "the file that the unit names exists");
-    assert!(environment.contains(&"OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318"));
+    assert!(environment.contains(&"OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317"));
     assert_eq!(unit_value(&unit, "ExecStart"), "%h/src/nagaya/target/release/nagaya");
 }
 
