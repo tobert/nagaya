@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, ThreadId};
 use std::time::Duration;
 
-use nagaya::admission::{Factory, OpenError, OpenErrorKind, PlanError, Registry};
+use nagaya::admission::{Factory, GroupDevice, OpenError, OpenErrorKind, PlanError, Registry};
 use nagaya::inventory::{Device, Inventory};
 use nagaya::process::{Event, OwnedLedger, Start, WaitError};
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, TierSpec};
@@ -98,11 +98,11 @@ impl RecordingFactory {
 }
 
 impl Factory for RecordingFactory {
-    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+    fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         Ok(self.planned.clone())
     }
 
-    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
         Ok(Box::new(RecordingEngine {
             inner: FakeAlways::new(),
             name: self.name.clone(),
@@ -275,11 +275,11 @@ struct FailingOpenFactory {
 }
 
 impl Factory for FailingOpenFactory {
-    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+    fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         Ok(self.limits.clone())
     }
 
-    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
         Err(OpenError {
             kind: OpenErrorKind::Other,
             message: "the weights are absent".to_owned(),
@@ -429,11 +429,11 @@ struct SlowOpenFactory {
 }
 
 impl Factory for SlowOpenFactory {
-    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+    fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         Ok(self.limits.clone())
     }
 
-    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
         thread::sleep(self.open_time);
         Ok(Box::new(FakeAlways::new()))
     }
@@ -482,4 +482,66 @@ fn an_open_that_never_ends_reaches_the_wait_timeout() {
         WaitError::Timeout { waiting } => assert_eq!(waiting, vec!["slow-one".to_owned()]),
         other => panic!("expected a timeout, got {other:?}"),
     }
+}
+
+/// A factory that keeps the devices that `plan` and `open` get.
+struct DevicesFactory {
+    seen: Arc<Mutex<Vec<(&'static str, Vec<GroupDevice>)>>>,
+}
+
+impl Factory for DevicesFactory {
+    fn plan(&self, _config: &toml::Table, devices: &[GroupDevice]) -> Result<Limits, PlanError> {
+        self.seen.lock().unwrap().push(("plan", devices.to_vec()));
+        Ok(limits_on(&[1, 0]))
+    }
+
+    fn open(&self, _config: &toml::Table, devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
+        self.seen.lock().unwrap().push(("open", devices.to_vec()));
+        Ok(Box::new(RecordingEngine {
+            inner: FakeAlways::new(),
+            name: "a".to_owned(),
+            limits: limits_on(&[1, 0]),
+            record: Arc::new(Mutex::new(Vec::new())),
+        }))
+    }
+}
+
+#[test]
+fn plan_and_open_get_the_machine_devices_of_the_engine_in_profile_order() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut registry = Registry::new();
+    registry.register(
+        "pair",
+        Box::new(DevicesFactory {
+            seen: Arc::clone(&seen),
+        }),
+    );
+    let mut inventory = inventory(&[0, 1]);
+    inventory.devices[0].pci_address = "0000:03:00.0".to_owned();
+    inventory.devices[1].pci_address = "0000:08:00.0".to_owned();
+    let profile = profile(vec![engine("a", "pair", &[1, 0])]);
+    let mut process = Start::new(profile, registry, inventory)
+        .heartbeat(Duration::from_millis(10))
+        .timeout(Duration::from_secs(2))
+        .start()
+        .unwrap();
+    process.wait_opens(Duration::from_secs(2)).unwrap();
+    let expected = vec![
+        GroupDevice {
+            id: 1,
+            name: "device-1".to_owned(),
+            pci_address: "0000:08:00.0".to_owned(),
+            memory_bytes: 1024,
+        },
+        GroupDevice {
+            id: 0,
+            name: "device-0".to_owned(),
+            pci_address: "0000:03:00.0".to_owned(),
+            memory_bytes: 1024,
+        },
+    ];
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![("plan", expected.clone()), ("open", expected)]
+    );
 }

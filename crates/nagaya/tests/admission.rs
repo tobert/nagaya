@@ -1,4 +1,4 @@
-use nagaya::admission::{AdmitError, Factory, OpenError, OpenErrorKind, PlanError, Registry, admit};
+use nagaya::admission::{AdmitError, Factory, GroupDevice, OpenError, OpenErrorKind, PlanError, Registry, admit};
 use nagaya::inventory::{Device, Inventory};
 use nagaya::placement::DeviceError;
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, TierSpec};
@@ -50,13 +50,13 @@ fn inventory(ids: &[nagaya_abi::DeviceId]) -> Inventory {
 struct FailingPlan;
 
 impl Factory for FailingPlan {
-    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+    fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         Err(PlanError {
             message: "the weights are absent".to_owned(),
         })
     }
 
-    fn open(&self, _config: &toml::Table) -> Result<Box<dyn nagaya_abi::Engine>, OpenError> {
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn nagaya_abi::Engine>, OpenError> {
         Err(OpenError {
             kind: OpenErrorKind::Other,
             message: "the weights are absent".to_owned(),
@@ -220,11 +220,11 @@ fn a_device_refusal_changes_nothing() {
 struct FixedLimits(Limits);
 
 impl Factory for FixedLimits {
-    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+    fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         Ok(self.0.clone())
     }
 
-    fn open(&self, _config: &toml::Table) -> Result<Box<dyn nagaya_abi::Engine>, OpenError> {
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn nagaya_abi::Engine>, OpenError> {
         panic!("an engine that admission refused is never opened")
     }
 }

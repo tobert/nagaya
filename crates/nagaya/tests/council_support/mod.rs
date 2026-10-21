@@ -10,7 +10,7 @@ use std::time::Duration;
 use nagaya::council::{Clock, Service, ServiceConfig};
 use nagaya_text_toy::ToyFamily;
 
-use nagaya::admission::{Factory, OpenError, PlanError, Registry};
+use nagaya::admission::{Factory, GroupDevice, OpenError, PlanError, Registry};
 use nagaya::inventory::{Device, Inventory};
 use nagaya::process::{OpenedEngine, Process, Start};
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, StoreSpec, TierSpec};
@@ -165,11 +165,11 @@ impl TermFactory {
 }
 
 impl Factory for TermFactory {
-    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+    fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         Ok(self.engine().limits())
     }
 
-    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
         Ok(Box::new(self.engine()))
     }
 }
