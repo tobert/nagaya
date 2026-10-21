@@ -100,7 +100,9 @@ Do these steps in this order. Stop at the first step that fails, and do the roll
    systemctl --user enable --now nagaya.service
    ```
 
-   The command returns when the process sends `READY=1`, or when `TimeoutStartSec` (300 s) ends.
+   The command returns when the process sends `READY=1`, or when `TimeoutStartSec` (300 s) ends. While mk opens, the
+   process sends `EXTEND_TIMEOUT_USEC=` every 5 s, so a slow load does not time the start out. The process ends a
+   hung open itself after 300 s and exits 1.
 
 4. Check the state of the unit and its log.
 

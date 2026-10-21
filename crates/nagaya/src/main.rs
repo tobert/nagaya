@@ -5,11 +5,13 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use nagaya::bootstrap::Bootstrap;
+use nagaya::cpu_sets::{self, CpuSets};
 use nagaya::exit::{ExitCode, panic_text};
 use nagaya::gossip::{Gossip, GossipConfig, PublishError};
 use nagaya::lifecycle;
 use nagaya::node::Node;
 use nagaya::notify::{EngineState, Notifier};
+use nagaya::probe::FileProbe;
 use nagaya::signal::{SignalFlag, install_terminate};
 use nagaya::swap::{Outcome, Swap};
 use nagaya::telemetry::{host_name, resource};
@@ -115,8 +117,23 @@ fn run(machine: Machine) -> ExitCode {
             return ExitCode::RefusedStart;
         }
     };
+    // The CPU sets come from the online CPUs of the file probe. A machine that cannot split them refuses the start.
+    let cpu_sets = match cpu_sets::for_machine(&FileProbe::new("/")) {
+        Ok(sets) => sets,
+        Err(error) => {
+            tracing::error!("{error}");
+            return error.exit_code();
+        }
+    };
+    tracing::info!(
+        "housekeeping CPUs {:?}; pool CPUs {} ({} threads)",
+        cpu_sets.housekeeping,
+        cpu_sets.pool.len(),
+        cpu_sets.pool_size()
+    );
     let mut gossip_config = GossipConfig::new(&node_name, config.gossip_bind);
     gossip_config.seeds = config.seed_peers.clone();
+    gossip_config.housekeeping = Some(cpu_sets.housekeeping.clone());
     let gossip = match Gossip::start(gossip_config) {
         Ok(gossip) => gossip,
         Err(error) => {
@@ -127,7 +144,7 @@ fn run(machine: Machine) -> ExitCode {
     tracing::info!("gossip listening on {}", gossip.local_addr());
     gossip.watch_peers(|line| tracing::info!("{line}"));
     let mut node = Node::new(gossip, config.http_bind);
-    let code = serve(&config, &node_name, profile, registry, inventory, &mut node);
+    let code = serve(&config, &node_name, profile, registry, inventory, cpu_sets, &mut node);
     node.shutdown();
     code
 }
@@ -146,6 +163,7 @@ fn serve(
     profile: nagaya::profile::PlacementProfile,
     registry: nagaya::admission::Registry,
     inventory: nagaya::inventory::Inventory,
+    cpu_sets: CpuSets,
     node: &mut Node,
 ) -> ExitCode {
     let notifier = match Notifier::from_env() {
@@ -165,13 +183,14 @@ fn serve(
     let names: Vec<String> = profile.engines.iter().map(|engine| engine.name.clone()).collect();
     published(node.publish_machine(&inventory, &profile));
     published(node.engines_loading(&names));
-    let mut ready = match lifecycle::start(
+    let options = lifecycle::Options::new(lifecycle::DEFAULT_OPEN_TIMEOUT).cpu_sets(cpu_sets);
+    let mut ready = match lifecycle::start_with(
         profile,
         registry,
         inventory,
         &config.store_dir,
         notifier.as_ref(),
-        lifecycle::DEFAULT_OPEN_TIMEOUT,
+        options,
     ) {
         Ok(ready) => ready,
         // `lifecycle::start` logs the error with its span.

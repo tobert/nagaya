@@ -1,6 +1,8 @@
 //! The CPU sets of spec 3.2a (milestone 14). Each rule has one test.
 
-use nagaya::cpu_sets::{CpuSetError, CpuSets, split};
+use nagaya::cpu_sets::{CpuSetError, CpuSets, CpuSetupError, for_machine, split};
+use nagaya::exit::ExitCode;
+use nagaya::probe::FileProbe;
 
 /// The online CPUs of gfx1151host: 16 cores, two threads each (`lscpu`).
 fn gfx1151host_online() -> Vec<u32> {
@@ -89,4 +91,46 @@ fn an_unsorted_list_is_an_error() {
 #[test]
 fn a_repeated_cpu_is_an_error() {
     assert_eq!(split(&[0, 1, 1, 2]), Err(CpuSetError::NotIncreasing { index: 2 }));
+}
+
+/// A machine root that has only the list of online CPUs.
+fn root_with_online(list: &str) -> tempfile::TempDir {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("sys/devices/system/cpu");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("online"), format!("{list}\n")).unwrap();
+    root
+}
+
+fn for_root(root: &tempfile::TempDir) -> Result<CpuSets, CpuSetupError> {
+    for_machine(&FileProbe::new(root.path()))
+}
+
+#[test]
+fn the_sets_come_from_the_online_list_of_the_file_probe() {
+    let root = root_with_online("0-2,5-7");
+    let split = for_root(&root).unwrap();
+    assert_eq!(split.housekeeping, vec![0, 1]);
+    assert_eq!(split.pool, vec![2, 5, 6, 7]);
+}
+
+#[test]
+fn a_machine_with_two_online_cpus_refuses_the_start() {
+    let error = for_root(&root_with_online("0-1")).unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::RefusedStart);
+    assert!(error.to_string().contains("2 online"), "{error}");
+}
+
+#[test]
+fn an_online_list_out_of_order_refuses_the_start() {
+    let error = for_root(&root_with_online("3,1,2")).unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::RefusedStart);
+}
+
+#[test]
+fn a_machine_with_no_online_list_refuses_the_start() {
+    let root = tempfile::tempdir().unwrap();
+    let error = for_root(&root).unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::RefusedStart);
+    assert!(error.to_string().contains("sys/devices/system/cpu/online"), "{error}");
 }
