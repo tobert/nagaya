@@ -76,6 +76,16 @@ fn the_template_id_has_two_parts_and_is_stable() {
     assert_eq!(chat, format!("qwen38-chat:{}", hash16(source.as_bytes())));
 }
 
+/// The template id of the test GGUF, pinned (gogi rule 6). Clients fit thresholds to an id, so a change to this value
+/// is a deliberate id change. Change it only when the rendered tokens of the test set change on purpose, and say so
+/// in the commit message. A change to a comment or to the code structure must not touch it.
+const GOLDEN_TEMPLATE_ID: &str = "nagaya-council:b66d022efb4d4e48+qwen38-chat:12827f24b742ea4e";
+
+#[test]
+fn the_template_id_of_the_test_gguf_is_the_golden_id() {
+    assert_eq!(base(), GOLDEN_TEMPLATE_ID);
+}
+
 #[test]
 fn a_hook_that_changes_nothing_keeps_the_template_id() {
     assert_eq!(
