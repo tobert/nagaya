@@ -187,3 +187,44 @@ fn a_long_context_with_an_assistant_message_costs_what_one_without_it_costs() {
     // The work is the same: two renders each. Allow for noise, but not for the three extra renders of a seam.
     assert!(a < b * 2 + Duration::from_millis(20), "{a:?} against {b:?}");
 }
+
+/// The lookup of held cuts reads only the entries that chain from the boundaries of the context. A store with 10,000
+/// unrelated entries of the same engine, at tokens inside the context, costs a build no more than an empty store.
+#[test]
+fn ten_thousand_unrelated_entries_do_not_slow_a_build() {
+    let (f, _) = fixture(Arc::new(nagaya_text_toy::ToyFamily::new()));
+    let long = "Keep the build directory clean. ".repeat(250);
+    let value = json!({"thinking": false, "messages": [
+        {"role": "user", "content": long, "snap": true},
+        {"role": "assistant", "content": "Noted."},
+        {"role": "user", "content": "Summarize."}]});
+    f.service.build(&context(&value), false, Default::default()).unwrap();
+    let best = || {
+        (0..3)
+            .map(|_| {
+                let started = Instant::now();
+                f.service.build(&context(&value), true, Default::default()).unwrap();
+                started.elapsed()
+            })
+            .min()
+            .unwrap()
+    };
+    let empty = best();
+    {
+        let ports = f.process.ports();
+        let mut store = ports.store().unwrap().lock().unwrap();
+        let identity = store
+            .entries()
+            .values()
+            .next()
+            .expect("the build held a snapshot")
+            .identity;
+        store.fill_unrelated(10_000, council_support::ENGINE, identity, 100..7900);
+    }
+    let full = best();
+    eprintln!("dry run: {empty:?} with an empty store, {full:?} with 10,000 unrelated entries");
+    assert!(
+        full < empty * 2 + Duration::from_millis(5),
+        "{full:?} against {empty:?}"
+    );
+}

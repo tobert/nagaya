@@ -820,6 +820,10 @@ pub struct Entry {
     pub epoch: u64,
     /// Why the store quarantined the entry.
     pub quarantine: Option<Quarantine>,
+    /// The recipe of the last seal before the snapshot: the recipe that its own recipe chains from (spec 6.2). A
+    /// build gives it. An entry from an older index has none.
+    #[serde(default)]
+    pub chains_from: Option<RecipeId>,
 }
 
 /// A pin on an entry.
@@ -848,6 +852,10 @@ pub struct Put<'a> {
     pub recipe: RecipeId,
     /// The previous recipe, for a delta. It must equal the parent entry's recipe.
     pub previous_recipe: Option<RecipeId>,
+    /// The recipe of the last seal before the snapshot, which its recipe chains from (spec 6.2). The store indexes the
+    /// entry by it, so a build finds a sealed snapshot inside a message from the boundary below it
+    /// ([`Store::chained_from`]).
+    pub chains_from: Option<RecipeId>,
     /// The engine that made the snapshot, with its class and its chain limits.
     pub engine: EngineFacts,
     /// The engine identity digest.
@@ -875,6 +883,54 @@ struct Index {
     pins: BTreeMap<ContentId, Vec<Pin>>,
     refused: BTreeSet<RecipeId>,
     epoch: u64,
+    /// The entries by `chains_from`. It is not written: a load makes it again from the entries. Each change of
+    /// `entries` goes through [`Index::insert`] and [`Index::remove`], so it stays the same as the entries.
+    #[serde(skip)]
+    chained: BTreeMap<RecipeId, BTreeSet<ContentId>>,
+}
+
+impl Index {
+    /// Add an entry, or replace the entry with its content id.
+    fn insert(&mut self, entry: Entry) {
+        let id = entry.content_id;
+        if let Some(from) = entry.chains_from {
+            self.chained.entry(from).or_default().insert(id);
+        }
+        if let Some(old) = self.entries.insert(id, entry)
+            && let Some(from) = old.chains_from
+            && self.entries[&id].chains_from != Some(from)
+        {
+            self.unchain(from, &id);
+        }
+    }
+
+    /// Remove an entry.
+    fn remove(&mut self, id: &ContentId) -> Option<Entry> {
+        let entry = self.entries.remove(id)?;
+        if let Some(from) = entry.chains_from {
+            self.unchain(from, id);
+        }
+        Some(entry)
+    }
+
+    fn unchain(&mut self, from: RecipeId, id: &ContentId) {
+        if let Some(ids) = self.chained.get_mut(&from) {
+            ids.remove(id);
+            if ids.is_empty() {
+                self.chained.remove(&from);
+            }
+        }
+    }
+
+    /// Make `chained` again from the entries, after a load.
+    fn rechain(&mut self) {
+        self.chained.clear();
+        for entry in self.entries.values() {
+            if let Some(from) = entry.chains_from {
+                self.chained.entry(from).or_default().insert(entry.content_id);
+            }
+        }
+    }
 }
 
 /// A place where a test injects a write failure.
@@ -1017,7 +1073,7 @@ impl Store {
             .map(|entry| entry.content_id)
             .collect();
         for id in &lost {
-            index.entries.remove(id);
+            index.remove(id);
             index.pins.remove(id);
             match std::fs::remove_file(dir.join("blobs").join(id.hex())) {
                 Ok(()) => {}
@@ -1025,6 +1081,7 @@ impl Store {
                 Err(error) => return Err(io_error(error)),
             }
         }
+        index.rechain();
         // 6.11: each entry is checked again at its first use after a restart.
         index.epoch = index.epoch.saturating_add(1);
         for entry in index.entries.values_mut() {
@@ -1084,7 +1141,7 @@ impl Store {
         }
         let mut index = self.index.clone();
         prune_pins(&mut index, now_ms);
-        index.entries.remove(id);
+        index.remove(id);
         let leaving = self.evicted(&[*id], EvictReason::IntervalReplaced);
         let previous = std::mem::replace(&mut self.index, index);
         if let Err(error) = self.persist() {
@@ -1154,7 +1211,7 @@ impl Store {
         let mut index = self.index.clone();
         prune_pins(&mut index, now_ms);
         for victim in &victims {
-            index.entries.remove(victim);
+            index.remove(victim);
             index.pins.remove(victim);
         }
         index.entries.get_mut(id).expect("the entry is in the index").tier = Tier::Nvme;
@@ -1188,6 +1245,79 @@ impl Store {
     /// The entries, for a test or a report.
     pub fn entries(&self) -> &BTreeMap<ContentId, Entry> {
         &self.index.entries
+    }
+
+    /// The entries whose recipe chains from `recipe` (`Entry::chains_from`), in any state. A build finds a sealed
+    /// snapshot inside a message from the boundary below it, and reads no other entry (spec 11.3c).
+    pub fn chained_from(&self, recipe: &RecipeId) -> impl Iterator<Item = &Entry> {
+        self.index
+            .chained
+            .get(recipe)
+            .into_iter()
+            .flatten()
+            .map(|id| &self.index.entries[id])
+    }
+
+    /// Check that the index by `chains_from` names each entry that has one, and no other. A test calls it after each
+    /// change of the store.
+    pub fn check_chained(&self) -> Result<(), String> {
+        let mut want: BTreeMap<RecipeId, BTreeSet<ContentId>> = BTreeMap::new();
+        for entry in self.index.entries.values() {
+            if let Some(from) = entry.chains_from {
+                want.entry(from).or_default().insert(entry.content_id);
+            }
+        }
+        if want == self.index.chained {
+            return Ok(());
+        }
+        Err(format!(
+            "the index by chains_from has {} recipes, and the entries give {}",
+            self.index.chained.len(),
+            want.len()
+        ))
+    }
+
+    /// Add `count` entries that no context has: each chains from its own recipe, at a token in `positions`. They have
+    /// no bytes. Tests of the lookup cost use them.
+    #[cfg(feature = "testing")]
+    pub fn fill_unrelated(&mut self, count: u64, engine: &str, identity: [u8; 32], positions: std::ops::Range<u64>) {
+        for n in 0..count {
+            let seed = n.to_le_bytes();
+            let from = recipe_root(&identity, &seed, &[], b"unrelated");
+            let id = ContentId(*blake3::hash(&from.0).as_bytes());
+            let end = positions.start + n % (positions.end - positions.start).max(1);
+            self.index.insert(Entry {
+                content_id: id,
+                recipe: recipe_boundary(&from, &[n as u32], end),
+                parent: None,
+                coverage: vec![PartCoverage {
+                    part: "cells".to_owned(),
+                    start: 0,
+                    end,
+                }],
+                tier: Tier::Nvme,
+                size: 0,
+                owner: 1,
+                created_ms: 0,
+                last_used_ms: 0,
+                hits: 0,
+                reason: Reason::Anchor,
+                provenance: None,
+                check: Check::None,
+                identity,
+                state: EntryState::Live,
+                engine: engine.to_owned(),
+                determinism: DeterminismClass::Always,
+                bit_dependence: Vec::new(),
+                chain: EntryChain {
+                    max_depth: u32::MAX,
+                    delta_fraction: 1.0,
+                },
+                epoch: self.index.epoch,
+                quarantine: None,
+                chains_from: Some(from),
+            });
+        }
     }
 
     /// The pins, for a test or a report.
@@ -1301,38 +1431,36 @@ impl Store {
         let mut index = self.index.clone();
         prune_pins(&mut index, put.now_ms);
         for victim in &victims {
-            index.entries.remove(victim);
+            index.remove(victim);
             index.pins.remove(victim);
         }
-        index.entries.insert(
-            id,
-            Entry {
-                content_id: id,
-                recipe: put.recipe,
-                parent: put.snapshot.parent,
-                coverage,
-                tier: put.tier,
-                size,
-                owner: put.owner,
-                created_ms: put.now_ms,
-                last_used_ms: put.now_ms,
-                hits: 0,
-                reason: put.reason,
-                provenance: put.provenance,
-                check: Check::Full,
-                identity: put.identity,
-                state: EntryState::Live,
-                engine: put.engine.name.clone(),
-                determinism: put.engine.determinism.into(),
-                bit_dependence: put.engine.bit_dependence.iter().map(|&item| item.into()).collect(),
-                chain: EntryChain {
-                    max_depth: put.engine.chain.max_depth,
-                    delta_fraction: put.engine.chain.delta_fraction,
-                },
-                epoch: self.index.epoch,
-                quarantine: None,
+        index.insert(Entry {
+            content_id: id,
+            recipe: put.recipe,
+            parent: put.snapshot.parent,
+            coverage,
+            tier: put.tier,
+            size,
+            owner: put.owner,
+            created_ms: put.now_ms,
+            last_used_ms: put.now_ms,
+            hits: 0,
+            reason: put.reason,
+            provenance: put.provenance,
+            check: Check::Full,
+            identity: put.identity,
+            state: EntryState::Live,
+            engine: put.engine.name.clone(),
+            determinism: put.engine.determinism.into(),
+            bit_dependence: put.engine.bit_dependence.iter().map(|&item| item.into()).collect(),
+            chain: EntryChain {
+                max_depth: put.engine.chain.max_depth,
+                delta_fraction: put.engine.chain.delta_fraction,
             },
-        );
+            epoch: self.index.epoch,
+            quarantine: None,
+            chains_from: put.chains_from,
+        });
         let previous = std::mem::replace(&mut self.index, index);
         if let Err(error) = self.persist() {
             self.index = previous;
@@ -1371,35 +1499,33 @@ impl Store {
             }
         }
         let size = bytes.len() as u64;
-        index.entries.insert(
-            id,
-            Entry {
-                content_id: id,
-                recipe: put.recipe,
-                parent: put.snapshot.parent,
-                coverage,
-                tier: put.tier,
-                size,
-                owner: put.owner,
-                created_ms: put.now_ms,
-                last_used_ms: put.now_ms,
-                hits: 0,
-                reason: put.reason,
-                provenance: put.provenance,
-                check: Check::Full,
-                identity: put.identity,
-                state: EntryState::Quarantined,
-                engine: put.engine.name.clone(),
-                determinism: put.engine.determinism.into(),
-                bit_dependence: put.engine.bit_dependence.iter().map(|&item| item.into()).collect(),
-                chain: EntryChain {
-                    max_depth: put.engine.chain.max_depth,
-                    delta_fraction: put.engine.chain.delta_fraction,
-                },
-                epoch,
-                quarantine: Some(Quarantine::Tripwire),
+        index.insert(Entry {
+            content_id: id,
+            recipe: put.recipe,
+            parent: put.snapshot.parent,
+            coverage,
+            tier: put.tier,
+            size,
+            owner: put.owner,
+            created_ms: put.now_ms,
+            last_used_ms: put.now_ms,
+            hits: 0,
+            reason: put.reason,
+            provenance: put.provenance,
+            check: Check::Full,
+            identity: put.identity,
+            state: EntryState::Quarantined,
+            engine: put.engine.name.clone(),
+            determinism: put.engine.determinism.into(),
+            bit_dependence: put.engine.bit_dependence.iter().map(|&item| item.into()).collect(),
+            chain: EntryChain {
+                max_depth: put.engine.chain.max_depth,
+                delta_fraction: put.engine.chain.delta_fraction,
             },
-        );
+            epoch,
+            quarantine: Some(Quarantine::Tripwire),
+            chains_from: put.chains_from,
+        });
         index.refused.insert(put.recipe);
         let previous = std::mem::replace(&mut self.index, index);
         if let Err(error) = self.persist() {
@@ -1767,7 +1893,7 @@ impl Store {
         let mut index = self.index.clone();
         index.refused.remove(&recipe);
         for id in &bad {
-            index.entries.remove(id);
+            index.remove(id);
             index.pins.remove(id);
         }
         let previous = std::mem::replace(&mut self.index, index);
@@ -1842,7 +1968,7 @@ impl Store {
         let mut index = self.index.clone();
         prune_pins(&mut index, now_ms);
         for id in &victims {
-            index.entries.remove(id);
+            index.remove(id);
             index.pins.remove(id);
         }
         let leaving = self.evicted(&victims, EvictReason::Evict);
@@ -2737,6 +2863,7 @@ mod tests {
                 snapshot,
                 recipe,
                 previous_recipe: None,
+                chains_from: None,
                 engine: EngineFacts {
                     name: "test".to_owned(),
                     determinism: Determinism::Always,

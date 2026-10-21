@@ -405,6 +405,7 @@ pub(crate) fn store_thread(store: &std::sync::Mutex<Store>, messages: Receiver<S
                     snapshot: &snapshot,
                     recipe,
                     previous_recipe: None,
+                    chains_from: None,
                     engine: *engine,
                     identity,
                     owner,

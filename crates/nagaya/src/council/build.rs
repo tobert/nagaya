@@ -972,6 +972,7 @@ impl<T: Then> ContextBody<T> {
             snapshot: &snapshot,
             recipe: recipe_not_sealed(&sealed),
             previous_recipe: None,
+            chains_from: None,
             engine: facts,
             identity: self.shared.identity,
             owner: COUNCIL_OWNER,
@@ -1204,6 +1205,8 @@ impl<T: Then> ContextBody<T> {
             seal.seal(state)
                 .map_err(|error| ServiceError::internal(format!("the seal at {place} failed: {error:?}")))?;
         }
+        // The recipe chains from the last seal before this one. The store indexes the snapshot by it.
+        let chains_from = self.sealed.map(|(sealed, _)| sealed);
         // The state is sealed now, so a later copy chains from this recipe.
         self.sealed = Some((recipe, self.fed.len()));
         let snapshot = park::park_snapshot(engine, state)
@@ -1217,6 +1220,7 @@ impl<T: Then> ContextBody<T> {
                 snapshot: &snapshot,
                 recipe,
                 previous_recipe: None,
+                chains_from,
                 engine: facts,
                 identity: self.shared.identity,
                 owner: COUNCIL_OWNER,

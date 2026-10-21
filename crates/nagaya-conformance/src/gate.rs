@@ -422,6 +422,7 @@ fn restore_through_store(
             snapshot: &snapshot,
             recipe: recipe_root(&identity, b"", &[], b""),
             previous_recipe: None,
+            chains_from: None,
             engine: EngineFacts::of("conformance", limits),
             identity,
             owner: 0,

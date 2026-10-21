@@ -570,34 +570,32 @@ impl Service {
     ///
     /// A snapshot is a cut when its recipe is the recipe of the context at its position, chained from the boundary
     /// below it. Thus the tokens of the context up to that position are the tokens that the snapshot holds, and the
-    /// head of a cut reply is found whatever form the client sent the reply back in. The scan reads the store's
-    /// index, and it renders nothing. A cut takes the message of the next boundary. The response never lists a cut.
+    /// head of a cut reply is found whatever form the client sent the reply back in. The lookup reads only the entries
+    /// that chain from the context's own boundaries (`Store::chained_from`), and it renders nothing. A cut takes the
+    /// message of the next boundary. The response never lists a cut.
     fn held_cuts(&self, rendering: &Rendering) -> Result<Vec<Cut>, ServiceError> {
         let below = boundary_recipes(self.root, rendering)?;
+        let bases = std::iter::once((self.root, 0)).chain(below.iter().map(|b| (b.recipe, b.boundary.tokens)));
         let store = self.store();
         let mut positions: Vec<usize> = Vec::new();
-        for entry in store.entries().values() {
-            let usable = entry.state == EntryState::Live
-                && entry.reason != nagaya_store::Reason::Interval
-                && entry.engine == self.shared.engine_name
-                && entry.identity == self.shared.identity;
-            let Some(position) = entry.coverage.iter().map(|span| span.end).max().map(|end| end as usize) else {
-                continue;
-            };
-            if !usable || position == 0 || position >= rendering.end || positions.contains(&position) {
-                continue;
-            }
-            let at = below.partition_point(|recipe| recipe.boundary.tokens < position);
-            if below.get(at).is_some_and(|recipe| recipe.boundary.tokens == position) {
-                continue;
-            }
-            let (base, start) = match at {
-                0 => (self.root, 0),
-                _ => (below[at - 1].recipe, below[at - 1].boundary.tokens),
-            };
-            if nagaya_store::recipe_boundary(&base, &rendering.tokens[start..position], position as u64) == entry.recipe
-            {
-                positions.push(position);
+        for (index, (base, start)) in bases.enumerate() {
+            // The cut lies before the next boundary of the context.
+            let next = below.get(index).map_or(rendering.end, |recipe| recipe.boundary.tokens);
+            for entry in store.chained_from(&base) {
+                let usable = entry.state == EntryState::Live
+                    && entry.reason != nagaya_store::Reason::Interval
+                    && entry.engine == self.shared.engine_name
+                    && entry.identity == self.shared.identity;
+                let Some(position) = entry.coverage.iter().map(|span| span.end).max().map(|end| end as usize) else {
+                    continue;
+                };
+                if !usable || position <= start || position >= next || positions.contains(&position) {
+                    continue;
+                }
+                let recipe = nagaya_store::recipe_boundary(&base, &rendering.tokens[start..position], position as u64);
+                if recipe == entry.recipe {
+                    positions.push(position);
+                }
             }
         }
         drop(store);
