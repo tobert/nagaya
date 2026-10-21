@@ -1824,6 +1824,7 @@ night (vetoable)" in its section. Amy can veto any of them. Each line gives the 
 - 3.2a: the group threads run on the pool set.
 - 3.2a: the sets use logical CPUs and do not know SMT siblings.
 - 4.2: a staging charge covers each host copy of engine state, up to one slot.
+- 4.3: the admission of a profile keeps the live context and staging charges, or it refuses with the shortfall.
 - 6.13: mk declares a checkpoint grain of 256 tokens.
 - 6.13: the job path makes the interval copy as the next quantum, and a build restores the longest copy.
 - 6.13: a refused charge or a put with no space skips the copy, and a client cannot pin a copy.
@@ -1885,6 +1886,11 @@ night (vetoable)" in its section. Amy can veto any of them. Each line gives the 
 - 11.7: a closed stream stops the generation, which holds no head.
 - 11.7: a response does not report a control-text hit in a message of a context.
 - 11.7: a stop sets every served model to `draining`, and the server waits at most 2 s for open requests.
+
+**In gogi (`~/src/gogi/docs/council-api.md`, `thinking`)**
+
+- A template may render a context the same with thinking on and off. Then both contexts have one head. gogi
+  `c98fe1f` changes the conformance check to match.
 
 **In `docs/engine-abi.md`**
 
