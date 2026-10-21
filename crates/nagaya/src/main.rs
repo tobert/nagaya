@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nagaya::bootstrap::Bootstrap;
-use nagaya::cpu_sets::{CpuSets, for_machine_with_devices};
+use nagaya::cpu_sets::{CpuSets, for_machine_with_devices_ignoring};
 use nagaya::exit::{ExitCode, after_stop, leave, panic_text};
 use nagaya::gossip::{Gossip, GossipConfig, PublishError};
 use nagaya::lifecycle;
@@ -104,13 +104,32 @@ fn run(machine: Machine) -> ExitCode {
             return ExitCode::RefusedStart;
         }
     };
-    let (registry, inventory) = match machine {
+    let (registry, mut inventory) = match machine {
         Ok(machine) => machine,
         Err(refusal) => {
             tracing::error!("{}", refusal.message);
             return refusal.code;
         }
     };
+    // An address that the probe did not find stops the start, so a stale address cannot hide a device (spec 2.1).
+    if let Err(error) = inventory.ignore(&config.ignore_devices) {
+        tracing::error!("{error}");
+        return error.exit_code();
+    }
+    for device in &inventory.devices {
+        tracing::info!(
+            "inventory: device {} `{}` at {} {}",
+            device.id,
+            device.name,
+            device.pci_address,
+            if device.ignored { "ignored" } else { "active" }
+        );
+    }
+    // Admission checks this again. The early check stops the start before the CPU sets and the gossip (spec 2.1).
+    if let Err(error) = nagaya::placement::check_ignored(&profile, &inventory) {
+        tracing::error!("{error}");
+        return ExitCode::RefusedStart;
+    }
     if let Err(error) = install_terminate(&SIGNALS) {
         tracing::error!("cannot install the SIGTERM handler: {error}");
         return ExitCode::Crash;
@@ -123,7 +142,7 @@ fn run(machine: Machine) -> ExitCode {
         }
     };
     // The CPU sets come from the CPU lists of the file probe (spec 3.2a, 3.2b). A machine that cannot split them refuses the start.
-    let cpu_sets = match for_machine_with_devices(&FileProbe::new("/")) {
+    let cpu_sets = match for_machine_with_devices_ignoring(&FileProbe::new("/"), &config.ignore_devices) {
         Ok(sets) => sets,
         Err(error) => {
             tracing::error!("{error}");

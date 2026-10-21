@@ -282,3 +282,50 @@ fn an_unspecified_gossip_address_exits_three() {
         );
     }
 }
+
+fn add_ignore_devices(fixture: &Fixture, list: &str) {
+    let mut text = std::fs::read_to_string(&fixture.config).unwrap();
+    text.push_str(&format!("ignore_devices = {list}\n"));
+    std::fs::write(&fixture.config, text).unwrap();
+}
+
+#[test]
+fn an_ignored_address_that_the_machine_lacks_exits_three_and_names_it() {
+    let fixture = Fixture::new("fake");
+    add_ignore_devices(&fixture, "[\"0000:99:00.0\"]");
+    let output = output(fixture.spawn(None));
+    assert_eq!(output.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("0000:99:00.0"),
+        "the message names the address: {stderr}"
+    );
+}
+
+#[test]
+fn a_profile_that_names_an_ignored_device_exits_three_and_the_log_shows_it_ignored() {
+    let fixture = Fixture::new("fake");
+    add_ignore_devices(&fixture, "[\"0000:00:00.0\"]");
+    let output = output(fixture.spawn(None));
+    assert_eq!(output.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("inventory: device 0 `fake-0` at 0000:00:00.0 ignored"),
+        "the log shows the ignored device: {stderr}"
+    );
+    assert!(stderr.contains("ignores that device"), "the refusal says why: {stderr}");
+}
+
+#[test]
+fn the_log_shows_a_device_that_is_not_ignored_as_active() {
+    let fixture = Fixture::new("fake");
+    let mut child = fixture.spawn(None);
+    let mut lines = support::Lines::new(child.0.as_mut().unwrap().stderr.take().unwrap());
+    lines.wait_for(
+        "inventory: device 0 `fake-0` at 0000:00:00.0 active",
+        Duration::from_secs(10),
+    );
+    // SAFETY: the child pid is live, and SIGTERM is the stop signal of spec 10.3.
+    assert_eq!(unsafe { kill(child.id() as i32, SIGTERM) }, 0);
+    wait_timeout(&mut child, Duration::from_secs(10));
+}
