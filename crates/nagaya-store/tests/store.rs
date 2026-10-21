@@ -480,3 +480,42 @@ fn a_block_format_on_another_dtype_is_refused() {
     engine.block_format = Some("IQ4_NL".to_owned());
     assert!(snapshot_from_engine(&mut engine, State::Slot(0), &[(0, 0, 2)]).is_err());
 }
+
+/// One pass over `tokens` at `from`, with the logit row of the last one.
+fn feed_at(engine: &mut FakeAlways, slot: u32, from: u64, tokens: &[u32]) -> Vec<u8> {
+    let last = from + tokens.len() as u64 - 1;
+    let out = engine
+        .pass(
+            &[Segment {
+                state: State::Slot(slot),
+                inputs: SegmentInputs::Tokens(tokens.to_vec()),
+                positions: (from..=last).collect(),
+                meta: Vec::new(),
+                outputs: OutputsWanted { logit_rows: vec![last] },
+            }],
+            &[],
+        )
+        .unwrap();
+    out.outputs
+        .into_iter()
+        .find(|output| output.name == "logits")
+        .unwrap()
+        .bytes
+}
+
+#[test]
+fn written_snapshots_put_a_state_back_in_a_slot() {
+    let tokens: Vec<u32> = (1..=20).collect();
+    let mut engine = FakeAlways::with_slots(vec![SlotLimit { bytes: 16384, count: 1 }]).with_vocab(16);
+    feed_at(&mut engine, 0, 0, &tokens);
+    let snapshot = snapshot_from_engine(&mut engine, State::Slot(0), &[(1, 0, 20), (2, 16, 4)]).unwrap();
+    // The slot moves on, and then it is cleared.
+    feed_at(&mut engine, 0, 20, &[7, 7, 7]);
+    assert_eq!(engine.slots().unwrap().slot_clear(0), WriteResult::Ok);
+    let written = nagaya_store::write_snapshots(&mut engine, State::Slot(0), std::slice::from_ref(&snapshot)).unwrap();
+    assert_eq!(written, nagaya_store::Restored::Done);
+    assert_eq!(engine.slots().unwrap().slot_high(0), 20);
+    let mut straight = FakeAlways::with_slots(vec![SlotLimit { bytes: 16384, count: 1 }]).with_vocab(16);
+    feed_at(&mut straight, 0, 0, &tokens);
+    assert_eq!(feed_at(&mut engine, 0, 20, &[9]), feed_at(&mut straight, 0, 20, &[9]));
+}
