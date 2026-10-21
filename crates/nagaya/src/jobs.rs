@@ -18,12 +18,19 @@ pub enum Ran {
     More(Vec<Kind>),
     /// The quantum failed. The job ends, and the body has told its caller why.
     Failed,
+    /// The quantum ran, and the body cancels its job, for example because its client went away. The job ends as
+    /// cancelled (spec 5.9).
+    Cancelled,
 }
 
 /// The work of one job.
 pub trait JobBody: Send {
     /// Run the quantum of the given kind. `engines` are the engines of the group, in profile order.
     fn run(&mut self, kind: Kind, engines: &mut [Box<dyn Engine>]) -> Ran;
+
+    /// Hear that the job reached a terminal state. The group calls it once, before it drops the body. A job can end
+    /// with no quantum that ran, for example when it passed its deadline (spec 5.8).
+    fn ended(&mut self, _state: JobState) {}
 }
 
 /// A job that a request brings to a group.
@@ -32,6 +39,8 @@ pub struct JobSpec {
     pub class: Class,
     /// The integer priority (spec 5.4).
     pub priority: i64,
+    /// The time after which the job runs no more quanta (spec 5.8).
+    pub deadline: Option<Instant>,
     /// The kind of the first quantum. The body adds the others when it runs the first one.
     pub first: Kind,
     /// The work.
@@ -90,12 +99,15 @@ impl GroupJobs {
         let id = self.next_id;
         self.next_id += 1;
         let now_ms = self.now_ms();
+        let deadline_ms = spec
+            .deadline
+            .map(|deadline| deadline.saturating_duration_since(self.epoch).as_millis() as u64);
         let job = Job {
             id,
             class: spec.class,
             priority: spec.priority,
             arrival_ms: now_ms,
-            deadline_ms: None,
+            deadline_ms,
             engine: self.group,
             quanta: [spec.first].into_iter().collect(),
             admitted: false,
@@ -155,6 +167,14 @@ impl GroupJobs {
                 Completion::Done
             }
             Ran::Failed => Completion::Failed,
+            Ran::Cancelled => {
+                // The quantum ran to its end. A cancel of a running job takes effect when it completes (spec 5.9).
+                self.event(Event::Cancel {
+                    now_ms: self.now_ms(),
+                    job: id,
+                });
+                Completion::Done
+            }
         };
         self.finished = Some((duration_ms, outcome));
         true
@@ -162,16 +182,17 @@ impl GroupJobs {
 
     /// Drop the jobs that reached a terminal state, and their bodies. A job that leaves takes its balance (spec 5.4).
     fn forget_ended_jobs(&mut self) {
-        let ended: Vec<JobId> = self
+        let ended: Vec<(JobId, JobState)> = self
             .state
             .jobs
             .iter()
             .filter(|job| job.state.is_terminal())
-            .map(|job| job.id)
+            .map(|job| (job.id, job.state))
             .collect();
         self.state.jobs.retain(|job| !job.state.is_terminal());
-        for id in ended {
-            self.bodies.remove(&id);
+        for (id, state) in ended {
+            let mut body = self.bodies.remove(&id).expect("a job that ended has a body");
+            body.ended(state);
         }
     }
 

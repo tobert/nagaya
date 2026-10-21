@@ -111,6 +111,7 @@ fn job(class: Class, name: &'static str, log: &Log, more: &[Kind]) -> JobSpec {
     JobSpec {
         class,
         priority: 0,
+        deadline: None,
         first: Kind::Copy,
         body: Box::new(Record {
             name,
@@ -160,6 +161,7 @@ fn a_job_runs_on_the_thread_that_opened_the_engine() {
             JobSpec {
                 class: Class::Interactive,
                 priority: 0,
+                deadline: None,
                 first: Kind::Read,
                 body: Box::new(Record {
                     name: "a",
@@ -211,6 +213,7 @@ fn a_stop_cancels_the_jobs_that_have_not_started() {
             JobSpec {
                 class: Class::Batch,
                 priority: 0,
+                deadline: None,
                 first: Kind::Copy,
                 body: Box::new(Holds(result_tx)),
             },
@@ -284,6 +287,7 @@ fn a_stop_cancels_a_job_that_waits_for_its_next_quantum() {
             JobSpec {
                 class: Class::Interactive,
                 priority: 0,
+                deadline: None,
                 first: Kind::Copy,
                 body: Box::new(TwoQuanta {
                     entered: entered_tx,

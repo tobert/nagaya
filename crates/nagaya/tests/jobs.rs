@@ -2,11 +2,11 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use nagaya::jobs::{GroupJobs, JobBody, JobSpec, Ran};
 use nagaya_abi::{Engine, Kind};
-use nagaya_sched::Class;
+use nagaya_sched::{Class, JobState};
 
 type Log = Arc<Mutex<Vec<String>>>;
 
@@ -20,6 +20,10 @@ struct Script {
     ran: usize,
     /// The quantum, counted from 0, that fails.
     fail_at: Option<usize>,
+    /// The quantum, counted from 0, after which the body cancels its job.
+    cancel_at: Option<usize>,
+    /// The terminal states that the body heard.
+    ended: Option<Arc<Mutex<Vec<JobState>>>>,
     dropped: Option<Arc<AtomicUsize>>,
     /// The time that each quantum takes, so that the scheduler has time to charge.
     sleep: Duration,
@@ -34,10 +38,25 @@ impl JobBody for Script {
         if self.fail_at == Some(index) {
             return Ran::Failed;
         }
+        if self.cancel_at == Some(index) {
+            return Ran::Cancelled;
+        }
         if index == 0 && !self.more.is_empty() {
             return Ran::More(std::mem::take(&mut self.more));
         }
         Ran::Done
+    }
+
+    fn ended(&mut self, state: JobState) {
+        if let Some(ended) = &self.ended {
+            ended.lock().unwrap().push(state);
+        }
+    }
+}
+
+impl Script {
+    fn heard(&self) -> Arc<Mutex<Vec<JobState>>> {
+        Arc::clone(self.ended.as_ref().expect("the script records what it heard"))
     }
 }
 
@@ -56,6 +75,8 @@ fn script(name: &'static str, log: &Log, more: &[Kind]) -> Script {
         more: more.to_vec(),
         ran: 0,
         fail_at: None,
+        cancel_at: None,
+        ended: Some(Arc::new(Mutex::new(Vec::new()))),
         dropped: None,
         sleep: Duration::ZERO,
     }
@@ -66,6 +87,7 @@ fn spec(class: Class, priority: i64, first: Kind, body: Script) -> JobSpec {
         class,
         priority,
         first,
+        deadline: None,
         body: Box::new(body),
     }
 }
@@ -239,4 +261,51 @@ fn a_group_with_no_job_is_idle_and_runs_nothing() {
     let mut jobs = GroupJobs::new(0);
     assert!(jobs.idle());
     assert!(!jobs.run_one(&mut []));
+}
+
+#[test]
+fn a_body_hears_how_its_job_ended() {
+    let log = log();
+    let body = script("a", &log, &[Kind::Prefill]);
+    let heard = body.heard();
+    let mut failing = script("bad", &log, &[Kind::Prefill]);
+    failing.fail_at = Some(0);
+    let failed = failing.heard();
+    let mut jobs = GroupJobs::new(0);
+    jobs.add(spec(Class::Batch, 1, Kind::Copy, body));
+    jobs.add(spec(Class::Batch, 0, Kind::Copy, failing));
+    run_all(&mut jobs);
+    assert_eq!(*heard.lock().unwrap(), [JobState::Done]);
+    assert_eq!(*failed.lock().unwrap(), [JobState::Failed]);
+}
+
+#[test]
+fn a_job_past_its_deadline_runs_no_more_quanta_and_its_body_hears_expired() {
+    let log = log();
+    let mut body = script("late", &log, &[Kind::Prefill, Kind::Prefill]);
+    body.sleep = Duration::from_millis(30);
+    let heard = body.heard();
+    let mut jobs = GroupJobs::new(0);
+    jobs.add(JobSpec {
+        deadline: Some(Instant::now() + Duration::from_millis(10)),
+        ..spec(Class::Interactive, 0, Kind::Copy, body)
+    });
+    run_all(&mut jobs);
+    // The scheduler checks the deadline between quanta, so the first quantum ran (spec 5.8).
+    assert_eq!(lines(&log), ["late:Copy"]);
+    assert_eq!(*heard.lock().unwrap(), [JobState::Expired]);
+}
+
+#[test]
+fn a_body_that_cancels_its_job_runs_no_more_quanta_and_hears_cancelled() {
+    let log = log();
+    let mut body = script("gone", &log, &[Kind::Decode, Kind::Decode, Kind::Decode]);
+    body.cancel_at = Some(1);
+    let heard = body.heard();
+    let mut jobs = GroupJobs::new(0);
+    jobs.add(spec(Class::Interactive, 0, Kind::Prefill, body));
+    jobs.add(spec(Class::Batch, 0, Kind::Copy, script("next", &log, &[])));
+    run_all(&mut jobs);
+    assert_eq!(lines(&log), ["gone:Prefill", "gone:Decode", "next:Copy"]);
+    assert_eq!(*heard.lock().unwrap(), [JobState::Cancelled]);
 }

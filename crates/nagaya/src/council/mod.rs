@@ -659,6 +659,7 @@ fn submit(
             JobSpec {
                 class: schedule.class,
                 priority: i64::from(schedule.priority),
+                deadline: None,
                 first,
                 body,
             },
