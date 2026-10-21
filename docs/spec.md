@@ -1830,6 +1830,9 @@ part of identity (gogi `docs/council-api.md`, "Terms").
 - `embeddings`: served by the engine through a pass with a hidden-state output;
 - `status` (9.7) and `traces` (13.1).
 
+Built on 2026-10-21: `render`, `tokenize` and `detokenize` (11.4b to 11.4d), and the prefix in `identity` (11.4f). The
+other routes in this list are not built.
+
 **11.4b The text routes.** `render`, `tokenize` and `detokenize` use the family library (11.3). They share the rules
 below. These rules are **Proposed (for Amy)**, by Claude Sonnet 5.5 on 2026-10-21. Amy decides, and senpai writes an
 accepted rule as "Decided <date>".
@@ -1853,15 +1856,18 @@ see what a council request feeds. The semantic search of kaijutsu uses them to c
 - **Proposed (for Amy).** The HTTP server span of 9.2 covers each call, and its `http.route` is the path, such as
   `/nagaya/v1/render`. The routes make no `nagaya.job` span and no metric of their own.
 
-The code goes in a new file, `crates/nagaya/src/http/extensions.rs`. The function `router` in
-`crates/nagaya/src/http/mod.rs` merges its routes. `Service` gets one accessor, `Service::family`
-(`crates/nagaya/src/council/mod.rs`), because its field `family` is private.
+Built on 2026-10-21. The code is in `crates/nagaya/src/http/extensions.rs`. The function `routes` in
+`crates/nagaya/src/http/routes.rs` merges its routes, so `router` and the running server both serve them. `Service`
+has one accessor, `Service::family` (`crates/nagaya/src/council/mod.rs`), because its field `family` is private. The
+tests are `crates/nagaya/tests/extensions.rs` (the toy family), `extensions_qwen38.rs` (the real tokenizer and
+template) and `http_telemetry_extensions.rs` (the span and the duration point).
 
 A `FamilyError::Client` becomes a 400. The existing `From<FamilyError>` for `ServiceError`
 (`crates/nagaya/src/council/error.rs`) does this. A `FamilyError::Internal` is a 500, and the process stops (8.5).
 
 **Proposed (for Amy).** A family error can have no `param`. Then the route sets it to the request member at fault:
 `text` for `tokenize`, `tokens` for `detokenize`, and `context` for `render`. mk and mkviolet name only the message.
+A family error that has a `param`, such as `continue`, keeps it (`at` in `extensions.rs`).
 
 **11.4c Render.** `POST /nagaya/v1/render` gives the text and the tokens of a context, as a council request feeds
 them. **Proposed (for Amy).** It is for bench tools and for the debug of a template.
@@ -1929,7 +1935,11 @@ Choices between options, each one made for Amy to change:
   it to `medium` (`EFFORT` in `crates/nagaya-text-qwen38/src/council/mod.rs`). A body with it is a 400.
 
 A message that the template refuses, a context that fails `Context::check`, and a Unicode noncharacter in a string
-are each a 400 `invalid_request`. The message names the fault, as mk does.
+are each a 400 `invalid_request`. The message names the fault, as mk does. The `param` is `context`, unless the fault
+is in a member that has its own name, such as an unknown member of the context.
+
+The route detokenizes the tokens of the rendering to make `text`. These tokens come from valid text, so a failure
+there is a defect: a 500 `internal`, and the process stops (8.5).
 
 **11.4d Tokenize and detokenize.** `POST /nagaya/v1/tokenize` turns text into token ids. `POST /nagaya/v1/detokenize`
 turns token ids into text. **Proposed (for Amy).** They are for the semantic search, for a count of tokens, and for a
@@ -1971,20 +1981,30 @@ POST /nagaya/v1/detokenize
 - **Proposed (for Amy).** An empty `text` gives an empty `tokens`. An empty `tokens` gives an empty `text`. Neither is
   an error.
 - **Proposed (for Amy).** `pieces` are lossy by design. A piece is the bytes of one token, and a token can end inside
-  a character. The route replaces bad bytes with U+FFFD in each piece, as mk does. The piece of a marker is its text.
+  a character. The route replaces bad bytes with U+FFFD in each piece (`String::from_utf8_lossy`). The piece of a
+  marker is its text.
+- **Proposed (for Amy).** Code found a difference from mk. mk's `piece_text` drops a cut-off character at the end of a
+  piece. The route keeps a U+FFFD, so that a client sees the cut. A token of several stray bytes can give more than
+  one U+FFFD, and a top token in a raw read (11.3c) always gives one.
+- **Proposed (for Amy).** Each route has its own members. `special` and `pieces` in a `detokenize` body, and `tokens` in
+  a `tokenize` body, are each a 400 that names the member. A `tokens` member must be an array of unsigned 32-bit
+  integers. Any other value is a 400 with `param` `tokens`, and the message names the place of the bad id.
 
 Two small additions to the `Family` trait (`crates/nagaya-council/src/family.rs`) serve `special` and `pieces`.
 
-- **Proposed (for Amy).** Add `Family::tokenize_special(&self, text: &str) -> Result<Vec<u32>, FamilyError>`. Qwen3.8
-  calls `Tokenizer::encode`. This is the rule of a raw-read suffix (gogi "Raw reads"), where a marker is one token.
-- **Proposed (for Amy).** Add `Family::pieces(&self, tokens: &[u32]) -> Result<Vec<String>, FamilyError>`. Qwen3.8
-  calls `Tokenizer::token_piece(id, true)` for each id, then converts with lossy UTF-8
-  (`crates/nagaya-text-qwen38/src/tokenizer.rs`). `ToyFamily` and the test family `Holding`
-  (`crates/nagaya/tests/council_generations.rs`) implement both.
-- **Proposed (for Amy).** The other option is to build the first set with neither `special` nor `pieces`. `tokenize`
-  then needs no change to the trait. The cost is a bench tool that cannot tokenize a raw suffix.
+- **Proposed (for Amy).** Built on 2026-10-21. `Family::tokenize_special(&self, text: &str) -> Result<Vec<u32>,
+  FamilyError>`. Qwen3.8 calls `Tokenizer::encode`. This is the rule of a raw-read suffix
+  (gogi "Raw reads"), where a marker is one token.
+- **Proposed (for Amy).** Built on 2026-10-21. `Family::pieces(&self, tokens: &[u32]) -> Result<Vec<String>,
+  FamilyError>`. Qwen3.8 calls `Tokenizer::token_piece(id, true)` for each id, then converts with lossy UTF-8
+  (`crates/nagaya-text-qwen38/src/council/mod.rs`). `ToyFamily` and the test family `Holding`
+  (`crates/nagaya/tests/council_generations.rs`) implement both. Both methods are required, not defaults, so a family
+  that does not implement them does not compile.
+- **Proposed (for Amy).** The other option was to build the first set with neither `special` nor `pieces`. `tokenize`
+  then needs no change to the trait. The cost is a bench tool that cannot tokenize a raw suffix. The build took the
+  pick above.
 
-Tests that can fail:
+Tests that can fail (all built, in `crates/nagaya/tests/extensions.rs` and `extensions_qwen38.rs`):
 
 - `detokenize(render.tokens)` equals `render.text`, for each fixture of the family.
 - `tokenize` with `special` on, applied to a `render.text` with no `control_text`, gives `render.tokens`.
@@ -2013,7 +2033,8 @@ The other option is a `GET /nagaya/v1/health` that gives only `{"status": "ok"}`
 gogi's example lists `/mk/v1` this way, and it lists no route (gogi "Extensions").
 
 - **Proposed (for Amy).** `Council::identity` returns `["/nagaya/v1"]` as soon as the process serves one route under
-  the prefix. Today it returns an empty list (`crates/nagaya/src/http/mod.rs`).
+  the prefix. The text routes need a family. The list holds the prefix when the council has a served model, and it is
+  empty otherwise (`crates/nagaya/src/http/mod.rs`). Built on 2026-10-21.
 - **Proposed (for Amy).** The list claims only routes that exist. A route that is not built is a 404 `not_found`
   (11.7), also under the prefix. Thus a client probes a route by calling it.
 - **Proposed (for Amy).** Each machine lists the prefix for its own routes. `status` (9.7) is per machine, and the
@@ -2079,11 +2100,12 @@ rules are each "Decided by senpai 2026-10-20 night (vetoable)".
   gets a status response. A later failure is an `error` event. At most 256 events wait for a slow client. A full
   queue holds the generation back, and it drops no event.
 - A closed stream ends the forward thread, so the generation stops at its next token and holds no head.
-- A response does not report a control-text hit in a message of a context (`message:<i>`). gogi names only the
-  places `case`, `spec` and `suffix:<i>` (gogi rule 2).
+- A council response does not report a control-text hit in a message of a context (`message:<i>`). gogi names only
+  the places `case`, `spec` and `suffix:<i>` (gogi rule 2). The response of `render` does report it (11.4c).
 - A stop first sets every served model to `draining`, so a new request is a 503 `model_unavailable`. Then the
   engines stop (10.3), and the server waits at most 2 s for its open requests.
-- The routes under `/nagaya/v1` (11.4a) and the status feed (9.7) are not built.
+- The routes `render`, `tokenize` and `detokenize` under `/nagaya/v1` are built (11.4b to 11.4d). The other routes of
+  11.4a and the status feed (9.7) are not built.
 - Continuations are built (11.3c). `gogi-conformance` against the process with the fake engine gave 271 to 274 ok,
   0 FAIL and 8 skip on 2026-10-21, at gogi `dc94cb3`. The number of checks depends on the reply to a random nonce.
 
