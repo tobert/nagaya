@@ -1611,6 +1611,7 @@ rules are each "Decided by senpai 2026-10-20 night (vetoable)".
 - A service call blocks, so each call runs on a call thread of its own, on the pool CPUs (3.2a). At most 64 calls
   run at once. A request past that is a 429 `busy`. A panic in a call is a 500 `internal`.
 - A request body has at most 16 MiB. A larger body is a 413 `too_large` that names `body`.
+  A body that does not arrive whole is a 400 `invalid_request` that names `body`.
 - A route that does not exist is a 404 `not_found`, also for a known path with another method.
 - A request id is `req_<start time in hex>_<count>`. It differs between requests and between runs.
 - A ledger that refuses the charge of a context or of a staging copy (4.2) is a 429 `busy`. A job that a stop

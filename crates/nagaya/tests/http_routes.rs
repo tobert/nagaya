@@ -465,6 +465,52 @@ fn council_free(council: &Arc<Council>) -> usize {
     council.free_slots()
 }
 
+/// Send one request with a body that the test builds, and give the status and the error body.
+fn send_body(council: &Arc<Council>, body: Body) -> (StatusCode, Value) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/council/v2/contexts")
+            .body(body)
+            .unwrap();
+        let response = router(Arc::clone(council)).oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 24).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    })
+}
+
+#[test]
+fn a_body_past_the_limit_is_a_413_that_names_the_body() {
+    let f = Fixture::new();
+    let council = council(&f);
+    let (status, value) = send_body(&council, Body::from(vec![b' '; nagaya::http::MAX_BODY_BYTES + 1]));
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{value}");
+    assert_eq!(value["error"]["type"], "too_large", "{value}");
+    assert_eq!(value["error"]["param"], "body", "{value}");
+}
+
+#[test]
+fn a_body_that_does_not_arrive_whole_is_a_400_invalid_request() {
+    let f = Fixture::new();
+    let council = council(&f);
+    let chunks: Vec<Result<&'static [u8], std::io::Error>> = vec![
+        Ok(&b"{\"model\": \"to"[..]),
+        Err(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "the client went away",
+        )),
+    ];
+    let (status, value) = send_body(&council, Body::from_stream(futures_util::stream::iter(chunks)));
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{value}");
+    assert_eq!(value["error"]["type"], "invalid_request", "{value}");
+    assert_eq!(value["error"]["param"], "body", "{value}");
+}
+
 /// Kaibo review 2026-10-20, unverified items. `Service::read` takes the longest suffix with `.expect`, and the Qwen3.8
 /// queue read takes the queue name with `.expect`. gogi's `validate` and `Context::check` must refuse the bad request
 /// first. These requests reach no `.expect`: each is a 400 that names the parameter.
