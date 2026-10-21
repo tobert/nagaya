@@ -21,8 +21,8 @@ inventory, active profile, and engine identities through `chitchat` (`docs/spec.
 **Device.** One thing that runs quanta: a GPU, or the CPU when an engine runs work there (mkviolet's AVX-512 lens).
 A **device group** is the set of devices that one or more engines use. Each device group has one long-lived nagaya
 thread, and every engine call for the group comes from that thread. Two engines that use one device share one group.
-mkviolet's Gemma 4 spans both B70 cards, so its group is the two cards. It runs its own work for each card inside a
-pass (`docs/engine-abi.md` D1).
+mkviolet's Gemma 4 spans both B70 cards, so its group is the two cards. Each card runs one stage, on a stage thread
+of its own (`docs/engine-abi.md` D1).
 
 **Placement profile.** The list of a machine's engines, their devices, their config, the budgets, the shares, the
 store's budgets and pinned identities (`docs/spec.md` 2.4). It is one TOML file in the store directory.
@@ -57,9 +57,9 @@ append-only: the engine times a new shape once and keeps its pick. A new library
 **lineage**, which is a new identity (`docs/engine-abi.md` D3). mk has no library GEMMs and needs no plan table.
 
 **Arena.** The memory that holds an engine's weights and can outlive the process: a set of named file descriptors.
-An arena records how strong its check is. mk has one arena, with a full check (`mk_arena_check`). mkviolet has 60
-DMA-BUF slabs, with a spot check of the first and last 64 bytes of each tensor (`gemma4.rs:284-287`). An inference
-engine opens its arena read-only, and a training engine writes it.
+An arena records how strong its check is. mk has one arena, with a full check (`mk_arena_check`). mkviolet has 30
+DMA-BUF slabs, one for each layer, with a spot check of the first and last 64 bytes of each tensor
+(`gemma4.rs:284-287`). An inference engine opens its arena read-only, and a training engine writes it.
 
 **State object.** Everything that a pass reads besides its inputs, made of parts. There are three kinds:
 
@@ -103,7 +103,7 @@ the content id. Whether a snapshot fits a slot is a check on coverage, not part 
 **Recipe.** What a snapshot was made from: a hash of the engine identity, the inputs and the boundaries. For an
 engine that declares a geometry key, the recipe holds that key too. The store maps a recipe to the content ids made
 from it, so the nagaya can ask "do we already have this?" before it builds. mkviolet's `snapshot_id` is the input
-part of a recipe (`held.rs:312-325`).
+part of a recipe (`held.rs:329-342`).
 
 **Tolerance.** What a served model accepts in place of exact bits: `exact`, or named approximations. Each
 approximation has a quality budget that its approver measured once. A snapshot made by an approximation has its own

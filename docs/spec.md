@@ -58,8 +58,17 @@ bind addresses, store directory, and seed peer addresses.
 | Machine | Devices | Memory |
 |---|---|---|
 | gfx1151host | Strix Halo, one gfx1151 GPU | 128 GB unified |
-| b70host | two Intel Arc Pro B70, a BlueField-2 | 64 GB GDDR6, 128 GB DDR5, 4 TB NVMe |
+| b70host | two Intel Arc Pro B70, and an AMD Radeon 610M for the display | 64 GB GDDR6, 128 GB DDR5, 4 TB NVMe |
 | sm121host | DGX Spark, one Blackwell GPU | 128 GB unified |
+
+On 2026-10-21, a capture of b70host's tree showed these facts:
+
+- The CPU is a Ryzen 9 9950X with 32 online CPUs. Each CCD has one L3 domain: CPUs 0-7 and 16-23, then 8-15 and
+  24-31 (`cpu*/cache/index3/shared_cpu_list`).
+- The B70 cards are at PCI 0000:03:00.0 and 0000:08:00.0. The iGPU is at 0000:80:00.0 (`1002:13c0`, gfx1036). The
+  firmware makes the iGPU the primary display.
+- No BlueField-2 is in the machine. The NICs are `enp17s0` (igc), `enp18s0` (atlantic, 1 Gb/s) and a Wi-Fi card.
+- Both cards have `local_cpulist` 0-31 and `numa_node` -1. Thus the machine has no NUMA locality to use (3.2b).
 
 Telemetry takes hardware attributes from the probed inventory, not from constants in code. (mkviolet puts B70 values
 in `telemetry.rs` as constants.) A CPU that runs work is a device in the inventory too, with host memory as its tier.
@@ -86,7 +95,20 @@ root path is `/` on a machine, and a fixed tree in a test (`crates/nagaya/tests/
 - Network: each interface in `sys/class/net` that has a `device` directory. Virtual interfaces have none.
 
 A device id is the position in the list: AMD GPUs first, then Intel, then NVIDIA, each in the order of the kernel
-number. A missing directory that lists one kind of GPU means that the machine has no GPU of that kind. This is how a
+number.
+
+**Proposed** (claude-opus-5-5, 2026-10-21): the device ids follow the PCI address, in the order of domain, bus,
+device and function, for every vendor. Reason: on b70host the vendor order makes the display iGPU device 0, and the
+B70 cards devices 1 and 2. The PCI order gives the cards 0 and 1, and the iGPU 2. A device id then does not change
+when a driver loads in another order. gfx1151host has one device, so it keeps id 0.
+
+**Proposed** (claude-opus-5-5, 2026-10-21): a display GPU. The probe lists every GPU that it can size, also a GPU
+that drives the display, such as b70host's iGPU. A device that no engine of the profile names gets no budget, no
+group thread and no work. The nagaya is the only compute client of each device that its profile names (3.1). The
+display server keeps a device that the profile does not name. Reason: the simplest rule needs no list of excluded
+devices in the bootstrap config.
+
+A missing directory that lists one kind of GPU means that the machine has no GPU of that kind. This is how a
 coordinator machine joins with no GPU (2.1). Any other missing or malformed file is an error that names the file
 (8.5).
 
@@ -99,8 +121,13 @@ starts. Decided by senpai 2026-10-20 night (vetoable).
 - NVIDIA: `proc/driver/nvidia` gives the model, the bus location and the minor number. It does not give the memory
   size. NVML gives it. Thus the probe accepts only the models in a short list whose memory is unified, and it reads
   their memory as the host memory. Any other model is an error.
-- Xe: sysfs has no file for the size of the device memory. The probe reads the largest prefetchable memory BAR in
-  the `resource` file. With resizable BAR off, the BAR is small, so the probe refuses the card.
+- Xe: sysfs has no file for the size of the device memory, and `xe` has no `tile0/vram0` size file. The probe reads
+  the largest prefetchable memory BAR of the standard BARs 0 to 5, which are the first six lines of the `resource`
+  file. The later lines are the ROM and the SR-IOV BARs of the virtual functions. With resizable BAR off, the BAR is
+  small, so the probe refuses the card. Resizable BAR is a deploy requirement on b70host.
+
+  On b70host, line 9 of `resource` holds 56 GiB: 7 virtual functions of 8 GiB. BAR 2 holds the 32 GiB of the
+  card. A probe that reads every line takes the 56 GiB.
 - AMD: the probe cannot tell unified memory from dedicated memory by one flag. It compares the KFD framebuffer
   memory with `mem_info_gtt_total` and `mem_info_vram_total` of the PCI device. Equal to the first means unified.
   Equal to the second means dedicated. Equal to neither is an error.
@@ -159,6 +186,24 @@ path. Decided 2026-10-20 (reading).
 
 The nagaya measures edges at install, stores the result in its local store index, and can measure them again. Each
 measurement is data with a date.
+
+**The edges of a machine with discrete cards.** **Proposed** (claude-opus-5-5, 2026-10-21). b70host has these
+edges, and the install measures each one:
+
+- host to `device(i)`, and `device(i)` to host. Each B70 links at PCIe 5.0 x8. mkviolet measured about 21.6 GB/s for
+  a copy from host to device (mkviolet `docs/07-long-context.md`).
+- `device(i)` to `device(j)`. mkviolet copies the residual through host memory (`run_card0`, `run_card1`). A peer
+  copy is a separate edge with its own measurement.
+- NVMe to `device(i)`, through host memory or direct. The edge records which path works (7.2).
+
+The probe reads the link of a card from the upstream port of the card's own PCIe switch. On b70host the ports are
+01:00.0 and 06:00.0, and each reports 32 GT/s x8. The card's endpoint reports 2.5 GT/s x1, because it sits behind
+that switch. Thus a probe that reads the endpoint gives a false rate.
+
+**Pinned host memory.** **Proposed** (claude-opus-5-5, 2026-10-21). A copy over PCIe is fastest from pinned host
+memory. Thus a mandatory host term may set `pinned: true`. The ledger charges its bytes in the host budget, as any
+host bytes. `nagaya.ledger.bytes` reports the term, so the pinned bytes are visible. mkviolet pins a staging buffer
+of 4 MiB for uploads (`STAGE_FLOATS`, `gemma4.rs:172`), and host buffers for the routes (`gemma4.rs:521`).
 
 Not built. The nagaya measures no edge yet.
 
@@ -242,6 +287,17 @@ and `pin_identity`. Each `[[budgets]]` entry has `tiers` and `bytes`, and a tier
 `[store]` table has `nvme`, an optional `host` (4.1a), and an optional `interval_copies` (6.13), 0 by default.
 Decided 2026-10-20 (reading).
 
+**One name for each device.** **Proposed** (claude-opus-5-5, 2026-10-21). The spec names a device in four places.
+Each place uses one of two names, and this map joins them.
+
+- A **machine device id** is the id of 2.1. The profile uses it: `devices = [0, 1]`, and a budget tier
+  `device(0)`. The metric attribute `tier` writes it as `device0` (9.4). The fd names of 10.2 use it.
+- A **group index** is a position in the profile's `devices` list of the engine. The ABI uses it: a term tier
+  `device(i)` (4.2), `limits().stages[].device`, and the devices that `open` gets (engine-abi "Core").
+- The ledger maps a term tier `device(i)` to the machine device `devices[i]` of the engine. Then it finds the budget
+  of that machine device. Thus an engine never sees a machine device id, and a profile never sees a group index.
+- On gfx1151host, both names of the one device are 0.
+
 An engine name has letters, digits, `.`, `_` and `-`, and at most 128 bytes. A profile with another name does not
 parse. Reason: the name is part of the gossip key `engine:<name>` (2.3). Decided 2026-10-20.
 
@@ -253,7 +309,8 @@ check.
 ## 3. Process
 
 **3.1 One process per machine.** The nagaya owns every GPU on the machine (Amy: "we'd do 1 process per host that
-owns the gpus"). The nagaya is the only GPU client. A tool that needs a device sends its work through the nagaya, or
+owns the gpus"). The nagaya is the only GPU client. A display GPU that the profile does not name is the one exception
+(2.1, Proposed). A tool that needs a device sends its work through the nagaya, or
 stops the nagaya first. (ds4-recipe: a shader fault with a second GPU client made the SMU stop responding.)
 
 **3.2 Threads and CPU isolation.** The nagaya isolates control work from compute work with `sched_setaffinity` and OS
@@ -270,11 +327,18 @@ thread priorities:
   have one device, and mkviolet's group has both B70 cards. Engines whose device sets share a device, also through
   a chain of shared devices, are in one group with the union of their devices. A group has one thread and one
   scheduler. Every engine call for a group comes from its thread, and the call
-  is synchronous. Inside a pass, the engine runs its own work on each of its devices (D1).
+  is synchronous.
+- **One stage thread per device of a staged engine.** An engine that declares `stages` gets one more thread for
+  each device of its stages (D1). The group thread runs the scheduler and sends each stage quantum to the thread of
+  its device. Each call that touches a device comes from the stage thread of that device. Decided 2026-10-21 (Amy:
+  "move stage_pass up"). The thread layout is **Proposed** (claude-opus-5-5) in engine-abi D1.
 - **A bounded CPU worker pool.** Rendering, tokenization, hashing, safetensors conversion, and CPU device passes
   (13.2) run on a bounded pool pinned to the remaining cores at `SCHED_BATCH`. Long CPU work yields between chunks
   to obey `max_quantum_ms`. On unified-memory machines (`gfx1151host` and `sm121host`), the scheduler pauses background CPU
   memory work during a GPU pass to protect GPU memory bandwidth.
+- **No pause on a discrete card.** **Proposed** (claude-opus-5-5, 2026-10-21): a machine whose cards have their own
+  memory, such as b70host, has no pause rule. A pass there reads GDDR6, not host memory. The host traffic of a
+  pass is the residual and the uploads, about 11 MB for a block of mkviolet. A measurement under load can add a rule.
 
 **3.2a Control runtime first.** The control runtime (`tokio`) arrived with gossip, in milestone 10 step f. The HTTP
 server joined the runtime in milestone 12 step 6. The group threads, the ledger thread and the watchdog thread stay
@@ -336,6 +400,25 @@ does not pin threads that a runtime starts.
 
 **Open:** 3.2 asks for elevated priority on the control threads. Milestone 14 does not apply it. A raised priority
 needs `CAP_SYS_NICE` or a setting in the unit.
+
+**3.2b CPU sets for each device.** **Proposed** (claude-opus-5-5, 2026-10-21). 3.2a puts every group thread in one
+pool set. A stage thread (3.2) drives one card, so it gets a set of its own.
+
+- A stage thread pins to the CPUs of the card's `local_cpulist` that are in the pool set.
+- A card whose `local_cpulist` holds every online CPU has no locality. Then the nagaya gives each such card one L3
+  domain (`cpu*/cache/index3/shared_cpu_list`), in the order of the device ids. With more cards than domains, the
+  cards take the domains in turn.
+- On b70host, card 0 gets CPUs 2-7 and 16-23, and card 1 gets CPUs 8-15 and 24-31. CPUs 0 and 1 are the
+  housekeeping set.
+- The group thread, the CPU pool and the store thread keep the pool set (3.2a).
+
+Reason: the two CCDs of the 9950X have their own L3. A stage thread that stays on one CCD keeps its host buffers in
+one cache.
+
+The Level Zero runtime and IGC start threads of their own, as the HIP runtime does (15 item 14). Linux gives a new
+thread the mask of the thread that starts it. **Proposed** (claude-opus-5-5, 2026-10-21): the engine calls `zeInit` on
+the group thread, so those threads start with the pool set. The nagaya does not pin a thread that a runtime starts.
+**Open:** measure the masks of the Level Zero threads on b70host, as on gfx1151.
 
 **3.3 Engine lifecycle and profile swaps.** The nagaya opens each engine at start, from the profile. mk cannot close
 inside a process today: "the HIP runtime's own teardown segfaults" (mk `service/__main__.py`). Thus in v0, when
@@ -472,6 +555,10 @@ opens (engine-abi, "The context term holds the pool").
 **5.1 Units.** A job is the quanta of one request, in order, with a class (ontology). A quantum is one pass or one
 stage. It runs to its end, and the nagaya chooses what runs next only between quanta.
 
+For an engine with stages, the nagaya chooses between quanta on each device apart. A stage quantum of a block is
+ready after the stage before it ends. The job's lease keeps every other job from the slot until the job ends
+(engine-abi D1, "The hold of the slot"). Decided 2026-10-21.
+
 An engine meets its `max_quantum_ms` (D8) when it chooses the size of each unit of work. The engine knows its own
 speed, so it picks the size from its own measurements. (mk splits a prefill into 256-token chunks in its Python
 service, and that split moves into mk's engine wrapper.) The watchdog reports each quantum that runs past the bound
@@ -538,6 +625,9 @@ the scheduler chooses. Decided 2026-10-18.
 
 In v0 the windows have no key in the bootstrap config. A measurement that
 changes them adds the key (2.1). Decided 2026-10-20 (reading).
+
+An engine with a feed rule (6.14) declares no `segments_exact`. The scheduler joins its segments only when no
+segment writes rows that the store keeps, as for reads and branch blocks. Decided 2026-10-21 (engine-abi D11).
 
 A pass holds segments of one kind only (5.2), and at most the engine's `max_segments`.
 The scheduler joins a ready job only when its next quantum has the
@@ -682,9 +772,12 @@ Decided 2026-10-18 evening.
 only when it is at most a quarter of a full snapshot.) A delta holds, for each cells part and ring part, the rows
 after its parent's end. It holds each fixed part whole. The store never evicts a base while a delta needs it.
 
-**Open** (kaibo, 2026-10-20): a ring part can wrap past its parent's end. Then the rows after the parent's end are
-gone, and check 4 refuses the delta. The refusal changes nothing, so nothing is corrupt. A rule for a wrapped ring,
-for example a ring part held whole, comes with the mkviolet port.
+A ring part can wrap past its parent's end (kaibo, 2026-10-20). Then the rows after the parent's end are gone, and
+check 4 refuses the delta. The refusal changes nothing, so nothing is corrupt.
+
+**Proposed** (claude-opus-5-5, 2026-10-21): a ring part can start after the end of the parent. Then the build puts a
+whole snapshot with no parent. Check 4 stays as it is. Reason: the store needs no new rule. A ring held whole in the
+delta holds 4,096 rows of each sliding layer of mkviolet. That is close to the size of a whole snapshot.
 
 A delta's `put` names its parent content id and its previous recipe. The store checks these facts:
 
@@ -904,6 +997,41 @@ On mk, the split of tokens into passes does not change bits. The probe `examples
 248,320 logits were equal. One pass of 200 tokens took 424 ms, and 200 passes of one token took 10,079 ms. Thus a
 replay of up to 255 tokens takes about 0.5 s on mk.
 
+**6.14 The feed rule.** Decided 2026-10-21 (Amy, engine-abi D11). An engine can declare a feed rule, `{block}`. The
+scheduler feeds each span between boundaries in passes of `block` tokens from the start of the span. mkviolet
+declares it, because its bits depend on the token count of a pass.
+
+This is the reading of 6.2 for such an engine. A recipe names the identity, the tokens and the boundaries. The bits
+of a state follow from them only when the rule made every row. Thus the store keeps a state under a recipe only when
+the rule made each of its rows. These rules follow:
+
+- **Decode.** A decode quantum feeds one token, or one token and its drafts. Its rows do not follow the rule. The job
+  path never puts a state with decode rows under a recipe of 6.2. The park recipe (6.2) names bytes, so a park of
+  such a state is still exact.
+- **Drafts.** A draft test feeds one token and k drafts in one pass, with k + 1 logit rows (mkviolet
+  `mk_api.rs:1187-1222`). The rows of a rejected draft stay past the token count, and the next pass writes over them.
+  The logits fall under the tolerance of the served model.
+- **Branch blocks.** A branch block is a read. It feeds the tail of a case and each branch in one pass with
+  per-token `meta` (`branch_block`, `gemma4.rs:1521-1554`). No row of it is kept, also the rows of the tail. No build
+  continues from the slot after it. The job restores a held snapshot, or feeds again from a boundary.
+- **The bits of a branch.** On 2026-10-21, a branch in a branch block gave the logits of a plain pass of the prefix
+  and that branch. The difference was 0 (`golden_branches_match_separate_passes`, mkviolet `golden.rs:264-287`).
+  The rows stay unkept all the same, because the rule did not make them.
+- **Reads.** The reads of a decision keep no state. mkviolet splits a case into chunks that it picks for speed
+  (`council_server.rs:822-848`). The nagaya may do the same for a read on such an engine.
+- **A continued span.** The last pass of a span can hold fewer than `block` tokens. Then a job that continues the
+  span feeds that pass again (engine-abi D11 rule 7).
+
+**Proposed** (claude-opus-5-5, 2026-10-21): on an engine with a feed rule, a generation holds no head after its reply,
+and `head` is null (11.3c). The reply rows come from decode quanta. The next build finds the last held boundary of the
+prompt, and it feeds the reply by the rule. Reason: a head would need a second feed of the reply now. The next build
+does that feed only when a client asks for it.
+
+**Proposed** (claude-opus-5-5, 2026-10-21): drafts are a setting of the served model, not a bit setting of the
+engine. The nagaya's generation job makes the prompt-lookup drafts, as mkviolet does (`draft`, `mk_api.rs:336-347`,
+keys of 4 and 3 tokens, at most 7 drafts). Reason: drafts change no row that the store keeps. Thus a change of the
+setting must not change the identity and lose the store.
+
 ## 7. IO
 
 **7.1 One IO service per machine.** Engines (through the `io` capability) and the store send IO requests
@@ -930,6 +1058,9 @@ because the group thread is blocked in the pass.
 A device group that stops its heartbeat is a failure. The process exits with code 1, the crash code of 10.4, and
 systemd restarts it. Reason: a stalled engine can hold a device, and the process stops before it continues in a bad
 state (8.5).
+
+A group with stages has one heartbeat for each stage thread, and the watchdog watches each one (engine-abi D1). A
+stall of one stage thread is a stall of the group.
 
 The timeout is 30 s, three times the longest declared quantum bound (mk: 10 s). It has no key in the
 bootstrap config. The code takes it as a start parameter, so the tests use a short value.
@@ -1002,7 +1133,18 @@ of 1.7e-5 on 2026-10-20. Decided 2026-10-20 (reading).
 The fixture covers prompts of up to 596 tokens. Past about 640 tokens, the gap between mk and the reference is not
 explained (15 item 8). The oracle does not gate a longer prompt.
 
-A family with no reference has no oracle yet: the first port of mkviolet builds the Gemma reference. Decided 2026-10-20
+A family with no reference has no oracle yet: the first port of mkviolet builds the Gemma reference.
+
+**The Gemma 4 oracle.** **Proposed** (claude-opus-5-5, 2026-10-21). mkviolet's `tools/gemma4_reference.py` runs HF
+transformers' own Gemma 4 layers in f32 on the CPU. `tools/gemma4_render_reference.py` renders the chat template with
+Python's jinja2. The port makes the fixture with them, as mk's `tools/oracle_fixture.py` makes the Qwen3.8 fixture.
+
+- mkviolet measured these gaps (mkviolet `docs/README.md`). The full pass had a largest logit difference of 5.8e-5.
+  A prompt of 1,270 tokens, past the sliding window of 1,024, had 7.2e-3 and the same top token.
+- At 1,270 tokens, the f32 order of sums changed 123 of 38,100 top-8 expert picks. Each change began on a near tie in
+  HF's own router.
+- The gates are the argmax and top-8 rules of the Qwen3.8 oracle. The largest logit difference is at most 1e-2. The
+  bench reports the other numbers. A spike measures the gap at longer prompts first. Decided 2026-10-20
 (`docs/deepinfer.md` 6). The engine crates stay one for each vendor and device (Amy: "we generate a megakernel per
 vendor/device and they get their own whole crate").
 
@@ -1131,7 +1273,8 @@ never attributes.
 Decided by senpai 2026-10-20 night (vetoable). These rules fix the labels of the metrics that exist:
 
 - The attribute `device_group` holds the id of the device group. The attribute `tier` holds `host`, `nvme` or
-  `device<id>`. A budget that covers several tiers has the sorted tiers joined with `+`, for example `device0+host`.
+  `device<id>`. The `<id>` is the machine device id (2.4, "One name for each device").
+  A budget that covers several tiers has the sorted tiers joined with `+`, for example `device0+host`.
 - The wait of a quantum runs from the moment its lead segment became ready to the moment the quantum started. The lead
   segment is the first one. A job is ready when it arrives, and again when a quantum of it ends and more remain. A job
   that the ledger has not admitted yet is ready, so its wait includes the time until the admission.
@@ -1161,6 +1304,17 @@ NVML. Each provider maps its values onto shared names:
 | `nagaya.device.memory.used` | By | device, domain |
 | `nagaya.device.throttle` | {event} | device, reason |
 | `nagaya.device.evicted` | ms | device (amdgpu KFD only) |
+
+**The Xe provider.** **Proposed** (claude-opus-5-5, 2026-10-21). Each card has these files under
+`/sys/class/drm/card<N>/device`, as the b70host tree shows:
+
+- clock: `tile0/gt<N>/freq0/act_freq` and `cur_freq`;
+- power: the change of `hwmon/hwmon*/energy1_input` over time, and `power1_cap`;
+- temperature: `hwmon/hwmon*/temp*_input`, with each `temp*_label` as the sensor;
+- activity: the change of `tile0/gt<N>/gtidle/idle_residency_ms` over time;
+- throttle: `tile0/gt<N>/freq0/throttle/reason_*`, with the reason in the file name.
+
+`nagaya.device.evicted` stays amdgpu only.
 
 mk's `mk.gpu.*` names and mkviolet's `mkviolet.*` names map onto these names. Council decision metrics (count,
 spread, confidence) belong to the council layer (11.1).
@@ -1209,6 +1363,17 @@ Evidence never hides its failure. A counter that cannot be read, or that went ba
 `evidence unavailable`. The failure is logged all the same. The sources are `/proc/meminfo`, `/proc/vmstat`,
 `/sys/class/kfd/kfd/proc/<pid>/stats_*/evicted_ms` and `/sys/class/drm/card*/device/mem_info_gtt_used`. The GTT is
 summed over the devices, and it is absent on a machine with no amdgpu device.
+
+**Evidence on Xe.** **Proposed** (claude-opus-5-5, 2026-10-21). Xe has no counter of evicted ms, and no GTT in the
+amdgpu sense. Thus a Xe machine reads these sources in their place:
+
+- the memory of the nagaya's own DRM clients: the `drm-total-*` and `drm-resident-*` keys in `/proc/self/fdinfo/<fd>`
+  of each `xe` fd;
+- the throttle state of each GT: `device/tile0/gt<N>/freq0/throttle/status` and `reasons`;
+- `MemAvailable` and `/proc/vmstat`, as on any machine.
+
+The exact fdinfo keys need a check on b70host before the code reads them. A source that is absent is
+`evidence unavailable`, as above.
 
 **9.7 Status feed.** Each machine has one SSE status feed (mk `/mk/v1/status`, mkviolet `PassBus`):
 
@@ -1348,7 +1513,8 @@ Then it exits 1.
 **10.2 Arenas through a restart.** systemd's file-descriptor store keeps the arenas (`FDSTORE=1`). Each fd has the
 name `<engine>/<device>/<part>`. systemd reads `FileDescriptorStoreMax` from the unit file before the process starts.
 The unit file sets a generous ceiling (`FileDescriptorStoreMax=512`), and profile admission (2.4) refuses a profile
-that needs more arena fds than the ceiling. (mkviolet keeps 61 fds under a limit of 64, `systemd/mkviolet.service`.)
+that needs more arena fds than the ceiling. (mkviolet keeps 30 slab fds under a limit of 64,
+`systemd/mkviolet.service`.)
 
 At start, the nagaya does these steps for each engine:
 
@@ -1359,6 +1525,21 @@ At start, the nagaya does these steps for each engine:
    loop.)
 
 `systemctl stop` clears the store. A restart keeps it.
+
+**The names of the fds.** **Proposed** (claude-opus-5-5, 2026-10-21).
+
+- `<engine>` is the engine name in the profile. `<device>` is `device<id>`, with the machine device id (2.4).
+  `<part>` is a name that the engine gives in `arena_export`.
+- mkviolet's parts are `w<ll>` for the slab of layer `ll`, and `head` for the head on card 1. Thus its arena has 31
+  fds, such as `gemma/device1/w15`.
+- mkviolet stores no head today, so a restart uploads the head again. The head is about 1.5 GB: 262,144 rows of 2,816
+  BF16 values. The port gives it a slab.
+- The engine opens its stored fds through `Factory::attach` (engine-abi "The factory gets its devices"). The check is
+  `spot`: the first and last 64 bytes of each tensor (`verify_stored_slab`, `gemma4.rs:287-307`).
+
+mkviolet restarts in 0.9 to 1.2 s from its stored slabs, and a cold start takes 7.4 s (mkviolet `docs/README.md`).
+Thus 10.2 moves into the b70host milestone (`AGENTS.md`), because mkviolet has it now and the port must not lose
+it.
 
 Not built. The unit sets no `FileDescriptorStoreMax`, and the process stores no fd. Each start loads the weights again
 (`docs/deploy.md`).
@@ -1598,6 +1779,39 @@ milestones 11 and 11b).
   from `released`. Decided 2026-10-20 (reading, from a note by Sonnet 5.5).
 - One token can release text in two phases, but a gogi `token` event has one phase. This is rare, because each
   Qwen3.8 marker is one token. 11.3a has the rule for the step of such a token.
+
+**The Gemma 4 library.** **Proposed** (claude-opus-5-5, 2026-10-21). The crate `nagaya-text-gemma4` holds the Gemma
+4 family. It ports mkviolet's text code, which already serves council v2 and `/mk/v1` on b70host.
+
+- **Tokenizer.** The library reads the `tokenizer.json` of the checkpoint with the `tokenizers` crate, as mkviolet
+  does (`tokenizer.rs:27-48`). The tokenizer hash is of that file (12.3).
+- **Template.** The library runs Google's chat template (`assets/gemma4_chat_template.jinja` in mkviolet) with
+  `minijinja`, `trim_blocks` and `lstrip_blocks`, as `chat.rs` does. The identity's `template` is the text of that
+  file. The variables that the library sets, such as `PRESERVE_THINKING`, are code, so the test renders of 11.3a
+  cover them.
+- **Escapes.** Client text that spells a marker is content. mkviolet swaps each marker text for a sentinel of
+  Unicode noncharacters before the render, and it refuses a noncharacter in client text (`chat.rs:1-13`).
+- **Council rendering.** The library ports `src/template.rs` (`mkv-letters-1`), the origin of 11.3a, with its Gemma 4
+  layout. The template id follows 11.3a.
+- **Reply parser.** The library ports `parse_tool_call` and the thought channel of `chat.rs`.
+
+Reason for `tokenizers` and `minijinja`: the port copies code that its Python fixtures already check. A move to the
+Jinja interpreter of the Qwen3.8 library is a later choice.
+
+**The engine registry.** **Proposed** (claude-opus-5-5, 2026-10-21). Today a hard map from the engine kind picks the
+family (`if kind == crate::mk::KIND`, `crates/nagaya/src/serving.rs:24-40`). These rules replace it:
+
+- The identity gets one more field, `family`: `toy`, `qwen38` or `gemma4`. The engine sets it.
+- The process holds a registry of family libraries by that name. A family library opens from the identity and the
+  table `[engines.family]` of the profile, which names its files.
+- The opened library must give the `tokenizer_hash` of the identity, as 11.7 says now. Another hash refuses the
+  start (exit 3).
+- `context_tokens` of the served model is the largest slot of the engine, in tokens. `SlotLimit` gets a member
+  `tokens` for it. This replaces the 4096 and mk's `MAX_CONTEXT` of 11.7.
+
+Reason: the identity names what the engine computes, so it selects the text rules too (11.3). A new engine kind then
+needs no change in `serving.rs`. mkviolet gives `context_tokens` as the slot size less one (`council_server.rs:334`).
+The port checks why before it copies that.
 
 **11.3a Council rendering.** A decision and a raw read put a spec, a case and a letter menu after each context. The
 nagaya renders them with mkviolet's rules (mkviolet `src/template.rs` and its council code), ported to each family.
@@ -2000,6 +2214,7 @@ has a tailnet address in its code.)
 (`crates/nagaya/src/http`). It starts the server after `READY=1`, and it logs `http listening on <address>`. These
 rules are each "Decided by senpai 2026-10-20 night (vetoable)".
 
+- The engine registry of 11.3 (**Proposed**) replaces the first two rules below.
 - The process serves an opened engine when its kind has a family library. The kind `fake-toy` has the toy family
   (11.3b). The kind `mk-qwen38-gfx1151` has the Qwen3.8 family, from the first shard of `MK_SHARDS`. The tokenizer
   hash of that family must equal the `tokenizer_hash` of the engine identity. Thus the identity selects the library
@@ -2045,6 +2260,7 @@ rules are each "Decided by senpai 2026-10-20 night (vetoable)".
 - `template`, the text of the chat template, for example the GGUF key `tokenizer.chat_template`. The identity digest
   covers it, so a new template is a new recipe. Gossip carries the digest, not the text (2.3). Decided 2026-10-20
   (reading, kaibo job-2 finding 7);
+- `family`, the name of the family library that the engine needs (11.3, "The engine registry", Proposed);
 - `numbers`: the engine binary, and the nagaya code that turns its outputs into answers;
 - the lineage of the plan table;
 - the bit settings, each with its class (`docs/prior-art.md` 1);
@@ -2053,6 +2269,22 @@ rules are each "Decided by senpai 2026-10-20 night (vetoable)".
 The nagaya keeps each engine's expected identity in the store's index. At start, it compares the identity from
 `identity()` with the expected one. A mismatch makes the old entries of that engine unusable. It is a refusal to
 start only when the profile pins the identity.
+
+**A GPU binary in the identity.** **Proposed** (claude-opus-5-5, 2026-10-21). A GPU compiler makes the kernel binary
+of an engine, ahead of time or at load. mkviolet's `build.rs` runs `ocloc` for `bmg-g31`, and `main.rs` embeds the
+binary (`megakernel_bmg.bin`). These rules cover such an engine:
+
+- `numbers` holds the SHA-256 of each kernel binary that the engine loads. Thus a new compiler output is a new
+  identity, also when the source did not change.
+- The plan table lineage holds the compiler version (`ocloc` and its IGC), the driver version, and the device. The
+  device is its PCI vendor id, device id and revision. A change of any one is a new lineage, and so a new identity
+  (ontology "Plan table").
+- A Level Zero engine reads the driver version with `zeDriverGetProperties`. A HIP engine reads the HIP runtime
+  version.
+- A kernel that compiles at load is hashed after the compile, so the hash names the bytes that run.
+
+Reason: the bits come from the binary that runs, not from its source. The binary depends on the compiler, the
+driver and the device.
 
 **12.2 Two weight ids.** The checkpoint digest is logical. It hashes the canonical config and each tensor's payload,
 so a new packing does not change it. The arena id is the content id of the packed bytes that the engine runs.
@@ -2064,15 +2296,33 @@ identity labels them as spot checks until we replace them.
 
 **12.3 Identity defects to correct in the port.**
 
-- mkviolet loads EmbeddingGemma 2's `tokenizer.json` for Gemma 4. The file "differs ... by a few hundred bytes;
-  which entries differ is not yet checked" (`tokenizer.rs`). Thus its tokenizer hash names the wrong file.
-- mkviolet's metrics label card 1 `google/embeddinggemma-2`.
+- mkviolet loads EmbeddingGemma 2's `tokenizer.json` for Gemma 4 (`main.rs:132`). The file "differs ... by a few
+  hundred bytes; which entries differ is not yet checked" (`tokenizer.rs:4-5`). Thus its tokenizer hash names the
+  wrong file. The port loads the `tokenizer.json` of the Gemma 4 checkpoint (`checkpoints/gemma-4-26B-A4B/`).
+- mkviolet's `tokenizer_hash` is the first 16 hex digits of the SHA-256 of the file (`tokenizer.rs:22`). **Proposed**
+  (claude-opus-5-5, 2026-10-21): the port hashes the whole file and writes `sha256:` and 64 hex digits, as the
+  Qwen3.8 library does. Reason: one form for every family.
+- mkviolet's `weight_hash` hashes the shard headers only (`main.rs:216`). The port labels it `spot-sha256:`, as the mk
+  binding does (12.2).
+- mkviolet's metrics label card 1 `google/embeddinggemma-2` (`telemetry.rs:492`, `:523`). The port takes the label
+  from the identity.
 
 ## 13. Taps, lenses and composition
 
 **13.1 Taps.** An engine declares its taps in `limits()`, with the conditions that each tap needs (mk: unfused, one
 segment). A tap gives one of these outputs: a residual at a layer (rows), routes, or gates. The store keeps large
 tap outputs as content-addressed artifacts, with an owner and a budget. (mk keeps traces as per-layer `.npy` files.)
+
+**mkviolet's taps, for later.** These taps are not in the first port. They are noted here so that the port does not
+close a door.
+
+- **Routes.** mkviolet writes each layer's expert picks (`MoERouteDecision`, 128 bytes) into host memory
+  (`gemma4.rs:521`), and `count_routes` reads them after each stage (`gemma4.rs:1219-1230`). A route tap costs no
+  copy.
+- **Residuals.** A J-Lens reads the residual at layer l (13.2). The residual after layer 14 already crosses host
+  memory between the stages (D1).
+- **Steering.** A steering vector is an input that changes bits. Thus it goes into the recipe (6.12), and a steered
+  state never has a plain recipe.
 
 **13.2 Lenses.** A lens (mkviolet J-Lens) is a state object of its own. It belongs to one model, has a content id,
 and runs on a CPU device (2.1). Two models cannot share a lens. Models are compared in the lens's concept
@@ -2103,9 +2353,8 @@ The inventories found these items. We correct each one when its code moves. We d
   in its code.
 - mkviolet has instruments without call sites (9.5) and wrong model labels (12.3).
 - mkviolet's README gives `GEN_SEQ` 16384 and its `main.rs` gives 65536. Its `docs/07` is out of date.
-- mkviolet's determinism class is not known. The first port runs one recipe in two processes and compares the
-  content ids (engine-abi, "How mkviolet maps"). The rule that our engines are `always` or `pinned` (README) is a
-  requirement on the port. The test shows if mkviolet meets it.
+- mkviolet declares `always` with a feed rule (6.14, engine-abi D11). The first port runs one recipe in two
+  processes and compares the content ids. The test shows if mkviolet meets the class.
 
 ## 15. Open questions
 
@@ -2149,6 +2398,8 @@ The inventories found these items. We correct each one when its code moves. We d
 16. Answered 2026-10-21: the job path uses `ObservedScheduler` and the evidence module (9.2, 9.6). Two things stay
     open (9.2). The council thread loses the parent of `nagaya.job` for an HTTP request. The engine receives no trace
     context.
+17. Which masks do the threads of the Level Zero runtime and IGC get on b70host (3.2b)? The nagaya does not pin
+    them, so a measurement shows whether they leave the pool set.
 
 ## 16. Decided by senpai on 2026-10-20 night
 
