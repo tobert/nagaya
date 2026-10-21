@@ -1057,6 +1057,11 @@ impl Store {
         self.interval_copies = copies;
     }
 
+    /// The cap on interval copies (spec 6.13). Zero means the store refuses them.
+    pub fn interval_copies(&self) -> u32 {
+        self.interval_copies
+    }
+
     /// Remove one interval copy, for example the previous copy of a context (spec 6.13). It returns false when
     /// the store has no such entry, because the cap can have removed the copy already.
     pub fn remove(&mut self, id: &ContentId, now_ms: u64) -> Result<bool, StoreError> {

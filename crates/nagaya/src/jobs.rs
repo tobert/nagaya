@@ -16,6 +16,9 @@ pub enum Ran {
     Done,
     /// The quantum ran, and the job has these quanta to add after the ones it has.
     More(Vec<Kind>),
+    /// The quantum ran, and the job runs these quanta before the ones it has, for example an interval copy (spec
+    /// 6.13).
+    First(Vec<Kind>),
     /// The quantum failed. The job ends, and the body has told its caller why.
     Failed,
     /// The quantum ran, and the body cancels its job, for example because its client went away. The job ends as
@@ -163,6 +166,12 @@ impl GroupJobs {
             Ran::More(kinds) => {
                 self.state
                     .append_quanta(id, &kinds)
+                    .expect("a job that ran a quantum is running");
+                Completion::Done
+            }
+            Ran::First(kinds) => {
+                self.state
+                    .prepend_quanta(id, &kinds)
                     .expect("a job that ran a quantum is running");
                 Completion::Done
             }

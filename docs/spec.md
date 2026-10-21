@@ -773,7 +773,7 @@ or a steering vector. Such state goes into the recipe. Thus a steered or masked 
 
 **6.13 Interval copies.** An engine can declare a checkpoint grain in `limits()`, in tokens. Then, between quanta,
 the scheduler makes an interval copy (ontology) of each context that passed a multiple of the grain. Milestone 11.5
-built the store's part. The scheduler's part needs the recipe of each live context, so it comes with milestone 12.
+built the store's part. Milestone 12 step 7 built the scheduler's part on the job path.
 Decided 2026-10-20 (`docs/deepinfer.md` 3), and reworked the same day after kaibo's review.
 
 mk declares a grain of 256 tokens. Decided by senpai 2026-10-20 night (vetoable). Two GPU tests in
@@ -832,6 +832,25 @@ mk declares a grain of 256 tokens. Decided by senpai 2026-10-20 night (vetoable)
   path of milestone 12 step 5 chooses it.
 
 Reason: these are the smallest rules that keep the text above true.
+
+**The job path.** Decided by senpai 2026-10-20 night (vetoable). The council jobs of milestone 12 step 5 make and
+use the copies (`crates/nagaya/src/council/build.rs`):
+
+- **A context is a slot.** The tracker of an engine keys each context by the slot of its job. A job tracks its slot
+  from its start to its end. A rewind moves the rows back, so the job tracks the slot again from the new rows. The
+  context keeps its copy through the rewind.
+- **The copy is the next quantum.** The copy is a quantum of the kind `copy` in the class of the job. It runs before
+  the job's other quanta, so it holds the state at the end of the pass (`Ran::First`).
+- **No copy on a boundary.** When a pass of a build ends on a boundary, the snapshot of that boundary is the next
+  quantum. That snapshot holds the state, so the job makes no copy there.
+- **The recipe.** The sealed recipe at a copy's position chains from the last seal of the state (6.2). Its items are
+  the recipe at the last seal, the tokens since that seal, and the position. A seal is a boundary snapshot or the
+  head of a reply.
+- **A build looks for a copy.** A build takes the live copies of its engine. It computes the recipe of a copy at each
+  copy's position from its own tokens. It restores the longest copy that matches above its highest held boundary,
+  and it feeds from there. A copy on a boundary position is never used. The build names the copy in `from`.
+- **A skip is not an error.** A charge that the ledger refuses and a put with no space skip the copy, with a warning
+  in the log. Any other error of the copy ends the job.
 
 A restore from a copy writes its parts, then replays the tokens after it, with the same boundaries. The result has
 the bits of the first run. The lookup is by recipe with tag 8, so any context with the same prefix can use a copy.
