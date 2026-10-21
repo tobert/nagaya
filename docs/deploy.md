@@ -1,7 +1,8 @@
-# Deploy on gfx1151host
+# Deploy on gfx1151host and b70host
 
 This doc tells how to build the nagaya and install its systemd user unit on gfx1151host. It tells how to move the service
 on port 8090 from mk to the nagaya, and how to go back. The rules are in `docs/spec.md` 2.1, 2.4, 3.3 and 10.1-10.4.
+The section "b70host" at the end does the same for mkviolet on b70host.
 
 The cutover ran at 00:24 on 2026-10-21. `nagaya.service` serves council v2 on port 8090 with mk on gfx1151, and
 `megakernel.service` is stopped and disabled. Use "Cut over from mk" again only after a rollback.
@@ -272,3 +273,141 @@ These rules fill gaps in the spec. Each one is the simplest choice that works.
 - `weights_bytes` in the engine config is the size of mk's weight arena. The file holds the measured size (see "The
   weights size"). A wrong size exits 3.
 - A probe error at start exits 3 (spec 2.1, 10.4).
+
+## b70host
+
+The nagaya replaces mkviolet on b70host (Amy, 2026-10-21: "our goal is to replace it"). It serves Gemma 4 on the
+two B70 cards behind council v2 on `198.51.100.10:8091`, mkviolet's address. Run each command as `atobey` on b70host.
+Every `systemctl` command has `--user`.
+
+### The files
+
+| File | What it is |
+|---|---|
+| `deploy/b70host/nagaya.service` | The systemd user unit (spec 10.1, "One unit file for each machine"). |
+| `deploy/b70host/nagaya.toml` | The bootstrap config (spec 2.1). The unit sets `NAGAYA_CONFIG` to it. |
+| `deploy/b70host/profile.toml` | The placement profile (spec 2.4). A copy goes in the store directory. |
+
+The test `crates/nagaya/tests/deploy.rs` reads all three with the real loaders. Its admission test plans from the
+checkpoint, so run it with `GEMMA4_MODEL_DIR` set.
+
+- The config binds HTTP to `198.51.100.10:8091` and gossip to UDP port 8092 on the same address. It has no seed peers.
+- The config ignores the Radeon 610M at `0000:80:00.0`. The iGPU drives the display, and it gets no work (spec 2.1).
+- The store directory is `/home/atobey/.local/share/nagaya/store`, on the NVMe disk.
+- The profile puts the engine `gemma` of kind `mk-gemma4-bmg` on devices 0 and 1, the cards at `0000:03:00.0`
+  and `0000:08:00.0`.
+- The slots are mkviolet's: one of 4,096 positions and one of 65,536. A block holds 512 tokens.
+- The unit sets `GEMMA4_MODEL_DIR` to `~/src/mkviolet/checkpoints/gemma-4-26B-A4B`. The engine and the family read
+  the checkpoint there.
+- The unit sets no Level Zero variable. `ZE_AFFINITY_MASK` would hide a card, and the engine finds its cards by PCI
+  address.
+- The OTLP line of the unit is a comment. No collector listened on b70host on 2026-10-21. Remove the `#` when one
+  runs on port 4317.
+
+The plan gives 29,964,945,932 bytes of terms on device 0 and 31,889,794,060 bytes on device 1. Each card has 32 GiB
+(34,359,738,368 bytes), so card 1 has about 2.3 GB left. A larger slot does not fit. The host budget is 96 GiB, and
+the store takes 16 GiB of it and 50 GiB of NVMe.
+
+### Build and install
+
+Build the release binary with the feature `xe`. The feature registers the kind `mk-gemma4-bmg`, and `build.rs`
+compiles the kernels with `ocloc`. A build without it has no engine and exits 3.
+
+```
+cd ~/src/nagaya
+nice -n 10 cargo build --release -p nagaya --features xe
+ls -l target/release/nagaya
+```
+
+Link the unit, copy the profile, and ask systemd to read the unit. Run these steps once.
+
+```
+ln -s ~/src/nagaya/deploy/b70host/nagaya.service ~/.config/systemd/user/nagaya.service
+mkdir -p ~/.local/share/nagaya/store
+cp -n ~/src/nagaya/deploy/b70host/profile.toml ~/.local/share/nagaya/store/profile.toml
+systemctl --user daemon-reload
+systemd-analyze --user verify nagaya.service
+```
+
+Copy the profile. Do not link it, because a profile swap writes the file again (spec 2.3).
+
+### Cut over from mkviolet
+
+Do these steps in this order. Stop at the first step that fails, and do the rollback below.
+
+1. Check that mkviolet does not run, and that nothing else holds the cards (spec 3.1).
+
+   ```
+   systemctl --user is-active mkviolet.service nagaya.service
+   fuser -v /dev/dri/renderD* 2>&1
+   ```
+
+   Both units must say `inactive`. Amy stopped and disabled `mkviolet.service` on 2026-10-21. The second command
+   lists the processes that hold a card. The display server holds the iGPU, and that is correct. Stop any job of
+   ours that holds a B70 card. Do not stop a process that you do not know.
+
+2. Enable and start the nagaya.
+
+   ```
+   systemctl --user enable --now nagaya.service
+   ```
+
+   The command returns when the process sends `READY=1`. The rehearsal of 2026-10-21 was ready after 8 s.
+
+3. Check the state of the unit and its log.
+
+   ```
+   systemctl --user status nagaya.service
+   journalctl --user -u nagaya.service -b --no-pager | tail -40
+   ```
+
+   The log has the lines "inventory: device 2 `gfx1036` at 0000:80:00.0 ignored" and "ready with 1 engines".
+
+4. Ask for the identity, and run gogi's conformance suite.
+
+   ```
+   curl -s http://198.51.100.10:8091/council/v2/identity
+   cd ~/src/gogi
+   nice -n 10 cargo run --release -p gogi-conformance -- http://198.51.100.10:8091
+   ```
+
+   The rehearsal of 2026-10-21 gave `215 ok, 0 FAIL, 8 skip`. It ran on loopback, with gogi `a07d85e`.
+
+5. Look for card errors in the kernel log.
+
+   ```
+   journalctl -k -b --no-pager | grep -i -E 'xe .*(hang|reset|timeout|wedge)|drm.*(hang|reset)' | tail -20
+   ```
+
+   Any hang or reset after the start is a failed gate. Do the rollback.
+
+6. Check the kaijutsu gate as in "The kaijutsu gate", with the address `http://198.51.100.10:8091`.
+
+### Roll back to mkviolet
+
+Use this when a gate fails, or when Amy asks for mkviolet. mkviolet's unit runs its release binary, so build it
+first.
+
+```
+systemctl --user disable --now nagaya.service
+cd ~/src/mkviolet
+nice -n 10 cargo build --release
+systemctl --user link ~/src/mkviolet/systemd/mkviolet.service
+systemctl --user enable --now mkviolet.service
+systemctl --user is-active mkviolet.service
+curl -s http://198.51.100.10:8091/council/v2/identity
+```
+
+The `disable` removes the nagaya's link. The `link` puts mkviolet's unit back in systemd's search path. The last line
+answers when mkviolet has loaded its weights. Nothing in the store directory needs a change for the rollback.
+
+### Rules for every restart on b70host
+
+- Build the release binary again before each restart, with `--features xe`.
+- `mkviolet.service` and the nagaya's unit use the same address. Never start both.
+- Do not run work on the iGPU. It drives the display.
+- Exit code 3 is a refusal to start. Read the log, fix the cause, and run
+  `systemctl --user reset-failed nagaya.service`. Then start it.
+- The unit does not keep arenas through a restart yet (spec 10.2). Each restart loads the weights again. Lane
+  sg-arenas adds `FileDescriptorStoreMax=512` and `FileDescriptorStorePreserve=restart` at the comment in the unit.
+
