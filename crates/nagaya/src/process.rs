@@ -12,10 +12,13 @@ use std::time::{Duration, Instant};
 use nagaya_abi::{DeviceId, Engine, Identity, Limits, Tier};
 use nagaya_ledger::{Ledger, LedgerError};
 use nagaya_store::Store;
+use nagaya_telemetry::Inherit;
+use tracing::Span;
 
 use crate::admission::{AdmitError, Admitted, Factory, OpenErrorKind, Registry, admit};
 use crate::affinity::{pin_current_thread, set_batch_policy};
 use crate::cpu_sets::CpuSets;
+use crate::evidence::Machine;
 use crate::exit::{ExitCode, panic_text};
 use crate::inventory::Inventory;
 use crate::jobs::{GroupJobs, JobSpec};
@@ -139,9 +142,14 @@ impl StopReport {
 
 /// Start a worker thread with a name. The name shows in `ps`, in `top` and in the CPU mask test (spec 3.2a).
 fn spawn_named(name: String, body: impl FnOnce() + Send + 'static) -> JoinHandle<()> {
+    // The new thread records on the telemetry of this thread. In the process this is the same everywhere.
+    let inherit = Inherit::capture();
     thread::Builder::new()
         .name(name)
-        .spawn(body)
+        .spawn(move || {
+            let _telemetry = inherit.enter();
+            body()
+        })
         .expect("cannot start a worker thread")
 }
 
@@ -449,6 +457,7 @@ pub struct Start {
     store_dir: Option<PathBuf>,
     store_budget: Option<StoreBudget>,
     cpu_sets: Option<CpuSets>,
+    machine: Machine,
 }
 
 impl Start {
@@ -463,7 +472,15 @@ impl Start {
             store_dir: None,
             store_budget: None,
             cpu_sets: None,
+            machine: Machine::real(),
         }
+    }
+
+    /// Set the machine whose counters a group reads when a quantum fails (spec 9.6). The default is the real machine.
+    /// A test gives a fixed tree of files.
+    pub fn machine(mut self, machine: Machine) -> Self {
+        self.machine = machine;
+        self
     }
 
     /// Set the CPU sets. Each thread pins itself to its set when it starts (spec 3.2a). With no sets, no thread pins.
@@ -510,6 +527,7 @@ impl Start {
             store_dir,
             store_budget,
             cpu_sets,
+            machine,
         } = self;
         assert!(
             heartbeat < timeout,
@@ -665,6 +683,7 @@ impl Start {
             let group_store = store_tx.clone();
             let group_accepting = Arc::clone(&accepting);
             let group_cpus = pool.clone();
+            let group_machine = machine.clone();
             let handle = spawn_named(format!("nagaya-group-{index}"), move || {
                 guard("group", &group_guard, || {
                     pin("group", group_cpus.as_deref());
@@ -674,6 +693,7 @@ impl Start {
                         messages: stop_rx,
                         store: group_store,
                         accepting: group_accepting,
+                        machine: group_machine,
                     };
                     group_thread(index, jobs, links, heartbeat);
                 });
@@ -749,6 +769,7 @@ struct GroupLinks {
     messages: Receiver<GroupMessage>,
     store: Option<Sender<StoreMessage>>,
     accepting: Arc<AtomicBool>,
+    machine: Machine,
 }
 
 fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: Duration) {
@@ -758,6 +779,7 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
         messages: stop,
         store,
         accepting,
+        machine,
     } = links;
     let _ = heartbeats.send(WatchMessage::Beat {
         group,
@@ -813,7 +835,7 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
     let names: Vec<String> = opened.iter().map(|engine| engine.name.clone()).collect();
     let _ = events.send(Event::Opened { group, engines: opened });
     let mut cancelled = 0;
-    let mut jobs = GroupJobs::new(group as u32);
+    let mut jobs = GroupJobs::new(group as u32, names.join("+")).machine(machine);
     let beat = || WatchMessage::Beat {
         group,
         at: Instant::now(),
@@ -845,8 +867,8 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
                     }
                 }
                 // A job that arrives after the stop began is cancelled below, before it runs.
-                Ok(GroupMessage::Job(spec)) => {
-                    jobs.add(spec);
+                Ok(GroupMessage::Job(spec, parent)) => {
+                    jobs.add_under(spec, parent);
                 }
                 Ok(GroupMessage::Park(reply)) => {
                     cancelled += jobs.cancel_all();
@@ -1033,7 +1055,9 @@ enum GroupMessage {
     /// Run one quantum to its end.
     Quantum(Quantum),
     /// Add a job. The scheduler of the group chooses when its quanta run (spec 5).
-    Job(JobSpec),
+    ///
+    /// The span is the one that was current when the request submitted the job. It is the parent of the job's span.
+    Job(JobSpec, Span),
     /// Park every engine, then stop the thread (spec 10.3).
     Park(Sender<ParkProgress>),
     /// Stop the thread without a park. `Process::drop` uses it.
@@ -1172,7 +1196,8 @@ impl Ports {
         let Some(stop) = self.groups.get(group) else {
             return Err(SubmitError::UnknownGroup);
         };
-        stop.send(GroupMessage::Job(job)).map_err(|_| SubmitError::Stopped)
+        stop.send(GroupMessage::Job(job, Span::current()))
+            .map_err(|_| SubmitError::Stopped)
     }
 
     /// The group and the place in the group of the engine with this name in the profile.
@@ -1264,7 +1289,8 @@ impl Process {
         let Some(stop) = self.group_stops.get(group) else {
             return Err(SubmitError::UnknownGroup);
         };
-        stop.send(GroupMessage::Job(job)).map_err(|_| SubmitError::Stopped)
+        stop.send(GroupMessage::Job(job, Span::current()))
+            .map_err(|_| SubmitError::Stopped)
     }
 
     /// Wait for every group to open its engines, or for a failure.

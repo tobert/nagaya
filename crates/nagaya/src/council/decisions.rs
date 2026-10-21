@@ -108,6 +108,7 @@ impl DecisionThen {
 
 impl Then for DecisionThen {
     const NEEDS_STATE: bool = true;
+    const REQUEST: &'static str = "decision";
 
     fn next(&mut self, got: Got) -> Result<Want, ServiceError> {
         match got {

@@ -346,6 +346,7 @@ fn tool_calls(parsed: &ParsedReply, ids: &[String]) -> Vec<ReplyToolCall> {
 
 impl Then for GenerateThen {
     const NEEDS_STATE: bool = true;
+    const REQUEST: &'static str = "generation";
 
     fn next(&mut self, got: Got) -> Result<Want, ServiceError> {
         match (&self.stage, got) {

@@ -195,6 +195,11 @@ impl<T: Send + 'static> JobBody for Once<T> {
         let _ = self.tx.send(work(engines));
         Ran::Done
     }
+
+    fn request(&self) -> &'static str {
+        // The only one-quantum job asks the engine for its identity and limits when the service attaches.
+        "attach"
+    }
 }
 
 /// The charge of a context on the ledger. The charge ends with `release`, and also when the guard drops.

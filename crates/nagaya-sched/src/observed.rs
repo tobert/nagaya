@@ -9,7 +9,7 @@ use nagaya_abi::Kind;
 use nagaya_telemetry::{QuantumLabels, instruments};
 use tracing::Span;
 
-use crate::{Class, Completion, EngineId, Event, JobId, JobState, Quantum, Scheduler, StepError, step};
+use crate::{Completion, EngineId, Event, JobId, JobState, Quantum, Scheduler, StepError, step};
 
 /// A scheduler that records the metrics and the spans of its quanta.
 ///
@@ -155,7 +155,7 @@ impl ObservedScheduler {
                     engine = engine.as_str(),
                     device_group = quantum.engine,
                     kind = kind_label(quantum.kind),
-                    class = class_label(quantum.class),
+                    class = quantum.class.label(),
                     segments = quantum.segments.len(),
                     wait_ms,
                     run_ms = tracing::field::Empty,
@@ -191,7 +191,7 @@ fn labels<'a>(engine: &'a str, quantum: &Quantum) -> QuantumLabels<'a> {
         engine,
         device_group: quantum.engine,
         kind: kind_label(quantum.kind),
-        class: class_label(quantum.class),
+        class: quantum.class.label(),
     }
 }
 
@@ -215,14 +215,5 @@ fn kind_label(kind: Kind) -> &'static str {
         Kind::Copy => "copy",
         Kind::Step => "step",
         Kind::Train => "train",
-    }
-}
-
-/// The attribute value for a class.
-fn class_label(class: Class) -> &'static str {
-    match class {
-        Class::Interactive => "interactive",
-        Class::Batch => "batch",
-        Class::Filler => "filler",
     }
 }

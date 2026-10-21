@@ -321,6 +321,16 @@ impl Machine {
     }
 }
 
+/// Log a failed quantum that had no watch, and give the line.
+///
+/// A decode quantum has none (see the module). The line says so, so that no failure is logged without a reason for the
+/// missing evidence.
+pub fn failed_unwatched(failure: &str) -> String {
+    let line = format!("quantum failed: {failure}; evidence unavailable (not read before a decode quantum)");
+    tracing::error!("{line}");
+    line
+}
+
 /// The counters from before a quantum.
 pub struct Watch {
     machine: Machine,

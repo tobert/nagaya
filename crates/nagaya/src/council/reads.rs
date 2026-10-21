@@ -55,6 +55,7 @@ impl RawThen {
 
 impl Then for RawThen {
     const NEEDS_STATE: bool = true;
+    const REQUEST: &'static str = "read";
 
     fn next(&mut self, got: Got) -> Result<Want, ServiceError> {
         match got {

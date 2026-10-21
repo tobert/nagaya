@@ -35,6 +35,17 @@ pub enum Class {
     Filler,
 }
 
+impl Class {
+    /// The attribute value for the class (spec 9.4).
+    pub fn label(self) -> &'static str {
+        match self {
+            Class::Interactive => "interactive",
+            Class::Batch => "batch",
+            Class::Filler => "filler",
+        }
+    }
+}
+
 /// The state of a job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JobState {
@@ -53,6 +64,18 @@ pub enum JobState {
 }
 
 impl JobState {
+    /// The attribute value for the state.
+    pub fn label(self) -> &'static str {
+        match self {
+            JobState::Ready => "ready",
+            JobState::Running => "running",
+            JobState::Done => "done",
+            JobState::Cancelled => "cancelled",
+            JobState::Failed => "failed",
+            JobState::Expired => "expired",
+        }
+    }
+
     /// True when the job is in a terminal state.
     pub fn is_terminal(self) -> bool {
         matches!(
