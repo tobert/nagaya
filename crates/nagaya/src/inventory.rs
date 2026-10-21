@@ -19,6 +19,17 @@ pub struct Device {
     pub unified: bool,
 }
 
+/// True when `text` is a PCI address in the form `dddd:bb:dd.f`, with hex digits (spec 2.1).
+pub fn is_pci_address(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.len() == 12
+        && bytes.iter().enumerate().all(|(index, byte)| match index {
+            4 | 7 => *byte == b':',
+            10 => *byte == b'.',
+            _ => byte.is_ascii_hexdigit(),
+        })
+}
+
 /// The inventory of one machine.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Inventory {
