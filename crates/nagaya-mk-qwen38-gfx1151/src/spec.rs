@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use nagaya_abi::{
-    BitClass, BitSetting, Capability, ChainLimits, Determinism, Dtype, ElasticTerm, Identity, Inputs, Kind, Lifetime,
-    Limits, MandatoryTerm, MemoryLimits, PartKind, PartLimits, SlotLimit, Stage, Tier,
+    BitClass, BitSetting, Capability, ChainLimits, CoverageSpan, Determinism, Dtype, ElasticTerm, Identity, Inputs,
+    Kind, Lifetime, Limits, MandatoryTerm, MemoryLimits, PartKind, PartLimits, SlotLimit, Stage, Tier,
 };
 
 /// The vocabulary size (mk `kVocab`).
@@ -54,9 +54,10 @@ pub const PROBE_CAPACITY: u32 = CAPACITY_STEP;
 
 /// The device bytes that the allocator adds to each context, over the state bytes of `context_bytes`.
 ///
-/// Measured on 2026-10-20 night on gfx1151 by `examples/context_pool.rs`: 12 contexts of 4096 tokens took 20 086 784
-/// bytes more than their state bytes (1 673 899 each), and 4 contexts of 32 768 took 8 093 696 more (2 023 424 each).
-/// The declared value is 4 MiB, twice the larger reading, so a page of drift does not refuse a sound library.
+/// `examples/context_pool.rs` measured it on gfx1151 on 2026-10-20 night. 12 contexts of 4096 tokens took 20 086 784
+/// bytes more than their state bytes, which is 1 673 899 for each. 4 contexts of 32 768 tokens took 8 093 696 bytes
+/// more, which is 2 023 424 for each. The declared value is 4 MiB, twice the larger reading. Thus a page of drift
+/// does not refuse a sound library.
 pub const CONTEXT_ALLOCATION_BYTES: u64 = 4 << 20;
 
 /// The bytes that the ledger holds for one context of this capacity: its state bytes and the allocator's bytes.
@@ -186,6 +187,89 @@ pub fn stored_part(part: u32) -> Result<u32, String> {
     }
 }
 
+/// The capacity of one slot in tokens. The slots follow `CONTEXT_CLASSES` in order, so the small class comes first.
+pub fn slot_capacity(slot: u32) -> Option<u32> {
+    let mut first = 0u32;
+    for class in CONTEXT_CLASSES {
+        if slot < first + class.count {
+            return Some(class.capacity);
+        }
+        first += class.count;
+    }
+    None
+}
+
+/// The bytes of one row of a cells part: part 3 (`kv`) or part 4 (`idx_keys`).
+pub fn row_bytes(part: usize) -> Option<u64> {
+    match part {
+        3 => Some(KV_ROW_BYTES),
+        4 => Some(IDX_ROW_BYTES),
+        _ => None,
+    }
+}
+
+/// The positions that `len` bytes of one part hold. mk holds the rows of a cells part from position 0.
+///
+/// A fixed or derived part holds no position. Bytes that are not whole rows are a defect of the caller, so this
+/// panics (spec 8.5).
+pub fn coverage_of(part: usize, len: usize) -> CoverageSpan {
+    let Some(row) = row_bytes(part) else {
+        return CoverageSpan { part, start: 0, end: 0 };
+    };
+    let len = len as u64;
+    assert!(
+        len.is_multiple_of(row),
+        "{len} bytes of part {part} are not a whole number of rows of {row} bytes"
+    );
+    CoverageSpan {
+        part,
+        start: 0,
+        end: len / row,
+    }
+}
+
+/// Ok when a slot can hold the span: mk writes the rows of a cells part from position 0, up to the capacity.
+pub fn fits(span: &CoverageSpan, slot: u32) -> Result<(), String> {
+    if row_bytes(span.part).is_none() {
+        return Err(format!(
+            "part {} is not a cells part; only parts 3 and 4 hold rows",
+            span.part
+        ));
+    }
+    let capacity = slot_capacity(slot).ok_or_else(|| format!("slot {slot} is not in the context pool"))?;
+    if span.start != 0 {
+        return Err(format!(
+            "the span of part {} starts at position {}; mk writes rows from position 0",
+            span.part, span.start
+        ));
+    }
+    if span.end > u64::from(capacity) {
+        return Err(format!(
+            "the span of part {} holds {} rows; slot {slot} holds {capacity} tokens",
+            span.part, span.end
+        ));
+    }
+    Ok(())
+}
+
+/// Ok when a cells read asks for a whole cells part. mk reads a part whole, so a read from 0 of all rows is the only
+/// range that it gives. The worker checks that `n` is the context's token count.
+pub fn whole_read_problem(part: usize, from: u64, n: u64, len: usize) -> Result<(), String> {
+    let row = row_bytes(part).ok_or_else(|| format!("part {part} is not a cells part; read it with part_read"))?;
+    if from != 0 {
+        return Err(format!(
+            "mk has no range read: a cells read starts from 0, and this one starts at {from}"
+        ));
+    }
+    if n.checked_mul(row) != Some(len as u64) {
+        return Err(format!(
+            "{n} rows of part {part} are {} bytes; the buffer holds {len} bytes",
+            n.saturating_mul(row)
+        ));
+    }
+    Ok(())
+}
+
 /// The floats of one mk scratch buffer for each token of a pass. The names are mk's `scratch()` names.
 ///
 /// mk sizes each buffer at `kMaxPassTokens`, whatever the pass's token count, so this table is the pool at its
@@ -307,8 +391,14 @@ pub fn scratch_problem(measured: u64) -> Result<(), String> {
 /// The limits of the engine for the fixed context pool.
 pub fn limits(arena_bytes: u64) -> Limits {
     Limits {
-        // The ABI takes each capability from its accessor. This binding has `parts()` and `seal()` only.
-        capabilities: vec![Capability::Parts, Capability::Seal],
+        // The ABI takes each capability from its accessor. This binding has `parts()`, `coverage()`, `seal()` and
+        // `slots()`.
+        capabilities: vec![
+            Capability::Parts,
+            Capability::Coverage,
+            Capability::Seal,
+            Capability::Slots,
+        ],
         parts: parts(),
         inputs: Inputs::Tokens,
         devices: vec![0],
@@ -643,10 +733,97 @@ mod tests {
 
     #[test]
     fn the_limits_declare_only_the_reachable_capabilities() {
-        // The ABI takes a capability from its accessor. mk has parts() and seal(), and no accessor for contexts,
-        // poison or the pass check, so the limits must not declare those.
+        // The ABI takes a capability from its accessor. mk has parts(), coverage(), seal() and slots(), and no
+        // accessor for contexts, poison or the pass check, so the limits must not declare those.
         let limits = limits(0);
-        assert_eq!(limits.capabilities, vec![Capability::Parts, Capability::Seal]);
+        assert_eq!(
+            limits.capabilities,
+            vec![
+                Capability::Parts,
+                Capability::Coverage,
+                Capability::Seal,
+                Capability::Slots
+            ]
+        );
+    }
+
+    #[test]
+    fn each_slot_has_the_capacity_of_its_class() {
+        for slot in 0..12 {
+            assert_eq!(slot_capacity(slot), Some(4096), "slot {slot}");
+        }
+        for slot in 12..16 {
+            assert_eq!(slot_capacity(slot), Some(32_768), "slot {slot}");
+        }
+        assert_eq!(slot_capacity(16), None);
+    }
+
+    #[test]
+    fn the_coverage_of_a_cells_part_is_its_rows_from_zero() {
+        let kv = CoverageSpan {
+            part: 3,
+            start: 0,
+            end: 2,
+        };
+        assert_eq!(coverage_of(3, 2 * KV_ROW_BYTES as usize), kv);
+        let keys = CoverageSpan {
+            part: 4,
+            start: 0,
+            end: 5,
+        };
+        assert_eq!(coverage_of(4, 5 * IDX_ROW_BYTES as usize), keys);
+        assert_eq!(
+            coverage_of(4, 0),
+            CoverageSpan {
+                part: 4,
+                start: 0,
+                end: 0
+            }
+        );
+        // A fixed part holds no position.
+        assert_eq!(
+            coverage_of(0, 64),
+            CoverageSpan {
+                part: 0,
+                start: 0,
+                end: 0
+            }
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "not a whole number of rows")]
+    fn the_coverage_of_a_partial_row_is_a_defect() {
+        coverage_of(3, KV_ROW_BYTES as usize + 1);
+    }
+
+    #[test]
+    fn a_span_fits_a_slot_that_holds_its_rows() {
+        let span = |part, start, end| CoverageSpan { part, start, end };
+        assert_eq!(fits(&span(3, 0, 4096), 0), Ok(()));
+        assert_eq!(fits(&span(4, 0, 4096), 11), Ok(()));
+        let error = fits(&span(3, 0, 4097), 0).unwrap_err();
+        assert!(error.contains("4096"), "{error}");
+        assert_eq!(fits(&span(3, 0, 4097), 12), Ok(()));
+        assert_eq!(fits(&span(3, 0, 32_768), 15), Ok(()));
+        assert!(fits(&span(3, 0, 32_769), 15).is_err());
+        let error = fits(&span(3, 1, 3), 0).unwrap_err();
+        assert!(error.contains("position 0"), "{error}");
+        assert!(fits(&span(0, 0, 1), 0).is_err(), "a fixed part has no rows");
+        assert!(fits(&span(3, 0, 1), 16).is_err(), "slot 16 is not in the pool");
+    }
+
+    #[test]
+    fn a_cells_read_takes_only_the_whole_part() {
+        assert_eq!(whole_read_problem(3, 0, 2, 2 * KV_ROW_BYTES as usize), Ok(()));
+        assert_eq!(whole_read_problem(4, 0, 2, 2 * IDX_ROW_BYTES as usize), Ok(()));
+        assert_eq!(whole_read_problem(3, 0, 0, 0), Ok(()));
+        let error = whole_read_problem(3, 1, 1, KV_ROW_BYTES as usize).unwrap_err();
+        assert!(error.contains("from 0"), "{error}");
+        let error = whole_read_problem(3, 0, 2, KV_ROW_BYTES as usize).unwrap_err();
+        assert!(error.contains("bytes"), "{error}");
+        let error = whole_read_problem(0, 0, 1, 64).unwrap_err();
+        assert!(error.contains("not a cells part"), "{error}");
     }
 
     fn keys(tokenizer_hash: &str, template: &str) -> crate::gguf::TextKeys {

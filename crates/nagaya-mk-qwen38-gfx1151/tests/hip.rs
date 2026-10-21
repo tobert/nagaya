@@ -6,7 +6,8 @@
 #![cfg(feature = "hip")]
 
 use nagaya_abi::{
-    Engine, OutputsWanted, PartError, PassErrorKind, SealError, Segment, SegmentInputs, State, Tap, WriteResult,
+    CoverageSpan, Engine, OutputsWanted, PartError, PassErrorKind, SealError, Segment, SegmentInputs, State, Tap,
+    WriteResult,
 };
 use nagaya_conformance::{compare_f32_rows, run_all};
 use nagaya_mk_qwen38_gfx1151::{MkEngine, open};
@@ -524,4 +525,54 @@ fn a_large_context_takes_more_tokens_than_a_small_one() {
     let logits = feed(&mut engine, LARGE, &ids, 256);
     assert!(logits.iter().all(|value| value.is_finite()));
     assert_eq!(engine.n(state).unwrap(), 5000);
+}
+
+#[test]
+fn a_slot_counts_its_tokens_and_a_clear_empties_it() {
+    let mut engine = open().expect("open mk");
+    let state = State::Slot(0);
+    let ids = synthetic_ids(300);
+    let first = feed(&mut engine, 0, &ids, 256);
+    assert_eq!(engine.slots().unwrap().slot_high(0), 300);
+    assert_eq!(engine.slots().unwrap().slot_high(1), 0, "slot 1 holds no token");
+
+    // A cells read from 0 of all rows is the whole part.
+    let mut whole = vec![0u8; 300 * 49_152];
+    engine.parts().unwrap().part_read(state, 3, &mut whole).unwrap();
+    let mut rows = vec![0u8; 300 * 49_152];
+    engine.parts().unwrap().cells_read(state, 3, 0, 300, &mut rows).unwrap();
+    assert!(whole == rows, "the cells read differs from the part read");
+    let mut short = vec![0u8; 299 * 49_152];
+    assert_eq!(
+        engine.parts().unwrap().cells_read(state, 3, 1, 299, &mut short),
+        Err(PartError::Refused),
+        "mk has no range read"
+    );
+    assert_eq!(
+        engine.parts().unwrap().cells_read(state, 3, 0, 299, &mut short),
+        Err(PartError::Refused),
+        "a read of fewer rows than the token count is a range read"
+    );
+
+    let coverage = engine.coverage().unwrap();
+    let span = coverage.coverage(state, 3, &rows);
+    assert_eq!(
+        span,
+        CoverageSpan {
+            part: 3,
+            start: 0,
+            end: 300
+        }
+    );
+    assert_eq!(coverage.fits(&span, 0), Ok(()));
+
+    let capacity = engine.capacity(state).unwrap();
+    assert_eq!(engine.slots().unwrap().slot_clear(0), WriteResult::Ok);
+    assert_eq!(engine.slots().unwrap().slot_high(0), 0);
+    assert_eq!(engine.capacity(state).unwrap(), capacity, "a clear keeps the capacity");
+    assert!(!engine.poisoned(state).unwrap());
+
+    // The cleared slot is a new context: the same tokens give the same logits.
+    let again = feed(&mut engine, 0, &ids, 256);
+    assert_eq!(first, again, "the cleared slot kept state from before the clear");
 }

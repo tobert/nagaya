@@ -3,8 +3,9 @@
 use std::sync::{Arc, OnceLock};
 
 use nagaya_abi::{
-    Coverage, Dtype, Engine, Identity, Limits, Output, PartError, Parts, PassError, PassErrorKind, PassOut, PassStatus,
-    Seal, SealError, Segment, SegmentInputs, Slots, State, Tap, WriteResult,
+    Coverage, CoverageSpan, Dtype, Engine, Identity, Limits, Output, PartError, PartId, Parts, PassError,
+    PassErrorKind, PassOut, PassStatus, Seal, SealError, Segment, SegmentInputs, SlotId, Slots, State, Tap,
+    WriteResult,
 };
 
 use crate::spec;
@@ -31,7 +32,7 @@ pub fn open() -> Result<MkEngine, MkError> {
     let pool = worker.open_states(&spec::CONTEXT_CLASSES)?;
     Ok(MkEngine {
         worker,
-        states: pool.ids,
+        states: pool.ids.into_iter().map(Some).collect(),
         readings: pool.readings,
         last_error: None,
     })
@@ -40,7 +41,8 @@ pub fn open() -> Result<MkEngine, MkError> {
 /// The mk engine: a context pool, the engine's declared facts, and the last error.
 pub struct MkEngine {
     worker: Arc<Worker>,
-    states: Vec<u64>,
+    /// The context id of each slot. A slot whose clear failed has no context.
+    states: Vec<Option<u64>>,
     readings: Vec<ClassReading>,
     last_error: Option<String>,
 }
@@ -49,7 +51,7 @@ impl MkEngine {
     /// The context id for one state.
     fn context(&self, state: State) -> Option<u64> {
         let State::Slot(slot) = state;
-        self.states.get(slot as usize).copied()
+        self.states.get(slot as usize).copied().flatten()
     }
 
     /// The context's token count.
@@ -123,7 +125,7 @@ fn write_from(from: u64) -> Result<(), String> {
 
 impl Drop for MkEngine {
     fn drop(&mut self) {
-        let ids = std::mem::take(&mut self.states);
+        let ids = std::mem::take(&mut self.states).into_iter().flatten().collect();
         self.worker.free_states(ids);
     }
 }
@@ -353,7 +355,7 @@ impl Engine for MkEngine {
     }
 
     fn coverage(&mut self) -> Option<&mut dyn Coverage> {
-        None
+        Some(self)
     }
 
     fn seal(&mut self) -> Option<&mut dyn Seal> {
@@ -361,7 +363,7 @@ impl Engine for MkEngine {
     }
 
     fn slots(&mut self) -> Option<&mut dyn Slots> {
-        None
+        Some(self)
     }
 }
 
@@ -425,18 +427,14 @@ impl Parts for MkEngine {
         self.write_result(call)
     }
 
-    fn cells_read(
-        &mut self,
-        _state: State,
-        part: usize,
-        _from: u64,
-        _n: u64,
-        _out: &mut [u8],
-    ) -> Result<(), PartError> {
-        self.last_error = Some(format!(
-            "mk has no range read for part {part}; read the whole part, which holds the context's n rows"
-        ));
-        Err(PartError::Refused)
+    /// mk has no range read. A read from 0 of all the context's rows is a whole read, and mk gives it.
+    fn cells_read(&mut self, state: State, part: usize, from: u64, n: u64, out: &mut [u8]) -> Result<(), PartError> {
+        if let Err(message) = spec::whole_read_problem(part, from, n, out.len()) {
+            self.last_error = Some(message);
+            return Err(PartError::Refused);
+        }
+        // The worker refuses a buffer that does not hold the context's n rows, so `n` must be the token count.
+        self.part_read(state, part, out)
     }
 
     fn cells_write(&mut self, state: State, part: usize, from: u64, n: u64, bytes: &[u8]) -> WriteResult {
@@ -467,6 +465,49 @@ impl Parts for MkEngine {
         }
         let call = self.worker.set_n(id, n as u32);
         self.write_result(call)
+    }
+}
+
+/// mk's contexts are the slots of v0 (engine-abi "v0 mk binding choices").
+impl Slots for MkEngine {
+    /// The context's token count: the rows of each cells part. A slot with no context holds no row.
+    ///
+    /// A worker that stopped cannot answer, and the trait has no error, so this panics (spec 8.5).
+    fn slot_high(&self, slot: SlotId) -> u64 {
+        let Some(id) = self.context(State::Slot(slot)) else {
+            return 0;
+        };
+        match self.worker.n(id) {
+            Ok(n) => u64::from(n),
+            Err(error) => panic!("cannot read the token count of mk slot {slot}: {error}"),
+        }
+    }
+
+    /// Free the context and make a new one of the same capacity. mk has no call that empties a context.
+    ///
+    /// The context term holds the pool (spec 4.2), so the new context needs no new admission. When mk cannot make
+    /// it, the slot has no context, and the result is `Failed`.
+    fn slot_clear(&mut self, slot: SlotId) -> WriteResult {
+        let Some(id) = self.context(State::Slot(slot)) else {
+            self.last_error = Some(format!("slot {slot} has no context in this engine"));
+            return WriteResult::Refused;
+        };
+        let call = self.worker.clear(id);
+        if matches!(call, Call::Failed(_)) {
+            self.states[slot as usize] = None;
+        }
+        self.write_result(call)
+    }
+}
+
+/// mk holds the rows of each cells part from position 0. The bytes give the row count.
+impl Coverage for MkEngine {
+    fn coverage(&self, _state: State, part: PartId, bytes: &[u8]) -> CoverageSpan {
+        spec::coverage_of(part, bytes.len())
+    }
+
+    fn fits(&self, coverage: &CoverageSpan, slot: SlotId) -> Result<(), String> {
+        spec::fits(coverage, slot)
     }
 }
 
