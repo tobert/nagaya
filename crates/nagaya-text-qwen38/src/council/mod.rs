@@ -42,6 +42,7 @@ use nagaya_council::template_id::{hash16, template_id};
 
 use crate::gguf::{Metadata, Value};
 use crate::json::Json;
+use crate::pystr::strip;
 use crate::template::RenderOptions;
 use crate::{Error, Qwen38, Rendered, Tokenizer};
 
@@ -166,6 +167,10 @@ impl Qwen38Family {
     }
 
     /// Render messages with the chat template. The effort is `medium`.
+    ///
+    /// The template refuses a system message after a message of another role. gogi lets a client send one
+    /// (`docs/council-api.md`, "Contexts"). The library renders such a message in place as a system turn: it hands
+    /// the template a user message with stand-in text, and then it swaps the turn that the template wrote.
     pub(crate) fn run(
         &self,
         messages: &[Json],
@@ -178,9 +183,41 @@ impl Qwen38Family {
             generation_prompt,
             reasoning_effort: Some(EFFORT.to_string()),
         };
-        self.model
-            .render(&Json::Array(messages.to_vec()), tools, &options)
-            .map_err(refusal)
+        let later = messages::later_system_messages(messages);
+        if later.is_empty() {
+            return self
+                .model
+                .render(&Json::Array(messages.to_vec()), tools, &options)
+                .map_err(refusal);
+        }
+        let prefix = messages::stand_in_prefix(messages, tools);
+        let mut stand_ins = messages.to_vec();
+        let mut turns = Vec::with_capacity(later.len());
+        for (n, &i) in later.iter().enumerate() {
+            let name = format!("{prefix}{n}");
+            // The template trims the content of every message, so the swapped turn does too.
+            let content = strip(messages::content_of(&messages[i]), None, true, true);
+            stand_ins[i] = messages::turn_json("user", &name);
+            turns.push((
+                format!("<|im_start|>user\n{name}<|im_end|>\n"),
+                format!("<|im_start|>system\n{}<|im_end|>\n", self.content(&content)?),
+            ));
+        }
+        let mut rendered = self
+            .model
+            .render(&Json::Array(stand_ins), tools, &options)
+            .map_err(refusal)?;
+        for (from, to) in turns {
+            let Some(at) = rendered.escaped.find(&from) else {
+                return Err(FamilyError::internal(
+                    "the template did not render the stand-in of a later system message as a user turn. The chat template changed shape.",
+                ));
+            };
+            rendered.escaped.replace_range(at..at + from.len(), &to);
+        }
+        rendered.ids = self.encode(&rendered.escaped)?;
+        rendered.text = self.tokenizer().unescape(&rendered.escaped).map_err(refusal)?;
+        Ok(rendered)
     }
 
     /// Client text as escaped content: its special token text cannot open or close a turn.

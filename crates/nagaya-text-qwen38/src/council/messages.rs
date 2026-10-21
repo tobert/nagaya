@@ -120,3 +120,51 @@ pub(crate) fn message_strings(m: &Message) -> Vec<&str> {
     }
     out
 }
+
+fn role_of(message: &Json) -> Option<&str> {
+    match message {
+        Json::Object(o) => match o.iter().find(|(k, _)| k == "role") {
+            Some((_, Json::Str(role))) => Some(role),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The text content of a message, or an empty string when it has none.
+pub(crate) fn content_of(message: &Json) -> &str {
+    match message {
+        Json::Object(o) => match o.iter().find(|(k, _)| k == "content") {
+            Some((_, Json::Str(content))) => content,
+            _ => "",
+        },
+        _ => "",
+    }
+}
+
+/// The indexes of the system messages that follow a message of another role. The template merges the system
+/// messages at the start, and it refuses these.
+pub(crate) fn later_system_messages(messages: &[Json]) -> Vec<usize> {
+    let leading = messages.iter().take_while(|m| role_of(m) == Some("system")).count();
+    (leading..messages.len())
+        .filter(|&i| role_of(&messages[i]) == Some("system"))
+        .collect()
+}
+
+fn mentions(json: &Json, needle: &str) -> bool {
+    match json {
+        Json::Str(s) => s.contains(needle),
+        Json::Array(items) => items.iter().any(|i| mentions(i, needle)),
+        Json::Object(o) => o.iter().any(|(k, v)| k.contains(needle) || mentions(v, needle)),
+        _ => false,
+    }
+}
+
+/// The start of the stand-in text of a later system message. No string of the messages or the tools holds it.
+pub(crate) fn stand_in_prefix(messages: &[Json], tools: Option<&Json>) -> String {
+    let mut prefix = "nagaya-system-turn-".to_string();
+    while messages.iter().chain(tools).any(|j| mentions(j, &prefix)) {
+        prefix.insert(0, 'x');
+    }
+    prefix
+}
