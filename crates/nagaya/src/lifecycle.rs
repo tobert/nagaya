@@ -13,8 +13,47 @@ use crate::profile::{PlacementProfile, ProfileError};
 use crate::signal::SignalFlag;
 use nagaya_telemetry::instruments;
 
-/// The backstop wait for every engine to open. It is two watchdog timeouts (spec 7.4).
-pub const DEFAULT_OPEN_TIMEOUT: Duration = Duration::from_secs(60);
+/// The backstop wait for every engine to open. It equals `TimeoutStartSec` in the unit (spec 7.4, 10.1).
+///
+/// A group beats while its engine opens, so the watchdog cannot end a hung open. This wait ends it.
+pub const DEFAULT_OPEN_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// How often the start tells systemd that the engines still open. It equals the heartbeat (spec 7.4, 10.1).
+pub const DEFAULT_OPEN_TICK: Duration = crate::process::DEFAULT_HEARTBEAT;
+
+/// How far each tick moves the start deadline of systemd. It equals the watchdog timeout (spec 10.1).
+pub const DEFAULT_START_EXTEND: Duration = crate::process::DEFAULT_WATCHDOG_TIMEOUT;
+
+/// The timing of the start. The tests use short values.
+#[derive(Clone, Copy, Debug)]
+pub struct Options {
+    timeout: Duration,
+    tick: Duration,
+    extend: Duration,
+}
+
+impl Options {
+    /// Options with the default tick and extension, and a wait of `timeout` for the opens.
+    pub fn new(timeout: Duration) -> Self {
+        Self {
+            timeout,
+            tick: DEFAULT_OPEN_TICK,
+            extend: DEFAULT_START_EXTEND,
+        }
+    }
+
+    /// Set how often the start tells systemd that the engines still open.
+    pub fn tick(mut self, tick: Duration) -> Self {
+        self.tick = tick;
+        self
+    }
+
+    /// Set how far each tick moves the start deadline of systemd.
+    pub fn extend(mut self, extend: Duration) -> Self {
+        self.extend = extend;
+        self
+    }
+}
 
 /// How often the wait loop reads the signal counter (spec 10.3 note).
 pub const WAIT_POLL: Duration = Duration::from_millis(50);
@@ -113,6 +152,20 @@ pub fn start(
     notifier: Option<&Notifier>,
     timeout: Duration,
 ) -> Result<Ready, LifecycleError> {
+    start_with(profile, registry, inventory, store_dir, notifier, Options::new(timeout))
+}
+
+/// Start as `start` does, with the timing in `options`.
+///
+/// While the engines open, each tick sends `EXTEND_TIMEOUT_USEC=` and the `loading` status to systemd (spec 10.1).
+pub fn start_with(
+    profile: PlacementProfile,
+    registry: Registry,
+    inventory: Inventory,
+    store_dir: &Path,
+    notifier: Option<&Notifier>,
+    options: Options,
+) -> Result<Ready, LifecycleError> {
     let span = tracing::info_span!(
         "nagaya.start",
         engines = profile.engines.len(),
@@ -120,7 +173,7 @@ pub fn start(
         otel.status_code = tracing::field::Empty,
     );
     let _entered = span.enter();
-    let result = start_engines(profile, registry, inventory, store_dir, notifier, timeout);
+    let result = start_engines(profile, registry, inventory, store_dir, notifier, options);
     match &result {
         Ok(_) => span.record("outcome", "ready"),
         Err(error) => {
@@ -146,10 +199,10 @@ fn start_engines(
     inventory: Inventory,
     store_dir: &Path,
     notifier: Option<&Notifier>,
-    timeout: Duration,
+    options: Options,
 ) -> Result<Ready, LifecycleError> {
+    let names: Vec<String> = profile.engines.iter().map(|engine| engine.name.clone()).collect();
     let mut process = {
-        let names: Vec<String> = profile.engines.iter().map(|engine| engine.name.clone()).collect();
         record_states(&names, EngineState::Loading);
         if !names.is_empty() {
             tracing::info!(engines = names.join(", "), "opening engines");
@@ -164,7 +217,16 @@ fn start_engines(
             .start()
             .map_err(LifecycleError::Start)?
     };
-    match process.wait_opens(timeout) {
+    let extend = |notifier: &Notifier| {
+        if let Err(error) = notifier.extend_start(&names, options.extend) {
+            tracing::warn!("cannot send EXTEND_TIMEOUT_USEC to systemd: {error}");
+        }
+    };
+    match process.wait_opens_with(options.timeout, options.tick, || {
+        if let Some(notifier) = notifier {
+            extend(notifier);
+        }
+    }) {
         Ok(opened) => {
             let mut names: Vec<String> = opened.iter().map(|engine| engine.name.clone()).collect();
             names.sort();
@@ -189,6 +251,12 @@ fn start_engines(
         }
         Err(WaitError::Timeout { waiting }) => {
             record_states(&waiting, EngineState::Fatal);
+            if let Some(notifier) = notifier
+                && let Err(error) =
+                    notifier.notify(&format!("STATUS=engine {} did not open in time", waiting.join(", ")))
+            {
+                tracing::warn!("cannot send STATUS= to systemd: {error}");
+            }
             Err(LifecycleError::Timeout { waiting })
         }
         Err(WaitError::Disconnected) => Err(LifecycleError::Disconnected),

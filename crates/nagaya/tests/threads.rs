@@ -324,24 +324,6 @@ fn only_the_ledger_thread_writes_the_ledger() {
     assert!(message.contains("the ledger is written off its thread"), "{message}");
 }
 
-struct StallFactory {
-    limits: Limits,
-    release: Arc<AtomicBool>,
-}
-
-impl Factory for StallFactory {
-    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
-        Ok(self.limits.clone())
-    }
-
-    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
-        while !self.release.load(Ordering::SeqCst) {
-            thread::sleep(Duration::from_millis(2));
-        }
-        Ok(Box::new(FakeAlways::new()))
-    }
-}
-
 struct Release(Arc<AtomicBool>);
 
 impl Drop for Release {
@@ -350,25 +332,29 @@ impl Drop for Release {
     }
 }
 
+/// A group stalls in a pass, not in an open: a group beats while its engine opens (spec 7.4).
 #[test]
 fn a_stalled_group_reaches_the_caller() {
     let release = Arc::new(AtomicBool::new(false));
+    let record: Record = Arc::new(Mutex::new(Vec::new()));
     let mut registry = Registry::new();
-    registry.register(
-        "stall",
-        Box::new(StallFactory {
-            limits: limits_on(&[0]),
-            release: Arc::clone(&release),
-        }),
-    );
-    let profile = profile(vec![engine("stall-one", "stall", &[0])]);
-    let process = Start::new(profile, registry, inventory(&[0]))
+    registry.register("a", Box::new(RecordingFactory::new("a", &[0], record)));
+    let profile = profile(vec![engine("stall-one", "a", &[0])]);
+    let mut process = Start::new(profile, registry, inventory(&[0]))
         .heartbeat(Duration::from_millis(10))
         .timeout(Duration::from_millis(100))
         .start()
         .unwrap();
+    process.wait_opens(Duration::from_secs(2)).unwrap();
     // The guard drops before the process, so a failed assert cannot block the join.
     let guard = Release(Arc::clone(&release));
+    let hold = Arc::clone(&release);
+    let quantum = nagaya::process::Quantum::new(move |_| {
+        while !hold.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(2));
+        }
+    });
+    process.submit(0, quantum).unwrap();
     let event = process
         .recv(Duration::from_secs(2))
         .expect("the watchdog reports the stall");
@@ -429,4 +415,66 @@ fn a_quantum_that_blocks_past_the_timeout_stalls_the_group() {
             devices: vec![0]
         }
     );
+}
+
+/// An engine whose open takes `open_time`, as mk's open does (spec 7.4).
+struct SlowOpenFactory {
+    limits: Limits,
+    open_time: Duration,
+}
+
+impl Factory for SlowOpenFactory {
+    fn plan(&self, _config: &toml::Table) -> Result<Limits, PlanError> {
+        Ok(self.limits.clone())
+    }
+
+    fn open(&self, _config: &toml::Table) -> Result<Box<dyn Engine>, OpenError> {
+        thread::sleep(self.open_time);
+        Ok(Box::new(FakeAlways::new()))
+    }
+}
+
+fn started_slow_open(open_time: Duration, timeout: Duration) -> nagaya::process::Process {
+    let mut registry = Registry::new();
+    registry.register(
+        "slow",
+        Box::new(SlowOpenFactory {
+            limits: limits_on(&[0]),
+            open_time,
+        }),
+    );
+    let profile = profile(vec![engine("slow-one", "slow", &[0])]);
+    Start::new(profile, registry, inventory(&[0]))
+        .heartbeat(Duration::from_millis(10))
+        .timeout(timeout)
+        .start()
+        .unwrap()
+}
+
+#[test]
+fn an_open_that_outlasts_the_watchdog_timeout_is_not_a_stall() {
+    // The open takes 600 ms. The watchdog timeout is 100 ms. The group beats while it opens (spec 7.4).
+    let mut process = started_slow_open(Duration::from_millis(600), Duration::from_millis(100));
+    let opened = process
+        .wait_opens(Duration::from_secs(5))
+        .expect("a slow open is not a stall");
+    assert_eq!(opened.len(), 1);
+}
+
+#[test]
+fn a_group_keeps_its_beat_after_a_slow_open() {
+    let mut process = started_slow_open(Duration::from_millis(300), Duration::from_millis(100));
+    process.wait_opens(Duration::from_secs(5)).unwrap();
+    // An idle group beats on its interval, so the long open leaves no stall behind.
+    assert_eq!(process.recv(Duration::from_millis(600)), None);
+}
+
+#[test]
+fn an_open_that_never_ends_reaches_the_wait_timeout() {
+    // The beat during an open hides a hung open from the watchdog. The wait for the opens is the backstop.
+    let mut process = started_slow_open(Duration::from_secs(3), Duration::from_millis(100));
+    match process.wait_opens(Duration::from_millis(400)).unwrap_err() {
+        WaitError::Timeout { waiting } => assert_eq!(waiting, vec!["slow-one".to_owned()]),
+        other => panic!("expected a timeout, got {other:?}"),
+    }
 }

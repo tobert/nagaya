@@ -703,6 +703,8 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
     });
     let mut engines: Vec<Box<dyn Engine>> = Vec::with_capacity(jobs.len());
     let mut opened = Vec::with_capacity(jobs.len());
+    // An open can take minutes, and it blocks this thread. The guard beats for the group until the open ends (7.4).
+    let open_beat = OpenBeat::start(group, heartbeats.clone(), interval);
     for job in jobs {
         let engine = match job.factory.open(&job.placement.config) {
             Ok(engine) => engine,
@@ -745,6 +747,7 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
         });
         engines.push(engine);
     }
+    drop(open_beat);
     let names: Vec<String> = opened.iter().map(|engine| engine.name.clone()).collect();
     let _ = events.send(Event::Opened { group, engines: opened });
     let mut cancelled = 0;
@@ -820,6 +823,49 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
         }
     }
     drop(engines);
+}
+
+/// The heartbeat of a group while its engine opens (spec 7.4).
+///
+/// The open blocks the group thread, so a helper thread sends the beats. The helper stops when this guard drops,
+/// also when the group thread panics or returns early. A hung open is not a stall: the wait for the opens ends it.
+struct OpenBeat {
+    stop: Option<Sender<()>>,
+    helper: Option<JoinHandle<()>>,
+}
+
+impl OpenBeat {
+    fn start(group: usize, heartbeats: Sender<WatchMessage>, interval: Duration) -> Self {
+        let (stop, stopped) = mpsc::channel();
+        let helper = thread::Builder::new()
+            .name(format!("nagaya-open-{group}"))
+            .spawn(move || {
+                // A timeout is a beat due. A message or a closed channel means the open ended.
+                while let Err(RecvTimeoutError::Timeout) = stopped.recv_timeout(interval) {
+                    let beat = WatchMessage::Beat {
+                        group,
+                        at: Instant::now(),
+                    };
+                    if heartbeats.send(beat).is_err() {
+                        return;
+                    }
+                }
+            })
+            .expect("cannot start the open heartbeat thread");
+        Self {
+            stop: Some(stop),
+            helper: Some(helper),
+        }
+    }
+}
+
+impl Drop for OpenBeat {
+    fn drop(&mut self) {
+        drop(self.stop.take());
+        if let Some(helper) = self.helper.take() {
+            let _ = helper.join();
+        }
+    }
 }
 
 /// Park every engine of one group. A part that the engine cannot read or write is a failure.
@@ -1102,6 +1148,18 @@ impl Process {
 
     /// Wait for every group to open its engines, or for a failure.
     pub fn wait_opens(&mut self, timeout: Duration) -> Result<Vec<OpenedEngine>, WaitError> {
+        self.wait_opens_with(timeout, timeout, || {})
+    }
+
+    /// Wait as `wait_opens` does, and call `tick` each time `every` passes with no event (spec 10.1, 7.4).
+    ///
+    /// The caller uses the tick to tell systemd that a long open goes on. The tick does not run after the timeout.
+    pub fn wait_opens_with(
+        &mut self,
+        timeout: Duration,
+        every: Duration,
+        mut tick: impl FnMut(),
+    ) -> Result<Vec<OpenedEngine>, WaitError> {
         let deadline = Instant::now() + timeout;
         let mut opened = Vec::new();
         let mut done = vec![false; self.group_count];
@@ -1110,7 +1168,7 @@ impl Process {
             let event = if left.is_zero() {
                 Err(RecvTimeoutError::Timeout)
             } else {
-                self.events.recv_timeout(left)
+                self.events.recv_timeout(left.min(every))
             };
             match event {
                 Ok(Event::Opened { group, engines }) => {
@@ -1118,6 +1176,7 @@ impl Process {
                     opened.extend(engines);
                 }
                 Ok(event) => return Err(WaitError::Event(event)),
+                Err(RecvTimeoutError::Timeout) if Instant::now() < deadline => tick(),
                 Err(RecvTimeoutError::Timeout) => {
                     let waiting = (0..self.group_count)
                         .filter(|&group| !done[group])
