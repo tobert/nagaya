@@ -1,5 +1,8 @@
 //! The pure parts of a build: the recipe of each boundary and the steps that feed the rest (spec 6.2, 11.3c).
 
+// A plan of one pass is a list of one range, not the list of the tokens in it.
+#![allow(clippy::single_range_in_vec_init)]
+
 use nagaya_abi::Kind;
 use nagaya_council::build::{Step, boundary_recipes, plan_chunks, plan_steps, root_recipe};
 use nagaya_council::family::{Boundary, FamilyError, Rendering};
