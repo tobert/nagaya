@@ -10,8 +10,10 @@
 //! Spec 9.5: every instrument has a call site, and a test that runs that call site. Add an instrument to
 //! [`Instruments`] in the same commit as its call site and its test.
 
+mod inherit;
 mod instruments;
 
+pub use inherit::{Inherit, InheritGuard};
 pub use instruments::{
     AlreadyInstalled, EngineState, EvictReason, Instruments, LookupOutcome, METER_NAME, QuantumLabels, RefusalGate,
     RestoreResult, ScopeGuard, TierLabel, install, instruments, scope, tier_set,
