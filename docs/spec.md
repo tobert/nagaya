@@ -58,8 +58,17 @@ bind addresses, store directory, and seed peer addresses.
 | Machine | Devices | Memory |
 |---|---|---|
 | gfx1151host | Strix Halo, one gfx1151 GPU | 128 GB unified |
-| b70host | two Intel Arc Pro B70, a BlueField-2 | 64 GB GDDR6, 128 GB DDR5, 4 TB NVMe |
+| b70host | two Intel Arc Pro B70, and an AMD Radeon 610M for the display | 64 GB GDDR6, 128 GB DDR5, 4 TB NVMe |
 | sm121host | DGX Spark, one Blackwell GPU | 128 GB unified |
+
+On 2026-10-21, a capture of b70host's tree showed these facts:
+
+- The CPU is a Ryzen 9 9950X with 32 online CPUs. Each CCD has one L3 domain: CPUs 0-7 and 16-23, then 8-15 and
+  24-31 (`cpu*/cache/index3/shared_cpu_list`).
+- The B70 cards are at PCI 0000:03:00.0 and 0000:08:00.0. The iGPU is at 0000:80:00.0 (`1002:13c0`, gfx1036). The
+  firmware makes the iGPU the primary display.
+- No BlueField-2 is in the machine. The NICs are `enp17s0` (igc), `enp18s0` (atlantic, 1 Gb/s) and a Wi-Fi card.
+- Both cards have `local_cpulist` 0-31 and `numa_node` -1. Thus the machine has no NUMA locality to use (3.2b).
 
 Telemetry takes hardware attributes from the probed inventory, not from constants in code. (mkviolet puts B70 values
 in `telemetry.rs` as constants.) A CPU that runs work is a device in the inventory too, with host memory as its tier.
@@ -86,7 +95,20 @@ root path is `/` on a machine, and a fixed tree in a test (`crates/nagaya/tests/
 - Network: each interface in `sys/class/net` that has a `device` directory. Virtual interfaces have none.
 
 A device id is the position in the list: AMD GPUs first, then Intel, then NVIDIA, each in the order of the kernel
-number. A missing directory that lists one kind of GPU means that the machine has no GPU of that kind. This is how a
+number.
+
+**Proposed** (claude-opus-5-5, 2026-10-21): the device ids follow the PCI address, in the order of domain, bus,
+device and function, for every vendor. Reason: on b70host the vendor order makes the display iGPU device 0, and the
+B70 cards devices 1 and 2. The PCI order gives the cards 0 and 1, and the iGPU 2. A device id then does not change
+when a driver loads in another order. gfx1151host has one device, so it keeps id 0.
+
+**Proposed** (claude-opus-5-5, 2026-10-21): a display GPU. The probe lists every GPU that it can size, also a GPU
+that drives the display, such as b70host's iGPU. A device that no engine of the profile names gets no budget, no
+group thread and no work. The nagaya is the only compute client of each device that its profile names (3.1). The
+display server keeps a device that the profile does not name. Reason: the simplest rule needs no list of excluded
+devices in the bootstrap config.
+
+A missing directory that lists one kind of GPU means that the machine has no GPU of that kind. This is how a
 coordinator machine joins with no GPU (2.1). Any other missing or malformed file is an error that names the file
 (8.5).
 
@@ -99,8 +121,13 @@ starts. Decided by senpai 2026-10-20 night (vetoable).
 - NVIDIA: `proc/driver/nvidia` gives the model, the bus location and the minor number. It does not give the memory
   size. NVML gives it. Thus the probe accepts only the models in a short list whose memory is unified, and it reads
   their memory as the host memory. Any other model is an error.
-- Xe: sysfs has no file for the size of the device memory. The probe reads the largest prefetchable memory BAR in
-  the `resource` file. With resizable BAR off, the BAR is small, so the probe refuses the card.
+- Xe: sysfs has no file for the size of the device memory, and `xe` has no `tile0/vram0` size file. The probe reads
+  the largest prefetchable memory BAR of the standard BARs 0 to 5, which are the first six lines of the `resource`
+  file. The later lines are the ROM and the SR-IOV BARs of the virtual functions. With resizable BAR off, the BAR is
+  small, so the probe refuses the card. Resizable BAR is a deploy requirement on b70host.
+
+  On b70host, line 9 of `resource` holds 56 GiB: 7 virtual functions of 8 GiB. BAR 2 holds the 32 GiB of the
+  card. A probe that reads every line takes the 56 GiB.
 - AMD: the probe cannot tell unified memory from dedicated memory by one flag. It compares the KFD framebuffer
   memory with `mem_info_gtt_total` and `mem_info_vram_total` of the PCI device. Equal to the first means unified.
   Equal to the second means dedicated. Equal to neither is an error.
@@ -242,6 +269,17 @@ and `pin_identity`. Each `[[budgets]]` entry has `tiers` and `bytes`, and a tier
 `[store]` table has `nvme`, an optional `host` (4.1a), and an optional `interval_copies` (6.13), 0 by default.
 Decided 2026-10-20 (reading).
 
+**One name for each device.** **Proposed** (claude-opus-5-5, 2026-10-21). The spec names a device in four places.
+Each place uses one of two names, and this map joins them.
+
+- A **machine device id** is the id of 2.1. The profile uses it: `devices = [0, 1]`, and a budget tier
+  `device(0)`. The metric attribute `tier` writes it as `device0` (9.4). The fd names of 10.2 use it.
+- A **group index** is a position in the profile's `devices` list of the engine. The ABI uses it: a term tier
+  `device(i)` (4.2), `limits().stages[].device`, and the devices that `open` gets (engine-abi "Core").
+- The ledger maps a term tier `device(i)` to the machine device `devices[i]` of the engine. Then it finds the budget
+  of that machine device. Thus an engine never sees a machine device id, and a profile never sees a group index.
+- On gfx1151host, both names of the one device are 0.
+
 An engine name has letters, digits, `.`, `_` and `-`, and at most 128 bytes. A profile with another name does not
 parse. Reason: the name is part of the gossip key `engine:<name>` (2.3). Decided 2026-10-20.
 
@@ -253,7 +291,8 @@ check.
 ## 3. Process
 
 **3.1 One process per machine.** The nagaya owns every GPU on the machine (Amy: "we'd do 1 process per host that
-owns the gpus"). The nagaya is the only GPU client. A tool that needs a device sends its work through the nagaya, or
+owns the gpus"). The nagaya is the only GPU client. A display GPU that the profile does not name is the one exception
+(2.1, Proposed). A tool that needs a device sends its work through the nagaya, or
 stops the nagaya first. (ds4-recipe: a shader fault with a second GPU client made the SMU stop responding.)
 
 **3.2 Threads and CPU isolation.** The nagaya isolates control work from compute work with `sched_setaffinity` and OS
@@ -1131,7 +1170,8 @@ never attributes.
 Decided by senpai 2026-10-20 night (vetoable). These rules fix the labels of the metrics that exist:
 
 - The attribute `device_group` holds the id of the device group. The attribute `tier` holds `host`, `nvme` or
-  `device<id>`. A budget that covers several tiers has the sorted tiers joined with `+`, for example `device0+host`.
+  `device<id>`. The `<id>` is the machine device id (2.4, "One name for each device").
+  A budget that covers several tiers has the sorted tiers joined with `+`, for example `device0+host`.
 - The wait of a quantum runs from the moment its lead segment became ready to the moment the quantum started. The lead
   segment is the first one. A job is ready when it arrives, and again when a quantum of it ends and more remain. A job
   that the ledger has not admitted yet is ready, so its wait includes the time until the admission.
