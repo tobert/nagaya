@@ -1736,8 +1736,8 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
   - The rendering of the context with the reply has the boundaries of the prompt before the reply.
   - The slot holds a prefix of that rendering, at most 8 tokens short.
 
-  Then the job feeds the rest and puts the snapshot. A reply that ends with `max_tokens` holds no head (see
-  continuations below).
+  Then the job feeds the rest and puts the snapshot. The head of a reply that ends with `max_tokens` is the seam
+  of its open rendering (see continuations below).
 - A build can start at a cut. A cut is the end of a message that the client did not mark, where the rendering keeps
   it. The build starts at a cut when the store holds a snapshot there and at no higher boundary. An earlier context
   made that snapshot at a boundary of its own, such as the head of a generation after its reply. Reason: gogi's build
@@ -1761,7 +1761,7 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
 - The decision limits are mkviolet's until the profile names others: `decision_context_tokens` 3072,
   `contexts_per_decision` 8, `case_bytes` 65536 and `default_timeout_ms` 30000.
 
-Continuations follow gogi's rules (`docs/council-api.md`, "Continuations", gogi `a07d85e`). The nagaya uses them in
+Continuations follow gogi's rules (`docs/council-api.md`, "Continuations", gogi `dc94cb3`). The nagaya uses them in
 these ways. Each served model declares the capability `continuation` (`crates/nagaya/src/http/mod.rs`).
 
 - **The rendering.** `Family::render` renders an open last message as a reply up to its open text, without its end
@@ -1785,28 +1785,32 @@ these ways. Each served model declares the capability `continuation` (`crates/na
   `crates/nagaya-text-qwen38/src/reply.rs`). The toy parser trims nothing.
 - **The reply.** `done` joins the open text as sent and the new text. `usage.prompt` counts the open text. `n` and
   `usage.completion` count only the sampled tokens (`GenerateThen::finish`, `crates/nagaya/src/council/generations.rs`).
-- **Proposed (for Amy)** (Claude Opus 5.5, 2026-10-21), the build plan. A continuation builds the context before
-  its open message (`Service::open_plan`, `nagaya_council::continuation::open_plan`). Then it feeds the open
-  message as a generation feeds its generation prompt, with no seal.
-  - Reason: a seal changes bits (mk rounds the GDN state to bf16). A seal inside the open text makes a continuation
-    differ from the reply that it continues. The head after the reply is the end of its closed rendering, so the
-    next request starts there.
-  - The other choice was a seam boundary one token before the end of the open text. It failed gogi's check "a
-    continuation writes what the whole reply wrote".
-- **Proposed (for Amy)** (Claude Opus 5.5, 2026-10-21), no head for a cut reply. A reply that ends with
-  `max_tokens` has `head` null. gogi allows this ("when the server holds it").
-  - Reason: a head of the open rendering holds the state inside the open text, and it must not seal. The store takes
-    a put with no seal only as an interval copy (6.13). The deploy profile caps interval copies at 0.
-  - The next step is a new put with no seal, outside the interval cap, before the last sampled token. A continuation
-    then restores it and feeds one token. This needs a rule in 6.4 and 6.13.
-  - Until then, a continuation of a cut reply feeds the open text again. Three conformance checks skip for this
-    reason.
-- **Proposed (for Amy)** (Claude Opus 5.5, 2026-10-21), the dry run. A build with an open message and
-  `dry_run: true` looks up the plan of the continuation. Its `kept` and `fed` are what the generation keeps and
-  feeds. Its `head` is `recipe:` and the recipe of the open rendering, which the store never holds.
-- **Proposed (for Amy)** (Claude Opus 5.5, 2026-10-21), the template id. The test sets of the families have no open
-  message yet, so the open rendering is not in the template id (11.3a). Adding one changes the id of each family
-  once, and a fitted threshold does not carry over. Reason to wait: the deploy on gfx1151host keeps its id.
+- The build plan: a continuation builds the context before its open message (`Service::open_plan`,
+  `nagaya_council::continuation::open_plan`). Then it feeds the open message as a generation feeds its generation
+  prompt, with no seal. Reason: a seal changes bits (mk rounds the GDN state to bf16). A seal inside the open text
+  makes a continuation differ from the reply that it continues. The next request starts from the head after the
+  reply. Decided by Amy 2026-10-21.
+- The head of a cut reply: a reply that ends with `max_tokens` seals a snapshot of its open rendering. It gives
+  that snapshot as `head`, listed last in `snapshots` (`GenerateThen::cut_head`). A continuation of that reply
+  starts from the head: the longest held snapshot wins, as for any build. It may differ from the uncut reply, which
+  gogi allows (boundaries are content). Decided by Amy 2026-10-21 ("Sealed head").
+  - The build plan above stays. The build also looks up the seam of the open text after the plan
+    (`build::Extension`, `ContextBody::restore_seam`). When the store holds it, the build restores it and the
+    generation feeds the last token. The state keeps the seal of the seam, so the head after that reply has the seam
+    among the boundaries of its recipe (`recipes_with_cuts`).
+  - A cut reply that the client sends back closed starts from the head too. The open rendering's tokens up to the
+    seam must begin the closed rendering's tokens. `Service::seam_cut` gives the seam of the last assistant message
+    as a cut. The end of the message before it must be a boundary. This costs two or three renders of the prefix.
+  - **Proposed (for Amy)** (Claude Opus 5.5, 2026-10-21), the seam. The head is the seam of the open rendering, the
+    position before the last sampled token, not its end. Reason: a snapshot holds no logit row. A continuation from a
+    head at the end would have no first logit row, and it cannot feed the last token again. At the seam it feeds
+    that token (`fed` 1). gogi allows a head before or after the last sampled token.
+- The dry run: a build with an open message and `dry_run: true` looks up the plan of the continuation and its seam.
+  Its `kept` and `fed` are what the generation keeps and feeds. Its `head` is `recipe:` and the recipe of the open
+  rendering, which the store never holds. Decided by Amy 2026-10-21.
+- The template id: the test sets of the families have no open message, so the open rendering is not in the template
+  id (11.3a). Adding one would change the id of each family once, and a fitted threshold does not carry over.
+  Decided by Amy 2026-10-21.
 - A riding `before` is not built, because the nagaya does not serve `ride`. A generation with `decisions` is a 400
   that names `decisions`.
 
@@ -2080,8 +2084,8 @@ rules are each "Decided by senpai 2026-10-20 night (vetoable)".
 - A stop first sets every served model to `draining`, so a new request is a 503 `model_unavailable`. Then the
   engines stop (10.3), and the server waits at most 2 s for its open requests.
 - The routes under `/nagaya/v1` (11.4a) and the status feed (9.7) are not built.
-- Continuations are built (11.3c). `gogi-conformance` against the process with the fake engine gave 268 ok,
-  0 FAIL and 10 skip on 2026-10-21, at gogi `a07d85e`.
+- Continuations are built (11.3c). `gogi-conformance` against the process with the fake engine gave 271 to 274 ok,
+  0 FAIL and 8 skip on 2026-10-21, at gogi `dc94cb3`. The number of checks depends on the reply to a random nonce.
 
 ## 12. Identity
 
