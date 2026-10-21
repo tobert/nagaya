@@ -397,6 +397,9 @@ decision, and the buffer that holds a snapshot before the store takes it. Decide
 - A refusal reads nothing and changes nothing (4.3). The client gets 429 `busy` (11.5), with the shortfall in bytes.
 - The charge ends when the copy drops. A job drops its mark before its caller hears the result.
 - The store's own bytes are in the store's budget (4.1a). The charge covers the transient buffer only.
+- A release that the ledger refuses leaves the ledger wrong. This holds for a staging charge and for a context charge.
+  The service records a failure, the main loop sees it, and the process stops with exit 1 (8.5). A release in a
+  stopping process is no failure, because the ledger has no charge left.
 
 Reason: the copy is the largest transient allocation of the nagaya, and no term charged it (kaibo review,
 2026-10-20, finding 3).
@@ -406,6 +409,19 @@ Reason: the copy is the largest transient allocation of the nagaya, and no term 
 refusal charges nothing and changes nothing.
 
 `pass` never allocates. Its scratch for each kind is a mandatory term, which the ledger charges at `open`.
+
+Admission of a profile keeps the charges that live now. Decided by senpai 2026-10-20 night (vetoable).
+
+- A live context and a live staging copy stay charged when the ledger admits a profile. A later release finds its
+  charge.
+- The ledger takes the live charges from the unassigned bytes of the new budgets. It charges a live context with the
+  context terms of the new profile.
+- If the live charges do not fit the new budgets, the ledger refuses the profile and changes nothing. The shortfall
+  is in bytes (4.3).
+
+Reason: a profile swap (3.3) admits a profile while requests run. A reset of the charges made a later release fail.
+The failed release stops the process (4.2), so a planned restart would have become a crash. The alternative, a
+refusal of every admission while a charge lives, would make a transient request refuse a profile for good (2.3).
 
 When the ledger refuses a quantum's call, the quantum waits in the scheduler and keeps its place. A request that can
 never fit, even with all reclaim done (4.6), gets 413 `too_large`. Its `param` names the limit that it is over.

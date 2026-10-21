@@ -497,6 +497,19 @@ fn a_call_thread_that_cannot_pin_is_a_500_that_the_council_records() {
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{value}");
 }
 
+/// The council reports the failure of a service: a failed release of a ledger charge stops the process (spec 4.2, 8.5).
+#[test]
+fn the_council_reports_a_failed_release_of_a_service() {
+    let f = Fixture::new();
+    let council = council(&f);
+    assert_eq!(council.failure(), None);
+    let ports = f.process.ports();
+    let staging = nagaya::council::staging::Staging::take(&ports, ENGINE, 10).unwrap();
+    ports.release_staging(nagaya_abi::Tier::Host, 10).unwrap();
+    drop(staging);
+    assert!(council.failure().is_some(), "the main loop would not see the failure");
+}
+
 /// Send one request with a body that the test builds, and give the status and the error body.
 fn send_body(council: &Arc<Council>, body: Body) -> (StatusCode, Value) {
     let runtime = tokio::runtime::Builder::new_current_thread()

@@ -112,9 +112,11 @@ impl Council {
         self.models.iter().map(|served| served.service.free_slots()).sum()
     }
 
-    /// The first internal error of a route, when one happened. The process then stops with exit 1 (spec 8.5).
+    /// The first internal error of a route or of a served service, when one happened. The process then stops with
+    /// exit 1 (spec 8.5). A service fails when a release of a ledger charge fails (spec 4.2).
     pub fn failure(&self) -> Option<String> {
-        self.failure.lock().expect("the failure lock is poisoned").clone()
+        let own = self.failure.lock().expect("the failure lock is poisoned").clone();
+        own.or_else(|| self.models.iter().find_map(|served| served.service.failure()))
     }
 
     fn fail(&self, message: &str) {
