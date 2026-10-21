@@ -1090,7 +1090,18 @@ of 1.7e-5 on 2026-10-20. Decided 2026-10-20 (reading).
 The fixture covers prompts of up to 596 tokens. Past about 640 tokens, the gap between mk and the reference is not
 explained (15 item 8). The oracle does not gate a longer prompt.
 
-A family with no reference has no oracle yet: the first port of mkviolet builds the Gemma reference. Decided 2026-10-20
+A family with no reference has no oracle yet: the first port of mkviolet builds the Gemma reference.
+
+**The Gemma 4 oracle.** **Proposed** (claude-opus-5-5, 2026-10-21). mkviolet's `tools/gemma4_reference.py` runs HF
+transformers' own Gemma 4 layers in f32 on the CPU. `tools/gemma4_render_reference.py` renders the chat template with
+Python's jinja2. The port makes the fixture with them, as mk's `tools/oracle_fixture.py` makes the Qwen3.8 fixture.
+
+- mkviolet measured these gaps (mkviolet `docs/README.md`). The full pass had a largest logit difference of 5.8e-5.
+  A prompt of 1,270 tokens, past the sliding window of 1,024, had 7.2e-3 and the same top token.
+- At 1,270 tokens, the f32 order of sums changed 123 of 38,100 top-8 expert picks. Each change began on a near tie in
+  HF's own router.
+- The gates are the argmax and top-8 rules of the Qwen3.8 oracle. The largest logit difference is at most 1e-2. The
+  bench reports the other numbers. A spike measures the gap at longer prompts first. Decided 2026-10-20
 (`docs/deepinfer.md` 6). The engine crates stay one for each vendor and device (Amy: "we generate a megakernel per
 vendor/device and they get their own whole crate").
 
@@ -1704,6 +1715,39 @@ milestones 11 and 11b).
 - One token can release text in two phases, but a gogi `token` event has one phase. This is rare, because each
   Qwen3.8 marker is one token. 11.3a has the rule for the step of such a token.
 
+**The Gemma 4 library.** **Proposed** (claude-opus-5-5, 2026-10-21). The crate `nagaya-text-gemma4` holds the Gemma
+4 family. It ports mkviolet's text code, which already serves council v2 and `/mk/v1` on b70host.
+
+- **Tokenizer.** The library reads the `tokenizer.json` of the checkpoint with the `tokenizers` crate, as mkviolet
+  does (`tokenizer.rs:27-48`). The tokenizer hash is of that file (12.3).
+- **Template.** The library runs Google's chat template (`assets/gemma4_chat_template.jinja` in mkviolet) with
+  `minijinja`, `trim_blocks` and `lstrip_blocks`, as `chat.rs` does. The identity's `template` is the text of that
+  file. The variables that the library sets, such as `PRESERVE_THINKING`, are code, so the test renders of 11.3a
+  cover them.
+- **Escapes.** Client text that spells a marker is content. mkviolet swaps each marker text for a sentinel of
+  Unicode noncharacters before the render, and it refuses a noncharacter in client text (`chat.rs:1-13`).
+- **Council rendering.** The library ports `src/template.rs` (`mkv-letters-1`), the origin of 11.3a, with its Gemma 4
+  layout. The template id follows 11.3a.
+- **Reply parser.** The library ports `parse_tool_call` and the thought channel of `chat.rs`.
+
+Reason for `tokenizers` and `minijinja`: the port copies code that its Python fixtures already check. A move to the
+Jinja interpreter of the Qwen3.8 library is a later choice.
+
+**The engine registry.** **Proposed** (claude-opus-5-5, 2026-10-21). Today a hard map from the engine kind picks the
+family (`if kind == crate::mk::KIND`, `crates/nagaya/src/serving.rs:24-40`). These rules replace it:
+
+- The identity gets one more field, `family`: `toy`, `qwen38` or `gemma4`. The engine sets it.
+- The process holds a registry of family libraries by that name. A family library opens from the identity and the
+  table `[engines.family]` of the profile, which names its files.
+- The opened library must give the `tokenizer_hash` of the identity, as 11.7 says now. Another hash refuses the
+  start (exit 3).
+- `context_tokens` of the served model is the largest slot of the engine, in tokens. `SlotLimit` gets a member
+  `tokens` for it. This replaces the 4096 and mk's `MAX_CONTEXT` of 11.7.
+
+Reason: the identity names what the engine computes, so it selects the text rules too (11.3). A new engine kind then
+needs no change in `serving.rs`. mkviolet gives `context_tokens` as the slot size less one (`council_server.rs:334`).
+The port checks why before it copies that.
+
 **11.3a Council rendering.** A decision and a raw read put a spec, a case and a letter menu after each context. The
 nagaya renders them with mkviolet's rules (mkviolet `src/template.rs` and its council code), ported to each family.
 The family library holds the port, because the tokens belong to the family. Decided 2026-10-20 (Amy: "mkviolet is
@@ -2105,6 +2149,7 @@ has a tailnet address in its code.)
 (`crates/nagaya/src/http`). It starts the server after `READY=1`, and it logs `http listening on <address>`. These
 rules are each "Decided by senpai 2026-10-20 night (vetoable)".
 
+- The engine registry of 11.3 (**Proposed**) replaces the first two rules below.
 - The process serves an opened engine when its kind has a family library. The kind `fake-toy` has the toy family
   (11.3b). The kind `mk-qwen38-gfx1151` has the Qwen3.8 family, from the first shard of `MK_SHARDS`. The tokenizer
   hash of that family must equal the `tokenizer_hash` of the engine identity. Thus the identity selects the library
@@ -2150,6 +2195,7 @@ rules are each "Decided by senpai 2026-10-20 night (vetoable)".
 - `template`, the text of the chat template, for example the GGUF key `tokenizer.chat_template`. The identity digest
   covers it, so a new template is a new recipe. Gossip carries the digest, not the text (2.3). Decided 2026-10-20
   (reading, kaibo job-2 finding 7);
+- `family`, the name of the family library that the engine needs (11.3, "The engine registry", Proposed);
 - `numbers`: the engine binary, and the nagaya code that turns its outputs into answers;
 - the lineage of the plan table;
 - the bit settings, each with its class (`docs/prior-art.md` 1);

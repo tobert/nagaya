@@ -89,7 +89,7 @@ open(config) -> engine           config: devices, weights, engine-specific setti
 attach(config, arena_set)        the same, on an existing arena set
 identity() -> {
     model, checkpoint_digest,    the logical digest of the weights (spec 12.2)
-    tokenizer_hash, template, numbers, plan table,
+    tokenizer_hash, template, family, numbers, plan table,   family: Proposed (spec 11.3)
     bit settings: [{name, value, class}],   class: reference-defining | approx | policy
     canary_hash,
 }
