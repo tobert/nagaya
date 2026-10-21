@@ -188,7 +188,7 @@ fn nesting_stops_at_512_levels_and_the_error_says_so() {
     p(&objects(512));
     for text in [nest(513), objects(513)] {
         match Json::parse(&text) {
-            Err(nagaya_text_qwen38::Error::Json(m)) => assert!(m.contains("512"), "{m}"),
+            Err(nagaya_jinja::Error::Json(m)) => assert!(m.contains("512"), "{m}"),
             Ok(_) => panic!("513 levels should be refused"),
             Err(other) => panic!("513 levels should be a Json error, got {other:?}"),
         }

@@ -50,7 +50,7 @@ unified memory. The first engine is mk (`~/src/megakernel-qwen38-flashnext-strix
 
 ### Layout
 
-The twelve crates live in directories under `crates/`. Use these crates:
+The crates live in directories under `crates/`. Use these crates:
 
 | Crate | Holds | Spec |
 |---|---|---|
@@ -61,7 +61,9 @@ The twelve crates live in directories under `crates/`. Use these crates:
 | `nagaya-mk-qwen38-gfx1151` | the mk engine: an FFI binding to `libmkengine.so` and the `Engine` trait on top | ABI "How mk maps" |
 | `nagaya-mk-gemma4-bmg` | the mkviolet engine: Level Zero, the OpenCL C kernels, and the Gemma 4 host code; a card needs `xe` | ABI "How mkviolet maps" |
 | `nagaya-council` | council v2 logic with no I/O: the family interface, the sampler, request checks | 11 |
+| `nagaya-jinja` | the Jinja interpreter of the chat templates, with the results of Python's jinja2 | 11.3 |
 | `nagaya-text-qwen38` | the Qwen3.8 family library: tokenizer, templates, detokenizer, reply parser | 11.3, 11.3a |
+| `nagaya-text-gemma4` | the Gemma 4 family library: tokenizer, template, escapes, council rendering, reply parser | 11.3, 11.3a |
 | `nagaya-text-toy` | the toy family library on gogi's `gogi-toy`, for tests with the fake engine | 11.3b |
 | `nagaya-conformance` | the conformance suite (8.3), generic over the `Engine` trait | 8.3 |
 | `nagaya-telemetry` | the instruments, the stderr log, the OTLP export and the sampler | 9 |
@@ -287,7 +289,8 @@ get ran sometimes, perhaps just a bump in our AGENTS.md"
 - Do this at least before each merge that touches the crates of that model.
 - gfx1151host holds the Qwen3.8 GGUF at the default path of `NAGAYA_QWEN38_GGUF`.
 - b70host holds Gemma 4 in `~/src/mkviolet/checkpoints/gemma-4-26B-A4B`. The `xe` tests of
-  `nagaya-mk-gemma4-bmg` read it from `GEMMA4_MODEL_DIR`.
+  `nagaya-mk-gemma4-bmg` and the tests of `nagaya-text-gemma4` read it from `GEMMA4_MODEL_DIR`. The variable has no
+  default, so the tests of `nagaya-text-gemma4` skip when it is unset.
 - Those tests also read HF reference files from `target/gemma4-golden` or `GEMMA4_GOLDEN_DIR`. Write them with
   `tools/gemma4_golden.sh`, with no GPU job. An absent reference file skips the test, as an absent model does.
 - The report of a check names how many tests skipped for a missing model.

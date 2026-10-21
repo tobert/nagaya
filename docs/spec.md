@@ -1144,6 +1144,10 @@ A family with no reference has no oracle yet: the first port of mkviolet builds 
 transformers' own Gemma 4 layers in f32 on the CPU. `tools/gemma4_render_reference.py` renders the chat template with
 Python's jinja2. The port makes the fixture with them, as mk's `tools/oracle_fixture.py` makes the Qwen3.8 fixture.
 
+The tool is `tools/gemma4_oracle_fixture.py`, and the fixture is `crates/nagaya-text-gemma4/tests/fixtures/oracle.json`.
+It holds five prompts of 6 to 586 tokens, in the format of the Qwen3.8 fixture. It took 94 s on b70host on
+2026-10-21. The fixture belongs to the family, so each engine of Gemma 4 reads the same file.
+
 - mkviolet measured these gaps (mkviolet `docs/README.md`). The full pass had a largest logit difference of 5.8e-5.
   A prompt of 1,270 tokens, past the sliding window of 1,024, had 7.2e-3 and the same top token.
 - At 1,270 tokens, the f32 order of sums changed 123 of 38,100 top-8 expert picks. Each change began on a near tie in
@@ -1800,6 +1804,30 @@ milestones 11 and 11b).
 - **Council rendering.** The library ports `src/template.rs` (`mkv-letters-1`), the origin of 11.3a, with its Gemma 4
   layout. The template id follows 11.3a.
 - **Reply parser.** The library ports `parse_tool_call` and the thought channel of `chat.rs`.
+- **The method `get` of a dict.** Google's template calls `message.get(...)`. The interpreter holds `get` with the
+  results of Python: a missing key gives the default, which is none. It refuses a keyword argument, as Python does.
+  The other methods of a dict stay refused. **Proposed** (claude-opus-5-5, 2026-10-21). Reason: the template needs
+  it, and transformers renders it so (`crates/nagaya-jinja/tests/dict_get.rs`).
+
+**The Gemma 4 choices.** **Proposed** (claude-opus-5-5, 2026-10-21). The port found these places where mkviolet's rules
+do not carry over, or where the rules above leave a choice open:
+
+- **A failed tool result.** mkviolet gives the template the map `{"error": content}` (`held.rs:48`). In Python's
+  jinja2 a map is a sequence, so Google's template loops over its keys and fails. The library writes `Error: ` before
+  the content, as the Qwen3.8 library does. Reason: one form for both families, and a render that Python gives too.
+- **Noncharacters.** mkviolet refuses only U+FDD0 to U+FDEF. The library refuses all 66 noncharacters, and the error
+  names the character and its offset, as the Qwen3.8 library does. Reason: the words of the rule above.
+- **The reply parser** ports the reply splitter of `mk_api.rs` (`Splitter`, council wire), because `chat.rs` has
+  only `parse_tool_call`. Its stop tokens are `<turn|>`, `<eos>`, `<|tool_response>` and `<|turn>` (`mk_api.rs:654`).
+  A marker token gives an empty piece.
+- **Boundaries.** A marked message is a boundary when the tokens of its rendering begin the tokens of the whole, as
+  in the Qwen3.8 library. Two boundaries with the same token count keep the first.
+- **Reads.** A plain read and a queue read keep mkviolet's text and its tokenization piece by piece. A read hashes the
+  whole text that it was conditioned on (gogi), as the Qwen3.8 library does. mkviolet hashes the id of the head.
+- **Detokenize.** The library gives the text of `tokenizers`, so bytes that end inside a character give U+FFFD. The
+  Qwen3.8 library refuses such tokens.
+- **Host tests** read the checkpoint directory from `GEMMA4_MODEL_DIR`, with no default path. With the variable unset,
+  a test skips. With `NAGAYA_REQUIRE_MODELS=1`, it fails.
 
 Reason for `tokenizers`: the port copies code that its Python fixtures already check.
 
@@ -2325,6 +2353,9 @@ identity labels them as spot checks until we replace them.
 - mkviolet loads EmbeddingGemma 2's `tokenizer.json` for Gemma 4 (`main.rs:132`). The file "differs ... by a few
   hundred bytes; which entries differ is not yet checked" (`tokenizer.rs:4-5`). Thus its tokenizer hash names the
   wrong file. The port loads the `tokenizer.json` of the Gemma 4 checkpoint (`checkpoints/gemma-4-26B-A4B/`).
+
+  The two files differ only in the post-processor (checked 2026-10-21). EmbeddingGemma 2's adds `<bos>` and `<eos>`.
+  mkviolet encodes with no post-processor, so the ids are the same, and only the hash differs.
 - mkviolet's `tokenizer_hash` is the first 16 hex digits of the SHA-256 of the file (`tokenizer.rs:22`). **Proposed**
   (claude-opus-5-5, 2026-10-21): the port hashes the whole file and writes `sha256:` and 64 hex digits, as the
   Qwen3.8 library does. Reason: one form for every family.

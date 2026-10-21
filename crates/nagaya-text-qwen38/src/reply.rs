@@ -13,7 +13,8 @@
 
 use crate::json::Json;
 use crate::pystr::{repr, strip};
-use crate::{Error, Tokenizer, chars, detok::Utf8Stream, template::truthy};
+use crate::{Error, Tokenizer, chars, detok::Utf8Stream};
+use nagaya_jinja::truthy;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Deref;
 
@@ -398,7 +399,7 @@ fn convert(value: &str, types: &Types) -> Result<Json, String> {
             if types.contains(&Ty::String) {
                 return Ok(Json::Str(value.to_string()));
             }
-            let why = match e {
+            let why = match Error::from(e) {
                 Error::Json(m) => m,
                 other => other.to_string(),
             };

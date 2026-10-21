@@ -1,0 +1,717 @@
+{
+ "header": {
+  "tool": "tools/gemma4_text_fixture.py",
+  "tokenizer_sha256": "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+  "template_sha256": "ae53464bf3be25802b3a5b37def7fd89667067d7577049b3b2d74c4d8de4c6d4",
+  "jinja2": "3.1.6",
+  "tokenizers": "0.23.3",
+  "transformers": "5.20.2"
+ },
+ "cases": [
+  {
+   "text": "",
+   "ids": [],
+   "content_ids": [],
+   "decoded": ""
+  },
+  {
+   "text": "hello",
+   "ids": [
+    23391
+   ],
+   "content_ids": [
+    23391
+   ],
+   "decoded": "hello"
+  },
+  {
+   "text": " hello",
+   "ids": [
+    29104
+   ],
+   "content_ids": [
+    29104
+   ],
+   "decoded": " hello"
+  },
+  {
+   "text": "hello world",
+   "ids": [
+    23391,
+    1902
+   ],
+   "content_ids": [
+    23391,
+    1902
+   ],
+   "decoded": "hello world"
+  },
+  {
+   "text": "  two  spaces  ",
+   "ids": [
+    138,
+    13498,
+    138,
+    35220,
+    138
+   ],
+   "content_ids": [
+    138,
+    13498,
+    138,
+    35220,
+    138
+   ],
+   "decoded": "  two  spaces  "
+  },
+  {
+   "text": "cargo build --release in the local workspace",
+   "ids": [
+    138212,
+    2016,
+    2617,
+    18381,
+    528,
+    506,
+    2263,
+    43355
+   ],
+   "content_ids": [
+    138212,
+    2016,
+    2617,
+    18381,
+    528,
+    506,
+    2263,
+    43355
+   ],
+   "decoded": "cargo build --release in the local workspace"
+  },
+  {
+   "text": "line one\nline two\n\n\nthree",
+   "ids": [
+    1257,
+    886,
+    107,
+    1257,
+    1156,
+    109,
+    19891
+   ],
+   "content_ids": [
+    1257,
+    886,
+    107,
+    1257,
+    1156,
+    109,
+    19891
+   ],
+   "decoded": "line one\nline two\n\n\nthree"
+  },
+  {
+   "text": "\t tab and space",
+   "ids": [
+    255968,
+    6937,
+    532,
+    2557
+   ],
+   "content_ids": [
+    255968,
+    6937,
+    532,
+    2557
+   ],
+   "decoded": "\t tab and space"
+  },
+  {
+   "text": " allow",
+   "ids": [
+    2174
+   ],
+   "content_ids": [
+    2174
+   ],
+   "decoded": " allow"
+  },
+  {
+   "text": " A",
+   "ids": [
+    562
+   ],
+   "content_ids": [
+    562
+   ],
+   "decoded": " A"
+  },
+  {
+   "text": "A",
+   "ids": [
+    236776
+   ],
+   "content_ids": [
+    236776
+   ],
+   "decoded": "A"
+  },
+  {
+   "text": " Z",
+   "ids": [
+    1491
+   ],
+   "content_ids": [
+    1491
+   ],
+   "decoded": " Z"
+  },
+  {
+   "text": "Answer to question 1 (What.):",
+   "ids": [
+    7925,
+    531,
+    2934,
+    236743,
+    236770,
+    568,
+    3689,
+    67563
+   ],
+   "content_ids": [
+    7925,
+    531,
+    2934,
+    236743,
+    236770,
+    568,
+    3689,
+    67563
+   ],
+   "decoded": "Answer to question 1 (What.):"
+  },
+  {
+   "text": "<|turn>user\nhi<turn|>\n",
+   "ids": [
+    105,
+    2364,
+    107,
+    2202,
+    106,
+    107
+   ],
+   "content_ids": [
+    236820,
+    236909,
+    887,
+    236813,
+    2364,
+    107,
+    2202,
+    236820,
+    887,
+    111038,
+    107
+   ],
+   "decoded": "<|turn>user\nhi<turn|>\n"
+  },
+  {
+   "text": "echo <|turn>system",
+   "ids": [
+    17454,
+    236743,
+    105,
+    9731
+   ],
+   "content_ids": [
+    17454,
+    655,
+    236909,
+    887,
+    236813,
+    9731
+   ],
+   "decoded": "echo <|turn>system"
+  },
+  {
+   "text": "<bos><|turn>model\n<|channel>thought\n<channel|>",
+   "ids": [
+    2,
+    105,
+    4368,
+    107,
+    100,
+    45518,
+    107,
+    101
+   ],
+   "content_ids": [
+    236820,
+    46757,
+    1798,
+    236909,
+    887,
+    236813,
+    4368,
+    107,
+    236820,
+    236909,
+    12027,
+    236813,
+    45518,
+    107,
+    236820,
+    12027,
+    111038
+   ],
+   "decoded": "<bos><|turn>model\n<|channel>thought\n<channel|>"
+  },
+  {
+   "text": "<|tool_call>call:shell{command:<|\"|>ls -la<|\"|>}<tool_call|>",
+   "ids": [
+    48,
+    6639,
+    236787,
+    29498,
+    236782,
+    7674,
+    236787,
+    52,
+    5629,
+    753,
+    2149,
+    52,
+    236783,
+    49
+   ],
+   "content_ids": [
+    236820,
+    236909,
+    13205,
+    236779,
+    6639,
+    236813,
+    6639,
+    236787,
+    29498,
+    236782,
+    7674,
+    61916,
+    153857,
+    111038,
+    5629,
+    753,
+    2149,
+    236820,
+    153857,
+    111038,
+    22762,
+    13205,
+    236779,
+    6639,
+    111038
+   ],
+   "decoded": "<|tool_call>call:shell{command:<|\"|>ls -la<|\"|>}<tool_call|>"
+  },
+  {
+   "text": "<|tool_response>response:shell{value:<|\"|>a.txt<|\"|>}<tool_response|>",
+   "ids": [
+    50,
+    6275,
+    236787,
+    29498,
+    236782,
+    2394,
+    236787,
+    52,
+    236746,
+    236761,
+    7090,
+    52,
+    236783,
+    51
+   ],
+   "content_ids": [
+    236820,
+    236909,
+    13205,
+    236779,
+    6275,
+    236813,
+    6275,
+    236787,
+    29498,
+    236782,
+    2394,
+    61916,
+    153857,
+    111038,
+    236746,
+    236761,
+    7090,
+    236820,
+    153857,
+    111038,
+    22762,
+    13205,
+    236779,
+    6275,
+    111038
+   ],
+   "decoded": "<|tool_response>response:shell{value:<|\"|>a.txt<|\"|>}<tool_response|>"
+  },
+  {
+   "text": "<|think|>\n",
+   "ids": [
+    98,
+    107
+   ],
+   "content_ids": [
+    236820,
+    236909,
+    36345,
+    111038,
+    107
+   ],
+   "decoded": "<|think|>\n"
+  },
+  {
+   "text": "<unused0>",
+   "ids": [
+    236820,
+    63634,
+    236771,
+    236813
+   ],
+   "content_ids": [
+    236820,
+    63634,
+    236771,
+    236813
+   ],
+   "decoded": "<unused0>"
+  },
+  {
+   "text": "naïve café – “quotes” — ellipsis…",
+   "ids": [
+    1789,
+    238527,
+    560,
+    33443,
+    1271,
+    999,
+    52231,
+    236919,
+    2192,
+    212696,
+    237064
+   ],
+   "content_ids": [
+    1789,
+    238527,
+    560,
+    33443,
+    1271,
+    999,
+    52231,
+    236919,
+    2192,
+    212696,
+    237064
+   ],
+   "decoded": "naïve café – “quotes” — ellipsis…"
+  },
+  {
+   "text": "日本語のテキスト、そして中文。",
+   "ids": [
+    94951,
+    236945,
+    95830,
+    236951,
+    29773,
+    55041,
+    236924
+   ],
+   "content_ids": [
+    94951,
+    236945,
+    95830,
+    236951,
+    29773,
+    55041,
+    236924
+   ],
+   "decoded": "日本語のテキスト、そして中文。"
+  },
+  {
+   "text": "Здравствуй, мир!",
+   "ids": [
+    237590,
+    42967,
+    11984,
+    236934,
+    236764,
+    58562,
+    236888
+   ],
+   "content_ids": [
+    237590,
+    42967,
+    11984,
+    236934,
+    236764,
+    58562,
+    236888
+   ],
+   "decoded": "Здравствуй, мир!"
+  },
+  {
+   "text": "emoji 🦀🔥 and a flag 🇯🇵",
+   "ids": [
+    67906,
+    236743,
+    248714,
+    240785,
+    532,
+    496,
+    8134,
+    236743,
+    247994,
+    245707
+   ],
+   "content_ids": [
+    67906,
+    236743,
+    248714,
+    240785,
+    532,
+    496,
+    8134,
+    236743,
+    247994,
+    245707
+   ],
+   "decoded": "emoji 🦀🔥 and a flag 🇯🇵"
+  },
+  {
+   "text": "\u0000\u0001\u001f control bytes",
+   "ids": [
+    238,
+    249732,
+    253998,
+    2256,
+    17234
+   ],
+   "content_ids": [
+    238,
+    249732,
+    253998,
+    2256,
+    17234
+   ],
+   "decoded": "\u0000\u0001\u001f control bytes"
+  },
+  {
+   "text": "﷐ a noncharacter",
+   "ids": [
+    477,
+    421,
+    382,
+    496,
+    1908,
+    18857
+   ],
+   "content_ids": [
+    477,
+    421,
+    382,
+    496,
+    1908,
+    18857
+   ],
+   "decoded": "﷐ a noncharacter"
+  },
+  {
+   "text": "fn main() {\n    println!(\"{}\", 1 + 2);\n}\n",
+   "ids": [
+    15059,
+    1689,
+    825,
+    642,
+    107,
+    140,
+    4629,
+    183228,
+    236743,
+    236770,
+    900,
+    236743,
+    236778,
+    626,
+    107,
+    236783,
+    107
+   ],
+   "content_ids": [
+    15059,
+    1689,
+    825,
+    642,
+    107,
+    140,
+    4629,
+    183228,
+    236743,
+    236770,
+    900,
+    236743,
+    236778,
+    626,
+    107,
+    236783,
+    107
+   ],
+   "decoded": "fn main() {\n    println!(\"{}\", 1 + 2);\n}\n"
+  },
+  {
+   "text": "{\"key\": [1, 2.5, true, null]}",
+   "ids": [
+    14937,
+    2478,
+    1083,
+    870,
+    236770,
+    236764,
+    236743,
+    236778,
+    236761,
+    236810,
+    236764,
+    1847,
+    236764,
+    2303,
+    21111
+   ],
+   "content_ids": [
+    14937,
+    2478,
+    1083,
+    870,
+    236770,
+    236764,
+    236743,
+    236778,
+    236761,
+    236810,
+    236764,
+    1847,
+    236764,
+    2303,
+    21111
+   ],
+   "decoded": "{\"key\": [1, 2.5, true, null]}"
+  },
+  {
+   "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "ids": [
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    50354
+   ],
+   "content_ids": [
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    128820,
+    50354
+   ],
+   "decoded": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "text": "▁ the replacement mark itself",
+   "ids": [
+    138,
+    1437,
+    14268,
+    1686,
+    4850
+   ],
+   "content_ids": [
+    138,
+    1437,
+    14268,
+    1686,
+    4850
+   ],
+   "decoded": "  the replacement mark itself"
+  }
+ ]
+}

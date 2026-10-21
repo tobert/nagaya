@@ -129,7 +129,6 @@ fn a_method_of_another_kind_of_value_is_an_error_that_names_it() {
         ("{{ [1, 2].count(1) }}", "count"),
         ("{{ [1, 2].append(3) }}", "append"),
         ("{{ {'a': 1}.keys() }}", "keys"),
-        ("{{ {'a': 1}.get('a') }}", "get"),
         ("{{ (5).bit_length() }}", "bit_length"),
         ("{{ messages.pop() }}", "pop"),
     ] {

@@ -3,21 +3,17 @@
 //! Every rule comes from the GGUF metadata of the model. The tests compare each result with the output of mk's
 //! Python front-end, byte for byte and id for id.
 
-pub mod chars;
 pub mod council;
 pub mod detok;
 mod error;
 pub mod family;
+pub mod gguf;
 pub mod hash;
-mod methods;
+pub mod reply;
 pub mod template;
 pub mod tokenizer;
-#[rustfmt::skip]
-mod unicode_tables;
-pub mod gguf;
-pub mod json;
-pub mod pystr;
-pub mod reply;
+
+pub use nagaya_jinja::{chars, json, pystr};
 
 pub use council::Qwen38Family;
 pub use error::Error;
