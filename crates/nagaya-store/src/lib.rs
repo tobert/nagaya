@@ -1093,6 +1093,78 @@ impl Store {
         Ok(true)
     }
 
+    /// Park one live entry to the NVMe tier, bit for bit (ontology "Park", spec 10.3 step 3).
+    ///
+    /// The entry keeps its recipe, owner and reason, so a lookup after a restart finds it (6.11). An entry on NVMe
+    /// stays as it is. The store makes room on NVMe as for a put to NVMe (6.9). A refusal changes nothing.
+    pub fn park(&mut self, id: &ContentId, now_ms: u64) -> Result<(), StoreError> {
+        let Some(entry) = self.index.entries.get(id) else {
+            return Err(StoreError::Invalid(format!(
+                "the store holds no entry {}; put the snapshot instead",
+                id.hex()
+            )));
+        };
+        if entry.state != EntryState::Live {
+            return Err(StoreError::Quarantined(*id));
+        }
+        if entry.tier == Tier::Nvme {
+            return Ok(());
+        }
+        if entry.reason == Reason::Interval {
+            return Err(StoreError::Invalid(
+                "an interval copy stays in the host tier, never on NVMe (spec 6.13); remove it first".to_owned(),
+            ));
+        }
+        if let Some(parent) = entry.parent
+            && self
+                .index
+                .entries
+                .get(&parent)
+                .is_none_or(|parent| parent.tier != Tier::Nvme)
+        {
+            return Err(StoreError::Invalid(format!(
+                "the parent {} is not on NVMe, so a restart would cut the chain; park the parent first",
+                parent.hex()
+            )));
+        }
+        let (owner, size, parent) = (entry.owner, entry.size, entry.parent);
+        let bytes = self.read_bytes(id)?;
+
+        // 6.9: choose the victims before the store writes the parked bytes, as a put does.
+        let spared: BTreeSet<ContentId> = self.ancestors(parent).into_iter().collect();
+        let need = self.need_bytes(Tier::Nvme, owner, size, &BTreeSet::new());
+        let victims = self.choose_victims(owner, Tier::Nvme, need, now_ms, &spared);
+        let freed: u64 = victims
+            .iter()
+            .filter_map(|victim| self.index.entries.get(victim))
+            .map(|entry| entry.size)
+            .sum();
+        if freed < need {
+            return Err(StoreError::NoSpace);
+        }
+        // The telemetry has no reason for a park. A park makes room on NVMe as a put does.
+        let leaving = self.evicted(&victims, EvictReason::PutRoom);
+
+        self.write_blob(&bytes, id)?;
+        let mut index = self.index.clone();
+        prune_pins(&mut index, now_ms);
+        for victim in &victims {
+            index.entries.remove(victim);
+            index.pins.remove(victim);
+        }
+        index.entries.get_mut(id).expect("the entry is in the index").tier = Tier::Nvme;
+        let previous = std::mem::replace(&mut self.index, index);
+        if let Err(error) = self.persist() {
+            self.index = previous;
+            return Err(self.rollback_blob(id, Tier::Nvme, error));
+        }
+        // The index names the file now, so the host tier can free its copy.
+        self.host_blobs.remove(id);
+        record_evicted(&leaving);
+        self.record_held();
+        self.remove_blobs(&victims)
+    }
+
     /// Set the byte quota of one owner in one tier.
     pub fn set_owner_quota(&mut self, quota: u64) {
         self.owner_quota = quota;
@@ -1194,7 +1266,7 @@ impl Store {
         let capped_set: BTreeSet<ContentId> = capped.iter().copied().collect();
 
         // 6.9: choose the victims before the store writes the new entry.
-        let need = self.need_bytes(&put, size, &capped_set);
+        let need = self.need_bytes(put.tier, put.owner, size, &capped_set);
         // 6.5: the new entry needs its whole chain. A victim is never an ancestor of the new entry.
         let mut spared = capped_set.clone();
         spared.extend(self.ancestors(put.snapshot.parent));
@@ -1876,14 +1948,15 @@ impl Store {
         self.budgets.get(&tier).copied().unwrap_or(u64::MAX)
     }
 
-    /// The bytes that the put must free. Entries in `leaving` are already chosen to go, so they do not count.
-    fn need_bytes(&self, put: &Put<'_>, size: u64, leaving: &BTreeSet<ContentId>) -> u64 {
+    /// The bytes that a write of `size` bytes for `owner` in `tier` must free. Entries in `leaving` are already chosen
+    /// to go, so they do not count.
+    fn need_bytes(&self, tier: Tier, owner: u64, size: u64, leaving: &BTreeSet<ContentId>) -> u64 {
         let tier_total: u64 = self
             .index
             .entries
             .values()
             .filter(|entry| !leaving.contains(&entry.content_id))
-            .filter(|entry| entry.state == EntryState::Live && entry.tier == put.tier)
+            .filter(|entry| entry.state == EntryState::Live && entry.tier == tier)
             .map(|entry| entry.size)
             .sum();
         let owner_total: u64 = self
@@ -1891,10 +1964,10 @@ impl Store {
             .entries
             .values()
             .filter(|entry| !leaving.contains(&entry.content_id))
-            .filter(|entry| entry.state == EntryState::Live && entry.owner == put.owner && entry.tier == put.tier)
+            .filter(|entry| entry.state == EntryState::Live && entry.owner == owner && entry.tier == tier)
             .map(|entry| entry.size)
             .sum();
-        let by_budget = tier_total.saturating_add(size).saturating_sub(self.budget_of(put.tier));
+        let by_budget = tier_total.saturating_add(size).saturating_sub(self.budget_of(tier));
         let by_quota = owner_total.saturating_add(size).saturating_sub(self.owner_quota);
         by_budget.max(by_quota)
     }
