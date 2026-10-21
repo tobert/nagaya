@@ -64,6 +64,10 @@ fn the_profile_names_the_mk_engine_and_the_store_budgets() {
     assert_eq!(engine.name, "mk");
     assert_eq!(engine.kind, "mk-qwen38-gfx1151");
     assert_eq!(engine.devices, vec![0]);
+    // The mk factory plans from this key (`nagaya::mk`). It refuses any other key.
+    let keys: Vec<&String> = engine.config.keys().collect();
+    assert_eq!(keys, vec!["weights_bytes"]);
+    assert!(engine.config["weights_bytes"].as_integer().unwrap() > 0);
     let store = profile.store.expect("an engine needs a [store] table (spec 4.1a)");
     assert!(store.nvme > 0);
     assert!(
