@@ -649,6 +649,7 @@ dependencies = [
  "nagaya",
  "nagaya-abi",
  "nagaya-ledger",
+ "nagaya-mk-qwen38-gfx1151",
  "nagaya-store",
  "nagaya-telemetry",
  "opentelemetry",

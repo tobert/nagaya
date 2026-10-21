@@ -15,6 +15,10 @@ fn open_refuses_a_library_whose_digest_is_not_the_pin() {
         Ok(_) => panic!("open accepted a library whose digest is not the pin"),
         Err(error) => error,
     };
+    assert!(
+        error.is_pin(),
+        "the process refuses the start for a pin error (spec 10.4)"
+    );
     let message = error.message();
     assert!(message.contains("has SHA-256"), "{message}");
     assert!(message.contains(&wrong), "{message}");

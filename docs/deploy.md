@@ -24,8 +24,10 @@ is `/home/atobey/.local/share/nagaya/store`.
 
 These gaps were open on 2026-10-20 night. Check each one, because the cutover fails while one is open.
 
-- The `nagaya` binary needs the mk engine. A build with no engine exits 3 with the message "this build has no
-  engine". The profile names the engine kind `mk-qwen38-gfx1151`. The registry must use this kind.
+- The `nagaya` binary needs the mk engine. Build it with `--features hip` (see "Build"). A build without the feature
+  exits 3 with the message "this build has no engine". The feature registers the kind `mk-qwen38-gfx1151`.
+- The profile needs the real size of mk's weight arena. The file in `deploy/gfx1151host/` holds an estimate. Read "The
+  weights size" below before the first start.
 - The `nagaya` binary needs the HTTP routes of council v2 (milestone 12 step 6). Without them, the identity check
   below cannot pass.
 - The mk context sizes change in the `ctx-size` lane. The profile names no context count and no size, so it does not
@@ -38,12 +40,19 @@ Build the release binary in the repository of the nagaya:
 
 ```
 cd ~/src/nagaya
-nice -n 10 cargo build --release -p nagaya
+nice -n 10 cargo build --release -p nagaya --features hip
 ls -l target/release/nagaya
 ```
 
-The unit runs this file. Build it again before each restart, or the unit runs the old code. The release profile
-needs no setting beyond the default (`opt-level = 3`). The `[profile.dev]` table is not part of the release build.
+The unit runs this file. Build it again before each restart, or the unit runs the old code. The feature `hip` adds
+the mk engine. Without it, the binary has no engine and exits 3. The build does not need mk, and it does not open the
+GPU: the process loads mk's library at run time from `MK_ENGINE_LIB`.
+
+The release profile needs no setting beyond the default (`opt-level = 3`). The `[profile.dev]` table is not part of
+the release build.
+
+At start, the binary reads the inventory of the machine from files under `/` (spec 2.1). It opens no GPU runtime for
+this. A probe error exits 3 with the message "cannot read the inventory of this machine".
 
 ## Install
 
@@ -138,7 +147,8 @@ Nothing in the store directory needs a change for the rollback. The nagaya leave
 
 ## Rules for every restart
 
-- Build the release binary again before each restart. A restart runs `target/release/nagaya` as it is.
+- Build the release binary again before each restart, with `--features hip`. A restart runs `target/release/nagaya`
+  as it is.
 - Nothing else may hold the GPU while the nagaya runs (spec 3.1). A tool that needs the GPU stops the unit first:
   `systemctl --user stop nagaya.service`. It starts the unit again when it ends.
 - mk's unit and the nagaya's unit use the same address. Never start both. A second process on the GPU can stop the
@@ -173,6 +183,22 @@ shortfall in bytes.
 
 Then raise the pool in `profile.toml`, or lower `store.host`. Keep the pool 12 GiB below `MemTotal`.
 
+## The weights size
+
+The engine config in `profile.toml` has one key, `weights_bytes`: the size of mk's weight arena (spec 2.4,
+`docs/engine-abi.md` "v0 mk binding choices"). The plan reads no weights, so the profile must give the size. The
+ledger holds these bytes for the weights term.
+
+The file in `deploy/gfx1151host/` holds an estimate of 61 GiB, from mk's notes. Do this at the first start:
+
+1. Start the unit. mk loads its weights, which takes about 35 s.
+2. The process finds another arena size and exits 3. The log says: "mk's weight arena is N bytes, and the profile
+   plans M bytes; set `weights_bytes = N`".
+3. Write N in both profiles: `deploy/gfx1151host/profile.toml` and `~/.local/share/nagaya/store/profile.toml`.
+4. Run `systemctl --user reset-failed nagaya.service`, then start the unit again.
+
+A rebuild of mk can change the arena size, and the same exit 3 follows. Do the same steps then.
+
 ## Settings left unset
 
 The unit leaves two mk settings unset. Set one with a drop-in file: `systemctl --user edit nagaya.service`.
@@ -202,3 +228,7 @@ These rules fill gaps in the spec. Each one is the simplest choice that works.
 - `interval_copies` is 0 (spec 6.13), so the store refuses interval copies until a lane builds them.
 - The library pin and `MK_FAST_QMM` stay unset.
 - The profile is copied into the store directory once. It is not a link.
+- The release binary is built with `--features hip`. The plain build has no engine and exits 3.
+- `weights_bytes` in the engine config is the size of mk's weight arena. The file holds an estimate until the first
+  start gives the real size (see "The weights size"). A wrong size exits 3.
+- A probe error at start exits 3 (spec 2.1, 10.4).

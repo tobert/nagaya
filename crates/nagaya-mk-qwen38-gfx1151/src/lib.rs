@@ -12,3 +12,11 @@ mod worker;
 
 pub use engine::{MkEngine, open};
 pub use worker::{MkError, MkPaths};
+
+/// The limits that `open` gives for an arena of `weights_bytes`. It reads no weights and opens no device.
+///
+/// mk knows the arena size only after the weights load. The caller of `plan` supplies the size, and `open` gives the
+/// real one in `limits()`. The two must be equal (spec 2.4).
+pub fn plan(weights_bytes: u64) -> nagaya_abi::Limits {
+    spec::limits(weights_bytes)
+}

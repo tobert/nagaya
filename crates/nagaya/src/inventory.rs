@@ -2,6 +2,8 @@
 
 use nagaya_abi::DeviceId;
 
+use crate::exit::ExitCode;
+
 /// One device of the machine. A CPU is a device when an engine runs work on it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Device {
@@ -45,6 +47,15 @@ impl std::fmt::Display for ProbeError {
 }
 
 impl std::error::Error for ProbeError {}
+
+impl ProbeError {
+    /// The exit code of a probe error at start (spec 10.4).
+    ///
+    /// The machine is wrong, and a restart cannot change it. Thus the start is refused: exit 3.
+    pub fn exit_code(&self) -> ExitCode {
+        ExitCode::RefusedStart
+    }
+}
 
 /// A probe of the machine's devices and host memory.
 pub trait Probe {

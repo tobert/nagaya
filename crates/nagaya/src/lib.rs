@@ -9,6 +9,8 @@ pub mod exit;
 pub mod gossip;
 pub mod inventory;
 pub mod lifecycle;
+#[cfg(feature = "hip")]
+pub mod mk;
 pub mod node;
 pub mod notify;
 pub mod park;

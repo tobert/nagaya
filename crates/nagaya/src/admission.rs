@@ -95,6 +95,14 @@ impl Registry {
         self.factories.get(kind).cloned()
     }
 
+    /// Make a registry with the mk engine. A build with the feature `hip` uses it.
+    #[cfg(feature = "hip")]
+    pub fn with_mk() -> Self {
+        let mut registry = Self::new();
+        registry.register(crate::mk::KIND, Box::new(crate::mk::MkFactory));
+        registry
+    }
+
     /// Make a registry with the fake engine and the fake that panics on open. The tests use it.
     #[cfg(feature = "fake")]
     pub fn with_fake() -> Self {

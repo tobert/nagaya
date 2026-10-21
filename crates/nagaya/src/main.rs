@@ -27,7 +27,7 @@ static SIGNALS: SignalFlag = SignalFlag::new();
 fn main() {
     // The inventory is known before the config, so that the resource of the telemetry can carry its hardware.
     let machine = engine_machine();
-    let telemetry = match start_telemetry(machine.as_ref().map(|(_, inventory)| inventory)) {
+    let telemetry = match start_telemetry(machine.as_ref().ok().map(|(_, inventory)| inventory)) {
         Ok(telemetry) => telemetry,
         Err(error) => {
             // The log is not up, so the message goes to stderr by hand.
@@ -78,7 +78,7 @@ fn start_telemetry(
     Ok(telemetry)
 }
 
-fn run(machine: Option<(nagaya::admission::Registry, nagaya::inventory::Inventory)>) -> ExitCode {
+fn run(machine: Machine) -> ExitCode {
     let path = config_path();
     let config = match Bootstrap::read(&path) {
         Ok(config) => config,
@@ -98,10 +98,10 @@ fn run(machine: Option<(nagaya::admission::Registry, nagaya::inventory::Inventor
         }
     };
     let (registry, inventory) = match machine {
-        Some(machine) => machine,
-        None => {
-            tracing::error!("this build has no engine; build with the feature `fake` for a test engine");
-            return ExitCode::RefusedStart;
+        Ok(machine) => machine,
+        Err(refusal) => {
+            tracing::error!("{}", refusal.message);
+            return refusal.code;
         }
     };
     if let Err(error) = install_terminate(&SIGNALS) {
@@ -261,9 +261,18 @@ fn config_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG))
 }
 
-/// The engine factories and the inventory of this machine. Milestone 14 adds the mk engine.
+/// A refusal to start that is known before the telemetry starts. The log is not up then, so `run` logs the message.
+struct Refusal {
+    code: ExitCode,
+    message: String,
+}
+
+/// The engine factories and the inventory of this machine, or the reason that the start is refused.
+type Machine = Result<(nagaya::admission::Registry, nagaya::inventory::Inventory), Refusal>;
+
+/// The engine factories and the inventory of this machine. The fake build has a fake engine and a made-up device.
 #[cfg(feature = "fake")]
-fn engine_machine() -> Option<(nagaya::admission::Registry, nagaya::inventory::Inventory)> {
+fn engine_machine() -> Machine {
     use nagaya::admission::Registry;
     use nagaya::inventory::{Device, Inventory};
 
@@ -277,11 +286,38 @@ fn engine_machine() -> Option<(nagaya::admission::Registry, nagaya::inventory::I
         devices: vec![device],
         host_bytes: 1 << 30,
     };
-    Some((Registry::with_fake(), inventory))
+    Ok((Registry::with_fake(), inventory))
 }
 
-/// The engine factories and the inventory of this machine. A build without an engine refuses to start.
+/// The engine factories and the inventory of this machine. The inventory comes from the files of the machine (spec
+/// 2.1). A probe error refuses the start (spec 10.4).
 #[cfg(not(feature = "fake"))]
-fn engine_machine() -> Option<(nagaya::admission::Registry, nagaya::inventory::Inventory)> {
-    None
+fn engine_machine() -> Machine {
+    use nagaya::inventory::Probe;
+    use nagaya::probe::FileProbe;
+
+    let registry = engine_registry()?;
+    let probe: &dyn Probe = &FileProbe::new("/");
+    match probe.probe() {
+        Ok(inventory) => Ok((registry, inventory)),
+        Err(error) => Err(Refusal {
+            code: error.exit_code(),
+            message: format!("cannot read the inventory of this machine: {error}"),
+        }),
+    }
+}
+
+/// The engine factories of a build with the mk engine.
+#[cfg(all(feature = "hip", not(feature = "fake")))]
+fn engine_registry() -> Result<nagaya::admission::Registry, Refusal> {
+    Ok(nagaya::admission::Registry::with_mk())
+}
+
+/// A build without an engine refuses to start.
+#[cfg(all(not(feature = "hip"), not(feature = "fake")))]
+fn engine_registry() -> Result<nagaya::admission::Registry, Refusal> {
+    Err(Refusal {
+        code: ExitCode::RefusedStart,
+        message: "this build has no engine; build with the feature `hip` for the mk engine".to_owned(),
+    })
 }

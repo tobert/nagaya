@@ -21,23 +21,42 @@ use crate::spec;
 
 /// An error from the mk binding. The message says what failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MkError(String);
+pub struct MkError {
+    message: String,
+    pin: bool,
+}
 
 impl MkError {
     /// Make an error with a message.
     pub fn new(message: impl Into<String>) -> Self {
-        Self(message.into())
+        Self {
+            message: message.into(),
+            pin: false,
+        }
+    }
+
+    /// Make an error for a library that the pin refuses (`MK_ENGINE_LIB_SHA256`).
+    pub fn pin(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            pin: true,
+        }
     }
 
     /// The message.
     pub fn message(&self) -> &str {
-        &self.0
+        &self.message
+    }
+
+    /// True when the library pin refused the library. The process refuses the start then (spec 10.4).
+    pub fn is_pin(&self) -> bool {
+        self.pin
     }
 }
 
 impl fmt::Display for MkError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
+        formatter.write_str(&self.message)
     }
 }
 
@@ -45,7 +64,7 @@ impl std::error::Error for MkError {}
 
 impl From<String> for MkError {
     fn from(message: String) -> Self {
-        Self(message)
+        Self::new(message)
     }
 }
 
@@ -570,7 +589,7 @@ impl ThreadState {
         let digest = gguf::spot_digest(&paths.shards)?;
         let library_sha256 = file_sha256(&paths.library)?;
         // Read the file here, before dlopen, so that the binding binds no symbol of a refused library.
-        pin_problem(pin_from_env()?.as_deref(), &paths.library, &library_sha256).map_err(MkError::new)?;
+        pin_problem(pin_from_env()?.as_deref(), &paths.library, &library_sha256).map_err(MkError::pin)?;
         let fast_qmm = fast_qmm()?;
         let tiles = tiles()?;
         let binding = binding::load(&paths.library).map_err(MkError::new)?;
