@@ -148,13 +148,21 @@ Use this when a gate fails, or when Amy asks for mk.
 
 ```
 systemctl --user disable --now nagaya.service
+ln -s ~/src/megakernel-qwen38-flashnext-strixhalo/deploy/megakernel.service ~/.config/systemd/user/megakernel.service
+systemctl --user daemon-reload
 systemctl --user enable --now megakernel.service
 systemctl --user is-active megakernel.service
 curl -s http://198.51.100.20:8090/mk/v1/health
 ```
 
-The second line starts mk, which loads its weights. The third line says `active`. The `curl` answers when the load
-ends. mk serves its own route, `/mk/v1`, on port 8090. Its answer proves that mk is back.
+Both units are links into a repository. `systemctl --user disable` removes such a link from `~/.config/systemd/user/`,
+so the cutover removed mk's unit (seen on 2026-10-21). Thus the second line links mk's unit again, and the third line
+reads it.
+
+The fourth line starts mk, which loads its weights. The fifth line says `active`. The `curl` answers when
+the load ends. mk serves its own route, `/mk/v1`, on port 8090. Its answer proves that mk is back.
+
+To go back to the nagaya later, link its unit again first, as in "Install".
 
 Nothing in the store directory needs a change for the rollback. The nagaya leaves its store and its profile there.
 
