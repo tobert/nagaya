@@ -22,6 +22,9 @@ pub struct Engine {
     pub segments_exact: bool,
     /// The most segments in one pass (`Limits.max_segments`).
     pub max_segments: u32,
+    /// True when the engine has a feed rule. It joins only the segments of reads, whose rows the store does not keep
+    /// (spec 5.7, engine-abi D11 rule 6).
+    pub joins_reads: bool,
 }
 
 /// How urgently a job's quanta run.
@@ -421,6 +424,7 @@ impl Scheduler {
             });
             let best = candidates.first().copied()?;
             let engine = best.engine;
+            let kind = *best.quanta.front()?;
             // An engine that is not listed takes one segment in a pass.
             let segment_limit = match self.engines.iter().find(|info| info.id == engine) {
                 None => 1,
@@ -429,14 +433,13 @@ impl Scheduler {
                         info.max_segments > 0,
                         "engine {engine} has max_segments 0, so no pass can run"
                     );
-                    if info.segments_exact {
+                    if info.segments_exact || (info.joins_reads && kind == Kind::Read) {
                         info.max_segments as usize
                     } else {
                         1
                     }
                 }
             };
-            let kind = *best.quanta.front()?;
             let mut segments = vec![best.id];
             for candidate in &candidates[1..] {
                 if segments.len() >= segment_limit {
