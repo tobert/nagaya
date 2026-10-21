@@ -28,6 +28,9 @@ fn first_difference(got: &[u32], want: &[u32]) -> String {
 
 #[test]
 fn the_vocabulary_matches_the_fixture() {
+    if common::absent() {
+        return;
+    }
     let tok = tokenizer();
     let f = tokenizer_fixture();
     assert_eq!(tok.len() as i128, f.get("header").get("n_tokens").int());
@@ -61,6 +64,9 @@ fn pretokenize_splits_like_the_pattern_of_mk() {
 
 #[test]
 fn encode_gives_the_ids_of_mk() {
+    if common::absent() {
+        return;
+    }
     let cases = tokenizer_fixture().get("encode").items();
     assert!(cases.len() > 400);
     for case in cases {
@@ -100,6 +106,9 @@ fn assert_reserved(name: &str, error: &Error, case: &Json) {
 
 #[test]
 fn encode_refuses_each_noncharacter() {
+    if common::absent() {
+        return;
+    }
     let cases = tokenizer_fixture().get("encode_refused").items();
     assert_eq!(cases.len(), 69);
     for case in cases {
@@ -113,6 +122,9 @@ fn encode_refuses_each_noncharacter() {
 
 #[test]
 fn a_noncharacter_error_names_the_character_and_its_offset() {
+    if common::absent() {
+        return;
+    }
     let err = tokenizer().encode("ab\u{fdd0}").unwrap_err();
     assert!(
         matches!(
@@ -129,6 +141,9 @@ fn a_noncharacter_error_names_the_character_and_its_offset() {
 
 #[test]
 fn escape_and_unescape_give_the_text_of_mk() {
+    if common::absent() {
+        return;
+    }
     let cases = tokenizer_fixture().get("escape").items();
     assert!(cases.len() > 40);
     for case in cases {
@@ -152,6 +167,9 @@ fn escape_and_unescape_give_the_text_of_mk() {
 
 #[test]
 fn each_escape_character_encodes_as_the_text_of_its_special_token() {
+    if common::absent() {
+        return;
+    }
     let cases = tokenizer_fixture().get("escape_chars").items();
     assert_eq!(cases.len(), 33);
     for case in cases {
@@ -168,6 +186,9 @@ fn each_escape_character_encodes_as_the_text_of_its_special_token() {
 
 #[test]
 fn escape_and_unescape_refuse_what_mk_refuses() {
+    if common::absent() {
+        return;
+    }
     let cases = tokenizer_fixture().get("escape_refused").items();
     assert_eq!(cases.len(), 6);
     for case in cases {
@@ -187,6 +208,9 @@ fn escape_and_unescape_refuse_what_mk_refuses() {
 
 #[test]
 fn encode_never_reads_an_escape_character_as_text() {
+    if common::absent() {
+        return;
+    }
     // mk refuses an escape character in raw text. `encode_escaped` is the only call that reads it.
     assert!(matches!(tokenizer().encode("\u{fdd0}"), Err(Error::Reserved { .. })));
     assert!(tokenizer().encode_escaped("\u{fdd0}").is_ok());
@@ -194,6 +218,9 @@ fn encode_never_reads_an_escape_character_as_text() {
 
 #[test]
 fn decode_gives_the_text_of_mk() {
+    if common::absent() {
+        return;
+    }
     let cases = tokenizer_fixture().get("decode").items();
     assert!(cases.len() > 100);
     for case in cases {
@@ -207,6 +234,9 @@ fn decode_gives_the_text_of_mk() {
 
 #[test]
 fn decode_refuses_what_mk_refuses() {
+    if common::absent() {
+        return;
+    }
     let cases = tokenizer_fixture().get("decode_errors").items();
     assert_eq!(cases.len(), 6);
     for case in cases {
@@ -252,6 +282,9 @@ fn hex(bytes: &[u8]) -> String {
 
 #[test]
 fn token_piece_gives_the_bytes_of_mk() {
+    if common::absent() {
+        return;
+    }
     let cases = tokenizer_fixture().get("token_pieces").items();
     assert!(cases.len() > 300);
     for case in cases {
@@ -276,6 +309,9 @@ fn token_piece_gives_the_bytes_of_mk() {
 
 #[test]
 fn token_piece_refuses_an_id_outside_the_vocabulary() {
+    if common::absent() {
+        return;
+    }
     let n = tokenizer().len() as u32;
     assert!(matches!(tokenizer().token_piece(n, false), Err(Error::TokenId { .. })));
     assert!(matches!(
@@ -286,6 +322,9 @@ fn token_piece_refuses_an_id_outside_the_vocabulary() {
 
 #[test]
 fn every_piece_of_the_vocabulary_matches_the_digest_of_mk() {
+    if common::absent() {
+        return;
+    }
     let digest = tokenizer_fixture().get("piece_digest");
     for (special, key) in [(false, "plain"), (true, "special")] {
         let mut h = Digest::new();
@@ -301,6 +340,9 @@ fn every_piece_of_the_vocabulary_matches_the_digest_of_mk() {
 
 #[test]
 fn encoding_every_vocabulary_text_matches_the_digest_of_mk() {
+    if common::absent() {
+        return;
+    }
     let sweep = tokenizer_fixture().get("vocab_sweep");
     let tok = tokenizer();
     let mut h = Digest::new();
@@ -352,6 +394,9 @@ impl Digest {
 
 #[test]
 fn control_hits_list_the_special_token_text_in_order() {
+    if common::absent() {
+        return;
+    }
     let t = tokenizer();
     assert_eq!(
         t.control_hits("a <|im_start|>user<|im_end|> b <think> c"),
