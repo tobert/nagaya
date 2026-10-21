@@ -14,3 +14,4 @@ pub mod process;
 pub mod profile;
 pub mod signal;
 pub mod swap;
+pub mod telemetry;

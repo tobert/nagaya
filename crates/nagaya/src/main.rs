@@ -1,6 +1,6 @@
 //! The nagaya process: bootstrap config, threads, HTTP, gossip, and systemd.
 
-use std::panic::catch_unwind;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -12,6 +12,8 @@ use nagaya::node::Node;
 use nagaya::notify::{EngineState, Notifier};
 use nagaya::signal::{SignalFlag, install_terminate};
 use nagaya::swap::{Outcome, Swap};
+use nagaya::telemetry::{host_name, resource};
+use nagaya_telemetry::{Config, Telemetry};
 
 /// The environment variable that names the bootstrap config (`docs/spec.md` 2.1).
 const CONFIG_ENV: &str = "NAGAYA_CONFIG";
@@ -23,50 +25,93 @@ const DEFAULT_CONFIG: &str = "nagaya.toml";
 static SIGNALS: SignalFlag = SignalFlag::new();
 
 fn main() {
-    let code = match catch_unwind(run) {
-        Ok(code) => code,
-        Err(payload) => {
-            eprintln!("the process panicked: {}", panic_text(payload.as_ref()));
-            ExitCode::Crash
+    // The inventory is known before the config, so that the resource of the telemetry can carry its hardware.
+    let machine = engine_machine();
+    let telemetry = match start_telemetry(machine.as_ref().map(|(_, inventory)| inventory)) {
+        Ok(telemetry) => telemetry,
+        Err(error) => {
+            // The log is not up, so the message goes to stderr by hand.
+            eprintln!("cannot start the telemetry: {error}");
+            std::process::exit(ExitCode::RefusedStart.code());
         }
     };
+    let span = tracing::info_span!(
+        "nagaya.process",
+        exit_code = tracing::field::Empty,
+        otel.status_code = tracing::field::Empty
+    );
+    let code = span.in_scope(|| {
+        let code = match catch_unwind(AssertUnwindSafe(|| run(machine))) {
+            Ok(code) => code,
+            Err(payload) => {
+                tracing::error!("the process panicked: {}", panic_text(payload.as_ref()));
+                ExitCode::Crash
+            }
+        };
+        if code == ExitCode::Clean || code == ExitCode::PlannedRestart {
+            tracing::info!(exit_code = code.code(), "the process exits");
+        } else {
+            tracing::error!(exit_code = code.code(), "the process exits");
+        }
+        code
+    });
+    span.record("exit_code", code.code());
+    if code != ExitCode::Clean && code != ExitCode::PlannedRestart {
+        span.record("otel.status_code", "ERROR");
+    }
+    drop(span);
+    // `exit` runs no destructor, so the telemetry flushes here (spec 9.1).
+    drop(telemetry);
     std::process::exit(code.code());
 }
 
-fn run() -> ExitCode {
+/// Start the stderr log and, when the environment asks for it, the OTLP export (spec 9.1).
+fn start_telemetry(
+    inventory: Option<&nagaya::inventory::Inventory>,
+) -> Result<Telemetry, nagaya_telemetry::SetupError> {
+    let host = host_name();
+    let resource = resource(host.as_ref().ok().map(String::as_str), inventory);
+    let telemetry = nagaya_telemetry::init(&Config::from_env(resource))?;
+    if let Err(error) = host {
+        tracing::warn!("cannot read the host name for the telemetry resource: {error}");
+    }
+    Ok(telemetry)
+}
+
+fn run(machine: Option<(nagaya::admission::Registry, nagaya::inventory::Inventory)>) -> ExitCode {
     let path = config_path();
     let config = match Bootstrap::read(&path) {
         Ok(config) => config,
         Err(error) => {
-            eprintln!("cannot use the bootstrap config `{}`: {error}", path.display());
+            tracing::error!("cannot use the bootstrap config `{}`: {error}", path.display());
             return ExitCode::RefusedStart;
         }
     };
     let profile = match lifecycle::active_profile(&config.store_dir) {
         Ok(profile) => profile,
         Err(error) => {
-            eprintln!(
+            tracing::error!(
                 "cannot use the placement profile in `{}`: {error}",
                 config.store_dir.display()
             );
             return ExitCode::RefusedStart;
         }
     };
-    let (registry, inventory) = match engine_machine() {
+    let (registry, inventory) = match machine {
         Some(machine) => machine,
         None => {
-            eprintln!("this build has no engine; build with the feature `fake` for a test engine");
+            tracing::error!("this build has no engine; build with the feature `fake` for a test engine");
             return ExitCode::RefusedStart;
         }
     };
     if let Err(error) = install_terminate(&SIGNALS) {
-        eprintln!("cannot install the SIGTERM handler: {error}");
+        tracing::error!("cannot install the SIGTERM handler: {error}");
         return ExitCode::Crash;
     }
     let node_name = match config.node_name() {
         Ok(name) => name,
         Err(error) => {
-            eprintln!("cannot use the node name: {error}");
+            tracing::error!("cannot use the node name: {error}");
             return ExitCode::RefusedStart;
         }
     };
@@ -75,12 +120,12 @@ fn run() -> ExitCode {
     let gossip = match Gossip::start(gossip_config) {
         Ok(gossip) => gossip,
         Err(error) => {
-            eprintln!("{error}");
+            tracing::error!("{error}");
             return ExitCode::RefusedStart;
         }
     };
-    eprintln!("gossip listening on {}", gossip.local_addr());
-    gossip.watch_peers(|line| eprintln!("{line}"));
+    tracing::info!("gossip listening on {}", gossip.local_addr());
+    gossip.watch_peers(|line| tracing::info!("{line}"));
     let mut node = Node::new(gossip, config.http_bind);
     let code = serve(&config, &node_name, profile, registry, inventory, &mut node);
     node.shutdown();
@@ -90,7 +135,7 @@ fn run() -> ExitCode {
 /// Log a gossip write that failed. Gossip is advice for peers, so a failed write does not stop the process.
 fn published(result: Result<(), PublishError>) {
     if let Err(error) = result {
-        eprintln!("cannot publish to gossip: {error}");
+        tracing::warn!("cannot publish to gossip: {error}");
     }
 }
 
@@ -106,14 +151,14 @@ fn serve(
     let notifier = match Notifier::from_env() {
         Ok(notifier) => notifier,
         Err(error) => {
-            eprintln!("cannot use the systemd notify socket: {error}");
+            tracing::warn!("cannot use the systemd notify socket: {error}");
             None
         }
     };
     let mut swap = match Swap::open(&config.store_dir, node_name, profile.clone()) {
         Ok(swap) => swap,
         Err(error) => {
-            eprintln!("{error}");
+            tracing::error!("{error}");
             return ExitCode::RefusedStart;
         }
     };
@@ -129,13 +174,11 @@ fn serve(
         lifecycle::DEFAULT_OPEN_TIMEOUT,
     ) {
         Ok(ready) => ready,
-        Err(error) => {
-            eprintln!("{error}");
-            return error.exit_code();
-        }
+        // `lifecycle::start` logs the error with its span.
+        Err(error) => return error.exit_code(),
     };
     published(node.engines_ready(&ready.opened));
-    eprintln!("ready with {} engines", ready.opened.len());
+    tracing::info!("ready with {} engines", ready.opened.len());
     let code = {
         // A desired profile from a peer arrives through gossip (spec 2.4 note, 3.3).
         let process = &ready.process;
@@ -159,9 +202,9 @@ fn serve(
     published(node.engines_state(&parked, EngineState::Unloaded));
     published(node.engines_state(&unparked, EngineState::Fatal));
     for failure in &report.parked.failures {
-        eprintln!("the park failed: {failure}");
+        tracing::error!("the park failed: {failure}");
     }
-    eprintln!("{}", report.log_line());
+    tracing::info!("{}", report.log_line());
     let stop_code = report.exit_code();
     // A planned restart stops as in 10.3, then exits 4 (spec 3.3). A failed stop is still a crash.
     let code = if code == ExitCode::PlannedRestart && stop_code == ExitCode::Clean {
@@ -180,30 +223,30 @@ fn desired_profile(swap: &mut Swap, node: &mut Node, process: &nagaya::process::
     let version = candidate.version;
     match swap.handle(candidate, process) {
         Err(error) => {
-            eprintln!("cannot handle desired profile version {version}: {error}");
+            tracing::error!("cannot handle desired profile version {version}: {error}");
             Some(ExitCode::Crash)
         }
         Ok(Outcome::Restart) => {
-            eprintln!(
+            tracing::info!(
                 "desired profile version {version} differs from the active profile; the process stops to restart"
             );
             node.clear_refusal();
             Some(ExitCode::PlannedRestart)
         }
         Ok(Outcome::Unchanged) => {
-            eprintln!("desired profile version {version} equals the active profile; nothing changed");
+            tracing::info!("desired profile version {version} equals the active profile; nothing changed");
             node.clear_refusal();
             None
         }
         Ok(Outcome::Stopping) => {
-            eprintln!("desired profile version {version} waits: the process is stopping");
+            tracing::info!("desired profile version {version} waits: the process is stopping");
             None
         }
         Ok(Outcome::Refused(refusal)) => {
-            eprintln!("refused desired profile version {version}: {}", refusal.reason);
+            tracing::warn!("refused desired profile version {version}: {}", refusal.reason);
             for entry in &refusal.shortfall {
                 let tiers: Vec<String> = entry.tiers.iter().map(ToString::to_string).collect();
-                eprintln!("  short by {} bytes: {}", entry.bytes, tiers.join(", "));
+                tracing::warn!("  short by {} bytes: {}", entry.bytes, tiers.join(", "));
             }
             published(node.publish_refusal(&refusal));
             None
