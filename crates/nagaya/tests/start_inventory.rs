@@ -25,6 +25,7 @@ fn the_start_path_reads_the_inventory_of_gfx1151host_through_the_probe_trait() {
                 pci_address: "0000:c2:00.0".to_owned(),
                 memory_bytes: 133_143_986_176,
                 unified: true,
+                ignored: false,
             }],
             host_bytes: 131_156_408 * 1024,
         }

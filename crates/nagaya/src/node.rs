@@ -81,6 +81,7 @@ impl Node {
                     "pci_address": device.pci_address,
                     "memory_bytes": device.memory_bytes,
                     "unified": device.unified,
+                    "ignored": device.ignored,
                 })
             })
             .collect();

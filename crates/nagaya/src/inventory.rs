@@ -17,6 +17,19 @@ pub struct Device {
     pub memory_bytes: u64,
     /// True when device memory is the host's memory (gfx1151host, sm121host).
     pub unified: bool,
+    /// True when `ignore_devices` names the device (spec 2.1). An ignored device keeps its id and gets no work.
+    pub ignored: bool,
+}
+
+/// True when `text` is a PCI address in the form `dddd:bb:dd.f`, with hex digits (spec 2.1).
+pub fn is_pci_address(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.len() == 12
+        && bytes.iter().enumerate().all(|(index, byte)| match index {
+            4 | 7 => *byte == b':',
+            10 => *byte == b'.',
+            _ => byte.is_ascii_hexdigit(),
+        })
 }
 
 /// The inventory of one machine.
@@ -28,7 +41,38 @@ pub struct Inventory {
     pub host_bytes: u64,
 }
 
+/// Say which PCI addresses in `found` the list `ignore` names (spec 2.1, "Ignored devices").
+///
+/// The result has one flag for each address in `found`, in order. An address in `ignore` that is not in `found` is an
+/// error: a stale or misspelled address must not hide a device silently.
+pub fn ignored_flags<'a>(found: impl IntoIterator<Item = &'a str>, ignore: &[String]) -> Result<Vec<bool>, ProbeError> {
+    let found: Vec<&str> = found.into_iter().collect();
+    for address in ignore {
+        if !found.iter().any(|candidate| candidate.eq_ignore_ascii_case(address)) {
+            return Err(ProbeError {
+                message: format!(
+                    "ignore_devices names `{address}`, but the probe found no device at that PCI address; \
+                     correct the address in the bootstrap config, or remove it"
+                ),
+            });
+        }
+    }
+    Ok(found
+        .iter()
+        .map(|candidate| ignore.iter().any(|address| candidate.eq_ignore_ascii_case(address)))
+        .collect())
+}
+
 impl Inventory {
+    /// Mark the devices at the PCI addresses of `ignore` as ignored (spec 2.1). Each device keeps its id.
+    pub fn ignore(&mut self, ignore: &[String]) -> Result<(), ProbeError> {
+        let flags = ignored_flags(self.devices.iter().map(|device| device.pci_address.as_str()), ignore)?;
+        for (device, flag) in self.devices.iter_mut().zip(flags) {
+            device.ignored = flag;
+        }
+        Ok(())
+    }
+
     /// The device with the given id.
     pub fn device(&self, id: DeviceId) -> Option<&Device> {
         self.devices.iter().find(|device| device.id == id)

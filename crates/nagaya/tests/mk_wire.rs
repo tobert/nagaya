@@ -116,6 +116,7 @@ fn a_missing_variable_refuses_the_start_with_exit_3_and_names_the_variable() {
             pci_address: "0000:c2:00.0".to_owned(),
             memory_bytes: 133_143_986_176,
             unified: true,
+            ignored: false,
         }],
         host_bytes: 131_156_408 * 1024,
     };

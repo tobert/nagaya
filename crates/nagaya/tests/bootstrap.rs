@@ -124,3 +124,38 @@ fn a_specified_gossip_address_is_read() {
         );
     }
 }
+
+#[test]
+fn the_ignore_list_is_empty_by_default() {
+    assert_eq!(
+        Bootstrap::parse(REQUIRED_ONLY).unwrap().ignore_devices,
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn the_ignore_list_reads_pci_addresses() {
+    let text = format!("{REQUIRED_ONLY}ignore_devices = [\"0000:80:00.0\", \"0000:c2:00.0\"]\n");
+    let config = Bootstrap::parse(&text).unwrap();
+    assert_eq!(config.ignore_devices, vec!["0000:80:00.0", "0000:c2:00.0"]);
+}
+
+#[test]
+fn a_malformed_pci_address_in_the_ignore_list_is_refused() {
+    for address in [
+        "80:00.0",
+        "0000:80:00",
+        "0000:80:00.0 ",
+        "0000:8g:00.0",
+        "0000:080:00.0",
+        "gfx1151",
+        "",
+    ] {
+        let text = format!("{REQUIRED_ONLY}ignore_devices = [\"{address}\"]\n");
+        let error = Bootstrap::parse(&text).unwrap_err();
+        assert!(
+            error.to_string().contains("ignore_devices") && error.to_string().contains(address),
+            "the message must name the key and the address for {address:?}: {error}"
+        );
+    }
+}

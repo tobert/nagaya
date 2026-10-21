@@ -247,6 +247,7 @@ pub fn inventory(stages: usize) -> Inventory {
                 pci_address: format!("0000:0{id}:00.0"),
                 memory_bytes: 1 << 20,
                 unified: false,
+                ignored: false,
             })
             .collect(),
         host_bytes: 1 << 22,
