@@ -1,7 +1,7 @@
 //! The pure parts of a build: the recipe of each boundary and the steps that feed the rest (spec 6.2, 11.3c).
 
 use nagaya_abi::Kind;
-use nagaya_council::build::{Step, boundary_recipes, plan_steps, root_recipe};
+use nagaya_council::build::{Step, boundary_recipes, plan_chunks, plan_steps, root_recipe};
 use nagaya_council::family::{Boundary, FamilyError, Rendering};
 
 fn rendering(tokens: Vec<u32>, cuts: &[(usize, usize)]) -> Rendering {
@@ -147,4 +147,73 @@ fn a_feed_is_a_prefill_and_a_snapshot_is_a_copy() {
 #[should_panic(expected = "chunk")]
 fn a_chunk_of_zero_tokens_is_a_defect() {
     plan_steps(0, &bounds(&[3]), 0);
+}
+
+/// The ranges of a plan, with a bound. Each range holds a token, so a plan with more than `len` ranges has an empty
+/// one and never ends.
+fn chunks(len: usize, rows: &[usize], chunk: usize, max_rows: usize) -> Vec<std::ops::Range<usize>> {
+    let ranges: Vec<_> = plan_chunks(len, rows, chunk, max_rows).take(len + 1).collect();
+    assert!(
+        ranges.len() <= len,
+        "the plan of {len} tokens, rows {rows:?}, chunk {chunk}, max_rows {max_rows} has more than {len} ranges: \
+         {:?}",
+        &ranges[..ranges.len().min(6)]
+    );
+    ranges
+}
+
+#[test]
+fn chunks_cover_the_tokens_in_order_and_hold_at_most_one_chunk() {
+    assert_eq!(chunks(10, &[], 4, 8), [0..4, 4..8, 8..10]);
+    assert_eq!(chunks(4, &[], 4, 8), [0..4]);
+    assert!(chunks(0, &[], 4, 8).is_empty());
+}
+
+#[test]
+fn a_chunk_holds_at_most_the_rows_that_a_pass_gives() {
+    let rows: Vec<usize> = (0..10).collect();
+    assert_eq!(chunks(10, &rows, 100, 3), [0..3, 3..6, 6..9, 9..10]);
+    // Rows far apart share a chunk.
+    assert_eq!(chunks(10, &[1, 8], 100, 2), [0..10]);
+}
+
+#[test]
+fn a_later_chunk_counts_its_rows_from_its_own_start() {
+    // The second range starts at row 8. Its rows are [8], so it holds the rest of the tokens.
+    assert_eq!(chunks(10, &[1, 5, 8], 100, 2), [0..8, 8..10]);
+    assert_eq!(chunks(12, &[0, 1, 2, 3, 4, 5], 100, 2), [0..2, 2..4, 4..12]);
+}
+
+#[test]
+fn every_row_falls_in_exactly_one_chunk_and_no_chunk_is_empty() {
+    for len in 0..30usize {
+        for step in 1..5usize {
+            let rows: Vec<usize> = (0..len).step_by(step).collect();
+            for chunk in 1..9usize {
+                for max_rows in 1..5usize {
+                    let ranges = chunks(len, &rows, chunk, max_rows);
+                    let mut next = 0;
+                    for range in &ranges {
+                        assert_eq!(range.start, next);
+                        assert!(range.end > range.start && range.len() <= chunk);
+                        assert!(rows.iter().filter(|r| range.contains(r)).count() <= max_rows);
+                        next = range.end;
+                    }
+                    assert_eq!(next, len);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[should_panic(expected = "rows")]
+fn rows_that_do_not_increase_are_a_defect() {
+    let _ = plan_chunks(10, &[3, 3], 4, 4);
+}
+
+#[test]
+#[should_panic(expected = "rows")]
+fn a_row_past_the_last_token_is_a_defect() {
+    let _ = plan_chunks(10, &[10], 4, 4);
 }

@@ -114,3 +114,57 @@ pub fn plan_steps(kept: usize, boundaries: &[Boundary], chunk: usize) -> Vec<Ste
     }
     steps
 }
+
+/// The ranges of tokens that a read feeds, one pass each (spec 11.3c).
+///
+/// A range has at most `chunk` tokens and at most `max_rows` of the rows. The rows are the token indices whose logits
+/// the caller wants. They must increase and lie inside the tokens, or the caller has a defect.
+///
+/// The plan is lazy. Each range holds at least one token, so a plan has at most `len` ranges.
+pub fn plan_chunks(len: usize, rows: &[usize], chunk: usize, max_rows: usize) -> Chunks<'_> {
+    assert!(chunk > 0 && max_rows > 0, "a pass holds at least one token and one row");
+    assert!(
+        rows.windows(2).all(|pair| pair[0] < pair[1]) && rows.last().is_none_or(|last| *last < len),
+        "the rows must increase and lie inside the tokens"
+    );
+    Chunks {
+        len,
+        rows,
+        chunk,
+        max_rows,
+        start: 0,
+    }
+}
+
+/// The ranges of [`plan_chunks`], in order.
+#[derive(Clone, Debug)]
+pub struct Chunks<'a> {
+    len: usize,
+    rows: &'a [usize],
+    chunk: usize,
+    max_rows: usize,
+    start: usize,
+}
+
+impl Iterator for Chunks<'_> {
+    type Item = std::ops::Range<usize>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.start >= self.len {
+            return None;
+        }
+        let start = self.start;
+        let mut end = self.len.min(start + self.chunk);
+        // The rows of this range start at the first row at or after its start. The row after the last one that
+        // fits starts the next range. It is after `start`, because the first row of the range fits.
+        let first = self.rows.partition_point(|row| *row < start);
+        if let Some(next) = self.rows.get(first + self.max_rows)
+            && *next < end
+        {
+            end = *next;
+        }
+        assert!(end > start, "a range of a plan holds at least one token");
+        self.start = end;
+        Some(start..end)
+    }
+}
