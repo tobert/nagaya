@@ -188,6 +188,9 @@ fn gogi_conformance_passes_against_the_process_with_the_fake_engine() {
     if !short {
         for name in [
             "a cut reply names the phase of its next token",
+            "a cut reply's head is listed last in snapshots",
+            "a dry run of a cut reply sent back open keeps its head",
+            "a continuation resumed from the head feeds at most the last sampled token",
             "a dry run of a cut reply sent back open reports a dry run",
             "a continuation's done starts with the open text",
             "a continuation's completion counts only the sampled tokens",

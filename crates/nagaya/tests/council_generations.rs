@@ -617,22 +617,26 @@ fn a_continuation_goes_on_from_the_open_text_and_counts_only_the_sampled_tokens(
     assert_eq!((built.head, built.usage.fed), (Some(head), 0));
 }
 
-/// A seal changes bits (spec 11.3c), so a continuation seals nothing inside the open text. It then writes what the
-/// whole reply wrote, bit for bit.
+/// Decided by Amy 2026-10-21 (spec 11.3c): a cut reply holds a sealed head. A snapshot holds no logit row, so the head
+/// is the state before the last sampled token, and a continuation from it feeds that token.
 #[test]
-fn a_continuation_of_a_cut_reply_writes_what_the_whole_reply_wrote() {
+fn a_cut_reply_holds_a_sealed_head_and_a_continuation_starts_from_it() {
     let (f, script) = scripted();
     let value = ctx(true, opening());
     script.set(prompt(&value), think_then_answer_long());
-    let whole = generate(&f, &value, 50, json!({"temperature": 0}));
-    assert_eq!((whole.reasoning.as_str(), whole.content.as_str()), ("hi", "okay"));
     let cut = generate(&f, &value, 4, json!({"temperature": 0}));
     assert_eq!(
-        (cut.reasoning.as_str(), cut.content.as_str(), cut.finish),
-        ("hi", "o", Finish::MaxTokens)
+        (cut.reasoning.as_str(), cut.content.as_str(), cut.finish, cut.phase),
+        ("hi", "o", Finish::MaxTokens, Some(Phase::Content))
     );
-    assert_eq!(cut.phase, Some(Phase::Content));
-    assert_eq!(cut.head, None, "a cut reply holds no head (spec 11.3c, Proposed)");
+    let head = cut.head.clone().expect("a cut reply holds a sealed head");
+    let last = cut.snapshots.last().unwrap().clone();
+    assert_eq!(last.id, head, "the head is listed last");
+    assert_eq!(
+        (last.message, last.tokens),
+        (2, (prompt(&value) + 3) as u64),
+        "the head holds the state before the last sampled token"
+    );
     let open = cut.as_open_message().unwrap();
     let resumed = with_open(&value, serde_json::to_value(&open).unwrap());
     assert_eq!(
@@ -640,53 +644,57 @@ fn a_continuation_of_a_cut_reply_writes_what_the_whole_reply_wrote() {
         prompt(&value) + 4,
         "the open rendering is the prompt and the sampled tokens"
     );
-    let user = ToyFamily::new().render(&context(&value), false).unwrap().end as u64;
     let dry = f.service.build(&context(&resumed), true, Default::default()).unwrap();
-    assert_eq!((dry.usage.kept, dry.usage.fed), (user, prompt(&resumed) as u64 - user));
-    assert_eq!(dry.head, None, "the store never holds an open rendering");
+    assert_eq!(
+        (dry.from.clone(), dry.usage.kept, dry.usage.fed),
+        (Some(head.clone()), last.tokens, 1)
+    );
     let done = generate(&f, &resumed, 46, json!({"temperature": 0}));
     assert_eq!(
-        done.usage.kept, user,
-        "the build starts from the context before the open message"
+        (done.usage.kept, done.usage.fed),
+        (last.tokens, 1),
+        "the continuation feeds the last sampled token"
     );
     assert_eq!(
-        (done.reasoning.as_str(), done.content.as_str(), done.finish),
-        ("hi", "okay", Finish::EndTurn),
-        "the continuation writes what the whole reply wrote"
-    );
-    assert_eq!(done.usage.completion, 4);
-    assert_eq!(
-        done.head, whole.head,
-        "the head after the reply is the head after the whole reply"
+        (
+            done.reasoning.as_str(),
+            done.content.as_str(),
+            done.finish,
+            done.usage.completion
+        ),
+        ("hi", "okay", Finish::EndTurn, 4)
     );
 }
 
-/// The fake engine's logits, with no script, differ after a seal. A continuation that sealed inside its open text
-/// would write another reply. The engine speaks the toy language, so the reply renders back as its tokens.
+/// A continuation that does not start from a head seals nothing inside the open text, so it writes what the whole
+/// reply wrote, bit for bit. The fake engine's logits differ after a seal. The engine speaks the toy language, so the
+/// reply renders back as its tokens.
 #[test]
-fn a_continuation_without_a_script_writes_what_the_whole_reply_wrote() {
-    let factory = TermFactory {
-        speaking: true,
-        ..TermFactory::toy()
+fn a_continuation_from_before_the_open_message_writes_what_the_whole_reply_wrote() {
+    let speaking = || {
+        let factory = TermFactory {
+            speaking: true,
+            ..TermFactory::toy()
+        };
+        Fixture::with_factory(
+            factory,
+            1 << 20,
+            None,
+            ServiceConfig::new("toy", council_support::ENGINE),
+        )
     };
-    let f = Fixture::with_factory(
-        factory,
-        1 << 20,
-        None,
-        ServiceConfig::new("toy", council_support::ENGINE),
-    );
+    let f = speaking();
     let value = ctx(true, opening());
     let whole = generate(&f, &value, 30, json!({"temperature": 0}));
     let cut = generate(&f, &value, 3, json!({"temperature": 0}));
     let Some(open) = cut.as_open_message() else {
         panic!("the cut reply goes back open: {cut:?}")
     };
-    let done = generate(
-        &f,
-        &with_open(&value, serde_json::to_value(&open).unwrap()),
-        27,
-        json!({"temperature": 0}),
-    );
+    let resumed = with_open(&value, serde_json::to_value(&open).unwrap());
+    // Another store holds no head, so the continuation builds the context before the open message.
+    let other = speaking();
+    let done = generate(&other, &resumed, 27, json!({"temperature": 0}));
+    assert_eq!(done.usage.kept, 0);
     assert_eq!(
         (
             done.reasoning.as_str(),
@@ -700,6 +708,12 @@ fn a_continuation_without_a_script_writes_what_the_whole_reply_wrote() {
             whole.finish,
             whole.usage.completion
         )
+    );
+    // The store with the head starts from it.
+    let from_head = generate(&f, &resumed, 27, json!({"temperature": 0}));
+    assert_eq!(
+        (from_head.usage.kept, from_head.usage.fed),
+        (cut.snapshots.last().unwrap().tokens, 1)
     );
 }
 
@@ -720,6 +734,10 @@ fn a_reply_cut_inside_its_thinking_resumes_inside_it() {
     );
     assert_eq!((done.reasoning.as_str(), done.content.as_str()), ("hi", "okay"));
     assert_eq!(done.usage.reasoning, 2, "the rest of the thought and <endthink>");
+    assert_eq!(
+        done.usage.fed, 1,
+        "the continuation starts from the head of the cut reply"
+    );
 }
 
 #[test]
@@ -732,7 +750,10 @@ fn a_reply_cut_inside_a_call_names_the_call_phase_and_holds_no_head() {
     script.set(prompt(&value), reply);
     let cut = generate(&f, &value, 3, json!({"temperature": 0}));
     assert_eq!((cut.finish, cut.phase), (Finish::MaxTokens, Some(Phase::Call)));
-    assert_eq!(cut.head, None, "a cut reply holds no head");
+    assert_eq!(
+        cut.head, None,
+        "an open message holds no calls, so the reply has no open rendering"
+    );
     assert_eq!(cut.as_open_message(), None);
 }
 

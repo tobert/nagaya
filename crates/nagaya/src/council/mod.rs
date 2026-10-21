@@ -463,6 +463,7 @@ impl Service {
             .expect("a rendering has a boundary")
             .recipe;
         let open = context.open().is_some();
+        let open_rendering = rendering.clone();
         let rendering = match open {
             true => self.open_plan(context, &rendering)?,
             false => rendering,
@@ -470,9 +471,15 @@ impl Service {
         let recipes = plan_recipes(self.root, &rendering)?;
         let tokens: Arc<[u32]> = rendering.tokens[..rendering.end].into();
         let cuts = self.cuts(context, &rendering)?;
+        let extension = match open {
+            true => extension(context, &open_rendering, &rendering),
+            false => None,
+        };
         let outcome = if dry_run {
             let (tx, rx) = mpsc::channel();
-            let body = LookupBody::new(Arc::clone(&self.shared), recipes.clone(), tokens.len(), tx).cuts(cuts);
+            let body = LookupBody::new(Arc::clone(&self.shared), recipes.clone(), tokens.len(), tx)
+                .cuts(cuts)
+                .extension(extension);
             submit(
                 &self.ports,
                 self.group,
@@ -845,6 +852,18 @@ pub(crate) fn held_boundaries(outcome: &Outcome) -> Vec<(nagaya_council::family:
         .filter(|(recipe, _)| Some(recipe.boundary) != outcome.cut)
         .filter_map(|(recipe, id)| Some((recipe.boundary, (*id)?)))
         .collect()
+}
+
+/// The extension of a continuation: the open text after its plan, up to the seam (spec 11.3c). `open` is the
+/// rendering of the open context, and `plan` its build plan. `None` for a context with no open message, or with no
+/// token between the plan and the seam.
+pub(crate) fn extension(context: &Context, open: &Rendering, plan: &Rendering) -> Option<build::Extension> {
+    context.open()?;
+    let seam = open.tokens.len().checked_sub(1)?;
+    (plan.end < seam).then(|| build::Extension {
+        tokens: open.tokens[plan.end..seam].to_vec(),
+        message: context.messages.len() - 1,
+    })
 }
 
 /// The recipes of a build plan. A plan with no boundary builds nothing: the job starts on an empty slot.

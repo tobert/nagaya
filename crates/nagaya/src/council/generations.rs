@@ -12,12 +12,12 @@ use gogi_proto::generation::{
 };
 use gogi_proto::message::Message;
 use nagaya_abi::Kind;
-use nagaya_council::build::{BoundaryRecipe, boundary_recipes, recipes_with_cut};
+use nagaya_council::build::{BoundaryRecipe, recipes_with_cut, recipes_with_cuts};
 use nagaya_council::family::{
     Boundary, Family, FamilyError, ParsedReply, Rendering, ReplyCall, ReplyParser, ReplyStart,
 };
 use nagaya_council::sampler::{Settings, pick};
-use nagaya_store::{ContentId, Reason, RecipeId};
+use nagaya_store::{ContentId, Reason, RecipeId, recipe_boundary};
 
 use super::build::{ContextBody, Got, Then, Want};
 use super::error::ServiceError;
@@ -100,12 +100,14 @@ pub(crate) struct GenerateThen {
     open: Option<Message>,
     root: RecipeId,
     /// The recipes of the boundaries of the build. A build that starts from a cut gives them the cut too.
-    recipes: Vec<RecipeId>,
+    recipes: Vec<BoundaryRecipe>,
     /// The rendering that the build makes: the context without the generation prompt, or the context before the open
     /// message of a continuation.
     rendering: Rendering,
     /// The cut that the build started from.
     cut: Option<Boundary>,
+    /// The seam of the head of a cut reply that the build started from. The state keeps its seal.
+    resumed: Option<Boundary>,
     /// The tokens of the prompt: the context, then the generation prompt or the open text.
     prompt: Vec<u32>,
     /// The tokens that the build makes. The generation feeds the rest of the prompt for its first logit row.
@@ -222,9 +224,8 @@ impl GenerateThen {
     /// parser read.
     ///
     /// The reply of a continuation is the whole message: the open text as sent, then the new text, with nothing
-    /// trimmed at the seam (gogi "Continuations"). The head after a reply is the end of its closed rendering. A reply
-    /// that ended with `max_tokens` has no head: the head of its open rendering would hold the state inside the open
-    /// text, which needs a put that does not seal (spec 11.3c, Proposed).
+    /// trimmed at the seam (gogi "Continuations"). The head after a reply is the end of its closed rendering. The head
+    /// after a reply that ended with `max_tokens` is the seam of its open rendering (spec 11.3c).
     fn finish(&mut self, cut: Option<Finish>, mut parsed: ParsedReply) -> Result<Want, ServiceError> {
         let finish = match cut {
             Some(cut) => cut,
@@ -236,9 +237,14 @@ impl GenerateThen {
             parsed.reasoning.insert_str(0, open.reasoning.as_deref().unwrap_or(""));
             parsed.content.insert_str(0, open.content.as_deref().unwrap_or(""));
         }
+        let done = GenerationDone {
+            finish,
+            phase: self.next_phase,
+            ..reply_done(&parsed, &self.call_ids(parsed.calls.len()))
+        };
         let reply = match finish {
-            Finish::MaxTokens => None,
-            _ => reply_done(&parsed, &self.call_ids(parsed.calls.len())).as_message(),
+            Finish::MaxTokens => done.as_open_message(),
+            _ => done.as_message(),
         };
         self.parsed = Some(parsed);
         let Some(reply) = reply else {
@@ -252,14 +258,16 @@ impl GenerateThen {
         let rendering = match self.family.render(&context, false) {
             Ok(rendering) => rendering,
             // A reply that the template does not render has no head.
+            // A cut reply that fails its seam check has none.
             Err(FamilyError::Client(_)) => return Ok(self.done()),
             Err(error) => return Err(error.into()),
         };
-        // The state has the boundaries of the build, the cut too.
-        let recipes = match self.cut {
-            Some(cut) => recipes_with_cut(self.root, &rendering, cut)?,
-            None => boundary_recipes(self.root, &rendering)?,
-        };
+        if context.open().is_some() {
+            return Ok(self.cut_head(&rendering, context.messages.len() - 1));
+        }
+        // The state has the boundaries of the build, the cut and the seam that it started from too.
+        let cuts: Vec<Boundary> = self.cut.into_iter().chain(self.resumed).collect();
+        let recipes = recipes_with_cuts(self.root, &rendering, &cuts)?;
         // The slot holds the prompt and each sampled token but the last.
         let fed = self.prompt.len() + self.sampled.len() - 1;
         let tokens = &rendering.tokens[..rendering.end];
@@ -267,7 +275,7 @@ impl GenerateThen {
             && tokens[..self.prompt.len()] == self.prompt[..]
             && tokens[self.prompt.len()..fed] == self.sampled[..self.sampled.len() - 1];
         let same_boundaries =
-            recipes.len() == self.recipes.len() + 1 && recipes.iter().zip(&self.recipes).all(|(a, b)| a.recipe == *b);
+            recipes.len() == self.recipes.len() + 1 && recipes.iter().zip(&self.recipes).all(|(a, b)| a == b);
         if !same_boundaries || !in_slot || tokens.len() - fed > HEAD_FEED || tokens.len() > self.room {
             return Ok(self.done());
         }
@@ -287,6 +295,46 @@ impl GenerateThen {
             logits: false,
             kind: Kind::Prefill,
         })
+    }
+
+    /// Hold the head of a cut reply: a sealed snapshot at the seam of its open rendering, the position before its last
+    /// token (spec 11.3c). A snapshot holds no logit row, so a continuation from the head feeds that last token for
+    /// its first logit row. `rendering` is the open rendering of the reply, the message at index `message`.
+    ///
+    /// The recipe chains from the last seal of the state: the build feeds the prompt and samples with no seal. The
+    /// slot holds the prompt and each sampled token but the last, and the job feeds the rest up to the seam.
+    fn cut_head(&mut self, rendering: &Rendering, message: usize) -> Want {
+        let tokens = &rendering.tokens[..rendering.end];
+        let fed = self.prompt.len() + self.sampled.len() - 1;
+        let Some(seam) = tokens.len().checked_sub(1) else {
+            return self.done();
+        };
+        let (base, at) = self
+            .recipes
+            .last()
+            .map_or((self.root, 0), |recipe| (recipe.recipe, recipe.boundary.tokens));
+        let in_slot = seam >= fed
+            && tokens[..self.prompt.len()] == self.prompt[..]
+            && tokens[self.prompt.len()..fed] == self.sampled[..self.sampled.len() - 1];
+        if !in_slot || seam - fed > HEAD_FEED || seam > self.room || at >= seam {
+            return self.done();
+        }
+        let recipe = recipe_boundary(&base, &tokens[at..seam], seam as u64);
+        self.stage = Stage::Head {
+            recipe,
+            boundary: Boundary { message, tokens: seam },
+        };
+        if seam == fed {
+            return Want::Snapshot {
+                recipe,
+                reason: Reason::PrefillDone,
+            };
+        }
+        Want::Feed {
+            tokens: tokens[fed..seam].to_vec(),
+            logits: false,
+            kind: Kind::Prefill,
+        }
     }
 
     fn done(&mut self) -> Want {
@@ -383,14 +431,22 @@ impl Then for GenerateThen {
 
     fn next(&mut self, got: Got) -> Result<Want, ServiceError> {
         match (&self.stage, got) {
-            (Stage::Building, Got::Built(cut)) => {
+            (Stage::Building, got @ (Got::Built(_) | Got::Resumed { .. })) => {
                 self.stage = Stage::Sampling;
+                let (cut, seam) = match got {
+                    Got::Resumed { cut, seam } => (cut, Some(seam)),
+                    Got::Built(cut) => (cut, None),
+                    _ => unreachable!("the arm matches only a build"),
+                };
                 if let Some(cut) = cut {
                     self.cut = Some(cut);
-                    self.recipes = recipes_with_cut(self.root, &self.rendering, cut)?
-                        .iter()
-                        .map(|recipe| recipe.recipe)
-                        .collect();
+                    self.recipes = recipes_with_cut(self.root, &self.rendering, cut)?;
+                }
+                // A continuation from the head of a cut reply starts at the seam, and feeds the last token.
+                if let Some(seam) = seam {
+                    self.resumed = Some(seam.boundary);
+                    self.recipes.push(seam);
+                    self.end = seam.boundary.tokens;
                 }
                 // The generation prompt, or the open message of a continuation.
                 let tokens = self.prompt[self.end..].to_vec();
@@ -493,14 +549,16 @@ impl Service {
         let room = (prompt + max_tokens + HEAD_FEED).min(context_tokens);
         let tokens: Arc<[u32]> = built.tokens[..end].into();
         let cuts = self.cuts(context, &built)?;
+        let extension = super::extension(context, &rendering, &built);
         let then = GenerateThen {
             family: Arc::clone(&self.family),
             context: context.clone(),
             open: context.open().cloned(),
             root: self.root,
-            recipes: recipes.iter().map(|recipe| recipe.recipe).collect(),
+            recipes: recipes.clone(),
             rendering: built,
             cut: None,
+            resumed: None,
             prompt: rendering.tokens.clone(),
             end,
             settings,
@@ -520,7 +578,11 @@ impl Service {
             next_phase: None,
         };
         let shared = Arc::clone(&self.shared);
-        let job = |tx| ContextBody::with(shared, tokens, recipes.clone(), room, then, tx).cuts(cuts);
+        let job = |tx| {
+            ContextBody::with(shared, tokens, recipes.clone(), room, then, tx)
+                .cuts(cuts)
+                .extension(extension)
+        };
         let finished = self.run_context(job, Schedule::of(request.class, request.priority), None)?;
         let ids = finished
             .then
