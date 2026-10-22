@@ -584,13 +584,34 @@ these choices. Each is the simplest choice that fits the rules above.
 Reason: the code must not guess, and each choice keeps the bits of the copy. A test compares the logits of the trait
 with the logits of the copy before the trait, bit for bit (`the_trait_gives_the_bits_of_the_copy`).
 
-**Open:** the stage threads lose about 2% of decode speed. mkviolet's `pipeline_stage` keeps the idle card awake.
+**Was open:** the stage threads lose about 2% of decode speed. mkviolet's `pipeline_stage` keeps the idle card awake.
 A card that idles for 10 ms or more waits 100-550 us at its next command (`B70Card::wake`). The stage threads do not
 wake it.
 
 On 2026-10-21, decode after 20 tokens gave 46.1 tokens/s on the stage threads and 47.1 on the copy. A test thread
 that woke both cards each 3 ms gave 47.6. A fix needs a call on the stage thread between quanta. That is a change
 of the ABI, so Amy decides.
+
+**The wake call.** Decided 2026-10-22 (Amy: "add the call"). A stage thread keeps its card awake between the quanta
+of a job.
+
+**Proposed** (claude-opus-5-5, 2026-10-22): the shape of the wake call, and when the stage thread makes it.
+
+```rust
+trait StageHandle {
+    // ... stage_pass and parts as above
+    fn wake(&mut self) -> Result<(), PassError> { Ok(()) }   // mkviolet: B70Card::wake
+}
+```
+
+- The stage thread calls `wake` when it has no quantum and 3 ms passed since its last call to the device.
+- It calls `wake` only while a job of its group holds a slot lease (5.6). With no job, it makes no call, so the
+  card can idle. Reason: a card that the nagaya keeps awake uses more power at idle.
+- A wake is not a quantum. It charges no job, and the scheduler does not see it.
+- A wake that fails is a pass failure of the stage (spec 8.2).
+- An engine whose devices do not sleep keeps the default, which does nothing.
+
+Reason for 3 ms: the test thread of 2026-10-21 woke the cards each 3 ms and gave 47.6 tokens/s.
 
 ## Decisions
 
