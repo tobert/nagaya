@@ -1058,6 +1058,17 @@ engine. The nagaya's generation job makes the prompt-lookup drafts, as mkviolet 
 keys of 4 and 3 tokens, at most 7 drafts). Reason: drafts change no row that the store keeps. Thus a change of the
 setting must not change the identity and lose the store.
 
+**Open** (Amy, 2026-10-22: "leave open for testing on b70host"): do drafts change the bits? A drafted verify pass
+has a shape that a plain decode does not have. Gemma 4 declares `segments_exact: false`, and its feed rule (6.14)
+exists because its bits depend on the split of a pass. The test runs on the B70 cards:
+
+- Decode the same prompt greedily with drafts on and with drafts off. Compare the logits of each step, bit for bit.
+- Compare the rows that the slot holds after each run, bit for bit.
+- Equal bits accept the note above. Other bits make drafts a bit setting, or a rule that a verify pass follows.
+
+gfx1151host cannot run this test. mk declares `segments_exact: true` (`crates/nagaya-mk-qwen38-gfx1151/src/spec.rs:463`),
+so the test cannot fail there for this reason.
+
 ## 7. IO
 
 **7.1 One IO service per machine.** Engines (through the `io` capability) and the store send IO requests
