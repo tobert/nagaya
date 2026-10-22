@@ -797,7 +797,7 @@ after its parent's end. It holds each fixed part whole. The store never evicts a
 A ring part can wrap past its parent's end (kaibo, 2026-10-20). Then the rows after the parent's end are gone, and
 check 4 refuses the delta. The refusal changes nothing, so nothing is corrupt.
 
-**Proposed** (claude-opus-5-5, 2026-10-21): a ring part can start after the end of the parent. Then the build puts a
+Decided 2026-10-22 (Amy: "all good"): a ring part can start after the end of the parent. Then the build puts a
 whole snapshot with no parent. Check 4 stays as it is. Reason: the store needs no new rule. A ring held whole in the
 delta holds 4,096 rows of each sliding layer of mkviolet. That is close to the size of a whole snapshot.
 
