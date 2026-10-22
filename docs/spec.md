@@ -296,7 +296,7 @@ and `pin_identity`. Each `[[budgets]]` entry has `tiers` and `bytes`, and a tier
 `[store]` table has `nvme`, an optional `host` (4.1a), and an optional `interval_copies` (6.13), 0 by default.
 Decided 2026-10-20 (reading).
 
-**One name for each device.** **Proposed** (claude-opus-5-5, 2026-10-21). The spec names a device in four places.
+**One name for each device.** Decided 2026-10-22 (Amy: "all good"). The spec names a device in four places.
 Each place uses one of two names, and this map joins them.
 
 - A **machine device id** is the id of 2.1. The profile uses it: `devices = [0, 1]`, and a budget tier
@@ -307,7 +307,7 @@ Each place uses one of two names, and this map joins them.
   of that machine device. Thus an engine never sees a machine device id, and a profile never sees a group index.
 - On gfx1151host, both names of the one device are 0.
 
-**Proposed** (claude-opus-5-5, 2026-10-21): `limits().devices` holds group indexes, `0` to `n - 1` in order. The
+Decided 2026-10-22 (Amy: "all good"): `limits().devices` holds group indexes, `0` to `n - 1` in order. The
 process checks that `n` is the length of the profile's `devices` list, as `check_devices` checks the list today
 (`crates/nagaya/src/placement.rs`). The engine finds each physical card by the PCI address in the devices that
 `plan` and `open` get. Reason: today `limits().devices` holds machine ids, so an engine on machine device 1 must know

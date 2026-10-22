@@ -24,6 +24,11 @@ thread, and every engine call for the group comes from that thread. Two engines 
 mkviolet's Gemma 4 spans both B70 cards, so its group is the two cards. Each card runs one stage, on a stage thread
 of its own (`docs/engine-abi.md` D1).
 
+A device has two names. Its **machine device id** is its id on the machine, as the inventory gives it. The profile,
+the budgets, the metrics and the fd names use it. Its **group index** is its position in the profile's `devices`
+list of an engine. The engine ABI uses it. The ledger maps one to the other, so an engine never sees a machine
+device id (`docs/spec.md` 2.4, "One name for each device").
+
 **Placement profile.** The list of a machine's engines, their devices, their config, the budgets, the shares, the
 store's budgets and pinned identities (`docs/spec.md` 2.4). It is one TOML file in the store directory.
 
