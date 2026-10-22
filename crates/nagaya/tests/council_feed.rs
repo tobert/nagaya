@@ -100,6 +100,7 @@ fn a_generation_holds_no_head_so_the_next_build_feeds_the_reply_by_the_rule() {
             tier: Tier::Host,
             reason: Reason::PrefillDone,
             sealed_recipe: None,
+            chains_from: None,
             provenance: None,
             now_ms: 10_000_000,
         })

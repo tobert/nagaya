@@ -6,10 +6,10 @@
 
 mod common;
 
-use common::{gguf_path, tokenizer};
+use common::{absent, gguf_path, tokenizer};
 use gogi_proto::context::Tool;
 use gogi_proto::generation::Phase;
-use nagaya_council::family::{Family, FamilyError, ParsedReply, ReplyCall, ReplyParser, ReplyStep};
+use nagaya_council::family::{Family, FamilyError, ParsedReply, ReplyCall, ReplyParser, ReplyStart, ReplyStep};
 use nagaya_text_qwen38::Qwen38Family;
 use serde_json::{Value, json};
 use std::sync::OnceLock;
@@ -75,7 +75,10 @@ fn ids_of(case: &Value) -> Vec<u32> {
 fn parser_of(case: &Value) -> Box<dyn ReplyParser> {
     let tools = tools_of(case["tools"].as_str().expect("a tool set name"));
     family()
-        .reply_parser(case["thinking"].as_bool().expect("thinking"), &tools)
+        .reply_parser(
+            ReplyStart::prompt(case["thinking"].as_bool().expect("thinking")),
+            &tools,
+        )
         .unwrap_or_else(|e| panic!("{}: {e}", case["name"]))
 }
 
@@ -85,7 +88,7 @@ fn run(case: &Value) -> (Vec<ReplyStep>, ParsedReply) {
         .into_iter()
         .map(|id| parser.push(id).unwrap_or_else(|e| panic!("{}: {e}", case["name"])))
         .collect();
-    (steps, parser.finish())
+    (steps, parser.finish(false))
 }
 
 fn cases() -> &'static Vec<Value> {
@@ -133,7 +136,7 @@ fn the_stop_token_adds_no_text_and_keeps_the_phase() {
     if common::absent() {
         return;
     }
-    let mut parser = family().reply_parser(false, &[]).unwrap();
+    let mut parser = family().reply_parser(ReplyStart::prompt(false), &[]).unwrap();
     for id in tokenizer().encode("Hello").unwrap() {
         parser.push(id).unwrap();
     }
@@ -144,9 +147,42 @@ fn the_stop_token_adds_no_text_and_keeps_the_phase() {
             piece: String::new()
         }
     );
-    let reply = parser.finish();
+    let reply = parser.finish(false);
     assert_eq!(reply.content, "Hello");
     assert!(reply.ended);
+}
+
+/// gogi "Continuations": `done.phase` of a cut reply is the phase that its next token would have.
+#[test]
+fn a_reply_parser_names_the_phase_of_the_next_token() {
+    if absent() {
+        return;
+    }
+    let tools = vec![serde_json::from_value(json!({"name": "sh", "input_schema": {"type": "object"}})).unwrap()];
+    let mut parser = family().reply_parser(ReplyStart::prompt(true), &tools).unwrap();
+    assert_eq!(parser.phase(), Phase::Reasoning);
+    for id in tokenizer().encode("plan").unwrap() {
+        parser.push(id).unwrap();
+    }
+    assert_eq!(parser.phase(), Phase::Reasoning);
+    parser.push(tokenizer().token_id("</think>").unwrap()).unwrap();
+    assert_eq!(
+        parser.phase(),
+        Phase::Content,
+        "a reply cut just after </think> resumes in its content"
+    );
+    parser.push(tokenizer().token_id("<tool_call>").unwrap()).unwrap();
+    assert_eq!(parser.phase(), Phase::Call);
+    let open = family()
+        .reply_parser(
+            ReplyStart {
+                thinking: false,
+                open: true,
+            },
+            &[],
+        )
+        .unwrap();
+    assert_eq!(open.phase(), Phase::Content);
 }
 
 fn same_call(got: &ReplyCall, want: &Value, name: &Value) {
@@ -275,7 +311,7 @@ fn a_thinking_block_then_a_tool_call() {
         "read_file",
         json!({"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer"}}}),
     )];
-    let mut parser = family().reply_parser(true, &tools).unwrap();
+    let mut parser = family().reply_parser(ReplyStart::prompt(true), &tools).unwrap();
     let text = "I should read it.</think>\n\nOpening the file.\n\n<tool_call>\n<function=read_file>\n\
                 <parameter=path>\n/etc/hosts\n</parameter>\n<parameter=limit>\n20\n</parameter>\n\
                 </function>\n</tool_call>";
@@ -284,7 +320,7 @@ fn a_thinking_block_then_a_tool_call() {
         steps.push(parser.push(id).unwrap());
     }
     steps.push(parser.push(IM_END).unwrap());
-    let reply = parser.finish();
+    let reply = parser.finish(false);
     assert_eq!(reply.reasoning, "I should read it.");
     assert_eq!(reply.content, "Opening the file.");
     assert_eq!(
@@ -316,10 +352,10 @@ fn the_other_stop_token_ends_the_turn_too() {
     if common::absent() {
         return;
     }
-    let mut parser = family().reply_parser(false, &[]).unwrap();
+    let mut parser = family().reply_parser(ReplyStart::prompt(false), &[]).unwrap();
     parser.push(tokenizer().encode("Hi").unwrap()[0]).unwrap();
     parser.push(END_OF_TEXT).unwrap();
-    assert!(parser.finish().ended);
+    assert!(parser.finish(false).ended);
 }
 
 #[test]
@@ -328,7 +364,7 @@ fn the_parser_says_that_the_reply_ended_after_a_stop_token() {
         return;
     }
     for stop in [IM_END, END_OF_TEXT] {
-        let mut parser = family().reply_parser(false, &[]).unwrap();
+        let mut parser = family().reply_parser(ReplyStart::prompt(false), &[]).unwrap();
         parser.push(tokenizer().encode("Hi").unwrap()[0]).unwrap();
         assert!(!parser.ended(), "text does not end the reply");
         parser.push(stop).unwrap();
@@ -341,11 +377,11 @@ fn a_cut_reply_has_not_ended() {
     if common::absent() {
         return;
     }
-    let mut parser = family().reply_parser(false, &[]).unwrap();
+    let mut parser = family().reply_parser(ReplyStart::prompt(false), &[]).unwrap();
     for id in tokenizer().encode("Hi th").unwrap() {
         parser.push(id).unwrap();
     }
-    let reply = parser.finish();
+    let reply = parser.finish(false);
     assert_eq!((reply.content.as_str(), reply.ended), ("Hi th", false));
 }
 
@@ -354,7 +390,7 @@ fn a_token_after_the_stop_token_is_an_internal_error() {
     if common::absent() {
         return;
     }
-    let mut parser = family().reply_parser(false, &[]).unwrap();
+    let mut parser = family().reply_parser(ReplyStart::prompt(false), &[]).unwrap();
     parser.push(IM_END).unwrap();
     let e = parser.push(tokenizer().encode("x").unwrap()[0]).unwrap_err();
     assert!(matches!(e, FamilyError::Internal(_)), "{e:?}");
@@ -365,7 +401,7 @@ fn an_id_outside_the_vocabulary_is_an_internal_error() {
     if common::absent() {
         return;
     }
-    let mut parser = family().reply_parser(false, &[]).unwrap();
+    let mut parser = family().reply_parser(ReplyStart::prompt(false), &[]).unwrap();
     let id = u32::try_from(family().vocab_size()).unwrap();
     let e = parser.push(id).unwrap_err();
     assert!(
@@ -380,7 +416,7 @@ fn a_tool_list_the_parser_cannot_read_is_a_client_error() {
         return;
     }
     let tools = vec![Tool::new("f", json!({"properties": {"p": {"type": "text"}}}))];
-    match family().reply_parser(false, &tools) {
+    match family().reply_parser(ReplyStart::prompt(false), &tools) {
         Err(FamilyError::Client(invalid)) => assert!(invalid.message.contains("unsupported"), "{}", invalid.message),
         Err(other) => panic!("want a client error, got {other:?}"),
         Ok(_) => panic!("accepted a tool with the type \"text\""),
@@ -393,13 +429,13 @@ fn an_integer_that_json_numbers_cannot_hold_makes_a_malformed_call() {
         return;
     }
     let tools = vec![Tool::new("f", json!({"properties": {"n": {"type": "integer"}}}))];
-    let mut parser = family().reply_parser(false, &tools).unwrap();
+    let mut parser = family().reply_parser(ReplyStart::prompt(false), &tools).unwrap();
     let text = "<tool_call>\n<function=f>\n<parameter=n>\n123456789012345678901234567890\n</parameter>\n</function>\n</tool_call>";
     for id in tokenizer().encode(text).unwrap() {
         parser.push(id).unwrap();
     }
     parser.push(IM_END).unwrap();
-    let reply = parser.finish();
+    let reply = parser.finish(false);
     match reply.calls.as_slice() {
         [ReplyCall::Malformed { text, error }] => {
             assert!(text.contains("123456789012345678901234567890"), "{text}");

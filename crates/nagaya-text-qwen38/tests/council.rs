@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{gguf_path, tokenizer};
+use common::{absent, gguf_path, tokenizer};
 use gogi_proto::context::Context;
 use nagaya_council::family::{Boundary, Family, FamilyError};
 use nagaya_text_qwen38::Qwen38Family;
@@ -514,6 +514,78 @@ fn tokenize_makes_text_of_a_marker_and_detokenize_undoes_it() {
     let FamilyError::Client(invalid) = e else { panic!() };
     assert_eq!(invalid.param.as_deref(), Some("tokens"));
     assert_eq!(f.vocab_size(), tokenizer().len());
+}
+
+#[test]
+fn tokenize_special_makes_one_token_of_the_text_of_a_marker() {
+    if absent() {
+        return;
+    }
+    let f = family();
+    let ids = f.tokenize_special("<|im_start|>user").unwrap();
+    assert_eq!(ids[0], special("<|im_start|>"));
+    assert_eq!(ids, tokenizer().encode("<|im_start|>user").unwrap());
+    // The same text without `special` stays text, so the two differ (gogi rule 2).
+    assert_ne!(ids, f.tokenize("<|im_start|>user").unwrap());
+    // Text with no marker tokenizes the same way in both modes.
+    assert_eq!(
+        f.tokenize_special("Hello world").unwrap(),
+        f.tokenize("Hello world").unwrap()
+    );
+    assert_eq!(f.tokenize_special("").unwrap(), Vec::<u32>::new());
+}
+
+#[test]
+fn tokenize_special_refuses_a_noncharacter_as_a_client_error() {
+    if absent() {
+        return;
+    }
+    let e = family().tokenize_special("a\u{fdd0}b").unwrap_err();
+    assert!(e.is_client(), "{e:?}");
+}
+
+#[test]
+fn pieces_are_the_text_of_each_token_and_a_marker_is_its_text() {
+    if absent() {
+        return;
+    }
+    let f = family();
+    let ids = f.tokenize("Hello world").unwrap();
+    assert_eq!(f.pieces(&ids).unwrap(), ["Hello", " world"]);
+    assert_eq!(f.pieces(&[special("<|im_end|>")]).unwrap(), ["<|im_end|>"]);
+    assert_eq!(f.pieces(&[]).unwrap(), Vec::<String>::new());
+}
+
+#[test]
+fn a_piece_that_is_not_whole_text_has_the_replacement_character() {
+    if absent() {
+        return;
+    }
+    let f = family();
+    // A token that holds bytes which are not UTF-8 alone, such as the first byte of a long character.
+    let split = (0..f.vocab_size() as u32)
+        .find(|&id| {
+            tokenizer()
+                .token_piece(id, true)
+                .is_ok_and(|b| std::str::from_utf8(&b).is_err())
+        })
+        .expect("the vocabulary has a token that is not whole text");
+    let pieces = f.pieces(&[split]).unwrap();
+    assert!(pieces[0].contains('\u{fffd}'), "{:?}", pieces[0]);
+    // The text of the same token is a client error: detokenize is strict.
+    assert!(f.detokenize(&[split]).is_err());
+}
+
+#[test]
+fn pieces_of_a_token_outside_the_vocabulary_is_a_client_error_that_names_tokens() {
+    if absent() {
+        return;
+    }
+    let f = family();
+    let FamilyError::Client(invalid) = f.pieces(&[1, f.vocab_size() as u32]).unwrap_err() else {
+        panic!("want a client error")
+    };
+    assert_eq!(invalid.param.as_deref(), Some("tokens"));
 }
 
 // ---------------------------------------------------------------- letters and raw reads
@@ -1173,4 +1245,25 @@ fn equal_letter_log_probabilities_go_on_from_the_first_letter() {
         panic!()
     };
     assert_eq!(text(&second.feed), "A\", \"undo\": \"");
+}
+
+/// A marked message that renders no token, such as an empty system message, is no boundary. A boundary must come
+/// after the one before it, and after token 0.
+#[test]
+fn a_marked_message_that_renders_no_token_is_no_boundary() {
+    if absent() {
+        return;
+    }
+    let c = context(json!({"messages": [
+        {"role": "system", "content": "", "snap": true},
+        {"role": "user", "content": "one", "snap": true},
+        {"role": "system", "content": "", "snap": true},
+        {"role": "user", "content": "two"}]}));
+    let r = family().render(&c, false).unwrap();
+    let tokens: Vec<usize> = r.boundaries.iter().map(|b| b.tokens).collect();
+    assert!(
+        tokens[0] > 0 && tokens.windows(2).all(|w| w[0] < w[1]),
+        "{:?}",
+        r.boundaries
+    );
 }

@@ -5,10 +5,7 @@ members = [
     "crates/nagaya-ledger",
     "crates/nagaya-sched",
     "crates/nagaya-mk-qwen38-gfx1151",
-    "crates/nagaya-mk-gemma4-bmg",
-    "crates/nagaya-jinja",
     "crates/nagaya-text-qwen38",
-    "crates/nagaya-text-gemma4",
     "crates/nagaya-council",
     "crates/nagaya-text-toy",
     "crates/nagaya-telemetry",
@@ -19,10 +16,10 @@ resolver = "3"
 
 # gogi is not pushed yet. Senpai changes the URL later. A path dependency breaks in a worktree.
 [workspace.dependencies]
-gogi-proto = { git = "file:///home/atobey/src/gogi", rev = "a07d85eb56f25f7332024628a5c1ae1197b49367" }
-gogi-fake = { git = "file:///home/atobey/src/gogi", rev = "a07d85eb56f25f7332024628a5c1ae1197b49367" }
-gogi-toy = { git = "file:///home/atobey/src/gogi", rev = "a07d85eb56f25f7332024628a5c1ae1197b49367" }
-gogi-conformance = { git = "file:///home/atobey/src/gogi", rev = "a07d85eb56f25f7332024628a5c1ae1197b49367" }
+gogi-proto = { git = "file:///home/atobey/src/gogi", rev = "dc94cb3d07c865e4abe12369cabd6061e441dc80" }
+gogi-fake = { git = "file:///home/atobey/src/gogi", rev = "dc94cb3d07c865e4abe12369cabd6061e441dc80" }
+gogi-toy = { git = "file:///home/atobey/src/gogi", rev = "dc94cb3d07c865e4abe12369cabd6061e441dc80" }
+gogi-conformance = { git = "file:///home/atobey/src/gogi", rev = "dc94cb3d07c865e4abe12369cabd6061e441dc80" }
 
 [profile.dev]
 debug = "line-tables-only"

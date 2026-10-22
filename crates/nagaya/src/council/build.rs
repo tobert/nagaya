@@ -69,17 +69,29 @@ pub struct Outcome {
     pub kept: usize,
     /// For each boundary, the entry that the store holds at the end of the job.
     pub held: Vec<Option<ContentId>>,
-    /// The recipes of the boundaries, in the order of `held`. With a cut, they have the cut too.
+    /// The recipes of the boundaries, in the order of `held`. With a cut, they have the cut and the seals that it
+    /// chains through too.
     pub recipes: Vec<BoundaryRecipe>,
-    /// The cut that the build started from, when it started from one. It is not a boundary of the context.
-    pub cut: Option<Boundary>,
+    /// The boundaries of `recipes` that are not boundaries of the context: the cut that the build started from and the
+    /// seals that it chains through. A response lists no snapshot there.
+    pub inserted: Vec<Boundary>,
 }
 
-/// A cut: the end of a message that the client did not mark, and the recipes of the context with a boundary there.
+/// A cut: a held snapshot that is not at a boundary of the context, and the recipes of the context with the seals of
+/// its chain inserted (spec 11.3c).
 pub type Cut = (Boundary, Vec<BoundaryRecipe>);
 
-/// Where a job starts: the recipes of its boundaries, the held entry of each, and the cut that it starts from.
-type Start = (Vec<BoundaryRecipe>, Vec<Option<ContentId>>, Option<Boundary>);
+/// Where a job starts: the recipes of its boundaries, the held entry of each, and the boundaries that a cut inserted.
+type Start = (Vec<BoundaryRecipe>, Vec<Option<ContentId>>, Vec<Boundary>);
+
+/// The boundaries of `chain` that `plan` does not have.
+fn inserted(plan: &[BoundaryRecipe], chain: &[BoundaryRecipe]) -> Vec<Boundary> {
+    chain
+        .iter()
+        .map(|recipe| recipe.boundary)
+        .filter(|boundary| plan.iter().all(|recipe| recipe.boundary.tokens != boundary.tokens))
+        .collect()
+}
 
 /// Choose where a job starts. Give the recipes, the held entry of each, and the cut that the job starts from.
 ///
@@ -102,10 +114,10 @@ fn choose(
             .expect("the recipes of a cut have the cut");
         if lookup_all(shared, engine, slot, &with_cut[at..=at])?[0].is_some() {
             let held = lookup_all(shared, engine, slot, with_cut)?;
-            return Ok((with_cut.clone(), held, Some(*cut)));
+            return Ok((with_cut.clone(), held, inserted(recipes, with_cut)));
         }
     }
-    Ok((recipes.to_vec(), held, None))
+    Ok((recipes.to_vec(), held, Vec::new()))
 }
 
 /// Look up the entry of each boundary. A miss and an ambiguous lookup give `None` (spec 6.6).
@@ -134,6 +146,106 @@ fn lookup_all(
     Ok(held)
 }
 
+/// The open text of a continuation after its build plan, up to a held seal inside it (spec 11.3c). The head of a cut
+/// reply is a snapshot at the seam of its open rendering. A continuation of that reply starts from it when the store
+/// holds it, and feeds the rest of the open text.
+#[derive(Clone, Debug)]
+pub struct Extension {
+    /// The tokens after the end of the plan, up to the last seal.
+    pub tokens: Vec<u32>,
+    /// The recipes of the plan's boundaries, with the seals of the chain that the plan part holds.
+    pub chain: Vec<BoundaryRecipe>,
+    /// The seals after the end of the plan, in order. The job looks up the last one.
+    pub seals: Vec<BoundaryRecipe>,
+}
+
+/// Look up one recipe. A miss and an ambiguous lookup give `None` (spec 6.6).
+fn lookup_one(
+    shared: &Shared,
+    engine: &mut dyn Engine,
+    slot: u32,
+    recipe: &BoundaryRecipe,
+) -> Result<Option<ContentId>, ServiceError> {
+    Ok(lookup_all(shared, engine, slot, std::slice::from_ref(recipe))?[0])
+}
+
+/// Restore an entry into `state`. An entry that left the store since its lookup, or that the store quarantines at
+/// the restore, is a miss: the result is `Refused`, and the state is as it was. The store checks the entry before it
+/// writes a part.
+fn restore_entry(
+    shared: &Shared,
+    id: &ContentId,
+    engine: &mut dyn Engine,
+    state: State,
+) -> Result<Restored, StoreError> {
+    let mut store = shared.store.lock().expect("the store lock is poisoned");
+    let live = store
+        .entries()
+        .get(id)
+        .is_some_and(|entry| entry.state == EntryState::Live);
+    if !live {
+        return Ok(Restored::Refused {
+            part: "the entry left the store or is quarantined".to_owned(),
+        });
+    }
+    match store.restore(id, engine, state, &shared.identity, (shared.clock)()) {
+        Err(StoreError::Quarantined(_)) => Ok(Restored::Refused {
+            part: "the store quarantined the entry".to_owned(),
+        }),
+        other => other,
+    }
+}
+
+/// The recipe of an interval copy at a token of a context with `tokens` and boundaries `recipes`, with the last seal
+/// before it. A token on a boundary has none: the sealed snapshot there serves a build (spec 6.13).
+fn copy_recipe_at(
+    root: RecipeId,
+    recipes: &[BoundaryRecipe],
+    tokens: &[u32],
+    position: usize,
+) -> Option<(RecipeId, RecipeId, usize)> {
+    if recipes.iter().any(|recipe| recipe.boundary.tokens == position) || position > tokens.len() {
+        return None;
+    }
+    let (base, at) = recipes
+        .iter()
+        .rev()
+        .find(|recipe| recipe.boundary.tokens < position)
+        .map_or((root, 0), |recipe| (recipe.recipe, recipe.boundary.tokens));
+    let sealed = recipe_boundary(&base, &tokens[at..position], position as u64);
+    Some((recipe_not_sealed(&sealed), base, at))
+}
+
+/// The longest interval copy of a context above the token `above`, when the store holds one: its position, its
+/// content id, and the last seal before it with its position (spec 6.13). A build and a dry run use it.
+fn best_copy(
+    shared: &Shared,
+    recipes: &[BoundaryRecipe],
+    tokens: &[u32],
+    above: usize,
+) -> Option<(usize, ContentId, RecipeId, usize)> {
+    shared.intervals.as_ref()?;
+    let store = shared.store.lock().expect("the store lock is poisoned");
+    store
+        .entries()
+        .values()
+        .filter(|entry| {
+            entry.reason == Reason::Interval
+                && entry.state == EntryState::Live
+                && entry.engine == shared.engine_name
+                && entry.identity == shared.identity
+        })
+        .filter_map(|entry| {
+            let position = entry.coverage.iter().map(|span| span.end).max()? as usize;
+            if position <= above {
+                return None;
+            }
+            let (recipe, base, at) = copy_recipe_at(shared.root, recipes, tokens, position)?;
+            (recipe == entry.recipe).then_some((position, entry.content_id, base, at))
+        })
+        .max_by_key(|(position, ..)| *position)
+}
+
 /// The highest boundary that the store holds.
 fn highest(held: &[Option<ContentId>]) -> Option<usize> {
     held.iter().rposition(Option::is_some)
@@ -144,23 +256,31 @@ pub struct LookupBody {
     shared: Arc<Shared>,
     recipes: Vec<BoundaryRecipe>,
     cuts: Vec<Cut>,
-    tokens: usize,
+    extension: Option<Extension>,
+    /// The tokens of the plan.
+    tokens: Arc<[u32]>,
+    /// The tokens that the slot of the job would hold: the context, or all the open rendering of a continuation.
+    room: usize,
     tx: Option<Sender<Result<Outcome, ServiceError>>>,
 }
 
 impl LookupBody {
     /// Make the body. The result goes to `tx`.
+    /// Make the body. `room` is the tokens that the job's slot would hold. The result goes to `tx`.
     pub fn new(
         shared: Arc<Shared>,
         recipes: Vec<BoundaryRecipe>,
-        tokens: usize,
+        tokens: Arc<[u32]>,
+        room: usize,
         tx: Sender<Result<Outcome, ServiceError>>,
     ) -> Self {
         Self {
             shared,
             recipes,
             cuts: Vec::new(),
+            extension: None,
             tokens,
+            room,
             tx: Some(tx),
         }
     }
@@ -171,20 +291,52 @@ impl LookupBody {
         self
     }
 
+    /// Let the lookup start from a held seam (see [`ContextBody::extension`]).
+    pub fn extension(mut self, extension: Option<Extension>) -> Self {
+        self.extension = extension;
+        self
+    }
+
     fn look(&self, engine: &mut dyn Engine) -> Result<Outcome, ServiceError> {
         let pool = self.shared.pool.lock().expect("the slot pool lock is poisoned");
-        let Some(slot) = slots::lowest_fitting(engine, &self.shared.limits, &pool, self.tokens) else {
-            return Err(too_large(self.tokens));
+        let Some(slot) = slots::lowest_fitting(engine, &self.shared.limits, &pool, self.room) else {
+            return Err(too_large(self.room));
         };
         drop(pool);
-        let (recipes, held, cut) = choose(&self.shared, engine, slot, &self.recipes, &self.cuts)?;
+        if let Some(extension) = &self.extension
+            && let Some(seam) = extension.seals.last()
+            && let Some(id) = lookup_one(&self.shared, engine, slot, seam)?
+        {
+            let held = lookup_all(&self.shared, engine, slot, &extension.chain)?;
+            let mut inserted = inserted(&self.recipes, &extension.chain);
+            inserted.extend(extension.seals.iter().map(|seal| seal.boundary));
+            return Ok(Outcome {
+                from: Some(id),
+                kept: seam.boundary.tokens,
+                held,
+                recipes: extension.chain.clone(),
+                inserted,
+            });
+        }
+        let (recipes, held, inserted) = choose(&self.shared, engine, slot, &self.recipes, &self.cuts)?;
         let start = highest(&held);
+        let above = start.map_or(0, |index| recipes[index].boundary.tokens);
+        // A build restores an interval copy above the highest held boundary, so a dry run reports it (spec 6.13).
+        if let Some((position, id, ..)) = best_copy(&self.shared, &recipes, &self.tokens, above) {
+            return Ok(Outcome {
+                from: Some(id),
+                kept: position,
+                held,
+                recipes,
+                inserted,
+            });
+        }
         Ok(Outcome {
             from: start.and_then(|index| held[index]),
-            kept: start.map_or(0, |index| recipes[index].boundary.tokens),
+            kept: above,
             held,
             recipes,
-            cut,
+            inserted,
         })
     }
 }
@@ -249,15 +401,19 @@ pub enum Want {
 /// What the slot gives back for the last want.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Got {
-    /// The build is complete. The slot holds the context when the work needs its state. The build started from the
-    /// cut, when it names one: then the boundaries of the state have the cut too.
-    Built(Option<Boundary>),
+    /// The build is complete. The slot holds the context when the work needs its state. The recipes are the seals of
+    /// the state: the boundaries of the context, and the cut and the seals of its chain when the build started from a
+    /// cut.
+    Built(Vec<BoundaryRecipe>),
+    /// The build restored a held seal inside the open text of a continuation (see [`Extension`]), such as the head of
+    /// a cut reply. The slot holds the tokens to the last of the recipes, which are the seals of the state.
+    Resumed(Vec<BoundaryRecipe>),
     /// The feed is complete. The row is there when the feed asked for it.
     Fed(Option<Vec<f32>>),
     /// The mark or the rewind is complete.
     Copied,
-    /// The store holds the snapshot.
-    Held(ContentId),
+    /// The store holds the snapshot, or holds its bytes under another recipe (`None`).
+    Held(Option<ContentId>),
 }
 
 /// The work after a build, as a state machine with no I/O. The body drives it on the group thread.
@@ -344,8 +500,12 @@ pub struct ContextBody<T: Then> {
     recipes: Vec<BoundaryRecipe>,
     /// The cuts where the job may start, from the highest down.
     cuts: Vec<Cut>,
-    /// The cut that the job started from.
-    cut: Option<Boundary>,
+    /// The open text of a continuation after the plan. The job may start from a held seal in it.
+    extension: Option<Extension>,
+    /// True when the job started from a seal of the extension.
+    resumed: bool,
+    /// The boundaries of `recipes` that are not boundaries of the context.
+    inserted: Vec<Boundary>,
     /// The tokens that the slot must hold when the job takes it: the context, and what the work feeds after it when
     /// the job knows that.
     room: usize,
@@ -417,7 +577,9 @@ impl<T: Then> ContextBody<T> {
             tokens,
             recipes,
             cuts: Vec::new(),
-            cut: None,
+            extension: None,
+            resumed: false,
+            inserted: Vec::new(),
             room,
             lease: None,
             started: false,
@@ -444,6 +606,74 @@ impl<T: Then> ContextBody<T> {
     pub fn cuts(mut self, cuts: Vec<Cut>) -> Self {
         self.cuts = cuts;
         self
+    }
+
+    /// Let the job start from a held seam after its plan: the head of a cut reply that a continuation sends back
+    /// open (spec 11.3c). The job never seals at the seam itself.
+    pub fn extension(mut self, extension: Option<Extension>) -> Self {
+        self.extension = extension;
+        self
+    }
+
+    /// What the build gives the work when it is complete.
+    fn built(&self) -> Got {
+        let mut recipes = self.recipes.clone();
+        match &self.extension {
+            Some(extension) if self.resumed => {
+                recipes.extend(&extension.seals);
+                Got::Resumed(recipes)
+            }
+            _ => Got::Built(recipes),
+        }
+    }
+
+    /// Restore the last seal of the extension, when the store holds it: the head of a cut reply, for example. It gives
+    /// true on a restore. A refused restore changed nothing (spec 6.8), and the build goes on from the held
+    /// boundaries.
+    fn restore_seam(&mut self, engine: &mut dyn Engine) -> Result<bool, ServiceError> {
+        let Some(extension) = self.extension.clone() else {
+            return Ok(false);
+        };
+        let Some(seam) = extension.seals.last().copied() else {
+            return Ok(false);
+        };
+        let slot = self.slot();
+        let Some(id) = lookup_one(&self.shared, engine, slot, &seam)? else {
+            return Ok(false);
+        };
+        let restored = restore_entry(&self.shared, &id, engine, self.state());
+        match restored {
+            Ok(Restored::Done) => {
+                let tokens = seam.boundary.tokens;
+                let rows = self.rows(engine)?;
+                if rows != tokens {
+                    return Err(ServiceError::internal(format!(
+                        "the restored seal of slot {slot} holds {rows} rows, but the seal is at token {tokens}"
+                    )));
+                }
+                self.held = lookup_all(&self.shared, engine, slot, &extension.chain)?;
+                self.inserted = inserted(&self.recipes, &extension.chain);
+                self.inserted.extend(extension.seals.iter().map(|seal| seal.boundary));
+                self.recipes = extension.chain;
+                self.from = Some(id);
+                self.kept = tokens;
+                self.fed = self.tokens.to_vec();
+                self.fed.extend(&extension.tokens);
+                self.sealed = Some((seam.recipe, tokens));
+                self.resumed = true;
+                Ok(true)
+            }
+            Ok(Restored::Refused { .. }) => Ok(false),
+            Ok(Restored::Failed { part }) => Err(ServiceError::internal(format!(
+                "the restore of the seal {} stopped at part `{part}` and poisoned slot {slot}: {}",
+                id.hex(),
+                engine.last_error().unwrap_or_default()
+            ))),
+            Err(error) => Err(ServiceError::internal(format!(
+                "the restore of the seal {} failed: {error}",
+                id.hex()
+            ))),
+        }
     }
 
     fn slot(&self) -> u32 {
@@ -493,7 +723,7 @@ impl<T: Then> ContextBody<T> {
                 kept: self.kept,
                 held: std::mem::take(&mut self.held),
                 recipes: std::mem::take(&mut self.recipes),
-                cut: self.cut,
+                inserted: std::mem::take(&mut self.inserted),
             },
             then: self.then.take().expect("a job finishes once"),
         };
@@ -525,12 +755,19 @@ impl<T: Then> ContextBody<T> {
             )));
         }
         self.sealed = Some((self.shared.root, 0));
+        // The longest held snapshot wins: a seal inside the open text of a continuation is after every boundary.
+        if self.restore_seam(engine)? {
+            self.track(engine)?;
+            let got = self.built();
+            return self.next_want(engine, got);
+        }
         if self.recipes.is_empty() {
             self.track(engine)?;
-            return self.next_want(engine, Got::Built(self.cut));
+            let got = self.built();
+            return self.next_want(engine, got);
         }
-        let (recipes, held, cut) = choose(&self.shared, engine, slot, &self.recipes, &self.cuts)?;
-        (self.recipes, self.held, self.cut) = (recipes, held, cut);
+        let (recipes, held, inserted) = choose(&self.shared, engine, slot, &self.recipes, &self.cuts)?;
+        (self.recipes, self.held, self.inserted) = (recipes, held, inserted);
         let last = self.recipes.len() - 1;
         let mut candidate = highest(&self.held);
         let above = candidate.map_or(0, |index| self.recipes[index].boundary.tokens);
@@ -546,10 +783,7 @@ impl<T: Then> ContextBody<T> {
                 self.kept = tokens;
                 break;
             }
-            let restored = {
-                let mut store = self.shared.store.lock().expect("the store lock is poisoned");
-                store.restore(&id, engine, state, &self.shared.identity, (self.shared.clock)())
-            };
+            let restored = restore_entry(&self.shared, &id, engine, state);
             match restored {
                 Ok(Restored::Done) => {
                     let rows = self.rows(engine)?;
@@ -587,7 +821,8 @@ impl<T: Then> ContextBody<T> {
         let boundaries: Vec<_> = self.recipes.iter().map(|recipe| recipe.boundary).collect();
         let steps = plan_steps(self.kept, &boundaries, self.shared.chunk);
         if steps.is_empty() {
-            return self.next_want(engine, Got::Built(self.cut));
+            let got = self.built();
+            return self.next_want(engine, got);
         }
         let kinds = steps.iter().map(Step::kind).collect();
         self.units = steps.into_iter().map(Unit::Build).collect();
@@ -682,7 +917,7 @@ impl<T: Then> ContextBody<T> {
                 };
                 let message = self.recipes[boundary].boundary.message;
                 let id = self.snapshot(engine, recipe, reason, &format!("the boundary of message {message}"))?;
-                self.held[boundary] = Some(id);
+                self.held[boundary] = id;
                 None
             }
             Unit::Mark => {
@@ -821,7 +1056,10 @@ impl<T: Then> ContextBody<T> {
         }
         match got {
             Some(got) => self.next_want(engine, got),
-            None if self.building => self.next_want(engine, Got::Built(self.cut)),
+            None if self.building => {
+                let got = self.built();
+                self.next_want(engine, got)
+            }
             None => unreachable!("the last unit of a want gives back what it did"),
         }
     }
@@ -920,6 +1158,7 @@ impl<T: Then> ContextBody<T> {
             snapshot: &snapshot,
             recipe: recipe_not_sealed(&sealed),
             previous_recipe: None,
+            chains_from: None,
             engine: facts,
             identity: self.shared.identity,
             owner: COUNCIL_OWNER,
@@ -958,57 +1197,14 @@ impl<T: Then> ContextBody<T> {
         Ok(())
     }
 
-    /// The recipe of an interval copy at a token of the context, with the last seal before it. A token on a boundary
-    /// has none: the sealed snapshot there serves a build (spec 6.13).
-    fn copy_recipe_at(&self, position: usize) -> Option<(RecipeId, RecipeId, usize)> {
-        if self.recipes.iter().any(|recipe| recipe.boundary.tokens == position) || position > self.tokens.len() {
-            return None;
-        }
-        let (base, at) = self
-            .recipes
-            .iter()
-            .rev()
-            .find(|recipe| recipe.boundary.tokens < position)
-            .map_or((self.shared.root, 0), |recipe| (recipe.recipe, recipe.boundary.tokens));
-        let sealed = recipe_boundary(&base, &self.tokens[at..position], position as u64);
-        Some((recipe_not_sealed(&sealed), base, at))
-    }
-
     /// Restore the longest interval copy of the context above the token `above`, when the store holds one. A restore
     /// writes the copy's parts, and the build replays the tokens after it (spec 6.13). It gives true on a restore.
     fn restore_copy(&mut self, engine: &mut dyn Engine, above: usize) -> Result<bool, ServiceError> {
-        if self.shared.intervals.is_none() {
-            return Ok(false);
-        }
-        let best = {
-            let store = self.shared.store.lock().expect("the store lock is poisoned");
-            store
-                .entries()
-                .values()
-                .filter(|entry| {
-                    entry.reason == Reason::Interval
-                        && entry.state == EntryState::Live
-                        && entry.engine == self.shared.engine_name
-                        && entry.identity == self.shared.identity
-                })
-                .filter_map(|entry| {
-                    let position = entry.coverage.iter().map(|span| span.end).max()? as usize;
-                    if position <= above {
-                        return None;
-                    }
-                    let (recipe, base, at) = self.copy_recipe_at(position)?;
-                    (recipe == entry.recipe).then_some((position, entry.content_id, base, at))
-                })
-                .max_by_key(|(position, ..)| *position)
-        };
-        let Some((position, id, base, at)) = best else {
+        let Some((position, id, base, at)) = best_copy(&self.shared, &self.recipes, &self.tokens, above) else {
             return Ok(false);
         };
         let slot = self.slot();
-        let restored = {
-            let mut store = self.shared.store.lock().expect("the store lock is poisoned");
-            store.restore(&id, engine, self.state(), &self.shared.identity, (self.shared.clock)())
-        };
+        let restored = restore_entry(&self.shared, &id, engine, self.state());
         match restored {
             Ok(Restored::Done) => {
                 let rows = self.rows(engine)?;
@@ -1086,7 +1282,7 @@ impl<T: Then> ContextBody<T> {
         recipe: RecipeId,
         reason: Reason,
         place: &str,
-    ) -> Result<ContentId, ServiceError> {
+    ) -> Result<Option<ContentId>, ServiceError> {
         let state = self.state();
         // The buffer of the copy is host memory. The charge stays until the store has taken the snapshot.
         let _staging = self.stage(engine, state, &format!("read the state at {place}"))?;
@@ -1094,19 +1290,36 @@ impl<T: Then> ContextBody<T> {
             seal.seal(state)
                 .map_err(|error| ServiceError::internal(format!("the seal at {place} failed: {error:?}")))?;
         }
+        // The recipe chains from the last seal before this one. The store indexes the snapshot by it.
+        let chains_from = self.sealed.map(|(sealed, _)| sealed);
         // The state is sealed now, so a later copy chains from this recipe.
         self.sealed = Some((recipe, self.fed.len()));
         let snapshot = park::park_snapshot(engine, state)
             .map_err(|message| ServiceError::internal(format!("cannot read the state at {place}: {message}")))?;
         let facts = EngineFacts::of(&self.shared.engine_name, &self.shared.limits);
-        self.shared
-            .store
-            .lock()
-            .expect("the store lock is poisoned")
+        let id = snapshot
+            .content_id()
+            .map_err(|error| ServiceError::internal(format!("cannot hash the state at {place}: {error}")))?;
+        let mut store = self.shared.store.lock().expect("the store lock is poisoned");
+        // The store can hold the same bytes under another recipe: on an engine with no seal, a build with and a build
+        // without a boundary make the same state. The store keeps one recipe for each content id, so this boundary
+        // holds no snapshot. The state is the same, so nothing is lost. The store can also hold the bytes as a
+        // quarantined entry, which it never replaces (spec 6.7).
+        if let Some(entry) = store.entries().get(&id)
+            && (entry.state != EntryState::Live || entry.recipe != recipe)
+        {
+            tracing::debug!(
+                "no snapshot at {place}: the store holds its bytes {} under another recipe or in quarantine",
+                id.hex()
+            );
+            return Ok(None);
+        }
+        store
             .put(Put {
                 snapshot: &snapshot,
                 recipe,
                 previous_recipe: None,
+                chains_from,
                 engine: facts,
                 identity: self.shared.identity,
                 owner: COUNCIL_OWNER,
@@ -1116,7 +1329,17 @@ impl<T: Then> ContextBody<T> {
                 provenance: None,
                 now_ms: (self.shared.clock)(),
             })
-            .map_err(|error| ServiceError::internal(format!("the store refused the snapshot at {place}: {error}")))
+            .map(Some)
+            .or_else(|error| match error {
+                // Pins hold the room of the tier. The boundary holds no snapshot, as an interval copy does (6.13).
+                StoreError::NoSpace => {
+                    tracing::warn!("no snapshot at {place}: the store has no room, and pins hold the rest");
+                    Ok(None)
+                }
+                error => Err(ServiceError::internal(format!(
+                    "the store refused the snapshot at {place}: {error}"
+                ))),
+            })
     }
 }
 

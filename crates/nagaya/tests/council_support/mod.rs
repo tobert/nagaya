@@ -65,6 +65,7 @@ pub struct WithContextTerm {
     script: Script,
     vocab: usize,
     grain: Option<u64>,
+    seal: bool,
 }
 
 impl Engine for WithContextTerm {
@@ -111,6 +112,9 @@ impl Engine for WithContextTerm {
     }
 
     fn seal(&mut self) -> Option<&mut dyn Seal> {
+        if !self.seal {
+            return None;
+        }
         self.inner.seal()
     }
 
@@ -132,6 +136,10 @@ pub struct TermFactory {
     pub grain: Option<u64>,
     /// The cap on interval copies in the `[store]` table of the profile.
     pub interval_copies: u32,
+    /// True when the engine speaks the toy language: its logits get the speaking bias of `nagaya-text-toy`.
+    pub speaking: bool,
+    /// False for an engine with no `seal` capability: a seal changes no bits.
+    pub seal: bool,
 }
 
 impl TermFactory {
@@ -145,6 +153,8 @@ impl TermFactory {
             script: Script::default(),
             grain: None,
             interval_copies: 0,
+            speaking: false,
+            seal: true,
         }
     }
 
@@ -153,6 +163,9 @@ impl TermFactory {
         if let Some(vocab) = self.vocab {
             inner = inner.with_vocab(vocab);
         }
+        if self.speaking {
+            inner = inner.with_logit_bias(nagaya_text_toy::speaking_bias());
+        }
         WithContextTerm {
             inner,
             bytes: self.bytes,
@@ -160,6 +173,7 @@ impl TermFactory {
             script: self.script.clone(),
             vocab: self.vocab.unwrap_or(0),
             grain: self.grain,
+            seal: self.seal,
         }
     }
 }

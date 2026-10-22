@@ -2053,9 +2053,9 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
 - The reads of a decision run one after another, in request order. The service checks `timeout_ms` before each
   read, and the scheduler checks it between quanta (5.8). Either one ends the decision with 504 `timeout`.
 - A raw read lists 8 top tokens when the request names no `top`, and at most 64. A larger `top` is a 400.
-- **Proposed** (claude-opus-5-5, 2026-10-21). A build or a raw read holds at most `context_tokens`, the suffix
-  included. A longer one is a 413 `too_large` that names `context_tokens`. Reason: gogi `d79d22d` changed gogi-fake
-  to the gogi Errors table, and `context_full` stays for a generation's prompt with no room.
+- A build of more than `context_tokens` tokens is a 413 `too_large` that names `context_tokens`. So is a raw read
+  whose context and longest suffix have more. A context of exactly `context_tokens` tokens builds. `context_full` is
+  only for the prompt of a generation (gogi "Errors", gogi `a07d85e`).
 - The text of a top token is the detokenized token. A token that is not whole text alone, such as one byte of a
   longer character, has the text U+FFFD. Its `id` names it exactly.
 - The council identity's `engine` is `nagaya:` and the first 16 hex digits of the identity digest (6.2). The digest
@@ -2064,16 +2064,21 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
   - The rendering of the context with the reply has the boundaries of the prompt before the reply.
   - The slot holds a prefix of that rendering, at most 8 tokens short.
 
-  Then the job feeds the rest and puts the snapshot.
-- A build can start at a cut. A cut is the end of a message that the client did not mark, where the rendering keeps
-  it. The build starts at a cut when the store holds a snapshot there and at no higher boundary. An earlier context
-  made that snapshot at a boundary of its own, such as the head of a generation after its reply. Reason: gogi's build
-  starts from the longest held snapshot whose tokens begin the context, and the next request sends the reply
-  unmarked.
-- A seal changes bits, so a build from a cut keeps the cut among the boundaries of its state. Its later snapshots
-  have recipes with the cut, and the response lists no snapshot at the cut. Thus a snapshot never holds a seal
-  that its recipe does not name (gogi "Boundaries are content"). The service finds the cuts with a second render,
-  with every message marked.
+  Then the job feeds the rest and puts the snapshot. The head of a reply that ends with `max_tokens` is the seam
+  of its open rendering (see continuations below).
+- A build can start at a cut. A cut is a held snapshot that is not at a boundary of the context. Examples are the end
+  of a message that the client did not mark, and the head of a cut reply. The build starts at a cut when the store holds
+  no higher boundary. An earlier context made that snapshot at a seal of its own. Reason: gogi's build starts from
+  the longest held snapshot whose tokens begin the context, and the next request sends the reply unmarked.
+- A seal changes bits. So a build from a cut keeps the cut and each seal of its chain among the boundaries of its
+  state (`Outcome::inserted`). Its later snapshots have recipes with them, and the response lists no snapshot at
+  them. Thus a snapshot never holds a seal that its recipe does not name (gogi "Boundaries are content").
+- The service finds the cuts in the store's index by `chains_from`, the recipe of the seal that a snapshot's recipe
+  chains from (`Service::starts`, `Store::chained_from`). From each seal, starting at the root, it goes to the next
+  boundary of the plan. It also goes to each held entry that chains from the seal, when the context's tokens give
+  its recipe. It reads only the
+  entries that chain from the context, and it renders nothing. The store makes the index again from its entries at
+  a load (`Index::rechain`).
 - A reply parser can release text after the last token, such as text that it held back as a possible marker. The
   service adds that text to the piece of the last token event. Thus the pieces of a part join to its text in
   `done` (gogi "Streams"). The text must have the phase of the last token. Text of another phase is an internal error,
@@ -2083,11 +2088,78 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
 - A generation that sends no seed takes one from the hash keys of the Rust standard library, which the operating
   system seeds.
 - The sample defaults of a served model are temperature 1 with no filter, until the profile names others.
-- A reply ends with `context_full` when the prompt and the reply reach `context_tokens`. **Proposed**
-  (claude-opus-5-5, 2026-10-21): when it also reaches `max_tokens`, it ends with `context_full`. Reason: gogi
-  "Generations" puts `context_full` before `max_tokens` since `bd3901c`.
+- A reply ends with `context_full` when the prompt and the reply reach `context_tokens`. When it also reaches
+  `max_tokens`, it ends with `context_full` (gogi "Generations", `finish`, gogi `a07d85e`).
 - The decision limits are mkviolet's until the profile names others: `decision_context_tokens` 3072,
   `contexts_per_decision` 8, `case_bytes` 65536 and `default_timeout_ms` 30000.
+
+Continuations follow gogi's rules (`docs/council-api.md`, "Continuations", gogi `dc94cb3`). The nagaya uses them in
+these ways. Each served model declares the capability `continuation` (`crates/nagaya/src/http/mod.rs`).
+
+- **The rendering.** `Family::render` renders an open last message as a reply up to its open text, without its end
+  and without a generation prompt. Thus `end` is the length of the tokens (`crates/nagaya-council/src/family.rs`).
+  The toy family takes the rendering of `gogi-toy`.
+- **The Qwen3.8 rendering.** The chat template renders a closed assistant message as `<|im_start|>assistant\n`,
+  `<think>\n`, the trimmed reasoning, `\n</think>\n\n`, the trimmed content and `<|im_end|>\n`.
+  `Qwen38Family::run_open` renders the message closed with stand-in text in its open field, and cuts at the
+  stand-in. Then it adds the open field as sent. Thus the text before the field is the template's own, and the field
+  keeps its white space (`crates/nagaya-text-qwen38/src/council/mod.rs`).
+- **The prefix.** The tokens of a Qwen3.8 open rendering begin the tokens of its closed rendering, unless the open
+  field ends with white space. The template trims that white space. The tokenizer keeps a newline apart from the text
+  before it, so the newline before `</think>` merges with no last token
+  (`crates/nagaya-text-qwen38/tests/continuation.rs`).
+- **The seam check.** The family checks each open field in `render`, with `gogi_proto::continuation::check_seam`. A
+  field that does not tokenize on its own is a 400 that names `continue`. This is the prefix check of mk's
+  `prefill` (`service/generate.py`, `_with_prefill`).
+- **The parse.** The reply parser starts in the phase that the open message sets (`ReplyStart::of`). It reads only
+  the sampled tokens. After an open message, the Qwen3.8 parser keeps the white space at the start of its first part.
+  At `max_tokens`, it keeps the white space at the end of its last part (`Keep` in
+  `crates/nagaya-text-qwen38/src/reply.rs`). The toy parser trims nothing.
+- **The reply.** `done` joins the open text as sent and the new text. `usage.prompt` counts the open text. `n` and
+  `usage.completion` count only the sampled tokens (`GenerateThen::finish`, `crates/nagaya/src/council/generations.rs`).
+- The build plan: a continuation builds the context before its open message (`Service::open_plan`,
+  `nagaya_council::continuation::open_plan`). Then it feeds the open message as a generation feeds its generation
+  prompt, with no seal. Reason: a seal changes bits (mk rounds the GDN state to bf16). A seal inside the open text
+  makes a continuation differ from the reply that it continues. The next request starts from the head after the
+  reply. Decided by Amy 2026-10-21.
+- The head of a cut reply: a reply that ends with `max_tokens` seals a snapshot of its open rendering. It gives
+  that snapshot as `head`, listed last in `snapshots` (`GenerateThen::cut_head`). A continuation of that reply
+  starts from the head: the longest held snapshot wins, as for any build. It may differ from the uncut reply, which
+  gogi allows (boundaries are content). Decided by Amy 2026-10-21 ("Sealed head").
+  - The build plan above stays. The build also looks up the seam of the open text after the plan
+    (`build::Extension`, `ContextBody::restore_seam`). When the store holds it, the build restores it and the
+    generation feeds the last token. The state keeps the seal of the seam, so the head after that reply has the seam
+    among the boundaries of its recipe (`recipes_with_cuts`).
+  - A cut reply that the client sends back closed starts from the head too, in any form. The open rendering's
+    tokens up to the seam must begin the closed rendering's tokens. The search of the store's index finds the head
+    (see the cuts above). So does a context that sends back the reply of a continuation from a head: that reply's
+    head chains through the seam.
+  - **Proposed (for Amy)** (Claude Opus 5.5, 2026-10-21), the cuts from the index. A build tries each sealed
+    snapshot that the search of the index finds, not only the ends of messages. Reason: the first rule tried the
+    open forms of the last assistant message. It missed a reply cut inside its thinking and sent back with
+    `content: ""`, and it cost three renders of the prefix. The search also replaces the second render of the cuts at
+    message ends.
+  - The timings of a dry run come from a release host test (`crates/nagaya/tests/council_heads.rs`). For 18026
+    tokens with an assistant message: 103 ms with the open forms, then 38 ms with a pass over the index. It is 16 ms
+    with one render. The same context without the message takes 16 ms. With 10,000 unrelated entries in the store: 85 ms
+    with a pass over the index, then 0.22 ms (0.16 ms when empty).
+  - A dry run reports the interval copy that a build would restore. For a continuation, it asks for a slot of the
+    open rendering, as the generation does.
+  - A continuation whose reply's closed tokens differ from its prompt and sampled tokens holds no head after the
+    reply. Two causes: the template trims white space at the end of the reply, and a token at the seam merges in
+    the closed rendering. The slot holds the other tokens, so no head can name them.
+  - The seam. The head is the seam of the open rendering, the position before the last sampled token, not its end.
+    Reason: a snapshot holds no logit row. A continuation from a head at the end would have no first logit row, and
+    it cannot feed the last token again. At the seam it feeds that token (`fed` 1), which gogi allows. Proposed by
+    Claude Opus 5.5; decided by Amy 2026-10-21.
+- The dry run: a build with an open message and `dry_run: true` looks up the plan of the continuation and its seam.
+  Its `kept` and `fed` are what the generation keeps and feeds. Its `head` is `recipe:` and the recipe of the open
+  rendering, which the store never holds. Decided by Amy 2026-10-21.
+- The template id: the test sets of the families have no open message, so the open rendering is not in the template
+  id (11.3a). Adding one would change the id of each family once, and a fitted threshold does not carry over.
+  Decided by Amy 2026-10-21.
+- A riding `before` is not built, because the nagaya does not serve `ride`. A generation with `decisions` is a 400
+  that names `decisions`.
 
 **11.4 `/mk/v1`.** kaijutsu's mk provider uses `model`, `render` and `generate` (mkviolet `mk_api.rs`).
 
@@ -2104,6 +2176,9 @@ part of identity (gogi `docs/council-api.md`, "Terms").
 - `render`, `tokenize` and `detokenize`: served by the family library for bench tools and semantic search;
 - `embeddings`: served by the engine through a pass with a hidden-state output;
 - `status` (9.7) and `traces` (13.1).
+
+Built on 2026-10-21: `render`, `tokenize` and `detokenize` (11.4b to 11.4d), and the prefix in `identity` (11.4f). The
+other routes in this list are not built.
 
 **11.4b The text routes.** `render`, `tokenize` and `detokenize` use the family library (11.3). They share the rules
 below. These rules are **Proposed (for Amy)**, by Claude Sonnet 5.5 on 2026-10-21. Amy decides, and senpai writes an
@@ -2128,15 +2203,18 @@ see what a council request feeds. The semantic search of kaijutsu uses them to c
 - **Proposed (for Amy).** The HTTP server span of 9.2 covers each call, and its `http.route` is the path, such as
   `/nagaya/v1/render`. The routes make no `nagaya.job` span and no metric of their own.
 
-The code goes in a new file, `crates/nagaya/src/http/extensions.rs`. The function `router` in
-`crates/nagaya/src/http/mod.rs` merges its routes. `Service` gets one accessor, `Service::family`
-(`crates/nagaya/src/council/mod.rs`), because its field `family` is private.
+Built on 2026-10-21. The code is in `crates/nagaya/src/http/extensions.rs`. The function `routes` in
+`crates/nagaya/src/http/routes.rs` merges its routes, so `router` and the running server both serve them. `Service`
+has one accessor, `Service::family` (`crates/nagaya/src/council/mod.rs`), because its field `family` is private. The
+tests are `crates/nagaya/tests/extensions.rs` (the toy family), `extensions_qwen38.rs` (the real tokenizer and
+template) and `http_telemetry_extensions.rs` (the span and the duration point).
 
 A `FamilyError::Client` becomes a 400. The existing `From<FamilyError>` for `ServiceError`
 (`crates/nagaya/src/council/error.rs`) does this. A `FamilyError::Internal` is a 500, and the process stops (8.5).
 
 **Proposed (for Amy).** A family error can have no `param`. Then the route sets it to the request member at fault:
 `text` for `tokenize`, `tokens` for `detokenize`, and `context` for `render`. mk and mkviolet name only the message.
+A family error that has a `param`, such as `continue`, keeps it (`at` in `extensions.rs`).
 
 **11.4c Render.** `POST /nagaya/v1/render` gives the text and the tokens of a context, as a council request feeds
 them. **Proposed (for Amy).** It is for bench tools and for the debug of a template.
@@ -2204,7 +2282,11 @@ Choices between options, each one made for Amy to change:
   it to `medium` (`EFFORT` in `crates/nagaya-text-qwen38/src/council/mod.rs`). A body with it is a 400.
 
 A message that the template refuses, a context that fails `Context::check`, and a Unicode noncharacter in a string
-are each a 400 `invalid_request`. The message names the fault, as mk does.
+are each a 400 `invalid_request`. The message names the fault, as mk does. The `param` is `context`, unless the fault
+is in a member that has its own name, such as an unknown member of the context.
+
+The route detokenizes the tokens of the rendering to make `text`. These tokens come from valid text, so a failure
+there is a defect: a 500 `internal`, and the process stops (8.5).
 
 **11.4d Tokenize and detokenize.** `POST /nagaya/v1/tokenize` turns text into token ids. `POST /nagaya/v1/detokenize`
 turns token ids into text. **Proposed (for Amy).** They are for the semantic search, for a count of tokens, and for a
@@ -2246,20 +2328,30 @@ POST /nagaya/v1/detokenize
 - **Proposed (for Amy).** An empty `text` gives an empty `tokens`. An empty `tokens` gives an empty `text`. Neither is
   an error.
 - **Proposed (for Amy).** `pieces` are lossy by design. A piece is the bytes of one token, and a token can end inside
-  a character. The route replaces bad bytes with U+FFFD in each piece, as mk does. The piece of a marker is its text.
+  a character. The route replaces bad bytes with U+FFFD in each piece (`String::from_utf8_lossy`). The piece of a
+  marker is its text.
+- **Proposed (for Amy).** Code found a difference from mk. mk's `piece_text` drops a cut-off character at the end of a
+  piece. The route keeps a U+FFFD, so that a client sees the cut. A token of several stray bytes can give more than
+  one U+FFFD, and a top token in a raw read (11.3c) always gives one.
+- **Proposed (for Amy).** Each route has its own members. `special` and `pieces` in a `detokenize` body, and `tokens` in
+  a `tokenize` body, are each a 400 that names the member. A `tokens` member must be an array of unsigned 32-bit
+  integers. Any other value is a 400 with `param` `tokens`, and the message names the place of the bad id.
 
 Two small additions to the `Family` trait (`crates/nagaya-council/src/family.rs`) serve `special` and `pieces`.
 
-- **Proposed (for Amy).** Add `Family::tokenize_special(&self, text: &str) -> Result<Vec<u32>, FamilyError>`. Qwen3.8
-  calls `Tokenizer::encode`. This is the rule of a raw-read suffix (gogi "Raw reads"), where a marker is one token.
-- **Proposed (for Amy).** Add `Family::pieces(&self, tokens: &[u32]) -> Result<Vec<String>, FamilyError>`. Qwen3.8
-  calls `Tokenizer::token_piece(id, true)` for each id, then converts with lossy UTF-8
-  (`crates/nagaya-text-qwen38/src/tokenizer.rs`). `ToyFamily` and the test family `Holding`
-  (`crates/nagaya/tests/council_generations.rs`) implement both.
-- **Proposed (for Amy).** The other option is to build the first set with neither `special` nor `pieces`. `tokenize`
-  then needs no change to the trait. The cost is a bench tool that cannot tokenize a raw suffix.
+- **Proposed (for Amy).** Built on 2026-10-21. `Family::tokenize_special(&self, text: &str) -> Result<Vec<u32>,
+  FamilyError>`. Qwen3.8 calls `Tokenizer::encode`. This is the rule of a raw-read suffix
+  (gogi "Raw reads"), where a marker is one token.
+- **Proposed (for Amy).** Built on 2026-10-21. `Family::pieces(&self, tokens: &[u32]) -> Result<Vec<String>,
+  FamilyError>`. Qwen3.8 calls `Tokenizer::token_piece(id, true)` for each id, then converts with lossy UTF-8
+  (`crates/nagaya-text-qwen38/src/council/mod.rs`). `ToyFamily` and the test family `Holding`
+  (`crates/nagaya/tests/council_generations.rs`) implement both. Both methods are required, not defaults, so a family
+  that does not implement them does not compile.
+- **Proposed (for Amy).** The other option was to build the first set with neither `special` nor `pieces`. `tokenize`
+  then needs no change to the trait. The cost is a bench tool that cannot tokenize a raw suffix. The build took the
+  pick above.
 
-Tests that can fail:
+Tests that can fail (all built, in `crates/nagaya/tests/extensions.rs` and `extensions_qwen38.rs`):
 
 - `detokenize(render.tokens)` equals `render.text`, for each fixture of the family.
 - `tokenize` with `special` on, applied to a `render.text` with no `control_text`, gives `render.tokens`.
@@ -2288,7 +2380,8 @@ The other option is a `GET /nagaya/v1/health` that gives only `{"status": "ok"}`
 gogi's example lists `/mk/v1` this way, and it lists no route (gogi "Extensions").
 
 - **Proposed (for Amy).** `Council::identity` returns `["/nagaya/v1"]` as soon as the process serves one route under
-  the prefix. Today it returns an empty list (`crates/nagaya/src/http/mod.rs`).
+  the prefix. The text routes need a family. The list holds the prefix when the council has a served model, and it is
+  empty otherwise (`crates/nagaya/src/http/mod.rs`). Built on 2026-10-21.
 - **Proposed (for Amy).** The list claims only routes that exist. A route that is not built is a 404 `not_found`
   (11.7), also under the prefix. Thus a client probes a route by calling it.
 - **Proposed (for Amy).** Each machine lists the prefix for its own routes. `status` (9.7) is per machine, and the
@@ -2356,15 +2449,14 @@ rules are each "Decided by senpai 2026-10-20 night (vetoable)".
   gets a status response. A later failure is an `error` event. At most 256 events wait for a slow client. A full
   queue holds the generation back, and it drops no event.
 - A closed stream ends the forward thread, so the generation stops at its next token and holds no head.
-- A response does not report a control-text hit in a message of a context (`message:<i>`). gogi names only the
-  places `case`, `spec` and `suffix:<i>` (gogi rule 2).
+- A council response does not report a control-text hit in a message of a context (`message:<i>`). gogi names only
+  the places `case`, `spec` and `suffix:<i>` (gogi rule 2). The response of `render` does report it (11.4c).
 - A stop first sets every served model to `draining`, so a new request is a 503 `model_unavailable`. Then the
   engines stop (10.3), and the server waits at most 2 s for its open requests.
-- The routes under `/nagaya/v1` (11.4a) and the status feed (9.7) are not built.
-- Continuations are not built. gogi proposes them (`docs/council-api.md`, "Continuations", gogi `cc5d50e`), and
-  Amy agreed on the rules on 2026-10-21. They replace mk's `prefill` field. The nagaya declares capability
-  `continuation` after gogi's conformance checks for them pass. Until then, an open message is a 400 that names
-  `continue`, and `done` has no `phase`.
+- The routes `render`, `tokenize` and `detokenize` under `/nagaya/v1` are built (11.4b to 11.4d). The other routes of
+  11.4a and the status feed (9.7) are not built.
+- Continuations are built (11.3c). `gogi-conformance` against the process with the fake engine gave 271 to 274 ok,
+  0 FAIL and 8 skip on 2026-10-21, at gogi `dc94cb3`. The number of checks depends on the reply to a random nonce.
 
 ## 12. Identity
 
@@ -2463,7 +2555,8 @@ The inventories found these items. We correct each one when its code moves. We d
 
 - mk splits a prefill in its Python service (`contexts._feed`). The split moves under `max_quantum_ms` (5.1).
 - mk's `prefill` field of `/mk/v1/generate` (`service/generate.py`, `_with_prefill`) becomes a gogi
-  continuation. Its prefix check at the seam moves with it. The new name keeps "prefill" for the prompt pass.
+  continuation. Its prefix check at the seam moved with it (11.3c, the seam check). The new name keeps "prefill" for
+  the prompt pass.
 - mk orders jobs first in, first out in its one high tier. The nagaya uses the order in 5.4.
 - mk's "park" writes through to disk and seals at each "hold". In nagaya terms, a hold is a declared boundary, and
   a write to disk is a park to NVMe (D7).
@@ -2586,7 +2679,8 @@ night (vetoable)" in its section. Amy can veto any of them. Each line gives the 
 - 11.3c: the call ids are `call_<16 hex digits>_<index>`, from a hash of the prompt and the reply.
 - 11.3c: a generation with no seed takes one from the operating system.
 - 11.3c: the sample defaults are temperature 1 with no filter.
-- 11.3c: a reply that reaches the context size ends with `context_full`, even when it reached `max_tokens`.
+- 11.3c: a reply that reaches the context size ends with `context_full`, also when it reached `max_tokens`. gogi
+  `a07d85e` changed this order on 2026-10-21.
 - 11.3c: the decision limits are mkviolet's until the profile names others.
 - 11.7: the process serves an engine only when its kind has a family library with the same tokenizer hash.
 - 11.7: the served model is the engine's `model`, with 4096 tokens of context, or mk's maximum.

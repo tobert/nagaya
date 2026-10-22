@@ -7,7 +7,7 @@ use gogi_proto::context::Context;
 use gogi_proto::generation::Phase;
 use gogi_proto::spec::{Spec, SpecRules, parse_spec};
 use nagaya_council::family::{
-    Advance, Asked, Boundary, Continues, DecisionInput, Family, FamilyError, ReadPlan, ReadStep, ReplyCall,
+    Advance, Asked, Boundary, Continues, DecisionInput, Family, FamilyError, ReadPlan, ReadStep, ReplyCall, ReplyStart,
 };
 use nagaya_council::template_id::hash16;
 use nagaya_text_gemma4::CHAT_TEMPLATE;
@@ -165,6 +165,66 @@ fn tokenize_keeps_a_marker_as_text_and_detokenize_gives_it_back() {
     assert_eq!(family().detokenize(&ids).unwrap(), "say <|turn> now");
     assert!(client(family().detokenize(&[262_144]).unwrap_err()).contains("262144"));
     assert!(client(family().tokenize("\u{fdd0}").unwrap_err()).contains("U+FDD0"));
+}
+
+/// The param of a client error.
+fn param(e: FamilyError) -> Option<String> {
+    match e {
+        FamilyError::Client(invalid) => invalid.param,
+        other => panic!("want a client error, got {other:?}"),
+    }
+}
+
+/// spec 11.4d: tokens that end inside a character do not make whole text. That is a 400 that names `tokens`.
+#[test]
+fn detokenize_refuses_tokens_that_end_inside_a_character() {
+    if absent() {
+        return;
+    }
+    // Byte fallback: a character that is not in the vocabulary is one token for each byte.
+    let ids = family().tokenize("\u{1F9A5}").unwrap();
+    assert_eq!(ids.len(), 4, "{ids:?}");
+    assert_eq!(family().detokenize(&ids).unwrap(), "\u{1F9A5}");
+    assert_eq!(
+        param(family().detokenize(&ids[..3]).unwrap_err()).as_deref(),
+        Some("tokens")
+    );
+    assert_eq!(
+        param(family().detokenize(&ids[1..]).unwrap_err()).as_deref(),
+        Some("tokens")
+    );
+}
+
+/// spec 11.4d: the piece of a token is its text alone. A byte of a longer character is U+FFFD, and a marker is its
+/// text.
+#[test]
+fn pieces_give_each_token_alone() {
+    if absent() {
+        return;
+    }
+    let mut ids = family().tokenize(" A").unwrap();
+    ids.push(special("<|turn>"));
+    ids.extend(family().tokenize("\u{1F9A5}").unwrap());
+    let pieces = family().pieces(&ids).unwrap();
+    assert_eq!(
+        pieces,
+        [" A", "<|turn>", "\u{FFFD}", "\u{FFFD}", "\u{FFFD}", "\u{FFFD}"]
+    );
+    assert_eq!(
+        param(family().pieces(&[262_144]).unwrap_err()).as_deref(),
+        Some("tokens")
+    );
+}
+
+/// gogi "Raw reads": in a suffix, the text of a marker is the marker token. Client text keeps it as text.
+#[test]
+fn tokenize_special_gives_the_marker_token() {
+    if absent() {
+        return;
+    }
+    let ids = family().tokenize_special("<|turn>model\n").unwrap();
+    assert_eq!(ids[0], special("<|turn>"));
+    assert_eq!(ids, tpl("<|turn>model\n"));
 }
 
 // ---------------------------------------------------------------- the raw read
@@ -417,13 +477,13 @@ fn a_spec_past_the_letters_and_a_question_with_no_option_are_client_errors() {
 // ---------------------------------------------------------------- replies
 
 fn push_all(thinking: bool, ids: &[u32]) -> (Vec<(Phase, String)>, nagaya_council::family::ParsedReply) {
-    let mut parser = family().reply_parser(thinking, &[]).unwrap();
+    let mut parser = family().reply_parser(ReplyStart::prompt(thinking), &[]).unwrap();
     let steps = ids
         .iter()
         .map(|&t| parser.push(t).unwrap())
         .map(|s| (s.phase, s.piece))
         .collect();
-    (steps, parser.finish())
+    (steps, parser.finish(false))
 }
 
 fn joined(steps: &[(Phase, String)], phase: Phase) -> String {
@@ -495,13 +555,13 @@ fn every_stop_token_ends_a_reply_and_a_later_token_is_a_defect() {
         return;
     }
     for stop in ["<turn|>", "<eos>", "<|tool_response>", "<|turn>"] {
-        let mut parser = family().reply_parser(false, &[]).unwrap();
+        let mut parser = family().reply_parser(ReplyStart::prompt(false), &[]).unwrap();
         parser.push(tpl("Hi")[0]).unwrap();
         assert_eq!(parser.push(special(stop)).unwrap().piece, "");
         assert!(parser.ended(), "{stop}");
         assert!(matches!(parser.push(tpl("x")[0]), Err(FamilyError::Internal(_))));
     }
-    let mut parser = family().reply_parser(false, &[]).unwrap();
+    let mut parser = family().reply_parser(ReplyStart::prompt(false), &[]).unwrap();
     assert!(matches!(parser.push(262_144), Err(FamilyError::Internal(_))));
 }
 
@@ -535,4 +595,38 @@ fn the_template_id_has_the_council_hash_and_the_hash_of_the_template() {
     let again = nagaya_text_gemma4::Gemma4Family::from_dir(&common::model::model_dir()).unwrap();
     assert_eq!(again.template_id(), id, "the id is the same for each build");
     assert_eq!(family().vocab_size(), 262_144);
+}
+
+/// gogi "Continuations": the phase of the next token. A reply that ends with `max_tokens` reports it as `done.phase`.
+#[test]
+fn the_parser_tells_the_phase_of_the_next_token() {
+    if absent() {
+        return;
+    }
+    let mut parser = family().reply_parser(ReplyStart::prompt(true), &[]).unwrap();
+    assert_eq!(parser.phase(), Phase::Reasoning);
+    parser.push(tpl("plan")[0]).unwrap();
+    parser.push(special("<channel|>")).unwrap();
+    assert_eq!(parser.phase(), Phase::Content);
+    parser.push(special("<|tool_call>")).unwrap();
+    assert_eq!(parser.phase(), Phase::Call);
+    let parser = family().reply_parser(ReplyStart::prompt(false), &[]).unwrap();
+    assert_eq!(parser.phase(), Phase::Content);
+}
+
+// ---------------------------------------------------------------- continuations
+
+/// Until this family renders an open message, an open message is a 400 that names `continue`.
+#[test]
+fn an_open_message_is_refused_naming_continue() {
+    if absent() {
+        return;
+    }
+    let c = context(json!({"messages": [
+        {"role": "user", "content": "Write the config."},
+        {"role": "assistant", "content": "Plan:", "continue": true}]}));
+    assert_eq!(
+        param(family().render(&c, true).unwrap_err()).as_deref(),
+        Some("continue")
+    );
 }

@@ -11,6 +11,8 @@ pub enum Error {
     Reserved { ch: char, offset: usize },
     /// A token id is not in the vocabulary.
     TokenId { id: u32, count: usize },
+    /// Tokens that end or start inside a character, so their bytes are not whole UTF-8 text.
+    Bytes(String),
     /// The chat template refused the messages, or failed to run.
     Template(String),
     /// JSON that the template cannot take.
@@ -31,6 +33,7 @@ impl fmt::Display for Error {
                 f,
                 "token id {id} is not in the vocabulary of {count} tokens. Use an id below {count}."
             ),
+            Error::Bytes(m) => write!(f, "{m}. Send the tokens of whole characters."),
             Error::Template(m) => write!(f, "the chat template refused these messages: {m}"),
             Error::Json(m) => write!(f, "not usable JSON: {m}"),
         }

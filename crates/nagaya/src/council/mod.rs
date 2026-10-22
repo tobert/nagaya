@@ -19,16 +19,17 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use gogi_proto::Invalid;
 use gogi_proto::SnapshotId;
 use gogi_proto::context::{Context, SnapshotInfo, Tier as SnapshotTier, Usage};
 use gogi_proto::decision::DecisionIdentity;
 use gogi_proto::pins::{PinHeld, PinOwner, PinsPut, PinsPutResult, SnapshotDetail, validate_owner};
 use gogi_proto::spec::{HeldSpec, SpecRules};
 use nagaya_abi::{Capability, Engine, Limits};
-use nagaya_council::build::{boundary_recipes, recipes_with_cut, root_recipe};
-use nagaya_council::family::{Family, Rendering};
+use nagaya_council::build::{BoundaryRecipe, boundary_recipes, recipes_with_cuts, root_recipe};
+use nagaya_council::family::{Boundary, Family, Rendering};
 use nagaya_sched::{Class, IntervalCopies, IntervalPolicy};
-use nagaya_store::{ContentId, EntryState, Store, Tier};
+use nagaya_store::{ContentId, EntryState, RecipeId, Store, Tier, recipe_boundary};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -408,6 +409,11 @@ impl Service {
         &self.config.model
     }
 
+    /// The family library of the served model. The text routes under `/nagaya/v1` use it (spec 11.4b).
+    pub fn family(&self) -> &dyn Family {
+        &*self.family
+    }
+
     /// The config of the service: its limits and its defaults.
     pub fn config(&self) -> &ServiceConfig {
         &self.config
@@ -442,18 +448,51 @@ impl Service {
 
     /// Build a context (gogi "Contexts"): render it, start from the longest held prefix, feed the rest, and hold a
     /// snapshot at each boundary. A dry run renders and looks up, and feeds and holds nothing.
+    ///
+    /// An open message builds only as a dry run (gogi "Continuations"). The dry run looks up the build plan of a
+    /// continuation: the context before the open message. Its `head` names the recipe of the open rendering, which
+    /// the store never holds.
     pub fn build(&self, context: &Context, dry_run: bool, schedule: Schedule) -> Result<Built, ServiceError> {
-        refuse_open(context)?;
+        if context.open().is_some() && !dry_run {
+            return Err(Invalid::param(
+                "continue",
+                "nothing was built: a build reads an open message only with dry_run: true; send dry_run: true to test \
+                 a continuation, or send it to a generation",
+            )
+            .into());
+        }
         let rendering = self.family.render(context, false)?;
         if rendering.end > self.config.context_tokens {
-            return Err(past_context_tokens(rendering.end, self.config.context_tokens));
+            return Err(ServiceError::past_context(rendering.end, self.config.context_tokens));
         }
-        let recipes = boundary_recipes(self.root, &rendering)?;
+        let rendering_end = rendering.end;
+        let head_recipe = boundary_recipes(self.root, &rendering)?
+            .last()
+            .expect("a rendering has a boundary")
+            .recipe;
+        let open = context.open().is_some();
+        let open_rendering = rendering.clone();
+        let rendering = match open {
+            true => self.open_plan(context, &rendering)?,
+            false => rendering,
+        };
+        let recipes = plan_recipes(self.root, &rendering)?;
         let tokens: Arc<[u32]> = rendering.tokens[..rendering.end].into();
-        let cuts = self.cuts(context, &rendering)?;
+        let (cuts, extension) = match open {
+            true => self.starts(context, &open_rendering.tokens, &rendering)?,
+            false => (self.cuts(context, &rendering)?, None),
+        };
         let outcome = if dry_run {
             let (tx, rx) = mpsc::channel();
-            let body = LookupBody::new(Arc::clone(&self.shared), recipes.clone(), tokens.len(), tx).cuts(cuts);
+            // A continuation's slot holds all its open rendering, and a dry run reports what the generation would.
+            let room = if open {
+                open_rendering.tokens.len()
+            } else {
+                tokens.len()
+            };
+            let body = LookupBody::new(Arc::clone(&self.shared), recipes.clone(), Arc::clone(&tokens), room, tx)
+                .cuts(cuts)
+                .extension(extension);
             submit(
                 &self.ports,
                 self.group,
@@ -468,7 +507,7 @@ impl Service {
             let job = |tx| BuildBody::new(shared, tokens, recipes.clone(), tx).cuts(cuts);
             self.run_context(job, schedule, None)?.outcome
         };
-        let prompt = rendering.end as u64;
+        let prompt = rendering_end as u64;
         let usage = Usage {
             prompt,
             kept: outcome.kept as u64,
@@ -482,33 +521,180 @@ impl Service {
             self.infos(&held_boundaries(&outcome))
         };
         Ok(Built {
-            head_recipe: outcome.recipes.last().expect("a rendering has a boundary").recipe,
-            head: outcome.held.last().copied().flatten().map(|id| snapshot_id(&id)),
+            head_recipe,
+            // The store can evict the head before the list is read. A build names only a head that it lists.
+            head: match open {
+                true => None,
+                false => outcome
+                    .held
+                    .last()
+                    .copied()
+                    .flatten()
+                    .map(|id| snapshot_id(&id))
+                    .filter(|head| dry_run || snapshots.iter().any(|snapshot| snapshot.id == *head)),
+            },
             from: outcome.from.map(|id| snapshot_id(&id)),
             usage,
             snapshots,
         })
     }
 
-    /// The cuts of a context: the end of each message that the client did not mark, where the rendering keeps it, from
-    /// the highest down. A build may start from a snapshot that an earlier context held there (spec 11.3c).
+    /// The build plan of an open context (gogi "Continuations", spec 11.3c): the rendering of the context before its
+    /// open message. `rendering` is the rendering of the open context.
+    pub(crate) fn open_plan(&self, context: &Context, rendering: &Rendering) -> Result<Rendering, ServiceError> {
+        let mut before = context.clone();
+        before.messages.pop();
+        let before = match before.messages.is_empty() {
+            true => Rendering {
+                tokens: Vec::new(),
+                end: 0,
+                boundaries: Vec::new(),
+                control_text: Vec::new(),
+            },
+            false => self.family.render(&before, false)?,
+        };
+        Ok(nagaya_council::continuation::open_plan(rendering, &before)?)
+    }
+
+    /// The cuts of a context that has no open message (see [`Service::starts`]).
     fn cuts(&self, context: &Context, rendering: &Rendering) -> Result<Vec<Cut>, ServiceError> {
-        if context.messages.iter().all(|message| message.snap) {
-            return Ok(Vec::new());
+        Ok(self.starts(context, &rendering.tokens[..rendering.end], rendering)?.0)
+    }
+
+    /// The held snapshots where a job may start, other than the plain boundaries of its plan (spec 11.3c).
+    ///
+    /// The store may hold a snapshot whose chain of seals differs from the plan's: at the unmarked end of a message,
+    /// at the head of a cut reply, or after such a cut. The search follows the store's index by `chains_from` from
+    /// the root. From each seal, it goes to the next boundary of the plan, and to each held entry that chains from
+    /// the seal and whose recipe the context's `tokens` give. Thus it reads only the entries that chain from this
+    /// context, and it renders nothing.
+    ///
+    /// `tokens` are the context's tokens: the plan's, or for an open context all the open rendering. A held entry at
+    /// or before the end of the plan is a cut, with the seals of its chain inserted among the plan's boundaries. For
+    /// an open context, the longest held entry after the plan, at most one token before the end, is the extension.
+    fn starts(
+        &self,
+        context: &Context,
+        tokens: &[u32],
+        plan: &Rendering,
+    ) -> Result<(Vec<Cut>, Option<build::Extension>), ServiceError> {
+        let open = context.open().is_some();
+        let limit = if open { tokens.len().saturating_sub(1) } else { plan.end };
+        // The message of a seal that is not a boundary: the message of the next boundary, or the open message.
+        let message_at = |position: usize| {
+            plan.boundaries
+                .iter()
+                .find(|boundary| boundary.tokens >= position)
+                .map_or(context.messages.len() - 1, |boundary| boundary.message)
+        };
+        struct Node {
+            recipe: RecipeId,
+            at: usize,
+            path: Vec<BoundaryRecipe>,
         }
-        let mut all = context.clone();
-        for message in &mut all.messages {
-            message.snap = true;
-        }
-        let marked = self.family.render(&all, false)?;
-        let mut cuts = Vec::new();
-        for cut in marked.boundaries.iter().rev() {
-            let between = cut.tokens < rendering.end && rendering.boundaries.iter().all(|b| b.tokens != cut.tokens);
-            if between {
-                cuts.push((*cut, recipes_with_cut(self.root, rendering, *cut)?));
+        let mut stack = vec![Node {
+            recipe: self.root,
+            at: 0,
+            path: Vec::new(),
+        }];
+        let mut seen: std::collections::BTreeSet<RecipeId> = std::collections::BTreeSet::new();
+        let mut found: Vec<Node> = Vec::new();
+        let store = self.store();
+        while let Some(node) = stack.pop() {
+            if let Some(next) = plan.boundaries.iter().find(|boundary| boundary.tokens > node.at) {
+                let recipe = recipe_boundary(&node.recipe, &tokens[node.at..next.tokens], next.tokens as u64);
+                if seen.insert(recipe) {
+                    stack.push(Node {
+                        recipe,
+                        at: next.tokens,
+                        path: node.path.clone(),
+                    });
+                }
+            }
+            for entry in store.chained_from(&node.recipe) {
+                let usable = entry.state == EntryState::Live
+                    && entry.reason != nagaya_store::Reason::Interval
+                    && entry.engine == self.shared.engine_name
+                    && entry.identity == self.shared.identity;
+                let Some(at) = entry.coverage.iter().map(|span| span.end).max().map(|end| end as usize) else {
+                    continue;
+                };
+                if !usable || at <= node.at || at > limit {
+                    continue;
+                }
+                if recipe_boundary(&node.recipe, &tokens[node.at..at], at as u64) != entry.recipe {
+                    continue;
+                }
+                let mut path = node.path.clone();
+                if plan.boundaries.iter().all(|boundary| boundary.tokens != at) {
+                    path.push(BoundaryRecipe {
+                        boundary: Boundary {
+                            message: message_at(at),
+                            tokens: at,
+                        },
+                        recipe: entry.recipe,
+                    });
+                }
+                if !path.is_empty() {
+                    found.push(Node {
+                        recipe: entry.recipe,
+                        at,
+                        path: path.clone(),
+                    });
+                }
+                if seen.insert(entry.recipe) {
+                    stack.push(Node {
+                        recipe: entry.recipe,
+                        at,
+                        path,
+                    });
+                }
             }
         }
-        Ok(cuts)
+        drop(store);
+        let chain = |seals: &[BoundaryRecipe]| -> Result<Vec<BoundaryRecipe>, ServiceError> {
+            if plan.boundaries.is_empty() {
+                return Ok(Vec::new());
+            }
+            let inserted: Vec<Boundary> = seals.iter().map(|seal| seal.boundary).collect();
+            Ok(recipes_with_cuts(self.root, plan, &inserted)?)
+        };
+        let mut cuts: Vec<Cut> = Vec::new();
+        let mut extension: Option<build::Extension> = None;
+        for node in found {
+            if node.at > plan.end {
+                if extension
+                    .as_ref()
+                    .is_some_and(|e| e.seals.last().is_some_and(|s| s.boundary.tokens >= node.at))
+                {
+                    continue;
+                }
+                let (inside, after): (Vec<BoundaryRecipe>, Vec<BoundaryRecipe>) =
+                    node.path.iter().partition(|seal| seal.boundary.tokens <= plan.end);
+                extension = Some(build::Extension {
+                    tokens: tokens[plan.end..node.at].to_vec(),
+                    chain: chain(&inside)?,
+                    seals: after,
+                });
+                continue;
+            }
+            if cuts.iter().any(|(cut, _)| cut.tokens == node.at) {
+                continue;
+            }
+            let recipes = chain(&node.path)?;
+            let Some(cut) = recipes.iter().find(|recipe| recipe.boundary.tokens == node.at) else {
+                continue;
+            };
+            if cut.recipe != node.recipe {
+                return Err(ServiceError::internal(format!(
+                    "the chain of a held snapshot at token {} does not give its recipe",
+                    node.at
+                )));
+            }
+            cuts.push((cut.boundary, recipes));
+        }
+        cuts.sort_by_key(|(cut, _)| std::cmp::Reverse(cut.tokens));
+        Ok((cuts, extension))
     }
 
     /// Run a context job with the ledger charge of its context, and wait for its result (spec 4.2).
@@ -803,9 +989,20 @@ pub(crate) fn held_boundaries(outcome: &Outcome) -> Vec<(nagaya_council::family:
         .recipes
         .iter()
         .zip(&outcome.held)
-        .filter(|(recipe, _)| Some(recipe.boundary) != outcome.cut)
+        .filter(|(recipe, _)| !outcome.inserted.contains(&recipe.boundary))
         .filter_map(|(recipe, id)| Some((recipe.boundary, (*id)?)))
         .collect()
+}
+
+/// The recipes of a build plan. A plan with no boundary builds nothing: the job starts on an empty slot.
+pub(crate) fn plan_recipes(
+    root: nagaya_store::RecipeId,
+    plan: &Rendering,
+) -> Result<Vec<nagaya_council::build::BoundaryRecipe>, ServiceError> {
+    match plan.boundaries.is_empty() {
+        true => Ok(Vec::new()),
+        false => Ok(boundary_recipes(root, plan)?),
+    }
 }
 
 /// The snapshot id of a content id (spec 11.1): `blake3:` and the 64 hex digits.
@@ -847,26 +1044,4 @@ fn submit(
 
 fn wait(rx: &Receiver<Result<Outcome, ServiceError>>) -> Result<Outcome, ServiceError> {
     rx.recv().map_err(|_| ServiceError::Cancelled)?
-}
-
-/// Refuse an open message (`continue: true`). This model does not declare the capability `continuation`, so gogi
-/// "Continuations" makes an open message a 400 that names `continue`. The check comes before a family renders it.
-pub(crate) fn refuse_open(context: &Context) -> Result<(), ServiceError> {
-    if context.open().is_some() {
-        return Err(gogi_proto::Invalid::param(
-            "continue",
-            "this model does not declare the continuation capability; send the last message without continue: true",
-        )
-        .into());
-    }
-    Ok(())
-}
-
-/// The error of a context, or a context and its longest suffix, that is longer than `context_tokens`. gogi "Errors"
-/// makes it a 413 `too_large` that names `context_tokens`. `context_full` is only for a generation's prompt.
-pub(crate) fn past_context_tokens(tokens: usize, context_tokens: usize) -> ServiceError {
-    ServiceError::TooLarge {
-        param: "context_tokens".to_owned(),
-        message: format!("the context has {tokens} tokens, and the served model holds {context_tokens}; shorten it"),
-    }
 }

@@ -121,7 +121,7 @@ impl Service {
             let rendering = self.family.render(context, false)?;
             let end = rendering.end;
             if end + longest > self.config.context_tokens {
-                return Err(super::past_context_tokens(end + longest, self.config.context_tokens));
+                return Err(ServiceError::past_context(end + longest, self.config.context_tokens));
             }
             let recipes = boundary_recipes(self.root, &rendering)?;
             let tokens: Arc<[u32]> = rendering.tokens[..end].into();

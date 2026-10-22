@@ -326,6 +326,7 @@ fn a_long_slot_parks_and_restores_through_the_store() {
             tier: Tier::Host,
             reason: Reason::Anchor,
             sealed_recipe: None,
+            chains_from: None,
             provenance: None,
             now_ms: 0,
         })

@@ -5,6 +5,7 @@
 //! call (spec 3.2). Every response carries a `request-id` header, and every error body carries the same id (11.5).
 
 mod errors;
+mod extensions;
 mod routes;
 mod stream;
 
@@ -153,7 +154,12 @@ impl Council {
             } else {
                 vec![Capability::Classes]
             },
-            extensions: Vec::new(),
+            // The text routes need a family, so a process that serves no model lists no prefix (spec 11.4f).
+            extensions: if pins {
+                vec![extensions::PREFIX.to_owned()]
+            } else {
+                Vec::new()
+            },
         }
     }
 
@@ -179,9 +185,12 @@ impl Council {
                 default_timeout_ms: config.default_timeout_ms,
                 text_tokens: None,
             },
+            // Each family library renders an open message and checks its seams, so each served model continues a
+            // reply (gogi "Continuations"). Riding decisions are not built, so no model declares `ride`.
             capabilities: vec![
                 Capability::Reads,
                 Capability::Generate,
+                Capability::Continuation,
                 Capability::DryRun,
                 Capability::LeaveOneOut,
             ],

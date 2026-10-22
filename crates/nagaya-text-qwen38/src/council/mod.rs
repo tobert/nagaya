@@ -35,8 +35,9 @@ mod test_set;
 mod tests;
 
 use gogi_proto::context::{Context, Tool};
+use gogi_proto::message::Message;
 use nagaya_council::family::{
-    Boundary, ControlHit, DecisionInput, Family, FamilyError, RawRead, ReadPlan, Rendering, ReplyParser,
+    Boundary, ControlHit, DecisionInput, Family, FamilyError, RawRead, ReadPlan, Rendering, ReplyParser, ReplyStart,
 };
 use nagaya_council::template_id::{hash16, template_id};
 
@@ -220,6 +221,81 @@ impl Qwen38Family {
         Ok(rendered)
     }
 
+    /// Render messages and an open last message (gogi "Continuations"): the template's rendering of the message as a
+    /// reply, cut at the start of its open field, and then the open field as sent.
+    ///
+    /// The template trims the reasoning and the content of a message, so the open field does not go through it. The
+    /// library renders the message closed with stand-in text in the open field, and cuts the text at the stand-in. A
+    /// `content` member makes `content` the open field, even when it is empty. Without one, `reasoning` is the open
+    /// field. Thus the text before the field is the template's own, and the field keeps its white space.
+    pub(crate) fn run_open(
+        &self,
+        before: &[Json],
+        open: &Message,
+        tools: Option<&Json>,
+        thinking: bool,
+    ) -> Result<Rendered, FamilyError> {
+        let mut all = before.to_vec();
+        let stand_in = messages::stand_in_prefix(&all, tools).replace("system-turn", "open-text");
+        let (closed, field) = match &open.content {
+            Some(content) => (
+                Message {
+                    content: Some(stand_in.clone()),
+                    open: false,
+                    ..open.clone()
+                },
+                content.as_str(),
+            ),
+            None => (
+                Message {
+                    reasoning: Some(stand_in.clone()),
+                    content: Some(String::new()),
+                    open: false,
+                    ..open.clone()
+                },
+                open.reasoning.as_deref().unwrap_or(""),
+            ),
+        };
+        all.push(messages::message_json(&closed));
+        let rendered = self.run(&all, tools, thinking, false)?;
+        let Some(at) = rendered.escaped.rfind(&stand_in) else {
+            return Err(FamilyError::internal(
+                "the template did not render the stand-in text of an open message. The chat template changed shape.",
+            ));
+        };
+        let escaped = format!("{}{}", &rendered.escaped[..at], self.content(field)?);
+        let ids = self.encode(&escaped)?;
+        let text = self.tokenizer().unescape(&escaped).map_err(refusal)?;
+        Ok(Rendered { escaped, text, ids })
+    }
+
+    /// The seam check of mk's `prefill` (gogi "Continuations"): each open field that is not empty must tokenize on its
+    /// own. The rendering up to the start of the field must be a token prefix of the rendering through its end.
+    fn check_seams(
+        &self,
+        messages: &[Json],
+        open: &Message,
+        tools: Option<&Json>,
+        thinking: bool,
+    ) -> Result<(), FamilyError> {
+        let before = &messages[..messages.len() - 1];
+        for seam in gogi_proto::continuation::seams(open) {
+            let start = self.run_open(before, &seam.before, tools, thinking)?.ids;
+            let with = self.run_open(before, &seam.with, tools, thinking)?.ids;
+            gogi_proto::continuation::check_seam(seam.field, &start, &with, |ids| self.lossy_text(ids))?;
+        }
+        Ok(())
+    }
+
+    /// The text of tokens, with U+FFFD for bytes that are not whole characters. An error message shows it.
+    fn lossy_text(&self, ids: &[u32]) -> String {
+        let bytes: Vec<u8> = ids
+            .iter()
+            .flat_map(|&id| self.tokenizer().token_piece(id, true).unwrap_or_default())
+            .collect();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
     /// Client text as escaped content: its special token text cannot open or close a turn.
     pub(crate) fn content(&self, text: &str) -> Result<String, FamilyError> {
         self.tokenizer().escape(text).map_err(refusal)
@@ -279,9 +355,17 @@ impl Family for Qwen38Family {
         let tools = messages::tools_json(&context.tools);
         let messages: Vec<Json> = context.messages.iter().map(messages::message_json).collect();
         let thinking = context.thinks();
-        let base = self.run(&messages, tools.as_ref(), thinking, false)?;
+        let open = context.open();
+        let base = match open {
+            Some(open) => {
+                self.check_seams(&messages, open, tools.as_ref(), thinking)?;
+                self.run_open(&messages[..messages.len() - 1], open, tools.as_ref(), thinking)?
+            }
+            None => self.run(&messages, tools.as_ref(), thinking, false)?,
+        };
         let end = base.ids.len();
-        let mut tokens = if generation_prompt {
+        // An open message takes the place of the generation prompt (gogi "Continuations").
+        let mut tokens = if generation_prompt && open.is_none() {
             let whole = self.run(&messages, tools.as_ref(), thinking, true)?.ids;
             if !whole.starts_with(&base.ids) {
                 return Err(FamilyError::internal(
@@ -292,15 +376,17 @@ impl Family for Qwen38Family {
         } else {
             base.ids.clone()
         };
-        // A marked message is a boundary when its rendering is a prefix of the whole (gogi "Contexts").
+        // A marked message is a boundary when its rendering is a prefix of the whole (gogi "Contexts"). It must also
+        // add tokens: an empty system message renders none, and a boundary comes after the one before it.
         let last = messages.len() - 1;
-        let mut boundaries = Vec::new();
+        let mut boundaries: Vec<Boundary> = Vec::new();
         for (i, message) in context.messages.iter().enumerate().take(last) {
             if !message.snap {
                 continue;
             }
             let part = self.run(&messages[..=i], tools.as_ref(), thinking, false)?;
-            if base.ids.starts_with(&part.ids) {
+            let after = boundaries.last().map_or(0, |b| b.tokens);
+            if base.ids.starts_with(&part.ids) && part.ids.len() > after && part.ids.len() < end {
                 boundaries.push(Boundary {
                     message: i,
                     tokens: part.ids.len(),
@@ -311,7 +397,7 @@ impl Family for Qwen38Family {
             message: last,
             tokens: end,
         });
-        if generation_prompt {
+        if generation_prompt && open.is_none() {
             self.tweak(Site::Context, &mut tokens);
         }
         let control_text = context
@@ -342,12 +428,16 @@ impl Family for Qwen38Family {
         read::raw_read(self, letters, suffixes)
     }
 
-    fn reply_parser(&self, thinking: bool, tools: &[Tool]) -> Result<Box<dyn ReplyParser>, FamilyError> {
-        reply::reply_parser(self, thinking, tools)
+    fn reply_parser(&self, start: ReplyStart, tools: &[Tool]) -> Result<Box<dyn ReplyParser>, FamilyError> {
+        reply::reply_parser(self, start, tools)
     }
 
     fn tokenize(&self, text: &str) -> Result<Vec<u32>, FamilyError> {
         self.encode(&self.content(text)?)
+    }
+
+    fn tokenize_special(&self, text: &str) -> Result<Vec<u32>, FamilyError> {
+        self.tokenizer().encode(text).map_err(refusal)
     }
 
     fn detokenize(&self, tokens: &[u32]) -> Result<String, FamilyError> {
@@ -358,6 +448,19 @@ impl Family for Qwen38Family {
             }
             other => internal(other),
         })
+    }
+
+    fn pieces(&self, tokens: &[u32]) -> Result<Vec<String>, FamilyError> {
+        tokens
+            .iter()
+            .map(|&id| {
+                let bytes = self.tokenizer().token_piece(id, true).map_err(|e| match e {
+                    Error::TokenId { .. } | Error::Bytes(_) => FamilyError::client_param("tokens", e.to_string()),
+                    other => internal(other),
+                })?;
+                Ok(String::from_utf8_lossy(&bytes).into_owned())
+            })
+            .collect()
     }
 
     fn template_id(&self) -> &str {

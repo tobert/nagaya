@@ -44,6 +44,18 @@ impl ServiceError {
     pub fn internal(message: impl Into<String>) -> Self {
         ServiceError::Internal(message.into())
     }
+
+    /// The 413 `too_large` of a build or a raw read that needs more than `context_tokens` tokens. `context_full` is
+    /// only for the prompt of a generation (gogi "Errors").
+    pub fn past_context(tokens: usize, context_tokens: usize) -> Self {
+        ServiceError::TooLarge {
+            param: "context_tokens".to_owned(),
+            message: format!(
+                "nothing ran: the request needs {tokens} tokens, and the served model holds {context_tokens}; \
+                 shorten the context"
+            ),
+        }
+    }
 }
 
 impl std::fmt::Display for ServiceError {

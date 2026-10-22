@@ -77,16 +77,33 @@ pub fn recipes_with_cut(
     rendering: &Rendering,
     cut: Boundary,
 ) -> Result<Vec<BoundaryRecipe>, FamilyError> {
-    if cut.tokens == 0 || cut.tokens >= rendering.end || rendering.boundaries.iter().any(|b| b.tokens == cut.tokens) {
-        return Err(FamilyError::internal(format!(
-            "a cut at token {} is not inside the context of {} tokens, between its boundaries",
-            cut.tokens, rendering.end
-        )));
+    recipes_with_cuts(root, rendering, &[cut])
+}
+
+/// The recipes of a rendering with more boundaries, at `cuts`, in any order (spec 11.3c).
+///
+/// A state keeps each seal that its build made, so its recipe names each place where it was sealed. A build from a
+/// cut sealed at the cut. A continuation from the head of a cut reply keeps the seal of that head. Each cut must lie
+/// before the end, and on no boundary. Any other cut is a defect of the caller: the result is
+/// [`FamilyError::Internal`].
+pub fn recipes_with_cuts(
+    root: RecipeId,
+    rendering: &Rendering,
+    cuts: &[Boundary],
+) -> Result<Vec<BoundaryRecipe>, FamilyError> {
+    let mut with_cuts = rendering.clone();
+    for cut in cuts {
+        if cut.tokens == 0 || cut.tokens >= rendering.end || with_cuts.boundaries.iter().any(|b| b.tokens == cut.tokens)
+        {
+            return Err(FamilyError::internal(format!(
+                "a cut at token {} is not inside the context of {} tokens, between its boundaries",
+                cut.tokens, rendering.end
+            )));
+        }
+        let at = with_cuts.boundaries.partition_point(|b| b.tokens < cut.tokens);
+        with_cuts.boundaries.insert(at, *cut);
     }
-    let mut with_cut = rendering.clone();
-    let at = with_cut.boundaries.partition_point(|b| b.tokens < cut.tokens);
-    with_cut.boundaries.insert(at, cut);
-    boundary_recipes(root, &with_cut)
+    boundary_recipes(root, &with_cuts)
 }
 
 /// One step of a build after its restore.

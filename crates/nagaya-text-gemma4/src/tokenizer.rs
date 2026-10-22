@@ -138,6 +138,45 @@ impl Tokenizer {
             .map_err(|e| Error::Tokenizer(e.to_string()))
     }
 
+    /// The bytes of one token alone, by the rules of the file's decoder: a byte token `<0xHH>` is its byte, an added
+    /// token is its text, and any other token is its text with `▁` as a space. An id outside the vocabulary is an
+    /// error.
+    pub fn token_bytes(&self, id: u32) -> Result<Vec<u8>, Error> {
+        if id as usize >= self.vocab {
+            return Err(Error::TokenId { id, count: self.vocab });
+        }
+        if let Some(added) = self.inner.get_added_tokens_decoder().get(&id) {
+            return Ok(added.content.clone().into_bytes());
+        }
+        let Some(token) = self.inner.id_to_token(id) else {
+            return Err(Error::Tokenizer(format!("the vocabulary has no text for token {id}")));
+        };
+        let byte = token
+            .strip_prefix("<0x")
+            .and_then(|t| t.strip_suffix('>'))
+            .filter(|hex| hex.len() == 2)
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        Ok(match byte {
+            Some(b) => vec![b],
+            None => token.replace('\u{2581}', " ").into_bytes(),
+        })
+    }
+
+    /// The text of `ids` when their bytes are whole UTF-8 text. Tokens that end or start inside a character are
+    /// [`Error::Bytes`].
+    pub fn decode_whole(&self, ids: &[u32]) -> Result<String, Error> {
+        let mut bytes = Vec::new();
+        for &id in ids {
+            bytes.extend(self.token_bytes(id)?);
+        }
+        String::from_utf8(bytes).map_err(|e| {
+            Error::Bytes(format!(
+                "the tokens are not whole text: byte {} is inside a character",
+                e.utf8_error().valid_up_to()
+            ))
+        })
+    }
+
     /// The id of one exact vocabulary entry, such as `<|turn>` or `▁A`.
     pub fn token_id(&self, token: &str) -> Option<u32> {
         self.inner.token_to_id(token)

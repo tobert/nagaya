@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use gogi_proto::generation::Phase;
-use nagaya_council::family::{FamilyError, ParsedReply, ReplyCall, ReplyParser, ReplyStep};
+use nagaya_council::family::{FamilyError, ParsedReply, ReplyCall, ReplyParser, ReplyStart, ReplyStep};
 
 use super::Gemma4Family;
 use crate::call::parse_tool_call;
@@ -25,12 +25,16 @@ pub(crate) struct Marks {
 /// The name of the thought channel, as the template writes it after `<|channel>`.
 const CHANNEL_NAME: &str = "thought";
 
-pub(crate) fn reply_parser(family: &Gemma4Family, thinking: bool) -> Box<dyn ReplyParser> {
+pub(crate) fn reply_parser(family: &Gemma4Family, start: ReplyStart) -> Box<dyn ReplyParser> {
     Box::new(Gemma4ReplyParser {
         tokenizer: family.shared_tokenizer(),
         marks: family.marks,
         stop: family.stop.clone(),
-        phase: if thinking { Phase::Reasoning } else { Phase::Content },
+        phase: if start.thinking {
+            Phase::Reasoning
+        } else {
+            Phase::Content
+        },
         self_opened: false,
         think_sent: 0,
         think: String::new(),
@@ -185,7 +189,11 @@ impl ReplyParser for Gemma4ReplyParser {
         self.ended
     }
 
-    fn finish(mut self: Box<Self>) -> ParsedReply {
+    fn phase(&self) -> Phase {
+        self.phase
+    }
+
+    fn finish(mut self: Box<Self>, _max_tokens: bool) -> ParsedReply {
         if let Some(body) = self.call.take() {
             self.close_call(body, false);
         }

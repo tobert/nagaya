@@ -90,9 +90,11 @@ fn identity_lists_the_served_model_with_its_limits_capabilities_and_status() {
         Capability::Generate,
         Capability::DryRun,
         Capability::LeaveOneOut,
+        Capability::Continuation,
     ] {
         assert!(model.has(capability), "{capability:?}");
     }
+    assert!(!model.has(Capability::Ride), "riding decisions are not built");
     assert!(identity.has(Capability::Pins) && identity.has(Capability::Classes));
     assert!(identity.limits.pin_bytes.is_some());
 }
@@ -568,6 +570,42 @@ fn a_read_with_no_suffix_is_a_400_before_any_family_code_runs() {
         let (status, _, value) = send(&council, "POST", "/council/v2/reads", Some(body));
         assert_eq!(status, StatusCode::BAD_REQUEST, "{value}");
         assert_eq!(value["error"]["param"], param, "{value}");
+    }
+}
+
+/// gogi "Continuations": `continue` is a boolean, and any other value is a 400 that names `continue`. The body does
+/// not decode, so the error comes before any route code runs.
+#[test]
+fn a_continue_that_is_not_a_boolean_is_a_400_that_names_continue() {
+    let f = Fixture::new();
+    let council = council(&f);
+    let mut open = context();
+    open["messages"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"role": "assistant", "content": "Plan:", "continue": "yes"}));
+    let spec = format!("sha256:{}", "0".repeat(64));
+    for (path, body) in [
+        (
+            "/council/v2/generations",
+            json!({"model": "toy", "context": open, "max_tokens": 4}),
+        ),
+        (
+            "/council/v2/contexts",
+            json!({"model": "toy", "context": open, "dry_run": true}),
+        ),
+        (
+            "/council/v2/decisions",
+            json!({"model": "toy", "spec_id": spec, "case": "x", "contexts": [open]}),
+        ),
+        (
+            "/council/v2/reads",
+            json!({"model": "toy", "contexts": [open], "suffixes": ["x"], "letters": ["A", "B"]}),
+        ),
+    ] {
+        let (status, _, value) = send(&council, "POST", path, Some(body));
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{path}: {value}");
+        assert_eq!(value["error"]["param"], "continue", "{path}: {value}");
     }
 }
 

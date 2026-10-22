@@ -88,6 +88,7 @@ fn put_full(
         snapshot,
         recipe,
         previous_recipe: previous,
+        chains_from: None,
         engine: engine_facts(),
         identity: [1u8; 32],
         owner: 1,

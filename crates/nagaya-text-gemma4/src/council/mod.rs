@@ -34,7 +34,7 @@ use std::sync::Arc;
 
 use gogi_proto::context::{Context, Tool};
 use nagaya_council::family::{
-    Boundary, ControlHit, DecisionInput, Family, FamilyError, RawRead, ReadPlan, Rendering, ReplyParser,
+    Boundary, ControlHit, DecisionInput, Family, FamilyError, RawRead, ReadPlan, Rendering, ReplyParser, ReplyStart,
 };
 use nagaya_council::template_id::{council_hash, hash16, template_id};
 use nagaya_jinja::Json;
@@ -79,6 +79,14 @@ pub(crate) fn client(e: Error) -> FamilyError {
 /// A library error for a failure that the client did not cause.
 pub(crate) fn internal(e: Error) -> FamilyError {
     FamilyError::internal(e.to_string())
+}
+
+/// An error of the tokens that a client sent: an id outside the vocabulary, or bytes that are not whole text.
+fn tokens_error(e: Error) -> FamilyError {
+    match e {
+        Error::TokenId { .. } | Error::Bytes(_) => FamilyError::client_param("tokens", e.to_string()),
+        other => internal(other),
+    }
 }
 
 /// A refusal of the template or of the escapes on client input is the client's. Any other error is ours.
@@ -219,6 +227,12 @@ fn letter_tokens(tokenizer: &Tokenizer) -> Result<(Vec<u32>, Vec<u32>), Error> {
 impl Family for Gemma4Family {
     fn render(&self, context: &Context, generation_prompt: bool) -> Result<Rendering, FamilyError> {
         context.check()?;
+        if context.open().is_some() {
+            return Err(FamilyError::client_param(
+                "continue",
+                "this model does not render an open message yet; send the last message without continue: true",
+            ));
+        }
         let tools = messages::tools_json(&context.tools);
         let msgs: Vec<Json> = context.messages.iter().map(messages::message_json).collect();
         let thinking = context.thinks();
@@ -287,9 +301,9 @@ impl Family for Gemma4Family {
         read::raw_read(self, letters, suffixes)
     }
 
-    fn reply_parser(&self, thinking: bool, _tools: &[Tool]) -> Result<Box<dyn ReplyParser>, FamilyError> {
+    fn reply_parser(&self, start: ReplyStart, _tools: &[Tool]) -> Result<Box<dyn ReplyParser>, FamilyError> {
         // The Gemma 4 call form writes its own types, so the parser needs no schema.
-        Ok(reply::reply_parser(self, thinking))
+        Ok(reply::reply_parser(self, start))
     }
 
     fn tokenize(&self, text: &str) -> Result<Vec<u32>, FamilyError> {
@@ -297,10 +311,22 @@ impl Family for Gemma4Family {
     }
 
     fn detokenize(&self, tokens: &[u32]) -> Result<String, FamilyError> {
-        self.tokenizer().decode(tokens).map_err(|e| match e {
-            Error::TokenId { .. } => FamilyError::client_param("tokens", e.to_string()),
-            other => internal(other),
-        })
+        self.tokenizer().decode_whole(tokens).map_err(tokens_error)
+    }
+
+    fn tokenize_special(&self, text: &str) -> Result<Vec<u32>, FamilyError> {
+        check_text(text).map_err(client)?;
+        self.tokenizer().encode(text).map_err(internal)
+    }
+
+    fn pieces(&self, tokens: &[u32]) -> Result<Vec<String>, FamilyError> {
+        tokens
+            .iter()
+            .map(|&id| {
+                let bytes = self.tokenizer().token_bytes(id).map_err(tokens_error)?;
+                Ok(String::from_utf8_lossy(&bytes).into_owned())
+            })
+            .collect()
     }
 
     fn template_id(&self) -> &str {

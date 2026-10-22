@@ -1,7 +1,7 @@
 //! The toy family library: nagaya's family interface on gogi's `gogi-toy` (spec 11.3b).
 //!
-//! The tokens, the template, the boundaries and the council read come from `gogi_toy`, so they equal the tokens of
-//! `gogi-fake`. The fake engine gives logits over `gogi_toy::VOCAB` tokens (engine-abi, "Logit outputs").
+//! The tokens, the template, the boundaries, the rendering of an open message and the council read come from
+//! `gogi_toy`, so they equal the tokens of `gogi-fake`. The fake engine gives logits over `gogi_toy::VOCAB` tokens (engine-abi, "Logit outputs").
 
 mod plan;
 mod reply;
@@ -10,7 +10,7 @@ mod test_set;
 use gogi_proto::context::{Context, Tool};
 use gogi_toy as toy;
 use nagaya_council::family::{
-    Boundary, ControlHit, DecisionInput, Family, FamilyError, RawRead, ReadPlan, Rendering, ReplyParser,
+    Boundary, ControlHit, DecisionInput, Family, FamilyError, RawRead, ReadPlan, Rendering, ReplyParser, ReplyStart,
 };
 use nagaya_council::template_id::{hash16, template_id};
 
@@ -132,6 +132,9 @@ pub(crate) fn hits(place: &str, text: &str) -> Vec<ControlHit> {
 impl Family for ToyFamily {
     fn render(&self, context: &Context, generation_prompt: bool) -> Result<Rendering, FamilyError> {
         context.check()?;
+        // An open message renders without its end (gogi-toy). Each open field must tokenize on its own. A toy token
+        // is a byte, so the check never refuses, but it is the check that every family makes.
+        toy::check_open(&context.tools, context.thinks(), &context.messages)?;
         let r = toy::render(&context.tools, context.thinks(), &context.messages, generation_prompt);
         let mut tokens = r.tokens;
         self.tweak(Site::Context, &mut tokens);
@@ -179,9 +182,10 @@ impl Family for ToyFamily {
         })
     }
 
-    fn reply_parser(&self, thinking: bool, _tools: &[Tool]) -> Result<Box<dyn ReplyParser>, FamilyError> {
-        // The toy call format has no schema, so the tools do not change the parse.
-        Ok(Box::new(reply::ToyReplyParser::new(thinking)))
+    fn reply_parser(&self, start: ReplyStart, _tools: &[Tool]) -> Result<Box<dyn ReplyParser>, FamilyError> {
+        // The toy call format has no schema, so the tools do not change the parse. The toy parser trims nothing, so
+        // a continuation needs no other parse.
+        Ok(Box::new(reply::ToyReplyParser::new(start.thinking)))
     }
 
     fn tokenize(&self, text: &str) -> Result<Vec<u32>, FamilyError> {
@@ -190,23 +194,15 @@ impl Family for ToyFamily {
         Ok(tokens)
     }
 
+    fn tokenize_special(&self, text: &str) -> Result<Vec<u32>, FamilyError> {
+        Ok(toy::tokenize_suffix(text))
+    }
+
     fn detokenize(&self, tokens: &[u32]) -> Result<String, FamilyError> {
         let mut bytes = Vec::new();
         for (i, &token) in tokens.iter().enumerate() {
-            if token as usize >= toy::VOCAB {
-                return Err(FamilyError::client_param(
-                    "tokens",
-                    format!(
-                        "token {i} is {token}, which is not a token: ids run 0 to {}",
-                        toy::VOCAB - 1
-                    ),
-                ));
-            }
-            if token < 256 {
-                bytes.push(token as u8);
-            } else {
-                bytes.extend(toy::piece(token).into_bytes());
-            }
+            check_token(i, token)?;
+            bytes.extend(token_bytes(token));
         }
         String::from_utf8(bytes).map_err(|e| {
             FamilyError::client_param(
@@ -216,12 +212,46 @@ impl Family for ToyFamily {
         })
     }
 
+    fn pieces(&self, tokens: &[u32]) -> Result<Vec<String>, FamilyError> {
+        tokens
+            .iter()
+            .enumerate()
+            .map(|(i, &token)| {
+                check_token(i, token)?;
+                Ok(String::from_utf8_lossy(&token_bytes(token)).into_owned())
+            })
+            .collect()
+    }
+
     fn template_id(&self) -> &str {
         &self.template_id
     }
 
     fn vocab_size(&self) -> usize {
         toy::VOCAB
+    }
+}
+
+/// A token past the vocabulary is a client error that names `tokens`. `i` is its place in the request.
+fn check_token(i: usize, token: u32) -> Result<(), FamilyError> {
+    if token as usize >= toy::VOCAB {
+        return Err(FamilyError::client_param(
+            "tokens",
+            format!(
+                "token {i} is {token}, which is not a token: ids run 0 to {}",
+                toy::VOCAB - 1
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// The bytes of one token: a byte token is its byte, and a marker is its text.
+fn token_bytes(token: u32) -> Vec<u8> {
+    if token < 256 {
+        vec![token as u8]
+    } else {
+        toy::piece(token).into_bytes()
     }
 }
 
