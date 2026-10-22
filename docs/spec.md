@@ -2112,7 +2112,7 @@ these ways. Each served model declares the capability `continuation` (`crates/na
   field ends with white space. The template trims that white space. The tokenizer keeps a newline apart from the text
   before it, so the newline before `</think>` merges with no last token
   (`crates/nagaya-text-qwen38/tests/continuation.rs`).
-- **The Gemma 4 rendering.** **Proposed** (claude-opus-5-5, 2026-10-22). Google's template renders a closed
+- **The Gemma 4 rendering.** Decided 2026-10-22 (Amy: "accept."). Google's template renders a closed
   assistant message in a form that differs from its generation prompt. With thinking off, the prompt ends with an
   empty thought channel, `<|channel>thought\n<channel|>`, and a closed message has none. With thinking on, a closed
   message puts `\n` before `<channel|>`, and the model writes no such newline. So `Gemma4Family` renders an open
