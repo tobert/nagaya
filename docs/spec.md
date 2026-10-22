@@ -1586,7 +1586,7 @@ At start, the nagaya does these steps for each engine:
 - The engine opens its stored fds through `Factory::attach` (engine-abi "The factory gets its devices"). The check is
   `spot`: the first and last 64 bytes of each tensor (`verify_stored_slab`, `gemma4.rs:287-307`).
 
-**The ceiling and the start steps.** **Proposed** (claude-opus-5-5, 2026-10-21).
+**The ceiling and the start steps.** Decided 2026-10-22 (Amy: "all good").
 
 - The process reads the ceiling from `$FDSTORE`. systemd sets it to `FileDescriptorStoreMax` (systemd.exec(5),
   version 254 and later).
