@@ -628,7 +628,7 @@ stage threads under it.
 - the residual: a host buffer that the nagaya owns (D5). Stage s writes it, and stage s + 1 reads it. A row is
   `limits().residual_row_bytes`: 2,816 F32 values (11,264 bytes) for mkviolet.
 
-**Proposed** (claude-opus-5-5, 2026-10-21): a restore is not a member of the segment. mkviolet restores a held
+Decided 2026-10-22 (Amy: "seems ok, approved."): a restore is not a member of the segment. mkviolet restores a held
 snapshot into the slot inside a pipelined pass: each card writes its layers first (`PipeJob.kv`,
 `gemma4.rs:1477-1490`, `council_server.rs:859-874`). In the nagaya, a restore is a `copy` quantum on the device of a
 stage. It writes only the parts of that stage, through `Store::restore` (spec 8.3). It runs on that device just before
