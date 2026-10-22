@@ -1538,7 +1538,7 @@ recorder of metrics and spans.
 **10.1 systemd.** The unit is `Type=notify`. The process sends `READY=1` when every engine in the profile has
 opened, passed its canary, and woken its pinned state. `STATUS=` gives the state of each engine.
 
-**One unit file for each machine.** **Proposed** (claude-opus-5-5, 2026-10-21). gfx1151host's unit stays at
+**One unit file for each machine.** Decided 2026-10-22 (Amy: "all good"). gfx1151host's unit stays at
 `deploy/nagaya.service`. b70host's unit is `deploy/b70host/nagaya.service`, next to its config and profile.
 Reason: the units differ in the engine variables, the cargo feature of the build and the OTLP line. One shared unit
 needs a drop-in file on each machine, and a drop-in is not in the repository.
