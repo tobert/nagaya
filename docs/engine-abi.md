@@ -529,7 +529,7 @@ check.
 
 ### mkviolet's parts
 
-**Proposed** (claude-opus-5-5, 2026-10-21). mkviolet keeps only KV (`new_slots`, `gemma4.rs:444-475`). The device
+Decided 2026-10-22 (Amy: "accepted"). mkviolet keeps only KV (`new_slots`, `gemma4.rs:444-475`). The device
 holds each layer's K and V as F32 planes. These parts follow from that layout:
 
 - Each layer has two parts, `k.<ll>` and `v.<ll>`, with `ll` the layer in two digits. The dtype is F32, so the store
@@ -549,7 +549,7 @@ holds each layer's K and V as F32 planes. These parts follow from that layout:
 
 ### The first Gemma 4 binding
 
-**Proposed** (claude-opus-5-5, 2026-10-21). The trait on the copy (`crates/nagaya-mk-gemma4-bmg/src/engine.rs`) needs
+Decided 2026-10-22 (Amy: "accepted"). The trait on the copy (`crates/nagaya-mk-gemma4-bmg/src/engine.rs`) needs
 these choices. Each is the simplest choice that fits the rules above.
 
 - **The config.** The kind is `mk-gemma4-bmg`. Its config has three keys. `slots` lists the positions of each slot.

@@ -196,7 +196,7 @@ done. Milestone 15 is next on gfx1151host, and milestone 15s is next on b70host.
     - Before step one, interview Amy on the copy list and the order of the ports.
 15s. **mkviolet on b70host.** Replace `mkviolet.service` with the nagaya on b70host. Amy, 2026-10-21: "pull
     the engine in now, you can stop mkviolet, our goal is to replace it." The branch is `b70host`. The milestone
-    number is **Proposed** (claude-opus-5-5). Do the steps in this order:
+    number is Decided 2026-10-22. Do the steps in this order:
     1. **Spec.** Write the b70host rules into the docs: engine-abi D1 and D11, spec 2.1-2.4, 3.2b, 6.14, 10.2, 11.3
        and 12.1. Amy decides each Proposed note.
     2. **Host code.** Build the engine registry (11.3) and the devices with PCI addresses in `Factory` (engine-abi
@@ -245,9 +245,9 @@ done. Milestone 15 is next on gfx1151host, and milestone 15s is next on b70host.
   on 2026-10-21 ("cards and cpus are all yours"). Before you run GPU tests, check that it is inactive:
   `systemctl --user is-active mkviolet.service nagaya.service`. If either one runs, stop and report.
 - The iGPU (gfx1036) drives the display. Do not run work on it.
-- GPU tests read the Gemma 4 checkpoint directory from `GEMMA4_MODEL_DIR` (**Proposed**, claude-opus-5-5). The
+- GPU tests read the Gemma 4 checkpoint directory from `GEMMA4_MODEL_DIR` (Decided 2026-10-22). The
   directory holds `config.json`, the safetensors shards and `tokenizer.json`. Do not put the path in code.
-- GPU tests are behind the cargo feature `xe` (**Proposed**, claude-opus-5-5), so `cargo test` with no features needs
+- GPU tests are behind the cargo feature `xe` (Decided 2026-10-22), so `cargo test` with no features needs
   no card. On b70host, also run `cargo test -p nagaya-mk-gemma4-bmg --tests --features xe -- --test-threads=1`.
 - The reference Python for the Gemma 4 oracle is `~/.venvs/nagaya-ref`. Do not run it with a GPU job.
 

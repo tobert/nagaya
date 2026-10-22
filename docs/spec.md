@@ -196,7 +196,7 @@ path. Decided 2026-10-20 (reading).
 The nagaya measures edges at install, stores the result in its local store index, and can measure them again. Each
 measurement is data with a date.
 
-**The edges of a machine with discrete cards.** **Proposed** (claude-opus-5-5, 2026-10-21). b70host has these
+**The edges of a machine with discrete cards.** Decided 2026-10-22 (Amy: "accepted"). b70host has these
 edges, and the install measures each one:
 
 - host to `device(i)`, and `device(i)` to host. Each B70 links at PCIe 5.0 x8. mkviolet measured about 21.6 GB/s for
@@ -419,7 +419,7 @@ does not pin threads that a runtime starts.
 **Open:** 3.2 asks for elevated priority on the control threads. Milestone 14 does not apply it. A raised priority
 needs `CAP_SYS_NICE` or a setting in the unit.
 
-**3.2b CPU sets for each device.** **Proposed** (claude-opus-5-5, 2026-10-21). 3.2a puts every group thread in one
+**3.2b CPU sets for each device.** Decided 2026-10-22 (Amy: "accepted"). 3.2a puts every group thread in one
 pool set. A stage thread (3.2) drives one card, so it gets a set of its own.
 
 - A stage thread pins to the CPUs of the card's `local_cpulist` that are in the pool set.
@@ -430,18 +430,17 @@ pool set. A stage thread (3.2) drives one card, so it gets a set of its own.
   housekeeping set.
 - The group thread, the CPU pool and the store thread keep the pool set (3.2a).
 - A machine with one card has nothing to separate. Its card keeps the pool set, and the nagaya reads no CPU list.
-  **Proposed** (claude-sonnet-5-5, 2026-10-21). Reason: on gfx1151host the behavior of 3.2a stays as it was.
+  Reason: on gfx1151host the behavior of 3.2a stays as it was.
 - A card with a `local_cpulist` that holds a part of the online CPUs takes that part, less the housekeeping set.
-  **Proposed** (claude-sonnet-5-5, 2026-10-21).
 - A card whose set holds no pool CPU is an error. The start is refused: exit 3 (10.4).
-  **Proposed** (claude-sonnet-5-5, 2026-10-21). Reason: a stage thread on the wrong CPUs breaks the isolation.
-- The L3 domains come in the order of their lowest CPU. **Proposed** (claude-sonnet-5-5, 2026-10-21).
+  Reason: a stage thread on the wrong CPUs breaks the isolation.
+- The L3 domains come in the order of their lowest CPU.
 
 Reason: the two CCDs of the 9950X have their own L3. A stage thread that stays on one CCD keeps its host buffers in
 one cache.
 
 The Level Zero runtime and IGC start threads of their own, as the HIP runtime does (15 item 14). Linux gives a new
-thread the mask of the thread that starts it. **Proposed** (claude-opus-5-5, 2026-10-21): the engine calls `zeInit` on
+thread the mask of the thread that starts it. Decided 2026-10-22 (Amy: "accepted"): the engine calls `zeInit` on
 the group thread, so those threads start with the pool set. The nagaya does not pin a thread that a runtime starts.
 **Open:** measure the masks of the Level Zero threads on b70host, as on gfx1151.
 
@@ -1177,7 +1176,7 @@ explained (15 item 8). The oracle does not gate a longer prompt.
 
 A family with no reference has no oracle yet: the first port of mkviolet builds the Gemma reference.
 
-**The Gemma 4 oracle.** **Proposed** (claude-opus-5-5, 2026-10-21). mkviolet's `tools/gemma4_reference.py` runs HF
+**The Gemma 4 oracle.** Decided 2026-10-22 (Amy: "accepted"). mkviolet's `tools/gemma4_reference.py` runs HF
 transformers' own Gemma 4 layers in f32 on the CPU. `tools/gemma4_render_reference.py` renders the chat template with
 Python's jinja2. The port makes the fixture with them, as mk's `tools/oracle_fixture.py` makes the Qwen3.8 fixture.
 
@@ -1351,7 +1350,7 @@ NVML. Each provider maps its values onto shared names:
 | `nagaya.device.throttle` | {event} | device, reason |
 | `nagaya.device.evicted` | ms | device (amdgpu KFD only) |
 
-**The Xe provider.** **Proposed** (claude-opus-5-5, 2026-10-21). Each card has these files under
+**The Xe provider.** Decided 2026-10-22 (Amy: "accepted"). Each card has these files under
 `/sys/class/drm/card<N>/device`, as the b70host tree shows:
 
 - clock: `tile0/gt<N>/freq0/act_freq` and `cur_freq`;
@@ -1411,7 +1410,7 @@ Evidence never hides its failure. A counter that cannot be read, or that went ba
 `/sys/class/kfd/kfd/proc/<pid>/stats_*/evicted_ms` and `/sys/class/drm/card*/device/mem_info_gtt_used`. The GTT is
 summed over the devices, and it is absent on a machine with no amdgpu device.
 
-**Evidence on Xe.** **Proposed** (claude-opus-5-5, 2026-10-21). Xe has no counter of evicted ms, and no GTT in the
+**Evidence on Xe.** Decided 2026-10-22 (Amy: "accepted"). Xe has no counter of evicted ms, and no GTT in the
 amdgpu sense. Thus a Xe machine reads these sources in their place:
 
 - the memory of the nagaya's own DRM clients: the `drm-total-*` and `drm-resident-*` keys in `/proc/self/fdinfo/<fd>`
@@ -1578,7 +1577,7 @@ At start, the nagaya does these steps for each engine:
 
 `systemctl stop` clears the store. A restart keeps it.
 
-**The names of the fds.** **Proposed** (claude-opus-5-5, 2026-10-21).
+**The names of the fds.** Decided 2026-10-22 (Amy: "accepted").
 
 - `<engine>` is the engine name in the profile. `<device>` is `device<id>`, with the machine device id (2.4).
   `<part>` is a name that the engine gives in `arena_export`.
@@ -1860,7 +1859,7 @@ milestones 11 and 11b).
 - One token can release text in two phases, but a gogi `token` event has one phase. This is rare, because each
   Qwen3.8 marker is one token. 11.3a has the rule for the step of such a token.
 
-**The Gemma 4 library.** **Proposed** (claude-opus-5-5, 2026-10-21). The crate `nagaya-text-gemma4` holds the Gemma
+**The Gemma 4 library.** Decided 2026-10-22 (Amy: "accepted"). The crate `nagaya-text-gemma4` holds the Gemma
 4 family. It ports mkviolet's text code, which already serves council v2 and `/mk/v1` on b70host.
 
 - **Tokenizer.** The library reads the `tokenizer.json` of the checkpoint with the `tokenizers` crate, as mkviolet
@@ -1877,7 +1876,7 @@ milestones 11 and 11b).
 - **Reply parser.** The library ports `parse_tool_call` and the thought channel of `chat.rs`.
 - **The method `get` of a dict.** Google's template calls `message.get(...)`. The interpreter holds `get` with the
   results of Python: a missing key gives the default, which is none. It refuses a keyword argument, as Python does.
-  The other methods of a dict stay refused. **Proposed** (claude-opus-5-5, 2026-10-21). Reason: the template needs
+  The other methods of a dict stay refused. Decided 2026-10-22 (Amy: "accepted"). Reason: the template needs
   it, and transformers renders it so (`crates/nagaya-jinja/tests/dict_get.rs`).
 
 **The Gemma 4 choices.** Decided 2026-10-22 (Amy: "yeah refuse on both/all"). The port found these places where
@@ -1906,7 +1905,7 @@ mkviolet's rules do not carry over, or where the rules above leave a choice open
 
 Reason for `tokenizers`: the port copies code that its Python fixtures already check.
 
-**Proposed** (claude-opus-5-5, 2026-10-21): the Jinja interpreter moves out of `nagaya-text-qwen38` into a crate
+Decided 2026-10-22 (Amy: "accepted"): the Jinja interpreter moves out of `nagaya-text-qwen38` into a crate
 `nagaya-jinja`, which both family libraries use. The move changes no behavior, and the Qwen3.8 fixtures stay green
 through it. A feature that Gemma 4's template needs and the interpreter lacks is a step with a test that fails first.
 Reason: one template engine for every family, as Amy chose, with no second copy of it.
@@ -2548,9 +2547,9 @@ identity labels them as spot checks until we replace them.
 
   The two files differ only in the post-processor (checked 2026-10-21). EmbeddingGemma 2's adds `<bos>` and `<eos>`.
   mkviolet encodes with no post-processor, so the ids are the same, and only the hash differs.
-- mkviolet's `tokenizer_hash` is the first 16 hex digits of the SHA-256 of the file (`tokenizer.rs:22`). **Proposed**
-  (claude-opus-5-5, 2026-10-21): the port hashes the whole file and writes `sha256:` and 64 hex digits, as the
-  Qwen3.8 library does. Reason: one form for every family.
+- mkviolet's `tokenizer_hash` is the first 16 hex digits of the SHA-256 of the file (`tokenizer.rs:22`). Decided
+  2026-10-22 (Amy: "accepted"): the port hashes the whole file and writes `sha256:` and 64 hex digits, as the Qwen3.8
+  library does. Reason: one form for every family.
 - mkviolet's `weight_hash` hashes the shard headers only (`main.rs:216`). The port labels it `spot-sha256:`, as the mk
   binding does (12.2).
 - mkviolet's metrics label card 1 `google/embeddinggemma-2` (`telemetry.rs:492`, `:523`). The port takes the label
