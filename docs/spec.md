@@ -1866,12 +1866,15 @@ milestones 11 and 11b).
   The other methods of a dict stay refused. **Proposed** (claude-opus-5-5, 2026-10-21). Reason: the template needs
   it, and transformers renders it so (`crates/nagaya-jinja/tests/dict_get.rs`).
 
-**The Gemma 4 choices.** **Proposed** (claude-opus-5-5, 2026-10-21). The port found these places where mkviolet's rules
-do not carry over, or where the rules above leave a choice open:
+**The Gemma 4 choices.** Decided 2026-10-22 (Amy: "yeah refuse on both/all"). The port found these places where
+mkviolet's rules do not carry over, or where the rules above leave a choice open:
 
 - **A failed tool result.** mkviolet gives the template the map `{"error": content}` (`held.rs:48`). In Python's
   jinja2 a map is a sequence, so Google's template loops over its keys and fails. The library writes `Error: ` before
   the content, as the Qwen3.8 library does. Reason: one form for both families, and a render that Python gives too.
+- **One form in every family.** A family library gives a failed tool result the form `Error: ` and the content. It
+  uses another form only when its model's template needs that form. Amy, 2026-10-22: "seems okay if it needs to
+  follow a model's template, but otherwise we should try to be consistent across models and kernels."
 - **Noncharacters.** mkviolet refuses only U+FDD0 to U+FDEF. The library refuses all 66 noncharacters, and the error
   names the character and its offset, as the Qwen3.8 library does. Reason: the words of the rule above.
 - **The reply parser** ports the reply splitter of `mk_api.rs` (`Splitter`, council wire), because `chat.rs` has
@@ -1881,8 +1884,9 @@ do not carry over, or where the rules above leave a choice open:
   in the Qwen3.8 library. Two boundaries with the same token count keep the first.
 - **Reads.** A plain read and a queue read keep mkviolet's text and its tokenization piece by piece. A read hashes the
   whole text that it was conditioned on (gogi), as the Qwen3.8 library does. mkviolet hashes the id of the head.
-- **Detokenize.** The library gives the text of `tokenizers`, so bytes that end inside a character give U+FFFD. The
-  Qwen3.8 library refuses such tokens.
+- **Detokenize.** Every family library refuses tokens whose bytes end inside a character. The error names `tokens`
+  (11.4d). No library puts U+FFFD in their place (`crates/nagaya-text-gemma4/src/council/mod.rs`,
+  `decode_whole`). A piece of one token is not a detokenize, so `pieces` keeps U+FFFD (`Family::pieces`).
 - **Host tests** read the checkpoint directory from `GEMMA4_MODEL_DIR`, with no default path. With the variable unset,
   a test skips. With `NAGAYA_REQUIRE_MODELS=1`, it fails.
 
