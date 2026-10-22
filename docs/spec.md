@@ -209,10 +209,13 @@ The probe reads the link of a card from the upstream port of the card's own PCIe
 01:00.0 and 06:00.0, and each reports 32 GT/s x8. The card's endpoint reports 2.5 GT/s x1, because it sits behind
 that switch. Thus a probe that reads the endpoint gives a false rate.
 
-**Pinned host memory.** **Proposed** (claude-opus-5-5, 2026-10-21). A copy over PCIe is fastest from pinned host
+**Pinned host memory.** Decided 2026-10-22 (Amy: "accepted"). A copy over PCIe is fastest from pinned host
 memory. Thus a mandatory host term may set `pinned: true`. The ledger charges its bytes in the host budget, as any
 host bytes. `nagaya.ledger.bytes` reports the term, so the pinned bytes are visible. mkviolet pins a staging buffer
 of 4 MiB for uploads (`STAGE_FLOATS`, `gemma4.rs:172`), and host buffers for the routes (`gemma4.rs:521`).
+
+Not built: the term has no member `pinned`. The Gemma 4 binding names its term `pinned.<i>`
+(`crates/nagaya-mk-gemma4-bmg/src/spec.rs:197`), and the ledger charges it as any host term.
 
 Not built. The nagaya measures no edge yet.
 
@@ -346,7 +349,7 @@ thread priorities:
 - **One stage thread per device of a staged engine.** An engine that declares `stages` gets one more thread for
   each device of its stages (D1). The group thread runs the scheduler and sends each stage quantum to the thread of
   its device. Each call that touches a device comes from the stage thread of that device. Decided 2026-10-21 (Amy:
-  "move stage_pass up"). The thread layout is **Proposed** (claude-opus-5-5) in engine-abi D1.
+  "move stage_pass up"). The thread layout is in engine-abi D1.
 - **A bounded CPU worker pool.** Rendering, tokenization, hashing, safetensors conversion, and CPU device passes
   (13.2) run on a bounded pool pinned to the remaining cores at `SCHED_BATCH`. Long CPU work yields between chunks
   to obey `max_quantum_ms`. On unified-memory machines (`gfx1151host` and `sm121host`), the scheduler pauses background CPU
@@ -1908,8 +1911,8 @@ Reason for `tokenizers`: the port copies code that its Python fixtures already c
 through it. A feature that Gemma 4's template needs and the interpreter lacks is a step with a test that fails first.
 Reason: one template engine for every family, as Amy chose, with no second copy of it.
 
-**The engine registry.** **Proposed** (claude-opus-5-5, 2026-10-21). Today a hard map from the engine kind picks the
-family (`if kind == crate::mk::KIND`, `crates/nagaya/src/serving.rs:24-40`). These rules replace it:
+**The engine registry.** Decided 2026-10-22 (Amy: "accepted"). Before this rule, a hard map from the engine kind
+picked the family (`if kind == crate::mk::KIND` in `crates/nagaya/src/serving.rs`). These rules replace it:
 
 - The identity gets one more field, `family`: `toy`, `qwen38` or `gemma4`. The engine sets it.
 - The process holds a registry of family libraries by that name. A family library opens from the identity and the
@@ -2449,7 +2452,7 @@ has a tailnet address in its code.)
 (`crates/nagaya/src/http`). It starts the server after `READY=1`, and it logs `http listening on <address>`. These
 rules are each "Decided by senpai 2026-10-20 night (vetoable)".
 
-- The engine registry of 11.3 (**Proposed**) replaces the first two rules below. The code builds it
+- The engine registry of 11.3 replaces the first two rules below. The code builds it
   (`crates/nagaya/src/serving.rs`, `FamilyRegistry`).
 - The process serves an opened engine when its kind has a family library. The kind `fake-toy` has the toy family
   (11.3b). The kind `mk-qwen38-gfx1151` has the Qwen3.8 family, from the first shard of `MK_SHARDS`. The tokenizer
@@ -2496,7 +2499,7 @@ rules are each "Decided by senpai 2026-10-20 night (vetoable)".
 - `template`, the text of the chat template, for example the GGUF key `tokenizer.chat_template`. The identity digest
   covers it, so a new template is a new recipe. Gossip carries the digest, not the text (2.3). Decided 2026-10-20
   (reading, kaibo job-2 finding 7);
-- `family`, the name of the family library that the engine needs (11.3, "The engine registry", Proposed);
+- `family`, the name of the family library that the engine needs (11.3, "The engine registry");
 - `numbers`: the engine binary, and the nagaya code that turns its outputs into answers;
 - the lineage of the plan table;
 - the bit settings, each with its class (`docs/prior-art.md` 1);

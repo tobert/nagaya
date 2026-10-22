@@ -55,8 +55,8 @@ trait Factory {                  // in the `nagaya` crate, crates/nagaya/src/adm
 The config is a TOML table from the placement profile. The engine parses it and refuses a field that it does not
 know. Thus the nagaya holds every engine as `Box<dyn Engine>`.
 
-**The factory gets its devices.** **Proposed** (claude-opus-5-5, 2026-10-21). Today `open` takes only the config
-(`crates/nagaya/src/admission.rs:73`). mk uses the HIP device that is current on the calling thread.
+**The factory gets its devices.** Decided 2026-10-22 (Amy: "accepted"). Before this rule, `open` took only the
+config. mk uses the HIP device that is current on the calling thread.
 
 ```rust
 struct GroupDevice { id: DeviceId, name: String, pci_address: String, memory_bytes: u64 }
@@ -71,8 +71,7 @@ trait Factory {
 
 - `devices` holds the machine devices of the engine, in the order of the profile's `devices` list. The position in
   the slice is the group index (spec 2.4). `id` is the machine device id.
-- The inventory keeps the PCI address of each device for this. Today `Machine::inventory` drops it
-  (`crates/nagaya/src/probe.rs:76-81`).
+- The inventory keeps the PCI address of each device for this (`crates/nagaya/src/probe.rs`).
 - A Level Zero engine maps each PCI address to its Level Zero device with `zeDevicePciGetPropertiesExt`. It refuses
   an address that it does not find, and an address that two devices give. mkviolet takes the cards in the order of
   `zeDeviceGet` (`L0Cluster::init`, `level_zero.rs:745-790`), and that order can differ from the PCI order.
@@ -81,7 +80,7 @@ trait Factory {
 
 Reason: the profile names the devices, so the engine must run on those devices and no others.
 
-**Arena calls in v0.** **Proposed** (claude-opus-5-5, 2026-10-21). These are the Rust shapes of the `arena`
+**Arena calls in v0.** Decided 2026-10-22 (Amy: "accepted"). These are the Rust shapes of the `arena`
 capability and of `attach` (spec 10.2).
 
 ```rust
@@ -188,7 +187,7 @@ close        close()                     frees the engine in the process
 An engine without `close` stays open until the process exits. The nagaya changes such an engine only through a
 planned restart (spec 3.3, exit code 4). Its `Drop` does not free it, and a comment says why. Decided 2026-10-18.
 
-**Per-part coverage.** **Proposed** (claude-opus-5-5, 2026-10-21). This closes the old note: the park used one row
+**Per-part coverage.** Decided 2026-10-22 (Amy: "accepted"). This closes the old note: the park used one row
 count, `slot_high`, for every row part of a slot.
 
 - The park and the staging charge (spec 4.2) read `coverage(state, part)` for each cells part and each ring part.
@@ -655,10 +654,10 @@ snapshot into the slot inside a pipelined pass: each card writes its layers firs
 stage. It writes only the parts of that stage, through `Store::restore` (spec 8.3). It runs on that device just before
 the first stage quantum of the block. Reason: one restore path for every engine, with the same overlap of cards.
 
-**Proposed** (claude-opus-5-5, 2026-10-21): each part names its stage, `limits().parts[].stage`. A stage handle reads
+Decided 2026-10-22 (Amy: "accepted"): each part names its stage, `limits().parts[].stage`. A stage handle reads
 and writes only the parts of its stage. mkviolet's parts are the KV of one layer, so each part has one card.
 
-**Proposed** (claude-opus-5-5, 2026-10-21): the Rust shape of `stages`.
+Decided 2026-10-22 (Amy: "accepted"): the Rust shape of `stages`.
 
 ```rust
 trait Stages {
@@ -677,7 +676,7 @@ trait StageHandle {
   call that touches a device then goes through the handle of that device.
 - `identity`, `limits` and `last_error` stay on the `Engine`, on the group thread.
 
-**Proposed** (claude-opus-5-5, 2026-10-21): the threads of a group with stages.
+Decided 2026-10-22 (Amy: "accepted"): the threads of a group with stages.
 
 - The group thread runs the one scheduler of the group (spec 5.5). It sends each stage quantum to the stage thread
   of its device, and it gets the end back.
@@ -708,12 +707,12 @@ council read takes card 0 while a generation's stage 1 runs on card 1. mkviolet 
 the engine chooses its `feed.block` to fit it. Each stage thread beats a heartbeat of its own. The watchdog reports a
 stage quantum past the bound, and a stall of any stage thread stops the process (spec 7.4).
 
-**The residual term.** **Proposed** (claude-opus-5-5, 2026-10-21). The residual buffers are a mandatory host term of
+**The residual term.** Decided 2026-10-22 (Amy: "accepted"). The residual buffers are a mandatory host term of
 the engine, `residual`, with lifetime `engine`. It has two buffers for each boundary between stages. One holds a
 block for stage s + 1, while stage s writes the next block. Each buffer holds `feed.block` rows. mkviolet's term is 2 ×
 512 × 11,264 = 11,534,336 bytes.
 
-**The stage path in v0.** **Proposed** (claude-opus-5-5, 2026-10-21). The rules above leave these choices open. The
+**The stage path in v0.** Decided 2026-10-22 (Amy: "accepted"). The rules above leave these choices open. The
 first build of the stage path takes the simplest choice for each.
 
 - **A free residual buffer is a ready condition.** A block holds a residual buffer from the start of stage s to the
