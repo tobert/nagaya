@@ -33,6 +33,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use gogi_proto::context::{Context, Tool};
+use gogi_proto::message::Message;
 use nagaya_council::family::{
     Boundary, ControlHit, DecisionInput, Family, FamilyError, RawRead, ReadPlan, Rendering, ReplyParser, ReplyStart,
 };
@@ -45,6 +46,9 @@ use crate::{CHAT_TEMPLATE, Error};
 
 /// The name of the family in the identity and in the template id.
 pub const FAMILY: &str = "gemma4";
+
+/// The marker that closes the thought channel. An open message with a `content` member writes it after the reasoning.
+const CHANNEL_CLOSE: &str = "<channel|>";
 
 /// The file of the tokenizer in a checkpoint directory.
 pub const TOKENIZER_FILE: &str = "tokenizer.json";
@@ -171,6 +175,48 @@ impl Gemma4Family {
             .map_err(refusal)
     }
 
+    /// Render messages and an open last message (spec 11.3c, "The Gemma 4 rendering"): the generation prompt of the
+    /// messages before it, then the open text as the model writes it. A `content` member closes the thinking with
+    /// `<channel|>` when thinking is on. With thinking off, the prompt closed it.
+    pub(crate) fn run_open(
+        &self,
+        before: &[Json],
+        open: &Message,
+        tools: &[Json],
+        thinking: bool,
+    ) -> Result<Rendered, FamilyError> {
+        let reasoning = open.reasoning.as_deref().unwrap_or("");
+        let close = if thinking && open.content.is_some() {
+            CHANNEL_CLOSE
+        } else {
+            ""
+        };
+        let content = open.content.as_deref().unwrap_or("");
+        self.chat
+            .render_open(before, tools, thinking, &[(reasoning, close), (content, "")])
+            .map_err(refusal)
+    }
+
+    /// The seam check of mk's `prefill` (gogi "Continuations"): each open field that is not empty must tokenize on its
+    /// own. The rendering up to the start of the field must be a token prefix of the rendering through its end.
+    fn check_seams(&self, before: &[Json], open: &Message, tools: &[Json], thinking: bool) -> Result<(), FamilyError> {
+        for seam in gogi_proto::continuation::seams(open) {
+            let start = self.run_open(before, &seam.before, tools, thinking)?.tokens;
+            let with = self.run_open(before, &seam.with, tools, thinking)?.tokens;
+            gogi_proto::continuation::check_seam(seam.field, &start, &with, |ids| self.lossy_text(ids))?;
+        }
+        Ok(())
+    }
+
+    /// The text of tokens, with U+FFFD for bytes that are not whole characters. An error message shows it.
+    fn lossy_text(&self, ids: &[u32]) -> String {
+        let bytes: Vec<u8> = ids
+            .iter()
+            .flat_map(|&id| self.tokenizer().token_bytes(id).unwrap_or_default())
+            .collect();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
     /// The tokens of template text: its marker text gives the marker tokens.
     pub(crate) fn tpl(&self, text: &str) -> Result<Vec<u32>, FamilyError> {
         self.tokenizer().encode(text).map_err(internal)
@@ -227,18 +273,21 @@ fn letter_tokens(tokenizer: &Tokenizer) -> Result<(Vec<u32>, Vec<u32>), Error> {
 impl Family for Gemma4Family {
     fn render(&self, context: &Context, generation_prompt: bool) -> Result<Rendering, FamilyError> {
         context.check()?;
-        if context.open().is_some() {
-            return Err(FamilyError::client_param(
-                "continue",
-                "this model does not render an open message yet; send the last message without continue: true",
-            ));
-        }
         let tools = messages::tools_json(&context.tools);
         let msgs: Vec<Json> = context.messages.iter().map(messages::message_json).collect();
         let thinking = context.thinks();
-        let base = self.run(&msgs, &tools, thinking, false)?;
+        let open = context.open();
+        let base = match open {
+            Some(open) => {
+                let before = &msgs[..msgs.len() - 1];
+                self.check_seams(before, open, &tools, thinking)?;
+                self.run_open(before, open, &tools, thinking)?
+            }
+            None => self.run(&msgs, &tools, thinking, false)?,
+        };
         let end = base.tokens.len();
-        let tokens = if generation_prompt {
+        // An open message takes the place of the generation prompt (gogi "Continuations").
+        let tokens = if generation_prompt && open.is_none() {
             let whole = self.run(&msgs, &tools, thinking, true)?.tokens;
             if !whole.starts_with(&base.tokens) {
                 return Err(FamilyError::internal(

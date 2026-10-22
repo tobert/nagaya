@@ -175,6 +175,30 @@ impl Chat {
         thinking: bool,
         generation_prompt: bool,
     ) -> Result<Rendered, Error> {
+        self.render_then(messages, tools, thinking, generation_prompt, &[])
+    }
+
+    /// Render `messages` with the generation prompt, then add the open text of a reply as the model writes it
+    /// (spec 11.3c, "The Gemma 4 rendering"). Each `(text, marker)` pair adds the text as content, then the marker as
+    /// template text. The whole text is tokenized as one string, so a field can merge with the text before it.
+    pub fn render_open(
+        &self,
+        messages: &[Json],
+        tools: &[Json],
+        thinking: bool,
+        open: &[(&str, &str)],
+    ) -> Result<Rendered, Error> {
+        self.render_then(messages, tools, thinking, true, open)
+    }
+
+    fn render_then(
+        &self,
+        messages: &[Json],
+        tools: &[Json],
+        thinking: bool,
+        generation_prompt: bool,
+        open: &[(&str, &str)],
+    ) -> Result<Rendered, Error> {
         let mut esc = Escaper {
             specials: self.tokenizer.specials(),
             originals: Vec::new(),
@@ -198,6 +222,10 @@ impl Chat {
         // After a tool response the template opens the thought channel itself.
         if thinking && generation_prompt && !escaped.ends_with(THOUGHT_OPEN) {
             escaped.push_str(THOUGHT_OPEN);
+        }
+        for (text, marker) in open {
+            escaped.push_str(&esc.escape(text)?);
+            escaped.push_str(marker);
         }
         let rendered = self.tokenize_escaped(&escaped, &esc.originals)?;
         if rendered.tokens.first() != Some(&self.bos) {

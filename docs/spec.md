@@ -2126,7 +2126,7 @@ these ways. Each served model declares the capability `continuation` (`crates/na
 - **The parse.** The reply parser starts in the phase that the open message sets (`ReplyStart::of`). It reads only
   the sampled tokens. After an open message, the Qwen3.8 parser keeps the white space at the start of its first part.
   At `max_tokens`, it keeps the white space at the end of its last part (`Keep` in
-  `crates/nagaya-text-qwen38/src/reply.rs`). The toy parser trims nothing.
+  `crates/nagaya-text-qwen38/src/reply.rs`). The toy parser and the Gemma 4 parser trim nothing.
 - **The reply.** `done` joins the open text as sent and the new text. `usage.prompt` counts the open text. `n` and
   `usage.completion` count only the sampled tokens (`GenerateThen::finish`, `crates/nagaya/src/council/generations.rs`).
 - The build plan: a continuation builds the context before its open message (`Service::open_plan`,

@@ -613,20 +613,3 @@ fn the_parser_tells_the_phase_of_the_next_token() {
     let parser = family().reply_parser(ReplyStart::prompt(false), &[]).unwrap();
     assert_eq!(parser.phase(), Phase::Content);
 }
-
-// ---------------------------------------------------------------- continuations
-
-/// Until this family renders an open message, an open message is a 400 that names `continue`.
-#[test]
-fn an_open_message_is_refused_naming_continue() {
-    if absent() {
-        return;
-    }
-    let c = context(json!({"messages": [
-        {"role": "user", "content": "Write the config."},
-        {"role": "assistant", "content": "Plan:", "continue": true}]}));
-    assert_eq!(
-        param(family().render(&c, true).unwrap_err()).as_deref(),
-        Some("continue")
-    );
-}
