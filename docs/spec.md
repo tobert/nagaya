@@ -2108,6 +2108,18 @@ these ways. Each served model declares the capability `continuation` (`crates/na
   field ends with white space. The template trims that white space. The tokenizer keeps a newline apart from the text
   before it, so the newline before `</think>` merges with no last token
   (`crates/nagaya-text-qwen38/tests/continuation.rs`).
+- **The Gemma 4 rendering.** **Proposed** (claude-opus-5-5, 2026-10-22). Google's template renders a closed
+  assistant message in a form that differs from its generation prompt. With thinking off, the prompt ends with an
+  empty thought channel, `<|channel>thought\n<channel|>`, and a closed message has none. With thinking on, a closed
+  message puts `\n` before `<channel|>`, and the model writes no such newline. So `Gemma4Family` renders an open
+  message as the generation prompt of the context before it. Then it adds the open text as the model writes it:
+  - the reasoning as sent;
+  - `<channel|>`, when thinking is on and the message has a `content` member;
+  - the content as sent.
+
+  The library tokenizes this text as one string, with the escapes of 11.3. Reason: these are the tokens that the
+  model saw when it sampled the reply, so a cut reply goes on from the same tokens. The closed rendering's tokens
+  do not begin with them, so a cut reply that the client sends back closed starts from the last boundary.
 - **The seam check.** The family checks each open field in `render`, with `gogi_proto::continuation::check_seam`. A
   field that does not tokenize on its own is a 400 that names `continue`. This is the prefix check of mk's
   `prefill` (`service/generate.py`, `_with_prefill`).
