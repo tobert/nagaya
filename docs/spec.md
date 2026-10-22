@@ -2491,21 +2491,28 @@ The nagaya keeps each engine's expected identity in the store's index. At start,
 `identity()` with the expected one. A mismatch makes the old entries of that engine unusable. It is a refusal to
 start only when the profile pins the identity.
 
-**A GPU binary in the identity.** **Proposed** (claude-opus-5-5, 2026-10-21). A GPU compiler makes the kernel binary
-of an engine, ahead of time or at load. mkviolet's `build.rs` runs `ocloc` for `bmg-g31`, and `main.rs` embeds the
-binary (`megakernel_bmg.bin`). These rules cover such an engine:
+**The canary decides for a new build.** **Proposed** (claude-opus-5-5, 2026-10-22). This replaces the note "A GPU
+binary in the identity" of 2026-10-21. That note put the compiler and the driver in the identity digest. Then each
+driver update makes every held entry unusable, also when the bits do not change. Amy, 2026-10-22: "if I have a long
+running context and upgrade I don't want to have to refill it just because I built a new binary that is not very
+different most of the time."
 
-- `numbers` holds the SHA-256 of each kernel binary that the engine loads. Thus a new compiler output is a new
-  identity, also when the source did not change.
-- The plan table lineage holds the compiler version (`ocloc` and its IGC), the driver version, and the device. The
-  device is its PCI vendor id, device id and revision. A change of any one is a new lineage, and so a new identity
-  (ontology "Plan table").
+- The identity gets a member `build`, with the facts of the build. It holds the SHA-256 of each kernel binary and
+  engine library, and the compiler version. It also holds the driver or runtime version, and the PCI ids of the card.
+- The identity digest does not cover `build`. It covers the other fields of 12.1, also the canary hash.
+- `numbers` keeps the values that change bits by choice, such as mk's `fast_qmm` and `tiles`. A file path is not a
+  number. mk's `engine_lib` path moves to `build` (`crates/nagaya-mk-qwen38-gfx1151/src/spec.rs:514`).
+- Thus a new build with the same canary bits has the same digest. Its held entries stay usable, and the gate
+  thresholds still fit. A new build with other canary bits has a new digest, as now.
+- Each entry records the `build` that made it. A context with rows of two builds is then visible.
 - A Level Zero engine reads the driver version with `zeDriverGetProperties`. A HIP engine reads the HIP runtime
-  version.
-- A kernel that compiles at load is hashed after the compile, so the hash names the bytes that run.
+  version. A kernel that compiles at load is hashed after the compile.
+- The canary covers the shapes of the oracle fixture (8.3): a short prompt, a long prompt and a greedy decode. A
+  staged engine runs each stage, and a ring part wraps.
+- Order: build the canary (8.1) first. Until it runs at each start, `build` stays in the digest, as now.
 
-Reason: the bits come from the binary that runs, not from its source. The binary depends on the compiler, the
-driver and the device.
+Reason: the bits decide if a build changed the numbers, not the facts of the build. A canary covers only the paths
+that it runs, so its inputs must run each path that the limits allow.
 
 **12.2 Two weight ids.** The checkpoint digest is logical. It hashes the canonical config and each tensor's payload,
 so a new packing does not change it. The arena id is the content id of the packed bytes that the engine runs.
