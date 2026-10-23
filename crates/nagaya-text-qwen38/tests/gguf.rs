@@ -87,6 +87,32 @@ fn reads_every_value_type_in_file_order() {
     assert_eq!(m.get("absent"), None);
 }
 
+#[test]
+fn iterates_the_entries_in_file_order() {
+    let m = read(&built_file()).expect("a well-formed file");
+    let keys: Vec<&str> = m.iter().map(|(key, _)| key).collect();
+    assert_eq!(
+        keys,
+        [
+            "u8", "i8", "u16", "i16", "u32", "i32", "f32", "bool", "str", "strs", "u64", "i64", "f64", "nested"
+        ]
+    );
+    assert_eq!(m.iter().nth(1).map(|(_, value)| value), Some(&Value::I8(-2)));
+}
+
+#[test]
+fn stops_after_the_last_entry() {
+    // The mk reader reads the tensor records that follow the metadata, from the bytes that this reader leaves.
+    let mut file = built_file();
+    let metadata_bytes = file.len();
+    file.extend_from_slice(b"tensor records");
+    let mut rest: &[u8] = &file;
+    let m = Metadata::read(&mut rest, file.len() as u64).expect("a well-formed file");
+    assert_eq!(m.len(), 14);
+    assert_eq!(rest, b"tensor records");
+    assert_eq!(file.len() - rest.len(), metadata_bytes);
+}
+
 fn assert_gguf_error(bytes: &[u8], needle: &str) {
     match read(bytes) {
         Err(Error::Gguf(m)) => assert!(m.contains(needle), "message {m:?} should name {needle:?}"),

@@ -104,6 +104,11 @@ impl Metadata {
         self.index.get(key).map(|&at| &self.entries[at].1)
     }
 
+    /// Each key and its value, in file order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &Value)> {
+        self.entries.iter().map(|(key, value)| (key.as_str(), value))
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }
