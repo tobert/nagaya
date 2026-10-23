@@ -15,9 +15,12 @@ use nagaya_abi::{Identity, Limits};
 
 use crate::arena::{self, Arena};
 use crate::binding::{self, Binding, MkSegment, PassStop};
+use crate::context::MkContext;
 use crate::gguf;
+use crate::pass::{self, Builder, Knobs, PassBuffers, Scratch, Seg, Weights};
 use crate::ple::{self, PleTable};
 use crate::spec;
+use crate::stage::Stage;
 use crate::table::WeightTable;
 
 /// An error from the mk binding. The message says what failed.
@@ -162,6 +165,9 @@ struct ThreadState {
     model: Option<gguf::Model>,
     ple: Option<PleTable>,
     _arena: Option<Arena>,
+    /// The arena's tensors by role, and the fixed device buffers of a pass, for the pass build.
+    weights: Option<Weights>,
+    buffers: Option<PassBuffers>,
     contexts: HashMap<u64, Context>,
     next_id: u64,
     fast_qmm: bool,
@@ -634,6 +640,20 @@ impl ThreadState {
         let (planned, arena_bytes) = arena::plan(model.tensors(), tiles)?;
         let arena = unsafe { arena::create(&binding, &model, &planned, arena_bytes, tiles) }?;
         let table = WeightTable::new(&planned, &arena)?;
+        let tensors = planned
+            .iter()
+            .map(|p| {
+                let tensor = pass::Tensor {
+                    kind: p.kind,
+                    ne: p.ne,
+                    row_bytes: p.row_bytes,
+                    // SAFETY: the plan puts each tensor inside the arena (WeightTable::new checks it).
+                    d: unsafe { arena.ptr.add(p.offset as usize) },
+                };
+                (p.name.clone(), tensor)
+            })
+            .collect();
+        let weights = Weights::new(&tensors)?;
         let engine = unsafe { (binding.engine_open)(table.as_ptr()) };
         drop(table);
         if engine.is_null() {
@@ -644,6 +664,22 @@ impl ThreadState {
         // returns with a last error and poisons the contexts, and the wrapper reports PassStatus::Poison (D6, 8.2).
         // mk has no query for this flag, so a test cannot observe the call. A forced spin-timeout needs contention.
         unsafe { (binding.recover_spin_timeouts)(engine, true) };
+        let mut buffers = PassBuffers {
+            tokens: std::ptr::null(),
+            head_rows: std::ptr::null(),
+            inv_freq: std::ptr::null(),
+        };
+        unsafe {
+            (binding.pass_buffers_cpp)(
+                engine,
+                &mut buffers.tokens,
+                &mut buffers.head_rows,
+                &mut buffers.inv_freq,
+            )
+        };
+        // The Rust rope table must equal the C++ one, which the passes read (the live comparison of step 6).
+        #[cfg(feature = "hip")]
+        rope_problem(buffers.inv_freq).map_err(MkError::new)?;
 
         let state = Self {
             binding,
@@ -651,6 +687,8 @@ impl ThreadState {
             model: Some(model),
             ple: Some(ple),
             _arena: Some(arena),
+            weights: Some(weights),
+            buffers: Some(buffers),
             contexts: HashMap::new(),
             next_id: 0,
             fast_qmm,
@@ -726,7 +764,9 @@ impl ThreadState {
         let mut logits = vec![0f32; rows * spec::VOCAB as usize];
         let logits = want_logits.then_some(logits.as_mut_slice());
         let ple = self.ple_rows(&segments)?;
-        match unsafe { self.binding.pass_segments(self.engine, &segments, logits, &ple) } {
+        let knobs = self.knobs(want_logits)?;
+        let build = || self.build(&segments, want_logits, knobs);
+        match unsafe { self.binding.pass_segments(self.engine, &segments, logits, &ple, build) } {
             Ok(_ms) => Ok(()),
             Err(PassStop::Refused(why)) => Err(format!("the pass scratch probe was refused: {why}")),
             Err(PassStop::Stopped(why)) => Err(format!("the pass scratch probe stopped: {why}")),
@@ -1233,7 +1273,9 @@ impl ThreadState {
         let mut logits = vec![0f32; rows * spec::VOCAB as usize];
         let buffer = request.want_logits.then_some(logits.as_mut_slice());
         let ple = self.ple_rows(&segments).map_err(problem)?;
-        let ms = match unsafe { self.binding.pass_segments(self.engine, &segments, buffer, &ple) } {
+        let knobs = self.knobs(request.want_logits).map_err(problem)?;
+        let build = || self.build(&segments, request.want_logits, knobs);
+        let ms = match unsafe { self.binding.pass_segments(self.engine, &segments, buffer, &ple, build) } {
             Ok(ms) => ms,
             Err(PassStop::Refused(message)) => return Err(problem(message)),
             Err(PassStop::Stopped(message)) => return Err(PassProblem { message, poison: true }),
@@ -1245,7 +1287,97 @@ impl ThreadState {
     }
 }
 
+/// The difference of the rope table at `device` from the Rust table, or `Ok`.
+#[cfg(feature = "hip")]
+fn rope_problem(device: *const f32) -> Result<(), String> {
+    let mut table = pass::inv_freq();
+    unsafe { crate::context::read_device(table.as_mut_ptr().cast(), device.cast(), std::mem::size_of_val(&table)) };
+    let want = pass::inv_freq();
+    if table.iter().map(|v| v.to_bits()).ne(want.iter().map(|v| v.to_bits())) {
+        return Err(format!("the rope table differs: C++ {table:?}, Rust {want:?}"));
+    }
+    Ok(())
+}
+
+/// The C++ engine's scratch pool, which the Rust build asks for the same buffers in the live comparison.
+struct CppScratch<'a> {
+    binding: &'a Binding,
+    engine: *mut c_void,
+}
+
+impl Scratch for CppScratch<'_> {
+    fn get(&mut self, name: &str, floats: usize) -> *mut f32 {
+        let name = std::ffi::CString::new(name).expect("a scratch name holds no NUL");
+        let p = unsafe { (self.binding.scratch_cpp)(self.engine, name.as_ptr(), floats as u64) };
+        assert!(!p.is_null(), "mk_scratch gave no buffer for {name:?}");
+        p
+    }
+}
+
+/// The most stages that the C++ build may give in the live comparison.
+const COMPARE_CAP: u32 = 8192;
+
 impl ThreadState {
+    /// The knobs of the pass build from the environment. A bad value refuses the pass.
+    fn knobs(&self, want_logits: bool) -> Result<Knobs, String> {
+        let knobs = Knobs::from(self.fast_qmm, |name| {
+            std::env::var_os(name).map(|value| value.into_string().unwrap_or_else(|_| "<not UTF-8>".to_owned()))
+        })?;
+        if knobs.debug_layers > 0 && want_logits {
+            return Err("MK_DEBUG_LAYERS builds no head; ask for no logits".to_owned());
+        }
+        Ok(knobs)
+    }
+
+    /// The stages of a pass, built in Rust (`pass.rs`). The live comparison of milestone 15 step 6 also asks the C++
+    /// engine for its build of the same pass, and stops the program on the first stage that differs.
+    fn build(&self, segments: &[MkSegment], want_logits: bool, knobs: Knobs) -> Vec<Stage> {
+        let segs: Vec<Seg> = segments
+            .iter()
+            .map(|segment| Seg {
+                c: segment.context as *mut MkContext,
+                t: segment.t,
+            })
+            .collect();
+        let t: u32 = segs.iter().map(|segment| segment.t).sum();
+        let mut scratch = CppScratch {
+            binding: &self.binding,
+            engine: self.engine,
+        };
+        let mut builder = Builder {
+            w: self.weights.as_ref().expect("an open engine has its weights"),
+            scratch: &mut scratch,
+            buffers: self.buffers.expect("an open engine has its pass buffers"),
+            knobs,
+        };
+        let built = builder.build(&segs, t, want_logits);
+        let mut cpp = vec![pass::st(0, 0); COMPARE_CAP as usize];
+        let n = unsafe {
+            (self.binding.build_cpp)(
+                self.engine,
+                segments.as_ptr(),
+                segments.len() as u32,
+                want_logits,
+                cpp.as_mut_ptr(),
+                COMPARE_CAP,
+            )
+        } as usize;
+        for (index, (rust, cpp)) in built.stages.iter().zip(&cpp[..n]).enumerate() {
+            let (rust, cpp) = (pass::stage_text(rust), pass::stage_text(cpp));
+            assert!(
+                rust == cpp,
+                "the live comparison: stage {index} of the pass differs\n  Rust {rust}\n  C++  {cpp}"
+            );
+        }
+        assert_eq!(
+            built.stages.len(),
+            n,
+            "the live comparison: Rust built {} stages, C++ {n}",
+            built.stages.len()
+        );
+        built.stages
+    }
+
     /// The PLE rows of a pass, segment after segment: each segment's tokens after its context's PLE history.
     ///
     /// mk stops the program on a read of a poisoned context, so a poisoned one is an error here.
@@ -1386,6 +1518,8 @@ mod tests {
             model: None,
             ple: None,
             _arena: None,
+            weights: None,
+            buffers: None,
             contexts,
             next_id: 2,
             fast_qmm: true,

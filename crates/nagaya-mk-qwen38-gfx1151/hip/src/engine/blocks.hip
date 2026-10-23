@@ -120,7 +120,7 @@ void Engine::add_moe(std::vector<Stage> &S, uint32_t il, uint32_t t, const float
 }
 
 // inv_freq[i] = 1 / theta^(2i / 64), in f32 like Qwen4ExpTextRotaryEmbedding's default init.
-static const float *inv_freq_table() {
+const float *inv_freq_table() {
   static float *d = nullptr;
   if (!d) {
     float h[kRopeDims / 2];

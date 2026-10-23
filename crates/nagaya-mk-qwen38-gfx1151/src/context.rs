@@ -132,7 +132,12 @@ mod linked {
     use crate::ple::PLE_EOS;
     use crate::spec;
 
-    /// The device buffer of `bytes`, set to `byte`.
+    /// Copy `bytes` bytes of device memory at `src` to the host at `dst`.
+    pub(crate) unsafe fn read_device(dst: *mut c_void, src: *const c_void, bytes: usize) {
+        unsafe { rt::mk_rt_memcpy(dst, src, bytes as u64, Copy::DeviceToHost as u32) };
+    }
+
+    /// A new device buffer of `bytes`.
     unsafe fn device(bytes: u64) -> *mut f32 {
         let p = unsafe { rt::mk_rt_malloc(bytes) };
         assert!(!p.is_null(), "mk_rt_malloc({bytes}) gave no buffer");

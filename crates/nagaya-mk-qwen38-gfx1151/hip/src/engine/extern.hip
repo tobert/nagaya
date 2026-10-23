@@ -67,9 +67,21 @@ void mk_segments_problem(void *e, const Segment *s, uint32_t n, mk_text_sink put
   const std::string w = static_cast<Engine *>(e)->segments_problem(s, n);
   put(out, w.data(), w.size());
 }
-// A fused pass of n segments (engine.h Engine::pass_segments), and its wall time in ms. The logits go straight into
-// logits. ple holds the PLE rows of the pass's tokens.
-double mk_pass_segments(void *e, const Segment *s, uint32_t n, bool want_logits, float *logits, const float *ple) {
-  return static_cast<Engine *>(e)->pass_segments(s, n, want_logits, logits, ple).ms;
+// A fused pass of n segments that runs the n_stages stages of the Rust build (engine.h Engine::pass_stages), and its
+// wall time in ms. The logits go straight into logits. ple holds the PLE rows of the pass's tokens.
+double mk_pass_stages(void *e, const Segment *s, uint32_t n, bool want_logits, float *logits, const float *ple,
+                      const Stage *stages, uint32_t n_stages) {
+  return static_cast<Engine *>(e)->pass_stages(s, n, want_logits, logits, ple, stages, n_stages).ms;
+}
+// The live comparison: the C++ build of the same pass into out (engine.h Engine::build_into).
+uint32_t mk_build(void *e, const Segment *s, uint32_t n, bool want_logits, Stage *out, uint32_t cap) {
+  return static_cast<Engine *>(e)->build_into(s, n, want_logits, out, cap);
+}
+// The named scratch buffer of floats floats (engine.h ScratchPool::get), and the fixed buffers of a pass.
+float *mk_scratch(void *e, const char *name, uint64_t floats) { return static_cast<Engine *>(e)->scratch_buffer(name, floats); }
+void mk_pass_buffers(void *e, const int32_t **tokens, const uint32_t **head_rows, const float **inv_freq) {
+  *tokens = static_cast<Engine *>(e)->tokens_buffer();
+  *head_rows = static_cast<Engine *>(e)->head_rows_buffer();
+  *inv_freq = inv_freq_table();
 }
 }

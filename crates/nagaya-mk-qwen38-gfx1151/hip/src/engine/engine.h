@@ -120,6 +120,8 @@ inline void check_whole_tiled(const Tensor &w, uint32_t n) {
     MK_DIE("qmm over %u rows of a tiled matrix with %lu", n, (unsigned long)(w.ne[1] * w.ne[2]));
 }
 const void *stage_kernel();
+// The rope table of the attention prep, made at its first use (blocks.hip).
+const float *inv_freq_table();
 WatchdogConfig engine_watchdog_config();  // 10 s, or MK_WATCHDOG_DEADLINE_S (a test knob)
 
 class Engine {
@@ -143,6 +145,15 @@ class Engine {
   // segment's logits at its last token (want_logits), or null when want_logits is false. ple: [t][kEmbd], the PLE rows
   // of the pass's t tokens, segment after segment (src/ple.rs).
   PassOut pass_segments(const Segment *s, uint32_t n, bool want_logits, float *logits_out, const float *ple);
+  // The live comparison of milestone 15 step 6: the C++ build of a pass into out (at most cap stages; returns the count),
+  // and a pass that runs the n_stages stages that the Rust host built. Both die on segments_problem.
+  uint32_t build_into(const Segment *s, uint32_t n, bool want_logits, Stage *out, uint32_t cap);
+  PassOut pass_stages(const Segment *s, uint32_t n, bool want_logits, float *logits_out, const float *ple, const Stage *stages,
+                      uint32_t n_stages);
+  // The named scratch buffer of the pass (ScratchPool::get), and the fixed device buffers of the pass.
+  float *scratch_buffer(const char *name, size_t n) { return scratch(name, n); }
+  const int32_t *tokens_buffer() const { return d_tokens_; }
+  const uint32_t *head_rows_buffer() const { return d_head_rows_; }
   // Off (the default): a pass that stops early for any reason stops the program. On: a fused pass that stops on a
   // spin-timeout (a grid barrier's bounded wait ran out, as under another tenant's GPU contention; PLAN.md Problems
   // 2026-10-01 11:47) returns instead, with last_error() set, and poisons every context it was extending
@@ -155,7 +166,8 @@ class Engine {
  private:
   void wire();
   Tensor get(const std::string &name) const;
-  PassOut run_pass(const Segment *s, uint32_t n, bool want_logits, float *logits_out, const float *ple);
+  PassOut run_pass(const Segment *s, uint32_t n, bool want_logits, float *logits_out, const float *ple,
+                   const Stage *stages = nullptr, uint32_t n_stages = 0);
   // t: the pass's tokens, the sum of the segments'.
   std::vector<Stage> build(const Segment *seg, uint32_t ns, uint32_t t, bool want_logits, std::vector<uint32_t> *layer_ends);
   std::vector<Stage> build_stages(const Segment *seg, uint32_t ns, uint32_t t, bool want_logits, std::vector<uint32_t> *layer_ends);

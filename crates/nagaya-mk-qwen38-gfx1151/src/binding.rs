@@ -10,6 +10,7 @@
 use std::ffi::{c_char, c_int, c_void};
 
 use crate::spec;
+use crate::stage::Stage;
 use crate::table::MkWeightTable;
 
 /// `struct Segment` of `engine.h`: `t` tokens at `tokens` that continue `context`.
@@ -87,10 +88,20 @@ pub(crate) type LastError = unsafe extern "C" fn(*mut c_void, TextSink, *mut c_v
 /// `void mk_segments_problem(void *e, const Segment *s, uint32_t n, mk_text_sink put, void *out)`.
 pub(crate) type SegmentsProblem = unsafe extern "C" fn(*mut c_void, *const MkSegment, u32, TextSink, *mut c_void);
 
-/// `double mk_pass_segments(void *e, const Segment *s, uint32_t n, bool want_logits, float *logits, const float *ple)`:
-/// one fused pass.
-pub(crate) type PassSegments =
-    unsafe extern "C" fn(*mut c_void, *const MkSegment, u32, bool, *mut f32, *const f32) -> f64;
+/// `double mk_pass_stages(void *e, const Segment *s, uint32_t n, bool want_logits, float *logits, const float *ple,
+/// const Stage *stages, uint32_t n_stages)`: one fused pass of the stages that the Rust host built.
+pub(crate) type PassStages =
+    unsafe extern "C" fn(*mut c_void, *const MkSegment, u32, bool, *mut f32, *const f32, *const Stage, u32) -> f64;
+
+/// `uint32_t mk_build(void *e, const Segment *s, uint32_t n, bool want_logits, Stage *out, uint32_t cap)`: the C++
+/// build of the same pass, for the live comparison.
+pub(crate) type BuildCpp = unsafe extern "C" fn(*mut c_void, *const MkSegment, u32, bool, *mut Stage, u32) -> u32;
+
+/// `float *mk_scratch(void *e, const char *name, uint64_t floats)`.
+pub(crate) type ScratchCpp = unsafe extern "C" fn(*mut c_void, *const c_char, u64) -> *mut f32;
+
+/// `void mk_pass_buffers(void *e, const int32_t **tokens, const uint32_t **head_rows, const float **inv_freq)`.
+pub(crate) type PassBuffersCpp = unsafe extern "C" fn(*mut c_void, *mut *const i32, *mut *const u32, *mut *const f32);
 
 /// `hipError_t hipMemGetInfo(size_t *free, size_t *total)`, from the HIP runtime that the engine links.
 pub(crate) type MemGetInfo = unsafe extern "C" fn(*mut usize, *mut usize) -> c_int;
@@ -118,7 +129,10 @@ pub(crate) struct Binding {
     pub round_gdn: RoundGdn,
     pub last_error: LastError,
     pub segments_problem: SegmentsProblem,
-    pub pass_segments: PassSegments,
+    pub pass_stages: PassStages,
+    pub build_cpp: BuildCpp,
+    pub scratch_cpp: ScratchCpp,
+    pub pass_buffers_cpp: PassBuffersCpp,
     pub mem_get_info: MemGetInfo,
 }
 
@@ -220,6 +234,7 @@ impl Binding {
         segments: &[MkSegment],
         logits: Option<&mut [f32]>,
         ple: &[f32],
+        build: impl FnOnce() -> Vec<Stage>,
     ) -> Result<f64, PassStop> {
         let tokens: usize = segments.iter().map(|segment| segment.t as usize).sum();
         assert_eq!(
@@ -249,14 +264,18 @@ impl Binding {
             Some(logits) => (true, logits.as_mut_ptr()),
             None => (false, std::ptr::null_mut()),
         };
+        // The build reads the contexts, so it runs after the checks.
+        let stages = build();
         let ms = unsafe {
-            (self.pass_segments)(
+            (self.pass_stages)(
                 engine,
                 segments.as_ptr(),
                 segments.len() as u32,
                 want_logits,
                 logits,
                 ple.as_ptr(),
+                stages.as_ptr(),
+                stages.len() as u32,
             )
         };
         let error = unsafe { self.last_error(engine) };
@@ -291,7 +310,10 @@ pub(crate) mod rt {
 mod linked {
     use std::ffi::{c_int, c_void};
 
+    use std::ffi::c_char;
+
     use super::{MkSegment, TextSink};
+    use crate::stage::Stage;
     use crate::table::MkWeightTable;
 
     // The calls of the extern layer `hip/src/engine/extern.hip`, the runtime calls `mk_rt_*` of
@@ -320,14 +342,31 @@ mod linked {
         pub(super) fn mk_ctx_round_gdn_bf16(e: *mut c_void, c: *mut c_void);
         pub(super) fn mk_last_error(e: *mut c_void, put: TextSink, out: *mut c_void);
         pub(super) fn mk_segments_problem(e: *mut c_void, s: *const MkSegment, n: u32, put: TextSink, out: *mut c_void);
-        pub(super) fn mk_pass_segments(
+        pub(super) fn mk_pass_stages(
             e: *mut c_void,
             s: *const MkSegment,
             n: u32,
             want_logits: bool,
             logits: *mut f32,
             ple: *const f32,
+            stages: *const Stage,
+            n_stages: u32,
         ) -> f64;
+        pub(super) fn mk_build(
+            e: *mut c_void,
+            s: *const MkSegment,
+            n: u32,
+            want_logits: bool,
+            out: *mut Stage,
+            cap: u32,
+        ) -> u32;
+        pub(super) fn mk_scratch(e: *mut c_void, name: *const c_char, floats: u64) -> *mut f32;
+        pub(super) fn mk_pass_buffers(
+            e: *mut c_void,
+            tokens: *mut *const i32,
+            head_rows: *mut *const u32,
+            inv_freq: *mut *const f32,
+        );
         pub(super) fn hipMemGetInfo(free: *mut usize, total: *mut usize) -> c_int;
     }
 
@@ -367,7 +406,10 @@ pub(crate) fn linked() -> Result<(Binding, Build), String> {
             round_gdn: mk_ctx_round_gdn_bf16,
             last_error: mk_last_error,
             segments_problem: mk_segments_problem,
-            pass_segments: mk_pass_segments,
+            pass_stages: mk_pass_stages,
+            build_cpp: mk_build,
+            scratch_cpp: mk_scratch,
+            pass_buffers_cpp: mk_pass_buffers,
             mem_get_info: hipMemGetInfo,
         },
         BUILD,
@@ -393,9 +435,9 @@ pub(crate) mod stub {
     use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
     use super::{
-        Binding, CtxFree, CtxMax, CtxNew, EngineOpen, LastError, MemGetInfo, PartBytes, PassSegments,
-        RecoverSpinTimeouts, Relayout, RoundGdn, RtHostFree, RtHostMalloc, RtHostRegister, SegmentsProblem, StateBytes,
-        StateRead,
+        Binding, BuildCpp, CtxFree, CtxMax, CtxNew, EngineOpen, LastError, MemGetInfo, PartBytes, PassBuffersCpp,
+        PassStages, RecoverSpinTimeouts, Relayout, RoundGdn, RtHostFree, RtHostMalloc, RtHostRegister, ScratchCpp,
+        SegmentsProblem, StateBytes, StateRead,
     };
 
     /// What the stub calls know about one context. A test passes a pointer to this in place of mk's context.
@@ -491,7 +533,10 @@ pub(crate) mod stub {
                 state_bytes: std::mem::transmute::<unsafe extern "C" fn(), StateBytes>(never),
                 last_error: std::mem::transmute::<unsafe extern "C" fn(), LastError>(never),
                 segments_problem: std::mem::transmute::<unsafe extern "C" fn(), SegmentsProblem>(never),
-                pass_segments: std::mem::transmute::<unsafe extern "C" fn(), PassSegments>(never),
+                pass_stages: std::mem::transmute::<unsafe extern "C" fn(), PassStages>(never),
+                build_cpp: std::mem::transmute::<unsafe extern "C" fn(), BuildCpp>(never),
+                scratch_cpp: std::mem::transmute::<unsafe extern "C" fn(), ScratchCpp>(never),
+                pass_buffers_cpp: std::mem::transmute::<unsafe extern "C" fn(), PassBuffersCpp>(never),
                 mem_get_info: std::mem::transmute::<unsafe extern "C" fn(), MemGetInfo>(never),
             }
         }
@@ -507,6 +552,7 @@ mod tests {
     use super::stub::{self, StubContext};
     use super::{Binding, MkSegment, PassStop, TextSink, segments};
     use crate::spec;
+    use crate::stage::Stage;
 
     /// The names of the `mk_` calls that `text` defines or declares: each `mk_<name>(` that follows `fn ` in Rust, or
     /// that starts a definition at the left margin in C++.
@@ -573,13 +619,16 @@ mod tests {
         unsafe { give(put, out, &problem) };
     }
 
-    unsafe extern "C" fn pass_segments(
+    #[allow(clippy::too_many_arguments)]
+    unsafe extern "C" fn pass_stages(
         _engine: *mut c_void,
         _segments: *const MkSegment,
         n: u32,
         want_logits: bool,
         logits: *mut f32,
         _ple: *const f32,
+        _stages: *const Stage,
+        _n_stages: u32,
     ) -> f64 {
         PASS.with_borrow_mut(|stub| stub.passes.push((n, want_logits, logits.is_null())));
         12.5
@@ -599,7 +648,7 @@ mod tests {
         });
         Binding {
             segments_problem,
-            pass_segments,
+            pass_stages,
             last_error,
             ..stub::binding()
         }
@@ -621,7 +670,15 @@ mod tests {
         let poisoned = Box::leak(Box::new(StubContext::new(true))) as *mut StubContext as *mut c_void;
         let mut made = some_segments(2, &tokens);
         made[1].context = poisoned;
-        let result = unsafe { binding.pass_segments(std::ptr::null_mut(), &made, None, &[0.0; 2 * crate::ple::EMBD]) };
+        let result = unsafe {
+            binding.pass_segments(
+                std::ptr::null_mut(),
+                &made,
+                None,
+                &[0.0; 2 * crate::ple::EMBD],
+                Vec::new,
+            )
+        };
         assert!(
             matches!(&result, Err(PassStop::Refused(message)) if message.contains("segment 1") && message.contains("poisoned")),
             "{result:?}"
@@ -645,6 +702,7 @@ mod tests {
                     &segments,
                     None,
                     &vec![0.0; count * crate::ple::EMBD],
+                    Vec::new,
                 )
             };
             assert!(
@@ -668,6 +726,7 @@ mod tests {
                 &some_segments(1, &tokens),
                 None,
                 &[0.0; crate::ple::EMBD],
+                Vec::new,
             )
         };
         assert_eq!(result, Err(PassStop::Refused("segment 0: context full".to_owned())));
@@ -689,6 +748,7 @@ mod tests {
                 &some_segments(2, &tokens),
                 None,
                 &[0.0; 2 * crate::ple::EMBD],
+                Vec::new,
             )
         };
         assert_eq!(result, Err(PassStop::Stopped(error)));
@@ -705,6 +765,7 @@ mod tests {
                 &some_segments(2, &tokens),
                 None,
                 &[0.0; 2 * crate::ple::EMBD],
+                Vec::new,
             )
         };
         assert_eq!(result, Ok(12.5));
@@ -715,6 +776,7 @@ mod tests {
                 &some_segments(2, &tokens),
                 Some(&mut logits),
                 &[0.0; 2 * crate::ple::EMBD],
+                Vec::new,
             )
         };
         assert_eq!(result, Ok(12.5));
@@ -733,6 +795,7 @@ mod tests {
                 &some_segments(2, &tokens),
                 Some(&mut logits),
                 &[0.0; 2 * crate::ple::EMBD],
+                Vec::new,
             )
         };
     }

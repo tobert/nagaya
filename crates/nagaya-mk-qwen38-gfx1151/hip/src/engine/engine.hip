@@ -751,7 +751,26 @@ PassOut Engine::failed_pass(const Segment *seg, uint32_t ns, const char *why, do
   return po;
 }
 
-PassOut Engine::run_pass(const Segment *seg, uint32_t ns, bool want_logits, float *logits_out, const float *ple) {
+uint32_t Engine::build_into(const Segment *seg, uint32_t ns, bool want_logits, Stage *out, uint32_t cap) {
+  const std::string problem = segments_problem(seg, ns);
+  if (!problem.empty()) MK_DIE("build: %s", problem.c_str());
+  uint32_t t = 0;
+  for (uint32_t i = 0; i < ns; ++i) t += seg[i].t;
+  std::vector<uint32_t> ends;
+  const std::vector<Stage> S = build(seg, ns, t, want_logits, &ends);
+  if (S.size() > cap) MK_DIE("build: %zu stages, the buffer holds %u", S.size(), cap);
+  memcpy(out, S.data(), sizeof(Stage) * S.size());
+  return uint32_t(S.size());
+}
+
+PassOut Engine::pass_stages(const Segment *s, uint32_t n, bool want_logits, float *logits_out, const float *ple,
+                            const Stage *stages, uint32_t n_stages) {
+  if (!stages || n_stages == 0) MK_DIE("pass_stages: no stages");
+  return run_pass(s, n, want_logits, logits_out, ple, stages, n_stages);
+}
+
+PassOut Engine::run_pass(const Segment *seg, uint32_t ns, bool want_logits, float *logits_out, const float *ple,
+                         const Stage *stages, uint32_t n_stages) {
   for (uint32_t i = 0; i < ns; ++i)
     if (seg[i].c && seg[i].c->poisoned)
       MK_DIE("pass on a context poisoned by a spin-timeout (segment %u, %u tokens): its state is half-written", i, seg[i].c->n);
@@ -775,7 +794,7 @@ PassOut Engine::run_pass(const Segment *seg, uint32_t ns, bool want_logits, floa
   MK_CHECK(hipMemcpy(scratch("ple_emb", size_t(kMaxPassTokens) * kEmbd), ple, sizeof(float) * size_t(t) * kEmbd,
                      hipMemcpyHostToDevice));
   std::vector<uint32_t> ends;
-  std::vector<Stage> S = build(seg, ns, t, want_logits, &ends);
+  std::vector<Stage> S = stages ? std::vector<Stage>(stages, stages + n_stages) : build(seg, ns, t, want_logits, &ends);
   if (S.size() > stage_cap_) {
     if (d_stages_) MK_CHECK(hipHostFree(d_stages_));
     stage_cap_ = S.size();
