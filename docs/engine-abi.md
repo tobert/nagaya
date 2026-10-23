@@ -470,6 +470,10 @@ It replaces the rule "The deploy profile pins the mk library" (Decided 2026-10-1
   `engine_hip`, the versions of the compiler and of HIP. No path is in `numbers` (spec 12.1).
 - The build facts stay in the identity digest until the canary runs at each start (spec 12.1). Thus a new build
   makes the held entries unusable. Amy accepted one refill for this change.
+- The compiler writes each object to stdout, and runs in the crate directory. Thus the archive has the same SHA-256
+  for each profile and feature set. A path of the build directory in the command would change a HIP symbol name.
+- The SHA-256 differs between two checkouts, because `__FILE__` and the debug information hold the source paths.
+  Build the deployed binary from the same checkout each time.
 - mk has no call for the vocabulary size, so the binding cannot check `kVocab` against the engine.
 
 Reason: the binary now holds its engine. The digest of the archive is a fact of the build, so a pin would only

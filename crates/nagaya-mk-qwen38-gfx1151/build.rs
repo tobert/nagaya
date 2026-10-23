@@ -47,6 +47,13 @@ const ENGINE_UNITS: &[&str] = &[
 /// The plain C++ translation units of mk's target `mkgguf_static` (mk `src/gguf/CMakeLists.txt:5-8`).
 const GGUF_UNITS: &[&str] = &["gguf.cpp", "dequant.cpp"];
 
+/// The compiler writes each object to stdout, and the script writes it to `OUT_DIR`.
+///
+/// clang hashes the command line into the name of a HIP symbol (`__hip_cuid_`), and it writes the working directory
+/// into the debug information. Thus a path of `OUT_DIR` in the command, or `OUT_DIR` as the working directory, makes
+/// the archive differ for each profile and feature set. Its SHA-256 is in the identity, so it must not differ.
+const OBJECT_TO_STDOUT: &[&str] = &["-o", "-"];
+
 /// One compile: the source, the object and the arguments in their order.
 pub(crate) struct Unit {
     pub(crate) source: PathBuf,
@@ -106,10 +113,9 @@ fn rt_unit(src: &Path, out: &Path) -> Unit {
     hip_tail(src.join("rt").join("rt.cpp"), out.join("rt.rt.cpp.o"), arguments)
 }
 
-/// Add `-o <object> -x hip -c <source>`, in the order of mk's compile commands.
+/// Add `-o - -x hip -c <source>`, in the order of mk's compile commands.
 fn hip_tail(source: PathBuf, object: PathBuf, mut arguments: Vec<String>) -> Unit {
-    arguments.push("-o".to_owned());
-    arguments.push(object.display().to_string());
+    arguments.extend(strings(OBJECT_TO_STDOUT));
     arguments.extend(strings(&["-x", "hip", "-c"]));
     arguments.push(source.display().to_string());
     Unit {
@@ -126,8 +132,7 @@ fn gguf_unit(src: &Path, out: &Path, name: &str) -> Unit {
     let mut arguments = vec![include(&src.join("gguf")), "-x".to_owned(), "c++".to_owned()];
     arguments.extend(strings(COMMON));
     arguments.extend(strings(WARNINGS_AND_FLOATS));
-    arguments.push("-o".to_owned());
-    arguments.push(object.display().to_string());
+    arguments.extend(strings(OBJECT_TO_STDOUT));
     arguments.push("-c".to_owned());
     arguments.push(source.display().to_string());
     Unit {
@@ -137,19 +142,19 @@ fn gguf_unit(src: &Path, out: &Path, name: &str) -> Unit {
     }
 }
 
-/// Run a command, and stop the build with its output when it fails.
-fn run(program: &Path, arguments: &[String], what: &str) -> Vec<u8> {
+/// Run a command in `directory`, and give its stdout. Stop the build with its stderr when it fails.
+fn run(program: &Path, arguments: &[String], directory: &Path, what: &str) -> Vec<u8> {
     let output = Command::new(program)
         .args(arguments)
+        .current_dir(directory)
         .output()
         .unwrap_or_else(|error| panic!("{what}: cannot run {}: {error}", program.display()));
     if !output.status.success() {
         panic!(
-            "{what} failed with {}:\n{} {}\n{}{}",
+            "{what} failed with {}:\n{} {}\n{}",
             output.status,
             program.display(),
             arguments.join(" "),
-            String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
     }
@@ -196,12 +201,14 @@ fn main() {
     std::thread::scope(|scope| {
         for unit in &units {
             let compiler = &compiler;
+            let manifest = &manifest;
             scope.spawn(move || {
-                run(
-                    compiler,
-                    &unit.arguments,
-                    &format!("the compile of {}", unit.source.display()),
-                )
+                // The manifest directory is the working directory: it is the same for each profile.
+                let what = format!("the compile of {}", unit.source.display());
+                let object = run(compiler, &unit.arguments, manifest, &what);
+                assert!(!object.is_empty(), "{what} wrote no object");
+                std::fs::write(&unit.object, object)
+                    .unwrap_or_else(|error| panic!("write {}: {error}", unit.object.display()));
             });
         }
     });
@@ -213,17 +220,17 @@ fn main() {
     // llvm-ar writes a deterministic archive by default: no time stamps, owners or modes.
     let mut arguments = vec!["crs".to_owned(), library.display().to_string()];
     arguments.extend(units.iter().map(|unit| unit.object.display().to_string()));
-    run(&archiver, &arguments, "the archive of libmkengine.a");
+    run(&archiver, &arguments, &out, "the archive of libmkengine.a");
 
     let bytes = std::fs::read(&library).unwrap_or_else(|error| panic!("read {}: {error}", library.display()));
     let sha256: String = sha2_hex(&bytes);
     let compiler_version = first_line(
-        &run(&compiler, &["--version".to_owned()], "clang++ --version"),
+        &run(&compiler, &["--version".to_owned()], &out, "clang++ --version"),
         "clang++",
     );
     let hipconfig = rocm.join("bin").join("hipconfig");
     let hip_version = first_line(
-        &run(&hipconfig, &["--version".to_owned()], "hipconfig --version"),
+        &run(&hipconfig, &["--version".to_owned()], &out, "hipconfig --version"),
         "hipconfig",
     );
     println!("cargo:rustc-env=MK_ENGINE_BUILD_SHA256={sha256}");

@@ -31,7 +31,6 @@ fn each_compile_is_the_compile_of_mk_cmake_build() {
             Path::new(words.next().expect("a command names its compiler")),
             build::compiler()
         );
-        let object = unit.object.display().to_string();
         let mut expected = Vec::new();
         let mut after_o = false;
         for word in words {
@@ -39,8 +38,9 @@ fn each_compile_is_the_compile_of_mk_cmake_build() {
             if word.starts_with('@') && word.ends_with(".modmap") {
                 continue;
             }
+            // The compiler writes the object to stdout, so no path of the build directory is in the command.
             if after_o {
-                expected.push(object.clone());
+                expected.push("-".to_owned());
                 after_o = false;
                 continue;
             }
