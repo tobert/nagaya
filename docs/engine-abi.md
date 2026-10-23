@@ -341,22 +341,21 @@ Reason: the fake engine must serve a family with a vocabulary, and the output ro
 
 | ABI | mk (`extern.hip`) | Notes |
 |---|---|---|
-| open / attach | `mk_engine_open(table)`; attach has no call yet (Proposed note below) | no device argument: the HIP device is the calling thread's current one, so the wrapper sets it on the group's thread; weights are three GGUF shards, which the Rust reader parses into the tensor table (Proposed note below) |
+| open / attach | `mk_engine_open(weights)`; no attach | no device argument: the HIP device is the calling thread's current one, so the wrapper sets it on the group's thread; the Rust reader parses the three GGUF shards, and the Rust host fills the arena and gives the engine a weight table (Proposed note below) |
 | plan | none yet | the wrapper computes the terms from the config and mk's fixed shapes |
-| arena | `mk_engine_arena_bytes` | one fd; full check in `Engine::check_arena`, which has no call yet |
+| arena | `arena::plan` and `arena::create` in Rust (`arena.rs`) | one sealed memfd in mk's `arena.h` layout; no check of another process's arena yet: milestone 15 step 6 removed the C++ check, which had no call |
 | identity | built in the Python service | moves into the engine; must include `fused` and `MK_FAST_QMM` |
-| contexts | `mk_ctx_new`, `mk_ctx_free`, `mk_ctx_n` | `Engine::fork` and `Engine::copy` have no call; a fork shares its parent's K/V and index keys |
-| parts | `mk_ctx_state_read`, `mk_ctx_state_write`, `mk_ctx_cells_write`, `mk_ctx_set_n` | parts 0-2 and 5 fixed, 3-4 cells; `idx_pooled` derived. `cells_read` takes only rows 0 to n, the whole part: snapshots are stored whole (about 316 MB at n = 3584, ontology "Part") |
-| slots | `mk_ctx_n`, `mk_ctx_free` then `mk_ctx_new` | `slot_high` is the token count; `slot_clear` makes a new context of the same capacity |
+| contexts | `context::ctx_new`, `ctx_free`, `ctx_n` in Rust (`context.rs`) | over the runtime calls `mk_rt_malloc`, `mk_rt_free` and `mk_rt_memset` of `rt.cpp`; no fork and no copy |
+| parts | `context::state_read`, `state_write`, `cells_write`, `set_n` in Rust | over `mk_rt_memcpy` and `mk_rt_memcpy_2d`; `set_n` pools the index keys through `mk_ctx_pool`. Parts 0-2 and 5 fixed, 3-4 cells; `idx_pooled` derived. `cells_read` takes only rows 0 to n, the whole part: snapshots are stored whole (about 316 MB at n = 3584, ontology "Part") |
+| slots | `ctx_n`, `ctx_free` then `ctx_new` | `slot_high` is the token count; `slot_clear` makes a new context of the same capacity |
 | coverage | none | rows 0 to n of each cells part; `fits` compares the rows with the slot's capacity |
 | seal | `mk_ctx_round_gdn_bf16` | changes bits in place |
-| poison / last_error | `mk_ctx_poisoned`, `mk_last_error` | |
-| part writes | `mk_ctx_state_write`, `mk_ctx_cells_write`, `mk_ctx_set_n` | return nothing and abort on input they refuse; the wrapper checks every precondition first (part index, bytes, an empty context that owns its K/V for parts 3-5, n within `max`, not poisoned) and returns refused; a write to a context that is already poisoned is refused, because this call changes nothing; after the call, `mk_ctx_poisoned` gives failed (decided 2026-10-18) |
+| poison / last_error | `MkContext::poisoned`, `mk_last_error` | |
+| part writes | `context::state_write`, `cells_write`, `set_n` | return nothing and stop the program on input they refuse; the wrapper checks every precondition first (part index, bytes, an empty context for parts 3-5, n within `max`, not poisoned) and returns refused; a write to a context that is already poisoned is refused, because this call changes nothing; after the call, the poison flag gives failed (decided 2026-10-18) |
 | close | none | `Engine::~Engine` exists, but HIP teardown segfaults in the process; mk does not declare `close` |
-| attach path | `Engine(table, path)` | the path is `/proc/self/fd/<n>` for an fd from systemd's store |
-| pass_check / pass | `mk_segments_problem`, `mk_pass_segments` | tokens only (PLE needs token ids); outputs are logits and hidden per segment; `Engine::pass_segments` aborts the process on bad segments (`MK_DIE`), so `Binding::pass_segments` refuses a segment count outside 1 to 16, then a problem of `mk_segments_problem`, then a poisoned context |
-| taps | none | `Engine::pass` has the taps (layers, routes, gates), with no call; unfused, one segment |
-| telemetry | none | the `Engine` fields hold op times (`stage.h`), with no call |
+| pass_check / pass | `mk_segments_problem`, `mk_pass_segments` | tokens only (PLE needs token ids); the host gathers the PLE rows of the tokens (`ple.rs`) and gives them to the pass; outputs are logits per segment; `Engine::pass_segments` aborts the process on bad segments (`MK_DIE`), so `Binding::pass_segments` refuses a segment count outside 1 to 16, then a problem of `mk_segments_problem`, then a poisoned context |
+| taps | none | milestone 15 step 6 removed the taps (layers, routes, gates), which had no call |
+| telemetry | none | milestone 15 step 6 removed the op times and the event ring of a pass, which had no call |
 | determinism | `always` | `stage.h`: "every op's output bits depend only on its work items"; top-k ties break by index; bit settings in the identity |
 
 ### v0 mk binding choices
@@ -383,13 +382,13 @@ the ABI.
   - `cells_read` takes `from` 0 and `n` equal to the token count. Then it is a whole read. It refuses every other
     range, because mk has no range read.
 
-  **Open:** `mk_ctx_new` stops the program when `hipMalloc` fails (`MK_CHECK`, `engine.hip:561-569`). Thus a clear
+  **Open:** `context::ctx_new` stops the program when `hipMalloc` fails (`mk_rt_malloc` in `rt.cpp`). Thus a clear
   that cannot allocate ends the process, and the binding never sees a null context. The free comes first, so the
   allocator holds the bytes. mk needs a reset call that keeps the buffers, so that a clear does not allocate.
   - The factory of the process crate gives `plan(config)` (next rule), and this binding fixes the pool.
 - **The factory plans from `weights_bytes`.** Decided by senpai 2026-10-20 night (vetoable).
-  - mk knows the size of its weight arena only after the weights load (`mk_engine_arena_bytes`). The arena is a repacked
-    copy of the tensors, so `plan` cannot compute the size.
+  - The size of the weight arena comes from `arena::plan`, which reads the tensor records of the shards at open. The
+    arena is a repacked copy of the tensors, and `plan` reads no shard, so it cannot compute the size.
   - The config of the engine has one key, `weights_bytes`. The factory refuses any other key.
   - `plan` returns the limits of the pool with this size in the weights term.
   - `open` loads the weights and compares the real arena with the key. A difference refuses the start (exit 3,
@@ -401,7 +400,7 @@ the ABI.
   pool had 16 contexts of 256 tokens (Amy, 2026-10-20: "grow the pool"). A kaijutsu context needs thousands of
   tokens, so 256 cannot serve council v2.
   - The count stays 16, which equals `max_segments`. A pass can hold one segment for each context.
-  - mk takes any capacity that is a multiple of 256, up to 32,768 (`check_capacity`).
+  - mk takes any capacity that is a multiple of 256, up to 32,768 (`context.rs` `ctx_new`).
   - Two sizes keep the long contexts few and the short ones many.
   - The measured bytes are in "The context term holds the pool", below.
   - To change the classes, edit `CONTEXT_CLASSES` in `spec.rs`. The tests derive their numbers from it.
@@ -413,7 +412,8 @@ the ABI.
   which a grain needs. The grain is `CHECKPOINT_GRAIN` in `spec.rs`.
   - A profile with `interval_copies = 0` makes no copies. The gfx1151host profile has 0.
 - **`max_quantum_ms` is 10000.** mk splits a pass at 256 tokens (`kMaxPassTokens`). A prefill chunk of that size takes
-  about 2 s. mk's watchdog stops the program at a 10 s deadline (`engine.h:302-306`), so the declared bound is 10 s.
+  about 2 s. mk's watchdog stops the program at a 10 s deadline (`engine.h` `Engine::wd_`), so the declared bound is
+  10 s.
 - **`cells_write` writes `n` rows from `from`.** The binding refuses a `from` other than 0 and changes nothing. mk
   writes n cells into an empty context that owns its K/V. The caller calls `set_n` after it writes every part.
 - **`positions` are strict and `meta` is empty.** mk appends the tokens at the context's n. The binding refuses a
@@ -432,7 +432,7 @@ the ABI.
 - **The template is the GGUF's text.** The identity's `template` is the text of `tokenizer.chat_template` in the
   first shard. A missing key, or a value that is not a string, is an error at open that names the key and the file.
 - **The context term holds the pool.** The mandatory term `context` has lifetime `engine` and holds all 16
-  contexts. A read of a poisoned context is an error. The bytes follow from mk's `new_context`:
+  contexts. A read of a poisoned context is an error. The bytes follow from `context.rs` `ctx_new`:
   - The fixed state is 4 × (36×48×128×128 + 36×3×10,240 + 9×10,240) = 118,038,528 bytes.
   - Each token adds 4 × (12×2×2×256 + 12×128 + 12×128÷4) = 56,832 bytes.
   - That is 49,152 bytes of K/V, 6,144 of index keys and 1,536 of pooled keys.
@@ -453,8 +453,9 @@ the ABI.
   - A gate of the conformance suite holds at most three handles.
 - **`canary_hash` is empty.** This binding does not run mk's canary. The process does not run it yet (spec 8.1).
 - **The identity carries `MK_FAST_QMM`, `MK_TILES` and `fused`.** They are `Approx`, `ReferenceDefining` and
-  `Approx`. mk reads `MK_FAST_QMM` at each pass build (`engine.h:27-32`). `MK_TILES` chooses the tiled or the GGUF
-  layout at load (`engine.h:139-146`). The binding has not measured whether the two give equal bits. A change after
+  `Approx`. mk reads `MK_FAST_QMM` at each pass build (`engine.h` `fast_qmm_enabled`). `MK_TILES` chooses the tiled
+  or the GGUF layout at load (`worker.rs` `tiles`, `arena.rs` `plan`). The binding has not measured whether the two
+  give equal bits. A change after
   open refuses the pass, as for `MK_FAST_QMM`.
 
 Reason for all: the code must not guess.
@@ -504,6 +505,12 @@ C++ engine is. This is the simplest seam that removes the GGUF parse from C++:
 Reason: the arena bytes and the logits stay the same, and the C ABI changes in three calls only. Step 6 moves the plan
 and the PLE gather into Rust. Then the two calls back into Rust go away.
 
+Replaced in step 6 (Claude Opus 5.5, 2026-10-23): this seam is gone. The Rust host plans and fills the arena
+(`arena.rs`) and gathers the PLE rows of each pass (`ple.rs`). `mk_engine_open` takes a `mk_weight_table`
+(`weight_table.h`): each tensor of the arena by name, in its final layout. `drop_cached`, `dequant_f32`, the
+shard paths and the PLE keys left the table. `mk_engine_attach` and `mk_arena_check` had no caller, and step 6
+removed the C++ code behind them. The export of the arena (spec 10.2) builds the attach in Rust, from `arena.rs`.
+
 **Proposed** (Claude Opus 5.5, 2026-10-22): the Rust schedule orders the stages that the C++ engine builds. Step 5
 of milestone 15 moves mk's stage schedule (`stage_sched.h`) to Rust. The docs do not say where that seam is. This is
 the simplest seam that removes the schedule from C++:
@@ -538,9 +545,9 @@ the simplest choice:
     and `mk_kernel_resources`;
   - `mk_ctx_fork`, `mk_ctx_copy`, `mk_ctx_pooled_n` and `mk_engine_close`.
 - `mk_engine_attach` and `mk_arena_check` also go. The mk engine exports no arena yet (spec 10.2). The step that
-  exports it adds the two calls to the layer and binds them. The `Engine` constructor with a path and
-  `Engine::check_arena` stay in `engine.hip`.
-- The `Engine` methods behind these calls stay in `engine.hip` for step 6.
+  exports it adds the two calls to the layer and binds them.
+- The `Engine` methods behind these calls stay in `engine.hip` for step 6. Step 6 removed them (Claude Opus 5.5,
+  2026-10-23): no call reached them, and the arena code is Rust now.
 
 Reason: Amy, 2026-10-22: "don't copy extra stuff". A call with no caller has no test. Five of these calls stopped the
 program on a small buffer (`MK_DIE`), and one self-test stopped on a small buffer (`MK_CHECK_BYTES`). With no caller,
@@ -572,7 +579,7 @@ see the call. The opt-in is not pinned.
 
 Two paths have no test. A forced spin-timeout, and the `-1` to `PassStatus::Poison` path that follows it, need GPU
 contention, so no test in this suite reaches them. The poisoned `set_n` path has no test on real mk, because mk's
-`restore_n` stops the program on a poisoned context (`engine.hip:775-776`). A stub binding tests the refusal.
+`set_n` stops the program on a poisoned context (`context.rs`). A stub binding tests the refusal.
 
 Reason: a test that passes when the code is broken is a defect, so the suite reports these limits instead of a false
 check. A lab hook for the first case is not in v0.
