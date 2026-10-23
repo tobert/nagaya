@@ -9,8 +9,9 @@ test time. The tool runs no GPU job and writes nothing into mk.
     PYTHONDONTWRITEBYTECODE=1 nice -n 19 ionice -c3 \
         ~/src/megakernel-qwen38-flashnext-strixhalo/.venv/bin/python -I tools/op_fixtures.py [--out DIR] [GROUP ...]
 
-A group is a pair of files, `<group>.json` and `<group>.bin`. The JSON file holds the header, the metadata and an index of
-the arrays. The BIN file holds the little-endian bytes of the arrays. With no group the tool writes every group.
+A group is a module in `tools/op_groups`. It writes a pair of files, `<group>.json` and `<group>.bin`. The JSON file holds
+the header, the metadata and an index of the arrays. The BIN file holds the little-endian bytes of the arrays. With no
+group the tool writes every group. The metadata of a group names the files of mk that the group reads.
 """
 from __future__ import annotations
 
@@ -136,53 +137,18 @@ def git(repo: Path, *args: str) -> str:
 
 # ---- the groups --------------------------------------------------------------------------------------------------------
 
-GROUPS = {}
 
-
-def group(fn):
-    GROUPS[fn.__name__.removeprefix("make_")] = fn
-    return fn
-
-
-@group
-def make_gen(g: Group) -> None:
-    """The first values of each generator function, so that the Rust test can check its own generator."""
-    g.add("u64_head", u64_stream(7, 16).astype("<u8").view(np.uint32))
-    g.add("normals", normals(9, 64))
-    g.add("uniforms", uniforms(11, 64))
-    g.add("integers", integers(13, 64, 300).astype("<u4"))
-    g.add("permutation", permutation(15, 100).astype("<u4"))
-    g.add("bytes", stream_bytes(17, 100))
-    g.meta["raw"] = []
-    for qtype, (values, block, _) in QTYPES.items():
-        rows, k = 3, 512
-        raw = raw_rows(qtype, 19, rows, k)
-        # Keep only the head and the tail of each row, so that the fixture stays small.
-        g.add(f"raw_{qtype}", raw.reshape(-1)[:300])
-        g.meta["raw"].append({"type": qtype, "seed": 19, "rows": rows, "k": k, "len": 300})
-
-
-@group
-def make_qmm(g: Group) -> None:
-    """Dequantized values of gguf-py for the raw rows of the generator, one case for each type (test_qmm.py)."""
-    sys.path.insert(0, str(GGUF_PY))
-    import gguf
-    types = {"F32": gguf.GGMLQuantizationType.F32, "BF16": gguf.GGMLQuantizationType.BF16,
-             "Q8_0": gguf.GGMLQuantizationType.Q8_0, "IQ4_NL": gguf.GGMLQuantizationType.IQ4_NL,
-             "Q6_K": gguf.GGMLQuantizationType.Q6_K, "IQ3_S": gguf.GGMLQuantizationType.IQ3_S,
-             "IQ4_XS": gguf.GGMLQuantizationType.IQ4_XS}
-    g.meta["dequant_cases"] = []
-    for n, (qtype, ty) in enumerate(types.items()):
-        rows, k, seed = 4, 512, 500 + n
-        raw = raw_rows(qtype, seed, rows, k)
-        want = gguf.quants.dequantize(raw, ty).astype(np.float32).reshape(rows, k)
-        assert np.isfinite(want).all(), qtype
-        g.add(f"dequant_{qtype}", want)
-        g.meta["dequant_cases"].append({"type": qtype, "rows": rows, "k": k, "seed": seed})
-
-
-# Every mk file that a group reads, for the header.
-MK_FILES = ["tests/ops/test_qmm.py"]
+def load_groups() -> dict:
+    """Every module in tools/op_groups. Its file name is the group name. It has `MK_FILES` and `make(g, lib)`, where `lib`
+    is this module: the generator, `Group` and the paths."""
+    import importlib.util
+    found = {}
+    for path in sorted((Path(__file__).resolve().parent / "op_groups").glob("*.py")):
+        spec = importlib.util.spec_from_file_location(f"op_group_{path.stem}", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        found[path.stem] = module
+    return found
 
 
 def main() -> None:
@@ -190,21 +156,23 @@ def main() -> None:
     parser.add_argument("groups", nargs="*")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     args = parser.parse_args()
-    names = args.groups or list(GROUPS)
+    groups = load_groups()
+    names = args.groups or list(groups)
     for name in names:
-        if name not in GROUPS:
-            sys.exit(f"no group {name}; the groups are {', '.join(GROUPS)}")
+        if name not in groups:
+            sys.exit(f"no group {name}; the groups are {', '.join(groups)}")
     header = {
         "mk_rev": git(MK, "rev-parse", "HEAD"),
-        "mk_files": MK_FILES,
         "python": platform.python_version(),
         "numpy": np.__version__,
         "generator": "tools/op_fixtures.py",
         "author": AUTHOR,
     }
+    me = sys.modules[__name__]
     for name in names:
         g = Group(name)
-        GROUPS[name](g)
+        g.meta["mk_files"] = groups[name].MK_FILES
+        groups[name].make(g, me)
         g.write(args.out, header)
 
 

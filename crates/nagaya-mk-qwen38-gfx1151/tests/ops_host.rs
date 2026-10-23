@@ -127,6 +127,30 @@ fn the_groups_on_disk_are_the_groups_that_the_tests_load() {
     );
 }
 
+/// Each group but `gen` names the files of mk that it ports, as paths in mk's `tests/ops`.
+#[test]
+fn each_group_names_the_mk_files_it_reads() {
+    for name in groups() {
+        let files = Fixture::load(&name)
+            .meta("mk_files")
+            .as_array()
+            .expect("mk_files")
+            .clone();
+        if name == "gen" {
+            assert!(files.is_empty(), "gen reads no file of mk");
+            continue;
+        }
+        assert!(!files.is_empty(), "the group {name} names no file of mk");
+        for file in files {
+            let file = file.as_str().unwrap();
+            assert!(
+                file.starts_with("tests/ops/") && file.ends_with(".py"),
+                "{name}: {file} is not an op test of mk"
+            );
+        }
+    }
+}
+
 #[test]
 fn the_fixtures_stay_small() {
     let total: u64 = std::fs::read_dir(fixture::directory())
