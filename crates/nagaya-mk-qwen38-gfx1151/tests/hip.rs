@@ -743,6 +743,34 @@ fn an_interval_copy_restores_and_replays_to_the_bits_of_the_live_context() {
 }
 
 #[test]
+fn a_restore_past_the_dense_reach_pools_the_keys_and_replays_to_the_bits() {
+    // A pass whose context reaches past 2051 visible cells scores the pooled block keys (mk's indexer). The pooled
+    // keys are derived state: a restore pools them from the written index keys (host.rs pool_context). A restore at
+    // 2304 tokens, then a replay, must give the bits of the live context, so the replay reads the pooled keys.
+    const AT: usize = 9 * 256;
+    let ids = synthetic_ids(AT + 120);
+    let mut engine = open().expect("open mk");
+    let live = State::Slot(0);
+    feed(&mut engine, 0, &ids[..AT], 256);
+    let rows = [(3usize, 0u64, AT as u64), (4, 0, AT as u64)];
+    let copy = nagaya_store::snapshot_from_engine(&mut engine, live, &rows).expect("the interval copy");
+    let live_logits = feed_sizes(&mut engine, 0, &ids[AT..], &[120]);
+    let live_parts = stored_parts(&mut engine, 0);
+
+    assert_eq!(engine.slots().unwrap().slot_clear(LARGE), WriteResult::Ok);
+    let restored =
+        nagaya_store::write_snapshots(&mut engine, State::Slot(LARGE), std::slice::from_ref(&copy)).expect("restore");
+    assert_eq!(restored, nagaya_store::Restored::Done);
+    let replay_logits = feed_sizes(&mut engine, LARGE, &ids[AT..], &[120]);
+    let replay_parts = stored_parts(&mut engine, LARGE);
+    assert_parts_equal("the replay past the dense reach differs", &live_parts, &replay_parts);
+    assert!(
+        bits(&live_logits) == bits(&replay_logits),
+        "the logits of the replay past the dense reach differ from the live context"
+    );
+}
+
+#[test]
 fn a_split_across_256_does_not_change_the_bits_in_either_class() {
     // Spec 5.7 and 6.13: the split of the tokens into passes does not change bits. The splits cross the multiples
     // 256 and 512 of the grain at different tokens. One of them crosses 256 one token at a time.
