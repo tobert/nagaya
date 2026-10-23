@@ -196,11 +196,14 @@ Nothing in the store directory needs a change for the rollback. The nagaya leave
 
 The live gate council of kaijutsu reads `~/.config/kaijutsu/config/kernel/gate.toml`. Its `[council]` table has
 `server = "http://198.51.100.20:8090"`. It talks to whatever serves port 8090. After the cutover, that is the
-nagaya, and the thresholds in the file must match the identity that the nagaya serves. A threshold is fitted for one
-identity (gogi `docs/council-api.md`). Do these steps after each cutover and each rollback:
+nagaya. A threshold is fitted for one identity (gogi `docs/council-api.md`). Since 2026-10-21, the file's threshold
+names its spec alone, and no identity fields. Its comment says: "a megakernel redeploy no longer turns decisions into
+misses."
+
+A new engine identity thus does not remove the threshold. Do these steps after each cutover and each rollback:
 
 1. Read the identity from `GET /council/v2/identity`.
-2. Compare its `weight_hash`, `engine`, `tokenizer_hash` and `template` with each `[[council.threshold]]` entry.
+2. If a `[[council.threshold]]` entry names `weight_hash`, `engine`, `tokenizer_hash` or `template`, compare them.
 3. If one differs, the gate has no threshold for that identity. Ask Amy before you change the file.
 
 On 2026-10-21, a throwaway kaijutsu kernel drove a generation and gate council decisions through the nagaya.
