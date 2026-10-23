@@ -4,7 +4,7 @@
 //! the metric points that the call site recorded. Other threads, and other tests, record nowhere.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use opentelemetry_sdk::metrics::InMemoryMetricExporter;
 use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
@@ -37,6 +37,23 @@ pub struct Point {
 /// and the log asks for the same lock, so the thread waits for itself. A held copy stops this.
 static RETAINED: Mutex<Vec<tracing::Dispatch>> = Mutex::new(Vec::new());
 
+/// Two dispatches that live as long as the process. A capture or a log reader makes the third at the least.
+///
+/// `tracing` caches, for each callsite, whether a subscriber wants it. When one dispatch is alive, a thread that
+/// registers a callsite asks only its own dispatch. A thread with no dispatch then caches "never", even while
+/// another thread sets a dispatch. The event of that other thread is lost. With three dispatches alive, a thread
+/// that registers a callsite asks all of them under a lock, so no event is lost.
+static STEADY: OnceLock<[tracing::Dispatch; 2]> = OnceLock::new();
+
+fn steady() {
+    STEADY.get_or_init(|| {
+        [
+            tracing::Dispatch::new(tracing_subscriber::registry()),
+            tracing::Dispatch::new(tracing_subscriber::registry()),
+        ]
+    });
+}
+
 /// How many dispatches the captures of this process keep (see `RETAINED`).
 pub fn retained_dispatches() -> usize {
     RETAINED.lock().unwrap().len()
@@ -54,6 +71,7 @@ pub struct Capture {
 impl Capture {
     /// Start a capture on this thread, with the production sampler and a resource of `resource`.
     pub fn start(resource: Vec<(String, ResourceValue)>) -> Self {
+        steady();
         let config = Config::from_lookup(|_| None, resource);
         let spans = InMemorySpanExporter::default();
         let metrics = InMemoryMetricExporter::default();
@@ -205,6 +223,7 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Sink {
 
 /// Run `run` with the stderr format of the nagaya on this thread, and give the lines that it wrote.
 pub fn log_lines(run: impl FnOnce()) -> Vec<String> {
+    steady();
     let sink = Sink::default();
     let layer = tracing_subscriber::fmt::layer()
         .with_writer(sink.clone())
