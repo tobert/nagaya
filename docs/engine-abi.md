@@ -339,24 +339,24 @@ Reason: the fake engine must serve a family with a vocabulary, and the output ro
 
 ## How mk maps
 
-| ABI | mk (`capi.hip`) | Notes |
+| ABI | mk (`extern.hip`) | Notes |
 |---|---|---|
-| open / attach | `mk_engine_open(table)`, `mk_engine_attach(table, path)` | no device argument: the HIP device is the calling thread's current one, so the wrapper sets it on the group's thread; weights are three GGUF shards, which the Rust reader parses into the tensor table (Proposed note below) |
+| open / attach | `mk_engine_open(table)`; attach has no call yet (Proposed note below) | no device argument: the HIP device is the calling thread's current one, so the wrapper sets it on the group's thread; weights are three GGUF shards, which the Rust reader parses into the tensor table (Proposed note below) |
 | plan | none yet | the wrapper computes the terms from the config and mk's fixed shapes |
-| arena | `mk_engine_arena`, `mk_arena_check` | one fd; full check |
+| arena | `mk_engine_arena_bytes` | one fd; full check in `Engine::check_arena`, which has no call yet |
 | identity | built in the Python service | moves into the engine; must include `fused` and `MK_FAST_QMM` |
-| contexts | `mk_ctx_new`, `mk_ctx_fork`, `mk_ctx_copy`, `mk_ctx_free`, `mk_ctx_n` | a fork shares its parent's K/V and index keys |
+| contexts | `mk_ctx_new`, `mk_ctx_free`, `mk_ctx_n` | `Engine::fork` and `Engine::copy` have no call; a fork shares its parent's K/V and index keys |
 | parts | `mk_ctx_state_read`, `mk_ctx_state_write`, `mk_ctx_cells_write`, `mk_ctx_set_n` | parts 0-2 and 5 fixed, 3-4 cells; `idx_pooled` derived. `cells_read` takes only rows 0 to n, the whole part: snapshots are stored whole (about 316 MB at n = 3584, ontology "Part") |
 | slots | `mk_ctx_n`, `mk_ctx_free` then `mk_ctx_new` | `slot_high` is the token count; `slot_clear` makes a new context of the same capacity |
 | coverage | none | rows 0 to n of each cells part; `fits` compares the rows with the slot's capacity |
 | seal | `mk_ctx_round_gdn_bf16` | changes bits in place |
 | poison / last_error | `mk_ctx_poisoned`, `mk_last_error` | |
 | part writes | `mk_ctx_state_write`, `mk_ctx_cells_write`, `mk_ctx_set_n` | return nothing and abort on input they refuse; the wrapper checks every precondition first (part index, bytes, an empty context that owns its K/V for parts 3-5, n within `max`, not poisoned) and returns refused; a write to a context that is already poisoned is refused, because this call changes nothing; after the call, `mk_ctx_poisoned` gives failed (decided 2026-10-18) |
-| close | none | `mk_engine_close` exists, but HIP teardown segfaults in the process; mk does not declare `close` |
-| attach path | `mk_engine_attach(…, path)` | the path is `/proc/self/fd/<n>` for an fd from systemd's store |
-| pass_check / pass | `mk_segments_problem`, `mk_pass_segments` | tokens only (PLE needs token ids); outputs are logits and hidden per segment; `mk_pass_segments` aborts the process on bad segments (`MK_DIE`), so the wrapper calls `mk_segments_problem` first |
-| taps | `mk_pass` (layers, routes), `mk_pass_gdn_ab` (gates) | unfused, one segment; logits go straight to the caller's buffer, the other taps are copied |
-| telemetry | `mk_stage_times`, `mk_stage_detail`, `mk_dispatches`, `mk_host_stats` | mk's stages are ops (`stage.h`), so these are op times |
+| close | none | `Engine::~Engine` exists, but HIP teardown segfaults in the process; mk does not declare `close` |
+| attach path | `Engine(table, path)` | the path is `/proc/self/fd/<n>` for an fd from systemd's store |
+| pass_check / pass | `mk_segments_problem`, `mk_pass_segments` | tokens only (PLE needs token ids); outputs are logits and hidden per segment; `Engine::pass_segments` aborts the process on bad segments (`MK_DIE`), so `Binding::pass_segments` refuses a segment count outside 1 to 16, then a problem of `mk_segments_problem`, then a poisoned context |
+| taps | none | `Engine::pass` has the taps (layers, routes, gates), with no call; unfused, one segment |
+| telemetry | none | the `Engine` fields hold op times (`stage.h`), with no call |
 | determinism | `always` | `stage.h`: "every op's output bits depend only on its work items"; top-k ties break by index; bit settings in the identity |
 
 ### v0 mk binding choices
@@ -388,7 +388,7 @@ the ABI.
   allocator holds the bytes. mk needs a reset call that keeps the buffers, so that a clear does not allocate.
   - The factory of the process crate gives `plan(config)` (next rule), and this binding fixes the pool.
 - **The factory plans from `weights_bytes`.** Decided by senpai 2026-10-20 night (vetoable).
-  - mk knows the size of its weight arena only after the weights load (`mk_engine_arena`). The arena is a repacked
+  - mk knows the size of its weight arena only after the weights load (`mk_engine_arena_bytes`). The arena is a repacked
     copy of the tensors, so `plan` cannot compute the size.
   - The config of the engine has one key, `weights_bytes`. The factory refuses any other key.
   - `plan` returns the limits of the pool with this size in the weights term.
@@ -480,7 +480,8 @@ It replaces the rule "The deploy profile pins the mk library" (Decided 2026-10-1
   for each profile and feature set. A path of the build directory in the command would change a HIP symbol name.
 - The SHA-256 differs between two checkouts, because `__FILE__` and the debug information hold the source paths.
   Build the deployed binary from the same checkout each time.
-- mk has no call for the vocabulary size, so the binding cannot check `kVocab` against the engine.
+- mk has no call for the vocabulary size. `extern.hip` states `kVocab` and the other sizes of the binding's buffers
+  in `static_assert` lines. A host test compares them with `spec.rs` (`src/layout.rs`).
 
 Reason: the binary now holds its engine. The digest of the archive is a fact of the build, so a pin would only
 compare the build with itself.
@@ -520,6 +521,30 @@ the simplest seam that removes the schedule from C++:
 
 Reason: the order, the barriers and the bits stay the same, and the C ABI does not change. Step 6 builds the stages
 in Rust. Then the two calls become plain Rust calls, and the table loses them.
+
+**Proposed** (Claude Opus 5.5, 2026-10-22): the extern layer holds only the calls that the binding uses. Step 4 of
+milestone 15 moves the checks and the result rules of mk's C ABI into Rust. The C++ side keeps a thin layer,
+`hip/src/engine/extern.hip`. The docs do not say what happens to the calls that nothing in the nagaya uses. This is
+the simplest choice:
+
+- Each call of the extern layer takes C types and calls one `Engine` method or reads one field. It has no check.
+- The binding declares each call of the layer, and a test compares the two lists.
+- The calls that only mk's Python harness and lab used go:
+  - the taps, `mk_pass` and `mk_pass_gdn_ab`;
+  - the telemetry: `mk_stage_times`, `mk_stage_detail`, `mk_stage_raw`, `mk_stage_barriers`, `mk_mega_hwid`,
+    `mk_mega_grid`, `mk_dispatches`, `mk_host_stats` and `mk_last_hidden`;
+  - the mask and the poison cells: `mk_ctx_set_mask`, `mk_ctx_mask` and `mk_ctx_poison_cells`;
+  - the self-tests: `mk_scratch_selftest`, `mk_stage_abort_selftest`, `mk_trap_selftest`, `mk_trap_sink_installed`
+    and `mk_kernel_resources`;
+  - `mk_ctx_fork`, `mk_ctx_copy`, `mk_ctx_pooled_n` and `mk_engine_close`.
+- `mk_engine_attach` and `mk_arena_check` also go. The mk engine exports no arena yet (spec 10.2). The step that
+  exports it adds the two calls to the layer and binds them. The `Engine` constructor with a path and
+  `Engine::check_arena` stay in `engine.hip`.
+- The `Engine` methods behind these calls stay in `engine.hip` for step 6.
+
+Reason: Amy, 2026-10-22: "don't copy extra stuff". A call with no caller has no test. Five of these calls stopped the
+program on a small buffer (`MK_DIE`), and one self-test stopped on a small buffer (`MK_CHECK_BYTES`). With no caller,
+these checks need no Rust copy.
 
 **mk's pass scratch is a mandatory term.** The ABI says that `pass` never allocates and that its scratch is a
 mandatory term. mk allocates one scratch pool at its first ask and keeps it for the engine's life
