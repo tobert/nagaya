@@ -594,7 +594,8 @@ of the ABI, so Amy decides.
 **The wake call.** Decided 2026-10-22 (Amy: "add the call"). A stage thread keeps its card awake between the quanta
 of a job.
 
-**Proposed** (claude-opus-5-5, 2026-10-22): the shape of the wake call, and when the stage thread makes it.
+**The shape of the wake call**, and when the stage thread makes it. Decided by senpai 2026-10-22 (vetoable). Amy
+reads it in her review of the docs. Not built yet.
 
 ```rust
 trait StageHandle {
