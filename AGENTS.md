@@ -215,9 +215,9 @@ done. Milestone 15 is next on gfx1151host, and milestone 15s is next on b70host.
        mkviolet's address. Do not start, stop or enable a service: senpai does the cutover with Amy.
 
     Senpai and Amy did the cutover at 11:01 on 2026-10-23, from `5d7c5eb`. `nagaya.service` serves council v2
-    on `198.51.100.10:8091` with Gemma 4 on the two B70 cards. `mkviolet.service` stays disabled. The process was
-    ready after 7 s. `gogi-conformance` at gogi `a07d85e` gave 266 ok, 0 FAIL and 11 skip. The kernel log has no
-    hang or reset. b70host has no kaijutsu gate config, so the gate check has no target here.
+    on `198.51.100.10:8091` with Gemma 4 on the two B70 cards, ready after 7 s. `mkviolet.service` stays disabled.
+    `gogi-conformance` at gogi `a07d85e` gave 266 ok, 0 FAIL and 11 skip. The kernel log has no hang or reset.
+    b70host has no kaijutsu gate config, so the gate check has no target here.
 16. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
