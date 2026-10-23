@@ -1,0 +1,417 @@
+{
+ "arrays": {
+  "dense_gamma_ik": {
+   "dtype": "f32",
+   "len": 512,
+   "offset": 2688,
+   "shape": [
+    128
+   ]
+  },
+  "dense_gamma_iq": {
+   "dtype": "f32",
+   "len": 512,
+   "offset": 2176,
+   "shape": [
+    128
+   ]
+  },
+  "dense_gamma_k": {
+   "dtype": "f32",
+   "len": 1024,
+   "offset": 1152,
+   "shape": [
+    256
+   ]
+  },
+  "dense_gamma_q": {
+   "dtype": "f32",
+   "len": 1024,
+   "offset": 128,
+   "shape": [
+    256
+   ]
+  },
+  "dense_out": {
+   "dtype": "f32",
+   "len": 98304,
+   "offset": 3200,
+   "shape": [
+    24,
+    4,
+    256
+   ]
+  },
+  "dense_sel": {
+   "dtype": "i32",
+   "len": 2304,
+   "offset": 101504,
+   "shape": [
+    24,
+    24
+   ]
+  },
+  "inv_freq": {
+   "dtype": "f32",
+   "len": 128,
+   "offset": 0,
+   "shape": [
+    32
+   ]
+  },
+  "long0_bounds": {
+   "dtype": "f32",
+   "len": 10880,
+   "offset": 269008,
+   "shape": [
+    5,
+    544
+   ]
+  },
+  "long0_ids": {
+   "dtype": "i32",
+   "len": 10880,
+   "offset": 247248,
+   "shape": [
+    5,
+    544
+   ]
+  },
+  "long0_k": {
+   "dtype": "f32",
+   "len": 10240,
+   "offset": 279888,
+   "shape": [
+    5,
+    2,
+    256
+   ]
+  },
+  "long0_out": {
+   "dtype": "f32",
+   "len": 20480,
+   "offset": 226768,
+   "shape": [
+    5,
+    4,
+    256
+   ]
+  },
+  "long0_scores": {
+   "dtype": "f32",
+   "len": 10880,
+   "offset": 258128,
+   "shape": [
+    5,
+    544
+   ]
+  },
+  "long1_bounds": {
+   "dtype": "f32",
+   "len": 6528,
+   "offset": 315472,
+   "shape": [
+    3,
+    544
+   ]
+  },
+  "long1_ids": {
+   "dtype": "i32",
+   "len": 6528,
+   "offset": 302416,
+   "shape": [
+    3,
+    544
+   ]
+  },
+  "long1_k": {
+   "dtype": "f32",
+   "len": 6144,
+   "offset": 322000,
+   "shape": [
+    3,
+    2,
+    256
+   ]
+  },
+  "long1_out": {
+   "dtype": "f32",
+   "len": 12288,
+   "offset": 290128,
+   "shape": [
+    3,
+    4,
+    256
+   ]
+  },
+  "long1_scores": {
+   "dtype": "f32",
+   "len": 6528,
+   "offset": 308944,
+   "shape": [
+    3,
+    544
+   ]
+  },
+  "long2_bounds": {
+   "dtype": "f32",
+   "len": 8704,
+   "offset": 361936,
+   "shape": [
+    4,
+    544
+   ]
+  },
+  "long2_ids": {
+   "dtype": "i32",
+   "len": 8704,
+   "offset": 344528,
+   "shape": [
+    4,
+    544
+   ]
+  },
+  "long2_k": {
+   "dtype": "f32",
+   "len": 8192,
+   "offset": 370640,
+   "shape": [
+    4,
+    2,
+    256
+   ]
+  },
+  "long2_out": {
+   "dtype": "f32",
+   "len": 16384,
+   "offset": 328144,
+   "shape": [
+    4,
+    4,
+    256
+   ]
+  },
+  "long2_scores": {
+   "dtype": "f32",
+   "len": 8704,
+   "offset": 353232,
+   "shape": [
+    4,
+    544
+   ]
+  },
+  "long3_bounds": {
+   "dtype": "f32",
+   "len": 8704,
+   "offset": 412624,
+   "shape": [
+    4,
+    544
+   ]
+  },
+  "long3_ids": {
+   "dtype": "i32",
+   "len": 8704,
+   "offset": 395216,
+   "shape": [
+    4,
+    544
+   ]
+  },
+  "long3_k": {
+   "dtype": "f32",
+   "len": 8192,
+   "offset": 421328,
+   "shape": [
+    4,
+    2,
+    256
+   ]
+  },
+  "long3_out": {
+   "dtype": "f32",
+   "len": 16384,
+   "offset": 378832,
+   "shape": [
+    4,
+    4,
+    256
+   ]
+  },
+  "long3_scores": {
+   "dtype": "f32",
+   "len": 8704,
+   "offset": 403920,
+   "shape": [
+    4,
+    544
+   ]
+  },
+  "long4_bounds": {
+   "dtype": "f32",
+   "len": 2176,
+   "offset": 437968,
+   "shape": [
+    1,
+    544
+   ]
+  },
+  "long4_ids": {
+   "dtype": "i32",
+   "len": 2176,
+   "offset": 433616,
+   "shape": [
+    1,
+    544
+   ]
+  },
+  "long4_k": {
+   "dtype": "f32",
+   "len": 2048,
+   "offset": 440144,
+   "shape": [
+    1,
+    2,
+    256
+   ]
+  },
+  "long4_out": {
+   "dtype": "f32",
+   "len": 4096,
+   "offset": 429520,
+   "shape": [
+    1,
+    4,
+    256
+   ]
+  },
+  "long4_scores": {
+   "dtype": "f32",
+   "len": 2176,
+   "offset": 435792,
+   "shape": [
+    1,
+    544
+   ]
+  },
+  "long_gamma_ik": {
+   "dtype": "f32",
+   "len": 512,
+   "offset": 226256,
+   "shape": [
+    128
+   ]
+  },
+  "long_gamma_iq": {
+   "dtype": "f32",
+   "len": 512,
+   "offset": 225744,
+   "shape": [
+    128
+   ]
+  },
+  "long_gamma_k": {
+   "dtype": "f32",
+   "len": 1024,
+   "offset": 224720,
+   "shape": [
+    256
+   ]
+  },
+  "long_gamma_q": {
+   "dtype": "f32",
+   "len": 1024,
+   "offset": 223696,
+   "shape": [
+    256
+   ]
+  },
+  "sparse_gamma_ik": {
+   "dtype": "f32",
+   "len": 512,
+   "offset": 106368,
+   "shape": [
+    128
+   ]
+  },
+  "sparse_gamma_iq": {
+   "dtype": "f32",
+   "len": 512,
+   "offset": 105856,
+   "shape": [
+    128
+   ]
+  },
+  "sparse_gamma_k": {
+   "dtype": "f32",
+   "len": 1024,
+   "offset": 104832,
+   "shape": [
+    256
+   ]
+  },
+  "sparse_gamma_q": {
+   "dtype": "f32",
+   "len": 1024,
+   "offset": 103808,
+   "shape": [
+    256
+   ]
+  },
+  "sparse_out": {
+   "dtype": "f32",
+   "len": 114688,
+   "offset": 106880,
+   "shape": [
+    28,
+    4,
+    256
+   ]
+  },
+  "sparse_sel": {
+   "dtype": "i32",
+   "len": 2128,
+   "offset": 221568,
+   "shape": [
+    28,
+    19
+   ]
+  }
+ },
+ "header": {
+  "author": "written by Claude Sonnet 5.5 for this tool, 2026-10-22",
+  "generator": "tools/op_fixtures.py",
+  "mk_rev": "555a2a3b01457eafbc64f3b9d14931df09ea0e02",
+  "numpy": "2.5.3",
+  "python": "3.14.8"
+ },
+ "meta": {
+  "long_cases": [
+   {
+    "p0": 5000,
+    "t": 5
+   },
+   {
+    "p0": 8190,
+    "t": 3
+   },
+   {
+    "p0": 12000,
+    "t": 4
+   },
+   {
+    "p0": 32704,
+    "t": 4
+   },
+   {
+    "p0": 32767,
+    "t": 1
+   }
+  ],
+  "long_nk": 544,
+  "mk_files": [
+   "tests/ops/test_attn.py",
+   "tests/ops/test_attn_long.py"
+  ]
+ }
+}
