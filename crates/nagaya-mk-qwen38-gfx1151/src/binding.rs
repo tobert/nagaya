@@ -42,40 +42,40 @@ pub(crate) type RtHostFree = unsafe extern "C" fn(*mut c_void);
 /// `void mk_engine_recover_spin_timeouts(void *e, bool on)`.
 pub(crate) type RecoverSpinTimeouts = unsafe extern "C" fn(*mut c_void, bool);
 
-/// `void *mk_ctx_new(void *e, uint32_t max_tokens)`.
+/// The context call `new`, in Rust (`context.rs`).
 pub(crate) type CtxNew = unsafe extern "C" fn(*mut c_void, u32) -> *mut c_void;
 
-/// `void mk_ctx_free(void *e, void *c)`.
+/// The context call `free`, in Rust (`context.rs`).
 pub(crate) type CtxFree = unsafe extern "C" fn(*mut c_void, *mut c_void);
 
-/// `uint32_t mk_ctx_n(void *c)`.
+/// The context call `n`, in Rust (`context.rs`).
 pub(crate) type CtxN = unsafe extern "C" fn(*mut c_void) -> u32;
 
-/// `uint32_t mk_ctx_max(void *c)`.
+/// The context call `max`, in Rust (`context.rs`).
 pub(crate) type CtxMax = unsafe extern "C" fn(*mut c_void) -> u32;
 
-/// `bool mk_ctx_owns_kv(void *c)`.
+/// The context call `owns_kv`, in Rust (`context.rs`).
 pub(crate) type CtxOwnsKv = unsafe extern "C" fn(*mut c_void) -> bool;
 
-/// `bool mk_ctx_poisoned(void *c)`.
+/// The context call `poisoned`, in Rust (`context.rs`).
 pub(crate) type CtxPoisoned = unsafe extern "C" fn(*mut c_void) -> bool;
 
-/// `uint64_t mk_ctx_state_bytes(uint32_t part)`.
+/// The context call `state_bytes`, in Rust (`context.rs`).
 pub(crate) type StateBytes = unsafe extern "C" fn(u32) -> u64;
 
-/// `uint64_t mk_ctx_part_bytes(uint32_t part, uint32_t n)`.
+/// The context call `part_bytes`, in Rust (`context.rs`).
 pub(crate) type PartBytes = unsafe extern "C" fn(u32, u32) -> u64;
 
-/// `void mk_ctx_state_read(void *e, void *c, uint32_t part, void *dst)`.
+/// The context call `state_read`, in Rust (`context.rs`).
 pub(crate) type StateRead = unsafe extern "C" fn(*mut c_void, *mut c_void, u32, *mut c_void);
 
-/// `void mk_ctx_state_write(void *e, void *c, uint32_t part, const void *src)`.
+/// The context call `state_write`, in Rust (`context.rs`).
 pub(crate) type StateWrite = unsafe extern "C" fn(*mut c_void, *mut c_void, u32, *const c_void);
 
-/// `void mk_ctx_cells_write(void *e, void *c, uint32_t part, uint32_t n, const void *src)`.
+/// The context call `cells_write`, in Rust (`context.rs`).
 pub(crate) type CellsWrite = unsafe extern "C" fn(*mut c_void, *mut c_void, u32, u32, *const c_void);
 
-/// `void mk_ctx_set_n(void *e, void *c, uint32_t n)`.
+/// The context call `set_n`, in Rust (`context.rs`).
 pub(crate) type SetN = unsafe extern "C" fn(*mut c_void, *mut c_void, u32);
 
 /// `void mk_ctx_round_gdn_bf16(void *e, void *c)`.
@@ -279,6 +279,14 @@ pub(crate) struct Build {
     pub hip: &'static str,
 }
 
+/// The calls of the engine and the runtime that the Rust host makes itself (`context.rs`).
+#[cfg(feature = "hip")]
+pub(crate) mod rt {
+    pub(crate) use super::linked::{
+        mk_ctx_pool, mk_rt_free, mk_rt_malloc, mk_rt_memcpy, mk_rt_memcpy_2d, mk_rt_memset,
+    };
+}
+
 #[cfg(feature = "hip")]
 mod linked {
     use std::ffi::{c_int, c_void};
@@ -295,18 +303,20 @@ mod linked {
         pub(super) fn mk_rt_host_malloc(n: u64) -> *mut c_void;
         pub(super) fn mk_rt_host_free(p: *mut c_void);
         pub(super) fn mk_engine_recover_spin_timeouts(e: *mut c_void, on: bool);
-        pub(super) fn mk_ctx_new(e: *mut c_void, max_tokens: u32) -> *mut c_void;
-        pub(super) fn mk_ctx_free(e: *mut c_void, c: *mut c_void);
-        pub(super) fn mk_ctx_n(c: *mut c_void) -> u32;
-        pub(super) fn mk_ctx_max(c: *mut c_void) -> u32;
-        pub(super) fn mk_ctx_owns_kv(c: *mut c_void) -> bool;
-        pub(super) fn mk_ctx_poisoned(c: *mut c_void) -> bool;
-        pub(super) fn mk_ctx_state_bytes(part: u32) -> u64;
-        pub(super) fn mk_ctx_part_bytes(part: u32, n: u32) -> u64;
-        pub(super) fn mk_ctx_state_read(e: *mut c_void, c: *mut c_void, part: u32, dst: *mut c_void);
-        pub(super) fn mk_ctx_state_write(e: *mut c_void, c: *mut c_void, part: u32, src: *const c_void);
-        pub(super) fn mk_ctx_cells_write(e: *mut c_void, c: *mut c_void, part: u32, n: u32, src: *const c_void);
-        pub(super) fn mk_ctx_set_n(e: *mut c_void, c: *mut c_void, n: u32);
+        pub(crate) fn mk_ctx_pool(e: *mut c_void, c: *const c_void);
+        pub(crate) fn mk_rt_malloc(n: u64) -> *mut c_void;
+        pub(crate) fn mk_rt_free(p: *mut c_void);
+        pub(crate) fn mk_rt_memset(p: *mut c_void, value: i32, n: u64);
+        pub(crate) fn mk_rt_memcpy(dst: *mut c_void, src: *const c_void, n: u64, kind: u32);
+        pub(crate) fn mk_rt_memcpy_2d(
+            dst: *mut c_void,
+            dpitch: u64,
+            src: *const c_void,
+            spitch: u64,
+            width: u64,
+            height: u64,
+            kind: u32,
+        );
         pub(super) fn mk_ctx_round_gdn_bf16(e: *mut c_void, c: *mut c_void);
         pub(super) fn mk_last_error(e: *mut c_void, put: TextSink, out: *mut c_void);
         pub(super) fn mk_segments_problem(e: *mut c_void, s: *const MkSegment, n: u32, put: TextSink, out: *mut c_void);
@@ -332,6 +342,7 @@ mod linked {
 /// Bind every call to the engine that this binary links, and give the facts of its build.
 #[cfg(feature = "hip")]
 pub(crate) fn linked() -> Result<(Binding, Build), String> {
+    use crate::context;
     use linked::*;
     Ok((
         Binding {
@@ -341,18 +352,18 @@ pub(crate) fn linked() -> Result<(Binding, Build), String> {
             rt_host_malloc: mk_rt_host_malloc,
             rt_host_free: mk_rt_host_free,
             recover_spin_timeouts: mk_engine_recover_spin_timeouts,
-            ctx_new: mk_ctx_new,
-            ctx_free: mk_ctx_free,
-            ctx_n: mk_ctx_n,
-            ctx_max: mk_ctx_max,
-            ctx_owns_kv: mk_ctx_owns_kv,
-            ctx_poisoned: mk_ctx_poisoned,
-            state_bytes: mk_ctx_state_bytes,
-            part_bytes: mk_ctx_part_bytes,
-            state_read: mk_ctx_state_read,
-            state_write: mk_ctx_state_write,
-            cells_write: mk_ctx_cells_write,
-            set_n: mk_ctx_set_n,
+            ctx_new: context::ctx_new,
+            ctx_free: context::ctx_free,
+            ctx_n: context::ctx_n,
+            ctx_max: context::ctx_max,
+            ctx_owns_kv: context::ctx_owns_kv,
+            ctx_poisoned: context::ctx_poisoned,
+            state_bytes: context::state_bytes,
+            part_bytes: context::part_bytes,
+            state_read: context::state_read,
+            state_write: context::state_write,
+            cells_write: context::cells_write,
+            set_n: context::set_n,
             round_gdn: mk_ctx_round_gdn_bf16,
             last_error: mk_last_error,
             segments_problem: mk_segments_problem,
@@ -504,7 +515,9 @@ mod tests {
             .lines()
             .filter_map(|line| {
                 let line = if rust {
-                    line.trim_start().strip_prefix("pub(super) fn ")?
+                    let line = line.trim_start();
+                    line.strip_prefix("pub(super) fn ")
+                        .or_else(|| line.strip_prefix("pub(crate) fn "))?
                 } else {
                     line
                 };
@@ -767,7 +780,7 @@ mod tests {
         );
         layer.sort();
         assert!(
-            layer.len() >= 19,
+            layer.len() >= 10,
             "the extern layer defines {} calls: {layer:?}",
             layer.len()
         );

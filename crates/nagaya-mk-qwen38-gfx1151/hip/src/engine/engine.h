@@ -54,7 +54,8 @@ struct Layer {
   Tensor ple_key, ple_value, ple_norm_key, ple_norm_query, ple_norm_conv, ple_conv1d;
 };
 
-// A context: everything a pass continues from.
+// A context: everything a pass continues from. The Rust host makes, frees, reads and writes it (src/context.rs, which
+// mirrors this layout as MkContext; extern.hip states it). A pass reads it and advances it.
 struct Context {
   uint32_t n = 0;       // tokens so far
   uint32_t max = 0;     // K/V capacity
@@ -69,14 +70,9 @@ struct Context {
   float *idx_pooled = nullptr;
   uint32_t pooled_n = 0;
   int32_t ple_hist[2] = {int32_t(model::kPleEos), int32_t(model::kPleEos)};  // last 2 token ids
-  bool owns_kv = true;          // every context owns its K/V: the engine has no fork
   // A pass extending it stopped on a spin-timeout (Engine::set_recover_spin_timeouts): its recurrent state and its
   // cells >= n are half-written (n itself never advanced). Any later pass of it stops the program; free it.
   bool poisoned = false;
-  // What has been written into an empty context to wake a parked one (Engine::state_write_cells, state_write of ple_hist),
-  // for Engine::restore_n's check: the K/V and index-key cells written, and whether the PLE history was.
-  uint32_t restored_kv = 0, restored_idx = 0;
-  bool restored_ple = false;
 };
 
 // One segment of a pass (goal 04 S): t tokens continuing context c. A pass of several segments runs every weight stage
@@ -131,24 +127,9 @@ class Engine {
   // Takes the weights of the arena that the Rust host loaded (weight_table.h, src/arena.rs).
   explicit Engine(const mk_weight_table *table);
   ~Engine();
-  Context *new_context(uint32_t max_tokens);
-  void free_context(Context *c);
-  // A context, one part at a time, to and from host memory (exact bytes; parking, docs/park.md, builds on it). The fixed
-  // state: part 0 gdn_state f32 [36][48][128][128], 1 gdn_conv f32 [36][3][10240], 2 ple_conv f32 [9][10240]. The parts
-  // that depend on the token count n: 3 kv f32 [12][n][2][2][256] and 4 idx_keys f32 [12][n][128] (cells 0..n-1,
-  // compacted from the capacity-strided layout), 5 ple_hist int32 [2]. state_bytes(part, n) is a part's size for n tokens
-  // (state_bytes(part) for parts 0-2 and 5; it dies for 3 and 4). All die on a poisoned context or an unknown part.
-  // state_write: parts 0-2 into any context (the host side is not inspected); part 5 (ids in 0..kVocab-1) only into an
-  // empty context (n == 0); parts 3-4 die (state_write_cells).
-  // state_write_cells: part 3 or 4, n cells (1..capacity) of src into cells 0..n-1, only into an empty context.
-  // restore_n: sets the token count of such a context to n (1..capacity), once the K/V and index keys were written with
-  // exactly n cells and the PLE history was written; it is then a context of n tokens like any other.
-  static uint64_t state_bytes(uint32_t part, uint32_t n);
-  static uint64_t state_bytes(uint32_t part);
-  void state_read(const Context *c, uint32_t part, void *dst);
-  void state_write(Context *c, uint32_t part, const void *src);
-  void state_write_cells(Context *c, uint32_t part, uint32_t n, const void *src);
-  void restore_n(Context *c, uint32_t n);
+  // Pools every complete block of c's index keys (blocks [0, c->n / 4)), one launch for each QSA layer, outside any pass:
+  // the restore of a context in src/context.rs. c->pooled_n is the caller's to set.
+  void pool_context(const Context *c);
   // The rounding rule gdn-bf16-v1 (docs/park.md; round.hip): c's GDN recurrent state rounded in place to bf16 (round to
   // nearest, ties to even, on the f32 bit pattern; kept as f32 with the low 16 bits zero). Only the recurrent state moves.
   // A non-finite element, or a finite one that rounds to infinity, stops the program naming the first one (layer, head,

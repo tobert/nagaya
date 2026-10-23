@@ -35,7 +35,7 @@ __global__ void __launch_bounds__(kRoundBlock) k_round_bf16(uint32_t *s, uint32_
 
 void Engine::round_gdn_bf16(Context *c) {
   if (c->poisoned) MK_DIE("round_gdn_bf16 of a context poisoned by a spin-timeout (%u tokens): its state is half-written", c->n);
-  const uint64_t n = state_bytes(0) / sizeof(float);
+  const uint64_t n = 36ull * kGdnVHeads * kGdnKDim * kGdnVDim;
   static_assert(36ull * kGdnVHeads * kGdnKDim * kGdnVDim < kNoBad, "the element index fits 32 bits below the sentinel");
   uint32_t *flag = nullptr;  // [0] the lowest bad index, [1] how many
   MK_CHECK(hipMalloc(&flag, 2 * sizeof(uint32_t)));

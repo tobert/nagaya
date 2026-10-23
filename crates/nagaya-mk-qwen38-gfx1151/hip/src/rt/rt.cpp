@@ -357,4 +357,21 @@ void *mk_rt_host_malloc(uint64_t n) {
   return p;
 }
 void mk_rt_host_free(void *p) { MK_CHECK(hipHostFree(p)); }
+// n bytes of device memory.
+void *mk_rt_malloc(uint64_t n) {
+  void *p = nullptr;
+  MK_CHECK(hipMalloc(&p, n));
+  return p;
+}
+void mk_rt_free(void *p) { MK_CHECK(hipFree(p)); }
+// Sets n bytes of device memory at p to the byte value.
+void mk_rt_memset(void *p, int value, uint64_t n) { MK_CHECK(hipMemset(p, value, n)); }
+// kind: 1 host to device, 2 device to host (hipMemcpyKind). The copies wait for the device.
+void mk_rt_memcpy(void *dst, const void *src, uint64_t n, uint32_t kind) {
+  MK_CHECK(hipMemcpy(dst, src, n, hipMemcpyKind(kind)));
+}
+void mk_rt_memcpy_2d(void *dst, uint64_t dpitch, const void *src, uint64_t spitch, uint64_t width, uint64_t height,
+                     uint32_t kind) {
+  MK_CHECK(hipMemcpy2D(dst, dpitch, src, spitch, width, height, hipMemcpyKind(kind)));
+}
 }

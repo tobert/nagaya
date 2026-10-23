@@ -16,6 +16,18 @@ static_assert(offsetof(Segment, c) == 0, "Segment.c, MkSegment.context in Rust")
 static_assert(offsetof(Segment, tokens) == 8, "Segment.tokens");
 static_assert(offsetof(Segment, t) == 16, "Segment.t");
 static_assert(sizeof(bool) == 1, "bool, which Rust's bool is");
+static_assert(sizeof(Context) == 72, "Context, MkContext in Rust");
+static_assert(offsetof(Context, n) == 0, "Context.n");
+static_assert(offsetof(Context, max) == 4, "Context.max");
+static_assert(offsetof(Context, gdn_state) == 8, "Context.gdn_state");
+static_assert(offsetof(Context, gdn_conv) == 16, "Context.gdn_conv");
+static_assert(offsetof(Context, ple_conv) == 24, "Context.ple_conv");
+static_assert(offsetof(Context, kv) == 32, "Context.kv");
+static_assert(offsetof(Context, idx_keys) == 40, "Context.idx_keys");
+static_assert(offsetof(Context, idx_pooled) == 48, "Context.idx_pooled");
+static_assert(offsetof(Context, pooled_n) == 56, "Context.pooled_n");
+static_assert(offsetof(Context, ple_hist) == 60, "Context.ple_hist");
+static_assert(offsetof(Context, poisoned) == 68, "Context.poisoned");
 static_assert(kMaxSegments == 16, "spec.rs MAX_SEGMENTS");
 static_assert(model::kVocab == 248320, "spec.rs VOCAB");
 static_assert(model::kMaxPassTokens == 256, "spec.rs MAX_PASS_TOKENS");
@@ -41,26 +53,8 @@ void mk_relayout(uint32_t tile, const uint8_t *src, uint8_t *dst, uint32_t rows,
 }
 void mk_engine_recover_spin_timeouts(void *e, bool on) { static_cast<Engine *>(e)->set_recover_spin_timeouts(on); }
 
-void *mk_ctx_new(void *e, uint32_t max_tokens) { return static_cast<Engine *>(e)->new_context(max_tokens); }
-void mk_ctx_free(void *e, void *c) { static_cast<Engine *>(e)->free_context(static_cast<Context *>(c)); }
-uint32_t mk_ctx_n(void *c) { return static_cast<Context *>(c)->n; }
-uint32_t mk_ctx_max(void *c) { return static_cast<Context *>(c)->max; }
-bool mk_ctx_owns_kv(void *c) { return static_cast<Context *>(c)->owns_kv; }
-bool mk_ctx_poisoned(void *c) { return static_cast<Context *>(c)->poisoned; }
-
-// The parts of a context (engine.h Engine::state_read). Each Engine method stops the program on input it refuses.
-uint64_t mk_ctx_state_bytes(uint32_t part) { return Engine::state_bytes(part); }
-uint64_t mk_ctx_part_bytes(uint32_t part, uint32_t n) { return Engine::state_bytes(part, n); }
-void mk_ctx_state_read(void *e, void *c, uint32_t part, void *dst) {
-  static_cast<Engine *>(e)->state_read(static_cast<Context *>(c), part, dst);
-}
-void mk_ctx_state_write(void *e, void *c, uint32_t part, const void *src) {
-  static_cast<Engine *>(e)->state_write(static_cast<Context *>(c), part, src);
-}
-void mk_ctx_cells_write(void *e, void *c, uint32_t part, uint32_t n, const void *src) {
-  static_cast<Engine *>(e)->state_write_cells(static_cast<Context *>(c), part, n, src);
-}
-void mk_ctx_set_n(void *e, void *c, uint32_t n) { static_cast<Engine *>(e)->restore_n(static_cast<Context *>(c), n); }
+// A context is the Rust host's (src/context.rs). This call pools its complete blocks (engine.h Engine::pool_context).
+void mk_ctx_pool(void *e, const void *c) { static_cast<Engine *>(e)->pool_context(static_cast<const Context *>(c)); }
 void mk_ctx_round_gdn_bf16(void *e, void *c) { static_cast<Engine *>(e)->round_gdn_bf16(static_cast<Context *>(c)); }
 
 // The last pass's error, "" after a clean pass.

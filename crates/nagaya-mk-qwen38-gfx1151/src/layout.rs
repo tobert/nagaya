@@ -8,6 +8,7 @@ use std::mem::{offset_of, size_of};
 use std::path::Path;
 
 use crate::binding::MkSegment;
+use crate::context::MkContext;
 use crate::schedule::call::MkAccess;
 use crate::spec;
 use crate::table::{MkWeight, MkWeightTable};
@@ -104,6 +105,18 @@ fn a_segment_and_the_buffer_numbers_are_those_of_extern_hip() {
             ("offsetof(Segment, tokens)", offset_of!(MkSegment, tokens)),
             ("offsetof(Segment, t)", offset_of!(MkSegment, t)),
             ("sizeof(bool)", size_of::<bool>()),
+            ("sizeof(Context)", size_of::<MkContext>()),
+            ("offsetof(Context, n)", offset_of!(MkContext, n)),
+            ("offsetof(Context, max)", offset_of!(MkContext, max)),
+            ("offsetof(Context, gdn_state)", offset_of!(MkContext, gdn_state)),
+            ("offsetof(Context, gdn_conv)", offset_of!(MkContext, gdn_conv)),
+            ("offsetof(Context, ple_conv)", offset_of!(MkContext, ple_conv)),
+            ("offsetof(Context, kv)", offset_of!(MkContext, kv)),
+            ("offsetof(Context, idx_keys)", offset_of!(MkContext, idx_keys)),
+            ("offsetof(Context, idx_pooled)", offset_of!(MkContext, idx_pooled)),
+            ("offsetof(Context, pooled_n)", offset_of!(MkContext, pooled_n)),
+            ("offsetof(Context, ple_hist)", offset_of!(MkContext, ple_hist)),
+            ("offsetof(Context, poisoned)", offset_of!(MkContext, poisoned)),
             ("kMaxSegments", spec::MAX_SEGMENTS as usize),
             ("model::kVocab", spec::VOCAB as usize),
             ("model::kMaxPassTokens", spec::MAX_PASS_TOKENS as usize),

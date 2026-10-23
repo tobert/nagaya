@@ -6,6 +6,7 @@
 
 mod arena;
 mod binding;
+mod context;
 mod dequant;
 mod engine;
 mod gguf;
