@@ -9,8 +9,8 @@ English (`AGENTS.md`).
 
 When this spec and another doc do not agree, correct one of them. Neither one wins without a decision.
 
-Status: draft, 2026-10-21. The sources are the design conversations with Amy and inventories of mk
-(`~/src/megakernel-qwen38-flashnext-strixhalo`) and mkviolet (`~/src/mkviolet`). The code follows `AGENTS.md`. Each open
+Status: draft, 2026-10-22. The sources are the design conversations with Amy and inventories of mk and mkviolet,
+our two learning megakernels (`docs/ontology.md`, "The other projects"). The code follows `AGENTS.md`. Each open
 question has the mark **Open**, and section 15 lists all of them.
 
 We change this spec before we change the code (Amy, 2026-10-20: "I want to keep updating the spec before the code so
@@ -23,6 +23,9 @@ accepted (Amy, 2026-10-22: "if those decisions seem ok to you let's call them ok
 in her review of the docs.
 
 ## 1. Scope
+
+The nagaya is an exokernel for megakernels. This repository holds its spec (this doc and `docs/engine-abi.md`), its
+reference implementation (`crates/`), and the council v2 API that it serves (section 11).
 
 The nagaya is one process on each machine. It owns the machine's GPUs, and engines run inside it. It decides three
 things: where engines and state live, what runs next on each device, and what the store keeps. It does not decide
@@ -616,7 +619,7 @@ while interactive is more cooperative multitasking"):
   present jobs in `interactive`, clamped to ±30 s. A job that leaves takes only its own balance (ds4-recipe
   `11-multi-session-serving.md` section 6).
 
-gogi settles the first key: "a higher priority runs first within its class" (`~/src/gogi/docs/council-api.md:159-160`).
+gogi settles the first key: "a higher priority runs first within its class" (gogi `docs/council-api.md`, "Classes").
 Among equal priorities, the higher owed balance runs first, and then the earlier arrival.
 
 When an interactive pass has several segments, each segment gets an equal part of the pass time. The rounding
@@ -1149,7 +1152,9 @@ poison. After a poison or a timeout, the nagaya does these steps:
 
 (mk `service/gpu.py` does this.)
 
-**8.3 Conformance.** Each engine has a conformance suite in the nagaya's tests. It checks these properties:
+**8.3 Conformance.** The crate `nagaya-conformance` holds one suite for every engine, generic over the `Engine`
+trait. The GPU tests of each engine crate run it on the real device. They are `tests/hip.rs` in the mk crate and
+`tests/xe.rs` in the Gemma 4 crate. The fake engines run it with no GPU. It checks these properties:
 
 - park and restore keep every bit;
 - seal runs only at boundaries;
@@ -1160,14 +1165,18 @@ poison. After a poison or a timeout, the nagaya does these steps:
 - for an engine with stages, `Engine::pass` and the stage path give the same outputs and parts (engine-abi D1);
 - for an engine with a feed rule, a span fed by the rule after a restore gives the bits of one job (6.14).
 
-**One oracle for each family.** Each model family has one reference: today, fixed outputs of mk's Python. Every
-engine of that family passes its conformance against that reference, on any vendor's device. The reference runs on
-the CPU, so it does not give the bits of a GPU. Thus the oracle has a tolerance, and a spike measures the gap first.
+**One oracle for each family.** Each model family has one reference: fixed outputs of the model's own Python code
+on the CPU, kept as a fixture in this repository. Every engine of that family passes its conformance against that
+reference, on any vendor's device. The reference runs on the CPU, so it does not give the bits of a GPU. Thus the
+oracle has a tolerance, and a spike measures the gap first.
 
-**The Qwen3.8 oracle.** mk's Python reference (`tools/oracle_fixture.py`) writes the fixture. It holds five prompts
-of 5 to 596 tokens, with the top 64 logits and the logsumexp of the last position. The bench `oracle` in the mk
-crate compares mk with it. mk's exact path (`MK_FAST_QMM=0`) is the gate. Its largest gap was a logit difference
-of 1.7e-5 on 2026-10-20. Decided 2026-10-20 (reading).
+**The Qwen3.8 oracle.** The tool `tools/oracle_fixture.py` writes the fixture. It runs the model's transformers code
+from mk's archive, with mk's venv (`AGENTS.md`, "Checks").
+
+The fixture holds five prompts of 5 to 596 tokens, with the top 64 logits and the logsumexp of the last position.
+The bench `oracle` in the mk crate compares mk with it.
+mk's exact path (`MK_FAST_QMM=0`) is the gate. Its largest gap was a logit difference of 1.7e-5 on 2026-10-20.
+Decided 2026-10-20 (reading).
 
 - On the exact path, the argmax agrees when the reference's top two differ by more than 0.25. The reference's top 8
   are in the engine's top 16. The largest logit difference is at most 1e-3, the KL at most 1e-8, and the logsumexp
@@ -1178,15 +1187,17 @@ of 1.7e-5 on 2026-10-20. Decided 2026-10-20 (reading).
 The fixture covers prompts of up to 596 tokens. Past about 640 tokens, the gap between mk and the reference is not
 explained (15 item 8). The oracle does not gate a longer prompt.
 
-A family with no reference has no oracle yet: the first port of mkviolet builds the Gemma reference.
+A family with no reference has no oracle. Both families of v0 have one: the Qwen3.8 oracle above, and the Gemma 4
+oracle below, which the first port of mkviolet built.
 
-**The Gemma 4 oracle.** Decided 2026-10-22 (Amy: "accepted"). mkviolet's `tools/gemma4_reference.py` runs HF
-transformers' own Gemma 4 layers in f32 on the CPU. `tools/gemma4_render_reference.py` renders the chat template with
-Python's jinja2. The port makes the fixture with them, as mk's `tools/oracle_fixture.py` makes the Qwen3.8 fixture.
+**The Gemma 4 oracle.** Decided 2026-10-22 (Amy: "accepted"). `tools/gemma4_reference.py` runs HF transformers'
+own Gemma 4 layers in f32 on the CPU (copied from mkviolet). `tools/gemma4_oracle_fixture.py` makes the fixture
+with it, as `tools/oracle_fixture.py` makes the Qwen3.8 fixture. The reference Python runs in `~/.venvs/nagaya-ref`
+(`AGENTS.md`, "mkviolet on b70host").
 
-The tool is `tools/gemma4_oracle_fixture.py`, and the fixture is `crates/nagaya-text-gemma4/tests/fixtures/oracle.json`.
-It holds five prompts of 6 to 586 tokens, in the format of the Qwen3.8 fixture. It took 94 s on b70host on
-2026-10-21. The fixture belongs to the family, so each engine of Gemma 4 reads the same file.
+The fixture is `crates/nagaya-text-gemma4/tests/fixtures/oracle.json`, and `crates/nagaya-text-gemma4/tests/oracle.rs`
+reads it. It holds five prompts of 6 to 586 tokens, in the format of the Qwen3.8 fixture. It took 94 s on b70host
+on 2026-10-21. The fixture belongs to the family, so each engine of Gemma 4 reads the same file.
 
 - mkviolet measured these gaps (mkviolet `docs/README.md`). The full pass had a largest logit difference of 5.8e-5.
   A prompt of 1,270 tokens, past the sliding window of 1,024, had 7.2e-3 and the same top token.
@@ -1217,7 +1228,7 @@ end of a job. Decided 2026-10-20 (reading).
 
 ## 9. Observability
 
-The nagaya follows kaijutsu's conventions (`~/src/kaijutsu/docs/telemetry.md`). mkviolet already follows them.
+The nagaya follows kaijutsu's conventions (kaijutsu `docs/telemetry.md`). mkviolet followed them too.
 
 **9.1 Activation.** The nagaya always logs to stderr. It also exports in these cases:
 
@@ -1616,9 +1627,9 @@ At start, the nagaya does these steps for each engine:
 
 Reason: the unit file is the one source of the ceiling. A bootstrap key can differ from the unit.
 
-mkviolet restarts in 0.9 to 1.2 s from its stored slabs, and a cold start takes 7.4 s (mkviolet `docs/README.md`).
-Thus 10.2 moves into the b70host milestone (`AGENTS.md`), because mkviolet has it now and the port must not lose
-it.
+mkviolet restarted in 0.9 to 1.2 s from its stored slabs, and its cold start took 7.4 s (mkviolet `docs/README.md`).
+Thus 10.2 went into the b70host milestone (`AGENTS.md`, 15s step 7), because mkviolet had it and the port must
+not lose it.
 
 Built: the process side (`crates/nagaya/src/arena.rs`, `crates/nagaya/src/process/handoff.rs`) and the arena of the
 Gemma 4 engine, with its head slab (`Loaded::attach`). On b70host on 2026-10-21, a cold `Loaded::load` took 7.1 s,
@@ -1715,9 +1726,17 @@ a core dump. Nothing in the process needs an `atexit` handler.
 ## 11. Client API
 
 **11.1 Council and coordinator routing.** The nagaya serves council v2 for all engines in the cluster. It does not
-serve v1, because no client speaks v1. The contract is gogi (`~/src/gogi`): `docs/council-api.md`, the types in
-`gogi-proto`, and the suite in `gogi-conformance`. mkviolet and kaijutsu move
-to the same gogi before the nagaya serves them (Amy, 2026-10-18).
+serve v1, because no client speaks v1. The contract is gogi (ontology, "The other projects"): the text
+`docs/council-api.md`, the types in `gogi-proto`, and the suite in `gogi-conformance`. mkviolet and kaijutsu moved
+to the same gogi before the nagaya served them (Amy, 2026-10-18).
+
+gogi is normative today. This spec says how the nagaya serves the API, and it never restates the API. When this
+spec and gogi differ about the API, gogi is the rule, and this spec is corrected.
+
+**Proposed** (Claude Fable 5.1, 2026-10-22): the text of the council v2 API moves into this repository, as
+`docs/council-api.md`. gogi keeps the types, the suite and the toy family. Reason: Amy wants the nagaya to stand
+alone as a spec, a reference implementation and the council API. The text is the part that a reader of these docs
+needs. Until Amy decides, gogi's text stays the contract, and nothing moves.
 
 Any machine can receive any request and act as its coordinator (Cassandra style). Clients prefer a coordinator with
 separate host memory (`b70host` or a CPU rig) to save unified memory bandwidth on `gfx1151host` and `sm121host` (3.2). The
@@ -1863,15 +1882,15 @@ milestones 11 and 11b).
   Qwen3.8 marker is one token. 11.3a has the rule for the step of such a token.
 
 **The Gemma 4 library.** Decided 2026-10-22 (Amy: "accepted"). The crate `nagaya-text-gemma4` holds the Gemma
-4 family. It ports mkviolet's text code, which already serves council v2 and `/mk/v1` on b70host.
+4 family. It ports mkviolet's text code, which served council v2 and `/mk/v1` on b70host until 2026-10-21.
 
 - **Tokenizer.** The library reads the `tokenizer.json` of the checkpoint with the `tokenizers` crate, as mkviolet
-  does (`tokenizer.rs:27-48`). The tokenizer hash is of that file (12.3).
-- **Template.** The library runs Google's chat template (`assets/gemma4_chat_template.jinja` in mkviolet) with the
-  nagaya's own Jinja interpreter, with `trim_blocks` and `lstrip_blocks`, as `chat.rs` does. Decided 2026-10-21
-  (Amy, by interview): not `minijinja`. The identity's `template` is the text of that
-  file. The variables that the library sets, such as `PRESERVE_THINKING`, are code, so the test renders of 11.3a
-  cover them.
+  did (`tokenizer.rs:27-48`). The tokenizer hash is of that file (12.3).
+- **Template.** The library runs Google's chat template with the nagaya's own Jinja interpreter, with `trim_blocks`
+  and `lstrip_blocks`, as mkviolet's `chat.rs` did. The template is the crate's own copy,
+  `crates/nagaya-text-gemma4/assets/gemma4_chat_template.jinja`, copied from mkviolet. Decided 2026-10-21 (Amy, by
+  interview): not `minijinja`. The identity's `template` is the text of that file. The variables that the library
+  sets, such as `PRESERVE_THINKING`, are code, so the test renders of 11.3a cover them.
 - **Escapes.** Client text that spells a marker is content. mkviolet swaps each marker text for a sentinel of
   Unicode noncharacters before the render, and it refuses a noncharacter in client text (`chat.rs:1-13`).
 - **Council rendering.** The library ports `src/template.rs` (`mkv-letters-1`), the origin of 11.3a, with its Gemma 4
@@ -2199,10 +2218,10 @@ these ways. Each served model declares the capability `continuation` (`crates/na
 
 **11.4 `/mk/v1`.** kaijutsu's mk provider uses `model`, `render` and `generate` (mkviolet `mk_api.rs`).
 
-Decided 2026-10-17: the nagaya does not serve `/mk/v1`. kaijutsu moves to council v2 and uses the gogi reference
-(`~/src/gogi`). Amy: "kaijutsu will move to council v2 and use the new gogi (~/src/gogi) reference. it's happening
-now, on b70host". In council v2 the server renders messages with its model's own template, and the template is
-part of identity (gogi `docs/council-api.md`, "Terms").
+Decided 2026-10-17: the nagaya does not serve `/mk/v1`. kaijutsu moved to council v2 and uses the gogi reference.
+Amy: "kaijutsu will move to council v2 and use the new gogi (~/src/gogi) reference. it's happening now, on
+b70host". In council v2 the server renders messages with its model's own template, and the template is part of
+identity (gogi `docs/council-api.md`, "Terms").
 
 **11.4a Extensions.** gogi puts model-specific routes under the server's own prefix, listed in
 `identity.extensions` (gogi `docs/council-api.md`, "Extensions"). The nagaya's prefix is `/nagaya/v1`:
@@ -2743,7 +2762,7 @@ gives the section and the rule in a few words. The lists before the last one are
 - 11.7: a response does not report a control-text hit in a message of a context.
 - 11.7: a stop sets every served model to `draining`, and the server waits at most 2 s for open requests.
 
-**In gogi (`~/src/gogi/docs/council-api.md`, `thinking`)**
+**In gogi (`docs/council-api.md`, `thinking`)**
 
 - A template may render a context the same with thinking on and off. Then both contexts have one head. gogi
   `c98fe1f` changes the conformance check to match.

@@ -1,8 +1,8 @@
 # DeepInfer
 
 DeepInfer is DeepSeek's inference framework for DeepSeek V4.1 Flash (Apache-2.0). This doc records what it teaches
-the nagaya, and where each lesson lands. It follows the rules of `docs/prior-art.md`: an item is a proposal until
-Amy decides it.
+the nagaya, the exokernel of `docs/spec.md`, and where each lesson lands. It follows the rules of
+`docs/prior-art.md`: an item is a proposal until Amy decides it.
 
 The clone is `~/src/research/DeepInfer` at `774ce24`, with the submodules DeepGEMM, FlashMLA, DeepEP and DeepSelect.
 Three Claude readers read the code on 2026-10-20: the kernels, the scheduler and state, and the cluster code. They

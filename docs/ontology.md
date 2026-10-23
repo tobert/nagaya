@@ -1,15 +1,35 @@
 # Ontology
 
-This doc has one term for each thing that the nagaya needs. Each entry gives the definition, then where the thing
-already exists. A term in bold inside an entry is defined there. The spec (`docs/spec.md`) and the ABI
+This doc has one term for each thing that the nagaya needs. The nagaya is an exokernel for megakernels: one process
+owns a machine, and each engine keeps its own abstractions. Each entry gives the definition, then where the thing
+came from in mk or mkviolet. A term in bold inside an entry is defined there. The spec (`docs/spec.md`) and the ABI
 (`docs/engine-abi.md`) hold the rules and the details.
-
-- mk is `~/src/megakernel-qwen38-flashnext-strixhalo`.
-- mkviolet is `~/src/mkviolet`.
 
 The terms are in four groups: places, things, time and holding. Places are where things are, and things are what is
 held. Time is what runs, and holding is who keeps what, and until when. `docs/reviews.md` records how the terms
 changed.
+
+## The other projects
+
+The docs name four other projects. Each one is defined here and nowhere else. A file path after "mk" or "mkviolet"
+in a doc names the source of a copy or of a measurement. It is not a place that a reader must go.
+
+**mk.** Our first megakernel: Qwen3.8 on one AMD gfx1151, with HIP kernels, a C++ host and a Python service. It
+served `/mk/v1` on gfx1151host until the cutover of 2026-10-21. Milestone 15 copies its engine into
+`nagaya-mk-qwen38-gfx1151`, from mk `555a2a3` (`AGENTS.md`). After that, mk's repository is an archive, and no rule
+of these docs needs it.
+
+**mkviolet.** Our second megakernel: Gemma 4 on two Intel Arc Pro B70 cards, with OpenCL C kernels and a Rust
+host. It served council v2 on b70host until 2026-10-21. Milestone 15s copied its engine into
+`nagaya-mk-gemma4-bmg` and its text code into `nagaya-text-gemma4`. Its repository becomes an archive in the same
+way. Both archives keep their megakernels (Amy, 2026-10-22: "their megakernels live on").
+
+**gogi.** The council v2 contract: the text `docs/council-api.md`, the types in `gogi-proto`, the suite
+`gogi-conformance`, and the toy family `gogi-toy`. gogi is normative today. When `docs/spec.md` and gogi differ
+about the API, gogi is the rule (`docs/spec.md` 11.1).
+
+**kaijutsu.** The agent. It coordinates models through council v2: casts, seats, judges and bumps (`docs/spec.md`
+1). It is the first client of the nagaya, and the nagaya follows its telemetry conventions (`docs/spec.md` 9).
 
 ## Places
 
@@ -62,9 +82,10 @@ append-only: the engine times a new shape once and keeps its pick. A new library
 **lineage**, which is a new identity (`docs/engine-abi.md` D3). mk has no library GEMMs and needs no plan table.
 
 **Arena.** The memory that holds an engine's weights and can outlive the process: a set of named file descriptors.
-An arena records how strong its check is. mk has one arena, with a full check (`mk_arena_check`). mkviolet has 30
+An arena records how strong its check is. mk has one arena, with a full check (`mk_arena_check`). mkviolet had 30
 DMA-BUF slabs, one for each layer, with a spot check of the first and last 64 bytes of each tensor
-(`gemma4.rs:284-287`). An inference engine opens its arena read-only, and a training engine writes it.
+(`gemma4.rs:284-287`). The nagaya's Gemma 4 engine has 31: the head has a slab too (`docs/spec.md` 10.2). An
+inference engine opens its arena read-only, and a training engine writes it.
 
 **State object.** Everything that a pass reads besides its inputs, made of parts. There are three kinds:
 

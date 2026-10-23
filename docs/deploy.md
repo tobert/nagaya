@@ -1,8 +1,9 @@
 # Deploy on gfx1151host and b70host
 
-This doc tells how to build the nagaya and install its systemd user unit on gfx1151host. It tells how to move the service
-on port 8090 from mk to the nagaya, and how to go back. The rules are in `docs/spec.md` 2.1, 2.4, 3.3 and 10.1-10.4.
-The section "b70host" at the end does the same for mkviolet on b70host.
+This doc tells how to build the nagaya, the process of `docs/spec.md`, and install its systemd user unit on gfx1151host.
+It tells how to move the service on port 8090 from mk to the nagaya, and how to go back. The rules are in
+`docs/spec.md` 2.1, 2.4, 3.3 and 10.1-10.4. The section "b70host" at the end does the same for mkviolet on
+b70host. `docs/ontology.md` defines mk and mkviolet.
 
 The cutover ran at 00:24 on 2026-10-21. `nagaya.service` serves council v2 on port 8090 with mk on gfx1151, and
 `megakernel.service` is stopped and disabled. Use "Cut over from mk" again only after a rollback.
@@ -153,7 +154,8 @@ Do these steps in this order. Stop at the first step that fails, and do the roll
 
 ## Roll back to mk
 
-Use this when a gate fails, or when Amy asks for mk.
+Use this when a gate fails, or when Amy asks for mk. mk is an archive after milestone 15 (`docs/ontology.md`). The
+rollback needs its unit file and its built library, which the archive keeps.
 
 ```
 systemctl --user disable --now nagaya.service
@@ -387,8 +389,8 @@ Do these steps in this order. Stop at the first step that fails, and do the roll
 
 ### Roll back to mkviolet
 
-Use this when a gate fails, or when Amy asks for mkviolet. mkviolet's unit runs its release binary, so build it
-first.
+Use this when a gate fails, or when Amy asks for mkviolet. mkviolet is an archive (`docs/ontology.md`), and the
+rollback needs its unit file and its source. Its unit runs its release binary, so build it first.
 
 ```
 systemctl --user disable --now nagaya.service
@@ -410,6 +412,7 @@ answers when mkviolet has loaded its weights. Nothing in the store directory nee
 - Do not run work on the iGPU. It drives the display.
 - Exit code 3 is a refusal to start. Read the log, fix the cause, and run
   `systemctl --user reset-failed nagaya.service`. Then start it.
-- On gfx1151host, the unit does not keep arenas through a restart yet (spec 10.2). Each restart loads the weights again. Lane
-  sg-arenas adds `FileDescriptorStoreMax=512` and `FileDescriptorStorePreserve=restart` at the comment in the unit.
+- The unit keeps the 31 Gemma 4 slabs through a restart (spec 10.2): it sets `FileDescriptorStoreMax=512` and
+  `FileDescriptorStorePreserve=restart`. `systemctl --user restart` attaches them in about 1.2 s. `systemctl --user
+  stop` clears the store, so the next start loads cold.
 

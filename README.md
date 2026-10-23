@@ -3,44 +3,62 @@
 A *nagaya* (長屋（ながや）) is a row house: one building, several households, each with its own door. This nagaya is
 the one process on each machine that owns the GPUs. Engines live in it, and each engine has its own door.
 
-An engine is a model's code and weights. The first engines are mk's Qwen engine (`libmkengine`) and mkviolet's
-Gemma 4 engine. Later engines are lfm and gmk's instruments. The nagaya divides the machine among its engines:
-device memory, host memory, NVMe, and time on each device. Each engine keeps its own abstractions: its key/value
-layout, its recurrent state, its kernels.
+The nagaya is three things:
+
+- **An exokernel for megakernels.** The spec (`docs/spec.md`) and the engine ABI (`docs/engine-abi.md`) say how one
+  process divides a machine among its engines. The parts are device memory, host memory, NVMe, and time on each
+  device. The nagaya decides where state lives, what runs next on each device, and what the store keeps. It never
+  decides what a model computes. Each engine keeps its own abstractions: its key/value layout, its recurrent state,
+  its kernels.
+- **A reference implementation.** The Cargo workspace in `crates/` is that process in Rust, with two megakernel
+  engines. One is Qwen3.8 on one AMD gfx1151 (`nagaya-mk-qwen38-gfx1151`). The other is Gemma 4 on two Intel Arc
+  Pro B70 cards (`nagaya-mk-gemma4-bmg`). `AGENTS.md` gives the layout, the rules and the milestones.
+- **The council v2 API.** Clients speak council v2 to the nagaya. The contract is gogi, and the nagaya serves it for
+  every engine of the cluster (`docs/spec.md` 11). Its own routes are under `/nagaya/v1`.
+
+An engine is a model's code and weights. The two engines came from our learning projects, mk and mkviolet.
+`docs/ontology.md` defines mk, mkviolet, gogi and kaijutsu once, for every doc. Later engines are lfm and gmk's
+instruments.
 
 v0 covers three kinds of work: inference, image batch, and training as filler. Amy chose all three for v0 on
 2026-10-17.
 
-Clients speak council v2 to the nagaya. The contract is gogi (`~/src/gogi`). The nagaya speaks
-the engine ABI (`docs/engine-abi.md`) to its engines.
+## Status
 
-Status: running on gfx1151host. The design came on 2026-10-17 from a conversation with Amy. It began with renting a GPU for
-a weekend and ended with a common host for our megakernels. The code began with mk's engine on 2026-10-18.
+The design came on 2026-10-17 from a conversation with Amy. It began with renting a GPU for a weekend and ended with
+a common host for our megakernels. The code began with mk's engine on 2026-10-18.
 
-Since 00:24 on 2026-10-21, `nagaya.service` serves council v2 on `198.51.100.20:8090` with mk's engine on gfx1151.
-`megakernel.service` is stopped and disabled. `gogi-conformance` gave 215 ok, 0 FAIL and 5 skip against it.
-`AGENTS.md` gives the milestones. Milestones 1 to 14 are done. `docs/deploy.md` tells how to run it.
+- Since 00:24 on 2026-10-21, `nagaya.service` serves council v2 on `198.51.100.20:8090` with the Qwen3.8 engine on
+  gfx1151host's gfx1151. `megakernel.service` is stopped and disabled. `gogi-conformance` gave 215 ok, 0 FAIL and 5 skip.
+- Milestones 1 to 14 are done (`docs/history.md`). Milestone 15s, the Gemma 4 engine on b70host, is done except
+  the cutover. Milestone 15, the copy of mk's engine into this repository, runs now (`AGENTS.md`).
+- `docs/deploy.md` tells how to run the nagaya on each machine.
 
 ## Why a new repo
 
 Amy, 2026-10-17: "tempted to expand mkviolet but it was made to be just for those cards for us to learn, I am
 tempted to come up with a new name and port all the code into a fresh repo and clean as we go."
 
-- mkviolet (`~/src/mkviolet`) is the seed. It is Rust, and one process owns both B70 cards. It serves council v2.
-  It keeps weights alive across restarts through systemd's file-descriptor store. Its code moves here engine by
-  engine, and we clean it as it moves.
-- mk (`~/src/megakernel-qwen38-flashnext-strixhalo`) joins through its existing C ABI (`src/engine/capi.hip`). The
-  HIP code stays in mk.
+- mkviolet is the seed. It is Rust, and one process owns both B70 cards. It served council v2 and kept its weights
+  alive across restarts through systemd's file-descriptor store. Its engine is now `nagaya-mk-gemma4-bmg`
+  (milestone 15s): copied in, and cleaned as it moved.
+- mk joined first, through its C ABI (`libmkengine`). Milestone 15 copies its engine in, HIP kernels and all, so
+  that the nagaya owns both engines (Amy, 2026-10-19: "copy code in, we own all of it 100%").
 - One nagaya process per machine (Amy: "we'd do 1 process per host that owns the gpus").
 - Engines we build give the same bits for the same identity and inputs: `always` or `pinned` (`docs/engine-abi.md`
   D3). Engines we borrow declare what they promise instead.
 
+When milestones 15 and 15s are done, mk and mkviolet become archives (Amy, 2026-10-22: "they were our learning
+projects for this and their megakernels live on"). The docs then name them only as the source of a copy or of a
+measurement.
+
 ## Documents
 
 - `docs/spec.md`: the spec. Read it after this file.
-- `docs/ontology.md`: the nouns, defined once, with where each one already exists in mk and mkviolet.
-- `docs/engine-abi.md`: the draft engine ABI v0, how mk and mkviolet map onto it, and its decisions.
-- `docs/deploy.md`: how to build the nagaya, install its unit on gfx1151host, cut over from mk, and roll back.
+- `docs/ontology.md`: the nouns, defined once, and the four other projects that the docs name.
+- `docs/engine-abi.md`: the engine ABI v0, how the two engines map onto it, and its decisions D1-D11.
+- `docs/deploy.md`: how to build the nagaya, install its unit on gfx1151host and on b70host, cut over, and roll back.
+- `docs/history.md`: the finished milestones, with what each one built and its merges.
 - `docs/reviews.md`: reviews of these documents and what we did with each finding.
 - `docs/prior-art.md`: what ds4-recipe and Ai2's scheduler teach us, as proposals.
 - `docs/deepinfer.md`: what DeepSeek's DeepInfer teaches us, as proposals.
@@ -79,10 +97,10 @@ The first pass keeps three doors open:
 3. State objects (weights, contexts, snapshots) are canonical safetensors with BLAKE3 content ids, served over plain
    HTTP (`/nagaya/v1/cas/{content_id}`) between machines that run the same engine identity.
 
-A model spread across machines over Ethernet means pipeline stages per machine. mkviolet already splits Gemma 4 by
-layers across its two cards. It hands the residual between them through host memory (`gemma4.rs`
-`pipeline_stage`). Thus a stage boundary is a residual at a layer. `docs/engine-abi.md` D1 defers exposing stages
-until a split across machines needs it.
+A model spread across machines over Ethernet means pipeline stages per machine. The Gemma 4 engine splits its
+layers across its two cards, and it hands the residual between them through host memory. Thus a stage boundary is a
+residual at a layer. `docs/engine-abi.md` D1 exposes stages, and the scheduler runs each stage on its card. A split
+across machines would use the same boundary.
 
 lfm (Amy, 2026-10-17): "we'd add lfm over time and likely deprecate lfm2d". lfm2d is candle-based on a fork of
 candle; it may stay as a second council API implementation. A new lfm engine (perhaps LFM 2.5 on one Intel card)
@@ -91,5 +109,5 @@ comes when we're ready for another model or need one to validate against.
 Other later items:
 
 - a model router (lfm or council decisions);
-- rented burst machines (`~/src/rented-gpu`) that join as leases;
+- rented burst machines that join as leases;
 - streams (home video, audio for the cochlea, beat tracking).
