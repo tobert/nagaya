@@ -14,6 +14,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use nagaya_abi::{Engine, OutputsWanted, Segment, SegmentInputs, State};
+use sha2::{Digest, Sha256};
 
 /// The most tokens in one pass (mk `kMaxPassTokens`).
 const MAX_PASS_TOKENS: usize = 256;
@@ -21,14 +22,16 @@ const MAX_PASS_TOKENS: usize = 256;
 /// The capacity of the small context class, which holds slots 0-11 (`spec.rs` `CONTEXT_CLASSES`).
 const SMALL_CONTEXT: usize = 4096;
 
-/// Run the ids in context `slot`, and return the logits of the last position and the wall time.
+/// Run the ids in context `slot`. Return the logits of the last position, their SHA-256 and the wall time.
 ///
 /// A prompt of more than `MAX_PASS_TOKENS` tokens takes several passes, each of at most that many tokens. Only the
-/// last pass asks for logits.
-fn run(engine: &mut impl Engine, slot: u32, prompt: &oracle::Prompt) -> (Vec<f32>, f64) {
+/// last pass asks for logits. The SHA-256 covers the logit bytes as the engine gave them, so two builds with equal
+/// hashes gave equal bits.
+fn run(engine: &mut impl Engine, slot: u32, prompt: &oracle::Prompt) -> (Vec<f32>, String, f64) {
     let length = prompt.ids.len();
     let started = Instant::now();
     let mut logits = Vec::new();
+    let mut sha256 = String::new();
     let mut done = 0;
     while done < length {
         let end = (done + MAX_PASS_TOKENS).min(length);
@@ -47,6 +50,7 @@ fn run(engine: &mut impl Engine, slot: u32, prompt: &oracle::Prompt) -> (Vec<f32
             .unwrap_or_else(|error| panic!("{}: the pass at token {done} failed: {error:?}", prompt.name));
         if last {
             let bytes = &out.outputs.first().expect("the pass gives logits").bytes;
+            sha256 = Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect();
             logits = bytes
                 .as_chunks::<4>()
                 .0
@@ -56,7 +60,7 @@ fn run(engine: &mut impl Engine, slot: u32, prompt: &oracle::Prompt) -> (Vec<f32
         }
         done = end;
     }
-    (logits, started.elapsed().as_secs_f64())
+    (logits, sha256, started.elapsed().as_secs_f64())
 }
 
 fn main() {
@@ -81,7 +85,7 @@ fn main() {
     );
     let mut failed = false;
     for (slot, prompt) in fixture.prompts.iter().enumerate() {
-        let (logits, seconds) = run(&mut engine, slot as u32, prompt);
+        let (logits, sha256, seconds) = run(&mut engine, slot as u32, prompt);
         let gap = oracle::measure(prompt, &logits);
         println!(
             "{:<8} {:>6} {:>6} {:>3} {:>3} {:>3} {:>5} {:>10.6} {:>10.3e} {:>10.6} {:>8.3}",
@@ -97,6 +101,7 @@ fn main() {
             gap.lse_diff,
             seconds
         );
+        println!("  logits sha256 {sha256}");
         for breach in oracle::breaches(&gap, path) {
             failed = true;
             println!("  BREACH {}: {breach}", prompt.name);
