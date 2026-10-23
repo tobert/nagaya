@@ -354,7 +354,7 @@ Do these steps in this order. Stop at the first step that fails, and do the roll
    systemctl --user enable --now nagaya.service
    ```
 
-   The command returns when the process sends `READY=1`. The rehearsal of 2026-10-21 was ready after 8 s.
+   The command returns when the process sends `READY=1`. The cutover of 2026-10-23 was ready after 7 s.
 
 3. Check the state of the unit and its log.
 
@@ -373,7 +373,8 @@ Do these steps in this order. Stop at the first step that fails, and do the roll
    nice -n 10 cargo run --release -p gogi-conformance -- http://198.51.100.10:8091
    ```
 
-   The rehearsal of 2026-10-21 gave `215 ok, 0 FAIL, 8 skip`. It ran on loopback, with gogi `a07d85e`.
+   The cutover of 2026-10-23 gave `266 ok, 0 FAIL, 11 skip`, with gogi `a07d85e`. The skips include `ride`,
+   which the nagaya does not declare, and the restart check.
 
 5. Look for card errors in the kernel log.
 
