@@ -18,9 +18,12 @@ no edit in another repository.
 
 - Interview Amy on the copy list and the order of the ports (`AGENTS.md`, milestone 15). Write her answers into the
   milestone as rules with the mark "Decided <date>".
-- Write the spec first. The b70host port began with a spec pass (`f421ae7`), and each later lane cited it. A rule
+- Write the spec first. The b70host port began with a spec pass (`f421ae7`, the merge of sg-spec). A rule
   that the docs leave open gets a **Proposed** note with the simplest choice. Amy decides later. Do not choose in
   code.
+- Use a reference implementation only to make fixtures. The code comes from the spec and from the crates in this
+  tree. Amy, 2026-10-22: "we will archive mk and mkviolet when this is all done; they were our learning projects
+  for this and their megakernels live on".
 - Work in lanes on a branch for the machine, with one worktree for each lane under `~/src/wt/`. The lanes of 15s
   were `sg-spec`, `sg-probe`, `sg-devices`, `sg-registry`, `sg-gemma-text`, `sg-engine`, `sg-stages`, `sg-cpus`,
   `sg-trait`, `sg-ignore`, `sg-deploy` and `sg-arenas`. Each merge names what it proved.
@@ -45,7 +48,7 @@ A port adds these things:
 |---|---|
 | the engine crate | `crates/nagaya-<kind>-<model>-<target>/` |
 | the family library, when the family is new | `crates/nagaya-text-<family>/` |
-| the factory module and the family opener | `crates/nagaya/src/<engine>.rs`, as `mk.rs` and `gemma4.rs` |
+| the factory module and the family opener | `crates/nagaya/src/<engine>.rs`, as `mk.rs` and `gemma4.rs`, named in `crates/nagaya/src/lib.rs:11` |
 | the kind in the engine registry | `crates/nagaya/src/admission.rs:191` (`Registry::compiled_in`) |
 | the family in the family registry | `crates/nagaya/src/serving.rs:53` (`FamilyRegistry::compiled_in`) |
 | the cargo feature that registers both | `crates/nagaya/Cargo.toml`, as `hip` and `xe` |
@@ -79,11 +82,14 @@ and `vocab_size`. The vocabulary size is here, not in `limits()` (engine-abi "Lo
   4 needed `dict.get` (`crates/nagaya-jinja/tests/dict_get.rs`).
 - **Escapes.** Client text that spells a marker is content. Refuse all 66 Unicode noncharacters, and name the
   character and its offset in the error (spec 11.3, "The Gemma 4 choices").
-- **Reply parser.** Port the parser of the reference. Name its stop tokens, its phases and the finish map (spec
-  11.3, "The finish"). Test it against fixed outputs of the reference.
-- **Council rendering.** Port mkviolet's rules (spec 11.3a) to the family's tokens. Keep one form across families.
-  A failed tool result renders as `Error: ` and the content, unless the model's template has its own form (spec
-  11.3, "One form in every family").
+- **Reply parser.** Write it from the rules of spec 11.3 ("The finish", "The reply parser"), with the parsers in
+  this tree as the pattern: `crates/nagaya-text-qwen38/src/reply.rs` and
+  `crates/nagaya-text-gemma4/src/council/reply.rs`. Name its stop tokens, its phases and the finish map. Test it
+  against a fixture of the reference implementation (`tools/reply_fixture.py`).
+- **Council rendering.** Follow spec 11.3a with the family's tokens. The code is in this tree:
+  `crates/nagaya-text-qwen38/src/council/` and `crates/nagaya-text-gemma4/src/council/`. Keep one form across
+  families. A failed tool result renders as `Error: ` and the content, unless the model's template has its own form
+  (spec 11.3, "One form in every family").
 - **Template id.** `nagaya-council:<hash>+<family>-chat:<hash>` (`crates/nagaya-council/src/template_id.rs`). The
   first hash is over the tokens of a fixed set of test renders that the library keeps. Test that a comment edit keeps
   the id, and that a token change changes it (`AGENTS.md`, milestone 12 step 4). Reason: a client's thresholds are
@@ -99,8 +105,9 @@ reference's own Python, with no service and no GPU job (`tools/oracle_fixture.py
   repository and never writes into it.
 - The fixture records its source: the revision of the reference and the files it read
   (`crates/nagaya-text-qwen38/tests/fixtures.rs`).
-- A crate's fixtures stay under 1 MB in total, and a test checks it (`the_fixtures_stay_small` in
-  `crates/nagaya-text-qwen38/tests/fixtures.rs` and `crates/nagaya-text-gemma4/tests/model_skip.rs`).
+- A crate's fixtures stay under 1 MB in total. This is a convention of the two family crates, not a rule of the
+  spec. Each crate has a test for it (`crates/nagaya-text-qwen38/tests/fixtures.rs:24`,
+  `crates/nagaya-text-gemma4/tests/model_skip.rs:40`).
 - A fixture lives in the family crate when each engine of the family reads it. The oracle fixture is one
   (`crates/nagaya-text-gemma4/tests/fixtures/oracle.json`).
 
@@ -142,7 +149,7 @@ gets its devices").
   What the code cannot compute goes in the config as a measured value: mk's `weights_bytes` (engine-abi "The factory
   plans from `weights_bytes`"). `open` compares the real size with the plan, and a difference exits 3 with the real
   size in the message.
-- The config refuses a key that it does not know (`crates/nagaya/src/gemma4.rs:45`).
+- The config refuses a key that it does not know (`crates/nagaya/src/gemma4.rs:46-54`).
 - The engine finds each card by its PCI address, and it refuses a count that is not its own. It never sees a machine
   device id. `limits().devices` holds group indexes 0 to n - 1 (spec 2.4, "One name for each device"). A Level Zero
   engine maps the address with `zeDevicePciGetPropertiesExt` (`crates/nagaya-mk-gemma4-bmg/src/level_zero.rs:821`).
@@ -176,8 +183,13 @@ two engines took different capabilities for the same rule:
 - **Identity.** Fill the fields of spec 12.1: `model`, `checkpoint_digest`, `tokenizer_hash`, `template`, `family`,
   `numbers`, the plan table lineage, the bit settings with their class, and `canary_hash`. Today `numbers` holds the
   kernel's SHA-256, the compiler versions and the driver version. The plan table names the PCI ids of the card
-  (engine-abi "The first Gemma 4 binding"). The digest does not cover `family`. A Proposed note would move the build
-  facts out of the digest (section 9).
+  (engine-abi "The first Gemma 4 binding"). The digest does not cover `family`. Decided by senpai 2026-10-22
+  (vetoable): the canary decides for a new build, and the digest will not cover a `build` member. Until the canary
+  runs at each start, the build facts stay in the digest (spec 12.1).
+- **The family crate.** The engine crate depends on its family crate. The identity's `template` is the family's
+  template text, and the engine hashes the tokenizer file with the family's function
+  (`crates/nagaya-mk-gemma4-bmg/Cargo.toml:17-18`, `crates/nagaya-mk-gemma4-bmg/src/engine.rs:93`). Reason: one
+  hash function, so the registry's check at start compares like with like.
 - **Stages.** An engine that spans devices declares `stages` and gives one `StageHandle` for each stage with
   `take_handles` (D1). Each part names its stage, and a handle reads and writes only its parts. After `take_handles`,
   `Engine::pass` refuses. The residual buffers are a mandatory host term, two for each boundary. An engine with
@@ -200,8 +212,8 @@ two engines took different capabilities for the same rule:
   failure after a change poisons the state (D6).
 - **Close.** An engine whose runtime teardown segfaults declares no `close`, and its `Drop` frees nothing
   (engine-abi "Capabilities"). The binary ends through one exit path with `_exit` (spec 10.4, "One exit path").
-- **The wake call.** A card that idles between the quanta of a job loses speed at its next command. The call is
-  Decided, and its shape is Proposed (engine-abi "The wake call", section 9).
+- **The wake call.** A card that idles between the quanta of a job loses speed at its next command. The call and
+  its shape are decided, and it is not built (engine-abi "The wake call", "The shape of the wake call").
 
 **Copy first, then port.** Copy the reference engine with no change in behavior, and prove the bits before the
 trait. The Gemma 4 trait test keeps the hashes of the copy's logits in the test
@@ -229,11 +241,16 @@ each with the gates green (`AGENTS.md`, milestone 15).
 - **A static link, or a runtime load.** The Gemma 4 engine links Level Zero at build time. mk loads its library at
   run time from `MK_ENGINE_LIB`, because mk's repository builds it (`AGENTS.md`, "mk on gfx1151host"). Milestone 15 links
   mk statically after the copy.
-- **`serde_json` features.** The workspace turns on `preserve_order` and `float_roundtrip` in every crate that
-  reads JSON. Cargo joins the features of one build, so a crate alone may lack them (spec 11.3a).
+- **`serde_json` features.** Cargo joins the features of one build, so a workspace build has `preserve_order` and
+  `float_roundtrip` (spec 11.3a). A build of one crate alone has only what its own `Cargo.toml` names. Today the
+  two family crates name both, `nagaya-council` names `float_roundtrip` only, and `nagaya-mk-gemma4-bmg` names
+  `preserve_order` only (`crates/nagaya-council/Cargo.toml:12`, `crates/nagaya-mk-gemma4-bmg/Cargo.toml:13`). Name
+  each feature that the crate's own tests need (section 9).
 - **The clippy check with the feature** runs only on a machine that has the compiler: `ocloc` for `xe`
   (`AGENTS.md`, "Checks").
-- **The workspace members.** Add the crate to `members` in the workspace `Cargo.toml` (section 9).
+- **The workspace members.** Add the crate to `members` in the workspace `Cargo.toml`. The tree differs from this
+  instruction today. The Gemma 4 port added no member, and its three crates are members only as path dependencies
+  (section 9).
 
 ## 6. Tests
 
@@ -248,6 +265,15 @@ gate that an engine's limits do not reach gives "not applicable".
 - The suite compares by integer bit pattern. NaN fails, also against NaN (spec 8.3).
 - Run the suite on the card in the engine's GPU test (`crates/nagaya-mk-qwen38-gfx1151/tests/hip.rs`,
   `crates/nagaya-mk-gemma4-bmg/tests/xe.rs`).
+
+**The host layers.** Each port adds tests that need no card:
+
+- the plan, the limits and the checks, as unit tests in the engine crate's `spec.rs`;
+- the factory: the config, the plan with no card, and the family opener (`crates/nagaya/tests/gemma4_factory.rs`);
+- the text routes with the real tokenizer and template of the family (`crates/nagaya/tests/extensions_qwen38.rs`);
+- the deploy files, read with the real loaders (`crates/nagaya/tests/deploy.rs`);
+- the probe tree of the machine, with the check that all trees stay under 200 KB
+  (`crates/nagaya/tests/probe.rs:229`).
 
 **GPU tests.** They sit behind the feature, and they run with `--test-threads=1`, because the tests share one engine
 and the weights fill the card (`crates/nagaya-mk-gemma4-bmg/tests/xe.rs:4`). Before a run, check that the old
@@ -280,6 +306,10 @@ For a new machine:
 - Know what the probe cannot see for the vendor (spec 2.1, "What the file probe cannot see"). NVIDIA gives no
   memory size without NVML. Xe has no size file, so the probe reads a BAR. AMD needs two files to tell unified from
   dedicated memory. The probe gives a true size or stops.
+- The probe has code for each vendor: `Vendor` (`crates/nagaya/src/probe.rs:13`), `amd_devices` (`:310`),
+  `xe_devices` (`:391`) and `nvidia_devices` (`:456`). A new vendor is a step in that file, with a test on its tree.
+  A new NVIDIA model goes in `UNIFIED_NVIDIA_MODELS` (`:516`) when its memory is unified. The probe refuses another
+  model and names the list (spec 2.1, "What the file probe cannot see").
 - Read a PCIe link from the upstream port of the card's switch. The endpoint of a B70 reports 2.5 GT/s x1 behind
   its switch (spec 2.2).
 
@@ -298,8 +328,13 @@ ids), `config`, `share` and `pin_identity`. Each `[[budgets]]` entry has the tie
 `[store]` table has the store's budgets.
 
 A machine with unified memory pools `device(0)` and `host` in one budget. A machine with discrete cards has one
-budget for each card and one for host memory (`deploy/b70host/profile.toml`). Keep the host budget 12 GiB below
-`MemTotal`, the safety floor (spec 4.7). The test `crates/nagaya/tests/deploy.rs` reads the real files with the
+budget for each card and one for host memory (`deploy/b70host/profile.toml`). The host safety floor of spec 4.7
+is a runtime check of `MemAvailable`, 12 GiB in mk. It sets no size, and the ledger does not check it yet
+(`docs/spec.md:578`).
+
+The two profiles keep a margin of their own, and each says why in a comment. gfx1151host's pool is 112 GiB of 125.1 GiB
+(`deploy/gfx1151host/profile.toml:22-24`). b70host's host budget is 96 GiB of 123.5 GiB
+(`deploy/b70host/profile.toml:34-38`). The test `crates/nagaya/tests/deploy.rs` reads the real files with the
 real loaders.
 
 **The unit.** One unit file for each machine, in `deploy/<machine>/` next to its config and profile (spec 10.1).
@@ -319,7 +354,8 @@ steps of the two cutovers were these:
 3. Ask for the identity.
 4. Run `gogi-conformance`.
 5. Read the kernel log for card errors.
-6. Check the kaijutsu gate's thresholds against the identity.
+6. Check that the clients' fitted thresholds match the served `template` id. The id changes only when the rendered
+   tokens change (spec 11.3a). kaijutsu's gate holds such thresholds (`docs/deploy.md`, "The kaijutsu gate").
 
 Senpai does the cutover with Amy. Do not start, stop or enable a service yourself (`AGENTS.md`, milestones 14 and
 15s).
@@ -347,16 +383,15 @@ not choose. Amy decides.
 - `docs/deploy.md:413-414` says that lane sg-arenas adds the fd store lines later. The b70host unit sets them
   (`deploy/b70host/nagaya.service:41-42`), and spec 10.2 says the restart is built. gfx1151host's unit keeps the
   comment (`deploy/nagaya.service:38`).
-- Spec 8.3 (`docs/spec.md:1179-1190`) says that a bench reports the Gemma 4 oracle numbers. No test or bench in
+- Spec 8.3 (`docs/spec.md:1183-1194`) says that a bench reports the Gemma 4 oracle numbers. No test or bench in
   `crates/nagaya-mk-gemma4-bmg` reads `oracle.json`; only `crates/nagaya-text-gemma4/tests/oracle.rs` reads it.
-- `docs/spec.md:1159` and `:1177` say that the only oracle is mk's Python, and that the Gemma reference is not
-  built. The Gemma 4 oracle is built (`docs/spec.md:1179`).
-- Spec 12.1 (`docs/spec.md:2511`): whether the identity digest covers the build facts. Proposed. Today the Gemma 4
-  `numbers` holds the kernel hash and the compiler versions, and the plan table holds the driver.
-- The wake call (`docs/engine-abi.md:597`): the shape of `wake` and the 3 ms rule. Proposed.
-- Spec 3.2 (`docs/spec.md:357`): no pause of CPU memory work during a pass on a machine with discrete cards.
-  Proposed. A third machine with discrete cards needs the decision.
-- Spec 6.14 (`docs/spec.md:1058`): whether drafts change the bits of Gemma 4. Proposed, and open until a test on the
-  B70 cards.
+- `docs/spec.md:1163` and `:1181` say that the only oracle is mk's Python, and that the Gemma reference is not
+  built. The Gemma 4 oracle is built (`docs/spec.md:1183`).
+- Spec 11.3a (`docs/spec.md:1996`) says that the workspace turns on `preserve_order` and `float_roundtrip` for all
+  its crates. `nagaya-council` names `float_roundtrip` only, and `nagaya-mk-gemma4-bmg` names `preserve_order` only
+  (section 5).
+- Spec 6.14 (`docs/spec.md:1062`): whether drafts change the bits of Gemma 4. Proposed, and open until a test on the
+  B70 cards. `f1ab9ad` decided the notes on the build in the digest, the wake call and the pause rule. This one
+  stays open.
 - Three copies of the model-file helper exist (section 3). `AGENTS.md:287` names only the Qwen3.8 copy. Where the
   helper of the third model lives is not decided.
