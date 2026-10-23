@@ -4,6 +4,7 @@
 // and the reader keeps them for the engine's life: the host gathers PLE rows from them (Engine::ple_rows).
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -44,6 +45,32 @@ struct mk_tensor_table {
   void (*dequant_f32)(uint32_t type, const void *src, int64_t n, float *dst);
 };
 }
+
+// The layouts of the two structs, which src/table.rs mirrors. The Rust test src/layout.rs reads these lines and
+// compares each number with the Rust struct, so a change on one side fails a test. Keep each assert on one line.
+static_assert(sizeof(mk_tensor) == 72, "mk_tensor");
+static_assert(offsetof(mk_tensor, name) == 0, "mk_tensor.name");
+static_assert(offsetof(mk_tensor, type) == 8, "mk_tensor.type, MkTensor.kind in Rust");
+static_assert(offsetof(mk_tensor, n_dims) == 12, "mk_tensor.n_dims");
+static_assert(offsetof(mk_tensor, ne) == 16, "mk_tensor.ne");
+static_assert(offsetof(mk_tensor, n_elements) == 48, "mk_tensor.n_elements");
+static_assert(offsetof(mk_tensor, n_bytes) == 56, "mk_tensor.n_bytes");
+static_assert(offsetof(mk_tensor, data) == 64, "mk_tensor.data");
+static_assert(sizeof(mk_tensor_table) == 112, "mk_tensor_table");
+static_assert(offsetof(mk_tensor_table, n_tensors) == 0, "mk_tensor_table.n_tensors");
+static_assert(offsetof(mk_tensor_table, tensors) == 8, "mk_tensor_table.tensors");
+static_assert(offsetof(mk_tensor_table, n_shards) == 16, "mk_tensor_table.n_shards");
+static_assert(offsetof(mk_tensor_table, shards) == 24, "mk_tensor_table.shards");
+static_assert(offsetof(mk_tensor_table, ple_eos_token_id) == 32, "mk_tensor_table.ple_eos_token_id");
+static_assert(offsetof(mk_tensor_table, n_ple_layer_multipliers) == 40, "mk_tensor_table.n_ple_layer_multipliers");
+static_assert(offsetof(mk_tensor_table, ple_layer_multipliers) == 48, "mk_tensor_table.ple_layer_multipliers");
+static_assert(offsetof(mk_tensor_table, n_ple_head_offsets) == 56, "mk_tensor_table.n_ple_head_offsets");
+static_assert(offsetof(mk_tensor_table, ple_head_offsets) == 64, "mk_tensor_table.ple_head_offsets");
+static_assert(offsetof(mk_tensor_table, n_ple_head_vocab_sizes) == 72, "mk_tensor_table.n_ple_head_vocab_sizes");
+static_assert(offsetof(mk_tensor_table, ple_head_vocab_sizes) == 80, "mk_tensor_table.ple_head_vocab_sizes");
+static_assert(offsetof(mk_tensor_table, reader) == 88, "mk_tensor_table.reader");
+static_assert(offsetof(mk_tensor_table, drop_cached) == 96, "mk_tensor_table.drop_cached");
+static_assert(offsetof(mk_tensor_table, dequant_f32) == 104, "mk_tensor_table.dequant_f32");
 
 namespace mk {
 
