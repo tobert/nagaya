@@ -121,6 +121,13 @@ fn the_binding_opens_mk_and_declares_its_parts() {
 
     let identity = engine.identity();
     assert_eq!(identity.model, "Qwen3.8-Flash-Next-UD-IQ4_XS");
+    // The facts of the static build take the place of the library path and its pin (spec 12.1).
+    let build = identity
+        .numbers
+        .get("engine_build_sha256")
+        .expect("the identity names the build");
+    assert_eq!(build.len(), 64, "{build}");
+    assert!(!identity.numbers.contains_key("engine_lib"), "{:?}", identity.numbers);
     assert!(
         identity.checkpoint_digest.starts_with("spot-sha256:"),
         "{}",

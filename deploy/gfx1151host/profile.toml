@@ -2,8 +2,8 @@
 # `<store_dir>/profile.toml`, so docs/deploy.md says to copy this file there once. The loader is
 # `crates/nagaya/src/profile.rs`, and `crates/nagaya/tests/deploy.rs` reads this file.
 
-# The mk engine (docs/engine-abi.md "v0 mk binding choices"). Its library and its shards come from the unit's
-# environment (`MK_ENGINE_LIB`, `MK_SHARDS`), and not from this table. The context pool is fixed in the binding
+# The mk engine (docs/engine-abi.md "v0 mk binding choices"). The binary links it. Its shards come from the unit's
+# environment (`MK_SHARDS`), and not from this table. The context pool is fixed in the binding
 # (`spec.rs`: `CONTEXT_COUNT`, `CONTEXT_CAPACITY`), so this profile names no context count and no context size.
 [[engines]]
 name = "mk"

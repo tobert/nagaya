@@ -165,17 +165,19 @@ fn the_unit_reads_the_config_in_deploy() {
 }
 
 #[test]
-fn the_unit_names_the_mk_library_and_three_shards() {
+fn the_unit_names_three_shards_and_no_mk_library() {
     let unit = unit();
     let environment: Vec<&str> = unit
         .lines()
         .filter_map(|line| line.strip_prefix("Environment="))
         .collect();
-    let library = environment
-        .iter()
-        .find_map(|value| value.strip_prefix("MK_ENGINE_LIB="))
-        .expect("the unit sets MK_ENGINE_LIB");
-    assert!(library.ends_with("/build/src/engine/libmkengine.so"), "{library}");
+    // The binary links mk's engine, so the unit names no library and no library pin (AGENTS.md milestone 15).
+    assert!(
+        environment
+            .iter()
+            .all(|value| !value.trim_start_matches('"').starts_with("MK_ENGINE_LIB")),
+        "{environment:?}"
+    );
     let shards = environment
         .iter()
         .find_map(|value| {

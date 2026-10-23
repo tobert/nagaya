@@ -233,9 +233,10 @@ each with the gates green (`AGENTS.md`, milestone 15).
   mk, they are `-ffp-contract=off -fno-fast-math` (`AGENTS.md`, milestone 15). For Gemma 4, they are mkviolet's
   `ocloc` options (`crates/nagaya-mk-gemma4-bmg/build.rs`).
 - **No CMake.** `build.rs` calls the compiler itself (`AGENTS.md`, milestone 15).
-- **A static link, or a runtime load.** The Gemma 4 engine links Level Zero at build time. mk loads its library at
-  run time from `MK_ENGINE_LIB`, because mk's repository builds it (`AGENTS.md`, "mk on gfx1151host"). Milestone 15 links
-  mk statically after the copy.
+- **A static link.** Both engines link at build time. The Gemma 4 engine links Level Zero. The mk engine links its
+  own HIP code statically, with mk's flags, and a test checks the flags (`crates/nagaya-mk-qwen38-gfx1151/build.rs`,
+  `tests/build_flags.rs`). Build objects to stdout from the crate directory, so the archive digest does not take in
+  the build directory.
 - **`serde_json` features.** Cargo joins the features of one build, so a workspace build has `preserve_order` and
   `float_roundtrip` (spec 11.3a). A build of one crate alone has only what its own `Cargo.toml` names. Today the
   two family crates name both, `nagaya-council` names `float_roundtrip` only, and `nagaya-mk-gemma4-bmg` names

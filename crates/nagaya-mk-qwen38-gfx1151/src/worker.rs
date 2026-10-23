@@ -7,13 +7,11 @@
 use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::fmt;
-use std::io::Read;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 
 use nagaya_abi::{Identity, Limits};
-use sha2::{Digest, Sha256};
 
 use crate::binding::{self, Binding};
 use crate::gguf;
@@ -23,7 +21,6 @@ use crate::spec;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MkError {
     message: String,
-    pin: bool,
 }
 
 impl MkError {
@@ -31,26 +28,12 @@ impl MkError {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
-            pin: false,
-        }
-    }
-
-    /// Make an error for a library that the pin refuses (`MK_ENGINE_LIB_SHA256`).
-    pub fn pin(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            pin: true,
         }
     }
 
     /// The message.
     pub fn message(&self) -> &str {
         &self.message
-    }
-
-    /// True when the library pin refused the library. The process refuses the start then (spec 10.4).
-    pub fn is_pin(&self) -> bool {
-        self.pin
     }
 }
 
@@ -68,11 +51,9 @@ impl From<String> for MkError {
     }
 }
 
-/// Where the library and the three weight shards are.
+/// Where the three weight shards are.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MkPaths {
-    /// The path of `libmkengine.so` (`MK_ENGINE_LIB`).
-    pub library: PathBuf,
     /// The three shard paths (`MK_SHARDS`, with `:` between them).
     pub shards: Vec<PathBuf>,
 }
@@ -93,27 +74,16 @@ fn parse_shards(raw: &[u8]) -> Result<Vec<PathBuf>, MkError> {
 }
 
 impl MkPaths {
-    /// Read the paths from `MK_ENGINE_LIB` and `MK_SHARDS`.
+    /// Read the paths from `MK_SHARDS`.
     pub fn from_env() -> Result<Self, MkError> {
-        let library = std::env::var_os("MK_ENGINE_LIB")
-            .ok_or_else(|| MkError::new("MK_ENGINE_LIB is not set; set it to libmkengine.so"))?;
         let shards = std::env::var_os("MK_SHARDS")
             .ok_or_else(|| MkError::new("MK_SHARDS is not set; give three GGUF paths with : between them"))?;
         let shards = parse_shards(shards.as_os_str().as_bytes())?;
-        Ok(Self {
-            library: PathBuf::from(library),
-            shards,
-        })
+        Ok(Self { shards })
     }
 
     /// Check that every path exists and every shard has a GGUF v3 header.
     fn validate(&self) -> Result<Vec<gguf::ShardHeader>, MkError> {
-        if !self.library.is_file() {
-            return Err(MkError::new(format!(
-                "the mk engine library {} is missing",
-                self.library.display()
-            )));
-        }
         let mut headers = Vec::new();
         for path in &self.shards {
             if !path.is_file() {
@@ -533,59 +503,6 @@ fn check_memory(needed: u64) -> Result<(), MkError> {
     memory_problem("the shards", mem_available()?, needed).map_err(MkError::new)
 }
 
-/// The SHA-256 of a file, as lowercase hex.
-fn file_sha256(path: &Path) -> Result<String, MkError> {
-    let mut file = std::fs::File::open(path).map_err(|error| MkError::new(format!("{}: {error}", path.display())))?;
-    let mut hash = Sha256::new();
-    let mut buffer = vec![0u8; 1 << 20];
-    loop {
-        let count = file
-            .read(&mut buffer)
-            .map_err(|error| MkError::new(format!("{}: {error}", path.display())))?;
-        if count == 0 {
-            break;
-        }
-        hash.update(&buffer[..count]);
-    }
-    Ok(hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect())
-}
-
-/// The environment variable that pins the library's SHA-256.
-const PIN_ENV: &str = "MK_ENGINE_LIB_SHA256";
-
-/// Read `MK_ENGINE_LIB_SHA256`. `None` means that the caller set no pin.
-fn pin_from_env() -> Result<Option<String>, MkError> {
-    match std::env::var(PIN_ENV) {
-        Ok(value) => Ok(Some(value)),
-        Err(std::env::VarError::NotPresent) => Ok(None),
-        Err(error) => Err(MkError::new(format!("{PIN_ENV}: {error}"))),
-    }
-}
-
-/// True when the byte is a lowercase hex digit.
-fn is_lower_hex(byte: u8) -> bool {
-    byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
-}
-
-/// Refuse a library whose SHA-256 is not the pin. An unset pin is no check (decided 2026-10-18).
-///
-/// The caller runs this before dlopen, so the binding binds no symbol of a library that the pin refuses.
-fn pin_problem(pin: Option<&str>, library: &Path, digest: &str) -> Result<(), String> {
-    let Some(pin) = pin else {
-        return Ok(());
-    };
-    if pin.len() != 64 || !pin.bytes().all(is_lower_hex) {
-        return Err(format!("{PIN_ENV}={pin} is not 64 lowercase hex characters"));
-    }
-    if pin != digest {
-        return Err(format!(
-            "the mk engine library {} has SHA-256 {digest}; {PIN_ENV} pins {pin}",
-            library.display()
-        ));
-    }
-    Ok(())
-}
-
 /// The device bytes that `what` took: the free bytes before minus the free bytes after.
 ///
 /// Free memory that grew is an error with both readings. A saturating difference would read 0 bytes, and the class
@@ -659,15 +576,12 @@ fn probe_shapes(capacity: u32) -> [(u32, bool); 2] {
 }
 
 impl ThreadState {
-    /// Load the library and open the engine. This runs on the worker thread.
+    /// Bind the linked engine and open it. This runs on the worker thread.
     fn open(paths: &MkPaths) -> Result<(Self, Spec), MkError> {
         let digest = gguf::spot_digest(&paths.shards)?;
-        let library_sha256 = file_sha256(&paths.library)?;
-        // Read the file here, before dlopen, so that the binding binds no symbol of a refused library.
-        pin_problem(pin_from_env()?.as_deref(), &paths.library, &library_sha256).map_err(MkError::pin)?;
         let fast_qmm = fast_qmm()?;
         let tiles = tiles()?;
-        let binding = binding::load(&paths.library).map_err(MkError::new)?;
+        let (binding, build) = binding::linked().map_err(MkError::new)?;
         // Refuse a library whose parts are not the declared size, before it writes past a Rust buffer.
         if let Some(problem) = spec::parts_problem(
             |part| unsafe { (binding.state_bytes)(part) },
@@ -713,15 +627,7 @@ impl ThreadState {
         let pass_scratch = state.measure_pass_scratch().map_err(MkError::new)?;
         spec::scratch_problem(pass_scratch).map_err(MkError::new)?;
 
-        let identity = spec::identity(
-            &paths.shards,
-            &paths.library,
-            &library_sha256,
-            fast_qmm,
-            tiles,
-            &digest,
-            &text,
-        );
+        let identity = spec::identity(&paths.shards, &build, fast_qmm, tiles, &digest, &text);
         let limits = spec::limits(arena_bytes);
         Ok((
             state,
@@ -1463,7 +1369,7 @@ mod tests {
     use std::cell::RefCell;
     use std::ffi::c_void;
     use std::os::unix::ffi::OsStrExt;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     use std::collections::HashMap;
     use std::sync::atomic::Ordering;
@@ -1472,7 +1378,7 @@ mod tests {
 
     use super::{
         Aligned, Call, Context, ThreadState, Word, fast_qmm_from, memory_problem, open_contexts, parse_shards,
-        pin_problem, probe_shapes, remake_context, rounds_to_finite, taken_bytes, tiles_from,
+        probe_shapes, remake_context, rounds_to_finite, taken_bytes, tiles_from,
     };
 
     /// A worker state with one stub context, id 1.
@@ -1717,30 +1623,6 @@ mod tests {
         // A path that is not UTF-8 stays the same bytes.
         let paths = parse_shards(&[0xff, b':', b'/', b'b', b':', b'/', b'c']).unwrap();
         assert_eq!(paths[0].as_os_str().as_bytes(), &[0xff]);
-    }
-
-    #[test]
-    fn a_pin_must_be_64_lowercase_hex_characters() {
-        let path = Path::new("/lib/libmkengine.so");
-        let digest = "a".repeat(64);
-        assert_eq!(pin_problem(None, path, &digest), Ok(()), "an unset pin is no check");
-        assert_eq!(pin_problem(Some(&digest), path, &digest), Ok(()));
-        for shape in ["a".repeat(63), "A".repeat(64), "z".repeat(64), "a".repeat(65)] {
-            let error = pin_problem(Some(&shape), path, &digest).expect_err("another shape must refuse");
-            assert!(error.contains("is not 64 lowercase hex characters"), "{error}");
-        }
-    }
-
-    #[test]
-    fn a_pin_that_is_not_the_digest_refuses_the_library() {
-        let path = Path::new("/lib/libmkengine.so");
-        let digest = "a".repeat(64);
-        let pin = "b".repeat(64);
-        let error = pin_problem(Some(&pin), path, &digest).expect_err("another digest must refuse");
-        assert_eq!(
-            error,
-            format!("the mk engine library /lib/libmkengine.so has SHA-256 {digest}; MK_ENGINE_LIB_SHA256 pins {pin}")
-        );
     }
 
     #[test]

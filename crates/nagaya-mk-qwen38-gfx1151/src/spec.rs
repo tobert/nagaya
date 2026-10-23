@@ -501,18 +501,20 @@ pub fn parts_problem(mk_state_bytes: impl Fn(u32) -> u64, mk_part_bytes: impl Fn
 }
 
 /// The identity of the engine and its weights.
-pub fn identity(
+pub(crate) fn identity(
     shards: &[std::path::PathBuf],
-    library: &Path,
-    library_sha256: &str,
+    build: &crate::binding::Build,
     fast_qmm: bool,
     tiles: bool,
     checkpoint_digest: &str,
     text: &crate::gguf::TextKeys,
 ) -> Identity {
     let mut numbers = BTreeMap::new();
-    numbers.insert("engine_lib".to_owned(), library.display().to_string());
-    numbers.insert("engine_lib_sha256".to_owned(), library_sha256.to_owned());
+    // The build facts stay in the numbers, and thus in the identity digest, until the canary runs at each start
+    // (spec 12.1). A file path is not a number, so no path is here.
+    numbers.insert("engine_build_sha256".to_owned(), build.library_sha256.to_owned());
+    numbers.insert("engine_compiler".to_owned(), build.compiler.to_owned());
+    numbers.insert("engine_hip".to_owned(), build.hip.to_owned());
     numbers.insert("fast_qmm".to_owned(), u8::from(fast_qmm).to_string());
     numbers.insert("tiles".to_owned(), u8::from(tiles).to_string());
     numbers.insert("fused".to_owned(), "1".to_owned());
@@ -857,12 +859,40 @@ mod tests {
         }
     }
 
+    fn build(library_sha256: &'static str) -> crate::binding::Build {
+        crate::binding::Build {
+            library_sha256,
+            compiler: "AMD clang version 22.0.0git",
+            hip: "7.2.53211-9999",
+        }
+    }
+
+    #[test]
+    fn the_identity_holds_the_build_facts_and_no_file_path() {
+        let shards = vec![PathBuf::from("/models/Qwen-00001-of-00003.gguf")];
+        let one = identity(&shards, &build("aa"), true, true, "spot", &keys("sha256:t", "t"));
+        let number = |key: &str| one.numbers.get(key).map(String::as_str);
+        assert_eq!(number("engine_build_sha256"), Some("aa"));
+        assert_eq!(number("engine_compiler"), Some("AMD clang version 22.0.0git"));
+        assert_eq!(number("engine_hip"), Some("7.2.53211-9999"));
+        // A file path is not a number (spec 12.1).
+        assert_eq!(number("engine_lib"), None);
+        assert!(
+            one.numbers.values().all(|value| !value.starts_with('/')),
+            "{:?}",
+            one.numbers
+        );
+        // Until the canary runs at each start, the build facts stay in the identity digest (spec 12.1).
+        let other = identity(&shards, &build("bb"), true, true, "spot", &keys("sha256:t", "t"));
+        assert_ne!(one, other);
+    }
+
     #[test]
     fn the_identity_carries_the_template() {
         let shards = vec![PathBuf::from("/models/Qwen-00001-of-00003.gguf")];
-        let library = Path::new("/lib/libmkengine.so");
-        let first = identity(&shards, library, "sha", true, true, "spot", &keys("sha256:t", "one"));
-        let second = identity(&shards, library, "sha", true, true, "spot", &keys("sha256:t", "two"));
+        let facts = &build("sha");
+        let first = identity(&shards, facts, true, true, "spot", &keys("sha256:t", "one"));
+        let second = identity(&shards, facts, true, true, "spot", &keys("sha256:t", "two"));
         assert_eq!(first.template, "one");
         assert_ne!(first, second);
     }
@@ -870,9 +900,9 @@ mod tests {
     #[test]
     fn the_identity_records_the_tile_setting() {
         let shards = vec![PathBuf::from("/models/Qwen-00001-of-00003.gguf")];
-        let library = Path::new("/lib/libmkengine.so");
-        let on = identity(&shards, library, "sha", true, true, "spot", &keys("sha256:t", "t"));
-        let off = identity(&shards, library, "sha", true, false, "spot", &keys("sha256:t", "t"));
+        let facts = &build("sha");
+        let on = identity(&shards, facts, true, true, "spot", &keys("sha256:t", "t"));
+        let off = identity(&shards, facts, true, false, "spot", &keys("sha256:t", "t"));
         assert_eq!(on.numbers.get("tiles").map(String::as_str), Some("1"));
         assert_eq!(off.numbers.get("tiles").map(String::as_str), Some("0"));
         assert_ne!(on, off);
@@ -883,9 +913,9 @@ mod tests {
     #[test]
     fn the_identity_carries_the_tokenizer_hash() {
         let shards = vec![PathBuf::from("/models/Qwen-00001-of-00003.gguf")];
-        let library = Path::new("/lib/libmkengine.so");
-        let first = identity(&shards, library, "sha", true, true, "spot", &keys("sha256:one", "t"));
-        let second = identity(&shards, library, "sha", true, true, "spot", &keys("sha256:two", "t"));
+        let facts = &build("sha");
+        let first = identity(&shards, facts, true, true, "spot", &keys("sha256:one", "t"));
+        let second = identity(&shards, facts, true, true, "spot", &keys("sha256:two", "t"));
         assert_eq!(first.tokenizer_hash, "sha256:one");
         assert_ne!(first, second);
     }
