@@ -389,8 +389,9 @@ Do these steps in this order. Stop at the first step that fails, and do the roll
 
 ### Roll back to mkviolet
 
-Use this when a gate fails, or when Amy asks for mkviolet. mkviolet is an archive (`docs/ontology.md`), and the
-rollback needs its unit file and its source. Its unit runs its release binary, so build it first.
+Use this when a gate fails, or when Amy asks for mkviolet. mkviolet becomes an archive after milestone 15s
+(`docs/ontology.md`), and the rollback needs its unit file and its source. Its unit runs its release binary, so
+build it first.
 
 ```
 systemctl --user disable --now nagaya.service

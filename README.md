@@ -58,7 +58,7 @@ measurement.
 - `docs/ontology.md`: the nouns, defined once, and the four other projects that the docs name.
 - `docs/engine-abi.md`: the engine ABI v0, how the two engines map onto it, and its decisions D1-D11.
 - `docs/deploy.md`: how to build the nagaya, install its unit on gfx1151host and on b70host, cut over, and roll back.
-- `docs/history.md`: the finished milestones, with what each one built and its merges.
+- `docs/history.md`: the finished milestones, with what each one built, and the merges where the run recorded them.
 - `docs/reviews.md`: reviews of these documents and what we did with each finding.
 - `docs/prior-art.md`: what ds4-recipe and Ai2's scheduler teach us, as proposals.
 - `docs/deepinfer.md`: what DeepSeek's DeepInfer teaches us, as proposals.
@@ -94,8 +94,8 @@ The first pass keeps three doors open:
 2. Placement is live cluster data. The nagaya processes gossip their probed hardware, active profiles, and loaded
    engine identities through `chitchat` (`docs/spec.md` 2.3). Any machine can receive a request, tokenize it locally,
    and coordinate or proxy it (`docs/spec.md` 11.1).
-3. State objects (weights, contexts, snapshots) are canonical safetensors with BLAKE3 content ids, served over plain
-   HTTP (`/nagaya/v1/cas/{content_id}`) between machines that run the same engine identity.
+3. State objects (weights, contexts, snapshots) are canonical safetensors with BLAKE3 content ids. Later, plain HTTP
+   (`/nagaya/v1/cas/{content_id}`) can serve them between machines that run the same engine identity.
 
 A model spread across machines over Ethernet means pipeline stages per machine. The Gemma 4 engine splits its
 layers across its two cards, and it hands the residual between them through host memory. Thus a stage boundary is a

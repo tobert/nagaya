@@ -4,7 +4,7 @@ This spec says what the nagaya is and what it does, one rule at a time. It is wr
 English (`AGENTS.md`).
 
 - `docs/ontology.md` defines each term once.
-- `docs/engine-abi.md` defines the calls and the decisions D1-D10. The spec refers to them by number.
+- `docs/engine-abi.md` defines the calls and the decisions D1-D11. The spec refers to them by number.
 - `docs/prior-art.md`, `docs/deepinfer.md` and `docs/reviews.md` record where the rules came from.
 
 When this spec and another doc do not agree, correct one of them. Neither one wins without a decision.
@@ -2798,11 +2798,13 @@ gives the section and the rule in a few words. The lists before the last one are
 - 11.3c: a build takes the lowest free slot that fits, or it is `too_large` or `busy`.
 - 11.3c: a build lists the boundaries that the store holds when it ends.
 - 11.3c: the store's owner key is the first 8 bytes of the BLAKE3 hash of the owner text.
-- 12.1: the canary decides for a new build, and the identity digest does not cover `build`.
-- engine-abi D1: the stage thread calls `wake` after 3 ms with no quantum, only while a job holds a lease.
+- 12.1: the canary decides for a new build. When the canary runs at each start, the digest does not cover `build`.
+- engine-abi D1: a stage thread calls `wake` 3 ms after its last device call, only while a job of its group holds
+  a slot lease.
 - 9.7a: the status feed has two events, `snapshot` and `quantum`, with the members of its tables. Not built.
 - 9.7a: a decode quantum makes an event, and the events of one group are in order.
-- 9.7a: the queries `engine` and `kind` filter the feed, and a name that does not exist is a 400.
+- 9.7a: the queries `engine` and `kind` filter the feed. An engine that is not on the machine, or a kind that does
+  not exist, is a 400.
 - 9.7a: the keepalive comes every 15 s, at most 16 feeds are open, and a stop ends each feed after `draining`.
 - 9.7b: the group thread sends each event to a `StatusBus`, and a full channel of 256 drops its subscriber. Not built.
 - 11.4b: each text route needs `model`, refuses an unknown member, and gives 503 while the model is not `ready`.
@@ -2814,6 +2816,6 @@ gives the section and the rule in a few words. The lists before the last one are
 - 11.4d: `tokenize` keeps a marker as text unless `special` is on, and `detokenize` refuses a split character.
 - 11.4d: a piece has U+FFFD for a cut, and the members of each route are its own.
 - 11.4d: `Family` has `tokenize_special` and `pieces`, both required.
-- 11.4e: there is no `model` route and no `health` route, because `identity` covers them.
+- 11.4e: the first set has no `model` route and no `health` route, because `identity` covers most of them.
 - 11.4f: `identity.extensions` lists `/nagaya/v1` when the process serves a model, and only routes that exist answer.
 - 11.5: the text routes and the status feed add no error code to the table.

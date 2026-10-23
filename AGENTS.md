@@ -83,8 +83,8 @@ in a lock: one thread owns it (3.2).
 ### Milestones
 
 Do them in this order. Each milestone ends with all checks green and one or more commits. Milestones 1 to 14 are
-done, and `docs/history.md` keeps their full text and their merges. Milestone 15 runs now on gfx1151host. Milestone 15s is
-done except the cutover on b70host.
+done, and `docs/history.md` keeps their full text, and the merges where the run recorded them. Milestone 15
+runs now on gfx1151host. Milestone 15s is done except the cutover on b70host.
 
 1. **Workspace.** The Cargo workspace, its crates, `rustfmt.toml` and the dev profile. Done.
 2. **Engine trait.** The ABI core and capabilities as traits, with a fake engine and a broken fake for the gates. Done.
