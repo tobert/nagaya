@@ -1,0 +1,123 @@
+{
+ "arrays": {
+  "dequant_BF16": {
+   "dtype": "f32",
+   "len": 8192,
+   "offset": 8192,
+   "shape": [
+    4,
+    512
+   ]
+  },
+  "dequant_F32": {
+   "dtype": "f32",
+   "len": 8192,
+   "offset": 0,
+   "shape": [
+    4,
+    512
+   ]
+  },
+  "dequant_IQ3_S": {
+   "dtype": "f32",
+   "len": 8192,
+   "offset": 40960,
+   "shape": [
+    4,
+    512
+   ]
+  },
+  "dequant_IQ4_NL": {
+   "dtype": "f32",
+   "len": 8192,
+   "offset": 24576,
+   "shape": [
+    4,
+    512
+   ]
+  },
+  "dequant_IQ4_XS": {
+   "dtype": "f32",
+   "len": 8192,
+   "offset": 49152,
+   "shape": [
+    4,
+    512
+   ]
+  },
+  "dequant_Q6_K": {
+   "dtype": "f32",
+   "len": 8192,
+   "offset": 32768,
+   "shape": [
+    4,
+    512
+   ]
+  },
+  "dequant_Q8_0": {
+   "dtype": "f32",
+   "len": 8192,
+   "offset": 16384,
+   "shape": [
+    4,
+    512
+   ]
+  }
+ },
+ "header": {
+  "author": "written by Claude Sonnet 5.5 for this tool, 2026-10-22",
+  "generator": "tools/op_fixtures.py",
+  "mk_files": [
+   "tests/ops/test_qmm.py"
+  ],
+  "mk_rev": "555a2a3b01457eafbc64f3b9d14931df09ea0e02",
+  "numpy": "2.5.3",
+  "python": "3.14.8"
+ },
+ "meta": {
+  "dequant_cases": [
+   {
+    "k": 512,
+    "rows": 4,
+    "seed": 500,
+    "type": "F32"
+   },
+   {
+    "k": 512,
+    "rows": 4,
+    "seed": 501,
+    "type": "BF16"
+   },
+   {
+    "k": 512,
+    "rows": 4,
+    "seed": 502,
+    "type": "Q8_0"
+   },
+   {
+    "k": 512,
+    "rows": 4,
+    "seed": 503,
+    "type": "IQ4_NL"
+   },
+   {
+    "k": 512,
+    "rows": 4,
+    "seed": 504,
+    "type": "Q6_K"
+   },
+   {
+    "k": 512,
+    "rows": 4,
+    "seed": 505,
+    "type": "IQ3_S"
+   },
+   {
+    "k": 512,
+    "rows": 4,
+    "seed": 506,
+    "type": "IQ4_XS"
+   }
+  ]
+ }
+}
