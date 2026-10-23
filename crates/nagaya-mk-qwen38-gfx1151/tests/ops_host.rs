@@ -11,7 +11,19 @@ mod inputs;
 use fixture::Fixture;
 use inputs::Qtype;
 
-const GROUPS: [&str; 2] = ["gen", "qmm"];
+/// The groups on disk, in name order.
+fn groups() -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(fixture::directory())
+        .unwrap()
+        .filter_map(|e| {
+            let name = e.unwrap().file_name().into_string().unwrap();
+            name.strip_suffix(".json").map(str::to_owned)
+        })
+        .collect();
+    names.sort();
+    assert!(!names.is_empty(), "no fixture group on disk");
+    names
+}
 
 #[test]
 fn the_generator_matches_the_python_generator() {
@@ -77,33 +89,41 @@ fn the_raw_rows_match_the_python_generator() {
 
 #[test]
 fn all_fixtures_come_from_one_run_of_one_revision_of_mk() {
-    let first = Fixture::load(GROUPS[0]);
+    let names = groups();
+    let first = Fixture::load(&names[0]);
     let header = &first.json["header"];
     let rev = header["mk_rev"].as_str().expect("mk_rev");
     assert!(
         rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit()),
         "mk_rev {rev:?} is not a git revision"
     );
-    for name in GROUPS {
+    for name in &names {
         assert_eq!(&Fixture::load(name).json["header"], header, "the header of {name}");
     }
 }
 
+/// Each fixture file is read by a test, and each test reads a file that exists. The test finds the reads in the sources.
 #[test]
-fn the_group_list_is_the_list_of_files() {
-    let mut on_disk: Vec<String> = std::fs::read_dir(fixture::directory())
+fn the_groups_on_disk_are_the_groups_that_the_tests_load() {
+    let tests = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let mut loaded = std::collections::BTreeSet::new();
+    let mut paths: Vec<_> = std::fs::read_dir(tests.join("ops"))
         .unwrap()
-        .filter_map(|e| {
-            let name = e.unwrap().file_name().into_string().unwrap();
-            name.strip_suffix(".json").map(str::to_owned)
-        })
+        .map(|e| e.unwrap().path())
         .collect();
-    on_disk.sort();
-    let mut listed: Vec<String> = GROUPS.iter().map(|s| (*s).to_owned()).collect();
-    listed.sort();
+    paths.push(tests.join("ops_host.rs"));
+    for path in paths {
+        if path.extension().is_some_and(|e| e == "rs") {
+            let text = std::fs::read_to_string(&path).unwrap();
+            for part in text.split("Fixture::load(\"").skip(1) {
+                loaded.insert(part.split('"').next().unwrap().to_owned());
+            }
+        }
+    }
+    let on_disk: std::collections::BTreeSet<String> = groups().into_iter().collect();
     assert_eq!(
-        on_disk, listed,
-        "a fixture file that no test reads, or a group with no file"
+        on_disk, loaded,
+        "a fixture file that no test loads, or a group with no file"
     );
 }
 

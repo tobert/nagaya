@@ -11,4 +11,11 @@ mod inputs;
 mod mkops;
 
 mod child;
+
+mod abi;
+mod attn;
+mod gdn;
+mod hc;
+mod moe;
 mod qmm;
+mod tiles;
