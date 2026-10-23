@@ -1,8 +1,11 @@
-//! The mk engine: mk's HIP code in `hip/`, an FFI binding to it, and the `Engine` trait on top.
+//! The mk engine: mk's HIP kernels in `hip/`, the Rust host code around them, and the `Engine` trait on top.
 //!
-//! `build.rs` compiles the engine, and the crate links it statically, under the feature `hip`. The three shard paths
-//! come from `MK_SHARDS`. One worker thread makes every mk call, because mk's HIP device is the calling thread's
-//! current device. The engine is never closed: mk's HIP teardown segfaults in the process (spec 3.3).
+//! `build.rs` compiles the kernels and the C++ runtime layer, and the crate links them statically, under the feature
+//! `hip`. The Rust host makes every decision (milestone 15 step 6): `gguf.rs` reads the shards, `arena.rs` fills the
+//! weight arena, `context.rs` holds the contexts, `ple.rs` gathers the PLE rows, `pass.rs` builds the stages,
+//! `schedule.rs` orders them, and `host.rs` runs the pass. The three shard paths come from `MK_SHARDS`. One worker
+//! thread makes every mk call, because mk's HIP device is the calling thread's current device. The engine is never
+//! closed: mk's HIP teardown segfaults in the process (spec 3.3).
 
 mod arena;
 mod binding;

@@ -341,19 +341,19 @@ Reason: the fake engine must serve a family with a vocabulary, and the output ro
 
 | ABI | mk (`extern.hip`) | Notes |
 |---|---|---|
-| open / attach | `mk_engine_open(weights)`; no attach | no device argument: the HIP device is the calling thread's current one, so the wrapper sets it on the group's thread; the Rust reader parses the three GGUF shards, and the Rust host fills the arena and gives the engine a weight table (Proposed note below) |
+| open / attach | `mk_engine_open(watchdog_deadline_s)`; no attach | no device argument: the HIP device is the calling thread's current one, so the wrapper sets it on the group's thread; the Rust reader parses the three GGUF shards, and the Rust host fills the arena (Proposed notes below); the C++ engine is the runtime layer only: the launches under the control block and the watchdog |
 | plan | none yet | the wrapper computes the terms from the config and mk's fixed shapes |
 | arena | `arena::plan` and `arena::create` in Rust (`arena.rs`) | one sealed memfd in mk's `arena.h` layout; no check of another process's arena yet: milestone 15 step 6 removed the C++ check, which had no call |
 | identity | built in the Python service | moves into the engine; must include `fused` and `MK_FAST_QMM` |
 | contexts | `context::ctx_new`, `ctx_free`, `ctx_n` in Rust (`context.rs`) | over the runtime calls `mk_rt_malloc`, `mk_rt_free` and `mk_rt_memset` of `rt.cpp`; no fork and no copy |
-| parts | `context::state_read`, `state_write`, `cells_write`, `set_n` in Rust | over `mk_rt_memcpy` and `mk_rt_memcpy_2d`; `set_n` pools the index keys through `mk_ctx_pool`. Parts 0-2 and 5 fixed, 3-4 cells; `idx_pooled` derived. `cells_read` takes only rows 0 to n, the whole part: snapshots are stored whole (about 316 MB at n = 3584, ontology "Part") |
+| parts | `context::state_read`, `state_write`, `cells_write`, `set_n` in Rust | over `mk_rt_memcpy` and `mk_rt_memcpy_2d`; after `set_n` the worker pools the index keys (`host.rs` `pool_context`, through `mk_launch_each`). Parts 0-2 and 5 fixed, 3-4 cells; `idx_pooled` derived. `cells_read` takes only rows 0 to n, the whole part: snapshots are stored whole (about 316 MB at n = 3584, ontology "Part") |
 | slots | `ctx_n`, `ctx_free` then `ctx_new` | `slot_high` is the token count; `slot_clear` makes a new context of the same capacity |
 | coverage | none | rows 0 to n of each cells part; `fits` compares the rows with the slot's capacity |
 | seal | `mk_ctx_round_gdn_bf16` | changes bits in place |
 | poison / last_error | `MkContext::poisoned`, `mk_last_error` | |
 | part writes | `context::state_write`, `cells_write`, `set_n` | return nothing and stop the program on input they refuse; the wrapper checks every precondition first (part index, bytes, an empty context for parts 3-5, n within `max`, not poisoned) and returns refused; a write to a context that is already poisoned is refused, because this call changes nothing; after the call, the poison flag gives failed (decided 2026-10-18) |
 | close | none | `Engine::~Engine` exists, but HIP teardown segfaults in the process; mk does not declare `close` |
-| pass_check / pass | `mk_segments_problem`, `mk_pass_segments` | tokens only (PLE needs token ids); the host gathers the PLE rows of the tokens (`ple.rs`) and gives them to the pass; outputs are logits per segment; `Engine::pass_segments` aborts the process on bad segments (`MK_DIE`), so `Binding::pass_segments` refuses a segment count outside 1 to 16, then a problem of `mk_segments_problem`, then a poisoned context |
+| pass_check / pass | `host::segments_problem`, `host::run_pass` in Rust; `mk_launch_fused` | tokens only (PLE needs token ids); the worker refuses a segment count outside 1 to 16, then a problem of `segments_problem`, then a poisoned context, then a bad knob; the host gathers the PLE rows (`ple.rs`), builds the stages (`pass.rs`), and launches them; outputs are logits per segment |
 | taps | none | milestone 15 step 6 removed the taps (layers, routes, gates), which had no call |
 | telemetry | none | milestone 15 step 6 removed the op times and the event ring of a pass, which had no call |
 | determinism | `always` | `stage.h`: "every op's output bits depend only on its work items"; top-k ties break by index; bit settings in the identity |
@@ -412,15 +412,15 @@ the ABI.
   which a grain needs. The grain is `CHECKPOINT_GRAIN` in `spec.rs`.
   - A profile with `interval_copies = 0` makes no copies. The gfx1151host profile has 0.
 - **`max_quantum_ms` is 10000.** mk splits a pass at 256 tokens (`kMaxPassTokens`). A prefill chunk of that size takes
-  about 2 s. mk's watchdog stops the program at a 10 s deadline (`engine.h` `Engine::wd_`), so the declared bound is
-  10 s.
+  about 2 s. mk's watchdog stops the program at a 10 s deadline (`worker.rs` `watchdog_deadline`), so the declared
+  bound is 10 s.
 - **`cells_write` writes `n` rows from `from`.** The binding refuses a `from` other than 0 and changes nothing. mk
   writes n cells into an empty context that owns its K/V. The caller calls `set_n` after it writes every part.
 - **`positions` are strict and `meta` is empty.** mk appends the tokens at the context's n. The binding refuses a
   segment whose first position is not n, or whose positions are not contiguous. mk reads no per-token metadata, so
   `meta` must be empty.
-- **A pass is fused by default.** The binding passes `fused = 1`. A tap needs the unfused path and one segment. This
-  binding declares no taps.
+- **A pass is fused.** Milestone 15 step 6 removed the unfused pass, which no call used. The restore's pool stages
+  still run one launch each (`mk_launch_each`). This binding declares no taps.
 - **The checkpoint digest is a spot check.** The binding hashes each shard's size and its GGUF header, as mk's
   `weight_hash` does. The digest starts with `spot-sha256:`.
 - **`tokenizer_hash` is a hash of the GGUF tokenizer.** mk loads no tokenizer file. The binding hashes the
@@ -453,7 +453,7 @@ the ABI.
   - A gate of the conformance suite holds at most three handles.
 - **`canary_hash` is empty.** This binding does not run mk's canary. The process does not run it yet (spec 8.1).
 - **The identity carries `MK_FAST_QMM`, `MK_TILES` and `fused`.** They are `Approx`, `ReferenceDefining` and
-  `Approx`. mk reads `MK_FAST_QMM` at each pass build (`engine.h` `fast_qmm_enabled`). `MK_TILES` chooses the tiled
+  `Approx`. The worker reads `MK_FAST_QMM` at each pass build (`worker.rs` `fast_qmm`). `MK_TILES` chooses the tiled
   or the GGUF layout at load (`worker.rs` `tiles`, `arena.rs` `plan`). The binding has not measured whether the two
   give equal bits. A change after
   open refuses the pass, as for `MK_FAST_QMM`.
@@ -529,6 +529,12 @@ the simplest seam that removes the schedule from C++:
 Reason: the order, the barriers and the bits stay the same, and the C ABI does not change. Step 6 builds the stages
 in Rust. Then the two calls become plain Rust calls, and the table loses them.
 
+Replaced in step 6 (Claude Opus 5.5, 2026-10-23): this seam is gone. The Rust host builds the stages of a pass
+(`pass.rs`) and calls `schedule::plan` and `stage_footprint` directly. The table, `schedule`, `footprint` and
+`mk_access` went. A live comparison ran first. For each pass of the hip suite and the oracle bench, the C++ build
+and the Rust build agreed in every field of every stage. `MK_ELIDE` and the other knobs of the build
+are read in Rust at each pass, and a bad value refuses the pass.
+
 **Proposed** (Claude Opus 5.5, 2026-10-22): the extern layer holds only the calls that the binding uses. Step 4 of
 milestone 15 moves the checks and the result rules of mk's C ABI into Rust. The C++ side keeps a thin layer,
 `hip/src/engine/extern.hip`. The docs do not say what happens to the calls that nothing in the nagaya uses. This is
@@ -570,12 +576,10 @@ The wrapper's host buffers also wait for the process crate (the review's note on
 
 Decided 2026-10-20 (reading): these limits stay, and this section records them.
 
-The binding binds `mk_engine_recover_spin_timeouts` and calls it with `on = 1` at open (`566446c`, in the open path
-of `worker.rs`). A misspelled symbol makes open fail with an undefined-symbol error, and `f99f9c0` quotes that
-mutation. Thus the suite pins the symbol's name only.
-
-Removing the binding and the `on = 1` call leaves every test green. mk has no query for the flag, so the suite cannot
-see the call. The opt-in is not pinned.
+The binding bound `mk_engine_recover_spin_timeouts` and called it with `on = 1` at open (`566446c`). Milestone 15
+step 6 moved the rule into Rust, and the flag went. A pass can stop on a spin-timeout that the watchdog did not ask
+for. Then `host.rs` `run_pass` always poisons the contexts of the pass. Any other stop ends the process. The test knob
+`MK_MUTATE_STALL_BARRIER` can force a real spin-timeout, so a test of that path is now possible; none is written yet.
 
 Two paths have no test. A forced spin-timeout, and the `-1` to `PassStatus::Poison` path that follows it, need GPU
 contention, so no test in this suite reaches them. The poisoned `set_n` path has no test on real mk, because mk's
