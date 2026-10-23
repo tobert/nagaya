@@ -9,7 +9,8 @@ use nagaya_ledger::Admission;
 
 use crate::profile::StoreSpec;
 use nagaya_store::{
-    ContentId, EngineFacts, EntryState, Put, Reason, RecipeId, Snapshot, Store, StoreError, Tensor, Tier, recipe_root,
+    ContentId, EngineFacts, EntryState, PinnedPark, Put, Reason, RecipeId, Snapshot, Store, StoreError, Tensor, Tier,
+    recipe_root,
 };
 
 use crate::process::ParkReport;
@@ -69,6 +70,13 @@ pub(crate) enum StoreMessage {
         now_ms: u64,
         /// The answer of the store.
         reply: Sender<Result<ContentId, StoreError>>,
+    },
+    /// Park the pinned entries of the host tier to NVMe at a stop (spec 6.11).
+    ParkPinned {
+        /// The time of the park, which tells a live pin from an ended one.
+        now_ms: u64,
+        /// The answer of the store.
+        reply: Sender<PinnedPark>,
     },
     /// Stop the store thread.
     Stop,
@@ -378,7 +386,7 @@ fn shape_bytes(part: &PartLimits) -> u64 {
     part.shape.iter().product::<u64>() * part.dtype.element_bytes()
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("the clock is before the epoch");
@@ -417,6 +425,10 @@ pub(crate) fn store_thread(store: &std::sync::Mutex<Store>, messages: Receiver<S
                 };
                 let result = store_park(&mut store, put, content);
                 let _ = reply.send(result);
+            }
+            StoreMessage::ParkPinned { now_ms, reply } => {
+                let report = store.lock().expect("the store lock is poisoned").park_pinned(now_ms);
+                let _ = reply.send(report);
             }
             StoreMessage::Stop => break,
         }

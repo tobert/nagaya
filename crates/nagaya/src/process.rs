@@ -59,6 +59,10 @@ pub struct ParkReport {
     pub parked_engines: Vec<String>,
     /// The queued quanta that the stop cancelled before they started (spec 10.3, 5.9).
     pub cancelled: usize,
+    /// The pinned entries of the host tier that the stop parked to NVMe (spec 6.11).
+    pub pinned: usize,
+    /// The bytes of those entries.
+    pub pinned_bytes: u64,
     /// The parts that the group could not read, one message for each.
     pub failures: Vec<String>,
 }
@@ -72,6 +76,8 @@ impl ParkReport {
         self.bytes += other.bytes;
         self.entries += other.entries;
         self.cancelled += other.cancelled;
+        self.pinned += other.pinned;
+        self.pinned_bytes += other.pinned_bytes;
         self.parked_engines.extend(other.parked_engines);
         self.failures.extend(other.failures);
     }
@@ -130,12 +136,19 @@ impl StopReport {
                 self.parked.states, self.parked.parts
             );
         }
-        if self.parked.states == 0 && self.parked.entries == 0 && failed == 0 {
+        if self.parked.states == 0 && self.parked.entries == 0 && self.parked.pinned == 0 && failed == 0 {
             return format!("the stop parked nothing: no state needed a park{cancelled}");
         }
+        let pinned = match self.parked.pinned {
+            0 => String::new(),
+            count => format!(
+                " and parked {count} pinned entries ({} bytes)",
+                self.parked.pinned_bytes
+            ),
+        };
         if failed == 0 {
             return format!(
-                "the stop wrote {} states and {} parts ({} bytes) to the store{cancelled}",
+                "the stop wrote {} states and {} parts ({} bytes) to the store{pinned}{cancelled}",
                 self.parked.states, self.parked.parts, self.parked.bytes
             );
         }
@@ -1580,11 +1593,72 @@ impl Process {
                 }
             }
         }
+        match self.park_pinned(budget, signals, entered, &mut parked) {
+            Some(parked_all) => complete &= parked_all,
+            None => {
+                self.finish_stop();
+                return StopReport {
+                    parked,
+                    complete: false,
+                    interrupted: true,
+                };
+            }
+        }
         self.finish_stop();
         StopReport {
             parked,
             complete,
             interrupted: false,
+        }
+    }
+
+    /// Park the pinned entries of the host tier after the groups park, so a pin stays through a restart (spec 6.11).
+    ///
+    /// The wait is at most one park budget. It gives false when the store did not answer in it, and `None` when a
+    /// second signal came. A park that failed is in `parked.failures`.
+    fn park_pinned(
+        &self,
+        budget: Duration,
+        signals: &SignalFlag,
+        entered: usize,
+        parked: &mut ParkReport,
+    ) -> Option<bool> {
+        let Some(store) = &self.store else {
+            return Some(true);
+        };
+        let (reply, answer) = mpsc::channel();
+        let message = StoreMessage::ParkPinned {
+            now_ms: park::now_ms(),
+            reply,
+        };
+        if store.send(message).is_err() {
+            parked
+                .failures
+                .push("the pinned entries were not parked: the store thread stopped".to_owned());
+            return Some(true);
+        }
+        let deadline = Instant::now() + budget;
+        loop {
+            if signals.count() != entered {
+                return None;
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            match answer.recv_timeout(left.min(STOP_POLL)) {
+                Ok(report) => {
+                    parked.pinned += report.parked.len();
+                    parked.pinned_bytes += report.bytes;
+                    parked.failures.extend(report.failures);
+                    return Some(true);
+                }
+                Err(RecvTimeoutError::Timeout) if left.is_zero() => return Some(false),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    parked
+                        .failures
+                        .push("the pinned entries were not parked: the store thread stopped".to_owned());
+                    return Some(true);
+                }
+            }
         }
     }
 
