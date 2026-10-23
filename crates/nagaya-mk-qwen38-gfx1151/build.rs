@@ -38,11 +38,13 @@ const WARNINGS_AND_FLOATS: &[&str] = &[
 const HIP_DEFINES: &[&str] = &["-DUSE_PROF_API=1", "-D__HIP_PLATFORM_AMD__=1", "-D__HIP_ROCclr__=1"];
 
 /// The translation units of mk's target `mkengine` (mk `src/engine/CMakeLists.txt:1`).
+///
+/// `extern.hip` is the thin extern layer that took the place of mk's C ABI `capi.hip` in milestone 15 step 4.
 const ENGINE_UNITS: &[&str] = &[
     "engine.hip",
     "mega.hip",
     "blocks.hip",
-    "capi.hip",
+    "extern.hip",
     "convert.hip",
     "round.hip",
 ];

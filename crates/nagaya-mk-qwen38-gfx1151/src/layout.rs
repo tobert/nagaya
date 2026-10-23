@@ -7,6 +7,8 @@
 use std::mem::{offset_of, size_of};
 use std::path::Path;
 
+use crate::binding::MkSegment;
+use crate::spec;
 use crate::table::{MkTensor, MkTensorTable};
 
 /// The `static_assert(<expression> == <number>, "<note>");` lines of `text`, as (expression, number).
@@ -119,6 +121,24 @@ fn the_tensor_table_has_the_layout_of_tensor_table_h() {
                 "offsetof(mk_tensor_table, dequant_f32)",
                 offset_of!(MkTensorTable, dequant_f32),
             ),
+        ],
+    );
+}
+
+#[test]
+fn a_segment_and_the_buffer_numbers_are_those_of_extern_hip() {
+    assert_same(
+        "extern.hip",
+        &[
+            ("sizeof(Segment)", size_of::<MkSegment>()),
+            ("offsetof(Segment, c)", offset_of!(MkSegment, context)),
+            ("offsetof(Segment, tokens)", offset_of!(MkSegment, tokens)),
+            ("offsetof(Segment, t)", offset_of!(MkSegment, t)),
+            ("sizeof(bool)", size_of::<bool>()),
+            ("kMaxSegments", spec::MAX_SEGMENTS as usize),
+            ("model::kVocab", spec::VOCAB as usize),
+            ("model::kMaxPassTokens", spec::MAX_PASS_TOKENS as usize),
+            ("model::kMaxContext", spec::MAX_CONTEXT as usize),
         ],
     );
 }
