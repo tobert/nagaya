@@ -505,9 +505,13 @@ mod tests {
         write_text_gguf(&first, None, "template one");
         write_text_gguf(&second, None, "template two");
         let shards = vec![first.clone()];
-        let library = std::path::Path::new("/lib/libmkengine.so");
+        let build = crate::binding::Build {
+            library_sha256: "sha",
+            compiler: "clang",
+            hip: "hip",
+        };
         let identity_of = |path: &std::path::Path| {
-            crate::spec::identity(&shards, library, "sha", true, true, "spot", &text_keys(path).unwrap())
+            crate::spec::identity(&shards, &build, true, true, "spot", &text_keys(path).unwrap())
         };
         let (one, two) = (identity_of(&first), identity_of(&second));
         assert_eq!(one.tokenizer_hash, two.tokenizer_hash);

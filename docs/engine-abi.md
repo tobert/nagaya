@@ -388,8 +388,8 @@ the ABI.
   - `plan` returns the limits of the pool with this size in the weights term.
   - `open` loads the weights and compares the real arena with the key. A difference refuses the start (exit 3,
     spec 10.4). The message gives the real size for the profile.
-  - The factory reads `MK_ENGINE_LIB`, `MK_SHARDS` and the optional pin `MK_ENGINE_LIB_SHA256` from the environment.
-  - `plan` refuses a missing variable, or a library or a shard that is not a file. The message names the variable.
+  - The factory reads `MK_SHARDS` from the environment. The engine is in the binary, so no variable names a library.
+  - `plan` refuses a missing `MK_SHARDS`, or a shard that is not a file. The message names the variable.
   - The kind in the profile is `mk-qwen38-gfx1151`. A build with the feature `hip` registers it.
 - **The pool is 12 contexts of 4,096 tokens and 4 of 32,768.** Decided by senpai 2026-10-20 night (vetoable). The
   pool had 16 contexts of 256 tokens (Amy, 2026-10-20: "grow the pool"). A kaijutsu context needs thousands of
@@ -456,12 +456,24 @@ Reason for all: the code must not guess.
 **Corrected** by deepseek-flash, 2026-10-18: `max_quantum_ms` was 30000. mk's watchdog aborts a pass at 10 s
 (`engine.h:302-306`), so a 30 s bound promises a quantum that mk would stop. Review finding 13.
 
-**The deploy profile pins the mk library.** The identity records the SHA-256 of `libmkengine.so`. The deploy profile
-requires that pin. The binding reads `MK_ENGINE_LIB_SHA256` and refuses a library with another digest before it binds
-any symbol. Tests may leave the pin unset. mk has no call for the vocabulary size, so the binding cannot check
-`kVocab` against the library either. Decided 2026-10-18.
+**The binary links mk's engine statically.** Amy decided this on 2026-10-22, by interview (AGENTS.md milestone 15).
+It replaces the rule "The deploy profile pins the mk library" (Decided 2026-10-18).
 
-Reason: without the pin, nothing compares the digest in the identity with an expected one (review finding 2).
+- The crate holds a copy of mk's sources in `hip/`, from mk commit `555a2a3`. The layout under `src/` is mk's.
+- Under the feature `hip`, `build.rs` compiles the engine units into `libmkengine.a`. It uses ROCm's `clang++` and the
+  flags of mk's CMake build, flag for flag. A test compares them with mk's `compile_commands.json`
+  (`tests/build_flags.rs`). The float flags `-ffp-contract=off -fno-fast-math` stay.
+- The crate links the archive whole, so that each HIP object registers its kernels. The HIP runtime and the C++
+  library stay shared.
+- `MK_ENGINE_LIB` and the library pin `MK_ENGINE_LIB_SHA256` are gone. The build facts take the place of the pin.
+  `numbers` holds `engine_build_sha256`, the SHA-256 of `libmkengine.a`. It also holds `engine_compiler` and
+  `engine_hip`, the versions of the compiler and of HIP. No path is in `numbers` (spec 12.1).
+- The build facts stay in the identity digest until the canary runs at each start (spec 12.1). Thus a new build
+  makes the held entries unusable. Amy accepted one refill for this change.
+- mk has no call for the vocabulary size, so the binding cannot check `kVocab` against the engine.
+
+Reason: the binary now holds its engine. The digest of the archive is a fact of the build, so a pin would only
+compare the build with itself.
 
 **mk's pass scratch is a mandatory term.** The ABI says that `pass` never allocates and that its scratch is a
 mandatory term. mk allocates one scratch pool at its first ask and keeps it for the engine's life

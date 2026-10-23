@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
+# Build mk's engine from `hip/` with ROCm, and link it statically. A build without it needs no ROCm.
 hip = []
 
 [[example]]
@@ -24,9 +25,11 @@ harness = false
 required-features = ["hip"]
 
 [dependencies]
-libloading = "0.8"
 nagaya-abi = { version = "0.1.0", path = "../nagaya-abi" }
 nagaya-text-qwen38 = { version = "0.1.0", path = "../nagaya-text-qwen38" }
+sha2 = "0.10"
+
+[build-dependencies]
 sha2 = "0.10"
 
 [dev-dependencies]

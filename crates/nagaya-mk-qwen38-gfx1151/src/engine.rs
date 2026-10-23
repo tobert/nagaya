@@ -25,9 +25,7 @@ pub fn open() -> Result<MkEngine, MkError> {
         Err(error) => return Err(error.clone()),
     };
     if worker.paths() != &paths {
-        return Err(MkError::new(
-            "MK_ENGINE_LIB or MK_SHARDS changed after the engine opened".to_owned(),
-        ));
+        return Err(MkError::new("MK_SHARDS changed after the engine opened".to_owned()));
     }
     let pool = worker.open_states(&spec::CONTEXT_CLASSES)?;
     Ok(MkEngine {

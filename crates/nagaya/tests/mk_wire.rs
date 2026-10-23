@@ -1,6 +1,6 @@
 //! The mk engine as a factory kind (spec 2.4, 10.4; docs/engine-abi.md "v0 mk binding choices").
 //!
-//! No test here opens the engine, loads the library or touches the GPU. `plan` reads the environment and checks that
+//! No test here opens the engine or touches the GPU. `plan` reads the environment and checks that
 //! files exist. A test that sets the environment holds `ENV`, because the environment belongs to the whole process.
 #![cfg(feature = "hip")]
 
@@ -21,7 +21,6 @@ use nagaya_mk_qwen38_gfx1151::MkError;
 
 static ENV: Mutex<()> = Mutex::new(());
 
-const LIB: &str = "MK_ENGINE_LIB";
 const SHARDS: &str = "MK_SHARDS";
 
 fn repo() -> PathBuf {
@@ -43,10 +42,9 @@ fn set(name: &str, value: Option<&Path>) {
     }
 }
 
-/// A library file and three shard files. They are empty: `plan` checks that they exist and reads nothing.
+/// Three shard files. They are empty: `plan` checks that they exist and reads nothing.
 struct Install {
     _directory: tempfile::TempDir,
-    library: PathBuf,
     shards: [PathBuf; 3],
 }
 
@@ -59,7 +57,6 @@ impl Install {
             path
         };
         Self {
-            library: file("libmkengine.so"),
             shards: [file("one.gguf"), file("two.gguf"), file("three.gguf")],
             _directory: directory,
         }
@@ -71,7 +68,6 @@ impl Install {
             .iter()
             .map(|path| path.to_str().unwrap())
             .collect::<Vec<_>>();
-        set(LIB, Some(&self.library));
         set(SHARDS, Some(Path::new(&shards.join(":"))));
     }
 }
@@ -120,38 +116,32 @@ fn a_missing_variable_refuses_the_start_with_exit_3_and_names_the_variable() {
         }],
         host_bytes: 131_156_408 * 1024,
     };
-    for missing in [LIB, SHARDS] {
-        install.export();
-        set(missing, None);
-        let store = tempfile::tempdir().unwrap();
-        let error = match lifecycle::start(
-            profile.clone(),
-            Registry::with_mk(),
-            inventory.clone(),
-            store.path(),
-            None,
-            Duration::from_secs(5),
-        ) {
-            Ok(_) => panic!("the start succeeded with {missing} unset"),
-            Err(error) => error,
-        };
-        assert_eq!(error.exit_code(), ExitCode::RefusedStart, "{error}");
-        assert!(
-            error.to_string().contains(missing),
-            "the message does not name {missing}: {error}"
-        );
-    }
+    install.export();
+    set(SHARDS, None);
+    let store = tempfile::tempdir().unwrap();
+    let error = match lifecycle::start(
+        profile,
+        Registry::with_mk(),
+        inventory,
+        store.path(),
+        None,
+        Duration::from_secs(5),
+    ) {
+        Ok(_) => panic!("the start succeeded with {SHARDS} unset"),
+        Err(error) => error,
+    };
+    assert_eq!(error.exit_code(), ExitCode::RefusedStart, "{error}");
+    assert!(
+        error.to_string().contains(SHARDS),
+        "the message does not name {SHARDS}: {error}"
+    );
 }
 
 #[test]
-fn plan_refuses_a_library_or_a_shard_that_is_not_a_file() {
+fn plan_refuses_a_shard_that_is_not_a_file() {
     let _env = ENV.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let install = Install::new();
     let table = config("weights_bytes = 1000");
-    install.export();
-    set(LIB, Some(&install.library.with_extension("gone")));
-    let message = MkFactory.plan(&table, &[gfx1151host_device()]).unwrap_err().to_string();
-    assert!(message.contains(LIB) && message.contains("gone"), "{message}");
     install.export();
     std::fs::remove_file(&install.shards[1]).unwrap();
     let message = MkFactory.plan(&table, &[gfx1151host_device()]).unwrap_err().to_string();
@@ -198,13 +188,8 @@ fn plan_refuses_a_config_without_a_usable_weights_size_or_with_an_unknown_key() 
 }
 
 #[test]
-fn a_pin_refusal_refuses_the_start_and_any_other_open_error_is_a_crash() {
-    let pin = mk::open_error(MkError::pin(
-        "the mk engine library /x has SHA-256 aa; MK_ENGINE_LIB_SHA256 pins bb",
-    ));
-    assert_eq!(pin.kind, OpenErrorKind::Pin);
-    assert!(pin.kind.refuses_start());
-    assert!(pin.message.contains("MK_ENGINE_LIB_SHA256"));
+fn an_open_error_of_the_mk_binding_is_a_crash() {
+    // The engine is linked into the binary, so no library pin can refuse the start (AGENTS.md milestone 15).
     let other = mk::open_error(MkError::new("mk_engine_open returned no engine"));
     assert_eq!(other.kind, OpenErrorKind::Other);
     assert!(!other.kind.refuses_start());

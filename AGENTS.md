@@ -46,7 +46,8 @@ unified memory. The first engine is mk (`~/src/megakernel-qwen38-flashnext-strix
 - When two docs do not agree, or a doc leaves a choice open, do not guess in code. Write the simplest choice into the
   doc with the mark **Proposed**, your reason, and your model name. Commit it alone, then continue. Amy decides later.
   When she accepts it, senpai writes it as a rule with the mark "Decided <date>" (spec, header).
-- Do not edit other repositories. mk's HIP code stays in mk. If the work needs a change in mk, stop and report.
+- Do not edit other repositories. mk's HIP code is now in `crates/nagaya-mk-qwen38-gfx1151/hip/`, and we own it
+  (milestone 15). mkviolet stays a reference: read it, and do not edit it.
 
 ### Layout
 
@@ -58,7 +59,7 @@ The crates live in directories under `crates/`. Use these crates:
 | `nagaya-store` | canonical safetensors, content ids, recipes, entries, lookup, eviction | 6, D3, D10 |
 | `nagaya-ledger` | budgets, terms, admission, shares, reclaim order | 4, D9 |
 | `nagaya-sched` | jobs, quanta, classes, the order of ready quanta | 5 |
-| `nagaya-mk-qwen38-gfx1151` | the mk engine: an FFI binding to `libmkengine.so` and the `Engine` trait on top | ABI "How mk maps" |
+| `nagaya-mk-qwen38-gfx1151` | the mk engine: mk's HIP code in `hip/`, its FFI binding, and the `Engine` trait on top | ABI "How mk maps" |
 | `nagaya-mk-gemma4-bmg` | the mkviolet engine: Level Zero, the OpenCL C kernels, and the Gemma 4 host code; a card needs `xe` | ABI "How mkviolet maps" |
 | `nagaya-council` | council v2 logic with no I/O: the family interface, the sampler, request checks | 11 |
 | `nagaya-jinja` | the Jinja interpreter of the chat templates, with the results of Python's jinja2 | 11.3 |
@@ -240,10 +241,11 @@ done. Milestone 15 is next on gfx1151host, and milestone 15s is next on b70host.
 
 ### mk on gfx1151host
 
-- Do not build mk. Amy builds it. The library is `build/src/engine/libmkengine.so` in mk's repo. If it is missing or
-  older than mk's last commit, stop and report.
-- Load the library at runtime with `libloading`, from the path in `MK_ENGINE_LIB`. Do not link it at build time, so
-  that a machine without mk builds and tests the workspace. Do not copy the library into this repo.
+- mk's engine is in `crates/nagaya-mk-qwen38-gfx1151/hip/`, a copy of mk commit `555a2a3` (milestone 15, Amy
+  2026-10-22). mk's repository is an archive: do not edit it, and do not build it.
+- Under the feature `hip`, `build.rs` compiles the copy with ROCm's `clang++` and links it statically. A build
+  without `hip` needs no ROCm, so a machine without ROCm builds and tests the workspace.
+- Keep mk's compile flags. `tests/build_flags.rs` compares them with mk's `compile_commands.json`.
 - mk's weights are three GGUF shards. mk's `harness/paths.py` (`SHARDS`) gives their paths. GPU tests read them
   from `MK_SHARDS`, three paths with `:` between them. Do not put the paths in code.
 - `mk_engine_attach` takes a path, not an fd. For an fd from systemd's store, give `/proc/self/fd/<n>`.
@@ -319,9 +321,12 @@ get ran sometimes, perhaps just a bump in our AGENTS.md"
   `tools/gemma4_golden.sh`, with no GPU job. An absent reference file skips the test, as an absent model does.
 - The report of a check names how many tests skipped for a missing model.
 
-On gfx1151host, run the oracle bench with `MK_ENGINE_LIB` and `MK_SHARDS` set and both units inactive:
+On gfx1151host, run the oracle bench with `MK_SHARDS` set and both units inactive:
 `cargo bench -p nagaya-mk-qwen38-gfx1151 --features hip --bench oracle`. It exits with 1 when a gate breaks.
 Set `MK_FAST_QMM=0` for the gate: the exact path must match the reference. Leave it unset to measure the fast path.
+
+The bench prints the SHA-256 of the logits of each prompt. A port step that keeps the bits keeps each hash.
+
 Make the fixture again with `PYTHONDONTWRITEBYTECODE=1 nice -n 19 ionice -c3 <mk venv python> -I tools/oracle_fixture.py
 OUT.json`. It needs about 30 GiB of RAM, and it must not run with a GPU job.
 

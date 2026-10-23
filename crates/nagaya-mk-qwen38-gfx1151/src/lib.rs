@@ -1,8 +1,8 @@
-//! The mk engine: an FFI binding to `libmkengine.so` and the `Engine` trait on top.
+//! The mk engine: mk's HIP code in `hip/`, an FFI binding to it, and the `Engine` trait on top.
 //!
-//! The library is loaded from `MK_ENGINE_LIB` at run time. The three shard paths come from `MK_SHARDS`. One worker
-//! thread makes every mk call, because mk's HIP device is the calling thread's current device. The engine is never
-//! closed: mk's HIP teardown segfaults in the process (spec 3.3).
+//! `build.rs` compiles the engine, and the crate links it statically, under the feature `hip`. The three shard paths
+//! come from `MK_SHARDS`. One worker thread makes every mk call, because mk's HIP device is the calling thread's
+//! current device. The engine is never closed: mk's HIP teardown segfaults in the process (spec 3.3).
 
 mod binding;
 mod engine;
