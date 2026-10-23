@@ -1,0 +1,48 @@
+{
+ "arrays": {
+  "combine": {
+   "dtype": "f32",
+   "len": 81920,
+   "offset": 30768,
+   "shape": [
+    2,
+    10240
+   ]
+  },
+  "pre_inject": {
+   "dtype": "f32",
+   "len": 48,
+   "offset": 30720,
+   "shape": [
+    3,
+    4
+   ]
+  },
+  "pre_mixed": {
+   "dtype": "f32",
+   "len": 30720,
+   "offset": 0,
+   "shape": [
+    3,
+    2560
+   ]
+  }
+ },
+ "header": {
+  "author": "written by Claude Sonnet 5.5 for this tool, 2026-10-22",
+  "generator": "tools/op_fixtures.py",
+  "mk_rev": "555a2a3b01457eafbc64f3b9d14931df09ea0e02",
+  "numpy": "2.5.3",
+  "python": "3.14.8"
+ },
+ "meta": {
+  "mk_files": [
+   "tests/ops/test_hc.py"
+  ],
+  "pre": {
+   "d_down": 3072,
+   "d_up": 7168,
+   "t": 3
+  }
+ }
+}
