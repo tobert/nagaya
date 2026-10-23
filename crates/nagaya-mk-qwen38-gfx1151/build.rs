@@ -47,9 +47,6 @@ const ENGINE_UNITS: &[&str] = &[
     "round.hip",
 ];
 
-/// The plain C++ translation units of mk's target `mkgguf_static` (mk `src/gguf/CMakeLists.txt:5-8`).
-const GGUF_UNITS: &[&str] = &["gguf.cpp", "dequant.cpp"];
-
 /// The compiler writes each object to stdout, and the script writes it to `OUT_DIR`.
 ///
 /// clang hashes the command line into the name of a HIP symbol (`__hip_cuid_`), and it writes the working directory
@@ -69,13 +66,13 @@ pub(crate) fn compiler() -> PathBuf {
     Path::new(ROCM).join("llvm").join("bin").join("clang++")
 }
 
-/// Every compile of the engine, in the order of mk's targets: the engine units, `rt.cpp`, then the GGUF units.
+/// Every compile of the engine, in the order of mk's targets: the engine units, then `rt.cpp`.
 ///
-/// `src` is the directory `hip/src`, and `out` is the directory of the objects.
+/// mk's GGUF units (`gguf.cpp`, `dequant.cpp`) are not here. The Rust reader took their place in milestone 15 step 3
+/// (`src/gguf.rs`, `src/dequant.rs`). `src` is the directory `hip/src`, and `out` is the directory of the objects.
 pub(crate) fn units(src: &Path, out: &Path) -> Vec<Unit> {
     let mut units: Vec<Unit> = ENGINE_UNITS.iter().map(|name| engine_unit(src, out, name)).collect();
     units.push(rt_unit(src, out));
-    units.extend(GGUF_UNITS.iter().map(|name| gguf_unit(src, out, name)));
     units
 }
 
@@ -120,23 +117,6 @@ fn rt_unit(src: &Path, out: &Path) -> Unit {
 fn hip_tail(source: PathBuf, object: PathBuf, mut arguments: Vec<String>) -> Unit {
     arguments.extend(strings(OBJECT_TO_STDOUT));
     arguments.extend(strings(&["-x", "hip", "-c"]));
-    arguments.push(source.display().to_string());
-    Unit {
-        source,
-        object,
-        arguments,
-    }
-}
-
-/// The compile of one GGUF unit as plain C++, with no HIP flag (mk `src/gguf/CMakeLists.txt:9`).
-fn gguf_unit(src: &Path, out: &Path, name: &str) -> Unit {
-    let source = src.join("gguf").join(name);
-    let object = out.join(format!("gguf.{name}.o"));
-    let mut arguments = vec![include(&src.join("gguf")), "-x".to_owned(), "c++".to_owned()];
-    arguments.extend(strings(COMMON));
-    arguments.extend(strings(WARNINGS_AND_FLOATS));
-    arguments.extend(strings(OBJECT_TO_STDOUT));
-    arguments.push("-c".to_owned());
     arguments.push(source.display().to_string());
     Unit {
         source,

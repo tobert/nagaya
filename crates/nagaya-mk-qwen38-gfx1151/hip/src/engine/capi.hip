@@ -9,15 +9,14 @@
 using namespace mk;
 
 extern "C" {
-void *mk_engine_open(const char *s1, const char *s2, const char *s3) { return new Engine({s1, s2, s3}); }
+// The tensor table comes from the Rust reader (tensor_table.h). Its tensor data must stay mapped for the engine's life.
+void *mk_engine_open(const mk_tensor_table *t) { return new Engine(t); }
 // An engine on another engine's weight arena (arena.h): path is /proc/<pid>/fd/<n>. Dies on an arena it can't trust.
-void *mk_engine_attach(const char *s1, const char *s2, const char *s3, const char *path) {
-  return new Engine({s1, s2, s3}, path);
-}
+void *mk_engine_attach(const mk_tensor_table *t, const char *path) { return new Engine(t, path); }
 // Whether the arena at path is exactly what this build makes from these shards (engine.h Engine::check_arena): 0,
 // or 1 with the first difference in why (cap bytes, NUL-terminated).
-int mk_arena_check(const char *s1, const char *s2, const char *s3, const char *path, char *why, uint32_t cap) {
-  const std::string w = Engine::check_arena({s1, s2, s3}, path);
+int mk_arena_check(const mk_tensor_table *t, const char *path, char *why, uint32_t cap) {
+  const std::string w = Engine::check_arena(t, path);
   snprintf(why, cap, "%s", w.c_str());
   return w.empty() ? 0 : 1;
 }

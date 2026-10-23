@@ -1155,6 +1155,7 @@ dependencies = [
 name = "nagaya-mk-qwen38-gfx1151"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "libloading",
  "nagaya-abi",
  "nagaya-conformance",

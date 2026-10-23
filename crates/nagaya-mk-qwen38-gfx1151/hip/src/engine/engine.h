@@ -10,7 +10,7 @@
 #include <vector>
 
 #include "arena.h"
-#include "gguf.hpp"
+#include "tensor_table.h"
 #include "model.h"
 #include "rt.h"
 #include "stage.h"
@@ -153,8 +153,8 @@ class Engine {
  public:
   // Loads the weights into a new sealed arena (arena.h), or, given attach (a path like /proc/<pid>/fd/<n>), maps
   // another engine's arena read-only after checking it against this build (attach_arena); either way the same pages
-  // the kernels read.
-  explicit Engine(const std::vector<std::string> &shards, const char *attach = nullptr);
+  // the kernels read. The tensor table comes from the Rust reader (tensor_table.h).
+  explicit Engine(const mk_tensor_table *table, const char *attach = nullptr);
   ~Engine();
   Context *new_context(uint32_t max_tokens);
   void free_context(Context *c);
@@ -242,7 +242,7 @@ class Engine {
   uint64_t arena_bytes() const { return arena_bytes_; }
   // Whether the arena at path is exactly what this build makes from these GGUF files: "" if so, else the first
   // difference (Engine::arena_problem). Needs the GPU for the spot check's conversions; builds no engine.
-  static std::string check_arena(const std::vector<std::string> &shards, const char *path);
+  static std::string check_arena(const mk_tensor_table *table, const char *path);
 
  private:
   struct Planned {  // one uploaded tensor: its GGUF index, final layout and place in the arena
@@ -253,11 +253,11 @@ class Engine {
     uint32_t rows = 0, k = 0;
     uint64_t src_bytes = 0, bytes = 0, offset = 0;
   };
-  static std::vector<Planned> plan(const mkgguf::Model &model, uint64_t *arena_bytes);
+  static std::vector<Planned> plan(const TensorTable &table, uint64_t *arena_bytes);
   static arena::Header arena_header(const std::vector<Planned> &P, uint64_t arena_bytes, const std::vector<std::string> &shards);
   static arena::Entry arena_entry(const Planned &p);
-  static void expected_bytes(const mkgguf::Model &model, const Planned &p, std::vector<uint8_t> &out);
-  static std::string arena_problem(const mkgguf::Model &model, const std::vector<std::string> &shards, const std::vector<Planned> &P,
+  static void expected_bytes(const TensorTable &table, const Planned &p, std::vector<uint8_t> &out);
+  static std::string arena_problem(const TensorTable &table, const std::vector<std::string> &shards, const std::vector<Planned> &P,
                                    uint64_t arena_bytes, int fd, const char *path, size_t *types);
   void create_arena(const std::vector<Planned> &P);
   void attach_arena(const char *path, const std::vector<Planned> &P);
@@ -278,7 +278,7 @@ class Engine {
   // Runs stages one launch each under the unfused pass's rails (control block, watchdog), outside any pass.
   void run_stages_now(const std::vector<Stage> &S);
 
-  mkgguf::Model model_;
+  TensorTable table_;
   std::vector<std::string> shards_;
   std::unordered_map<std::string, Tensor> w_;
   int arena_fd_ = -1;
@@ -286,7 +286,7 @@ class Engine {
   uint64_t arena_bytes_ = 0;
   Layer layers_[model::kLayers];
   Tensor tok_embd_, out_hc_norm_, out_hc_down_, out_hc_up_, output_;
-  const mkgguf::TensorInfo *ple_ = nullptr;  // the PLE table, left mapped (ple_rows gathers from it)
+  const GgufTensor *ple_ = nullptr;  // the PLE table, left mapped (ple_rows gathers from it)
   // pass scratch, sized for kMaxPassTokens
   ScratchPool scratch_;
   // A fork's fixed state (gdn_state, gdn_conv, ple_conv), kept for the next fork (Engine::fork).

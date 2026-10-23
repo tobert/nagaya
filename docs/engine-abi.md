@@ -341,7 +341,7 @@ Reason: the fake engine must serve a family with a vocabulary, and the output ro
 
 | ABI | mk (`capi.hip`) | Notes |
 |---|---|---|
-| open / attach | `mk_engine_open(s1, s2, s3)`, `mk_engine_attach(…, path)` | no device argument: the HIP device is the calling thread's current one, so the wrapper sets it on the group's thread; weights are three GGUF shards |
+| open / attach | `mk_engine_open(table)`, `mk_engine_attach(table, path)` | no device argument: the HIP device is the calling thread's current one, so the wrapper sets it on the group's thread; weights are three GGUF shards, which the Rust reader parses into the tensor table (Proposed note below) |
 | plan | none yet | the wrapper computes the terms from the config and mk's fixed shapes |
 | arena | `mk_engine_arena`, `mk_arena_check` | one fd; full check |
 | identity | built in the Python service | moves into the engine; must include `fused` and `MK_FAST_QMM` |
@@ -484,6 +484,24 @@ It replaces the rule "The deploy profile pins the mk library" (Decided 2026-10-1
 
 Reason: the binary now holds its engine. The digest of the archive is a fact of the build, so a pin would only
 compare the build with itself.
+
+**Proposed** (Claude Opus 5.5, 2026-10-22): the Rust reader gives the engine a tensor table. Step 3 of milestone
+15 moves mk's GGUF reader and dequantizer to Rust. The docs do not say where the seam between the reader and the
+C++ engine is. This is the simplest seam that removes the GGUF parse from C++:
+
+- The binding opens the shards with the Rust reader (`src/gguf.rs`). The reader maps each shard read-only, and it
+  keeps the checks of mk's C++ reader.
+- `mk_engine_open`, `mk_engine_attach` and `mk_arena_check` take a `mk_tensor_table` in place of three paths
+  (`hip/src/engine/tensor_table.h`).
+- The table holds each tensor's name, type, shape, byte count and a pointer into its shard's map. It also holds the
+  shard paths and the four PLE keys of the metadata.
+- The engine keeps its plan, its arena layout, its arena checks and its PLE gather. It reads them from the table.
+- The engine calls back into Rust twice. `drop_cached` drops the page cache of a copied range, and `dequant_f32`
+  decodes the PLE rows. Each call stops the program on an error, as mk's C++ reader did.
+- The binding keeps the maps for the engine's life, because the engine gathers PLE rows from them.
+
+Reason: the arena bytes and the logits stay the same, and the C ABI changes in three calls only. Step 6 moves the plan
+and the PLE gather into Rust. Then the two calls back into Rust go away.
 
 **mk's pass scratch is a mandatory term.** The ABI says that `pass` never allocates and that its scratch is a
 mandatory term. mk allocates one scratch pool at its first ask and keeps it for the engine's life

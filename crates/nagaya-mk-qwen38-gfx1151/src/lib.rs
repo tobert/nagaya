@@ -5,9 +5,13 @@
 //! current device. The engine is never closed: mk's HIP teardown segfaults in the process (spec 3.3).
 
 mod binding;
+mod dequant;
 mod engine;
 mod gguf;
+#[cfg(test)]
+mod gguf_shard_tests;
 mod spec;
+mod table;
 mod worker;
 
 pub use engine::{MkEngine, open};

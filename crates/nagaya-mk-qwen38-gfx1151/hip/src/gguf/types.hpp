@@ -37,7 +37,7 @@ namespace mkgguf {
 
 // GGML tensor element type ids, exactly as they appear in a GGUF tensor-info record and in
 // gguf-py's GGMLQuantizationType. Only the ids present in the Qwen3.8-Flash-Next UD-IQ4_XS
-// GGUF are given names; any other id read from the file is a hard error (see gguf.hpp).
+// GGUF are given names. The Rust reader (src/gguf.rs) refuses any other id.
 enum class GgmlType : uint32_t {
     F32 = 0,
     BF16 = 30,
@@ -57,16 +57,6 @@ inline bool ggml_type_is_known(uint32_t id) {
             return false;
     }
 }
-
-const char* ggml_type_name(GgmlType t);
-
-// Elements per block, and bytes per block, for each known type. F32 and BF16 are
-// "one element per block" so the same block-oriented dequant code path handles them too.
-struct GgmlTypeTraits {
-    uint32_t block_size;  // elements per block
-    uint32_t type_size;   // bytes per block
-};
-GgmlTypeTraits ggml_type_traits(GgmlType t);
 
 // GGUF metadata value type ids (GGUF spec / gguf-py GGUFValueType), used by the KV reader.
 // Original to this repo (not a ggml port): these ids are the GGUF file format's own spec,
