@@ -29,9 +29,10 @@ The design came on 2026-10-17 from a conversation with Amy. It began with rentin
 a common host for our megakernels. The code began with mk's engine on 2026-10-18.
 
 - Since 00:24 on 2026-10-21, `nagaya.service` serves council v2 on `198.51.100.20:8090` with the Qwen3.8 engine on
-  gfx1151host's gfx1151. `megakernel.service` is stopped and disabled. `gogi-conformance` gave 215 ok, 0 FAIL and 5 skip.
-- Milestones 1 to 14 are done (`docs/history.md`). Milestone 15s, the Gemma 4 engine on b70host, is done except
-  the cutover. Milestone 15, the copy of mk's engine into this repository, runs now (`AGENTS.md`).
+  gfx1151host's gfx1151. `megakernel.service` is stopped and disabled. Since 2026-10-23, the engine is the nagaya's own
+  copy, and `gogi-conformance` gives 274 ok, 0 FAIL and 7 skip.
+- Milestones 1 to 15 are done (`docs/history.md`, `AGENTS.md`). Milestone 15s, the Gemma 4 engine on b70host, is
+  done except the cutover.
 - `docs/deploy.md` tells how to run the nagaya on each machine.
 
 ## Why a new repo
@@ -42,8 +43,8 @@ tempted to come up with a new name and port all the code into a fresh repo and c
 - mkviolet is the seed. It is Rust, and one process owns both B70 cards. It served council v2 and kept its weights
   alive across restarts through systemd's file-descriptor store. Its engine is now `nagaya-mk-gemma4-bmg`
   (milestone 15s): copied in, and cleaned as it moved.
-- mk joined first, through its C ABI (`libmkengine`). Milestone 15 copies its engine in, HIP kernels and all, so
-  that the nagaya owns both engines (Amy, 2026-10-19: "copy code in, we own all of it 100%").
+- mk joined first, through its C ABI (`libmkengine`). Milestone 15 copied its engine in, HIP kernels and all. Its
+  host code is Rust now, so the nagaya owns both engines (Amy, 2026-10-19: "copy code in, we own all of it 100%").
 - One nagaya process per machine (Amy: "we'd do 1 process per host that owns the gpus").
 - Engines we build give the same bits for the same identity and inputs: `always` or `pinned` (`docs/engine-abi.md`
   D3). Engines we borrow declare what they promise instead.

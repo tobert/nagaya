@@ -85,7 +85,7 @@ in a lock: one thread owns it (3.2).
 
 Do them in this order. Each milestone ends with all checks green and one or more commits. Milestones 1 to 14 are
 done, and `docs/history.md` keeps their full text, and the merges where the run recorded them. Milestone 15
-runs now on gfx1151host. Milestone 15s is done except the cutover on b70host.
+is done on gfx1151host. Milestone 15s is done except the cutover on b70host. Milestone 16 is next on gfx1151host.
 
 1. **Workspace.** The Cargo workspace, its crates, `rustfmt.toml` and the dev profile. Done.
 2. **Engine trait.** The ABI core and capabilities as traits, with a fake engine and a broken fake for the gates. Done.
@@ -136,9 +136,20 @@ runs now on gfx1151host. Milestone 15s is done except the cutover on b70host.
       5. The stage schedule (`stage_sched.h`) in Rust.
       6. The host code of `engine.hip`. `rt.cpp` stays C++ as the HIP runtime layer.
 
-    Steps 1 to 5 are merged on main (`11493fe`). Step 6 is on the branch `m15-host`: the load and the PLE rows
-    (`arena.rs`, `ple.rs`), the contexts (`context.rs`), and the pass (`pass.rs`, `host.rs`) are Rust. The C++ that is
-    left is the kernels, `rt.cpp`, and the launches in `engine.hip` and `extern.hip`.
+    Done on 2026-10-23 at 02:28. The load and the PLE rows (`arena.rs`, `ple.rs`), the contexts (`context.rs`), and
+    the pass (`pass.rs`, `host.rs`) are Rust. The C++ that is left is the kernels, `rt.cpp`, and the launches in
+    `engine.hip` and `extern.hip`. `build.rs` calls ROCm's `clang++` directly, as mk's CMake did, because `hipcc` is
+    a wrapper.
+
+    At each step the oracle bench gave the same five logit hashes, and the arena digest stayed the same.
+    `nagaya.service` runs the build of `92b071f`, and `gogi-conformance` gave 274 ok, 0 FAIL and 7 skip. The merges:
+
+    - step 1, the copy and the static link: `dd89a9b`;
+    - step 2, the op tests: `2f65fae`;
+    - step 3, the GGUF reader: `4aadc34`;
+    - step 4, the C ABI: `2c710aa`;
+    - step 5, the stage schedule: `11493fe`;
+    - step 6, the host code: `92b071f`.
     - **Identity:** accept one refill. The canary (8.1) is not built, so the build facts stay in the digest (12.1).
       The new build gets a new digest, and each held context fills again once.
     - **Tonight:** do every step in order. Stop at the first step that does not go green, and report. Deploy the
