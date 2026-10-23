@@ -503,6 +503,24 @@ C++ engine is. This is the simplest seam that removes the GGUF parse from C++:
 Reason: the arena bytes and the logits stay the same, and the C ABI changes in three calls only. Step 6 moves the plan
 and the PLE gather into Rust. Then the two calls back into Rust go away.
 
+**Proposed** (Claude Opus 5.5, 2026-10-22): the Rust schedule orders the stages that the C++ engine builds. Step 5
+of milestone 15 moves mk's stage schedule (`stage_sched.h`) to Rust. The docs do not say where that seam is. This is
+the simplest seam that removes the schedule from C++:
+
+- The tensor table carries two more calls into Rust. `schedule` gives the order and the `sched` word of each stage
+  of a pass. `footprint` gives the accesses of one stage, for the checks of the fused hc_mix.
+- The engine still builds its stages, and it applies the order. The Rust schedule reads the stages in place.
+- Rust mirrors `Stage` and the argument type of each op as `#[repr(C)]` types (`src/stage.rs`).
+- One file holds each size, offset and constant of that mirror (`hip/src/engine/stage_layout.def`). The C++ build
+  checks the C++ types against it. The Rust build makes the Rust constants from it and checks the Rust mirror.
+  Thus a change on one side alone stops a build.
+- `MK_ELIDE` stays an environment variable of the C++ engine. With `MK_ELIDE=0` the call gives each stage in build
+  order with a grid barrier after it.
+- An error of the schedule is a defect of the pass build. The call stops the program with the message.
+
+Reason: the order, the barriers and the bits stay the same, and the C ABI does not change. Step 6 builds the stages
+in Rust. Then the two calls become plain Rust calls, and the table loses them.
+
 **mk's pass scratch is a mandatory term.** The ABI says that `pass` never allocates and that its scratch is a
 mandatory term. mk allocates one scratch pool at its first ask and keeps it for the engine's life
 (`engine.h:104-112`). The term is `{name: "pass_scratch", tier: device(0), bytes: the measured constant (milestone
