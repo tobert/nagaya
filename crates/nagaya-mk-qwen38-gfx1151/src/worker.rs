@@ -338,31 +338,30 @@ impl Worker {
 
     /// Read one whole part into a new buffer of `len` bytes.
     pub fn read(&self, id: u64, part: usize, len: usize) -> Result<Vec<u8>, Call> {
-        self.ask(|reply| Command::Read {
-            id,
-            part: part as u32,
-            len,
-            reply,
-        })
-        .unwrap_or_else(|| Err(Call::Failed("the mk worker stopped".to_owned())))
+        let part = part_id(part)?;
+        self.ask(|reply| Command::Read { id, part, len, reply })
+            .unwrap_or_else(|| Err(Call::Failed("the mk worker stopped".to_owned())))
     }
 
     /// Write one fixed part.
     pub fn write(&self, id: u64, part: usize, bytes: Vec<u8>) -> Call {
-        self.ask(|reply| Command::Write {
-            id,
-            part: part as u32,
-            bytes,
-            reply,
-        })
-        .unwrap_or_else(|| Call::Failed("the mk worker stopped".to_owned()))
+        let part = match part_id(part) {
+            Ok(part) => part,
+            Err(call) => return call,
+        };
+        self.ask(|reply| Command::Write { id, part, bytes, reply })
+            .unwrap_or_else(|| Call::Failed("the mk worker stopped".to_owned()))
     }
 
     /// Write `n` rows of a cells part.
     pub fn cells_write(&self, id: u64, part: usize, n: u32, bytes: Vec<u8>) -> Call {
+        let part = match part_id(part) {
+            Ok(part) => part,
+            Err(call) => return call,
+        };
         self.ask(|reply| Command::CellsWrite {
             id,
-            part: part as u32,
+            part,
             n,
             bytes,
             reply,
@@ -402,6 +401,11 @@ impl Worker {
     pub fn part_bytes(&self, part: u32, n: u32) -> Option<u64> {
         self.ask(|reply| Command::PartBytes { part, n, reply })
     }
+}
+
+/// The 32-bit part id that mk takes, or a refusal. A cast would read part 2^32 + 3 as part 3.
+fn part_id(part: usize) -> Result<u32, Call> {
+    u32::try_from(part).map_err(|_| Call::Refused(format!("mk has no part {part}")))
 }
 
 /// Start the worker thread and open the engine on it.
