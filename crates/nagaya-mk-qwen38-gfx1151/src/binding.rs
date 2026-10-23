@@ -1,12 +1,10 @@
-//! The C ABI of `libmkengine.so`, loaded at run time.
+//! The C ABI of mk's engine, linked statically from `hip/` (spec 12.1, AGENTS.md milestone 15).
 //!
-//! The library is loaded from `MK_ENGINE_LIB` and is never closed. mk's HIP teardown segfaults in the process (spec
-//! 3.3), so the engine stays open until the process exits. The loaded library is leaked for the same reason.
+//! `build.rs` compiles the engine into `libmkengine.a` under the feature `hip`. A build without `hip` links no mk
+//! code, and `linked` returns an error. The engine is never closed: mk's HIP teardown segfaults in the process (spec
+//! 3.3).
 
 use std::ffi::{c_char, c_int, c_void};
-use std::path::Path;
-
-use libloading::Library;
 
 /// `void *mk_engine_open(const char *s1, const char *s2, const char *s3)`.
 pub(crate) type EngineOpen = unsafe extern "C" fn(*const c_char, *const c_char, *const c_char) -> *mut c_void;
@@ -56,8 +54,7 @@ pub(crate) type StateBytes = unsafe extern "C" fn(u32) -> u64;
 /// `void mk_engine_arena(void *e, int32_t *fd, uint64_t *bytes)`.
 pub(crate) type Arena = unsafe extern "C" fn(*mut c_void, *mut i32, *mut u64);
 
-/// `hipError_t hipMemGetInfo(size_t *free, size_t *total)`. HIP is a dependency of the mk library, so the loader
-/// finds it through the mk library handle.
+/// `hipError_t hipMemGetInfo(size_t *free, size_t *total)`, from the HIP runtime that the engine links.
 pub(crate) type MemGetInfo = unsafe extern "C" fn(*mut usize, *mut usize) -> c_int;
 
 /// `uint32_t mk_last_error(void *e, char *why, uint32_t cap)`.
@@ -83,8 +80,6 @@ pub(crate) type PassSegments = unsafe extern "C" fn(
 
 /// The calls that this binding uses.
 pub(crate) struct Binding {
-    #[allow(dead_code)]
-    library: &'static Library,
     pub engine_open: EngineOpen,
     pub ctx_new: CtxNew,
     pub ctx_free: CtxFree,
@@ -107,48 +102,111 @@ pub(crate) struct Binding {
     pub mem_get_info: MemGetInfo,
 }
 
-/// Load the library and bind every call.
-pub(crate) fn load(path: &Path) -> Result<Binding, String> {
-    if !path.is_file() {
-        return Err(format!("the mk engine library {} is missing", path.display()));
-    }
-    let library: &'static Library = Box::leak(Box::new(
-        unsafe { Library::new(path) }.map_err(|error| format!("load {}: {error}", path.display()))?,
-    ));
-    // Each symbol lives as long as the leaked library.
-    unsafe {
-        Ok(Binding {
-            library,
-            engine_open: symbol(library, b"mk_engine_open\0")?,
-            ctx_new: symbol(library, b"mk_ctx_new\0")?,
-            ctx_free: symbol(library, b"mk_ctx_free\0")?,
-            ctx_n: symbol(library, b"mk_ctx_n\0")?,
-            ctx_max: symbol(library, b"mk_ctx_max\0")?,
-            ctx_owns_kv: symbol(library, b"mk_ctx_owns_kv\0")?,
-            ctx_poisoned: symbol(library, b"mk_ctx_poisoned\0")?,
-            state_read: symbol(library, b"mk_ctx_state_read\0")?,
-            state_write: symbol(library, b"mk_ctx_state_write\0")?,
-            cells_write: symbol(library, b"mk_ctx_cells_write\0")?,
-            set_n: symbol(library, b"mk_ctx_set_n\0")?,
-            recover_spin_timeouts: symbol(library, b"mk_engine_recover_spin_timeouts\0")?,
-            round_gdn: symbol(library, b"mk_ctx_round_gdn_bf16\0")?,
-            part_bytes: symbol(library, b"mk_ctx_part_bytes\0")?,
-            state_bytes: symbol(library, b"mk_ctx_state_bytes\0")?,
-            arena: symbol(library, b"mk_engine_arena\0")?,
-            last_error: symbol(library, b"mk_last_error\0")?,
-            segments_problem: symbol(library, b"mk_segments_problem\0")?,
-            pass_segments: symbol(library, b"mk_pass_segments\0")?,
-            mem_get_info: symbol(library, b"hipMemGetInfo\0")?,
-        })
-    }
+/// The facts of the engine build, from `build.rs`. The identity holds them (spec 12.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Build {
+    /// The SHA-256 of `libmkengine.a`, as 64 lowercase hex digits.
+    pub library_sha256: &'static str,
+    /// The first line of `clang++ --version`, the compiler of every unit.
+    pub compiler: &'static str,
+    /// The output of `hipconfig --version`, the HIP version of the build.
+    pub hip: &'static str,
 }
 
-/// Copy one function pointer out of the library.
-unsafe fn symbol<T: Copy>(library: &'static Library, name: &[u8]) -> Result<T, String> {
-    let symbol = unsafe { library.get::<T>(name) }
-        .map_err(|error| format!("bind {}: {error}", String::from_utf8_lossy(&name[..name.len() - 1])))?;
-    Ok(*symbol)
+#[cfg(feature = "hip")]
+mod linked {
+    use std::ffi::{c_char, c_int, c_void};
+
+    // The declarations of mk `hip/src/engine/capi.hip`, and one call of the HIP runtime.
+    unsafe extern "C" {
+        pub(super) fn mk_engine_open(s1: *const c_char, s2: *const c_char, s3: *const c_char) -> *mut c_void;
+        pub(super) fn mk_ctx_new(e: *mut c_void, max_tokens: u32) -> *mut c_void;
+        pub(super) fn mk_ctx_free(e: *mut c_void, c: *mut c_void);
+        pub(super) fn mk_ctx_n(c: *mut c_void) -> u32;
+        pub(super) fn mk_ctx_max(c: *mut c_void) -> u32;
+        pub(super) fn mk_ctx_owns_kv(c: *mut c_void) -> c_int;
+        pub(super) fn mk_ctx_poisoned(c: *mut c_void) -> c_int;
+        pub(super) fn mk_ctx_state_read(e: *mut c_void, c: *mut c_void, part: u32, dst: *mut c_void);
+        pub(super) fn mk_ctx_state_write(e: *mut c_void, c: *mut c_void, part: u32, src: *const c_void);
+        pub(super) fn mk_ctx_cells_write(e: *mut c_void, c: *mut c_void, part: u32, n: u32, src: *const c_void);
+        pub(super) fn mk_ctx_set_n(e: *mut c_void, c: *mut c_void, n: u32);
+        pub(super) fn mk_engine_recover_spin_timeouts(e: *mut c_void, on: c_int);
+        pub(super) fn mk_ctx_round_gdn_bf16(e: *mut c_void, c: *mut c_void);
+        pub(super) fn mk_ctx_part_bytes(part: u32, n: u32) -> u64;
+        pub(super) fn mk_ctx_state_bytes(part: u32) -> u64;
+        pub(super) fn mk_engine_arena(e: *mut c_void, fd: *mut i32, bytes: *mut u64);
+        pub(super) fn mk_last_error(e: *mut c_void, why: *mut c_char, cap: u32) -> u32;
+        pub(super) fn mk_segments_problem(
+            e: *mut c_void,
+            n: u32,
+            ctxs: *const *mut c_void,
+            lens: *const u32,
+            why: *mut c_char,
+            cap: u32,
+        ) -> c_int;
+        #[allow(clippy::too_many_arguments)]
+        pub(super) fn mk_pass_segments(
+            e: *mut c_void,
+            n: u32,
+            ctxs: *const *mut c_void,
+            lens: *const u32,
+            tokens: *const i32,
+            fused: c_int,
+            logits: *mut f32,
+            hidden: *mut f32,
+        ) -> f64;
+        pub(super) fn hipMemGetInfo(free: *mut usize, total: *mut usize) -> c_int;
+    }
+
+    /// The facts that `build.rs` gave.
+    pub(super) const BUILD: super::Build = super::Build {
+        library_sha256: env!("MK_ENGINE_BUILD_SHA256"),
+        compiler: env!("MK_ENGINE_BUILD_COMPILER"),
+        hip: env!("MK_ENGINE_BUILD_HIP"),
+    };
 }
+
+/// Bind every call to the engine that this binary links, and give the facts of its build.
+#[cfg(feature = "hip")]
+pub(crate) fn linked() -> Result<(Binding, Build), String> {
+    use linked::*;
+    Ok((
+        Binding {
+            engine_open: mk_engine_open,
+            ctx_new: mk_ctx_new,
+            ctx_free: mk_ctx_free,
+            ctx_n: mk_ctx_n,
+            ctx_max: mk_ctx_max,
+            ctx_owns_kv: mk_ctx_owns_kv,
+            ctx_poisoned: mk_ctx_poisoned,
+            state_read: mk_ctx_state_read,
+            state_write: mk_ctx_state_write,
+            cells_write: mk_ctx_cells_write,
+            set_n: mk_ctx_set_n,
+            recover_spin_timeouts: mk_engine_recover_spin_timeouts,
+            round_gdn: mk_ctx_round_gdn_bf16,
+            part_bytes: mk_ctx_part_bytes,
+            state_bytes: mk_ctx_state_bytes,
+            arena: mk_engine_arena,
+            last_error: mk_last_error,
+            segments_problem: mk_segments_problem,
+            pass_segments: mk_pass_segments,
+            mem_get_info: hipMemGetInfo,
+        },
+        BUILD,
+    ))
+}
+
+/// A build without the feature `hip` links no engine.
+#[cfg(not(feature = "hip"))]
+pub(crate) fn linked() -> Result<(Binding, Build), String> {
+    Err(NOT_LINKED.to_owned())
+}
+
+/// The error of `linked` in a build without the feature `hip`.
+#[cfg(not(feature = "hip"))]
+pub(crate) const NOT_LINKED: &str =
+    "this build links no mk engine; build nagaya-mk-qwen38-gfx1151 with the feature hip";
 
 /// A binding to stub calls and a stub context, for tests that need a poisoned context. mk poisons a context only
 /// on a spin timeout, and no test can force that.
@@ -156,8 +214,6 @@ unsafe fn symbol<T: Copy>(library: &'static Library, name: &[u8]) -> Result<T, S
 pub(crate) mod stub {
     use std::ffi::{c_int, c_void};
     use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
-
-    use libloading::Library;
 
     use super::{
         Arena, Binding, CtxFree, CtxMax, CtxNew, EngineOpen, LastError, MemGetInfo, PartBytes, PassSegments,
@@ -232,12 +288,10 @@ pub(crate) mod stub {
 
     /// A binding whose calls on a context read a `StubContext`. Every other call aborts the process.
     pub(crate) fn binding() -> Binding {
-        let library: &'static Library = Box::leak(Box::new(Library::from(libloading::os::unix::Library::this())));
         let never: unsafe extern "C" fn() = never;
         // The transmutes below only name the call types. The stub never calls them, and `never` takes no argument.
         unsafe {
             Binding {
-                library,
                 engine_open: std::mem::transmute::<unsafe extern "C" fn(), EngineOpen>(never),
                 ctx_new: std::mem::transmute::<unsafe extern "C" fn(), CtxNew>(never),
                 ctx_free: std::mem::transmute::<unsafe extern "C" fn(), CtxFree>(never),
@@ -265,13 +319,30 @@ pub(crate) mod stub {
 
 #[cfg(test)]
 mod tests {
-    use super::load;
-
+    #[cfg(not(feature = "hip"))]
     #[test]
-    fn a_missing_library_is_an_error() {
-        let result = load(std::path::Path::new("/nonexistent/libmkengine.so"));
-        assert!(result.is_err(), "a missing library loaded");
-        let error = result.err().unwrap_or_default();
-        assert!(error.contains("is missing"), "{error}");
+    fn a_build_without_hip_links_no_engine() {
+        let error = super::linked().err().expect("a build without hip linked an engine");
+        assert_eq!(error, super::NOT_LINKED);
+        assert!(error.contains("feature hip"), "{error}");
+    }
+
+    #[cfg(feature = "hip")]
+    #[test]
+    fn a_hip_build_gives_the_facts_of_its_build() {
+        let (_binding, build) = super::linked().expect("a hip build links the engine");
+        assert_eq!(build.library_sha256.len(), 64, "{}", build.library_sha256);
+        assert!(
+            build
+                .library_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+            "{}",
+            build.library_sha256
+        );
+        assert!(build.compiler.contains("clang version"), "{}", build.compiler);
+        assert!(!build.hip.is_empty());
+        // The part sizes are pure host code, so this call needs no device.
+        assert!(unsafe { (_binding.state_bytes)(0) } > 0);
     }
 }

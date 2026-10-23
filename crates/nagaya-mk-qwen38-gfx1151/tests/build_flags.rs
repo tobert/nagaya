@@ -1,0 +1,72 @@
+//! The compiles of `build.rs` are mk's compiles, flag for flag.
+//!
+//! The fixture holds the nine entries of mk's `build/compile_commands.json` for the units of `libmkengine.so`, from
+//! mk's CMake build at mk commit `555a2a3`. The float flags are part of the model's definition, and the conformance
+//! gates compare bits. Thus a flag that differs fails here, before a GPU run.
+
+#[allow(dead_code)]
+#[path = "../build.rs"]
+mod build;
+
+use std::path::Path;
+
+/// The source root of mk's build, as the fixture names it.
+const MK_SRC: &str = "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src";
+
+#[test]
+fn each_compile_is_the_compile_of_mk_cmake_build() {
+    let text = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/build/compile_commands.json"),
+    )
+    .expect("read the fixture");
+    let entries: Vec<serde_json::Value> = serde_json::from_str(&text).expect("the fixture is a JSON list");
+    let src = Path::new("/nagaya/hip/src");
+    let out = Path::new("/out");
+    let units = build::units(src, out);
+    assert_eq!(units.len(), entries.len(), "one compile for each unit of mk's library");
+    for (unit, entry) in units.iter().zip(&entries) {
+        let command = entry["command"].as_str().expect("an entry has a command");
+        let mut words = command.split_whitespace();
+        assert_eq!(
+            Path::new(words.next().expect("a command names its compiler")),
+            build::compiler()
+        );
+        let mut expected = Vec::new();
+        let mut after_o = false;
+        for word in words {
+            // CMake's module map of a C++ unit is an empty file. It gives no flag.
+            if word.starts_with('@') && word.ends_with(".modmap") {
+                continue;
+            }
+            // The compiler writes the object to stdout, so no path of the build directory is in the command.
+            if after_o {
+                expected.push("-".to_owned());
+                after_o = false;
+                continue;
+            }
+            after_o = word == "-o";
+            expected.push(word.replace(MK_SRC, &src.display().to_string()));
+        }
+        assert_eq!(unit.arguments, expected, "the compile of {}", unit.source.display());
+        assert_eq!(
+            unit.source.display().to_string(),
+            entry["file"]
+                .as_str()
+                .expect("an entry names its file")
+                .replace(MK_SRC, &src.display().to_string())
+        );
+    }
+}
+
+#[test]
+fn every_unit_keeps_the_float_flags() {
+    for unit in build::units(Path::new("/s"), Path::new("/o")) {
+        for flag in ["-ffp-contract=off", "-fno-fast-math"] {
+            assert!(
+                unit.arguments.iter().any(|argument| argument == flag),
+                "{} has no {flag}",
+                unit.source.display()
+            );
+        }
+    }
+}

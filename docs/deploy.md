@@ -37,7 +37,8 @@ wrong.
   `mk-qwen38-gfx1151`. A build without it exits 3 with the message "this build has no engine".
 - Build the binary from a commit at or after `9a79c3a`. Before that merge, mk did not declare `slots` and
   `coverage`. The old binary logs "cannot serve engine `mk`" and exits 3 (spec 11.7).
-- mk's library must exist and be newer than mk's last commit (AGENTS.md "mk on gfx1151host"). Amy builds it.
+- The binary holds mk's engine. The build compiles it from `crates/nagaya-mk-qwen38-gfx1151/hip/` and needs ROCm at
+  `/opt/rocm`. No mk library is needed (AGENTS.md milestone 15, Amy 2026-10-22).
 - The profile must hold the real size of mk's weight arena. The file in `deploy/gfx1151host/` holds the measured size.
   A new mk or new weights can change it. Read "The weights size" below.
 - The context pool is 12 contexts of 4,096 tokens and 4 of 32,768. The binding fixes it, and the profile names no
@@ -55,8 +56,8 @@ ls -l target/release/nagaya
 ```
 
 The unit runs this file. Build it again before each restart, or the unit runs the old code. The feature `hip` adds
-the mk engine. Without it, the binary has no engine and exits 3. The build does not need mk, and it does not open the
-GPU: the process loads mk's library at run time from `MK_ENGINE_LIB`.
+the mk engine. Without it, the binary has no engine and exits 3. The build compiles mk's HIP code with ROCm's
+`clang++` and links it statically, so the build takes about one minute more. It does not open the GPU.
 
 The release profile needs no setting beyond the default (`opt-level = 3`). The `[profile.dev]` table is not part of
 the release build.
@@ -187,8 +188,9 @@ Nothing in the store directory needs a change for the rollback. The nagaya leave
   SMU (spec 3.1).
 - A new profile from a client makes the process exit with code 4 and restart (spec 3.3, 10.4). systemd counts that
   start. The unit allows 3 starts in 600 s, so a fourth profile swap in 600 s fails and the unit stays down.
-- Exit code 3 is a refusal to start: a bad config, a profile that does not fit, a pin that differs. The unit does
-  not restart. Read the log, fix the cause, and run `systemctl --user reset-failed nagaya.service`. Then start it.
+- Exit code 3 is a refusal to start: a bad config, a profile that does not fit, a pinned identity that differs.
+  The unit does not restart. Read the log, fix the cause, and run `systemctl --user reset-failed nagaya.service`.
+  Then start it.
 
 ## The kaijutsu gate
 
@@ -239,15 +241,13 @@ gave it on 2026-10-20. After a new mk or new weights, a start can exit 3 with an
 3. Write N in both profiles: `deploy/gfx1151host/profile.toml` and `~/.local/share/nagaya/store/profile.toml`.
 4. Run `systemctl --user reset-failed nagaya.service`, then start the unit again.
 
-A rebuild of mk can change the arena size, and the same exit 3 follows. Do the same steps then.
+A change to the HIP code of the engine can change the arena size, and the same exit 3 follows. Do the same steps
+then.
 
 ## Settings left unset
 
-The unit leaves two mk settings unset. Set one with a drop-in file: `systemctl --user edit nagaya.service`.
+The unit leaves one mk setting unset. Set it with a drop-in file: `systemctl --user edit nagaya.service`.
 
-- `MK_ENGINE_LIB_SHA256` is the pin of the library. When it is set, the binding refuses a library with another
-  SHA-256, and the process exits 3. Get the value with `sha256sum` on `libmkengine.so`. The pin makes a rebuild of
-  mk fail the start, so set it only when Amy asks.
 - `MK_FAST_QMM=0` selects the exact path. Unset means the fast path, an approximation. The identity carries the
   setting (`docs/engine-abi.md`). A change of it changes the identity.
 
@@ -269,7 +269,8 @@ These rules fill gaps in the spec. Each one is the simplest choice that works.
 - The pool is 112 GiB, the store's host budget is 16 GiB and its NVMe budget is 50 GiB (see "The memory budgets").
 - `interval_copies` is 0 (spec 6.13), so the scheduler makes no interval copy. A larger value turns the copies on.
   A change of it restarts the process (spec 2.3).
-- The library pin and `MK_FAST_QMM` stay unset.
+- `MK_FAST_QMM` stays unset. The library pin was unset too. Milestone 15 removed it, because the binary links its
+  engine (Amy, 2026-10-22).
 - The profile is copied into the store directory once. It is not a link.
 - The release binary is built with `--features hip`. The plain build has no engine and exits 3.
 - `weights_bytes` in the engine config is the size of mk's weight arena. The file holds the measured size (see "The

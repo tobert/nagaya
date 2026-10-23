@@ -1,8 +1,7 @@
 //! The mk engine as a factory kind (spec 2.4; `docs/engine-abi.md`, "v0 mk binding choices").
 //!
-//! This module exists in a build with the feature `hip`. The factory reads `MK_ENGINE_LIB`, `MK_SHARDS` and the
-//! optional pin `MK_ENGINE_LIB_SHA256` from the environment, as the unit sets them. It loads no library and opens no
-//! device until `open`.
+//! This module exists in a build with the feature `hip`, which links mk's engine statically. The factory reads
+//! `MK_SHARDS` from the environment, as the unit sets it. It opens no device until `open`.
 
 use nagaya_abi::{Engine, Limits};
 use nagaya_mk_qwen38_gfx1151::{MkError, MkPaths};
@@ -88,14 +87,6 @@ fn check_install() -> Result<(), PlanError> {
     let paths = MkPaths::from_env().map_err(|error| PlanError {
         message: error.message().to_owned(),
     })?;
-    if !paths.library.is_file() {
-        return Err(PlanError {
-            message: format!(
-                "MK_ENGINE_LIB names `{}`, which is not a file; build mk and set the path of libmkengine.so",
-                paths.library.display()
-            ),
-        });
-    }
     for shard in &paths.shards {
         if !shard.is_file() {
             return Err(PlanError {
@@ -109,15 +100,10 @@ fn check_install() -> Result<(), PlanError> {
     Ok(())
 }
 
-/// Map an error of the mk binding to an open error. A library that the pin refuses refuses the start (spec 10.4).
+/// Map an error of the mk binding to an open error. Each one is a crash (spec 10.4): the binding has no refusal.
 pub fn open_error(error: MkError) -> OpenError {
-    let kind = if error.is_pin() {
-        OpenErrorKind::Pin
-    } else {
-        OpenErrorKind::Other
-    };
     OpenError {
-        kind,
+        kind: OpenErrorKind::Other,
         message: error.message().to_owned(),
     }
 }

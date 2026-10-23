@@ -1700,16 +1700,19 @@ needs no new dependency. A later step can use a signal stream from `tokio` inste
 |---|---|---|
 | 0 | a clean stop | no restart |
 | 1 | a crash | restart |
-| 3 | a refusal to start: a bad bootstrap config (2.1), a probe error (2.1), a profile that does not fit, a canary mismatch at start, a mismatch of a pinned identity (12.1), of the library pin, of a part size or of the weight arena size, a store that does not open, a gossip bind or an HTTP bind that fails, or a council service that does not attach (11.7) | `RestartPreventExitStatus=3` |
+| 3 | a refusal to start: a bad bootstrap config (2.1), a probe error (2.1), a profile that does not fit, a canary mismatch at start, a mismatch of a pinned identity (12.1), of a part size or of the weight arena size, a store that does not open, a gossip bind or an HTTP bind that fails, or a council service that does not attach (11.7) | `RestartPreventExitStatus=3` |
 | 4 | a planned restart: a new profile (2.3, 3.3) | `RestartForceExitStatus=4` |
 
 The restart policy follows mk's unit: `Restart=on-failure`, `RestartSec=30`, and at most 3 starts in 600 s.
 systemd counts each start against that limit, also a start after code 4. Thus a fourth profile swap in 600 s fails.
 
-An engine that does not open at start stops the process. A mismatch of a pinned identity (12.1), the library pin,
-a part size or the weight arena size is a refusal to start: exit 3. Any other failure to open is a crash. The
-process exits 1, and systemd restarts it within its start limit. A message on stderr names the engine and the
-reason. Decided 2026-10-20 (reading).
+An engine that does not open at start stops the process. A mismatch of a pinned identity (12.1), a part size or the
+weight arena size is a refusal to start: exit 3. Any other failure to open is a crash. The process exits 1, and
+systemd restarts it within its start limit. A message on stderr names the engine and the reason. Decided 2026-10-20
+(reading).
+
+The library pin was a refusal to start too. It is gone, because the binary links mk's engine. Amy decided this on
+2026-10-22 (AGENTS.md milestone 15).
 
 **One exit path.** Decided by senpai 2026-10-20 night (vetoable).
 
@@ -2543,7 +2546,9 @@ different most of the time."
   engine library, and the compiler version. It also holds the driver or runtime version, and the PCI ids of the card.
 - The identity digest does not cover `build`. It covers the other fields of 12.1, also the canary hash.
 - `numbers` keeps the values that change bits by choice, such as mk's `fast_qmm` and `tiles`. A file path is not a
-  number. mk's `engine_lib` path moves to `build` (`crates/nagaya-mk-qwen38-gfx1151/src/spec.rs:514`).
+  number. mk's `engine_lib` path is gone, because the binary links mk's engine (Amy, 2026-10-22, AGENTS.md milestone
+  15). Until `build` exists, `numbers` holds mk's build facts: `engine_build_sha256`, `engine_compiler` and
+  `engine_hip` (`crates/nagaya-mk-qwen38-gfx1151/src/spec.rs:515-517`).
 - Thus a new build with the same canary bits has the same digest. Its held entries stay usable, and the gate
   thresholds still fit. A new build with other canary bits has a new digest, as now.
 - Each entry records the `build` that made it. A context with rows of two builds is then visible.
@@ -2782,7 +2787,7 @@ gives the section and the rule in a few words. The lists before the last one are
 - The gossip port is 8091, next to the HTTP port 8090.
 - The pool is 112 GiB, the store's host budget is 16 GiB, and its NVMe budget is 50 GiB.
 - `interval_copies` is 0, so the scheduler makes no interval copy.
-- The library pin and `MK_FAST_QMM` stay unset.
+- `MK_FAST_QMM` stays unset. Milestone 15 removed the library pin.
 - The profile is copied into the store directory once, and it is not a link.
 - The release binary is built with `--features hip`.
 - `weights_bytes` is the size of mk's weight arena, and a wrong size exits 3.

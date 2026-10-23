@@ -251,8 +251,8 @@ fn a_plain_open_failure_is_a_crash() {
 }
 
 #[test]
-fn an_identity_pin_or_part_size_mismatch_exits_three() {
-    for kind in [OpenErrorKind::Identity, OpenErrorKind::Pin, OpenErrorKind::PartSize] {
+fn an_identity_or_part_size_mismatch_exits_three() {
+    for kind in [OpenErrorKind::Identity, OpenErrorKind::PartSize] {
         let directory = tempfile::tempdir().unwrap();
         let mut registry = Registry::new();
         registry.register(

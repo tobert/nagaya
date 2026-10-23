@@ -1,6 +1,6 @@
 //! A stop of the process with the mk engine on gfx1151 parks each state that holds tokens (spec 10.3).
 //!
-//! The test opens mk, so it needs the GPU, `MK_ENGINE_LIB` and `MK_SHARDS`. It loads the weights once (about 25 s).
+//! The test opens mk, so it needs the GPU and `MK_SHARDS`. It loads the weights once (about 25 s).
 //! The process holds the only engine handle. The test does not close mk (spec 3.3).
 #![cfg(feature = "hip")]
 
