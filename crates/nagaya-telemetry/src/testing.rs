@@ -4,7 +4,7 @@
 //! the metric points that the call site recorded. Other threads, and other tests, record nowhere.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use opentelemetry_sdk::metrics::InMemoryMetricExporter;
 use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
@@ -30,6 +30,35 @@ pub struct Point {
     pub count: u64,
 }
 
+/// The dispatches of all captures in this process. A capture's dispatch must outlive its guard.
+///
+/// `tracing` rebuilds the callsite interest while it holds a lock, and it holds a temporary copy of each dispatch.
+/// When the guard of a capture drops first, the rebuild drops the last copy. The drop of the tracer provider logs,
+/// and the log asks for the same lock, so the thread waits for itself. A held copy stops this.
+static RETAINED: Mutex<Vec<tracing::Dispatch>> = Mutex::new(Vec::new());
+
+/// Two dispatches that live as long as the process. A capture or a log reader makes the third at the least.
+///
+/// `tracing` caches, for each callsite, whether a subscriber wants it. When one dispatch is alive, a thread that
+/// registers a callsite asks only its own dispatch. A thread with no dispatch then caches "never", even while
+/// another thread sets a dispatch. The event of that other thread is lost. With three dispatches alive, a thread
+/// that registers a callsite asks all of them under a lock, so no event is lost.
+static STEADY: OnceLock<[tracing::Dispatch; 2]> = OnceLock::new();
+
+fn steady() {
+    STEADY.get_or_init(|| {
+        [
+            tracing::Dispatch::new(tracing_subscriber::registry()),
+            tracing::Dispatch::new(tracing_subscriber::registry()),
+        ]
+    });
+}
+
+/// How many dispatches the captures of this process keep (see `RETAINED`).
+pub fn retained_dispatches() -> usize {
+    RETAINED.lock().unwrap().len()
+}
+
 /// The telemetry that one test reads.
 pub struct Capture {
     telemetry: Telemetry,
@@ -42,12 +71,15 @@ pub struct Capture {
 impl Capture {
     /// Start a capture on this thread, with the production sampler and a resource of `resource`.
     pub fn start(resource: Vec<(String, ResourceValue)>) -> Self {
+        steady();
         let config = Config::from_lookup(|_| None, resource);
         let spans = InMemorySpanExporter::default();
         let metrics = InMemoryMetricExporter::default();
         let telemetry = Telemetry::with_exporters(&config, spans.clone(), metrics.clone(), false);
         let subscriber = tracing_subscriber::registry().with(telemetry.trace_layer());
-        let dispatch = tracing::subscriber::set_default(subscriber);
+        let dispatch = tracing::Dispatch::new(subscriber);
+        RETAINED.lock().unwrap().push(dispatch.clone());
+        let dispatch = tracing::dispatcher::set_default(&dispatch);
         let scope = scope(telemetry.instruments());
         Self {
             telemetry,
@@ -191,6 +223,7 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Sink {
 
 /// Run `run` with the stderr format of the nagaya on this thread, and give the lines that it wrote.
 pub fn log_lines(run: impl FnOnce()) -> Vec<String> {
+    steady();
     let sink = Sink::default();
     let layer = tracing_subscriber::fmt::layer()
         .with_writer(sink.clone())
