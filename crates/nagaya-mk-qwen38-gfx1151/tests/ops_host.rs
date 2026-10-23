@@ -127,6 +127,35 @@ fn the_groups_on_disk_are_the_groups_that_the_tests_load() {
     );
 }
 
+/// A site that traps without recording would be a silent trap. `MK_TRAP` is the only way to trap (`hip/src/rt/trap.h`).
+#[test]
+fn no_bare_builtin_trap_outside_the_trap_header() {
+    fn walk(dir: &std::path::Path, found: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, found);
+                continue;
+            }
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if ["h", "hip", "cpp"].contains(&ext) && path.file_name().is_some_and(|n| n != "trap.h") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                for (number, line) in text.lines().enumerate() {
+                    if line.contains("__builtin_trap") {
+                        found.push(format!("{}:{}", path.display(), number + 1));
+                    }
+                }
+            }
+        }
+    }
+    let mut found = Vec::new();
+    walk(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("hip/src"),
+        &mut found,
+    );
+    assert!(found.is_empty(), "a bare __builtin_trap: {found:?}");
+}
+
 /// Each group but `gen` names the files of mk that it ports, as paths in mk's `tests/ops`.
 #[test]
 fn each_group_names_the_mk_files_it_reads() {

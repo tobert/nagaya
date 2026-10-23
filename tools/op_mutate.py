@@ -7,7 +7,8 @@ builds the op libraries from the copy with the flags of `ops_build.rs`, and runs
 
     python3 tools/op_mutate.py LABEL FILE OLD NEW [--tests FILTER] [--work DIR]
 
-FILE is relative to `hip/src` (for example `ops/qmm.h`). OLD must occur once in FILE. The run takes the GPU lock when the
+FILE is relative to `hip/src` (for example `ops/qmm.h`). OLD must occur once in FILE, or with `--all` at least once, and
+then every occurrence changes. The run takes the GPU lock when the
 variable `GPU_LOCK` names a lock file, and it refuses to run when `megakernel.service` or `nagaya.service` is active.
 Prints the failed tests. It exits with 0 when at least one test failed, and with 1 when no test failed.
 """
@@ -68,6 +69,7 @@ def main():
     p.add_argument("old")
     p.add_argument("new")
     p.add_argument("--tests", default="")
+    p.add_argument("--all", action="store_true", help="replace every occurrence of OLD")
     p.add_argument("--work", type=Path, default=Path(os.environ.get("TMPDIR", "/tmp")) / "op_mutate")
     a = p.parse_args()
     for unit in ("megakernel.service", "nagaya.service"):
@@ -80,8 +82,8 @@ def main():
     shutil.copytree(CRATE / "hip/src", work / "src")
     target = work / "src" / a.file
     text = target.read_text()
-    if text.count(a.old) != 1:
-        sys.exit(f"the text occurs {text.count(a.old)} times in {a.file}, not once")
+    if text.count(a.old) != 1 and not (a.all and text.count(a.old) > 1):
+        sys.exit(f"the text occurs {text.count(a.old)} times in {a.file}")
     target.write_text(text.replace(a.old, a.new))
     build(work / "src", work / "lib")
     cmd = ["cargo", "test", "-p", "nagaya-mk-qwen38-gfx1151", "--test", "ops", "--features", "hip", "--", "--test-threads=1"]
