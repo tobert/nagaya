@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // The megakernel: one cooperative launch walks the pass's stage list, with a grid barrier
-// between stages (except inside the schedule's barrier-free segments, stage_sched.h). It must be the only kernel in this translation unit (see engine.hip).
+// between stages (except inside the schedule's barrier-free segments, src/schedule.rs). It must be the only kernel in this translation unit (see engine.hip).
 #include "device.h"
 #include "stage.h"
 
@@ -28,7 +28,7 @@ __global__ void __launch_bounds__(kMkBlock) __attribute__((amdgpu_waves_per_eu(8
   uint32_t tail_role = 0;
   for (uint32_t i = 0; i < n; ++i) {
     const uint64_t t_begin = events ? uint64_t(wall_clock64()) : 0;
-    // The schedule (stage_sched.h): a rotation deals this stage's items after the ones before it in its segment.
+    // The schedule (src/schedule.rs): a rotation deals this stage's items after the ones before it in its segment.
     const uint32_t sched = stages[i].sched;
     const uint32_t rot = sched & kSchedRotMask;
     if (tail_role != 2)  // a waiter has nothing to run in the tail stage

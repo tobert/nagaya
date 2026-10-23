@@ -24,7 +24,7 @@ namespace mk {
 constexpr uint32_t kSchedNoBarrier = 1u << 31;
 // kSchedTail (docs/narrow.md N3): this stage runs as the tail of the grid barrier before it: the last workgroup to arrive
 // there runs it alone, as op(wg 0, nwg 1), while the others wait, and its release is the barrier after the stage
-// (mega.hip, device.h grid_arrive_hold / grid_tail_release). Set only by schedule_stages (enable_tail), on a stage that is
+// (mega.hip, device.h grid_arrive_hold / grid_tail_release). Set only by the schedule (src/schedule.rs, enable_tail), on a stage that is
 // alone in its level and last-of-level. k_stage ignores it. The rotation is the bits below.
 constexpr uint32_t kSchedTail = 1u << 30;
 constexpr uint32_t kSchedRotMask = kSchedTail - 1;
@@ -72,7 +72,7 @@ struct Stage {
   uint32_t op;
   uint32_t layer;  // for the event ring / debugging
   uint32_t sub;    // an op's own sub-stage index (multi-stage ops)
-  // The fused pass's schedule (stage_sched.h; 0 = the plain schedule): kSchedNoBarrier, and in the low bits the rotation,
+  // The fused pass's schedule (src/schedule.rs; 0 = the plain schedule): kSchedNoBarrier, and in the low bits the rotation,
   // the items dealt to the stages before this one in its barrier-free segment. k_mega runs the stage as workgroup
   // (blockIdx + rotation) % grid, so a segment's small stages start on different workgroups. Every op's bits depend
   // only on its work items, never on which workgroup runs them (src/ops/common.h), so the rotation is schedule only.
