@@ -9,62 +9,56 @@
 
 using namespace mk;
 
-// The layout of a segment, which src/binding.rs mirrors as MkSegment, and the numbers that size the binding's
-// buffers (src/spec.rs). The Rust test src/layout.rs reads these lines. Keep each assert on one line.
-static_assert(sizeof(Segment) == 24, "Segment");
-static_assert(offsetof(Segment, c) == 0, "Segment.c, MkSegment.context in Rust");
-static_assert(offsetof(Segment, tokens) == 8, "Segment.tokens");
-static_assert(offsetof(Segment, t) == 16, "Segment.t");
+// The layouts that src/context.rs and src/binding.rs mirror, and the model numbers that size the host's buffers
+// (src/spec.rs). The Rust test src/layout.rs reads these lines. Keep each assert on one line.
 static_assert(sizeof(bool) == 1, "bool, which Rust's bool is");
-static_assert(kMaxSegments == 16, "spec.rs MAX_SEGMENTS");
+static_assert(sizeof(Context) == 72, "Context, MkContext in Rust");
+static_assert(offsetof(Context, n) == 0, "Context.n");
+static_assert(offsetof(Context, max) == 4, "Context.max");
+static_assert(offsetof(Context, gdn_state) == 8, "Context.gdn_state");
+static_assert(offsetof(Context, gdn_conv) == 16, "Context.gdn_conv");
+static_assert(offsetof(Context, ple_conv) == 24, "Context.ple_conv");
+static_assert(offsetof(Context, kv) == 32, "Context.kv");
+static_assert(offsetof(Context, idx_keys) == 40, "Context.idx_keys");
+static_assert(offsetof(Context, idx_pooled) == 48, "Context.idx_pooled");
+static_assert(offsetof(Context, pooled_n) == 56, "Context.pooled_n");
+static_assert(offsetof(Context, ple_hist) == 60, "Context.ple_hist");
+static_assert(offsetof(Context, poisoned) == 68, "Context.poisoned");
 static_assert(model::kVocab == 248320, "spec.rs VOCAB");
 static_assert(model::kMaxPassTokens == 256, "spec.rs MAX_PASS_TOKENS");
 static_assert(model::kMaxContext == 32768, "spec.rs MAX_CONTEXT");
 
+static_assert(sizeof(LaunchResult) == 16, "LaunchResult, MkLaunch in Rust");
+static_assert(offsetof(LaunchResult, status) == 0, "LaunchResult.status");
+static_assert(offsetof(LaunchResult, site) == 4, "LaunchResult.site");
+static_assert(offsetof(LaunchResult, wg) == 8, "LaunchResult.wg");
+static_assert(offsetof(LaunchResult, watchdog_stopped) == 12, "LaunchResult.watchdog_stopped");
+
 extern "C" {
-// Gives len bytes of text, with no NUL, to the binding's buffer out.
-typedef void (*mk_text_sink)(void *out, const char *text, uint64_t len);
-
-// The tensor table comes from the Rust reader (tensor_table.h). Its tensor data must stay mapped for the engine's life.
-void *mk_engine_open(const mk_tensor_table *t) { return new Engine(t); }
-uint64_t mk_engine_arena_bytes(void *e) { return static_cast<Engine *>(e)->arena_bytes(); }
-void mk_engine_recover_spin_timeouts(void *e, bool on) { static_cast<Engine *>(e)->set_recover_spin_timeouts(on); }
-
-void *mk_ctx_new(void *e, uint32_t max_tokens) { return static_cast<Engine *>(e)->new_context(max_tokens); }
-void mk_ctx_free(void *e, void *c) { static_cast<Engine *>(e)->free_context(static_cast<Context *>(c)); }
-uint32_t mk_ctx_n(void *c) { return static_cast<Context *>(c)->n; }
-uint32_t mk_ctx_max(void *c) { return static_cast<Context *>(c)->max; }
-bool mk_ctx_owns_kv(void *c) { return static_cast<Context *>(c)->owns_kv; }
-bool mk_ctx_poisoned(void *c) { return static_cast<Context *>(c)->poisoned; }
-
-// The parts of a context (engine.h Engine::state_read). Each Engine method stops the program on input it refuses.
-uint64_t mk_ctx_state_bytes(uint32_t part) { return Engine::state_bytes(part); }
-uint64_t mk_ctx_part_bytes(uint32_t part, uint32_t n) { return Engine::state_bytes(part, n); }
-void mk_ctx_state_read(void *e, void *c, uint32_t part, void *dst) {
-  static_cast<Engine *>(e)->state_read(static_cast<Context *>(c), part, dst);
+// The engine's runtime, with the watchdog's deadline in seconds.
+void *mk_engine_open(double watchdog_deadline_s) { return new Engine(watchdog_deadline_s); }
+// Re-lays out a rows x k matrix at src into read-once tiles at dst (tile: 1 IQ3_S, 2 Q8_0, 3 Q6_K, 4 IQ4_NL; tiles.h),
+// and waits for the device. src/arena.rs names the tile ids.
+void mk_relayout(uint32_t tile, const uint8_t *src, uint8_t *dst, uint32_t rows, uint32_t k) {
+  switch (tile) {
+    case 1: relayout_iq3s_tiles(src, dst, rows, k); break;
+    case 2: relayout_q8_tiles(src, dst, rows, k); break;
+    case 3: relayout_q6_tiles(src, dst, rows, k); break;
+    case 4: relayout_iq4_tiles(src, dst, rows, k); break;
+    default: MK_DIE("mk_relayout: tile %u: want 1 to 4", tile);
+  }
+  MK_CHECK(hipDeviceSynchronize());
 }
-void mk_ctx_state_write(void *e, void *c, uint32_t part, const void *src) {
-  static_cast<Engine *>(e)->state_write(static_cast<Context *>(c), part, src);
-}
-void mk_ctx_cells_write(void *e, void *c, uint32_t part, uint32_t n, const void *src) {
-  static_cast<Engine *>(e)->state_write_cells(static_cast<Context *>(c), part, n, src);
-}
-void mk_ctx_set_n(void *e, void *c, uint32_t n) { static_cast<Engine *>(e)->restore_n(static_cast<Context *>(c), n); }
 void mk_ctx_round_gdn_bf16(void *e, void *c) { static_cast<Engine *>(e)->round_gdn_bf16(static_cast<Context *>(c)); }
-
-// The last pass's error, "" after a clean pass.
-void mk_last_error(void *e, mk_text_sink put, void *out) {
-  const std::string &w = static_cast<Engine *>(e)->last_error();
-  put(out, w.data(), w.size());
+// The launches of the stages that the Rust host built (engine.h Engine::launch_fused, Engine::launch_each).
+void mk_launch_fused(void *e, const Stage *ds, uint32_t n, int grid, uint32_t skip, LaunchResult *out) {
+  *out = static_cast<Engine *>(e)->launch_fused(ds, n, grid, skip);
 }
-// The first problem of n segments as one pass, or "" (engine.h Engine::segments_problem).
-void mk_segments_problem(void *e, const Segment *s, uint32_t n, mk_text_sink put, void *out) {
-  const std::string w = static_cast<Engine *>(e)->segments_problem(s, n);
-  put(out, w.data(), w.size());
+void mk_launch_each(void *e, const Stage *ds, uint32_t n, LaunchResult *out) {
+  *out = static_cast<Engine *>(e)->launch_each(ds, n);
 }
-// A pass of n segments (engine.h Engine::pass_segments), and its wall time in ms. The logits go straight into logits.
-double mk_pass_segments(void *e, const Segment *s, uint32_t n, bool want_logits, bool fused, float *logits,
-                        float *hidden) {
-  return static_cast<Engine *>(e)->pass_segments(s, n, want_logits, fused, logits, hidden).ms;
-}
+// The most co-resident workgroups of the megakernel (rt.h max_coop_grid).
+int mk_max_coop_grid() { return max_coop_grid(mega_kernel(), kMkBlock, 0); }
+// The name of a control block status (rt.h status_name).
+const char *mk_status_name(uint32_t status) { return status_name(status); }
 }

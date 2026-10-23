@@ -257,6 +257,43 @@ fn a_cell_part_round_trips_and_sets_n() {
 }
 
 #[test]
+fn a_part_above_32_bits_is_refused_and_is_not_read_as_its_low_bits() {
+    // mk names a part with 32 bits. A cast would read part 2^32 + 5 as part 5 and part 2^32 + 3 as part 3.
+    let mut engine = open().expect("open mk");
+    let state = State::Slot(0);
+    let high = 1usize << 32;
+    let mut history = vec![0u8; 8];
+    assert_eq!(
+        engine.parts().unwrap().part_read(state, high + 5, &mut history),
+        Err(PartError::Refused)
+    );
+    assert!(engine.last_error().unwrap_or_default().contains("no part"));
+    assert_eq!(
+        engine
+            .parts()
+            .unwrap()
+            .part_write(state, high + 5, &[7, 0, 0, 0, 9, 0, 0, 0]),
+        WriteResult::Refused
+    );
+    assert!(engine.last_error().unwrap_or_default().contains("no part"));
+    let kv = finite_bytes(2 * 49_152, 1.0);
+    assert_eq!(
+        engine.parts().unwrap().cells_write(state, high + 3, 0, 2, &kv),
+        WriteResult::Refused
+    );
+    assert!(engine.last_error().unwrap_or_default().contains("no part"));
+    // Nothing changed: the history is the empty context's, and set_n finds no written cells.
+    engine.parts().unwrap().part_read(state, 5, &mut history).unwrap();
+    assert_ne!(history, [7, 0, 0, 0, 9, 0, 0, 0]);
+    assert_eq!(
+        engine.parts().unwrap().part_write(state, 5, &[7, 0, 0, 0, 9, 0, 0, 0]),
+        WriteResult::Ok
+    );
+    assert_eq!(engine.parts().unwrap().set_n(state, 2), WriteResult::Refused);
+    assert_eq!(engine.n(state).unwrap(), 0);
+}
+
+#[test]
 fn a_ple_history_must_hold_token_ids() {
     let mut engine = open().expect("open mk");
     let state = State::Slot(0);
@@ -702,6 +739,34 @@ fn an_interval_copy_restores_and_replays_to_the_bits_of_the_live_context() {
     assert!(
         bits(&plain_logits) == bits(&live_logits),
         "the copy changed the logits of the live context"
+    );
+}
+
+#[test]
+fn a_restore_past_the_dense_reach_pools_the_keys_and_replays_to_the_bits() {
+    // A pass whose context reaches past 2051 visible cells scores the pooled block keys (mk's indexer). The pooled
+    // keys are derived state: a restore pools them from the written index keys (host.rs pool_context). A restore at
+    // 2304 tokens, then a replay, must give the bits of the live context, so the replay reads the pooled keys.
+    const AT: usize = 9 * 256;
+    let ids = synthetic_ids(AT + 120);
+    let mut engine = open().expect("open mk");
+    let live = State::Slot(0);
+    feed(&mut engine, 0, &ids[..AT], 256);
+    let rows = [(3usize, 0u64, AT as u64), (4, 0, AT as u64)];
+    let copy = nagaya_store::snapshot_from_engine(&mut engine, live, &rows).expect("the interval copy");
+    let live_logits = feed_sizes(&mut engine, 0, &ids[AT..], &[120]);
+    let live_parts = stored_parts(&mut engine, 0);
+
+    assert_eq!(engine.slots().unwrap().slot_clear(LARGE), WriteResult::Ok);
+    let restored =
+        nagaya_store::write_snapshots(&mut engine, State::Slot(LARGE), std::slice::from_ref(&copy)).expect("restore");
+    assert_eq!(restored, nagaya_store::Restored::Done);
+    let replay_logits = feed_sizes(&mut engine, LARGE, &ids[AT..], &[120]);
+    let replay_parts = stored_parts(&mut engine, LARGE);
+    assert_parts_equal("the replay past the dense reach differs", &live_parts, &replay_parts);
+    assert!(
+        bits(&live_logits) == bits(&replay_logits),
+        "the logits of the replay past the dense reach differ from the live context"
     );
 }
 

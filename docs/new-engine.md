@@ -202,9 +202,9 @@ two engines took different capabilities for the same rule:
   (spec 3.2). Call the runtime's init on that thread. A thread that a runtime starts keeps the mask of the thread
   that starts it (spec 3.2b).
 - **Refuse, do not abort.** A pass that the wrapper refuses returns `PassError`, not `Ok` (engine-abi "A refused
-  pass returns an error"). Check every precondition before a C call that aborts the process: mk's `mk_segments_problem`
-  before `mk_pass_segments` (`AGENTS.md`, "mk on gfx1151host"). A bad write returns `Refused` and changes nothing, and a
-  failure after a change poisons the state (D6).
+  pass returns an error"). Check every precondition before a C call that aborts the process: mk's worker runs
+  `host::segments_problem` before `mk_launch_fused` (`AGENTS.md`, "mk on gfx1151host"). A bad write returns `Refused`
+  and changes nothing, and a failure after a change poisons the state (D6).
 - **Close.** An engine whose runtime teardown segfaults declares no `close`, and its `Drop` frees nothing
   (engine-abi "Capabilities"). The binary ends through one exit path with `_exit` (spec 10.4, "One exit path").
 - **The wake call.** A card that idles between the quanta of a job loses speed at its next command. The call and

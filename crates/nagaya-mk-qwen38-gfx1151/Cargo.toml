@@ -23,6 +23,10 @@ required-features = ["hip"]
 name = "arena_digest"
 required-features = ["hip"]
 
+[[example]]
+name = "thread_masks"
+required-features = ["hip"]
+
 [[bench]]
 name = "oracle"
 harness = false

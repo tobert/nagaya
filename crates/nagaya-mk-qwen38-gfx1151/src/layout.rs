@@ -7,10 +7,9 @@
 use std::mem::{offset_of, size_of};
 use std::path::Path;
 
-use crate::binding::MkSegment;
-use crate::schedule::call::MkAccess;
+use crate::binding::MkLaunch;
+use crate::context::MkContext;
 use crate::spec;
-use crate::table::{MkTensor, MkTensorTable};
 
 /// The `static_assert(<expression> == <number>, "<note>");` lines of `text`, as (expression, number).
 ///
@@ -62,96 +61,34 @@ fn assert_same(file: &str, rust: &[(&str, usize)]) {
 }
 
 #[test]
-fn the_tensor_table_has_the_layout_of_tensor_table_h() {
-    assert_same(
-        "tensor_table.h",
-        &[
-            ("sizeof(mk_tensor)", size_of::<MkTensor>()),
-            ("offsetof(mk_tensor, name)", offset_of!(MkTensor, name)),
-            ("offsetof(mk_tensor, type)", offset_of!(MkTensor, kind)),
-            ("offsetof(mk_tensor, n_dims)", offset_of!(MkTensor, n_dims)),
-            ("offsetof(mk_tensor, ne)", offset_of!(MkTensor, ne)),
-            ("offsetof(mk_tensor, n_elements)", offset_of!(MkTensor, n_elements)),
-            ("offsetof(mk_tensor, n_bytes)", offset_of!(MkTensor, n_bytes)),
-            ("offsetof(mk_tensor, data)", offset_of!(MkTensor, data)),
-            ("sizeof(mk_tensor_table)", size_of::<MkTensorTable>()),
-            (
-                "offsetof(mk_tensor_table, n_tensors)",
-                offset_of!(MkTensorTable, n_tensors),
-            ),
-            ("offsetof(mk_tensor_table, tensors)", offset_of!(MkTensorTable, tensors)),
-            (
-                "offsetof(mk_tensor_table, n_shards)",
-                offset_of!(MkTensorTable, n_shards),
-            ),
-            ("offsetof(mk_tensor_table, shards)", offset_of!(MkTensorTable, shards)),
-            (
-                "offsetof(mk_tensor_table, ple_eos_token_id)",
-                offset_of!(MkTensorTable, ple_eos_token_id),
-            ),
-            (
-                "offsetof(mk_tensor_table, n_ple_layer_multipliers)",
-                offset_of!(MkTensorTable, n_ple_layer_multipliers),
-            ),
-            (
-                "offsetof(mk_tensor_table, ple_layer_multipliers)",
-                offset_of!(MkTensorTable, ple_layer_multipliers),
-            ),
-            (
-                "offsetof(mk_tensor_table, n_ple_head_offsets)",
-                offset_of!(MkTensorTable, n_ple_head_offsets),
-            ),
-            (
-                "offsetof(mk_tensor_table, ple_head_offsets)",
-                offset_of!(MkTensorTable, ple_head_offsets),
-            ),
-            (
-                "offsetof(mk_tensor_table, n_ple_head_vocab_sizes)",
-                offset_of!(MkTensorTable, n_ple_head_vocab_sizes),
-            ),
-            (
-                "offsetof(mk_tensor_table, ple_head_vocab_sizes)",
-                offset_of!(MkTensorTable, ple_head_vocab_sizes),
-            ),
-            ("offsetof(mk_tensor_table, reader)", offset_of!(MkTensorTable, reader)),
-            (
-                "offsetof(mk_tensor_table, drop_cached)",
-                offset_of!(MkTensorTable, drop_cached),
-            ),
-            (
-                "offsetof(mk_tensor_table, dequant_f32)",
-                offset_of!(MkTensorTable, dequant_f32),
-            ),
-            (
-                "offsetof(mk_tensor_table, schedule)",
-                offset_of!(MkTensorTable, schedule),
-            ),
-            (
-                "offsetof(mk_tensor_table, footprint)",
-                offset_of!(MkTensorTable, footprint),
-            ),
-            ("sizeof(mk_access)", size_of::<MkAccess>()),
-            ("offsetof(mk_access, lo)", offset_of!(MkAccess, lo)),
-            ("offsetof(mk_access, hi)", offset_of!(MkAccess, hi)),
-            ("offsetof(mk_access, write)", offset_of!(MkAccess, write)),
-        ],
-    );
-}
-
-#[test]
-fn a_segment_and_the_buffer_numbers_are_those_of_extern_hip() {
+fn the_context_the_launch_result_and_the_buffer_numbers_are_those_of_extern_hip() {
     assert_same(
         "extern.hip",
         &[
-            ("sizeof(Segment)", size_of::<MkSegment>()),
-            ("offsetof(Segment, c)", offset_of!(MkSegment, context)),
-            ("offsetof(Segment, tokens)", offset_of!(MkSegment, tokens)),
-            ("offsetof(Segment, t)", offset_of!(MkSegment, t)),
             ("sizeof(bool)", size_of::<bool>()),
-            ("kMaxSegments", spec::MAX_SEGMENTS as usize),
+            ("sizeof(Context)", size_of::<MkContext>()),
+            ("offsetof(Context, n)", offset_of!(MkContext, n)),
+            ("offsetof(Context, max)", offset_of!(MkContext, max)),
+            ("offsetof(Context, gdn_state)", offset_of!(MkContext, gdn_state)),
+            ("offsetof(Context, gdn_conv)", offset_of!(MkContext, gdn_conv)),
+            ("offsetof(Context, ple_conv)", offset_of!(MkContext, ple_conv)),
+            ("offsetof(Context, kv)", offset_of!(MkContext, kv)),
+            ("offsetof(Context, idx_keys)", offset_of!(MkContext, idx_keys)),
+            ("offsetof(Context, idx_pooled)", offset_of!(MkContext, idx_pooled)),
+            ("offsetof(Context, pooled_n)", offset_of!(MkContext, pooled_n)),
+            ("offsetof(Context, ple_hist)", offset_of!(MkContext, ple_hist)),
+            ("offsetof(Context, poisoned)", offset_of!(MkContext, poisoned)),
             ("model::kVocab", spec::VOCAB as usize),
             ("model::kMaxPassTokens", spec::MAX_PASS_TOKENS as usize),
             ("model::kMaxContext", spec::MAX_CONTEXT as usize),
+            ("sizeof(LaunchResult)", size_of::<MkLaunch>()),
+            ("offsetof(LaunchResult, status)", offset_of!(MkLaunch, status)),
+            ("offsetof(LaunchResult, site)", offset_of!(MkLaunch, site)),
+            ("offsetof(LaunchResult, wg)", offset_of!(MkLaunch, wg)),
+            (
+                "offsetof(LaunchResult, watchdog_stopped)",
+                offset_of!(MkLaunch, watchdog_stopped),
+            ),
         ],
     );
 }

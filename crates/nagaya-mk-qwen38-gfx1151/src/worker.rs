@@ -13,10 +13,13 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use nagaya_abi::{Identity, Limits};
 
-use crate::binding::{self, Binding, PassStop};
+use crate::arena::{self, Arena};
+use crate::binding::{self, Binding, MkSegment, PassStop};
 use crate::gguf;
+use crate::host::{self, Host, LaunchKnobs, PassIn};
+use crate::pass::{self, Knobs, Weights};
+use crate::ple::{self, PleTable};
 use crate::spec;
-use crate::table::TensorTable;
 
 /// An error from the mk binding. The message says what failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -155,8 +158,14 @@ pub(crate) struct PassReply {
 struct ThreadState {
     binding: Binding,
     engine: *mut c_void,
-    /// The reader's maps of the shards. The engine gathers PLE rows from them for its life. A stub has none.
-    _model: Option<gguf::Model>,
+    /// The reader's maps of the shards, the PLE table in them, and the weight arena. The host gathers PLE rows from
+    /// the maps for each pass, and the kernels read the arena. A stub has none of them.
+    model: Option<gguf::Model>,
+    ple: Option<PleTable>,
+    _arena: Option<Arena>,
+    /// The arena's tensors by role, and the host side of the pass: the scratch pool and the fixed buffers.
+    weights: Option<Weights>,
+    host: Option<Host>,
     contexts: HashMap<u64, Context>,
     next_id: u64,
     fast_qmm: bool,
@@ -338,31 +347,30 @@ impl Worker {
 
     /// Read one whole part into a new buffer of `len` bytes.
     pub fn read(&self, id: u64, part: usize, len: usize) -> Result<Vec<u8>, Call> {
-        self.ask(|reply| Command::Read {
-            id,
-            part: part as u32,
-            len,
-            reply,
-        })
-        .unwrap_or_else(|| Err(Call::Failed("the mk worker stopped".to_owned())))
+        let part = part_id(part)?;
+        self.ask(|reply| Command::Read { id, part, len, reply })
+            .unwrap_or_else(|| Err(Call::Failed("the mk worker stopped".to_owned())))
     }
 
     /// Write one fixed part.
     pub fn write(&self, id: u64, part: usize, bytes: Vec<u8>) -> Call {
-        self.ask(|reply| Command::Write {
-            id,
-            part: part as u32,
-            bytes,
-            reply,
-        })
-        .unwrap_or_else(|| Call::Failed("the mk worker stopped".to_owned()))
+        let part = match part_id(part) {
+            Ok(part) => part,
+            Err(call) => return call,
+        };
+        self.ask(|reply| Command::Write { id, part, bytes, reply })
+            .unwrap_or_else(|| Call::Failed("the mk worker stopped".to_owned()))
     }
 
     /// Write `n` rows of a cells part.
     pub fn cells_write(&self, id: u64, part: usize, n: u32, bytes: Vec<u8>) -> Call {
+        let part = match part_id(part) {
+            Ok(part) => part,
+            Err(call) => return call,
+        };
         self.ask(|reply| Command::CellsWrite {
             id,
-            part: part as u32,
+            part,
             n,
             bytes,
             reply,
@@ -402,6 +410,11 @@ impl Worker {
     pub fn part_bytes(&self, part: u32, n: u32) -> Option<u64> {
         self.ask(|reply| Command::PartBytes { part, n, reply })
     }
+}
+
+/// The 32-bit part id that mk takes, or a refusal. A cast would read part 2^32 + 3 as part 3.
+fn part_id(part: usize) -> Result<u32, Call> {
+    u32::try_from(part).map_err(|_| Call::Refused(format!("mk has no part {part}")))
 }
 
 /// Start the worker thread and open the engine on it.
@@ -472,6 +485,47 @@ fn fast_qmm_from(value: Option<&str>) -> Result<bool, MkError> {
         Some("0") => Ok(false),
         Some(other) => Err(MkError::new(format!("MK_FAST_QMM={other}: want 0 or 1"))),
         None => Ok(true),
+    }
+}
+
+/// The knobs of mk that milestone 15 removed with the code that read them (step 6). Each one changed only a
+/// diagnostic or an experiment. Open refuses a set one, so a knob that now does nothing is not a silent change.
+const REMOVED_KNOBS: [&str; 7] = [
+    "MK_ATTACH_WAIT_S",
+    "MK_MEGA_EVENTS",
+    "MK_MEGA_PER_STAGE",
+    "MK_SCRATCH_WARMUP",
+    "MK_STAGE_TIMING",
+    "MK_STAGE_TIMING_PRINT",
+    "MK_UNFUSED_GRID",
+];
+
+/// Refuse a removed knob that `is_set` finds in the environment.
+fn removed_knob_problem(is_set: impl Fn(&str) -> bool) -> Result<(), MkError> {
+    match REMOVED_KNOBS.iter().find(|knob| is_set(knob)) {
+        Some(knob) => Err(MkError::new(format!(
+            "{knob} is set, and this engine has no such knob since milestone 15; unset it"
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// The value of an environment variable as text. A value that is not UTF-8 stays visible, so a knob refuses it.
+fn env_text(name: &str) -> Option<String> {
+    std::env::var_os(name).map(|value| value.into_string().unwrap_or_else(|_| "<not UTF-8>".to_owned()))
+}
+
+/// The watchdog's deadline for each launch sequence: 10 s, or `MK_WATCHDOG_DEADLINE_S` (a test knob) in (0, 3600].
+/// The longest pass is a bit over a second (mk PLAN.md).
+fn watchdog_deadline(value: Option<&str>) -> Result<f64, MkError> {
+    let Some(value) = value else {
+        return Ok(10.0);
+    };
+    match value.parse::<f64>() {
+        Ok(seconds) if seconds > 0.0 && seconds <= 3600.0 => Ok(seconds),
+        _ => Err(MkError::new(format!(
+            "MK_WATCHDOG_DEADLINE_S={value}: want seconds in (0, 3600]"
+        ))),
     }
 }
 
@@ -581,6 +635,7 @@ fn probe_shapes(capacity: u32) -> [(u32, bool); 2] {
 impl ThreadState {
     /// Bind the linked engine and open it. This runs on the worker thread.
     fn open(paths: &MkPaths) -> Result<(Self, Spec), MkError> {
+        removed_knob_problem(|knob| std::env::var_os(knob).is_some())?;
         let digest = gguf::spot_digest(&paths.shards)?;
         let fast_qmm = fast_qmm()?;
         let tiles = tiles()?;
@@ -596,25 +651,40 @@ impl ThreadState {
         // The tokenizer is in the first shard. Hash it before the weights load, so a shard with no tokenizer fails fast.
         let text = gguf::text_keys(&paths.shards[0])?;
 
-        // The Rust reader parses the shards, and the engine plans its arena from the reader's table (milestone 15).
+        // The Rust reader parses the shards, and the host plans and fills the weight arena (milestone 15 step 6).
         let model = gguf::Model::open(&paths.shards)?;
-        let table = TensorTable::new(&model)?;
-        let engine = unsafe { (binding.engine_open)(table.as_ptr()) };
-        drop(table);
+        let ple = PleTable::new(&model)?;
+        let (planned, arena_bytes) = arena::plan(model.tensors(), tiles)?;
+        let arena = unsafe { arena::create(&binding, &model, &planned, arena_bytes, tiles) }?;
+        let tensors = planned
+            .iter()
+            .map(|p| {
+                let tensor = pass::Tensor {
+                    kind: p.kind,
+                    ne: p.ne,
+                    row_bytes: p.row_bytes,
+                    d: arena.tensor(p),
+                };
+                (p.name.clone(), tensor)
+            })
+            .collect();
+        let weights = Weights::new(&tensors)?;
+        let deadline = watchdog_deadline(env_text("MK_WATCHDOG_DEADLINE_S").as_deref())?;
+        let engine = unsafe { (binding.engine_open)(deadline) };
         if engine.is_null() {
             return Err(MkError::new("mk_engine_open returned no engine"));
         }
-        let arena_bytes = unsafe { (binding.arena_bytes)(engine) };
+        // The fixed buffers of a pass, as mk's wire made them at load: before the scratch probe.
+        let host = unsafe { Host::new(&binding) };
 
-        // mk stops the program on a pass that stops early by default (engine.h:215-220). Opt in, so a spin-timeout
-        // returns with a last error and poisons the contexts, and the wrapper reports PassStatus::Poison (D6, 8.2).
-        // mk has no query for this flag, so a test cannot observe the call. A forced spin-timeout needs contention.
-        unsafe { (binding.recover_spin_timeouts)(engine, true) };
-
-        let state = Self {
+        let mut state = Self {
             binding,
             engine,
-            _model: Some(model),
+            model: Some(model),
+            ple: Some(ple),
+            _arena: Some(arena),
+            weights: Some(weights),
+            host: Some(host),
             contexts: HashMap::new(),
             next_id: 0,
             fast_qmm,
@@ -653,7 +723,7 @@ impl ThreadState {
     /// A pass of 1 token asks for `qmm_part2`, and a pass of 17 or more tokens does not (mk `engine.hip:1187`). The
     /// second pass has the 255 tokens that remain, with logits, so it asks for every other buffer at `kMaxPassTokens`.
     /// mk keeps the pool for the engine's life. The probe context is freed before the second reading.
-    fn measure_pass_scratch(&self) -> Result<u64, String> {
+    fn measure_pass_scratch(&mut self) -> Result<u64, String> {
         let before = self.free_device_bytes()?;
         let context = unsafe { (self.binding.ctx_new)(self.engine, spec::PROBE_CAPACITY) };
         if context.is_null() {
@@ -672,7 +742,7 @@ impl ThreadState {
     }
 
     /// Run the two probe passes on one context: 1 token, then the rest, with logits.
-    fn probe_passes(&self, context: *mut c_void) -> Result<(), String> {
+    fn probe_passes(&mut self, context: *mut c_void) -> Result<(), String> {
         let tokens: Vec<i32> = (1..=spec::PROBE_CAPACITY as i32).collect();
         let mut start = 0;
         for (count, want_logits) in probe_shapes(spec::PROBE_CAPACITY) {
@@ -684,12 +754,12 @@ impl ThreadState {
     }
 
     /// Run one probe pass: `tokens` at the context's end, with the logits row when asked.
-    fn probe_pass(&self, context: *mut c_void, tokens: &[i32], want_logits: bool) -> Result<(), String> {
+    fn probe_pass(&mut self, context: *mut c_void, tokens: &[i32], want_logits: bool) -> Result<(), String> {
         let segments = binding::segments(&[context], &[tokens.len() as u32], tokens);
         let rows = usize::from(want_logits);
         let mut logits = vec![0f32; rows * spec::VOCAB as usize];
         let logits = want_logits.then_some(logits.as_mut_slice());
-        match unsafe { self.binding.pass_segments(self.engine, &segments, logits) } {
+        match self.run_pass(&segments, logits) {
             Ok(_ms) => Ok(()),
             Err(PassStop::Refused(why)) => Err(format!("the pass scratch probe was refused: {why}")),
             Err(PassStop::Stopped(why)) => Err(format!("the pass scratch probe stopped: {why}")),
@@ -1055,6 +1125,11 @@ impl ThreadState {
             ));
         }
         unsafe { (self.binding.set_n)(self.engine, ptr, n) };
+        // The pooled keys are derived state: pool every complete block of the written index keys.
+        if let (Some(host), Some(weights)) = (self.host.as_mut(), self.weights.as_ref()) {
+            let context = unsafe { &*(ptr as *const crate::context::MkContext) };
+            unsafe { host::pool_context(&self.binding, self.engine, host, weights, context) };
+        }
         // mk returns nothing here. A call that left the context poisoned is a failure (spec 6.8), so check first.
         if unsafe { (self.binding.ctx_poisoned)(ptr) } {
             return Call::Failed("set_n poisoned the context".to_owned());
@@ -1195,7 +1270,7 @@ impl ThreadState {
         let rows = if request.want_logits { count } else { 0 };
         let mut logits = vec![0f32; rows * spec::VOCAB as usize];
         let buffer = request.want_logits.then_some(logits.as_mut_slice());
-        let ms = match unsafe { self.binding.pass_segments(self.engine, &segments, buffer) } {
+        let ms = match self.run_pass(&segments, buffer) {
             Ok(ms) => ms,
             Err(PassStop::Refused(message)) => return Err(problem(message)),
             Err(PassStop::Stopped(message)) => return Err(PassProblem { message, poison: true }),
@@ -1208,6 +1283,78 @@ impl ThreadState {
 }
 
 impl ThreadState {
+    /// The knobs of the pass build from the environment. A bad value refuses the pass.
+    fn knobs(&self, want_logits: bool) -> Result<Knobs, String> {
+        let knobs = Knobs::from(self.fast_qmm, env_text)?;
+        if knobs.debug_layers > 0 && want_logits {
+            return Err("MK_DEBUG_LAYERS builds no head; ask for no logits".to_owned());
+        }
+        Ok(knobs)
+    }
+
+    /// One pass of `segments` (`host.rs` `run_pass`), after the checks that refuse it: the segments, the poison, the
+    /// knobs and the PLE rows. `logits` takes one row of `VOCAB` values for each segment.
+    fn run_pass(&mut self, segments: &[MkSegment], logits: Option<&mut [f32]>) -> Result<f64, PassStop> {
+        if let Some(problem) = host::segments_problem(segments) {
+            return Err(PassStop::Refused(problem));
+        }
+        for (index, segment) in segments.iter().enumerate() {
+            if unsafe { (self.binding.ctx_poisoned)(segment.context) } {
+                return Err(PassStop::Refused(format!(
+                    "segment {index}: the context is poisoned; free it"
+                )));
+            }
+        }
+        if let Some(logits) = &logits {
+            assert_eq!(
+                logits.len(),
+                segments.len() * spec::VOCAB as usize,
+                "the logits buffer must hold one row of VOCAB values for each segment"
+            );
+        }
+        let knobs = self.knobs(logits.is_some()).map_err(PassStop::Refused)?;
+        let launch = LaunchKnobs::from(env_text).map_err(PassStop::Refused)?;
+        let ple = self.ple_rows(segments).map_err(PassStop::Refused)?;
+        let (Some(host), Some(weights)) = (self.host.as_mut(), self.weights.as_ref()) else {
+            return Err(PassStop::Refused("this engine has no pass host".to_owned()));
+        };
+        let input = PassIn {
+            segments,
+            ple: &ple,
+            knobs,
+            launch,
+        };
+        unsafe { host::run_pass(&self.binding, self.engine, host, weights, input, logits) }
+    }
+
+    /// The PLE rows of a pass, segment after segment: each segment's tokens after its context's PLE history.
+    ///
+    /// mk stops the program on a read of a poisoned context, so a poisoned one is an error here.
+    fn ple_rows(&self, segments: &[MkSegment]) -> Result<Vec<f32>, String> {
+        let (Some(model), Some(table)) = (&self.model, &self.ple) else {
+            return Err("this engine has no PLE table".to_owned());
+        };
+        let tokens: usize = segments.iter().map(|segment| segment.t as usize).sum();
+        let mut rows = vec![0f32; tokens * ple::EMBD];
+        let mut at = 0;
+        for (index, segment) in segments.iter().enumerate() {
+            if segment.context.is_null() || segment.tokens.is_null() {
+                return Err(format!("segment {index}: no context or no tokens pointer"));
+            }
+            if unsafe { (self.binding.ctx_poisoned)(segment.context) } {
+                return Err(format!("segment {index}: the context is poisoned; free it"));
+            }
+            let mut history = [0i32; 2];
+            unsafe { (self.binding.state_read)(self.engine, segment.context, 5, history.as_mut_ptr().cast()) };
+            // SAFETY: the segment names `t` readable tokens (binding::segments).
+            let tokens = unsafe { std::slice::from_raw_parts(segment.tokens, segment.t as usize) };
+            let end = at + tokens.len() * ple::EMBD;
+            table.rows(model, history, tokens, &mut rows[at..end]);
+            at = end;
+        }
+        Ok(rows)
+    }
+
     /// Borrow one context or refuse the call.
     fn context(&self, id: u64) -> Result<&Context, Call> {
         self.contexts
@@ -1317,7 +1464,11 @@ mod tests {
         ThreadState {
             binding: stub::binding(),
             engine: std::ptr::null_mut(),
-            _model: None,
+            model: None,
+            ple: None,
+            _arena: None,
+            weights: None,
+            host: None,
             contexts,
             next_id: 2,
             fast_qmm: true,
@@ -1545,6 +1696,20 @@ mod tests {
         // A path that is not UTF-8 stays the same bytes.
         let paths = parse_shards(&[0xff, b':', b'/', b'b', b':', b'/', b'c']).unwrap();
         assert_eq!(paths[0].as_os_str().as_bytes(), &[0xff]);
+    }
+
+    #[test]
+    fn a_removed_knob_is_refused_at_open_and_the_error_names_it() {
+        assert!(super::removed_knob_problem(|_| false).is_ok());
+        for knob in super::REMOVED_KNOBS {
+            let error = super::removed_knob_problem(|name| name == knob).expect_err(knob);
+            assert!(error.message().starts_with(knob), "{error}");
+        }
+        assert_eq!(super::REMOVED_KNOBS.len(), 7);
+        // The knobs that the engine still reads are not refused.
+        for kept in ["MK_FAST_QMM", "MK_TILES", "MK_ELIDE", "MK_WATCHDOG_DEADLINE_S"] {
+            assert!(super::removed_knob_problem(|name| name == kept).is_ok(), "{kept}");
+        }
     }
 
     #[test]
