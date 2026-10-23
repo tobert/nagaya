@@ -10,7 +10,8 @@ builds the op libraries from the copy with the flags of `ops_build.rs`, and runs
 FILE is relative to `hip/src` (for example `ops/qmm.h`). OLD must occur once in FILE, or with `--all` at least once, and
 then every occurrence changes. The run takes the GPU lock when the
 variable `GPU_LOCK` names a lock file, and it refuses to run when `megakernel.service` or `nagaya.service` is active.
-Prints the failed tests. It exits with 0 when at least one test failed, and with 1 when no test failed.
+Prints the failed tests, or the abort of the test process. It exits with 0 when a test failed or the process aborted,
+and with 1 when no test failed.
 """
 import argparse
 import concurrent.futures
@@ -92,7 +93,12 @@ def main():
     if lock:
         cmd = ["flock", lock, *cmd]
     r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, env={**os.environ, "MK_OPS_LIBDIR": str(work / "lib")})
-    failed = [l for l in (r.stdout + r.stderr).splitlines() if l.startswith("test ") and l.endswith("FAILED")]
+    text = r.stdout + r.stderr
+    if "could not compile" in text:
+        sys.exit("the tests did not compile:\n" + text[-2000:])
+    failed = [l for l in text.splitlines() if l.startswith("test ") and l.endswith("FAILED")]
+    # A mutation can abort the test process with a device trap: that is a failure too, and no line says which test.
+    failed += [l.strip() for l in text.splitlines() if "process didn't exit successfully" in l and "signal" in l]
     summary = [l for l in r.stdout.splitlines() if l.startswith("test result")]
     print(f"=== MUTATION {a.label} ({a.file})")
     print("\n".join(failed) or "NO TEST FAILED")
