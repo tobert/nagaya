@@ -12,6 +12,7 @@ mod engine;
 mod gguf;
 #[cfg(test)]
 mod gguf_shard_tests;
+mod host;
 #[cfg(test)]
 mod layout;
 mod pass;
@@ -19,7 +20,6 @@ mod ple;
 mod schedule;
 mod spec;
 mod stage;
-mod table;
 mod worker;
 
 pub use engine::{MkEngine, open};

@@ -4,16 +4,16 @@
 //! code, and `linked` returns an error. The engine is never closed: mk's HIP teardown segfaults in the process (spec
 //! 3.3).
 //!
-//! The C++ side is a thin extern layer, `hip/src/engine/extern.hip`: each call calls one `Engine` method and checks
-//! nothing. The checks and the result rules of a pass are here, in the methods of `Binding` (milestone 15 step 4).
+//! The C++ side is the runtime layer: the launches of `hip/src/engine/extern.hip` and the runtime calls `mk_rt_*` of
+//! `hip/src/rt/rt.cpp`. Each call checks nothing. The Rust host makes every decision (milestone 15 step 6): the
+//! arena (`arena.rs`), the contexts (`context.rs`), the PLE rows (`ple.rs`), the stages (`pass.rs`) and the pass
+//! (`host.rs`). `Binding` is a table of the calls, so the worker's stub tests can replace them.
 
 use std::ffi::{c_char, c_int, c_void};
 
-use crate::spec;
 use crate::stage::Stage;
-use crate::table::MkWeightTable;
 
-/// `struct Segment` of `engine.h`: `t` tokens at `tokens` that continue `context`.
+/// One segment of a pass: `t` tokens at `tokens` that continue the context `context` (`context.rs` `MkContext`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct MkSegment {
@@ -22,11 +22,20 @@ pub(crate) struct MkSegment {
     pub t: u32,
 }
 
-/// `mk_text_sink`: gives `len` bytes of text, with no NUL, to the buffer `out`.
-pub(crate) type TextSink = unsafe extern "C" fn(*mut c_void, *const c_char, u64);
+/// `struct LaunchResult` of `engine.h`: how a launch sequence ended.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct MkLaunch {
+    /// The control block's status (`rt.h` `Status`), 0 when the launch was clean.
+    pub status: u32,
+    pub site: u32,
+    pub wg: u32,
+    /// 1 when the watchdog asked the kernel to stop: its deadline or the memory floor.
+    pub watchdog_stopped: u32,
+}
 
-/// `void *mk_engine_open(const mk_weight_table *t)`. The table comes from the Rust host (`table.rs`).
-pub(crate) type EngineOpen = unsafe extern "C" fn(*const MkWeightTable) -> *mut c_void;
+/// `void *mk_engine_open(double watchdog_deadline_s)`.
+pub(crate) type EngineOpen = unsafe extern "C" fn(f64) -> *mut c_void;
 
 /// `void mk_relayout(uint32_t tile, const uint8_t *src, uint8_t *dst, uint32_t rows, uint32_t k)`.
 pub(crate) type Relayout = unsafe extern "C" fn(u32, *const u8, *mut u8, u32, u32);
@@ -40,8 +49,26 @@ pub(crate) type RtHostMalloc = unsafe extern "C" fn(u64) -> *mut c_void;
 /// `void mk_rt_host_free(void *p)`.
 pub(crate) type RtHostFree = unsafe extern "C" fn(*mut c_void);
 
-/// `void mk_engine_recover_spin_timeouts(void *e, bool on)`.
-pub(crate) type RecoverSpinTimeouts = unsafe extern "C" fn(*mut c_void, bool);
+/// `void *mk_rt_malloc(uint64_t n)`.
+pub(crate) type RtMalloc = unsafe extern "C" fn(u64) -> *mut c_void;
+
+/// `void mk_rt_memset(void *p, int value, uint64_t n)`.
+pub(crate) type RtMemset = unsafe extern "C" fn(*mut c_void, i32, u64);
+
+/// `void mk_rt_memcpy(void *dst, const void *src, uint64_t n, uint32_t kind)`.
+pub(crate) type RtMemcpy = unsafe extern "C" fn(*mut c_void, *const c_void, u64, u32);
+
+/// `void mk_launch_fused(void *e, const Stage *ds, uint32_t n, int grid, uint32_t skip, LaunchResult *out)`.
+pub(crate) type LaunchFused = unsafe extern "C" fn(*mut c_void, *const Stage, u32, i32, u32, *mut MkLaunch);
+
+/// `void mk_launch_each(void *e, const Stage *ds, uint32_t n, LaunchResult *out)`.
+pub(crate) type LaunchEach = unsafe extern "C" fn(*mut c_void, *const Stage, u32, *mut MkLaunch);
+
+/// `int mk_max_coop_grid()`.
+pub(crate) type MaxCoopGrid = unsafe extern "C" fn() -> i32;
+
+/// `const char *mk_status_name(uint32_t status)`.
+pub(crate) type StatusName = unsafe extern "C" fn(u32) -> *const c_char;
 
 /// The context call `new`, in Rust (`context.rs`).
 pub(crate) type CtxNew = unsafe extern "C" fn(*mut c_void, u32) -> *mut c_void;
@@ -82,27 +109,6 @@ pub(crate) type SetN = unsafe extern "C" fn(*mut c_void, *mut c_void, u32);
 /// `void mk_ctx_round_gdn_bf16(void *e, void *c)`.
 pub(crate) type RoundGdn = unsafe extern "C" fn(*mut c_void, *mut c_void);
 
-/// `void mk_last_error(void *e, mk_text_sink put, void *out)`.
-pub(crate) type LastError = unsafe extern "C" fn(*mut c_void, TextSink, *mut c_void);
-
-/// `void mk_segments_problem(void *e, const Segment *s, uint32_t n, mk_text_sink put, void *out)`.
-pub(crate) type SegmentsProblem = unsafe extern "C" fn(*mut c_void, *const MkSegment, u32, TextSink, *mut c_void);
-
-/// `double mk_pass_stages(void *e, const Segment *s, uint32_t n, bool want_logits, float *logits, const float *ple,
-/// const Stage *stages, uint32_t n_stages)`: one fused pass of the stages that the Rust host built.
-pub(crate) type PassStages =
-    unsafe extern "C" fn(*mut c_void, *const MkSegment, u32, bool, *mut f32, *const f32, *const Stage, u32) -> f64;
-
-/// `uint32_t mk_build(void *e, const Segment *s, uint32_t n, bool want_logits, Stage *out, uint32_t cap)`: the C++
-/// build of the same pass, for the live comparison.
-pub(crate) type BuildCpp = unsafe extern "C" fn(*mut c_void, *const MkSegment, u32, bool, *mut Stage, u32) -> u32;
-
-/// `float *mk_scratch(void *e, const char *name, uint64_t floats)`.
-pub(crate) type ScratchCpp = unsafe extern "C" fn(*mut c_void, *const c_char, u64) -> *mut f32;
-
-/// `void mk_pass_buffers(void *e, const int32_t **tokens, const uint32_t **head_rows, const float **inv_freq)`.
-pub(crate) type PassBuffersCpp = unsafe extern "C" fn(*mut c_void, *mut *const i32, *mut *const u32, *mut *const f32);
-
 /// `hipError_t hipMemGetInfo(size_t *free, size_t *total)`, from the HIP runtime that the engine links.
 pub(crate) type MemGetInfo = unsafe extern "C" fn(*mut usize, *mut usize) -> c_int;
 
@@ -113,7 +119,9 @@ pub(crate) struct Binding {
     pub rt_host_register: RtHostRegister,
     pub rt_host_malloc: RtHostMalloc,
     pub rt_host_free: RtHostFree,
-    pub recover_spin_timeouts: RecoverSpinTimeouts,
+    pub rt_malloc: RtMalloc,
+    pub rt_memset: RtMemset,
+    pub rt_memcpy: RtMemcpy,
     pub ctx_new: CtxNew,
     pub ctx_free: CtxFree,
     pub ctx_n: CtxN,
@@ -127,12 +135,10 @@ pub(crate) struct Binding {
     pub cells_write: CellsWrite,
     pub set_n: SetN,
     pub round_gdn: RoundGdn,
-    pub last_error: LastError,
-    pub segments_problem: SegmentsProblem,
-    pub pass_stages: PassStages,
-    pub build_cpp: BuildCpp,
-    pub scratch_cpp: ScratchCpp,
-    pub pass_buffers_cpp: PassBuffersCpp,
+    pub launch_fused: LaunchFused,
+    pub launch_each: LaunchEach,
+    pub max_coop_grid: MaxCoopGrid,
+    pub status_name: StatusName,
     pub mem_get_info: MemGetInfo,
 }
 
@@ -143,15 +149,6 @@ pub(crate) enum PassStop {
     Refused(String),
     /// The pass ran and stopped on a spin-timeout. mk poisoned each of its contexts.
     Stopped(String),
-}
-
-/// The binding's `mk_text_sink`: append the text to the `Vec<u8>` at `out`.
-unsafe extern "C" fn put_text(out: *mut c_void, text: *const c_char, len: u64) {
-    // SAFETY: the binding gives a pointer to its own `Vec<u8>` as `out`, and mk gives `len` readable bytes at `text`.
-    let out = unsafe { &mut *(out as *mut Vec<u8>) };
-    if len > 0 {
-        out.extend_from_slice(unsafe { std::slice::from_raw_parts(text as *const u8, len as usize) });
-    }
 }
 
 /// The segments of a pass: `lens[i]` tokens of `tokens` continue `contexts[i]`, in order.
@@ -177,116 +174,6 @@ pub(crate) fn segments(contexts: &[*mut c_void], lens: &[u32], tokens: &[i32]) -
         .collect()
 }
 
-impl Binding {
-    /// The last pass's error, whole. It is empty after a clean pass.
-    ///
-    /// # Safety
-    ///
-    /// `engine` is an engine of this binding.
-    pub(crate) unsafe fn last_error(&self, engine: *mut c_void) -> String {
-        let mut text = Vec::new();
-        unsafe { (self.last_error)(engine, put_text, (&mut text as *mut Vec<u8>).cast()) };
-        String::from_utf8_lossy(&text).into_owned()
-    }
-
-    /// The first problem of `segments` as one pass, or `None`.
-    ///
-    /// The binding refuses a segment count outside `1..=MAX_SEGMENTS` itself, and asks mk for the other rules.
-    ///
-    /// # Safety
-    ///
-    /// `engine` is an engine of this binding, and each segment names a live context of it.
-    pub(crate) unsafe fn segments_problem(&self, engine: *mut c_void, segments: &[MkSegment]) -> Option<String> {
-        if segments.is_empty() || segments.len() > spec::MAX_SEGMENTS as usize {
-            return Some(format!(
-                "{} segments: a pass takes 1..={} segments",
-                segments.len(),
-                spec::MAX_SEGMENTS
-            ));
-        }
-        let mut text = Vec::new();
-        unsafe {
-            (self.segments_problem)(
-                engine,
-                segments.as_ptr(),
-                segments.len() as u32,
-                put_text,
-                (&mut text as *mut Vec<u8>).cast(),
-            )
-        };
-        (!text.is_empty()).then(|| String::from_utf8_lossy(&text).into_owned())
-    }
-
-    /// Run one pass of `segments`, and give its wall time in milliseconds. mk runs each pass fused. `ple` holds the
-    /// PLE rows of the pass's tokens, `ple::EMBD` values for each token.
-    ///
-    /// mk stops the program on segments that its check refuses and on a poisoned context. Thus both checks run
-    /// first, and a problem refuses the pass. `logits` takes one row of `VOCAB` values for each segment. A buffer of another size stops the program,
-    /// because mk would write past its end. After the pass, a last error means that mk stopped the pass and poisoned
-    /// its contexts.
-    ///
-    /// # Safety
-    ///
-    /// `engine` is an engine of this binding, and each segment names a live context of it and `t` readable tokens.
-    pub(crate) unsafe fn pass_segments(
-        &self,
-        engine: *mut c_void,
-        segments: &[MkSegment],
-        logits: Option<&mut [f32]>,
-        ple: &[f32],
-        build: impl FnOnce() -> Vec<Stage>,
-    ) -> Result<f64, PassStop> {
-        let tokens: usize = segments.iter().map(|segment| segment.t as usize).sum();
-        assert_eq!(
-            ple.len(),
-            tokens * crate::ple::EMBD,
-            "the PLE rows must hold EMBD values for each token of the pass"
-        );
-        if let Some(logits) = &logits {
-            assert_eq!(
-                logits.len(),
-                segments.len() * spec::VOCAB as usize,
-                "the logits buffer must hold one row of VOCAB values for each segment"
-            );
-        }
-        if let Some(problem) = unsafe { self.segments_problem(engine, segments) } {
-            return Err(PassStop::Refused(problem));
-        }
-        // mk stops the program on a poisoned context, before its segment check (engine.hip run_pass).
-        for (index, segment) in segments.iter().enumerate() {
-            if unsafe { (self.ctx_poisoned)(segment.context) } {
-                return Err(PassStop::Refused(format!(
-                    "segment {index}: the context is poisoned; free it"
-                )));
-            }
-        }
-        let (want_logits, logits) = match logits {
-            Some(logits) => (true, logits.as_mut_ptr()),
-            None => (false, std::ptr::null_mut()),
-        };
-        // The build reads the contexts, so it runs after the checks.
-        let stages = build();
-        let ms = unsafe {
-            (self.pass_stages)(
-                engine,
-                segments.as_ptr(),
-                segments.len() as u32,
-                want_logits,
-                logits,
-                ple.as_ptr(),
-                stages.as_ptr(),
-                stages.len() as u32,
-            )
-        };
-        let error = unsafe { self.last_error(engine) };
-        if error.is_empty() {
-            Ok(ms)
-        } else {
-            Err(PassStop::Stopped(error))
-        }
-    }
-}
-
 /// The facts of the engine build, from `build.rs`. The identity holds them (spec 12.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Build {
@@ -299,33 +186,39 @@ pub(crate) struct Build {
 }
 
 /// The calls of the engine and the runtime that the Rust host makes itself (`context.rs`).
+/// The runtime calls that the Rust context code makes itself (`context.rs`).
 #[cfg(feature = "hip")]
 pub(crate) mod rt {
-    pub(crate) use super::linked::{
-        mk_ctx_pool, mk_rt_free, mk_rt_malloc, mk_rt_memcpy, mk_rt_memcpy_2d, mk_rt_memset,
-    };
+    pub(crate) use super::linked::{mk_rt_free, mk_rt_malloc, mk_rt_memcpy, mk_rt_memcpy_2d, mk_rt_memset};
 }
 
 #[cfg(feature = "hip")]
 mod linked {
-    use std::ffi::{c_int, c_void};
+    use std::ffi::{c_char, c_int, c_void};
 
-    use std::ffi::c_char;
-
-    use super::{MkSegment, TextSink};
+    use super::MkLaunch;
     use crate::stage::Stage;
-    use crate::table::MkWeightTable;
 
     // The calls of the extern layer `hip/src/engine/extern.hip`, the runtime calls `mk_rt_*` of
     // `hip/src/rt/rt.cpp`, and one call of the HIP runtime. A test compares the lists of calls.
     unsafe extern "C" {
-        pub(super) fn mk_engine_open(table: *const MkWeightTable) -> *mut c_void;
+        pub(super) fn mk_engine_open(watchdog_deadline_s: f64) -> *mut c_void;
         pub(super) fn mk_relayout(tile: u32, src: *const u8, dst: *mut u8, rows: u32, k: u32);
+        pub(super) fn mk_ctx_round_gdn_bf16(e: *mut c_void, c: *mut c_void);
+        pub(super) fn mk_launch_fused(
+            e: *mut c_void,
+            ds: *const Stage,
+            n: u32,
+            grid: i32,
+            skip: u32,
+            out: *mut MkLaunch,
+        );
+        pub(super) fn mk_launch_each(e: *mut c_void, ds: *const Stage, n: u32, out: *mut MkLaunch);
+        pub(super) fn mk_max_coop_grid() -> i32;
+        pub(super) fn mk_status_name(status: u32) -> *const c_char;
         pub(super) fn mk_rt_host_register(p: *mut c_void, n: u64);
         pub(super) fn mk_rt_host_malloc(n: u64) -> *mut c_void;
         pub(super) fn mk_rt_host_free(p: *mut c_void);
-        pub(super) fn mk_engine_recover_spin_timeouts(e: *mut c_void, on: bool);
-        pub(crate) fn mk_ctx_pool(e: *mut c_void, c: *const c_void);
         pub(crate) fn mk_rt_malloc(n: u64) -> *mut c_void;
         pub(crate) fn mk_rt_free(p: *mut c_void);
         pub(crate) fn mk_rt_memset(p: *mut c_void, value: i32, n: u64);
@@ -338,34 +231,6 @@ mod linked {
             width: u64,
             height: u64,
             kind: u32,
-        );
-        pub(super) fn mk_ctx_round_gdn_bf16(e: *mut c_void, c: *mut c_void);
-        pub(super) fn mk_last_error(e: *mut c_void, put: TextSink, out: *mut c_void);
-        pub(super) fn mk_segments_problem(e: *mut c_void, s: *const MkSegment, n: u32, put: TextSink, out: *mut c_void);
-        pub(super) fn mk_pass_stages(
-            e: *mut c_void,
-            s: *const MkSegment,
-            n: u32,
-            want_logits: bool,
-            logits: *mut f32,
-            ple: *const f32,
-            stages: *const Stage,
-            n_stages: u32,
-        ) -> f64;
-        pub(super) fn mk_build(
-            e: *mut c_void,
-            s: *const MkSegment,
-            n: u32,
-            want_logits: bool,
-            out: *mut Stage,
-            cap: u32,
-        ) -> u32;
-        pub(super) fn mk_scratch(e: *mut c_void, name: *const c_char, floats: u64) -> *mut f32;
-        pub(super) fn mk_pass_buffers(
-            e: *mut c_void,
-            tokens: *mut *const i32,
-            head_rows: *mut *const u32,
-            inv_freq: *mut *const f32,
         );
         pub(super) fn hipMemGetInfo(free: *mut usize, total: *mut usize) -> c_int;
     }
@@ -390,7 +255,9 @@ pub(crate) fn linked() -> Result<(Binding, Build), String> {
             rt_host_register: mk_rt_host_register,
             rt_host_malloc: mk_rt_host_malloc,
             rt_host_free: mk_rt_host_free,
-            recover_spin_timeouts: mk_engine_recover_spin_timeouts,
+            rt_malloc: mk_rt_malloc,
+            rt_memset: mk_rt_memset,
+            rt_memcpy: mk_rt_memcpy,
             ctx_new: context::ctx_new,
             ctx_free: context::ctx_free,
             ctx_n: context::ctx_n,
@@ -404,12 +271,10 @@ pub(crate) fn linked() -> Result<(Binding, Build), String> {
             cells_write: context::cells_write,
             set_n: context::set_n,
             round_gdn: mk_ctx_round_gdn_bf16,
-            last_error: mk_last_error,
-            segments_problem: mk_segments_problem,
-            pass_stages: mk_pass_stages,
-            build_cpp: mk_build,
-            scratch_cpp: mk_scratch,
-            pass_buffers_cpp: mk_pass_buffers,
+            launch_fused: mk_launch_fused,
+            launch_each: mk_launch_each,
+            max_coop_grid: mk_max_coop_grid,
+            status_name: mk_status_name,
             mem_get_info: hipMemGetInfo,
         },
         BUILD,
@@ -435,9 +300,9 @@ pub(crate) mod stub {
     use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
     use super::{
-        Binding, BuildCpp, CtxFree, CtxMax, CtxNew, EngineOpen, LastError, MemGetInfo, PartBytes, PassBuffersCpp,
-        PassStages, RecoverSpinTimeouts, Relayout, RoundGdn, RtHostFree, RtHostMalloc, RtHostRegister, ScratchCpp,
-        SegmentsProblem, StateBytes, StateRead,
+        Binding, CtxFree, CtxMax, CtxNew, EngineOpen, LaunchEach, LaunchFused, MaxCoopGrid, MemGetInfo, PartBytes,
+        Relayout, RoundGdn, RtHostFree, RtHostMalloc, RtHostRegister, RtMalloc, RtMemcpy, RtMemset, StateBytes,
+        StateRead, StatusName,
     };
 
     /// What the stub calls know about one context. A test passes a pointer to this in place of mk's context.
@@ -517,6 +382,9 @@ pub(crate) mod stub {
                 rt_host_register: std::mem::transmute::<unsafe extern "C" fn(), RtHostRegister>(never),
                 rt_host_malloc: std::mem::transmute::<unsafe extern "C" fn(), RtHostMalloc>(never),
                 rt_host_free: std::mem::transmute::<unsafe extern "C" fn(), RtHostFree>(never),
+                rt_malloc: std::mem::transmute::<unsafe extern "C" fn(), RtMalloc>(never),
+                rt_memset: std::mem::transmute::<unsafe extern "C" fn(), RtMemset>(never),
+                rt_memcpy: std::mem::transmute::<unsafe extern "C" fn(), RtMemcpy>(never),
                 ctx_new: std::mem::transmute::<unsafe extern "C" fn(), CtxNew>(never),
                 ctx_free: std::mem::transmute::<unsafe extern "C" fn(), CtxFree>(never),
                 ctx_n,
@@ -527,16 +395,13 @@ pub(crate) mod stub {
                 state_write,
                 cells_write,
                 set_n,
-                recover_spin_timeouts: std::mem::transmute::<unsafe extern "C" fn(), RecoverSpinTimeouts>(never),
                 round_gdn: std::mem::transmute::<unsafe extern "C" fn(), RoundGdn>(never),
                 part_bytes: std::mem::transmute::<unsafe extern "C" fn(), PartBytes>(never),
                 state_bytes: std::mem::transmute::<unsafe extern "C" fn(), StateBytes>(never),
-                last_error: std::mem::transmute::<unsafe extern "C" fn(), LastError>(never),
-                segments_problem: std::mem::transmute::<unsafe extern "C" fn(), SegmentsProblem>(never),
-                pass_stages: std::mem::transmute::<unsafe extern "C" fn(), PassStages>(never),
-                build_cpp: std::mem::transmute::<unsafe extern "C" fn(), BuildCpp>(never),
-                scratch_cpp: std::mem::transmute::<unsafe extern "C" fn(), ScratchCpp>(never),
-                pass_buffers_cpp: std::mem::transmute::<unsafe extern "C" fn(), PassBuffersCpp>(never),
+                launch_fused: std::mem::transmute::<unsafe extern "C" fn(), LaunchFused>(never),
+                launch_each: std::mem::transmute::<unsafe extern "C" fn(), LaunchEach>(never),
+                max_coop_grid: std::mem::transmute::<unsafe extern "C" fn(), MaxCoopGrid>(never),
+                status_name: std::mem::transmute::<unsafe extern "C" fn(), StatusName>(never),
                 mem_get_info: std::mem::transmute::<unsafe extern "C" fn(), MemGetInfo>(never),
             }
         }
@@ -545,14 +410,10 @@ pub(crate) mod stub {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
     use std::ffi::c_void;
     use std::path::Path;
 
-    use super::stub::{self, StubContext};
-    use super::{Binding, MkSegment, PassStop, TextSink, segments};
-    use crate::spec;
-    use crate::stage::Stage;
+    use super::segments;
 
     /// The names of the `mk_` calls that `text` defines or declares: each `mk_<name>(` that follows `fn ` in Rust, or
     /// that starts a definition at the left margin in C++.
@@ -582,224 +443,6 @@ mod tests {
         names
     }
 
-    /// What the stub calls of a pass saw and give, on this test's thread.
-    #[derive(Default)]
-    struct PassStub {
-        /// The text that the stub `mk_segments_problem` gives.
-        problem: String,
-        /// The text that the stub `mk_last_error` gives.
-        error: String,
-        /// The count of calls of `mk_segments_problem`.
-        checks: usize,
-        /// The arguments of each `mk_pass_segments` call: the segment count, `want_logits`, and whether `logits` is
-        /// null.
-        passes: Vec<(u32, bool, bool)>,
-    }
-
-    thread_local! {
-        static PASS: RefCell<PassStub> = RefCell::new(PassStub::default());
-    }
-
-    /// Give `text` to mk's sink, as the extern layer does.
-    unsafe fn give(put: TextSink, out: *mut c_void, text: &str) {
-        unsafe { put(out, text.as_ptr().cast(), text.len() as u64) };
-    }
-
-    unsafe extern "C" fn segments_problem(
-        _engine: *mut c_void,
-        _segments: *const MkSegment,
-        _n: u32,
-        put: TextSink,
-        out: *mut c_void,
-    ) {
-        let problem = PASS.with_borrow_mut(|stub| {
-            stub.checks += 1;
-            stub.problem.clone()
-        });
-        unsafe { give(put, out, &problem) };
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    unsafe extern "C" fn pass_stages(
-        _engine: *mut c_void,
-        _segments: *const MkSegment,
-        n: u32,
-        want_logits: bool,
-        logits: *mut f32,
-        _ple: *const f32,
-        _stages: *const Stage,
-        _n_stages: u32,
-    ) -> f64 {
-        PASS.with_borrow_mut(|stub| stub.passes.push((n, want_logits, logits.is_null())));
-        12.5
-    }
-
-    unsafe extern "C" fn last_error(_engine: *mut c_void, put: TextSink, out: *mut c_void) {
-        let error = PASS.with_borrow(|stub| stub.error.clone());
-        unsafe { give(put, out, &error) };
-    }
-
-    /// A binding whose pass calls are the stubs above, with a new `PassStub` for this thread.
-    fn pass_binding(problem: &str, error: &str) -> Binding {
-        PASS.set(PassStub {
-            problem: problem.to_owned(),
-            error: error.to_owned(),
-            ..PassStub::default()
-        });
-        Binding {
-            segments_problem,
-            pass_stages,
-            last_error,
-            ..stub::binding()
-        }
-    }
-
-    /// `count` segments of one token each, on distinct stub contexts that are not poisoned. The test leaks them.
-    fn some_segments(count: usize, tokens: &[i32]) -> Vec<MkSegment> {
-        let contexts: Vec<*mut c_void> = (0..count)
-            .map(|_| Box::leak(Box::new(StubContext::new(false))) as *mut StubContext as *mut c_void)
-            .collect();
-        segments(&contexts, &vec![1; count], &tokens[..count])
-    }
-
-    #[test]
-    fn a_pass_on_a_poisoned_context_is_refused_before_mk() {
-        // Engine::run_pass stops the program on a poisoned context before its own segment check.
-        let binding = pass_binding("", "");
-        let tokens = [7i32; 2];
-        let poisoned = Box::leak(Box::new(StubContext::new(true))) as *mut StubContext as *mut c_void;
-        let mut made = some_segments(2, &tokens);
-        made[1].context = poisoned;
-        let result = unsafe {
-            binding.pass_segments(
-                std::ptr::null_mut(),
-                &made,
-                None,
-                &[0.0; 2 * crate::ple::EMBD],
-                Vec::new,
-            )
-        };
-        assert!(
-            matches!(&result, Err(PassStop::Refused(message)) if message.contains("segment 1") && message.contains("poisoned")),
-            "{result:?}"
-        );
-        PASS.with_borrow(|stub| {
-            // mk's check comes first: it refuses a null context, which the poison read would follow.
-            assert_eq!(stub.checks, 1);
-            assert!(stub.passes.is_empty(), "a poisoned context reached mk's pass");
-        });
-    }
-
-    #[test]
-    fn a_pass_of_no_segments_or_of_too_many_is_refused_before_mk() {
-        let tokens = [7i32; 17];
-        for count in [0, spec::MAX_SEGMENTS as usize + 1] {
-            let binding = pass_binding("", "");
-            let segments = some_segments(count, &tokens);
-            let result = unsafe {
-                binding.pass_segments(
-                    std::ptr::null_mut(),
-                    &segments,
-                    None,
-                    &vec![0.0; count * crate::ple::EMBD],
-                    Vec::new,
-                )
-            };
-            assert!(
-                matches!(&result, Err(PassStop::Refused(message)) if message.contains("1..=16 segments")),
-                "{count} segments: {result:?}"
-            );
-            PASS.with_borrow(|stub| {
-                assert_eq!(stub.checks, 0, "{count} segments reached mk's check");
-                assert!(stub.passes.is_empty(), "{count} segments reached mk's pass");
-            });
-        }
-    }
-
-    #[test]
-    fn a_pass_runs_mk_check_first_and_a_problem_refuses_it() {
-        let binding = pass_binding("segment 0: context full", "");
-        let tokens = [7i32; 1];
-        let result = unsafe {
-            binding.pass_segments(
-                std::ptr::null_mut(),
-                &some_segments(1, &tokens),
-                None,
-                &[0.0; crate::ple::EMBD],
-                Vec::new,
-            )
-        };
-        assert_eq!(result, Err(PassStop::Refused("segment 0: context full".to_owned())));
-        PASS.with_borrow(|stub| {
-            assert_eq!(stub.checks, 1);
-            assert!(stub.passes.is_empty(), "a refused pass reached mk");
-        });
-    }
-
-    #[test]
-    fn a_pass_with_a_last_error_stopped_and_the_error_is_whole() {
-        // The old C ABI cut the error at the caller's buffer of 1,024 bytes. The sink takes it whole.
-        let error = "x".repeat(5000);
-        let binding = pass_binding("", &error);
-        let tokens = [7i32; 2];
-        let result = unsafe {
-            binding.pass_segments(
-                std::ptr::null_mut(),
-                &some_segments(2, &tokens),
-                None,
-                &[0.0; 2 * crate::ple::EMBD],
-                Vec::new,
-            )
-        };
-        assert_eq!(result, Err(PassStop::Stopped(error)));
-        PASS.with_borrow(|stub| assert_eq!(stub.passes.len(), 1));
-    }
-
-    #[test]
-    fn a_clean_pass_gives_its_time_and_asks_for_logits_only_with_a_buffer() {
-        let tokens = [7i32; 2];
-        let binding = pass_binding("", "");
-        let result = unsafe {
-            binding.pass_segments(
-                std::ptr::null_mut(),
-                &some_segments(2, &tokens),
-                None,
-                &[0.0; 2 * crate::ple::EMBD],
-                Vec::new,
-            )
-        };
-        assert_eq!(result, Ok(12.5));
-        let mut logits = vec![0f32; 2 * spec::VOCAB as usize];
-        let result = unsafe {
-            binding.pass_segments(
-                std::ptr::null_mut(),
-                &some_segments(2, &tokens),
-                Some(&mut logits),
-                &[0.0; 2 * crate::ple::EMBD],
-                Vec::new,
-            )
-        };
-        assert_eq!(result, Ok(12.5));
-        PASS.with_borrow(|stub| assert_eq!(stub.passes, [(2, false, true), (2, true, false)]));
-    }
-
-    #[test]
-    #[should_panic(expected = "one row of VOCAB values for each segment")]
-    fn a_logits_buffer_of_another_size_stops_the_program() {
-        let binding = pass_binding("", "");
-        let tokens = [7i32; 2];
-        let mut logits = vec![0f32; spec::VOCAB as usize];
-        let _ = unsafe {
-            binding.pass_segments(
-                std::ptr::null_mut(),
-                &some_segments(2, &tokens),
-                Some(&mut logits),
-                &[0.0; 2 * crate::ple::EMBD],
-                Vec::new,
-            )
-        };
-    }
-
     #[test]
     fn the_segments_take_their_tokens_in_order() {
         let tokens = [10i32, 11, 12, 13, 14, 15];
@@ -815,17 +458,6 @@ mod tests {
     #[should_panic(expected = "must add to its token count")]
     fn segments_whose_lengths_do_not_add_to_the_tokens_stop_the_program() {
         segments(&[std::ptr::dangling_mut::<c_void>()], &[3], &[1, 2]);
-    }
-
-    #[test]
-    fn the_last_error_of_a_clean_pass_is_empty() {
-        let binding = pass_binding("", "");
-        assert_eq!(unsafe { binding.last_error(std::ptr::null_mut()) }, "");
-        let binding = pass_binding("", "spin-timeout at stage 3");
-        assert_eq!(
-            unsafe { binding.last_error(std::ptr::null_mut()) },
-            "spin-timeout at stage 3"
-        );
     }
 
     #[test]

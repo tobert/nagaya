@@ -4,7 +4,8 @@
 //! mk's CMake build at mk commit `555a2a3`. The float flags are part of the model's definition, and the conformance
 //! gates compare bits. Thus a flag that differs fails here, before a GPU run.
 //!
-//! The build compiles seven of the nine. The Rust reader took the place of mk's two GGUF units in milestone 15 step 3.
+//! The build compiles six of the nine. The Rust reader took the place of mk's two GGUF units in milestone 15 step 3,
+//! and the Rust pass build took the place of `blocks.hip` in step 6.
 //! The thin extern layer `extern.hip` took the place of mk's C ABI `capi.hip` in step 4, with the same compile.
 
 #[allow(dead_code)]
@@ -28,18 +29,20 @@ fn each_compile_is_the_compile_of_mk_cmake_build() {
     )
     .expect("read the fixture");
     let entries: Vec<serde_json::Value> = serde_json::from_str(&text).expect("the fixture is a JSON list");
-    let (gguf, entries): (Vec<_>, Vec<_>) = entries.into_iter().partition(|entry| {
-        entry["file"]
-            .as_str()
-            .expect("an entry names its file")
-            .starts_with(&format!("{MK_SRC}/gguf/"))
+    let rust = [
+        format!("{MK_SRC}/engine/blocks.hip"),
+        format!("{MK_SRC}/gguf/gguf.cpp"),
+        format!("{MK_SRC}/gguf/dequant.cpp"),
+    ];
+    let (gone, entries): (Vec<_>, Vec<_>) = entries.into_iter().partition(|entry| {
+        let file = entry["file"].as_str().expect("an entry names its file");
+        file.starts_with(&format!("{MK_SRC}/gguf/")) || file == rust[0]
     });
-    let gguf: Vec<&str> = gguf.iter().map(|entry| entry["file"].as_str().unwrap()).collect();
-    assert_eq!(
-        gguf,
-        [format!("{MK_SRC}/gguf/gguf.cpp"), format!("{MK_SRC}/gguf/dequant.cpp")],
-        "only mk's two GGUF units are left out"
-    );
+    let mut gone: Vec<&str> = gone.iter().map(|entry| entry["file"].as_str().unwrap()).collect();
+    gone.sort();
+    let mut want: Vec<&str> = rust.iter().map(String::as_str).collect();
+    want.sort();
+    assert_eq!(gone, want, "only the units that Rust took the place of are left out");
     let src = Path::new("/nagaya/hip/src");
     let out = Path::new("/out");
     let units = build::units(src, out);

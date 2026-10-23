@@ -275,10 +275,16 @@ pub(crate) struct Arena {
 }
 
 impl Arena {
-    /// An arena over test memory, with no memfd.
-    #[cfg(test)]
-    pub(crate) fn for_test(ptr: *mut u8, bytes: u64) -> Arena {
-        Arena { ptr, bytes, _fd: -1 }
+    /// The first byte of a planned tensor in the arena. A tensor past the arena stops the program.
+    pub(crate) fn tensor(&self, p: &Planned) -> *const u8 {
+        assert!(
+            p.offset + p.bytes <= self.bytes,
+            "{} ends past the arena of {} bytes",
+            p.name,
+            self.bytes
+        );
+        // SAFETY: the offset is inside the arena (the assert above).
+        unsafe { self.ptr.add(p.offset as usize) }
     }
 }
 
@@ -529,6 +535,18 @@ mod tests {
         assert_eq!(u64::from_le_bytes(e[104..112].try_into().unwrap()), planned[1].offset);
         assert_eq!(u64::from_le_bytes(e[112..120].try_into().unwrap()), planned[1].bytes);
         assert_eq!(&e[120..128], &[0; 8]);
+    }
+
+    #[test]
+    #[should_panic(expected = "ends past the arena")]
+    fn a_tensor_past_the_arena_stops_the_program() {
+        let arena = Arena {
+            ptr: std::ptr::null_mut(),
+            bytes: 4096,
+            _fd: -1,
+        };
+        let (planned, _) = plan(&model_like(), false).unwrap();
+        arena.tensor(&planned[0]);
     }
 
     #[test]

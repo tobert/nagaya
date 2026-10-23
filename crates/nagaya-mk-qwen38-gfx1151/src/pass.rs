@@ -973,8 +973,6 @@ impl Builder<'_> {
 
     /// `blocks.hip` `pool_stages`: one pool stage for each attention layer that brings the context's pooled-key cache
     /// from block `b0` up to its `n / 4` (the restore of a context).
-    // The C++ engine still runs the pool stages of a restore until the next commit of step 6 moves them here.
-    #[allow(dead_code)]
     pub(crate) fn pool_stages(&self, c: &MkContext, b0: u32) -> Vec<Stage> {
         let max_nb = c.max / IDX_RATIO;
         assert!(
@@ -1330,39 +1328,6 @@ fn fuse_hc_mix(s: &mut Vec<Stage>, ends: &mut [u32]) {
     at[n] = out.len() as u32;
     remap(ends, &at);
     *s = out;
-}
-
-/// The arguments of a stage as text, for the comparison of two builds: the op, the layer, the sub-stage, the sched
-/// word and every field of the op's argument struct.
-pub(crate) fn stage_text(s: &Stage) -> String {
-    let args = match s.op {
-        ST_QMM | ST_QMM_H | ST_QMM_KSUM => format!("{:?}", s.qmm()),
-        ST_RMS => format!("{:?}", s.rms()),
-        ST_SILU_SCALE => format!("{:?}", s.silu()),
-        ST_HC_MIX => format!("{:?}", s.mix()),
-        ST_HC_COMBINE => format!("{:?}", s.comb()),
-        ST_HC_COMBINE_RMS => format!("{:?}", s.combrms()),
-        ST_EMBED => format!("{:?}", s.embed()),
-        ST_REPEAT4 => format!("{:?}", s.rep()),
-        ST_PLE_GATE => format!("{:?}", s.pgate()),
-        ST_PLE_CONV => format!("{:?}", s.pconv()),
-        ST_ADD => format!("{:?}", s.add()),
-        ST_GDN_CONV => format!("{:?}", s.gconv()),
-        ST_GDN_CORE => format!("{:?}", s.gcore()),
-        ST_MOE_ROUTER => format!("{:?}", s.router()),
-        ST_MOE_GROUP => format!("{:?}", s.group()),
-        ST_MOE_GU | ST_MOE_DOWN => format!("{:?}", s.ffn()),
-        ST_SWIGLU => format!("{:?}", s.swiglu()),
-        ST_MOE_COMBINE => format!("{:?}", s.mcomb()),
-        ST_ATTN_PREP => format!("{:?}", s.aprep()),
-        ST_ATTN_SELECT | ST_ATTN_SCORE | ST_ATTN_EMIT | ST_ATTN_POOL => format!("{:?}", s.asel()),
-        ST_ATTN_CORE => format!("{:?}", s.aatt()),
-        other => format!("op {other} has no argument text"),
-    };
-    format!(
-        "op {} layer {} sub {} sched {:#x} {args}",
-        s.op, s.layer, s.sub, s.sched
-    )
 }
 
 #[cfg(test)]

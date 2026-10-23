@@ -132,11 +132,6 @@ mod linked {
     use crate::ple::PLE_EOS;
     use crate::spec;
 
-    /// Copy `bytes` bytes of device memory at `src` to the host at `dst`.
-    pub(crate) unsafe fn read_device(dst: *mut c_void, src: *const c_void, bytes: usize) {
-        unsafe { rt::mk_rt_memcpy(dst, src, bytes as u64, Copy::DeviceToHost as u32) };
-    }
-
     /// A new device buffer of `bytes`.
     unsafe fn device(bytes: u64) -> *mut f32 {
         let p = unsafe { rt::mk_rt_malloc(bytes) };
@@ -292,8 +287,9 @@ mod linked {
     }
 
     /// Set the token count of a restored empty context to `n` (`engine.hip` `restore_n`). The pooled keys are derived
-    /// state, not stored: the engine pools every complete block of the written index keys, so `pooled_n == n / 4`.
-    pub(crate) unsafe extern "C" fn set_n(engine: *mut c_void, c: *mut c_void, n: u32) {
+    /// state, not stored: the worker then pools every complete block of the written index keys (`host.rs`
+    /// `pool_context`), so `pooled_n == n / 4`.
+    pub(crate) unsafe extern "C" fn set_n(_engine: *mut c_void, c: *mut c_void, n: u32) {
         let context = unsafe { context(c) };
         assert!(!context.poisoned, "set_n({n}) on a poisoned context");
         assert_eq!(context.n, 0, "set_n({n}) on a context of {} tokens", context.n);
@@ -303,9 +299,6 @@ mod linked {
             context.max
         );
         context.n = n;
-        if n / IDX_RATIO > 0 {
-            unsafe { rt::mk_ctx_pool(engine, c) };
-        }
         context.pooled_n = n / IDX_RATIO;
     }
 }

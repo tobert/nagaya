@@ -39,15 +39,9 @@ const HIP_DEFINES: &[&str] = &["-DUSE_PROF_API=1", "-D__HIP_PLATFORM_AMD__=1", "
 
 /// The translation units of mk's target `mkengine` (mk `src/engine/CMakeLists.txt:1`).
 ///
-/// `extern.hip` is the thin extern layer that took the place of mk's C ABI `capi.hip` in milestone 15 step 4.
-const ENGINE_UNITS: &[&str] = &[
-    "engine.hip",
-    "mega.hip",
-    "blocks.hip",
-    "extern.hip",
-    "convert.hip",
-    "round.hip",
-];
+/// `extern.hip` is the thin extern layer that took the place of mk's C ABI `capi.hip` in milestone 15 step 4. mk's
+/// `blocks.hip` built the stages of the model's blocks; the Rust pass build (`src/pass.rs`) took its place in step 6.
+const ENGINE_UNITS: &[&str] = &["engine.hip", "mega.hip", "extern.hip", "convert.hip", "round.hip"];
 
 /// The compiler writes each object to stdout, and the script writes it to `OUT_DIR`.
 ///

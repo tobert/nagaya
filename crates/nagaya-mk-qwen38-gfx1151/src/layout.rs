@@ -7,11 +7,9 @@
 use std::mem::{offset_of, size_of};
 use std::path::Path;
 
-use crate::binding::MkSegment;
+use crate::binding::MkLaunch;
 use crate::context::MkContext;
-use crate::schedule::call::MkAccess;
 use crate::spec;
-use crate::table::{MkWeight, MkWeightTable};
 
 /// The `static_assert(<expression> == <number>, "<note>");` lines of `text`, as (expression, number).
 ///
@@ -63,47 +61,10 @@ fn assert_same(file: &str, rust: &[(&str, usize)]) {
 }
 
 #[test]
-fn the_weight_table_has_the_layout_of_weight_table_h() {
-    assert_same(
-        "weight_table.h",
-        &[
-            ("sizeof(mk_weight)", size_of::<MkWeight>()),
-            ("offsetof(mk_weight, name)", offset_of!(MkWeight, name)),
-            ("offsetof(mk_weight, type)", offset_of!(MkWeight, kind)),
-            ("offsetof(mk_weight, ne)", offset_of!(MkWeight, ne)),
-            ("offsetof(mk_weight, row_bytes)", offset_of!(MkWeight, row_bytes)),
-            ("offsetof(mk_weight, d)", offset_of!(MkWeight, d)),
-            ("sizeof(mk_weight_table)", size_of::<MkWeightTable>()),
-            (
-                "offsetof(mk_weight_table, n_weights)",
-                offset_of!(MkWeightTable, n_weights),
-            ),
-            ("offsetof(mk_weight_table, weights)", offset_of!(MkWeightTable, weights)),
-            (
-                "offsetof(mk_weight_table, schedule)",
-                offset_of!(MkWeightTable, schedule),
-            ),
-            (
-                "offsetof(mk_weight_table, footprint)",
-                offset_of!(MkWeightTable, footprint),
-            ),
-            ("sizeof(mk_access)", size_of::<MkAccess>()),
-            ("offsetof(mk_access, lo)", offset_of!(MkAccess, lo)),
-            ("offsetof(mk_access, hi)", offset_of!(MkAccess, hi)),
-            ("offsetof(mk_access, write)", offset_of!(MkAccess, write)),
-        ],
-    );
-}
-
-#[test]
-fn a_segment_and_the_buffer_numbers_are_those_of_extern_hip() {
+fn the_context_the_launch_result_and_the_buffer_numbers_are_those_of_extern_hip() {
     assert_same(
         "extern.hip",
         &[
-            ("sizeof(Segment)", size_of::<MkSegment>()),
-            ("offsetof(Segment, c)", offset_of!(MkSegment, context)),
-            ("offsetof(Segment, tokens)", offset_of!(MkSegment, tokens)),
-            ("offsetof(Segment, t)", offset_of!(MkSegment, t)),
             ("sizeof(bool)", size_of::<bool>()),
             ("sizeof(Context)", size_of::<MkContext>()),
             ("offsetof(Context, n)", offset_of!(MkContext, n)),
@@ -117,10 +78,17 @@ fn a_segment_and_the_buffer_numbers_are_those_of_extern_hip() {
             ("offsetof(Context, pooled_n)", offset_of!(MkContext, pooled_n)),
             ("offsetof(Context, ple_hist)", offset_of!(MkContext, ple_hist)),
             ("offsetof(Context, poisoned)", offset_of!(MkContext, poisoned)),
-            ("kMaxSegments", spec::MAX_SEGMENTS as usize),
             ("model::kVocab", spec::VOCAB as usize),
             ("model::kMaxPassTokens", spec::MAX_PASS_TOKENS as usize),
             ("model::kMaxContext", spec::MAX_CONTEXT as usize),
+            ("sizeof(LaunchResult)", size_of::<MkLaunch>()),
+            ("offsetof(LaunchResult, status)", offset_of!(MkLaunch, status)),
+            ("offsetof(LaunchResult, site)", offset_of!(MkLaunch, site)),
+            ("offsetof(LaunchResult, wg)", offset_of!(MkLaunch, wg)),
+            (
+                "offsetof(LaunchResult, watchdog_stopped)",
+                offset_of!(MkLaunch, watchdog_stopped),
+            ),
         ],
     );
 }

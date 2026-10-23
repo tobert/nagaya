@@ -1,61 +1,21 @@
 // SPDX-License-Identifier: MIT
-// The engine: weights on the GPU, contexts, and passes built as stage lists (stage.h).
+// The engine's runtime layer: the launches of a pass's stages under the control block and the watchdog, the weight
+// relayout, and the bf16 rounding of a context. The Rust host builds the stages and decides every rule (milestone 15
+// step 6: src/pass.rs, src/worker.rs).
 #pragma once
 #include <hip/hip_runtime.h>
 
-#include <cstring>
-#include <memory>
+#include <cstdint>
 #include <string>
-#include <unordered_map>
-#include <vector>
 
-#include "weight_table.h"
 #include "model.h"
 #include "rt.h"
 #include "stage.h"
 
 namespace mk {
-// A pass's quantized qmm stages run on the f16 WMMA path (S2) by default (Amy, 2026-09-27: "flip fast to
-// default"); MK_FAST_QMM=0 builds the exact f32 engine, which check-m3 tests against the reference. Read at
-// every pass build; any value but 0 or 1 stops the program.
-// A bulky weight matrix (>= 8 MiB): the weight-policy experiment applies to these and to every expert matrix;
-// routers, hyper-connection and other small matrices keep plain loads (Amy: "only on the bulky weights, leave
-// routers and other small stuff alone").
-inline uint32_t bulky_weight(uint64_t row_bytes, uint32_t rows) { return row_bytes * rows >= (8ull << 20) ? 1u : 0u; }
 
-inline bool fast_qmm_enabled() {
-  const char *e = getenv("MK_FAST_QMM");
-  if (!e || !strcmp(e, "1")) return true;
-  if (!strcmp(e, "0")) return false;
-  MK_DIE("MK_FAST_QMM=%s: want 0 or 1", e);
-}
-}  // namespace mk
-
-namespace mk {
-
-struct Tensor {
-  uint32_t type = 0;
-  uint64_t ne[3] = {1, 1, 1};
-  uint64_t row_bytes = 0;  // bytes per ne0 row
-  const uint8_t *d = nullptr;
-  const float *f32() const;
-};
-
-struct Layer {
-  // hyper-connections: [0] attention side, [1] MoE side
-  Tensor hc_norm[2], hc_down[2], hc_up[2], hc_inject[2];
-  // gated DeltaNet
-  Tensor qkv, zgate, alpha, beta, ssm_a, dt_bias, conv1d, ssm_norm, ssm_out;
-  // attention
-  Tensor q, k, v, o, q_norm, k_norm, idx_q, idx_k, idx_q_norm, idx_k_norm;
-  // MoE
-  Tensor gate_inp, gate_inp_shexp, gate_shexp, up_shexp, down_shexp, gate_exps, up_exps, down_exps;
-  // PLE (layer 1)
-  Tensor ple_key, ple_value, ple_norm_key, ple_norm_query, ple_norm_conv, ple_conv1d;
-};
-
-// A context: everything a pass continues from. The Rust host makes, frees, reads and writes it (src/context.rs, which
-// mirrors this layout as MkContext; extern.hip states it). A pass reads it and advances it.
+// A context: everything a pass continues from. The Rust host makes, reads, writes, builds and advances it
+// (src/context.rs, which mirrors this layout as MkContext; extern.hip states it). round_gdn_bf16 reads it here.
 struct Context {
   uint32_t n = 0;       // tokens so far
   uint32_t max = 0;     // K/V capacity
@@ -75,35 +35,6 @@ struct Context {
   bool poisoned = false;
 };
 
-// One segment of a pass (goal 04 S): t tokens continuing context c. A pass of several segments runs every weight stage
-// once over all their rows (in the order given) and each state stage (PLE conv, GDN conv and core, attention prep,
-// select and attend) once per segment: the stage a pass of that segment alone would run, on its rows and its context.
-// So each segment gets the bits a pass of it alone gives (tests/engine/test_segments.py).
-struct Segment {
-  Context *c;
-  const int32_t *tokens;
-  uint32_t t;
-};
-// The most segments in one pass: the head's logits scratch is kMaxSegments x kVocab floats (15.9 MB).
-constexpr uint32_t kMaxSegments = 16;
-
-// The pass's named device buffers: one per name, allocated (zeroed) at its first ask and kept for the engine's life.
-// A later ask of a name for more floats than its buffer holds dies: stages built on it would run past its end.
-struct ScratchPool {
-  struct Buf {
-    float *p;
-    size_t n;
-  };
-  std::unordered_map<std::string, Buf> bufs;
-  float *get(const char *name, size_t n);
-  void free_all();
-};
-
-struct PassOut {
-  double ms = 0;
-  std::string error;  // non-empty: the pass stopped on a spin-timeout (set_recover_spin_timeouts); no outputs, contexts poisoned
-};
-
 // The megakernel's entry point (mega.hip; its own translation unit, see engine.hip).
 const void *mega_kernel();
 // Re-lay out an IQ3_S matrix (rows x k, GGUF row-major at src) into read-once tiles at dst (tiles.h); synchronizes.
@@ -114,93 +45,39 @@ void relayout_q8_tiles(const uint8_t *src, uint8_t *dst, uint32_t rows, uint32_t
 void relayout_q6_tiles(const uint8_t *src, uint8_t *dst, uint32_t rows, uint32_t k);
 // The same for an IQ4_NL matrix (the expert down matrices).
 void relayout_iq4_tiles(const uint8_t *src, uint8_t *dst, uint32_t rows, uint32_t k);
-// A tiled matrix is addressed by 16-row group from its first byte, so a matmul must cover all of its rows.
-inline void check_whole_tiled(const Tensor &w, uint32_t n) {
-  if ((w.type == q::Q8_0_TILES || w.type == q::IQ3_S_TILES || w.type == q::Q6_K_TILES || w.type == q::IQ4_NL_TILES) && w.ne[1] * w.ne[2] != n)
-    MK_DIE("qmm over %u rows of a tiled matrix with %lu", n, (unsigned long)(w.ne[1] * w.ne[2]));
-}
 const void *stage_kernel();
-// The rope table of the attention prep, made at its first use (blocks.hip).
-const float *inv_freq_table();
-WatchdogConfig engine_watchdog_config();  // 10 s, or MK_WATCHDOG_DEADLINE_S (a test knob)
+
+// How a launch sequence ended: the control block's status (rt.h Status), the site and the workgroup that recorded it,
+// and 1 when the watchdog asked the kernel to stop (its deadline or the memory floor).
+struct LaunchResult {
+  uint32_t status, site, wg, watchdog_stopped;
+};
 
 class Engine {
  public:
-  // Takes the weights of the arena that the Rust host loaded (weight_table.h, src/arena.rs).
-  explicit Engine(const mk_weight_table *table);
+  // The watchdog's deadline for each launch sequence, in seconds (the Rust host reads MK_WATCHDOG_DEADLINE_S).
+  explicit Engine(double watchdog_deadline_s);
   ~Engine();
-  // Pools every complete block of c's index keys (blocks [0, c->n / 4)), one launch for each QSA layer, outside any pass:
-  // the restore of a context in src/context.rs. c->pooled_n is the caller's to set.
-  void pool_context(const Context *c);
+  // One cooperative launch of the megakernel over the n stages at ds (host memory the device reads), with grid
+  // workgroups and the skip word of mega.hip.
+  LaunchResult launch_fused(const Stage *ds, uint32_t n, int grid, uint32_t skip);
+  // One launch of k_stage for each of the n stages at ds.
+  LaunchResult launch_each(const Stage *ds, uint32_t n);
   // The rounding rule gdn-bf16-v1 (docs/park.md; round.hip): c's GDN recurrent state rounded in place to bf16 (round to
   // nearest, ties to even, on the f32 bit pattern; kept as f32 with the low 16 bits zero). Only the recurrent state moves.
   // A non-finite element, or a finite one that rounds to infinity, stops the program naming the first one (layer, head,
   // index, value); so does a poisoned context.
   void round_gdn_bf16(Context *c);
-  // "" if the segments can run as one pass, else the first problem: 1..kMaxSegments segments, each of t >= 1 tokens,
-  // kMaxPassTokens in all, each fitting its context's capacity, and no two sharing a K/V or index-key buffer (one
-  // context twice: they would write the same cells).
-  std::string segments_problem(const Segment *s, uint32_t n) const;
-  // One fused pass of n segments (dies on segments_problem), advancing each context. logits_out: [n][kVocab], each
-  // segment's logits at its last token (want_logits), or null when want_logits is false. ple: [t][kEmbd], the PLE rows
-  // of the pass's t tokens, segment after segment (src/ple.rs).
-  PassOut pass_segments(const Segment *s, uint32_t n, bool want_logits, float *logits_out, const float *ple);
-  // The live comparison of milestone 15 step 6: the C++ build of a pass into out (at most cap stages; returns the count),
-  // and a pass that runs the n_stages stages that the Rust host built. Both die on segments_problem.
-  uint32_t build_into(const Segment *s, uint32_t n, bool want_logits, Stage *out, uint32_t cap);
-  PassOut pass_stages(const Segment *s, uint32_t n, bool want_logits, float *logits_out, const float *ple, const Stage *stages,
-                      uint32_t n_stages);
-  // The named scratch buffer of the pass (ScratchPool::get), and the fixed device buffers of the pass.
-  float *scratch_buffer(const char *name, size_t n) { return scratch(name, n); }
-  const int32_t *tokens_buffer() const { return d_tokens_; }
-  const uint32_t *head_rows_buffer() const { return d_head_rows_; }
-  // Off (the default): a pass that stops early for any reason stops the program. On: a fused pass that stops on a
-  // spin-timeout (a grid barrier's bounded wait ran out, as under another tenant's GPU contention; PLAN.md Problems
-  // 2026-10-01 11:47) returns instead, with last_error() set, and poisons every context it was extending
-  // (Context::poisoned); the next pass starts from ControlBlock's full reset. A device trap, the watchdog's abort, or a
-  // spin-timeout the watchdog also asked to stop still stop the program.
-  void set_recover_spin_timeouts(bool on) { recover_spin_timeouts_ = on; }
-  // The last pass's error ("" after a clean pass).
-  const std::string &last_error() const { return last_error_; }
 
  private:
-  void wire();
-  Tensor get(const std::string &name) const;
-  PassOut run_pass(const Segment *s, uint32_t n, bool want_logits, float *logits_out, const float *ple,
-                   const Stage *stages = nullptr, uint32_t n_stages = 0);
-  // t: the pass's tokens, the sum of the segments'.
-  std::vector<Stage> build(const Segment *seg, uint32_t ns, uint32_t t, bool want_logits, std::vector<uint32_t> *layer_ends);
-  std::vector<Stage> build_stages(const Segment *seg, uint32_t ns, uint32_t t, bool want_logits, std::vector<uint32_t> *layer_ends);
-  // The model's three blocks, appended as stages: mixed [T, E] in, out [T, E] out. The state stages, one per segment.
-  void add_gdn(std::vector<Stage> &S, const Segment *seg, uint32_t ns, uint32_t il, uint32_t t, const float *mixed, float *out);
-  void add_attn(std::vector<Stage> &S, const Segment *seg, uint32_t ns, uint32_t il, uint32_t t, const float *mixed, float *out);
-  void add_moe(std::vector<Stage> &S, uint32_t il, uint32_t t, const float *mixed, float *out);
-  // One pool stage per QSA layer for blocks [b0, c->n / 4) of c's cache (restore_n's one-off launch; blocks.hip).
-  std::vector<Stage> pool_stages(const Context *c, uint32_t b0);
-  // Runs stages one launch each under the control block and the watchdog, outside any pass.
-  void run_stages_now(const std::vector<Stage> &S);
-
-  ScheduleCalls table_;
-  std::unordered_map<std::string, Tensor> w_;
-  Layer layers_[model::kLayers];
-  Tensor tok_embd_, out_hc_norm_, out_hc_down_, out_hc_up_, output_;
-  // pass scratch, sized for kMaxPassTokens
-  ScratchPool scratch_;
-  int32_t *d_tokens_ = nullptr;
-  uint32_t *d_head_rows_ = nullptr;  // [kMaxSegments]: a pass of several segments' last rows (the head's x_row)
-  Stage *d_stages_ = nullptr;
-  size_t stage_cap_ = 0;
+  void make_event();
+  LaunchResult result();
   ControlBlock cb_;
-  // One watchdog thread for the engine's life, begun and finished around each launch sequence (goal 03 C). One 10 s
-  // deadline serves both: measured unfused passes (256 tokens, empty or 3584-token context, 2026-09-30, quiet GPU)
-  // take 0.62-0.74 s, fused ones 0.48-0.58 s, so 10 s is >10x the longest and still far under the gfx ring timeout and the
-  // 29 minutes an unwatched unfused pass once held the GPU.
-  Watchdog wd_{cb_, engine_watchdog_config(), /*armed=*/false};
+  // One watchdog thread for the engine's life, begun and finished around each launch sequence (goal 03 C). Measured
+  // passes (256 tokens, empty or 3584-token context, 2026-09-30, quiet GPU) take 0.48-0.74 s, so the 10 s default is
+  // >10x the longest and still far under the gfx ring timeout.
+  Watchdog wd_;
   hipEvent_t launched_ev_ = nullptr;  // recorded after each launch (the watchdog's "kernel still runs" query)
-  bool recover_spin_timeouts_ = false;
-  std::string last_error_;  // the last pass's error, "" if it was clean
-  PassOut failed_pass(const Segment *seg, uint32_t ns, const char *why, double ms);
-  float *scratch(const char *name, size_t n);
 };
 
 }  // namespace mk

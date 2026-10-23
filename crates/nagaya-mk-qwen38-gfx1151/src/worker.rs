@@ -15,13 +15,11 @@ use nagaya_abi::{Identity, Limits};
 
 use crate::arena::{self, Arena};
 use crate::binding::{self, Binding, MkSegment, PassStop};
-use crate::context::MkContext;
 use crate::gguf;
-use crate::pass::{self, Builder, Knobs, PassBuffers, Scratch, Seg, Weights};
+use crate::host::{self, Host, LaunchKnobs, PassIn};
+use crate::pass::{self, Knobs, Weights};
 use crate::ple::{self, PleTable};
 use crate::spec;
-use crate::stage::Stage;
-use crate::table::WeightTable;
 
 /// An error from the mk binding. The message says what failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -165,9 +163,9 @@ struct ThreadState {
     model: Option<gguf::Model>,
     ple: Option<PleTable>,
     _arena: Option<Arena>,
-    /// The arena's tensors by role, and the fixed device buffers of a pass, for the pass build.
+    /// The arena's tensors by role, and the host side of the pass: the scratch pool and the fixed buffers.
     weights: Option<Weights>,
-    buffers: Option<PassBuffers>,
+    host: Option<Host>,
     contexts: HashMap<u64, Context>,
     next_id: u64,
     fast_qmm: bool,
@@ -512,6 +510,25 @@ fn removed_knob_problem(is_set: impl Fn(&str) -> bool) -> Result<(), MkError> {
     }
 }
 
+/// The value of an environment variable as text. A value that is not UTF-8 stays visible, so a knob refuses it.
+fn env_text(name: &str) -> Option<String> {
+    std::env::var_os(name).map(|value| value.into_string().unwrap_or_else(|_| "<not UTF-8>".to_owned()))
+}
+
+/// The watchdog's deadline for each launch sequence: 10 s, or `MK_WATCHDOG_DEADLINE_S` (a test knob) in (0, 3600].
+/// The longest pass is a bit over a second (mk PLAN.md).
+fn watchdog_deadline(value: Option<&str>) -> Result<f64, MkError> {
+    let Some(value) = value else {
+        return Ok(10.0);
+    };
+    match value.parse::<f64>() {
+        Ok(seconds) if seconds > 0.0 && seconds <= 3600.0 => Ok(seconds),
+        _ => Err(MkError::new(format!(
+            "MK_WATCHDOG_DEADLINE_S={value}: want seconds in (0, 3600]"
+        ))),
+    }
+}
+
 /// The host safety floor. mk keeps 12 GiB of MemAvailable free (spec 4.7; mk `service/contexts.py`, `FLOOR_BYTES`).
 const MEMORY_FLOOR: u64 = 12 << 30;
 
@@ -639,7 +656,6 @@ impl ThreadState {
         let ple = PleTable::new(&model)?;
         let (planned, arena_bytes) = arena::plan(model.tensors(), tiles)?;
         let arena = unsafe { arena::create(&binding, &model, &planned, arena_bytes, tiles) }?;
-        let table = WeightTable::new(&planned, &arena)?;
         let tensors = planned
             .iter()
             .map(|p| {
@@ -647,48 +663,28 @@ impl ThreadState {
                     kind: p.kind,
                     ne: p.ne,
                     row_bytes: p.row_bytes,
-                    // SAFETY: the plan puts each tensor inside the arena (WeightTable::new checks it).
-                    d: unsafe { arena.ptr.add(p.offset as usize) },
+                    d: arena.tensor(p),
                 };
                 (p.name.clone(), tensor)
             })
             .collect();
         let weights = Weights::new(&tensors)?;
-        let engine = unsafe { (binding.engine_open)(table.as_ptr()) };
-        drop(table);
+        let deadline = watchdog_deadline(env_text("MK_WATCHDOG_DEADLINE_S").as_deref())?;
+        let engine = unsafe { (binding.engine_open)(deadline) };
         if engine.is_null() {
             return Err(MkError::new("mk_engine_open returned no engine"));
         }
+        // The fixed buffers of a pass, as mk's wire made them at load: before the scratch probe.
+        let host = unsafe { Host::new(&binding) };
 
-        // mk stops the program on a pass that stops early by default (engine.h:215-220). Opt in, so a spin-timeout
-        // returns with a last error and poisons the contexts, and the wrapper reports PassStatus::Poison (D6, 8.2).
-        // mk has no query for this flag, so a test cannot observe the call. A forced spin-timeout needs contention.
-        unsafe { (binding.recover_spin_timeouts)(engine, true) };
-        let mut buffers = PassBuffers {
-            tokens: std::ptr::null(),
-            head_rows: std::ptr::null(),
-            inv_freq: std::ptr::null(),
-        };
-        unsafe {
-            (binding.pass_buffers_cpp)(
-                engine,
-                &mut buffers.tokens,
-                &mut buffers.head_rows,
-                &mut buffers.inv_freq,
-            )
-        };
-        // The Rust rope table must equal the C++ one, which the passes read (the live comparison of step 6).
-        #[cfg(feature = "hip")]
-        rope_problem(buffers.inv_freq).map_err(MkError::new)?;
-
-        let state = Self {
+        let mut state = Self {
             binding,
             engine,
             model: Some(model),
             ple: Some(ple),
             _arena: Some(arena),
             weights: Some(weights),
-            buffers: Some(buffers),
+            host: Some(host),
             contexts: HashMap::new(),
             next_id: 0,
             fast_qmm,
@@ -727,7 +723,7 @@ impl ThreadState {
     /// A pass of 1 token asks for `qmm_part2`, and a pass of 17 or more tokens does not (mk `engine.hip:1187`). The
     /// second pass has the 255 tokens that remain, with logits, so it asks for every other buffer at `kMaxPassTokens`.
     /// mk keeps the pool for the engine's life. The probe context is freed before the second reading.
-    fn measure_pass_scratch(&self) -> Result<u64, String> {
+    fn measure_pass_scratch(&mut self) -> Result<u64, String> {
         let before = self.free_device_bytes()?;
         let context = unsafe { (self.binding.ctx_new)(self.engine, spec::PROBE_CAPACITY) };
         if context.is_null() {
@@ -746,7 +742,7 @@ impl ThreadState {
     }
 
     /// Run the two probe passes on one context: 1 token, then the rest, with logits.
-    fn probe_passes(&self, context: *mut c_void) -> Result<(), String> {
+    fn probe_passes(&mut self, context: *mut c_void) -> Result<(), String> {
         let tokens: Vec<i32> = (1..=spec::PROBE_CAPACITY as i32).collect();
         let mut start = 0;
         for (count, want_logits) in probe_shapes(spec::PROBE_CAPACITY) {
@@ -758,15 +754,12 @@ impl ThreadState {
     }
 
     /// Run one probe pass: `tokens` at the context's end, with the logits row when asked.
-    fn probe_pass(&self, context: *mut c_void, tokens: &[i32], want_logits: bool) -> Result<(), String> {
+    fn probe_pass(&mut self, context: *mut c_void, tokens: &[i32], want_logits: bool) -> Result<(), String> {
         let segments = binding::segments(&[context], &[tokens.len() as u32], tokens);
         let rows = usize::from(want_logits);
         let mut logits = vec![0f32; rows * spec::VOCAB as usize];
         let logits = want_logits.then_some(logits.as_mut_slice());
-        let ple = self.ple_rows(&segments)?;
-        let knobs = self.knobs(want_logits)?;
-        let build = || self.build(&segments, want_logits, knobs);
-        match unsafe { self.binding.pass_segments(self.engine, &segments, logits, &ple, build) } {
+        match self.run_pass(&segments, logits) {
             Ok(_ms) => Ok(()),
             Err(PassStop::Refused(why)) => Err(format!("the pass scratch probe was refused: {why}")),
             Err(PassStop::Stopped(why)) => Err(format!("the pass scratch probe stopped: {why}")),
@@ -1132,6 +1125,11 @@ impl ThreadState {
             ));
         }
         unsafe { (self.binding.set_n)(self.engine, ptr, n) };
+        // The pooled keys are derived state: pool every complete block of the written index keys.
+        if let (Some(host), Some(weights)) = (self.host.as_mut(), self.weights.as_ref()) {
+            let context = unsafe { &*(ptr as *const crate::context::MkContext) };
+            unsafe { host::pool_context(&self.binding, self.engine, host, weights, context) };
+        }
         // mk returns nothing here. A call that left the context poisoned is a failure (spec 6.8), so check first.
         if unsafe { (self.binding.ctx_poisoned)(ptr) } {
             return Call::Failed("set_n poisoned the context".to_owned());
@@ -1272,10 +1270,7 @@ impl ThreadState {
         let rows = if request.want_logits { count } else { 0 };
         let mut logits = vec![0f32; rows * spec::VOCAB as usize];
         let buffer = request.want_logits.then_some(logits.as_mut_slice());
-        let ple = self.ple_rows(&segments).map_err(problem)?;
-        let knobs = self.knobs(request.want_logits).map_err(problem)?;
-        let build = || self.build(&segments, request.want_logits, knobs);
-        let ms = match unsafe { self.binding.pass_segments(self.engine, &segments, buffer, &ple, build) } {
+        let ms = match self.run_pass(&segments, buffer) {
             Ok(ms) => ms,
             Err(PassStop::Refused(message)) => return Err(problem(message)),
             Err(PassStop::Stopped(message)) => return Err(PassProblem { message, poison: true }),
@@ -1287,95 +1282,49 @@ impl ThreadState {
     }
 }
 
-/// The difference of the rope table at `device` from the Rust table, or `Ok`.
-#[cfg(feature = "hip")]
-fn rope_problem(device: *const f32) -> Result<(), String> {
-    let mut table = pass::inv_freq();
-    unsafe { crate::context::read_device(table.as_mut_ptr().cast(), device.cast(), std::mem::size_of_val(&table)) };
-    let want = pass::inv_freq();
-    if table.iter().map(|v| v.to_bits()).ne(want.iter().map(|v| v.to_bits())) {
-        return Err(format!("the rope table differs: C++ {table:?}, Rust {want:?}"));
-    }
-    Ok(())
-}
-
-/// The C++ engine's scratch pool, which the Rust build asks for the same buffers in the live comparison.
-struct CppScratch<'a> {
-    binding: &'a Binding,
-    engine: *mut c_void,
-}
-
-impl Scratch for CppScratch<'_> {
-    fn get(&mut self, name: &str, floats: usize) -> *mut f32 {
-        let name = std::ffi::CString::new(name).expect("a scratch name holds no NUL");
-        let p = unsafe { (self.binding.scratch_cpp)(self.engine, name.as_ptr(), floats as u64) };
-        assert!(!p.is_null(), "mk_scratch gave no buffer for {name:?}");
-        p
-    }
-}
-
-/// The most stages that the C++ build may give in the live comparison.
-const COMPARE_CAP: u32 = 8192;
-
 impl ThreadState {
     /// The knobs of the pass build from the environment. A bad value refuses the pass.
     fn knobs(&self, want_logits: bool) -> Result<Knobs, String> {
-        let knobs = Knobs::from(self.fast_qmm, |name| {
-            std::env::var_os(name).map(|value| value.into_string().unwrap_or_else(|_| "<not UTF-8>".to_owned()))
-        })?;
+        let knobs = Knobs::from(self.fast_qmm, env_text)?;
         if knobs.debug_layers > 0 && want_logits {
             return Err("MK_DEBUG_LAYERS builds no head; ask for no logits".to_owned());
         }
         Ok(knobs)
     }
 
-    /// The stages of a pass, built in Rust (`pass.rs`). The live comparison of milestone 15 step 6 also asks the C++
-    /// engine for its build of the same pass, and stops the program on the first stage that differs.
-    fn build(&self, segments: &[MkSegment], want_logits: bool, knobs: Knobs) -> Vec<Stage> {
-        let segs: Vec<Seg> = segments
-            .iter()
-            .map(|segment| Seg {
-                c: segment.context as *mut MkContext,
-                t: segment.t,
-            })
-            .collect();
-        let t: u32 = segs.iter().map(|segment| segment.t).sum();
-        let mut scratch = CppScratch {
-            binding: &self.binding,
-            engine: self.engine,
-        };
-        let mut builder = Builder {
-            w: self.weights.as_ref().expect("an open engine has its weights"),
-            scratch: &mut scratch,
-            buffers: self.buffers.expect("an open engine has its pass buffers"),
-            knobs,
-        };
-        let built = builder.build(&segs, t, want_logits);
-        let mut cpp = vec![pass::st(0, 0); COMPARE_CAP as usize];
-        let n = unsafe {
-            (self.binding.build_cpp)(
-                self.engine,
-                segments.as_ptr(),
-                segments.len() as u32,
-                want_logits,
-                cpp.as_mut_ptr(),
-                COMPARE_CAP,
-            )
-        } as usize;
-        for (index, (rust, cpp)) in built.stages.iter().zip(&cpp[..n]).enumerate() {
-            let (rust, cpp) = (pass::stage_text(rust), pass::stage_text(cpp));
-            assert!(
-                rust == cpp,
-                "the live comparison: stage {index} of the pass differs\n  Rust {rust}\n  C++  {cpp}"
+    /// One pass of `segments` (`host.rs` `run_pass`), after the checks that refuse it: the segments, the poison, the
+    /// knobs and the PLE rows. `logits` takes one row of `VOCAB` values for each segment.
+    fn run_pass(&mut self, segments: &[MkSegment], logits: Option<&mut [f32]>) -> Result<f64, PassStop> {
+        if let Some(problem) = host::segments_problem(segments) {
+            return Err(PassStop::Refused(problem));
+        }
+        for (index, segment) in segments.iter().enumerate() {
+            if unsafe { (self.binding.ctx_poisoned)(segment.context) } {
+                return Err(PassStop::Refused(format!(
+                    "segment {index}: the context is poisoned; free it"
+                )));
+            }
+        }
+        if let Some(logits) = &logits {
+            assert_eq!(
+                logits.len(),
+                segments.len() * spec::VOCAB as usize,
+                "the logits buffer must hold one row of VOCAB values for each segment"
             );
         }
-        assert_eq!(
-            built.stages.len(),
-            n,
-            "the live comparison: Rust built {} stages, C++ {n}",
-            built.stages.len()
-        );
-        built.stages
+        let knobs = self.knobs(logits.is_some()).map_err(PassStop::Refused)?;
+        let launch = LaunchKnobs::from(env_text).map_err(PassStop::Refused)?;
+        let ple = self.ple_rows(segments).map_err(PassStop::Refused)?;
+        let (Some(host), Some(weights)) = (self.host.as_mut(), self.weights.as_ref()) else {
+            return Err(PassStop::Refused("this engine has no pass host".to_owned()));
+        };
+        let input = PassIn {
+            segments,
+            ple: &ple,
+            knobs,
+            launch,
+        };
+        unsafe { host::run_pass(&self.binding, self.engine, host, weights, input, logits) }
     }
 
     /// The PLE rows of a pass, segment after segment: each segment's tokens after its context's PLE history.
@@ -1519,7 +1468,7 @@ mod tests {
             ple: None,
             _arena: None,
             weights: None,
-            buffers: None,
+            host: None,
             contexts,
             next_id: 2,
             fast_qmm: true,
