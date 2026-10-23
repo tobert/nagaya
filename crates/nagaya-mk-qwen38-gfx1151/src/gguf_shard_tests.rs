@@ -2,8 +2,8 @@
 //!
 //! `tests/fixtures/dequant/shards.txt` holds what mk's C++ reader found in the three shards: each tensor's record
 //! and the SHA-256 of its dequant. `tools/mk_dequant_digests.cpp` wrote it, with mk's `gguf.cpp` and `dequant.cpp` as
-//! milestone 15 step 1 copied them from mk `555a2a3`. A machine with no copy of the shards skips these tests
-//! (`nagaya-text-qwen38/tests/common/model.rs`).
+//! milestone 15 step 1 copied them from mk `555a2a3`. The tool and the C++ copy are in commit `7d474c2`. A machine
+//! with no copy of the shards skips these tests (`nagaya-text-qwen38/tests/common/model.rs`).
 
 use std::path::PathBuf;
 

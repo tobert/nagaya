@@ -2,7 +2,8 @@
 //!
 //! Each body is a port of ggml's `dequantize_row_*` (`ggml/src/ggml-quants.c`, llama.cpp `5cf3a3528`), through mk's
 //! `src/gguf/dequant.cpp` at mk `555a2a3`. The ports keep ggml's float operations and their order, so the bits are
-//! equal. The tests compare the bits with digests that mk's C++ copy wrote (`tools/mk_dequant_digests.cpp`).
+//! equal. The tests compare the bits with digests that mk's C++ copy wrote. The tool that wrote them,
+//! `tools/mk_dequant_digests.cpp`, and the C++ copy are in commit `7d474c2`; a later commit removed both.
 //!
 //! The tables and the f16 conversion are verbatim copies of ggml (`ggml-common.h`, `ggml-impl.h`), MIT licensed:
 //!
@@ -340,7 +341,7 @@ mod tests {
 
     use super::{GgmlType, bf16_to_fp32, dequant_f32, fp16_to_fp32};
 
-    /// The digests that mk's C++ copy wrote (`tools/mk_dequant_digests.cpp blocks`).
+    /// The digests that mk's C++ copy wrote (`tools/mk_dequant_digests.cpp blocks`, commit `7d474c2`).
     const BLOCKS: &str = include_str!("../tests/fixtures/dequant/blocks.txt");
 
     /// The blocks of each type in the fixture.

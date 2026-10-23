@@ -3,6 +3,8 @@
 //! The fixture holds the nine entries of mk's `build/compile_commands.json` for the units of `libmkengine.so`, from
 //! mk's CMake build at mk commit `555a2a3`. The float flags are part of the model's definition, and the conformance
 //! gates compare bits. Thus a flag that differs fails here, before a GPU run.
+//!
+//! The build compiles seven of the nine. The Rust reader took the place of mk's two GGUF units in milestone 15 step 3.
 
 #[allow(dead_code)]
 #[path = "../build.rs"]
@@ -20,6 +22,18 @@ fn each_compile_is_the_compile_of_mk_cmake_build() {
     )
     .expect("read the fixture");
     let entries: Vec<serde_json::Value> = serde_json::from_str(&text).expect("the fixture is a JSON list");
+    let (gguf, entries): (Vec<_>, Vec<_>) = entries.into_iter().partition(|entry| {
+        entry["file"]
+            .as_str()
+            .expect("an entry names its file")
+            .starts_with(&format!("{MK_SRC}/gguf/"))
+    });
+    let gguf: Vec<&str> = gguf.iter().map(|entry| entry["file"].as_str().unwrap()).collect();
+    assert_eq!(
+        gguf,
+        [format!("{MK_SRC}/gguf/gguf.cpp"), format!("{MK_SRC}/gguf/dequant.cpp")],
+        "only mk's two GGUF units are left out"
+    );
     let src = Path::new("/nagaya/hip/src");
     let out = Path::new("/out");
     let units = build::units(src, out);
