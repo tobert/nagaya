@@ -12,7 +12,9 @@ mod gguf;
 mod gguf_shard_tests;
 #[cfg(test)]
 mod layout;
+mod schedule;
 mod spec;
+mod stage;
 mod table;
 mod worker;
 

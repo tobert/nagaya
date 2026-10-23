@@ -236,7 +236,7 @@ class Engine {
   // The last pass's final hidden state at its last token (the final mixer's output: the output head's input), kEmbd
   // floats into out; dies if no pass has run, or if the last pass had several segments (pass_segments returns theirs).
   void last_hidden(float *out);
-  std::vector<uint8_t> det_bar_;  // per stage of the last fused pass: 1 = a grid barrier after it (stage_sched.h)
+  std::vector<uint8_t> det_bar_;  // per stage of the last fused pass: 1 = a grid barrier after it (src/schedule.rs)
   const Layer &layer(uint32_t il) const { return layers_[il]; }
   int arena_fd() const { return arena_fd_; }
   uint64_t arena_bytes() const { return arena_bytes_; }

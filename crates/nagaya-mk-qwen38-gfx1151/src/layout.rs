@@ -8,6 +8,7 @@ use std::mem::{offset_of, size_of};
 use std::path::Path;
 
 use crate::binding::MkSegment;
+use crate::schedule::call::MkAccess;
 use crate::spec;
 use crate::table::{MkTensor, MkTensorTable};
 
@@ -121,6 +122,18 @@ fn the_tensor_table_has_the_layout_of_tensor_table_h() {
                 "offsetof(mk_tensor_table, dequant_f32)",
                 offset_of!(MkTensorTable, dequant_f32),
             ),
+            (
+                "offsetof(mk_tensor_table, schedule)",
+                offset_of!(MkTensorTable, schedule),
+            ),
+            (
+                "offsetof(mk_tensor_table, footprint)",
+                offset_of!(MkTensorTable, footprint),
+            ),
+            ("sizeof(mk_access)", size_of::<MkAccess>()),
+            ("offsetof(mk_access, lo)", offset_of!(MkAccess, lo)),
+            ("offsetof(mk_access, hi)", offset_of!(MkAccess, hi)),
+            ("offsetof(mk_access, write)", offset_of!(MkAccess, write)),
         ],
     );
 }

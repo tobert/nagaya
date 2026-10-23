@@ -4,7 +4,7 @@
 // the one that compiles k_stage, runs the ops without it. Both paths give the same bits. Before any ops include.
 #define MK_EXPERT_LOOKAHEAD 0
 #include "engine.h"
-#include "stage_sched.h"
+#include "stage_layout.h"
 #include "device.h"
 
 #include <atomic>
@@ -905,7 +905,7 @@ Stage rms_stage(uint32_t layer, const float *x, float *y, const Tensor &g, uint3
 // stage and its sum are adjacent, with a barrier (fused) or a launch (unfused) between any two stages. The split
 // depends on the matrix shape alone, never on T, so a token's bits don't depend on the pass it's in.
 // own_ranges (the barrier schedule, MK_ELIDE): each split gets its own partial range, dealt round the buffer, so two
-// splits and their sums can share a barrier-free segment (stage_sched.h); ranges still in use when the buffer wraps
+// splits and their sums can share a barrier-free segment (src/schedule.rs); ranges still in use when the buffer wraps
 // are hazards the schedule keeps in order. The values, and so the bits, don't depend on where the partials live.
 static void split_k(std::vector<Stage> &S, std::vector<uint32_t> *layer_ends, float *part, size_t part_floats, bool own_ranges) {
   std::vector<Stage> out;
@@ -1053,14 +1053,30 @@ static void fuse_hc(std::vector<Stage> &S, std::vector<uint32_t> *layer_ends) {
   S.swap(out);
 }
 
+// The footprint of a stage from the Rust schedule (src/schedule.rs), through the table's call, without a K/V reach:
+// its accesses, or a fence.
+struct StageFootprint {
+  bool fence = false;
+  std::vector<mk_access> acc;
+};
+static StageFootprint rust_footprint(const TensorTable &table, const Stage &s) {
+  constexpr uint32_t kCap = 16;
+  mk_access acc[kCap];
+  uint32_t fence = 0;
+  const uint32_t n = table.footprint(&s, acc, kCap, &fence);
+  StageFootprint f;
+  f.fence = fence != 0;
+  f.acc.assign(acc, acc + n);
+  return f;
+}
+
 // hc up + hc_mix as one stage (docs/narrow.md N1; qmmh.h QmmArgs::yout). hc_mix's only input from its layer's work is `up`,
 // which the hc up matmul writes a stage or two earlier (the inject matmul sits between them). The matmul moves to hc_mix's
 // slot and its epilogue does hc_mix: mixed and inject come out of the one stage, `up` is never written, and one level
 // (a grid barrier, a stage-argument fetch, a load round trip) goes. The inject matmul stays before: it writes z, which the
 // fused stage reads. Every float op is the same ones in the same order (small.h hc_mix_elem; the matmul's accumulators are
 // bit-for-bit the values it used to store), so the bits don't change. Any t: the epilogue handles every token tile.
-static void fuse_hc_mix(std::vector<Stage> &S, std::vector<uint32_t> *layer_ends) {
-  using namespace sched_detail;
+static void fuse_hc_mix(std::vector<Stage> &S, std::vector<uint32_t> *layer_ends, const TensorTable &table) {
   std::vector<Stage> out;
   out.reserve(S.size());
   std::vector<uint32_t> at(S.size() + 1);
@@ -1084,25 +1100,26 @@ static void fuse_hc_mix(std::vector<Stage> &S, std::vector<uint32_t> *layer_ends
         if (e >= j && e <= m) MK_DIE("fuse_hc_mix: layer end %u inside the stages %lld..%zu", e, (long long)j, m);
     // The matmul runs later now: nothing between may write what it reads, and nothing between may touch `up` (which
     // is no longer written) or write xn (which the epilogue reads at the new slot).
-    const Footprint fu = stage_footprint(S[j]);
-    const uintptr_t xlo = uintptr_t(x.xn), xhi = xlo + fl(uint64_t(x.t) * 4 * x.e), ulo = uintptr_t(x.up), uhi = ulo + fl(uint64_t(x.t) * 4 * x.e);
+    const StageFootprint fu = rust_footprint(table, S[j]);
+    const uintptr_t xlo = uintptr_t(x.xn), xhi = xlo + sizeof(float) * uint64_t(x.t) * 4 * x.e, ulo = uintptr_t(x.up),
+                    uhi = ulo + sizeof(float) * uint64_t(x.t) * 4 * x.e;
     for (size_t k = size_t(j) + 1; k < m; ++k) {
-      const Footprint fk = stage_footprint(S[k]);
+      const StageFootprint fk = rust_footprint(table, S[k]);
       if (fk.fence) MK_DIE("fuse_hc_mix: a fence stage (op %u) between the up matmul and its hc_mix", S[k].op);
-      for (const Access &a : fk.acc) {
+      for (const mk_access &a : fk.acc) {
         if (overlaps(a.lo, a.hi, ulo, uhi)) MK_DIE("fuse_hc_mix: stage %zu (op %u) touches up", k, S[k].op);
         if (a.write && overlaps(a.lo, a.hi, xlo, xhi)) MK_DIE("fuse_hc_mix: stage %zu (op %u) writes xn", k, S[k].op);
         if (a.write)
-          for (const Access &r : fu.acc)
+          for (const mk_access &r : fu.acc)
             if (!r.write && overlaps(a.lo, a.hi, r.lo, r.hi)) MK_DIE("fuse_hc_mix: stage %zu (op %u) writes the up matmul's input", k, S[k].op);
       }
     }
     // Nothing after the hc_mix reads `up` either (it is no longer written).
     for (size_t k = m + 1; k < S.size(); ++k) {
-      const Footprint fk = stage_footprint(S[k]);
+      const StageFootprint fk = rust_footprint(table, S[k]);
       if (fk.fence) continue;  // fences have no derived ranges; none reads this layer's up by construction
       bool rewritten = false, reads = false;
-      for (const Access &a : fk.acc)
+      for (const mk_access &a : fk.acc)
         if (overlaps(a.lo, a.hi, ulo, uhi)) (a.write ? rewritten : reads) = true;
       if (reads && !rewritten) MK_DIE("fuse_hc_mix: stage %zu (op %u) reads up after its hc_mix %zu", k, S[k].op, m);
       if (rewritten) break;  // the next layer's up matmul: later reads see its data, not this one's
@@ -1159,7 +1176,7 @@ static bool fuse_hcmix_enabled() {
   MK_DIE("MK_FUSE_HCMIX=%s: want 0 or 1", e);
 }
 
-// MK_ELIDE=0 turns the barrier schedule off (stage_sched.h; A/B and bit checks): every stage in build order with a
+// MK_ELIDE=0 turns the barrier schedule off (src/schedule.rs; A/B and bit checks): every stage in build order with a
 // grid barrier after it, and one partial range for every split. Unset or 1 schedules.
 static bool elide_enabled() {
   const char *e = getenv("MK_ELIDE");
@@ -1178,6 +1195,28 @@ static bool tail_enabled() {
   MK_DIE("MK_TAIL=%s: want 0 or 1", e);
 }
 
+// The Rust schedule (src/schedule.rs), through the table's call, on S: the order and the sched word of each stage.
+// Returns the grid barriers. A plan that is not a permutation of the stages stops the program.
+static uint32_t apply_schedule(const TensorTable &table, std::vector<Stage> &S, const std::vector<uint32_t> &ends, bool elide,
+                               bool tail) {
+  const uint32_t n = uint32_t(S.size());
+  std::vector<uint32_t> order(n), sched(n);
+  const uint32_t barriers =
+      table.schedule(S.data(), n, ends.data(), uint32_t(ends.size()), elide, tail, order.data(), sched.data());
+  std::vector<Stage> out;
+  out.reserve(n);
+  std::vector<char> seen(n, 0);
+  for (uint32_t k = 0; k < n; ++k) {
+    if (order[k] >= n || seen[order[k]]) MK_DIE("schedule: the plan names stage %u twice or past %u stages", order[k], n);
+    seen[order[k]] = 1;
+    Stage s = S[order[k]];
+    s.sched = sched[k];
+    out.push_back(s);
+  }
+  S.swap(out);
+  return barriers;
+}
+
 std::vector<Stage> Engine::build(const Segment *seg, uint32_t ns, uint32_t t, bool want_logits, std::vector<uint32_t> *layer_ends) {
   std::vector<Stage> S = build_stages(seg, ns, t, want_logits, layer_ends);
   constexpr size_t kPartFloats = size_t(16) * kMaxPassTokens * 640;  // the largest split: 16 x 320 = 8 x 640 = 5120
@@ -1189,10 +1228,13 @@ std::vector<Stage> Engine::build(const Segment *seg, uint32_t ns, uint32_t t, bo
   }
   // The fold lives in the f16 matmul's epilogue (qmmh.h); the exact engine (MK_FAST_QMM=0) has only kStQmm stages, so its
   // passes keep their hc_mix stages. With the f16 path on, a kStQmm up producer is a surprise and fuse_hc_mix stops.
-  if (fuse_enabled() && fuse_hcmix_enabled() && fast_qmm_enabled()) fuse_hc_mix(S, layer_ends);
+  if (fuse_enabled() && fuse_hcmix_enabled() && fast_qmm_enabled()) fuse_hc_mix(S, layer_ends, table_);
   // The schedule reorders within layers only (windows start at the layer ends), so the unfused path's per-layer
   // captures stay put; the unfused path runs the same order, one launch per stage.
-  if (elide) schedule_stages(S, layer_ends ? *layer_ends : std::vector<uint32_t>{}, tail_enabled());
+  const std::vector<uint32_t> no_ends;
+  const std::vector<uint32_t> &ends = layer_ends ? *layer_ends : no_ends;
+  const bool tail = tail_enabled();
+  apply_schedule(table_, S, ends, elide, tail);
   return S;
 }
 

@@ -1,8 +1,9 @@
 //! The tensor table that the Rust reader gives to mk's engine (`hip/src/engine/tensor_table.h`).
 //!
 //! mk's engine parses no GGUF. It plans its arena from this table, copies the tensor data out of the reader's maps,
-//! and gathers PLE rows from the map of the PLE table for its life. Its two calls back into Rust drop the page cache
-//! of a copied range and dequantize PLE rows. Each call stops the program on an error, as mk's C++ reader did.
+//! and gathers PLE rows from the map of the PLE table for its life. Two of its calls back into Rust drop the page cache
+//! of a copied range and dequantize PLE rows. The two calls of the pass build order the stages of a pass and give the
+//! footprint of a stage (`schedule.rs`). Each call stops the program on an error, as mk's C++ code did.
 
 use std::ffi::{CString, c_char, c_void};
 use std::marker::PhantomData;
@@ -10,6 +11,8 @@ use std::os::unix::ffi::OsStrExt;
 
 use crate::dequant::{GgmlType, dequant_f32};
 use crate::gguf::Model;
+use crate::schedule::call::{MkAccess, footprint_call, schedule_call};
+use crate::stage::Stage;
 
 /// `struct mk_tensor` of `tensor_table.h`.
 #[repr(C)]
@@ -41,6 +44,8 @@ pub(crate) struct MkTensorTable {
     pub reader: *const c_void,
     pub drop_cached: unsafe extern "C" fn(*const c_void, *const u8, u64),
     pub dequant_f32: unsafe extern "C" fn(u32, *const c_void, i64, *mut f32),
+    pub schedule: unsafe extern "C" fn(*const Stage, u32, *const u32, u32, u32, u32, *mut u32, *mut u32) -> u32,
+    pub footprint: unsafe extern "C" fn(*const Stage, *mut MkAccess, u32, *mut u32) -> u32,
 }
 
 /// The keys of the PLE hash that the engine reads (`engine.hip` `wire`, `ple_rows`).
@@ -114,6 +119,8 @@ impl<'a> TensorTable<'a> {
             reader: model as *const Model as *const c_void,
             drop_cached: drop_cached_call,
             dequant_f32: dequant_f32_call,
+            schedule: schedule_call,
+            footprint: footprint_call,
         };
         // The vectors move into the struct below. Their heap buffers do not move, so the pointers stay valid.
         Ok(TensorTable {
