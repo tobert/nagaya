@@ -20,7 +20,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "dequant.hpp"
 
 
 namespace mk {
@@ -141,7 +140,7 @@ arena::ShardId arena::shard_id(const std::string &path) {
   return s;
 }
 
-Engine::Engine(const std::vector<std::string> &shards, const char *attach) : model_(shards), shards_(shards) {
+Engine::Engine(const mk_tensor_table *table, const char *attach) : table_(table), shards_(table_.shards()) {
   trap_sink_install();  // a device trap names itself on stderr before the runtime aborts (trap.h)
   if (getenv("MK_SCRATCH_WARMUP")) {
     // Bring-up experiment: run one k_stage (an empty add) before the weights exist, so the
@@ -160,11 +159,11 @@ Engine::Engine(const std::vector<std::string> &shards, const char *attach) : mod
   // The PLE table stays mapped; the host gathers 16 rows per token (ple_rows). The rows a pass needs are scattered
   // over ~29 GB: a fault should read its own page, not the ~128 KiB of readahead around it (ple_rows asks for each
   // row's pages itself, all at once).
-  ple_ = &model_.tensor("per_layer_token_embd.weight");
+  ple_ = &table_.tensor("per_layer_token_embd.weight");
   const uintptr_t pg = uintptr_t(sysconf(_SC_PAGESIZE)), a = uintptr_t(ple_->data) & ~(pg - 1);
   if (madvise(reinterpret_cast<void *>(a), uintptr_t(ple_->data) + ple_->n_bytes - a, MADV_RANDOM))
     MK_DIE("madvise(MADV_RANDOM) on the PLE table: %s", strerror(errno));
-  const std::vector<Planned> P = plan(model_, &arena_bytes_);
+  const std::vector<Planned> P = plan(table_, &arena_bytes_);
   if (attach) attach_arena(attach, P);
   else create_arena(P);
   for (const Planned &p : P) {
@@ -199,11 +198,11 @@ Engine::~Engine() {
 // rows x row bytes as before), every Q8_0 matrix the matmuls read (all but the token embedding table, which is
 // gathered by row, and the 5 layers' Q8_0 expert down matrices, which measured no gain in tiles: PLAN.md), and the
 // Q6_K output head. Values are unchanged; both the f16 and the exact kernels decode tiles.
-std::vector<Engine::Planned> Engine::plan(const mkgguf::Model &model, uint64_t *arena_bytes) {
+std::vector<Engine::Planned> Engine::plan(const TensorTable &table, uint64_t *arena_bytes) {
   const bool tiles = tiles_enabled();
   std::vector<Planned> P;
-  for (size_t i = 0; i < model.n_tensors(); ++i) {
-    const auto &ti = model.tensor(i);
+  for (size_t i = 0; i < table.n_tensors(); ++i) {
+    const auto &ti = table.tensor(i);
     if (ti.name == "per_layer_token_embd.weight") continue;  // stays in the GGUF mapping (ple_rows)
     const std::string &nm = ti.name;
     if (nm.size() >= sizeof(arena::Entry::name)) MK_DIE("%s: name longer than the arena's %zu bytes", nm.c_str(), sizeof(arena::Entry::name) - 1);
@@ -283,7 +282,7 @@ arena::Entry Engine::arena_entry(const Planned &p) {
 
 // Fill a new arena: every tensor copied out of the GGUF mapping by the CPU straight into place, the tiled ones through
 // a pinned scratch buffer and the relayout kernel; each chunk's file pages dropped from the page cache once copied
-// (best effort, mkgguf::Model::drop_cached): the weights are read once, and the cache is better spent on the PLE
+// (best effort, the reader's drop_cached: tensor_table.h): the weights are read once, and the cache is better spent on the PLE
 // table the host keeps gathering from, and on the other tenants. Then the header and manifest, then the seals.
 void Engine::create_arena(const std::vector<Planned> &P) {
   const auto t0 = std::chrono::steady_clock::now();
@@ -303,12 +302,12 @@ void Engine::create_arena(const std::vector<Planned> &P) {
   constexpr uint64_t kChunk = 512ull << 20;
   uint64_t tiled = 0;
   for (const Planned &p : P) {
-    const auto &ti = model_.tensor(p.gguf);
+    const auto &ti = table_.tensor(p.gguf);
     uint8_t *to = p.tile == Tile::kNone ? arena_ + p.offset : scratch;
     for (uint64_t o = 0; o < p.src_bytes; o += kChunk) {
       const uint64_t n = std::min(kChunk, p.src_bytes - o);
       par_memcpy(to + o, ti.data + o, n);
-      model_.drop_cached(ti.data + o, n);
+      table_.drop_cached(ti.data + o, n);
     }
     if (p.tile != Tile::kNone) {
       relayout(p.tile, scratch, arena_ + p.offset, p.rows, p.k);
@@ -330,8 +329,8 @@ void Engine::create_arena(const std::vector<Planned> &P) {
 }
 
 // This build's bytes for p, from the GGUF (the tiled ones through the relayout kernel), into out.
-void Engine::expected_bytes(const mkgguf::Model &model, const Planned &p, std::vector<uint8_t> &out) {
-  const auto &ti = model.tensor(p.gguf);
+void Engine::expected_bytes(const TensorTable &table, const Planned &p, std::vector<uint8_t> &out) {
+  const auto &ti = table.tensor(p.gguf);
   out.resize(p.bytes);
   if (p.tile == Tile::kNone) {
     par_memcpy(out.data(), ti.data, p.bytes);
@@ -346,7 +345,7 @@ void Engine::expected_bytes(const mkgguf::Model &model, const Planned &p, std::v
     MK_CHECK(hipFree(dst));
     MK_CHECK(hipHostFree(src));
   }
-  model.drop_cached(ti.data, p.src_bytes);
+  table.drop_cached(ti.data, p.src_bytes);
 }
 
 // Whether the arena open at fd (named path in messages) is exactly what this build would make from these GGUF files:
@@ -354,7 +353,7 @@ void Engine::expected_bytes(const mkgguf::Model &model, const Planned &p, std::v
 // allocating), before a page is mapped or registered: the seals, the header against the GGUF files and tile setting,
 // the manifest against this build's plan field by field, and the smallest tensor of every type against this build's
 // own conversion of the GGUF (a tile format that changed between builds). *types: how many types were spot-checked.
-std::string Engine::arena_problem(const mkgguf::Model &model, const std::vector<std::string> &shards, const std::vector<Planned> &P,
+std::string Engine::arena_problem(const TensorTable &table, const std::vector<std::string> &shards, const std::vector<Planned> &P,
                                   uint64_t arena_bytes, int fd, const char *path, size_t *types) {
   char msg[768];
   auto say = [&](const char *fmt, auto... a) {
@@ -407,7 +406,7 @@ std::string Engine::arena_problem(const mkgguf::Model &model, const std::vector<
   std::vector<uint8_t> want_b, got_b;
   for (const auto &kv : smallest) {
     const Planned &p = P[kv.second];
-    expected_bytes(model, p, want_b);
+    expected_bytes(table, p, want_b);
     got_b.resize(p.bytes);
     if (!pread_all(got_b.data(), p.bytes, p.offset)) return say("%s past the end", p.name.c_str());
     if (memcmp(want_b.data(), got_b.data(), p.bytes))
@@ -417,13 +416,13 @@ std::string Engine::arena_problem(const mkgguf::Model &model, const std::vector<
   return "";
 }
 
-std::string Engine::check_arena(const std::vector<std::string> &shards, const char *path) {
+std::string Engine::check_arena(const mk_tensor_table *t, const char *path) {
   const int fd = open(path, O_RDONLY | O_CLOEXEC);
   if (fd < 0) return std::string(path) + ": " + strerror(errno);
-  const mkgguf::Model model(shards);
+  const TensorTable table(t);
   uint64_t bytes = 0;
-  const std::vector<Planned> P = plan(model, &bytes);
-  std::string why = arena_problem(model, shards, P, bytes, fd, path, nullptr);
+  const std::vector<Planned> P = plan(table, &bytes);
+  std::string why = arena_problem(table, table.shards(), P, bytes, fd, path, nullptr);
   close(fd);
   return why;
 }
@@ -437,7 +436,7 @@ void Engine::attach_arena(const char *path, const std::vector<Planned> &P) {
   const int fd = open(path, O_RDONLY | O_CLOEXEC);
   if (fd < 0) MK_DIE("%s: %s", path, strerror(errno));
   size_t types = 0;
-  const std::string why = arena_problem(model_, shards_, P, arena_bytes_, fd, path, &types);
+  const std::string why = arena_problem(table_, shards_, P, arena_bytes_, fd, path, &types);
   if (!why.empty()) MK_DIE("%s", why.c_str());
   void *m = mmap(nullptr, arena_bytes_, PROT_READ, MAP_SHARED, fd, 0);
   if (m == MAP_FAILED) MK_DIE("mmap %s: %s", path, strerror(errno));
@@ -461,8 +460,8 @@ void Engine::attach_arena(const char *path, const std::vector<Planned> &P) {
 
 void Engine::wire() {
   // The PLE hash's reset token is compiled in (model.h); the file must agree (kaibo M3/M4 review).
-  if (model_.get_i64("qwen4exp.ple.eos_token_id") != int64_t(kPleEos))
-    MK_DIE("GGUF qwen4exp.ple.eos_token_id %ld != compiled kPleEos %u", (long)model_.get_i64("qwen4exp.ple.eos_token_id"), kPleEos);
+  if (table_.ple_eos_token_id() != int64_t(kPleEos))
+    MK_DIE("GGUF qwen4exp.ple.eos_token_id %ld != compiled kPleEos %u", (long)table_.ple_eos_token_id(), kPleEos);
   tok_embd_ = get("token_embd.weight");
   out_hc_norm_ = get("output_hc_norm.weight");
   out_hc_down_ = get("output_hc_down.weight");
@@ -828,9 +827,9 @@ void Engine::last_hidden(float *out) {
 void Engine::ple_rows(const Context *c, const int32_t *tokens, uint32_t t, float *out) const {
   static std::vector<int64_t> mult, offs, sizes;
   if (mult.empty()) {
-    mult = model_.get_arr_i64("qwen4exp.ple.layer_multipliers");
-    offs = model_.get_arr_i64("qwen4exp.ple.head_offsets");
-    sizes = model_.get_arr_i64("qwen4exp.ple.head_vocab_sizes");
+    mult = table_.ple_layer_multipliers();
+    offs = table_.ple_head_offsets();
+    sizes = table_.ple_head_vocab_sizes();
     if (mult.size() != 3 || offs.size() != kPleHeads || sizes.size() != kPleHeads) MK_DIE("PLE constants have the wrong shape");
   }
   const int64_t eos = kPleEos;
@@ -870,8 +869,8 @@ void Engine::ple_rows(const Context *c, const int32_t *tokens, uint32_t t, float
     if (hist[p] == eos) last_eos = p;
   }
   for (size_t i = 0; i < ids.size(); ++i)
-    mkgguf::dequant_f32(ple_->type, ple_->data + uint64_t(ids[i]) * row_bytes, kPleHeadDim,
-                        out + (i / kPleHeads) * kEmbd + (i % kPleHeads) * kPleHeadDim);
+    table_.dequant_f32(ple_->type, ple_->data + uint64_t(ids[i]) * row_bytes, kPleHeadDim,
+                       out + (i / kPleHeads) * kEmbd + (i % kPleHeads) * kPleHeadDim);
 }
 
 // ---- pass building ----

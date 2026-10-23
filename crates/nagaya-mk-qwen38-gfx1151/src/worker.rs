@@ -5,7 +5,7 @@
 //! 3.3).
 
 use std::collections::HashMap;
-use std::ffi::{CStr, CString, c_char, c_void};
+use std::ffi::{CStr, c_char, c_void};
 use std::fmt;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
@@ -16,6 +16,7 @@ use nagaya_abi::{Identity, Limits};
 use crate::binding::{self, Binding};
 use crate::gguf;
 use crate::spec;
+use crate::table::TensorTable;
 
 /// An error from the mk binding. The message says what failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -154,6 +155,8 @@ pub(crate) struct PassReply {
 struct ThreadState {
     binding: Binding,
     engine: *mut c_void,
+    /// The reader's maps of the shards. The engine gathers PLE rows from them for its life. A stub has none.
+    _model: Option<gguf::Model>,
     contexts: HashMap<u64, Context>,
     next_id: u64,
     fast_qmm: bool,
@@ -593,15 +596,11 @@ impl ThreadState {
         // The tokenizer is in the first shard. Hash it before the weights load, so a shard with no tokenizer fails fast.
         let text = gguf::text_keys(&paths.shards[0])?;
 
-        let shards: Vec<CString> = paths
-            .shards
-            .iter()
-            .map(|path| {
-                CString::new(path.as_os_str().as_bytes())
-                    .map_err(|_| MkError::new(format!("the shard path {} holds a NUL", path.display())))
-            })
-            .collect::<Result<_, _>>()?;
-        let engine = unsafe { (binding.engine_open)(shards[0].as_ptr(), shards[1].as_ptr(), shards[2].as_ptr()) };
+        // The Rust reader parses the shards, and the engine plans its arena from the reader's table (milestone 15).
+        let model = gguf::Model::open(&paths.shards)?;
+        let table = TensorTable::new(&model)?;
+        let engine = unsafe { (binding.engine_open)(table.as_ptr()) };
+        drop(table);
         if engine.is_null() {
             return Err(MkError::new("mk_engine_open returned no engine"));
         }
@@ -617,6 +616,7 @@ impl ThreadState {
         let state = Self {
             binding,
             engine,
+            _model: Some(model),
             contexts: HashMap::new(),
             next_id: 0,
             fast_qmm,
@@ -1396,6 +1396,7 @@ mod tests {
         ThreadState {
             binding: stub::binding(),
             engine: std::ptr::null_mut(),
+            _model: None,
             contexts,
             next_id: 2,
             fast_qmm: true,

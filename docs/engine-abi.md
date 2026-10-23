@@ -341,7 +341,7 @@ Reason: the fake engine must serve a family with a vocabulary, and the output ro
 
 | ABI | mk (`capi.hip`) | Notes |
 |---|---|---|
-| open / attach | `mk_engine_open(s1, s2, s3)`, `mk_engine_attach(…, path)` | no device argument: the HIP device is the calling thread's current one, so the wrapper sets it on the group's thread; weights are three GGUF shards |
+| open / attach | `mk_engine_open(table)`, `mk_engine_attach(table, path)` | no device argument: the HIP device is the calling thread's current one, so the wrapper sets it on the group's thread; weights are three GGUF shards, which the Rust reader parses into the tensor table (Proposed note below) |
 | plan | none yet | the wrapper computes the terms from the config and mk's fixed shapes |
 | arena | `mk_engine_arena`, `mk_arena_check` | one fd; full check |
 | identity | built in the Python service | moves into the engine; must include `fused` and `MK_FAST_QMM` |

@@ -6,8 +6,10 @@
 
 use std::ffi::{c_char, c_int, c_void};
 
-/// `void *mk_engine_open(const char *s1, const char *s2, const char *s3)`.
-pub(crate) type EngineOpen = unsafe extern "C" fn(*const c_char, *const c_char, *const c_char) -> *mut c_void;
+use crate::table::MkTensorTable;
+
+/// `void *mk_engine_open(const mk_tensor_table *t)`. The table comes from the Rust reader (`table.rs`).
+pub(crate) type EngineOpen = unsafe extern "C" fn(*const MkTensorTable) -> *mut c_void;
 
 /// `void *mk_ctx_new(void *e, uint32_t max_tokens)`.
 pub(crate) type CtxNew = unsafe extern "C" fn(*mut c_void, u32) -> *mut c_void;
@@ -119,7 +121,7 @@ mod linked {
 
     // The declarations of mk `hip/src/engine/capi.hip`, and one call of the HIP runtime.
     unsafe extern "C" {
-        pub(super) fn mk_engine_open(s1: *const c_char, s2: *const c_char, s3: *const c_char) -> *mut c_void;
+        pub(super) fn mk_engine_open(table: *const crate::table::MkTensorTable) -> *mut c_void;
         pub(super) fn mk_ctx_new(e: *mut c_void, max_tokens: u32) -> *mut c_void;
         pub(super) fn mk_ctx_free(e: *mut c_void, c: *mut c_void);
         pub(super) fn mk_ctx_n(c: *mut c_void) -> u32;

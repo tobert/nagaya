@@ -5,15 +5,13 @@
 //! current device. The engine is never closed: mk's HIP teardown segfaults in the process (spec 3.3).
 
 mod binding;
-// The engine reads the tensor table of the reader from the next commit. Until then only the tests use it.
-#[cfg_attr(not(test), allow(dead_code))]
 mod dequant;
 mod engine;
-#[cfg_attr(not(test), allow(dead_code))]
 mod gguf;
 #[cfg(test)]
 mod gguf_shard_tests;
 mod spec;
+mod table;
 mod worker;
 
 pub use engine::{MkEngine, open};
