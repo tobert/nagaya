@@ -24,6 +24,10 @@ name = "oracle"
 harness = false
 required-features = ["hip"]
 
+[[test]]
+name = "ops"
+required-features = ["hip"]
+
 [dependencies]
 nagaya-abi = { version = "0.1.0", path = "../nagaya-abi" }
 nagaya-text-qwen38 = { version = "0.1.0", path = "../nagaya-text-qwen38" }
@@ -33,6 +37,7 @@ sha2 = "0.10"
 sha2 = "0.10"
 
 [dev-dependencies]
+libloading = "0.8"
 nagaya-conformance = { version = "0.1.0", path = "../nagaya-conformance" }
 nagaya-sched = { version = "0.1.0", path = "../nagaya-sched" }
 nagaya-store = { version = "0.1.0", path = "../nagaya-store" }
