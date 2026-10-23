@@ -135,11 +135,7 @@ void Engine::add_attn(std::vector<Stage> &S, const Segment *seg, uint32_t ns, ui
                       float *out) {
   const Layer &L = layers_[il];
   const uint32_t ai = il / 4;
-  // A pass with a masked context (attn_mask.h; lab only, unfused) lays every segment's selection out at the masked stride,
-  // so segments' rows never overlap; an unmasked pass keeps the unmasked stride (the same bits either way).
-  bool any_masked = false;
-  for (uint32_t i = 0; i < ns; ++i) any_masked |= seg[i].c->mask.n != 0;
-  const uint32_t max_sel = any_masked ? kAttnMaxSelMasked : kIdxBudget + kIdxRatio - 1, topk = kIdxBudget / kIdxRatio;
+  const uint32_t max_sel = kIdxBudget + kIdxRatio - 1, topk = kIdxBudget / kIdxRatio;
   float *q = scratch("att_q", size_t(kMaxPassTokens) * kHeads * 2 * kHeadDim);
   float *k = scratch("att_k", size_t(kMaxPassTokens) * kKvHeads * kHeadDim);
   float *v = scratch("att_v", size_t(kMaxPassTokens) * kKvHeads * kHeadDim);
@@ -165,8 +161,8 @@ void Engine::add_attn(std::vector<Stage> &S, const Segment *seg, uint32_t ns, ui
   // pool (the pooled block keys the pass completes, goal 08 I2: only for a segment that completes a block; its own level,
   // after the prep that wrote their raw keys and before the score that reads them), then every
   // score (only for a segment whose pass reaches past 2051 visible cells: within them every token is dense, emits
-  // cells 0..n_vis-1 and reads no score), then every select, then every attend. A masked context's select stays the
-  // composed lab op (scoring included). No stage writes the scores' near-tie copy (block_scores_out).
+  // cells 0..n_vis-1 and reads no score), then every select, then every attend. No stage writes the scores' near-tie
+  // copy (block_scores_out).
   std::vector<Stage> prep, pool, score, select, attend;
   size_t soff = 0;
   for (uint32_t i = 0, r0 = 0; i < ns; r0 += seg[i].t, ++i) {
@@ -196,25 +192,19 @@ void Engine::add_attn(std::vector<Stage> &S, const Segment *seg, uint32_t ns, ui
     // The dense rule below equals attn_select_emit's select_count == nb only while the budget is a whole number of blocks.
     static_assert(kIdxBudget % kIdxRatio == 0, "dense rule p0 + t <= budget + ratio - 1 assumes budget % ratio == 0");
     const bool dense = uint64_t(p0) + ti <= uint64_t(kIdxBudget) + kIdxRatio - 1;  // every token has select_count == nb
-    Stage se = mkst(c->mask.n ? kStAttnSelectMasked : kStAttnEmit, il);
+    Stage se = mkst(kStAttnEmit, il);
     se.sub = sub;
-    if (c->mask.n) {
-      for (uint32_t k = 0; k < c->mask.n; ++k)  // set_mask's rule, again where it matters: no pass masks its own cells
-        if (c->mask.hi[k] > p0) MK_DIE("attention mask range [%u, %u) past the context's %u tokens", c->mask.lo[k], c->mask.hi[k], p0);
-      se.aselm = AttnSelectMaskedArgs{sa, c->mask};
-    } else {
-      se.asel = sa;
-      if (!dense) {
-        Stage sc = se;
-        sc.op = kStAttnScore;
-        score.push_back(sc);
-      }
+    se.asel = sa;
+    if (!dense) {
+      Stage sc = se;
+      sc.op = kStAttnScore;
+      score.push_back(sc);
     }
     select.push_back(se);
-    if ((uint64_t(p0) + ti) / kIdxRatio > c->pooled_n) {  // a block completes in this pass (masked contexts too: the cache follows the cells)
+    if ((uint64_t(p0) + ti) / kIdxRatio > c->pooled_n) {  // a block completes in this pass
       Stage po = se;
       po.op = kStAttnPool;
-      po.asel = sa;  // a masked context's se holds the masked args; the pool stage takes the plain ones
+      po.asel = sa;
       pool.push_back(po);
       host_stats().pool_blocks += ((uint64_t(p0) + ti) / kIdxRatio - c->pooled_n);
     }

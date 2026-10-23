@@ -479,6 +479,28 @@ fn fast_qmm_from(value: Option<&str>) -> Result<bool, MkError> {
     }
 }
 
+/// The knobs of mk that milestone 15 removed with the code that read them (step 6). Each one changed only a
+/// diagnostic or an experiment. Open refuses a set one, so a knob that now does nothing is not a silent change.
+const REMOVED_KNOBS: [&str; 7] = [
+    "MK_ATTACH_WAIT_S",
+    "MK_MEGA_EVENTS",
+    "MK_MEGA_PER_STAGE",
+    "MK_SCRATCH_WARMUP",
+    "MK_STAGE_TIMING",
+    "MK_STAGE_TIMING_PRINT",
+    "MK_UNFUSED_GRID",
+];
+
+/// Refuse a removed knob that `is_set` finds in the environment.
+fn removed_knob_problem(is_set: impl Fn(&str) -> bool) -> Result<(), MkError> {
+    match REMOVED_KNOBS.iter().find(|knob| is_set(knob)) {
+        Some(knob) => Err(MkError::new(format!(
+            "{knob} is set, and this engine has no such knob since milestone 15; unset it"
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// The host safety floor. mk keeps 12 GiB of MemAvailable free (spec 4.7; mk `service/contexts.py`, `FLOOR_BYTES`).
 const MEMORY_FLOOR: u64 = 12 << 30;
 
@@ -585,6 +607,7 @@ fn probe_shapes(capacity: u32) -> [(u32, bool); 2] {
 impl ThreadState {
     /// Bind the linked engine and open it. This runs on the worker thread.
     fn open(paths: &MkPaths) -> Result<(Self, Spec), MkError> {
+        removed_knob_problem(|knob| std::env::var_os(knob).is_some())?;
         let digest = gguf::spot_digest(&paths.shards)?;
         let fast_qmm = fast_qmm()?;
         let tiles = tiles()?;
@@ -1549,6 +1572,20 @@ mod tests {
         // A path that is not UTF-8 stays the same bytes.
         let paths = parse_shards(&[0xff, b':', b'/', b'b', b':', b'/', b'c']).unwrap();
         assert_eq!(paths[0].as_os_str().as_bytes(), &[0xff]);
+    }
+
+    #[test]
+    fn a_removed_knob_is_refused_at_open_and_the_error_names_it() {
+        assert!(super::removed_knob_problem(|_| false).is_ok());
+        for knob in super::REMOVED_KNOBS {
+            let error = super::removed_knob_problem(|name| name == knob).expect_err(knob);
+            assert!(error.message().starts_with(knob), "{error}");
+        }
+        assert_eq!(super::REMOVED_KNOBS.len(), 7);
+        // The knobs that the engine still reads are not refused.
+        for kept in ["MK_FAST_QMM", "MK_TILES", "MK_ELIDE", "MK_WATCHDOG_DEADLINE_S"] {
+            assert!(super::removed_knob_problem(|name| name == kept).is_ok(), "{kept}");
+        }
     }
 
     #[test]

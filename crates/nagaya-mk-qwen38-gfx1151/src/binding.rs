@@ -78,10 +78,8 @@ pub(crate) type LastError = unsafe extern "C" fn(*mut c_void, TextSink, *mut c_v
 /// `void mk_segments_problem(void *e, const Segment *s, uint32_t n, mk_text_sink put, void *out)`.
 pub(crate) type SegmentsProblem = unsafe extern "C" fn(*mut c_void, *const MkSegment, u32, TextSink, *mut c_void);
 
-/// `double mk_pass_segments(void *e, const Segment *s, uint32_t n, bool want_logits, bool fused, float *logits,
-/// float *hidden)`.
-pub(crate) type PassSegments =
-    unsafe extern "C" fn(*mut c_void, *const MkSegment, u32, bool, bool, *mut f32, *mut f32) -> f64;
+/// `double mk_pass_segments(void *e, const Segment *s, uint32_t n, bool want_logits, float *logits)`: one fused pass.
+pub(crate) type PassSegments = unsafe extern "C" fn(*mut c_void, *const MkSegment, u32, bool, *mut f32) -> f64;
 
 /// `hipError_t hipMemGetInfo(size_t *free, size_t *total)`, from the HIP runtime that the engine links.
 pub(crate) type MemGetInfo = unsafe extern "C" fn(*mut usize, *mut usize) -> c_int;
@@ -191,7 +189,7 @@ impl Binding {
         (!text.is_empty()).then(|| String::from_utf8_lossy(&text).into_owned())
     }
 
-    /// Run one fused pass of `segments`, and give its wall time in milliseconds.
+    /// Run one pass of `segments`, and give its wall time in milliseconds. mk runs each pass fused.
     ///
     /// mk stops the program on segments that its check refuses and on a poisoned context. Thus both checks run
     /// first, and a problem refuses the pass. `logits` takes one row of `VOCAB` values for each segment. A buffer of another size stops the program,
@@ -229,17 +227,7 @@ impl Binding {
             Some(logits) => (true, logits.as_mut_ptr()),
             None => (false, std::ptr::null_mut()),
         };
-        let ms = unsafe {
-            (self.pass_segments)(
-                engine,
-                segments.as_ptr(),
-                segments.len() as u32,
-                want_logits,
-                true,
-                logits,
-                std::ptr::null_mut(),
-            )
-        };
+        let ms = unsafe { (self.pass_segments)(engine, segments.as_ptr(), segments.len() as u32, want_logits, logits) };
         let error = unsafe { self.last_error(engine) };
         if error.is_empty() {
             Ok(ms)
@@ -293,9 +281,7 @@ mod linked {
             s: *const MkSegment,
             n: u32,
             want_logits: bool,
-            fused: bool,
             logits: *mut f32,
-            hidden: *mut f32,
         ) -> f64;
         pub(super) fn hipMemGetInfo(free: *mut usize, total: *mut usize) -> c_int;
     }
@@ -504,9 +490,9 @@ mod tests {
         error: String,
         /// The count of calls of `mk_segments_problem`.
         checks: usize,
-        /// The arguments of each `mk_pass_segments` call: the segment count, `want_logits`, `fused`, and whether
-        /// `logits` and `hidden` are null.
-        passes: Vec<(u32, bool, bool, bool, bool)>,
+        /// The arguments of each `mk_pass_segments` call: the segment count, `want_logits`, and whether `logits` is
+        /// null.
+        passes: Vec<(u32, bool, bool)>,
     }
 
     thread_local! {
@@ -537,14 +523,9 @@ mod tests {
         _segments: *const MkSegment,
         n: u32,
         want_logits: bool,
-        fused: bool,
         logits: *mut f32,
-        hidden: *mut f32,
     ) -> f64 {
-        PASS.with_borrow_mut(|stub| {
-            stub.passes
-                .push((n, want_logits, fused, logits.is_null(), hidden.is_null()))
-        });
+        PASS.with_borrow_mut(|stub| stub.passes.push((n, want_logits, logits.is_null())));
         12.5
     }
 
@@ -647,13 +628,7 @@ mod tests {
         let result =
             unsafe { binding.pass_segments(std::ptr::null_mut(), &some_segments(2, &tokens), Some(&mut logits)) };
         assert_eq!(result, Ok(12.5));
-        // Each pass is fused and asks for no hidden state.
-        PASS.with_borrow(|stub| {
-            assert_eq!(
-                stub.passes,
-                [(2, false, true, true, true), (2, true, true, false, true)]
-            )
-        });
+        PASS.with_borrow(|stub| assert_eq!(stub.passes, [(2, false, true), (2, true, false)]));
     }
 
     #[test]

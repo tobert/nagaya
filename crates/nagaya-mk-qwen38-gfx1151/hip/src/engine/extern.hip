@@ -62,9 +62,9 @@ void mk_segments_problem(void *e, const Segment *s, uint32_t n, mk_text_sink put
   const std::string w = static_cast<Engine *>(e)->segments_problem(s, n);
   put(out, w.data(), w.size());
 }
-// A pass of n segments (engine.h Engine::pass_segments), and its wall time in ms. The logits go straight into logits.
-double mk_pass_segments(void *e, const Segment *s, uint32_t n, bool want_logits, bool fused, float *logits,
-                        float *hidden) {
-  return static_cast<Engine *>(e)->pass_segments(s, n, want_logits, fused, logits, hidden).ms;
+// A fused pass of n segments (engine.h Engine::pass_segments), and its wall time in ms. The logits go straight into
+// logits.
+double mk_pass_segments(void *e, const Segment *s, uint32_t n, bool want_logits, float *logits) {
+  return static_cast<Engine *>(e)->pass_segments(s, n, want_logits, logits).ms;
 }
 }
