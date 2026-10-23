@@ -4,13 +4,13 @@ This spec says what the nagaya is and what it does, one rule at a time. It is wr
 English (`AGENTS.md`).
 
 - `docs/ontology.md` defines each term once.
-- `docs/engine-abi.md` defines the calls and the decisions D1-D10. The spec refers to them by number.
+- `docs/engine-abi.md` defines the calls and the decisions D1-D11. The spec refers to them by number.
 - `docs/prior-art.md`, `docs/deepinfer.md` and `docs/reviews.md` record where the rules came from.
 
 When this spec and another doc do not agree, correct one of them. Neither one wins without a decision.
 
-Status: draft, 2026-10-21. The sources are the design conversations with Amy and inventories of mk
-(`~/src/megakernel-qwen38-flashnext-strixhalo`) and mkviolet (`~/src/mkviolet`). The code follows `AGENTS.md`. Each open
+Status: draft, 2026-10-22. The sources are the design conversations with Amy and inventories of mk and mkviolet,
+our two learning megakernels (`docs/ontology.md`, "The other projects"). The code follows `AGENTS.md`. Each open
 question has the mark **Open**, and section 15 lists all of them.
 
 We change this spec before we change the code (Amy, 2026-10-20: "I want to keep updating the spec before the code so
@@ -23,6 +23,9 @@ accepted (Amy, 2026-10-22: "if those decisions seem ok to you let's call them ok
 in her review of the docs.
 
 ## 1. Scope
+
+The nagaya is an exokernel for megakernels. This repository holds its spec (this doc and `docs/engine-abi.md`), its
+reference implementation (`crates/`), and the council v2 API that it serves (section 11).
 
 The nagaya is one process on each machine. It owns the machine's GPUs, and engines run inside it. It decides three
 things: where engines and state live, what runs next on each device, and what the store keeps. It does not decide
@@ -616,7 +619,7 @@ while interactive is more cooperative multitasking"):
   present jobs in `interactive`, clamped to ±30 s. A job that leaves takes only its own balance (ds4-recipe
   `11-multi-session-serving.md` section 6).
 
-gogi settles the first key: "a higher priority runs first within its class" (`~/src/gogi/docs/council-api.md:159-160`).
+gogi settles the first key: "a higher priority runs first within its class" (gogi `docs/council-api.md`, "Classes").
 Among equal priorities, the higher owed balance runs first, and then the earlier arrival.
 
 When an interactive pass has several segments, each segment gets an equal part of the pass time. The rounding
@@ -1149,7 +1152,9 @@ poison. After a poison or a timeout, the nagaya does these steps:
 
 (mk `service/gpu.py` does this.)
 
-**8.3 Conformance.** Each engine has a conformance suite in the nagaya's tests. It checks these properties:
+**8.3 Conformance.** The crate `nagaya-conformance` holds one suite for every engine, generic over the `Engine`
+trait. The GPU tests of each engine crate run it on the real device. They are `tests/hip.rs` in the mk crate and
+`tests/xe.rs` in the Gemma 4 crate. The fake engines run it with no GPU. It checks these properties:
 
 - park and restore keep every bit;
 - seal runs only at boundaries;
@@ -1160,14 +1165,18 @@ poison. After a poison or a timeout, the nagaya does these steps:
 - for an engine with stages, `Engine::pass` and the stage path give the same outputs and parts (engine-abi D1);
 - for an engine with a feed rule, a span fed by the rule after a restore gives the bits of one job (6.14).
 
-**One oracle for each family.** Each model family has one reference: today, fixed outputs of mk's Python. Every
-engine of that family passes its conformance against that reference, on any vendor's device. The reference runs on
-the CPU, so it does not give the bits of a GPU. Thus the oracle has a tolerance, and a spike measures the gap first.
+**One oracle for each family.** Each model family has one reference: fixed outputs of the model's own Python code
+on the CPU, kept as a fixture in this repository. Every engine of that family passes its conformance against that
+reference, on any vendor's device. The reference runs on the CPU, so it does not give the bits of a GPU. Thus the
+oracle has a tolerance, and a spike measures the gap first.
 
-**The Qwen3.8 oracle.** mk's Python reference (`tools/oracle_fixture.py`) writes the fixture. It holds five prompts
-of 5 to 596 tokens, with the top 64 logits and the logsumexp of the last position. The bench `oracle` in the mk
-crate compares mk with it. mk's exact path (`MK_FAST_QMM=0`) is the gate. Its largest gap was a logit difference
-of 1.7e-5 on 2026-10-20. Decided 2026-10-20 (reading).
+**The Qwen3.8 oracle.** The tool `tools/oracle_fixture.py` writes the fixture. It runs the model's transformers code
+from mk's archive, with mk's venv (`AGENTS.md`, "Checks").
+
+The fixture holds five prompts of 5 to 596 tokens, with the top 64 logits and the logsumexp of the last position.
+The bench `oracle` in the mk crate compares mk with it.
+mk's exact path (`MK_FAST_QMM=0`) is the gate. Its largest gap was a logit difference of 1.7e-5 on 2026-10-20.
+Decided 2026-10-20 (reading).
 
 - On the exact path, the argmax agrees when the reference's top two differ by more than 0.25. The reference's top 8
   are in the engine's top 16. The largest logit difference is at most 1e-3, the KL at most 1e-8, and the logsumexp
@@ -1178,15 +1187,17 @@ of 1.7e-5 on 2026-10-20. Decided 2026-10-20 (reading).
 The fixture covers prompts of up to 596 tokens. Past about 640 tokens, the gap between mk and the reference is not
 explained (15 item 8). The oracle does not gate a longer prompt.
 
-A family with no reference has no oracle yet: the first port of mkviolet builds the Gemma reference.
+A family with no reference has no oracle. Both families of v0 have one: the Qwen3.8 oracle above, and the Gemma 4
+oracle below, which the first port of mkviolet built.
 
-**The Gemma 4 oracle.** Decided 2026-10-22 (Amy: "accepted"). mkviolet's `tools/gemma4_reference.py` runs HF
-transformers' own Gemma 4 layers in f32 on the CPU. `tools/gemma4_render_reference.py` renders the chat template with
-Python's jinja2. The port makes the fixture with them, as mk's `tools/oracle_fixture.py` makes the Qwen3.8 fixture.
+**The Gemma 4 oracle.** Decided 2026-10-22 (Amy: "accepted"). `tools/gemma4_reference.py` runs HF transformers'
+own Gemma 4 layers in f32 on the CPU (copied from mkviolet). `tools/gemma4_oracle_fixture.py` makes the fixture
+with it, as `tools/oracle_fixture.py` makes the Qwen3.8 fixture. The reference Python runs in `~/.venvs/nagaya-ref`
+(`AGENTS.md`, "mkviolet on b70host").
 
-The tool is `tools/gemma4_oracle_fixture.py`, and the fixture is `crates/nagaya-text-gemma4/tests/fixtures/oracle.json`.
-It holds five prompts of 6 to 586 tokens, in the format of the Qwen3.8 fixture. It took 94 s on b70host on
-2026-10-21. The fixture belongs to the family, so each engine of Gemma 4 reads the same file.
+The fixture is `crates/nagaya-text-gemma4/tests/fixtures/oracle.json`, and `crates/nagaya-text-gemma4/tests/oracle.rs`
+reads it. It holds five prompts of 6 to 586 tokens, in the format of the Qwen3.8 fixture. It took 94 s on b70host
+on 2026-10-21. The fixture belongs to the family, so each engine of Gemma 4 reads the same file.
 
 - mkviolet measured these gaps (mkviolet `docs/README.md`). The full pass had a largest logit difference of 5.8e-5.
   A prompt of 1,270 tokens, past the sliding window of 1,024, had 7.2e-3 and the same top token.
@@ -1217,7 +1228,7 @@ end of a job. Decided 2026-10-20 (reading).
 
 ## 9. Observability
 
-The nagaya follows kaijutsu's conventions (`~/src/kaijutsu/docs/telemetry.md`). mkviolet already follows them.
+The nagaya follows kaijutsu's conventions (kaijutsu `docs/telemetry.md`). mkviolet followed them too.
 
 **9.1 Activation.** The nagaya always logs to stderr. It also exports in these cases:
 
@@ -1438,8 +1449,8 @@ Not built. The HTTP server exists (11.7), and it has no status route. `ObservedS
 the job path uses it now (9.2), so it can feed the bus.
 
 **9.7a The events.** The route is `GET /nagaya/v1/status` (11.4a). The feed is `text/event-stream`. Each event has an
-`event:` line and a `data:` line of one JSON object. These rules are **Proposed (for Amy)**, by Claude Sonnet 5.5 on
-2026-10-21.
+`event:` line and a `data:` line of one JSON object. The rules of this section are each "Decided by senpai 2026-10-22
+(vetoable)". Not built yet. Claude Sonnet 5.5 proposed them on 2026-10-21.
 
 | Event | When | `data` |
 |---|---|---|
@@ -1490,24 +1501,23 @@ data: {"t_ms": 91790, "engine": "mk-qwen38-gfx1151", "device_group": 0, "kind": 
 
 In a real event, the `data` is one line.
 
-- **Proposed (for Amy).** A decode quantum makes an event too, as mk's `pass` does. Decode makes metrics only in 9.2,
-  but a feed is for a person, and a client that wants less volume filters by `kind`.
-- **Proposed (for Amy).** The events of one group are in order. The events of two groups have no order, and `t_ms`
-  tells the client which came first.
-- **Proposed (for Amy).** A filter is the query `engine` and the query `kind` of the connect request. Each takes
-  values joined with commas. A name that is not an engine of the machine, or a kind that does not exist, is a 400
-  `invalid_request` that names the query. An empty result from a typo would hide the fault.
-- **Proposed (for Amy).** The `kind` filter drops quantum events only. The `engine` filter also drops entries of the
-  snapshot.
-- **Proposed (for Amy).** The keepalive comes every 15 s without an event, as in mk. A machine with no engine sends a
+- **Decode events.** A decode quantum makes an event too, as mk's `pass` event did. Decode makes metrics only in 9.2,
+  but a feed is for a person. A client that wants less volume filters by `kind`.
+- **Order.** The events of one group are in order. The events of two groups have no order. `t_ms` tells the client
+  which came first.
+- **Filters.** A filter is the query `engine` or the query `kind` of the connect request. Each takes values joined
+  with commas. A name that is not an engine of the machine, or a kind that does not exist, is a 400 `invalid_request`
+  that names the query. Reason: an empty result from a typo would hide the fault.
+- **What a filter drops.** The `kind` filter drops quantum events only. The `engine` filter also drops entries of
+  the snapshot.
+- **The keepalive.** The keepalive comes every 15 s without an event, as in mk. A machine with no engine sends a
   snapshot with an empty `engines`, and then the keepalive.
-- **Proposed (for Amy).** At most 16 feeds are open at once. A request past that is a 429 `busy`. A feed does not
-  count toward the 64 calls of 11.7, because it holds no call thread.
-- **Proposed (for Amy).** A stop ends each feed after the `draining` state (10.3). A client reconnects and gets a new
-  snapshot.
+- **Open feeds.** At most 16 feeds are open at once. A request past that is a 429 `busy`. A feed does not count
+  toward the 64 calls of 11.7, because it holds no call thread.
+- **A stop.** A stop ends each feed after the `draining` state (10.3). A client reconnects and gets a new snapshot.
 
-**9.7b Where the events come from.** **Proposed (for Amy).** The group thread produces them, and a bus delivers them.
-The code from the obs-wire merge (532eb28) already holds each value.
+**9.7b Where the events come from.** Decided by senpai 2026-10-22 (vetoable). Not built yet. The group thread
+produces the events, and a bus delivers them. The code of the obs-wire merge (`532eb28`) already holds each value.
 
 - A new type `StatusBus` in `crates/nagaya/src/status.rs` holds the subscribers and the last state of each group. The
   process makes one bus and gives it to the council and to each group.
@@ -1617,9 +1627,9 @@ At start, the nagaya does these steps for each engine:
 
 Reason: the unit file is the one source of the ceiling. A bootstrap key can differ from the unit.
 
-mkviolet restarts in 0.9 to 1.2 s from its stored slabs, and a cold start takes 7.4 s (mkviolet `docs/README.md`).
-Thus 10.2 moves into the b70host milestone (`AGENTS.md`), because mkviolet has it now and the port must not lose
-it.
+mkviolet restarted in 0.9 to 1.2 s from its stored slabs, and its cold start took 7.4 s (mkviolet `docs/README.md`).
+Thus 10.2 went into the b70host milestone (`AGENTS.md`, 15s step 7), because mkviolet had it and the port must
+not lose it.
 
 Built: the process side (`crates/nagaya/src/arena.rs`, `crates/nagaya/src/process/handoff.rs`) and the arena of the
 Gemma 4 engine, with its head slab (`Loaded::attach`). On b70host on 2026-10-21, a cold `Loaded::load` took 7.1 s,
@@ -1716,9 +1726,17 @@ a core dump. Nothing in the process needs an `atexit` handler.
 ## 11. Client API
 
 **11.1 Council and coordinator routing.** The nagaya serves council v2 for all engines in the cluster. It does not
-serve v1, because no client speaks v1. The contract is gogi (`~/src/gogi`): `docs/council-api.md`, the types in
-`gogi-proto`, and the suite in `gogi-conformance`. mkviolet and kaijutsu move
-to the same gogi before the nagaya serves them (Amy, 2026-10-18).
+serve v1, because no client speaks v1. The contract is gogi (ontology, "The other projects"): the text
+`docs/council-api.md`, the types in `gogi-proto`, and the suite in `gogi-conformance`. mkviolet and kaijutsu moved
+to the same gogi before the nagaya served them (Amy, 2026-10-18).
+
+gogi is normative today. This spec says how the nagaya serves the API, and it never restates the API. When this
+spec and gogi differ about the API, gogi is the rule, and this spec is corrected.
+
+**Proposed** (Claude Fable 5.1, 2026-10-22): the text of the council v2 API moves into this repository, as
+`docs/council-api.md`. gogi keeps the types, the suite and the toy family. Reason: Amy wants the nagaya to stand
+alone as a spec, a reference implementation and the council API. The text is the part that a reader of these docs
+needs. Until Amy decides, gogi's text stays the contract, and nothing moves.
 
 Any machine can receive any request and act as its coordinator (Cassandra style). Clients prefer a coordinator with
 separate host memory (`b70host` or a CPU rig) to save unified memory bandwidth on `gfx1151host` and `sm121host` (3.2). The
@@ -1864,15 +1882,15 @@ milestones 11 and 11b).
   Qwen3.8 marker is one token. 11.3a has the rule for the step of such a token.
 
 **The Gemma 4 library.** Decided 2026-10-22 (Amy: "accepted"). The crate `nagaya-text-gemma4` holds the Gemma
-4 family. It ports mkviolet's text code, which already serves council v2 and `/mk/v1` on b70host.
+4 family. It ports mkviolet's text code, which served council v2 and `/mk/v1` on b70host until 2026-10-21.
 
 - **Tokenizer.** The library reads the `tokenizer.json` of the checkpoint with the `tokenizers` crate, as mkviolet
-  does (`tokenizer.rs:27-48`). The tokenizer hash is of that file (12.3).
-- **Template.** The library runs Google's chat template (`assets/gemma4_chat_template.jinja` in mkviolet) with the
-  nagaya's own Jinja interpreter, with `trim_blocks` and `lstrip_blocks`, as `chat.rs` does. Decided 2026-10-21
-  (Amy, by interview): not `minijinja`. The identity's `template` is the text of that
-  file. The variables that the library sets, such as `PRESERVE_THINKING`, are code, so the test renders of 11.3a
-  cover them.
+  did (`tokenizer.rs:27-48`). The tokenizer hash is of that file (12.3).
+- **Template.** The library runs Google's chat template with the nagaya's own Jinja interpreter, with `trim_blocks`
+  and `lstrip_blocks`, as mkviolet's `chat.rs` did. The template is the crate's own copy,
+  `crates/nagaya-text-gemma4/assets/gemma4_chat_template.jinja`, copied from mkviolet. Decided 2026-10-21 (Amy, by
+  interview): not `minijinja`. The identity's `template` is the text of that file. The variables that the library
+  sets, such as `PRESERVE_THINKING`, are code, so the test renders of 11.3a cover them.
 - **Escapes.** Client text that spells a marker is content. mkviolet swaps each marker text for a sentinel of
   Unicode noncharacters before the render, and it refuses a noncharacter in client text (`chat.rs:1-13`).
 - **Council rendering.** The library ports `src/template.rs` (`mkv-letters-1`), the origin of 11.3a, with its Gemma 4
@@ -2168,11 +2186,14 @@ these ways. Each served model declares the capability `continuation` (`crates/na
     tokens up to the seam must begin the closed rendering's tokens. The search of the store's index finds the head
     (see the cuts above). So does a context that sends back the reply of a continuation from a head: that reply's
     head chains through the seam.
-  - **Proposed (for Amy)** (Claude Opus 5.5, 2026-10-21), the cuts from the index. A build tries each sealed
+  - **Open**, the cuts from the index. Claude Opus 5.5 proposed this rule on 2026-10-21. A build tries each sealed
     snapshot that the search of the index finds, not only the ends of messages. Reason: the first rule tried the
     open forms of the last assistant message. It missed a reply cut inside its thinking and sent back with
     `content: ""`, and it cost three renders of the prefix. The search also replaces the second render of the cuts at
     message ends.
+
+    Amy, 2026-10-22: "could we put something in the index to make this more targeted? maybe a few tokens of
+    prefix/suffix?" Section 15 lists the question.
   - The timings of a dry run come from a release host test (`crates/nagaya/tests/council_heads.rs`). For 18026
     tokens with an assistant message: 103 ms with the open forms, then 38 ms with a pass over the index. It is 16 ms
     with one render. The same context without the message takes 16 ms. With 10,000 unrelated entries in the store: 85 ms
@@ -2197,10 +2218,10 @@ these ways. Each served model declares the capability `continuation` (`crates/na
 
 **11.4 `/mk/v1`.** kaijutsu's mk provider uses `model`, `render` and `generate` (mkviolet `mk_api.rs`).
 
-Decided 2026-10-17: the nagaya does not serve `/mk/v1`. kaijutsu moves to council v2 and uses the gogi reference
-(`~/src/gogi`). Amy: "kaijutsu will move to council v2 and use the new gogi (~/src/gogi) reference. it's happening
-now, on b70host". In council v2 the server renders messages with its model's own template, and the template is
-part of identity (gogi `docs/council-api.md`, "Terms").
+Decided 2026-10-17: the nagaya does not serve `/mk/v1`. kaijutsu moved to council v2 and uses the gogi reference.
+Amy: "kaijutsu will move to council v2 and use the new gogi (~/src/gogi) reference. it's happening now, on
+b70host". In council v2 the server renders messages with its model's own template, and the template is part of
+identity (gogi `docs/council-api.md`, "Terms").
 
 **11.4a Extensions.** gogi puts model-specific routes under the server's own prefix, listed in
 `identity.extensions` (gogi `docs/council-api.md`, "Extensions"). The nagaya's prefix is `/nagaya/v1`:
@@ -2215,26 +2236,26 @@ Built on 2026-10-21: `render`, `tokenize` and `detokenize` (11.4b to 11.4d), and
 other routes in this list are not built.
 
 **11.4b The text routes.** `render`, `tokenize` and `detokenize` use the family library (11.3). They share the rules
-below. These rules are **Proposed (for Amy)**, by Claude Sonnet 5.5 on 2026-10-21. Amy decides, and senpai writes an
-accepted rule as "Decided <date>".
+below. The rules of 11.4b to 11.4f are each "Decided by senpai 2026-10-22 (vetoable)". Claude Sonnet 5.5 proposed
+them on 2026-10-21, and the code of that day follows them.
 
-Their sources are mk (`service/v1.py`, `service/openapi.json`) and mkviolet (`src/mk_api.rs`). Bench tools use them to
-see what a council request feeds. The semantic search of kaijutsu uses them to count and to cut text by tokens.
+Their sources were mk's `/mk/v1` routes and mkviolet's `mk_api.rs`. Bench tools use them to see what a council
+request feeds. The semantic search of kaijutsu uses them to count and to cut text by tokens.
 
-- **Proposed (for Amy).** Each body has a required `model`, as a council request has. A body without it, or with a name
-  that no served model has, is a 400 `invalid_request` that names `model`. The routes never choose a model for a
-  client (gogi "Served models").
-- **Proposed (for Amy).** A served model that is not `ready` gets a 503 `model_unavailable`. The route calls
-  `Council::route` (`crates/nagaya/src/http/mod.rs`), as the council routes do.
-  Other option: serve the text routes while the model loads, because they need only the family. The pick keeps one
-  rule for all routes, and `identity` tells a client when the model is `ready`.
-- **Proposed (for Amy).** The routes use no engine, no ledger charge and no job. The call runs on a call thread and
-  counts toward the 64 calls (11.7). A body has the limit of 16 MiB (11.7).
-- **Proposed (for Amy).** A body with an unknown member is a 400 that names it, through `parse`
+- **The model.** Each body has a required `model`, as a council request has. A body without it, or with a name that
+  no served model has, is a 400 `invalid_request` that names `model`. The routes never choose a model for a client
+  (gogi "Served models").
+- **A model that is not ready.** A served model that is not `ready` gets a 503 `model_unavailable`. The route calls
+  `Council::route` (`crates/nagaya/src/http/mod.rs`), as the council routes do. The other option was to serve the
+  text routes while the model loads, because they need only the family. This rule keeps one rule for all routes, and
+  `identity` tells a client when the model is `ready`.
+- **No engine.** The routes use no engine, no ledger charge and no job. The call runs on a call thread, and it counts
+  toward the 64 calls (11.7). A body has the limit of 16 MiB (11.7).
+- **Unknown members.** A body with an unknown member is a 400 that names it, through `parse`
   (`crates/nagaya/src/http/errors.rs`). Thus `class` and `priority` are 400, because the routes do not schedule.
-- **Proposed (for Amy).** A response names the served model by its `model`, never by an alias. It carries the
-  `request-id` header, as every response does.
-- **Proposed (for Amy).** The HTTP server span of 9.2 covers each call, and its `http.route` is the path, such as
+- **The response.** A response names the served model by its `model`, never by an alias. It carries the `request-id`
+  header, as every response does.
+- **The span.** The HTTP server span of 9.2 covers each call, and its `http.route` is the path, such as
   `/nagaya/v1/render`. The routes make no `nagaya.job` span and no metric of their own.
 
 Built on 2026-10-21. The code is in `crates/nagaya/src/http/extensions.rs`. The function `routes` in
@@ -2246,12 +2267,12 @@ template) and `http_telemetry_extensions.rs` (the span and the duration point).
 A `FamilyError::Client` becomes a 400. The existing `From<FamilyError>` for `ServiceError`
 (`crates/nagaya/src/council/error.rs`) does this. A `FamilyError::Internal` is a 500, and the process stops (8.5).
 
-**Proposed (for Amy).** A family error can have no `param`. Then the route sets it to the request member at fault:
-`text` for `tokenize`, `tokens` for `detokenize`, and `context` for `render`. mk and mkviolet name only the message.
-A family error that has a `param`, such as `continue`, keeps it (`at` in `extensions.rs`).
+**The `param` of a family error.** A family error can have no `param`. Then the route sets it to the request member
+at fault: `text` for `tokenize`, `tokens` for `detokenize`, and `context` for `render`. mk and mkviolet named only the
+message. A family error that has a `param`, such as `continue`, keeps it (`at` in `extensions.rs`).
 
 **11.4c Render.** `POST /nagaya/v1/render` gives the text and the tokens of a context, as a council request feeds
-them. **Proposed (for Amy).** It is for bench tools and for the debug of a template.
+them. It is for bench tools and for the debug of a template.
 
 | Request member | Type | Meaning |
 |---|---|---|
@@ -2285,35 +2306,35 @@ POST /nagaya/v1/render
 
 The numbers in the example show the shape only.
 
-- **Proposed (for Amy).** The route calls `Family::render(&context, generation_prompt)`
+- **The render call.** The route calls `Family::render(&context, generation_prompt)`
   (`crates/nagaya-council/src/family.rs`). The type `Context` is `gogi_proto::context::Context`, so the route
   decodes it as `POST /council/v2/contexts` does. The implementations are `Qwen38Family::render`
   (`crates/nagaya-text-qwen38/src/council/mod.rs`) and `ToyFamily::render` (`crates/nagaya-text-toy/src/lib.rs`).
-- **Proposed (for Amy).** `text` is `Family::detokenize(&rendering.tokens)`. For Qwen3.8 it equals `Rendered.text` of
+- **The text.** `text` is `Family::detokenize(&rendering.tokens)`. For Qwen3.8 it equals `Rendered.text` of
   `Qwen38::render` (`crates/nagaya-text-qwen38/src/family.rs`). A test pins this equality. `Rendering` has no text
   member, so this needs no change to the trait.
-- **Proposed (for Amy).** `tokens`, `end`, `boundaries` and `signals` come from the `Rendering` as they are. The
-  response never reports a boundary that a build would not keep.
-- **Proposed (for Amy).** Content that spells a marker is plain text in `tokens` (gogi rule 2). In `text` it looks
-  like the real marker. Thus `control_text` is the way to tell them apart. A client never sends `text` back as a
-  prompt. It sends the context.
-- **Proposed (for Amy).** Unlike the council responses (11.7), `render` reports the hits of `message:<i>`. gogi names
-  no such place for the council routes, but this route is a debug tool, and the place is the answer that it gives.
-- **Proposed (for Amy).** `render` does not check `context_tokens`. A client compares `n_tokens` with the limit in
+- **The tokens and the boundaries.** `tokens`, `end`, `boundaries` and `signals` come from the `Rendering` as they
+  are. The response never reports a boundary that a build would not keep.
+- **Control text.** Content that spells a marker is plain text in `tokens` (gogi rule 2). In `text` it looks like
+  the real marker. Thus `control_text` is the way to tell them apart. A client never sends `text` back as a prompt.
+  It sends the context.
+- **The place of a hit.** Unlike the council responses (11.7), `render` reports the hits of `message:<i>`. gogi
+  names no such place for the council routes. This route is a debug tool, and the place is the answer that it gives.
+- **No context limit.** `render` does not check `context_tokens`. A client compares `n_tokens` with the limit in
   `identity`. Thus the route needs no code for `context_full`.
-- **Proposed (for Amy).** The route shows the context only. A decision also renders a spec, a case and a letter menu
+- **The context only.** The route shows the context only. A decision also renders a spec, a case and a letter menu
   after it (11.3a). A later route can show them through `ReadPlan::prefix`. It is not in the first set.
 
-Choices between options, each one made for Amy to change:
+Senpai chose between two options in each of these three rules. Amy can change each one.
 
-- **Proposed (for Amy).** `generation_prompt` is `false` by default. This matches a build and a decision, which render
-  with no generation prompt, and so `boundaries` match a build. mk and mkviolet default to `true`. A client that
-  wants the prompt of a generation sends `true`.
-- **Proposed (for Amy).** The context is one member, `context`. The same object then goes to `/council/v2/contexts`.
-  The other option is mk's flat body, with `messages`, `tools` and `thinking` at the top. It saves one level, and a
-  client copies less.
-- **Proposed (for Amy).** The route has no `reasoning_effort`. gogi's context has none, and the Qwen3.8 library fixes
-  it to `medium` (`EFFORT` in `crates/nagaya-text-qwen38/src/council/mod.rs`). A body with it is a 400.
+- **The generation prompt.** `generation_prompt` is `false` by default. This matches a build and a decision, which
+  render with no generation prompt, and so `boundaries` match a build. mk and mkviolet defaulted to `true`. A client
+  that wants the prompt of a generation sends `true`.
+- **One member for the context.** The context is one member, `context`. The same object then goes to
+  `/council/v2/contexts`. The other option was mk's flat body, with `messages`, `tools` and `thinking` at the top.
+  It saves one level, and a client copies less.
+- **No reasoning effort.** The route has no `reasoning_effort`. gogi's context has none, and the Qwen3.8 library
+  fixes it to `medium` (`EFFORT` in `crates/nagaya-text-qwen38/src/council/mod.rs`). A body with it is a 400.
 
 A message that the template refuses, a context that fails `Context::check`, and a Unicode noncharacter in a string
 are each a 400 `invalid_request`. The message names the fault, as mk does. The `param` is `context`, unless the fault
@@ -2323,8 +2344,8 @@ The route detokenizes the tokens of the rendering to make `text`. These tokens c
 there is a defect: a 500 `internal`, and the process stops (8.5).
 
 **11.4d Tokenize and detokenize.** `POST /nagaya/v1/tokenize` turns text into token ids. `POST /nagaya/v1/detokenize`
-turns token ids into text. **Proposed (for Amy).** They are for the semantic search, for a count of tokens, and for a
-look at the pieces of a rendering.
+turns token ids into text. They are for the semantic search, for a count of tokens, and for a look at the pieces of
+a rendering.
 
 | Request member | Type | Meaning |
 |---|---|---|
@@ -2352,38 +2373,37 @@ POST /nagaya/v1/detokenize
 -> {"model": "qwen-3.8-flash-next", "text": "Hello world"}
 ```
 
-- **Proposed (for Amy).** With `special` off, `tokenize` calls `Family::tokenize`. The text of a marker stays text
-  (gogi rule 2). For Qwen3.8 this is `Qwen38Family::tokenize`: escape, then `encode_escaped`.
-- **Proposed (for Amy).** `detokenize` calls `Family::detokenize`. A token outside the vocabulary is a 400 with
-  `param` `tokens`. The message of `Error::TokenId` already gives the vocabulary size.
-- **Proposed (for Amy).** Tokens that do not make whole UTF-8 text are a 400 with `param` `tokens`. mk and mkviolet
-  replace the bad bytes. Here the route follows `Family::detokenize`, and a silent replacement would hide a split
-  character. Other option: add a member `lossy` that replaces the bytes.
-- **Proposed (for Amy).** An empty `text` gives an empty `tokens`. An empty `tokens` gives an empty `text`. Neither is
-  an error.
-- **Proposed (for Amy).** `pieces` are lossy by design. A piece is the bytes of one token, and a token can end inside
-  a character. The route replaces bad bytes with U+FFFD in each piece (`String::from_utf8_lossy`). The piece of a
+- **Tokenize.** With `special` off, `tokenize` calls `Family::tokenize`. The text of a marker stays text (gogi rule
+  2). For Qwen3.8 this is `Qwen38Family::tokenize`: it escapes the text as content, then it calls `encode_escaped`.
+- **Detokenize.** `detokenize` calls `Family::detokenize`. A token outside the vocabulary is a 400 with `param`
+  `tokens`. The message of `Error::TokenId` already gives the vocabulary size.
+- **Split characters.** Tokens that do not make whole UTF-8 text are a 400 with `param` `tokens`. mk and mkviolet
+  replaced the bad bytes. Here the route follows `Family::detokenize`, and a silent replacement would hide a split
+  character. The other option was a member `lossy` that replaces the bytes.
+- **Empty input.** An empty `text` gives an empty `tokens`. An empty `tokens` gives an empty `text`. Neither is an
+  error.
+- **Pieces.** `pieces` are lossy by design. A piece is the bytes of one token, and a token can end inside a
+  character. The route replaces bad bytes with U+FFFD in each piece (`String::from_utf8_lossy`). The piece of a
   marker is its text.
-- **Proposed (for Amy).** Code found a difference from mk. mk's `piece_text` drops a cut-off character at the end of a
-  piece. The route keeps a U+FFFD, so that a client sees the cut. A token of several stray bytes can give more than
-  one U+FFFD, and a top token in a raw read (11.3c) always gives one.
-- **Proposed (for Amy).** Each route has its own members. `special` and `pieces` in a `detokenize` body, and `tokens` in
-  a `tokenize` body, are each a 400 that names the member. A `tokens` member must be an array of unsigned 32-bit
-  integers. Any other value is a 400 with `param` `tokens`, and the message names the place of the bad id.
+- **A cut at the end of a piece.** The code found a difference from mk. mk's `piece_text` dropped a cut-off character
+  at the end of a piece. The route keeps a U+FFFD, so that a client sees the cut. A token of several stray bytes can
+  give more than one U+FFFD, and a top token in a raw read (11.3c) always gives one.
+- **The members of each route.** Each route has its own members. `special` and `pieces` in a `detokenize` body, and
+  `tokens` in a `tokenize` body, are each a 400 that names the member. A `tokens` member must be an array of unsigned
+  32-bit integers. Any other value is a 400 with `param` `tokens`, and the message names the place of the bad id.
 
-Two small additions to the `Family` trait (`crates/nagaya-council/src/family.rs`) serve `special` and `pieces`.
+Two small additions to the `Family` trait (`crates/nagaya-council/src/family.rs`) serve `special` and `pieces`. Both
+were built on 2026-10-21.
 
-- **Proposed (for Amy).** Built on 2026-10-21. `Family::tokenize_special(&self, text: &str) -> Result<Vec<u32>,
-  FamilyError>`. Qwen3.8 calls `Tokenizer::encode`. This is the rule of a raw-read suffix
-  (gogi "Raw reads"), where a marker is one token.
-- **Proposed (for Amy).** Built on 2026-10-21. `Family::pieces(&self, tokens: &[u32]) -> Result<Vec<String>,
-  FamilyError>`. Qwen3.8 calls `Tokenizer::token_piece(id, true)` for each id, then converts with lossy UTF-8
+- **`tokenize_special`.** `Family::tokenize_special(&self, text: &str) -> Result<Vec<u32>, FamilyError>`. Qwen3.8
+  calls `Tokenizer::encode`. This is the rule of a raw-read suffix (gogi "Raw reads"), where a marker is one token.
+- **`pieces`.** `Family::pieces(&self, tokens: &[u32]) -> Result<Vec<String>, FamilyError>`. Qwen3.8 calls
+  `Tokenizer::token_piece(id, true)` for each id, then converts with lossy UTF-8
   (`crates/nagaya-text-qwen38/src/council/mod.rs`). `ToyFamily` and the test family `Holding`
   (`crates/nagaya/tests/council_generations.rs`) implement both. Both methods are required, not defaults, so a family
   that does not implement them does not compile.
-- **Proposed (for Amy).** The other option was to build the first set with neither `special` nor `pieces`. `tokenize`
-  then needs no change to the trait. The cost is a bench tool that cannot tokenize a raw suffix. The build took the
-  pick above.
+- **The other option** was to build the first set with neither `special` nor `pieces`. `tokenize` then needs no
+  change to the trait. The cost is a bench tool that cannot tokenize a raw suffix. The build took the rule above.
 
 Tests that can fail (all built, in `crates/nagaya/tests/extensions.rs` and `extensions_qwen38.rs`):
 
@@ -2393,37 +2413,37 @@ Tests that can fail (all built, in `crates/nagaya/tests/extensions.rs` and `exte
   OpenAPI text.
 - A noncharacter, an id past the vocabulary, and a split character each give a 400 with the `param`.
 
-**11.4e Model and health.** **Proposed (for Amy).** The first set has no `model` route and no `health` route. Both
-exist in mk, and `GET /council/v2/identity` covers most of what they give.
+**11.4e Model and health.** The first set has no `model` route and no `health` route. Both existed in mk, and
+`GET /council/v2/identity` covers most of what they gave. Decided by senpai 2026-10-22 (vetoable).
 
-- **`model`.** mk's object has `id`, `weight_hash`, `max_context`, `build.engine_sha256` and `device`. The council
+- **`model`.** mk's object had `id`, `weight_hash`, `max_context`, `build.engine_sha256` and `device`. The council
   identity has `model`, `weight_hash`, `engine`, `limits.context_tokens` and `device` for each served model. The
   members `hidden_size` and `vocab_size` are not there. A client needs them for a vector space, so they belong to the
   `embeddings` response, which this section does not cover. `Family::vocab_size` already holds the vocabulary size.
-- **`health`.** mk answers 200 while it serves and 503 after a failure. The nagaya stops the process at a failure
+- **`health`.** mk answered 200 while it served and 503 after a failure. The nagaya stops the process at a failure
   (8.5), so it has no state that serves and is unhealthy. A probe uses `identity`: a 200 with each model `ready` is
   healthy. A fatal engine reports `unloaded` there (11.1). systemd sees `READY=1` when the engines open (10.1).
   The watchdog thread ends a hung process (7.4).
-- **`weights`.** mk's `health` tells `attached` or `loaded`. The nagaya counts this as `nagaya.arena.handoff` (9.4),
+- **`weights`.** mk's `health` told `attached` or `loaded`. The nagaya counts this as `nagaya.arena.handoff` (9.4),
   with the status `hot` or `cold`. No client route is needed.
 
-The other option is a `GET /nagaya/v1/health` that gives only `{"status": "ok"}`, for a load balancer that cannot read
-`identity`. It costs one route and no new state.
+The other option was a `GET /nagaya/v1/health` that gives only `{"status": "ok"}`, for a load balancer that cannot
+read `identity`. It costs one route and no new state.
 
-**11.4f Extensions in identity.** **Proposed (for Amy).** `identity.extensions` lists the prefix `/nagaya/v1` once.
-gogi's example lists `/mk/v1` this way, and it lists no route (gogi "Extensions").
+**11.4f Extensions in identity.** `identity.extensions` lists the prefix `/nagaya/v1` once. gogi's example lists
+`/mk/v1` this way, and it lists no route (gogi "Extensions"). The rules below were built on 2026-10-21.
 
-- **Proposed (for Amy).** `Council::identity` returns `["/nagaya/v1"]` as soon as the process serves one route under
-  the prefix. The text routes need a family. The list holds the prefix when the council has a served model, and it is
-  empty otherwise (`crates/nagaya/src/http/mod.rs`). Built on 2026-10-21.
-- **Proposed (for Amy).** The list claims only routes that exist. A route that is not built is a 404 `not_found`
+- **When the list holds the prefix.** `Council::identity` returns `["/nagaya/v1"]` as soon as the process serves one
+  route under the prefix. The text routes need a family. Thus the list holds the prefix when the council has a served
+  model, and it is empty otherwise (`crates/nagaya/src/http/mod.rs`).
+- **Only routes that exist.** The list claims only routes that exist. A route that is not built is a 404 `not_found`
   (11.7), also under the prefix. Thus a client probes a route by calling it.
-- **Proposed (for Amy).** Each machine lists the prefix for its own routes. `status` (9.7) is per machine, and the
-  text routes need a family that the machine holds (11.1).
-- **Proposed (for Amy).** A test calls `identity` and checks that the prefix is present if and only if a route under it
+- **One machine.** Each machine lists the prefix for its own routes. `status` (9.7) is per machine, and the text
+  routes need a family that the machine holds (11.1).
+- **The test.** A test calls `identity` and checks that the prefix is present if and only if a route under it
   answers. A test for the empty list fails when the first route is merged without the change.
 
-The other option is a route `GET /nagaya/v1` that lists the routes by name and version. It is more work, and gogi
+The other option was a route `GET /nagaya/v1` that lists the routes by name and version. It is more work, and gogi
 does not ask for it.
 
 **11.5 Errors.** All routes use gogi's error body, `{"error": {"type", "message", "param"?}, "request_id"}`, and the
@@ -2437,8 +2457,8 @@ does not ask for it.
 
 An unexpected failure is a 500 `internal`, and the process stops (8.5).
 
-**Proposed (for Amy).** The routes of 11.4b to 11.4d, and the status feed of 9.7a, need no new code in this table.
-They use the codes that the table and gogi's table already hold:
+The routes of 11.4b to 11.4d, and the status feed of 9.7a, need no new code in this table. They use the codes that
+the table and gogi's table already hold. Decided by senpai 2026-10-22 (vetoable).
 
 | Code | `error.type` | When, on these routes |
 |---|---|---|
@@ -2654,6 +2674,9 @@ The inventories found these items. We correct each one when its code moves. We d
     context.
 17. Which masks do the threads of the Level Zero runtime and IGC get on b70host (3.2b)? The nagaya does not pin
     them, so a measurement shows whether they leave the pool set.
+18. How does a build find a reply that a client cut and sent back (11.3c, "the cuts from the index")? Today a build
+    tries each sealed snapshot that a pass over the index finds. Amy, 2026-10-22: "could we put something in the
+    index to make this more targeted? maybe a few tokens of prefix/suffix?"
 
 ## 16. Decided by senpai
 
@@ -2739,7 +2762,7 @@ gives the section and the rule in a few words. The lists before the last one are
 - 11.7: a response does not report a control-text hit in a message of a context.
 - 11.7: a stop sets every served model to `draining`, and the server waits at most 2 s for open requests.
 
-**In gogi (`~/src/gogi/docs/council-api.md`, `thinking`)**
+**In gogi (`docs/council-api.md`, `thinking`)**
 
 - A template may render a context the same with thinking on and off. Then both contexts have one head. gogi
   `c98fe1f` changes the conformance check to match.
@@ -2775,5 +2798,24 @@ gives the section and the rule in a few words. The lists before the last one are
 - 11.3c: a build takes the lowest free slot that fits, or it is `too_large` or `busy`.
 - 11.3c: a build lists the boundaries that the store holds when it ends.
 - 11.3c: the store's owner key is the first 8 bytes of the BLAKE3 hash of the owner text.
-- 12.1: the canary decides for a new build, and the identity digest does not cover `build`.
-- engine-abi D1: the stage thread calls `wake` after 3 ms with no quantum, only while a job holds a lease.
+- 12.1: the canary decides for a new build. When the canary runs at each start, the digest does not cover `build`.
+- engine-abi D1: a stage thread calls `wake` 3 ms after its last device call, only while a job of its group holds
+  a slot lease.
+- 9.7a: the status feed has two events, `snapshot` and `quantum`, with the members of its tables. Not built.
+- 9.7a: a decode quantum makes an event, and the events of one group are in order.
+- 9.7a: the queries `engine` and `kind` filter the feed. An engine that is not on the machine, or a kind that does
+  not exist, is a 400.
+- 9.7a: the keepalive comes every 15 s, at most 16 feeds are open, and a stop ends each feed after `draining`.
+- 9.7b: the group thread sends each event to a `StatusBus`, and a full channel of 256 drops its subscriber. Not built.
+- 11.4b: each text route needs `model`, refuses an unknown member, and gives 503 while the model is not `ready`.
+- 11.4b: the text routes use no engine, count toward the 64 calls, and make no job span.
+- 11.4b: a family error with no `param` gets the request member at fault.
+- 11.4c: `render` calls `Family::render`, and `text` is the detokenized tokens of the rendering.
+- 11.4c: `render` reports the hits of `message:<i>`, checks no context limit, and shows the context only.
+- 11.4c: `generation_prompt` is `false` by default, the context is one member, and there is no `reasoning_effort`.
+- 11.4d: `tokenize` keeps a marker as text unless `special` is on, and `detokenize` refuses a split character.
+- 11.4d: a piece has U+FFFD for a cut, and the members of each route are its own.
+- 11.4d: `Family` has `tokenize_special` and `pieces`, both required.
+- 11.4e: the first set has no `model` route and no `health` route, because `identity` covers most of them.
+- 11.4f: `identity.extensions` lists `/nagaya/v1` when the process serves a model, and only routes that exist answer.
+- 11.5: the text routes and the status feed add no error code to the table.

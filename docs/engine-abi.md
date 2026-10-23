@@ -1,11 +1,17 @@
 # Engine ABI v0 (draft)
 
-This doc defines the interface that each engine exports to the nagaya. `docs/ontology.md` defines the terms.
+This doc defines the interface that each engine exports to the nagaya. The nagaya is an exokernel for megakernels:
+it owns the machine, and this ABI is the one boundary between it and an engine. Below the boundary, an engine keeps
+its layouts, its kernels and its caches. Above it, the nagaya keeps the ledger, the scheduler and the store.
+`docs/ontology.md` defines the terms, and the four other projects that this doc names.
 
-We drafted the ABI on 2026-10-17 from two sources:
+We drafted the ABI on 2026-10-17 from two sources, our two learning megakernels:
 
 - mk's C ABI (`src/engine/capi.hip`, `src/engine/engine.h`);
 - mkviolet's Gemma 4 engine (`src/gemma4.rs`, `src/held.rs`, `src/protocol.rs`, `src/hot_handoff.rs`).
+
+A file path after "mk" or "mkviolet" in this doc names the source of a copy or of a measurement. The copies live in
+`crates/nagaya-mk-qwen38-gfx1151` and `crates/nagaya-mk-gemma4-bmg`.
 
 On the same day, a kaibo review (deepseek cast) checked the draft against copies of that source. The review's
 headline: the first draft's call list was mk's `Context` model, and mkviolet, the second engine, already failed half
@@ -511,12 +517,15 @@ check.
 
 ## How mkviolet maps
 
+This table maps mkviolet's code, the source of `nagaya-mk-gemma4-bmg`, onto the ABI. The file names and the lines
+are mkviolet's, as they were when the copy was made.
+
 | ABI | mkviolet (`gemma4.rs` unless named) | Notes |
 |---|---|---|
 | open / attach | `load_slots(cluster, model_dir, slot_seqs, max_block)`, `load_slots_stored` | slot sizes and `max_block` are load-time config |
 | device group | both B70 cards | one group thread and one stage thread for each card (D1) |
 | stages | `run_card0`, `run_card1` (`gemma4.rs:1393-1436`) | stage 0: layers 0-14 on card 0; stage 1: layers 15-29 and the head on card 1 (`CARD_LAYERS`, `gemma4.rs:84`); the residual is F32 rows of 2,816 values, through host memory |
-| arena | 30 DMA-BUF slabs, one for each layer on its card (`slab_fd_name(l, card)`, `main.rs:76-108`), `verify_stored_slab` | spot check: first and last 64 bytes per tensor; the head has no slab today |
+| arena | 30 DMA-BUF slabs, one for each layer on its card (`slab_fd_name(l, card)`, `main.rs:76-108`), `verify_stored_slab` | spot check: first and last 64 bytes per tensor; mkviolet gave the head no slab, and the nagaya's copy gives it one, 31 slabs in all (spec 10.2) |
 | slots | `set_slot`, `kv_high`, `slot_clear` | no contexts, no stored token count, no fork |
 | parts | `save_kv_layer_from` (a range read), `load_kv`, `load_kv_layer` | `state` is the slot index; KV only: cells on global layers, ring on sliding layers |
 | part names | the K and V planes of each layer (`KvSnapshot`) | `k.<ll>` and `v.<ll>`, F32, two digits for the layer; see "mkviolet's parts" |
