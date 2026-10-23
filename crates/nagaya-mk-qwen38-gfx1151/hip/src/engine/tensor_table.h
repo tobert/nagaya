@@ -12,6 +12,12 @@
 #include "rt.h"
 
 extern "C" {
+// One access of a stage's footprint (src/schedule.rs): the bytes [lo, hi), written when write is 1.
+struct mk_access {
+  uint64_t lo, hi;
+  uint32_t write;
+};
+
 // One tensor record. ne[0] is the innermost dimension; a row is ne[0] values. data points into the shard's map.
 struct mk_tensor {
   const char *name;
@@ -42,6 +48,14 @@ struct mk_tensor_table {
   void (*drop_cached)(const void *reader, const uint8_t *p, uint64_t n);
   // Dequantizes n values of ggml type `type` at src into dst, bit for bit as ggml. Stops the program on an error.
   void (*dequant_f32)(uint32_t type, const void *src, int64_t n, float *dst);
+  // The schedule of the n stages (mk::Stage) of a pass in build order (src/schedule.rs). It writes the build index of
+  // the k-th stage to run to order[k], and its Stage::sched to sched[k]. With elide 0, each stage keeps its place with
+  // a grid barrier after it. Returns the grid barriers. Stops the program on an error.
+  uint32_t (*schedule)(const void *stages, uint32_t n, const uint32_t *window_starts, uint32_t n_windows, uint32_t elide,
+                       uint32_t tail, uint32_t *order, uint32_t *sched);
+  // The footprint of one stage (src/schedule.rs): at most cap accesses to out, and the fence flag. Returns the count.
+  // Stops the program on an error, or when the accesses are more than cap.
+  uint32_t (*footprint)(const void *stage, mk_access *out, uint32_t cap, uint32_t *fence);
 };
 }
 
@@ -66,6 +80,7 @@ class TensorTable {
     if (!t->tensors || t->n_tensors == 0) MK_DIE("the tensor table holds no tensors");
     if (!t->shards || t->n_shards == 0) MK_DIE("the tensor table names no shards");
     if (!t->reader || !t->drop_cached || !t->dequant_f32) MK_DIE("the tensor table has no reader calls");
+    if (!t->schedule || !t->footprint) MK_DIE("the tensor table has no schedule calls");
     tensors_.resize(t->n_tensors);
     for (uint64_t i = 0; i < t->n_tensors; ++i) {
       const mk_tensor &s = t->tensors[i];
@@ -91,6 +106,8 @@ class TensorTable {
     reader_ = t->reader;
     drop_cached_ = t->drop_cached;
     dequant_f32_ = t->dequant_f32;
+    schedule_ = t->schedule;
+    footprint_ = t->footprint;
   }
 
   size_t n_tensors() const { return tensors_.size(); }
@@ -110,6 +127,13 @@ class TensorTable {
   const std::vector<int64_t> &ple_head_vocab_sizes() const { return ple_head_vocab_sizes_; }
   void drop_cached(const uint8_t *p, uint64_t n) const { drop_cached_(reader_, p, n); }
   void dequant_f32(uint32_t type, const void *src, int64_t n, float *dst) const { dequant_f32_(type, src, n, dst); }
+  uint32_t schedule(const void *stages, uint32_t n, const uint32_t *window_starts, uint32_t n_windows, bool elide, bool tail,
+                    uint32_t *order, uint32_t *sched) const {
+    return schedule_(stages, n, window_starts, n_windows, elide ? 1 : 0, tail ? 1 : 0, order, sched);
+  }
+  uint32_t footprint(const void *stage, mk_access *out, uint32_t cap, uint32_t *fence) const {
+    return footprint_(stage, out, cap, fence);
+  }
 
  private:
   static void copy(const int64_t *p, uint64_t n, std::vector<int64_t> &out, const char *what) {
@@ -125,6 +149,8 @@ class TensorTable {
   const void *reader_ = nullptr;
   void (*drop_cached_)(const void *, const uint8_t *, uint64_t) = nullptr;
   void (*dequant_f32_)(uint32_t, const void *, int64_t, float *) = nullptr;
+  uint32_t (*schedule_)(const void *, uint32_t, const uint32_t *, uint32_t, uint32_t, uint32_t, uint32_t *, uint32_t *) = nullptr;
+  uint32_t (*footprint_)(const void *, mk_access *, uint32_t, uint32_t *) = nullptr;
 };
 
 }  // namespace mk

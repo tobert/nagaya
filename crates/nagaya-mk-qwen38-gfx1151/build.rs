@@ -155,11 +155,13 @@ fn first_line(bytes: &[u8], what: &str) -> String {
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=hip");
+    let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR"));
+    let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
+    // The Rust half of the stage layout. Every build makes it, because the schedule's host tests need it.
+    stage_layout(&manifest, &out);
     if std::env::var_os("CARGO_FEATURE_HIP").is_none() {
         return;
     }
-    let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR"));
-    let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
     let src = manifest.join("hip").join("src");
     let rocm = Path::new(ROCM);
     let compiler = compiler();
@@ -232,6 +234,54 @@ fn main() {
     // The op libraries of the op tests. They load at run time, so they add no link line.
     println!("cargo:rerun-if-changed=ops_build.rs");
     ops_build::build_ops(&src, &out);
+}
+
+/// Write `OUT_DIR/stage_layout.rs` from `hip/src/engine/stage_layout.def`: the Rust constants, and a compile-time
+/// check of each size and offset of the Rust mirror (`src/stage.rs`). A line that the script cannot read stops the build.
+fn stage_layout(manifest: &Path, out: &Path) {
+    let def = manifest.join("hip").join("src").join("engine").join("stage_layout.def");
+    let text = std::fs::read_to_string(&def).unwrap_or_else(|error| panic!("read {}: {error}", def.display()));
+    let mut rust = String::from("// Made by build.rs from hip/src/engine/stage_layout.def. Do not edit.\n");
+    for (index, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("//") {
+            continue;
+        }
+        let what = || format!("{}:{}: {line}", def.display(), index + 1);
+        let (kind, rest) = line.split_once('(').unwrap_or_else(|| panic!("{}: no '('", what()));
+        let arguments: Vec<&str> = rest
+            .strip_suffix(')')
+            .unwrap_or_else(|| panic!("{}: no ')' at the end", what()))
+            .split(',')
+            .map(str::trim)
+            .collect();
+        // A C++ field name that is a Rust keyword takes the raw form.
+        let field = |name: &str| {
+            if name == "type" {
+                "r#type".to_owned()
+            } else {
+                name.to_owned()
+            }
+        };
+        match (kind, arguments.as_slice()) {
+            ("MK_SIZE", [ty, bytes]) => rust.push_str(&format!(
+                "const _: () = assert!(core::mem::size_of::<{ty}>() == {bytes}, \"{ty}: size\");\n"
+            )),
+            ("MK_FIELD", [ty, name, offset]) => rust.push_str(&format!(
+                "const _: () = assert!(core::mem::offset_of!({ty}, {}) == {offset}, \"{ty}::{name}: offset\");\n",
+                field(name)
+            )),
+            ("MK_UNION", [ty, name, mirror, offset]) => rust.push_str(&format!(
+                "const _: () = assert!(core::mem::offset_of!({ty}, {mirror}) == {offset}, \"{ty}::{name}: offset\");\n"
+            )),
+            ("MK_CONST", [cxx, name, value]) => rust.push_str(&format!(
+                "/// `{cxx}` of mk's engine.\npub(crate) const {name}: u32 = {value};\n"
+            )),
+            _ => panic!("{}: not a layout line", what()),
+        }
+    }
+    let path = out.join("stage_layout.rs");
+    std::fs::write(&path, rust).unwrap_or_else(|error| panic!("write {}: {error}", path.display()));
 }
 
 /// The SHA-256 of `bytes` as 64 lowercase hex digits.
