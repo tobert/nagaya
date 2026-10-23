@@ -380,8 +380,8 @@ Do these steps in this order. Stop at the first step that fails, and do the roll
    `47f2191`, it gave `273 ok, 0 FAIL, 10 skip`. The stop parked 1 pinned entry of 38,309,888 bytes (spec 6.11). The
    restart attached the 31 stored arena fds. It sent `READY=1` 1.3 s after the old process exited.
 
-   The HTTP server starts about 0.45 s after `READY=1` (spec 11.7). Wait for the identity to answer before the suite
-   runs.
+   The HTTP server listens before the engines open, and it answers 503 `unavailable` until they are ready (spec
+   10.1). The process sends `READY=1` after the routes attach, so the suite can run when `restart` returns.
 
 5. Look for card errors in the kernel log.
 

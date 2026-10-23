@@ -564,3 +564,35 @@ fn a_start_timeout_sends_a_status_that_names_the_engine() {
     assert_eq!(receive(&socket), "STATUS=engine slow-one loading");
     assert_eq!(receive(&socket), "STATUS=engine slow-one did not open in time");
 }
+
+#[test]
+fn a_held_ready_waits_for_the_caller() {
+    // Spec 10.1: the process sends READY=1 after the council routes attach, not when the engines open.
+    let directory = tempfile::tempdir().unwrap();
+    let (socket, path) = bound(directory.path());
+    let notifier = Notifier::at(&path).unwrap();
+    let options = lifecycle::Options::new(Duration::from_secs(2)).hold_ready();
+    let mut ready = lifecycle::start_with(
+        fake_profile(),
+        Registry::with_fake(),
+        inventory(&[0]),
+        directory.path(),
+        Some(&notifier),
+        options,
+    )
+    .unwrap();
+    assert_eq!(receive(&socket), "STATUS=engine fake-one loading");
+    socket.set_nonblocking(true).unwrap();
+    let mut buffer = [0u8; 512];
+    let early = socket.recv(&mut buffer);
+    assert!(
+        early.is_err(),
+        "nothing else before the caller sends READY: {:?}",
+        early.map(|count| String::from_utf8_lossy(&buffer[..count]).into_owned())
+    );
+    socket.set_nonblocking(false).unwrap();
+    lifecycle::notify_ready(Some(&notifier), &ready.opened);
+    assert_eq!(receive(&socket), "READY=1\nSTATUS=engine fake-one ready");
+    let report = ready.process.stop(Duration::from_secs(2), &SignalFlag::new());
+    assert_eq!(report.exit_code(), ExitCode::Clean, "{report:?}");
+}

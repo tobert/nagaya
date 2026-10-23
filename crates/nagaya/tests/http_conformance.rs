@@ -80,6 +80,8 @@ impl Nagaya {
         let mut lines = Lines::new(child.stderr.take().unwrap());
         let addr = lines.wait_for("http listening on ", Duration::from_secs(60));
         assert_eq!(addr, format!("127.0.0.1:{}", self.port));
+        // The server listens before the engines open, and serves the routes from READY on (spec 10.1).
+        lines.wait_for("ready with ", Duration::from_secs(60));
         self.child = Some(child);
         self.lines = Some(lines);
     }
