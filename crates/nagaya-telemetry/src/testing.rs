@@ -4,7 +4,7 @@
 //! the metric points that the call site recorded. Other threads, and other tests, record nowhere.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use opentelemetry_sdk::metrics::InMemoryMetricExporter;
 use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
@@ -30,6 +30,18 @@ pub struct Point {
     pub count: u64,
 }
 
+/// The dispatches of all captures in this process. A capture's dispatch must outlive its guard.
+///
+/// `tracing` rebuilds the callsite interest while it holds a lock, and it holds a temporary copy of each dispatch.
+/// When the guard of a capture drops first, the rebuild drops the last copy. The drop of the tracer provider logs,
+/// and the log asks for the same lock, so the thread waits for itself. A held copy stops this.
+static RETAINED: Mutex<Vec<tracing::Dispatch>> = Mutex::new(Vec::new());
+
+/// How many dispatches the captures of this process keep (see `RETAINED`).
+pub fn retained_dispatches() -> usize {
+    RETAINED.lock().unwrap().len()
+}
+
 /// The telemetry that one test reads.
 pub struct Capture {
     telemetry: Telemetry,
@@ -47,7 +59,9 @@ impl Capture {
         let metrics = InMemoryMetricExporter::default();
         let telemetry = Telemetry::with_exporters(&config, spans.clone(), metrics.clone(), false);
         let subscriber = tracing_subscriber::registry().with(telemetry.trace_layer());
-        let dispatch = tracing::subscriber::set_default(subscriber);
+        let dispatch = tracing::Dispatch::new(subscriber);
+        RETAINED.lock().unwrap().push(dispatch.clone());
+        let dispatch = tracing::dispatcher::set_default(&dispatch);
         let scope = scope(telemetry.instruments());
         Self {
             telemetry,
