@@ -925,9 +925,15 @@ fn iq3s_tile_pool_at_110_bytes_is_refused() {
 /// A case that declares no byte size would pass the test above with no check.
 #[test]
 fn every_case_names_its_buffers() {
-    for (name, case) in cases() {
-        assert!(!buffers(&case).is_empty(), "{name} names no buffer");
+    let mut total = 0;
+    let all = cases();
+    for (name, case) in &all {
+        let names = buffers(case);
+        assert!(!names.is_empty(), "{name} names no buffer");
+        total += names.len();
     }
+    // The cases and the buffers of mk's `abi_cases.py` at mk commit 555a2a3. A case that goes missing is a check that goes.
+    assert_eq!((all.len(), total), (29, 110));
 }
 
 // ---- test_traps.py ----
