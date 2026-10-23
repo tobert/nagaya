@@ -196,7 +196,9 @@ Nothing in the store directory needs a change for the rollback. The nagaya leave
 
 The live gate council of kaijutsu reads `~/.config/kaijutsu/config/kernel/gate.toml`. Its `[council]` table has
 `server = "http://198.51.100.20:8090"`. It talks to whatever serves port 8090. After the cutover, that is the
-nagaya. A threshold is fitted for one identity (gogi `docs/council-api.md`). Since 2026-10-21, the file's threshold
+nagaya.
+
+A threshold is fitted for one identity (gogi `docs/council-api.md`). Since 2026-10-21, the file's threshold
 names its spec alone, and no identity fields. Its comment says: "a megakernel redeploy no longer turns decisions into
 misses."
 
