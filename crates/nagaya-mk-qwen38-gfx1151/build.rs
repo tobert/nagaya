@@ -10,6 +10,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+// The op libraries for the op tests (tests/ops). They are not part of the engine.
+pub(crate) mod ops_build;
+
 /// The ROCm install. mk's CMake build names the same path (mk `CMakeLists.txt:4-5`).
 const ROCM: &str = "/opt/rocm";
 
@@ -225,6 +228,10 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", rocm.join("lib").display());
     println!("cargo:rustc-link-lib=dylib=amdhip64");
     println!("cargo:rustc-link-lib=dylib=stdc++");
+
+    // The op libraries of the op tests. They load at run time, so they add no link line.
+    println!("cargo:rerun-if-changed=ops_build.rs");
+    ops_build::build_ops(&src, &out);
 }
 
 /// The SHA-256 of `bytes` as 64 lowercase hex digits.
