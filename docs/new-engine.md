@@ -4,12 +4,7 @@ This doc is the checklist for the third engine, family, card or machine. Each it
 from the two ports that exist: Qwen3.8 on gfx1151host (milestones 8 to 14) and Gemma 4 on b70host (milestone 15s). The
 rules are in `docs/spec.md`, `docs/engine-abi.md` and `AGENTS.md`. This doc points at them and does not repeat them.
 
-The other projects that this doc names, each in one line:
-
-- mk is the Qwen3.8 megakernel for gfx1151, with a C ABI (`~/src/megakernel-qwen38-flashnext-strixhalo`).
-- mkviolet is the Gemma 4 engine for the two B70 cards, in Rust (`~/src/mkviolet`).
-- gogi is the council v2 contract and its conformance suite (`~/src/gogi`).
-- kaijutsu is the first client. Its gate council reads thresholds that are fitted to one identity.
+This doc names mk, mkviolet, gogi and kaijutsu. `docs/ontology.md`, "The other projects", defines each one.
 
 Read `AGENTS.md` first. Its rules apply to every step here: a test first, a falsified test, no silent fallback, and
 no edit in another repository.
