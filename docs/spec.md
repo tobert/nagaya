@@ -905,7 +905,8 @@ Reason: one store holds every engine, pins stay through a restart, and a lease w
 forever. The mkviolet rule is the origin, not the scope.
 
 **6.11 Restart.** At start, the store loads its index again. It checks each entry when a lookup first uses it.
-Entries in the host tier do not survive a restart, so the store removes them from the index at start. Decided
+Entries in the host tier do not survive a restart, so the store removes them from the index at start. (The stop
+parks the pinned ones first, below.) Decided
 2026-10-20 (reading).
 
 The hits and the last use of each entry are in memory only, and a restart starts them again at zero. **Open:** a
@@ -914,10 +915,21 @@ flush at a stop or at an interval keeps them. A write at each use is too slow.
 At start, the store also wakes pinned entries into slots when the profile asks for them. (mk wakes its pinned
 parked contexts before `READY=1`.) Not built: the nagaya wakes no pinned entry at start.
 
-**Open:** A restart loses an entry of the host tier, also when a pin holds it. The index drops the entry and its pin
-at start. The stop parks the states of the slots, and it does not park the pinned entries of the host tier. Thus a
-pinned snapshot does not survive a restart. The restart check of `gogi-conformance` (`--allow-restart`) needs a
-pinned snapshot to survive. The stop must park the pinned entries of the host tier to NVMe for that check to pass.
+**The stop parks the pinned entries of the host tier.** After the groups park their states (10.3 step 3), the stop
+parks each live entry of the host tier that a live pin holds. It parks the entries under it first, because a park
+needs its parent on NVMe. Each parked entry keeps its recipe, its owner and its pins. Thus a pinned snapshot and its
+pin stay through a clean restart, as 6.10 says. A crash does not stop, so a crash loses them. Decided 2026-10-23.
+
+A park of a pinned entry that fails is a failure of the stop, as for a state (10.3).
+
+Amy, 2026-10-23: "ah, let's save add the saves then".
+
+**Proposed** (claude-opus-5-5, 2026-10-23), two choices that the decision leaves open:
+
+- The stop does not park a pinned interval copy, and its pin ends at the restart. Reason: an interval copy never goes
+  to NVMe (6.13), and a copy is not a parent, so no chain needs it.
+- The stop waits for the park of pinned entries for at most one park budget (2.1). A park past it makes the process
+  exit 1, as for a group (10.3). Reason: the budget bounds the whole stop, and a new budget needs a config field.
 
 **6.12 Steering and lab inputs.** Some state changes bits but is not an input, for example mk's attention cell mask
 or a steering vector. Such state goes into the recipe. Thus a steered or masked result never has a plain recipe.
@@ -2632,8 +2644,7 @@ The inventories found these items. We correct each one when its code moves. We d
 9. Should the control threads run at elevated priority (3.2, 3.2a)? A raised priority needs `CAP_SYS_NICE` or a
    setting in the unit, such as `Nice=`. A measurement under load shows whether the pinned cores are enough.
 
-10. Can a restart keep a pinned entry of the host tier (6.11)? Today the index drops the entry and its pin at start.
-    The restart check of `gogi-conformance` needs the stop to park such an entry to NVMe.
+10. Can a restart keep a pinned entry of the host tier (6.11)? Yes: the stop parks it to NVMe. Decided 2026-10-23.
 11. How does the park charge the host copy of a state (10.3 "Open", 4.2 "Staging")? The copy has no staging charge
     today. The charge path refuses while the process stops.
 12. Can a copy quantum run past the 30 s watchdog timeout on a slow NVMe (7.4)? We have not measured it (kaibo review
