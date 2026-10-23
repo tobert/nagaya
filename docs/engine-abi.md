@@ -503,6 +503,30 @@ C++ engine is. This is the simplest seam that removes the GGUF parse from C++:
 Reason: the arena bytes and the logits stay the same, and the C ABI changes in three calls only. Step 6 moves the plan
 and the PLE gather into Rust. Then the two calls back into Rust go away.
 
+**Proposed** (Claude Opus 5.5, 2026-10-22): the extern layer holds only the calls that the binding uses. Step 4 of
+milestone 15 moves the checks and the result rules of mk's C ABI into Rust. The C++ side keeps a thin layer,
+`hip/src/engine/extern.hip`. The docs do not say what happens to the calls that nothing in the nagaya uses. This is
+the simplest choice:
+
+- Each call of the extern layer takes C types and calls one `Engine` method or reads one field. It has no check.
+- The binding declares each call of the layer, and a test compares the two lists.
+- The calls that only mk's Python harness and lab used go:
+  - the taps, `mk_pass` and `mk_pass_gdn_ab`;
+  - the telemetry: `mk_stage_times`, `mk_stage_detail`, `mk_stage_raw`, `mk_stage_barriers`, `mk_mega_hwid`,
+    `mk_mega_grid`, `mk_dispatches`, `mk_host_stats` and `mk_last_hidden`;
+  - the mask and the poison cells: `mk_ctx_set_mask`, `mk_ctx_mask` and `mk_ctx_poison_cells`;
+  - the self-tests: `mk_scratch_selftest`, `mk_stage_abort_selftest`, `mk_trap_selftest`, `mk_trap_sink_installed`
+    and `mk_kernel_resources`;
+  - `mk_ctx_fork`, `mk_ctx_copy`, `mk_ctx_pooled_n` and `mk_engine_close`.
+- `mk_engine_attach` and `mk_arena_check` also go. The mk engine exports no arena yet (spec 10.2). The step that
+  exports it adds the two calls to the layer and binds them. The `Engine` constructor with a path and
+  `Engine::check_arena` stay in `engine.hip`.
+- The `Engine` methods behind these calls stay in `engine.hip` for step 6.
+
+Reason: Amy, 2026-10-22: "don't copy extra stuff". A call with no caller has no test. Five of these calls stopped the
+program on a small buffer (`MK_DIE`), and one self-test stopped on a small buffer (`MK_CHECK_BYTES`). With no caller,
+these checks need no Rust copy.
+
 **mk's pass scratch is a mandatory term.** The ABI says that `pass` never allocates and that its scratch is a
 mandatory term. mk allocates one scratch pool at its first ask and keeps it for the engine's life
 (`engine.h:104-112`). The term is `{name: "pass_scratch", tier: device(0), bytes: the measured constant (milestone
