@@ -194,6 +194,29 @@ done. Milestone 15 is next on gfx1151host, and milestone 15s is next on b70host.
     - First copy the code with no change in behavior, and run the hip suite and the conformance gates on gfx1151.
       Then port host code to Rust one part at a time, each with the gates green. Start with the GGUF reader.
     - Before step one, interview Amy on the copy list and the order of the ports.
+
+    Amy decided the plan on 2026-10-22, by interview. The copy is from mk `555a2a3` into
+    `crates/nagaya-mk-qwen38-gfx1151/hip/`. It keeps mk's folder layout, so the includes do not change.
+
+    - **Copy:** all of `src/engine`, all of `src/rt`, the GGUF reader and dequantizer (`gguf.cpp`, `dequant.cpp`
+      and their headers), and every file of `src/ops`. Leave out `mkgguf_c` (the C ABI for Python), the oracles'
+      Python, `lab/`, `probes/`, `reference/`, the service and the harness.
+    - **Op tests:** port mk's Python op tests (`tests/ops`) to Rust tests behind the feature `hip`. mk's Python
+      writes their fixed inputs and outputs once, with no GPU. Keep the fixtures small. No Python runs at test time.
+      `build.rs` builds the op libraries for these tests only.
+    - **Steps, in this order.** Each step ends with the hip suite and the oracle gate green.
+      1. The copy, built by `build.rs` and linked statically, with no change in behavior.
+      2. The op tests in Rust.
+      3. The GGUF reader and dequantizer in Rust. Check the bits against the C++ copy.
+      4. The C ABI (`capi.hip`) in Rust, over a thin extern layer.
+      5. The stage schedule (`stage_sched.h`) in Rust.
+      6. The host code of `engine.hip`. `rt.cpp` stays C++ as the HIP runtime layer.
+    - **Identity:** accept one refill. The canary (8.1) is not built, so the build facts stay in the digest (12.1).
+      The new build gets a new digest, and each held context fills again once.
+    - **Tonight:** do every step in order. Stop at the first step that does not go green, and report. Deploy the
+      last green build.
+    - mk and mkviolet become archives when milestones 15 and 15s are done (Amy, 2026-10-22: "they were our
+      learning projects for this and their megakernels live on").
 15s. **mkviolet on b70host.** Replace `mkviolet.service` with the nagaya on b70host. Amy, 2026-10-21: "pull
     the engine in now, you can stop mkviolet, our goal is to replace it." The branch is `b70host`. The milestone
     number is Decided 2026-10-22. Do the steps in this order:
