@@ -10,6 +10,8 @@ mod engine;
 mod gguf;
 #[cfg(test)]
 mod gguf_shard_tests;
+#[cfg(test)]
+mod layout;
 mod spec;
 mod table;
 mod worker;

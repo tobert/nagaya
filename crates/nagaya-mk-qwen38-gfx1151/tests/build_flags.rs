@@ -5,6 +5,7 @@
 //! gates compare bits. Thus a flag that differs fails here, before a GPU run.
 //!
 //! The build compiles seven of the nine. The Rust reader took the place of mk's two GGUF units in milestone 15 step 3.
+//! The thin extern layer `extern.hip` took the place of mk's C ABI `capi.hip` in step 4, with the same compile.
 
 #[allow(dead_code)]
 #[path = "../build.rs"]
@@ -14,6 +15,11 @@ use std::path::Path;
 
 /// The source root of mk's build, as the fixture names it.
 const MK_SRC: &str = "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src";
+
+/// The name of a unit here for its name in mk: `extern.hip` for mk's `capi.hip`, and the same name for the others.
+fn rename(word: &str) -> String {
+    word.replace("/engine/capi.hip", "/engine/extern.hip")
+}
 
 #[test]
 fn each_compile_is_the_compile_of_mk_cmake_build() {
@@ -59,15 +65,17 @@ fn each_compile_is_the_compile_of_mk_cmake_build() {
                 continue;
             }
             after_o = word == "-o";
-            expected.push(word.replace(MK_SRC, &src.display().to_string()));
+            expected.push(rename(&word.replace(MK_SRC, &src.display().to_string())));
         }
         assert_eq!(unit.arguments, expected, "the compile of {}", unit.source.display());
         assert_eq!(
             unit.source.display().to_string(),
-            entry["file"]
-                .as_str()
-                .expect("an entry names its file")
-                .replace(MK_SRC, &src.display().to_string())
+            rename(
+                &entry["file"]
+                    .as_str()
+                    .expect("an entry names its file")
+                    .replace(MK_SRC, &src.display().to_string())
+            )
         );
     }
 }

@@ -5,7 +5,7 @@
 //! 3.3).
 
 use std::collections::HashMap;
-use std::ffi::{CStr, c_char, c_void};
+use std::ffi::c_void;
 use std::fmt;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use nagaya_abi::{Identity, Limits};
 
-use crate::binding::{self, Binding};
+use crate::binding::{self, Binding, PassStop};
 use crate::gguf;
 use crate::spec;
 use crate::table::TensorTable;
@@ -604,14 +604,12 @@ impl ThreadState {
         if engine.is_null() {
             return Err(MkError::new("mk_engine_open returned no engine"));
         }
-        let mut fd = -1i32;
-        let mut arena_bytes = 0u64;
-        unsafe { (binding.arena)(engine, &mut fd, &mut arena_bytes) };
+        let arena_bytes = unsafe { (binding.arena_bytes)(engine) };
 
         // mk stops the program on a pass that stops early by default (engine.h:215-220). Opt in, so a spin-timeout
-        // returns -1 and poisons the contexts, and the wrapper reports PassStatus::Poison (D6, spec 8.2).
+        // returns with a last error and poisons the contexts, and the wrapper reports PassStatus::Poison (D6, 8.2).
         // mk has no query for this flag, so a test cannot observe the call. A forced spin-timeout needs contention.
-        unsafe { (binding.recover_spin_timeouts)(engine, 1) };
+        unsafe { (binding.recover_spin_timeouts)(engine, true) };
 
         let state = Self {
             binding,
@@ -648,26 +646,6 @@ impl ThreadState {
             return Err(format!("hipMemGetInfo failed with HIP error {code}"));
         }
         Ok(free as u64)
-    }
-
-    /// Run mk's segment check. Every `mk_pass_segments` call runs it first, because mk aborts on a bad segment.
-    fn segments_problem(&self, contexts: &[*mut c_void], lens: &[u32]) -> Result<(), String> {
-        let mut why = [0 as c_char; 512];
-        let code = unsafe {
-            (self.binding.segments_problem)(
-                self.engine,
-                contexts.len() as u32,
-                contexts.as_ptr(),
-                lens.as_ptr(),
-                why.as_mut_ptr(),
-                why.len() as u32,
-            )
-        };
-        if code == 0 {
-            return Ok(());
-        }
-        let message = unsafe { CStr::from_ptr(why.as_ptr()) }.to_string_lossy().into_owned();
-        Err(message)
     }
 
     /// The pass scratch in bytes: the device free memory that the pool's first asks take.
@@ -707,39 +685,15 @@ impl ThreadState {
 
     /// Run one probe pass: `tokens` at the context's end, with the logits row when asked.
     fn probe_pass(&self, context: *mut c_void, tokens: &[i32], want_logits: bool) -> Result<(), String> {
-        let contexts = [context];
-        let lens = [tokens.len() as u32];
-        // mk aborts the process on a bad segment, so run its check first (engine-abi, "How mk maps").
-        self.segments_problem(&contexts, &lens)?;
-        let mut logits = if want_logits {
-            vec![0f32; spec::VOCAB as usize]
-        } else {
-            Vec::new()
-        };
-        let logits_ptr = if want_logits {
-            logits.as_mut_ptr()
-        } else {
-            std::ptr::null_mut()
-        };
-        let ms = unsafe {
-            (self.binding.pass_segments)(
-                self.engine,
-                1,
-                contexts.as_ptr(),
-                lens.as_ptr(),
-                tokens.as_ptr(),
-                1,
-                logits_ptr,
-                std::ptr::null_mut(),
-            )
-        };
-        if ms < 0.0 {
-            let mut why = [0 as c_char; 512];
-            unsafe { (self.binding.last_error)(self.engine, why.as_mut_ptr(), why.len() as u32) };
-            let why = unsafe { CStr::from_ptr(why.as_ptr()) }.to_string_lossy().into_owned();
-            return Err(format!("the pass scratch probe stopped: {why}"));
+        let segments = binding::segments(&[context], &[tokens.len() as u32], tokens);
+        let rows = usize::from(want_logits);
+        let mut logits = vec![0f32; rows * spec::VOCAB as usize];
+        let logits = want_logits.then_some(logits.as_mut_slice());
+        match unsafe { self.binding.pass_segments(self.engine, &segments, logits) } {
+            Ok(_ms) => Ok(()),
+            Err(PassStop::Refused(why)) => Err(format!("the pass scratch probe was refused: {why}")),
+            Err(PassStop::Stopped(why)) => Err(format!("the pass scratch probe stopped: {why}")),
         }
-        Ok(())
     }
 
     /// Serve commands until the handle side closes the channel.
@@ -767,13 +721,12 @@ impl ThreadState {
                     reply.send(self.with_context(id, |state, context| unsafe { (state.binding.ctx_max)(context.ptr) }));
             }
             Command::OwnsKv { id, reply } => {
-                let _ = reply.send(self.with_context(id, |state, context| unsafe {
-                    (state.binding.ctx_owns_kv)(context.ptr) != 0
-                }));
+                let _ = reply
+                    .send(self.with_context(id, |state, context| unsafe { (state.binding.ctx_owns_kv)(context.ptr) }));
             }
             Command::Poisoned { id, reply } => {
                 let _ = reply.send(self.with_context(id, |state, context| unsafe {
-                    (state.binding.ctx_poisoned)(context.ptr) != 0
+                    (state.binding.ctx_poisoned)(context.ptr)
                 }));
             }
             Command::Read { id, part, len, reply } => {
@@ -927,7 +880,7 @@ impl ThreadState {
 
     fn read(&self, id: u64, part: u32, len: usize) -> Result<Vec<u8>, Call> {
         let context = self.context(id)?;
-        if unsafe { (self.binding.ctx_poisoned)(context.ptr) } != 0 {
+        if unsafe { (self.binding.ctx_poisoned)(context.ptr) } {
             return Err(Call::Failed("the context is poisoned; free it".to_owned()));
         }
         let n = unsafe { (self.binding.ctx_n)(context.ptr) };
@@ -956,9 +909,9 @@ impl ThreadState {
             Err(call) => return call,
         };
         let ptr = context.ptr;
-        let poisoned = unsafe { (self.binding.ctx_poisoned)(ptr) } != 0;
+        let poisoned = unsafe { (self.binding.ctx_poisoned)(ptr) };
         let n = unsafe { (self.binding.ctx_n)(ptr) };
-        let owns_kv = unsafe { (self.binding.ctx_owns_kv)(ptr) } != 0;
+        let owns_kv = unsafe { (self.binding.ctx_owns_kv)(ptr) };
         // mk reads the part as f32 values, so the source must be aligned for them.
         let bytes = Aligned::copy(bytes);
         match part {
@@ -978,7 +931,7 @@ impl ThreadState {
                     ));
                 }
                 unsafe { (self.binding.state_write)(self.engine, ptr, part, bytes.as_ptr()) };
-                if unsafe { (self.binding.ctx_poisoned)(ptr) } != 0 {
+                if unsafe { (self.binding.ctx_poisoned)(ptr) } {
                     return Call::Failed("the write poisoned the context".to_owned());
                 }
                 Call::Ok
@@ -1012,7 +965,7 @@ impl ThreadState {
                     }
                 }
                 unsafe { (self.binding.state_write)(self.engine, ptr, part, bytes.as_ptr()) };
-                if unsafe { (self.binding.ctx_poisoned)(ptr) } != 0 {
+                if unsafe { (self.binding.ctx_poisoned)(ptr) } {
                     return Call::Failed("the write poisoned the context".to_owned());
                 }
                 if let Some(context) = self.contexts.get_mut(&id) {
@@ -1031,9 +984,9 @@ impl ThreadState {
         };
         let ptr = context.ptr;
         let capacity = context.capacity;
-        let poisoned = unsafe { (self.binding.ctx_poisoned)(ptr) } != 0;
+        let poisoned = unsafe { (self.binding.ctx_poisoned)(ptr) };
         let current = unsafe { (self.binding.ctx_n)(ptr) };
-        let owns_kv = unsafe { (self.binding.ctx_owns_kv)(ptr) } != 0;
+        let owns_kv = unsafe { (self.binding.ctx_owns_kv)(ptr) };
         if poisoned {
             return Call::Refused(POISONED.to_owned());
         }
@@ -1060,7 +1013,7 @@ impl ThreadState {
             ));
         }
         unsafe { (self.binding.cells_write)(self.engine, ptr, part, n, bytes.as_ptr()) };
-        if unsafe { (self.binding.ctx_poisoned)(ptr) } != 0 {
+        if unsafe { (self.binding.ctx_poisoned)(ptr) } {
             return Call::Failed("the cells write poisoned the context".to_owned());
         }
         if let Some(context) = self.contexts.get_mut(&id) {
@@ -1080,9 +1033,9 @@ impl ThreadState {
         };
         let ptr = context.ptr;
         let capacity = context.capacity;
-        let poisoned = unsafe { (self.binding.ctx_poisoned)(ptr) } != 0;
+        let poisoned = unsafe { (self.binding.ctx_poisoned)(ptr) };
         let current = unsafe { (self.binding.ctx_n)(ptr) };
-        let owns_kv = unsafe { (self.binding.ctx_owns_kv)(ptr) } != 0;
+        let owns_kv = unsafe { (self.binding.ctx_owns_kv)(ptr) };
         let restored = (context.restored_kv, context.restored_idx, context.restored_ple);
         if poisoned {
             return Call::Refused(POISONED.to_owned());
@@ -1103,7 +1056,7 @@ impl ThreadState {
         }
         unsafe { (self.binding.set_n)(self.engine, ptr, n) };
         // mk returns nothing here. A call that left the context poisoned is a failure (spec 6.8), so check first.
-        if unsafe { (self.binding.ctx_poisoned)(ptr) } != 0 {
+        if unsafe { (self.binding.ctx_poisoned)(ptr) } {
             return Call::Failed("set_n poisoned the context".to_owned());
         }
         if unsafe { (self.binding.ctx_n)(ptr) } != n {
@@ -1157,7 +1110,7 @@ impl ThreadState {
             Err(call) => return call,
         };
         let ptr = context.ptr;
-        if unsafe { (self.binding.ctx_poisoned)(ptr) } != 0 {
+        if unsafe { (self.binding.ctx_poisoned)(ptr) } {
             return Call::Refused(POISONED.to_owned());
         }
         // mk_ctx_round_gdn_bf16 stops the program on a non-finite value, or one that rounds to infinity. Check first.
@@ -1171,7 +1124,7 @@ impl ThreadState {
             }
         }
         unsafe { (self.binding.round_gdn)(self.engine, ptr) };
-        if unsafe { (self.binding.ctx_poisoned)(ptr) } != 0 {
+        if unsafe { (self.binding.ctx_poisoned)(ptr) } {
             return Call::Failed("the seal poisoned the context".to_owned());
         }
         Call::Ok
@@ -1231,54 +1184,22 @@ impl ThreadState {
                 .contexts
                 .get(id)
                 .ok_or_else(|| problem(format!("context {id} is not in this engine")))?;
-            if unsafe { (self.binding.ctx_poisoned)(context.ptr) } != 0 {
+            if unsafe { (self.binding.ctx_poisoned)(context.ptr) } {
                 return Err(problem(format!("context {id} is poisoned; free it")));
             }
             pointers.push(context.ptr);
         }
 
-        // mk aborts the process on a bad segment, so run its check first (engine-abi, "How mk maps").
-        if let Err(message) = self.segments_problem(&pointers, &request.lens) {
-            return Err(problem(message));
-        }
-
-        let mut logits = if request.want_logits {
-            vec![0f32; count * spec::VOCAB as usize]
-        } else {
-            Vec::new()
+        // The binding runs mk's segment check first, because mk stops the program on a bad segment.
+        let segments = binding::segments(&pointers, &request.lens, &request.tokens);
+        let rows = if request.want_logits { count } else { 0 };
+        let mut logits = vec![0f32; rows * spec::VOCAB as usize];
+        let buffer = request.want_logits.then_some(logits.as_mut_slice());
+        let ms = match unsafe { self.binding.pass_segments(self.engine, &segments, buffer) } {
+            Ok(ms) => ms,
+            Err(PassStop::Refused(message)) => return Err(problem(message)),
+            Err(PassStop::Stopped(message)) => return Err(PassProblem { message, poison: true }),
         };
-        let logits_ptr = if request.want_logits {
-            logits.as_mut_ptr()
-        } else {
-            std::ptr::null_mut()
-        };
-        let ms = unsafe {
-            (self.binding.pass_segments)(
-                self.engine,
-                count as u32,
-                pointers.as_ptr(),
-                request.lens.as_ptr(),
-                request.tokens.as_ptr(),
-                1,
-                logits_ptr,
-                std::ptr::null_mut(),
-            )
-        };
-        if ms < 0.0 {
-            let mut buffer = [0 as c_char; 1024];
-            unsafe { (self.binding.last_error)(self.engine, buffer.as_mut_ptr(), buffer.len() as u32) };
-            let message = unsafe { CStr::from_ptr(buffer.as_ptr()) }
-                .to_string_lossy()
-                .into_owned();
-            return Err(PassProblem {
-                message: if message.is_empty() {
-                    "the pass stopped and mk gave no reason".to_owned()
-                } else {
-                    message
-                },
-                poison: true,
-            });
-        }
         let logits = request
             .want_logits
             .then(|| logits.iter().flat_map(|value| value.to_le_bytes()).collect());

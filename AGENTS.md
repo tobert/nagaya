@@ -171,7 +171,8 @@ runs now on gfx1151host. Milestone 15s is done except the cutover on b70host.
 - Keep mk's compile flags. `tests/build_flags.rs` compares them with mk's `compile_commands.json`.
 - mk's weights are three GGUF shards. mk's `harness/paths.py` (`SHARDS`) gives their paths. GPU tests read them
   from `MK_SHARDS`, three paths with `:` between them. Do not put the paths in code.
-- `mk_engine_attach` takes a path, not an fd. For an fd from systemd's store, give `/proc/self/fd/<n>`.
+- mk's attach (`Engine(table, path)` in `engine.hip`) takes a path, not an fd. For an fd from systemd's store, give
+  `/proc/self/fd/<n>`. The extern layer has no attach call yet.
 - `mk_ctx_state_write` returns nothing. The wrapper maps mk's result onto the three write results (ABI
   "Capabilities") through `mk_ctx_poisoned`.
 - The nagaya must be the only GPU client (spec 3.1). Since 2026-10-21, `nagaya.service` serves council v2 on gfx1151host.
@@ -180,8 +181,8 @@ runs now on gfx1151host. Milestone 15s is done except the cutover on b70host.
   - They are user units. The command without `--user` says "inactive" while they run.
   - If either one runs, stop and report. Do not stop a service yourself.
   - In a container with no systemd, ask your reviewer to check it.
-- mk aborts the process on some bad arguments (`MK_DIE` in `src/engine/capi.hip`). Call `mk_segments_problem`
-  before `mk_pass_segments`.
+- mk aborts the process on some bad arguments (`MK_DIE` in `engine.hip`). The extern layer `extern.hip` checks
+  nothing, so check in Rust before each call. `Binding::pass_segments` calls `mk_segments_problem` first.
 - mk's HIP device is the device that is current on the calling thread. Make every mk call from one thread.
 - Do not call `mk_engine_close` or free the engine in tests. HIP teardown in a process segfaults (spec 3.3).
 - GPU tests are behind the cargo feature `hip`, so `cargo test` with no features needs no GPU.
