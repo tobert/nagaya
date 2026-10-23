@@ -131,3 +131,13 @@ fn an_endpoint_makes_the_span_and_metric_exporters_connect_to_it() {
     }
     drop(flusher.join().expect("the flush thread ends"));
 }
+
+#[test]
+fn the_dispatch_of_a_capture_outlives_its_guard() {
+    use nagaya_telemetry::testing::{Capture, retained_dispatches};
+
+    let before = retained_dispatches();
+    drop(Capture::start(Vec::new()));
+    // Other tests start captures at the same time, so the count can grow by more than one.
+    assert!(retained_dispatches() > before);
+}

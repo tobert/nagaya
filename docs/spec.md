@@ -16,8 +16,11 @@ question has the mark **Open**, and section 15 lists all of them.
 We change this spec before we change the code (Amy, 2026-10-20: "I want to keep updating the spec before the code so
 we could redo it all again if we decide to"). The mark "Decided 2026-10-20 (reading)" is on a rule that began as a
 **Proposed** reading of the text. Senpai wrote it as a rule, and Amy can veto it.
+
 The mark "Decided by senpai 2026-10-20 night (vetoable)" is on a rule that senpai chose where the spec left a choice
-open. Amy can veto it.
+open. Amy can veto it. The mark "Decided by senpai 2026-10-22 (vetoable)" is on a **Proposed** note that senpai
+accepted (Amy, 2026-10-22: "if those decisions seem ok to you let's call them ok and melt them in"). Amy reads them
+in her review of the docs.
 
 ## 1. Scope
 
@@ -354,9 +357,10 @@ thread priorities:
   (13.2) run on a bounded pool pinned to the remaining cores at `SCHED_BATCH`. Long CPU work yields between chunks
   to obey `max_quantum_ms`. On unified-memory machines (`gfx1151host` and `sm121host`), the scheduler pauses background CPU
   memory work during a GPU pass to protect GPU memory bandwidth.
-- **No pause on a discrete card.** **Proposed** (claude-opus-5-5, 2026-10-21): a machine whose cards have their own
-  memory, such as b70host, has no pause rule. A pass there reads GDDR6, not host memory. The host traffic of a
+- **No pause on a discrete card.** A machine whose cards have their own memory, such as b70host, has no pause
+  rule. A pass there reads GDDR6, not host memory. The host traffic of a
   pass is the residual and the uploads, about 11 MB for a block of mkviolet. A measurement under load can add a rule.
+  Decided by senpai 2026-10-22 (vetoable).
 
 **3.2a Control runtime first.** The control runtime (`tokio`) arrived with gossip, in milestone 10 step f. The HTTP
 server joined the runtime in milestone 12 step 6. The group threads, the ledger thread and the watchdog thread stay
@@ -2031,31 +2035,32 @@ needs no GPU and no GGUF. Decided 2026-10-20 (Amy: "extend gogi to have what we 
 **11.3c The job path of a build.** A build renders a context, finds the longest held prefix, restores it, feeds the
 rest, and holds a snapshot at each boundary. These notes fix the choices that the text above leaves open.
 
-- **Proposed** (Claude Sonnet 5.5, 2026-10-20), the store and the group thread. `lookup` and `restore` take the
-  engine, and the engine lives on its group thread (3.2). Thus a build runs them on the group thread, and the store
-  sits behind a mutex that the group threads and the park thread share. The ledger stays on its own thread. A build
-  asks it by message.
-- **Proposed** (Claude Sonnet 5.5, 2026-10-20), the quanta of a build. The first quantum has the kind `copy`. It
-  chooses a slot, looks up the prefixes and restores the longest one. It then adds the other quanta to the job.
-- **Proposed** (Claude Sonnet 5.5, 2026-10-20), the same. A feed of at most `max_pass_inputs` tokens is `prefill`.
-  A seal and a put at a boundary is `copy`. A feed never crosses a boundary.
-- **Proposed** (Claude Sonnet 5.5, 2026-10-20), the seal. A build calls `seal` at each boundary that it passes,
-  before it reads the parts. A snapshot is a context sealed at a boundary (ontology). An engine without `seal` skips
-  the call.
-- **Proposed** (Claude Sonnet 5.5, 2026-10-20), the slot. A build takes the lowest free slot where the prompt fits
-  (`fits` on each cells part). A build that fits no slot is `too_large`. A build with no free slot is `busy`.
-- **Proposed** (Claude Sonnet 5.5, 2026-10-20), what a build lists. The response lists the boundaries that the
-  store holds when the build ends. A boundary that eviction removed, below the start of the build, is not made
-  again. A dry run feeds nothing and lists no snapshot.
+- **The store and the group thread.** `lookup` and `restore` take the engine, and the engine lives on its group
+  thread (3.2). Thus a build runs them on the group thread. The store sits behind a mutex that the group threads and
+  the park thread share. The ledger stays on its own thread, and a build asks it by message.
+  Decided by senpai 2026-10-22 (vetoable).
+- **The quanta of a build.** The first quantum has the kind `copy`. It chooses a slot, looks up the prefixes and
+  restores the longest one. It then adds the other quanta to the job. Decided by senpai 2026-10-22 (vetoable).
+- **The kinds of the later quanta.** A feed of at most `max_pass_inputs` tokens is `prefill`. An engine with a feed
+  rule feeds one block in each quantum (6.14). A seal and a put at a boundary is `copy`. A feed never crosses a
+  boundary. Decided by senpai 2026-10-22 (vetoable).
+- **The seal.** A build calls `seal` at each boundary that it passes, before it reads the parts. A snapshot is a
+  context sealed at a boundary (ontology). An engine without `seal` skips the call.
+  Decided by senpai 2026-10-22 (vetoable).
+- **The slot.** A build takes the lowest free slot where the prompt fits (`fits` on each cells part). A build that
+  fits no slot is `too_large`. A build with no free slot is `busy`. Decided by senpai 2026-10-22 (vetoable).
+- **What a build lists.** The response lists the boundaries that the store holds when the build ends. A boundary
+  that eviction removed, below the start of the build, is not made again. A dry run feeds nothing and lists no
+  snapshot. Decided by senpai 2026-10-22 (vetoable).
 - The head of a dry run. A dry run reports the held head when the store holds it. Otherwise the head is `recipe:` and
   the hex of the head's recipe. It names the state that a build would make. No store entry has the id, so a snapshot
   read or a pin of it finds nothing.
 
   Reason: gogi types `head` as required, and gogi is the contract. This settles a note of Claude Sonnet 5.5.
   Decided by senpai 2026-10-20 night (vetoable).
-- **Proposed** (Claude Sonnet 5.5, 2026-10-20), the pin owner. gogi names an owner with text, and the store names
-  it with a `u64`. The service keeps the text and gives the store the first 8 bytes of the BLAKE3 hash of the text. A
-  restart keeps the text in `pins.json` in the store directory. Entries that builds put have the owner 1.
+- **The pin owner.** gogi names an owner with text, and the store names it with a `u64`. The service keeps the
+  text and gives the store the first 8 bytes of the BLAKE3 hash of the text. A restart keeps the text in `pins.json`
+  in the store directory. Entries that builds put have the owner 1. Decided by senpai 2026-10-22 (vetoable).
 
 **Reads and generations on the job path.** The rules below are each "Decided by senpai 2026-10-20 night (vetoable)".
 
@@ -2508,7 +2513,7 @@ The nagaya keeps each engine's expected identity in the store's index. At start,
 `identity()` with the expected one. A mismatch makes the old entries of that engine unusable. It is a refusal to
 start only when the profile pins the identity.
 
-**The canary decides for a new build.** **Proposed** (claude-opus-5-5, 2026-10-22). This replaces the note "A GPU
+**The canary decides for a new build.** Decided by senpai 2026-10-22 (vetoable). This replaces the note "A GPU
 binary in the identity" of 2026-10-21. That note put the compiler and the driver in the identity digest. Then each
 driver update makes every held entry unusable, also when the bits do not change. Amy, 2026-10-22: "if I have a long
 running context and upgrade I don't want to have to refill it just because I built a new binary that is not very
@@ -2650,10 +2655,11 @@ The inventories found these items. We correct each one when its code moves. We d
 17. Which masks do the threads of the Level Zero runtime and IGC get on b70host (3.2b)? The nagaya does not pin
     them, so a measurement shows whether they leave the pool set.
 
-## 16. Decided by senpai on 2026-10-20 night
+## 16. Decided by senpai
 
 Senpai chose each rule below where the spec left a choice open. Each rule has the mark "Decided by senpai 2026-10-20
-night (vetoable)" in its section. Amy can veto any of them. Each line gives the section and the rule in a few words.
+night (vetoable)" or "Decided by senpai 2026-10-22 (vetoable)" in its section. Amy can veto any of them. Each line
+gives the section and the rule in a few words. The lists before the last one are from 2026-10-20 night.
 
 **In this spec**
 
@@ -2758,3 +2764,16 @@ night (vetoable)" in its section. Amy can veto any of them. Each line gives the 
 - The release binary is built with `--features hip`.
 - `weights_bytes` is the size of mk's weight arena, and a wrong size exits 3.
 - A probe error at start exits 3.
+
+**On 2026-10-22, from Proposed notes**
+
+- 3.2: a machine whose cards have their own memory has no pause rule for background CPU work.
+- 11.3c: a build runs `lookup` and `restore` on the group thread, and the store sits behind a mutex.
+- 11.3c: the first quantum of a build is a `copy` that chooses the slot and restores the longest prefix.
+- 11.3c: a feed is `prefill` of at most `max_pass_inputs` tokens, or one block of a feed rule.
+- 11.3c: a build seals each boundary that it passes, before it reads the parts.
+- 11.3c: a build takes the lowest free slot that fits, or it is `too_large` or `busy`.
+- 11.3c: a build lists the boundaries that the store holds when it ends.
+- 11.3c: the store's owner key is the first 8 bytes of the BLAKE3 hash of the owner text.
+- 12.1: the canary decides for a new build, and the identity digest does not cover `build`.
+- engine-abi D1: the stage thread calls `wake` after 3 ms with no quantum, only while a job holds a lease.
