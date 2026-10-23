@@ -19,6 +19,10 @@ required-features = ["hip"]
 name = "split_bits"
 required-features = ["hip"]
 
+[[example]]
+name = "arena_digest"
+required-features = ["hip"]
+
 [[bench]]
 name = "oracle"
 harness = false
