@@ -14,6 +14,7 @@ mod child;
 
 mod abi;
 mod attn;
+mod attn_a;
 mod gdn;
 mod hc;
 mod moe;

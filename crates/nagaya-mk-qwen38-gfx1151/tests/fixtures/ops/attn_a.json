@@ -1,0 +1,460 @@
+{
+ "arrays": {
+  "inv_freq": {
+   "dtype": "f32",
+   "len": 128,
+   "offset": 0,
+   "shape": [
+    32
+   ]
+  },
+  "out_0": {
+   "dtype": "f32",
+   "len": 16384,
+   "offset": 1136,
+   "shape": [
+    8,
+    2,
+    256
+   ]
+  },
+  "out_1": {
+   "dtype": "f32",
+   "len": 16384,
+   "offset": 18528,
+   "shape": [
+    8,
+    2,
+    256
+   ]
+  },
+  "out_2": {
+   "dtype": "f32",
+   "len": 14336,
+   "offset": 35800,
+   "shape": [
+    7,
+    2,
+    256
+   ]
+  },
+  "out_3": {
+   "dtype": "f32",
+   "len": 32768,
+   "offset": 51640,
+   "shape": [
+    16,
+    2,
+    256
+   ]
+  },
+  "out_4": {
+   "dtype": "f32",
+   "len": 10240,
+   "offset": 85424,
+   "shape": [
+    5,
+    2,
+    256
+   ]
+  },
+  "out_5": {
+   "dtype": "f32",
+   "len": 2048,
+   "offset": 95816,
+   "shape": [
+    1,
+    2,
+    256
+   ]
+  },
+  "out_6": {
+   "dtype": "f32",
+   "len": 8192,
+   "offset": 121872,
+   "shape": [
+    4,
+    2,
+    256
+   ]
+  },
+  "out_7": {
+   "dtype": "f32",
+   "len": 6144,
+   "offset": 156464,
+   "shape": [
+    3,
+    2,
+    256
+   ]
+  },
+  "out_8": {
+   "dtype": "f32",
+   "len": 4096,
+   "offset": 180208,
+   "shape": [
+    2,
+    2,
+    256
+   ]
+  },
+  "sabs_0": {
+   "dtype": "f32",
+   "len": 504,
+   "offset": 632,
+   "shape": [
+    126
+   ]
+  },
+  "sabs_1": {
+   "dtype": "f32",
+   "len": 504,
+   "offset": 18024,
+   "shape": [
+    126
+   ]
+  },
+  "sabs_2": {
+   "dtype": "f32",
+   "len": 444,
+   "offset": 35356,
+   "shape": [
+    111
+   ]
+  },
+  "sabs_3": {
+   "dtype": "f32",
+   "len": 752,
+   "offset": 50888,
+   "shape": [
+    188
+   ]
+  },
+  "sabs_4": {
+   "dtype": "f32",
+   "len": 508,
+   "offset": 84916,
+   "shape": [
+    127
+   ]
+  },
+  "sabs_5": {
+   "dtype": "f32",
+   "len": 76,
+   "offset": 95740,
+   "shape": [
+    19
+   ]
+  },
+  "sabs_6": {
+   "dtype": "f32",
+   "len": 12004,
+   "offset": 109868,
+   "shape": [
+    3001
+   ]
+  },
+  "sabs_7": {
+   "dtype": "f32",
+   "len": 13200,
+   "offset": 143264,
+   "shape": [
+    3300
+   ]
+  },
+  "sabs_8": {
+   "dtype": "f32",
+   "len": 8800,
+   "offset": 171408,
+   "shape": [
+    2200
+   ]
+  },
+  "score_0": {
+   "dtype": "f32",
+   "len": 504,
+   "offset": 128,
+   "shape": [
+    126
+   ]
+  },
+  "score_1": {
+   "dtype": "f32",
+   "len": 504,
+   "offset": 17520,
+   "shape": [
+    126
+   ]
+  },
+  "score_2": {
+   "dtype": "f32",
+   "len": 444,
+   "offset": 34912,
+   "shape": [
+    111
+   ]
+  },
+  "score_3": {
+   "dtype": "f32",
+   "len": 752,
+   "offset": 50136,
+   "shape": [
+    188
+   ]
+  },
+  "score_4": {
+   "dtype": "f32",
+   "len": 508,
+   "offset": 84408,
+   "shape": [
+    127
+   ]
+  },
+  "score_5": {
+   "dtype": "f32",
+   "len": 76,
+   "offset": 95664,
+   "shape": [
+    19
+   ]
+  },
+  "score_6": {
+   "dtype": "f32",
+   "len": 12004,
+   "offset": 97864,
+   "shape": [
+    3001
+   ]
+  },
+  "score_7": {
+   "dtype": "f32",
+   "len": 13200,
+   "offset": 130064,
+   "shape": [
+    3300
+   ]
+  },
+  "score_8": {
+   "dtype": "f32",
+   "len": 8800,
+   "offset": 162608,
+   "shape": [
+    2200
+   ]
+  }
+ },
+ "header": {
+  "author": "written by Claude Sonnet 5.5 for this tool, 2026-10-22",
+  "generator": "tools/op_fixtures.py",
+  "mk_rev": "555a2a3b01457eafbc64f3b9d14931df09ea0e02",
+  "numpy": "2.5.3",
+  "python": "3.14.8"
+ },
+ "meta": {
+  "cases": [
+   {
+    "budget": 2048,
+    "label": "dense, one range straddling both ends",
+    "p0": 60,
+    "ranges": [
+     [
+      10,
+      23
+     ]
+    ],
+    "sha256": [
+     "f7b44c176220e275b932961b2dbb110a5c3d3d64bd145d505a779006935e72e9",
+     "220d6ee13513be0857ba42ea9733afb74b5d224518030e94516809b637b5c001",
+     "57400b2f293348c45193a55da22e9540aaada969a2d745caf644d28ebdbc759d",
+     "fb9fde77d5d3d5088ecd85d2e3caa9b53d9e8fdaa15a4b07221e9717442d8ff8",
+     "7c080a1f3dd1e233fe3508b771f77b57aea0e74ea3818292a3c566a60e3ebea8",
+     "724e9aac10eae581a1b4a4a457fca73c052851dd327d7823166e4d4459ed374d",
+     "0e2102f7925936c3788d638741ed5540740090c6628c3c51e657f49124b0d39f",
+     "d45de4f1b063a9026b0c1e5911cf51460110b9ad5c808513827580e3fcae9f54"
+    ],
+    "t": 8
+   },
+   {
+    "budget": 16,
+    "label": "sparse toy, straddling both ends",
+    "p0": 60,
+    "ranges": [
+     [
+      5,
+      14
+     ]
+    ],
+    "sha256": [
+     "1a0b5eff88a45a6c369ed8bc494fcc8414a88f2198604454c8b9eacee1900fc3",
+     "fb88a7b76dbe121d37090f29f11197f4fd68a42d3992a118141acdfd698d40f3",
+     "40821162a0f36a7d9fb6f088ef9f8f690909dd38e8ec83a834a4fb552627b6cf",
+     "29add7724e7304b883bbb8d7963becf09bb76964827b23b6469e9b9eaf78fe2e",
+     "5dff10043b63b7a71f00c6aeb5cc626e61deea8420dd89cc778177a286188af1",
+     "fb1a8d2572c19f4a552775f4dbc34780a8d7417d5d3fb247a342f977b081dfb0",
+     "e3b309250e15d059adedc20c56a73945fa0f09a5e3007faa9fe737b8af66bdeb",
+     "8d9a42e19fa375889fadd0c17a90808e17b9280f40ec3de31e1eabbaa1a31d4c"
+    ],
+    "t": 8
+   },
+   {
+    "budget": 16,
+    "label": "sparse toy, four ranges: block-aligned, one cell, hi = p0",
+    "p0": 61,
+    "ranges": [
+     [
+      0,
+      4
+     ],
+     [
+      9,
+      10
+     ],
+     [
+      20,
+      33
+     ],
+     [
+      40,
+      61
+     ]
+    ],
+    "sha256": [
+     "7b6d59614c356ab3a12a8d1938421a0d54d87be4956eebe3703504ea04f949a9",
+     "bc50473c743457b4fef24792559062681b785be71d65ca87ab56a949ebf72013",
+     "ba3c7d698fc5b11567d80b371b0a05529c88fe6c589707a6eb02a84bd5be69c5",
+     "1e2c3ef7b307edf540c3455a616fc906ecd2cbddd0ab5cc24bfb913375f98160",
+     "1689e7d8e7221739724fd67b3b7999d9a60d3dc409a4e74b43f716d3880b1304",
+     "82684c2e3c3706e152d06d4ad7cc235aad4b4926c7a97385793106363ad6544f",
+     "56437071073625e8bb933996ea34e84b73225b1ff1aa41b96b06151e7244ea87"
+    ],
+    "t": 7
+   },
+   {
+    "budget": 16,
+    "label": "everything before p0 masked",
+    "p0": 40,
+    "ranges": [
+     [
+      0,
+      40
+     ]
+    ],
+    "sha256": [
+     "1a00f51f3029fa4b7e61b9bf7aa9de5a64798857872981f7e056e4f437171955",
+     "b0b4c90a464e827b59947654bf26d6f6425af3b9f97ac807e7bc95ed368107c7",
+     "73f844fc9492910da325154f3d1770ff7e32b08fe3f4ae64ce07b0bc4b68bef9",
+     "519da4e33a27268a3346600471a92acf5f7590eb0fe880e13a4024c653136b3e",
+     "f794dd0376f7b0ab1a396c06b8012bdbd9a6326af0170e4c43253e6b5ce6057f",
+     "407d699d159d4631a7a2ef4baffb7dbeea26f0f3a35741b3c50390485ceb6429",
+     "ac8e4d79a4ade5dc0497811d6cc9b3f1f4aafe3c9c218e55662e24e2f5d3e8da",
+     "c7e6214c030b7c918536915f60ec424ccad01432f8ef5375e2b35ed97fe01f70",
+     "a31d9efbdf3a4fb3ab9a16450e85673e7effde0c8c2518879f0d6aca9aa35013",
+     "ed4bcb05244cbc3bed172f1caf7e8c03ead46ae30227fc90e2a2fdd88c98b603",
+     "30146b9f69a446e3d94f9da43b2aa84221c819be2bf4dcc265d1f1fbdf7277ca",
+     "673ef87ff571e5df50e0cec6a560b2ec747e059399b5358265c3b9366f01b9aa",
+     "21df6570f968baad0b115685eb63b4a66349b618c1bd3eb66523ca468ec2875c",
+     "e157f6110d33868320ec03c474df7642683176789b81b59f9a87732b9714ad12",
+     "1d5275b29132c78de6c2a6f64cd3cb80e3bbfd687425664b0a05f981002e46a7",
+     "86bf5c8a55f6243cf4271d6fba116c863e1ceb3d1acaf1ffe0dda00b0b608502"
+    ],
+    "t": 16
+   },
+   {
+    "budget": 32,
+    "label": "dense after the mask (few clear blocks)",
+    "p0": 100,
+    "ranges": [
+     [
+      3,
+      97
+     ]
+    ],
+    "sha256": [
+     "9575532b4cdcf58327cef940ba28b4aeb07f2f204fc140b8ecf25cdd1715367d",
+     "49c24628300338b2409461723f88e3755c23d7727e6079540555e42ac3d364f6",
+     "f9ef08924226083ef4518e0924a6ebd780bf9f55c322f94114a89790342f6bf4",
+     "284012a72fb2297c73691f5792d83665d0df0e88400d3debbfb604b601f71e66",
+     "f4d0e4486e3c285392b2909d0e131965f614003bded4b45b02497d0f4e2a1a88"
+    ],
+    "t": 5
+   },
+   {
+    "budget": 16,
+    "label": "sparse toy, T = 1 (the decode shape)",
+    "p0": 77,
+    "ranges": [
+     [
+      13,
+      51
+     ]
+    ],
+    "sha256": [
+     "620c1b46c0facd34d97dfc101028c4966db7a59e2b7508cf729a5e0658c119fa"
+    ],
+    "t": 1
+   },
+   {
+    "budget": 2048,
+    "label": "real budget, dense after the mask (the lab's coding seam)",
+    "p0": 3000,
+    "ranges": [
+     [
+      0,
+      1958
+     ]
+    ],
+    "sha256": [
+     "249cde7d43630161ceb471e6ca82b99247c56a9c32a5cf7122e8363315afe704",
+     "53a49f3dbca8e7488f4978143db9d7c3d98ca28408a6618080fd332e73247848",
+     "22675d13a57c08b18a0bfd7469516b749a70fa85046d9cd5cebb21704b1ddb4b",
+     "4450ee0c804279ba0714e7bc02c5d74c902f2dea8174777b096bb2139fee55ea"
+    ],
+    "t": 4
+   },
+   {
+    "budget": 2048,
+    "label": "real budget, sparse, the coding seam",
+    "p0": 4400,
+    "ranges": [
+     [
+      0,
+      1958
+     ]
+    ],
+    "sha256": [
+     "d9dba4e76028a626ea30aa82d9a19689e5dd85ad154f6f4d22c089db7e71f176",
+     "14f57e45a839cde302ff4569efc2abca3bacef8749917a8b10448c14972f22d9",
+     "e75f43a5608b63c35b8ddab4f2865be48426ad306d00e3f6aa40924f0dc54092"
+    ],
+    "t": 3
+   },
+   {
+    "budget": 2048,
+    "label": "real budget, sparse, three ranges",
+    "p0": 4400,
+    "ranges": [
+     [
+      101,
+      303
+     ],
+     [
+      2000,
+      2001
+     ],
+     [
+      2500,
+      2600
+     ]
+    ],
+    "sha256": [
+     "dcb551eefa81aa182b4ecb490b01534cb04d71887fa9ca96b1fecc702f47aa2b",
+     "176a70c162e4bce3b33e32c687602dd103ea4b39e41bc22a1cc2ba828786ff97"
+    ],
+    "t": 2
+   }
+  ],
+  "mk_files": [
+   "tests/ops/test_attn_mask.py"
+  ]
+ }
+}
