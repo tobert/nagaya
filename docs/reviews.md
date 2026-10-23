@@ -1,5 +1,9 @@
 # Reviews
 
+This doc records each review of the nagaya's docs, the spec of an exokernel for megakernels, and what we did with
+each finding. The reviews read the drafts against mk and mkviolet, the two learning megakernels that
+`docs/ontology.md` defines.
+
 ## 2026-10-17: kaibo consult on the first drafts
 
 Cast `deepseek` (explorer and synth `deepseek-flash`), 539k tokens in, 83k out. kaibo could read only gmk. Thus we
