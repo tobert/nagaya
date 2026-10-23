@@ -924,7 +924,7 @@ A park of a pinned entry that fails is a failure of the stop, as for a state (10
 
 Amy, 2026-10-23: "ah, let's save add the saves then".
 
-**Proposed** (claude-opus-5-5, 2026-10-23), two choices that the decision leaves open:
+**Two rules for the park of pins.** Decided 2026-10-23 (Amy: "both look good, canonicalize them").
 
 - The stop does not park a pinned interval copy, and its pin ends at the restart. Reason: an interval copy never goes
   to NVMe (6.13), and a copy is not a parent, so no chain needs it.
@@ -1561,7 +1561,22 @@ When `<store_dir>/profile.toml` does not exist, the process starts with an empty
 because a machine with no engine can serve as a coordinator or hold a store tier (2.1). A process with an empty
 profile sends `READY=1` when admission passes. Decided 2026-10-20 (reading).
 
-Not built: the canary and the wake of pinned state (8.1, 6.11). Today `READY=1` follows the open of every engine.
+Not built: the canary and the wake of pinned state (8.1, 6.11). Today `READY=1` follows the open of every engine
+and the attach of the council routes.
+
+**`READY=1` follows the HTTP bind.** Decided 2026-10-23. Amy: "seems fine to change it, http can come up and return
+an http not ready if it's not ready yet".
+
+- The process binds the HTTP address before the engines open. A bind that fails refuses the start (exit 3, 10.4).
+- Until the council routes attach, each request gets a 503 `unavailable` that says the process is starting.
+- The process sends `READY=1` after the council routes attach. Thus a client that connects at `READY=1` gets an answer.
+
+Reason: on 2026-10-23, the HTTP server listened about 0.45 s after `READY=1` on b70host. A client that connected
+when `systemctl restart` returned got a refused connection.
+
+**Proposed** (claude-opus-5-5, 2026-10-23): a request during the start gets `unavailable`, not `model_unavailable`.
+Reason: `model_unavailable` names the model and its status, and the identity is known only after the engines open.
+gogi lists `unavailable` for a server that stops. A start is the same case for a client: it tries again later.
 
 While the engines open, the process tells systemd that the start goes on. Every 5 s (the heartbeat interval), it
 sends one datagram. The datagram holds `EXTEND_TIMEOUT_USEC=` and a `STATUS=` line that says `loading` for each
@@ -2409,7 +2424,7 @@ exist in mk, and `GET /council/v2/identity` covers most of what they give.
   `embeddings` response, which this section does not cover. `Family::vocab_size` already holds the vocabulary size.
 - **`health`.** mk answers 200 while it serves and 503 after a failure. The nagaya stops the process at a failure
   (8.5), so it has no state that serves and is unhealthy. A probe uses `identity`: a 200 with each model `ready` is
-  healthy. A fatal engine reports `unloaded` there (11.1). systemd sees `READY=1` when the engines open (10.1).
+  healthy. A fatal engine reports `unloaded` there (11.1). systemd sees `READY=1` when the routes serve (10.1).
   The watchdog thread ends a hung process (7.4).
 - **`weights`.** mk's `health` tells `attached` or `loaded`. The nagaya counts this as `nagaya.arena.handoff` (9.4),
   with the status `hot` or `cold`. No client route is needed.
@@ -2454,14 +2469,14 @@ They use the codes that the table and gogi's table already hold:
 | 429 | `busy` | More than 64 calls (11.7), or more than 16 open feeds (9.7a). |
 | 500 | `internal` | A family library defect. The process stops (8.5). |
 | 503 | `model_unavailable` | The served model is not `ready`. The text routes only. |
-| 503 | `unavailable` | The process is stopping. |
+| 503 | `unavailable` | The process is starting or stopping. |
 
 **11.6 Binding.** The HTTP and gossip listen addresses and seed peers are in the bootstrap config (2.1). (mkviolet
 has a tailnet address in its code.)
 
 **11.7 The HTTP routes.** The process serves the council routes with `axum` on the control runtime
-(`crates/nagaya/src/http`). It starts the server after `READY=1`, and it logs `http listening on <address>`. These
-rules are each "Decided by senpai 2026-10-20 night (vetoable)".
+(`crates/nagaya/src/http`). It starts the server before the engines open, and it logs `http listening on
+<address>` (10.1, Decided 2026-10-23). The other rules here are each "Decided by senpai 2026-10-20 night (vetoable)".
 
 - The engine registry of 11.3 replaces the first two rules below. The code builds it
   (`crates/nagaya/src/serving.rs`, `FamilyRegistry`).
