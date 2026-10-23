@@ -376,9 +376,12 @@ Do these steps in this order. Stop at the first step that fails, and do the roll
    The cutover of 2026-10-23 gave `266 ok, 0 FAIL, 11 skip`, with gogi `a07d85e`. The skips include `ride`,
    which the nagaya does not declare, and the restart check.
 
-   The restart check runs with `--allow-restart 'systemctl --user restart nagaya.service'`. On 2026-10-23 it gave
-   `270 ok, 4 FAIL, 10 skip`. The 4 failures are the pinned snapshot and its pin, which a restart loses (spec 6.11,
-   "Open"). The restart attached the 31 stored arena fds and was ready after about 2 s.
+   The restart check runs with `--allow-restart 'systemctl --user restart nagaya.service'`. On 2026-10-23, from
+   `47f2191`, it gave `273 ok, 0 FAIL, 10 skip`. The stop parked 1 pinned entry of 38,309,888 bytes (spec 6.11). The
+   restart attached the 31 stored arena fds. It sent `READY=1` 1.3 s after the old process exited.
+
+   The HTTP server starts about 0.45 s after `READY=1` (spec 11.7). Wait for the identity to answer before the suite
+   runs.
 
 5. Look for card errors in the kernel log.
 
