@@ -193,8 +193,8 @@ impl Binding {
 
     /// Run one fused pass of `segments`, and give its wall time in milliseconds.
     ///
-    /// mk stops the program on segments that its check refuses, so the check runs first, and a problem refuses the
-    /// pass. `logits` takes one row of `VOCAB` values for each segment. A buffer of another size stops the program,
+    /// mk stops the program on segments that its check refuses and on a poisoned context. Thus both checks run
+    /// first, and a problem refuses the pass. `logits` takes one row of `VOCAB` values for each segment. A buffer of another size stops the program,
     /// because mk would write past its end. After the pass, a last error means that mk stopped the pass and poisoned
     /// its contexts.
     ///
@@ -216,6 +216,14 @@ impl Binding {
         }
         if let Some(problem) = unsafe { self.segments_problem(engine, segments) } {
             return Err(PassStop::Refused(problem));
+        }
+        // mk stops the program on a poisoned context, before its segment check (engine.hip run_pass).
+        for (index, segment) in segments.iter().enumerate() {
+            if unsafe { (self.ctx_poisoned)(segment.context) } {
+                return Err(PassStop::Refused(format!(
+                    "segment {index}: the context is poisoned; free it"
+                )));
+            }
         }
         let (want_logits, logits) = match logits {
             Some(logits) => (true, logits.as_mut_ptr()),
@@ -457,7 +465,8 @@ mod tests {
     use std::ffi::c_void;
     use std::path::Path;
 
-    use super::{Binding, MkSegment, PassStop, TextSink, segments, stub};
+    use super::stub::{self, StubContext};
+    use super::{Binding, MkSegment, PassStop, TextSink, segments};
     use crate::spec;
 
     /// The names of the `mk_` calls that `text` defines or declares: each `mk_<name>(` that follows `fn ` in Rust, or
@@ -559,10 +568,32 @@ mod tests {
         }
     }
 
-    /// `count` segments of one token each, on distinct fake contexts.
+    /// `count` segments of one token each, on distinct stub contexts that are not poisoned. The test leaks them.
     fn some_segments(count: usize, tokens: &[i32]) -> Vec<MkSegment> {
-        let contexts: Vec<*mut c_void> = (2..count + 2).map(|index| index as *mut c_void).collect();
+        let contexts: Vec<*mut c_void> = (0..count)
+            .map(|_| Box::leak(Box::new(StubContext::new(false))) as *mut StubContext as *mut c_void)
+            .collect();
         segments(&contexts, &vec![1; count], &tokens[..count])
+    }
+
+    #[test]
+    fn a_pass_on_a_poisoned_context_is_refused_before_mk() {
+        // Engine::run_pass stops the program on a poisoned context before its own segment check.
+        let binding = pass_binding("", "");
+        let tokens = [7i32; 2];
+        let poisoned = Box::leak(Box::new(StubContext::new(true))) as *mut StubContext as *mut c_void;
+        let mut made = some_segments(2, &tokens);
+        made[1].context = poisoned;
+        let result = unsafe { binding.pass_segments(std::ptr::null_mut(), &made, None) };
+        assert!(
+            matches!(&result, Err(PassStop::Refused(message)) if message.contains("segment 1") && message.contains("poisoned")),
+            "{result:?}"
+        );
+        PASS.with_borrow(|stub| {
+            // mk's check comes first: it refuses a null context, which the poison read would follow.
+            assert_eq!(stub.checks, 1);
+            assert!(stub.passes.is_empty(), "a poisoned context reached mk's pass");
+        });
     }
 
     #[test]

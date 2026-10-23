@@ -354,7 +354,7 @@ Reason: the fake engine must serve a family with a vocabulary, and the output ro
 | part writes | `mk_ctx_state_write`, `mk_ctx_cells_write`, `mk_ctx_set_n` | return nothing and abort on input they refuse; the wrapper checks every precondition first (part index, bytes, an empty context that owns its K/V for parts 3-5, n within `max`, not poisoned) and returns refused; a write to a context that is already poisoned is refused, because this call changes nothing; after the call, `mk_ctx_poisoned` gives failed (decided 2026-10-18) |
 | close | none | `Engine::~Engine` exists, but HIP teardown segfaults in the process; mk does not declare `close` |
 | attach path | `Engine(table, path)` | the path is `/proc/self/fd/<n>` for an fd from systemd's store |
-| pass_check / pass | `mk_segments_problem`, `mk_pass_segments` | tokens only (PLE needs token ids); outputs are logits and hidden per segment; `Engine::pass_segments` aborts the process on bad segments (`MK_DIE`), so `Binding::pass_segments` refuses a segment count outside 1 to 16 and calls `mk_segments_problem` first |
+| pass_check / pass | `mk_segments_problem`, `mk_pass_segments` | tokens only (PLE needs token ids); outputs are logits and hidden per segment; `Engine::pass_segments` aborts the process on bad segments (`MK_DIE`), so `Binding::pass_segments` refuses a segment count outside 1 to 16, then a problem of `mk_segments_problem`, then a poisoned context |
 | taps | none | `Engine::pass` has the taps (layers, routes, gates), with no call; unfused, one segment |
 | telemetry | none | the `Engine` fields hold op times (`stage.h`), with no call |
 | determinism | `always` | `stage.h`: "every op's output bits depend only on its work items"; top-k ties break by index; bit settings in the identity |
