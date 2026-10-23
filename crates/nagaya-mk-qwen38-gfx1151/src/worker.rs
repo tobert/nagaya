@@ -13,10 +13,12 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use nagaya_abi::{Identity, Limits};
 
-use crate::binding::{self, Binding, PassStop};
+use crate::arena::{self, Arena};
+use crate::binding::{self, Binding, MkSegment, PassStop};
 use crate::gguf;
+use crate::ple::{self, PleTable};
 use crate::spec;
-use crate::table::TensorTable;
+use crate::table::WeightTable;
 
 /// An error from the mk binding. The message says what failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -155,8 +157,11 @@ pub(crate) struct PassReply {
 struct ThreadState {
     binding: Binding,
     engine: *mut c_void,
-    /// The reader's maps of the shards. The engine gathers PLE rows from them for its life. A stub has none.
-    _model: Option<gguf::Model>,
+    /// The reader's maps of the shards, the PLE table in them, and the weight arena. The host gathers PLE rows from
+    /// the maps for each pass, and the kernels read the arena. A stub has none of them.
+    model: Option<gguf::Model>,
+    ple: Option<PleTable>,
+    _arena: Option<Arena>,
     contexts: HashMap<u64, Context>,
     next_id: u64,
     fast_qmm: bool,
@@ -623,15 +628,17 @@ impl ThreadState {
         // The tokenizer is in the first shard. Hash it before the weights load, so a shard with no tokenizer fails fast.
         let text = gguf::text_keys(&paths.shards[0])?;
 
-        // The Rust reader parses the shards, and the engine plans its arena from the reader's table (milestone 15).
+        // The Rust reader parses the shards, and the host plans and fills the weight arena (milestone 15 step 6).
         let model = gguf::Model::open(&paths.shards)?;
-        let table = TensorTable::new(&model)?;
+        let ple = PleTable::new(&model)?;
+        let (planned, arena_bytes) = arena::plan(model.tensors(), tiles)?;
+        let arena = unsafe { arena::create(&binding, &model, &planned, arena_bytes, tiles) }?;
+        let table = WeightTable::new(&planned, &arena)?;
         let engine = unsafe { (binding.engine_open)(table.as_ptr()) };
         drop(table);
         if engine.is_null() {
             return Err(MkError::new("mk_engine_open returned no engine"));
         }
-        let arena_bytes = unsafe { (binding.arena_bytes)(engine) };
 
         // mk stops the program on a pass that stops early by default (engine.h:215-220). Opt in, so a spin-timeout
         // returns with a last error and poisons the contexts, and the wrapper reports PassStatus::Poison (D6, 8.2).
@@ -641,7 +648,9 @@ impl ThreadState {
         let state = Self {
             binding,
             engine,
-            _model: Some(model),
+            model: Some(model),
+            ple: Some(ple),
+            _arena: Some(arena),
             contexts: HashMap::new(),
             next_id: 0,
             fast_qmm,
@@ -716,7 +725,8 @@ impl ThreadState {
         let rows = usize::from(want_logits);
         let mut logits = vec![0f32; rows * spec::VOCAB as usize];
         let logits = want_logits.then_some(logits.as_mut_slice());
-        match unsafe { self.binding.pass_segments(self.engine, &segments, logits) } {
+        let ple = self.ple_rows(&segments)?;
+        match unsafe { self.binding.pass_segments(self.engine, &segments, logits, &ple) } {
             Ok(_ms) => Ok(()),
             Err(PassStop::Refused(why)) => Err(format!("the pass scratch probe was refused: {why}")),
             Err(PassStop::Stopped(why)) => Err(format!("the pass scratch probe stopped: {why}")),
@@ -1222,7 +1232,8 @@ impl ThreadState {
         let rows = if request.want_logits { count } else { 0 };
         let mut logits = vec![0f32; rows * spec::VOCAB as usize];
         let buffer = request.want_logits.then_some(logits.as_mut_slice());
-        let ms = match unsafe { self.binding.pass_segments(self.engine, &segments, buffer) } {
+        let ple = self.ple_rows(&segments).map_err(problem)?;
+        let ms = match unsafe { self.binding.pass_segments(self.engine, &segments, buffer, &ple) } {
             Ok(ms) => ms,
             Err(PassStop::Refused(message)) => return Err(problem(message)),
             Err(PassStop::Stopped(message)) => return Err(PassProblem { message, poison: true }),
@@ -1235,6 +1246,34 @@ impl ThreadState {
 }
 
 impl ThreadState {
+    /// The PLE rows of a pass, segment after segment: each segment's tokens after its context's PLE history.
+    ///
+    /// mk stops the program on a read of a poisoned context, so a poisoned one is an error here.
+    fn ple_rows(&self, segments: &[MkSegment]) -> Result<Vec<f32>, String> {
+        let (Some(model), Some(table)) = (&self.model, &self.ple) else {
+            return Err("this engine has no PLE table".to_owned());
+        };
+        let tokens: usize = segments.iter().map(|segment| segment.t as usize).sum();
+        let mut rows = vec![0f32; tokens * ple::EMBD];
+        let mut at = 0;
+        for (index, segment) in segments.iter().enumerate() {
+            if segment.context.is_null() || segment.tokens.is_null() {
+                return Err(format!("segment {index}: no context or no tokens pointer"));
+            }
+            if unsafe { (self.binding.ctx_poisoned)(segment.context) } {
+                return Err(format!("segment {index}: the context is poisoned; free it"));
+            }
+            let mut history = [0i32; 2];
+            unsafe { (self.binding.state_read)(self.engine, segment.context, 5, history.as_mut_ptr().cast()) };
+            // SAFETY: the segment names `t` readable tokens (binding::segments).
+            let tokens = unsafe { std::slice::from_raw_parts(segment.tokens, segment.t as usize) };
+            let end = at + tokens.len() * ple::EMBD;
+            table.rows(model, history, tokens, &mut rows[at..end]);
+            at = end;
+        }
+        Ok(rows)
+    }
+
     /// Borrow one context or refuse the call.
     fn context(&self, id: u64) -> Result<&Context, Call> {
         self.contexts
@@ -1344,7 +1383,9 @@ mod tests {
         ThreadState {
             binding: stub::binding(),
             engine: std::ptr::null_mut(),
-            _model: None,
+            model: None,
+            ple: None,
+            _arena: None,
             contexts,
             next_id: 2,
             fast_qmm: true,

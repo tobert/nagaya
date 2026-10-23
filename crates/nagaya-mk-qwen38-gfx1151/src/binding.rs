@@ -10,7 +10,7 @@
 use std::ffi::{c_char, c_int, c_void};
 
 use crate::spec;
-use crate::table::MkTensorTable;
+use crate::table::MkWeightTable;
 
 /// `struct Segment` of `engine.h`: `t` tokens at `tokens` that continue `context`.
 #[repr(C)]
@@ -24,11 +24,20 @@ pub(crate) struct MkSegment {
 /// `mk_text_sink`: gives `len` bytes of text, with no NUL, to the buffer `out`.
 pub(crate) type TextSink = unsafe extern "C" fn(*mut c_void, *const c_char, u64);
 
-/// `void *mk_engine_open(const mk_tensor_table *t)`. The table comes from the Rust reader (`table.rs`).
-pub(crate) type EngineOpen = unsafe extern "C" fn(*const MkTensorTable) -> *mut c_void;
+/// `void *mk_engine_open(const mk_weight_table *t)`. The table comes from the Rust host (`table.rs`).
+pub(crate) type EngineOpen = unsafe extern "C" fn(*const MkWeightTable) -> *mut c_void;
 
-/// `uint64_t mk_engine_arena_bytes(void *e)`.
-pub(crate) type ArenaBytes = unsafe extern "C" fn(*mut c_void) -> u64;
+/// `void mk_relayout(uint32_t tile, const uint8_t *src, uint8_t *dst, uint32_t rows, uint32_t k)`.
+pub(crate) type Relayout = unsafe extern "C" fn(u32, *const u8, *mut u8, u32, u32);
+
+/// `void mk_rt_host_register(void *p, uint64_t n)`.
+pub(crate) type RtHostRegister = unsafe extern "C" fn(*mut c_void, u64);
+
+/// `void *mk_rt_host_malloc(uint64_t n)`.
+pub(crate) type RtHostMalloc = unsafe extern "C" fn(u64) -> *mut c_void;
+
+/// `void mk_rt_host_free(void *p)`.
+pub(crate) type RtHostFree = unsafe extern "C" fn(*mut c_void);
 
 /// `void mk_engine_recover_spin_timeouts(void *e, bool on)`.
 pub(crate) type RecoverSpinTimeouts = unsafe extern "C" fn(*mut c_void, bool);
@@ -78,8 +87,10 @@ pub(crate) type LastError = unsafe extern "C" fn(*mut c_void, TextSink, *mut c_v
 /// `void mk_segments_problem(void *e, const Segment *s, uint32_t n, mk_text_sink put, void *out)`.
 pub(crate) type SegmentsProblem = unsafe extern "C" fn(*mut c_void, *const MkSegment, u32, TextSink, *mut c_void);
 
-/// `double mk_pass_segments(void *e, const Segment *s, uint32_t n, bool want_logits, float *logits)`: one fused pass.
-pub(crate) type PassSegments = unsafe extern "C" fn(*mut c_void, *const MkSegment, u32, bool, *mut f32) -> f64;
+/// `double mk_pass_segments(void *e, const Segment *s, uint32_t n, bool want_logits, float *logits, const float *ple)`:
+/// one fused pass.
+pub(crate) type PassSegments =
+    unsafe extern "C" fn(*mut c_void, *const MkSegment, u32, bool, *mut f32, *const f32) -> f64;
 
 /// `hipError_t hipMemGetInfo(size_t *free, size_t *total)`, from the HIP runtime that the engine links.
 pub(crate) type MemGetInfo = unsafe extern "C" fn(*mut usize, *mut usize) -> c_int;
@@ -87,7 +98,10 @@ pub(crate) type MemGetInfo = unsafe extern "C" fn(*mut usize, *mut usize) -> c_i
 /// The calls that this binding uses.
 pub(crate) struct Binding {
     pub engine_open: EngineOpen,
-    pub arena_bytes: ArenaBytes,
+    pub relayout: Relayout,
+    pub rt_host_register: RtHostRegister,
+    pub rt_host_malloc: RtHostMalloc,
+    pub rt_host_free: RtHostFree,
     pub recover_spin_timeouts: RecoverSpinTimeouts,
     pub ctx_new: CtxNew,
     pub ctx_free: CtxFree,
@@ -189,7 +203,8 @@ impl Binding {
         (!text.is_empty()).then(|| String::from_utf8_lossy(&text).into_owned())
     }
 
-    /// Run one pass of `segments`, and give its wall time in milliseconds. mk runs each pass fused.
+    /// Run one pass of `segments`, and give its wall time in milliseconds. mk runs each pass fused. `ple` holds the
+    /// PLE rows of the pass's tokens, `ple::EMBD` values for each token.
     ///
     /// mk stops the program on segments that its check refuses and on a poisoned context. Thus both checks run
     /// first, and a problem refuses the pass. `logits` takes one row of `VOCAB` values for each segment. A buffer of another size stops the program,
@@ -204,7 +219,14 @@ impl Binding {
         engine: *mut c_void,
         segments: &[MkSegment],
         logits: Option<&mut [f32]>,
+        ple: &[f32],
     ) -> Result<f64, PassStop> {
+        let tokens: usize = segments.iter().map(|segment| segment.t as usize).sum();
+        assert_eq!(
+            ple.len(),
+            tokens * crate::ple::EMBD,
+            "the PLE rows must hold EMBD values for each token of the pass"
+        );
         if let Some(logits) = &logits {
             assert_eq!(
                 logits.len(),
@@ -227,7 +249,16 @@ impl Binding {
             Some(logits) => (true, logits.as_mut_ptr()),
             None => (false, std::ptr::null_mut()),
         };
-        let ms = unsafe { (self.pass_segments)(engine, segments.as_ptr(), segments.len() as u32, want_logits, logits) };
+        let ms = unsafe {
+            (self.pass_segments)(
+                engine,
+                segments.as_ptr(),
+                segments.len() as u32,
+                want_logits,
+                logits,
+                ple.as_ptr(),
+            )
+        };
         let error = unsafe { self.last_error(engine) };
         if error.is_empty() {
             Ok(ms)
@@ -253,13 +284,16 @@ mod linked {
     use std::ffi::{c_int, c_void};
 
     use super::{MkSegment, TextSink};
-    use crate::table::MkTensorTable;
+    use crate::table::MkWeightTable;
 
-    // The calls of the extern layer `hip/src/engine/extern.hip`, and one call of the HIP runtime. A test compares
-    // the two lists of calls.
+    // The calls of the extern layer `hip/src/engine/extern.hip`, the runtime calls `mk_rt_*` of
+    // `hip/src/rt/rt.cpp`, and one call of the HIP runtime. A test compares the lists of calls.
     unsafe extern "C" {
-        pub(super) fn mk_engine_open(table: *const MkTensorTable) -> *mut c_void;
-        pub(super) fn mk_engine_arena_bytes(e: *mut c_void) -> u64;
+        pub(super) fn mk_engine_open(table: *const MkWeightTable) -> *mut c_void;
+        pub(super) fn mk_relayout(tile: u32, src: *const u8, dst: *mut u8, rows: u32, k: u32);
+        pub(super) fn mk_rt_host_register(p: *mut c_void, n: u64);
+        pub(super) fn mk_rt_host_malloc(n: u64) -> *mut c_void;
+        pub(super) fn mk_rt_host_free(p: *mut c_void);
         pub(super) fn mk_engine_recover_spin_timeouts(e: *mut c_void, on: bool);
         pub(super) fn mk_ctx_new(e: *mut c_void, max_tokens: u32) -> *mut c_void;
         pub(super) fn mk_ctx_free(e: *mut c_void, c: *mut c_void);
@@ -282,6 +316,7 @@ mod linked {
             n: u32,
             want_logits: bool,
             logits: *mut f32,
+            ple: *const f32,
         ) -> f64;
         pub(super) fn hipMemGetInfo(free: *mut usize, total: *mut usize) -> c_int;
     }
@@ -301,7 +336,10 @@ pub(crate) fn linked() -> Result<(Binding, Build), String> {
     Ok((
         Binding {
             engine_open: mk_engine_open,
-            arena_bytes: mk_engine_arena_bytes,
+            relayout: mk_relayout,
+            rt_host_register: mk_rt_host_register,
+            rt_host_malloc: mk_rt_host_malloc,
+            rt_host_free: mk_rt_host_free,
             recover_spin_timeouts: mk_engine_recover_spin_timeouts,
             ctx_new: mk_ctx_new,
             ctx_free: mk_ctx_free,
@@ -344,8 +382,9 @@ pub(crate) mod stub {
     use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
     use super::{
-        ArenaBytes, Binding, CtxFree, CtxMax, CtxNew, EngineOpen, LastError, MemGetInfo, PartBytes, PassSegments,
-        RecoverSpinTimeouts, RoundGdn, SegmentsProblem, StateBytes, StateRead,
+        Binding, CtxFree, CtxMax, CtxNew, EngineOpen, LastError, MemGetInfo, PartBytes, PassSegments,
+        RecoverSpinTimeouts, Relayout, RoundGdn, RtHostFree, RtHostMalloc, RtHostRegister, SegmentsProblem, StateBytes,
+        StateRead,
     };
 
     /// What the stub calls know about one context. A test passes a pointer to this in place of mk's context.
@@ -421,7 +460,10 @@ pub(crate) mod stub {
         unsafe {
             Binding {
                 engine_open: std::mem::transmute::<unsafe extern "C" fn(), EngineOpen>(never),
-                arena_bytes: std::mem::transmute::<unsafe extern "C" fn(), ArenaBytes>(never),
+                relayout: std::mem::transmute::<unsafe extern "C" fn(), Relayout>(never),
+                rt_host_register: std::mem::transmute::<unsafe extern "C" fn(), RtHostRegister>(never),
+                rt_host_malloc: std::mem::transmute::<unsafe extern "C" fn(), RtHostMalloc>(never),
+                rt_host_free: std::mem::transmute::<unsafe extern "C" fn(), RtHostFree>(never),
                 ctx_new: std::mem::transmute::<unsafe extern "C" fn(), CtxNew>(never),
                 ctx_free: std::mem::transmute::<unsafe extern "C" fn(), CtxFree>(never),
                 ctx_n,
@@ -524,6 +566,7 @@ mod tests {
         n: u32,
         want_logits: bool,
         logits: *mut f32,
+        _ple: *const f32,
     ) -> f64 {
         PASS.with_borrow_mut(|stub| stub.passes.push((n, want_logits, logits.is_null())));
         12.5
@@ -565,7 +608,7 @@ mod tests {
         let poisoned = Box::leak(Box::new(StubContext::new(true))) as *mut StubContext as *mut c_void;
         let mut made = some_segments(2, &tokens);
         made[1].context = poisoned;
-        let result = unsafe { binding.pass_segments(std::ptr::null_mut(), &made, None) };
+        let result = unsafe { binding.pass_segments(std::ptr::null_mut(), &made, None, &[0.0; 2 * crate::ple::EMBD]) };
         assert!(
             matches!(&result, Err(PassStop::Refused(message)) if message.contains("segment 1") && message.contains("poisoned")),
             "{result:?}"
@@ -583,7 +626,14 @@ mod tests {
         for count in [0, spec::MAX_SEGMENTS as usize + 1] {
             let binding = pass_binding("", "");
             let segments = some_segments(count, &tokens);
-            let result = unsafe { binding.pass_segments(std::ptr::null_mut(), &segments, None) };
+            let result = unsafe {
+                binding.pass_segments(
+                    std::ptr::null_mut(),
+                    &segments,
+                    None,
+                    &vec![0.0; count * crate::ple::EMBD],
+                )
+            };
             assert!(
                 matches!(&result, Err(PassStop::Refused(message)) if message.contains("1..=16 segments")),
                 "{count} segments: {result:?}"
@@ -599,7 +649,14 @@ mod tests {
     fn a_pass_runs_mk_check_first_and_a_problem_refuses_it() {
         let binding = pass_binding("segment 0: context full", "");
         let tokens = [7i32; 1];
-        let result = unsafe { binding.pass_segments(std::ptr::null_mut(), &some_segments(1, &tokens), None) };
+        let result = unsafe {
+            binding.pass_segments(
+                std::ptr::null_mut(),
+                &some_segments(1, &tokens),
+                None,
+                &[0.0; crate::ple::EMBD],
+            )
+        };
         assert_eq!(result, Err(PassStop::Refused("segment 0: context full".to_owned())));
         PASS.with_borrow(|stub| {
             assert_eq!(stub.checks, 1);
@@ -613,7 +670,14 @@ mod tests {
         let error = "x".repeat(5000);
         let binding = pass_binding("", &error);
         let tokens = [7i32; 2];
-        let result = unsafe { binding.pass_segments(std::ptr::null_mut(), &some_segments(2, &tokens), None) };
+        let result = unsafe {
+            binding.pass_segments(
+                std::ptr::null_mut(),
+                &some_segments(2, &tokens),
+                None,
+                &[0.0; 2 * crate::ple::EMBD],
+            )
+        };
         assert_eq!(result, Err(PassStop::Stopped(error)));
         PASS.with_borrow(|stub| assert_eq!(stub.passes.len(), 1));
     }
@@ -622,11 +686,24 @@ mod tests {
     fn a_clean_pass_gives_its_time_and_asks_for_logits_only_with_a_buffer() {
         let tokens = [7i32; 2];
         let binding = pass_binding("", "");
-        let result = unsafe { binding.pass_segments(std::ptr::null_mut(), &some_segments(2, &tokens), None) };
+        let result = unsafe {
+            binding.pass_segments(
+                std::ptr::null_mut(),
+                &some_segments(2, &tokens),
+                None,
+                &[0.0; 2 * crate::ple::EMBD],
+            )
+        };
         assert_eq!(result, Ok(12.5));
         let mut logits = vec![0f32; 2 * spec::VOCAB as usize];
-        let result =
-            unsafe { binding.pass_segments(std::ptr::null_mut(), &some_segments(2, &tokens), Some(&mut logits)) };
+        let result = unsafe {
+            binding.pass_segments(
+                std::ptr::null_mut(),
+                &some_segments(2, &tokens),
+                Some(&mut logits),
+                &[0.0; 2 * crate::ple::EMBD],
+            )
+        };
         assert_eq!(result, Ok(12.5));
         PASS.with_borrow(|stub| assert_eq!(stub.passes, [(2, false, true), (2, true, false)]));
     }
@@ -637,7 +714,14 @@ mod tests {
         let binding = pass_binding("", "");
         let tokens = [7i32; 2];
         let mut logits = vec![0f32; spec::VOCAB as usize];
-        let _ = unsafe { binding.pass_segments(std::ptr::null_mut(), &some_segments(2, &tokens), Some(&mut logits)) };
+        let _ = unsafe {
+            binding.pass_segments(
+                std::ptr::null_mut(),
+                &some_segments(2, &tokens),
+                Some(&mut logits),
+                &[0.0; 2 * crate::ple::EMBD],
+            )
+        };
     }
 
     #[test]
@@ -672,8 +756,16 @@ mod tests {
     fn the_extern_layer_and_the_binding_have_the_same_calls() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let layer = std::fs::read_to_string(root.join("hip/src/engine/extern.hip")).expect("read extern.hip");
+        let runtime = std::fs::read_to_string(root.join("hip/src/rt/rt.cpp")).expect("read rt.cpp");
         let binding = std::fs::read_to_string(root.join("src/binding.rs")).expect("read binding.rs");
-        let layer = calls(&layer, false);
+        let mut layer = calls(&layer, false);
+        // rt.cpp also holds the trap calls of the op tests. The host's runtime calls are the ones named mk_rt_.
+        layer.extend(
+            calls(&runtime, false)
+                .into_iter()
+                .filter(|name| name.starts_with("mk_rt_")),
+        );
+        layer.sort();
         assert!(
             layer.len() >= 19,
             "the extern layer defines {} calls: {layer:?}",

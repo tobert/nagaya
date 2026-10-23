@@ -83,77 +83,19 @@ const void *stage_kernel() { return reinterpret_cast<const void *>(&k_stage); }
 constexpr uint32_t kUnfusedGrid = 1024;
 
 
-// ---- weights: the arena (arena.h) ----
-namespace {
-
-double since_s(std::chrono::steady_clock::time_point t0) {
-  return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-}
-
-uint64_t round_up(uint64_t x, uint64_t a) { return (x + a - 1) / a * a; }
-
-// Coarse-grained, always (weights never change while a kernel runs): HIP registers host memory fine-grained by
-// default (hip_runtime_api.h). Measured 2026-09-30, 51-token fused read p50: fine-grained arena 452-456 ms,
-// coarse-grained 448 ms, hipMalloc baseline 454 ms (unfused ~209 all three): no difference that decides it. The
-// relayout kernels' writes reach memory at each kernel's end (the fill synchronizes after each one). Note
-// hipHostRegisterReadOnly is the same bit (0x8) in this ROCm and the device reports no read-only support: the
-// attacher's protection is its PROT_READ mapping and the seals, not a flag.
-constexpr unsigned kArenaRegister = hipExtHostRegisterCoarseGrained;
-
-// 16 CPU threads: one thread's memcpy out of the GGUF mapping is far below what the page cache and the arena take.
-void par_memcpy(uint8_t *dst, const uint8_t *src, uint64_t n) {
-  const int T = 16;
-  std::vector<std::thread> th;
-  const uint64_t per = (n + T - 1) / T;
-  for (int k = 0; k < T; ++k) {
-    const uint64_t o = k * per;
-    if (o >= n) break;
-    th.emplace_back([=] { memcpy(dst + o, src + o, std::min(per, n - o)); });
-  }
-  for (auto &x : th) x.join();
-}
-
-void relayout(Tile kind, const uint8_t *src, uint8_t *dst, uint32_t rows, uint32_t k) {
-  switch (kind) {
-    case Tile::kQ6: relayout_q6_tiles(src, dst, rows, k); break;
-    case Tile::kQ8: relayout_q8_tiles(src, dst, rows, k); break;
-    case Tile::kIq4: relayout_iq4_tiles(src, dst, rows, k); break;
-    case Tile::kIq3s: relayout_iq3s_tiles(src, dst, rows, k); break;
-    case Tile::kNone: MK_DIE("relayout of an untiled tensor");
-  }
-}
-
-}  // namespace
-
-arena::ShardId arena::shard_id(const std::string &path) {
-  ShardId s;
-  memset(&s, 0, sizeof s);
-  char real[PATH_MAX];
-  if (!realpath(path.c_str(), real)) MK_DIE("%s: %s", path.c_str(), strerror(errno));
-  if (strlen(real) >= sizeof s.path) MK_DIE("%s: path longer than %zu bytes", real, sizeof s.path - 1);
-  struct stat st;
-  if (stat(real, &st)) MK_DIE("stat %s: %s", real, strerror(errno));
-  s.size = uint64_t(st.st_size);
-  s.mtime_ns = int64_t(st.st_mtim.tv_sec) * 1000000000 + st.st_mtim.tv_nsec;
-  memcpy(s.path, real, strlen(real));
-  return s;
-}
-
-Engine::Engine(const mk_tensor_table *table) : table_(table), shards_(table_.shards()) {
+// ---- weights: the arena that the Rust host loaded (src/arena.rs) ----
+Engine::Engine(const mk_weight_table *table) : table_(table) {
   trap_sink_install();  // a device trap names itself on stderr before the runtime aborts (trap.h)
-  // The PLE table stays mapped; the host gathers 16 rows per token (ple_rows). The rows a pass needs are scattered
-  // over ~29 GB: a fault should read its own page, not the ~128 KiB of readahead around it (ple_rows asks for each
-  // row's pages itself, all at once).
-  ple_ = &table_.tensor("per_layer_token_embd.weight");
-  const uintptr_t pg = uintptr_t(sysconf(_SC_PAGESIZE)), a = uintptr_t(ple_->data) & ~(pg - 1);
-  if (madvise(reinterpret_cast<void *>(a), uintptr_t(ple_->data) + ple_->n_bytes - a, MADV_RANDOM))
-    MK_DIE("madvise(MADV_RANDOM) on the PLE table: %s", strerror(errno));
-  const std::vector<Planned> P = plan(table_, &arena_bytes_);
-  create_arena(P);
-  for (const Planned &p : P) {
-    Tensor t = p.t;
-    t.d = arena_ + p.offset;
-    w_[p.name] = t;
+  if (!table->weights || table->n_weights == 0) MK_DIE("the weight table holds no weights");
+  for (uint64_t i = 0; i < table->n_weights; ++i) {
+    const mk_weight &w = table->weights[i];
+    if (!w.name || !w.d) MK_DIE("weight %lu of the table has no name or no data", (unsigned long)i);
+    Tensor t;
+    t.type = w.type;
+    for (int j = 0; j < 3; ++j) t.ne[j] = w.ne[j];
+    t.row_bytes = w.row_bytes;
+    t.d = w.d;
+    if (!w_.emplace(w.name, t).second) MK_DIE("the weight table holds %s twice", w.name);
   }
   wire();
 }
@@ -164,152 +106,9 @@ Engine::~Engine() {
   (void)hipFree(d_head_rows_);
   (void)hipHostFree(d_stages_);
   if (launched_ev_) (void)hipEventDestroy(launched_ev_);
-  if (arena_) {
-    (void)hipHostUnregister(arena_);
-    munmap(arena_, arena_bytes_);
-  }
-  if (arena_fd_ >= 0) close(arena_fd_);
-}
-
-// Every uploaded tensor's place in the arena and its final layout, from the GGUF and this build alone. Read-once tiles (PLAN.md Speed): the IQ3_S expert gate and
-// up matrices, the IQ4_NL expert down matrices (each expert's tiles contiguous, so the MoE addresses expert e at e x
-// rows x row bytes as before), every Q8_0 matrix the matmuls read (all but the token embedding table, which is
-// gathered by row, and the 5 layers' Q8_0 expert down matrices, which measured no gain in tiles: PLAN.md), and the
-// Q6_K output head. Values are unchanged; both the f16 and the exact kernels decode tiles.
-std::vector<Engine::Planned> Engine::plan(const TensorTable &table, uint64_t *arena_bytes) {
-  const bool tiles = tiles_enabled();
-  std::vector<Planned> P;
-  for (size_t i = 0; i < table.n_tensors(); ++i) {
-    const auto &ti = table.tensor(i);
-    if (ti.name == "per_layer_token_embd.weight") continue;  // stays in the GGUF mapping (ple_rows)
-    const std::string &nm = ti.name;
-    if (nm.size() >= sizeof(arena::Entry::name)) MK_DIE("%s: name longer than the arena's %zu bytes", nm.c_str(), sizeof(arena::Entry::name) - 1);
-    Planned p;
-    p.gguf = i;
-    p.name = nm;
-    p.src_bytes = ti.n_bytes;
-    Tensor &t = p.t;
-    t.type = uint32_t(ti.type);
-    for (int j = 0; j < 3; ++j) t.ne[j] = ti.ne[j];
-    if (q::block_bytes(t.type) == 0) MK_DIE("%s: unsupported type %u", nm.c_str(), t.type);
-    if (ti.ne[0] % q::block_values(t.type) != 0 || (q::block_values(t.type) > 1 && ti.ne[0] % 32 != 0))
-      MK_DIE("%s: ne0 %lu is not a multiple of its block (%u)", nm.c_str(), (unsigned long)ti.ne[0], q::block_values(t.type));
-    t.row_bytes = q::row_bytes(t.type, uint32_t(ti.ne[0]));
-    p.bytes = ti.n_bytes;
-    p.k = uint32_t(t.ne[0]);
-    p.rows = uint32_t(t.ne[1] * t.ne[2]);
-    if (tiles) {
-      const bool expert_gu = nm.size() > 20 && (nm.find(".ffn_gate_exps.weight") != std::string::npos ||
-                                                nm.find(".ffn_up_exps.weight") != std::string::npos);
-      const bool expert_dn = nm.size() > 20 && nm.find(".ffn_down_exps.weight") != std::string::npos;
-      if (expert_dn && t.type != q::IQ4_NL && t.type != q::Q8_0)
-        MK_DIE("%s: expert down matrices are IQ4_NL or Q8_0, this one is type %u", nm.c_str(), t.type);
-      p.tile = (expert_gu && t.type == q::IQ3_S) ? Tile::kIq3s
-               : (t.type == q::Q8_0 && nm != "token_embd.weight" && nm.find("_exps.") == std::string::npos) ? Tile::kQ8
-               : (t.type == q::Q6_K && nm == "output.weight") ? Tile::kQ6
-               : (expert_dn && t.type == q::IQ4_NL) ? Tile::kIq4 : Tile::kNone;
-      if (p.tile != Tile::kNone) {
-        const uint64_t bytes = p.tile == Tile::kQ6 ? q6_tiled_bytes(p.rows, p.k) : p.tile == Tile::kQ8 ? q8_tiled_bytes(p.rows, p.k)
-                               : p.tile == Tile::kIq4 ? iq4_tiled_bytes(p.rows, p.k) : iq3s_tiled_bytes(p.rows, p.k);
-        if (p.tile != Tile::kIq3s && bytes != t.row_bytes * p.rows)
-          MK_DIE("%s: type %u tiles take %lu bytes, the rows %lu", nm.c_str(), t.type, (unsigned long)bytes, (unsigned long)(t.row_bytes * p.rows));
-        t.type = p.tile == Tile::kQ6 ? q::Q6_K_TILES : p.tile == Tile::kQ8 ? q::Q8_0_TILES
-                 : p.tile == Tile::kIq4 ? q::IQ4_NL_TILES : q::IQ3_S_TILES;
-        t.row_bytes = q::row_bytes(t.type, p.k);
-        p.bytes = bytes;
-      }
-    }
-    P.push_back(p);
-  }
-  uint64_t off = round_up(arena::kHeaderBytes + P.size() * sizeof(arena::Entry), arena::kDataAlign);
-  for (Planned &p : P) {
-    p.offset = off;
-    off = round_up(off + p.bytes, arena::kAlign);
-  }
-  *arena_bytes = off;
-  return P;
-}
-
-arena::Header Engine::arena_header(const std::vector<Planned> &P, uint64_t arena_bytes, const std::vector<std::string> &shards_) {
-  arena::Header h;
-  memset(&h, 0, sizeof h);
-  memcpy(h.magic, arena::kMagic, sizeof h.magic);
-  h.format = arena::kFormat;
-  h.tiles = tiles_enabled() ? 1 : 0;
-  h.n_tensors = uint32_t(P.size());
-  if (shards_.size() > arena::kMaxShards) MK_DIE("%zu shards, the arena records %u", shards_.size(), arena::kMaxShards);
-  h.n_shards = uint32_t(shards_.size());
-  h.bytes = arena_bytes;
-  h.manifest_off = arena::kHeaderBytes;
-  h.data_off = P.empty() ? arena_bytes : P[0].offset;
-  for (size_t i = 0; i < shards_.size(); ++i) h.shards[i] = arena::shard_id(shards_[i]);
-  return h;
-}
-
-arena::Entry Engine::arena_entry(const Planned &p) {
-  arena::Entry e;
-  memset(&e, 0, sizeof e);
-  memcpy(e.name, p.name.data(), p.name.size());
-  e.type = p.t.type;
-  for (int j = 0; j < 3; ++j) e.ne[j] = p.t.ne[j];
-  e.row_bytes = p.t.row_bytes;
-  e.offset = p.offset;
-  e.bytes = p.bytes;
-  return e;
-}
-
-// Fill a new arena: every tensor copied out of the GGUF mapping by the CPU straight into place, the tiled ones through
-// a pinned scratch buffer and the relayout kernel; each chunk's file pages dropped from the page cache once copied
-// (best effort, the reader's drop_cached: tensor_table.h): the weights are read once, and the cache is better spent on the PLE
-// table the host keeps gathering from, and on the other tenants. Then the header and manifest, then the seals.
-void Engine::create_arena(const std::vector<Planned> &P) {
-  const auto t0 = std::chrono::steady_clock::now();
-  arena_fd_ = memfd_create("mk-weights", MFD_CLOEXEC | MFD_ALLOW_SEALING);
-  if (arena_fd_ < 0) MK_DIE("memfd_create: %s", strerror(errno));
-  if (ftruncate(arena_fd_, off_t(arena_bytes_))) MK_DIE("ftruncate the arena to %lu: %s", (unsigned long)arena_bytes_, strerror(errno));
-  void *m = mmap(nullptr, arena_bytes_, PROT_READ | PROT_WRITE, MAP_SHARED, arena_fd_, 0);
-  if (m == MAP_FAILED) MK_DIE("mmap the arena: %s", strerror(errno));
-  arena_ = static_cast<uint8_t *>(m);
-  if (madvise(arena_, arena_bytes_, MADV_HUGEPAGE)) MK_DIE("madvise(MADV_HUGEPAGE) on the arena: %s", strerror(errno));
-  MK_CHECK(hipHostRegister(arena_, arena_bytes_, kArenaRegister));
-  uint64_t scratch_bytes = 0;
-  for (const Planned &p : P)
-    if (p.tile != Tile::kNone) scratch_bytes = std::max(scratch_bytes, p.src_bytes);
-  uint8_t *scratch = nullptr;
-  if (scratch_bytes) MK_CHECK(hipHostMalloc(&scratch, scratch_bytes, hipHostMallocDefault));
-  constexpr uint64_t kChunk = 512ull << 20;
-  uint64_t tiled = 0;
-  for (const Planned &p : P) {
-    const auto &ti = table_.tensor(p.gguf);
-    uint8_t *to = p.tile == Tile::kNone ? arena_ + p.offset : scratch;
-    for (uint64_t o = 0; o < p.src_bytes; o += kChunk) {
-      const uint64_t n = std::min(kChunk, p.src_bytes - o);
-      par_memcpy(to + o, ti.data + o, n);
-      table_.drop_cached(ti.data + o, n);
-    }
-    if (p.tile != Tile::kNone) {
-      relayout(p.tile, scratch, arena_ + p.offset, p.rows, p.k);
-      MK_CHECK(hipDeviceSynchronize());  // the scratch is reused by the next tiled tensor
-      tiled += p.bytes;
-    }
-  }
-  if (scratch) MK_CHECK(hipHostFree(scratch));
-  const arena::Header h = arena_header(P, arena_bytes_, shards_);
-  memcpy(arena_, &h, sizeof h);
-  for (size_t i = 0; i < P.size(); ++i) {
-    const arena::Entry e = arena_entry(P[i]);
-    memcpy(arena_ + arena::kHeaderBytes + i * sizeof e, &e, sizeof e);
-  }
-  if (fcntl(arena_fd_, F_ADD_SEALS, arena::kSeals)) MK_DIE("sealing the arena: %s", strerror(errno));
-  if (unsigned(fcntl(arena_fd_, F_GET_SEALS)) != arena::kSeals) MK_DIE("the arena's seals are %#x", fcntl(arena_fd_, F_GET_SEALS));
-  fprintf(stderr, "engine: loaded %.2f GiB of weights (%.2f GiB in read-once tiles) into the arena in %.1f s\n",
-          arena_bytes_ / double(1ull << 30), tiled / double(1ull << 30), since_s(t0));
 }
 
 void Engine::wire() {
-  // The PLE hash's reset token is compiled in (model.h); the file must agree (kaibo M3/M4 review).
-  if (table_.ple_eos_token_id() != int64_t(kPleEos))
-    MK_DIE("GGUF qwen4exp.ple.eos_token_id %ld != compiled kPleEos %u", (long)table_.ple_eos_token_id(), kPleEos);
   tok_embd_ = get("token_embd.weight");
   out_hc_norm_ = get("output_hc_norm.weight");
   out_hc_down_ = get("output_hc_down.weight");
@@ -521,8 +320,7 @@ void Engine::restore_n(Context *c, uint32_t n) {
            c->restored_kv, c->restored_idx, c->restored_ple ? "written" : "not written", n);
   c->n = n;
   // The pooled-key cache is derived state, not parked: pool every complete block of the written index keys, through the
-  // unfused path (one launch per QSA layer), so the invariant pooled_n == n / 4 holds and a fork of this context never has
-  // to write below its parent's n.
+  // unfused path (one launch per QSA layer), so the invariant pooled_n == n / 4 holds.
   if (n / kIdxRatio) run_stages_now(pool_stages(c, 0));
   c->pooled_n = n / kIdxRatio;
 }
@@ -553,56 +351,6 @@ void Engine::run_stages_now(const std::vector<Stage> &S) {
   if (cb_.status() != kOk)
     MK_DIE("stage launch outside a pass stopped: %s at stage %u of %zu (wg %u)", status_name(cb_.status()), cb_.host()->status_site,
            S.size(), cb_.host()->status_wg);
-}
-
-// ---- PLE rows (host): Qwen4ExpTextNGramEmbedding.forward for one pass ----
-void Engine::ple_rows(const Context *c, const int32_t *tokens, uint32_t t, float *out) const {
-  static std::vector<int64_t> mult, offs, sizes;
-  if (mult.empty()) {
-    mult = table_.ple_layer_multipliers();
-    offs = table_.ple_head_offsets();
-    sizes = table_.ple_head_vocab_sizes();
-    if (mult.size() != 3 || offs.size() != kPleHeads || sizes.size() != kPleHeads) MK_DIE("PLE constants have the wrong shape");
-  }
-  const int64_t eos = kPleEos;
-  std::vector<int64_t> hist(2 + t);
-  hist[0] = c->ple_hist[0];
-  hist[1] = c->ple_hist[1];
-  for (uint32_t i = 0; i < t; ++i) hist[2 + i] = tokens[i];
-  if (!ple_) MK_DIE("PLE table not found at load");
-  const uint64_t row_bytes = ple_->n_bytes / (ple_->n_elements / ple_->ne[0]), n_rows = ple_->n_elements / ple_->ne[0];
-  if (ple_->ne[0] != kPleHeadDim) MK_DIE("PLE rows of %lu values, want %u", (unsigned long)ple_->ne[0], kPleHeadDim);
-  // Two sweeps over the same positions: first every row id (asking the kernel for each row's pages, so the reads
-  // of a pass's 16 x T rows overlap instead of faulting one after another), then the rows, in the same order.
-  std::vector<int64_t> ids;
-  ids.reserve(size_t(t) * kPleHeads);
-  const uintptr_t pg = uintptr_t(sysconf(_SC_PAGESIZE));
-  int64_t last_eos = -1;  // last eos strictly before p
-  for (uint32_t p = 0; p < 2 + t; ++p) {
-    const int64_t seg_start = last_eos + 1, pos_in_seg = int64_t(p) - seg_start;
-    if (p >= 2) {
-      int64_t tok[3];
-      for (int s = 0; s < 3; ++s) tok[s] = (pos_in_seg >= s && int64_t(p) - s >= 0) ? hist[p - s] : eos;
-      for (int n = 2; n <= 3; ++n) {
-        uint64_t mixed = uint64_t(tok[0]) * uint64_t(mult[0]);
-        for (int s = 1; s < n; ++s) mixed ^= uint64_t(tok[s]) * uint64_t(mult[s]);
-        const int64_t m = int64_t(mixed);
-        for (uint32_t h = 0; h < 8; ++h) {
-          const uint32_t head = (n - 2) * 8 + h;
-          const int64_t v = sizes[head];
-          const int64_t id = ((m % v) + v) % v + offs[head];
-          if (id < 0 || uint64_t(id) >= n_rows) MK_DIE("PLE row %ld out of %lu", (long)id, (unsigned long)n_rows);
-          ids.push_back(id);
-          const uintptr_t r0 = uintptr_t(ple_->data + uint64_t(id) * row_bytes), a = r0 & ~(pg - 1);
-          (void)madvise(reinterpret_cast<void *>(a), r0 + row_bytes - a, MADV_WILLNEED);  // a hint: faults still work
-        }
-      }
-    }
-    if (hist[p] == eos) last_eos = p;
-  }
-  for (size_t i = 0; i < ids.size(); ++i)
-    table_.dequant_f32(ple_->type, ple_->data + uint64_t(ids[i]) * row_bytes, kPleHeadDim,
-                       out + (i / kPleHeads) * kEmbd + (i % kPleHeads) * kPleHeadDim);
 }
 
 // ---- pass building ----
@@ -791,7 +539,7 @@ struct StageFootprint {
   bool fence = false;
   std::vector<mk_access> acc;
 };
-static StageFootprint rust_footprint(const TensorTable &table, const Stage &s) {
+static StageFootprint rust_footprint(const ScheduleCalls &table, const Stage &s) {
   constexpr uint32_t kCap = 16;
   mk_access acc[kCap];
   uint32_t fence = 0;
@@ -808,7 +556,7 @@ static StageFootprint rust_footprint(const TensorTable &table, const Stage &s) {
 // (a grid barrier, a stage-argument fetch, a load round trip) goes. The inject matmul stays before: it writes z, which the
 // fused stage reads. Every float op is the same ones in the same order (small.h hc_mix_elem; the matmul's accumulators are
 // bit-for-bit the values it used to store), so the bits don't change. Any t: the epilogue handles every token tile.
-static void fuse_hc_mix(std::vector<Stage> &S, std::vector<uint32_t> *layer_ends, const TensorTable &table) {
+static void fuse_hc_mix(std::vector<Stage> &S, std::vector<uint32_t> *layer_ends, const ScheduleCalls &table) {
   std::vector<Stage> out;
   out.reserve(S.size());
   std::vector<uint32_t> at(S.size() + 1);
@@ -929,7 +677,7 @@ static bool tail_enabled() {
 
 // The Rust schedule (src/schedule.rs), through the table's call, on S: the order and the sched word of each stage.
 // Returns the grid barriers. A plan that is not a permutation of the stages stops the program.
-static uint32_t apply_schedule(const TensorTable &table, std::vector<Stage> &S, const std::vector<uint32_t> &ends, bool elide,
+static uint32_t apply_schedule(const ScheduleCalls &table, std::vector<Stage> &S, const std::vector<uint32_t> &ends, bool elide,
                                bool tail) {
   const uint32_t n = uint32_t(S.size());
   std::vector<uint32_t> order(n), sched(n);
@@ -1113,8 +861,8 @@ std::string Engine::segments_problem(const Segment *s, uint32_t n) const {
   return "";
 }
 
-PassOut Engine::pass_segments(const Segment *s, uint32_t n, bool want_logits, float *logits_out) {
-  return run_pass(s, n, want_logits, logits_out);
+PassOut Engine::pass_segments(const Segment *s, uint32_t n, bool want_logits, float *logits_out, const float *ple) {
+  return run_pass(s, n, want_logits, logits_out, ple);
 }
 
 // A fused pass that stopped on a spin-timeout (set_recover_spin_timeouts). Nothing it wrote is used: its contexts are
@@ -1130,13 +878,14 @@ PassOut Engine::failed_pass(const Segment *seg, uint32_t ns, const char *why, do
   return po;
 }
 
-PassOut Engine::run_pass(const Segment *seg, uint32_t ns, bool want_logits, float *logits_out) {
+PassOut Engine::run_pass(const Segment *seg, uint32_t ns, bool want_logits, float *logits_out, const float *ple) {
   for (uint32_t i = 0; i < ns; ++i)
     if (seg[i].c && seg[i].c->poisoned)
       MK_DIE("pass on a context poisoned by a spin-timeout (segment %u, %u tokens): its state is half-written", i, seg[i].c->n);
   const std::string problem = segments_problem(seg, ns);
   if (!problem.empty()) MK_DIE("pass: %s", problem.c_str());
   if (want_logits && !logits_out) MK_DIE("pass of %u segments: want_logits needs logits_out", ns);
+  if (!ple) MK_DIE("pass of %u segments: no PLE rows", ns);
   uint32_t t = 0;
   std::vector<int32_t> tokens;
   std::vector<uint32_t> head_rows(ns);
@@ -1149,13 +898,9 @@ PassOut Engine::run_pass(const Segment *seg, uint32_t ns, bool want_logits, floa
   const auto t0 = std::chrono::steady_clock::now();
   MK_CHECK(hipMemcpy(d_tokens_, tokens.data(), sizeof(int32_t) * t, hipMemcpyHostToDevice));
   if (ns > 1) MK_CHECK(hipMemcpy(d_head_rows_, head_rows.data(), sizeof(uint32_t) * ns, hipMemcpyHostToDevice));
-  {
-    // Each segment's n-gram rows hash its own context's history and tokens.
-    std::vector<float> pe(size_t(t) * kEmbd);
-    for (uint32_t i = 0, r0 = 0; i < ns; r0 += seg[i].t, ++i) ple_rows(seg[i].c, seg[i].tokens, seg[i].t, pe.data() + size_t(r0) * kEmbd);
-    float *pemb = scratch("ple_emb", size_t(kMaxPassTokens) * kEmbd);
-    MK_CHECK(hipMemcpy(pemb, pe.data(), sizeof(float) * pe.size(), hipMemcpyHostToDevice));
-  }
+  // Each segment's n-gram rows, which the host gathered from its own context's history and tokens.
+  MK_CHECK(hipMemcpy(scratch("ple_emb", size_t(kMaxPassTokens) * kEmbd), ple, sizeof(float) * size_t(t) * kEmbd,
+                     hipMemcpyHostToDevice));
   std::vector<uint32_t> ends;
   std::vector<Stage> S = build(seg, ns, t, want_logits, &ends);
   if (S.size() > stage_cap_) {

@@ -4,6 +4,7 @@
 //! come from `MK_SHARDS`. One worker thread makes every mk call, because mk's HIP device is the calling thread's
 //! current device. The engine is never closed: mk's HIP teardown segfaults in the process (spec 3.3).
 
+mod arena;
 mod binding;
 mod dequant;
 mod engine;
@@ -12,6 +13,7 @@ mod gguf;
 mod gguf_shard_tests;
 #[cfg(test)]
 mod layout;
+mod ple;
 mod schedule;
 mod spec;
 mod stage;

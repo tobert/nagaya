@@ -10,7 +10,7 @@ use std::path::Path;
 use crate::binding::MkSegment;
 use crate::schedule::call::MkAccess;
 use crate::spec;
-use crate::table::{MkTensor, MkTensorTable};
+use crate::table::{MkWeight, MkWeightTable};
 
 /// The `static_assert(<expression> == <number>, "<note>");` lines of `text`, as (expression, number).
 ///
@@ -62,73 +62,29 @@ fn assert_same(file: &str, rust: &[(&str, usize)]) {
 }
 
 #[test]
-fn the_tensor_table_has_the_layout_of_tensor_table_h() {
+fn the_weight_table_has_the_layout_of_weight_table_h() {
     assert_same(
-        "tensor_table.h",
+        "weight_table.h",
         &[
-            ("sizeof(mk_tensor)", size_of::<MkTensor>()),
-            ("offsetof(mk_tensor, name)", offset_of!(MkTensor, name)),
-            ("offsetof(mk_tensor, type)", offset_of!(MkTensor, kind)),
-            ("offsetof(mk_tensor, n_dims)", offset_of!(MkTensor, n_dims)),
-            ("offsetof(mk_tensor, ne)", offset_of!(MkTensor, ne)),
-            ("offsetof(mk_tensor, n_elements)", offset_of!(MkTensor, n_elements)),
-            ("offsetof(mk_tensor, n_bytes)", offset_of!(MkTensor, n_bytes)),
-            ("offsetof(mk_tensor, data)", offset_of!(MkTensor, data)),
-            ("sizeof(mk_tensor_table)", size_of::<MkTensorTable>()),
+            ("sizeof(mk_weight)", size_of::<MkWeight>()),
+            ("offsetof(mk_weight, name)", offset_of!(MkWeight, name)),
+            ("offsetof(mk_weight, type)", offset_of!(MkWeight, kind)),
+            ("offsetof(mk_weight, ne)", offset_of!(MkWeight, ne)),
+            ("offsetof(mk_weight, row_bytes)", offset_of!(MkWeight, row_bytes)),
+            ("offsetof(mk_weight, d)", offset_of!(MkWeight, d)),
+            ("sizeof(mk_weight_table)", size_of::<MkWeightTable>()),
             (
-                "offsetof(mk_tensor_table, n_tensors)",
-                offset_of!(MkTensorTable, n_tensors),
+                "offsetof(mk_weight_table, n_weights)",
+                offset_of!(MkWeightTable, n_weights),
             ),
-            ("offsetof(mk_tensor_table, tensors)", offset_of!(MkTensorTable, tensors)),
+            ("offsetof(mk_weight_table, weights)", offset_of!(MkWeightTable, weights)),
             (
-                "offsetof(mk_tensor_table, n_shards)",
-                offset_of!(MkTensorTable, n_shards),
-            ),
-            ("offsetof(mk_tensor_table, shards)", offset_of!(MkTensorTable, shards)),
-            (
-                "offsetof(mk_tensor_table, ple_eos_token_id)",
-                offset_of!(MkTensorTable, ple_eos_token_id),
+                "offsetof(mk_weight_table, schedule)",
+                offset_of!(MkWeightTable, schedule),
             ),
             (
-                "offsetof(mk_tensor_table, n_ple_layer_multipliers)",
-                offset_of!(MkTensorTable, n_ple_layer_multipliers),
-            ),
-            (
-                "offsetof(mk_tensor_table, ple_layer_multipliers)",
-                offset_of!(MkTensorTable, ple_layer_multipliers),
-            ),
-            (
-                "offsetof(mk_tensor_table, n_ple_head_offsets)",
-                offset_of!(MkTensorTable, n_ple_head_offsets),
-            ),
-            (
-                "offsetof(mk_tensor_table, ple_head_offsets)",
-                offset_of!(MkTensorTable, ple_head_offsets),
-            ),
-            (
-                "offsetof(mk_tensor_table, n_ple_head_vocab_sizes)",
-                offset_of!(MkTensorTable, n_ple_head_vocab_sizes),
-            ),
-            (
-                "offsetof(mk_tensor_table, ple_head_vocab_sizes)",
-                offset_of!(MkTensorTable, ple_head_vocab_sizes),
-            ),
-            ("offsetof(mk_tensor_table, reader)", offset_of!(MkTensorTable, reader)),
-            (
-                "offsetof(mk_tensor_table, drop_cached)",
-                offset_of!(MkTensorTable, drop_cached),
-            ),
-            (
-                "offsetof(mk_tensor_table, dequant_f32)",
-                offset_of!(MkTensorTable, dequant_f32),
-            ),
-            (
-                "offsetof(mk_tensor_table, schedule)",
-                offset_of!(MkTensorTable, schedule),
-            ),
-            (
-                "offsetof(mk_tensor_table, footprint)",
-                offset_of!(MkTensorTable, footprint),
+                "offsetof(mk_weight_table, footprint)",
+                offset_of!(MkWeightTable, footprint),
             ),
             ("sizeof(mk_access)", size_of::<MkAccess>()),
             ("offsetof(mk_access, lo)", offset_of!(MkAccess, lo)),

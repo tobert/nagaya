@@ -25,9 +25,20 @@ extern "C" {
 // Gives len bytes of text, with no NUL, to the binding's buffer out.
 typedef void (*mk_text_sink)(void *out, const char *text, uint64_t len);
 
-// The tensor table comes from the Rust reader (tensor_table.h). Its tensor data must stay mapped for the engine's life.
-void *mk_engine_open(const mk_tensor_table *t) { return new Engine(t); }
-uint64_t mk_engine_arena_bytes(void *e) { return static_cast<Engine *>(e)->arena_bytes(); }
+// The weight table comes from the Rust host (weight_table.h). The arena must stay mapped for the engine's life.
+void *mk_engine_open(const mk_weight_table *t) { return new Engine(t); }
+// Re-lays out a rows x k matrix at src into read-once tiles at dst (tile: 1 IQ3_S, 2 Q8_0, 3 Q6_K, 4 IQ4_NL; tiles.h),
+// and waits for the device. src/arena.rs names the tile ids.
+void mk_relayout(uint32_t tile, const uint8_t *src, uint8_t *dst, uint32_t rows, uint32_t k) {
+  switch (tile) {
+    case 1: relayout_iq3s_tiles(src, dst, rows, k); break;
+    case 2: relayout_q8_tiles(src, dst, rows, k); break;
+    case 3: relayout_q6_tiles(src, dst, rows, k); break;
+    case 4: relayout_iq4_tiles(src, dst, rows, k); break;
+    default: MK_DIE("mk_relayout: tile %u: want 1 to 4", tile);
+  }
+  MK_CHECK(hipDeviceSynchronize());
+}
 void mk_engine_recover_spin_timeouts(void *e, bool on) { static_cast<Engine *>(e)->set_recover_spin_timeouts(on); }
 
 void *mk_ctx_new(void *e, uint32_t max_tokens) { return static_cast<Engine *>(e)->new_context(max_tokens); }
@@ -63,8 +74,8 @@ void mk_segments_problem(void *e, const Segment *s, uint32_t n, mk_text_sink put
   put(out, w.data(), w.size());
 }
 // A fused pass of n segments (engine.h Engine::pass_segments), and its wall time in ms. The logits go straight into
-// logits.
-double mk_pass_segments(void *e, const Segment *s, uint32_t n, bool want_logits, float *logits) {
-  return static_cast<Engine *>(e)->pass_segments(s, n, want_logits, logits).ms;
+// logits. ple holds the PLE rows of the pass's tokens.
+double mk_pass_segments(void *e, const Segment *s, uint32_t n, bool want_logits, float *logits, const float *ple) {
+  return static_cast<Engine *>(e)->pass_segments(s, n, want_logits, logits, ple).ms;
 }
 }

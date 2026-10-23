@@ -342,3 +342,19 @@ void Watchdog::watch(std::unique_lock<std::mutex> &lk) {
 }
 
 }  // namespace mk
+
+// The thin runtime calls of the Rust host (src/binding.rs, milestone 15 step 6). Each call makes one HIP call and stops
+// the program when it fails, as MK_CHECK does. The host makes every call on its one worker thread.
+extern "C" {
+// Registers n bytes of host memory at p with the device, coarse-grained: weights never change while a kernel runs.
+// HIP registers host memory fine-grained by default (hip_runtime_api.h). Measured 2026-09-30, 51-token fused read p50:
+// fine-grained arena 452-456 ms, coarse-grained 448 ms, hipMalloc baseline 454 ms: no difference that decides it.
+void mk_rt_host_register(void *p, uint64_t n) { MK_CHECK(hipHostRegister(p, n, hipExtHostRegisterCoarseGrained)); }
+// n bytes of pinned host memory.
+void *mk_rt_host_malloc(uint64_t n) {
+  void *p = nullptr;
+  MK_CHECK(hipHostMalloc(&p, n, hipHostMallocDefault));
+  return p;
+}
+void mk_rt_host_free(void *p) { MK_CHECK(hipHostFree(p)); }
+}

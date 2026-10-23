@@ -9,8 +9,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "arena.h"
-#include "tensor_table.h"
+#include "weight_table.h"
 #include "model.h"
 #include "rt.h"
 #include "stage.h"
@@ -124,24 +123,13 @@ inline void check_whole_tiled(const Tensor &w, uint32_t n) {
   if ((w.type == q::Q8_0_TILES || w.type == q::IQ3_S_TILES || w.type == q::Q6_K_TILES || w.type == q::IQ4_NL_TILES) && w.ne[1] * w.ne[2] != n)
     MK_DIE("qmm over %u rows of a tiled matrix with %lu", n, (unsigned long)(w.ne[1] * w.ne[2]));
 }
-// MK_TILES=0 keeps the GGUF layout; unset or 1 converts the IQ3_S expert gate/up, the IQ4_NL and Q8_0 expert down
-// matrices, the Q8_0 dense matrices and the Q6_K output head to read-once tiles at load.
-inline bool tiles_enabled() {
-  const char *e = getenv("MK_TILES");
-  if (!e || !strcmp(e, "1")) return true;
-  if (!strcmp(e, "0")) return false;
-  MK_DIE("MK_TILES=%s: want 0 or 1", e);
-}
 const void *stage_kernel();
 WatchdogConfig engine_watchdog_config();  // 10 s, or MK_WATCHDOG_DEADLINE_S (a test knob)
-// A tensor's read-once tile layout (tiles.h), or none.
-enum class Tile { kNone, kIq3s, kQ8, kQ6, kIq4 };
 
 class Engine {
  public:
-  // Loads the weights into a new sealed arena (arena.h): the pages the kernels read. The tensor table comes from the
-  // Rust reader (tensor_table.h).
-  explicit Engine(const mk_tensor_table *table);
+  // Takes the weights of the arena that the Rust host loaded (weight_table.h, src/arena.rs).
+  explicit Engine(const mk_weight_table *table);
   ~Engine();
   Context *new_context(uint32_t max_tokens);
   void free_context(Context *c);
@@ -171,8 +159,9 @@ class Engine {
   // context twice: they would write the same cells).
   std::string segments_problem(const Segment *s, uint32_t n) const;
   // One fused pass of n segments (dies on segments_problem), advancing each context. logits_out: [n][kVocab], each
-  // segment's logits at its last token (want_logits), or null when want_logits is false.
-  PassOut pass_segments(const Segment *s, uint32_t n, bool want_logits, float *logits_out);
+  // segment's logits at its last token (want_logits), or null when want_logits is false. ple: [t][kEmbd], the PLE rows
+  // of the pass's t tokens, segment after segment (src/ple.rs).
+  PassOut pass_segments(const Segment *s, uint32_t n, bool want_logits, float *logits_out, const float *ple);
   // Off (the default): a pass that stops early for any reason stops the program. On: a fused pass that stops on a
   // spin-timeout (a grid barrier's bounded wait ran out, as under another tenant's GPU contention; PLAN.md Problems
   // 2026-10-01 11:47) returns instead, with last_error() set, and poisons every context it was extending
@@ -181,28 +170,14 @@ class Engine {
   void set_recover_spin_timeouts(bool on) { recover_spin_timeouts_ = on; }
   // The last pass's error ("" after a clean pass).
   const std::string &last_error() const { return last_error_; }
-  uint64_t arena_bytes() const { return arena_bytes_; }
 
  private:
-  struct Planned {  // one uploaded tensor: its GGUF index, final layout and place in the arena
-    size_t gguf = 0;
-    std::string name;
-    Tensor t;  // final type, ne, row_bytes (d is set once the arena is mapped)
-    Tile tile = Tile::kNone;
-    uint32_t rows = 0, k = 0;
-    uint64_t src_bytes = 0, bytes = 0, offset = 0;
-  };
-  static std::vector<Planned> plan(const TensorTable &table, uint64_t *arena_bytes);
-  static arena::Header arena_header(const std::vector<Planned> &P, uint64_t arena_bytes, const std::vector<std::string> &shards);
-  static arena::Entry arena_entry(const Planned &p);
-  void create_arena(const std::vector<Planned> &P);
   void wire();
   Tensor get(const std::string &name) const;
-  PassOut run_pass(const Segment *s, uint32_t n, bool want_logits, float *logits_out);
+  PassOut run_pass(const Segment *s, uint32_t n, bool want_logits, float *logits_out, const float *ple);
   // t: the pass's tokens, the sum of the segments'.
   std::vector<Stage> build(const Segment *seg, uint32_t ns, uint32_t t, bool want_logits, std::vector<uint32_t> *layer_ends);
   std::vector<Stage> build_stages(const Segment *seg, uint32_t ns, uint32_t t, bool want_logits, std::vector<uint32_t> *layer_ends);
-  void ple_rows(const Context *c, const int32_t *tokens, uint32_t t, float *out) const;
   // The model's three blocks, appended as stages: mixed [T, E] in, out [T, E] out. The state stages, one per segment.
   void add_gdn(std::vector<Stage> &S, const Segment *seg, uint32_t ns, uint32_t il, uint32_t t, const float *mixed, float *out);
   void add_attn(std::vector<Stage> &S, const Segment *seg, uint32_t ns, uint32_t il, uint32_t t, const float *mixed, float *out);
@@ -212,15 +187,10 @@ class Engine {
   // Runs stages one launch each under the control block and the watchdog, outside any pass.
   void run_stages_now(const std::vector<Stage> &S);
 
-  TensorTable table_;
-  std::vector<std::string> shards_;
+  ScheduleCalls table_;
   std::unordered_map<std::string, Tensor> w_;
-  int arena_fd_ = -1;
-  uint8_t *arena_ = nullptr;
-  uint64_t arena_bytes_ = 0;
   Layer layers_[model::kLayers];
   Tensor tok_embd_, out_hc_norm_, out_hc_down_, out_hc_up_, output_;
-  const GgufTensor *ple_ = nullptr;  // the PLE table, left mapped (ple_rows gathers from it)
   // pass scratch, sized for kMaxPassTokens
   ScratchPool scratch_;
   int32_t *d_tokens_ = nullptr;
