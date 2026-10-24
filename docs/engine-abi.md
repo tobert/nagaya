@@ -746,11 +746,11 @@ stage threads under it.
 - the residual: a host buffer that the nagaya owns (D5). Stage s writes it, and stage s + 1 reads it. A row is
   `limits().residual_row_bytes`: 2,816 F32 values (11,264 bytes) for mkviolet.
 
-Decided 2026-10-22 (Amy: "seems ok, approved."): a restore is not a member of the segment. mkviolet restores a held
-snapshot into the slot inside a pipelined pass: each card writes its layers first (`PipeJob.kv`,
-`gemma4.rs:1477-1490`, `council_server.rs:859-874`). In the nagaya, a restore is a `copy` quantum on the device of a
-stage. It writes only the parts of that stage, through `Store::restore` (spec 8.3). It runs on that device just before
-the first stage quantum of the block. Reason: one restore path for every engine, with the same overlap of cards.
+Decided 2026-10-22 (Amy: "seems ok, approved."), updated 2026-10-24 (Amy): a restore is not a member of the segment.
+mkviolet restores a held snapshot into the slot inside a pipelined pass: each card writes its layers first
+(`PipeJob.kv`, `gemma4.rs:1477-1490`, `council_server.rs:859-874`). In the nagaya, `StageScheduler` has `Item::Restore`
+for a per-stage copy quantum. The v0 job path (`StagedJobs`) runs a restore in a whole-group `copy` quantum
+(`Item::Whole(Kind::Copy)`). Each stage thread writes its own parts before the first block.
 
 Decided 2026-10-22 (Amy: "accepted"): each part names its stage, `limits().parts[].stage`. A stage handle reads
 and writes only the parts of its stage. mkviolet's parts are the KV of one layer, so each part has one card.
@@ -818,10 +818,11 @@ first build of the stage path takes the simplest choice for each.
   alone let three blocks wait at one boundary, and the term holds two.
 - **The residual of a pass.** A stage pass with several segments puts their rows in the residual in segment order. A
   pass never holds more rows than one buffer.
-- **Other copy quanta hold the group.** A copy quantum that is not a restore reads or writes the parts of every
-  stage, for example a snapshot, a mark or a lookup. It starts only when every device of the group is free and no
-  block of its job waits. A free device does not start a quantum of a lower rank before it. Reason: one path into the
-  store for every engine, and a wait of at most one quantum (D8).
+- **Copy quanta hold the group.** A whole-group copy quantum (`Item::Whole`) reads or writes the parts of every
+  stage, for example a restore, a snapshot, a mark or a lookup. It starts only when every device of the group is free
+  and no block of its job waits. No device may have a ready quantum of a higher rank either. A free device does not
+  start a quantum of a lower rank before it. Reason: one path into the store for every engine, and a wait of at most one
+  quantum (D8).
 - **Filler on each device.** A filler stage quantum runs on a device that has no ready quantum of a higher class. This
   is the reading of 5.5 for a group with stages. Reason: D1 fills an idle card.
 - **A stage handle has slots and coverage.** `StageHandle` also has `slots()` and `coverage()`, for the parts of its

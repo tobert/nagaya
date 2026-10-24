@@ -325,3 +325,29 @@ fn items_that_a_running_job_adds_run_after_its_blocks() {
     let quanta = run.step(StageEvent::Tick { now_ms: 2 });
     assert_eq!(started(&quanta), vec![(1, stage(1, 0), vec![0])]);
 }
+
+#[test]
+fn a_whole_quantum_waits_for_a_higher_rank_stage_on_another_device() {
+    let mut run = Run::new();
+    // Job 1 (batch) finishes stage 0 on device 0 and occupies device 1 with stage 1.
+    run.arrive(job(1, Class::Batch, &[PREFILL]));
+    run.complete(0, 1);
+    assert_eq!(run.on(1), Some((1, stage(0, 1))));
+
+    // Job 2 (interactive) runs stage 0 on device 0 while device 1 is busy, then waits for device 1.
+    run.arrive(job(2, Class::Interactive, &[PREFILL]));
+    assert!(run.complete(0, 1).is_empty());
+    assert_eq!((run.on(0), run.on(1)), (None, Some((1, stage(0, 1)))));
+
+    // Job 3 (filler) arrives with a whole-group copy.
+    assert!(run.arrive(job(3, Class::Filler, &[Item::Whole(Kind::Copy)])).is_empty());
+
+    // When device 1 finishes job 1, job 2's interactive stage 1 must take device 1 before job 3's filler copy.
+    let quanta = run.complete(1, 1);
+    assert_eq!(started(&quanta), vec![(2, stage(1, 1), vec![1])]);
+    assert_eq!((run.on(0), run.on(1)), (None, Some((2, stage(1, 1)))));
+
+    // Once job 2 finishes on device 1, job 3's whole-group copy starts on both devices.
+    let quanta = run.complete(1, 1);
+    assert_eq!(started(&quanta), vec![(3, Work::Whole, vec![0, 1])]);
+}

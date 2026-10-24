@@ -7,10 +7,10 @@
 //!
 //! 1. Stage s + 1 of a block is ready only after stage s of that block ends and writes the residual.
 //! 2. Stage s of block k + 1 is ready only after stage s of block k ends.
-//! 3. A restore is a copy quantum on the device of each stage. It comes before the block after it, by rule 2.
-//!    **Proposed** (claude-opus-5-5, engine-abi D1).
+//! 3. A restore is a copy quantum on the device of each stage. It comes before the block after it, by rule 2
+//!    (engine-abi D1).
 //!
-//! The rules of "The stage path in v0" (engine-abi D1, Proposed) also hold. A block holds a residual buffer from the
+//! The rules of "The stage path in v0" (engine-abi D1) also hold. A block holds a residual buffer from the
 //! start of stage s to the end of stage s + 1, and stage s waits for a free buffer. A copy quantum that is not a
 //! restore holds every device. Between quanta on each device, the ready quantum of the highest rank for that device
 //! starts (spec 5.3, 5.4): the class first, then the order in the class.
@@ -486,8 +486,9 @@ impl StageScheduler {
                 continue;
             };
             if best.work == Work::Whole {
-                // A whole quantum waits for every device. A free device starts no quantum of a lower rank before it.
-                if self.running.is_empty() {
+                // A whole quantum waits for every device, and for any quantum of a higher rank on another device.
+                // A free device starts no quantum of a lower rank before it.
+                if self.running.is_empty() && !self.higher_candidate_exists(&best) {
                     started.push(self.start(best, now_ms));
                     break;
                 }
@@ -496,6 +497,25 @@ impl StageScheduler {
             started.push(self.start(best, now_ms));
         }
         started
+    }
+
+    fn higher_candidate_exists(&self, whole: &Candidate) -> bool {
+        let mut candidates = Vec::new();
+        for &device in &self.engine.devices {
+            candidates.clear();
+            for index in 0..self.jobs.len() {
+                if Self::eligible(&self.jobs[index]) {
+                    self.candidates(index, device, &mut candidates);
+                }
+            }
+            if candidates
+                .iter()
+                .any(|other| self.before(other, whole) == std::cmp::Ordering::Less)
+            {
+                return true;
+            }
+        }
+        false
     }
 
     fn start(&mut self, candidate: Candidate, now_ms: u64) -> StageQuantum {
