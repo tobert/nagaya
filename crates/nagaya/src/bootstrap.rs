@@ -140,9 +140,13 @@ fn default_park_budget_secs() -> u64 {
     DEFAULT_PARK_BUDGET_SECS
 }
 
+/// The most bytes in a node name, so each gossip key that holds it fits 1024 bytes (spec 2.1, 2.3).
+const MAX_NODE_NAME_BYTES: usize = 128;
+
 /// Refuse a node name that a gossip key cannot hold. A key is `profile:desired:<host>`, so a name has no colon.
 fn check_node_name(name: &str) -> Result<(), BootstrapError> {
     let valid = !name.is_empty()
+        && name.len() <= MAX_NODE_NAME_BYTES
         && name
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-'));
@@ -151,7 +155,7 @@ fn check_node_name(name: &str) -> Result<(), BootstrapError> {
     } else {
         Err(BootstrapError::Parse {
             message: format!(
-                "node_name `{name}` is not valid; use letters, digits, `.`, `_` and `-`, and at least one character"
+                "node_name `{name}` is not valid; use 1 to {MAX_NODE_NAME_BYTES} bytes of letters, digits, `.`, `_` and `-`"
             ),
         })
     }

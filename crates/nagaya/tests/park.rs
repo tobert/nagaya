@@ -442,3 +442,112 @@ fn a_park_of_the_bytes_of_a_held_snapshot_parks_that_entry_with_its_recipe() {
     );
     assert_eq!(store.entries().len(), 1);
 }
+
+#[test]
+fn the_identity_digest_uses_the_recipe_key_context() {
+    let identity = seeded().identity();
+    let digest = identity_digest(&identity);
+    let mut keyed = blake3::Hasher::new_derive_key("nagaya recipe v1");
+    let add = |hasher: &mut blake3::Hasher, tag: u16, bytes: &[u8]| {
+        hasher.update(&tag.to_le_bytes());
+        hasher.update(&(bytes.len() as u64).to_le_bytes());
+        hasher.update(bytes);
+    };
+    add(&mut keyed, 1, identity.model.as_bytes());
+    add(&mut keyed, 2, identity.checkpoint_digest.as_bytes());
+    add(&mut keyed, 3, identity.tokenizer_hash.as_bytes());
+    add(&mut keyed, 4, identity.template.as_bytes());
+    let mut numbers = Vec::new();
+    numbers.extend_from_slice(&(identity.numbers.len() as u64).to_le_bytes());
+    for (name, value) in &identity.numbers {
+        numbers.extend_from_slice(&(name.len() as u64).to_le_bytes());
+        numbers.extend_from_slice(name.as_bytes());
+        numbers.extend_from_slice(&(value.len() as u64).to_le_bytes());
+        numbers.extend_from_slice(value.as_bytes());
+    }
+    add(&mut keyed, 5, &numbers);
+    add(&mut keyed, 6, identity.plan_table.as_bytes());
+    let mut settings = Vec::new();
+    settings.extend_from_slice(&(identity.bit_settings.len() as u64).to_le_bytes());
+    add(&mut keyed, 7, &settings);
+    add(&mut keyed, 8, identity.canary_hash.as_bytes());
+    assert_eq!(digest, *keyed.finalize().as_bytes());
+}
+
+#[test]
+fn a_park_keeps_the_block_format_of_each_part() {
+    struct BlockEngine(FakeAlways);
+    impl Engine for BlockEngine {
+        fn identity(&self) -> nagaya_abi::Identity {
+            self.0.identity()
+        }
+        fn limits(&self) -> Limits {
+            let mut limits = self.0.limits();
+            for part in &mut limits.parts {
+                if part.kind != PartKind::Derived {
+                    part.block_format = Some("q8_0".to_owned());
+                }
+            }
+            limits
+        }
+        fn pass(
+            &mut self,
+            segments: &[Segment],
+            taps: &[nagaya_abi::Tap],
+        ) -> Result<nagaya_abi::PassOut, nagaya_abi::PassError> {
+            self.0.pass(segments, taps)
+        }
+        fn last_error(&self) -> Option<String> {
+            self.0.last_error()
+        }
+        fn parts(&mut self) -> Option<&mut dyn nagaya_abi::Parts> {
+            self.0.parts()
+        }
+        fn slots(&mut self) -> Option<&mut dyn nagaya_abi::Slots> {
+            self.0.slots()
+        }
+        fn coverage(&mut self) -> Option<&mut dyn nagaya_abi::Coverage> {
+            self.0.coverage()
+        }
+    }
+    struct BlockFactory;
+    impl Factory for BlockFactory {
+        fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
+            let mut limits = limits_on(&[0]);
+            for part in &mut limits.parts {
+                if part.kind != PartKind::Derived {
+                    part.block_format = Some("q8_0".to_owned());
+                }
+            }
+            Ok(limits)
+        }
+        fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
+            Ok(Box::new(BlockEngine(seeded())))
+        }
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    let mut registry = Registry::new();
+    registry.register("seed", Box::new(BlockFactory));
+    let mut process = Start::new(profile(), registry, inventory(&[0]))
+        .store(directory.path())
+        .heartbeat(Duration::from_millis(10))
+        .timeout(Duration::from_secs(2))
+        .start()
+        .unwrap();
+    process.wait_opens(Duration::from_secs(2)).unwrap();
+    let report = process.stop(Duration::from_secs(2), &SignalFlag::new());
+    assert_eq!(report.exit_code(), ExitCode::Clean, "{report:?}");
+
+    let mut source = BlockEngine(seeded());
+    let expected = snapshot_from_engine(&mut source, State::Slot(0), &[(1, 0, 3), (2, 0, 3)]).unwrap();
+    for tensor in &expected.tensors {
+        assert_eq!(tensor.block_format.as_deref(), Some("q8_0"));
+    }
+    let store = Store::open(directory.path()).unwrap();
+    let id = expected.content_id().unwrap();
+    assert!(
+        store.entries().contains_key(&id),
+        "the parked snapshot must keep block_format so its content id matches snapshot_from_engine"
+    );
+}

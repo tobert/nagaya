@@ -232,7 +232,7 @@ pub(crate) fn park_snapshot(engine: &mut dyn Engine, state: State) -> Result<Sna
                     shape: part.shape.clone(),
                     data,
                     coverage: None,
-                    block_format: None,
+                    block_format: part.block_format.clone(),
                 });
             }
             PartKind::Cells | PartKind::Ring => {
@@ -294,7 +294,7 @@ pub(crate) fn park_snapshot(engine: &mut dyn Engine, state: State) -> Result<Sna
                     shape,
                     data,
                     coverage: Some((span.start, span.end)),
-                    block_format: None,
+                    block_format: part.block_format.clone(),
                 });
             }
         }
@@ -323,9 +323,12 @@ pub fn park_recipe(identity: &[u8; 32], content: &ContentId) -> RecipeId {
     recipe_root(identity, PARK_GEOMETRY_KEY, &[], &bytes)
 }
 
+/// The BLAKE3 key-derivation context of a recipe and an identity digest (spec 6.2).
+const RECIPE_KEY_CONTEXT: &str = "nagaya recipe v1";
+
 /// The digest of an engine identity (spec 6.2, 12.1).
 pub fn identity_digest(identity: &Identity) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = blake3::Hasher::new_derive_key(RECIPE_KEY_CONTEXT);
     add(&mut hasher, 1, identity.model.as_bytes());
     add(&mut hasher, 2, identity.checkpoint_digest.as_bytes());
     add(&mut hasher, 3, identity.tokenizer_hash.as_bytes());

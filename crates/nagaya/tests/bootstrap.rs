@@ -103,6 +103,21 @@ fn a_node_name_with_a_colon_is_refused() {
 }
 
 #[test]
+fn a_node_name_past_128_bytes_is_refused() {
+    let bound = "a".repeat(128);
+    let text = format!("{REQUIRED_ONLY}node_name = \"{bound}\"\n");
+    assert_eq!(Bootstrap::parse(&text).unwrap().node_name().unwrap(), bound);
+
+    let too_long = "a".repeat(129);
+    let text = format!("{REQUIRED_ONLY}node_name = \"{too_long}\"\n");
+    let error = Bootstrap::parse(&text).unwrap_err();
+    assert!(
+        error.to_string().contains("node_name") && error.to_string().contains("128"),
+        "the message must name the key and the 128-byte bound: {error}"
+    );
+}
+
+#[test]
 fn an_unspecified_gossip_address_is_refused() {
     for address in ["0.0.0.0:8091", "[::]:8091", "0.0.0.0:0"] {
         let text = REQUIRED_ONLY.replace("127.0.0.1:8091", address);
