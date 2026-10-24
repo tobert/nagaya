@@ -301,7 +301,8 @@ adds the entries does not count a pooled budget twice. On gfx1151host, `device(0
 2026-10-20 (reading).
 
 The placement profile is one TOML file. Each `[[engines]]` entry has `name`, `kind`, `devices`, `config`, an optional
-`family` table (11.3), `share` and `pin_identity`. Each `[[budgets]]` entry has `tiers` and `bytes`, and a tier is
+`family` table (11.3), `share` and `pin_identity`. An entry can also have `residency` and `idle_unload_s` (3.3a,
+Proposed). Each `[[budgets]]` entry has `tiers` and `bytes`, and a tier is
 `host` or `device(i)`. The `[store]` table has `nvme`, an optional `host` (4.1a), and an optional `interval_copies`
 (6.13), 0 by default. Decided 2026-10-20 (reading).
 
@@ -465,6 +466,58 @@ devices of each engine.
 
 Reason: voice and image engines can then use the B70 cards when Gemma 4 is idle. Milestone 16
 builds it (`AGENTS.md`).
+
+**3.3a The swap in place.** Proposed by senpai (Claude Opus 5.5), 2026-10-24. Reason: Amy decided the swap on demand
+(3.3), and these rules make it one choice on one thread. Amy decides each rule.
+
+- **Residency.** Each engine in the profile has `residency`: `resident` or `on_demand`. The default is `resident`.
+  At start the process opens each resident engine, and an on-demand engine stays unloaded.
+- **Only engines that close.** A profile refuses an on-demand engine unless each engine of its device group declares
+  `close` (engine-abi "Capabilities"). Reason: a swap frees an engine in the process, and only `close` makes that
+  safe. mk has no `close`, so gfx1151host keeps its restart (3.3).
+- **Admission.** The resident engines must fit together (2.4). Each on-demand engine must also fit with the resident
+  engines of the other device groups. Reason: in the worst case, a swap unloads every other engine of the group.
+- **One thread decides.** The group thread of an engine runs its swaps. A job names its engine. A job for an engine
+  that is not loaded waits on the group thread, and the swap starts.
+- **The engines that unload.** The group asks the ledger whether the engine fits beside the loaded engines. When it
+  does not fit, the group unloads loaded engines of its own group, the last in profile order first, until it fits.
+  Engines of other groups never unload for a swap.
+- **The wait before an unload.** An engine that must unload takes no new job. Its jobs that the group holds run to
+  their end, and new jobs for it wait for its next load. Jobs of engines that stay loaded go on.
+
+**The steps of a swap.** Proposed by senpai (Claude Opus 5.5), 2026-10-24.
+
+1. Unload each engine that must go. Park its states, as the stop does (10.3 step 3), in the park budget.
+2. Release the charges of its contexts. Remove its arena fds from systemd's store (`FDSTOREREMOVE=1`, 10.2).
+3. Drop the engine, which closes it. Admit the profile of the engines that stay loaded, so their shares grow (4.4).
+4. Admit the profile of the loaded engines with the new engine. Open the new engine cold, and export its arena (10.2).
+5. Run the jobs that waited. A job keeps its deadline (5.8), so a long swap can end it.
+
+An open that fails during a swap is a crash (8.5): the process exits 1, and systemd starts it with the resident
+engines. Reason: the displaced engines are unloaded, and no rule says which engine serves next. A crash restarts in
+a known state.
+
+Reason for the fd removal: an fd in systemd's store holds the device memory of its arena. An engine that closes while
+its fds stay in the store frees no device memory.
+
+**The swap back.** Proposed by senpai (Claude Opus 5.5), 2026-10-24.
+
+- An on-demand engine unloads after `idle_unload_s` seconds with no job. The key is in its profile entry, and the
+  default is 60. Then the group loads each resident engine of the group that is not loaded.
+- A job for a resident engine that is not loaded starts a swap, as for any engine.
+- A swap is one span `nagaya.swap`, with the engines that unload, the engine that loads, and each step's time (9.2).
+
+**What a swap does not change.** A profile `PUT` that changes engines still restarts the process (3.3). The device
+groups, the group threads and the routes stay as the profile made them. An unloaded engine is in its group, with the
+state `unloaded` (9.4, 11.1).
+
+**The status that clients see.** Proposed by senpai (Claude Opus 5.5), 2026-10-24. gogi gives 503
+`model_unavailable` to a served model that is not `ready` (11.1). An on-demand engine that is unloaded can still
+serve, because a request starts its load. Thus `identity.models` reports such an engine as `ready`. The status feed
+(9.7) and the metric `nagaya.engine.state` give its real state: `unloaded`, `loading` or `ready`.
+
+Reason: the swap is a wait inside the nagaya, and Amy decided that the request waits. This keeps the gogi suite
+green with no change to gogi.
 
 **Open:** Do the GPU queues of an idle engine slow the other engines on its device? mk has a note that its idle
 queues slow another process, but we did not find the source. A measurement answers the question.

@@ -193,6 +193,18 @@ close        close()                     frees the engine in the process
 An engine without `close` stays open until the process exits. The nagaya changes such an engine only through a
 planned restart (spec 3.3, exit code 4). Its `Drop` does not free it, and a comment says why. Decided 2026-10-18.
 
+**`close` in Rust.** Proposed by senpai (Claude Opus 5.5), 2026-10-24, for the swap in place (spec 3.3a).
+
+- `close` is the `Drop` of the engine. The trait gets no new method.
+- An engine that declares `close` frees each device allocation and each host allocation of its own in `Drop`. After
+  the drop, the free memory of each of its devices is what it was before `open`.
+- A gate of the conformance suite checks it on the device. It opens the engine, runs a pass and drops it, many times.
+  It reads the free device memory after each drop.
+- The arena fds that systemd holds are not the engine's own. The process removes them before the drop (spec 3.3a).
+
+Reason: the `Box<dyn Engine>` already drops at the end of the group thread. A drop that frees everything needs no
+second path, and a test can count the memory after it.
+
 **Per-part coverage.** Decided 2026-10-22 (Amy: "accepted"). This closes the old note: the park used one row
 count, `slot_high`, for every row part of a slot.
 
