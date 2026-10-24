@@ -531,3 +531,60 @@ fn the_swap_waits_for_the_queued_jobs_of_the_engine_that_unloads() {
         ]
     );
 }
+
+#[test]
+fn a_job_for_the_engine_that_unloads_waits_for_its_next_load() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start(directory.path(), 1000);
+    let (gate_tx, gate_rx) = mpsc::channel();
+    process
+        .submit_job(
+            0,
+            JobSpec {
+                class: Class::Interactive,
+                priority: 0,
+                deadline: None,
+                first: Kind::Read,
+                engine: CHAT,
+                body: Box::new(Probe {
+                    engine: CHAT,
+                    name: "chat",
+                    log: Arc::clone(&log),
+                    gate: Some(gate_rx),
+                    done: None,
+                }),
+            },
+        )
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !log_of(&log).contains(&"run:chat".to_owned()) {
+        assert!(Instant::now() < deadline, "the chat job did not start");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let (voice, voice_finished) = probe(VOICE, &log);
+    process.submit_job(0, voice).unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    let (late, late_finished) = probe(CHAT, &log);
+    process.submit_job(0, late).unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    gate_tx.send(()).unwrap();
+    voice_finished
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the voice job ran");
+    late_finished
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the late chat job ran");
+    assert_eq!(
+        log_of(&log),
+        [
+            "open:chat",
+            "run:chat",
+            "close:chat",
+            "open:voice",
+            "run:voice",
+            "close:voice",
+            "open:chat",
+            "run:chat"
+        ]
+    );
+}

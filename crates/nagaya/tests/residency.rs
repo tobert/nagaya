@@ -26,6 +26,9 @@ fn weights_limits(config: &toml::Table) -> Limits {
     if config.get("close").and_then(toml::Value::as_bool) != Some(false) {
         limits.capabilities.push(Capability::Close);
     }
+    if config.get("stages").and_then(toml::Value::as_bool) == Some(true) {
+        limits.capabilities.push(Capability::Stages);
+    }
     limits
 }
 
@@ -266,4 +269,22 @@ fn an_idle_time_of_zero_is_refused() {
         matches!(&error, AdmitError::Residency { engine, .. } if engine == "voice"),
         "{error:?}"
     );
+}
+
+#[test]
+fn an_engine_with_stages_shares_its_group_only_with_on_demand_engines() {
+    let mut gemma = engine("gemma", 0, 100, Residency::Resident);
+    gemma.config.insert("stages".to_owned(), toml::Value::Boolean(true));
+    let helper = engine("helper", 0, 100, Residency::Resident);
+    let (error, before, after) = refused(&profile(vec![gemma.clone(), helper]));
+    assert_eq!(after, before);
+    assert!(
+        matches!(&error, AdmitError::Residency { engine, .. } if engine == "helper"),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("stages"), "{error}");
+    // With the other engine on demand, the profile is admitted: a swap unloads one for the other.
+    let voice = engine("voice", 0, 100, Residency::OnDemand);
+    let mut ledger = Ledger::new();
+    admit(&profile(vec![gemma, voice]), &registry(), &inventory(), &mut ledger).unwrap();
 }

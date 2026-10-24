@@ -30,7 +30,7 @@ use crate::park::{self, StoreBudget, StoreMessage};
 use crate::placement::{self, DeviceGroup};
 use crate::profile::{EnginePlacement, PlacementProfile, Residency};
 use crate::signal::SignalFlag;
-use in_place::{Member, Unloaded};
+use in_place::{Exit, Member, Unloaded};
 
 mod handoff;
 mod in_place;
@@ -968,46 +968,37 @@ struct GroupLinks {
 }
 
 fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: Duration) {
-    let GroupLinks {
-        events,
-        heartbeats,
-        messages: stop,
-        own,
-        store,
-        accepting,
-        machine,
-        sets,
-        fd_store,
-        ledger,
-    } = links;
-    let _ = heartbeats.send(WatchMessage::Beat {
+    let _ = links.heartbeats.send(WatchMessage::Beat {
         group,
         at: Instant::now(),
     });
     // The group holds each engine of its profile entries, and an engine that is not loaded has its place (3.3a).
-    let mut members: Vec<Member> = jobs.into_iter().map(|job| Member { job, loaded: false }).collect();
+    let mut members: Vec<Member> = jobs
+        .into_iter()
+        .map(|job| Member {
+            job,
+            loaded: false,
+            handles: Vec::new(),
+        })
+        .collect();
     let mut engines: Vec<Box<dyn Engine>> = members.iter().map(Unloaded::of).collect();
     let mut opened = Vec::with_capacity(members.len());
     // An open can take minutes, and it blocks this thread. The guard beats for the group until the open ends (7.4).
-    let open_beat = OpenBeat::start(group, heartbeats.clone(), interval);
-    // The machine devices of the first engine, in the order of its profile entry. A stage names its device by index.
-    let first_devices: Vec<DeviceId> = members
-        .first()
-        .map(|member| member.job.devices.iter().map(|device| device.id).collect())
-        .unwrap_or_default();
+    let open_beat = OpenBeat::start(group, links.heartbeats.clone(), interval);
     for index in 0..members.len() {
         // An on-demand engine opens at its first job (spec 3.3a).
         if members[index].job.placement.residency != Residency::Resident {
             continue;
         }
-        match in_place::open(&mut members[index].job, fd_store.as_ref()) {
-            Ok((engine, info)) => {
+        match in_place::open(&mut members[index].job, links.fd_store.as_ref()) {
+            Ok((engine, handles, info)) => {
                 engines[index] = engine;
+                members[index].handles = handles;
                 members[index].loaded = true;
                 opened.push(info);
             }
             Err((kind, message)) => {
-                let _ = events.send(Event::OpenFailed {
+                let _ = links.events.send(Event::OpenFailed {
                     group,
                     engine: members[index].name().to_owned(),
                     kind,
@@ -1018,38 +1009,92 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
         }
     }
     drop(open_beat);
+    let _ = links.events.send(Event::Opened { group, engines: opened });
     let names: Vec<String> = members.iter().map(|member| member.name().to_owned()).collect();
-    if members.iter().any(|member| member.loaded && member.staged()) {
-        let links = staged::StagedLinks {
-            devices: first_devices,
-            events,
-            heartbeats,
-            messages: stop,
-            own,
-            store,
-            accepting,
-            machine,
-            sets,
-        };
-        staged::serve(group, engines, opened, links, interval);
-        return;
-    }
-    let _ = events.send(Event::Opened { group, engines: opened });
-    let mut cancelled = 0;
-    let mut jobs = GroupJobs::new(group as u32, names.join("+")).machine(machine);
+    let mut plain = Plain {
+        jobs: GroupJobs::new(group as u32, names.join("+")).machine(links.machine.clone()),
+        cancelled: 0,
+    };
     // The jobs for an engine that is not loaded, or that a planned swap unloads, in order of arrival (spec 3.3a).
     let mut waiting: Vec<(JobSpec, Span)> = Vec::new();
+    loop {
+        let staged = (0..members.len()).find(|index| members[*index].loaded && members[*index].staged());
+        let exit = match staged {
+            Some(index) => staged::serve(group, index, &mut members, &mut engines, &mut waiting, &links, interval),
+            None => serve_plain(
+                group,
+                &members,
+                &mut engines,
+                &mut plain,
+                &mut waiting,
+                &links,
+                interval,
+            ),
+        };
+        match exit {
+            Exit::Stop => break,
+            Exit::Swap(plan) => {
+                let swap_links = in_place::SwapLinks {
+                    events: &links.events,
+                    heartbeats: &links.heartbeats,
+                    ledger: &links.ledger,
+                    store: links.store.as_ref(),
+                    fd_store: links.fd_store.as_ref(),
+                };
+                in_place::swap(group, &mut members, &mut engines, plan, swap_links, interval);
+                if links
+                    .heartbeats
+                    .send(WatchMessage::Beat {
+                        group,
+                        at: Instant::now(),
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }
+    }
+    drop(engines);
+}
+
+/// The scheduler state of a group with no stages. It lives across swaps: the jobs of an engine that stays loaded go
+/// on (spec 3.3a).
+struct Plain {
+    jobs: GroupJobs,
+    cancelled: usize,
+}
+
+/// Serve the jobs of a group with no loaded engine of stages, until the group stops or swaps (spec 3.3a).
+fn serve_plain(
+    group: usize,
+    members: &[Member],
+    engines: &mut [Box<dyn Engine>],
+    plain: &mut Plain,
+    waiting: &mut Vec<(JobSpec, Span)>,
+    links: &GroupLinks,
+    interval: Duration,
+) -> Exit {
+    let Plain { jobs, cancelled } = plain;
+    // The jobs that waited for an engine that is loaded now run. The others wait for the next swap.
+    for (spec, parent) in std::mem::take(waiting) {
+        if members[spec.engine].loaded {
+            jobs.add_under(spec, parent);
+        } else {
+            waiting.push((spec, parent));
+        }
+    }
     let mut pending: Option<in_place::Plan> = None;
     let beat = || WatchMessage::Beat {
         group,
         at: Instant::now(),
     };
-    'serve: loop {
+    loop {
         // A group with a job to run takes the messages that wait and does not sleep. An idle group waits (spec 7.4).
         let mut message = if jobs.idle() {
-            stop.recv_timeout(interval)
+            links.messages.recv_timeout(interval)
         } else {
-            stop.try_recv().map_err(|error| match error {
+            links.messages.try_recv().map_err(|error| match error {
                 TryRecvError::Empty => RecvTimeoutError::Timeout,
                 TryRecvError::Disconnected => RecvTimeoutError::Disconnected,
             })
@@ -1059,15 +1104,15 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
                 Ok(GroupMessage::Quantum(quantum)) => {
                     // A stop cancels each queued quantum that has not started. The running quantum went to its end
                     // before this receive (spec 10.3 step 2).
-                    if accepting.load(Ordering::SeqCst) {
-                        quantum.finish(&mut engines);
+                    if links.accepting.load(Ordering::SeqCst) {
+                        quantum.finish(engines);
                     } else {
                         quantum.cancel();
-                        cancelled += 1;
+                        *cancelled += 1;
                     }
                     // A group with steady work never waits out the interval, so it beats after each quantum (spec 7.4).
-                    if heartbeats.send(beat()).is_err() {
-                        break 'serve;
+                    if links.heartbeats.send(beat()).is_err() {
+                        return Exit::Stop;
                     }
                 }
                 // A job that arrives after the stop began is cancelled below, before it runs.
@@ -1083,29 +1128,33 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
                     if member.loaded && !unloads {
                         jobs.add_under(spec, parent);
                     } else {
+                        // The plan starts at the arrival, so a later job for an engine that unloads waits (3.3a).
+                        if pending.is_none() && links.accepting.load(Ordering::SeqCst) {
+                            pending = Some(in_place::plan(spec.engine, members, &links.ledger));
+                        }
                         waiting.push((spec, parent));
                     }
                 }
                 Ok(GroupMessage::Park(reply)) => {
-                    cancelled += jobs.cancel_all() + waiting.len();
+                    *cancelled += jobs.cancel_all() + waiting.len();
                     waiting.clear();
                     // The drain ends here. The park budget of the group starts now.
                     let _ = reply.send(ParkProgress::Draining { ended: Instant::now() });
-                    let mut report = park_loaded(&members, &mut engines, store.as_ref());
-                    report.cancelled = cancelled;
+                    let mut report = park_loaded(members, engines, links.store.as_ref());
+                    report.cancelled = *cancelled;
                     let _ = reply.send(ParkProgress::Parked(report));
-                    break 'serve;
+                    return Exit::Stop;
                 }
-                Ok(GroupMessage::Stop) | Err(RecvTimeoutError::Disconnected) => break 'serve,
+                Ok(GroupMessage::Stop) | Err(RecvTimeoutError::Disconnected) => return Exit::Stop,
                 Ok(GroupMessage::StageDone(_)) => unreachable!("a group with no stages gets no end of a stage quantum"),
                 Err(RecvTimeoutError::Timeout) => {
-                    if jobs.idle() && heartbeats.send(beat()).is_err() {
-                        break 'serve;
+                    if jobs.idle() && links.heartbeats.send(beat()).is_err() {
+                        return Exit::Stop;
                     }
                 }
             }
             // Take every message that waits, so that the scheduler sees each arrival before it chooses.
-            message = stop.try_recv().map_err(|error| match error {
+            message = links.messages.try_recv().map_err(|error| match error {
                 TryRecvError::Empty => RecvTimeoutError::Timeout,
                 TryRecvError::Disconnected => RecvTimeoutError::Disconnected,
             });
@@ -1113,13 +1162,14 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
                 break;
             }
         }
-        // A stop plans no swap. Its park cancels the jobs that wait, as it cancels queued quanta (spec 10.3).
-        let serving = accepting.load(Ordering::SeqCst);
+        // A stop plans no swap. Its park cancels the jobs that wait, as it cancels queued quanta (spec 10.3). The jobs
+        // that waited through a swap plan the next one here.
+        let serving = links.accepting.load(Ordering::SeqCst);
         if serving
             && pending.is_none()
             && let Some((spec, _)) = waiting.first()
         {
-            pending = Some(in_place::plan(spec.engine, &members, &ledger));
+            pending = Some(in_place::plan(spec.engine, members, &links.ledger));
         }
         // The swap waits until the engines that unload hold no job. Jobs of the other engines go on (spec 3.3a).
         if serving
@@ -1127,39 +1177,19 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
                 .as_ref()
                 .is_some_and(|plan| plan.unload.iter().all(|index| !jobs.holds(*index)))
         {
-            let plan = pending.take().expect("a pending swap");
-            let links = in_place::SwapLinks {
-                events: &events,
-                heartbeats: &heartbeats,
-                ledger: &ledger,
-                store: store.as_ref(),
-                fd_store: fd_store.as_ref(),
-            };
-            in_place::swap(group, &mut members, &mut engines, plan, links, interval);
-            // The jobs of a loaded engine run now. The others wait for the next swap.
-            for (spec, parent) in std::mem::take(&mut waiting) {
-                if members[spec.engine].loaded {
-                    jobs.add_under(spec, parent);
-                } else {
-                    waiting.push((spec, parent));
-                }
-            }
-            if heartbeats.send(beat()).is_err() {
-                break;
-            }
+            return Exit::Swap(pending.take().expect("a pending swap"));
         }
         if !jobs.idle() {
             if serving {
-                jobs.run_one(&mut engines);
-                if heartbeats.send(beat()).is_err() {
-                    break;
+                jobs.run_one(engines);
+                if links.heartbeats.send(beat()).is_err() {
+                    return Exit::Stop;
                 }
             } else {
-                cancelled += jobs.cancel_all();
+                *cancelled += jobs.cancel_all();
             }
         }
     }
-    drop(engines);
 }
 
 /// Park each loaded engine of a group. An engine that is not loaded holds no state (spec 3.3a).

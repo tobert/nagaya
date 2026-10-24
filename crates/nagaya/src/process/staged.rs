@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -26,26 +26,10 @@ use nagaya_sched::{
 use nagaya_telemetry::{QuantumLabels, instruments};
 use tracing::Span;
 
-use super::{Event, GroupMessage, OpenedEngine, ParkProgress, WatchMessage, guard, park_group, pin, spawn_named};
-use crate::cpu_sets::CpuSets;
+use super::in_place::{self, Exit, Member, Plan, Unloaded};
+use super::{GroupLinks, GroupMessage, ParkProgress, WatchMessage, guard, park_group, pin, spawn_named};
 use crate::evidence::{self, Machine, Watch};
 use crate::jobs::{JobBody, JobSpec, Ran};
-use crate::park::StoreMessage;
-
-/// The links of a group with stages to the rest of the process.
-pub(super) struct StagedLinks {
-    /// The machine devices of the engine, by group index (spec 2.4).
-    pub(super) devices: Vec<DeviceId>,
-    pub(super) events: Sender<Event>,
-    pub(super) heartbeats: Sender<WatchMessage>,
-    pub(super) messages: Receiver<GroupMessage>,
-    pub(super) own: Sender<GroupMessage>,
-    pub(super) store: Option<Sender<StoreMessage>>,
-    pub(super) accepting: Arc<AtomicBool>,
-    pub(super) machine: Machine,
-    /// The CPU sets, when the process makes them (spec 3.2b).
-    pub(super) sets: Option<CpuSets>,
-}
 
 /// A call that a stage thread makes on its handle for the group thread.
 type Call = Box<dyn FnOnce(&mut dyn StageHandle) + Send>;
@@ -82,18 +66,21 @@ struct StageThreads {
 }
 
 impl StageThreads {
+    /// Start a thread for each stage. `machine` holds the machine devices of the engine by group index, and `devices`
+    /// holds the group index of each stage (spec 2.4).
     fn start(
         group: usize,
         handles: Vec<Box<dyn StageHandle + Send>>,
+        machine: &[DeviceId],
         devices: &[DeviceId],
-        links: &StagedLinks,
+        links: &GroupLinks,
         interval: Duration,
     ) -> Self {
         let mut senders = Vec::with_capacity(handles.len());
         let mut threads = Vec::with_capacity(handles.len());
         for (stage, handle) in handles.into_iter().enumerate() {
             let (work_tx, work_rx) = mpsc::channel();
-            let device = *links.devices.get(devices[stage] as usize).unwrap_or_else(|| {
+            let device = *machine.get(devices[stage] as usize).unwrap_or_else(|| {
                 panic!(
                     "stage {stage} names group device {}, which the group lacks",
                     devices[stage]
@@ -896,111 +883,121 @@ fn kind_label(kind: Kind) -> &'static str {
     }
 }
 
-/// Open the stage threads of the engine, and serve the group until it stops.
+/// Serve the engine with stages at `index` of the group until the group stops or swaps (engine-abi D1, spec 3.3a).
+///
+/// The engine loads alone, so each job for another engine of the group waits, and the first one plans a swap. When the
+/// engine holds no job, the loop unloads it while its stage threads still run, ends the threads, and gives the swap.
 pub(super) fn serve(
     group: usize,
-    mut engines: Vec<Box<dyn Engine>>,
-    opened: Vec<OpenedEngine>,
-    links: StagedLinks,
+    index: usize,
+    members: &mut [Member],
+    engines: &mut [Box<dyn Engine>],
+    waiting: &mut Vec<(JobSpec, Span)>,
+    links: &GroupLinks,
     interval: Duration,
-) {
-    let refuse = |events: &Sender<Event>, name: &str, message: String| {
-        let _ = events.send(Event::OpenFailed {
-            group,
-            engine: name.to_owned(),
-            kind: crate::admission::OpenErrorKind::Other,
-            message,
-        });
-    };
-    let name = opened[0].name.clone();
-    if engines.len() != 1 {
-        refuse(
-            &links.events,
-            &name,
-            "an engine with stages has a device group of its own; the profile shares its devices".to_owned(),
-        );
-        return;
-    }
-    let mut inner = engines.pop().expect("one engine");
-    let limits = inner.limits();
-    if limits.stages.len() != 2 {
-        refuse(
-            &links.events,
-            &name,
-            format!(
-                "the process runs an engine of two stages; this one has {}. One residual buffer serves a block",
-                limits.stages.len()
-            ),
-        );
-        return;
-    }
-    let handles = match inner.stages() {
-        Some(stages) => stages.take_handles(),
-        None => Vec::new(),
-    };
-    if handles.len() != limits.stages.len() {
-        refuse(
-            &links.events,
-            &name,
-            format!(
-                "the engine declares {} stages and gave {} stage handles",
-                limits.stages.len(),
-                handles.len()
-            ),
-        );
-        return;
-    }
+) -> Exit {
+    let name = members[index].name().to_owned();
+    let limits = members[index].job.limits.clone();
+    let handles = std::mem::take(&mut members[index].handles);
+    assert_eq!(
+        handles.len(),
+        limits.stages.len(),
+        "the open of engine `{name}` gave a handle for each stage"
+    );
+    let machine: Vec<DeviceId> = members[index].job.devices.iter().map(|device| device.id).collect();
     let devices: Vec<DeviceId> = limits.stages.iter().map(|stage| stage.device).collect();
-    let threads = StageThreads::start(group, handles, &devices, &links, interval);
-    let mut engines: Vec<Box<dyn Engine>> = vec![Box::new(StagedEngine {
+    let threads = StageThreads::start(group, handles, &machine, &devices, links, interval);
+    let inner = std::mem::replace(&mut engines[index], Unloaded::of(&members[index]));
+    engines[index] = Box::new(StagedEngine {
         inner,
         limits: limits.clone(),
         senders: threads.senders.clone(),
-    })];
-    let names = vec![name.clone()];
-    let _ = links.events.send(Event::Opened { group, engines: opened });
-    let mut jobs = StagedJobs::new(group as u32, name, &limits, links.machine.clone());
+    });
+    let mut jobs = StagedJobs::new(group as u32, name.clone(), &limits, links.machine.clone());
+    // The jobs that waited for this engine run now. The others wait for the next swap.
+    for (spec, parent) in std::mem::take(waiting) {
+        if spec.engine == index {
+            jobs.add(spec, parent, engines, &threads);
+        } else {
+            waiting.push((spec, parent));
+        }
+    }
+    let mut pending: Option<Plan> = None;
     let mut cancelled = 0;
     let beat = || WatchMessage::Beat {
         group,
         at: Instant::now(),
     };
-    loop {
+    let exit = loop {
         match links.messages.recv_timeout(interval) {
             Ok(GroupMessage::Quantum(quantum)) => {
                 if links.accepting.load(Ordering::SeqCst) {
-                    quantum.finish(&mut engines);
+                    quantum.finish(engines);
                 } else {
                     quantum.cancel();
                     cancelled += 1;
                 }
             }
-            Ok(GroupMessage::Job(spec, parent)) => jobs.add(spec, parent, &mut engines, &threads),
-            Ok(GroupMessage::StageDone(done)) => jobs.stage_done(done, &mut engines, &threads),
+            Ok(GroupMessage::Job(spec, parent)) => {
+                assert!(
+                    spec.engine < members.len(),
+                    "a job names engine {} of group {group}, which has {} engines",
+                    spec.engine,
+                    members.len()
+                );
+                if spec.engine == index && pending.is_none() {
+                    jobs.add(spec, parent, engines, &threads);
+                } else {
+                    // This loop takes one message at a time and plans after it, so a later job waits (3.3a).
+                    waiting.push((spec, parent));
+                }
+            }
+            Ok(GroupMessage::StageDone(done)) => jobs.stage_done(done, engines, &threads),
             Ok(GroupMessage::Park(reply)) => {
-                cancelled += jobs.cancel_all();
+                cancelled += jobs.cancel_all() + waiting.len();
+                waiting.clear();
                 // A park call waits on each stage thread for the stage quantum before it.
                 let _ = reply.send(ParkProgress::Draining { ended: Instant::now() });
-                let mut report = park_group(&names, &mut engines, links.store.as_ref());
+                let mut report = park_group(
+                    std::slice::from_ref(&name),
+                    &mut engines[index..=index],
+                    links.store.as_ref(),
+                );
                 report.cancelled = cancelled;
                 let _ = reply.send(ParkProgress::Parked(report));
-                break;
+                break Exit::Stop;
             }
-            Ok(GroupMessage::Stop) | Err(RecvTimeoutError::Disconnected) => break,
+            Ok(GroupMessage::Stop) | Err(RecvTimeoutError::Disconnected) => break Exit::Stop,
             Err(RecvTimeoutError::Timeout) => {}
         }
-        if !links.accepting.load(Ordering::SeqCst) && !jobs.idle() {
+        let serving = links.accepting.load(Ordering::SeqCst);
+        if !serving && !jobs.idle() {
             cancelled += jobs.cancel_all();
         }
-        if links.heartbeats.send(beat()).is_err() {
-            break;
+        if serving
+            && pending.is_none()
+            && let Some((spec, _)) = waiting.first()
+        {
+            pending = Some(in_place::plan(spec.engine, members, &links.ledger));
         }
+        if serving && pending.is_some() && jobs.idle() {
+            // The park reads the parts through the stage threads, so the engine unloads before the threads end.
+            in_place::unload(index, members, engines, links.store.as_ref(), links.fd_store.as_ref());
+            break Exit::Swap(pending.take().expect("a pending swap"));
+        }
+        if links.heartbeats.send(beat()).is_err() {
+            break Exit::Stop;
+        }
+    };
+    // The engine holds clones of the senders, so it drops first. A swap unloaded it already. Each stage thread ends
+    // its quantum, then stops when its sender drops.
+    if members[index].loaded {
+        drop(std::mem::replace(&mut engines[index], Unloaded::of(&members[index])));
     }
-    // The stage threads stop when their senders drop. Each one ends its quantum first.
-    drop(engines);
     let StageThreads { senders, handles } = threads;
     drop(senders);
     for handle in handles {
         let _ = handle.join();
     }
+    exit
 }

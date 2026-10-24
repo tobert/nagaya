@@ -9,7 +9,7 @@ use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use nagaya_abi::{Capability, Engine, Identity, Limits, PassError, PassOut, Segment, Tap};
+use nagaya_abi::{Capability, Engine, Identity, Limits, PassError, PassOut, Segment, StageHandle, Tap};
 use nagaya_ledger::LedgerError;
 use nagaya_telemetry::{EngineState, instruments};
 
@@ -22,6 +22,8 @@ use crate::park::StoreMessage;
 pub(super) struct Member {
     pub(super) job: GroupJob,
     pub(super) loaded: bool,
+    /// The stage handles of a loaded engine with stages, from its open until its stage threads take them.
+    pub(super) handles: Vec<Box<dyn StageHandle + Send>>,
 }
 
 impl Member {
@@ -78,6 +80,14 @@ impl Engine for Unloaded {
 pub(super) struct Plan {
     pub(super) load: Vec<usize>,
     pub(super) unload: Vec<usize>,
+}
+
+/// How a serve loop of a group ended.
+pub(super) enum Exit {
+    /// The group stops.
+    Stop,
+    /// The group swaps by the plan. A serve loop of stages unloaded its own engine before it ended.
+    Swap(Plan),
 }
 
 /// Ask the ledger thread whether a swap fits. It changes nothing.
@@ -180,27 +190,10 @@ pub(super) fn swap(
     let beat = OpenBeat::start(group, links.heartbeats.clone(), interval);
     let instruments = instruments();
     for &index in &plan.unload {
-        let name = members[index].name().to_owned();
-        instruments.engine_state(&name, EngineState::Draining);
-        let mut report = ParkReport::default();
-        park::park_engine(&name, engines[index].as_mut(), links.store, &mut report);
-        if !report.failures.is_empty() {
-            panic!(
-                "the swap cannot park the states of engine `{name}`: {}",
-                report.failures.join("; ")
-            );
+        // A serve loop of stages unloads its engine while its stage threads still run.
+        if members[index].loaded {
+            unload(index, members, engines, links.store, links.fd_store);
         }
-        // An fd in systemd's store holds the device memory of its part (spec 3.3a).
-        handoff::remove_arena(&members[index].job, links.fd_store);
-        // The drop closes the engine (engine-abi "`close` in Rust").
-        engines[index] = Unloaded::of(&members[index]);
-        members[index].loaded = false;
-        instruments.engine_state(&name, EngineState::Unloaded);
-        tracing::info!(
-            "engine `{name}` unloaded: parked {} states ({} bytes)",
-            report.states,
-            report.bytes
-        );
     }
     span.record("unload_ms", started.elapsed().as_millis() as u64);
     let (reply, answer) = mpsc::channel();
@@ -220,9 +213,10 @@ pub(super) fn swap(
     for &index in &plan.load {
         let name = members[index].name().to_owned();
         instruments.engine_state(&name, EngineState::Loading);
-        let (engine, opened) = open(&mut members[index].job, links.fd_store)
+        let (engine, handles, opened) = open(&mut members[index].job, links.fd_store)
             .unwrap_or_else(|(_, message)| panic!("the swap cannot open engine `{name}`: {message}"));
         engines[index] = engine;
+        members[index].handles = handles;
         members[index].loaded = true;
         instruments.engine_state(&name, EngineState::Ready);
         if let Some(handoff) = opened.handoff {
@@ -245,12 +239,51 @@ pub(super) fn swap(
     });
 }
 
-/// Open the engine of `job` and check its limits against the admitted limits, as the start does (spec 10.2, 10.4).
-pub(super) fn open(
-    job: &mut GroupJob,
+/// The stage handles and the opened engine of [`open`].
+type Open = (Box<dyn Engine>, Vec<Box<dyn StageHandle + Send>>, OpenedEngine);
+
+/// Unload the engine at `index`: park its states, remove its arena fds from systemd's store, and drop it (spec 3.3a).
+///
+/// An engine with stages parks through its stage threads, so its serve loop calls this before the threads end. A
+/// part that cannot be parked is a crash (spec 8.5).
+pub(super) fn unload(
+    index: usize,
+    members: &mut [Member],
+    engines: &mut [Box<dyn Engine>],
+    store: Option<&Sender<StoreMessage>>,
     fd_store: Option<&FdStore>,
-) -> Result<(Box<dyn Engine>, OpenedEngine), (OpenErrorKind, String)> {
-    let (engine, handoff) = handoff::open(job, fd_store).map_err(|error| (error.kind, error.to_string()))?;
+) {
+    let instruments = instruments();
+    let name = members[index].name().to_owned();
+    instruments.engine_state(&name, EngineState::Draining);
+    let mut report = ParkReport::default();
+    park::park_engine(&name, engines[index].as_mut(), store, &mut report);
+    if !report.failures.is_empty() {
+        panic!(
+            "the swap cannot park the states of engine `{name}`: {}",
+            report.failures.join("; ")
+        );
+    }
+    // An fd in systemd's store holds the device memory of its part (spec 3.3a).
+    handoff::remove_arena(&members[index].job, fd_store);
+    // The drop closes the engine (engine-abi "`close` in Rust").
+    engines[index] = Unloaded::of(&members[index]);
+    members[index].handles.clear();
+    members[index].loaded = false;
+    instruments.engine_state(&name, EngineState::Unloaded);
+    tracing::info!(
+        "engine `{name}` unloaded: parked {} states ({} bytes)",
+        report.states,
+        report.bytes
+    );
+}
+
+/// Open the engine of `job` and check its limits against the admitted limits, as the start does (spec 10.2, 10.4).
+///
+/// An engine with stages gives its stage handles here: the process runs an engine of two stages, with one handle for
+/// each stage (engine-abi D1).
+pub(super) fn open(job: &mut GroupJob, fd_store: Option<&FdStore>) -> Result<Open, (OpenErrorKind, String)> {
+    let (mut engine, handoff) = handoff::open(job, fd_store).map_err(|error| (error.kind, error.to_string()))?;
     let opened_limits = engine.limits();
     if opened_limits != job.limits {
         // A part size is the shape and the element type of a part. Any other difference is a crash (spec 10.4).
@@ -273,6 +306,29 @@ pub(super) fn open(
             format!("the limits of the engine break a rule: {message}"),
         ));
     }
+    let mut handles = Vec::new();
+    if opened_limits.capabilities.contains(&Capability::Stages) {
+        if opened_limits.stages.len() != 2 {
+            return Err((
+                OpenErrorKind::Other,
+                format!(
+                    "the process runs an engine of two stages; this one has {}. One residual buffer serves a block",
+                    opened_limits.stages.len()
+                ),
+            ));
+        }
+        handles = engine.stages().map(|stages| stages.take_handles()).unwrap_or_default();
+        if handles.len() != opened_limits.stages.len() {
+            return Err((
+                OpenErrorKind::Other,
+                format!(
+                    "the engine declares {} stages and gave {} stage handles",
+                    opened_limits.stages.len(),
+                    handles.len()
+                ),
+            ));
+        }
+    }
     let opened = OpenedEngine {
         name: job.placement.name.clone(),
         thread: thread::current().id(),
@@ -280,5 +336,5 @@ pub(super) fn open(
         limits: opened_limits,
         handoff,
     };
-    Ok((engine, opened))
+    Ok((engine, handles, opened))
 }

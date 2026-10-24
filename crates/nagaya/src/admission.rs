@@ -682,6 +682,29 @@ fn check_residency(profile: &PlacementProfile, planned: &[AdmittedEngine]) -> Re
         why,
     };
     let groups = crate::placement::device_groups(profile);
+    // An engine with stages loads alone (engine-abi D1), so the other engines of its group are on demand. The serve
+    // loop of stages serves one engine.
+    for group in &groups {
+        let staged = group.engines.iter().find(|index| {
+            profile.engines[**index].residency == Residency::Resident
+                && planned[**index].limits.capabilities.contains(&Capability::Stages)
+        });
+        if let Some(&staged) = staged
+            && let Some(&other) = group
+                .engines
+                .iter()
+                .find(|index| **index != staged && profile.engines[**index].residency == Residency::Resident)
+        {
+            return Err(fail(
+                &profile.engines[other].name,
+                format!(
+                    "the resident engine `{}` has stages, and it loads alone; make this engine \
+                     `residency = \"on_demand\"`, or move it to other devices",
+                    profile.engines[staged].name
+                ),
+            ));
+        }
+    }
     for (index, placement) in profile.engines.iter().enumerate() {
         let name = placement.name.as_str();
         match (placement.residency, placement.idle_unload_s) {
