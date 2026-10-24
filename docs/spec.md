@@ -50,8 +50,8 @@ Goals for v0:
 Not in v0:
 
 - One model split across machines. The links are gigabit today (README, "Between machines").
-- Engines that load and unload in place while the process runs. In v0, a change of engines restarts the process
-  (3.3).
+- Engines that load and unload in place for a profile `PUT`. A `PUT` that changes engines still restarts the
+  process (3.3). Milestone 16 builds the swap in place on demand (3.3, Decided 2026-10-24).
 - Cooperative yields inside a pass (D8).
 - Tensor transfer between engines (13.3).
 
@@ -457,6 +457,14 @@ inside a process today: "the HIP runtime's own teardown segfaults" (mk `service/
 `PUT /nagaya/v1/profile` changes the profile, the nagaya persists the profile and stops as in 10.3. It keeps its
 arenas in the file-descriptor store (10.2) and exits with code 4, and systemd starts it again. Later, an engine whose
 `close()` is safe loads and unloads in place (README door 1).
+
+**Swaps in place on demand.** Decided 2026-10-24 (Amy, by interview). An engine whose `close()` is safe loads and
+unloads in place, with no restart. The nagaya swaps by itself. A request for an engine that is not loaded starts
+the swap, and the request waits for the load (Amy: "Nagaya swaps itself"). The placement profile chooses the
+devices of each engine.
+
+Reason: voice and image engines can then use the B70 cards when Gemma 4 is idle. Milestone 16
+builds it (`AGENTS.md`).
 
 **Open:** Do the GPU queues of an idle engine slow the other engines on its device? mk has a note that its idle
 queues slow another process, but we did not find the source. A measurement answers the question.

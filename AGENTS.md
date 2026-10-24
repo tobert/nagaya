@@ -85,7 +85,7 @@ in a lock: one thread owns it (3.2).
 
 Do them in this order. Each milestone ends with all checks green and one or more commits. Milestones 1 to 14 are
 done, and `docs/history.md` keeps their full text, and the merges where the run recorded them. Milestone 15
-is done on gfx1151host. Milestone 15s is done except the cutover on b70host. Milestone 16 is next on gfx1151host.
+is done on gfx1151host, and milestone 15s is done on b70host. Milestones 16 and 17 run now, on b70host.
 
 1. **Workspace.** The Cargo workspace, its crates, `rustfmt.toml` and the dev profile. Done.
 2. **Engine trait.** The ABI core and capabilities as traits, with a fake engine and a broken fake for the gates. Done.
@@ -180,7 +180,55 @@ is done on gfx1151host. Milestone 15s is done except the cutover on b70host. Mil
     on `198.51.100.10:8091` with Gemma 4 on the two B70 cards, ready after 7 s. `mkviolet.service` stays disabled.
     `gogi-conformance` at gogi `a07d85e` gave 266 ok, 0 FAIL and 11 skip. The kernel log has no hang or reset.
     b70host has no kaijutsu gate config, so the gate check has no target here.
-16. Stop and ask Amy for the next milestone.
+16. **Engine swap in place.** The nagaya loads and unloads an engine while it runs, with no restart. Amy decided
+    this on 2026-10-24, by interview, so that voice and image engines can use the B70 cards when Gemma 4 is idle.
+    - **On demand:** the nagaya swaps by itself. A request for an engine that is not loaded starts the swap, and the
+      request waits for the load (Amy: "Nagaya swaps itself").
+    - **Order:** the swap is milestone 16, and voice is milestone 17.
+    - **Cards:** senpai may stop and start `nagaya.service` on b70host for GPU tests in milestones 16 and 17. Write
+      each stop and start in `signoff.md`.
+
+    Do the steps in this order:
+    1. **Spec.** Write the swap rules into spec 1, 2.4, 3.3, 4, 10 and 11, and into engine-abi `close`. Amy decides
+       each Proposed note.
+    2. **Close.** Measure `close` on the Gemma 4 engine on the B70 cards. Open it, run a pass and close it many
+       times, and check the free device memory each time. Declare `close` when the memory comes back.
+    3. **Ledger.** Release the terms of one engine, and admit one engine into a running ledger.
+    4. **Group.** Unload and load an engine on its group thread, with the fake engines first.
+    5. **On demand.** A job for an unloaded engine starts the swap, and an idle engine swaps back. Test it with the
+       fake engines.
+    6. **Routes.** Show the states `loading` and `unloaded` on the HTTP routes and on the status feed.
+    7. **Gates and deploy.** Run the gates on the cards, then deploy on b70host.
+17. **Voice.** Serve Qwen3-TTS from an engine on the B70 cards. Amy chose the model on 2026-10-24 after she
+    listened to CPU samples. She decided these rules on 2026-10-24, by interview:
+    - **Weights:** `Qwen3-TTS-12Hz-1.7B-VoiceDesign` only. A text prompt designs each voice.
+    - **Requests:** one request is a line or a paragraph. The agent orders the requests and paces them. The nagaya
+      has no stream for speech. A speech job can wait behind other work: "that's by design, it should be getting
+      enough back to stay ahead".
+    - **Replies:** the reply sends the audio in chunks while the frames decode.
+    - **Route:** `POST /v1/audio/speech`, in the shape of OpenAI's speech API.
+    - **Kernels:** the opcode interpreter of the Gemma 4 engine becomes a module that both engines use. The speech
+      engine adds its ops and builds its own task rings.
+    - **Codec:** the codec decoder runs on the card from the start.
+    - **Placement:** the speech engine swaps in on demand (milestone 16). The placement profile chooses its card.
+    - **Cards in one group:** a pass of one engine can run on one card while a stage of another engine runs on the
+      other card. Write this rule now (Amy: "Yes, design it now").
+    - **Voice drift:** each request designs its voice again, so the voice drifts a little between requests. Amy:
+      "a bit of drift, hmm, inevitable for now, let's let it be and fix up later".
+
+    The model name in the crate names is `qwen3tts`. Do the steps in this order:
+    1. **Spec.** Write the speech rules into the docs. They are the route, the outputs of the engine, the sampler of
+       the audio codes, and the passes on separate cards (engine-abi D1). Amy decides each Proposed note.
+    2. **Oracle fixture.** Write the fixed inputs and outputs from the Python reference once, on the CPU (8.3).
+    3. **Family.** Write `nagaya-text-qwen3tts`: the tokenizer and the template of a speech request.
+    4. **Shared interpreter.** Move the interpreter of the Gemma 4 engine into a shared module. The Gemma 4 gates must
+       give the same bits.
+    5. **Ops.** Add the ops of the talker, the code predictor, the sampler and the codec decoder, each with a test.
+    6. **Engine.** Write `nagaya-mk-qwen3tts-bmg` and its `Engine` trait. Run the conformance gates and the oracle.
+    7. **Route.** Serve `POST /v1/audio/speech`, with the audio in chunks.
+    8. **Cards in one group.** Build the passes on separate cards in one group.
+    9. **Deploy.** Add the speech engine to the profile of b70host as an engine on demand.
+18. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
 
@@ -214,6 +262,7 @@ is done on gfx1151host. Milestone 15s is done except the cutover on b70host. Mil
 - The nagaya must be the only compute client of the B70 cards (spec 3.1). Amy stopped and disabled `mkviolet.service`
   on 2026-10-21 ("cards and cpus are all yours"). Before you run GPU tests, check that it is inactive:
   `systemctl --user is-active mkviolet.service nagaya.service`. If either one runs, stop and report.
+  In milestones 16 and 17, senpai may stop `nagaya.service` for a GPU test, and start it again after.
 - The iGPU (gfx1036) drives the display. Do not run work on it.
 - GPU tests read the Gemma 4 checkpoint directory from `GEMMA4_MODEL_DIR` (Decided 2026-10-22). The
   directory holds `config.json`, the safetensors shards and `tokenizer.json`. Do not put the path in code.
