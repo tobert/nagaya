@@ -504,6 +504,8 @@ its fds stay in the store frees no device memory.
 
 - An on-demand engine unloads after `idle_unload_s` seconds with no job. The key is in its profile entry, and the
   default is 60. Then the group loads each resident engine of the group that is not loaded.
+- The key is at least 1, and only an on-demand entry has it. Admission refuses any other entry that names it.
+  Reason: 0 unloads the engine after each job, and a key on a resident engine does nothing.
 - A job for a resident engine that is not loaded starts a swap, as for any engine.
 - A swap is one span `nagaya.swap`, with the engines that unload, the engine that loads, and each step's time (9.2).
 
