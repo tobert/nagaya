@@ -946,6 +946,7 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
             own,
             store,
             accepting,
+            machine,
             sets,
         };
         staged::serve(group, engines, opened, links, interval);

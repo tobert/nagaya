@@ -276,3 +276,66 @@ fn the_gtt_counter_sums_the_devices() {
     std::fs::create_dir_all(root.path().join("sys/class/drm/card1-DP-1")).unwrap();
     assert_eq!(machine(root.path()).read().unwrap().gtt_used_bytes, Some(7 * GIB));
 }
+
+#[test]
+fn read_gives_the_xe_memory_and_throttle_counters_of_spec_9_6() {
+    let root = tempfile::tempdir().unwrap();
+    tree(root.path(), None, 48 * 1024 * 1024, None, &full_vmstat(1, 2, 3, 4));
+    let write = |path: &str, text: &str| {
+        let path = root.path().join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write(
+        &format!("proc/{PID}/fdinfo/10"),
+        "pos:\t0\nflags:\t02000002\ndrm-driver:\txe\ndrm-client-id:\t7\ndrm-total-system:\t1048576 KiB\ndrm-resident-system:\t524288 KiB\ndrm-total-vram0:\t4 GiB\ndrm-resident-vram0:\t4 GiB\n",
+    );
+    // A duplicate fd of the same DRM client must not be counted twice.
+    write(
+        &format!("proc/{PID}/fdinfo/11"),
+        "pos:\t0\ndrm-driver:\txe\ndrm-client-id:\t7\ndrm-total-system:\t1048576 KiB\ndrm-resident-system:\t524288 KiB\ndrm-total-vram0:\t4 GiB\ndrm-resident-vram0:\t4 GiB\n",
+    );
+    // A second DRM client on another card adds to the totals.
+    write(
+        &format!("proc/{PID}/fdinfo/12"),
+        "pos:\t0\ndrm-driver:\txe\ndrm-client-id:\t8\ndrm-total-system:\t2097152 KiB\ndrm-resident-system:\t1048576 KiB\ndrm-total-vram0:\t2 GiB\ndrm-resident-vram0:\t2 GiB\n",
+    );
+    // A regular file fdinfo has no drm-driver and is ignored.
+    write(&format!("proc/{PID}/fdinfo/3"), "pos:\t0\nflags:\t0100000\n");
+
+    write("sys/class/drm/card1/device/tile0/gt0/freq0/throttle/status", "0\n");
+    write("sys/class/drm/card1/device/tile0/gt0/freq0/throttle/reasons", "none\n");
+    write("sys/class/drm/card2/device/tile0/gt0/freq0/throttle/status", "1\n");
+    write(
+        "sys/class/drm/card2/device/tile0/gt0/freq0/throttle/reasons",
+        "thermal\n",
+    );
+
+    let before = machine(root.path()).read().unwrap();
+    assert_eq!(before.xe_memory_bytes.get("drm-total-system"), Some(&(3 * GIB)));
+    assert_eq!(before.xe_memory_bytes.get("drm-resident-system"), Some(&(3 * GIB / 2)));
+    assert_eq!(before.xe_memory_bytes.get("drm-total-vram0"), Some(&(6 * GIB)));
+    assert_eq!(before.xe_throttle.get("card1/tile0/gt0"), Some(&(0, "none".to_owned())));
+    assert_eq!(
+        before.xe_throttle.get("card2/tile0/gt0"),
+        Some(&(1, "thermal".to_owned()))
+    );
+
+    write(
+        &format!("proc/{PID}/fdinfo/12"),
+        "pos:\t0\ndrm-driver:\txe\ndrm-client-id:\t8\ndrm-total-system:\t2097152 KiB\ndrm-resident-system:\t2097152 KiB\ndrm-total-vram0:\t3 GiB\ndrm-resident-vram0:\t3 GiB\n",
+    );
+    write("sys/class/drm/card1/device/tile0/gt0/freq0/throttle/status", "1\n");
+    write(
+        "sys/class/drm/card1/device/tile0/gt0/freq0/throttle/reasons",
+        "prochot\n",
+    );
+    let after = machine(root.path()).read().unwrap();
+    let change = after.change_since(&before).unwrap().to_string();
+    assert!(change.contains("Xe drm-resident-system 1.5 -> 2.5 GiB"), "{change}");
+    assert!(change.contains("Xe drm-total-vram0 6.0 -> 7.0 GiB"), "{change}");
+    assert!(
+        change.contains("Xe card1/tile0/gt0 throttle 0 -> 1 (prochot)"),
+        "{change}"
+    );
+}

@@ -8,11 +8,14 @@
 //! [`Watch::failed`] with the failure. Each `watch` reads four files, so a caller may skip it for quanta that run
 //! many times in one second, such as decode.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
 const GIB: f64 = (1u64 << 30) as f64;
+const MIB: u64 = 1u64 << 20;
+const KIB: u64 = 1u64 << 10;
 
 /// Why the counters cannot be read or compared.
 #[derive(Debug)]
@@ -89,6 +92,10 @@ pub struct Counters {
     pub pswpout: u64,
     /// `pgscan_direct` of `/proc/vmstat`.
     pub pgscan_direct: u64,
+    /// The `drm-total-*` and `drm-resident-*` bytes of the `xe` DRM clients of this process (spec 9.6).
+    pub xe_memory_bytes: BTreeMap<String, u64>,
+    /// The throttle status and reasons of each Xe GT (`<card>/<tile>/<gt>` -> `(status, reasons)`).
+    pub xe_throttle: BTreeMap<String, (u64, String)>,
 }
 
 /// What the counters did between two reads.
@@ -98,6 +105,8 @@ pub struct Change {
     mem_available: (u64, u64),
     gtt: Option<(u64, u64)>,
     vmstat: [(&'static str, u64); 4],
+    xe_memory: BTreeMap<String, (u64, u64)>,
+    xe_throttle: BTreeMap<String, (u64, u64, String)>,
 }
 
 impl fmt::Display for Change {
@@ -119,6 +128,17 @@ impl fmt::Display for Change {
                 before as f64 / GIB,
                 after as f64 / GIB
             )?;
+        }
+        for (name, (before, after)) in &self.xe_memory {
+            write!(
+                formatter,
+                "; Xe {name} {:.1} -> {:.1} GiB",
+                *before as f64 / GIB,
+                *after as f64 / GIB
+            )?;
+        }
+        for (gt, (before, after, reasons)) in &self.xe_throttle {
+            write!(formatter, "; Xe {gt} throttle {before} -> {after} ({reasons})")?;
         }
         for (name, moved) in self.vmstat {
             write!(formatter, "; {name} +{moved}")?;
@@ -148,6 +168,16 @@ impl Counters {
             (Some(before), Some(after)) => Some((before, after)),
             _ => None,
         };
+        let mut xe_memory = BTreeMap::new();
+        for (name, after) in &self.xe_memory_bytes {
+            let before_bytes = before.xe_memory_bytes.get(name).copied().unwrap_or(0);
+            xe_memory.insert(name.clone(), (before_bytes, *after));
+        }
+        let mut xe_throttle = BTreeMap::new();
+        for (gt, (after_status, after_reasons)) in &self.xe_throttle {
+            let before_status = before.xe_throttle.get(gt).map_or(0, |(status, _)| *status);
+            xe_throttle.insert(gt.clone(), (before_status, *after_status, after_reasons.clone()));
+        }
         Ok(Change {
             kfd_evicted_ms,
             mem_available: (before.mem_available_bytes, self.mem_available_bytes),
@@ -167,6 +197,8 @@ impl Counters {
                     grown("pgscan_direct", before.pgscan_direct, self.pgscan_direct)?,
                 ),
             ],
+            xe_memory,
+            xe_throttle,
         })
     }
 }
@@ -191,6 +223,29 @@ fn read_number(path: &Path) -> Result<u64, EvidenceError> {
         path: path.to_owned(),
         text,
     })
+}
+
+fn parse_drm_bytes(path: &Path, text: &str) -> Result<u64, EvidenceError> {
+    let mut parts = text.split_whitespace();
+    let Some(number) = parts.next().and_then(|part| part.parse::<u64>().ok()) else {
+        return Err(EvidenceError::Parse {
+            path: path.to_owned(),
+            text: text.to_owned(),
+        });
+    };
+    let scale = match parts.next() {
+        None | Some("B") => 1,
+        Some("KiB") | Some("kB") => KIB,
+        Some("MiB") => MIB,
+        Some("GiB") => 1u64 << 30,
+        Some(_) => {
+            return Err(EvidenceError::Parse {
+                path: path.to_owned(),
+                text: text.to_owned(),
+            });
+        }
+    };
+    Ok(number.saturating_mul(scale))
 }
 
 impl Machine {
@@ -230,6 +285,8 @@ impl Machine {
             pgmigrate_success: find("pgmigrate_success").expect("checked above"),
             pswpout: find("pswpout").expect("checked above"),
             pgscan_direct: find("pgscan_direct").expect("checked above"),
+            xe_memory_bytes: self.xe_memory()?,
+            xe_throttle: self.xe_throttle()?,
         })
     }
 
@@ -310,6 +367,126 @@ impl Machine {
             total = Some(total.unwrap_or(0) + read_number(&file)?);
         }
         Ok(total)
+    }
+
+    /// The `drm-total-*` and `drm-resident-*` bytes of each `xe` DRM client in `/proc/<pid>/fdinfo`, summed once per
+    /// `drm-client-id` (spec 9.6).
+    fn xe_memory(&self) -> Result<BTreeMap<String, u64>, EvidenceError> {
+        let directory = self.root.join(format!("proc/{}/fdinfo", self.pid));
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+            Err(source) => {
+                return Err(EvidenceError::Io {
+                    path: directory,
+                    source,
+                });
+            }
+        };
+        let mut seen_clients = BTreeSet::new();
+        let mut totals = BTreeMap::new();
+        for entry in entries {
+            let entry = entry.map_err(|source| EvidenceError::Io {
+                path: directory.clone(),
+                source,
+            })?;
+            let path = entry.path();
+            let text = match std::fs::read_to_string(&path) {
+                Ok(text) => text,
+                // An fd can close while the read walks `/proc/<pid>/fdinfo`.
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(source) => return Err(EvidenceError::Io { path, source }),
+            };
+            let mut is_xe = false;
+            let mut client_id = None;
+            let mut pairs = Vec::new();
+            for line in text.lines() {
+                let Some((key, raw)) = line.split_once(':') else {
+                    continue;
+                };
+                let key = key.trim();
+                let value = raw.trim();
+                if key == "drm-driver" && value == "xe" {
+                    is_xe = true;
+                } else if key == "drm-client-id" {
+                    client_id = Some(value.to_owned());
+                } else if key.starts_with("drm-total-") || key.starts_with("drm-resident-") {
+                    pairs.push((key.to_owned(), value.to_owned()));
+                }
+            }
+            if !is_xe {
+                continue;
+            }
+            if let Some(id) = client_id
+                && !seen_clients.insert(id)
+            {
+                continue;
+            }
+            for (key, value) in pairs {
+                let bytes = parse_drm_bytes(&path, &value)?;
+                *totals.entry(key).or_insert(0) += bytes;
+            }
+        }
+        Ok(totals)
+    }
+
+    /// The throttle status and reasons of each Xe GT under `/sys/class/drm/card*/device/tile*/gt*/freq0/throttle`.
+    fn xe_throttle(&self) -> Result<BTreeMap<String, (u64, String)>, EvidenceError> {
+        let directory = self.root.join("sys/class/drm");
+        let cards = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+            Err(source) => {
+                return Err(EvidenceError::Io {
+                    path: directory,
+                    source,
+                });
+            }
+        };
+        let mut out = BTreeMap::new();
+        for card in cards {
+            let card = card.map_err(|source| EvidenceError::Io {
+                path: directory.clone(),
+                source,
+            })?;
+            let card_name = card.file_name().to_string_lossy().into_owned();
+            if !card_name.starts_with("card") || card_name.contains('-') {
+                continue;
+            }
+            let device_dir = card.path().join("device");
+            let Ok(tiles) = std::fs::read_dir(&device_dir) else {
+                continue;
+            };
+            for tile in tiles.flatten() {
+                let tile_name = tile.file_name().to_string_lossy().into_owned();
+                if !tile_name.starts_with("tile") {
+                    continue;
+                }
+                let Ok(gts) = std::fs::read_dir(tile.path()) else {
+                    continue;
+                };
+                for gt in gts.flatten() {
+                    let gt_name = gt.file_name().to_string_lossy().into_owned();
+                    if !gt_name.starts_with("gt") {
+                        continue;
+                    }
+                    let throttle = gt.path().join("freq0/throttle");
+                    let status_path = throttle.join("status");
+                    if !status_path.is_file() {
+                        continue;
+                    }
+                    let status = read_number(&status_path)?;
+                    let reasons_path = throttle.join("reasons");
+                    let reasons = if reasons_path.is_file() {
+                        read_text(&reasons_path)?.trim().to_owned()
+                    } else {
+                        String::new()
+                    };
+                    out.insert(format!("{card_name}/{tile_name}/{gt_name}"), (status, reasons));
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Read the counters before a quantum. A read that fails is kept, and [`Watch::failed`] names it.

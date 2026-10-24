@@ -211,3 +211,84 @@ fn a_stop_after_a_stage_panic_ends_with_exit_one_within_the_budget() {
     assert!(started.elapsed() < Duration::from_secs(6), "the stop returned late");
     assert_eq!(report.exit_code(), ExitCode::Crash, "{report:?}");
 }
+
+#[test]
+fn a_build_and_a_generation_on_two_stages_record_wait_and_run_durations_and_quantum_spans() {
+    let capture = nagaya_telemetry::testing::Capture::start(Vec::new());
+    let two = FeedFixture::new(2);
+    two.service.build(&context(), false, Default::default()).unwrap();
+    two.service.generate(&generation(), None).unwrap();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let wait = capture.metric("nagaya.quantum.wait.duration");
+        let run = capture.metric("nagaya.quantum.run.duration");
+        let wait_count: u64 = wait.iter().map(|point| point.count).sum();
+        let run_count: u64 = run.iter().map(|point| point.count).sum();
+        let jobs: Vec<_> = capture
+            .spans()
+            .into_iter()
+            .filter(|span| span.name == "nagaya.job")
+            .collect();
+        if wait_count == run_count && wait_count > 0 && jobs.len() >= 2 {
+            let quanta: Vec<_> = capture
+                .spans()
+                .into_iter()
+                .filter(|span| span.name == "nagaya.quantum")
+                .collect();
+            assert!(!quanta.is_empty(), "the staged group made no nagaya.quantum span");
+            for span in &quanta {
+                let kind = span
+                    .attributes
+                    .iter()
+                    .find(|item| item.key.as_str() == "kind")
+                    .map(|item| item.value.to_string());
+                assert_ne!(kind.as_deref(), Some("decode"));
+                let has_parent = jobs.iter().any(|job| job.span_context.span_id() == span.parent_span_id);
+                assert!(has_parent, "quantum span lacks a job parent: {span:?}");
+            }
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the staged quanta never matched: wait={wait_count}, run={run_count}, jobs={}",
+            jobs.len()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_failed_stage_quantum_logs_the_failure_and_the_machine_evidence() {
+    let root = tempfile::tempdir().unwrap();
+    let write = |path: &str, text: &str| {
+        let path = root.path().join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write("proc/meminfo", "MemAvailable:   1048576 kB\n");
+    write(
+        "proc/vmstat",
+        "compact_stall 10\npgmigrate_success 0\npswpout 0\npgscan_direct 0\n",
+    );
+    let factory = FeedFactory::new(2);
+    factory.fail_stage.store(1, Ordering::SeqCst);
+    let lines = nagaya_telemetry::testing::log_lines(|| {
+        let mut fixture = FeedFixture::with_machine(
+            factory.clone(),
+            Duration::from_secs(10),
+            nagaya::evidence::Machine::at(root.path(), 4242),
+        );
+        let result = fixture.service.build(&context(), false, Default::default());
+        assert!(result.is_err(), "stage 1 failed the build");
+        fixture.process.stop(Duration::from_secs(5), &SignalFlag::new());
+    });
+    let failures: Vec<_> = lines
+        .into_iter()
+        .filter(|line| line.starts_with("quantum failed:"))
+        .collect();
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(failures[0].contains("prefill quantum"), "{}", failures[0]);
+    assert!(failures[0].contains("engine feed"), "{}", failures[0]);
+    assert!(failures[0].contains("compact_stall +0"), "{}", failures[0]);
+}

@@ -1435,8 +1435,8 @@ amdgpu sense. Thus a Xe machine reads these sources in their place:
 - the throttle state of each GT: `device/tile0/gt<N>/freq0/throttle/status` and `reasons`;
 - `MemAvailable` and `/proc/vmstat`, as on any machine.
 
-The exact fdinfo keys need a check on b70host before the code reads them. A source that is absent is
-`evidence unavailable`, as above.
+The fdinfo reader sums the keys once per `drm-client-id` across `/proc/<pid>/fdinfo`, and the GT reader reads each
+`card*/device/tile*/gt*/freq0/throttle` entry. A source that is absent is `evidence unavailable`, as above.
 
 **9.7 Status feed.** Each machine has one SSE status feed (mk `/mk/v1/status`, mkviolet `PassBus`):
 

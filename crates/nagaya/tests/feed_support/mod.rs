@@ -42,6 +42,8 @@ pub struct FeedFactory {
     pub log: StageLog,
     /// The stage whose next quantum panics, or `NO_STAGE`.
     pub panic_stage: Arc<AtomicUsize>,
+    /// The stage whose next quantum returns an error, or `NO_STAGE`.
+    pub fail_stage: Arc<AtomicUsize>,
 }
 
 /// The value of `panic_stage` when no stage panics.
@@ -58,6 +60,7 @@ impl FeedFactory {
             delay_ms: Arc::default(),
             log: Arc::default(),
             panic_stage: Arc::new(AtomicUsize::new(NO_STAGE)),
+            fail_stage: Arc::new(AtomicUsize::new(NO_STAGE)),
         }
     }
 }
@@ -68,6 +71,7 @@ pub struct Traced {
     delay_ms: Arc<AtomicU64>,
     log: StageLog,
     panic_stage: Arc<AtomicUsize>,
+    fail_stage: Arc<AtomicUsize>,
 }
 
 impl Engine for Traced {
@@ -122,6 +126,7 @@ impl Stages for Traced {
                     delay_ms: Arc::clone(&self.delay_ms),
                     log: Arc::clone(&self.log),
                     panic_stage: Arc::clone(&self.panic_stage),
+                    fail_stage: Arc::clone(&self.fail_stage),
                 }) as Box<dyn StageHandle + Send>
             })
             .collect()
@@ -134,12 +139,19 @@ struct TracedStage {
     delay_ms: Arc<AtomicU64>,
     log: StageLog,
     panic_stage: Arc<AtomicUsize>,
+    fail_stage: Arc<AtomicUsize>,
 }
 
 impl StageHandle for TracedStage {
     fn stage_pass(&mut self, segments: &[nagaya_abi::Segment], residual: &mut Residual) -> Result<StageOut, PassError> {
         if self.panic_stage.load(Ordering::SeqCst) == self.stage {
             panic!("stage {} breaks on purpose", self.stage);
+        }
+        if self.fail_stage.load(Ordering::SeqCst) == self.stage {
+            return Err(PassError {
+                kind: nagaya_abi::PassErrorKind::Refused,
+                message: format!("stage {} failed on purpose", self.stage),
+            });
         }
         let start = Instant::now();
         std::thread::sleep(Duration::from_millis(self.delay_ms.load(Ordering::SeqCst)));
@@ -204,6 +216,7 @@ impl Factory for FeedFactory {
             delay_ms: Arc::clone(&self.delay_ms),
             log: Arc::clone(&self.log),
             panic_stage: Arc::clone(&self.panic_stage),
+            fail_stage: Arc::clone(&self.fail_stage),
         }))
     }
 }
@@ -274,6 +287,20 @@ impl FeedFixture {
 
     /// A fixture with this factory, this watchdog timeout and these CPU sets.
     pub fn with_sets(factory: FeedFactory, timeout: Duration, sets: Option<nagaya::cpu_sets::CpuSets>) -> Self {
+        Self::build(factory, timeout, sets, None)
+    }
+
+    /// A fixture with this factory, this watchdog timeout and this machine tree.
+    pub fn with_machine(factory: FeedFactory, timeout: Duration, machine: nagaya::evidence::Machine) -> Self {
+        Self::build(factory, timeout, None, Some(machine))
+    }
+
+    fn build(
+        factory: FeedFactory,
+        timeout: Duration,
+        sets: Option<nagaya::cpu_sets::CpuSets>,
+        machine: Option<nagaya::evidence::Machine>,
+    ) -> Self {
         let stages = factory.stages;
         let directory = tempfile::tempdir().unwrap();
         let mut registry = Registry::new();
@@ -281,6 +308,9 @@ impl FeedFixture {
         let mut start = Start::new(profile(stages), registry, inventory(stages));
         if let Some(sets) = sets {
             start = start.cpu_sets(sets);
+        }
+        if let Some(machine) = machine {
+            start = start.machine(machine);
         }
         let mut process = start
             .store(directory.path())
