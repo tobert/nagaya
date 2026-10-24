@@ -667,3 +667,73 @@ fn a_machine_device_with_no_budget_is_invalid() {
     };
     assert!(matches!(Ledger::new().admit(&profile), Err(LedgerError::Invalid(_))));
 }
+
+// The swap in place (spec 3.3a): the group asks whether an engine fits beside the loaded engines, then admits the
+// profile of the engines that stay loaded, then the profile with the new engine.
+
+fn swap_engine(name: &str) -> EnginePlan {
+    plan(
+        name,
+        1,
+        MemoryLimits {
+            mandatory: vec![mandatory("weights", Tier::Host, 60)],
+            elastic: Vec::new(),
+        },
+    )
+}
+
+fn swap_profile(names: &[&str]) -> Profile {
+    Profile {
+        budgets: vec![budget(&[Tier::Host], 100)],
+        engines: names.iter().map(|name| swap_engine(name)).collect(),
+    }
+}
+
+#[test]
+fn check_gives_the_admission_of_a_fitting_profile_and_changes_nothing() {
+    let mut ledger = Ledger::new();
+    ledger.admit(&swap_profile(&["a"])).unwrap();
+    let before = ledger.clone();
+    let checked = ledger.check(&swap_profile(&["b"])).unwrap();
+    assert_eq!(ledger, before);
+    assert_eq!(checked, ledger.admit(&swap_profile(&["b"])).unwrap());
+}
+
+#[test]
+fn check_gives_the_shortfall_of_a_profile_that_does_not_fit_and_changes_nothing() {
+    let mut ledger = Ledger::new();
+    ledger.admit(&swap_profile(&["a"])).unwrap();
+    let before = ledger.clone();
+    assert_eq!(
+        ledger.check(&swap_profile(&["a", "b"])),
+        Err(LedgerError::Refused(Refusal {
+            shortfall: vec![(vec![Tier::Host], 20)],
+        }))
+    );
+    assert_eq!(ledger, before);
+}
+
+#[test]
+fn check_refuses_to_drop_an_engine_with_a_live_context() {
+    let mut ledger = Ledger::new();
+    ledger.admit(&context_profile()).unwrap();
+    ledger.admit_context("a").unwrap();
+    let empty = Profile {
+        budgets: vec![budget(&[Tier::Host], 200)],
+        engines: Vec::new(),
+    };
+    assert!(matches!(ledger.check(&empty), Err(LedgerError::Invalid(_))));
+}
+
+#[test]
+fn a_swap_unloads_one_engine_and_admits_another_in_its_bytes() {
+    let mut ledger = Ledger::new();
+    ledger.admit(&swap_profile(&["a"])).unwrap();
+    assert_eq!(ledger.unassigned(), vec![(vec![Tier::Host], 40)]);
+    // The unload of `a`: the profile of the engines that stay loaded.
+    ledger.admit(&swap_profile(&[])).unwrap();
+    assert_eq!(ledger.unassigned(), vec![(vec![Tier::Host], 100)]);
+    // The load of `b` in the bytes that `a` gave back.
+    ledger.admit(&swap_profile(&["b"])).unwrap();
+    assert_eq!(ledger.unassigned(), vec![(vec![Tier::Host], 40)]);
+}

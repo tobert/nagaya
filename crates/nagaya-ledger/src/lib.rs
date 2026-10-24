@@ -283,6 +283,13 @@ impl Ledger {
         result
     }
 
+    /// Give what `admit` would give for a profile, with no change and no record (spec 3.3a).
+    ///
+    /// A swap asks it whether an engine fits beside the engines that stay loaded, before it unloads any of them.
+    pub fn check(&self, profile: &Profile) -> Result<Admission, LedgerError> {
+        self.clone().admit_unrecorded(profile)
+    }
+
     fn admit_unrecorded(&mut self, profile: &Profile) -> Result<Admission, LedgerError> {
         if profile.budgets.iter().any(|budget| budget.tiers.is_empty()) {
             return Err(LedgerError::Invalid("budget has no tiers".to_owned()));

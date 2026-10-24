@@ -274,3 +274,32 @@ fn a_refused_staging_counts_a_refusal_for_its_engine() {
     assert_eq!(refusals[0].attributes["tier"], "host");
     assert_eq!(refusals[0].attributes["gate"], "budget");
 }
+
+/// A check is a question, not an admission: it records no bytes and no refusal (spec 3.3a, 9.4).
+#[test]
+fn a_check_records_nothing() {
+    let capture = Capture::start(Vec::new());
+    let memory = MemoryLimits {
+        mandatory: vec![mandatory("weights", Tier::Host, 600, Lifetime::Engine)],
+        elastic: Vec::new(),
+    };
+    let fits = Profile {
+        budgets: vec![Budget {
+            tiers: vec![Tier::Host],
+            bytes: 1000,
+        }],
+        engines: vec![plan("qwen", memory.clone())],
+    };
+    let short = Profile {
+        budgets: vec![Budget {
+            tiers: vec![Tier::Host],
+            bytes: 100,
+        }],
+        engines: vec![plan("qwen", memory)],
+    };
+    let ledger = Ledger::new();
+    ledger.check(&fits).unwrap();
+    ledger.check(&short).unwrap_err();
+    assert!(capture.metric("nagaya.ledger.bytes").is_empty());
+    assert!(capture.metric("nagaya.ledger.refusals").is_empty());
+}
