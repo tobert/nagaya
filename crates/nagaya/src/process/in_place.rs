@@ -17,6 +17,7 @@ use super::{Event, GroupJob, LedgerMessage, OpenBeat, OpenedEngine, ParkReport, 
 use crate::admission::{AdmitError, OpenErrorKind};
 use crate::arena::FdStore;
 use crate::park::StoreMessage;
+use crate::profile::{DEFAULT_IDLE_UNLOAD_S, Residency};
 
 /// One engine of a group: what opens it, and whether it is loaded.
 pub(super) struct Member {
@@ -24,6 +25,8 @@ pub(super) struct Member {
     pub(super) loaded: bool,
     /// The stage handles of a loaded engine with stages, from its open until its stage threads take them.
     pub(super) handles: Vec<Box<dyn StageHandle + Send>>,
+    /// The last time that the engine held a job, or its load. The idle time of an on-demand engine counts from it.
+    pub(super) last_busy: Instant,
 }
 
 impl Member {
@@ -34,6 +37,16 @@ impl Member {
     /// True when the engine runs as stages on stage threads (engine-abi D1).
     pub(super) fn staged(&self) -> bool {
         self.job.limits.capabilities.contains(&Capability::Stages)
+    }
+
+    /// True for an engine that the profile makes resident (spec 3.3a).
+    pub(super) fn resident(&self) -> bool {
+        self.job.placement.residency == Residency::Resident
+    }
+
+    /// The time with no job after which an on-demand engine unloads (spec 3.3a).
+    fn idle_time(&self) -> Duration {
+        Duration::from_secs(self.job.placement.idle_unload_s.unwrap_or(DEFAULT_IDLE_UNLOAD_S))
     }
 }
 
@@ -147,6 +160,30 @@ pub(super) fn plan(target: usize, members: &[Member], ledger: &Sender<LedgerMess
     }
 }
 
+/// The swap back of an on-demand engine that held no job for its idle time, or `None` (spec 3.3a).
+///
+/// The swap unloads that engine and loads each resident engine of the group that is not loaded. When the resident
+/// engines do not fit beside the engines that stay loaded, or an engine with stages would not load alone, the swap only
+/// unloads.
+pub(super) fn idle_plan(members: &[Member], now: Instant, ledger: &Sender<LedgerMessage>) -> Option<Plan> {
+    let idle = (0..members.len()).find(|index| {
+        let member = &members[*index];
+        member.loaded && !member.resident() && now.duration_since(member.last_busy) >= member.idle_time()
+    })?;
+    let residents: Vec<usize> = (0..members.len())
+        .filter(|index| !members[*index].loaded && members[*index].resident())
+        .collect();
+    let others_stay = (0..members.len()).any(|index| index != idle && members[index].loaded);
+    let alone = !residents.iter().any(|index| members[*index].staged()) || (!others_stay && residents.len() == 1);
+    let name = |index: &usize| members[*index].name().to_owned();
+    let fits = alone
+        && (residents.is_empty() || check(ledger, residents.iter().map(name).collect(), vec![name(&idle)]).is_ok());
+    Some(Plan {
+        load: if fits { residents } else { Vec::new() },
+        unload: vec![idle],
+    })
+}
+
 /// The ways out of the group thread that a swap uses.
 pub(super) struct SwapLinks<'a> {
     pub(super) events: &'a Sender<Event>,
@@ -218,6 +255,7 @@ pub(super) fn swap(
         engines[index] = engine;
         members[index].handles = handles;
         members[index].loaded = true;
+        members[index].last_busy = Instant::now();
         instruments.engine_state(&name, EngineState::Ready);
         if let Some(handoff) = opened.handoff {
             instruments.arena_handoff(&name, handoff.status());

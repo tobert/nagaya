@@ -979,6 +979,7 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
             job,
             loaded: false,
             handles: Vec::new(),
+            last_busy: Instant::now(),
         })
         .collect();
     let mut engines: Vec<Box<dyn Engine>> = members.iter().map(Unloaded::of).collect();
@@ -1023,7 +1024,7 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
             Some(index) => staged::serve(group, index, &mut members, &mut engines, &mut waiting, &links, interval),
             None => serve_plain(
                 group,
-                &members,
+                &mut members,
                 &mut engines,
                 &mut plain,
                 &mut waiting,
@@ -1068,7 +1069,7 @@ struct Plain {
 /// Serve the jobs of a group with no loaded engine of stages, until the group stops or swaps (spec 3.3a).
 fn serve_plain(
     group: usize,
-    members: &[Member],
+    members: &mut [Member],
     engines: &mut [Box<dyn Engine>],
     plain: &mut Plain,
     waiting: &mut Vec<(JobSpec, Span)>,
@@ -1178,6 +1179,19 @@ fn serve_plain(
                 .is_some_and(|plan| plan.unload.iter().all(|index| !jobs.holds(*index)))
         {
             return Exit::Swap(pending.take().expect("a pending swap"));
+        }
+        let now = Instant::now();
+        for (index, member) in members.iter_mut().enumerate() {
+            if member.loaded && jobs.holds(index) {
+                member.last_busy = now;
+            }
+        }
+        if serving
+            && pending.is_none()
+            && waiting.is_empty()
+            && let Some(plan) = in_place::idle_plan(members, now, &links.ledger)
+        {
+            return Exit::Swap(plan);
         }
         if !jobs.idle() {
             if serving {

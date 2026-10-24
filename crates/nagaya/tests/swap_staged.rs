@@ -336,3 +336,62 @@ fn a_job_for_the_engine_that_unloads_waits_for_its_next_load() {
         ]
     );
 }
+
+/// `chat`, with stages, is on demand with an idle time of one second, and `voice` is resident.
+fn start_with_stages_on_demand(directory: &std::path::Path) -> (Process, Log) {
+    let log: Log = Arc::default();
+    let mut registry = Registry::new();
+    registry.register("pair", Box::new(Pair(Arc::clone(&log))));
+    let mut profile = profile();
+    profile.engines[CHAT].residency = Residency::OnDemand;
+    profile.engines[CHAT].idle_unload_s = Some(1);
+    profile.engines[VOICE].residency = Residency::Resident;
+    let inventory = Inventory {
+        devices: (0..2)
+            .map(|id| Device {
+                id,
+                name: format!("device-{id}"),
+                pci_address: format!("0000:0{id}:00.0"),
+                memory_bytes: 1 << 20,
+                unified: false,
+                ignored: false,
+            })
+            .collect(),
+        host_bytes: 1 << 20,
+    };
+    let mut process = Start::new(profile, registry, inventory)
+        .store(directory)
+        .heartbeat(Duration::from_millis(10))
+        .timeout(Duration::from_secs(5))
+        .start()
+        .unwrap();
+    let opened = process.wait_opens(Duration::from_secs(5)).unwrap();
+    let names: Vec<&str> = opened.iter().map(|engine| engine.name.as_str()).collect();
+    assert_eq!(names, ["voice"]);
+    (process, log)
+}
+
+#[test]
+fn an_idle_engine_with_stages_on_demand_unloads_through_its_stage_threads() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start_with_stages_on_demand(directory.path());
+    let (job, finished) = probe(CHAT, &log, None);
+    process.submit_job(0, job).unwrap();
+    finished.recv_timeout(Duration::from_secs(5)).expect("the chat job ran");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while log_of(&log).len() < 6 {
+        assert!(Instant::now() < deadline, "no swap back: {:?}", log_of(&log));
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        log_of(&log),
+        [
+            "open:voice",
+            "close:voice",
+            "open:chat",
+            "run:chat",
+            "close:chat",
+            "open:voice"
+        ]
+    );
+}

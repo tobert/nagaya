@@ -588,3 +588,115 @@ fn a_job_for_the_engine_that_unloads_waits_for_its_next_load() {
         ]
     );
 }
+
+#[test]
+fn an_idle_engine_on_demand_unloads_and_the_resident_engine_loads_again() {
+    let directory = tempfile::tempdir().unwrap();
+    let log: Log = Arc::default();
+    let mut registry = Registry::new();
+    registry.register("counted", Box::new(CountedFactory(Arc::clone(&log))));
+    let mut profile = profile(1000);
+    profile.engines[VOICE].idle_unload_s = Some(1);
+    let inventory = Inventory {
+        devices: vec![Device {
+            id: 0,
+            name: "device-0".to_owned(),
+            pci_address: "0000:00:00.0".to_owned(),
+            memory_bytes: 4096,
+            unified: false,
+            ignored: false,
+        }],
+        host_bytes: 4096,
+    };
+    let mut process = Start::new(profile, registry, inventory)
+        .store(directory.path())
+        .heartbeat(Duration::from_millis(10))
+        .timeout(Duration::from_secs(5))
+        .start()
+        .unwrap();
+    process.wait_opens(Duration::from_secs(5)).unwrap();
+    let (job, finished) = probe(VOICE, &log);
+    let submitted = Instant::now();
+    process.submit_job(0, job).unwrap();
+    finished
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the voice job ran");
+    assert_eq!(swapped(&process), (vec!["chat".to_owned()], vec!["voice".to_owned()]));
+    // No job comes. After its idle time, `voice` unloads and `chat` loads again.
+    assert_eq!(swapped(&process), (vec!["voice".to_owned()], vec!["chat".to_owned()]));
+    let after = submitted.elapsed();
+    assert!(after >= Duration::from_secs(1), "the swap back came after {after:?}");
+    assert_eq!(
+        log_of(&log),
+        [
+            "open:chat",
+            "close:chat",
+            "open:voice",
+            "run:voice",
+            "close:voice",
+            "open:chat"
+        ]
+    );
+}
+
+/// Start with `voice` unloading after `idle_s` seconds with no job.
+fn start_idle(directory: &std::path::Path, idle_s: u64) -> (Process, Log) {
+    let log: Log = Arc::default();
+    let mut registry = Registry::new();
+    registry.register("counted", Box::new(CountedFactory(Arc::clone(&log))));
+    let mut profile = profile(1000);
+    profile.engines[VOICE].idle_unload_s = Some(idle_s);
+    let inventory = Inventory {
+        devices: vec![Device {
+            id: 0,
+            name: "device-0".to_owned(),
+            pci_address: "0000:00:00.0".to_owned(),
+            memory_bytes: 4096,
+            unified: false,
+            ignored: false,
+        }],
+        host_bytes: 4096,
+    };
+    let mut process = Start::new(profile, registry, inventory)
+        .store(directory)
+        .heartbeat(Duration::from_millis(10))
+        .timeout(Duration::from_secs(5))
+        .start()
+        .unwrap();
+    process.wait_opens(Duration::from_secs(5)).unwrap();
+    (process, log)
+}
+
+#[test]
+fn an_idle_resident_engine_stays_loaded() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start_idle(directory.path(), 1);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(process.recv(Duration::from_millis(10)).is_none(), "no swap came");
+    assert_eq!(log_of(&log), ["open:chat"]);
+}
+
+#[test]
+fn a_job_in_the_idle_time_starts_the_idle_time_again() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start_idle(directory.path(), 1);
+    let (job, finished) = probe(VOICE, &log);
+    process.submit_job(0, job).unwrap();
+    finished
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the first voice job ran");
+    assert_eq!(swapped(&process), (vec!["chat".to_owned()], vec!["voice".to_owned()]));
+    std::thread::sleep(Duration::from_millis(700));
+    let (job, finished) = probe(VOICE, &log);
+    let second = Instant::now();
+    process.submit_job(0, job).unwrap();
+    finished
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the second voice job ran");
+    assert_eq!(swapped(&process), (vec!["voice".to_owned()], vec!["chat".to_owned()]));
+    let after = second.elapsed();
+    assert!(
+        after >= Duration::from_millis(950),
+        "the swap back came {after:?} after the second job; the idle time counts from it"
+    );
+}

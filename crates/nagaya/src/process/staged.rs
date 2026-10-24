@@ -980,6 +980,12 @@ pub(super) fn serve(
         {
             pending = Some(in_place::plan(spec.engine, members, &links.ledger));
         }
+        if !jobs.idle() {
+            members[index].last_busy = Instant::now();
+        }
+        if serving && pending.is_none() && waiting.is_empty() {
+            pending = in_place::idle_plan(members, Instant::now(), &links.ledger);
+        }
         if serving && pending.is_some() && jobs.idle() {
             // The park reads the parts through the stage threads, so the engine unloads before the threads end.
             in_place::unload(index, members, engines, links.store.as_ref(), links.fd_store.as_ref());
