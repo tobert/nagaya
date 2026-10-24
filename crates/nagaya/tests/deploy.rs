@@ -354,3 +354,59 @@ fn the_b70host_unit_keeps_the_arenas_through_a_restart() {
     );
     assert_eq!(unit_value(&unit, "FileDescriptorStorePreserve"), "restart");
 }
+
+/// The values of the `ExecStartPre=` lines of a unit, in order.
+fn exec_start_pre(unit: &str) -> Vec<&str> {
+    unit.lines()
+        .filter_map(|line| line.strip_prefix("ExecStartPre="))
+        .collect()
+}
+
+/// Check that a unit waits for the tailnet address of its bootstrap config before the process starts.
+fn check_address_wait(unit: &str, bootstrap: &Bootstrap) {
+    let address = bootstrap.http_bind.ip();
+    assert_eq!(
+        bootstrap.gossip_bind.ip(),
+        address,
+        "the wait covers one address, so both binds must use it"
+    );
+    let wait = format!("%h/src/nagaya/deploy/wait-address.sh {address} 120");
+    assert!(
+        exec_start_pre(unit).contains(&wait.as_str()),
+        "the unit needs `ExecStartPre={wait}`"
+    );
+    // A user unit cannot order itself after a system unit, so such an `After=` only misleads the reader.
+    assert!(
+        !unit_value(unit, "After").contains("tailscaled.service"),
+        "a user unit cannot wait for the system unit tailscaled.service"
+    );
+}
+
+#[test]
+fn the_units_wait_for_the_tailnet_address_of_their_config() {
+    // On 2026-10-24 b70host booted after a power loss. The nagaya started before tailscaled set 198.51.100.10, the
+    // gossip bind failed, and exit 3 kept the unit down.
+    check_address_wait(&unit(), &bootstrap());
+    check_address_wait(&b70host_unit(), &b70host_bootstrap());
+}
+
+#[test]
+fn the_address_wait_passes_a_present_address_and_fails_an_absent_one() {
+    let script = deploy("wait-address.sh");
+    let present = std::process::Command::new(&script)
+        .args(["127.0.0.1", "1"])
+        .output()
+        .unwrap();
+    assert!(present.status.success(), "{present:?}");
+    // 192.0.2.1 is TEST-NET-1 (RFC 5737), so no machine of ours holds it.
+    let absent = std::process::Command::new(&script)
+        .args(["192.0.2.1", "1"])
+        .output()
+        .unwrap();
+    assert_eq!(absent.status.code(), Some(1), "{absent:?}");
+    let message = String::from_utf8_lossy(&absent.stderr);
+    assert!(
+        message.contains("192.0.2.1"),
+        "the message names the address: {message}"
+    );
+}

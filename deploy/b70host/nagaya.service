@@ -7,7 +7,8 @@
 # `cargo build --release -p nagaya --features xe`. A build without the feature has no engine and exits 3.
 [Unit]
 Description=nagaya: the engines of b70host behind council v2 (tailnet, port 8091)
-After=network-online.target tailscaled.service
+# A user unit cannot order itself after the system unit tailscaled.service. The wait in ExecStartPre covers it.
+After=network-online.target
 Wants=network-online.target
 # A crash loop must not hit the cards again and again: three starts in 10 minutes, and the unit stays down.
 # systemd counts a start after exit 4 too, so a fourth profile swap in 600 s fails (spec 10.4).
@@ -35,6 +36,9 @@ Environment=GEMMA4_MODEL_DIR=%h/src/mkviolet/checkpoints/gemma-4-26B-A4B
 # Environment=OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317
 # The store directory must exist before the process reads its profile.
 ExecStartPre=/usr/bin/mkdir -p %h/.local/share/nagaya/store
+# At boot the tailnet address can come after the user manager starts the unit. A bind to a missing address
+# exits 3 and keeps the unit down (spec 10.4), so wait for 198.51.100.10. TimeoutStartSec covers the 120 s.
+ExecStartPre=%h/src/nagaya/deploy/wait-address.sh 198.51.100.10 120
 ExecStart=%h/src/nagaya/target/release/nagaya
 # Arenas through a restart (spec 10.2). systemd keeps the 31 Gemma 4 slabs through a restart, and the process reads
 # the ceiling from $FDSTORE. `systemctl stop` clears the store.

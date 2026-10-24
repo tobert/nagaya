@@ -18,6 +18,7 @@ without `--user` talks to the system manager and says "inactive" for a user unit
 | `deploy/nagaya.service` | The systemd user unit. `Type=notify` (spec 10.1). |
 | `deploy/gfx1151host/nagaya.toml` | The bootstrap config (spec 2.1). The unit sets `NAGAYA_CONFIG` to it. |
 | `deploy/gfx1151host/profile.toml` | The placement profile (spec 2.4). A copy goes in the store directory. |
+| `deploy/wait-address.sh` | The wait for the tailnet address. Both units run it before the process starts. |
 
 The test `crates/nagaya/tests/deploy.rs` reads all three with the real loaders. A change to a schema breaks it.
 
@@ -27,6 +28,12 @@ is `/home/atobey/.local/share/nagaya/store`.
 
 The unit sets `OTEL_EXPORTER_OTLP_ENDPOINT` to `http://127.0.0.1:4317`, the host collector. The nagaya exports OTLP
 over gRPC (spec 9.1). Without a collector, the log still works.
+
+The unit waits for the tailnet address before it starts the process. A user unit cannot order itself after the
+system unit `tailscaled.service`, so at boot the address can be missing. A bind to a missing address exits 3, and
+the unit stays down (spec 10.4). On 2026-10-24 b70host booted after a power loss, and this kept its nagaya
+down. `deploy/wait-address.sh` checks `ip -o addr show` once a second for 120 s. Then it fails with the address in
+the message, and the unit restarts after 30 s.
 
 ## Before you start
 
@@ -295,6 +302,7 @@ Every `systemctl` command has `--user`.
 | `deploy/b70host/nagaya.service` | The systemd user unit (spec 10.1, "One unit file for each machine"). |
 | `deploy/b70host/nagaya.toml` | The bootstrap config (spec 2.1). The unit sets `NAGAYA_CONFIG` to it. |
 | `deploy/b70host/profile.toml` | The placement profile (spec 2.4). A copy goes in the store directory. |
+| `deploy/wait-address.sh` | The wait for `198.51.100.10`, as on gfx1151host ("The files"). |
 
 The test `crates/nagaya/tests/deploy.rs` reads all three with the real loaders. Its admission test plans from the
 checkpoint, so run it with `GEMMA4_MODEL_DIR` set.
@@ -425,6 +433,8 @@ answers when mkviolet has loaded its weights. Nothing in the store directory nee
 - Build the release binary again before each restart, with `--features xe`.
 - `mkviolet.service` and the nagaya's unit use the same address. Never start both.
 - Do not run work on the iGPU. It drives the display.
+- The unit waits up to 120 s for `198.51.100.10` before the process starts. A unit that waits at boot is
+  waiting for tailscaled. Check it with `tailscale ip`.
 - Exit code 3 is a refusal to start. Read the log, fix the cause, and run
   `systemctl --user reset-failed nagaya.service`. Then start it.
 - The unit keeps the 31 Gemma 4 slabs through a restart (spec 10.2): it sets `FileDescriptorStoreMax=512` and

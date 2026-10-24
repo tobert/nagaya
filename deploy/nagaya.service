@@ -7,7 +7,8 @@
 # `cargo build --release -p nagaya --features hip`. A build without the feature has no engine and exits 3.
 [Unit]
 Description=nagaya: the engines of gfx1151host behind council v2 (tailnet, port 8090)
-After=network-online.target tailscaled.service
+# A user unit cannot order itself after the system unit tailscaled.service. The wait in ExecStartPre covers it.
+After=network-online.target
 Wants=network-online.target
 # A crash loop must not hit the GPU again and again: three starts in 10 minutes, and the unit stays down.
 # systemd counts a start after exit 4 too, so a fourth profile swap in 600 s fails (spec 10.4).
@@ -32,6 +33,9 @@ Environment="MK_SHARDS=/tank/ml/models/llama.cpp/Qwen3.8-Flash-Next-GGUF/UD-IQ4_
 Environment=OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317
 # The store directory must exist before the process reads its profile.
 ExecStartPre=/usr/bin/mkdir -p %h/.local/share/nagaya/store
+# At boot the tailnet address can come after the user manager starts the unit. A bind to a missing address
+# exits 3 and keeps the unit down (spec 10.4), so wait for 198.51.100.20. TimeoutStartSec covers the 120 s.
+ExecStartPre=%h/src/nagaya/deploy/wait-address.sh 198.51.100.20 120
 ExecStart=%h/src/nagaya/target/release/nagaya
 # Arenas through a restart (spec 10.2) come later. Then this unit sets FileDescriptorStoreMax=512 and
 # FileDescriptorStorePreserve=restart, as megakernel.service does. Today the process stores no fd, so it sets neither.
