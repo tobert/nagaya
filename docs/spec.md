@@ -548,7 +548,8 @@ never fit, even with all reclaim done (4.6), gets 413 `too_large`. Its `param` n
 **4.4 Spare memory.** The ledger first charges all mandatory terms and the minimum of each elastic term. If they do
 not fit, the nagaya refuses the profile (2.4). The ledger then divides what remains in each budget like this:
 
-1. Give each engine a part of the spare bytes in proportion to its share (D9).
+1. Give each engine in the profile a part of the spare bytes in proportion to its share (D9). An engine with no
+   elastic term in that budget leaves its part unassigned.
 2. Inside an engine, split its part among its elastic terms in proportion to each term's minimum bytes. When every
    minimum is 0, the elastic terms get no spare bytes.
 3. Round each term down to whole units, and cap it at its maximum.
@@ -1338,8 +1339,9 @@ Decided by senpai 2026-10-20 night (vetoable). These rules fix the labels of the
 - The wait of a quantum runs from the moment its lead segment became ready to the moment the quantum started. The lead
   segment is the first one. A job is ready when it arrives, and again when a quantum of it ends and more remain. A job
   that the ledger has not admitted yet is ready, so its wait includes the time until the admission.
-- `nagaya.ledger.bytes` is a gauge with one point for each engine term. It holds the bytes of the last admission. A term
-  of the lifetime `context` has no point, because the ledger charges it at `ctx_new`.
+- `nagaya.ledger.bytes` is a gauge with one point for each engine term. `admit` records the bytes of each mandatory and
+  elastic term of the admission, and omits `context` terms because 0 contexts exist at `open`. `admit_context` and
+  `release_context` record the live bytes of each `context` term.
 - `nagaya.ledger.refusals` counts one refusal for each short budget. The engine is `all` for a refused profile, and the
   engine name for a refused context. The ledger has the gate `budget` only. The gates `floor` and `resize` come with the
   code that refuses at them.

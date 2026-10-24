@@ -515,6 +515,22 @@ fn a_live_context_stays_charged_when_a_profile_is_admitted() {
 }
 
 #[test]
+fn a_profile_that_drops_an_engine_with_a_live_context_is_invalid_and_changes_nothing() {
+    let mut ledger = Ledger::new();
+    ledger.admit(&context_profile()).unwrap();
+    ledger.admit_context("a").unwrap();
+    let before = ledger.clone();
+    let empty = Profile {
+        budgets: vec![budget(&[Tier::Host], 200)],
+        engines: Vec::new(),
+    };
+    assert!(matches!(ledger.admit(&empty), Err(LedgerError::Invalid(_))));
+    assert_eq!(ledger, before);
+    ledger.release_context("a").unwrap();
+    ledger.admit(&empty).unwrap();
+}
+
+#[test]
 fn a_profile_that_does_not_fit_the_live_charges_is_refused_and_changes_nothing() {
     let mut ledger = Ledger::new();
     ledger.admit(&context_profile()).unwrap();

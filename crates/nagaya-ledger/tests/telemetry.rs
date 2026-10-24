@@ -189,6 +189,49 @@ fn a_refused_context_counts_a_refusal_for_its_engine() {
 }
 
 #[test]
+fn admit_context_and_release_context_record_the_context_term_bytes() {
+    let capture = Capture::start(Vec::new());
+    let memory = MemoryLimits {
+        mandatory: vec![mandatory("per_context", Tier::Host, 60, Lifetime::Context)],
+        elastic: Vec::new(),
+    };
+    let profile = Profile {
+        budgets: vec![Budget {
+            tiers: vec![Tier::Host],
+            bytes: 200,
+        }],
+        engines: vec![plan("qwen", memory)],
+    };
+    let mut ledger = Ledger::new();
+    ledger.admit(&profile).unwrap();
+    assert!(capture.metric("nagaya.ledger.bytes").is_empty());
+
+    ledger.admit_context("qwen").unwrap();
+    assert_eq!(
+        series(&capture.metric("nagaya.ledger.bytes")),
+        [row("host", "qwen", "per_context", 60.0)]
+    );
+
+    ledger.admit_context("qwen").unwrap();
+    assert_eq!(
+        series(&capture.metric("nagaya.ledger.bytes")),
+        [row("host", "qwen", "per_context", 120.0)]
+    );
+
+    ledger.release_context("qwen").unwrap();
+    assert_eq!(
+        series(&capture.metric("nagaya.ledger.bytes")),
+        [row("host", "qwen", "per_context", 60.0)]
+    );
+
+    ledger.release_context("qwen").unwrap();
+    assert_eq!(
+        series(&capture.metric("nagaya.ledger.bytes")),
+        [row("host", "qwen", "per_context", 0.0)]
+    );
+}
+
+#[test]
 fn an_invalid_profile_is_no_refusal() {
     let capture = Capture::start(Vec::new());
     let profile = Profile {

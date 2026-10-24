@@ -131,7 +131,7 @@ pub struct Ledger {
     /// The bytes that no term holds, one entry per budget (spec 4.4 step 4). A new context takes from them.
     unassigned: Vec<u128>,
     /// The terms with the lifetime `context` of each admitted engine, by engine name (spec 4.2).
-    context_terms: BTreeMap<String, Vec<(Tier, u64)>>,
+    context_terms: BTreeMap<String, Vec<(String, Tier, u64)>>,
     /// The live contexts of each engine.
     contexts: BTreeMap<String, u64>,
     /// The staging bytes that are charged now, by the index of the budget (spec 4.2).
@@ -159,8 +159,10 @@ impl Ledger {
     /// budget. A refusal changes nothing.
     pub fn admit_context(&mut self, engine: &str) -> Result<(), LedgerError> {
         let result = self.admit_context_unrecorded(engine);
-        if let Err(LedgerError::ContextRefused(refusal)) = &result {
-            record_refusal(engine, refusal);
+        match &result {
+            Ok(()) => self.record_context_bytes(engine),
+            Err(LedgerError::ContextRefused(refusal)) => record_refusal(engine, refusal),
+            Err(_) => {}
         }
         result
     }
@@ -171,7 +173,7 @@ impl Ledger {
             .get(engine)
             .ok_or_else(|| LedgerError::Invalid(format!("engine {engine} is not admitted: admit its profile first")))?;
         let mut need = vec![0u128; self.budgets.len()];
-        for (tier, bytes) in terms {
+        for (_, tier, bytes) in terms {
             need[budget_index_in(&self.budgets, *tier)?] += *bytes as u128;
         }
         let shortfall: Vec<(Vec<Tier>, u64)> = self
@@ -203,12 +205,24 @@ impl Ledger {
             )));
         }
         let terms = self.context_terms.get(engine).cloned().unwrap_or_default();
-        for (tier, bytes) in terms {
+        for (_, tier, bytes) in terms {
             let index = budget_index_in(&self.budgets, tier)?;
             self.unassigned[index] += bytes as u128;
         }
         self.contexts.insert(engine.to_owned(), live - 1);
+        self.record_context_bytes(engine);
         Ok(())
+    }
+
+    fn record_context_bytes(&self, engine: &str) {
+        let live = self.contexts.get(engine).copied().unwrap_or(0);
+        let Some(terms) = self.context_terms.get(engine) else {
+            return;
+        };
+        let instruments = instruments();
+        for (name, tier, bytes) in terms {
+            instruments.ledger_bytes(tier_label(*tier), engine, name, bytes.saturating_mul(live));
+        }
     }
 
     /// Charge staging bytes of an engine in one tier (spec 4.2).
@@ -358,7 +372,7 @@ impl Ledger {
 
         let mut context_terms = BTreeMap::new();
         for engine in &profile.engines {
-            let terms = machine_terms(engine, |lifetime| lifetime == Lifetime::Context)?;
+            let terms = named_machine_terms(engine, |lifetime| lifetime == Lifetime::Context)?;
             context_terms.insert(engine.name.clone(), terms);
         }
 
@@ -366,7 +380,15 @@ impl Ledger {
         // true. Decided by senpai 2026-10-20 night (vetoable); see spec 4.2 "Staging".
         let mut live = vec![0u128; profile.budgets.len()];
         for (engine, count) in &self.contexts {
-            for (tier, bytes) in context_terms.get(engine).into_iter().flatten() {
+            if *count == 0 {
+                continue;
+            }
+            let Some(terms) = context_terms.get(engine) else {
+                return Err(LedgerError::Invalid(format!(
+                    "engine {engine} has {count} live contexts and is absent from the new profile: release its contexts first, or keep the engine"
+                )));
+            };
+            for (_, tier, bytes) in terms {
                 live[budget_index(profile, *tier)?] += *bytes as u128 * *count as u128;
             }
         }
@@ -484,6 +506,21 @@ fn machine_terms(engine: &EnginePlan, accept: impl Fn(Lifetime) -> bool) -> Resu
         .iter()
         .filter(|term| accept(term.lifetime))
         .map(|term| Ok((machine_tier(engine, term.tier)?, term.bytes)))
+        .collect()
+}
+
+/// The mandatory terms of an engine whose lifetime the filter accepts, with term names and machine tiers.
+fn named_machine_terms(
+    engine: &EnginePlan,
+    accept: impl Fn(Lifetime) -> bool,
+) -> Result<Vec<(String, Tier, u64)>, LedgerError> {
+    engine
+        .limits
+        .memory
+        .mandatory
+        .iter()
+        .filter(|term| accept(term.lifetime))
+        .map(|term| Ok((term.name.clone(), machine_tier(engine, term.tier)?, term.bytes)))
         .collect()
 }
 
