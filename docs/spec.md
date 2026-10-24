@@ -300,10 +300,10 @@ A refusal has one entry for each budget that is short, with the tiers that share
 adds the entries does not count a pooled budget twice. On gfx1151host, `device(0)` and `host` are one pool (4.2). Decided
 2026-10-20 (reading).
 
-The placement profile is one TOML file. Each `[[engines]]` entry has `name`, `kind`, `devices`, `config`, `share`
-and `pin_identity`. Each `[[budgets]]` entry has `tiers` and `bytes`, and a tier is `host` or `device(i)`. The
-`[store]` table has `nvme`, an optional `host` (4.1a), and an optional `interval_copies` (6.13), 0 by default.
-Decided 2026-10-20 (reading).
+The placement profile is one TOML file. Each `[[engines]]` entry has `name`, `kind`, `devices`, `config`, an optional
+`family` table (11.3), `share` and `pin_identity`. Each `[[budgets]]` entry has `tiers` and `bytes`, and a tier is
+`host` or `device(i)`. The `[store]` table has `nvme`, an optional `host` (4.1a), and an optional `interval_copies`
+(6.13), 0 by default. Decided 2026-10-20 (reading).
 
 **One name for each device.** Decided 2026-10-22 (Amy: "all good"). The spec names a device in four places.
 Each place uses one of two names, and this map joins them.
@@ -393,7 +393,8 @@ process. Reason: a hook of the runtime cannot return an error, and a thread that
 isolation.
 
 - The control runtime (every worker and blocking thread, `nagaya-control`), the ledger thread (`nagaya-ledger`) and the
-  watchdog thread (`nagaya-watchdog`) pin to the housekeeping set.
+  watchdog thread (`nagaya-watchdog`) pin to the housekeeping set. The telemetry exporter thread (`nagaya-otlp`, 9.1)
+  starts before the CPU sets are built, so it keeps the process's initial CPU mask.
 - The group threads (`nagaya-group-<index>`) pin to the pool set, with the normal scheduling policy.
 - The store thread (`nagaya-store`) pins to the pool set at `SCHED_BATCH`. It hashes and converts bytes, which is pool
   work.

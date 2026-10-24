@@ -487,77 +487,19 @@ It replaces the rule "The deploy profile pins the mk library" (Decided 2026-10-1
 Reason: the binary now holds its engine. The digest of the archive is a fact of the build, so a pin would only
 compare the build with itself.
 
-**Proposed** (Claude Opus 5.5, 2026-10-22): the Rust reader gives the engine a tensor table. Step 3 of milestone
-15 moves mk's GGUF reader and dequantizer to Rust. The docs do not say where the seam between the reader and the
-C++ engine is. This is the simplest seam that removes the GGUF parse from C++:
+**The Rust host and the extern layer.** Milestone 15 step 6 moved the GGUF reader, the arena plan and the PLE gather
+into Rust (`gguf.rs`, `arena.rs` and `ple.rs`). It also moved the stage schedule and the stage build into Rust
+(`schedule.rs` and `pass.rs`):
 
-- The binding opens the shards with the Rust reader (`src/gguf.rs`). The reader maps each shard read-only, and it
-  keeps the checks of mk's C++ reader.
-- `mk_engine_open`, `mk_engine_attach` and `mk_arena_check` take a `mk_tensor_table` in place of three paths
-  (`hip/src/engine/tensor_table.h`).
-- The table holds each tensor's name, type, shape, byte count and a pointer into its shard's map. It also holds the
-  shard paths and the four PLE keys of the metadata.
-- The engine keeps its plan, its arena layout, its arena checks and its PLE gather. It reads them from the table.
-- The engine calls back into Rust twice. `drop_cached` drops the page cache of a copied range, and `dequant_f32`
-  decodes the PLE rows. Each call stops the program on an error, as mk's C++ reader did.
-- The binding keeps the maps for the engine's life, because the engine gathers PLE rows from them.
-
-Reason: the arena bytes and the logits stay the same, and the C ABI changes in three calls only. Step 6 moves the plan
-and the PLE gather into Rust. Then the two calls back into Rust go away.
-
-Replaced in step 6 (Claude Opus 5.5, 2026-10-23): this seam is gone. The Rust host plans and fills the arena
-(`arena.rs`) and gathers the PLE rows of each pass (`ple.rs`). `mk_engine_open` takes a `mk_weight_table`
-(`weight_table.h`): each tensor of the arena by name, in its final layout. `drop_cached`, `dequant_f32`, the
-shard paths and the PLE keys left the table. `mk_engine_attach` and `mk_arena_check` had no caller, and step 6
-removed the C++ code behind them. The export of the arena (spec 10.2) builds the attach in Rust, from `arena.rs`.
-
-**Proposed** (Claude Opus 5.5, 2026-10-22): the Rust schedule orders the stages that the C++ engine builds. Step 5
-of milestone 15 moves mk's stage schedule (`stage_sched.h`) to Rust. The docs do not say where that seam is. This is
-the simplest seam that removes the schedule from C++:
-
-- The tensor table carries two more calls into Rust. `schedule` gives the order and the `sched` word of each stage
-  of a pass. `footprint` gives the accesses of one stage, for the checks of the fused hc_mix.
-- The engine still builds its stages, and it applies the order. The Rust schedule reads the stages in place.
-- Rust mirrors `Stage` and the argument type of each op as `#[repr(C)]` types (`src/stage.rs`).
-- One file holds each size, offset and constant of that mirror (`hip/src/engine/stage_layout.def`). The C++ build
-  checks the C++ types against it. The Rust build makes the Rust constants from it and checks the Rust mirror.
-  Thus a change on one side alone stops a build.
-- `MK_ELIDE` stays an environment variable of the C++ engine. With `MK_ELIDE=0` the call gives each stage in build
-  order with a grid barrier after it.
-- An error of the schedule is a defect of the pass build. The call stops the program with the message.
-
-Reason: the order, the barriers and the bits stay the same, and the C ABI does not change. Step 6 builds the stages
-in Rust. Then the two calls become plain Rust calls, and the table loses them.
-
-Replaced in step 6 (Claude Opus 5.5, 2026-10-23): this seam is gone. The Rust host builds the stages of a pass
-(`pass.rs`) and calls `schedule::plan` and `stage_footprint` directly. The table, `schedule`, `footprint` and
-`mk_access` went. A live comparison ran first. For each pass of the hip suite and the oracle bench, the C++ build
-and the Rust build agreed in every field of every stage. `MK_ELIDE` and the other knobs of the build
-are read in Rust at each pass, and a bad value refuses the pass.
-
-**Proposed** (Claude Opus 5.5, 2026-10-22): the extern layer holds only the calls that the binding uses. Step 4 of
-milestone 15 moves the checks and the result rules of mk's C ABI into Rust. The C++ side keeps a thin layer,
-`hip/src/engine/extern.hip`. The docs do not say what happens to the calls that nothing in the nagaya uses. This is
-the simplest choice:
-
-- Each call of the extern layer takes C types and calls one `Engine` method or reads one field. It has no check.
-- The binding declares each call of the layer, and a test compares the two lists.
-- The calls that only mk's Python harness and lab used go:
-  - the taps, `mk_pass` and `mk_pass_gdn_ab`;
-  - the telemetry: `mk_stage_times`, `mk_stage_detail`, `mk_stage_raw`, `mk_stage_barriers`, `mk_mega_hwid`,
-    `mk_mega_grid`, `mk_dispatches`, `mk_host_stats` and `mk_last_hidden`;
-  - the mask and the poison cells: `mk_ctx_set_mask`, `mk_ctx_mask` and `mk_ctx_poison_cells`;
-  - the self-tests: `mk_scratch_selftest`, `mk_stage_abort_selftest`, `mk_trap_selftest`, `mk_trap_sink_installed`
-    and `mk_kernel_resources`;
-  - `mk_ctx_fork`, `mk_ctx_copy`, `mk_ctx_pooled_n` and `mk_engine_close`.
-- `mk_engine_attach` and `mk_arena_check` also go. The mk engine exports no arena yet (spec 10.2). The step that
-  exports it adds the two calls to the layer and binds them.
-- The `Engine` methods behind these calls stay in `engine.hip` for step 6. Step 6 removed them (Claude Opus 5.5,
-  2026-10-23): no call reached them, and the arena code is Rust now.
-
-Reason: Amy, 2026-10-22: "don't copy extra stuff". A call with no caller has no test. Five of these calls stopped the
-program on a small buffer (`MK_DIE`), and one self-test stopped on a small buffer (`MK_CHECK_BYTES`). With no caller,
-these checks need no Rust copy.
+- `mk_engine_open` takes a `mk_weight_table` (`weight_table.h`): each tensor of the arena by name, in its final
+  layout. The export of the arena (spec 10.2) builds the attach in Rust, from `arena.rs`.
+- Rust mirrors `Stage` and the argument type of each op as `#[repr(C)]` types (`src/stage.rs`). One file holds each
+  size, offset and constant of that mirror (`hip/src/engine/stage_layout.def`). Both the C++ build and the Rust build
+  check against it, so a change on one side alone stops a build.
+- `MK_ELIDE` and the other knobs of the build are read in Rust at each pass, and a bad value refuses the pass.
+- The C++ extern layer (`hip/src/engine/extern.hip`) holds only the calls that the binding uses. Each call takes C
+  types and calls one `Engine` method or reads one field. The binding declares each call of the layer, and a test
+  compares the two lists. The calls that only mk's Python harness and lab used were removed in step 6.
 
 **mk's pass scratch is a mandatory term.** The ABI says that `pass` never allocates and that its scratch is a
 mandatory term. mk allocates one scratch pool at its first ask and keeps it for the engine's life

@@ -370,13 +370,8 @@ Senpai does the cutover with Amy. Do not start, stop or enable a service yoursel
 These items are places where the docs and the code do not agree, or where a choice is still Proposed. This doc does
 not choose. Amy decides.
 
-- `docs/deploy.md:413-414` says that lane sg-arenas adds the fd store lines later. The b70host unit sets them
-  (`deploy/b70host/nagaya.service:41-42`), and spec 10.2 says the restart is built. gfx1151host's unit keeps the
-  comment (`deploy/nagaya.service:38`).
-- Spec 8.3 (`docs/spec.md:1183-1194`) says that a bench reports the Gemma 4 oracle numbers. No test or bench in
+- Spec 8.3 (`docs/spec.md:1207-1208`) says that a bench reports the Gemma 4 oracle numbers. No test or bench in
   `crates/nagaya-mk-gemma4-bmg` reads `oracle.json`; only `crates/nagaya-text-gemma4/tests/oracle.rs` reads it.
-- `docs/spec.md:1163` and `:1181` say that the only oracle is mk's Python, and that the Gemma reference is not
-  built. The Gemma 4 oracle is built (`docs/spec.md:1183`).
 - Spec 6.14 (`docs/spec.md:1062`): whether drafts change the bits of Gemma 4. Proposed, and open until a test on the
   B70 cards. `f1ab9ad` decided the notes on the build in the digest, the wake call and the pause rule. This one
   stays open.

@@ -262,9 +262,9 @@ pub struct ElasticTerm {
     pub tier: Tier,
     /// The size of one unit in bytes.
     pub unit_bytes: u64,
-    /// The minimum size in bytes.
+    /// The minimum size in units (`unit_bytes` each).
     pub minimum: u64,
-    /// The maximum size in bytes.
+    /// The maximum size in units (`unit_bytes` each).
     pub maximum: u64,
     /// The quantum kinds that use it.
     pub kinds: Vec<Kind>,
@@ -539,7 +539,8 @@ pub struct Tap {
 pub struct Output {
     /// The output name.
     pub name: String,
-    /// The element type of the bytes. A float output is compared as values (spec 8.3).
+    /// The element type of the bytes. Conformance compares outputs by integer bit pattern and rejects NaN and Inf
+    /// (spec 8.3).
     pub dtype: Dtype,
     /// The output bytes.
     pub bytes: Vec<u8>,
