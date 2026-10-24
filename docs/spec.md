@@ -1952,6 +1952,10 @@ mkviolet's rules do not carry over, or where the rules above leave a choice open
 - **The reply parser** ports the reply splitter of `mk_api.rs` (`Splitter`, council wire), because `chat.rs` has
   only `parse_tool_call`. Its stop tokens are `<turn|>`, `<eos>`, `<|tool_response>` and `<|turn>` (`mk_api.rs:654`).
   A marker token gives an empty piece.
+- **Proposed** (claude-opus-5-5, 2026-10-24): a character that a run of text does not finish. At `<|channel>`,
+  `<channel|>`, `<|tool_call>` or `<tool_call|>`, the parser drops its bytes, as mkviolet does
+  (`Splitter::new_segment`, `mk_api.rs:1306`). At a stop token or a cut, `finish` gives them as U+FFFD in the tail,
+  in the phase of the last token. Reason: a marker gives an empty piece, and the pieces of a part join to its text.
 - **Boundaries.** A marked message is a boundary when the tokens of its rendering begin the tokens of the whole, as
   in the Qwen3.8 library. Two boundaries with the same token count keep the first.
 - **Reads.** A plain read and a queue read keep mkviolet's text and its tokenization piece by piece. A read hashes the
