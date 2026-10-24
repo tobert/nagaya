@@ -71,17 +71,20 @@ struct Gemma4ReplyParser {
 }
 
 impl Gemma4ReplyParser {
+    /// Start a new run of text. The bytes of a character that the old run did not finish are dropped, as in mkviolet
+    /// (`Splitter::new_segment`): a marker gives no text, and the bytes belong to the phase before it (spec 11.3).
     fn new_segment(&mut self) {
-        self.flush_segment();
         self.segment.clear();
         self.segment_len = 0;
     }
 
-    /// Flush any text in the current segment that ended inside a character and was held back for a later token.
+    /// Give the text of the current run that ended inside a character and was held back for a later token.
     fn flush_segment(&mut self) -> Option<ReplyStep> {
-        let Ok(text) = self.tokenizer.decode(&self.segment) else {
-            return None;
-        };
+        // `push` decoded these tokens without an error, so an error here is a defect of the tokenizer (spec 8.5).
+        let text = self
+            .tokenizer
+            .decode(&self.segment)
+            .expect("the tokens of a run decode again as they decoded at push");
         let delta = text[self.segment_len.min(text.len())..].to_string();
         if delta.is_empty() {
             return None;
@@ -158,8 +161,12 @@ impl ReplyParser for Gemma4ReplyParser {
             )));
         }
         if self.stop.contains(&token) {
+            // The run stays, so `finish` gives a character that it did not finish in the tail, in this phase.
             self.ended = true;
-            return Ok(self.marker(self.phase));
+            return Ok(ReplyStep {
+                phase: self.phase,
+                piece: String::new(),
+            });
         }
         let m = self.marks;
         if token == m.channel_open && self.phase == Phase::Content && self.answer.trim().is_empty() {
@@ -243,7 +250,7 @@ impl ReplyParser for Gemma4ReplyParser {
 #[cfg(test)]
 mod tests {
     use gogi_proto::generation::Phase;
-    use nagaya_council::family::ReplyStart;
+    use nagaya_council::family::{ParsedReply, ReplyCall, ReplyParser};
 
     use super::{Gemma4ReplyParser, Marks};
     use crate::tokenizer::Tokenizer;
@@ -295,24 +302,27 @@ mod tests {
         }
     }"#;
 
-    #[test]
-    fn a_reply_ending_inside_a_character_flushes_its_held_text_on_finish() {
+    /// The tokens of `MINI_TOKENIZER`: `hi`, the first byte of a four-byte character, the markers and a stop token.
+    const HI: u32 = 9;
+    const SPLIT: u32 = 10;
+    const CHANNEL_OPEN: u32 = 4;
+    const CHANNEL_CLOSE: u32 = 5;
+    const TOOL_OPEN: u32 = 6;
+    const TOOL_CLOSE: u32 = 7;
+    const EOS: u32 = 1;
+
+    fn parser(thinking: bool) -> Box<dyn ReplyParser> {
         let tokenizer = Arc::new(Tokenizer::from_bytes(MINI_TOKENIZER.as_bytes()).unwrap());
-        let start = ReplyStart::prompt(false);
-        let mut parser: Box<dyn nagaya_council::family::ReplyParser> = Box::new(Gemma4ReplyParser {
+        Box::new(Gemma4ReplyParser {
             tokenizer,
             marks: Marks {
-                channel_open: 4,
-                channel_close: 5,
-                tool_open: 6,
-                tool_close: 7,
+                channel_open: CHANNEL_OPEN,
+                channel_close: CHANNEL_CLOSE,
+                tool_open: TOOL_OPEN,
+                tool_close: TOOL_CLOSE,
             },
-            stop: vec![1, 2, 3, 8],
-            phase: if start.thinking {
-                Phase::Reasoning
-            } else {
-                Phase::Content
-            },
+            stop: vec![EOS, 2, 3, 8],
+            phase: if thinking { Phase::Reasoning } else { Phase::Content },
             self_opened: false,
             think_sent: 0,
             think: String::new(),
@@ -322,13 +332,97 @@ mod tests {
             segment: Vec::new(),
             segment_len: 0,
             ended: false,
-        });
-        assert_eq!(parser.push(9).unwrap().piece, "hi");
-        // Token 10 (`<0xF0>`) is the start of a four-byte UTF-8 character and decodes to U+FFFD on its own.
-        assert_eq!(parser.push(10).unwrap().piece, "");
+        })
+    }
+
+    /// Push the tokens and finish. Then check that the pieces of each part join to its text in the reply, with the
+    /// tail on the last step, as the service streams them (spec 11.3c).
+    fn run(thinking: bool, tokens: &[u32]) -> ParsedReply {
+        let mut parser = parser(thinking);
+        let mut steps = Vec::new();
+        for &token in tokens {
+            steps.push(parser.push(token).unwrap());
+        }
+        let reply = parser.finish(tokens.last() != Some(&EOS));
+        for step in &reply.tail {
+            assert_eq!(
+                step.phase,
+                steps.last().unwrap().phase,
+                "the tail has the phase of the last token"
+            );
+        }
+        let joined = |phase: Phase| -> String {
+            steps
+                .iter()
+                .chain(&reply.tail)
+                .filter(|step| step.phase == phase)
+                .map(|step| step.piece.as_str())
+                .collect()
+        };
+        assert_eq!(
+            joined(Phase::Reasoning),
+            reply.reasoning,
+            "the reasoning pieces join to the reasoning"
+        );
+        assert_eq!(
+            joined(Phase::Content),
+            reply.content,
+            "the content pieces join to the content"
+        );
+        let call_text: String = reply
+            .calls
+            .iter()
+            .map(|call| match call {
+                ReplyCall::Malformed { text, .. } => text.as_str(),
+                ReplyCall::Parsed { .. } => panic!("the test calls do not parse"),
+            })
+            .collect();
+        assert_eq!(joined(Phase::Call), call_text, "the call pieces join to the call text");
+        reply
+    }
+
+    #[test]
+    fn a_reply_ending_inside_a_character_flushes_its_held_text_on_finish() {
+        let mut parser = parser(false);
+        assert_eq!(parser.push(HI).unwrap().piece, "hi");
+        // `SPLIT` (`<0xF0>`) is the start of a four-byte UTF-8 character and decodes to U+FFFD on its own.
+        assert_eq!(parser.push(SPLIT).unwrap().piece, "");
         let reply = parser.finish(true);
         assert_eq!(reply.content, "hi\u{FFFD}");
         assert_eq!(reply.tail.len(), 1);
         assert_eq!(reply.tail[0].piece, "\u{FFFD}");
+    }
+
+    #[test]
+    fn a_stop_token_after_an_unfinished_character_gives_it_in_the_tail() {
+        let reply = run(false, &[HI, SPLIT, EOS]);
+        assert!(reply.ended);
+        assert_eq!(reply.content, "hi\u{FFFD}");
+        assert_eq!(reply.tail.len(), 1, "{:?}", reply.tail);
+        assert_eq!(
+            (reply.tail[0].phase, reply.tail[0].piece.as_str()),
+            (Phase::Content, "\u{FFFD}")
+        );
+    }
+
+    #[test]
+    fn a_phase_marker_drops_an_unfinished_character_from_every_part() {
+        // `<channel|>` after held reasoning.
+        let reply = run(true, &[HI, SPLIT, CHANNEL_CLOSE, HI]);
+        assert_eq!((reply.reasoning.as_str(), reply.content.as_str()), ("hi", "hi"));
+        // `<|channel>` after held content, which opens a thought.
+        let reply = run(false, &[SPLIT, CHANNEL_OPEN, HI, CHANNEL_CLOSE, HI]);
+        assert_eq!((reply.reasoning.as_str(), reply.content.as_str()), ("hi", "hi"));
+        // `<|tool_call>` after held content.
+        let reply = run(false, &[HI, SPLIT, TOOL_OPEN, HI, TOOL_CLOSE, HI]);
+        assert_eq!(reply.content, "hihi");
+        // `<tool_call|>` after a held byte of the call.
+        let reply = run(false, &[TOOL_OPEN, HI, SPLIT, TOOL_CLOSE, HI]);
+        assert_eq!(reply.content, "hi");
+        assert!(
+            matches!(&reply.calls[..], [ReplyCall::Malformed { text, .. }] if text == "hi"),
+            "{:?}",
+            reply.calls
+        );
     }
 }
