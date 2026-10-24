@@ -2,10 +2,10 @@
 
 use nagaya_abi::{
     Capability, Engine, Limits, Output, OutputsWanted, PartId, PartKind, Parts, Residual, Segment, SegmentInputs,
-    StageOut, State, WriteResult,
+    StageOut, State,
 };
 
-use crate::gate::{Outcome, compare_outputs};
+use crate::gate::{Outcome, compare_outputs, non_finite, restore_through_store};
 use crate::{Failure, compare_bytes};
 
 const STAGES: &str = "stage_path_bits";
@@ -76,8 +76,17 @@ fn compare_parts(
     right: &[(PartId, Vec<u8>)],
 ) -> Result<(), Failure> {
     for ((id, left), (_, right)) in left.iter().zip(right) {
+        let part = &limits.parts[*id];
+        for (side, bytes) in [("left", left), ("right", right)] {
+            if let Some(index) = non_finite(part.dtype, bytes) {
+                return Err(Failure::new(
+                    gate,
+                    format!("part `{}` {side} index {index} is not finite", part.name),
+                ));
+            }
+        }
         compare_bytes(gate, left, right).map_err(|failure| Failure {
-            message: format!("part `{}`: {}", limits.parts[*id].name, failure.message),
+            message: format!("part `{}`: {}", part.name, failure.message),
             ..failure
         })?;
     }
@@ -282,24 +291,7 @@ fn feed_rule_inner<E: Engine>(
     let kept = read_parts(FEED, parts, limits, |_| true, 0, span as u64)?;
 
     let mut restored = make();
-    let parts = restored
-        .parts()
-        .ok_or_else(|| Failure::new(FEED, "the engine has no parts capability"))?;
-    for (id, bytes) in &kept {
-        let result = match limits.parts[*id].kind {
-            PartKind::Fixed => parts.part_write(State::Slot(0), *id, bytes),
-            _ => parts.cells_write(State::Slot(0), *id, 0, span as u64, bytes),
-        };
-        if result != WriteResult::Ok {
-            return Err(Failure::new(
-                FEED,
-                format!("the restore of part `{}` gave {result:?}", limits.parts[*id].name),
-            ));
-        }
-    }
-    if parts.set_n(State::Slot(0), span as u64) != WriteResult::Ok {
-        return Err(Failure::new(FEED, "set_n after the restore did not succeed"));
-    }
+    restore_through_store(&mut restored, State::Slot(0), limits, &kept, None, FEED)?;
     let got = feed(&mut restored, span as u64, &second, block)?;
     compare_outputs(FEED, &expected, &got)?;
     let parts = restored

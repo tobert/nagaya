@@ -105,7 +105,7 @@ fn pattern(len: usize, seed: u8, dtype: Dtype) -> Vec<u8> {
 }
 
 /// The first index of a non-finite value in a float part, or `None` for an integer part.
-fn non_finite(dtype: Dtype, bytes: &[u8]) -> Option<usize> {
+pub(crate) fn non_finite(dtype: Dtype, bytes: &[u8]) -> Option<usize> {
     // A value is non-finite when its bits under the mask equal the pattern. E4M3 has a NaN and no Inf.
     let (width, mask, pattern) = match dtype {
         Dtype::F32 => (4, 0x7f80_0000u32, 0x7f80_0000u32),
@@ -364,7 +364,7 @@ fn compare_filled(
 ///
 /// The function puts the parts in a store in a temporary directory, then restores that entry. Thus the gate and the
 /// store cannot drift apart. `spans` gives the positions of each row part. Without it, a row part starts at 0.
-fn restore_through_store(
+pub(crate) fn restore_through_store(
     engine: &mut dyn Engine,
     state: State,
     limits: &Limits,
@@ -768,10 +768,10 @@ fn same_boundaries_inner<E: Engine>(mut first: E, make: &mut dyn FnMut() -> E, l
         ));
     }
     compare_outputs(gate, &first_out.outputs, &second_out.outputs)?;
-    compare_fixed(gate, &mut first, &mut second, state, limits)?;
+    compare_state(gate, &mut first, &mut second, state, limits, 3)?;
     seal_state(&mut first, state, gate, "the first engine")?;
     seal_state(&mut second, state, gate, "the second engine")?;
-    compare_fixed(gate, &mut first, &mut second, state, limits)?;
+    compare_state(gate, &mut first, &mut second, state, limits, 3)?;
     // The next check makes two more engines. An engine that holds a large pool (mk: 11 GiB) needs these two freed.
     drop(first);
     drop(second);
@@ -806,7 +806,7 @@ fn same_boundaries_inner<E: Engine>(mut first: E, make: &mut dyn FnMut() -> E, l
             gate,
         )?;
         compare_outputs(gate, &with_gap_out.outputs, &without_gap_out.outputs)?;
-        compare_fixed(gate, &mut with_gap, &mut without_gap, state, limits)?;
+        compare_state(gate, &mut with_gap, &mut without_gap, state, limits, 3)?;
     }
     Ok(())
 }
@@ -1053,8 +1053,9 @@ fn segments_exact_bits_inner<E: Engine>(
                 message: format!("in a pass of {count} segments, segment {index}: {}", failure.message),
                 ..failure
             };
+            let rows = u64::from(1 + index % 2);
             compare_outputs(gate, wanted, found).map_err(context)?;
-            compare_fixed(gate, reference, &mut engine, State::Slot(index), limits).map_err(context)?;
+            compare_state(gate, reference, &mut engine, State::Slot(index), limits, rows).map_err(context)?;
         }
     }
     split_pass(make, limits)
@@ -1090,7 +1091,7 @@ fn split_pass<E: Engine>(make: &mut dyn FnMut() -> E, limits: &Limits) -> Result
         ..failure
     };
     compare_outputs(gate, &wanted.outputs, &found.outputs).map_err(context)?;
-    compare_fixed(gate, &mut whole, &mut split, state, limits).map_err(context)
+    compare_state(gate, &mut whole, &mut split, state, limits, tokens.len() as u64).map_err(context)
 }
 
 fn token_segment(state: State, start: u64, tokens: &[u32]) -> Segment {
@@ -1189,15 +1190,62 @@ fn read_fixed<E: Engine + ?Sized>(
     Ok(parts)
 }
 
-fn compare_fixed<E: Engine + ?Sized>(
+fn read_state<E: Engine + ?Sized>(
+    engine: &mut E,
+    state: State,
+    limits: &Limits,
+    rows: u64,
+    gate: &'static str,
+) -> Result<Vec<(PartId, Vec<u8>)>, Failure> {
+    let mut parts = Vec::new();
+    for (id, part) in limits.parts.iter().enumerate() {
+        if !part.is_stored() {
+            continue;
+        }
+        match part.kind {
+            PartKind::Fixed => {
+                let mut out = vec![0u8; shape_bytes(part) as usize];
+                if let Err(error) = engine.parts().unwrap().part_read(state, id, &mut out) {
+                    return Err(Failure::new(
+                        gate,
+                        format!("the engine refused to read part {}: {error:?}", part.name),
+                    ));
+                }
+                parts.push((id, out));
+            }
+            PartKind::Cells | PartKind::Ring if rows > 0 => {
+                let (from, count) = match (part.kind, engine.coverage()) {
+                    (PartKind::Ring, Some(coverage)) => {
+                        let span = coverage.coverage(state, id, &[]);
+                        (span.start, span.end.saturating_sub(span.start).max(1))
+                    }
+                    _ => (0, rows),
+                };
+                let mut out = vec![0u8; (shape_bytes(part) * count) as usize];
+                if let Err(error) = engine.parts().unwrap().cells_read(state, id, from, count, &mut out) {
+                    return Err(Failure::new(
+                        gate,
+                        format!("the engine refused to read part {}: {error:?}", part.name),
+                    ));
+                }
+                parts.push((id, out));
+            }
+            PartKind::Cells | PartKind::Ring | PartKind::Derived => {}
+        }
+    }
+    Ok(parts)
+}
+
+fn compare_state<E: Engine + ?Sized>(
     gate: &'static str,
     first: &mut E,
     second: &mut E,
     state: State,
     limits: &Limits,
+    rows: u64,
 ) -> Result<(), Failure> {
-    let left = read_fixed(first, state, limits, gate)?;
-    let right = read_fixed(second, state, limits, gate)?;
+    let left = read_state(first, state, limits, rows, gate)?;
+    let right = read_state(second, state, limits, rows, gate)?;
     compare_filled(gate, limits, &left, &right)
 }
 

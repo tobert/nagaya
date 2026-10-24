@@ -2,10 +2,12 @@
 
 use nagaya_abi::fake::{FakeAlways, FakeFeed};
 use nagaya_abi::{
-    Engine, Identity, Limits, PartError, PartId, Parts, PassError, PassOut, Residual, Segment, SlotLimit, StageHandle,
-    StageOut, Stages, State, Tap, WriteResult,
+    Coverage, CoverageSpan, Dtype, Engine, Identity, Limits, PartError, PartId, Parts, PassError, PassOut, Residual,
+    Seal, SealError, Segment, SlotLimit, Slots, StageHandle, StageOut, Stages, State, Tap, WriteResult,
 };
-use nagaya_conformance::{Outcome, feed_rule_bits, run_all, stage_path_bits};
+use nagaya_conformance::{
+    Outcome, feed_rule_bits, quantum_same_boundaries, run_all, segments_exact_bits, stage_path_bits,
+};
 
 fn slots() -> Vec<SlotLimit> {
     vec![SlotLimit {
@@ -136,4 +138,164 @@ impl Parts for Flip {
 fn a_stage_handle_whose_parts_differ_fails_the_stage_gate() {
     let mut make = || FlipOnStageRead(FakeFeed::two_stages(4, slots()).with_vocab(32));
     assert_fail(stage_path_bits(&mut make), "part `k.00`");
+}
+
+/// A fake with row parts only (no fixed parts) that flips a row cell in `cells_read` on its second instance, or
+/// writes NaN into a float row part, or refuses `Coverage::fits` during `Store::restore`.
+struct RowOnlyBroken {
+    inner: std::cell::RefCell<FakeFeed>,
+    flip_cells: bool,
+    nan_cells: bool,
+    refuse_fits: bool,
+}
+
+impl Engine for RowOnlyBroken {
+    fn identity(&self) -> Identity {
+        self.inner.borrow().identity()
+    }
+
+    fn limits(&self) -> Limits {
+        let mut limits = self.inner.borrow().limits();
+        limits.segments_exact = true;
+        if self.nan_cells {
+            for part in &mut limits.parts {
+                part.dtype = Dtype::F32;
+                part.shape = vec![2];
+            }
+        }
+        limits
+    }
+
+    fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
+        self.inner.get_mut().pass(segments, taps)
+    }
+
+    fn last_error(&self) -> Option<String> {
+        self.inner.borrow().last_error()
+    }
+
+    fn parts(&mut self) -> Option<&mut dyn Parts> {
+        Some(self)
+    }
+
+    fn slots(&mut self) -> Option<&mut dyn Slots> {
+        self.inner.get_mut().slots()
+    }
+
+    fn coverage(&mut self) -> Option<&mut dyn Coverage> {
+        Some(self)
+    }
+
+    fn seal(&mut self) -> Option<&mut dyn Seal> {
+        Some(self)
+    }
+}
+
+impl Seal for RowOnlyBroken {
+    fn seal(&mut self, _state: State) -> Result<(), SealError> {
+        Ok(())
+    }
+}
+
+impl Coverage for RowOnlyBroken {
+    fn coverage(&self, state: State, part: PartId, bytes: &[u8]) -> CoverageSpan {
+        Coverage::coverage(&*self.inner.borrow(), state, part, bytes)
+    }
+
+    fn fits(&self, coverage: &CoverageSpan, slot: u32) -> Result<(), String> {
+        if self.refuse_fits {
+            return Err("test: fits refused in feed_rule_bits".to_owned());
+        }
+        Coverage::fits(&*self.inner.borrow(), coverage, slot)
+    }
+}
+
+impl Parts for RowOnlyBroken {
+    fn part_read(&mut self, state: State, part: PartId, out: &mut [u8]) -> Result<(), PartError> {
+        self.inner.get_mut().parts().unwrap().part_read(state, part, out)
+    }
+
+    fn part_write(&mut self, state: State, part: PartId, bytes: &[u8]) -> WriteResult {
+        self.inner.get_mut().parts().unwrap().part_write(state, part, bytes)
+    }
+
+    fn cells_read(&mut self, state: State, part: PartId, from: u64, n: u64, out: &mut [u8]) -> Result<(), PartError> {
+        let result = self
+            .inner
+            .get_mut()
+            .parts()
+            .unwrap()
+            .cells_read(state, part, from, n, out);
+        if self.flip_cells
+            && let Some(byte) = out.first_mut()
+        {
+            *byte ^= 1;
+        }
+        if self.nan_cells && out.len() >= 4 {
+            out[..4].copy_from_slice(&f32::NAN.to_le_bytes());
+        }
+        result
+    }
+
+    fn cells_write(&mut self, state: State, part: PartId, from: u64, n: u64, bytes: &[u8]) -> WriteResult {
+        self.inner
+            .get_mut()
+            .parts()
+            .unwrap()
+            .cells_write(state, part, from, n, bytes)
+    }
+
+    fn set_n(&mut self, state: State, n: u64) -> WriteResult {
+        self.inner.get_mut().parts().unwrap().set_n(state, n)
+    }
+}
+
+#[test]
+fn quantum_same_boundaries_and_segments_exact_bits_check_row_parts_when_no_fixed_part_exists() {
+    let count = std::cell::Cell::new(0usize);
+    let mut make = || {
+        let index = count.get();
+        count.set(index + 1);
+        RowOnlyBroken {
+            inner: std::cell::RefCell::new(
+                FakeFeed::new(
+                    4,
+                    vec![SlotLimit {
+                        bytes: 8 * 64,
+                        count: 8,
+                        tokens: 64,
+                    }],
+                )
+                .with_max_pass_inputs(32)
+                .with_vocab(32),
+            ),
+            flip_cells: index % 2 == 1,
+            nan_cells: false,
+            refuse_fits: false,
+        }
+    };
+    assert_fail(quantum_same_boundaries(&mut make), "part k.00");
+    assert_fail(segments_exact_bits(&mut make), "part k.00");
+}
+
+#[test]
+fn non_finite_row_parts_fail_feed_rule_bits() {
+    let mut make = || RowOnlyBroken {
+        inner: std::cell::RefCell::new(FakeFeed::new(4, slots()).with_vocab(32)),
+        flip_cells: false,
+        nan_cells: true,
+        refuse_fits: false,
+    };
+    assert_fail(feed_rule_bits(&mut make), "not finite");
+}
+
+#[test]
+fn feed_rule_bits_restores_through_the_store_and_checks_fits() {
+    let mut make = || RowOnlyBroken {
+        inner: std::cell::RefCell::new(FakeFeed::new(4, slots()).with_vocab(32)),
+        flip_cells: false,
+        nan_cells: false,
+        refuse_fits: true,
+    };
+    assert_fail(feed_rule_bits(&mut make), "fits refused");
 }
