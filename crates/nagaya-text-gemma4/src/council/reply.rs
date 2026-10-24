@@ -72,8 +72,44 @@ struct Gemma4ReplyParser {
 
 impl Gemma4ReplyParser {
     fn new_segment(&mut self) {
+        self.flush_segment();
         self.segment.clear();
         self.segment_len = 0;
+    }
+
+    /// Flush any text in the current segment that ended inside a character and was held back for a later token.
+    fn flush_segment(&mut self) -> Option<ReplyStep> {
+        let Ok(text) = self.tokenizer.decode(&self.segment) else {
+            return None;
+        };
+        let delta = text[self.segment_len.min(text.len())..].to_string();
+        if delta.is_empty() {
+            return None;
+        }
+        self.segment_len = text.len();
+        self.append_delta(delta)
+    }
+
+    fn append_delta(&mut self, delta: String) -> Option<ReplyStep> {
+        match self.phase {
+            Phase::Reasoning => self.think.push_str(&delta),
+            Phase::Content => self.answer.push_str(&delta),
+            Phase::Call => {
+                if let Some(body) = self.call.as_mut() {
+                    body.push_str(&delta);
+                }
+            }
+            Phase::Unknown => unreachable!("the parser never sets the phase Unknown"),
+        }
+        let piece = if self.self_opened && self.phase == Phase::Reasoning {
+            self.visible_think()
+        } else {
+            delta
+        };
+        Some(ReplyStep {
+            phase: self.phase,
+            piece,
+        })
     }
 
     fn marker(&mut self, phase: Phase) -> ReplyStep {
@@ -164,25 +200,11 @@ impl ReplyParser for Gemma4ReplyParser {
         }
         let delta = text[self.segment_len.min(text.len())..].to_string();
         self.segment_len = text.len();
-        match self.phase {
-            Phase::Reasoning => self.think.push_str(&delta),
-            Phase::Content => self.answer.push_str(&delta),
-            Phase::Call => {
-                if let Some(body) = self.call.as_mut() {
-                    body.push_str(&delta);
-                }
-            }
-            Phase::Unknown => unreachable!("the parser never sets the phase Unknown"),
-        }
-        let piece = if self.self_opened && self.phase == Phase::Reasoning {
-            self.visible_think()
-        } else {
-            delta
-        };
-        Ok(ReplyStep {
+        let step = self.append_delta(delta).unwrap_or(ReplyStep {
             phase: self.phase,
-            piece,
-        })
+            piece: String::new(),
+        });
+        Ok(step)
     }
 
     fn ended(&self) -> bool {
@@ -194,6 +216,12 @@ impl ReplyParser for Gemma4ReplyParser {
     }
 
     fn finish(mut self: Box<Self>, _max_tokens: bool) -> ParsedReply {
+        let mut tail = Vec::new();
+        if let Some(step) = self.flush_segment()
+            && !step.piece.is_empty()
+        {
+            tail.push(step);
+        }
         if let Some(body) = self.call.take() {
             self.close_call(body, false);
         }
@@ -207,7 +235,100 @@ impl ReplyParser for Gemma4ReplyParser {
             reasoning,
             calls: std::mem::take(&mut self.calls),
             ended: self.ended,
-            tail: Vec::new(),
+            tail,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gogi_proto::generation::Phase;
+    use nagaya_council::family::ReplyStart;
+
+    use super::{Gemma4ReplyParser, Marks};
+    use crate::tokenizer::Tokenizer;
+    use std::sync::Arc;
+
+    const MINI_TOKENIZER: &str = r#"{
+        "version": "1.0",
+        "truncation": null,
+        "padding": null,
+        "added_tokens": [
+            {"id": 0, "content": "<bos>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+            {"id": 1, "content": "<eos>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+            {"id": 2, "content": "<|turn>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+            {"id": 3, "content": "<turn|>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+            {"id": 4, "content": "<|channel>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+            {"id": 5, "content": "<channel|>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+            {"id": 6, "content": "<|tool_call>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+            {"id": 7, "content": "<tool_call|>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+            {"id": 8, "content": "<|tool_response>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}
+        ],
+        "normalizer": null,
+        "pre_tokenizer": null,
+        "post_processor": null,
+        "decoder": {"type": "ByteFallback"},
+        "model": {
+            "type": "BPE",
+            "dropout": null,
+            "unk_token": null,
+            "continuing_subword_prefix": null,
+            "end_of_word_suffix": null,
+            "fuse_unk": false,
+            "byte_fallback": true,
+            "ignore_merges": false,
+            "vocab": {
+                "<bos>": 0,
+                "<eos>": 1,
+                "<|turn>": 2,
+                "<turn|>": 3,
+                "<|channel>": 4,
+                "<channel|>": 5,
+                "<|tool_call>": 6,
+                "<tool_call|>": 7,
+                "<|tool_response>": 8,
+                "hi": 9,
+                "<0xF0>": 10,
+                "<0x9F>": 11
+            },
+            "merges": []
+        }
+    }"#;
+
+    #[test]
+    fn a_reply_ending_inside_a_character_flushes_its_held_text_on_finish() {
+        let tokenizer = Arc::new(Tokenizer::from_bytes(MINI_TOKENIZER.as_bytes()).unwrap());
+        let start = ReplyStart::prompt(false);
+        let mut parser: Box<dyn nagaya_council::family::ReplyParser> = Box::new(Gemma4ReplyParser {
+            tokenizer,
+            marks: Marks {
+                channel_open: 4,
+                channel_close: 5,
+                tool_open: 6,
+                tool_close: 7,
+            },
+            stop: vec![1, 2, 3, 8],
+            phase: if start.thinking {
+                Phase::Reasoning
+            } else {
+                Phase::Content
+            },
+            self_opened: false,
+            think_sent: 0,
+            think: String::new(),
+            answer: String::new(),
+            call: None,
+            calls: Vec::new(),
+            segment: Vec::new(),
+            segment_len: 0,
+            ended: false,
+        });
+        assert_eq!(parser.push(9).unwrap().piece, "hi");
+        // Token 10 (`<0xF0>`) is the start of a four-byte UTF-8 character and decodes to U+FFFD on its own.
+        assert_eq!(parser.push(10).unwrap().piece, "");
+        let reply = parser.finish(true);
+        assert_eq!(reply.content, "hi\u{FFFD}");
+        assert_eq!(reply.tail.len(), 1);
+        assert_eq!(reply.tail[0].piece, "\u{FFFD}");
     }
 }
