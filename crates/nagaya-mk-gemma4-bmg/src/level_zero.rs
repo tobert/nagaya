@@ -229,6 +229,10 @@ unsafe extern "C" {
         phContext: *mut ze_context_handle_t,
     ) -> ze_result_t;
     pub fn zeContextDestroy(hContext: ze_context_handle_t) -> ze_result_t;
+    pub fn zeCommandQueueDestroy(hCommandQueue: ze_command_queue_handle_t) -> ze_result_t;
+    pub fn zeCommandListDestroy(hCommandList: ze_command_list_handle_t) -> ze_result_t;
+    pub fn zeModuleDestroy(hModule: ze_module_handle_t) -> ze_result_t;
+    pub fn zeKernelDestroy(hKernel: ze_kernel_handle_t) -> ze_result_t;
     pub fn zeCommandQueueCreate(
         hContext: ze_context_handle_t,
         hDevice: ze_device_handle_t,
@@ -379,6 +383,28 @@ pub struct B70Card {
 
 unsafe impl Send for B70Card {}
 unsafe impl Sync for B70Card {}
+
+impl Drop for B70Card {
+    /// Destroy the card's objects and its context (engine-abi "`close` in Rust"). The owner of each other buffer of the
+    /// context frees it first, because a destroyed context does not free the memory that it holds.
+    fn drop(&mut self) {
+        // No kernel runs: each launch waits for its end before it returns.
+        self.free(self.ring_dev as *mut c_void);
+        self.free(self.wake_buf as *mut c_void);
+        unsafe {
+            check_ze(zeKernelDestroy(self.kernel), "zeKernelDestroy");
+            check_ze(zeModuleDestroy(self.module), "zeModuleDestroy");
+            check_ze(zeCommandListDestroy(self.wake_list), "zeCommandListDestroy(wake)");
+            check_ze(zeCommandListDestroy(self.cmd_list), "zeCommandListDestroy");
+            check_ze(zeCommandQueueDestroy(self.copy_queue), "zeCommandQueueDestroy(copy)");
+            check_ze(
+                zeCommandQueueDestroy(self.compute_queue),
+                "zeCommandQueueDestroy(compute)",
+            );
+            check_ze(zeContextDestroy(self.context), "zeContextDestroy");
+        }
+    }
+}
 
 impl B70Card {
     pub fn xe2_cores(&self) -> u32 {

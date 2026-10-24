@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -38,9 +38,35 @@ pub struct Loaded {
     weights: [CardWeights; 2],
     /// The DMA-BUF fd of each slab of each stage, by part name (spec 10.2). `Loaded` owns them.
     slabs: [Vec<(String, OwnedFd)>; 2],
+    /// True when a cold load exported the slabs. The driver closes the fd of an exported slab when it frees the slab.
+    exported: bool,
     checkpoint_digest: String,
     tokenizer_hash: String,
     lineage: Lineage,
+}
+
+impl Drop for Loaded {
+    /// Free the weight slabs on each card (engine-abi "`close` in Rust"). The cluster drops after this call, and a card
+    /// destroys its context only when the context holds no slab.
+    fn drop(&mut self) {
+        if self.exported {
+            // `zeMemFree` closes the fd that the export gave, so these fds must not close a second time.
+            for slabs in &mut self.slabs {
+                for (_, fd) in slabs.drain(..) {
+                    let _ = fd.into_raw_fd();
+                }
+            }
+        }
+        for (stage, weights) in self.weights.iter().enumerate() {
+            let card = &self.cluster.cards[self.cards[stage]];
+            for layer in &weights.weights {
+                card.free(layer.slab as *mut std::ffi::c_void);
+            }
+            if let Some((base, _)) = weights.head {
+                card.free(base as *mut std::ffi::c_void);
+            }
+        }
+    }
 }
 
 impl Loaded {
@@ -113,6 +139,7 @@ impl Loaded {
             .map_err(other)?;
         let w1 = CardWeights::upload(&cluster.cards[cards[1]], &ckpt, CARD_LAYERS[1].clone(), true, &raw(1))
             .map_err(other)?;
+        let exported = stored.is_none();
         let slabs = match stored {
             Some(stored) => stored,
             // A cold load owns the fds that the export of each new slab gave.
@@ -140,6 +167,7 @@ impl Loaded {
             cards,
             weights: [w0, w1],
             slabs,
+            exported,
             checkpoint_digest,
             tokenizer_hash,
             lineage,

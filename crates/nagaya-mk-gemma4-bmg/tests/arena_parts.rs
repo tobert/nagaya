@@ -41,3 +41,20 @@ fn the_limits_name_the_arena_capability() {
         limits.capabilities
     );
 }
+
+/// A drop of the engine frees its memory (`tests/xe_close.rs`), so the engine declares `close` (engine-abi
+/// "`close` in Rust", spec 3.3a).
+#[test]
+fn the_limits_name_the_close_capability() {
+    let config = Config {
+        model_dir: "/nonexistent".into(),
+        slots: vec![4096],
+        max_block: spec::DEFAULT_MAX_BLOCK,
+    };
+    let limits = spec::limits(&config, [1, 1]);
+    assert!(
+        limits.capabilities.contains(&Capability::Close),
+        "{:?}",
+        limits.capabilities
+    );
+}

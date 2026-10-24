@@ -220,6 +220,8 @@ pub fn limits(config: &Config, weights: [u64; 2]) -> Limits {
             Capability::Coverage,
             Capability::Stages,
             Capability::Arena,
+            // A drop frees the weights, the shards and each card's context (`tests/xe_close.rs`).
+            Capability::Close,
         ],
         parts: parts(),
         inputs: Inputs::Tokens,
