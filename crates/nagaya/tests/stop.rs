@@ -17,7 +17,9 @@ use nagaya_abi::{
     Capability, Coverage, DeviceId, Engine, Identity, Limits, OutputsWanted, PartError, Parts, PassError, PassOut,
     Seal, Segment, SegmentInputs, SlotLimit, Slots, State, Tap, Tier, WriteResult,
 };
-use nagaya_store::{Store, snapshot_from_engine};
+use nagaya_store::{
+    EngineFacts, Put, Reason, RecipeId, Snapshot, Store, Tensor, Tier as StoreTier, recipe_root, snapshot_from_engine,
+};
 
 #[derive(Default)]
 struct ParkRecord {
@@ -932,4 +934,90 @@ fn an_interrupted_stop_reports_fatal_for_every_engine() {
     assert!(report.interrupted);
     assert_eq!(receive(&socket), "STATUS=engine good draining; engine bad draining");
     assert_eq!(receive(&socket), "STATUS=engine good fatal; engine bad fatal");
+}
+
+// The stop parks the pinned entries of the host tier, so a pin stays through a restart (spec 6.11, Decided
+// 2026-10-23).
+
+fn wall_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
+/// Put one entry in the host tier of the process's store, and pin it for an hour. Give its content id.
+fn pin_a_host_entry(process: &nagaya::process::Process) -> nagaya_store::ContentId {
+    let snapshot = Snapshot {
+        tensors: vec![Tensor {
+            name: "state".to_owned(),
+            kind: nagaya_abi::PartKind::Fixed,
+            dtype: nagaya_abi::Dtype::U8,
+            shape: vec![16],
+            data: vec![7; 16],
+            coverage: None,
+            block_format: None,
+        }],
+        parent: None,
+    };
+    let recipe: RecipeId = recipe_root(&[1u8; 32], &[], &[], &[]);
+    let now = wall_ms();
+    let ports = process.ports();
+    let mut store = ports.store().unwrap().lock().unwrap();
+    // The test profile assigns all of its host bytes to the engine, so the store gets a host budget of its own.
+    store.set_budget(StoreTier::Host, 1 << 20);
+    let id = store
+        .put(Put {
+            snapshot: &snapshot,
+            recipe,
+            previous_recipe: None,
+            chains_from: None,
+            engine: EngineFacts::of("a", &limits_on(&[0])),
+            identity: [1u8; 32],
+            owner: 9,
+            tier: StoreTier::Host,
+            reason: Reason::Anchor,
+            sealed_recipe: None,
+            provenance: None,
+            now_ms: now,
+        })
+        .unwrap();
+    store.pin(id, 9, now + 3_600_000, now).unwrap();
+    id
+}
+
+#[test]
+fn a_stop_parks_a_pinned_host_entry_and_its_pin_stays() {
+    let record = Arc::new(Mutex::new(ParkRecord::default()));
+    let (mut process, _, directory) = started(ParkFactory::new("a", record).empty());
+    let id = pin_a_host_entry(&process);
+    let report = process.stop(Duration::from_secs(2), &SignalFlag::new());
+    assert_eq!(report.exit_code(), ExitCode::Clean, "{report:?}");
+    assert_eq!(report.parked.pinned, 1, "{report:?}");
+    let line = report.log_line();
+    assert!(line.contains("parked 1 pinned entries"), "{line}");
+    assert!(!line.contains("parked nothing"), "{line}");
+    drop(process);
+
+    let store = Store::open(directory.path()).unwrap();
+    assert_eq!(store.entries()[&id].tier, StoreTier::Nvme, "6.11: the entry is on NVMe");
+    assert_eq!(store.pins()[&id].len(), 1, "6.10: the pin stays through a restart");
+}
+
+#[test]
+fn a_stop_whose_park_of_a_pin_fails_is_a_crash() {
+    let record = Arc::new(Mutex::new(ParkRecord::default()));
+    let (mut process, _, _directory) = started(ParkFactory::new("a", record).empty());
+    let id = pin_a_host_entry(&process);
+    process
+        .ports()
+        .store()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .set_budget(StoreTier::Nvme, 1);
+    let report = process.stop(Duration::from_secs(2), &SignalFlag::new());
+    assert_eq!(report.exit_code(), ExitCode::Crash, "{report:?}");
+    assert_eq!(report.parked.failures.len(), 1, "{report:?}");
+    assert!(report.parked.failures[0].contains(&id.hex()), "{report:?}");
 }

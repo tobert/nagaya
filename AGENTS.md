@@ -175,6 +175,11 @@ is done on gfx1151host. Milestone 15s is done except the cutover on b70host. Mil
     7. **Arenas.** Keep the arenas through a restart (10.2), with the head in a slab.
     8. **Deploy.** Write the unit and the profile for b70host. The bootstrap config binds `198.51.100.10:8091`,
        mkviolet's address. Do not start, stop or enable a service: senpai does the cutover with Amy.
+
+    Senpai and Amy did the cutover at 11:01 on 2026-10-23, from `5d7c5eb`. `nagaya.service` serves council v2
+    on `198.51.100.10:8091` with Gemma 4 on the two B70 cards, ready after 7 s. `mkviolet.service` stays disabled.
+    `gogi-conformance` at gogi `a07d85e` gave 266 ok, 0 FAIL and 11 skip. The kernel log has no hang or reset.
+    b70host has no kaijutsu gate config, so the gate check has no target here.
 16. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host

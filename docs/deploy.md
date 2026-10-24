@@ -362,7 +362,7 @@ Do these steps in this order. Stop at the first step that fails, and do the roll
    systemctl --user enable --now nagaya.service
    ```
 
-   The command returns when the process sends `READY=1`. The rehearsal of 2026-10-21 was ready after 8 s.
+   The command returns when the process sends `READY=1`. The cutover of 2026-10-23 was ready after 7 s.
 
 3. Check the state of the unit and its log.
 
@@ -381,7 +381,15 @@ Do these steps in this order. Stop at the first step that fails, and do the roll
    nice -n 10 cargo run --release -p gogi-conformance -- http://198.51.100.10:8091
    ```
 
-   The rehearsal of 2026-10-21 gave `215 ok, 0 FAIL, 8 skip`. It ran on loopback, with gogi `a07d85e`.
+   The cutover of 2026-10-23 gave `266 ok, 0 FAIL, 11 skip`, with gogi `a07d85e`. The skips include `ride`,
+   which the nagaya does not declare, and the restart check.
+
+   The restart check runs with `--allow-restart 'systemctl --user restart nagaya.service'`. On 2026-10-23, from
+   `47f2191`, it gave `273 ok, 0 FAIL, 10 skip`. The stop parked 1 pinned entry of 38,309,888 bytes (spec 6.11). The
+   restart attached the 31 stored arena fds. It sent `READY=1` 1.3 s after the old process exited.
+
+   The HTTP server listens before the engines open, and it answers 503 `unavailable` until they are ready (spec
+   10.1). The process sends `READY=1` after the routes attach, so the suite can run when `restart` returns.
 
 5. Look for card errors in the kernel log.
 

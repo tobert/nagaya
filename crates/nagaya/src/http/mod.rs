@@ -394,9 +394,45 @@ fn header_text(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
     Some(value.to_str().unwrap_or("").to_owned())
 }
 
+/// The routes of a server: empty while the process starts, and the council routes after the attach (spec 10.1).
+type Attached = Arc<OnceLock<Router>>;
+
+/// Serve a request with the council routes, or give a 503 `unavailable` while the process starts (spec 10.1).
+async fn dispatch(
+    axum::extract::State((attached, starting)): axum::extract::State<(Attached, Router)>,
+    request: Request,
+) -> Response {
+    use tower::ServiceExt;
+
+    let router = attached.get().cloned().unwrap_or(starting);
+    match router.oneshot(request).await {
+        Ok(response) => response,
+        Err(never) => match never {},
+    }
+}
+
+/// The answer to each request before the council routes attach.
+async fn starting(request: Request) -> Response {
+    let id = request
+        .extensions()
+        .get::<RequestId>()
+        .cloned()
+        .expect("the observe layer sets the request id");
+    Failure::new(
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        gogi_proto::error::ErrorType::Unavailable,
+        "nothing ran: the process is starting; try again when it is ready",
+    )
+    .respond(&id)
+}
+
 /// A running HTTP server.
 pub struct Server {
     addr: SocketAddr,
+    /// The council routes, after [`Server::attach`].
+    attached: Attached,
+    /// The receiver of `cut`, for the routes that attach later.
+    cut_rx: tokio::sync::watch::Receiver<bool>,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<std::io::Result<()>>,
     runtime: tokio::runtime::Handle,
@@ -407,14 +443,29 @@ pub struct Server {
 impl Server {
     /// Bind `bind` and serve the council routes on `runtime`. A bind that fails is an error.
     pub fn start(runtime: &tokio::runtime::Handle, bind: SocketAddr, council: Arc<Council>) -> std::io::Result<Self> {
+        let server = Self::bind(runtime, bind)?;
+        server.attach(council);
+        Ok(server)
+    }
+
+    /// Bind `bind` and serve on `runtime` before the council routes exist. Until [`Server::attach`], each request
+    /// gets a 503 `unavailable` (spec 10.1). A bind that fails is an error.
+    pub fn bind(runtime: &tokio::runtime::Handle, bind: SocketAddr) -> std::io::Result<Self> {
         let listener = std::net::TcpListener::bind(bind)?;
         listener.set_nonblocking(true)?;
         let addr = listener.local_addr()?;
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let (cut, cut_rx) = tokio::sync::watch::channel(false);
+        let attached: Attached = Arc::new(OnceLock::new());
+        let starting_router = Router::new()
+            .fallback(starting)
+            .layer(axum::middleware::from_fn(observe));
+        let app = Router::new()
+            .fallback(dispatch)
+            .with_state((Arc::clone(&attached), starting_router));
         let task = runtime.spawn(async move {
             let listener = tokio::net::TcpListener::from_std(listener)?;
-            axum::serve(listener, served_router(council, cut_rx))
+            axum::serve(listener, app)
                 .with_graceful_shutdown(async {
                     let _ = stopped.await;
                 })
@@ -422,11 +473,21 @@ impl Server {
         });
         Ok(Self {
             addr,
+            attached,
+            cut_rx,
             stop: Some(stop),
             task,
             runtime: runtime.clone(),
             cut,
         })
+    }
+
+    /// Serve the council routes from now on. A second attach is a defect, so it panics (spec 8.5).
+    pub fn attach(&self, council: Arc<Council>) {
+        let routes = served_router(council, self.cut_rx.clone());
+        if self.attached.set(routes).is_err() {
+            panic!("the council routes attached twice to one HTTP server");
+        }
     }
 
     /// The address that the server listens on.

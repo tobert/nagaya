@@ -914,7 +914,8 @@ Reason: one store holds every engine, pins stay through a restart, and a lease w
 forever. The mkviolet rule is the origin, not the scope.
 
 **6.11 Restart.** At start, the store loads its index again. It checks each entry when a lookup first uses it.
-Entries in the host tier do not survive a restart, so the store removes them from the index at start. Decided
+Entries in the host tier do not survive a restart, so the store removes them from the index at start. (The stop
+parks the pinned ones first, below.) Decided
 2026-10-20 (reading).
 
 `index.json` stores `hits` and `last_used_ms`, so a restart keeps them for every NVMe entry. A lookup updates them in
@@ -923,10 +924,21 @@ memory, and the next index write saves them to disk. Decided 2026-10-24 (Amy).
 At start, the store also wakes pinned entries into slots when the profile asks for them. (mk wakes its pinned
 parked contexts before `READY=1`.) Not built: the nagaya wakes no pinned entry at start.
 
-**Open:** A restart loses an entry of the host tier, also when a pin holds it. The index drops the entry and its pin
-at start. The stop parks the states of the slots, and it does not park the pinned entries of the host tier. Thus a
-pinned snapshot does not survive a restart. The restart check of `gogi-conformance` (`--allow-restart`) needs a
-pinned snapshot to survive. The stop must park the pinned entries of the host tier to NVMe for that check to pass.
+**The stop parks the pinned entries of the host tier.** After the groups park their states (10.3 step 3), the stop
+parks each live entry of the host tier that a live pin holds. It parks the entries under it first, because a park
+needs its parent on NVMe. Each parked entry keeps its recipe, its owner and its pins. Thus a pinned snapshot and its
+pin stay through a clean restart, as 6.10 says. A crash does not stop, so a crash loses them. Decided 2026-10-23.
+
+A park of a pinned entry that fails is a failure of the stop, as for a state (10.3).
+
+Amy, 2026-10-23: "ah, let's save add the saves then".
+
+**Two rules for the park of pins.** Decided 2026-10-23 (Amy: "both look good, canonicalize them").
+
+- The stop does not park a pinned interval copy, and its pin ends at the restart. Reason: an interval copy never goes
+  to NVMe (6.13), and a copy is not a parent, so no chain needs it.
+- The stop waits for the park of pinned entries for at most one park budget (2.1). A park past it makes the process
+  exit 1, as for a group (10.3). Reason: the budget bounds the whole stop, and a new budget needs a config field.
 
 **6.12 Steering and lab inputs.** Some state changes bits but is not an input, for example mk's attention cell mask
 or a steering vector. Such state goes into the recipe. Thus a steered or masked result never has a plain recipe.
@@ -1566,7 +1578,22 @@ When `<store_dir>/profile.toml` does not exist, the process starts with an empty
 because a machine with no engine can serve as a coordinator or hold a store tier (2.1). A process with an empty
 profile sends `READY=1` when admission passes. Decided 2026-10-20 (reading).
 
-Not built: the canary and the wake of pinned state (8.1, 6.11). Today `READY=1` follows the open of every engine.
+Not built: the canary and the wake of pinned state (8.1, 6.11). Today `READY=1` follows the open of every engine
+and the attach of the council routes.
+
+**`READY=1` follows the HTTP bind.** Decided 2026-10-23. Amy: "seems fine to change it, http can come up and return
+an http not ready if it's not ready yet".
+
+- The process binds the HTTP address before the engines open. A bind that fails refuses the start (exit 3, 10.4).
+- Until the council routes attach, each request gets a 503 `unavailable` that says the process is starting.
+- The process sends `READY=1` after the council routes attach. Thus a client that connects at `READY=1` gets an answer.
+
+Reason: on 2026-10-23, the HTTP server listened about 0.45 s after `READY=1` on b70host. A client that connected
+when `systemctl restart` returned got a refused connection.
+
+**Proposed** (claude-opus-5-5, 2026-10-23): a request during the start gets `unavailable`, not `model_unavailable`.
+Reason: `model_unavailable` names the model and its status, and the identity is known only after the engines open.
+gogi lists `unavailable` for a server that stops. A start is the same case for a client: it tries again later.
 
 While the engines open, the process tells systemd that the start goes on. Every 5 s (the heartbeat interval), it
 sends one datagram. The datagram holds `EXTEND_TIMEOUT_USEC=` and a `STATUS=` line that says `loading` for each
@@ -2428,7 +2455,7 @@ Tests that can fail (all built, in `crates/nagaya/tests/extensions.rs` and `exte
   `embeddings` response, which this section does not cover. `Family::vocab_size` already holds the vocabulary size.
 - **`health`.** mk answered 200 while it served and 503 after a failure. The nagaya stops the process at a failure
   (8.5), so it has no state that serves and is unhealthy. A probe uses `identity`: a 200 with each model `ready` is
-  healthy. A fatal engine reports `unloaded` there (11.1). systemd sees `READY=1` when the engines open (10.1).
+  healthy. A fatal engine reports `unloaded` there (11.1). systemd sees `READY=1` when the routes serve (10.1).
   The watchdog thread ends a hung process (7.4).
 - **`weights`.** mk's `health` told `attached` or `loaded`. The nagaya counts this as `nagaya.arena.handoff` (9.4),
   with the status `hot` or `cold`. No client route is needed.
@@ -2473,14 +2500,14 @@ the table and gogi's table already hold. Decided by senpai 2026-10-22 (vetoable)
 | 429 | `busy` | More than 64 calls (11.7), or more than 16 open feeds (9.7a). |
 | 500 | `internal` | A family library defect. The process stops (8.5). |
 | 503 | `model_unavailable` | The served model is not `ready`. The text routes only. |
-| 503 | `unavailable` | The process is stopping. |
+| 503 | `unavailable` | The process is starting or stopping. |
 
 **11.6 Binding.** The HTTP and gossip listen addresses and seed peers are in the bootstrap config (2.1). (mkviolet
 has a tailnet address in its code.)
 
 **11.7 The HTTP routes.** The process serves the council routes with `axum` on the control runtime
-(`crates/nagaya/src/http`). It starts the server after `READY=1`, and it logs `http listening on <address>`. These
-rules are each "Decided by senpai 2026-10-20 night (vetoable)".
+(`crates/nagaya/src/http`). It starts the server before the engines open, and it logs `http listening on
+<address>` (10.1, Decided 2026-10-23). The other rules here are each "Decided by senpai 2026-10-20 night (vetoable)".
 
 - The engine registry of 11.3 replaces the first two rules below. The code builds it
   (`crates/nagaya/src/serving.rs`, `FamilyRegistry`).
@@ -2665,8 +2692,7 @@ The inventories found these items. We correct each one when its code moves. We d
 9. Should the control threads run at elevated priority (3.2, 3.2a)? A raised priority needs `CAP_SYS_NICE` or a
    setting in the unit, such as `Nice=`. A measurement under load shows whether the pinned cores are enough.
 
-10. Can a restart keep a pinned entry of the host tier (6.11)? Today the index drops the entry and its pin at start.
-    The restart check of `gogi-conformance` needs the stop to park such an entry to NVMe.
+10. Can a restart keep a pinned entry of the host tier (6.11)? Yes: the stop parks it to NVMe. Decided 2026-10-23.
 11. How does the park charge the host copy of a state (10.3 "Open", 4.2 "Staging")? The copy has no staging charge
     today. The charge path refuses while the process stops.
 12. Can a copy quantum run past the 30 s watchdog timeout on a slow NVMe (7.4)? We have not measured it (kaibo review

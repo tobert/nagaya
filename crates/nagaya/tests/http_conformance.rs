@@ -5,11 +5,13 @@
 
 mod support;
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use gogi_conformance::{Opts, Report, Status, run};
+use gogi_conformance::{Opts, Report, Restart, Status, run};
 use support::Lines;
 
 const PROFILE: &str = "[[engines]]\nname = \"toy\"\nkind = \"fake-toy\"\ndevices = [0]\nshare = 1\n\
@@ -78,6 +80,8 @@ impl Nagaya {
         let mut lines = Lines::new(child.stderr.take().unwrap());
         let addr = lines.wait_for("http listening on ", Duration::from_secs(60));
         assert_eq!(addr, format!("127.0.0.1:{}", self.port));
+        // The server listens before the engines open, and serves the routes from READY on (spec 10.1).
+        lines.wait_for("ready with ", Duration::from_secs(60));
         self.child = Some(child);
         self.lines = Some(lines);
     }
@@ -133,15 +137,28 @@ fn failures(report: &Report) -> Vec<String> {
 
 #[test]
 fn gogi_conformance_passes_against_the_process_with_the_fake_engine() {
-    let mut nagaya = Nagaya::start();
+    let nagaya = Rc::new(RefCell::new(Nagaya::start()));
+    let url = nagaya.borrow().url();
+    // The restart check stops the process with SIGTERM and starts it again on the same store and port (spec 6.11).
+    let held = Rc::clone(&nagaya);
+    let restart = Restart::Hook(Box::new(move || {
+        let mut nagaya = held.borrow_mut();
+        match nagaya.terminate() {
+            Some(0) => {}
+            code => return Err(format!("the stop before the restart exited with {code:?}, not 0")),
+        }
+        nagaya.spawn();
+        Ok(())
+    }));
     let report = run(
         Opts {
-            url: nagaya.url(),
-            restart: None,
+            url,
+            restart: Some(restart),
             model: None,
         },
         false,
     );
+    let mut nagaya = nagaya.borrow_mut();
     let failed = failures(&report);
     let skipped: Vec<String> = report
         .checks
@@ -166,6 +183,11 @@ fn gogi_conformance_passes_against_the_process_with_the_fake_engine() {
     };
     // The generation and continuation checks ran: none of them is a skip.
     for name in [
+        "the server answers again after the restart",
+        "a held spec survives a restart",
+        "a pinned snapshot survives a restart",
+        "a context whose head is pinned feeds 0 tokens after a restart",
+        "a decision replays bit for bit across a restart",
         "generation holds its head",
         "stream reasoning and content pieces join to done's text",
         "a build without dry_run refuses an open message, naming continue",

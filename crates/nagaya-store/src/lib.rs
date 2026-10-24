@@ -1017,6 +1017,17 @@ pub enum Restored {
     },
 }
 
+/// The result of a park of the pinned entries of the host tier (spec 6.11).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PinnedPark {
+    /// The entries that moved to NVMe, each parent before its child.
+    pub parked: Vec<ContentId>,
+    /// The bytes of those entries.
+    pub bytes: u64,
+    /// The parks that failed, one message for each.
+    pub failures: Vec<String>,
+}
+
 impl Store {
     /// Open the store in `dir`, or make an empty one, with no budget in any tier. For tests only (spec 4.1a).
     #[cfg(any(test, feature = "testing"))]
@@ -1225,6 +1236,51 @@ impl Store {
         record_evicted(&leaving);
         self.record_held();
         self.remove_blobs(&victims)
+    }
+
+    /// Park each live entry of the host tier that a live pin holds, and the entries under it (spec 6.11). The stop
+    /// does this, so a pin stays through a clean restart.
+    ///
+    /// A parent parks before its child, because a park needs the parent on NVMe. An interval copy stays in the host
+    /// tier (6.13). A park that fails is in `failures`, and the other parks still run.
+    pub fn park_pinned(&mut self, now_ms: u64) -> PinnedPark {
+        let pinned: Vec<ContentId> = self
+            .index
+            .entries
+            .values()
+            .filter(|entry| entry.tier == Tier::Host && entry.state == EntryState::Live)
+            .filter(|entry| entry.reason != Reason::Interval)
+            .filter(|entry| self.has_live_pin(&entry.content_id, now_ms))
+            .map(|entry| entry.content_id)
+            .collect();
+        let mut report = PinnedPark::default();
+        let mut seen = BTreeSet::new();
+        for tip in pinned {
+            let mut chain = self.ancestors(Some(tip));
+            chain.reverse();
+            for id in chain {
+                if !seen.insert(id) {
+                    continue;
+                }
+                let Some(entry) = self.index.entries.get(&id) else {
+                    continue;
+                };
+                if entry.tier == Tier::Nvme {
+                    continue;
+                }
+                let size = entry.size;
+                match self.park(&id, now_ms) {
+                    Ok(()) => {
+                        report.parked.push(id);
+                        report.bytes += size;
+                    }
+                    Err(error) => report
+                        .failures
+                        .push(format!("the pinned entry {} did not park: {error}", id.hex())),
+                }
+            }
+        }
+        report
     }
 
     /// Set the byte quota of one owner in one tier.

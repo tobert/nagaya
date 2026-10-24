@@ -3006,3 +3006,96 @@ fn a_pinned_chain_larger_than_the_budget_loses_protection() {
     let victims2 = store.evict(1, Tier::Nvme, root_size + tip_size, 10).unwrap();
     assert!(victims2.contains(&root2) && victims2.contains(&tip2));
 }
+
+// The stop parks the pinned entries of the host tier, so a pin stays through a restart (spec 6.11, Decided
+// 2026-10-23).
+
+#[test]
+fn a_park_of_pins_keeps_each_pinned_host_entry_and_its_parents_through_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let alone = put_in(&mut store, &base_snapshot(1), recipe(200), 1, Tier::Host);
+    let parent = put_in(&mut store, &base_snapshot(2), recipe(201), 1, Tier::Host);
+    let next = next_recipe(recipe(201), 1);
+    let child = try_put(
+        &mut store,
+        &delta_at(parent, 2),
+        next,
+        Some(recipe(201)),
+        1,
+        Tier::Host,
+        10,
+    )
+    .unwrap();
+    let unpinned = put_in(&mut store, &base_snapshot(3), recipe(202), 1, Tier::Host);
+    let ended = put_in(&mut store, &wide_snapshot(4), recipe(203), 1, Tier::Host);
+    store.pin(alone, 5, 1_000, 10).unwrap();
+    store.pin(child, 6, 1_000, 10).unwrap();
+    store.pin(ended, 7, 15, 10).unwrap();
+    let sizes: u64 = [alone, parent, child].iter().map(|id| store.entries()[id].size).sum();
+
+    let report = store.park_pinned(20);
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    let mut parked = report.parked.clone();
+    parked.sort();
+    let mut wanted = vec![alone, parent, child];
+    wanted.sort();
+    assert_eq!(parked, wanted, "the pinned entries and the parent under a pin park");
+    assert_eq!(report.bytes, sizes);
+    let position = |id| report.parked.iter().position(|parked| *parked == id).unwrap();
+    assert!(position(parent) < position(child), "a parent parks before its child");
+    assert_eq!(store.entries()[&unpinned].tier, Tier::Host, "an unpinned entry stays");
+    assert_eq!(store.entries()[&ended].tier, Tier::Host, "an ended pin holds nothing");
+    drop(store);
+
+    let mut store = Store::open(dir.path()).unwrap();
+    for id in [alone, parent, child] {
+        assert_eq!(store.entries()[&id].tier, Tier::Nvme);
+    }
+    assert!(!store.entries().contains_key(&unpinned));
+    assert!(!store.entries().contains_key(&ended));
+    assert_eq!(
+        store.pins()[&alone],
+        vec![Pin {
+            owner: 5,
+            expires_ms: 1_000
+        }]
+    );
+    assert_eq!(
+        store.pins()[&child],
+        vec![Pin {
+            owner: 6,
+            expires_ms: 1_000
+        }]
+    );
+    assert_eq!(lookup(&mut store, next).unwrap(), vec![parent, child]);
+}
+
+#[test]
+fn a_park_of_pins_leaves_a_pinned_interval_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = copy_store(dir.path(), 4);
+    let copy = put_copy(&mut store, &base_snapshot(1), recipe(204), 1, 10).unwrap();
+    store.pin(copy, 5, 1_000, 10).unwrap();
+    let report = store.park_pinned(20);
+    assert!(report.parked.is_empty());
+    assert!(
+        report.failures.is_empty(),
+        "6.13: a copy stays in the host tier, and that is no failure"
+    );
+    assert_eq!(store.entries()[&copy].tier, Tier::Host);
+}
+
+#[test]
+fn a_park_of_pins_reports_a_park_with_no_room() {
+    let dir = tempfile::tempdir().unwrap();
+    let size = base_snapshot(1).encode().unwrap().len() as u64;
+    let mut store = Store::open_with_limits(dir.path(), u64::MAX, size - 1, u64::MAX, 0).unwrap();
+    let id = put_in(&mut store, &base_snapshot(1), recipe(205), 1, Tier::Host);
+    store.pin(id, 5, 1_000, 10).unwrap();
+    let report = store.park_pinned(20);
+    assert!(report.parked.is_empty());
+    assert_eq!(report.failures.len(), 1, "{:?}", report.failures);
+    assert!(report.failures[0].contains(&id.hex()), "{:?}", report.failures);
+    assert_eq!(store.entries()[&id].tier, Tier::Host);
+}

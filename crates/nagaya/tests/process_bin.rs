@@ -145,6 +145,50 @@ fn ready_and_a_sigterm_exit_zero() {
     assert_eq!(status.code(), Some(0));
 }
 
+/// Send one HTTP request on a new connection and give the status line. A refused connection is an error.
+fn http_status(addr: std::net::SocketAddr, path: &str) -> io::Result<String> {
+    use std::io::{BufRead, BufReader, Write};
+    let mut stream = std::net::TcpStream::connect(addr)?;
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    write!(stream, "GET {path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n")?;
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line)?;
+    Ok(line.trim_end().to_owned())
+}
+
+#[test]
+fn ready_comes_after_the_http_server_listens() {
+    // Spec 10.1: a client that connects when systemd sees READY=1 gets an answer, not a refused connection.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let fixture = Fixture::new("fake");
+    let config = std::fs::read_to_string(&fixture.config).unwrap();
+    std::fs::write(
+        &fixture.config,
+        config.replace("127.0.0.1:0\"\ngossip", &format!("127.0.0.1:{port}\"\ngossip")),
+    )
+    .unwrap();
+    let socket = UnixDatagram::bind(&fixture.notify).unwrap();
+    socket.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let mut child = fixture.spawn(Some(&fixture.notify));
+    let mut buffer = [0u8; 512];
+    loop {
+        let count = socket.recv(&mut buffer).expect("the process sends READY");
+        if buffer[..count].starts_with(b"READY=1") {
+            break;
+        }
+    }
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let status = http_status(addr, "/council/v2/identity").expect("the HTTP server listens at READY=1");
+    assert_eq!(status, "HTTP/1.1 200 OK");
+    // SAFETY: the child pid is live, and SIGTERM is the stop signal of spec 10.3.
+    assert_eq!(unsafe { kill(child.id() as i32, SIGTERM) }, 0);
+    assert_eq!(wait_timeout(&mut child, Duration::from_secs(10)).code(), Some(0));
+}
+
 #[test]
 fn ready_comes_with_gossip_up() {
     let fixture = Fixture::new("fake");

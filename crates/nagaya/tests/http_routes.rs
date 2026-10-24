@@ -645,3 +645,50 @@ fn a_build_whose_snapshot_copy_the_ledger_refuses_is_a_429_busy_that_names_the_s
         "{value}"
     );
 }
+
+/// Send one GET on a new connection. Give the status line, the request-id header and the body.
+fn get_raw(addr: std::net::SocketAddr, path: &str) -> (String, String, String) {
+    let mut connection = std::net::TcpStream::connect(addr).unwrap();
+    connection.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    write!(
+        connection,
+        "GET {path} HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut connection, &mut text).unwrap();
+    let (head, body) = text.split_once("\r\n\r\n").unwrap();
+    let status = head.lines().next().unwrap().to_owned();
+    let id = head
+        .lines()
+        .find_map(|line| line.strip_prefix("request-id: "))
+        .unwrap_or_default()
+        .to_owned();
+    (status, id, body.to_owned())
+}
+
+/// A server that binds before its council attaches answers 503 `unavailable`, then serves the routes (spec 10.1).
+#[test]
+fn a_server_answers_unavailable_until_the_council_attaches() {
+    let f = Fixture::new();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let server = Server::bind(runtime.handle(), "127.0.0.1:0".parse().unwrap()).unwrap();
+    let (status, id, body) = get_raw(server.local_addr(), "/council/v2/identity");
+    assert!(status.starts_with("HTTP/1.1 503"), "{status}");
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(body["error"]["type"], "unavailable", "{body}");
+    assert!(
+        body["error"]["message"].as_str().unwrap().contains("starting"),
+        "{body}"
+    );
+    assert!(!id.is_empty(), "a 503 during the start carries a request id");
+    assert_eq!(body["request_id"], id.as_str(), "the body repeats the request id");
+
+    server.attach(council(&f));
+    let (status, _, body) = get_raw(server.local_addr(), "/council/v2/identity");
+    assert!(status.starts_with("HTTP/1.1 200"), "{status}: {body}");
+    server.stop(Duration::from_secs(1));
+}

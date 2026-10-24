@@ -35,6 +35,7 @@ pub struct Options {
     cpu_sets: Option<CpuSets>,
     stored: ArenaSet,
     fd_store: Option<FdStore>,
+    hold_ready: bool,
 }
 
 impl Options {
@@ -47,7 +48,15 @@ impl Options {
             cpu_sets: None,
             stored: ArenaSet::empty(),
             fd_store: None,
+            hold_ready: false,
         }
+    }
+
+    /// Do not send `READY=1` when the engines open. The caller sends it with [`notify_ready`] after the council
+    /// routes attach (spec 10.1).
+    pub fn hold_ready(mut self) -> Self {
+        self.hold_ready = true;
+        self
     }
 
     /// Set the fds that systemd passed back, and the fd store (spec 10.2).
@@ -162,6 +171,17 @@ pub fn active_profile(store_dir: &Path) -> Result<PlacementProfile, ProfileError
     }
 }
 
+/// Send `READY=1` with the state of each opened engine (spec 10.1). A send that fails is a warning.
+pub fn notify_ready(notifier: Option<&Notifier>, opened: &[OpenedEngine]) {
+    let mut names: Vec<String> = opened.iter().map(|engine| engine.name.clone()).collect();
+    names.sort();
+    if let Some(notifier) = notifier
+        && let Err(error) = notifier.ready(&names)
+    {
+        tracing::warn!("cannot send READY=1 to systemd: {error}");
+    }
+}
+
 /// Start the threads, wait for every engine to open, then send `READY=1` (spec 10.1).
 ///
 /// The start makes the span `nagaya.start`. It records the state of each engine in `nagaya.engine.state` (spec 9.4).
@@ -261,10 +281,8 @@ fn start_engines(
                     instruments.arena_handoff(&engine.name, handoff.status());
                 }
             }
-            if let Some(notifier) = notifier
-                && let Err(error) = notifier.ready(&names)
-            {
-                tracing::warn!("cannot send READY=1 to systemd: {error}");
+            if !options.hold_ready {
+                notify_ready(notifier, &opened);
             }
             Ok(Ready { process, opened })
         }

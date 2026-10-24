@@ -255,11 +255,24 @@ fn serve(
     let names: Vec<String> = profile.engines.iter().map(|engine| engine.name.clone()).collect();
     let served_profile = profile.clone();
     let call_cpus = Some(cpu_sets.pool.clone());
+    // Spec 10.1: the HTTP server listens before the engines open, and it answers 503 until the routes attach.
+    let server = match http::Server::bind(&node.gossip().runtime(), config.http_bind) {
+        Ok(server) => server,
+        Err(error) => {
+            tracing::error!(
+                "cannot bind the HTTP address {}: {error}; check `http_bind`",
+                config.http_bind
+            );
+            return ExitCode::RefusedStart;
+        }
+    };
+    tracing::info!("http listening on {}", server.local_addr());
     published(node.publish_machine(&inventory, &profile));
     published(node.engines_loading(&names));
     let options = lifecycle::Options::new(lifecycle::DEFAULT_OPEN_TIMEOUT)
         .cpu_sets(cpu_sets)
-        .arenas(arenas, fd_store);
+        .arenas(arenas, fd_store)
+        .hold_ready();
     let mut ready = match lifecycle::start_with(
         profile,
         registry,
@@ -270,11 +283,13 @@ fn serve(
     ) {
         Ok(ready) => ready,
         // `lifecycle::start` logs the error with its span.
-        Err(error) => return error.exit_code(),
+        Err(error) => {
+            server.stop(HTTP_STOP);
+            return error.exit_code();
+        }
     };
     published(node.engines_ready(&ready.opened));
-    tracing::info!("ready with {} engines", ready.opened.len());
-    // The council routes serve after READY (spec 11.1, 11.6). A failure here refuses the start (spec 10.4).
+    // The council routes attach before READY (spec 10.1, 11.7). A failure here refuses the start (spec 10.4).
     let ports = ready.process.ports();
     let council = match serving::council(
         &serving::FamilyRegistry::compiled_in(),
@@ -287,24 +302,15 @@ fn serve(
         Ok(council) => Arc::new(council),
         Err(error) => {
             tracing::error!("{error}");
+            server.stop(HTTP_STOP);
             ready.process.abort();
             std::mem::forget(ready.process);
             return ExitCode::RefusedStart;
         }
     };
-    let server = match http::Server::start(&node.gossip().runtime(), config.http_bind, Arc::clone(&council)) {
-        Ok(server) => server,
-        Err(error) => {
-            tracing::error!(
-                "cannot bind the HTTP address {}: {error}; check `http_bind`",
-                config.http_bind
-            );
-            ready.process.abort();
-            std::mem::forget(ready.process);
-            return ExitCode::RefusedStart;
-        }
-    };
-    tracing::info!("http listening on {}", server.local_addr());
+    server.attach(Arc::clone(&council));
+    lifecycle::notify_ready(notifier.as_ref(), &ready.opened);
+    tracing::info!("ready with {} engines", ready.opened.len());
     let code = {
         // A desired profile from a peer arrives through gossip (spec 2.4 note, 3.3).
         let process = &ready.process;
