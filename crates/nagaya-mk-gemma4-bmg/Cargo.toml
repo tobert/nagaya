@@ -9,8 +9,8 @@ xe = []
 
 [dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
-# mkviolet builds serde_json with `preserve_order`. The workspace build has it too (nagaya-text-qwen38).
-serde_json = { version = "1.0.154", features = ["preserve_order"] }
+# mkviolet builds serde_json with `preserve_order`. Turn on `float_roundtrip` too (spec 11.3a).
+serde_json = { version = "1.0.154", features = ["float_roundtrip", "preserve_order"] }
 sha2 = "0.10.9"
 blake3 = "1.8.7"
 nagaya-abi = { version = "0.1.0", path = "../nagaya-abi" }

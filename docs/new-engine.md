@@ -238,15 +238,12 @@ each with the gates green (`AGENTS.md`, milestone 15).
   `tests/build_flags.rs`). Build objects to stdout from the crate directory, so the archive digest does not take in
   the build directory.
 - **`serde_json` features.** Cargo joins the features of one build, so a workspace build has `preserve_order` and
-  `float_roundtrip` (spec 11.3a). A build of one crate alone has only what its own `Cargo.toml` names. Today the
-  two family crates name both, `nagaya-council` names `float_roundtrip` only, and `nagaya-mk-gemma4-bmg` names
-  `preserve_order` only (`crates/nagaya-council/Cargo.toml:12`, `crates/nagaya-mk-gemma4-bmg/Cargo.toml:13`). Name
-  each feature that the crate's own tests need (section 9).
+  `float_roundtrip` (spec 11.3a). A build of one crate alone has only what its own `Cargo.toml` names. Every crate
+  that parses or writes tool schemas or config JSON names both features in its own `Cargo.toml`.
 - **The clippy check with the feature** runs only on a machine that has the compiler: `ocloc` for `xe`
   (`AGENTS.md`, "Checks").
-- **The workspace members.** Add the crate to `members` in the workspace `Cargo.toml`. The tree differs from this
-  instruction today. The Gemma 4 port added no member, and its three crates are members only as path dependencies
-  (section 9).
+- **The workspace members.** Add the crate to `members` in the workspace `Cargo.toml`. Every crate under `crates/`
+  is a member of `Cargo.toml`.
 
 ## 6. Tests
 
@@ -373,9 +370,6 @@ Senpai does the cutover with Amy. Do not start, stop or enable a service yoursel
 These items are places where the docs and the code do not agree, or where a choice is still Proposed. This doc does
 not choose. Amy decides.
 
-- The workspace `Cargo.toml:2-14` lists 11 members. `nagaya-jinja`, `nagaya-text-gemma4` and `nagaya-mk-gemma4-bmg`
-  are members only as path dependencies of `nagaya`. A crate that nothing depends on would fall out of
-  `--workspace`.
 - `docs/deploy.md:413-414` says that lane sg-arenas adds the fd store lines later. The b70host unit sets them
   (`deploy/b70host/nagaya.service:41-42`), and spec 10.2 says the restart is built. gfx1151host's unit keeps the
   comment (`deploy/nagaya.service:38`).
@@ -383,9 +377,6 @@ not choose. Amy decides.
   `crates/nagaya-mk-gemma4-bmg` reads `oracle.json`; only `crates/nagaya-text-gemma4/tests/oracle.rs` reads it.
 - `docs/spec.md:1163` and `:1181` say that the only oracle is mk's Python, and that the Gemma reference is not
   built. The Gemma 4 oracle is built (`docs/spec.md:1183`).
-- Spec 11.3a (`docs/spec.md:1996`) says that the workspace turns on `preserve_order` and `float_roundtrip` for all
-  its crates. `nagaya-council` names `float_roundtrip` only, and `nagaya-mk-gemma4-bmg` names `preserve_order` only
-  (section 5).
 - Spec 6.14 (`docs/spec.md:1062`): whether drafts change the bits of Gemma 4. Proposed, and open until a test on the
   B70 cards. `f1ab9ad` decided the notes on the build in the digest, the wake call and the pause rule. This one
   stays open.

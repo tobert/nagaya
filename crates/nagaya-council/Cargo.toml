@@ -9,6 +9,6 @@ gogi-proto.workspace = true
 indexmap = "2.14"
 nagaya-abi = { version = "0.1.0", path = "../nagaya-abi" }
 nagaya-store = { version = "0.1.0", path = "../nagaya-store" }
-serde_json = { version = "1.0", features = ["float_roundtrip"] }
+serde_json = { version = "1.0", features = ["float_roundtrip", "preserve_order"] }
 sha2 = "0.10.9"
 
