@@ -132,6 +132,9 @@ impl std::fmt::Display for LifecycleError {
             LifecycleError::Event(Event::Opened { group, .. }) => {
                 write!(formatter, "group {group} sent an open report during the start")
             }
+            LifecycleError::Event(Event::Swapped { group, .. }) => {
+                write!(formatter, "group {group} swapped engines during the start")
+            }
             LifecycleError::Timeout { waiting } => {
                 write!(formatter, "engine {} did not open in time", waiting.join(", "))
             }
@@ -402,5 +405,9 @@ fn status(event: &Event) -> String {
         Event::Panicked { thread, message } => format!("STATUS=the {thread} thread panicked: {message}"),
         Event::OpenFailed { engine, message, .. } => format!("STATUS=engine {engine} fatal: {message}"),
         Event::Opened { group, .. } => format!("STATUS=group {group} opened"),
+        Event::Swapped { group, loaded, .. } => {
+            let names: Vec<&str> = loaded.iter().map(|engine| engine.name.as_str()).collect();
+            format!("STATUS=group {group} loaded {}", names.join(", "))
+        }
     }
 }

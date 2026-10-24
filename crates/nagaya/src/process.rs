@@ -1,6 +1,6 @@
 //! The process threads: the ledger, the watchdog, and one thread per device group (spec 3.2).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -9,14 +9,15 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 
-use nagaya_abi::{ArenaPart, Capability, CheckStrength, DeviceId, Engine, Identity, Limits, Tier};
+use nagaya_abi::{ArenaPart, CheckStrength, DeviceId, Engine, Identity, Limits, Tier};
 use nagaya_ledger::{Ledger, LedgerError};
 use nagaya_store::Store;
 use nagaya_telemetry::Inherit;
 use tracing::Span;
 
 use crate::admission::{
-    AdmitError, Admitted, Factory, GroupDevice, OpenErrorKind, Registry, admit_with_fd_ceiling, group_devices,
+    AdmitError, Admitted, Factory, GroupDevice, OpenErrorKind, Registry, admit_loaded, admit_with_fd_ceiling,
+    group_devices,
 };
 use crate::affinity::{pin_current_thread, set_batch_policy};
 use crate::arena::{ArenaSet, FdName, FdStore};
@@ -27,10 +28,12 @@ use crate::inventory::Inventory;
 use crate::jobs::{GroupJobs, JobSpec};
 use crate::park::{self, StoreBudget, StoreMessage};
 use crate::placement::{self, DeviceGroup};
-use crate::profile::{EnginePlacement, PlacementProfile};
+use crate::profile::{EnginePlacement, PlacementProfile, Residency};
 use crate::signal::SignalFlag;
+use in_place::{Member, Unloaded};
 
 mod handoff;
+mod in_place;
 mod staged;
 
 /// The default watchdog timeout. Three times the longest declared quantum bound (mk: 10 s).
@@ -195,6 +198,10 @@ pub struct OwnedLedger {
     ledger: Ledger,
     owner: ThreadId,
     fd_ceiling: Option<usize>,
+    /// The profile that the ledger admitted last. A swap admits the loaded engines of it (spec 3.3a).
+    active: Option<PlacementProfile>,
+    /// The names of the loaded engines of the active profile.
+    loaded: BTreeSet<String>,
 }
 
 impl OwnedLedger {
@@ -210,10 +217,12 @@ impl OwnedLedger {
             ledger: Ledger::new(),
             owner: thread::current().id(),
             fd_ceiling,
+            active: None,
+            loaded: BTreeSet::new(),
         }
     }
 
-    /// Admit a profile. Only the owner thread may call this.
+    /// Admit a profile. Its resident engines are the loaded engines (spec 3.3a). Only the owner thread may call this.
     pub fn admit(
         &mut self,
         profile: &PlacementProfile,
@@ -225,7 +234,70 @@ impl OwnedLedger {
             self.owner,
             "the ledger is written off its thread"
         );
-        admit_with_fd_ceiling(profile, registry, inventory, &mut self.ledger, self.fd_ceiling)
+        let admitted = admit_with_fd_ceiling(profile, registry, inventory, &mut self.ledger, self.fd_ceiling)?;
+        self.loaded = profile
+            .engines
+            .iter()
+            .filter(|engine| engine.residency == Residency::Resident)
+            .map(|engine| engine.name.clone())
+            .collect();
+        self.active = Some(profile.clone());
+        Ok(admitted)
+    }
+
+    /// The loaded engines after a swap that loads `load` and unloads `unload`.
+    fn swapped(&self, load: &[String], unload: &[String]) -> BTreeSet<String> {
+        let mut loaded = self.loaded.clone();
+        for name in unload {
+            assert!(
+                loaded.remove(name),
+                "the swap unloads engine `{name}`, which is not loaded"
+            );
+        }
+        for name in load {
+            assert!(
+                loaded.insert(name.clone()),
+                "the swap loads engine `{name}`, which is loaded"
+            );
+        }
+        loaded
+    }
+
+    /// Check whether a swap fits, and change nothing (spec 3.3a). Only the owner thread may call this.
+    pub fn check_swap(
+        &mut self,
+        load: &[String],
+        unload: &[String],
+        registry: &Registry,
+        inventory: &Inventory,
+    ) -> Result<(), AdmitError> {
+        self.check_owner();
+        let profile = self
+            .active
+            .as_ref()
+            .expect("a swap comes after the admission of a profile");
+        let loaded = self.swapped(load, unload);
+        admit_loaded(profile, registry, inventory, &mut self.ledger, &loaded, false).map(|_| ())
+    }
+
+    /// Admit the loaded engines after a swap (spec 3.3a). A refusal changes nothing. Only the owner thread may call
+    /// this.
+    pub fn swap(
+        &mut self,
+        load: &[String],
+        unload: &[String],
+        registry: &Registry,
+        inventory: &Inventory,
+    ) -> Result<Admitted, AdmitError> {
+        self.check_owner();
+        let profile = self
+            .active
+            .clone()
+            .expect("a swap comes after the admission of a profile");
+        let loaded = self.swapped(load, unload);
+        let admitted = admit_loaded(&profile, registry, inventory, &mut self.ledger, &loaded, true)?;
+        self.loaded = loaded;
+        Ok(admitted)
     }
 
     /// Charge a new context of an engine (spec 4.2). Only the owner thread may call this.
@@ -416,6 +488,15 @@ pub enum Event {
         /// The devices of the group.
         devices: Vec<DeviceId>,
     },
+    /// A group swapped engines in place (spec 3.3a).
+    Swapped {
+        /// The group index.
+        group: usize,
+        /// The engines that unloaded, in profile order.
+        unloaded: Vec<String>,
+        /// The engines that loaded.
+        loaded: Vec<OpenedEngine>,
+    },
     /// A worker thread panicked. The process stops (spec 8.5).
     Panicked {
         /// The worker: `group`, `ledger` or `watchdog`.
@@ -436,7 +517,7 @@ impl Event {
                 ExitCode::Crash
             }),
             Event::Panicked { .. } => Some(ExitCode::Crash),
-            Event::Opened { .. } => None,
+            Event::Opened { .. } | Event::Swapped { .. } => None,
         }
     }
 }
@@ -636,6 +717,12 @@ impl Start {
                         LedgerMessage::Unassigned(reply) => {
                             let _ = reply.send(ledger.ledger().unassigned());
                         }
+                        LedgerMessage::CheckSwap { load, unload, reply } => {
+                            let _ = reply.send(ledger.check_swap(&load, &unload, &ledger_registry, &ledger_inventory));
+                        }
+                        LedgerMessage::Swap { load, unload, reply } => {
+                            let _ = reply.send(ledger.swap(&load, &unload, &ledger_registry, &ledger_inventory));
+                        }
                         LedgerMessage::Stop => break,
                     }
                 }
@@ -735,6 +822,16 @@ impl Start {
         let names: Vec<String> = profile.engines.iter().map(|engine| engine.name.clone()).collect();
         let mut split = stored.split(&names);
         handoff::drop_orphans(split.orphans, fd_store.as_ref());
+        // An on-demand engine stays unloaded at start, and its stored fds hold device memory (spec 3.3a).
+        for placement in profile
+            .engines
+            .iter()
+            .filter(|engine| engine.residency == Residency::OnDemand)
+        {
+            if let Some(stored) = split.engines.remove(&placement.name) {
+                handoff::drop_stored(&placement.name, stored, fd_store.as_ref());
+            }
+        }
 
         let accepting = Arc::new(AtomicBool::new(true));
         let groups = placement::device_groups(&profile);
@@ -757,6 +854,7 @@ impl Start {
             let group_machine = machine.clone();
             let group_own = stop_tx.clone();
             let group_fd_store = fd_store.clone();
+            let group_ledger = ledger_tx.clone();
             let handle = spawn_named(format!("nagaya-group-{index}"), move || {
                 guard("group", &group_guard, || {
                     pin("group", group_cpus.as_deref());
@@ -770,6 +868,7 @@ impl Start {
                         machine: group_machine,
                         sets: group_sets,
                         fd_store: group_fd_store,
+                        ledger: group_ledger,
                     };
                     group_thread(index, jobs, links, heartbeat);
                 });
@@ -864,6 +963,8 @@ struct GroupLinks {
     sets: Option<CpuSets>,
     /// The fd store of systemd, when the process keeps arenas (spec 10.2).
     fd_store: Option<FdStore>,
+    /// The ledger thread, which checks and admits a swap (spec 3.3a).
+    ledger: Sender<LedgerMessage>,
 }
 
 fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: Duration) {
@@ -877,80 +978,48 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
         machine,
         sets,
         fd_store,
+        ledger,
     } = links;
     let _ = heartbeats.send(WatchMessage::Beat {
         group,
         at: Instant::now(),
     });
-    let mut engines: Vec<Box<dyn Engine>> = Vec::with_capacity(jobs.len());
-    let mut opened = Vec::with_capacity(jobs.len());
+    // The group holds each engine of its profile entries, and an engine that is not loaded has its place (3.3a).
+    let mut members: Vec<Member> = jobs.into_iter().map(|job| Member { job, loaded: false }).collect();
+    let mut engines: Vec<Box<dyn Engine>> = members.iter().map(Unloaded::of).collect();
+    let mut opened = Vec::with_capacity(members.len());
     // An open can take minutes, and it blocks this thread. The guard beats for the group until the open ends (7.4).
     let open_beat = OpenBeat::start(group, heartbeats.clone(), interval);
     // The machine devices of the first engine, in the order of its profile entry. A stage names its device by index.
-    let first_devices: Vec<DeviceId> = jobs
+    let first_devices: Vec<DeviceId> = members
         .first()
-        .map(|job| job.devices.iter().map(|device| device.id).collect())
+        .map(|member| member.job.devices.iter().map(|device| device.id).collect())
         .unwrap_or_default();
-    for mut job in jobs {
-        let (engine, handoff) = match handoff::open(&mut job, fd_store.as_ref()) {
-            Ok(opened) => opened,
-            Err(error) => {
+    for index in 0..members.len() {
+        // An on-demand engine opens at its first job (spec 3.3a).
+        if members[index].job.placement.residency != Residency::Resident {
+            continue;
+        }
+        match in_place::open(&mut members[index].job, fd_store.as_ref()) {
+            Ok((engine, info)) => {
+                engines[index] = engine;
+                members[index].loaded = true;
+                opened.push(info);
+            }
+            Err((kind, message)) => {
                 let _ = events.send(Event::OpenFailed {
                     group,
-                    engine: job.placement.name.clone(),
-                    kind: error.kind,
-                    message: error.to_string(),
+                    engine: members[index].name().to_owned(),
+                    kind,
+                    message,
                 });
                 return;
             }
-        };
-        let opened_limits = engine.limits();
-        if opened_limits != job.limits {
-            // A part size is the shape and the element type of a part. Any other difference is a crash (spec 10.4).
-            let (kind, what) = if opened_limits.parts != job.limits.parts {
-                (
-                    OpenErrorKind::PartSize,
-                    "a part size after open does not equal the admitted part size",
-                )
-            } else {
-                (
-                    OpenErrorKind::Other,
-                    "limits() after open do not equal the admitted limits",
-                )
-            };
-            let _ = events.send(Event::OpenFailed {
-                group,
-                engine: job.placement.name.clone(),
-                kind,
-                message: what.to_owned(),
-            });
-            return;
         }
-        // The rules of the stages and the feed rule (engine-abi D1, D11). An engine that breaks one does not serve.
-        if let Err(message) = opened_limits.check() {
-            let _ = events.send(Event::OpenFailed {
-                group,
-                engine: job.placement.name.clone(),
-                kind: OpenErrorKind::Other,
-                message: format!("the limits of the engine break a rule: {message}"),
-            });
-            return;
-        }
-        opened.push(OpenedEngine {
-            name: job.placement.name.clone(),
-            thread: thread::current().id(),
-            identity: engine.identity(),
-            limits: opened_limits,
-            handoff,
-        });
-        engines.push(engine);
     }
     drop(open_beat);
-    let names: Vec<String> = opened.iter().map(|engine| engine.name.clone()).collect();
-    let staged = engines
-        .iter()
-        .any(|engine| engine.limits().capabilities.contains(&Capability::Stages));
-    if staged {
+    let names: Vec<String> = members.iter().map(|member| member.name().to_owned()).collect();
+    if members.iter().any(|member| member.loaded && member.staged()) {
         let links = staged::StagedLinks {
             devices: first_devices,
             events,
@@ -968,6 +1037,9 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
     let _ = events.send(Event::Opened { group, engines: opened });
     let mut cancelled = 0;
     let mut jobs = GroupJobs::new(group as u32, names.join("+")).machine(machine);
+    // The jobs for an engine that is not loaded, or that a planned swap unloads, in order of arrival (spec 3.3a).
+    let mut waiting: Vec<(JobSpec, Span)> = Vec::new();
+    let mut pending: Option<in_place::Plan> = None;
     let beat = || WatchMessage::Beat {
         group,
         at: Instant::now(),
@@ -1000,13 +1072,26 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
                 }
                 // A job that arrives after the stop began is cancelled below, before it runs.
                 Ok(GroupMessage::Job(spec, parent)) => {
-                    jobs.add_under(spec, parent);
+                    let member = members.get(spec.engine).unwrap_or_else(|| {
+                        panic!(
+                            "a job names engine {} of group {group}, which has {} engines",
+                            spec.engine,
+                            members.len()
+                        )
+                    });
+                    let unloads = pending.as_ref().is_some_and(|plan| plan.unload.contains(&spec.engine));
+                    if member.loaded && !unloads {
+                        jobs.add_under(spec, parent);
+                    } else {
+                        waiting.push((spec, parent));
+                    }
                 }
                 Ok(GroupMessage::Park(reply)) => {
-                    cancelled += jobs.cancel_all();
+                    cancelled += jobs.cancel_all() + waiting.len();
+                    waiting.clear();
                     // The drain ends here. The park budget of the group starts now.
                     let _ = reply.send(ParkProgress::Draining { ended: Instant::now() });
-                    let mut report = park_group(&names, &mut engines, store.as_ref());
+                    let mut report = park_loaded(&members, &mut engines, store.as_ref());
                     report.cancelled = cancelled;
                     let _ = reply.send(ParkProgress::Parked(report));
                     break 'serve;
@@ -1028,8 +1113,43 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
                 break;
             }
         }
+        // A stop plans no swap. Its park cancels the jobs that wait, as it cancels queued quanta (spec 10.3).
+        let serving = accepting.load(Ordering::SeqCst);
+        if serving
+            && pending.is_none()
+            && let Some((spec, _)) = waiting.first()
+        {
+            pending = Some(in_place::plan(spec.engine, &members, &ledger));
+        }
+        // The swap waits until the engines that unload hold no job. Jobs of the other engines go on (spec 3.3a).
+        if serving
+            && pending
+                .as_ref()
+                .is_some_and(|plan| plan.unload.iter().all(|index| !jobs.holds(*index)))
+        {
+            let plan = pending.take().expect("a pending swap");
+            let links = in_place::SwapLinks {
+                events: &events,
+                heartbeats: &heartbeats,
+                ledger: &ledger,
+                store: store.as_ref(),
+                fd_store: fd_store.as_ref(),
+            };
+            in_place::swap(group, &mut members, &mut engines, plan, links, interval);
+            // The jobs of a loaded engine run now. The others wait for the next swap.
+            for (spec, parent) in std::mem::take(&mut waiting) {
+                if members[spec.engine].loaded {
+                    jobs.add_under(spec, parent);
+                } else {
+                    waiting.push((spec, parent));
+                }
+            }
+            if heartbeats.send(beat()).is_err() {
+                break;
+            }
+        }
         if !jobs.idle() {
-            if accepting.load(Ordering::SeqCst) {
+            if serving {
                 jobs.run_one(&mut engines);
                 if heartbeats.send(beat()).is_err() {
                     break;
@@ -1040,6 +1160,28 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
         }
     }
     drop(engines);
+}
+
+/// Park each loaded engine of a group. An engine that is not loaded holds no state (spec 3.3a).
+fn park_loaded(
+    members: &[Member],
+    engines: &mut [Box<dyn Engine>],
+    store: Option<&Sender<StoreMessage>>,
+) -> ParkReport {
+    let mut report = ParkReport::default();
+    for (index, engine) in engines.iter_mut().enumerate() {
+        if !members[index].loaded {
+            continue;
+        }
+        report.engines += 1;
+        let name = members[index].name();
+        let failed = report.failures.len();
+        park::park_engine(name, engine.as_mut(), store, &mut report);
+        if report.failures.len() == failed {
+            report.parked_engines.push(name.to_owned());
+        }
+    }
+    report
 }
 
 /// The heartbeat of a group while its engine opens (spec 7.4).
@@ -1194,6 +1336,18 @@ enum LedgerMessage {
     ReleaseStaging(Tier, u64, Sender<Result<(), LedgerError>>),
     /// Read the unassigned bytes of each budget.
     Unassigned(Sender<Vec<(Vec<Tier>, u64)>>),
+    /// Check whether a swap fits, with no change (spec 3.3a).
+    CheckSwap {
+        load: Vec<String>,
+        unload: Vec<String>,
+        reply: Sender<Result<(), AdmitError>>,
+    },
+    /// Admit the loaded engines after a swap (spec 3.3a).
+    Swap {
+        load: Vec<String>,
+        unload: Vec<String>,
+        reply: Sender<Result<Admitted, AdmitError>>,
+    },
     Stop,
 }
 
@@ -1687,7 +1841,7 @@ impl Process {
                         parked.failures.push(format!("the {thread} thread panicked: {message}"));
                         return Drain::Stopped(false);
                     }
-                    Event::Opened { .. } | Event::OpenFailed { .. } => {}
+                    Event::Opened { .. } | Event::OpenFailed { .. } | Event::Swapped { .. } => {}
                 }
             }
             match reply.recv_timeout(STOP_POLL) {

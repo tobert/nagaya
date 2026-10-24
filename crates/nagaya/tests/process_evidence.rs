@@ -140,6 +140,7 @@ fn failure_lines(root: &Path) -> Vec<String> {
                     priority: 0,
                     deadline: None,
                     first: Kind::Prefill,
+                    engine: 0,
                     body: Box::new(BadPass {
                         root: root.to_owned(),
                         done: done_tx,

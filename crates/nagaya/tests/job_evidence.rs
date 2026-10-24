@@ -48,6 +48,7 @@ fn spec(first: Kind, body: Moves) -> JobSpec {
         priority: 0,
         deadline: None,
         first,
+        engine: 0,
         body: Box::new(body),
     }
 }

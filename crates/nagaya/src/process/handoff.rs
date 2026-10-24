@@ -31,6 +31,28 @@ fn remove(fd_store: Option<&FdStore>, name: &str) {
     }
 }
 
+/// Ask systemd to drop the stored fds of the arena of `job`, before the swap closes the engine (spec 3.3a). Each fd in
+/// systemd's store holds the device memory of its part.
+pub(super) fn remove_arena(job: &GroupJob, fd_store: Option<&FdStore>) {
+    let Some(store) = fd_store else {
+        return;
+    };
+    let names = expected_names(job).unwrap_or_else(|error| panic!("admission passed bad arena parts: {error}"));
+    for name in names {
+        remove(Some(store), &name.to_string());
+    }
+}
+
+/// Drop the stored fds of an on-demand engine at start: the engine stays unloaded, and the fds hold device memory
+/// (spec 3.3a).
+pub(super) fn drop_stored(engine: &str, stored: Vec<(FdName, OwnedFd)>, fd_store: Option<&FdStore>) {
+    for (name, fd) in stored {
+        tracing::warn!("engine `{engine}` is on demand, so the process drops its stored fd `{name}`");
+        remove(fd_store, &name.to_string());
+        drop::<OwnedFd>(fd);
+    }
+}
+
 fn other(message: String) -> OpenError {
     OpenError {
         kind: OpenErrorKind::Other,

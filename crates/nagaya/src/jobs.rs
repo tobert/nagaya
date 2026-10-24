@@ -76,6 +76,9 @@ pub struct JobSpec {
     pub deadline: Option<Instant>,
     /// The kind of the first quantum. The body adds the others when it runs the first one.
     pub first: Kind,
+    /// The engine of the job: its place in the engines of the group, in profile order. A job for an engine that is
+    /// not loaded waits for a swap (spec 3.3a).
+    pub engine: usize,
     /// The work.
     pub body: Box<dyn JobBody>,
 }
@@ -89,6 +92,8 @@ pub struct GroupJobs {
     epoch: Instant,
     scheduler: ObservedScheduler,
     bodies: BTreeMap<JobId, Box<dyn JobBody>>,
+    /// The engine of each job that has not ended, as its place in the group (spec 3.3a).
+    engines: BTreeMap<JobId, usize>,
     /// The span `nagaya.job` of each job that has not ended.
     spans: BTreeMap<JobId, Span>,
     /// The jobs that arrived since the last quantum. Their inputs become present when the next quantum is chosen.
@@ -112,6 +117,7 @@ impl GroupJobs {
             scheduler: ObservedScheduler::new(Scheduler::default(), BTreeMap::from([(group, engine.clone())])),
             engine,
             bodies: BTreeMap::new(),
+            engines: BTreeMap::new(),
             spans: BTreeMap::new(),
             fresh: Vec::new(),
             finished: None,
@@ -128,6 +134,11 @@ impl GroupJobs {
     /// True when no job waits or runs.
     pub fn idle(&self) -> bool {
         self.bodies.is_empty() && self.finished.is_none()
+    }
+
+    /// True when a job of the engine at `engine` in the group has not ended (spec 3.3a).
+    pub fn holds(&self, engine: usize) -> bool {
+        self.engines.values().any(|held| *held == engine)
     }
 
     fn now_ms(&self) -> u64 {
@@ -190,6 +201,7 @@ impl GroupJobs {
         // The ledger admitted the context before the job came, and a pass never allocates (spec 4.3).
         self.event(Event::Admit { now_ms, job: id });
         self.bodies.insert(id, spec.body);
+        self.engines.insert(id, spec.engine);
         self.fresh.push(id);
         id
     }
@@ -292,6 +304,7 @@ impl GroupJobs {
                 span.record("outcome", state.label());
             }
             let mut body = self.bodies.remove(&id).expect("a job that ended has a body");
+            self.engines.remove(&id);
             body.ended(state);
         }
     }
@@ -302,6 +315,7 @@ impl GroupJobs {
     pub fn cancel_all(&mut self) -> usize {
         let count = self.bodies.len();
         self.bodies.clear();
+        self.engines.clear();
         self.fresh.clear();
         for (_, span) in std::mem::take(&mut self.spans) {
             span.record("outcome", JobState::Cancelled.label());

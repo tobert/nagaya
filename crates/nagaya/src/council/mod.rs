@@ -256,6 +256,8 @@ pub struct Service {
     family: Arc<dyn Family>,
     config: ServiceConfig,
     group: usize,
+    /// The place of the engine in its group, which each job names (spec 3.3a).
+    index: usize,
     shared: Arc<Shared>,
     root: nagaya_store::RecipeId,
     identity: nagaya_abi::Identity,
@@ -311,7 +313,7 @@ impl Service {
         };
         submit(
             &ports,
-            group,
+            (group, index),
             Schedule::default(),
             None,
             nagaya_abi::Kind::Read,
@@ -373,6 +375,7 @@ impl Service {
             ports,
             family,
             group,
+            index,
             shared,
             root,
             identity,
@@ -495,7 +498,7 @@ impl Service {
                 .extension(extension);
             submit(
                 &self.ports,
-                self.group,
+                (self.group, self.index),
                 schedule,
                 None,
                 nagaya_abi::Kind::Read,
@@ -708,7 +711,7 @@ impl Service {
         let (tx, rx) = mpsc::channel();
         let result = submit(
             &self.ports,
-            self.group,
+            (self.group, self.index),
             schedule,
             deadline,
             nagaya_abi::Kind::Copy,
@@ -1019,7 +1022,7 @@ fn snapshot_tier(tier: Tier) -> SnapshotTier {
 
 fn submit(
     ports: &Ports,
-    group: usize,
+    (group, engine): (usize, usize),
     schedule: Schedule,
     deadline: Option<Instant>,
     first: nagaya_abi::Kind,
@@ -1033,6 +1036,7 @@ fn submit(
                 priority: i64::from(schedule.priority),
                 deadline,
                 first,
+                engine,
                 body,
             },
         )

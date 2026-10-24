@@ -88,6 +88,7 @@ fn spec(class: Class, priority: i64, first: Kind, body: Script) -> JobSpec {
         priority,
         first,
         deadline: None,
+        engine: 0,
         body: Box::new(body),
     }
 }

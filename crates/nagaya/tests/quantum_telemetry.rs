@@ -237,6 +237,7 @@ fn the_body_of_a_quantum_runs_inside_the_span_of_the_quantum() {
         priority: 0,
         deadline: None,
         first: nagaya_abi::Kind::Prefill,
+        engine: 0,
         body: Box::new(Spanning),
     });
     while !jobs.idle() {
@@ -263,6 +264,7 @@ fn a_stop_that_cancels_the_jobs_still_records_the_quantum_that_ran() {
         priority: 0,
         deadline: None,
         first: nagaya_abi::Kind::Prefill,
+        engine: 0,
         body: Box::new(Spanning),
     });
     assert!(jobs.run_one(&mut []));

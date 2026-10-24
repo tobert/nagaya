@@ -126,6 +126,7 @@ fn job(class: Class, name: &'static str, log: &Log, more: &[Kind]) -> JobSpec {
         priority: 0,
         deadline: None,
         first: Kind::Copy,
+        engine: 0,
         body: Box::new(Record {
             name,
             log: Arc::clone(log),
@@ -176,6 +177,7 @@ fn a_job_runs_on_the_thread_that_opened_the_engine() {
                 priority: 0,
                 deadline: None,
                 first: Kind::Read,
+                engine: 0,
                 body: Box::new(Record {
                     name: "a",
                     log: Arc::clone(&log),
@@ -228,6 +230,7 @@ fn a_stop_cancels_the_jobs_that_have_not_started() {
                 priority: 0,
                 deadline: None,
                 first: Kind::Copy,
+                engine: 0,
                 body: Box::new(Holds(result_tx)),
             },
         )
@@ -302,6 +305,7 @@ fn a_stop_cancels_a_job_that_waits_for_its_next_quantum() {
                 priority: 0,
                 deadline: None,
                 first: Kind::Copy,
+                engine: 0,
                 body: Box::new(TwoQuanta {
                     entered: entered_tx,
                     closed,

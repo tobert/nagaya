@@ -513,6 +513,66 @@ pub fn admit_with_fd_ceiling(
     ledger: &mut Ledger,
     fd_ceiling: Option<usize>,
 ) -> Result<Admitted, AdmitError> {
+    let Planned {
+        budgets,
+        engines,
+        planned,
+    } = plan_all(profile, registry, inventory, fd_ceiling)?;
+    check_residency(profile, &planned)?;
+    // The resident engines take memory at start. Each on-demand engine must fit beside the resident engines of the
+    // other device groups, because a swap unloads only engines of its own group (spec 3.3a). The checks change
+    // nothing, so a refusal changes nothing.
+    let resident = |index: usize| profile.engines[index].residency == Residency::Resident;
+    let residents = Profile {
+        budgets: budgets.clone(),
+        engines: (0..engines.len())
+            .filter(|index| resident(*index))
+            .map(|index| engines[index].clone())
+            .collect(),
+    };
+    ledger.check(&residents).map_err(AdmitError::Ledger)?;
+    let groups = crate::placement::device_groups(profile);
+    for (index, placement) in profile.engines.iter().enumerate() {
+        if resident(index) {
+            continue;
+        }
+        let own = groups
+            .iter()
+            .find(|group| group.engines.contains(&index))
+            .expect("each engine is in a device group");
+        let beside = Profile {
+            budgets: budgets.clone(),
+            engines: (0..engines.len())
+                .filter(|other| *other == index || (resident(*other) && !own.engines.contains(other)))
+                .map(|other| engines[other].clone())
+                .collect(),
+        };
+        ledger.check(&beside).map_err(|error| AdmitError::OnDemand {
+            engine: placement.name.clone(),
+            error,
+        })?;
+    }
+    let admission = ledger.admit(&residents).map_err(AdmitError::Ledger)?;
+    Ok(Admitted {
+        admission,
+        engines: planned,
+    })
+}
+
+/// The plans of every engine of a profile, before the ledger sees them.
+struct Planned {
+    budgets: Vec<Budget>,
+    engines: Vec<EnginePlan>,
+    planned: Vec<AdmittedEngine>,
+}
+
+/// Plan every engine of a profile, in profile order, and check its devices and its arena fds. No ledger runs here.
+fn plan_all(
+    profile: &PlacementProfile,
+    registry: &Registry,
+    inventory: &Inventory,
+    fd_ceiling: Option<usize>,
+) -> Result<Planned, AdmitError> {
     // An ignored device gets no work (spec 2.1), so refuse before any plan runs.
     check_ignored(profile, inventory).map_err(AdmitError::Device)?;
     let budgets: Vec<Budget> = profile
@@ -571,41 +631,43 @@ pub fn admit_with_fd_ceiling(
     {
         return Err(AdmitError::ArenaFds { needed, ceiling });
     }
-    check_residency(profile, &planned)?;
-    // The resident engines take memory at start. Each on-demand engine must fit beside the resident engines of the
-    // other device groups, because a swap unloads only engines of its own group (spec 3.3a). The checks change
-    // nothing, so a refusal changes nothing.
-    let resident = |index: usize| profile.engines[index].residency == Residency::Resident;
-    let residents = Profile {
-        budgets: budgets.clone(),
-        engines: (0..engines.len())
-            .filter(|index| resident(*index))
-            .map(|index| engines[index].clone())
+    Ok(Planned {
+        budgets,
+        engines,
+        planned,
+    })
+}
+
+/// Admit the engines of `profile` that `loaded` names, as a swap does (spec 3.3a). With `commit` false, the ledger
+/// only checks, and nothing changes.
+///
+/// The residency of an entry does not count here: each named engine is charged, and each other engine is not.
+pub fn admit_loaded(
+    profile: &PlacementProfile,
+    registry: &Registry,
+    inventory: &Inventory,
+    ledger: &mut Ledger,
+    loaded: &std::collections::BTreeSet<String>,
+    commit: bool,
+) -> Result<Admitted, AdmitError> {
+    let Planned {
+        budgets,
+        engines,
+        planned,
+    } = plan_all(profile, registry, inventory, None)?;
+    let charged = Profile {
+        budgets,
+        engines: engines
+            .into_iter()
+            .filter(|engine| loaded.contains(&engine.name))
             .collect(),
     };
-    ledger.check(&residents).map_err(AdmitError::Ledger)?;
-    let groups = crate::placement::device_groups(profile);
-    for (index, placement) in profile.engines.iter().enumerate() {
-        if resident(index) {
-            continue;
-        }
-        let own = groups
-            .iter()
-            .find(|group| group.engines.contains(&index))
-            .expect("each engine is in a device group");
-        let beside = Profile {
-            budgets: budgets.clone(),
-            engines: (0..engines.len())
-                .filter(|other| *other == index || (resident(*other) && !own.engines.contains(other)))
-                .map(|other| engines[other].clone())
-                .collect(),
-        };
-        ledger.check(&beside).map_err(|error| AdmitError::OnDemand {
-            engine: placement.name.clone(),
-            error,
-        })?;
+    let admission = if commit {
+        ledger.admit(&charged)
+    } else {
+        ledger.check(&charged)
     }
-    let admission = ledger.admit(&residents).map_err(AdmitError::Ledger)?;
+    .map_err(AdmitError::Ledger)?;
     Ok(Admitted {
         admission,
         engines: planned,
