@@ -5,13 +5,13 @@ use std::sync::Arc;
 
 #[cfg(feature = "fake")]
 use nagaya_abi::fake::FakeAlways;
-use nagaya_abi::{ArenaFd, ArenaPart, CheckStrength, DeviceId, Engine, Limits, Tier};
+use nagaya_abi::{ArenaFd, ArenaPart, Capability, CheckStrength, DeviceId, Engine, Limits, Tier};
 use nagaya_ledger::{Admission, Budget, EnginePlan, Ledger, LedgerError, Profile};
 
 use crate::arena::FdName;
 use crate::inventory::{Device, Inventory};
 use crate::placement::{DeviceError, check_devices, check_ignored};
-use crate::profile::{EnginePlacement, PlacementProfile};
+use crate::profile::{EnginePlacement, PlacementProfile, Residency};
 
 /// Why an engine cannot give its limits before it opens.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -254,6 +254,20 @@ pub enum AdmitError {
     },
     /// The process is stopping and takes no new work (spec 10.3).
     Stopping,
+    /// An entry breaks a rule of residency (spec 3.3a).
+    Residency {
+        /// The engine name.
+        engine: String,
+        /// Why the entry is invalid, and what to change.
+        why: String,
+    },
+    /// An on-demand engine does not fit beside the resident engines of the other device groups (spec 3.3a).
+    OnDemand {
+        /// The on-demand engine.
+        engine: String,
+        /// The refusal of the ledger.
+        error: LedgerError,
+    },
 }
 
 impl std::fmt::Display for AdmitError {
@@ -283,6 +297,12 @@ impl std::fmt::Display for AdmitError {
                  FileDescriptorStoreMax in the unit, or remove an engine"
             ),
             AdmitError::Stopping => write!(formatter, "the process is stopping"),
+            AdmitError::Residency { engine, why } => write!(formatter, "engine `{engine}`: {why}"),
+            AdmitError::OnDemand { engine, error } => write!(
+                formatter,
+                "the on-demand engine `{engine}` does not fit beside the resident engines of the other device \
+                 groups: {error}"
+            ),
         }
     }
 }
@@ -291,11 +311,13 @@ impl std::error::Error for AdmitError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             AdmitError::Ledger(error) => Some(error),
+            AdmitError::OnDemand { error, .. } => Some(error),
             AdmitError::Device(error) => Some(error),
             AdmitError::UnknownKind { .. }
             | AdmitError::Plan { .. }
             | AdmitError::Limits { .. }
             | AdmitError::ArenaFds { .. }
+            | AdmitError::Residency { .. }
             | AdmitError::Stopping => None,
         }
     }
@@ -549,11 +571,108 @@ pub fn admit_with_fd_ceiling(
     {
         return Err(AdmitError::ArenaFds { needed, ceiling });
     }
-    let admission = ledger
-        .admit(&Profile { budgets, engines })
-        .map_err(AdmitError::Ledger)?;
+    check_residency(profile, &planned)?;
+    // The resident engines take memory at start. Each on-demand engine must fit beside the resident engines of the
+    // other device groups, because a swap unloads only engines of its own group (spec 3.3a). The checks change
+    // nothing, so a refusal changes nothing.
+    let resident = |index: usize| profile.engines[index].residency == Residency::Resident;
+    let residents = Profile {
+        budgets: budgets.clone(),
+        engines: (0..engines.len())
+            .filter(|index| resident(*index))
+            .map(|index| engines[index].clone())
+            .collect(),
+    };
+    ledger.check(&residents).map_err(AdmitError::Ledger)?;
+    let groups = crate::placement::device_groups(profile);
+    for (index, placement) in profile.engines.iter().enumerate() {
+        if resident(index) {
+            continue;
+        }
+        let own = groups
+            .iter()
+            .find(|group| group.engines.contains(&index))
+            .expect("each engine is in a device group");
+        let beside = Profile {
+            budgets: budgets.clone(),
+            engines: (0..engines.len())
+                .filter(|other| *other == index || (resident(*other) && !own.engines.contains(other)))
+                .map(|other| engines[other].clone())
+                .collect(),
+        };
+        ledger.check(&beside).map_err(|error| AdmitError::OnDemand {
+            engine: placement.name.clone(),
+            error,
+        })?;
+    }
+    let admission = ledger.admit(&residents).map_err(AdmitError::Ledger)?;
     Ok(Admitted {
         admission,
         engines: planned,
     })
+}
+
+/// The rules of residency (spec 3.3a): an idle time only on an on-demand engine, and more than zero; no council model
+/// on demand; and `close` on each engine of the device group of an on-demand engine.
+fn check_residency(profile: &PlacementProfile, planned: &[AdmittedEngine]) -> Result<(), AdmitError> {
+    let fail = |engine: &str, why: String| AdmitError::Residency {
+        engine: engine.to_owned(),
+        why,
+    };
+    let groups = crate::placement::device_groups(profile);
+    for (index, placement) in profile.engines.iter().enumerate() {
+        let name = placement.name.as_str();
+        match (placement.residency, placement.idle_unload_s) {
+            (Residency::Resident, Some(_)) => {
+                return Err(fail(
+                    name,
+                    "a resident engine has no `idle_unload_s`; remove the key, or set `residency = \"on_demand\"`"
+                        .to_owned(),
+                ));
+            }
+            (Residency::OnDemand, Some(0)) => {
+                return Err(fail(
+                    name,
+                    "`idle_unload_s` is 0, which unloads the engine after each job; give one second or more".to_owned(),
+                ));
+            }
+            _ => {}
+        }
+        if placement.residency != Residency::OnDemand {
+            continue;
+        }
+        if !placement.family.is_empty() {
+            return Err(fail(
+                name,
+                "an on-demand engine serves no council model in v0, so its entry has no `family` table; remove the \
+                 table, or make the engine resident"
+                    .to_owned(),
+            ));
+        }
+        let own = groups
+            .iter()
+            .find(|group| group.engines.contains(&index))
+            .expect("each engine is in a device group");
+        for &member in &own.engines {
+            if !planned[member].limits.capabilities.contains(&Capability::Close) {
+                if member == index {
+                    return Err(fail(
+                        name,
+                        "an on-demand engine needs `close`, because a swap closes it; use an engine that declares \
+                         `close`, or make the engine resident"
+                            .to_owned(),
+                    ));
+                }
+                let other = &profile.engines[member].name;
+                return Err(fail(
+                    other,
+                    format!(
+                        "the engine has no `close`, and it shares a device group with the on-demand engine \
+                         `{name}`; a swap must close it, so give it `close` or move `{name}` to other devices"
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
