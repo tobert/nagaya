@@ -915,8 +915,8 @@ forever. The mkviolet rule is the origin, not the scope.
 Entries in the host tier do not survive a restart, so the store removes them from the index at start. Decided
 2026-10-20 (reading).
 
-The hits and the last use of each entry are in memory only, and a restart starts them again at zero. **Open:** a
-flush at a stop or at an interval keeps them. A write at each use is too slow.
+`index.json` stores `hits` and `last_used_ms`, so a restart keeps them for every NVMe entry. A lookup updates them in
+memory, and the next index write saves them to disk. Decided 2026-10-24 (Amy).
 
 At start, the store also wakes pinned entries into slots when the profile asks for them. (mk wakes its pinned
 parked contexts before `READY=1`.) Not built: the nagaya wakes no pinned entry at start.

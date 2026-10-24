@@ -2938,3 +2938,71 @@ fn a_park_refuses_a_delta_whose_parent_is_in_the_host_tier() {
         "a parked parent lets its delta park"
     );
 }
+
+#[test]
+fn eviction_takes_a_chain_root_after_its_descendants_when_more_space_is_needed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let root_recipe = recipe(240);
+    let root = put(&mut store, &base_snapshot(1), root_recipe, 1);
+    let middle_recipe = next_recipe(root_recipe, 2);
+    let middle = put_delta(&mut store, &delta_at(root, 2), middle_recipe, root_recipe, 1);
+    let tip_recipe = next_recipe(middle_recipe, 4);
+    let tip = put_delta(&mut store, &delta_at(middle, 4), tip_recipe, middle_recipe, 1);
+    let total: u64 = store.entries().values().map(|entry| entry.size).sum();
+    let victims = store.evict(1, Tier::Nvme, total, 10).unwrap();
+    assert_eq!(victims, vec![middle, tip, root]);
+    assert!(store.entries().is_empty());
+
+    let root2_recipe = recipe(241);
+    let root2 = put(&mut store, &base_snapshot(2), root2_recipe, 1);
+    let tip2_recipe = next_recipe(root2_recipe, 2);
+    let tip2 = put_delta(&mut store, &delta_at(root2, 2), tip2_recipe, root2_recipe, 1);
+    store.get(&root2, 20).unwrap();
+    let total2: u64 = store.entries().values().map(|entry| entry.size).sum();
+    let victims2 = store.evict(1, Tier::Nvme, total2, 20).unwrap();
+    assert_eq!(victims2, vec![tip2, root2]);
+    assert!(store.entries().is_empty());
+}
+
+#[test]
+fn a_pinned_chain_larger_than_the_budget_loses_protection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open_with_nvme_budget(dir.path(), 10_000).unwrap();
+    let root_recipe = recipe(242);
+    let root = put(&mut store, &base_snapshot(1), root_recipe, 1);
+    let tip_recipe = next_recipe(root_recipe, 2);
+    let tip = put_delta(&mut store, &delta_at(root, 2), tip_recipe, root_recipe, 1);
+    let root_size = store.entries()[&root].size;
+    let tip_size = store.entries()[&tip].size;
+    let budget = root_size.max(tip_size) + 1;
+    assert!(root_size + tip_size > budget, "the chain exceeds the budget");
+
+    store.pin(tip, 1, 100, 10).unwrap();
+    store.set_budget(Tier::Nvme, budget);
+    let victims = store.evict(1, Tier::Nvme, 1, 10).unwrap();
+    assert!(victims.contains(&tip), "the oversize pinned chain loses protection");
+
+    store.set_budget(Tier::Nvme, 10_000);
+    let root2_recipe = recipe(243);
+    let root2 = put(&mut store, &base_snapshot(3), root2_recipe, 1);
+    let tip2_recipe = next_recipe(root2_recipe, 2);
+    let tip2 = put_delta(&mut store, &delta_at(root2, 2), tip2_recipe, root2_recipe, 1);
+    let mut engine = FakeAlways::new();
+    store
+        .lookup_and_pin(
+            tip2_recipe,
+            &Tolerance::Exact,
+            &mut engine,
+            0,
+            Pin {
+                owner: 1,
+                expires_ms: 100,
+            },
+            10,
+        )
+        .unwrap();
+    store.set_budget(Tier::Nvme, budget);
+    let victims2 = store.evict(1, Tier::Nvme, root_size + tip_size, 10).unwrap();
+    assert!(victims2.contains(&root2) && victims2.contains(&tip2));
+}

@@ -2046,18 +2046,19 @@ impl Store {
         let mut chosen = BTreeSet::new();
         let mut bytes = 0u64;
         for (_, _, group) in groups {
-            if group.iter().any(|id| chosen.contains(id)) {
+            let remaining: Vec<ContentId> = group.into_iter().filter(|id| !chosen.contains(id)).collect();
+            if remaining.is_empty() {
                 continue;
             }
-            let group_bytes: u64 = group
+            let group_bytes: u64 = remaining
                 .iter()
                 .filter_map(|id| self.index.entries.get(id))
                 .map(|entry| entry.size)
                 .sum();
-            for id in &group {
+            for id in &remaining {
                 chosen.insert(*id);
             }
-            victims.extend(group);
+            victims.extend(remaining);
             bytes = bytes.saturating_add(group_bytes);
             if bytes >= need_bytes {
                 break;
@@ -2068,10 +2069,50 @@ impl Store {
 
     /// True when a pin keeps the entry from eviction.
     fn pin_protects(&self, entry: &Entry, now_ms: u64) -> bool {
-        // An entry is pinned while any owner's pin is live.
-        match self.index.pins.get(&entry.content_id) {
-            Some(pins) => pins.iter().any(|pin| pin.expires_ms > now_ms) && entry.size <= self.budget_of(entry.tier),
-            None => false,
+        // An entry is pinned while any owner's pin is live and its pinned entries fit the tier budget (spec 6.9).
+        let Some(pins) = self.index.pins.get(&entry.content_id) else {
+            return false;
+        };
+        let budget = self.budget_of(entry.tier);
+        pins.iter()
+            .filter(|pin| pin.expires_ms > now_ms)
+            .any(|pin| self.pinned_bytes_in_tier(entry, pin, now_ms) <= budget)
+    }
+
+    /// The bytes in `entry.tier` that `pin` holds on `entry`'s chain: the ancestors of `entry` in `entry.tier`, and
+    /// any descendants of `entry` in `entry.tier` that also carry a live pin of `pin.owner`.
+    fn pinned_bytes_in_tier(&self, entry: &Entry, pin: &Pin, now_ms: u64) -> u64 {
+        let mut held = BTreeSet::new();
+        self.collect_ancestors_in_tier(entry.content_id, entry.tier, &mut held);
+        for child in self.descendants(entry.content_id) {
+            let child_pinned = self.index.pins.get(&child).is_some_and(|pins| {
+                pins.iter()
+                    .any(|candidate| candidate.owner == pin.owner && candidate.expires_ms > now_ms)
+            });
+            if child_pinned {
+                self.collect_ancestors_in_tier(child, entry.tier, &mut held);
+            }
+        }
+        held.into_iter()
+            .filter_map(|id| self.index.entries.get(&id))
+            .map(|member| member.size)
+            .sum()
+    }
+
+    fn collect_ancestors_in_tier(&self, start: ContentId, tier: Tier, held: &mut BTreeSet<ContentId>) {
+        let mut visited = BTreeSet::new();
+        let mut cursor = Some(start);
+        while let Some(id) = cursor {
+            if !visited.insert(id) {
+                break;
+            }
+            let Some(member) = self.index.entries.get(&id) else {
+                break;
+            };
+            if member.state == EntryState::Live && member.tier == tier {
+                held.insert(id);
+            }
+            cursor = member.parent;
         }
     }
 
