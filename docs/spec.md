@@ -740,6 +740,10 @@ Thus a prefix lookup hashes only the tokens since the last boundary. The identit
 the fields of `identity()` (12.1). The inputs are tokens, not text: the tokenizer and template are in the identity.
 Decided 2026-10-18.
 
+The identity digest uses derive-key mode with the same context string. The code used plain BLAKE3 until 2026-10-24.
+That fix gave each engine a new digest and a new council `engine` id, so every held entry fills again once. Decided
+2026-10-24 (Amy: "accept the refill").
+
 The tag numbers are in this table. Decided 2026-10-20 (reading).
 
 | Tag | Item |

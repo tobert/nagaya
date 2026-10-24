@@ -487,9 +487,9 @@ It replaces the rule "The deploy profile pins the mk library" (Decided 2026-10-1
 Reason: the binary now holds its engine. The digest of the archive is a fact of the build, so a pin would only
 compare the build with itself.
 
-**The Rust host and the extern layer.** Milestone 15 step 6 moved the GGUF reader, the arena plan and the PLE gather
-into Rust (`gguf.rs`, `arena.rs` and `ple.rs`). It also moved the stage schedule and the stage build into Rust
-(`schedule.rs` and `pass.rs`):
+**The Rust host and the extern layer.** Milestone 15 moved the host code of mk into Rust. Step 3 moved the GGUF
+reader (`gguf.rs`), and step 5 moved the stage schedule (`schedule.rs`). Step 6 moved the arena plan, the PLE gather
+and the stage build (`arena.rs`, `ple.rs` and `pass.rs`):
 
 - `mk_engine_open` takes a `mk_weight_table` (`weight_table.h`): each tensor of the arena by name, in its final
   layout. The export of the arena (spec 10.2) builds the attach in Rust, from `arena.rs`.
@@ -499,7 +499,8 @@ into Rust (`gguf.rs`, `arena.rs` and `ple.rs`). It also moved the stage schedule
 - `MK_ELIDE` and the other knobs of the build are read in Rust at each pass, and a bad value refuses the pass.
 - The C++ extern layer (`hip/src/engine/extern.hip`) holds only the calls that the binding uses. Each call takes C
   types and calls one `Engine` method or reads one field. The binding declares each call of the layer, and a test
-  compares the two lists. The calls that only mk's Python harness and lab used were removed in step 6.
+  compares the two lists. Step 4 removed the calls that only mk's Python harness and lab used, and step 6
+  removed the C++ methods behind them.
 
 **mk's pass scratch is a mandatory term.** The ABI says that `pass` never allocates and that its scratch is a
 mandatory term. mk allocates one scratch pool at its first ask and keeps it for the engine's life
