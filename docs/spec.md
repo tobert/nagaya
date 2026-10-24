@@ -511,13 +511,14 @@ its fds stay in the store frees no device memory.
 groups, the group threads and the routes stay as the profile made them. An unloaded engine is in its group, with the
 state `unloaded` (9.4, 11.1).
 
-**The status that clients see.** Proposed by senpai (Claude Opus 5.5), 2026-10-24. gogi gives 503
-`model_unavailable` to a served model that is not `ready` (11.1). An on-demand engine that is unloaded can still
-serve, because a request starts its load. Thus `identity.models` reports such an engine as `ready`. The status feed
-(9.7) and the metric `nagaya.engine.state` give its real state: `unloaded`, `loading` or `ready`.
+**No council model on demand.** Proposed by senpai (Claude Opus 5.5), 2026-10-24. In v0, an on-demand engine serves
+no council model, so its profile entry has no `family` table. Speech (milestone 17) and image engines serve their own
+routes.
 
-Reason: the swap is a wait inside the nagaya, and Amy decided that the request waits. This keeps the gogi suite
-green with no change to gogi.
+Reason: a council service reads the identity and the limits of its engine when it attaches (11.7). For an engine
+that is not loaded, that read would start a load at each start of the process. gogi also gives 503
+`model_unavailable` to a served model that is not `ready` (11.1), but Amy decided that a request waits for the load.
+A route of our own can wait.
 
 **Open:** Do the GPU queues of an idle engine slow the other engines on its device? mk has a note that its idle
 queues slow another process, but we did not find the source. A measurement answers the question.
