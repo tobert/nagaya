@@ -212,6 +212,8 @@ pub fn profile_with_copies(host_budget: u64, nvme: u64, host_store: Option<u64>,
             family: toml::Table::new(),
             share: 1,
             pin_identity: false,
+            residency: Default::default(),
+            idle_unload_s: None,
         }],
         budgets: vec![
             BudgetSpec {

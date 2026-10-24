@@ -121,7 +121,35 @@ pub struct EnginePlacement {
     /// True when the profile pins the engine's identity (spec 12.1).
     #[serde(default)]
     pub pin_identity: bool,
+    /// When the engine is loaded (spec 3.3a). The default is `resident`, and a resident entry writes no key.
+    #[serde(default, skip_serializing_if = "Residency::is_resident")]
+    pub residency: Residency,
+    /// The seconds with no job after which an on-demand engine unloads (spec 3.3a). Only an on-demand entry has it;
+    /// without it, the time is [`DEFAULT_IDLE_UNLOAD_S`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_unload_s: Option<u64>,
 }
+
+/// When an engine is loaded (spec 3.3a).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Residency {
+    /// The engine opens at start. It unloads only while a swap gives its memory to another engine.
+    #[default]
+    Resident,
+    /// The engine opens at its first job, and it unloads after its idle time.
+    OnDemand,
+}
+
+impl Residency {
+    /// True for `resident`, the default.
+    pub fn is_resident(&self) -> bool {
+        *self == Residency::Resident
+    }
+}
+
+/// The seconds with no job after which an on-demand engine unloads, when its entry names none (spec 3.3a).
+pub const DEFAULT_IDLE_UNLOAD_S: u64 = 60;
 
 /// One budget in the profile (spec 4.1).
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]

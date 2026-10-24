@@ -1,5 +1,7 @@
 use nagaya::gossip::MAX_KEY_BYTES;
-use nagaya::profile::{BudgetSpec, EnginePlacement, MAX_ENGINE_NAME_BYTES, PlacementProfile, StoreSpec, TierSpec};
+use nagaya::profile::{
+    BudgetSpec, EnginePlacement, MAX_ENGINE_NAME_BYTES, PlacementProfile, Residency, StoreSpec, TierSpec,
+};
 use nagaya_abi::Tier;
 
 const EXAMPLE: &str = r#"
@@ -18,6 +20,8 @@ name = "helper"
 kind = "fake"
 devices = [0]
 share = 3
+residency = "on_demand"
+idle_unload_s = 30
 
 [[budgets]]
 tiers = ["device(0)", "host"]
@@ -40,6 +44,8 @@ fn example_profile() -> PlacementProfile {
                 family: toml::Table::new(),
                 share: 1,
                 pin_identity: true,
+                residency: Residency::Resident,
+                idle_unload_s: None,
             },
             EnginePlacement {
                 name: "helper".to_owned(),
@@ -49,6 +55,8 @@ fn example_profile() -> PlacementProfile {
                 family: toml::Table::new(),
                 share: 3,
                 pin_identity: false,
+                residency: Residency::OnDemand,
+                idle_unload_s: Some(30),
             },
         ],
         budgets: vec![BudgetSpec {
@@ -122,6 +130,34 @@ fn the_optional_engine_fields_have_defaults() {
     assert_eq!(profile.engines[1].config, toml::Table::new());
     assert!(!profile.engines[1].pin_identity);
     assert_eq!(profile.engines[1].family, toml::Table::new());
+    assert_eq!(profile.engines[0].residency, Residency::Resident);
+    assert_eq!(profile.engines[0].idle_unload_s, None);
+}
+
+#[test]
+fn an_engine_on_demand_names_its_idle_time() {
+    let profile = PlacementProfile::parse(EXAMPLE).unwrap();
+    assert_eq!(profile.engines[1].residency, Residency::OnDemand);
+    assert_eq!(profile.engines[1].idle_unload_s, Some(30));
+}
+
+#[test]
+fn a_residency_that_is_not_known_is_refused_with_its_text() {
+    let text = EXAMPLE.replace("\"on_demand\"", "\"lazy\"");
+    let error = PlacementProfile::parse(&text).unwrap_err();
+    assert!(
+        error.to_string().contains("lazy"),
+        "the message must name the residency: {error}"
+    );
+}
+
+#[test]
+fn a_resident_engine_writes_no_residency_key() {
+    let mut profile = example_profile();
+    profile.engines.truncate(1);
+    let text = profile.to_toml().unwrap();
+    assert!(!text.contains("residency"), "{text}");
+    assert!(!text.contains("idle_unload_s"), "{text}");
 }
 
 #[test]
