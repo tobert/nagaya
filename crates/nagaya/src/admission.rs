@@ -523,13 +523,7 @@ pub fn admit_with_fd_ceiling(
     // other device groups, because a swap unloads only engines of its own group (spec 3.3a). The checks change
     // nothing, so a refusal changes nothing.
     let resident = |index: usize| profile.engines[index].residency == Residency::Resident;
-    let residents = Profile {
-        budgets: budgets.clone(),
-        engines: (0..engines.len())
-            .filter(|index| resident(*index))
-            .map(|index| engines[index].clone())
-            .collect(),
-    };
+    let residents = charged(&budgets, &engines, resident);
     ledger.check(&residents).map_err(AdmitError::Ledger)?;
     let groups = crate::placement::device_groups(profile);
     for (index, placement) in profile.engines.iter().enumerate() {
@@ -540,13 +534,9 @@ pub fn admit_with_fd_ceiling(
             .iter()
             .find(|group| group.engines.contains(&index))
             .expect("each engine is in a device group");
-        let beside = Profile {
-            budgets: budgets.clone(),
-            engines: (0..engines.len())
-                .filter(|other| *other == index || (resident(*other) && !own.engines.contains(other)))
-                .map(|other| engines[other].clone())
-                .collect(),
-        };
+        let beside = charged(&budgets, &engines, |other| {
+            other == index || (resident(other) && !own.engines.contains(&other))
+        });
         ledger.check(&beside).map_err(|error| AdmitError::OnDemand {
             engine: placement.name.clone(),
             error,
@@ -557,6 +547,30 @@ pub fn admit_with_fd_ceiling(
         admission,
         engines: planned,
     })
+}
+
+/// The ledger's profile of the engines that `loaded` names (spec 3.3a). Each other engine stays with its context terms
+/// only and a share of 0: it takes no memory, and a request can charge its context before it waits for the load.
+fn charged(budgets: &[Budget], engines: &[EnginePlan], loaded: impl Fn(usize) -> bool) -> Profile {
+    Profile {
+        budgets: budgets.to_vec(),
+        engines: engines
+            .iter()
+            .enumerate()
+            .map(|(index, engine)| {
+                let mut plan = engine.clone();
+                if !loaded(index) {
+                    plan.limits
+                        .memory
+                        .mandatory
+                        .retain(|term| term.lifetime == nagaya_abi::Lifetime::Context);
+                    plan.limits.memory.elastic.clear();
+                    plan.share = 0;
+                }
+                plan
+            })
+            .collect(),
+    }
 }
 
 /// The plans of every engine of a profile, before the ledger sees them.
@@ -655,13 +669,7 @@ pub fn admit_loaded(
         engines,
         planned,
     } = plan_all(profile, registry, inventory, None)?;
-    let charged = Profile {
-        budgets,
-        engines: engines
-            .into_iter()
-            .filter(|engine| loaded.contains(&engine.name))
-            .collect(),
-    };
+    let charged = charged(&budgets, &engines, |index| loaded.contains(&engines[index].name));
     let admission = if commit {
         ledger.admit(&charged)
     } else {

@@ -700,3 +700,21 @@ fn a_job_in_the_idle_time_starts_the_idle_time_again() {
         "the swap back came {after:?} after the second job; the idle time counts from it"
     );
 }
+
+/// A council request charges its context before its job waits for a swap (spec 3.3a, 4.2), so the ledger knows the
+/// context terms of an engine that is not loaded.
+#[test]
+fn a_context_of_an_engine_that_is_not_loaded_can_be_charged() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start(directory.path(), 1000);
+    let ports = process.ports();
+    ports.admit_context("voice").expect("a context of the unloaded `voice`");
+    ports.release_context("voice").unwrap();
+    let (job, finished) = probe(VOICE, &log);
+    process.submit_job(0, job).unwrap();
+    finished
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the voice job ran");
+    ports.admit_context("chat").expect("a context of the unloaded `chat`");
+    ports.release_context("chat").unwrap();
+}

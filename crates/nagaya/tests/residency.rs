@@ -288,3 +288,42 @@ fn an_engine_with_stages_shares_its_group_only_with_on_demand_engines() {
     let mut ledger = Ledger::new();
     admit(&profile(vec![gemma, voice]), &registry(), &inventory(), &mut ledger).unwrap();
 }
+
+#[test]
+fn an_on_demand_engine_takes_no_share_of_the_spare_memory_at_start() {
+    struct Elastic;
+    impl Factory for Elastic {
+        fn plan(&self, config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
+            let mut limits = weights_limits(config);
+            limits.memory.elastic = vec![nagaya_abi::ElasticTerm {
+                name: "cache".to_owned(),
+                tier: Tier::Device(0),
+                unit_bytes: 1,
+                // The ledger divides the spare bytes in proportion to the minimums (spec 4.4).
+                minimum: 1,
+                maximum: 1 << 20,
+                kinds: Vec::new(),
+            }];
+            Ok(limits)
+        }
+        fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
+            panic!("an admission opens no engine")
+        }
+    }
+    let mut chat = engine("chat", 0, 200, Residency::Resident);
+    let mut voice = engine("voice", 0, 200, Residency::OnDemand);
+    chat.kind = "elastic".to_owned();
+    voice.kind = "elastic".to_owned();
+    let mut registry = Registry::new();
+    registry.register("elastic", Box::new(Elastic));
+    let mut ledger = Ledger::new();
+    let admitted = admit(&profile(vec![chat, voice]), &registry, &inventory(), &mut ledger).unwrap();
+    let chat = admitted
+        .admission
+        .engines
+        .iter()
+        .find(|engine| engine.name == "chat")
+        .unwrap();
+    // Device 0 has 1000 bytes. `chat` takes 200 of them, and its cache takes the other 800.
+    assert_eq!(chat.elastic, vec![("cache".to_owned(), 800)]);
+}
