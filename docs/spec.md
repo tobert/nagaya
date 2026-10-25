@@ -1306,6 +1306,16 @@ the store cannot drift apart. Decided 2026-10-20 (reading, kaibo job-2 finding 1
 The suite compares values by integer bit pattern. NaN or Inf fails, even when the bit patterns are equal. Counts
 must also match. Each gate keeps a broken variant that it must fail (ds4-recipe `01-correctness-and-measurement.md`).
 
+**The speech oracle.** Proposed by senpai (Claude Opus 5.5), 2026-10-24. The random stream of the card differs
+from PyTorch's, so the oracle of a speech engine forces the codes. The fixture holds a prompt, the codes that the
+reference sampled for it, and the reference outputs:
+
+- the logits of codebook 0 at each frame, and the logits of the code predictor for codebooks 1 to 15;
+- the audio that the codec decoder makes from those codes.
+
+The engine runs with the codes of the fixture in place of its samples, and each output must be within its tolerance.
+Python writes the fixture once, on the CPU; no Python runs at test time (`AGENTS.md` "Checks").
+
 **8.4 Audit.** For some engines the tripwire is not reliable, because of their determinism class. For them, the
 nagaya runs an audit after each start, as a filler job in the same process. The audit builds a sample of stored
 recipes again and compares the content ids (D3). A restart is the fresh process that the audit needs, so the audit
@@ -1883,6 +1893,11 @@ Pooling and the decision numbers come from `gogi_proto::math`, which all engines
 **11.2 Generation.** The nagaya runs one sampler for all engines. It applies top_k, top_p, min_p, then temperature.
 The draw is seeded, and the response reports the seed. Each engine has its own defaults. All engines share the SSE
 framing.
+
+**A speech engine samples on the card.** Proposed by senpai (Claude Opus 5.5), 2026-10-24. The one sampler is for
+text. A speech engine makes 16 samples for each 80 ms frame, each from the one before (engine-abi "Speech"). The engine
+draws them on the card, from the seed of the request. Its draw keeps no state either: the random value depends on the
+seed, the frame and the codebook. Reason: 16 host round trips for each frame would cost more than the frame.
 
 **The draw keeps no state.** The random value for a token depends on three things: the seed, the position of the
 token, and the purpose of the draw. The purposes are a sample, a resample and the test of a draft.
@@ -2626,6 +2641,53 @@ has a tailnet address in its code.)
   11.4a and the status feed (9.7) are not built.
 - Continuations are built (11.3c). `gogi-conformance` against the process with the fake engine gave 271 to 274 ok,
   0 FAIL and 8 skip on 2026-10-21, at gogi `dc94cb3`. The number of checks depends on the reply to a random nonce.
+
+**11.8 Speech.** Amy decided these rules on 2026-10-24, by interview (`AGENTS.md` milestone 17).
+
+- One request is a line or a paragraph. The agent orders the requests and paces them. The nagaya has no stream for
+  speech, and a speech job can wait behind other work.
+- The reply sends the audio in chunks while the frames decode.
+- The route is `POST /v1/audio/speech`, in the shape of OpenAI's speech API.
+- The engine is Qwen3-TTS VoiceDesign. A text prompt designs each voice, so the voice drifts a little between
+  requests. Amy: "a bit of drift, hmm, inevitable for now, let's let it be and fix up later".
+- The speech engine is on demand (3.3a), and the placement profile chooses its card.
+
+**The request.** Proposed by senpai (Claude Opus 5.5), 2026-10-24. The body is JSON.
+
+| Key | Rule |
+|---|---|
+| `model` | The served speech model, the `model` of the engine identity. Another value is 404 `model_not_found`. |
+| `input` | The text to speak: one line or paragraph, at most 4,096 characters. Empty text is 400. |
+| `instructions` | The voice design prompt. It is required, because VoiceDesign designs each voice from it. |
+| `voice` | Accepted and ignored, because OpenAI's clients always send it. The log records it. |
+| `response_format` | `wav` (the default) or `pcm`. Another value is 400 with the param named. |
+| `speed` | Absent or 1.0. Another value is 400, because the engine has no time stretch. |
+| `language` | An extension: a Qwen3-TTS language name, or `auto` (the default). |
+| `seed` | An extension: the seed of the sampler. Without it, the seed is the hash of the request id. |
+
+**The reply.** Proposed by senpai (Claude Opus 5.5), 2026-10-24.
+
+- The status is 200 when the first chunk is ready. The body is chunked: each quantum of frames sends its audio.
+- `pcm` is signed 16-bit little-endian, mono, 24 kHz, with no header. `wav` is the same samples after a RIFF header.
+  Its two size fields are `0xFFFFFFFF`, because the length is not known when the header goes.
+- An error before the first chunk is a JSON error body in OpenAI's shape: `{"error": {"message", "type", "param",
+  "code"}}`. An error after it ends the body early, and the log names the request.
+- The sampler of a request is the generation config of the checkpoint: `temperature` 0.9, `top_k` 50, `top_p` 1.0,
+  and `repetition_penalty` 1.05 for codebook 0. A request does not change them in v0.
+- A request waits for the swap that loads the engine (3.3a), and the wait counts toward its timeout.
+
+Reason: OpenAI's shape lets an agent's existing speech client use the route with no change. The chunked body starts
+playback before the line ends. The WAV header with unknown sizes is the usual form for streamed WAV.
+
+**The speech family.** Proposed by senpai (Claude Opus 5.5), 2026-10-24. The crate `nagaya-text-qwen3tts` holds the
+family library of Qwen3-TTS (11.3):
+
+- the tokenizer of the text vocabulary, from `vocab.json` and `merges.txt` of the checkpoint;
+- the prompt of a request, as pairs of a text id and a codec id (engine-abi "Speech"), with the template of the
+  reference `generate_voice_design`;
+- the codec ids of the prompt: the think tokens, the language id, the pad and the start of speech.
+
+The family has no detokenizer and no reply parser, because the output is audio.
 
 ## 12. Identity
 

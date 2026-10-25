@@ -990,6 +990,51 @@ Decided 2026-10-18. An image engine uses `pass(segments, taps)` with quantum kin
 - mk's painter is the first case (mk `docs/painter.md`). mk's `YieldHook` showed that a paused run matched the
   unpaused one, max pixel difference 0 (ontology "Quantum").
 
+## Speech
+
+Proposed by senpai (Claude Opus 5.5), 2026-10-24, for milestone 17. Amy decides each rule. The first speech engine
+is Qwen3-TTS VoiceDesign on a B70 card (`AGENTS.md` milestone 17).
+
+A speech engine declares the `speech` capability. It takes no pass through `pass`; its `pass` refuses, as the pass of
+an engine with stages does. It has these calls:
+
+```
+speech_begin(slot, prompt, sampler) -> ok | why   feeds the prompt into the slot, and keeps the sampler there
+speech_frames(slot, max) -> {codes, audio, end}   makes at most `max` frames and their audio; stops at end-of-speech
+speech_clear(slot)                                frees the state of the slot
+```
+
+- **Prompt.** A prompt position has two ids: one from the text vocabulary and one from the codec vocabulary. Either id
+  can be absent. Qwen3-TTS sums the projected text embedding and the codec embedding of each position. The family
+  library makes the pairs (spec 11.3); the engine never takes text (D2).
+- **Sampler.** The engine samples on the card, because one frame of Qwen3-TTS has 16 samples that depend on each
+  other. The sampler has `temperature`, `top_k`, `top_p`, `repetition_penalty` and a `seed`. The same identity,
+  prompt, sampler and seed give the same codes and the same audio bits.
+- **Frames.** A frame is 16 codes, one for each codebook, and 1,920 audio samples at 24 kHz (80 ms). `speech_frames`
+  is one quantum of kind `decode`. The engine sizes `max` so that a quantum fits `max_quantum_ms` (D8).
+- **Audio.** The codec decoder runs on the card in the same quantum. Its output is signed 16-bit PCM, mono, 24 kHz. The
+  decoder keeps the codes of the last frames of the slot as its left context. Thus the audio of each quantum joins the
+  audio before it.
+- **State.** A slot holds the KV of the talker and the history of codebook 0 for the repetition penalty. It also holds
+  the counter of the random stream and the codes of the left context. The store keeps no speech state. A request
+  starts with an empty slot, and `speech_clear` ends it.
+
+Reason: a speech request is not a context that a later request extends, so a speech slot has no part to snapshot or
+restore. One call that makes a few frames keeps the 16 dependent samples on the card, which is the reason for the
+megakernel. The other way is a pass for each sample, with 16 host round trips for each 80 ms of audio.
+
+**Passes on separate cards of one group.** Proposed by senpai (Claude Opus 5.5), 2026-10-24. Amy decided the rule on
+2026-10-24 (`AGENTS.md` milestone 17, "Yes, design it now"); this is its text.
+
+- A pass of an engine with one device can run on its device. A stage of an engine with stages can run at that time
+  on another device of the group.
+- The group thread sends the pass to the stage thread of its device, so each device still runs one quantum at a time.
+- Both engines must be loaded: the ledger must hold both (spec 3.3a).
+- The scheduler of the group orders both engines' quanta by class and priority (spec 5.3, 5.4).
+
+Reason: during one-token decode of an engine with two stages, each card waits while the other runs its stage. A pass
+of a small engine on the waiting card costs the large engine nothing.
+
 ## Not covered yet
 
 - Streams. They need a period, a deadline and a late policy, in `limits()` or per job. A pass blocks, so the
