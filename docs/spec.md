@@ -1203,10 +1203,12 @@ engine. The nagaya's generation job makes the prompt-lookup drafts, as mkviolet 
 keys of 4 and 3 tokens, at most 7 drafts). Reason: drafts change no row that the store keeps. Thus a change of the
 setting must not change the identity and lose the store.
 
-**6.15 Objects.** Proposed by senpai (Claude Opus 5.5), 2026-10-25. Amy decides each rule. Reason: council requests
-will carry images, audio, video and MIDI (Amy: "I kinda want our API to be comprehensive"). gogi's contract holds
-the text of the API: "Objects and keeps", "Outputs" and "Contexts" (gogi `04cf19b`, `59298a3`,
-`41c53bc`). This section is how the nagaya implements it.
+**6.15 Objects.** Proposed by senpai (Claude Opus 5.5), 2026-10-25. Amy decides each rule. The budget, the limits
+and the order of the work are Decided 2026-10-25 (Amy, by interview); see "The budget of objects" below.
+
+Reason: council requests will carry images, audio, video and MIDI (Amy: "I kinda want our API to be
+comprehensive"). gogi's contract holds the text of the API: "Objects and keeps", "Outputs" and "Contexts" (gogi
+`04cf19b`, `59298a3`, `41c53bc`). This section is how the nagaya implements it.
 
 - **Object.** An object is bytes and a media type, named by its content id (6.2). The id is the BLAKE3 hash of the
   bytes, with no canonical form. A message, a reply or a case names an object by `{"id", "mime"}`.
@@ -1231,6 +1233,17 @@ the text of the API: "Objects and keeps", "Outputs" and "Contexts" (gogi `04cf19
   puts a keep on it.
 - **On disk.** The reference store keeps an object as a file under the store directory, at
   `objects/<the first 2 hex digits>/<the other 62>`. Its media type and keeps are in the index, not in the file.
+
+**The budget of objects.** Decided 2026-10-25 (Amy, by interview).
+
+- Objects have their own budget, the key `objects` of the `[store]` table, in bytes. It is not part of `nvme`. Reason:
+  a batch of images must not evict model state, and model state must not evict images. b70host sets 200 GiB.
+- A profile without the key declares no capability `objects`, and the routes of objects are a 404.
+- `object_bytes` is 8 GiB (8,589,934,592 bytes), or half the budget when that is less. `keep_bytes` is half the
+  budget. Thus a put always fits after the store evicts cached objects, and full keeps never stop a generation.
+- The store evicts the cached object that was used least recently first. Decided by senpai 2026-10-25 (vetoable).
+- Replication waits (Amy: "later"). The first step is the store on one machine, its routes and the conformance
+  checks. Home machines and pulls come when a second machine speaks this contract.
 
 Snapshots stay entries (6.4) for now. They can become objects of their own media type later, with their own order of
 eviction.
