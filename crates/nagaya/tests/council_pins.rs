@@ -358,3 +358,39 @@ fn a_snapshot_evicted_during_a_read_is_not_found_not_a_panic() {
     assert!(!armed.load(Ordering::SeqCst), "the eviction ran during the read");
     assert!(matches!(result, Err(ServiceError::NotFound(_))), "{result:?}");
 }
+
+/// The id of an entry that the engine `voice` made, put in the store of the fixture.
+fn voice_entry(f: &Fixture) -> SnapshotId {
+    let ports = f.process.ports();
+    let mut store = ports.store().unwrap().lock().unwrap();
+    store.fill_unrelated(1, "voice", [7; 32], 5..6);
+    let id = store
+        .entries()
+        .iter()
+        .find(|(_, entry)| entry.engine == "voice")
+        .map(|(id, _)| *id)
+        .unwrap();
+    SnapshotId::parse(format!("blake3:{}", id.hex())).unwrap()
+}
+
+/// Snapshots and pins belong to the server (gogi "Served models"). The service reads and pins the snapshots of the
+/// other engines of its profile, such as a speech engine (spec 11.8a), and no others.
+#[test]
+fn a_snapshot_of_a_peer_engine_reads_and_pins_and_one_of_another_engine_does_not() {
+    let mut config = ServiceConfig::new("toy", ENGINE);
+    config.peers = vec![("voice".to_owned(), "fake-voice".to_owned())];
+    let f = Fixture::with(0, 1 << 20, None, config);
+    let id = voice_entry(&f);
+    assert_eq!(
+        f.service.snapshot(&id).unwrap().model,
+        "fake-voice",
+        "a peer's snapshot names its model"
+    );
+    let result = f.service.put_pins("kernel-1", &put(&[&id], 600)).unwrap();
+    assert!(result.snapshots[0].held, "a peer's snapshot pins");
+
+    let alone = Fixture::new();
+    let id = voice_entry(&alone);
+    assert!(matches!(alone.service.snapshot(&id), Err(ServiceError::NotFound(_))));
+    assert!(!alone.service.put_pins("kernel-1", &put(&[&id], 600)).unwrap().snapshots[0].held);
+}

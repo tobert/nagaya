@@ -304,6 +304,7 @@ fn serve(
         &ready.opened,
         &ports,
         &config.store_dir,
+        &nagaya::qwen3tts::peers(&served_profile),
         call_cpus,
     )
     .and_then(|council| {

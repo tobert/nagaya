@@ -185,6 +185,17 @@ impl SpeechFamily for Family {
     }
 }
 
+/// The engines of this kind in the profile, each with its served model. The council reads and pins their snapshots
+/// (spec 11.8a).
+pub fn peers(profile: &PlacementProfile) -> Vec<(String, String)> {
+    profile
+        .engines
+        .iter()
+        .filter(|placement| placement.kind == KIND)
+        .map(|placement| (placement.name.clone(), MODEL.to_owned()))
+        .collect()
+}
+
 /// The speech service of each engine of this kind in the profile. The family opens from the checkpoint of the
 /// engine, so a service exists also while its engine is unloaded (spec 3.3a).
 pub fn speech_services(

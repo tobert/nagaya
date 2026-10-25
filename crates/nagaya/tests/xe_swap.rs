@@ -231,6 +231,7 @@ fn gemma4_unloads_for_an_engine_on_demand_and_loads_again_with_the_same_reply() 
             &ready.opened,
             &ready.process.ports(),
             store.path(),
+            &[],
             None,
         )
         .expect("the process serves Gemma 4"),

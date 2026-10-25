@@ -135,6 +135,7 @@ fn the_process_serves_gemma4_on_both_cards() {
             &ready.opened,
             &ready.process.ports(),
             store.path(),
+            &[],
             None,
         )
         .expect("the process serves the engine"),

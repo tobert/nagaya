@@ -109,6 +109,10 @@ pub struct ServiceConfig {
     pub pin_bytes: u64,
     /// What a spec may hold.
     pub spec_rules: SpecRules,
+    /// The other engines of the server, whose snapshots this service reads and pins too: snapshots and pins belong to
+    /// the server (gogi "Served models"), such as those of a speech engine (spec 11.8a). Each is the name of the
+    /// engine in the profile and its served model.
+    pub peers: Vec<(String, String)>,
 }
 
 /// The sample settings that a generation takes when its request does not name them. Each engine has its own
@@ -151,6 +155,7 @@ impl ServiceConfig {
             sample: SampleDefaults::default(),
             pin_bytes: 1 << 30,
             spec_rules: SpecRules::default(),
+            peers: Vec::new(),
         }
     }
 }
@@ -775,9 +780,17 @@ impl Service {
                     .collect()
             })
             .unwrap_or_default();
+        // A peer's snapshot names the peer's served model.
+        let model = self
+            .config
+            .peers
+            .iter()
+            .find(|(peer, _)| *peer == entry.engine)
+            .map_or(&self.config.model, |(_, model)| model)
+            .clone();
         Ok(SnapshotDetail {
             id: id.clone(),
-            model: self.config.model.clone(),
+            model,
             tokens,
             tier: snapshot_tier(entry.tier),
             bytes: Some(entry.size),
@@ -785,12 +798,13 @@ impl Service {
         })
     }
 
-    /// True when the store holds a live entry that this engine made.
+    /// True when the store holds a live entry that this engine or a peer made.
     fn is_ours(&self, store: &Store, content: &ContentId) -> bool {
-        store
-            .entries()
-            .get(content)
-            .is_some_and(|entry| entry.state == EntryState::Live && entry.engine == self.config.engine)
+        store.entries().get(content).is_some_and(|entry| {
+            entry.state == EntryState::Live
+                && (entry.engine == self.config.engine
+                    || self.config.peers.iter().any(|(peer, _)| *peer == entry.engine))
+        })
     }
 
     /// The bytes of the entries that pins keep: the entries, and the parents that they are built on.

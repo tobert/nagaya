@@ -153,7 +153,8 @@ fn open_qwen38(identity: &Identity, table: &toml::Table) -> Result<OpenedFamily,
 
 /// The council of a started process: a service for each opened engine whose kind has a family library.
 ///
-/// `call_cpus` are the CPUs of the call threads. A family that does not load, or a service that does not attach,
+/// `peers` are the other engines whose snapshots the council reads and pins, with their served models, such as the
+/// speech engines (spec 11.8a). `call_cpus` are the CPUs of the call threads. A family that does not load, or a service that does not attach,
 /// is an error. The process refuses to start then (spec 10.4).
 pub fn council(
     families: &FamilyRegistry,
@@ -161,6 +162,7 @@ pub fn council(
     opened: &[OpenedEngine],
     ports: &Ports,
     store_dir: &Path,
+    peers: &[(String, String)],
     call_cpus: Option<Vec<u32>>,
 ) -> Result<Council, String> {
     let mut models = Vec::new();
@@ -170,7 +172,7 @@ pub fn council(
             .iter()
             .find(|placement| placement.name == engine.name)
             .ok_or_else(|| format!("the opened engine `{}` is not in the profile", engine.name))?;
-        let Some(plan) = families.plan(engine, &placement.family)? else {
+        let Some(mut plan) = families.plan(engine, &placement.family)? else {
             tracing::info!(
                 "engine `{}` has the family `{}`, which has no library, so it is not a served model",
                 engine.name,
@@ -178,6 +180,7 @@ pub fn council(
             );
             continue;
         };
+        plan.config.peers = peers.iter().filter(|(peer, _)| *peer != engine.name).cloned().collect();
         let service = Service::attach(ports.clone(), plan.family, store_dir, plan.config)
             .map_err(|error| format!("cannot serve engine `{}`: {error}", engine.name))?;
         tracing::info!("serving model `{}` on engine `{}`", service.model(), engine.name);
