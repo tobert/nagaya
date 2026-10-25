@@ -1036,6 +1036,22 @@ megakernel. The other way is a pass for each sample, with 16 host round trips fo
 Reason: during one-token decode of an engine with two stages, each card waits while the other runs its stage. A pass
 of a small engine on the waiting card costs the large engine nothing.
 
+**How a group loads both.** Proposed by senpai (Claude Opus 5.5), 2026-10-24, for milestone 17 step 8. The rule
+above leaves the load open.
+
+- An engine with one device loads beside a loaded engine with stages when the ledger admits both. It opens on the
+  stage thread of its device, and its quanta run there. No engine unloads.
+- When it does not fit, the swap unloads the engine with stages, as before (spec 3.3a).
+- A load of an engine with stages first unloads each other loaded engine of its group. Each one loads again beside
+  it at its next job.
+- An idle engine on a stage thread unloads there (spec 3.3a "The swap back"). The engine with stages stays loaded.
+- A quantum of the engine with one device holds only its device. The scheduler ranks it with the stage quanta of
+  that device by class and priority (spec 5.3, 5.4).
+
+Reason: an engine opens on one thread and stays on it, because some engines need one thread (mk). A job body moves
+to the stage thread for its quantum, and the engine never moves. The first rule of this list keeps the large engine
+loaded when the small one fits.
+
 ## Not covered yet
 
 - Streams. They need a period, a deadline and a late policy, in `limits()` or per job. A pass blocks, so the
