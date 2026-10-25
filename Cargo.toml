@@ -9,6 +9,7 @@ members = [
     "crates/nagaya-jinja",
     "crates/nagaya-text-qwen38",
     "crates/nagaya-text-gemma4",
+    "crates/nagaya-text-qwen3tts",
     "crates/nagaya-council",
     "crates/nagaya-text-toy",
     "crates/nagaya-telemetry",

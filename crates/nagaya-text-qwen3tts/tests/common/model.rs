@@ -1,0 +1,85 @@
+//! The checkpoint of the tests, and the rule for a machine that has no copy of it.
+//!
+//! Amy, 2026-10-21: "adjust the tests so they don't break our tests when we don't have a model downloaded locally.
+//! we won't replicate all models to all machines so this state is normal." An absent checkpoint skips the test. The
+//! variable `QWEN3TTS_MODEL_DIR` names the directory, and the code holds no default path (AGENTS.md). The variable
+//! `NAGAYA_REQUIRE_MODELS=1` makes an absent checkpoint fail the test. Only absence skips.
+#![allow(dead_code)]
+
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
+
+use nagaya_text_qwen3tts::Qwen3TtsFamily;
+
+pub const DIR_VARIABLE: &str = "QWEN3TTS_MODEL_DIR";
+pub const REQUIRE_VARIABLE: &str = "NAGAYA_REQUIRE_MODELS";
+
+/// What the check found for the checkpoint.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Found {
+    Present,
+    Skip(String),
+}
+
+/// Check the vocabulary file in the directory `dir`, or the unset variable when `dir` is `None`. An absent file
+/// skips, or panics when `require` is set. Any other error panics.
+pub fn check(dir: Option<&Path>, require: bool, test: &str) -> Found {
+    let absent = |what: String| {
+        if require {
+            panic!("{what}. {REQUIRE_VARIABLE} is set. Set {DIR_VARIABLE} to the Qwen3-TTS checkpoint directory.");
+        }
+        Found::Skip(format!("skipped: {test}: {what}; set {DIR_VARIABLE}"))
+    };
+    let Some(dir) = dir else {
+        return absent(format!("{DIR_VARIABLE} is not set"));
+    };
+    let file = dir.join("vocab.json");
+    match std::fs::metadata(&file) {
+        Ok(m) if m.is_file() => Found::Present,
+        Ok(_) => panic!(
+            "{} is not a file. Set {DIR_VARIABLE} to a checkpoint directory.",
+            file.display()
+        ),
+        Err(e) if e.kind() == ErrorKind::NotFound => absent(format!(
+            "the Qwen3-TTS vocabulary file {} does not exist",
+            file.display()
+        )),
+        Err(e) => panic!("cannot read the Qwen3-TTS vocabulary file {}: {e}", file.display()),
+    }
+}
+
+fn configured() -> Option<PathBuf> {
+    std::env::var_os(DIR_VARIABLE).map(PathBuf::from)
+}
+
+fn required() -> bool {
+    std::env::var(REQUIRE_VARIABLE).is_ok_and(|v| v == "1")
+}
+
+/// True when the checkpoint is absent and the test must return. It prints one line to stderr.
+/// Call it first in each test that needs the checkpoint.
+pub fn absent() -> bool {
+    let thread = std::thread::current();
+    match check(configured().as_deref(), required(), thread.name().unwrap_or("a test")) {
+        Found::Present => false,
+        Found::Skip(line) => {
+            eprintln!("{line}");
+            true
+        }
+    }
+}
+
+/// The checkpoint directory. A test that calls it has called `absent` before, so the directory is there.
+pub fn model_dir() -> PathBuf {
+    let dir = configured().expect("the test must call `absent` first");
+    assert!(dir.join("vocab.json").is_file(), "the test must call `absent` first");
+    dir
+}
+
+/// The family of the checkpoint, built once for each test binary.
+pub fn family() -> &'static Qwen3TtsFamily {
+    static FAMILY: std::sync::OnceLock<Qwen3TtsFamily> = std::sync::OnceLock::new();
+    FAMILY.get_or_init(|| {
+        Qwen3TtsFamily::from_dir(&model_dir()).unwrap_or_else(|e| panic!("the checkpoint builds no family: {e}"))
+    })
+}

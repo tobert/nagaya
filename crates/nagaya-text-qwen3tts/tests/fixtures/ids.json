@@ -1,0 +1,421 @@
+{
+ "versions": {
+  "transformers": "4.57.3",
+  "tokenizers": "0.22.2",
+  "torch": "2.14.1+cpu"
+ },
+ "strings": [
+  {
+   "text": "",
+   "ids": [],
+   "qwen2_pattern_differs": false
+  },
+  {
+   "text": "hello",
+   "ids": [
+    14990
+   ],
+   "qwen2_pattern_differs": false
+  },
+  {
+   "text": " hello",
+   "ids": [
+    23811
+   ],
+   "qwen2_pattern_differs": false
+  },
+  {
+   "text": "Hello, world!",
+   "ids": [
+    9707,
+    11,
+    1879,
+    0
+   ],
+   "qwen2_pattern_differs": false
+  },
+  {
+   "text": "  two  spaces  ",
+   "ids": [
+    220,
+    1378,
+    220,
+    12621,
+    256
+   ],
+   "qwen2_pattern_differs": false
+  },
+  {
+   "text": "line one\nline two\n\n\nthree",
+   "ids": [
+    1056,
+    825,
+    198,
+    1056,
+    1378,
+    1406,
+    27856
+   ],
+   "qwen2_pattern_differs": false
+  },
+  {
+   "text": "\t tab and space\r\nCRLF",
+   "ids": [
+    197,
+    5651,
+    323,
+    3550,
+    319,
+    34,
+    80658
+   ],
+   "qwen2_pattern_differs": false
+  },
+  {
+   "text": "trailing spaces   ",
+   "ids": [
+    376,
+    14277,
+    12621,
+    262
+   ],
+   "qwen2_pattern_differs": false
+  },
+  {
+   "text": "numbers 1234567 and 3.14159, -42",
+   "ids": [
+    37378,
+    220,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    323,
+    220,
+    18,
+    13,
+    16,
+    19,
+    16,
+    20,
+    24,
+    11,
+    481,
+    19,
+    17
+   ],
+   "qwen2_pattern_differs": false
+  },
+  {
+   "text": "punctuation: !?;:...--()[]{}<>\"'`~@#$%^&*_+=|\\/",
+   "ids": [
+    79,
+    72299,
+    25,
+    753,
+    30,
+    26,
+    25,
+    1112,
+    313,
+    368,
+    1294,
+    6257,
+    27,
+    9877,
+    6,
+    63,
+    93,
+    31,
+    48077,
+    45899,
+    5,
+    55904,
+    8496,
+    91,
+    4739
+   ],
+   "qwen2_pattern_differs": false
+  },
+  {
+   "text": "don't you'll we've I'M THEY'RE",
+   "ids": [
+    15007,
+    944,
+    498,
+    3278,
+    582,
+    3003,
+    358,
+    27603,
+    62493,
+    94153
+   ],
+   "qwen2_pattern_differs": false
+  },
+  {
+   "text": "CamelCase HTTPServer iPhone XMLHttpRequest",
+   "ids": [
+    25406,
+    301,
+    4207,
+    10130,
+    5475,
+    600,
+    6939,
+    11874,
+    2905,
+    1900
+   ],
+   "qwen2_pattern_differs": true
+  },
+  {
+   "text": "a/b/c path/to/file.txt\n/",
+   "ids": [
+    64,
+    3470,
+    2899,
+    1815,
+    32429,
+    23903,
+    3909,
+    198,
+    14
+   ],
+   "qwen2_pattern_differs": false
+  },
+  {
+   "text": "naïve café – “quotes” — ellipsis…",
+   "ids": [
+    3376,
+    37572,
+    586,
+    51950,
+    1365,
+    1036,
+    53282,
+    854,
+    1959,
+    25607,
+    47402,
+    1940
+   ],
+   "qwen2_pattern_differs": false
+  },
+  {
+   "text": "decomposed: café naïve",
+   "ids": [
+    450,
+    92734,
+    25,
+    51950,
+    94880,
+    586
+   ],
+   "qwen2_pattern_differs": false
+  },
+  {
+   "text": "emoji 🦀🔥 and a flag 🇯🇵 and 👩‍👩‍👧",
+   "ids": [
+    37523,
+    11162,
+    99,
+    222,
+    144670,
+    323,
+    264,
+    5181,
+    11162,
+    229,
+    107,
+    145516,
+    323,
+    61804,
+    102,
+    378,
+    235,
+    145233,
+    378,
+    235,
+    145665
+   ],
+   "qwen2_pattern_differs": false
+  },
+  {
+   "text": "我叫通义千问，是阿里云的开源大模型。",
+   "ids": [
+    35946,
+    99882,
+    31935,
+    64559,
+    99320,
+    56007,
+    3837,
+    20412,
+    102661,
+    99718,
+    9370,
+    115462,
+    26288,
+    104949,
+    1773
+   ],
+   "qwen2_pattern_differs": false
+  },
+  {
+   "text": "日本語のテキスト、そしてカタカナ。",
+   "ids": [
+    101059,
+    102819,
+    15767,
+    56833,
+    61803,
+    70534,
+    5373,
+    79439,
+    70393,
+    46207,
+    70393,
+    95352,
+    1773
+   ],
+   "qwen2_pattern_differs": false
+  },
+  {
+   "text": "안녕하세요, 세계!",
+   "ids": [
+    126246,
+    144370,
+    91145,
+    11,
+    133196,
+    0
+   ],
+   "qwen2_pattern_differs": false
+  },
+  {
+   "text": "नमस्ते दुनिया",
+   "ids": [
+    60096,
+    87244,
+    78368,
+    30484,
+    97,
+    34370,
+    14925,
+    99,
+    72653,
+    60096,
+    42311,
+    107,
+    23868
+   ],
+   "qwen2_pattern_differs": false
+  },
+  {
+   "text": "Здравствуй, мир!",
+   "ids": [
+    35451,
+    6949,
+    26988,
+    20200,
+    82580,
+    11,
+    137144,
+    0
+   ],
+   "qwen2_pattern_differs": false
+  },
+  {
+   "text": "<|im_start|>assistant\nHi<|im_end|>\n",
+   "ids": [
+    151644,
+    77091,
+    198,
+    13048,
+    151645,
+    198
+   ],
+   "qwen2_pattern_differs": false
+  },
+  {
+   "text": "<tts_pad><tts_text_bos><tts_text_eod><tts_text_bos_single>",
+   "ids": [
+    151671,
+    151672,
+    151673,
+    151674
+   ],
+   "qwen2_pattern_differs": false
+  },
+  {
+   "text": "<think>x</think> <tool_call>y</tool_call> <|endoftext|>",
+   "ids": [
+    151667,
+    87,
+    151668,
+    220,
+    151657,
+    88,
+    151658,
+    220,
+    151643
+   ],
+   "qwen2_pattern_differs": false
+  },
+  {
+   "text": "<|im_start|><|im_start|>",
+   "ids": [
+    151644,
+    151644
+   ],
+   "qwen2_pattern_differs": false
+  },
+  {
+   "text": "<|im_startx|> <tts_pad",
+   "ids": [
+    27,
+    91,
+    318,
+    4906,
+    87,
+    91,
+    29,
+    366,
+    83,
+    2576,
+    30290
+   ],
+   "qwen2_pattern_differs": false
+  },
+  {
+   "text": "\u0000\u0001\u001f control bytes",
+   "ids": [
+    188,
+    189,
+    219,
+    2524,
+    5820
+   ],
+   "qwen2_pattern_differs": false
+  },
+  {
+   "text": "  　 unicode spaces   sep",
+   "ids": [
+    4102,
+    378,
+    225,
+    22441,
+    26077,
+    12621,
+    636,
+    101,
+    21017
+   ],
+   "qwen2_pattern_differs": false
+  }
+ ]
+}
