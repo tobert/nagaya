@@ -8,8 +8,10 @@
 mod error;
 mod family;
 mod ids;
+mod prompt;
 mod tokenizer;
 
 pub use error::Error;
 pub use family::Qwen3TtsFamily;
-pub use ids::{CodecIds, SpeechIds, TextIds};
+pub use ids::{AUTO, CodecIds, SpeechIds, TextIds};
+pub use prompt::PromptPosition;

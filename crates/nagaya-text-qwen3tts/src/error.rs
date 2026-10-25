@@ -11,6 +11,8 @@ pub enum Error {
     Tokenizer(String),
     /// The language of a request is not `auto` and not a language of the checkpoint.
     Language { given: String, known: Vec<String> },
+    /// The token ids of the assistant text do not have the form of the template. This is a defect of the library.
+    Prompt(String),
 }
 
 impl fmt::Display for Error {
@@ -24,6 +26,7 @@ impl fmt::Display for Error {
                 "the language {given:?} is not known. Use one of these: {}.",
                 known.join(", ")
             ),
+            Error::Prompt(m) => write!(f, "{m}. Report this defect of nagaya-text-qwen3tts."),
         }
     }
 }

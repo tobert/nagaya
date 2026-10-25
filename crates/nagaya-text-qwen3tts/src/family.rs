@@ -1,7 +1,7 @@
 //! The family of Qwen3-TTS: the tokenizer and the ids of one checkpoint.
 
 use crate::tokenizer::Tokenizer;
-use crate::{Error, SpeechIds};
+use crate::{Error, PromptPosition, SpeechIds};
 use std::path::Path;
 
 /// The family library of one Qwen3-TTS VoiceDesign checkpoint.
@@ -52,6 +52,25 @@ impl Qwen3TtsFamily {
     /// The token ids of `text`, as the reference processor gives them. The text of an added token becomes that token.
     pub fn tokenize(&self, text: &str) -> Result<Vec<u32>, Error> {
         self.tokenizer.encode(text)
+    }
+
+    /// The prompt of a speech request, as `generate_voice_design(text, instructions, language)` builds it.
+    ///
+    /// Empty `instructions` give no instruction positions, as in the reference. `language` is `auto` or a language
+    /// of the checkpoint, in any case. The text of an added token in `text` or `instructions` becomes that token,
+    /// as in the reference.
+    pub fn prompt(&self, text: &str, instructions: &str, language: &str) -> Result<Vec<PromptPosition>, Error> {
+        // Refuse an unknown language before the tokenizer runs.
+        self.ids.language_id(language)?;
+        let assistant = self.tokenize(&format!(
+            "<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"
+        ))?;
+        let instructions = if instructions.is_empty() {
+            None
+        } else {
+            Some(self.tokenize(&format!("<|im_start|>user\n{instructions}<|im_end|>\n"))?)
+        };
+        self.ids.positions(instructions.as_deref(), &assistant, language)
     }
 
     /// The ids of the checkpoint, with the constants that the decode needs.
