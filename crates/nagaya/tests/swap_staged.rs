@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use nagaya::admission::{Factory, GroupDevice, OpenError, PlanError, Registry};
 use nagaya::inventory::{Device, Inventory};
 use nagaya::jobs::{JobBody, JobSpec, Ran};
-use nagaya::process::{Process, Start};
+use nagaya::process::{Event, Process, Start};
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, Residency, StoreSpec, TierSpec};
 use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{Capability, Engine, Identity, Kind, Limits, PassError, PassOut, Segment, Stages, Tap, Tier};
@@ -135,6 +135,11 @@ fn profile() -> PlacementProfile {
 }
 
 fn start(directory: &std::path::Path) -> (Process, Log) {
+    start_watched(directory, Duration::from_secs(5))
+}
+
+/// The process of `start`, with a watchdog timeout of `timeout`.
+fn start_watched(directory: &std::path::Path, timeout: Duration) -> (Process, Log) {
     let log: Log = Arc::default();
     let mut registry = Registry::new();
     registry.register("pair", Box::new(Pair(Arc::clone(&log))));
@@ -154,7 +159,7 @@ fn start(directory: &std::path::Path) -> (Process, Log) {
     let mut process = Start::new(profile(), registry, inventory)
         .store(directory)
         .heartbeat(Duration::from_millis(10))
-        .timeout(Duration::from_secs(5))
+        .timeout(timeout)
         .start()
         .unwrap();
     let opened = process.wait_opens(Duration::from_secs(5)).unwrap();
@@ -395,4 +400,24 @@ fn an_idle_engine_with_stages_on_demand_unloads_through_its_stage_threads() {
             "open:voice"
         ]
     );
+}
+
+/// The stage threads of an engine that unloads end, and the watchdog stops watching them (spec 7.4). On b70host on
+/// 2026-10-24, a swap from gemma to the speech engine ended in a stall 30 s later, the watchdog timeout, and exit 1.
+#[test]
+fn a_swap_that_ends_the_stage_threads_is_not_a_stall() {
+    let directory = tempfile::tempdir().unwrap();
+    let timeout = Duration::from_millis(300);
+    let (process, log) = start_watched(directory.path(), timeout);
+    let (job, finished) = probe(VOICE, &log, None);
+    process.submit_job(0, job).unwrap();
+    finished
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the voice job ran");
+    let deadline = Instant::now() + timeout * 4;
+    while Instant::now() < deadline {
+        if let Some(event) = process.recv(Duration::from_millis(20)) {
+            assert!(!matches!(event, Event::Stalled { .. }), "{event:?}");
+        }
+    }
 }

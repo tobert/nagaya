@@ -1517,8 +1517,10 @@ pub(super) fn serve(
     }
     let StageThreads { senders, handles } = threads;
     drop(senders);
-    for handle in handles {
+    for (stage, handle) in handles.into_iter().enumerate() {
         let _ = handle.join();
+        // A stage thread that ended beats no more, so its watch ends with it (spec 7.4).
+        let _ = links.heartbeats.send(WatchMessage::StopStage { group, stage });
     }
     exit
 }

@@ -1355,6 +1355,9 @@ fn watchdog(messages: Receiver<WatchMessage>, events: Sender<Event>, timeout: Du
                     watch.last = at;
                 }
             }
+            Ok(WatchMessage::StopStage { group, stage }) => {
+                watches.remove(&(group, Some(stage)));
+            }
             Ok(WatchMessage::Stop) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => {}
         }
@@ -1399,6 +1402,11 @@ enum WatchMessage {
         group: usize,
         stage: usize,
         at: Instant,
+    },
+    /// The stage thread of one stage of a group ended, so the watch of it ends too.
+    StopStage {
+        group: usize,
+        stage: usize,
     },
     Stop,
 }
