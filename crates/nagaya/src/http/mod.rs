@@ -87,6 +87,8 @@ pub struct Council {
     speech: Vec<Arc<crate::speech::SpeechService>>,
     /// The objects and keeps, when the profile names an `objects` budget (spec 6.15).
     objects: Option<Arc<Mutex<nagaya_store::objects::ObjectStore>>>,
+    /// `object_bytes` and `keep_bytes` of the object store. They are fixed at its open, so identity takes no lock.
+    object_limits: Option<(u64, u64)>,
 }
 
 impl Council {
@@ -108,6 +110,7 @@ impl Council {
             failure: Mutex::new(None),
             speech: Vec::new(),
             objects: None,
+            object_limits: None,
         })
     }
 
@@ -119,6 +122,7 @@ impl Council {
 
     /// Serve objects and keeps from this store (spec 6.15, gogi "Objects and keeps").
     pub fn with_objects(mut self, store: nagaya_store::objects::ObjectStore) -> Self {
+        self.object_limits = Some((store.object_bytes(), store.keep_bytes()));
         self.objects = Some(Arc::new(Mutex::new(store)));
         self
     }
@@ -181,10 +185,7 @@ impl Council {
         let defaults = crate::council::ServiceConfig::new("", "");
         let config = self.models.first().map_or(&defaults, |served| served.service.config());
         let pins = !self.models.is_empty();
-        let objects = self.objects.as_ref().map(|store| {
-            let store = store.lock().expect("the object store lock is poisoned");
-            (store.object_bytes(), store.keep_bytes())
-        });
+        let objects = self.object_limits;
         ServerIdentity {
             models,
             limits: ServerLimits {

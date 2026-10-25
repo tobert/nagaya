@@ -1,7 +1,8 @@
 //! The routes of objects and keeps (gogi "Objects and keeps", spec 6.15).
 //!
-//! A put streams the body to a staged file and hashes it as it arrives, so a large object never sits in memory. The
-//! store's index lives behind a mutex, and each call holds it only to look up or commit, never during a transfer.
+//! A put streams the body to a staged file and hashes it as it arrives, so a large object never sits in memory. Each
+//! call on the store runs on a call thread through [`Council::call`], so it never blocks the control runtime, a panic
+//! in it is an internal error, and an internal error stops the process (spec 8.5).
 
 use std::sync::{Arc, Mutex};
 
@@ -27,6 +28,15 @@ use crate::council::error::ServiceError;
 type Shared = State<Arc<Council>>;
 type Id = Extension<RequestId>;
 
+/// The most puts that stream at once. Each stages up to `object_bytes`, so this bounds the staged bytes on disk.
+const PUTS_AT_ONCE: usize = 4;
+
+/// The most bytes past `object_bytes` that a refused put reads and drops before its 413, so that the client is not
+/// still sending when the answer comes. A body past even this gets its 413 before it is read.
+const DRAIN_BYTES: u64 = 64 << 20;
+
+static PUTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(PUTS_AT_ONCE);
+
 pub(super) fn routes() -> Router<Arc<Council>> {
     Router::new()
         .route("/council/v2/objects/{id}", put(put_object).get(get_object))
@@ -35,10 +45,6 @@ pub(super) fn routes() -> Router<Arc<Council>> {
             put(put_keep).get(get_keep).delete(delete_keep),
         )
 }
-
-/// The most bytes past `object_bytes` that a refused put reads and drops before its 413, so that the client is not
-/// still sending when the answer comes. A body past even this gets its 413 before it is read.
-const DRAIN_BYTES: u64 = 64 << 20;
 
 /// Read and drop the rest of a body, up to [`DRAIN_BYTES`].
 async fn drain(stream: &mut axum::body::BodyDataStream) {
@@ -67,20 +73,26 @@ fn too_large(param: &str, message: String) -> Failure {
     failure
 }
 
-fn from_store(error: ObjectError) -> Failure {
+fn not_found(message: String) -> Failure {
+    Failure::new(StatusCode::NOT_FOUND, ErrorType::NotFound, message)
+}
+
+/// The service error of a store error. A file system failure is internal, so it stops the process.
+fn from_store(error: ObjectError) -> ServiceError {
     match error {
-        ObjectError::TooLarge { limit, .. } => too_large(limit, error.to_string()),
-        ObjectError::Io(message) => Failure::from(ServiceError::internal(message)),
+        ObjectError::TooLarge { limit, .. } => ServiceError::TooLarge {
+            param: limit.to_owned(),
+            message: error.to_string(),
+        },
+        ObjectError::Io(message) => ServiceError::internal(message),
     }
 }
 
 /// The store of the process, or the 404 of a profile with no objects budget.
 fn store(council: &Council) -> Result<Arc<Mutex<ObjectStore>>, Failure> {
     council.objects().ok_or_else(|| {
-        Failure::new(
-            StatusCode::NOT_FOUND,
-            ErrorType::NotFound,
-            "the server holds no objects: its profile names no `objects` budget in `[store]` (spec 6.15)",
+        not_found(
+            "the server holds no objects: its profile names no `objects` budget in `[store]` (spec 6.15)".to_owned(),
         )
     })
 }
@@ -89,7 +101,7 @@ fn store(council: &Council) -> Result<Arc<Mutex<ObjectStore>>, Failure> {
 fn content(id: &str) -> Result<ContentId, Failure> {
     path_id(id)?;
     ContentId::from_hex(id.trim_start_matches("blake3:"))
-        .map_err(|e| Failure::from(ServiceError::internal(format!("{e:?}"))))
+        .map_err(|_| invalid("id", format!("nothing was looked up: {id:?} is not a content id")))
 }
 
 async fn put_object(
@@ -101,44 +113,85 @@ async fn put_object(
 ) -> Response {
     let result = async {
         let store = store(&council)?;
+        if council.draining() {
+            return Err(Failure::from(ServiceError::Stopping).with_message("nothing is held: the server is stopping"));
+        }
         let content = content(&text)?;
         let mime = headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).ok_or_else(|| {
-            invalid("content-type", "nothing is held: the request has no content-type header; send the object's media type, such as `audio/wav`".to_owned())
+            invalid(
+                "content-type",
+                "nothing is held: the request has no content-type header; send the object's media type, such as \
+                 `audio/wav`"
+                    .to_owned(),
+            )
         })?;
         if let Some(problem) = mime_problem(mime) {
             return Err(invalid("content-type", format!("nothing is held: content-type {problem}")));
         }
+        let _put = PUTS.try_acquire().map_err(|_| {
+            Failure::from(ServiceError::Busy(format!(
+                "nothing is held: {PUTS_AT_ONCE} puts stream now, the most that this server takes at once; try again later"
+            )))
+        })?;
         let (limit, staged) = {
-            let mut store = store.lock().expect("the object store lock is poisoned");
-            (store.object_bytes(), store.staging_path())
+            let store = Arc::clone(&store);
+            council
+                .call(move || {
+                    let mut store = store.lock().expect("the object store lock is poisoned");
+                    Ok((store.object_bytes(), store.staging_path()))
+                })
+                .await?
         };
-        let declared = headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok());
+        let declared = headers
+            .get(header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
         let mut stream = body.into_data_stream();
         if let Some(n) = declared.filter(|n| *n > limit) {
             if n <= limit + DRAIN_BYTES {
                 drain(&mut stream).await;
             }
-            return Err(too_large("object_bytes", format!("nothing is held: the object is {n} bytes; object_bytes is {limit}")));
+            return Err(too_large(
+                "object_bytes",
+                format!("nothing is held: the object is {n} bytes; object_bytes is {limit}"),
+            ));
         }
         // Stream the body to the staged file, and hash it as it arrives.
-        let mut file = tokio::fs::File::create(&staged).await.map_err(|e| Failure::from(ServiceError::internal(format!("cannot make `{}`: {e}", staged.display()))))?;
+        let write_error = |e: std::io::Error| {
+            council.failed(ServiceError::internal(format!("cannot write `{}`: {e}", staged.display())))
+        };
+        let mut file = tokio::fs::File::create(&staged).await.map_err(write_error)?;
         let mut hasher = blake3::Hasher::new();
         let mut size: u64 = 0;
         let outcome = async {
             while let Some(chunk) = stream.next().await {
-                let chunk = chunk.map_err(|e| invalid("body", format!("nothing is held: the body did not arrive whole ({e}); send the request again")))?;
+                let chunk = chunk.map_err(|e| {
+                    invalid(
+                        "body",
+                        format!("nothing is held: the body did not arrive whole ({e}); send the request again"),
+                    )
+                })?;
                 size += chunk.len() as u64;
                 if size > limit {
                     drain(&mut stream).await;
-                    return Err(too_large("object_bytes", format!("nothing is held: the object is more than {limit} bytes, which is object_bytes")));
+                    return Err(too_large(
+                        "object_bytes",
+                        format!("nothing is held: the object is more than {limit} bytes, which is object_bytes"),
+                    ));
                 }
                 hasher.update(&chunk);
-                file.write_all(&chunk).await.map_err(|e| Failure::from(ServiceError::internal(format!("cannot write `{}`: {e}", staged.display()))))?;
+                file.write_all(&chunk).await.map_err(write_error)?;
             }
-            file.sync_all().await.map_err(|e| Failure::from(ServiceError::internal(format!("cannot write `{}`: {e}", staged.display()))))?;
+            file.sync_all().await.map_err(write_error)?;
             let actual = format!("blake3:{}", hasher.finalize().to_hex());
             if actual != text {
-                return Err(invalid("id", format!("nothing is held: the {size} bytes sent hash to {actual}, not {text}; PUT them at {actual}, or send the bytes {text} names")));
+                return Err(invalid(
+                    "id",
+                    format!(
+                        "nothing is held: the {size} bytes sent hash to {actual}, not {text}; PUT them at {actual}, or \
+                         send the bytes {text} names"
+                    ),
+                ));
             }
             Ok(())
         }
@@ -148,11 +201,17 @@ async fn put_object(
             return Err(failure);
         }
         let mime = mime.to_owned();
-        let committed = tokio::task::spawn_blocking(move || store.lock().expect("the object store lock is poisoned").commit(&content, &mime, &staged, size, now_ms()))
-            .await
-            .map_err(|e| Failure::from(ServiceError::internal(format!("the commit of an object stopped: {e}"))))?
-            .map_err(from_store)?;
-        let status = if committed.created { StatusCode::CREATED } else { StatusCode::OK };
+        let committed = council
+            .call(move || {
+                let mut store = store.lock().expect("the object store lock is poisoned");
+                store.commit(&content, &mime, &staged, size, now_ms()).map_err(from_store)
+            })
+            .await?;
+        let status = if committed.created {
+            StatusCode::CREATED
+        } else {
+            StatusCode::OK
+        };
         Ok((status, json!({"id": text, "mime": committed.mime, "bytes": size})))
     }
     .await;
@@ -174,25 +233,17 @@ async fn get_object(
             // The nagaya writes no outputs yet, so it gives no pending ids (spec 11.1, "Text only").
             return Err(match gogi_proto::ids::pending_id_problem(&text) {
                 Some(problem) => invalid("id", format!("nothing was looked up: {problem}")),
-                None => Failure::new(
-                    StatusCode::NOT_FOUND,
-                    ErrorType::NotFound,
-                    format!("no output is pending as {text}"),
-                ),
+                None => not_found(format!("no output is pending as {text}")),
             });
         }
         let content = content(&text)?;
-        let found = store
-            .lock()
-            .expect("the object store lock is poisoned")
-            .get(&content, now_ms())
-            .ok_or_else(|| {
-                Failure::new(
-                    StatusCode::NOT_FOUND,
-                    ErrorType::NotFound,
-                    format!("no object {text} is held; PUT it again"),
-                )
-            })?;
+        let found = council
+            .call(move || {
+                let mut store = store.lock().expect("the object store lock is poisoned");
+                store.get(&content, now_ms()).map_err(from_store)
+            })
+            .await?
+            .ok_or_else(|| not_found(format!("no object {text} is held; PUT it again")))?;
         let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
         let (status, start, length, content_range) = match byte_range(range, found.bytes) {
             ByteRange::Whole => (StatusCode::OK, 0, found.bytes, None),
@@ -213,17 +264,26 @@ async fn get_object(
                     ),
                 );
                 failure.body.error.param = Some("range".to_owned());
-                return Err(failure);
+                let mut response = failure.respond(&id);
+                let unsatisfied = format!("bytes */{}", found.bytes);
+                response.headers_mut().insert(
+                    header::CONTENT_RANGE,
+                    unsatisfied.parse().expect("a content range is a header value"),
+                );
+                return Ok(response);
             }
         };
-        let mut file = tokio::fs::File::open(&found.path).await.map_err(|e| {
-            Failure::from(ServiceError::internal(format!(
+        // A put can evict the object after the lookup. Its file is then gone, which is the 404 of an object that the
+        // store does not hold, not an internal error.
+        let mut file = tokio::fs::File::open(&found.path).await.map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => not_found(format!("no object {text} is held; PUT it again")),
+            _ => council.failed(ServiceError::internal(format!(
                 "cannot read `{}`: {e}",
                 found.path.display()
-            )))
+            ))),
         })?;
         file.seek(std::io::SeekFrom::Start(start)).await.map_err(|e| {
-            Failure::from(ServiceError::internal(format!(
+            council.failed(ServiceError::internal(format!(
                 "cannot read `{}`: {e}",
                 found.path.display()
             )))
@@ -273,11 +333,14 @@ async fn put_keep(State(council): Shared, Extension(id): Id, Path(owner): Path<S
         let put: KeepsPut = parse(&bytes(body).await?, "keeps")?;
         put.validate().map_err(|e| Failure::from(ServiceError::Invalid(e)))?;
         let ids: Vec<ContentId> = put.objects.iter().map(|text| content(text)).collect::<Result<_, _>>()?;
-        let held = store
-            .lock()
-            .expect("the object store lock is poisoned")
-            .put_keep(&owner, &ids, put.ttl_s * 1000, now_ms())
-            .map_err(from_store)?;
+        let ttl_ms = put.ttl_s.saturating_mul(1000);
+        let keeper = owner.clone();
+        let held = council
+            .call(move || {
+                let mut store = store.lock().expect("the object store lock is poisoned");
+                store.put_keep(&keeper, &ids, ttl_ms, now_ms()).map_err(from_store)
+            })
+            .await?;
         let objects: Vec<_> = put
             .objects
             .iter()
@@ -295,17 +358,16 @@ async fn get_keep(State(council): Shared, Extension(id): Id, Path(owner): Path<S
     let result = async {
         let store = store(&council)?;
         owner_of(&owner)?;
-        let (ids, left_ms) = store
-            .lock()
-            .expect("the object store lock is poisoned")
-            .keep(&owner, now_ms())
-            .ok_or_else(|| {
-                Failure::new(
-                    StatusCode::NOT_FOUND,
-                    ErrorType::NotFound,
-                    format!("{owner} keeps nothing"),
-                )
-            })?;
+        let keeper = owner.clone();
+        let (ids, left_ms) = council
+            .call(move || {
+                Ok(store
+                    .lock()
+                    .expect("the object store lock is poisoned")
+                    .keep(&keeper, now_ms()))
+            })
+            .await?
+            .ok_or_else(|| not_found(format!("{owner} keeps nothing")))?;
         let objects: Vec<String> = ids.iter().map(|id| format!("blake3:{}", id.hex())).collect();
         Ok(json!({"owner": owner, "objects": objects, "expires_in_s": left_ms.div_ceil(1000)}))
     }
@@ -317,19 +379,17 @@ async fn delete_keep(State(council): Shared, Extension(id): Id, Path(owner): Pat
     let result = async {
         let store = store(&council)?;
         owner_of(&owner)?;
-        if store
-            .lock()
-            .expect("the object store lock is poisoned")
-            .drop_keep(&owner, now_ms())
-            .map_err(from_store)?
-        {
+        let keeper = owner.clone();
+        let dropped = council
+            .call(move || {
+                let mut store = store.lock().expect("the object store lock is poisoned");
+                store.drop_keep(&keeper, now_ms()).map_err(from_store)
+            })
+            .await?;
+        if dropped {
             Ok(())
         } else {
-            Err(Failure::new(
-                StatusCode::NOT_FOUND,
-                ErrorType::NotFound,
-                format!("{owner} keeps nothing"),
-            ))
+            Err(not_found(format!("{owner} keeps nothing")))
         }
     }
     .await;

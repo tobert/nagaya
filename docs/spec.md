@@ -303,8 +303,8 @@ adds the entries does not count a pooled budget twice. On gfx1151host, `device(0
 The placement profile is one TOML file. Each `[[engines]]` entry has `name`, `kind`, `devices`, `config`, an optional
 `family` table (11.3), `share` and `pin_identity`. An entry can also have `residency` and `idle_unload_s` (3.3a,
 Proposed). Each `[[budgets]]` entry has `tiers` and `bytes`, and a tier is
-`host` or `device(i)`. The `[store]` table has `nvme`, an optional `host` (4.1a), and an optional `interval_copies`
-(6.13), 0 by default. Decided 2026-10-20 (reading).
+`host` or `device(i)`. The `[store]` table has `nvme`, an optional `host` (4.1a), an optional `interval_copies`
+(6.13), 0 by default, and an optional `objects` (6.15). Decided 2026-10-20 (reading).
 
 **One name for each device.** Decided 2026-10-22 (Amy: "all good"). The spec names a device in four places.
 Each place uses one of two names, and this map joins them.
@@ -1213,7 +1213,8 @@ comprehensive"). gogi's contract holds the text of the API: "Objects and keeps",
 - **Object.** An object is bytes and a media type, named by its content id (6.2). The id is the BLAKE3 hash of the
   bytes, with no canonical form. A message, a reply or a case names an object by `{"id", "mime"}`.
 - **The routes.** `PUT /council/v2/objects/{id}` sends the bytes. The server hashes them as they arrive. A
-  mismatch is a 400 that names both ids, and the server keeps nothing. A put of a held object takes no bytes.
+  mismatch is a 400 that names both ids, and the server keeps nothing. A put of a held object takes no new disk space.
+  The server still reads and hashes its body, so a client sends `HEAD` first to skip the transfer (gogi).
   `GET` and `HEAD` on the same path read the object, and `GET` accepts `Range`.
 - **Two classes.** An object is `cached` or `kept`. A cached object is evicted as an entry with no pin is (6.9).
   A kept object has a keep: a lease with an owner and an expiry, as a pin has (6.10). The store never evicts an
@@ -1242,6 +1243,12 @@ comprehensive"). gogi's contract holds the text of the API: "Objects and keeps",
 - `object_bytes` is 8 GiB (8,589,934,592 bytes), or half the budget when that is less. `keep_bytes` is half the
   budget. Thus a put always fits after the store evicts cached objects, and full keeps never stop a generation.
 - The store evicts the cached object that was used least recently first. Decided by senpai 2026-10-25 (vetoable).
+- At most four puts stream at once, so staged bytes stay below four times `object_bytes`. A fifth is a 429 `busy`.
+  Decided by senpai 2026-10-25 (vetoable).
+- The first read of an object after a start hashes its file. A file that does not hash to its id drops the object,
+  as an eviction does (7.3: same size is not same bytes). An index that does not read moves aside, and the store
+  starts empty. Objects are a cache of what clients sent, so a start never stops for them. Decided by senpai
+  2026-10-25 (vetoable).
 - Replication waits (Amy: "later"). The first step is the store on one machine, its routes and the conformance
   checks. Home machines and pulls come when a second machine speaks this contract.
 
