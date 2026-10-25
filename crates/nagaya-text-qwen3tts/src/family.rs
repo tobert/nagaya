@@ -62,15 +62,25 @@ impl Qwen3TtsFamily {
     pub fn prompt(&self, text: &str, instructions: &str, language: &str) -> Result<Vec<PromptPosition>, Error> {
         // Refuse an unknown language before the tokenizer runs.
         self.ids.language_id(language)?;
-        let assistant = self.tokenize(&format!(
-            "<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"
-        ))?;
+        let assistant = self.line_ids(text)?;
         let instructions = if instructions.is_empty() {
             None
         } else {
-            Some(self.tokenize(&format!("<|im_start|>user\n{instructions}<|im_end|>\n"))?)
+            Some(self.voice_ids(instructions)?)
         };
         self.ids.positions(instructions.as_deref(), &assistant, language)
+    }
+
+    /// The ids of a voice design: `<|im_start|>user\n{instructions}<|im_end|>\n`.
+    pub fn voice_ids(&self, instructions: &str) -> Result<Vec<u32>, Error> {
+        self.tokenize(&format!("<|im_start|>user\n{instructions}<|im_end|>\n"))
+    }
+
+    /// The ids of a line: `<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n`.
+    pub fn line_ids(&self, text: &str) -> Result<Vec<u32>, Error> {
+        self.tokenize(&format!(
+            "<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"
+        ))
     }
 
     /// The ids of the checkpoint, with the constants that the decode needs.

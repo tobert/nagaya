@@ -13,6 +13,8 @@ pub enum Error {
     Language { given: String, known: Vec<String> },
     /// The token ids of the assistant text do not have the form of the template. This is a defect of the library.
     Prompt(String),
+    /// Item `item` of a speech context breaks a rule of its order (spec 11.8a).
+    Context { item: usize, message: String },
 }
 
 impl fmt::Display for Error {
@@ -27,6 +29,7 @@ impl fmt::Display for Error {
                 known.join(", ")
             ),
             Error::Prompt(m) => write!(f, "{m}. Report this defect of nagaya-text-qwen3tts."),
+            Error::Context { item, message } => write!(f, "item {item} of the speech context: {message}"),
         }
     }
 }

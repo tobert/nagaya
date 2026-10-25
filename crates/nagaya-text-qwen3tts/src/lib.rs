@@ -5,12 +5,14 @@
 //! `Qwen3TTSModel.generate_voice_design` with `non_streaming_mode=True`. The family has no detokenizer and no reply
 //! parser, because the output is audio.
 
+mod context;
 mod error;
 mod family;
 mod ids;
 mod prompt;
 mod tokenizer;
 
+pub use context::{Frame, Rendering, SpeechItem, SpeechPosition};
 pub use error::Error;
 pub use family::Qwen3TtsFamily;
 pub use ids::{AUTO, CodecIds, SpeechIds, TextIds};
