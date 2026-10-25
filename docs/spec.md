@@ -845,6 +845,27 @@ job-2 finding 2).
 mk's `context_id` and mkviolet's `snap:<sha256>` are the input part of a recipe. They do not include the engine
 identity. mk's id is a SHA-256 of the tokens and boundaries with `|gdn-bf16-v1|`.
 
+**The printed form of a content id.** Decided 2026-10-25 (Amy: "blake3 it is"; "256 bit addresses everywhere").
+
+- A content id is the whole 256-bit BLAKE3 hash. Its printed form is `blake3:` and 64 lowercase hex digits.
+- Each API, log, file and gossip value uses the whole printed form.
+- A display can show a short form. No input accepts one, and no input resolves a prefix.
+- A request that names a short form or a prefix is an error that names the id. gogi's contract sets its status.
+  Today the snapshot routes give 404 (`crates/nagaya/src/council/mod.rs:752`), and `ContentId::from_hex` takes
+  only 64 lowercase hex digits (`crates/nagaya-store/src/lib.rs:116`).
+
+Reason for the whole form: a person copies and pastes what they see (Amy: "let's assume they will copy and paste
+something"). In a cluster that copies objects (6.15), a prefix that is unique today can name two objects tomorrow.
+
+Reason for BLAKE3, not SHA-256:
+
+- BLAKE3 is a tree hash. A reader can check one range of an object against its id, without the rest.
+- A BLAKE3 hash of one file runs on many cores. A SHA-256 hash of one file runs on one core.
+- The store, the recipes, the identities and kaijutsu's store already use BLAKE3.
+
+A SHA-256 of a source, for example the object id of a Hugging Face file, can be metadata of an entry. It is never
+an address.
+
 **6.3 Sealed bytes are canonical.** In the store, each snapshot is a canonical safetensors file (D10). Each cells
 part and ring part has the shape of its coverage: the rows that it holds, in position order. Thus two slots of
 different sizes that hold the same rows make the same file.

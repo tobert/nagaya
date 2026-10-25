@@ -126,6 +126,9 @@ chain, the hash also covers the parent's content id (`docs/engine-abi.md` D3, D1
 records its **coverage**: the positions that it holds in each part. Coverage is in the canonical file, so it is in
 the content id. Whether a snapshot fits a slot is a check on coverage, not part of the id.
 
+An object also has a content id. The printed form of each content id is `blake3:` and 64 hex digits, always whole
+(`docs/spec.md` 6.2).
+
 **Recipe.** What a snapshot was made from: a hash of the engine identity, the inputs and the boundaries. For an
 engine that declares a geometry key, the recipe holds that key too. The store maps a recipe to the content ids made
 from it, so the nagaya can ask "do we already have this?" before it builds. mkviolet's `snapshot_id` is the input
