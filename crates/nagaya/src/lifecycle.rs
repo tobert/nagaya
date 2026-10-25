@@ -275,6 +275,11 @@ fn start_engines(
         }
     }) {
         Ok(opened) => {
+            // An on-demand engine stays unloaded until its first job (spec 3.3a).
+            let waiting = names
+                .iter()
+                .filter(|name| opened.iter().all(|engine| &engine.name != *name));
+            record_states(waiting, EngineState::Unloaded);
             let mut names: Vec<String> = opened.iter().map(|engine| engine.name.clone()).collect();
             names.sort();
             record_states(&names, EngineState::Ready);
@@ -328,6 +333,18 @@ pub fn wait_with(
     poll: Duration,
     tick: &mut dyn FnMut() -> Option<ExitCode>,
 ) -> ExitCode {
+    wait_with_events(process, signals, notifier, poll, tick, &mut |_| {})
+}
+
+/// Like `wait_with`, and give each event that stops nothing to `on_event`, for example a swap in place (spec 3.3a).
+pub fn wait_with_events(
+    process: &Process,
+    signals: &SignalFlag,
+    notifier: Option<&Notifier>,
+    poll: Duration,
+    tick: &mut dyn FnMut() -> Option<ExitCode>,
+    on_event: &mut dyn FnMut(Event),
+) -> ExitCode {
     loop {
         if signals.count() > 0 {
             return ExitCode::Clean;
@@ -348,12 +365,22 @@ pub fn wait_with(
             continue;
         };
         let Some(code) = event.exit_code() else {
+            on_event(event);
             continue;
         };
         if let Some(notifier) = notifier {
             let _ = notifier.notify(&status(&event));
         }
         return code;
+    }
+}
+
+/// Keep the list of loaded engines (`Ready::opened`) after a swap in place (spec 3.3a). The stop reports the engines
+/// in it.
+pub fn apply_swap(opened: &mut Vec<OpenedEngine>, event: &Event) {
+    if let Event::Swapped { unloaded, loaded, .. } = event {
+        opened.retain(|engine| !unloaded.contains(&engine.name));
+        opened.extend(loaded.iter().cloned());
     }
 }
 

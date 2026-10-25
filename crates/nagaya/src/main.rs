@@ -289,6 +289,13 @@ fn serve(
         }
     };
     published(node.engines_ready(&ready.opened));
+    // An on-demand engine stays unloaded until its first job (spec 3.3a).
+    let waiting: Vec<String> = names
+        .iter()
+        .filter(|name| ready.opened.iter().all(|engine| &engine.name != *name))
+        .cloned()
+        .collect();
+    published(node.engines_state(&waiting, EngineState::Unloaded));
     // The council routes attach before READY (spec 10.1, 11.7). A failure here refuses the start (spec 10.4).
     let ports = ready.process.ports();
     let council = match serving::council(
@@ -314,8 +321,19 @@ fn serve(
     let code = {
         // A desired profile from a peer arrives through gossip (spec 2.4 note, 3.3).
         let process = &ready.process;
+        let opened = &mut ready.opened;
         let council = &council;
+        // The swaps in place that the wait heard of. The tick publishes them, because it holds the node (spec 3.3a).
+        let swaps = std::cell::RefCell::new(Vec::new());
+        let mut on_event = |event| swaps.borrow_mut().push(event);
         let mut tick = || {
+            for event in swaps.borrow_mut().drain(..) {
+                if let nagaya::process::Event::Swapped { unloaded, loaded, .. } = &event {
+                    published(node.engines_state(unloaded, EngineState::Unloaded));
+                    published(node.engines_ready(loaded));
+                }
+                lifecycle::apply_swap(opened, &event);
+            }
             node.check_name();
             // An internal error of a route stops the process (spec 8.5, 11.5).
             if council.failure().is_some() {
@@ -323,7 +341,14 @@ fn serve(
             }
             desired_profile(&mut swap, node, process)
         };
-        lifecycle::wait_with(process, &SIGNALS, notifier.as_ref(), lifecycle::WAIT_POLL, &mut tick)
+        lifecycle::wait_with_events(
+            process,
+            &SIGNALS,
+            notifier.as_ref(),
+            lifecycle::WAIT_POLL,
+            &mut tick,
+            &mut on_event,
+        )
     };
     if code != ExitCode::Clean && code != ExitCode::PlannedRestart {
         // Spec 8.5: an unexpected failure stops the process. Ask the workers to stop, then do not join one.
