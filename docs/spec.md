@@ -2833,14 +2833,19 @@ its escapes; the speech route has none in v0.
   a 400 that names `messages`.
 - `language` is `output.options.language`, `auto` by default. The seed is `sample.seed`. The sampler is the
   checkpoint's, as in 11.8.
+- One language renders each line of a context. Proposed by senpai (Claude Opus 5.5), 2026-10-25. Reason: a line in
+  the context has no language of its own. A generation in another language renders another context, and feeds it.
 
 **The rendering of a speech context.** Proposed by senpai (Claude Opus 5.5), 2026-10-25.
 
 1. The voice design: `<|im_start|>user\n{system}<|im_end|>\n`, text positions only.
 2. For each line: the assistant role, the codec prefill of its language, its text with the codec pad, `tts_eos`, and
    `tts_pad` with the codec bos. These are the positions of one request today (`nagaya-text-qwen3tts`).
-3. After a line with audio: one frame position for each frame of the audio, then the frame of the codec end. A frame
-   position is the 16 codes of the frame and the trailing text `tts_pad`, as the engine feeds a frame that it made.
+3. After a line with audio: one frame position for each frame of the audio. A frame position is the 16 codes of the
+   frame and the trailing text `tts_pad`, as the engine feeds a frame that it made.
+4. Before a line that follows audio: one text position of `tts_pad` with the codec end. Proposed by senpai (Claude
+   Opus 5.5), 2026-10-25. Reason: the head after a line then holds the rows that the engine holds after the line.
+   Thus a generation holds its head with no feed.
 
 A boundary can follow the voice design and each message, by `snap: true`. The end of the context is a boundary.
 
@@ -2853,14 +2858,24 @@ A boundary can follow the voice design and each message, by `snap: true`. The en
 - An eviction can drop the codes of an output. The server then answers as for an object that it does not hold: a 404
   that names the part. The client speaks that line again.
 
+**The WAV of an output.** Proposed by senpai (Claude Opus 5.5), 2026-10-25. gogi leaves the bytes of a stream open.
+
+- The sealed object is a whole WAV: PCM, mono, 16 bits, 24 kHz, with the true sizes in its header.
+- A `GET` of the pending id streams the same bytes, except the two size fields of the header. They are `0xFFFFFFFF`,
+  as on `/v1/audio/speech`, because the length is not known while the frames decode.
+
+Reason: a reader of the object gets a valid WAV, and a reader of the stream gets audio before the end.
+
 **The held state of a speech context.** Proposed by senpai (Claude Opus 5.5), 2026-10-25.
 
-- A speech snapshot holds the talker KV of each position and the history of codebook 0. It also holds the codes of
-  the codec's left context. Each is a part of the snapshot (D10), so the store keeps it as any snapshot.
+- A speech snapshot holds the talker KV of each position, as the part `talker_kv` (D10). The store keeps it as any
+  snapshot. Each line starts its sampler and its codec again (engine-abi "Held speech state"), so they hold nothing.
 - The recipe of a speech context hashes its positions as the recipe of a text context hashes its tokens (6.2). A text
   position is its text id and its codec id; a frame position is its 16 codes.
 - A generation holds its head after the line's frames, so the next line feeds only its own positions. Pins keep a
   voice, as they keep a chat.
+- A boundary is restorable only before the last line. A generation feeds at least the last line, because the feed
+  that starts a line samples its first code.
 - The random value of a code depends on the seed, the frame within its line, and the codebook (11.2). Thus the same
   context and seed give the same codes, held or fed.
 

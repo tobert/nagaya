@@ -1025,7 +1025,7 @@ context holds state as a chat does ("Level 2 sounds awesome"). This replaces the
 part to snapshot. The speech calls become these:
 
 ```
-speech_feed(slot, positions, sampler) -> ok | why   feeds positions after the state of the slot, and keeps the sampler
+speech_feed(slot, positions, sampler?) -> ok | why  feeds positions after the state of the slot
 speech_frames(slot, max) -> {codes, audio, end}     as before
 speech_clear(slot)                                   as before
 ```
@@ -1037,10 +1037,15 @@ the store keeps a speech snapshot as it keeps any snapshot, with no call of its 
   Or it is a frame position: the 16 codes of a frame. The engine feeds it as a frame that it made. That is the sum of
   the 16 code embeddings and the trailing text `tts_pad`.
 - **Feed.** `speech_feed` into an empty slot is the old `speech_begin`. Into a slot with state, it adds positions
-  after the last one. Each feed starts a new line: the frame counter of the random stream starts at 0 again.
-- **Parts.** The engine declares two parts. `talker_kv` is a cells part: the talker KV of each position, one row each.
-  `speech_tail` is a fixed part: the history of codebook 0 and the codes of the codec's left context. Two slots with
-  the same state give the same bytes.
+  after the last one. A slot whose line has not ended refuses a feed.
+- **A feed with a sampler starts a line.** The sampler, the history of codebook 0 and the codec state start again.
+  The frame counter of the random stream starts at 0. The feed ends with the sample of the line's first codebook 0.
+- **A feed with no sampler holds its rows** and starts no line. Proposed by senpai (Claude Opus 5.5), 2026-10-25.
+  Reason: a build holds a snapshot at each boundary inside a context, and a line starts only after the last one.
+- **Parts.** The engine declares one cells part, `talker_kv`: the talker KV of each position, one row each. Proposed
+  by senpai (Claude Opus 5.5), 2026-10-25. This replaces a second part `speech_tail` for the history of codebook 0
+  and the codec's left context. Reason: each line starts both again, so only the KV carries over. Two slots with the
+  same state give the same bytes.
 - **Restore.** The nagaya writes the parts of a snapshot into an empty slot and sets its row count, as for a text
   engine (6.8). A feed then goes on from the last row.
 - **Determinism.** A restore and a feed can give the same codes as one feed of all the positions into an empty slot.
