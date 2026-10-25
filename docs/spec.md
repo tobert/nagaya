@@ -500,6 +500,16 @@ a known state.
 Reason for the fd removal: an fd in systemd's store holds the device memory of its arena. An engine that closes while
 its fds stay in the store frees no device memory.
 
+**The ledger of a swap.** Proposed by senpai (Claude Opus 5.5), 2026-10-24.
+
+- The ledger admits the set of loaded engines, and the ledger thread keeps that set.
+- An engine that is not loaded stays in the ledger with its context terms only, and with a share of 0. It takes no
+  memory and no part of the spare memory (4.4).
+- Thus a request can charge its context before its job waits for the load (4.2).
+
+Reason: a council request charges its context on the request thread, before it submits its job (11.3c). On the cards
+on 2026-10-24, a generation for an unloaded Gemma 4 failed with "engine gemma is not admitted" until this rule.
+
 **The swap back.** Proposed by senpai (Claude Opus 5.5), 2026-10-24.
 
 - An on-demand engine unloads after `idle_unload_s` seconds with no job. The key is in its profile entry, and the
