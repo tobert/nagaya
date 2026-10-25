@@ -229,6 +229,7 @@ pub fn profile_with_copies(host_budget: u64, nvme: u64, host_store: Option<u64>,
             nvme,
             host: host_store,
             interval_copies: copies,
+            objects: None,
         }),
     }
 }

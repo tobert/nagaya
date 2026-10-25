@@ -14,6 +14,8 @@ use safetensors::{Dtype as SafeDtype, SafeTensors};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+pub mod objects;
+
 /// The alignment of the data section.
 const ALIGN: usize = 4096;
 

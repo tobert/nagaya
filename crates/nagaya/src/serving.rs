@@ -187,5 +187,14 @@ pub fn council(
             device: None,
         });
     }
-    Council::new(models, call_cpus)
+    let council = Council::new(models, call_cpus)?;
+    match profile.store.and_then(|store| store.objects) {
+        None => Ok(council),
+        Some(budget) => {
+            let store = nagaya_store::objects::ObjectStore::open(&store_dir.join("objects"), budget)
+                .map_err(|error| format!("cannot open the objects in the store directory: {error}"))?;
+            tracing::info!("objects: {} of a budget of {budget} bytes held", store.used());
+            Ok(council.with_objects(store))
+        }
+    }
 }

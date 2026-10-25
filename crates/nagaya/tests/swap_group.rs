@@ -140,6 +140,7 @@ fn profile(device_bytes: u64) -> PlacementProfile {
             nvme: 1 << 20,
             host: None,
             interval_copies: 0,
+            objects: None,
         }),
     }
 }

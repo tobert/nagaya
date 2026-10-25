@@ -17,7 +17,7 @@ use support::Lines;
 const PROFILE: &str = "[[engines]]\nname = \"toy\"\nkind = \"fake-toy\"\ndevices = [0]\nshare = 1\n\
      [[budgets]]\ntiers = [\"device(0)\"]\nbytes = 4096\n\
      [[budgets]]\ntiers = [\"host\"]\nbytes = 33554432\n\
-     [store]\nnvme = 67108864\nhost = 16777216\n";
+     [store]\nnvme = 67108864\nhost = 16777216\nobjects = 25165824\n";
 
 /// A free TCP port on loopback. The port stays the same through a restart.
 fn free_port() -> u16 {
@@ -199,6 +199,14 @@ fn gogi_conformance_passes_against_the_process_with_the_fake_engine() {
         "a decision with an open context is a 400 naming continue",
         "raw reads of an open context are a 400 naming continue",
         "continue: false on the last message is a closed message",
+        // Objects, with a budget of 24 MiB: object_bytes and keep_bytes are each 12 MiB, so the suite probes both.
+        "an object reads back bit for bit",
+        "a range reads its bytes",
+        "an object past object_bytes is a 413",
+        "a keep set past keep_bytes is a 413",
+        "a PUT replaces the owner's whole keep set",
+        "a kept object survives a restart bit for bit",
+        "an owner's keeps survive a restart",
     ] {
         assert!(ok(name), "{name}");
     }

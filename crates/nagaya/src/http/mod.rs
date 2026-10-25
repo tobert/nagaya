@@ -6,6 +6,7 @@
 
 mod errors;
 mod extensions;
+mod objects;
 mod routes;
 pub mod speech;
 mod stream;
@@ -84,6 +85,8 @@ pub struct Council {
     failure: Mutex<Option<String>>,
     /// The speech services (spec 11.8).
     speech: Vec<Arc<crate::speech::SpeechService>>,
+    /// The objects and keeps, when the profile names an `objects` budget (spec 6.15).
+    objects: Option<Arc<Mutex<nagaya_store::objects::ObjectStore>>>,
 }
 
 impl Council {
@@ -104,6 +107,7 @@ impl Council {
             call_cpus,
             failure: Mutex::new(None),
             speech: Vec::new(),
+            objects: None,
         })
     }
 
@@ -111,6 +115,17 @@ impl Council {
     pub fn with_speech(mut self, services: Vec<crate::speech::SpeechService>) -> Self {
         self.speech = services.into_iter().map(Arc::new).collect();
         self
+    }
+
+    /// Serve objects and keeps from this store (spec 6.15, gogi "Objects and keeps").
+    pub fn with_objects(mut self, store: nagaya_store::objects::ObjectStore) -> Self {
+        self.objects = Some(Arc::new(Mutex::new(store)));
+        self
+    }
+
+    /// The object store, when the process has one.
+    pub fn objects(&self) -> Option<Arc<Mutex<nagaya_store::objects::ObjectStore>>> {
+        self.objects.clone()
     }
 
     /// The speech service of a served speech model.
@@ -166,6 +181,10 @@ impl Council {
         let defaults = crate::council::ServiceConfig::new("", "");
         let config = self.models.first().map_or(&defaults, |served| served.service.config());
         let pins = !self.models.is_empty();
+        let objects = self.objects.as_ref().map(|store| {
+            let store = store.lock().expect("the object store lock is poisoned");
+            (store.object_bytes(), store.keep_bytes())
+        });
         ServerIdentity {
             models,
             limits: ServerLimits {
@@ -173,14 +192,17 @@ impl Council {
                 choice_options: config.spec_rules.choice_options as u64,
                 questions_per_spec: Some(config.spec_rules.questions_per_spec as u64),
                 pin_bytes: pins.then_some(config.pin_bytes),
-                object_bytes: None,
-                keep_bytes: None,
+                object_bytes: objects.map(|(object, _)| object),
+                keep_bytes: objects.map(|(_, keep)| keep),
             },
-            capabilities: if pins {
-                vec![Capability::Pins, Capability::Classes]
-            } else {
-                vec![Capability::Classes]
-            },
+            capabilities: [
+                pins.then_some(Capability::Pins),
+                Some(Capability::Classes),
+                objects.map(|_| Capability::Objects),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
             // The text routes need a family, so a process that serves no model lists no prefix (spec 11.4f).
             extensions: if pins {
                 vec![extensions::PREFIX.to_owned()]

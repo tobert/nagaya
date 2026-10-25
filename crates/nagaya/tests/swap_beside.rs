@@ -146,6 +146,7 @@ fn start_with(directory: &std::path::Path, engines: [EnginePlacement; 2]) -> (Pr
             nvme: 1 << 20,
             host: None,
             interval_copies: 0,
+            objects: None,
         }),
     };
     let inventory = Inventory {

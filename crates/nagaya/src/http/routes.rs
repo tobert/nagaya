@@ -44,6 +44,7 @@ pub fn routes() -> Router<Arc<Council>> {
         .route("/council/v2/generations", post(generations))
         .route("/v1/audio/speech", post(super::speech::speech))
         .merge(super::extensions::routes())
+        .merge(super::objects::routes())
         .fallback(unknown)
         .method_not_allowed_fallback(unknown)
 }
@@ -193,7 +194,7 @@ async fn specs_list(State(council): Shared, Extension(id): Id) -> Response {
 
 /// Checks a content id in a path: an id that is not whole is a `400` naming `id`, and the server never looks up a
 /// prefix (gogi "Content ids").
-fn path_id(id: &str) -> Result<(), Failure> {
+pub(super) fn path_id(id: &str) -> Result<(), Failure> {
     match gogi_proto::content_id_problem(id) {
         None => Ok(()),
         Some(problem) => Err(Failure::from(ServiceError::Invalid(gogi_proto::Invalid::param(

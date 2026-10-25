@@ -43,6 +43,7 @@ fn profile(engines: &[&str], device: u64) -> PlacementProfile {
             nvme: 65536,
             host: None,
             interval_copies: 0,
+            objects: None,
         }),
     }
 }
@@ -202,6 +203,7 @@ fn a_profile_that_changes_only_a_store_budget_restarts() {
         nvme: 131072,
         host: None,
         interval_copies: 0,
+        objects: None,
     });
     assert_eq!(offer(directory.path(), &active, &wanted, &process), Outcome::Restart);
     assert_eq!(PlacementProfile::read_active(directory.path()).unwrap(), wanted);

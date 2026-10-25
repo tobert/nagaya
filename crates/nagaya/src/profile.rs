@@ -174,6 +174,9 @@ pub struct StoreSpec {
     /// store refuses them.
     #[serde(default)]
     pub interval_copies: u32,
+    /// The budget of objects in bytes, apart from `nvme` (spec 6.15). Without it, the process holds no objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub objects: Option<u64>,
 }
 
 /// A machine's placement profile (spec 2.4).

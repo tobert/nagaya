@@ -150,6 +150,7 @@ fn profile() -> PlacementProfile {
             nvme: 1 << 20,
             host: None,
             interval_copies: 0,
+            objects: None,
         }),
     }
 }

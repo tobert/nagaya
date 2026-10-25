@@ -67,6 +67,7 @@ fn example_profile() -> PlacementProfile {
             nvme: 4096,
             host: Some(1024),
             interval_copies: 3,
+            objects: None,
         }),
     }
 }
@@ -92,6 +93,7 @@ fn the_profile_names_engines_devices_config_and_shares() {
             nvme: 4096,
             host: Some(1024),
             interval_copies: 3,
+            objects: None,
         })
     );
 }

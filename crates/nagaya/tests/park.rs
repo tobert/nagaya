@@ -103,6 +103,7 @@ fn profile() -> PlacementProfile {
             nvme: 65536,
             host: None,
             interval_copies: 0,
+            objects: None,
         }),
     }
 }
@@ -224,6 +225,7 @@ fn the_store_budget_takes_the_profile_values() {
         nvme: 4096,
         host: Some(1024),
         interval_copies: 5,
+        objects: None,
     };
     assert_eq!(
         StoreBudget::from_spec(&named, &admission),
@@ -237,6 +239,7 @@ fn the_store_budget_takes_the_profile_values() {
         nvme: 4096,
         host: None,
         interval_copies: 0,
+        objects: None,
     };
     assert_eq!(
         StoreBudget::from_spec(&unnamed, &admission),

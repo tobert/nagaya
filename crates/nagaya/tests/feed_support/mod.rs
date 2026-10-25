@@ -249,6 +249,7 @@ pub fn profile(stages: usize) -> PlacementProfile {
             nvme: 1 << 24,
             host: None,
             interval_copies: 0,
+            objects: None,
         }),
     }
 }

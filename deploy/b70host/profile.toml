@@ -59,8 +59,10 @@ tiers = ["host"]
 bytes = 103079215104
 
 # The store (spec 4.1a): 16 GiB in host memory and 50 GiB on NVMe, as on gfx1151host. The host budget of the store takes
-# its bytes from the host budget above.
+# its bytes from the host budget above. Objects have their own budget of 200 GiB on the same disk, apart from the
+# NVMe budget (spec 6.15, Amy 2026-10-25): objects of up to 8 GiB, and keeps of up to 100 GiB in all.
 [store]
 nvme = 53687091200
 host = 17179869184
 interval_copies = 0
+objects = 214748364800
