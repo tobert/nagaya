@@ -62,6 +62,7 @@ The crates live in directories under `crates/`. Use these crates:
 | `nagaya-ledger` | budgets, terms, admission, shares, reclaim order | 4, D9 |
 | `nagaya-sched` | jobs, quanta, classes, the order of ready quanta | 5 |
 | `nagaya-mk-qwen38-gfx1151` | the mk engine: mk's HIP code in `hip/`, its FFI binding, and the `Engine` trait on top | ABI "How mk maps" |
+| `nagaya-mk-bmg` | the megakernel interpreter of the B70 cards: Level Zero, the task protocol, the kernel source, one binary per engine | ABI "How mkviolet maps" |
 | `nagaya-mk-gemma4-bmg` | the mkviolet engine: Level Zero, the OpenCL C kernels, and the Gemma 4 host code; a card needs `xe` | ABI "How mkviolet maps" |
 | `nagaya-council` | council v2 logic with no I/O: the family interface, the sampler, request checks | 11 |
 | `nagaya-jinja` | the Jinja interpreter of the chat templates, with the results of Python's jinja2 | 11.3 |

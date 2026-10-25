@@ -156,8 +156,8 @@ impl Loaded {
         }
         let lineage = Lineage {
             kernel_sha256: nagaya_text_gemma4::tokenizer::sha256_of(MEGAKERNEL_BIN),
-            ocloc: env!("GEMMA4_OCLOC_VERSION").to_owned(),
-            igc: env!("GEMMA4_IGC_REVISION").to_owned(),
+            ocloc: nagaya_mk_bmg::OCLOC_VERSION.to_owned(),
+            igc: nagaya_mk_bmg::IGC_REVISION.to_owned(),
             driver: cluster.driver_version(),
             devices,
         };

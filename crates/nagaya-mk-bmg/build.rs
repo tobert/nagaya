@@ -1,6 +1,7 @@
 //! Compiles the kernels for the B70 cards with `ocloc`, ahead of time, when the feature `xe` is on.
 //!
-//! The flags are mkviolet's (`build.rs` in mkviolet). The output goes to `OUT_DIR`, and the crate embeds it.
+//! The flags are mkviolet's (`build.rs` in mkviolet). The output goes to `OUT_DIR`, and the crate embeds it. The Gemma 4
+//! binary keeps the command of milestone 15s, so its bytes do not change (milestone 17 step 4).
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -34,7 +35,7 @@ fn main() {
         .unwrap_or_else(|e| panic!("cannot run ocloc --version: {e}"));
     let version = String::from_utf8_lossy(&version.stdout).trim().to_owned();
     assert!(!version.is_empty(), "ocloc --version printed no version");
-    println!("cargo:rustc-env=GEMMA4_OCLOC_VERSION={version}");
+    println!("cargo:rustc-env=BMG_OCLOC_VERSION={version}");
     // `ocloc query` writes its answer to a file of that name in the working directory.
     let status = Command::new("ocloc")
         .args(["query", "IGC_REVISION"])
@@ -48,7 +49,7 @@ fn main() {
         "" => "unknown".to_owned(),
         revision => revision.to_owned(),
     };
-    println!("cargo:rustc-env=GEMMA4_IGC_REVISION={igc}");
+    println!("cargo:rustc-env=BMG_IGC_REVISION={igc}");
     let binary = out.join("megakernel_bmg.bin");
     assert!(
         binary.is_file(),

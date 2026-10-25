@@ -3,7 +3,7 @@
 //! Amy, 2026-10-21: "copy code in, we own all of it 100%". The copy keeps mkviolet's bits. `engine` holds the `Engine`
 //! trait with two stages (step 5), and `spec` holds its limits and rules. The nagaya's stage threads take the place of
 //! mkviolet's card locks and `pipeline_stage`. The kernels are OpenCL C in `kernels/`, and `build.rs` compiles them
-//! with `ocloc` for `bmg-g31`.
+//! with `ocloc` for `bmg-g31` in the crate `nagaya-mk-bmg`, which this engine shares with the speech engine.
 //! The parts that touch a card need the feature `xe`. With no feature, the crate builds and tests with no card.
 
 // The copy keeps mkviolet's code as it was, so these lints wait for the port of each part.
@@ -22,32 +22,15 @@
 pub mod engine;
 pub mod gemma4;
 #[cfg(feature = "xe")]
-pub mod level_zero;
-pub mod protocol;
+pub use nagaya_mk_bmg::level_zero;
+pub use nagaya_mk_bmg::protocol;
 pub mod safetensors;
 pub mod sharding;
 pub mod spec;
 
-/// The kernel binary for `bmg-g31` that `build.rs` compiled from `kernels/megakernel.cl`.
+/// The kernel binary of this engine for `bmg-g31`, which `nagaya-mk-bmg` compiled from its `kernels/megakernel.cl`.
 #[cfg(feature = "xe")]
-pub const MEGAKERNEL_BIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_bmg.bin"));
+pub const MEGAKERNEL_BIN: &[u8] = nagaya_mk_bmg::GEMMA4_KERNEL;
 
 /// The name of the kernel's entry point in `MEGAKERNEL_BIN`.
-pub const MEGAKERNEL_ENTRY: &str = "mk_persistent_interpreter";
-
-#[cfg(all(test, feature = "xe"))]
-mod tests {
-    use super::*;
-
-    /// `build.rs` embeds a native module: `ocloc` writes an ELF file, and Level Zero loads it with
-    /// `ZE_MODULE_FORMAT_NATIVE`.
-    #[test]
-    fn the_kernel_binary_is_an_elf_module() {
-        assert!(
-            MEGAKERNEL_BIN.len() > 4096,
-            "the kernel binary holds {} bytes",
-            MEGAKERNEL_BIN.len()
-        );
-        assert_eq!(&MEGAKERNEL_BIN[..4], b"\x7fELF");
-    }
-}
+pub const MEGAKERNEL_ENTRY: &str = nagaya_mk_bmg::KERNEL_ENTRY;

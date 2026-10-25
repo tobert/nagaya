@@ -1137,12 +1137,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nagaya-mk-bmg"
+version = "0.1.0"
+
+[[package]]
 name = "nagaya-mk-gemma4-bmg"
 version = "0.1.0"
 dependencies = [
  "blake3",
  "nagaya-abi",
  "nagaya-conformance",
+ "nagaya-mk-bmg",
  "nagaya-store",
  "nagaya-text-gemma4",
  "serde",

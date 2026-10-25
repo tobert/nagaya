@@ -1,0 +1,10 @@
+[package]
+name = "nagaya-mk-bmg"
+version = "0.1.0"
+edition = "2024"
+
+# The feature `xe` builds the kernels with `ocloc` and links Level Zero. With no feature, the crate needs no card.
+[features]
+xe = []
+
+[dependencies]

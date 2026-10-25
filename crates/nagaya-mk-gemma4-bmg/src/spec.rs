@@ -270,28 +270,7 @@ pub fn plan(config: &Config) -> Result<Limits, String> {
     Ok(limits(config, weights))
 }
 
-/// The index of the card at each wanted PCI address, in the order of `wanted`. `cards` holds the address of each card.
-pub fn match_addresses(cards: &[String], wanted: &[String]) -> Result<Vec<usize>, String> {
-    let mut found = Vec::with_capacity(wanted.len());
-    for (index, address) in wanted.iter().enumerate() {
-        let address = address.to_ascii_lowercase();
-        if wanted[..index].iter().any(|other| other.eq_ignore_ascii_case(&address)) {
-            return Err(format!("the profile names the PCI address {address} twice"));
-        }
-        let matches: Vec<usize> = (0..cards.len()).filter(|card| cards[*card] == address).collect();
-        match matches[..] {
-            [card] => found.push(card),
-            [] => {
-                return Err(format!(
-                    "no Level Zero card has the PCI address {address}; the cards are at {}",
-                    cards.join(", ")
-                ));
-            }
-            _ => return Err(format!("two Level Zero cards give the PCI address {address}")),
-        }
-    }
-    Ok(found)
-}
+pub use nagaya_mk_bmg::match_addresses;
 
 /// One block that a pass runs, after its checks.
 #[derive(Clone, Debug, PartialEq, Eq)]

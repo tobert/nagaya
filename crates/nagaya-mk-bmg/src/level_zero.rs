@@ -785,7 +785,7 @@ impl L0Cluster {
     /// The order of `zeDeviceGet` can differ from the PCI order, so an engine finds its cards by address. An address
     /// that no card has, or that two cards have, is an error. Two equal addresses in `addresses` are an error.
     pub fn cards_at(&self, addresses: &[String]) -> Result<Vec<usize>, String> {
-        crate::spec::match_addresses(
+        crate::match_addresses(
             &self
                 .cards
                 .iter()
