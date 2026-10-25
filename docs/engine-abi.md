@@ -1022,28 +1022,29 @@ speech_clear(slot)                                frees the state of the slot
 
 **Held speech state.** Proposed by senpai (Claude Opus 5.5), 2026-10-25, for spec 11.8a. Amy decided that a speech
 context holds state as a chat does ("Level 2 sounds awesome"). This replaces the reason that a speech slot had no
-part to snapshot. The calls become these:
+part to snapshot. The speech calls become these:
 
 ```
 speech_feed(slot, positions, sampler) -> ok | why   feeds positions after the state of the slot, and keeps the sampler
 speech_frames(slot, max) -> {codes, audio, end}     as before
-speech_parts(slot) -> parts                          the state of the slot as parts, for a snapshot (D10)
-speech_restore(slot, parts) -> ok | why              puts a snapshot's parts into an empty slot
 speech_clear(slot)                                   as before
 ```
+
+The state of a slot is read and written by the part capability that text engines declare ("Capabilities"). Thus
+the store keeps a speech snapshot as it keeps any snapshot, with no call of its own.
 
 - **Positions.** A position is a text position, a text id and a codec id, either of which can be absent, as before.
   Or it is a frame position: the 16 codes of a frame. The engine feeds it as a frame that it made. That is the sum of
   the 16 code embeddings and the trailing text `tts_pad`.
 - **Feed.** `speech_feed` into an empty slot is the old `speech_begin`. Into a slot with state, it adds positions
   after the last one. Each feed starts a new line: the frame counter of the random stream starts at 0 again.
-- **Parts.** `speech_parts` gives the talker KV of every position as a cells part, with coverage `0..n`. The history
-  of codebook 0 and the codec's left context are a fixed part. Two slots with the same state give the same bytes.
-- **Restore.** `speech_restore` checks the shapes of the parts against the engine, as any restore does (6.8). A slot
-  that holds state refuses it.
+- **Parts.** The engine declares two parts. `talker_kv` is a cells part: the talker KV of each position, one row each.
+  `speech_tail` is a fixed part: the history of codebook 0 and the codes of the codec's left context. Two slots with
+  the same state give the same bytes.
+- **Restore.** The nagaya writes the parts of a snapshot into an empty slot and sets its row count, as for a text
+  engine (6.8). A feed then goes on from the last row.
 - **Determinism.** A restore and a feed can give the same codes as one feed of all the positions into an empty slot.
-  They do when the engine's passes keep the bits of a split (`segments_exact`), which the engine declares. When they do
-  not, a held state is a tolerance of its own (spec 6.14 shows the rule for text).
+  They do when the engine's passes keep the bits of a split (`segments_exact`), which the engine declares.
 
 **Passes on separate cards of one group.** Proposed by senpai (Claude Opus 5.5), 2026-10-24. Amy decided the rule on
 2026-10-24 (`AGENTS.md` milestone 17, "Yes, design it now"); this is its text.
