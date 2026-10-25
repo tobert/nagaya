@@ -187,7 +187,11 @@ impl SpeechFamily for Family {
 
 /// The speech service of each engine of this kind in the profile. The family opens from the checkpoint of the
 /// engine, so a service exists also while its engine is unloaded (spec 3.3a).
-pub fn speech_services(profile: &PlacementProfile, ports: &Ports) -> Result<Vec<SpeechService>, String> {
+pub fn speech_services(
+    profile: &PlacementProfile,
+    ports: &Ports,
+    store_dir: &std::path::Path,
+) -> Result<Vec<SpeechService>, String> {
     let mut services = Vec::new();
     for placement in profile.engines.iter().filter(|placement| placement.kind == KIND) {
         let config = config(&placement.config).map_err(|error| error.message)?;
@@ -198,11 +202,10 @@ pub fn speech_services(profile: &PlacementProfile, ports: &Ports) -> Result<Vec<
                 config.model_dir.display()
             )
         })?;
-        let service = SpeechService::new(
-            SpeechConfig::new(MODEL, &placement.name, config.slots),
-            Arc::new(Family(family)),
-            ports.clone(),
-        )?;
+        let mut speech = SpeechConfig::new(MODEL, &placement.name, config.slots);
+        speech.context_positions = u64::from(config.max_positions());
+        let service = SpeechService::new(speech, Arc::new(Family(family)), ports.clone())?
+            .with_codes(crate::speech::codes::CodeBook::open(store_dir)?);
         tracing::info!("serving speech model `{MODEL}` on engine `{}`", placement.name);
         services.push(service);
     }

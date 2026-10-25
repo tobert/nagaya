@@ -63,6 +63,8 @@ pub struct SpeechConfig {
     pub temperature: f32,
     pub top_k: u32,
     pub repetition_penalty: f32,
+    /// The positions that a slot holds: a speech context and the frames of its last line.
+    pub context_positions: u64,
 }
 
 impl SpeechConfig {
@@ -76,6 +78,7 @@ impl SpeechConfig {
             temperature: 0.9,
             top_k: 50,
             repetition_penalty: 1.05,
+            context_positions: 0,
         }
     }
 }
@@ -284,6 +287,10 @@ pub struct SpeechService {
     engine: usize,
     pool: Arc<SlotPool>,
     clock: crate::council::Clock,
+    /// The codes of the outputs that the service wrote, when it serves speech contexts (spec 11.8a).
+    codes: Option<codes::CodeBook>,
+    /// The identity of the engine after its first open since the start.
+    identity: Arc<Mutex<Option<nagaya_abi::Identity>>>,
 }
 
 impl SpeechService {
@@ -306,7 +313,44 @@ impl SpeechService {
             group,
             engine,
             clock: crate::council::system_clock(),
+            codes: None,
+            identity: Arc::default(),
         })
+    }
+
+    /// Serve speech contexts, with the codes of the outputs in this book (spec 11.8a).
+    pub fn with_codes(mut self, codes: codes::CodeBook) -> Self {
+        self.codes = Some(codes);
+        self
+    }
+
+    /// The config of the service.
+    pub fn config(&self) -> &SpeechConfig {
+        &self.config
+    }
+
+    /// The identity of the engine, once it opened since the start.
+    pub fn identity(&self) -> Option<nagaya_abi::Identity> {
+        self.identity.lock().expect("the identity lock is poisoned").clone()
+    }
+
+    /// True when the service serves speech contexts: it has a code book.
+    pub fn serves_contexts(&self) -> bool {
+        self.codes.is_some()
+    }
+
+    /// The codes of the output `id`, when this service wrote it and still holds them.
+    pub fn codes(&self, id: &nagaya_store::ContentId) -> Result<Option<Vec<Frame>>, String> {
+        self.codes.as_ref().map_or(Ok(None), |book| book.get(id))
+    }
+
+    /// Keep the codes of the output `id`.
+    pub fn keep_codes(&self, id: &nagaya_store::ContentId, frames: &[Frame]) -> Result<(), String> {
+        let book = self
+            .codes
+            .as_ref()
+            .ok_or_else(|| "the speech service has no code book; start it with a store directory".to_owned())?;
+        book.put(id, frames)
     }
 
     /// The service with a clock that the caller chooses, for the times of the store.
@@ -384,6 +428,7 @@ impl SpeechService {
             held: Vec::new(),
             recipes: Vec::new(),
             digest: [0; 32],
+            identity: Arc::clone(&self.identity),
         };
         self.submit(slot, deadline, Box::new(body))?;
         Ok(told)

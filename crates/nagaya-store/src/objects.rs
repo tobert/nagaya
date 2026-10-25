@@ -277,6 +277,11 @@ impl ObjectStore {
         }))
     }
 
+    /// The bytes of the held object `id`, which does not count as a use.
+    pub fn bytes_of(&self, id: &ContentId) -> Option<u64> {
+        self.index.objects.get(&id.hex()).map(|held| held.bytes)
+    }
+
     /// The media type of the held object `id`, which does not count as a use.
     pub fn mime_of(&self, id: &ContentId) -> Option<&str> {
         self.index.objects.get(&id.hex()).map(|held| held.mime.as_str())

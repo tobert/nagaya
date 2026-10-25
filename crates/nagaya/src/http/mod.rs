@@ -7,9 +7,11 @@
 mod errors;
 mod extensions;
 mod objects;
+pub mod pending;
 mod routes;
 pub mod speech;
 mod stream;
+pub mod voice;
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
@@ -89,6 +91,8 @@ pub struct Council {
     objects: Option<Arc<Mutex<nagaya_store::objects::ObjectStore>>>,
     /// `object_bytes` and `keep_bytes` of the object store. They are fixed at its open, so identity takes no lock.
     object_limits: Option<(u64, u64)>,
+    /// The pending ids of the outputs that replies make now (gogi "Outputs").
+    pending: pending::PendingIds,
 }
 
 impl Council {
@@ -111,6 +115,7 @@ impl Council {
             speech: Vec::new(),
             objects: None,
             object_limits: None,
+            pending: pending::PendingIds::default(),
         })
     }
 
@@ -130,6 +135,16 @@ impl Council {
     /// The object store, when the process has one.
     pub fn objects(&self) -> Option<Arc<Mutex<nagaya_store::objects::ObjectStore>>> {
         self.objects.clone()
+    }
+
+    /// The pending ids of the outputs that replies make now.
+    pub fn pending(&self) -> &pending::PendingIds {
+        &self.pending
+    }
+
+    /// The status of each served model: the status of the process.
+    pub(crate) fn model_status(&self) -> ModelStatus {
+        self.status()
     }
 
     /// The speech service of a served speech model.
@@ -181,7 +196,18 @@ impl Council {
 
     /// The identity of the server (gogi "Identity, limits, capabilities").
     pub fn identity(&self) -> ServerIdentity {
-        let models = self.models.iter().map(|served| self.served_model(served)).collect();
+        // A speech service with a code book serves speech contexts, so it is a served model too (spec 11.8a).
+        let models = self
+            .models
+            .iter()
+            .map(|served| self.served_model(served))
+            .chain(
+                self.speech
+                    .iter()
+                    .filter(|service| service.serves_contexts())
+                    .map(|service| voice::served_model(service, self.status())),
+            )
+            .collect();
         let defaults = crate::council::ServiceConfig::new("", "");
         let config = self.models.first().map_or(&defaults, |served| served.service.config());
         let pins = !self.models.is_empty();

@@ -11,6 +11,13 @@ pub enum ServiceError {
     Invalid(Invalid),
     /// An unknown spec, snapshot or pin owner. The route answers 404.
     NotFound(String),
+    /// A request names an object that the server does not hold. The route answers 404, and `param` names the member.
+    NotHeld {
+        /// The member that names the object, such as `messages[2].content[0]`.
+        param: String,
+        /// What is missing, and what the client can do.
+        message: String,
+    },
     /// A request is over a limit. `param` names the limit. The route answers 413 `too_large`.
     TooLarge {
         /// The limit.
@@ -62,7 +69,7 @@ impl std::fmt::Display for ServiceError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ServiceError::Invalid(invalid) => write!(formatter, "{}", invalid.message),
-            ServiceError::NotFound(message) => write!(formatter, "{message}"),
+            ServiceError::NotFound(message) | ServiceError::NotHeld { message, .. } => write!(formatter, "{message}"),
             ServiceError::TooLarge { message, .. } => write!(formatter, "{message}"),
             ServiceError::ContextFull {
                 prompt_tokens,

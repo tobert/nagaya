@@ -115,7 +115,7 @@ pub async fn generation(
 }
 
 /// The `error` event of a failure after the `200`: an error body with the request id (gogi "Streams").
-fn error_event(council: &Council, error: ServiceError, id: &RequestId) -> StreamEvent {
+pub(super) fn error_event(council: &Council, error: ServiceError, id: &RequestId) -> StreamEvent {
     let failure: Failure = council.failed(error);
     StreamEvent::Error((*failure.body).with_request_id(id.0.clone()))
 }

@@ -4,13 +4,19 @@
 //! The fake's row is a hash of the row before it and of the position. The codes of a frame are a hash of the last row,
 //! the seed and the frame. Thus a line gives the same codes only from the same state, fed or restored.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use gogi_proto::generation::GenerationDone;
 use nagaya::admission::{Factory, GroupDevice, OpenError, PlanError, Registry};
+use nagaya::http::{Council, router};
 use nagaya::inventory::{Device, Inventory};
 use nagaya::process::{Process, Start};
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, Residency, StoreSpec, TierSpec};
+use nagaya::speech::codes::CodeBook;
 use nagaya::speech::{
     ContextItem, ContextRendering, SpeechConfig, SpeechContext, SpeechError, SpeechFamily, SpeechService, Spoken, Told,
 };
@@ -20,6 +26,9 @@ use nagaya_abi::{
     Parts, PassError, PassErrorKind, PassOut, PromptPair, Segment, SlotId, SlotLimit, Slots, Speech, SpeechOut,
     SpeechPosition, SpeechSampler, State, Tap, Tier, WriteResult,
 };
+use nagaya_store::objects::ObjectStore;
+use serde_json::{Value, json};
+use tower::ServiceExt;
 
 const MODEL: &str = "fake-voice";
 /// The samples of one fake frame.
@@ -59,6 +68,8 @@ struct SlotState {
 struct Voice {
     log: Log,
     slots: Vec<SlotState>,
+    /// While it is set, a frames call waits.
+    hold: Arc<AtomicBool>,
 }
 
 impl Voice {
@@ -99,6 +110,9 @@ impl Speech for Voice {
     }
 
     fn speech_frames(&mut self, slot: SlotId, max: u32) -> Result<SpeechOut, PassError> {
+        while self.hold.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(2));
+        }
         let s = &mut self.slots[slot as usize];
         let line = s.line.as_mut().expect("frames of a line");
         let n = (line.total - line.frames).min(max as usize).min(2);
@@ -249,7 +263,7 @@ impl Engine for Voice {
     }
 }
 
-struct Voices(Log);
+struct Voices(Log, Arc<AtomicBool>);
 
 impl Factory for Voices {
     fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
@@ -260,6 +274,7 @@ impl Factory for Voices {
         Ok(Box::new(Voice {
             log: Arc::clone(&self.0),
             slots: vec![SlotState::default(), SlotState::default()],
+            hold: Arc::clone(&self.1),
         }))
     }
 }
@@ -328,15 +343,17 @@ impl SpeechFamily for Letters {
 struct Fixture {
     process: Process,
     log: Log,
-    _directory: tempfile::TempDir,
+    hold: Arc<AtomicBool>,
+    directory: tempfile::TempDir,
 }
 
 impl Fixture {
     fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
         let log: Log = Arc::default();
+        let hold = Arc::new(AtomicBool::new(false));
         let mut registry = Registry::new();
-        registry.register("voices", Box::new(Voices(Arc::clone(&log))));
+        registry.register("voices", Box::new(Voices(Arc::clone(&log), Arc::clone(&hold))));
         let profile = PlacementProfile {
             engines: vec![EnginePlacement {
                 name: "voice".to_owned(),
@@ -387,8 +404,22 @@ impl Fixture {
         Self {
             process,
             log,
-            _directory: directory,
+            hold,
+            directory,
         }
+    }
+
+    /// A council that serves the speech model with a code book and an object store, and no text model.
+    fn council(&self) -> Arc<Council> {
+        let dir = self.directory.path();
+        let service = self.service().with_codes(CodeBook::open(dir).unwrap());
+        let objects = ObjectStore::open(&dir.join("objects"), 1 << 24).unwrap();
+        Arc::new(
+            Council::new(Vec::new(), None)
+                .unwrap()
+                .with_speech(vec![service])
+                .with_objects(objects),
+        )
     }
 
     fn service(&self) -> SpeechService {
@@ -452,7 +483,7 @@ fn a_first_line_feeds_the_voice_and_the_line_and_holds_the_head() {
     assert_eq!(audio.len(), spoken.codes.len() * FRAME);
     assert!(spoken.head.is_some(), "the head after the line is held");
     assert_eq!(
-        spoken.held.iter().map(|(message, _)| *message).collect::<Vec<_>>(),
+        spoken.held.iter().map(|(message, _, _)| *message).collect::<Vec<_>>(),
         [0],
         "the marked voice"
     );
@@ -526,4 +557,280 @@ fn an_unmarked_voice_feeds_with_the_line_and_holds_only_the_head() {
     let (_, spoken) = fixture.speak(&first("hello", false));
     assert!(spoken.held.is_empty(), "{:?}", spoken.held);
     assert_eq!(fixture.take_log(), [format!("feed:0:{}:true", spoken.prompt)]);
+}
+
+// ---- the council routes of a speech model (spec 11.8a)
+
+/// Send a request through the router. Give the status, the content type, the location and the whole body.
+fn send(
+    council: &Arc<Council>,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+) -> (StatusCode, String, String, Vec<u8>) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut request = Request::builder().method(method).uri(path);
+        if body.is_some() {
+            request = request.header("content-type", "application/json");
+        }
+        let body = body.map_or_else(Body::empty, |value| Body::from(value.to_string()));
+        let response = router(Arc::clone(council))
+            .oneshot(request.body(body).unwrap())
+            .await
+            .unwrap();
+        let header = |name| {
+            response
+                .headers()
+                .get(name)
+                .map(|value: &axum::http::HeaderValue| value.to_str().unwrap().to_owned())
+                .unwrap_or_default()
+        };
+        let (kind, location) = (header("content-type"), header("location"));
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 24)
+            .await
+            .unwrap()
+            .to_vec();
+        (status, kind, location, bytes)
+    })
+}
+
+fn json(bytes: &[u8]) -> Value {
+    serde_json::from_slice(bytes).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(bytes)))
+}
+
+fn messages(lines: &[Value]) -> Value {
+    let mut all = vec![json!({"role": "system", "content": VOICE, "snap": true})];
+    all.extend(lines.iter().cloned());
+    json!({"model": MODEL, "context": {"messages": all}, "max_tokens": 1, "sample": {"seed": 5},
+           "output": {"mime": "audio/wav"}})
+}
+
+fn generate(council: &Arc<Council>, body: Value) -> (StatusCode, Value) {
+    let (status, _, _, bytes) = send(council, "POST", "/council/v2/generations", Some(body));
+    (status, json(&bytes))
+}
+
+/// The status and `error.param` of a refused generation.
+fn refused(council: &Arc<Council>, body: Value) -> (StatusCode, String) {
+    let (status, v) = generate(council, body);
+    (status, v["error"]["param"].as_str().unwrap_or("").to_owned())
+}
+
+#[test]
+fn identity_lists_the_speech_model_as_a_writer_of_wav() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let (status, _, _, bytes) = send(&council, "GET", "/council/v2/identity", None);
+    assert_eq!(status, StatusCode::OK);
+    let v = json(&bytes);
+    let model = v["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["model"] == MODEL)
+        .expect("the speech model");
+    assert_eq!(model["media"]["outputs"], json!(["audio/wav"]));
+    assert_eq!(model["capabilities"], json!(["generate"]));
+}
+
+#[test]
+fn a_generation_writes_a_wav_and_the_next_line_starts_from_its_head() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let (status, done) = generate(&council, messages(&[json!({"role": "user", "content": "hello"})]));
+    assert_eq!(status, StatusCode::OK, "{done}");
+    let output = &done["outputs"][0];
+    let id = output["id"].as_str().unwrap();
+    let (status, kind, _, wav) = send(&council, "GET", &format!("/council/v2/objects/{id}"), None);
+    assert_eq!((status, kind.as_str()), (StatusCode::OK, "audio/wav"));
+    assert_eq!(
+        format!("blake3:{}", blake3::hash(&wav).to_hex()),
+        id,
+        "the bytes hash to the id"
+    );
+    assert_eq!(&wav[..4], b"RIFF");
+    assert_eq!(
+        u32::from_le_bytes(wav[40..44].try_into().unwrap()) as usize,
+        wav.len() - 44,
+        "the true data size"
+    );
+    assert_eq!(done["usage"]["media"]["written"]["objects"], json!(1));
+    assert!(done["head"].is_string(), "{done}");
+
+    // The client appends the reply, as `done` gives it, and the next line.
+    let reply: GenerationDone = serde_json::from_value(done.clone()).unwrap();
+    let reply = serde_json::to_value(reply.as_message().unwrap()).unwrap();
+    let (status, next) = generate(
+        &council,
+        messages(&[
+            json!({"role": "user", "content": "hello"}),
+            reply,
+            json!({"role": "user", "content": "world"}),
+        ]),
+    );
+    assert_eq!(status, StatusCode::OK, "{next}");
+    let frames = (wav.len() - 44) / 2 / FRAME;
+    let head_rows = done["usage"]["prompt"].as_u64().unwrap() as usize + frames;
+    assert_eq!(next["usage"]["kept"], json!(head_rows), "{}", next["usage"]);
+    assert_eq!(next["usage"]["media"]["read"]["objects"], json!(1));
+}
+
+#[test]
+fn audio_that_the_model_did_not_write_is_refused_and_unheld_audio_is_a_404() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let bytes = b"RIFF not ours".to_vec();
+    let id = format!("blake3:{}", blake3::hash(&bytes).to_hex());
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let request = Request::builder()
+            .method("PUT")
+            .uri(format!("/council/v2/objects/{id}"))
+            .header("content-type", "audio/wav")
+            .body(Body::from(bytes))
+            .unwrap();
+        assert_eq!(
+            router(Arc::clone(&council)).oneshot(request).await.unwrap().status(),
+            StatusCode::CREATED
+        );
+    });
+    let with = |id: &str| {
+        messages(&[
+            json!({"role": "user", "content": "hello"}),
+            json!({"role": "assistant", "content": [{"type": "object", "id": id, "mime": "audio/wav"}]}),
+            json!({"role": "user", "content": "world"}),
+        ])
+    };
+    let part = "messages[2].content[0]".to_owned();
+    assert_eq!(refused(&council, with(&id)), (StatusCode::BAD_REQUEST, part.clone()));
+    let unheld = format!("blake3:{}", blake3::hash(b"never put").to_hex());
+    assert_eq!(refused(&council, with(&unheld)), (StatusCode::NOT_FOUND, part));
+    assert!(council.failure().is_none(), "{:?}", council.failure());
+}
+
+#[test]
+fn a_generation_names_each_member_that_a_speech_model_does_not_take() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let line = json!({"role": "user", "content": "hello"});
+    let mut no_output = messages(std::slice::from_ref(&line));
+    no_output.as_object_mut().unwrap().remove("output");
+    assert_eq!(
+        refused(&council, no_output),
+        (StatusCode::BAD_REQUEST, "output".to_owned())
+    );
+    let mut option = messages(std::slice::from_ref(&line));
+    option["output"]["options"] = json!({"seconds": 3});
+    assert_eq!(
+        refused(&council, option),
+        (StatusCode::BAD_REQUEST, "output.options.seconds".to_owned())
+    );
+    let mut warm = messages(std::slice::from_ref(&line));
+    warm["sample"]["temperature"] = json!(0.5);
+    assert_eq!(
+        refused(&council, warm),
+        (StatusCode::BAD_REQUEST, "sample.temperature".to_owned())
+    );
+    let mut image = messages(std::slice::from_ref(&line));
+    image["output"]["mime"] = json!("image/png");
+    assert_eq!(
+        refused(&council, image),
+        (StatusCode::BAD_REQUEST, "output.mime".to_owned())
+    );
+    let ends_with_audio = messages(&[line.clone(), json!({"role": "assistant", "content": "spoken"})]);
+    assert_eq!(refused(&council, ends_with_audio).0, StatusCode::BAD_REQUEST);
+    assert!(council.failure().is_none(), "{:?}", council.failure());
+}
+
+/// The events of a stream body, as name and data.
+fn events(body: &[u8]) -> Vec<(String, Value)> {
+    let text = String::from_utf8_lossy(body);
+    let mut out = Vec::new();
+    for block in text.split("\n\n").filter(|b| !b.trim().is_empty()) {
+        let name = block
+            .lines()
+            .find_map(|l| l.strip_prefix("event: "))
+            .unwrap_or("")
+            .to_owned();
+        let data: String = block.lines().filter_map(|l| l.strip_prefix("data: ")).collect();
+        out.push((name, serde_json::from_str(&data).unwrap_or(Value::Null)));
+    }
+    out
+}
+
+#[test]
+fn a_stream_names_a_pending_id_that_streams_the_audio_and_then_moves_to_the_object() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let mut body = messages(&[json!({"role": "user", "content": "hello"})]);
+    body["stream"] = json!(true);
+    fixture.hold.store(true, Ordering::SeqCst);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (stream_events, during, after) = runtime.block_on(async {
+        use http_body_util::BodyExt;
+        let request = Request::builder()
+            .method("POST")
+            .uri("/council/v2/generations")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = router(Arc::clone(&council)).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut sse = response.into_body();
+        let mut seen = Vec::new();
+        let pending = loop {
+            let frame = sse.frame().await.expect("an event").unwrap();
+            seen.extend(frame.into_data().unwrap());
+            if let Some((_, output)) = events(&seen).into_iter().find(|(name, _)| name == "output") {
+                break output["pending"].as_str().unwrap().to_owned();
+            }
+        };
+        // The line waits in the engine, so the pending id streams its header first.
+        let request = Request::builder()
+            .uri(format!("/council/v2/objects/{pending}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = router(Arc::clone(&council)).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut reading = response.into_body();
+        let first = reading.frame().await.expect("the header").unwrap().into_data().unwrap();
+        fixture.hold.store(false, Ordering::SeqCst);
+        let mut during = first.to_vec();
+        while let Some(frame) = reading.frame().await {
+            during.extend(frame.unwrap().into_data().unwrap());
+        }
+        while let Some(frame) = sse.frame().await {
+            seen.extend(frame.unwrap().into_data().unwrap());
+        }
+        (events(&seen), during, pending)
+    });
+    let pending = after;
+    let done = &stream_events
+        .iter()
+        .find(|(name, _)| name == "done")
+        .expect("a done event")
+        .1;
+    let id = done["outputs"][0]["id"].as_str().unwrap();
+    let (_, _, _, wav) = send(&council, "GET", &format!("/council/v2/objects/{id}"), None);
+    assert_eq!(&during[4..8], [0xff; 4], "the stream's header has the unknown sizes");
+    assert_eq!(
+        during[44..],
+        wav[44..],
+        "the stream has the samples of the sealed object"
+    );
+    assert_eq!(during[8..40], wav[8..40]);
+    let (status, _, location, _) = send(&council, "GET", &format!("/council/v2/objects/{pending}"), None);
+    assert_eq!(status, StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(location, format!("/council/v2/objects/{id}"));
 }

@@ -60,6 +60,11 @@ impl From<ServiceError> for Failure {
                 body: Box::new(ErrorBody::from(invalid)),
             },
             ServiceError::NotFound(_) => Self::new(StatusCode::NOT_FOUND, ErrorType::NotFound, message),
+            ServiceError::NotHeld { param, .. } => {
+                let mut failure = Self::new(StatusCode::NOT_FOUND, ErrorType::NotFound, message);
+                failure.body.error.param = Some(param);
+                failure
+            }
             ServiceError::TooLarge { param, .. } => {
                 let mut failure = Self::new(StatusCode::PAYLOAD_TOO_LARGE, ErrorType::TooLarge, message);
                 failure.body.error.param = Some(param);

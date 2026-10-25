@@ -21,6 +21,7 @@ use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 use super::errors::{Failure, parse};
+use super::pending::{Lookup, PendingOutput};
 use super::routes::{answer, bytes, path_id};
 use super::{Council, RequestId};
 use crate::council::error::ServiceError;
@@ -221,6 +222,34 @@ async fn put_object(
     }
 }
 
+/// The bytes of an output as the server makes them. The body ends when the output is sealed or cancelled.
+fn pending_stream(output: Arc<PendingOutput>) -> Response {
+    let mime = output.mime.clone();
+    let changes = output.changed();
+    let stream = futures_util::stream::unfold((output, 0usize, changes), |(output, at, mut changes)| async move {
+        loop {
+            let (bytes, end) = output.read(at);
+            if !bytes.is_empty() {
+                let next = at + bytes.len();
+                return Some((Ok::<_, std::convert::Infallible>(bytes), (output, next, changes)));
+            }
+            if end.is_some() {
+                return None;
+            }
+            // A change after the read above wakes this wait, so no byte is missed.
+            if changes.changed().await.is_err() {
+                return None;
+            }
+        }
+    });
+    let mut response = (StatusCode::OK, Body::from_stream(stream)).into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        mime.parse().expect("a pending media type is a header value"),
+    );
+    response
+}
+
 async fn get_object(
     State(council): Shared,
     Extension(id): Id,
@@ -230,11 +259,25 @@ async fn get_object(
     let result = async {
         let store = store(&council)?;
         if text.starts_with("pending:") {
-            // The nagaya writes no outputs yet, so it gives no pending ids (spec 11.1, "Text only").
-            return Err(match gogi_proto::ids::pending_id_problem(&text) {
-                Some(problem) => invalid("id", format!("nothing was looked up: {problem}")),
-                None => not_found(format!("no output is pending as {text}")),
-            });
+            if let Some(problem) = gogi_proto::ids::pending_id_problem(&text) {
+                return Err(invalid("id", format!("nothing was looked up: {problem}")));
+            }
+            return match council.pending().lookup(&text) {
+                Lookup::Making(output) => Ok(pending_stream(output)),
+                Lookup::Sealed(sealed) => {
+                    let mut response = StatusCode::PERMANENT_REDIRECT.into_response();
+                    let location = format!("/council/v2/objects/{sealed}");
+                    response.headers_mut().insert(
+                        header::LOCATION,
+                        location.parse().expect("an object path is a header value"),
+                    );
+                    Ok(response)
+                }
+                Lookup::Unknown => Err(not_found(format!(
+                    "no output is pending as {text}: the server never gave it, its output was cancelled, or it was \
+                     sealed long ago; read the content id that `done` named"
+                ))),
+            };
         }
         let content = content(&text)?;
         let found = council

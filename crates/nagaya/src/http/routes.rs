@@ -255,12 +255,21 @@ async fn reads(State(council): Shared, Extension(id): Id, body: Body) -> Respons
 async fn generations(State(council): Shared, Extension(id): Id, body: Body) -> Response {
     let request = async {
         let request: GenerationRequest = parse(&bytes(body).await?, "generation")?;
+        if let Some((service, model)) = super::voice::route(&council, &request.model) {
+            if model.status != gogi_proto::identity::ModelStatus::Ready {
+                return Err(Failure::unavailable(&model));
+            }
+            return Ok(Err((service, model, request)));
+        }
         let served = council.route(&request.model)?;
-        Ok::<_, Failure>((request, served))
+        Ok::<_, Failure>(Ok((request, served)))
     }
     .await;
     let (request, served) = match request {
-        Ok(found) => found,
+        Ok(Ok(found)) => found,
+        Ok(Err((service, model, request))) => {
+            return super::voice::generation(council, service, model, request, id).await;
+        }
         Err(failure) => return failure.respond(&id),
     };
     if request.stream.unwrap_or(false) {

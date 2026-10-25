@@ -71,8 +71,8 @@ pub struct Spoken {
     pub fed: usize,
     /// The snapshot after the line's frames.
     pub head: Option<ContentId>,
-    /// The snapshots that the build held, with the index of the message that each one ends.
-    pub held: Vec<(usize, ContentId)>,
+    /// The snapshots that the build held: the index of the message that each one ends, its positions, and its id.
+    pub held: Vec<(usize, usize, ContentId)>,
 }
 
 /// The words of a position in a recipe: `0, text, codec` for a pair, with `u32::MAX` for an absent id, and `1` and
@@ -135,10 +135,12 @@ pub(super) struct ContextJob {
     pub told: bool,
     pub kept: usize,
     pub codes: Vec<Frame>,
-    pub held: Vec<(usize, ContentId)>,
+    pub held: Vec<(usize, usize, ContentId)>,
     /// The recipe at the end of each message, and the identity digest, from the first quantum on.
     pub recipes: Vec<RecipeId>,
     pub digest: [u8; 32],
+    /// The identity of the engine, which the service shows once the engine opened.
+    pub identity: Arc<Mutex<Option<nagaya_abi::Identity>>>,
 }
 
 /// The failure of a job: what the route sees.
@@ -311,6 +313,7 @@ impl ContextJob {
     fn start(&mut self, engine: &mut dyn Engine) -> Result<(), SpeechError> {
         let identity = engine.identity();
         self.digest = identity_digest(&identity);
+        *self.identity.lock().expect("the identity lock is poisoned") = Some(identity.clone());
         self.recipes = end_recipes(speech_root(&identity), &self.positions, &self.ends);
         // A slot can hold rows of a job that passed its deadline. A clear of an empty slot does nothing.
         engine
@@ -334,7 +337,7 @@ impl ContextJob {
                 Reason::Anchor,
                 &format!("the end of message {index}"),
             )? {
-                self.held.push((index, id));
+                self.held.push((index, end, id));
             }
         }
         self.feed(engine, at, total, true)
