@@ -11,7 +11,7 @@ use nagaya::admission::{Factory, GroupDevice, OpenError, PlanError, Registry, ad
 use nagaya::bootstrap::Bootstrap;
 use nagaya::inventory::Probe;
 use nagaya::probe::FileProbe;
-use nagaya::profile::{PROFILE_FILE, PlacementProfile, TierSpec};
+use nagaya::profile::{PROFILE_FILE, PlacementProfile, Residency, TierSpec};
 use nagaya_abi::{Engine, Limits, Tier};
 use nagaya_ledger::Ledger;
 
@@ -210,8 +210,9 @@ fn the_b70host_config_binds_mkviolets_address_and_ignores_the_igpu() {
 #[test]
 fn the_b70host_profile_names_the_gemma4_engine_on_both_cards() {
     let profile = b70host_profile();
-    assert_eq!(profile.engines.len(), 1);
+    assert_eq!(profile.engines.len(), 2, "gemma, and the speech engine on demand");
     let engine = &profile.engines[0];
+    assert_eq!(engine.residency, Residency::Resident);
     assert_eq!(engine.kind, nagaya::gemma4::KIND);
     assert_eq!(engine.devices, vec![0, 1], "stage 0 on device 0, stage 1 on device 1");
     // mkviolet serves one slot of 4096 positions and one of 65,536, with blocks of 512 (mkviolet `src/main.rs`).
@@ -276,6 +277,31 @@ impl Factory for PlanOnly {
     }
 }
 
+/// The plan of the speech engine, from its checkpoint and no card.
+struct SpeechPlanOnly;
+
+impl Factory for SpeechPlanOnly {
+    fn plan(&self, config: &toml::Table, devices: &[GroupDevice]) -> Result<Limits, PlanError> {
+        nagaya::qwen3tts::plan(config, devices)
+    }
+
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
+        panic!("a deploy test opens no engine")
+    }
+}
+
+/// True when the Qwen3-TTS checkpoint is named, as the unit names it. Without it, the test skips.
+fn speech_checkpoint() -> bool {
+    if std::env::var_os(nagaya::qwen3tts::MODEL_VARIABLE).is_some() {
+        return true;
+    }
+    if std::env::var("NAGAYA_REQUIRE_MODELS").is_ok_and(|v| v == "1") {
+        panic!("QWEN3TTS_MODEL_DIR is not set and NAGAYA_REQUIRE_MODELS is set; name the Qwen3-TTS checkpoint");
+    }
+    eprintln!("skipped: QWEN3TTS_MODEL_DIR is not set; set it to the Qwen3-TTS checkpoint directory");
+    false
+}
+
 fn checkpoint() -> Option<PathBuf> {
     match std::env::var_os(nagaya::gemma4::MODEL_VARIABLE) {
         Some(dir) => Some(PathBuf::from(dir)),
@@ -290,9 +316,50 @@ fn checkpoint() -> Option<PathBuf> {
 }
 
 #[test]
+fn the_b70host_profile_names_the_speech_engine_on_demand_on_card_zero() {
+    // Amy, 2026-10-24: the speech engine swaps in on demand, and the profile chooses its card (milestone 17).
+    let profile = b70host_profile();
+    let engine = &profile.engines[1];
+    assert_eq!(
+        (engine.name.as_str(), engine.kind.as_str()),
+        ("voice", nagaya::qwen3tts::KIND)
+    );
+    assert_eq!(engine.devices, vec![0]);
+    assert_eq!(engine.residency, Residency::OnDemand);
+    assert_eq!(engine.idle_unload_s, None, "the default idle time of 60 s");
+    assert!(
+        engine.family.is_empty(),
+        "an on-demand engine serves no council model (spec 3.3a)"
+    );
+    let config = nagaya::qwen3tts::config(&{
+        // The checkpoint comes from QWEN3TTS_MODEL_DIR in the unit, so the check gives the table a directory.
+        let mut table = engine.config.clone();
+        assert!(
+            !table.contains_key("model_dir"),
+            "the checkpoint comes from QWEN3TTS_MODEL_DIR in the unit"
+        );
+        table.insert(
+            "model_dir".to_owned(),
+            toml::Value::String(std::env::temp_dir().display().to_string()),
+        );
+        table
+    })
+    .unwrap();
+    assert_eq!(
+        (
+            config.slots,
+            config.max_frames,
+            config.max_prompt,
+            config.frames_per_quantum
+        ),
+        (2, 1500, 512, 8)
+    );
+}
+
+#[test]
 fn the_b70host_profile_admits_on_the_probed_b70host() {
     // The start path up to the open: the probe, the ignored iGPU, the plan and the ledger.
-    if checkpoint().is_none() {
+    if checkpoint().is_none() || !speech_checkpoint() {
         return;
     }
     let config = b70host_bootstrap();
@@ -305,8 +372,15 @@ fn the_b70host_profile_admits_on_the_probed_b70host() {
     }
     let mut registry = Registry::new();
     registry.register(nagaya::gemma4::KIND, Box::new(PlanOnly));
+    registry.register(nagaya::qwen3tts::KIND, Box::new(SpeechPlanOnly));
     let admitted = admit(&b70host_profile(), &registry, &inventory, &mut Ledger::new()).expect("b70host admits");
-    assert_eq!(admitted.engines.len(), 1);
+    assert_eq!(admitted.engines.len(), 2);
+    assert!(
+        admitted.engines[1]
+            .limits
+            .capabilities
+            .contains(&nagaya_abi::Capability::Speech)
+    );
     let limits = &admitted.engines[0].limits;
     for tier in [Tier::Device(0), Tier::Device(1), Tier::Host] {
         let bytes: u64 = limits
@@ -332,6 +406,10 @@ fn the_b70host_unit_reads_its_config_and_the_checkpoint_and_hides_no_card() {
     assert_eq!(config, "deploy/b70host/nagaya.toml");
     assert!(repo().join(config).is_file(), "the file that the unit names exists");
     assert!(environment.contains(&"GEMMA4_MODEL_DIR=%h/src/mkviolet/checkpoints/gemma-4-26B-A4B"));
+    assert!(environment.contains(
+        &"QWEN3TTS_MODEL_DIR=%h/.cache/huggingface/hub/models--Qwen--Qwen3-TTS-12Hz-1.7B-VoiceDesign/snapshots/\
+          5ecdb67327fd37bb2e042aab12ff7391903235d3"
+    ));
     // The engine finds its cards by PCI address, so no Level Zero variable may hide one.
     assert!(
         environment.iter().all(|value| !value.starts_with("ZE_")),

@@ -27,6 +27,9 @@ Environment=NAGAYA_CONFIG=%h/src/nagaya/deploy/b70host/nagaya.toml
 # The Gemma 4 checkpoint directory: `config.json`, the safetensors shards and `tokenizer.json` (AGENTS.md "mkviolet on
 # b70host"). The engine and the family library read it when the profile names no `model_dir`.
 Environment=GEMMA4_MODEL_DIR=%h/src/mkviolet/checkpoints/gemma-4-26B-A4B
+# The Qwen3-TTS VoiceDesign checkpoint in the Hugging Face cache (milestone 17). The engine and its family read it,
+# because the profile names no `model_dir`.
+Environment=QWEN3TTS_MODEL_DIR=%h/.cache/huggingface/hub/models--Qwen--Qwen3-TTS-12Hz-1.7B-VoiceDesign/snapshots/5ecdb67327fd37bb2e042aab12ff7391903235d3
 # No Level Zero variable. ZE_AFFINITY_MASK would hide a card, and the engine finds its two cards by PCI address
 # (engine-abi "The factory gets its devices"). mkviolet's unit sets none either. The process sets its own CPU sets for
 # each card (spec 3.2b), so the unit sets no CPUAffinity.

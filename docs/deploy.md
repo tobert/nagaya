@@ -313,6 +313,9 @@ checkpoint, so run it with `GEMMA4_MODEL_DIR` set.
 - The profile puts the engine `gemma` of kind `mk-gemma4-bmg` on devices 0 and 1, the cards at `0000:03:00.0`
   and `0000:08:00.0`.
 - The slots are mkviolet's: one of 4,096 positions and one of 65,536. A block holds 512 tokens.
+- The profile puts the speech engine `voice` of kind `qwen3tts-bmg` on device 0, on demand (spec 3.3a, 11.8). It
+  serves `POST /v1/audio/speech` with the model `Qwen3-TTS-12Hz-1.7B-VoiceDesign`.
+- The unit sets `QWEN3TTS_MODEL_DIR` to the Qwen3-TTS checkpoint in the Hugging Face cache.
 - The unit sets `GEMMA4_MODEL_DIR` to `~/src/mkviolet/checkpoints/gemma-4-26B-A4B`. The engine and the family read
   the checkpoint there.
 - The unit sets no Level Zero variable. `ZE_AFFINITY_MASK` would hide a card, and the engine finds its cards by PCI
@@ -325,6 +328,29 @@ checkpoint, so run it with `GEMMA4_MODEL_DIR` set.
 The plan gives 29,964,945,932 bytes of terms on device 0 and 31,889,794,060 bytes on device 1. Each card has 32 GiB
 (34,359,738,368 bytes), so card 1 has about 2.3 GB left. A larger slot does not fit. The host budget is 96 GiB, and
 the store takes 16 GiB of it and 50 GiB of NVMe.
+
+The speech engine plans 5,645,096,644 bytes on card 0, and card 0 has 4,394,792,436 bytes beside `gemma`. Thus it
+does not load beside `gemma` (engine-abi "How a group loads both"). A speech request unloads `gemma` and loads the
+speech engine. Sixty seconds after the last speech job, the speech engine unloads and `gemma` loads cold again.
+
+### Change the profile
+
+The process reads the copy in the store directory, so a new file in `deploy/b70host/` changes nothing alone.
+
+1. Compare the copy with the file in the repository. A profile swap of a client writes the copy (spec 2.3), so a
+   difference that you did not make is a swap. Stop and ask Amy about it.
+
+   ```
+   diff ~/.local/share/nagaya/store/profile.toml <(git -C ~/src/nagaya show HEAD~1:deploy/b70host/profile.toml)
+   ```
+
+2. Stop the unit, copy the new file, and start the unit. The stop clears the stored arenas, so `gemma` loads cold.
+
+   ```
+   systemctl --user stop nagaya.service
+   cp ~/src/nagaya/deploy/b70host/profile.toml ~/.local/share/nagaya/store/profile.toml
+   systemctl --user start nagaya.service
+   ```
 
 ### Build and install
 
