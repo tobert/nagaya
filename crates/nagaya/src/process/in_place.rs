@@ -114,24 +114,21 @@ fn check(ledger: &Sender<LedgerMessage>, load: Vec<String>, unload: Vec<String>)
 
 /// Plan the swap that loads `target` (spec 3.3a).
 ///
-/// An engine with stages shares its cards with no other loaded engine, so it unloads the others, and the others unload
-/// it. Then the group unloads its loaded engines, the last in profile order first, until the target fits. Admission
-/// checked that the target fits with its whole group unloaded, so a plan that still does not fit is a defect.
+/// An engine with stages loads after the group unloads every other engine (engine-abi "How a group loads both").
+/// Another engine first tries to load beside the loaded engines. Then the group unloads its engines with stages, and
+/// then its other loaded engines, the last in profile order first, until the target fits. Admission checked that the
+/// target fits with its whole group unloaded, so a plan that still does not fit is a defect.
 pub(super) fn plan(target: usize, members: &[Member], ledger: &Sender<LedgerMessage>) -> Plan {
     let loaded: Vec<usize> = (0..members.len()).filter(|index| members[*index].loaded).collect();
     let mut unload: Vec<usize> = if members[target].staged() {
         loaded.clone()
     } else {
-        loaded
-            .iter()
-            .copied()
-            .filter(|index| members[*index].staged())
-            .collect()
+        Vec::new()
     };
-    let mut candidates = loaded
-        .iter()
-        .rev()
-        .copied()
+    let staged = loaded.iter().copied().filter(|index| members[*index].staged());
+    let others = loaded.iter().rev().copied().filter(|index| !members[*index].staged());
+    let mut candidates = staged
+        .chain(others)
         .filter(|index| !unload.contains(index))
         .collect::<Vec<_>>()
         .into_iter();

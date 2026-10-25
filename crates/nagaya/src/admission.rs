@@ -692,8 +692,8 @@ fn check_residency(profile: &PlacementProfile, planned: &[AdmittedEngine]) -> Re
         why,
     };
     let groups = crate::placement::device_groups(profile);
-    // An engine with stages loads alone (engine-abi D1), so the other engines of its group are on demand. The serve
-    // loop of stages serves one engine.
+    // A load of an engine with stages first unloads the other engines of its group (engine-abi "How a group loads
+    // both"), so they are on demand. Each one loads beside it again at its next job.
     for group in &groups {
         let staged = group.engines.iter().find(|index| {
             profile.engines[**index].residency == Residency::Resident
@@ -708,7 +708,7 @@ fn check_residency(profile: &PlacementProfile, planned: &[AdmittedEngine]) -> Re
             return Err(fail(
                 &profile.engines[other].name,
                 format!(
-                    "the resident engine `{}` has stages, and it loads alone; make this engine \
+                    "the resident engine `{}` has stages, and its load unloads the others; make this engine \
                      `residency = \"on_demand\"`, or move it to other devices",
                     profile.engines[staged].name
                 ),

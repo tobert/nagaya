@@ -918,6 +918,20 @@ struct GroupJob {
     stored: Vec<(FdName, std::os::fd::OwnedFd)>,
 }
 
+impl GroupJob {
+    /// A copy with no stored fd, to hold the place of the job while a stage thread opens its engine.
+    fn shell(&self) -> Self {
+        Self {
+            placement: self.placement.clone(),
+            limits: self.limits.clone(),
+            devices: self.devices.clone(),
+            factory: Arc::clone(&self.factory),
+            arena_parts: self.arena_parts.clone(),
+            stored: Vec::new(),
+        }
+    }
+}
+
 fn group_jobs(
     profile: &PlacementProfile,
     admitted: &Admitted,
@@ -1148,6 +1162,9 @@ fn serve_plain(
                 }
                 Ok(GroupMessage::Stop) | Err(RecvTimeoutError::Disconnected) => return Exit::Stop,
                 Ok(GroupMessage::StageDone(_)) => unreachable!("a group with no stages gets no end of a stage quantum"),
+                Ok(GroupMessage::HostedDone(_)) => {
+                    unreachable!("a group with no stages holds no engine on a stage thread")
+                }
                 Err(RecvTimeoutError::Timeout) => {
                     if jobs.idle() && links.heartbeats.send(beat()).is_err() {
                         return Exit::Stop;
@@ -1239,16 +1256,34 @@ struct OpenBeat {
 
 impl OpenBeat {
     fn start(group: usize, heartbeats: Sender<WatchMessage>, interval: Duration) -> Self {
+        Self::beat(format!("nagaya-open-{group}"), heartbeats, interval, move |at| {
+            WatchMessage::Beat { group, at }
+        })
+    }
+
+    /// Beat for the stage thread of `stage` while an open blocks it (engine-abi "How a group loads both").
+    fn stage(group: usize, stage: usize, heartbeats: Sender<WatchMessage>, interval: Duration) -> Self {
+        Self::beat(
+            format!("nagaya-open-{group}-{stage}"),
+            heartbeats,
+            interval,
+            move |at| WatchMessage::BeatStage { group, stage, at },
+        )
+    }
+
+    fn beat(
+        name: String,
+        heartbeats: Sender<WatchMessage>,
+        interval: Duration,
+        message: impl Fn(Instant) -> WatchMessage + Send + 'static,
+    ) -> Self {
         let (stop, stopped) = mpsc::channel();
         let helper = thread::Builder::new()
-            .name(format!("nagaya-open-{group}"))
+            .name(name)
             .spawn(move || {
                 // A timeout is a beat due. A message or a closed channel means the open ended.
                 while let Err(RecvTimeoutError::Timeout) = stopped.recv_timeout(interval) {
-                    let beat = WatchMessage::Beat {
-                        group,
-                        at: Instant::now(),
-                    };
+                    let beat = message(Instant::now());
                     if heartbeats.send(beat).is_err() {
                         return;
                     }
@@ -1427,6 +1462,8 @@ enum GroupMessage {
     Stop,
     /// A stage thread ended a stage quantum (engine-abi D1).
     StageDone(staged::StageDone),
+    /// A stage thread ended a quantum of an engine that it holds (engine-abi "How a group loads both").
+    HostedDone(staged::HostedDone),
 }
 
 /// Why a context charge did not happen.

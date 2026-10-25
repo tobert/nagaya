@@ -1,6 +1,6 @@
 //! The swap in place on a group whose resident engine has stages (spec 3.3a, engine-abi D1): Gemma 4 on two cards,
-//! and an on-demand engine on one of them. An engine with stages loads alone, so a job for the other engine unloads
-//! it, and a job for it unloads the other.
+//! and an on-demand engine on one of them. The two do not fit on card 1 together, so a job for the other engine
+//! unloads the engine with stages, and a job for it unloads the other. `swap_beside.rs` has the two when they fit.
 
 mod feed_support;
 
@@ -114,10 +114,11 @@ fn engine(name: &str, devices: Vec<u32>, residency: Residency) -> EnginePlacemen
     }
 }
 
+/// Each engine takes 4,096 bytes of card 1, so a budget of 6,000 bytes holds one of them at a time.
 fn profile() -> PlacementProfile {
     let budget = |tier: Tier| BudgetSpec {
         tiers: vec![TierSpec::from(tier)],
-        bytes: 1 << 20,
+        bytes: if tier == Tier::Device(1) { 6000 } else { 1 << 20 },
     };
     PlacementProfile {
         engines: vec![
