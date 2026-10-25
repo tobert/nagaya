@@ -1008,7 +1008,8 @@ speech_clear(slot)                                frees the state of the slot
   can be absent. Qwen3-TTS sums the projected text embedding and the codec embedding of each position. The family
   library makes the pairs (spec 11.3); the engine never takes text (D2).
 - **Sampler.** The engine samples on the card, because one frame of Qwen3-TTS has 16 samples that depend on each
-  other. The sampler has `temperature`, `top_k`, `top_p`, `repetition_penalty` and a `seed`. The same identity,
+  other. The sampler has `temperature`, `top_k`, `repetition_penalty` and a `seed`. It has no `top_p`, because
+  the request sampler fixes `top_p` at 1.0 (spec 11.8), and 1.0 keeps every id. The same identity,
   prompt, sampler and seed give the same codes and the same audio bits.
 - **Frames.** A frame is 16 codes, one for each codebook, and 1,920 audio samples at 24 kHz (80 ms). `speech_frames`
   is one quantum of kind `decode`. The engine sizes `max` so that a quantum fits `max_quantum_ms` (D8).
