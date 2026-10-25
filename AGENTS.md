@@ -68,6 +68,7 @@ The crates live in directories under `crates/`. Use these crates:
 | `nagaya-jinja` | the Jinja interpreter of the chat templates, with the results of Python's jinja2 | 11.3 |
 | `nagaya-text-qwen38` | the Qwen3.8 family library: tokenizer, templates, detokenizer, reply parser | 11.3, 11.3a |
 | `nagaya-text-gemma4` | the Gemma 4 family library: tokenizer, template, escapes, council rendering, reply parser | 11.3, 11.3a |
+| `nagaya-text-qwen3tts` | the Qwen3-TTS family library: tokenizer, the prompt of a speech request, the codec ids | 11.3, 11.8 |
 | `nagaya-text-toy` | the toy family library on gogi's `gogi-toy`, for tests with the fake engine | 11.3b |
 | `nagaya-conformance` | the conformance suite (8.3), generic over the `Engine` trait | 8.3 |
 | `nagaya-telemetry` | the instruments, the stderr log, the OTLP export and the sampler | 9 |
