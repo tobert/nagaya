@@ -44,6 +44,10 @@ pub fn service_error(error: SpeechError) -> ServiceError {
     match error {
         SpeechError::Invalid { param, message } => invalid(param, message),
         SpeechError::Busy(message) => ServiceError::Busy(message),
+        SpeechError::ContextFull { positions, room } => ServiceError::ContextFull {
+            prompt_tokens: positions,
+            context_tokens: room,
+        },
         SpeechError::Timeout(_) => ServiceError::Timeout,
         SpeechError::Stopping(_) => ServiceError::Stopping,
         SpeechError::Failed(message) => ServiceError::internal(message),
@@ -75,7 +79,7 @@ pub fn check(
     model: &ServedModel,
     request: &GenerationRequest,
 ) -> Result<Checked, ServiceError> {
-    request.context.check().map_err(ServiceError::Invalid)?;
+    request.validate().map_err(ServiceError::Invalid)?;
     let Some(output) = &request.output else {
         return Err(invalid(
             "output",
@@ -152,7 +156,16 @@ pub fn check(
         }
         match message.role {
             Role::System if i == 0 => voice = Some(text_of(&message.content)),
-            Role::User => items.push(ContextItem::Line(text_of(&message.content))),
+            Role::User => {
+                let line = text_of(&message.content);
+                if line.trim().is_empty() {
+                    return Err(invalid(
+                        format!("messages[{i}].content"),
+                        format!("nothing ran: messages[{i}] is an empty line; give the text to speak"),
+                    ));
+                }
+                items.push(ContextItem::Line(line));
+            }
             Role::Assistant => {
                 let parts: Vec<(usize, ObjectRef)> = message
                     .content
@@ -181,9 +194,9 @@ pub fn check(
                     .map_err(|_| invalid(at.clone(), format!("nothing ran: {at}.id is not a content id")))?;
                 let held = {
                     let store = store.lock().expect("the object store lock is poisoned");
-                    store.mime_of(&id).map(str::to_owned)
+                    store.mime_of(&id).map(str::to_owned).zip(store.bytes_of(&id))
                 };
-                let Some(held) = held else {
+                let Some((held, bytes)) = held else {
                     return Err(ServiceError::NotHeld {
                         message: format!(
                             "nothing ran: {at} is {}, which the server does not hold; speak its line again",
@@ -201,20 +214,15 @@ pub fn check(
                         ),
                     ));
                 }
-                let frames = service.codes(&id).map_err(ServiceError::internal)?.ok_or_else(|| {
-                    invalid(
-                        at.clone(),
-                        format!(
-                            "nothing ran: {at} is {}, which {} did not write, or whose codes it no longer holds; the \
-                             engine has no codec encoder, so speak its line again",
-                            object.id, model.model
-                        ),
-                    )
+                // Codes that the book does not hold are as an object that the server does not hold (spec 11.8a).
+                let frames = service.codes(&id).map_err(ServiceError::internal)?.ok_or_else(|| ServiceError::NotHeld {
+                    message: format!(
+                        "nothing ran: {at} is {}, whose codes {} does not hold: it did not write it, or it dropped the \
+                         codes; the engine has no codec encoder, so speak its line again",
+                        object.id, model.model
+                    ),
+                    param: at.clone(),
                 })?;
-                let bytes = {
-                    let store = store.lock().expect("the object store lock is poisoned");
-                    store.bytes_of(&id).unwrap_or(0)
-                };
                 read.insert(object.id.clone(), bytes);
                 items.push(ContextItem::Audio(frames));
             }
@@ -243,6 +251,7 @@ pub fn check(
             snaps,
             language,
             seed,
+            schedule: crate::council::Schedule::of(request.class, request.priority),
         },
         read,
     })
@@ -320,12 +329,25 @@ pub fn speak(
             }
         }
     }
-    let spoken = spoken.ok_or_else(|| ServiceError::internal("a speech generation ended with no end"))?;
+    // A stop drops the job with no end, so the line was cancelled (spec 11.7).
+    let spoken = spoken.ok_or(ServiceError::Cancelled)?;
     let data = u32::try_from(pcm.len()).map_err(|_| ServiceError::internal("the audio of a line is over 4 GiB"))?;
     let mut wav = wav_header(Some(data)).to_vec();
     wav.extend(&pcm);
     let id = seal(council, &wav)?;
-    service.keep_codes(&id, &spoken.codes).map_err(ServiceError::internal)?;
+    let objects = council.objects();
+    let held = |id: &ContentId| {
+        objects.as_ref().is_some_and(|store| {
+            store
+                .lock()
+                .expect("the object store lock is poisoned")
+                .bytes_of(id)
+                .is_some()
+        })
+    };
+    service
+        .keep_codes(&id, &spoken.codes, &held)
+        .map_err(ServiceError::internal)?;
     let text = format!("blake3:{}", id.hex());
     let samples = pcm.len() as u64 / 2;
     // The snapshots of the context with the reply appended: the marked ends that the build held, then the head.
@@ -392,7 +414,12 @@ fn seal(council: &Council, wav: &[u8]) -> Result<ContentId, ServiceError> {
     let text = content_id(wav);
     let id = ContentId::from_hex(text.trim_start_matches("blake3:")).expect("a content id has 64 hex digits");
     let staged = store.lock().expect("the object store lock is poisoned").staging_path();
-    std::fs::write(&staged, wav)
+    // The bytes reach the disk before the rename, so a crash leaves no object whose bytes do not hash to its id.
+    std::fs::File::create(&staged)
+        .and_then(|mut file| {
+            std::io::Write::write_all(&mut file, wav)?;
+            file.sync_all()
+        })
         .map_err(|error| ServiceError::internal(format!("cannot write `{}`: {error}", staged.display())))?;
     let mut store = store.lock().expect("the object store lock is poisoned");
     store
@@ -481,27 +508,30 @@ pub async fn generation(
     let (out, mut items) = mpsc::channel::<Item>(1);
     let inner = Arc::clone(&council);
     let started = council.spawn(move || {
+        let mut started: Option<String> = None;
         let result = guarded(|| {
             let checked = check(&inner, &service, &model, &request)?;
             let (pending, output) = inner.pending().start(WAV);
+            started = Some(pending.clone());
             let event = OutputEvent {
                 index: 0,
                 mime: WAV.to_owned(),
-                pending: pending.clone(),
+                pending,
             };
             if out.blocking_send(Item::Output(event)).is_err() {
-                inner.pending().cancel(&pending);
                 return Err(ServiceError::Cancelled);
             }
-            let spoken = speak(&inner, &service, &model.model, checked, Some(&output), &|| {
+            speak(&inner, &service, &model.model, checked, Some(&output), &|| {
                 out.is_closed()
-            });
-            match &spoken {
-                Ok(done) => inner.pending().seal(&pending, done.outputs[0].id.as_str()),
-                Err(_) => inner.pending().cancel(&pending),
-            }
-            spoken
+            })
         });
+        // Outside the guard, so a panic in the call also ends its pending id.
+        if let Some(pending) = &started {
+            match &result {
+                Ok(done) => inner.pending().seal(pending, done.outputs[0].id.as_str()),
+                Err(_) => inner.pending().cancel(pending),
+            }
+        }
         let _ = out.blocking_send(Item::End(Box::new(result)));
         drop(permit);
     });

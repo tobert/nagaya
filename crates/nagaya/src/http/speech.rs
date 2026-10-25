@@ -80,6 +80,7 @@ impl From<SpeechError> for OpenAiError {
         match error {
             SpeechError::Invalid { param, message } => OpenAiError::invalid(param, message),
             SpeechError::Busy(message) => OpenAiError::server(StatusCode::SERVICE_UNAVAILABLE, "busy", message),
+            error @ SpeechError::ContextFull { .. } => OpenAiError::invalid("input", error.to_string()),
             SpeechError::Timeout(message) => OpenAiError::server(StatusCode::GATEWAY_TIMEOUT, "timeout", message),
             SpeechError::Stopping(message) => OpenAiError::server(StatusCode::SERVICE_UNAVAILABLE, "draining", message),
             SpeechError::Failed(message) => {

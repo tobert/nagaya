@@ -12,6 +12,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use gogi_proto::generation::GenerationDone;
 use nagaya::admission::{Factory, GroupDevice, OpenError, PlanError, Registry};
+use nagaya::council::Schedule;
 use nagaya::http::{Council, router};
 use nagaya::inventory::{Device, Inventory};
 use nagaya::process::{Process, Start};
@@ -349,6 +350,11 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_host(1 << 20)
+    }
+
+    /// A fixture whose host budget is `host` bytes: the ledger charges the copy of each snapshot there.
+    fn with_host(host: u64) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let log: Log = Arc::default();
         let hold = Arc::new(AtomicBool::new(false));
@@ -373,7 +379,7 @@ impl Fixture {
                 },
                 BudgetSpec {
                     tiers: vec![TierSpec::from(Tier::Host)],
-                    bytes: 1 << 20,
+                    bytes: host,
                 },
             ],
             store: Some(StoreSpec {
@@ -423,12 +429,9 @@ impl Fixture {
     }
 
     fn service(&self) -> SpeechService {
-        SpeechService::new(
-            SpeechConfig::new(MODEL, "voice", 2),
-            Arc::new(Letters),
-            self.process.ports(),
-        )
-        .unwrap()
+        let mut config = SpeechConfig::new(MODEL, "voice", 2);
+        config.context_positions = ROOM;
+        SpeechService::new(config, Arc::new(Letters), self.process.ports()).unwrap()
     }
 
     /// Speak the last line of a context. Give the audio and the result.
@@ -458,6 +461,7 @@ fn first(line: &str, snap_voice: bool) -> SpeechContext {
         snaps: vec![snap_voice, false],
         language: "en".to_owned(),
         seed: 5,
+        schedule: Schedule::default(),
     }
 }
 
@@ -681,7 +685,9 @@ fn a_generation_writes_a_wav_and_the_next_line_starts_from_its_head() {
 }
 
 #[test]
-fn audio_that_the_model_did_not_write_is_refused_and_unheld_audio_is_a_404() {
+/// The server cannot tell audio that it did not write from audio whose codes it dropped, so both are a 404 that
+/// names the part (spec 11.8a, e3f99db).
+fn audio_that_the_model_did_not_write_and_unheld_audio_are_a_404() {
     let fixture = Fixture::new();
     let council = fixture.council();
     let bytes = b"RIFF not ours".to_vec();
@@ -710,7 +716,7 @@ fn audio_that_the_model_did_not_write_is_refused_and_unheld_audio_is_a_404() {
         ])
     };
     let part = "messages[2].content[0]".to_owned();
-    assert_eq!(refused(&council, with(&id)), (StatusCode::BAD_REQUEST, part.clone()));
+    assert_eq!(refused(&council, with(&id)), (StatusCode::NOT_FOUND, part.clone()));
     let unheld = format!("blake3:{}", blake3::hash(b"never put").to_hex());
     assert_eq!(refused(&council, with(&unheld)), (StatusCode::NOT_FOUND, part));
     assert!(council.failure().is_none(), "{:?}", council.failure());
@@ -833,4 +839,101 @@ fn a_stream_names_a_pending_id_that_streams_the_audio_and_then_moves_to_the_obje
     let (status, _, location, _) = send(&council, "GET", &format!("/council/v2/objects/{pending}"), None);
     assert_eq!(status, StatusCode::PERMANENT_REDIRECT);
     assert_eq!(location, format!("/council/v2/objects/{id}"));
+}
+
+// ---- the paths that the kaibo review of 9033ed3 found (job-6)
+
+#[test]
+fn a_stop_during_a_line_cancels_it_frees_its_slot_and_is_no_internal_error() {
+    let mut fixture = Fixture::new();
+    let council = fixture.council();
+    fixture.hold.store(true, Ordering::SeqCst);
+    let log = Arc::clone(&fixture.log);
+    let hold = Arc::clone(&fixture.hold);
+    let (status, failure) = std::thread::scope(|scope| {
+        let request = scope.spawn(|| {
+            let line = messages(&[json!({"role": "user", "content": "hello"})]);
+            send(&council, "POST", "/council/v2/generations", Some(line)).0
+        });
+        // The job is in its frames, which wait.
+        while !log.lock().unwrap().iter().any(|line| line.ends_with(":true")) {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let release = scope.spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            hold.store(false, Ordering::SeqCst);
+        });
+        fixture
+            .process
+            .stop(Duration::from_millis(50), &nagaya::signal::SignalFlag::new());
+        release.join().unwrap();
+        (request.join().unwrap(), council.failure())
+    });
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(failure.is_none(), "a stop is no internal error: {failure:?}");
+    assert_eq!(
+        council.speech_service(MODEL).unwrap().free_slots(),
+        2,
+        "the slot came back"
+    );
+}
+
+#[test]
+fn audio_whose_codes_are_gone_is_a_404_that_names_the_part() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let (_, done) = generate(&council, messages(&[json!({"role": "user", "content": "hello"})]));
+    let id = done["outputs"][0]["id"].as_str().unwrap();
+    let file = fixture
+        .directory
+        .path()
+        .join("speech-codes")
+        .join(id.trim_start_matches("blake3:"));
+    std::fs::remove_file(&file).unwrap();
+    let reply = json!({"role": "assistant", "content": [{"type": "object", "id": id, "mime": "audio/wav"}]});
+    let next = messages(&[
+        json!({"role": "user", "content": "hello"}),
+        reply,
+        json!({"role": "user", "content": "x"}),
+    ]);
+    assert_eq!(
+        refused(&council, next),
+        (StatusCode::NOT_FOUND, "messages[2].content[0]".to_owned())
+    );
+}
+
+#[test]
+fn an_empty_line_is_refused_and_a_batch_line_speaks() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let empty = messages(&[json!({"role": "user", "content": "  "})]);
+    assert_eq!(
+        refused(&council, empty),
+        (StatusCode::BAD_REQUEST, "messages[1].content".to_owned())
+    );
+    let mut batch = messages(&[json!({"role": "user", "content": "hello"})]);
+    batch["class"] = json!("batch");
+    assert_eq!(generate(&council, batch).0, StatusCode::OK);
+}
+
+#[test]
+fn a_context_past_the_slot_is_context_full() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let long = "a".repeat(ROOM as usize);
+    let (status, v) = generate(&council, messages(&[json!({"role": "user", "content": long})]));
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{v}");
+    assert_eq!(v["error"]["type"], json!("context_full"));
+    assert_eq!(v["error"]["context_tokens"], json!(ROOM));
+}
+
+#[test]
+fn a_refused_copy_of_a_snapshot_is_busy_and_no_internal_error() {
+    // The voice of 11 positions is 88 bytes of state, past a host budget of 16 bytes.
+    let fixture = Fixture::with_host(16);
+    let council = fixture.council();
+    let (status, v) = generate(&council, messages(&[json!({"role": "user", "content": "hello"})]));
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{v}");
+    assert!(council.failure().is_none(), "{:?}", council.failure());
+    assert_eq!(council.speech_service(MODEL).unwrap().free_slots(), 2);
 }

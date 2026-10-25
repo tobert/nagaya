@@ -47,6 +47,26 @@ impl CodeBook {
         written.map_err(|error| format!("cannot write the codes of {}: {error}", id.hex()))
     }
 
+    /// Drop the code file of each output that `held` says the object store does not hold, and each temporary file.
+    /// It gives the files that it dropped.
+    pub fn prune(&self, held: &dyn Fn(&ContentId) -> bool) -> Result<usize, String> {
+        let entries =
+            std::fs::read_dir(&self.dir).map_err(|error| format!("cannot list `{}`: {error}", self.dir.display()))?;
+        let mut dropped = 0;
+        for entry in entries {
+            let path = entry
+                .map_err(|error| format!("cannot list `{}`: {error}", self.dir.display()))?
+                .path();
+            let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+            let keep = ContentId::from_hex(name).is_ok_and(|id| held(&id));
+            if !keep {
+                std::fs::remove_file(&path).map_err(|error| format!("cannot remove `{}`: {error}", path.display()))?;
+                dropped += 1;
+            }
+        }
+        Ok(dropped)
+    }
+
     /// The codes of the output `id`, or `None` when this book holds none. A file whose size is not a whole count of
     /// frames is an error: the book does not guess at its frames.
     pub fn get(&self, id: &ContentId) -> Result<Option<Vec<Frame>>, String> {
@@ -93,6 +113,20 @@ mod tests {
         book.put(&id, &frames).unwrap();
         assert_eq!(book.get(&id).unwrap(), Some(frames));
         assert_eq!(book.get(&other).unwrap(), None);
+    }
+
+    #[test]
+    fn a_prune_drops_the_codes_of_outputs_that_are_not_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let book = CodeBook::open(dir.path()).unwrap();
+        let id = |text: &[u8]| ContentId::from_hex(&blake3::hash(text).to_hex()).unwrap();
+        let (kept, left) = (id(b"kept"), id(b"left"));
+        book.put(&kept, &[[1; 16]]).unwrap();
+        book.put(&left, &[[2; 16]]).unwrap();
+        std::fs::write(dir.path().join(CODES_DIR).join("x.tmp"), b"part").unwrap();
+        assert_eq!(book.prune(&|held| *held == kept).unwrap(), 2);
+        assert_eq!(book.get(&kept).unwrap(), Some(vec![[1; 16]]));
+        assert_eq!(book.get(&left).unwrap(), None);
     }
 
     #[test]

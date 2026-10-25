@@ -10,7 +10,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use nagaya_abi::{Engine, Kind, PassErrorKind, PromptPair, SlotId, SpeechPosition, SpeechSampler};
-use nagaya_sched::{Class, JobState};
+use nagaya_sched::JobState;
 
 use crate::jobs::{JobBody, JobSpec, Ran};
 use crate::process::{Ports, SubmitError};
@@ -106,8 +106,10 @@ pub enum Chunk {
 pub enum SpeechError {
     /// The request breaks a rule. `param` names the key.
     Invalid { param: &'static str, message: String },
-    /// No slot came free before the timeout.
+    /// No slot came free before the timeout, or the ledger refused a copy.
     Busy(String),
+    /// The context and a frame do not fit in a slot.
+    ContextFull { positions: u64, room: u64 },
     /// The request passed its timeout.
     Timeout(String),
     /// The process is stopping.
@@ -120,6 +122,11 @@ impl std::fmt::Display for SpeechError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SpeechError::Invalid { param, message } => write!(formatter, "`{param}`: {message}"),
+            SpeechError::ContextFull { positions, room } => write!(
+                formatter,
+                "nothing ran: the context has {positions} positions, and a slot holds {room} with the frames of its \
+                 line; start a shorter context"
+            ),
             SpeechError::Busy(message)
             | SpeechError::Timeout(message)
             | SpeechError::Stopping(message)
@@ -291,6 +298,8 @@ pub struct SpeechService {
     codes: Option<codes::CodeBook>,
     /// The identity of the engine after its first open since the start.
     identity: Arc<Mutex<Option<nagaya_abi::Identity>>>,
+    /// The code puts since the start.
+    puts: std::sync::atomic::AtomicU64,
 }
 
 impl SpeechService {
@@ -315,6 +324,7 @@ impl SpeechService {
             clock: crate::council::system_clock(),
             codes: None,
             identity: Arc::default(),
+            puts: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -344,13 +354,28 @@ impl SpeechService {
         self.codes.as_ref().map_or(Ok(None), |book| book.get(id))
     }
 
-    /// Keep the codes of the output `id`.
-    pub fn keep_codes(&self, id: &nagaya_store::ContentId, frames: &[Frame]) -> Result<(), String> {
+    /// Keep the codes of the output `id`. At the first put and at each 256th one, drop the code files of the outputs
+    /// that `held` says the object store no longer holds, so the book does not grow past the objects.
+    pub fn keep_codes(
+        &self,
+        id: &nagaya_store::ContentId,
+        frames: &[Frame],
+        held: &dyn Fn(&nagaya_store::ContentId) -> bool,
+    ) -> Result<(), String> {
         let book = self
             .codes
             .as_ref()
             .ok_or_else(|| "the speech service has no code book; start it with a store directory".to_owned())?;
-        book.put(id, frames)
+        book.put(id, frames)?;
+        if self
+            .puts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            .is_multiple_of(256)
+        {
+            let dropped = book.prune(held)?;
+            tracing::debug!("the code book dropped the codes of {dropped} outputs that the object store left");
+        }
+        Ok(())
     }
 
     /// The service with a clock that the caller chooses, for the times of the store.
@@ -389,6 +414,13 @@ impl SpeechService {
                 rendering.ends.last(),
                 rendering.positions.len()
             )));
+        }
+        let room = self.config.context_positions;
+        if room > 0 && rendering.positions.len() as u64 + 1 >= room {
+            return Err(SpeechError::ContextFull {
+                positions: rendering.positions.len() as u64,
+                room,
+            });
         }
         let store = self.ports.store().cloned().ok_or_else(|| {
             SpeechError::Failed("the process has no store; start it with a store directory".to_owned())
@@ -430,16 +462,22 @@ impl SpeechService {
             digest: [0; 32],
             identity: Arc::clone(&self.identity),
         };
-        self.submit(slot, deadline, Box::new(body))?;
+        self.submit(slot, deadline, context.schedule, Box::new(body))?;
         Ok(told)
     }
 
     /// Send a job that holds `slot`. A refused job drops its body with no call of `ended`, so the slot comes back
     /// here.
-    fn submit(&self, slot: SlotId, deadline: Instant, body: Box<dyn JobBody>) -> Result<(), SpeechError> {
+    fn submit(
+        &self,
+        slot: SlotId,
+        deadline: Instant,
+        schedule: crate::council::Schedule,
+        body: Box<dyn JobBody>,
+    ) -> Result<(), SpeechError> {
         let job = JobSpec {
-            class: Class::Interactive,
-            priority: 0,
+            class: schedule.class,
+            priority: i64::from(schedule.priority),
             deadline: Some(deadline),
             first: Kind::Prefill,
             engine: self.engine,
@@ -499,7 +537,7 @@ impl SpeechService {
             told: false,
             timeout: self.config.timeout,
         };
-        self.submit(slot, deadline, Box::new(body))?;
+        self.submit(slot, deadline, crate::council::Schedule::default(), Box::new(body))?;
         Ok(chunks)
     }
 }

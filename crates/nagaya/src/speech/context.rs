@@ -16,9 +16,10 @@ use nagaya_store::{
 };
 
 use super::{Frame, SlotPool, SpeechError};
-use crate::council::Clock;
 use crate::council::build::COUNCIL_OWNER;
+use crate::council::error::ServiceError;
 use crate::council::staging::{Staging, state_bytes};
+use crate::council::{Clock, Schedule};
 use crate::jobs::{JobBody, Ran};
 use crate::park::{identity_digest, park_snapshot};
 use crate::process::Ports;
@@ -47,6 +48,8 @@ pub struct SpeechContext {
     /// The language of each line.
     pub language: String,
     pub seed: u64,
+    /// The class and the priority of the job.
+    pub schedule: Schedule,
 }
 
 /// What the job of a generation sends to its route.
@@ -251,8 +254,14 @@ impl ContextJob {
         let bytes = state_bytes(engine, &limits, state)
             .map_err(|message| failed(format!("cannot size the copy of {place}: {message}")))?;
         // The buffer of the copy is host memory. The charge stays until the store has taken the snapshot.
-        let _staging = Staging::take(&self.ports, &self.engine_name, bytes)
-            .map_err(|error| failed(format!("cannot charge the copy of {place}: {error}")))?;
+        let _staging = Staging::take(&self.ports, &self.engine_name, bytes).map_err(|error| match error {
+            // A refused charge is a 429, and a stop is a 503, as for a text build (spec 11.5).
+            ServiceError::ContextRefused(error) => SpeechError::Busy(format!(
+                "nothing more ran: the ledger could not hold the copy of {place}: {error}; try again later"
+            )),
+            ServiceError::Stopping => SpeechError::Stopping(format!("the process stopped before the copy of {place}")),
+            other => failed(format!("cannot charge the copy of {place}: {other}")),
+        })?;
         let snapshot = park_snapshot(engine, state)
             .map_err(|message| failed(format!("cannot read the state at {place}: {message}")))?;
         let id = snapshot
@@ -373,6 +382,13 @@ impl ContextJob {
     }
 }
 
+impl Drop for ContextJob {
+    /// A stop drops the bodies of its jobs with no call of `ended`, so the slot comes back here.
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 impl JobBody for ContextJob {
     fn run(&mut self, _kind: Kind, engines: &mut [Box<dyn Engine>]) -> Ran {
         let engine = engines[self.engine].as_mut();
@@ -430,7 +446,9 @@ impl JobBody for ContextJob {
                 )),
                 other => SpeechError::Failed(format!("the speech job ended as {other:?} before its end of speech")),
             };
-            let _ = self.out.try_send(Err(message));
+            // The route drains the queue until it sees an end, so this send does not wait for long. A route that went
+            // away drops the receiver, and the send gives an error at once.
+            let _ = self.out.send(Err(message));
         }
     }
 
