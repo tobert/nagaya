@@ -2689,6 +2689,14 @@ family library of Qwen3-TTS (11.3):
 
 The family has no detokenizer and no reply parser, because the output is audio.
 
+**The split of the speech tokenizer.** Proposed by senpai (Claude Opus 5.5), 2026-10-24. The tokenizer splits text
+with Mistral's pattern, as the reference runs. `Qwen3TTSModel.from_pretrained` passes `fix_mistral_regex=True`, and
+transformers 4.57.3 applies it to this checkpoint, whose config names 4.57.3. Reason: the oracle compares with the
+reference as it runs. Of 28 fixture texts, only text in camel case gave other ids under Qwen2's pattern.
+
+The family keeps text that spells a special token as that token, as the reference does. Spec 11.3 gives each family
+its escapes; the speech route has none in v0.
+
 ## 12. Identity
 
 **12.1 Fields.** An engine identity has the fields of `identity()` in the ABI:
