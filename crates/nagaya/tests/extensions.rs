@@ -450,3 +450,25 @@ fn identity_lists_the_prefix_if_and_only_if_the_text_routes_answer() {
     let identity: ServerIdentity = serde_json::from_value(body).unwrap();
     assert!(identity.extensions.is_empty(), "{:?}", identity.extensions);
 }
+
+/// The toy family reads text only, so the render route refuses an object part by name before the family sees it
+/// (gogi "Contexts"). A family that got the part would panic, and a panic stops the process.
+#[test]
+fn render_refuses_an_object_part_by_name_and_the_process_answers_after() {
+    let f = Fixture::new();
+    let council = council(&f);
+    let id = format!("blake3:{}", "a".repeat(64));
+    let with_object = json!({"messages": [
+        {"role": "user", "content": "Say hi."},
+        {"role": "user", "content": [{"type": "text", "text": "Look:"}, {"type": "object", "id": id, "mime": "image/png"}]}]});
+    let (kind, param) = refused(
+        post(&council, "render", json!({"model": "toy", "context": with_object})),
+        StatusCode::BAD_REQUEST,
+    );
+    assert_eq!(
+        (kind.as_str(), param.as_deref()),
+        ("invalid_request", Some("messages[1].content[1]"))
+    );
+    let (status, _, _) = post(&council, "render", json!({"model": "toy", "context": context()}));
+    assert_eq!(status, StatusCode::OK);
+}
