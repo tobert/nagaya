@@ -1178,6 +1178,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nagaya-mk-qwen3tts-bmg"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "nagaya-abi",
+ "nagaya-mk-bmg",
+ "nagaya-text-qwen3tts",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "nagaya-sched"
 version = "0.1.0"
 dependencies = [
