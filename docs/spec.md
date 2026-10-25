@@ -1854,10 +1854,9 @@ to the same gogi before the nagaya served them (Amy, 2026-10-18).
 gogi is normative today. This spec says how the nagaya serves the API, and it never restates the API. When this
 spec and gogi differ about the API, gogi is the rule, and this spec is corrected.
 
-**Proposed** (Claude Fable 5.1, 2026-10-22): the text of the council v2 API moves into this repository, as
-`docs/council-api.md`. gogi keeps the types, the suite and the toy family. Reason: Amy wants the nagaya to stand
-alone as a spec, a reference implementation and the council API. The text is the part that a reader of these docs
-needs. Until Amy decides, gogi's text stays the contract, and nothing moves.
+**The text stays in gogi.** Decided 2026-10-25 (Amy: "council api docs should stay with gogi except where we have
+implementation details"). This rule replaces a Proposed note of 2026-10-22, which moved the text here. gogi keeps
+the text, the types, the suite and the toy family. This spec keeps only how the nagaya implements the API.
 
 Any machine can receive any request and act as its coordinator (Cassandra style). Clients prefer a coordinator with
 separate host memory (`b70host` or a CPU rig) to save unified memory bandwidth on `gfx1151host` and `sm121host` (3.2). The
