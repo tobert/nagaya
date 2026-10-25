@@ -56,7 +56,21 @@ fn a_zero_or_a_quantum_larger_than_a_request_is_refused() {
 fn the_limits_name_speech_one_card_and_the_slots() {
     let config = config(PathBuf::from("/nowhere"));
     let limits = limits(&config, 1000);
-    assert_eq!(limits.capabilities, vec![Capability::Speech, Capability::Close]);
+    assert_eq!(
+        limits.capabilities,
+        vec![
+            Capability::Speech,
+            Capability::Close,
+            Capability::Parts,
+            Capability::Slots
+        ]
+    );
+    // The held state of a speech context is one cells part (engine-abi "Held speech state").
+    assert_eq!(limits.parts.len(), 1);
+    assert_eq!(
+        (limits.parts[0].name.as_str(), limits.parts[0].shape.as_slice()),
+        ("talker_kv", [28u64, 2, 8, 128].as_slice())
+    );
     assert_eq!(limits.devices, vec![0]);
     assert!(limits.stages.is_empty());
     assert_eq!(limits.slots.len(), 1);
