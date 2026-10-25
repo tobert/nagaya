@@ -27,7 +27,7 @@ pub(crate) struct DecisionThen {
     /// The letter log probabilities of each asked question, by its index in the asked questions.
     pub logprobs: Vec<Option<Vec<f64>>>,
     /// The hash of the text that the read was conditioned on.
-    pub rendered_sha256: Option<String>,
+    pub rendered_hash: Option<String>,
     /// The tokens that the read fed after the build.
     pub fed: usize,
     /// True while the slot holds the state after the prefix.
@@ -44,7 +44,7 @@ impl DecisionThen {
         Self {
             plan,
             logprobs: vec![None; asked],
-            rendered_sha256: None,
+            rendered_hash: None,
             fed: 0,
             at_prefix: false,
             marked: false,
@@ -68,7 +68,7 @@ impl DecisionThen {
     fn advance(&mut self, last: Option<&[f64]>) -> Result<Want, ServiceError> {
         match self.plan.advance(last)? {
             Advance::Done(done) => {
-                self.rendered_sha256 = Some(done.rendered_sha256);
+                self.rendered_hash = Some(done.rendered_hash);
                 Ok(Want::Done)
             }
             Advance::Step(step) => {
@@ -160,6 +160,15 @@ impl Service {
     pub fn decide(&self, request: &DecisionRequest) -> Result<DecisionResponse, ServiceError> {
         let started = Instant::now();
         request.validate()?;
+        let mut objects = Self::objects_in(&request.contexts);
+        objects.extend(
+            request
+                .case_media
+                .iter()
+                .enumerate()
+                .map(|(i, o)| (format!("case_media[{i}]"), o.clone())),
+        );
+        self.reads_text_only(&objects)?;
         if request.think.is_some_and(|think| think.tokens > 0) {
             return Err(Invalid::param(
                 "think",
@@ -275,9 +284,10 @@ impl Service {
                 ),
                 described: None,
                 answers: Default::default(),
-                rendered_sha256: then
-                    .rendered_sha256
-                    .ok_or_else(|| ServiceError::internal("a read plan ended with no rendered hash"))?,
+                rendered_hash: then
+                    .rendered_hash
+                    .ok_or_else(|| ServiceError::internal("a read plan ended with no rendered hash"))
+                    .and_then(|hash| gogi_proto::ContentId::parse(hash).map_err(ServiceError::internal))?,
                 thought: None,
                 tokens: None,
                 ms: None,

@@ -456,6 +456,7 @@ impl Service {
     /// continuation: the context before the open message. Its `head` names the recipe of the open rendering, which
     /// the store never holds.
     pub fn build(&self, context: &Context, dry_run: bool, schedule: Schedule) -> Result<Built, ServiceError> {
+        self.reads_text_only(&gogi_proto::objects::objects_of(&context.messages))?;
         if context.open().is_some() && !dry_run {
             return Err(Invalid::param(
                 "continue",
@@ -517,6 +518,7 @@ impl Service {
             fed: prompt - outcome.kept as u64,
             completion: 0,
             reasoning: 0,
+            media: None,
         };
         let snapshots = if dry_run {
             Vec::new()
@@ -809,6 +811,38 @@ impl Service {
             .sum()
     }
 
+    /// Refuses the first object a request names, with a `400` that names its member (gogi "Contexts"). Each served model
+    /// of the nagaya reads text only: no family renders an object yet, so its identity declares no `media`.
+    pub(crate) fn reads_text_only(
+        &self,
+        objects: &[(String, gogi_proto::objects::ObjectRef)],
+    ) -> Result<(), ServiceError> {
+        match objects.first() {
+            None => Ok(()),
+            Some((at, object)) => Err(Invalid::param(
+                at.clone(),
+                format!(
+                    "nothing ran: {at} is {} of media type {}, and {} reads text only",
+                    object.id, object.mime, self.config.model
+                ),
+            )
+            .into()),
+        }
+    }
+
+    /// The objects of each context of a request with several, named `contexts[k].messages[i].content[j]`.
+    pub(crate) fn objects_in(contexts: &[Context]) -> Vec<(String, gogi_proto::objects::ObjectRef)> {
+        contexts
+            .iter()
+            .enumerate()
+            .flat_map(|(k, c)| {
+                gogi_proto::objects::objects_of(&c.messages)
+                    .into_iter()
+                    .map(move |(at, o)| (format!("contexts[{k}].{at}"), o))
+            })
+            .collect()
+    }
+
     /// Replace the pins of an owner (gogi "Snapshots and pins"). A snapshot that the store does not hold reports
     /// `held: false` and pins nothing. So does an interval copy. A set past `pin_bytes` pins nothing and is `too_large`.
     pub fn put_pins(&self, owner: &str, put: &PinsPut) -> Result<PinsPutResult, ServiceError> {
@@ -831,7 +865,7 @@ impl Service {
                     .filter(|content| store.entries()[content].reason != nagaya_store::Reason::Interval)
             };
             report.push(PinHeld {
-                id: text.clone(),
+                id: gogi_proto::SnapshotId::parse(text.clone()).expect("put.validate checked each id"),
                 held: content.is_some(),
             });
             if let Some(content) = content

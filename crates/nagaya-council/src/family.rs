@@ -162,8 +162,21 @@ pub struct ReadStep {
 /// What a plan gives when it is done.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReadDone {
-    /// The SHA-256 of the text that the read was conditioned on, in lowercase hexadecimal (gogi "Decisions").
-    pub rendered_sha256: String,
+    /// The content id of the text that the read was conditioned on (gogi "Decisions", `rendered_hash`).
+    pub rendered_hash: String,
+}
+
+/// The text of a message's content. A family renders text only, because each served model of the nagaya declares no
+/// media inputs, and the route refuses an object part before a family sees it (gogi `objects::check_reads`). Parts
+/// here are a defect, so the call panics instead of rendering them as empty text.
+pub fn content_text(m: &gogi_proto::Message) -> Option<&str> {
+    match &m.content {
+        None => None,
+        Some(gogi_proto::Content::Text(s)) => Some(s),
+        Some(gogi_proto::Content::Parts(_)) => {
+            panic!("a family got content parts, which the route refuses for a served model with no media inputs")
+        }
+    }
 }
 
 /// What a plan gives next.

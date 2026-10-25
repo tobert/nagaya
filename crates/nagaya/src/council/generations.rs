@@ -234,7 +234,9 @@ impl GenerateThen {
         self.finish = Some(finish);
         if let Some(open) = &self.open {
             parsed.reasoning.insert_str(0, open.reasoning.as_deref().unwrap_or(""));
-            parsed.content.insert_str(0, open.content.as_deref().unwrap_or(""));
+            parsed
+                .content
+                .insert_str(0, nagaya_council::family::content_text(open).unwrap_or(""));
         }
         let done = GenerationDone {
             finish,
@@ -421,6 +423,7 @@ fn reply_done(parsed: &ParsedReply, ids: &[String]) -> GenerationDone {
         decisions: Vec::new(),
         seed: None,
         phase: None,
+        parts: Vec::new(),
     }
 }
 
@@ -503,6 +506,17 @@ impl Service {
         events: Option<SyncSender<TokenEvent>>,
     ) -> Result<GenerationDone, ServiceError> {
         request.validate()?;
+        self.reads_text_only(&gogi_proto::objects::objects_of(&request.context.messages))?;
+        if let Some(output) = &request.output {
+            return Err(Invalid::param(
+                "output.mime",
+                format!(
+                    "nothing ran: output.mime is {}, and {} writes text only; send the generation without output",
+                    output.mime, self.config.model
+                ),
+            )
+            .into());
+        }
         if !request.decisions.is_empty() {
             return Err(Invalid::param(
                 "decisions",
@@ -615,6 +629,7 @@ impl Service {
                 fed: prompt as u64 - kept,
                 completion: reply.tokens.len() as u64,
                 reasoning: reply.reasoning,
+                media: None,
             },
             head,
             snapshots,
@@ -625,6 +640,7 @@ impl Service {
             decisions: Vec::new(),
             seed: Some(settings.seed),
             phase: reply.phase,
+            parts: Vec::new(),
         })
     }
 }

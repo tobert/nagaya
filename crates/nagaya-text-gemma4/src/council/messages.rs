@@ -55,7 +55,7 @@ pub(crate) fn tools_json(tools: &[Tool]) -> Vec<Json> {
 pub(crate) fn message_json(m: &Message) -> Json {
     let mut o = vec![("role".to_string(), text(m.role.as_str()))];
     let failed = m.is_error && m.role == Role::Tool;
-    match (&m.content, failed) {
+    match (nagaya_council::family::content_text(m), failed) {
         (Some(c), true) => o.push(("content".to_string(), Json::Str(format!("{ERROR_PREFIX}{c}")))),
         (None, true) => o.push(("content".to_string(), text(ERROR_PREFIX))),
         (Some(c), false) => o.push(("content".to_string(), text(c))),
@@ -103,7 +103,7 @@ pub(crate) fn message_strings(m: &Message) -> Vec<&str> {
         }
     }
     let mut out: Vec<&str> = Vec::new();
-    out.extend(m.content.as_deref());
+    out.extend(nagaya_council::family::content_text(m));
     out.extend(m.reasoning.as_deref());
     for call in &m.tool_calls {
         out.push(&call.name);

@@ -286,7 +286,7 @@ fn drive(plan: &mut dyn ReadPlan, likeliest: &[usize]) -> (Vec<ReadStep>, String
     let mut last: Option<Vec<f64>> = None;
     loop {
         match plan.advance(last.as_deref()).expect("the plan runs") {
-            Advance::Done(done) => return (steps, done.rendered_sha256),
+            Advance::Done(done) => return (steps, done.rendered_hash),
             Advance::Step(step) => {
                 let best = likeliest.get(steps.len()).copied().unwrap_or(0);
                 last = Some(
@@ -335,7 +335,7 @@ fn a_plain_read_has_the_layout_of_mkviolet() {
     assert_eq!(steps[0].letters, [tpl(" A")[0], tpl(" B")[0]]);
     assert_eq!(
         sha,
-        gogi_proto::canon::sha256_hex(format!("<bos>{SPEC_LAYER}{CASE_LAYER}").as_bytes())
+        gogi_proto::canon::content_id(format!("<bos>{SPEC_LAYER}{CASE_LAYER}").as_bytes())
     );
 }
 
@@ -358,7 +358,7 @@ fn a_plain_read_after_a_context_goes_on_from_it() {
     assert_eq!(text(plan.prefix()), format!("{SPEC_LAYER}{CASE_LAYER}"));
     let (_, sha) = drive(plan.as_mut(), &[]);
     let whole = format!("{}{SPEC_LAYER}{CASE_LAYER}", text(&rendering.tokens));
-    assert_eq!(sha, gogi_proto::canon::sha256_hex(whole.as_bytes()));
+    assert_eq!(sha, gogi_proto::canon::content_id(whole.as_bytes()));
     // A rendering that is not the context's is a defect of the caller.
     let mut wrong = rendering.clone();
     wrong.tokens[1] = special("<eos>");
@@ -452,7 +452,7 @@ fn a_queue_read_writes_the_next_call_in_the_form_of_the_template() {
         );
         assert_eq!(
             sha,
-            gogi_proto::canon::sha256_hex(whole.as_bytes()),
+            gogi_proto::canon::content_id(whole.as_bytes()),
             "thinking {thinking}"
         );
     }

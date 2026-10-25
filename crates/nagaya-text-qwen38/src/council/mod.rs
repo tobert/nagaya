@@ -237,19 +237,19 @@ impl Qwen38Family {
     ) -> Result<Rendered, FamilyError> {
         let mut all = before.to_vec();
         let stand_in = messages::stand_in_prefix(&all, tools).replace("system-turn", "open-text");
-        let (closed, field) = match &open.content {
+        let (closed, field) = match nagaya_council::family::content_text(open) {
             Some(content) => (
                 Message {
-                    content: Some(stand_in.clone()),
+                    content: Some(stand_in.clone().into()),
                     open: false,
                     ..open.clone()
                 },
-                content.as_str(),
+                content,
             ),
             None => (
                 Message {
                     reasoning: Some(stand_in.clone()),
-                    content: Some(String::new()),
+                    content: Some("".into()),
                     open: false,
                     ..open.clone()
                 },

@@ -64,9 +64,9 @@ impl Cursor {
         Advance::Step(step)
     }
 
-    fn done(&mut self, rendered_sha256: String) -> Advance {
+    fn done(&mut self, rendered_hash: String) -> Advance {
         self.done = true;
-        Advance::Done(ReadDone { rendered_sha256 })
+        Advance::Done(ReadDone { rendered_hash })
     }
 }
 
@@ -93,7 +93,7 @@ pub(crate) fn decision_read(family: &ToyFamily, input: &DecisionInput<'_>) -> Re
             })
             .collect();
         check_queue_schema(c, &asked)?;
-        let start = read::queue_start(c, &call.id, input.case);
+        let start = read::queue_start(c, &call.id, input.case, &[]);
         let context = &rendering.tokens[..rendering.end];
         if !start.starts_with(context) {
             return Err(FamilyError::internal(
@@ -131,7 +131,13 @@ pub(crate) fn decision_read(family: &ToyFamily, input: &DecisionInput<'_>) -> Re
     };
     // With no context the prefix holds the whole text, `<bos>` too.
     let from = if input.context.is_some() { base.len() } else { 0 };
-    let text = read::plain_text(&base, &input.spec.instructions, &input.spec.input_label, input.case);
+    let text = read::plain_text(
+        &base,
+        &input.spec.instructions,
+        &input.spec.input_label,
+        input.case,
+        &[],
+    );
     let mut prefix = text[from..].to_vec();
     family.tweak(Site::Prefix, &mut prefix);
     let mut steps = Vec::new();
@@ -143,7 +149,7 @@ pub(crate) fn decision_read(family: &ToyFamily, input: &DecisionInput<'_>) -> Re
     }
     Ok(Box::new(PlainPlan {
         prefix,
-        rendered_sha256: read::rendered_sha256(&text),
+        rendered_hash: read::rendered_hash(&text),
         steps,
         cursor: Cursor::new(),
         control_text,
@@ -189,7 +195,7 @@ fn check_asked(spec: &Spec, asked: &[Asked]) -> Result<(), FamilyError> {
 /// A read with no queue: each question is read after the same text.
 struct PlainPlan {
     prefix: Vec<u32>,
-    rendered_sha256: String,
+    rendered_hash: String,
     /// For each asked question: its tokens and its letters.
     steps: Vec<(Vec<u32>, Vec<u32>)>,
     cursor: Cursor,
@@ -208,7 +214,7 @@ impl ReadPlan for PlainPlan {
     fn advance(&mut self, last: Option<&[f64]>) -> Result<Advance, FamilyError> {
         self.cursor.accept(last)?;
         let Some((feed, letters)) = self.steps.get(self.cursor.given) else {
-            return Ok(self.cursor.done(self.rendered_sha256.clone()));
+            return Ok(self.cursor.done(self.rendered_hash.clone()));
         };
         let step = ReadStep {
             question: self.cursor.given,
@@ -267,7 +273,7 @@ impl ReadPlan for QueuePlan {
             read::queue_letter(&mut self.tokens, before.options[best]);
         }
         let Some(step) = self.steps.get(self.cursor.given) else {
-            return Ok(self.cursor.done(read::rendered_sha256(&self.tokens)));
+            return Ok(self.cursor.done(read::rendered_hash(&self.tokens)));
         };
         read::queue_question(&mut self.tokens, &step.id);
         let mut feed = self.tokens[from..].to_vec();

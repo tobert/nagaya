@@ -126,17 +126,17 @@ async fn contexts(State(council): Shared, Extension(id): Id, body: Body) -> Resp
     answer(&id, result)
 }
 
-/// The head of a dry run that finds no held head: `recipe:` and the hex of the head's recipe (spec 11.3c). No store
-/// entry has this id, so a snapshot read or a pin of it finds nothing.
+/// The head of a dry run that finds no held head: `blake3:` and the hex of the head's recipe (spec 11.3c, Proposed). No
+/// store entry has this id, so a snapshot read or a pin of it finds nothing.
 fn recipe_head(recipe: &nagaya_store::RecipeId) -> SnapshotId {
-    SnapshotId::parse(format!("recipe:{}", recipe.hex())).expect("a recipe id makes a valid snapshot id")
+    SnapshotId::parse(format!("blake3:{}", recipe.hex())).expect("a recipe id is a whole BLAKE3 hash")
 }
 
 async fn snapshot(State(council): Shared, Extension(id): Id, Path(snapshot): Path<String>) -> Response {
     let result = async {
         let home = council.home()?;
-        let snapshot = SnapshotId::parse(snapshot.clone())
-            .map_err(|_| Failure::from(ServiceError::NotFound(format!("no snapshot {snapshot} is held"))))?;
+        let snapshot = path_id(&snapshot)
+            .and_then(|_| SnapshotId::parse(snapshot.clone()).map_err(|e| Failure::from(ServiceError::internal(e))))?;
         council.call(move || home.service.snapshot(&snapshot)).await
     }
     .await;
@@ -191,8 +191,21 @@ async fn specs_list(State(council): Shared, Extension(id): Id) -> Response {
     answer(&id, result)
 }
 
+/// Checks a content id in a path: an id that is not whole is a `400` naming `id`, and the server never looks up a
+/// prefix (gogi "Content ids").
+fn path_id(id: &str) -> Result<(), Failure> {
+    match gogi_proto::content_id_problem(id) {
+        None => Ok(()),
+        Some(problem) => Err(Failure::from(ServiceError::Invalid(gogi_proto::Invalid::param(
+            "id",
+            format!("nothing was looked up: {problem}"),
+        )))),
+    }
+}
+
 async fn spec_get(State(council): Shared, Extension(id): Id, Path(spec_id): Path<String>) -> Response {
     let result = async {
+        path_id(&spec_id)?;
         let home = council.home()?;
         council.call(move || home.service.spec(&spec_id)).await
     }
@@ -202,6 +215,7 @@ async fn spec_get(State(council): Shared, Extension(id): Id, Path(spec_id): Path
 
 async fn spec_delete(State(council): Shared, Extension(id): Id, Path(spec_id): Path<String>) -> Response {
     let result = async {
+        path_id(&spec_id)?;
         let home = council.home()?;
         council.call(move || home.service.drop_spec(&spec_id)).await
     }

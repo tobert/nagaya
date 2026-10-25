@@ -173,6 +173,8 @@ impl Council {
                 choice_options: config.spec_rules.choice_options as u64,
                 questions_per_spec: Some(config.spec_rules.questions_per_spec as u64),
                 pin_bytes: pins.then_some(config.pin_bytes),
+                object_bytes: None,
+                keep_bytes: None,
             },
             capabilities: if pins {
                 vec![Capability::Pins, Capability::Classes]
@@ -202,6 +204,7 @@ impl Council {
             engine: identity.engine,
             device: served.device.clone(),
             text_stop: None,
+            media: None,
             limits: ModelLimits {
                 context_tokens: config.context_tokens as u64,
                 decision_context_tokens: config.decision_context_tokens as u64,

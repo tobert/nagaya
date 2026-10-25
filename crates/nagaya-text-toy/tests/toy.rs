@@ -242,7 +242,7 @@ fn fake_answers(
     assert_eq!(code, 200, "{d}");
     (
         d["reads"][0]["answers"].clone(),
-        d["reads"][0]["rendered_sha256"].as_str().unwrap().to_string(),
+        d["reads"][0]["rendered_hash"].as_str().unwrap().to_string(),
     )
 }
 
@@ -274,7 +274,7 @@ fn run_plan(spec_value: &Value, ctx: Option<&Value>, case: &str, asked: &[Asked]
             .collect();
         out.insert(q.id.clone(), Value::Object(map));
     }
-    (Value::Object(out), done.rendered_sha256)
+    (Value::Object(out), done.rendered_hash)
 }
 
 fn logprobs_of(answers: &Value) -> Value {
@@ -717,7 +717,7 @@ fn the_template_id_is_stable_and_has_the_form_of_spec_11_3a() {
         .unwrap();
     assert!(re(council) && re(chat), "{id}");
     // A fixed value, so that a change in the toy rendering shows in review.
-    assert_eq!(id, "nagaya-council:b4d0ab381879513e+toy-chat:2d2b4b820d4413f7");
+    assert_eq!(id, "nagaya-council:b4d0ab381879513e+toy-chat:8cd37a15493d0e2e");
 }
 
 #[test]

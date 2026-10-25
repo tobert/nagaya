@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use gogi_proto::canon::sha256_hex;
+use gogi_proto::canon::content_id;
 use gogi_proto::context::Context;
 use gogi_proto::decision::{check_queue_schema, queue_call, queue_tool};
 use gogi_proto::spec::{QuestionKind, Spec};
@@ -166,8 +166,8 @@ fn hits_of(family: &Qwen38Family, place: &str, pieces: &[String]) -> Vec<Control
     pieces.iter().flat_map(|p| family.hits(place, p)).collect()
 }
 
-fn sha_of_escaped(tokenizer: &Tokenizer, escaped: &str) -> Result<String, FamilyError> {
-    Ok(sha256_hex(tokenizer.unescape(escaped).map_err(refusal)?.as_bytes()))
+fn hash_of_escaped(tokenizer: &Tokenizer, escaped: &str) -> Result<String, FamilyError> {
+    Ok(content_id(tokenizer.unescape(escaped).map_err(refusal)?.as_bytes()))
 }
 
 // ---------------------------------------------------------------- the plan
@@ -220,9 +220,9 @@ impl Cursor {
         Advance::Step(step)
     }
 
-    fn done(&mut self, rendered_sha256: String) -> Advance {
+    fn done(&mut self, rendered_hash: String) -> Advance {
         self.done = true;
-        Advance::Done(ReadDone { rendered_sha256 })
+        Advance::Done(ReadDone { rendered_hash })
     }
 }
 
@@ -303,7 +303,7 @@ fn context_messages(input: &DecisionInput<'_>) -> (Vec<Json>, Option<Json>) {
 /// A read with no queue: each question is read after the same text.
 struct PlainPlan {
     prefix: Vec<u32>,
-    rendered_sha256: String,
+    rendered_hash: String,
     /// For each asked question: its tokens and its letters.
     steps: Vec<(Vec<u32>, Vec<u32>)>,
     cursor: Cursor,
@@ -352,7 +352,7 @@ fn plain_plan(family: &Qwen38Family, input: &DecisionInput<'_>) -> Result<Box<dy
     Ok(Box::new(PlainPlan {
         prefix,
         // gogi: the hash covers the text that the read was conditioned on. mkviolet hashes the label of the head.
-        rendered_sha256: sha_of_escaped(family.tokenizer(), &escaped)?,
+        rendered_hash: hash_of_escaped(family.tokenizer(), &escaped)?,
         steps,
         cursor: Cursor::new(),
         control_text,
@@ -371,7 +371,7 @@ impl ReadPlan for PlainPlan {
     fn advance(&mut self, last: Option<&[f64]>) -> Result<Advance, FamilyError> {
         self.cursor.accept(last)?;
         let Some((feed, letters)) = self.steps.get(self.cursor.given) else {
-            return Ok(self.cursor.done(self.rendered_sha256.clone()));
+            return Ok(self.cursor.done(self.rendered_hash.clone()));
         };
         let step = ReadStep {
             question: self.cursor.given,
@@ -527,7 +527,7 @@ impl ReadPlan for QueuePlan {
         }
         let Some(step) = self.steps.get(self.cursor.given) else {
             // The hash covers all the text the read was conditioned on, up to the last letter and its quote (gogi).
-            let sha256 = sha_of_escaped(&self.tokenizer, &self.escaped)?;
+            let sha256 = hash_of_escaped(&self.tokenizer, &self.escaped)?;
             return Ok(self.cursor.done(sha256));
         };
         self.escaped

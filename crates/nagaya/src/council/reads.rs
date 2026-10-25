@@ -101,6 +101,7 @@ impl Service {
     /// reads from the head.
     pub fn read(&self, request: &ReadsRequest) -> Result<ReadsResponse, ServiceError> {
         request.validate()?;
+        self.reads_text_only(&Self::objects_in(&request.contexts))?;
         let count = request.top.unwrap_or(DEFAULT_TOP);
         if count > MAX_TOP {
             return Err(Invalid::param("top", format!("top is {count}; a read lists at most {MAX_TOP} tokens")).into());

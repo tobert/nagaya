@@ -43,7 +43,7 @@ pub fn spec(v: &Value) -> Spec {
 pub struct Driven {
     /// For each step, the question and the letter log probabilities.
     pub steps: Vec<(usize, Vec<f64>)>,
-    pub rendered_sha256: String,
+    pub rendered_hash: String,
 }
 
 /// Run a plan on the toy model of seed `SEED`. `context_tokens` are the tokens of the context's rendering.
@@ -57,7 +57,7 @@ pub fn drive(plan: &mut dyn ReadPlan, context_tokens: &[u32]) -> Driven {
             Advance::Done(done) => {
                 return Driven {
                     steps,
-                    rendered_sha256: done.rendered_sha256,
+                    rendered_hash: done.rendered_hash,
                 };
             }
             Advance::Step(step) => {

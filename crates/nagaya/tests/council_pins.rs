@@ -74,8 +74,7 @@ fn an_unknown_snapshot_is_not_found() {
     let f = Fixture::new();
     for id in [
         format!("blake3:{}", "0".repeat(64)),
-        format!("snap:{}", "0".repeat(64)),
-        format!("blake3:{}", "f".repeat(40)),
+        format!("blake3:{}", "f".repeat(64)),
     ] {
         let id = SnapshotId::parse(id).unwrap();
         assert!(

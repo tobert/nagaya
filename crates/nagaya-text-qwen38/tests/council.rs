@@ -714,7 +714,7 @@ fn drive(plan: &mut dyn ReadPlan, likeliest: &[usize]) -> Run {
                 return Run {
                     prefix,
                     steps,
-                    sha256: done.rendered_sha256,
+                    sha256: done.rendered_hash,
                 };
             }
             Advance::Step(step) => {
@@ -745,7 +745,7 @@ fn plan_for(
 }
 
 fn sha256_text(s: &str) -> String {
-    gogi_proto::sha256_hex(s.as_bytes())
+    gogi_proto::content_id(s.as_bytes())
 }
 
 fn fixture_spec() -> Spec {

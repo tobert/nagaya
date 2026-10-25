@@ -873,9 +873,9 @@ identity. mk's id is a SHA-256 of the tokens and boundaries with `|gdn-bf16-v1|`
 - A content id is the whole 256-bit BLAKE3 hash. Its printed form is `blake3:` and 64 lowercase hex digits.
 - Each API, log, file and gossip value uses the whole printed form.
 - A display can show a short form. No input accepts one, and no input resolves a prefix.
-- A request that names a short form or a prefix is an error that names the id. gogi's contract sets its status.
-  Today the snapshot routes give 404 (`crates/nagaya/src/council/mod.rs:752`), and `ContentId::from_hex` takes
-  only 64 lowercase hex digits (`crates/nagaya-store/src/lib.rs:116`).
+- A request that names a short form or a prefix is a 400 `invalid_request`. Its `param` is `id` for a path, or the
+  member of the body. The message quotes the id (gogi "Content ids", `33b78b7`). A whole id that the server does not
+  hold is a 404.
 
 Reason for the whole form: a person copies and pastes what they see (Amy: "let's assume they will copy and paste
 something"). In a cluster that copies objects (6.15), a prefix that is unique today can name two objects tomorrow.
@@ -1204,8 +1204,9 @@ keys of 4 and 3 tokens, at most 7 drafts). Reason: drafts change no row that the
 setting must not change the identity and lose the store.
 
 **6.15 Objects.** Proposed by senpai (Claude Opus 5.5), 2026-10-25. Amy decides each rule. Reason: council requests
-will carry images, audio, video and MIDI (Amy: "I kinda want our API to be comprehensive"). gogi's contract gets
-the text of the API. This section is how the nagaya implements it.
+will carry images, audio, video and MIDI (Amy: "I kinda want our API to be comprehensive"). gogi's contract holds
+the text of the API: "Objects and keeps", "Outputs" and "Contexts" (gogi `04cf19b`, `59298a3`,
+`41c53bc`). This section is how the nagaya implements it.
 
 - **Object.** An object is bytes and a media type, named by its content id (6.2). The id is the BLAKE3 hash of the
   bytes, with no canonical form. A message, a reply or a case names an object by `{"id", "mime"}`.
@@ -1217,9 +1218,9 @@ the text of the API. This section is how the nagaya implements it.
   object while a keep on it is live.
 - **The term of a keep.** A keep lasts at most 30 days, and a client renews it. Reason: the one-day maximum of a
   pin (6.10) is for model state that the server can build again. A client cannot always make an object again.
-- **A miss.** A request that names an object that the cluster does not hold is a 404 `object_not_found` that names
-  the id. The client sends the object again. Thus the rule of the contract stays: an eviction costs a send, never a
-  wrong answer.
+- **A miss.** A request that names an object that the cluster does not hold is a 404 `not_found`. Its `param` names
+  the part, and the message quotes the id (gogi). The client sends the object again. Thus the rule of the contract
+  stays: an eviction costs a send, never a wrong answer.
 - **Home machines.** Each kept object has two home machines, by rendezvous hash of its id over the machines in gossip
   that hold a store (2.3). A machine that receives a kept object tells its homes, and each home pulls a copy.
   Gossip carries which machines hold a store, never a list of objects.
@@ -2238,7 +2239,7 @@ reply does not change the id.
   Decided by senpai 2026-10-20 night (vetoable).
 - The template keeps the reasoning of every assistant message. No marked message loses its boundary for that reason.
   Decided by senpai 2026-10-20 night (vetoable).
-- `rendered_sha256` is the SHA-256 of the text that the read was conditioned on (gogi's words). mkviolet hashes the
+- `rendered_hash` is the content id of the text that the read was conditioned on (gogi's words). mkviolet hashes the
   head's snapshot id. A plain read hashes the text through `Answer to question`, which all its questions share. A
   queue read hashes its whole text at the end: the call through the last letter that the read chose, and its closing
   quote.
@@ -3000,7 +3001,7 @@ gives the section and the rule in a few words. The lists before the last one are
 - 11.3a: a system message after another role renders as a system turn.
 - 11.3a: a marked message is a boundary, but a tool message inside a run is not.
 - 11.3a: the template keeps the reasoning of every assistant message.
-- 11.3a: `rendered_sha256` hashes the text that the read was conditioned on.
+- 11.3a: `rendered_hash` hashes the text that the read was conditioned on.
 - 11.3a: the reply parser takes the stop token as a pushed token and puts early-phase text in no step.
 - 11.3c: a dry run reports `recipe:` and the hex of the head's recipe when the store does not hold the head.
 - 11.3c: a raw read, a decision read and a generation are each one job for each context.

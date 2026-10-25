@@ -110,7 +110,7 @@ fn response(logprobs: &[Vec<Vec<f64>>], named: bool, pool: &Pool) -> DecisionRes
                 snapshot: None,
                 described: None,
                 answers,
-                rendered_sha256: "x".to_owned(),
+                rendered_hash: gogi_proto::ContentId::parse(gogi_proto::content_id(b"x")).unwrap(),
                 thought: None,
                 tokens: None,
                 ms: None,

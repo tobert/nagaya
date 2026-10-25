@@ -191,7 +191,7 @@ impl Gemma4Family {
         } else {
             ""
         };
-        let content = open.content.as_deref().unwrap_or("");
+        let content = nagaya_council::family::content_text(open).unwrap_or("");
         self.chat
             .render_open(before, tools, thinking, &[(reasoning, close), (content, "")])
             .map_err(refusal)

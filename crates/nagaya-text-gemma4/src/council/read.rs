@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 
-use gogi_proto::canon::sha256_hex;
+use gogi_proto::canon::content_id;
 use gogi_proto::context::Context;
 use gogi_proto::decision::{check_queue_schema, queue_call};
 use gogi_proto::spec::{QuestionKind, Spec};
@@ -242,9 +242,9 @@ impl Cursor {
         Advance::Step(step)
     }
 
-    fn done(&mut self, rendered_sha256: String) -> Advance {
+    fn done(&mut self, rendered_hash: String) -> Advance {
         self.done = true;
-        Advance::Done(ReadDone { rendered_sha256 })
+        Advance::Done(ReadDone { rendered_hash })
     }
 }
 
@@ -322,7 +322,7 @@ fn context_again(family: &Gemma4Family, c: &Context, rendering: &Rendering) -> R
 /// A read with no queue: each question is read after the same text.
 struct PlainPlan {
     prefix: Vec<u32>,
-    rendered_sha256: String,
+    rendered_hash: String,
     /// For each asked question: its tokens and its letters.
     steps: Vec<(Vec<u32>, Vec<u32>)>,
     cursor: Cursor,
@@ -352,7 +352,7 @@ fn plain_plan(family: &Gemma4Family, input: &DecisionInput<'_>) -> Result<Box<dy
     Ok(Box::new(PlainPlan {
         prefix: p.tokens,
         // gogi: the hash covers the text that the read was conditioned on. mkviolet hashes the id of the head.
-        rendered_sha256: sha256_hex(format!("{context_text}{}", p.text).as_bytes()),
+        rendered_hash: content_id(format!("{context_text}{}", p.text).as_bytes()),
         steps,
         cursor: Cursor::new(),
         control_text,
@@ -371,7 +371,7 @@ impl ReadPlan for PlainPlan {
     fn advance(&mut self, last: Option<&[f64]>) -> Result<Advance, FamilyError> {
         self.cursor.accept(last)?;
         let Some((feed, letters)) = self.steps.get(self.cursor.given) else {
-            return Ok(self.cursor.done(self.rendered_sha256.clone()));
+            return Ok(self.cursor.done(self.rendered_hash.clone()));
         };
         let step = ReadStep {
             question: self.cursor.given,
@@ -527,7 +527,7 @@ impl ReadPlan for QueuePlan {
         let Some(step) = self.steps.get(self.cursor.given) else {
             // gogi: the hash covers all the text the read was conditioned on, up to the last letter and its quote.
             // mkviolet hashes the text up to the call's opening brace.
-            return Ok(self.cursor.done(sha256_hex(self.text.as_bytes())));
+            return Ok(self.cursor.done(content_id(self.text.as_bytes())));
         };
         feed.extend(&step.key);
         self.text.push_str(&step.key_text);

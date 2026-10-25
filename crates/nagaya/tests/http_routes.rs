@@ -106,8 +106,10 @@ type Case<'a> = (&'a str, &'a str, Option<Value>, StatusCode, &'a str, Option<&'
 fn every_error_has_gogis_body_and_repeats_the_request_id() {
     let f = Fixture::new();
     let council = council(&f);
-    let unknown_snapshot = format!("/council/v2/snapshots/snap:{}", "0".repeat(64));
-    let unknown_spec = format!("/council/v2/specs/sha256:{}", "0".repeat(64));
+    let unknown_snapshot = format!("/council/v2/snapshots/blake3:{}", "0".repeat(64));
+    let foreign_snapshot = format!("/council/v2/snapshots/snap:{}", "0".repeat(64));
+    let unknown_spec = format!("/council/v2/specs/blake3:{}", "0".repeat(64));
+    let foreign_spec = format!("/council/v2/specs/sha256:{}", "0".repeat(64));
     let cases: Vec<Case> = vec![
         (
             "GET",
@@ -158,15 +160,32 @@ fn every_error_has_gogis_body_and_repeats_the_request_id() {
             None,
         ),
         ("GET", &unknown_snapshot, None, StatusCode::NOT_FOUND, "not_found", None),
+        // An id that is not a whole content id is a 400 naming it, never a lookup (gogi "Content ids").
         (
             "GET",
             "/council/v2/snapshots/nope",
             None,
-            StatusCode::NOT_FOUND,
-            "not_found",
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            Some("id"),
+        ),
+        (
+            "GET",
+            &foreign_snapshot,
             None,
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            Some("id"),
         ),
         ("GET", &unknown_spec, None, StatusCode::NOT_FOUND, "not_found", None),
+        (
+            "GET",
+            &foreign_spec,
+            None,
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            Some("id"),
+        ),
         (
             "GET",
             "/council/v2/pins/nobody",
@@ -216,7 +235,12 @@ fn a_build_routes_by_alias_and_a_dry_run_with_no_held_head_names_its_recipe() {
     );
     assert_eq!(status, StatusCode::OK, "{dry}");
     assert_eq!(dry["model"], "toy");
-    assert!(dry["head"].as_str().unwrap().starts_with("recipe:"), "{dry}");
+    // A head that the store does not hold is the recipe under the blake3 scheme (spec 11.3c, Proposed).
+    let head = dry["head"].as_str().unwrap();
+    assert!(
+        gogi_proto::content_id_problem(head).is_none() && dry["dry_run"] == true,
+        "{dry}"
+    );
     let (_, _, built) = send(
         &council,
         "POST",
@@ -584,7 +608,7 @@ fn a_continue_that_is_not_a_boolean_is_a_400_that_names_continue() {
         .as_array_mut()
         .unwrap()
         .push(json!({"role": "assistant", "content": "Plan:", "continue": "yes"}));
-    let spec = format!("sha256:{}", "0".repeat(64));
+    let spec = format!("blake3:{}", "0".repeat(64));
     for (path, body) in [
         (
             "/council/v2/generations",
@@ -615,7 +639,7 @@ fn a_decision_context_whose_queue_names_no_tool_is_a_400() {
     let council = council(&f);
     let mut queued = context();
     queued["queue"] = json!("next_command");
-    let body = json!({"model": "toy", "spec_id": format!("sha256:{}", "0".repeat(64)), "case": "x",
+    let body = json!({"model": "toy", "spec_id": format!("blake3:{}", "0".repeat(64)), "case": "x",
         "contexts": [queued]});
     let (status, _, value) = send(&council, "POST", "/council/v2/decisions", Some(body));
     assert_eq!(status, StatusCode::BAD_REQUEST, "{value}");

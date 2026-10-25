@@ -72,7 +72,7 @@ fn decide(f: &Fixture, contexts: &[Value], extra: Value) -> DecisionResponse {
 struct Run {
     /// The letter log probabilities of each asked question, in order.
     letters: Vec<Vec<f64>>,
-    rendered_sha256: String,
+    rendered_hash: String,
     /// The tokens of the context, the prefix once, and each step.
     tokens: usize,
 }
@@ -115,7 +115,7 @@ fn direct(value: Option<&Value>, case: &str, ask: Option<&[String]>) -> Run {
             Advance::Done(done) => {
                 return Run {
                     letters: out,
-                    rendered_sha256: done.rendered_sha256,
+                    rendered_hash: done.rendered_hash,
                     tokens,
                 };
             }
@@ -180,7 +180,7 @@ fn a_plain_decision_gives_the_numbers_of_a_direct_run_and_obeys_the_exact_relati
             run.letters,
             "read {i}: each question after the same prefix, bit for bit"
         );
-        assert_eq!(r.reads[i].rendered_sha256, run.rendered_sha256);
+        assert_eq!(r.reads[i].rendered_hash.as_str(), run.rendered_hash);
         tokens += run.tokens as u64;
         assert_eq!(r.reads[i].context, Some(i as u64));
         let built = f.service.build(&context(value), false, Default::default()).unwrap();
@@ -194,7 +194,8 @@ fn a_plain_decision_gives_the_numbers_of_a_direct_run_and_obeys_the_exact_relati
             kept: 0,
             fed: tokens,
             completion: 0,
-            reasoning: 0
+            reasoning: 0,
+            media: None
         }
     );
     assert_eq!(r.answers.keys().collect::<Vec<_>>(), ["verdict", "undo", "fine"]);
@@ -210,7 +211,7 @@ fn a_queue_decision_reads_each_question_after_the_letters_before_it() {
     math::verify(&r, &request(&held(&f), &contexts, json!({})).expect()).unwrap();
     let run = direct(Some(&contexts[0]), "rm -rf build", None);
     assert_eq!(raw(&r)[0], run.letters);
-    assert_eq!(r.reads[0].rendered_sha256, run.rendered_sha256);
+    assert_eq!(r.reads[0].rendered_hash.as_str(), run.rendered_hash);
     assert_eq!(r.usage.fed, run.tokens as u64);
 }
 
@@ -303,9 +304,9 @@ fn usage_signals_and_hashes_match_gogi_fake_for_the_same_requests() {
             .as_array()
             .unwrap()
             .iter()
-            .map(|r| r["rendered_sha256"].as_str().unwrap())
+            .map(|r| r["rendered_hash"].as_str().unwrap())
             .collect();
-        let ours: Vec<&str> = got.reads.iter().map(|r| r.rendered_sha256.as_str()).collect();
+        let ours: Vec<&str> = got.reads.iter().map(|r| r.rendered_hash.as_str()).collect();
         // A queue read writes the likeliest letters into its text, and the two models give other letters. The
         // direct run checks the hash of a queue read.
         if !queue {
@@ -346,7 +347,7 @@ fn each_refused_decision_names_its_field_and_reads_nothing() {
         invalid_param(f.service.decide(&request(&id, &mixed, json!({})))),
         "contexts"
     );
-    let unknown = format!("sha256:{}", "0".repeat(64));
+    let unknown = format!("blake3:{}", "0".repeat(64));
     assert!(matches!(
         f.service.decide(&request(&unknown, &one, json!({}))),
         Err(ServiceError::NotFound(_))
