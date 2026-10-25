@@ -2849,6 +2849,16 @@ its escapes; the speech route has none in v0.
 
 A boundary can follow the voice design and each message, by `snap: true`. The end of the context is a boundary.
 
+**Each message ends a recipe.** Proposed by senpai (Claude Opus 5.5), 2026-10-25.
+
+- The recipe of a speech context chains at the end of each message, not only at a boundary. A position count ends it.
+- `snap: true` marks where a build holds a snapshot. A lookup tries the end of each message before the last line.
+- The head of a generation is at the end of the reply. The next context has the reply as a message, so its end has
+  the same recipe.
+
+Reason: a text build finds the head of a reply through the seals of its chain (11.3c). A speech context needs none
+of that machinery, because each message end is in the chain.
+
 **The codes of an output.** Proposed by senpai (Claude Opus 5.5), 2026-10-25.
 
 - The audio of a line is a WAV, but the model state needs its codes. The service keeps the codes of each output that
