@@ -79,7 +79,7 @@ impl<'a> SafeTensorsView<'a> {
             );
         }
         let mut json = serde_json::Value::Object(header).to_string();
-        while json.len() % 8 != 0 {
+        while !json.len().is_multiple_of(8) {
             json.push(' ');
         }
         let mut out = Vec::with_capacity(8 + json.len() + current_offset);
