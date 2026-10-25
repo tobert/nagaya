@@ -2,7 +2,8 @@
 //! (spec 2.4), so it runs with no card.
 
 use nagaya_abi::{
-    Capability, ChainLimits, Determinism, Inputs, Kind, Lifetime, Limits, MandatoryTerm, MemoryLimits, SlotLimit, Tier,
+    Capability, ChainLimits, Determinism, Dtype, Inputs, Kind, Lifetime, Limits, MandatoryTerm, MemoryLimits, PartKind,
+    PartLimits, SlotLimit, Tier,
 };
 use nagaya_mk_bmg::protocol::MAX_TASKS_PER_CARD;
 use nagaya_mk_bmg::safetensors::MappedSafeTensors;
@@ -89,8 +90,21 @@ pub fn limits(config: &Config, weights: u64) -> Limits {
     ];
     Limits {
         // A drop frees the weights, the slots and the card's context.
-        capabilities: vec![Capability::Speech, Capability::Close],
-        parts: Vec::new(),
+        capabilities: vec![
+            Capability::Speech,
+            Capability::Close,
+            Capability::Parts,
+            Capability::Slots,
+        ],
+        // The talker KV of each position: the held state of a speech context (engine-abi "Held speech state").
+        parts: vec![PartLimits {
+            name: "talker_kv".to_owned(),
+            kind: PartKind::Cells,
+            dtype: Dtype::F32,
+            shape: vec![LAYERS as u64, 2, KV_HEADS as u64, HEAD_DIM as u64],
+            block_format: None,
+            stage: 0,
+        }],
         inputs: Inputs::Tokens,
         devices: vec![0],
         stages: Vec::new(),

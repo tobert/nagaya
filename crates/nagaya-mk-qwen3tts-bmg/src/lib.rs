@@ -13,6 +13,6 @@ pub mod spec;
 pub mod weights;
 
 #[cfg(feature = "xe")]
-pub use engine::{Forced, Qwen3TtsEngine};
+pub use engine::{Forced, KV_ROW_BYTES, Qwen3TtsEngine};
 pub use plan::plan;
 pub use spec::Config;

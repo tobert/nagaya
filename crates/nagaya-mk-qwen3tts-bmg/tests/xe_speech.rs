@@ -152,11 +152,11 @@ fn a_refusal_names_the_rule_and_changes_nothing() {
     };
     assert!(refused(begin(&mut *engine, 0, &p, &cold)).contains("temperature 0"));
     assert!(refused(engine.speech_frames(0, 4).map(|_| ())).contains("holds no request"));
-    // A busy slot refuses a second request, and its own request goes on as if nothing came.
+    // A slot whose line has not ended refuses a feed, and its own line goes on as if nothing came.
     let alone = joined(&speak(&mut engine, 0, 11, QUANTUM));
     begin(&mut *engine, 0, &p, &sampler(11)).unwrap();
     let mut quanta = vec![engine.speech_frames(0, QUANTUM).unwrap()];
-    assert!(refused(begin(&mut *engine, 0, &p, &sampler(12))).contains("holds a request"));
+    assert!(refused(begin(&mut *engine, 0, &p, &sampler(12))).contains("has not ended"));
     while !quanta.last().unwrap().end {
         quanta.push(engine.speech_frames(0, QUANTUM).unwrap());
     }

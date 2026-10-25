@@ -6,7 +6,7 @@
 //! `Qwen3TTSTokenizerV2Decoder.forward`. The codec decodes in quanta and keeps the state of each causal layer, so the
 //! audio of the quanta equals the audio of one decode of every frame.
 
-use nagaya_abi::PromptPair;
+use nagaya_abi::{PromptPair, SpeechPosition};
 use nagaya_mk_bmg::protocol::{MkTaskDescriptor, NO_EVENT};
 use nagaya_mk_bmg::tasks as t;
 
@@ -17,6 +17,10 @@ use crate::weights::{Layer, Weights};
 pub struct Work {
     pub ids_text: u64,
     pub ids_codec: u64,
+    /// The ids of codebooks 1 to 15 of a feed's frame positions, `[15][max_prompt]` u32: `NO_EVENT` for a pair.
+    pub ids_cp: u64,
+    /// The id of `tts_pad` of each position of a feed: 0 for a frame, `NO_EVENT` for a pair.
+    pub ids_pad: u64,
     pub x: u64,
     pub nrm: u64,
     pub q: u64,
@@ -124,13 +128,20 @@ impl Work {
         Self {
             ids_text: z(p * 4),
             ids_codec: z(p * 4),
+            ids_cp: z((CODEBOOKS - 1) * p * 4),
+            ids_pad: z(p * 4),
             x: z(f(p * HIDDEN)),
             nrm: z(f(p * HIDDEN)),
             q: z(f(p * HEADS * HEAD_DIM)),
             att: z(f(p * HEADS * HEAD_DIM)),
             mlp: z(f(p * INTER)),
             tmp: z(f(p * HIDDEN)),
-            scores: z(f(t::score_floats(HEADS as u32, config.max_prompt, 0))),
+            // A feed after held state attends to every row before it.
+            scores: z(f(t::score_floats(
+                HEADS as u32,
+                config.max_prompt,
+                config.max_positions(),
+            ))),
             logits: z(f(CODEC_VOCAB)),
             cp_logits: z(f((CODEBOOKS - 1) * CP_VOCAB)),
             cpx: z(f(CODEBOOKS * CP_HIDDEN)),
@@ -409,6 +420,97 @@ pub fn prompt_rows(wt: &Weights, work: &Work, n: usize) -> Tasks {
     out.push(t::bias(wt.fc2_b, work.x, n32, h, false));
     out.push(t::mask_rows(work.ids_text, work.x, n32, h));
     out.push(t::embed(work.ids_codec, wt.codec_embed, work.x, n32, h, 1, false, true));
+    out
+}
+
+/// The ids of a feed for the card: `[text][codec][cp 1..15][pad]`, each `max_prompt` u32. A frame position has no
+/// text id, its code 0 as the codec id, its codes 1 to 15, and the `tts_pad` row; a pair has no code and no pad.
+pub fn feed_ids(positions: &[SpeechPosition], max_prompt: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
+    let mut text = Vec::with_capacity(positions.len() * 4);
+    let mut codec = Vec::with_capacity(positions.len() * 4);
+    let mut cp = vec![NO_EVENT; (CODEBOOKS - 1) * max_prompt];
+    let mut pad = Vec::with_capacity(positions.len() * 4);
+    for (i, p) in positions.iter().enumerate() {
+        match p {
+            SpeechPosition::Pair(pair) => {
+                text.extend(pair.text.unwrap_or(NO_EVENT).to_le_bytes());
+                codec.extend(pair.codec.unwrap_or(NO_EVENT).to_le_bytes());
+                pad.extend(NO_EVENT.to_le_bytes());
+            }
+            SpeechPosition::Frame(codes) => {
+                text.extend(NO_EVENT.to_le_bytes());
+                codec.extend(codes[0].to_le_bytes());
+                for g in 1..CODEBOOKS {
+                    cp[(g - 1) * max_prompt + i] = codes[g];
+                }
+                pad.extend(0u32.to_le_bytes());
+            }
+        }
+    }
+    let cp = cp.iter().flat_map(|id| id.to_le_bytes()).collect();
+    (text, codec, cp, pad)
+}
+
+/// The rows of `n` feed positions into `work.x`: the rows of the pairs as `prompt_rows` makes them, and for each
+/// frame position the sum of its 16 code embeddings and the trailing text `tts_pad`, as `frame` feeds a frame.
+pub fn feed_rows(wt: &Weights, work: &Work, config: &Config, n: usize) -> Tasks {
+    let mut out = prompt_rows(wt, work, n);
+    let (n32, h) = (n as u32, HIDDEN as u32);
+    let p = config.max_prompt as u64;
+    for g in 1..CODEBOOKS {
+        out.push(t::embed(
+            work.ids_cp + (g as u64 - 1) * p * 4,
+            wt.cp_embeds[g - 1],
+            work.x,
+            n32,
+            h,
+            1,
+            false,
+            true,
+        ));
+    }
+    out.push(t::embed(work.ids_pad, work.pad_row, work.x, n32, h, 1, true, true));
+    out
+}
+
+/// A feed of `n` positions at rows `p0..` of the slot's KV, whose ids are in place (`feed_ids`). With `sampling`, it
+/// ends with the talker's logits of a new line's first codebook 0 and its sample.
+pub fn feed(
+    wt: &Weights,
+    work: &Work,
+    slot: &Slot,
+    config: &Config,
+    p0: usize,
+    n: usize,
+    sampling: Option<Sampling>,
+) -> Tasks {
+    let mut out = feed_rows(wt, work, config, n);
+    let b = Bufs {
+        x: work.x,
+        nrm: work.nrm,
+        q: work.q,
+        att: work.att,
+        mlp: work.mlp,
+        scores: work.scores,
+    };
+    let max_seq = config.max_positions() as usize;
+    let plane = 2 * max_seq * KV_HEADS * HEAD_DIM;
+    for (l, w) in wt.layers.iter().enumerate() {
+        qwen3_layer(
+            &mut out,
+            w,
+            &b,
+            slot.kv + (l * plane * 4) as u64,
+            max_seq,
+            n,
+            p0,
+            HIDDEN,
+            INTER,
+        );
+    }
+    if sampling.is_some() {
+        talker_head(&mut out, wt, work, slot, row(work.x, n - 1, HIDDEN), 0, sampling);
+    }
     out
 }
 
@@ -1065,4 +1167,44 @@ pub fn codec(wt: &Weights, work: &Work, slot: &Slot, config: &Config, first: usi
 pub fn sampler_state(seed: u64) -> Vec<u8> {
     let words = [seed as u32, (seed >> 32) as u32, 0, 0];
     words.iter().flat_map(|w| w.to_le_bytes()).collect()
+}
+
+#[cfg(test)]
+mod feed_tests {
+    use super::*;
+
+    fn words(bytes: &[u8]) -> Vec<u32> {
+        bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| u32::from_le_bytes(*b))
+            .collect()
+    }
+
+    #[test]
+    fn a_feed_puts_a_pair_and_a_frame_in_their_id_buffers() {
+        let pair = SpeechPosition::Pair(PromptPair {
+            text: Some(7),
+            codec: None,
+        });
+        let frame = SpeechPosition::Frame((100..116).collect());
+        let (text, codec, cp, pad) = feed_ids(&[pair, frame], 4);
+        assert_eq!(words(&text), [7, NO_EVENT]);
+        assert_eq!(words(&codec), [NO_EVENT, 100], "a frame's code 0 is its codec id");
+        assert_eq!(words(&pad), [NO_EVENT, 0], "only a frame takes the tts_pad row");
+        let cp = words(&cp);
+        assert_eq!(cp.len(), (CODEBOOKS - 1) * 4);
+        for g in 1..CODEBOOKS {
+            assert_eq!(
+                cp[(g - 1) * 4..(g - 1) * 4 + 2],
+                [NO_EVENT, 100 + g as u32],
+                "codebook {g}"
+            );
+            assert!(
+                cp[(g - 1) * 4 + 2..g * 4].iter().all(|&id| id == NO_EVENT),
+                "the rest of codebook {g} is empty"
+            );
+        }
+    }
 }

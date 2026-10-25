@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use nagaya_abi::{
-    Engine, Identity, Limits, PassError, PassErrorKind, PassOut, PromptPair, Segment, SlotId, Speech, SpeechOut,
-    SpeechPosition, SpeechSampler, Tap,
+    Engine, Identity, Limits, PartError, PartId, Parts, PassError, PassErrorKind, PassOut, PromptPair, Segment, SlotId,
+    Slots, Speech, SpeechOut, SpeechPosition, SpeechSampler, State, Tap, WriteResult,
 };
 use nagaya_mk_bmg::level_zero::{B70Card, L0Cluster};
 use nagaya_mk_bmg::ring::Ring;
@@ -57,6 +57,8 @@ pub struct Qwen3TtsEngine {
     weights: Weights,
     work: Work,
     slots: Vec<(Slot, Option<Request>)>,
+    /// The rows of the talker KV that each slot holds while it has no line: after a restore (`set_n`).
+    held: Vec<usize>,
 }
 
 // The engine holds USM pointers of its card, and one thread at a time calls it.
@@ -158,7 +160,7 @@ impl Qwen3TtsEngine {
         )?;
         let mut alloc = |bytes: usize| device.zeros(card, bytes);
         let work = Work::new(&mut alloc, &config);
-        let slots = (0..config.slots)
+        let slots: Vec<(Slot, Option<Request>)> = (0..config.slots)
             .map(|_| (Slot::new(&mut alloc, &config), None))
             .collect();
         device.write(card, work.pad_id, &TTS_PAD.to_le_bytes());
@@ -198,6 +200,7 @@ impl Qwen3TtsEngine {
             device,
             weights,
             work,
+            held: vec![0; slots.len()],
             slots,
         };
         engine.run(model::pad_row(&engine.weights, &engine.work));
@@ -251,6 +254,48 @@ impl Qwen3TtsEngine {
         self.device.write(self.card(), self.work.ids_text, &text);
         self.device.write(self.card(), self.work.ids_codec, &codec);
         Ok(())
+    }
+
+    /// The rows of the talker KV that slot `index` holds: a line's prompt and fed frames, or the rows of a restore.
+    fn rows(&self, index: usize) -> usize {
+        match self.slots[index].1 {
+            Some(line) => line.prompt + line.frames,
+            None => self.held[index],
+        }
+    }
+
+    /// Check the ids of feed positions against the vocabularies.
+    fn check_positions(&self, positions: &[SpeechPosition]) -> Result<(), PassError> {
+        if positions.is_empty() {
+            return Err(refused("the feed has 0 positions; give at least one".to_owned()));
+        }
+        for (at, p) in positions.iter().enumerate() {
+            let fits = match p {
+                SpeechPosition::Pair(pair) => {
+                    !pair.text.is_some_and(|id| id as usize >= TEXT_VOCAB)
+                        && !pair.codec.is_some_and(|id| id as usize >= CODEC_VOCAB)
+                }
+                SpeechPosition::Frame(codes) => {
+                    codes.len() == CODEBOOKS
+                        && (codes[0] as usize) < CODEC_VOCAB
+                        && codes[1..].iter().all(|&c| (c as usize) < CP_VOCAB)
+                }
+            };
+            if !fits {
+                return Err(refused(format!(
+                    "feed position {at} is {p:?}, outside the vocabularies of {TEXT_VOCAB} text ids, {CODEC_VOCAB} \
+                     codec ids and {CP_VOCAB} codes, or not {CODEBOOKS} codes"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// The device address of layer `l`'s K (`kv` 0) or V (`kv` 1) row `r` in a slot's KV.
+    fn kv_row(&self, index: usize, l: usize, kv: usize, r: usize) -> u64 {
+        let max_seq = self.config.max_positions() as usize;
+        let kvd = KV_HEADS * HEAD_DIM;
+        self.slots[index].0.kv + (((l * 2 + kv) * max_seq + r) * kvd * 4) as u64
     }
 
     fn slot_index(&self, slot: SlotId) -> Result<usize, PassError> {
@@ -346,22 +391,11 @@ impl Speech for Qwen3TtsEngine {
         sampler: &SpeechSampler,
     ) -> Result<(), PassError> {
         let index = self.slot_index(slot)?;
-        if self.slots[index].1.is_some() {
+        if self.slots[index].1.is_some_and(|line| !line.end) {
             return Err(refused(format!(
-                "slot {slot} holds a request, and this engine does not feed after the state of a slot yet; clear it \
-                 before a new one"
+                "slot {slot} speaks a line that has not ended; make its frames to the end, or clear the slot"
             )));
         }
-        let prompt: Vec<PromptPair> = positions
-            .iter()
-            .map(|p| match p {
-                SpeechPosition::Pair(pair) => Ok(*pair),
-                SpeechPosition::Frame(_) => Err(refused(
-                    "this engine does not feed frame positions yet; send a prompt of text and codec pairs".to_owned(),
-                )),
-            })
-            .collect::<Result<_, _>>()?;
-        let prompt = prompt.as_slice();
         if !(sampler.temperature > 0.0 && sampler.temperature.is_finite())
             || !(sampler.repetition_penalty > 0.0 && sampler.repetition_penalty.is_finite())
         {
@@ -370,7 +404,16 @@ impl Speech for Qwen3TtsEngine {
                 sampler.temperature, sampler.repetition_penalty
             )));
         }
-        self.put_prompt(prompt)?;
+        self.check_positions(positions)?;
+        let base = self.rows(index);
+        let room = self.config.max_positions() as usize;
+        if base + positions.len() >= room {
+            return Err(refused(format!(
+                "slot {slot} holds {base} positions, and {} more leave no room for a frame in its {room}; start a \
+                 shorter context",
+                positions.len()
+            )));
+        }
         let s = &self.slots[index].0;
         let state = model::sampler_state(sampler.seed);
         self.device.write(self.card(), s.state, &state);
@@ -385,11 +428,34 @@ impl Speech for Qwen3TtsEngine {
             top_k: sampler.top_k,
             penalty: sampler.repetition_penalty,
         };
-        let tasks = model::prefill(&self.weights, &self.work, s, &self.config, prompt.len(), Some(sampling));
-        self.run(tasks);
+        // A feed longer than the work buffers runs in chunks. The last chunk samples codebook 0 of the line's first
+        // frame.
+        let chunk = self.config.max_prompt as usize;
+        let mut at = base;
+        let count = positions.len().div_ceil(chunk);
+        for (k, part) in positions.chunks(chunk).enumerate() {
+            let (text, codec, cp, pad) = model::feed_ids(part, chunk);
+            self.device.write(self.card(), self.work.ids_text, &text);
+            self.device.write(self.card(), self.work.ids_codec, &codec);
+            self.device.write(self.card(), self.work.ids_cp, &cp);
+            self.device.write(self.card(), self.work.ids_pad, &pad);
+            let sample = (k + 1 == count).then_some(sampling);
+            let tasks = model::feed(
+                &self.weights,
+                &self.work,
+                &self.slots[index].0,
+                &self.config,
+                at,
+                part.len(),
+                sample,
+            );
+            self.run(tasks);
+            at += part.len();
+        }
         let first = self.read_u32(self.slots[index].0.code(0, 0), 1)[0];
+        self.held[index] = 0;
         self.slots[index].1 = Some(Request {
-            prompt: prompt.len(),
+            prompt: at,
             frames: 0,
             decoded: 0,
             sampling,
@@ -403,7 +469,9 @@ impl Speech for Qwen3TtsEngine {
         let Some(mut request) = self.slots[index].1 else {
             return Err(refused(format!("slot {slot} holds no request; begin one first")));
         };
-        let room = self.config.max_frames as usize - request.frames;
+        // Frame f writes its input at row `prompt + f`, so the rows of the slot bound a line too.
+        let positions_left = self.config.max_positions() as usize - (request.prompt + request.frames);
+        let room = (self.config.max_frames as usize - request.frames).min(positions_left);
         let want = (max.min(self.config.frames_per_quantum) as usize).min(room);
         let first = request.frames;
         while !request.end && request.frames < first + want {
@@ -420,7 +488,9 @@ impl Speech for Qwen3TtsEngine {
             request.frames += 1;
             let next = self.read_u32(self.slots[index].0.code(request.frames, 0), 1)[0];
             // A request ends at end-of-speech, or when it has no room for another frame.
-            request.end = next == CODEC_EOS || request.frames == self.config.max_frames as usize;
+            request.end = next == CODEC_EOS
+                || request.frames == self.config.max_frames as usize
+                || request.prompt + request.frames + 1 >= self.config.max_positions() as usize;
         }
         let n = request.frames - first;
         let mut out = SpeechOut {
@@ -444,7 +514,100 @@ impl Speech for Qwen3TtsEngine {
     fn speech_clear(&mut self, slot: SlotId) {
         if let Some((_, request)) = self.slots.get_mut(slot as usize) {
             *request = None;
+            self.held[slot as usize] = 0;
         }
+    }
+}
+
+/// The bytes of one row of the cells part `talker_kv`: the K and V of every layer at one position.
+pub const KV_ROW_BYTES: usize = LAYERS * 2 * KV_HEADS * HEAD_DIM * 4;
+
+impl Parts for Qwen3TtsEngine {
+    fn part_read(&mut self, _state: State, _part: PartId, _out: &mut [u8]) -> Result<(), PartError> {
+        // The engine's only part is a cells part.
+        Err(PartError::Refused)
+    }
+
+    fn part_write(&mut self, _state: State, _part: PartId, _bytes: &[u8]) -> WriteResult {
+        WriteResult::Refused
+    }
+
+    /// Rows `from..from + n` of `talker_kv`: for each row, the K and V of each layer, as `[layer][k, v][head][dim]`.
+    fn cells_read(&mut self, state: State, part: PartId, from: u64, n: u64, out: &mut [u8]) -> Result<(), PartError> {
+        let State::Slot(slot) = state;
+        let (from, n) = (from as usize, n as usize);
+        let Ok(index) = self.slot_index(slot) else {
+            return Err(PartError::Refused);
+        };
+        if part != 0 || from + n > self.rows(index) || out.len() != n * KV_ROW_BYTES {
+            return Err(PartError::Refused);
+        }
+        let kvd = KV_HEADS * HEAD_DIM * 4;
+        for l in 0..LAYERS {
+            for kv in 0..2 {
+                let plane = self.device.read(self.card(), self.kv_row(index, l, kv, from), n * kvd);
+                for r in 0..n {
+                    let at = r * KV_ROW_BYTES + (l * 2 + kv) * kvd;
+                    out[at..at + kvd].copy_from_slice(&plane[r * kvd..(r + 1) * kvd]);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Write rows of `talker_kv` into a slot with no line, as a restore does (6.8).
+    fn cells_write(&mut self, state: State, part: PartId, from: u64, n: u64, bytes: &[u8]) -> WriteResult {
+        let State::Slot(slot) = state;
+        let (from, n) = (from as usize, n as usize);
+        let Ok(index) = self.slot_index(slot) else {
+            return WriteResult::Refused;
+        };
+        if part != 0
+            || self.slots[index].1.is_some()
+            || from + n > self.config.max_positions() as usize
+            || bytes.len() != n * KV_ROW_BYTES
+        {
+            return WriteResult::Refused;
+        }
+        let kvd = KV_HEADS * HEAD_DIM * 4;
+        for l in 0..LAYERS {
+            for kv in 0..2 {
+                let mut plane = vec![0u8; n * kvd];
+                for r in 0..n {
+                    let at = r * KV_ROW_BYTES + (l * 2 + kv) * kvd;
+                    plane[r * kvd..(r + 1) * kvd].copy_from_slice(&bytes[at..at + kvd]);
+                }
+                self.device.write(self.card(), self.kv_row(index, l, kv, from), &plane);
+            }
+        }
+        WriteResult::Ok
+    }
+
+    /// Set the rows that a slot with no line holds, after a write of its cells.
+    fn set_n(&mut self, state: State, n: u64) -> WriteResult {
+        let State::Slot(slot) = state;
+        let Ok(index) = self.slot_index(slot) else {
+            return WriteResult::Refused;
+        };
+        if self.slots[index].1.is_some() || n as usize >= self.config.max_positions() as usize {
+            return WriteResult::Refused;
+        }
+        self.held[index] = n as usize;
+        WriteResult::Ok
+    }
+}
+
+impl Slots for Qwen3TtsEngine {
+    fn slot_high(&self, slot: SlotId) -> u64 {
+        self.slot_index(slot).map_or(0, |index| self.rows(index) as u64)
+    }
+
+    fn slot_clear(&mut self, slot: SlotId) -> WriteResult {
+        if self.slot_index(slot).is_err() {
+            return WriteResult::Refused;
+        }
+        self.speech_clear(slot);
+        WriteResult::Ok
     }
 }
 
@@ -469,6 +632,14 @@ impl Engine for Qwen3TtsEngine {
     }
 
     fn speech(&mut self) -> Option<&mut dyn Speech> {
+        Some(self)
+    }
+
+    fn parts(&mut self) -> Option<&mut dyn Parts> {
+        Some(self)
+    }
+
+    fn slots(&mut self) -> Option<&mut dyn Slots> {
         Some(self)
     }
 }
