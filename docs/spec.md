@@ -2810,6 +2810,60 @@ reference as it runs. Of 28 fixture texts, only text in camel case gave other id
 The family keeps text that spells a special token as that token, as the reference does. Spec 11.3 gives each family
 its escapes; the speech route has none in v0.
 
+**11.8a Speech in the council API.** Amy decided these rules on 2026-10-25, by interview (M18 step 2).
+
+- A speech engine is a council served model too. A generation with an `output` of `audio/wav` speaks a line, and the
+  route `/v1/audio/speech` stays for clients in OpenAI's shape.
+- A speech context renders its input as it is, and the generation speaks the most recent message. Amy: "I think a
+  tts context would take the exact input and render it ... just process most recent".
+- A speech context holds state as a chat holds it: a snapshot of the voice, and the head after each spoken line. The
+  next line then continues with the audio before it in the model state. Amy: "Level 2 sounds awesome tbh perfect
+  display of something council + nagaya can do".
+- The frame is built whether or not Qwen3-TTS keeps its voice better with it. Amy: "I think the frame is right even
+  if qwen doesn't adapt right away. Maybe we can tune it later." A later model may use it better.
+
+**The speech context.** Proposed by senpai (Claude Opus 5.5), 2026-10-25. Amy decides each rule.
+
+- The `system` message is the voice design: the text that `generate_voice_design` takes as `instruct`, such as the
+  ship AI of `~/tts-proto`. A context has one `system` message, first, or none.
+- Each `user` message is a line to speak, rendered as it is.
+- An `assistant` message after a line holds that line's audio: an object part of `audio/wav` that this served model
+  wrote. Its text, when it has some, is not rendered.
+- The last message is a `user` line. A generation speaks it, with `output` of `audio/wav`. Any other last message is
+  a 400 that names `messages`.
+- `language` is `output.options.language`, `auto` by default. The seed is `sample.seed`. The sampler is the
+  checkpoint's, as in 11.8.
+
+**The rendering of a speech context.** Proposed by senpai (Claude Opus 5.5), 2026-10-25.
+
+1. The voice design: `<|im_start|>user\n{system}<|im_end|>\n`, text positions only.
+2. For each line: the assistant role, the codec prefill of its language, its text with the codec pad, `tts_eos`, and
+   `tts_pad` with the codec bos. These are the positions of one request today (`nagaya-text-qwen3tts`).
+3. After a line with audio: one frame position for each frame of the audio, then the frame of the codec end. A frame
+   position is the 16 codes of the frame and the trailing text `tts_pad`, as the engine feeds a frame that it made.
+
+A boundary can follow the voice design and each message, by `snap: true`. The end of the context is a boundary.
+
+**The codes of an output.** Proposed by senpai (Claude Opus 5.5), 2026-10-25.
+
+- The audio of a line is a WAV, but the model state needs its codes. The service keeps the codes of each output that
+  it wrote, beside the object, under its content id.
+- An `assistant` part names an output of this served model. An audio object that it did not write is a 400 that
+  names the part. Reason: the engine has no codec encoder, so it cannot make codes from audio.
+- An eviction can drop the codes of an output. The server then answers as for an object that it does not hold: a 404
+  that names the part. The client speaks that line again.
+
+**The held state of a speech context.** Proposed by senpai (Claude Opus 5.5), 2026-10-25.
+
+- A speech snapshot holds the talker KV of each position and the history of codebook 0. It also holds the codes of
+  the codec's left context. Each is a part of the snapshot (D10), so the store keeps it as any snapshot.
+- The recipe of a speech context hashes its positions as the recipe of a text context hashes its tokens (6.2). A text
+  position is its text id and its codec id; a frame position is its 16 codes.
+- A generation holds its head after the line's frames, so the next line feeds only its own positions. Pins keep a
+  voice, as they keep a chat.
+- The random value of a code depends on the seed, the frame within its line, and the codebook (11.2). Thus the same
+  context and seed give the same codes, held or fed.
+
 ## 12. Identity
 
 **12.1 Fields.** An engine identity has the fields of `identity()` in the ABI:

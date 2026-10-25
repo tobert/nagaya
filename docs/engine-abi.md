@@ -1017,12 +1017,33 @@ speech_clear(slot)                                frees the state of the slot
   decoder keeps the codes of the last frames of the slot as its left context. Thus the audio of each quantum joins the
   audio before it.
 - **State.** A slot holds the KV of the talker and the history of codebook 0 for the repetition penalty. It also holds
-  the counter of the random stream and the codes of the left context. The store keeps no speech state. A request
-  starts with an empty slot, and `speech_clear` ends it.
+  the counter of the random stream and the codes of the left context. Until M18, the store kept no speech state:
+  a request started with an empty slot, and `speech_clear` ended it.
 
-Reason: a speech request is not a context that a later request extends, so a speech slot has no part to snapshot or
-restore. One call that makes a few frames keeps the 16 dependent samples on the card, which is the reason for the
-megakernel. The other way is a pass for each sample, with 16 host round trips for each 80 ms of audio.
+**Held speech state.** Proposed by senpai (Claude Opus 5.5), 2026-10-25, for spec 11.8a. Amy decided that a speech
+context holds state as a chat does ("Level 2 sounds awesome"). This replaces the reason that a speech slot had no
+part to snapshot. The calls become these:
+
+```
+speech_feed(slot, positions, sampler) -> ok | why   feeds positions after the state of the slot, and keeps the sampler
+speech_frames(slot, max) -> {codes, audio, end}     as before
+speech_parts(slot) -> parts                          the state of the slot as parts, for a snapshot (D10)
+speech_restore(slot, parts) -> ok | why              puts a snapshot's parts into an empty slot
+speech_clear(slot)                                   as before
+```
+
+- **Positions.** A position is a text position, a text id and a codec id, either of which can be absent, as before.
+  Or it is a frame position: the 16 codes of a frame. The engine feeds it as a frame that it made. That is the sum of
+  the 16 code embeddings and the trailing text `tts_pad`.
+- **Feed.** `speech_feed` into an empty slot is the old `speech_begin`. Into a slot with state, it adds positions
+  after the last one. Each feed starts a new line: the frame counter of the random stream starts at 0 again.
+- **Parts.** `speech_parts` gives the talker KV of every position as a cells part, with coverage `0..n`. The history
+  of codebook 0 and the codec's left context are a fixed part. Two slots with the same state give the same bytes.
+- **Restore.** `speech_restore` checks the shapes of the parts against the engine, as any restore does (6.8). A slot
+  that holds state refuses it.
+- **Determinism.** A restore and a feed can give the same codes as one feed of all the positions into an empty slot.
+  They do when the engine's passes keep the bits of a split (`segments_exact`), which the engine declares. When they do
+  not, a held state is a tolerance of its own (spec 6.14 shows the rule for text).
 
 **Passes on separate cards of one group.** Proposed by senpai (Claude Opus 5.5), 2026-10-24. Amy decided the rule on
 2026-10-24 (`AGENTS.md` milestone 17, "Yes, design it now"); this is its text.
