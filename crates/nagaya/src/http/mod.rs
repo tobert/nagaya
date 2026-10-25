@@ -7,6 +7,7 @@
 mod errors;
 mod extensions;
 mod routes;
+pub mod speech;
 mod stream;
 
 use std::net::SocketAddr;
@@ -81,6 +82,8 @@ pub struct Council {
     call_cpus: Option<Vec<u32>>,
     /// The first internal error. The process stops when it sees one (spec 8.5, 11.5).
     failure: Mutex<Option<String>>,
+    /// The speech services (spec 11.8).
+    speech: Vec<Arc<crate::speech::SpeechService>>,
 }
 
 impl Council {
@@ -100,7 +103,29 @@ impl Council {
             calls: Arc::new(Semaphore::new(MAX_CALLS)),
             call_cpus,
             failure: Mutex::new(None),
+            speech: Vec::new(),
         })
+    }
+
+    /// Serve these speech services on `POST /v1/audio/speech` (spec 11.8).
+    pub fn with_speech(mut self, services: Vec<crate::speech::SpeechService>) -> Self {
+        self.speech = services.into_iter().map(Arc::new).collect();
+        self
+    }
+
+    /// The speech service of a served speech model.
+    pub fn speech_service(&self, model: &str) -> Option<Arc<crate::speech::SpeechService>> {
+        self.speech.iter().find(|service| service.model() == model).cloned()
+    }
+
+    /// The served speech models.
+    pub fn speech_models(&self) -> Vec<String> {
+        self.speech.iter().map(|service| service.model().to_owned()).collect()
+    }
+
+    /// True when the server takes no new request (spec 10.3 step 1).
+    pub fn draining(&self) -> bool {
+        self.status.load(Ordering::SeqCst) != READY
     }
 
     /// Take no new request: every served model reports `draining` (spec 10.3 step 1).

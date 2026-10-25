@@ -25,5 +25,6 @@ pub mod process;
 pub mod profile;
 pub mod serving;
 pub mod signal;
+pub mod speech;
 pub mod swap;
 pub mod telemetry;

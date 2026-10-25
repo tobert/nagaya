@@ -42,6 +42,7 @@ pub fn routes() -> Router<Arc<Council>> {
         .route("/council/v2/decisions", post(decisions))
         .route("/council/v2/reads", post(reads))
         .route("/council/v2/generations", post(generations))
+        .route("/v1/audio/speech", post(super::speech::speech))
         .merge(super::extensions::routes())
         .fallback(unknown)
         .method_not_allowed_fallback(unknown)
