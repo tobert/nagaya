@@ -348,7 +348,7 @@ pub enum Capability {
     Train,
     /// Close.
     Close,
-    /// Speech: `speech_begin`, `speech_frames` and `speech_clear` (engine-abi "Speech").
+    /// Speech: `speech_feed`, `speech_frames` and `speech_clear` (engine-abi "Speech").
     Speech,
 }
 
@@ -812,6 +812,16 @@ pub struct PromptPair {
     pub codec: Option<u32>,
 }
 
+/// One position of a speech context (engine-abi "Held speech state"): a pair of a text id and a codec id, or a frame
+/// of codes that the engine feeds as a frame that it made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SpeechPosition {
+    /// A text id and a codec id, either of which can be absent.
+    Pair(PromptPair),
+    /// The codes of one frame, one for each codebook.
+    Frame(Vec<u32>),
+}
+
 /// The sampler of a speech request (engine-abi "Speech", spec 11.2). The same identity, prompt, sampler and seed give
 /// the same codes and the same audio.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -841,8 +851,14 @@ pub struct SpeechOut {
 
 /// The speech capability (engine-abi "Speech").
 pub trait Speech {
-    /// Feed the prompt into an empty slot, and keep the sampler there.
-    fn speech_begin(&mut self, slot: SlotId, prompt: &[PromptPair], sampler: &SpeechSampler) -> Result<(), PassError>;
+    /// Feed positions after the state of the slot, and keep the sampler there. Each feed starts a new line: the frame
+    /// counter of the random stream starts at 0 again. A feed into an empty slot starts the slot.
+    fn speech_feed(
+        &mut self,
+        slot: SlotId,
+        positions: &[SpeechPosition],
+        sampler: &SpeechSampler,
+    ) -> Result<(), PassError>;
 
     /// Make at most `max` frames in the slot and decode their audio. It stops at the end of speech.
     fn speech_frames(&mut self, slot: SlotId, max: u32) -> Result<SpeechOut, PassError>;

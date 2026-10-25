@@ -17,7 +17,7 @@ use nagaya::speech::{Chunk, SpeechConfig, SpeechError, SpeechFamily, SpeechReque
 use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{
     Capability, Coverage, Engine, Identity, Lifetime, Limits, MandatoryTerm, Parts, PassError, PassErrorKind, PassOut,
-    PromptPair, Seal, Segment, SlotId, SlotLimit, Slots, Speech, SpeechOut, SpeechSampler, Tap, Tier,
+    PromptPair, Seal, Segment, SlotId, SlotLimit, Slots, Speech, SpeechOut, SpeechPosition, SpeechSampler, Tap, Tier,
 };
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -40,7 +40,12 @@ struct FakeSpeech {
 }
 
 impl Speech for FakeSpeech {
-    fn speech_begin(&mut self, slot: SlotId, prompt: &[PromptPair], sampler: &SpeechSampler) -> Result<(), PassError> {
+    fn speech_feed(
+        &mut self,
+        slot: SlotId,
+        prompt: &[SpeechPosition],
+        sampler: &SpeechSampler,
+    ) -> Result<(), PassError> {
         if prompt.len() > MAX_PROMPT {
             return Err(PassError {
                 kind: PassErrorKind::Refused,

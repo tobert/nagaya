@@ -16,6 +16,17 @@ use nagaya_mk_bmg::ring::Ring;
 use nagaya_mk_bmg::{KERNEL_ENTRY, QWEN3TTS_KERNEL};
 use nagaya_mk_qwen3tts_bmg::{Config, Qwen3TtsEngine};
 
+/// The old `speech_begin`: a feed of text and codec pairs into an empty slot.
+fn begin(
+    engine: &mut dyn nagaya_abi::Speech,
+    slot: u32,
+    prompt: &[PromptPair],
+    sampler: &nagaya_abi::SpeechSampler,
+) -> Result<(), nagaya_abi::PassError> {
+    let positions: Vec<_> = prompt.iter().map(|p| nagaya_abi::SpeechPosition::Pair(*p)).collect();
+    engine.speech_feed(slot, &positions, sampler)
+}
+
 /// The device bytes above the driver's own that may stay after a drop.
 const SLACK: u64 = 1 << 20;
 
@@ -83,7 +94,7 @@ fn a_drop_frees_the_device_memory_of_each_open() {
             repetition_penalty: 1.05,
             seed: round,
         };
-        engine.speech_begin(0, &prompt, &sampler).expect("begin");
+        begin(&mut engine, 0, &prompt, &sampler).expect("begin");
         engine.speech_frames(0, 2).expect("frames");
         let loaded = process_vram();
         let start = std::time::Instant::now();

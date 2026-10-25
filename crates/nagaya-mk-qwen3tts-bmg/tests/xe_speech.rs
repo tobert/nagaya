@@ -11,6 +11,17 @@ use nagaya_mk_qwen3tts_bmg::spec::{CODEBOOKS, CODEC_EOS, SAMPLES_PER_FRAME};
 use nagaya_mk_qwen3tts_bmg::{Config, Qwen3TtsEngine};
 use nagaya_text_qwen3tts::Qwen3TtsFamily;
 
+/// The old `speech_begin`: a feed of text and codec pairs into an empty slot.
+fn begin(
+    engine: &mut dyn nagaya_abi::Speech,
+    slot: u32,
+    prompt: &[PromptPair],
+    sampler: &nagaya_abi::SpeechSampler,
+) -> Result<(), nagaya_abi::PassError> {
+    let positions: Vec<_> = prompt.iter().map(|p| nagaya_abi::SpeechPosition::Pair(*p)).collect();
+    engine.speech_feed(slot, &positions, sampler)
+}
+
 const MAX_FRAMES: u32 = 96;
 const QUANTUM: u32 = 6;
 
@@ -59,7 +70,7 @@ fn sampler(seed: u64) -> SpeechSampler {
 
 /// Every quantum of one request, in order, until its end.
 fn speak(engine: &mut Qwen3TtsEngine, slot: u32, seed: u64, max: u32) -> Vec<SpeechOut> {
-    engine.speech_begin(slot, &prompt(), &sampler(seed)).expect("begin");
+    begin(&mut *engine, slot, &prompt(), &sampler(seed)).expect("begin");
     let mut quanta = Vec::new();
     loop {
         let out = engine.speech_frames(slot, max).expect("frames");
@@ -128,24 +139,24 @@ fn a_refusal_names_the_rule_and_changes_nothing() {
         error.message
     };
     let p = prompt();
-    assert!(refused(engine.speech_begin(9, &p, &sampler(1))).contains("slot 9 does not exist"));
-    assert!(refused(engine.speech_begin(0, &[], &sampler(1))).contains("0 positions"));
+    assert!(refused(begin(&mut *engine, 9, &p, &sampler(1))).contains("slot 9 does not exist"));
+    assert!(refused(begin(&mut *engine, 0, &[], &sampler(1))).contains("0 positions"));
     let bad = [PromptPair {
         text: None,
         codec: Some(5000),
     }];
-    assert!(refused(engine.speech_begin(0, &bad, &sampler(1))).contains("outside the vocabularies"));
+    assert!(refused(begin(&mut *engine, 0, &bad, &sampler(1))).contains("outside the vocabularies"));
     let cold = SpeechSampler {
         temperature: 0.0,
         ..sampler(1)
     };
-    assert!(refused(engine.speech_begin(0, &p, &cold)).contains("temperature 0"));
+    assert!(refused(begin(&mut *engine, 0, &p, &cold)).contains("temperature 0"));
     assert!(refused(engine.speech_frames(0, 4).map(|_| ())).contains("holds no request"));
     // A busy slot refuses a second request, and its own request goes on as if nothing came.
     let alone = joined(&speak(&mut engine, 0, 11, QUANTUM));
-    engine.speech_begin(0, &p, &sampler(11)).unwrap();
+    begin(&mut *engine, 0, &p, &sampler(11)).unwrap();
     let mut quanta = vec![engine.speech_frames(0, QUANTUM).unwrap()];
-    assert!(refused(engine.speech_begin(0, &p, &sampler(12))).contains("holds a request"));
+    assert!(refused(begin(&mut *engine, 0, &p, &sampler(12))).contains("holds a request"));
     while !quanta.last().unwrap().end {
         quanta.push(engine.speech_frames(0, QUANTUM).unwrap());
     }

@@ -5,7 +5,7 @@ use std::path::Path;
 
 use nagaya_abi::{
     Engine, Identity, Limits, PassError, PassErrorKind, PassOut, PromptPair, Segment, SlotId, Speech, SpeechOut,
-    SpeechSampler, Tap,
+    SpeechPosition, SpeechSampler, Tap,
 };
 use nagaya_mk_bmg::level_zero::{B70Card, L0Cluster};
 use nagaya_mk_bmg::ring::Ring;
@@ -339,13 +339,29 @@ impl Qwen3TtsEngine {
 }
 
 impl Speech for Qwen3TtsEngine {
-    fn speech_begin(&mut self, slot: SlotId, prompt: &[PromptPair], sampler: &SpeechSampler) -> Result<(), PassError> {
+    fn speech_feed(
+        &mut self,
+        slot: SlotId,
+        positions: &[SpeechPosition],
+        sampler: &SpeechSampler,
+    ) -> Result<(), PassError> {
         let index = self.slot_index(slot)?;
         if self.slots[index].1.is_some() {
             return Err(refused(format!(
-                "slot {slot} holds a request; clear it before a new one"
+                "slot {slot} holds a request, and this engine does not feed after the state of a slot yet; clear it \
+                 before a new one"
             )));
         }
+        let prompt: Vec<PromptPair> = positions
+            .iter()
+            .map(|p| match p {
+                SpeechPosition::Pair(pair) => Ok(*pair),
+                SpeechPosition::Frame(_) => Err(refused(
+                    "this engine does not feed frame positions yet; send a prompt of text and codec pairs".to_owned(),
+                )),
+            })
+            .collect::<Result<_, _>>()?;
+        let prompt = prompt.as_slice();
         if !(sampler.temperature > 0.0 && sampler.temperature.is_finite())
             || !(sampler.repetition_penalty > 0.0 && sampler.repetition_penalty.is_finite())
         {
@@ -443,7 +459,7 @@ impl Engine for Qwen3TtsEngine {
 
     /// A speech engine takes no pass (engine-abi "Speech").
     fn pass(&mut self, _segments: &[Segment], _taps: &[Tap]) -> Result<PassOut, PassError> {
-        let error = refused("a speech engine takes no pass; use speech_begin and speech_frames".to_owned());
+        let error = refused("a speech engine takes no pass; use speech_feed and speech_frames".to_owned());
         self.last_error = Some(error.message.clone());
         Err(error)
     }

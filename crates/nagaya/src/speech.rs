@@ -1,6 +1,6 @@
 //! The speech service for one speech engine (spec 11.8), with no HTTP.
 //!
-//! A request becomes one job on the group of the engine. Its first quantum feeds the prompt (`speech_begin`), and each
+//! A request becomes one job on the group of the engine. Its first quantum feeds the prompt (`speech_feed`), and each
 //! later quantum makes the frames of one `speech_frames` call. The job sends the audio of each quantum to the route as
 //! it decodes. A request waits for a free slot of the engine, and a job for an engine that is not loaded waits for
 //! the swap that loads it (spec 3.3a).
@@ -9,7 +9,7 @@ use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use nagaya_abi::{Engine, Kind, PassErrorKind, PromptPair, SlotId, SpeechSampler};
+use nagaya_abi::{Engine, Kind, PassErrorKind, PromptPair, SlotId, SpeechPosition, SpeechSampler};
 use nagaya_sched::{Class, JobState};
 
 use crate::jobs::{JobBody, JobSpec, Ran};
@@ -191,7 +191,8 @@ impl JobBody for SpeechBody {
         if !self.begun {
             // A job that passed its deadline after its begin left its slot full. A clear of an empty slot does nothing.
             speech.speech_clear(self.slot);
-            if let Err(error) = speech.speech_begin(self.slot, &self.prompt, &self.sampler) {
+            let positions: Vec<SpeechPosition> = self.prompt.iter().map(|p| SpeechPosition::Pair(*p)).collect();
+            if let Err(error) = speech.speech_feed(self.slot, &positions, &self.sampler) {
                 let failure = match error.kind {
                     PassErrorKind::Refused => SpeechError::Invalid {
                         param: "input",
