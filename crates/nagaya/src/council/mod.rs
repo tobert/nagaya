@@ -813,17 +813,14 @@ impl Service {
 
     /// Refuses the first object a request names, with a `400` that names its member (gogi "Contexts"). Each served model
     /// of the nagaya reads text only: no family renders an object yet, so its identity declares no `media`.
-    pub(crate) fn reads_text_only(
-        &self,
-        objects: &[(String, gogi_proto::objects::ObjectRef)],
-    ) -> Result<(), ServiceError> {
+    pub(crate) fn reads_text_only(&self, objects: &[gogi_proto::objects::Named]) -> Result<(), ServiceError> {
         match objects.first() {
             None => Ok(()),
-            Some((at, object)) => Err(Invalid::param(
-                at.clone(),
+            Some(named) => Err(Invalid::param(
+                named.at.clone(),
                 format!(
-                    "nothing ran: {at} is {} of media type {}, and {} reads text only",
-                    object.id, object.mime, self.config.model
+                    "nothing ran: {} is {} of media type {}, and {} reads text only",
+                    named.at, named.object.id, named.object.mime, self.config.model
                 ),
             )
             .into()),
@@ -831,14 +828,17 @@ impl Service {
     }
 
     /// The objects of each context of a request with several, named `contexts[k].messages[i].content[j]`.
-    pub(crate) fn objects_in(contexts: &[Context]) -> Vec<(String, gogi_proto::objects::ObjectRef)> {
+    pub(crate) fn objects_in(contexts: &[Context]) -> Vec<gogi_proto::objects::Named> {
         contexts
             .iter()
             .enumerate()
             .flat_map(|(k, c)| {
                 gogi_proto::objects::objects_of(&c.messages)
                     .into_iter()
-                    .map(move |(at, o)| (format!("contexts[{k}].{at}"), o))
+                    .map(move |named| gogi_proto::objects::Named {
+                        at: format!("contexts[{k}].{}", named.at),
+                        ..named
+                    })
             })
             .collect()
     }

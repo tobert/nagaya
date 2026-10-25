@@ -423,7 +423,7 @@ fn reply_done(parsed: &ParsedReply, ids: &[String]) -> GenerationDone {
         decisions: Vec::new(),
         seed: None,
         phase: None,
-        parts: Vec::new(),
+        outputs: Vec::new(),
     }
 }
 
@@ -640,7 +640,7 @@ impl Service {
             decisions: Vec::new(),
             seed: Some(settings.seed),
             phase: reply.phase,
-            parts: Vec::new(),
+            outputs: Vec::new(),
         })
     }
 }

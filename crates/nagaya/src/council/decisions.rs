@@ -166,7 +166,11 @@ impl Service {
                 .case_media
                 .iter()
                 .enumerate()
-                .map(|(i, o)| (format!("case_media[{i}]"), o.clone())),
+                .map(|(i, o)| gogi_proto::objects::Named {
+                    at: format!("case_media[{i}]"),
+                    object: o.clone(),
+                    assistant: false,
+                }),
         );
         self.reads_text_only(&objects)?;
         if request.think.is_some_and(|think| think.tokens > 0) {
