@@ -851,13 +851,14 @@ pub struct SpeechOut {
 
 /// The speech capability (engine-abi "Speech").
 pub trait Speech {
-    /// Feed positions after the state of the slot, and keep the sampler there. Each feed starts a new line: the frame
-    /// counter of the random stream starts at 0 again. A feed into an empty slot starts the slot.
+    /// Feed positions after the state of the slot. With a sampler, the feed starts a new line: the frame counter of the
+    /// random stream starts at 0 again, and the feed samples the line's first code. With none, it holds the rows and
+    /// starts no line. A slot whose line has not ended refuses a feed.
     fn speech_feed(
         &mut self,
         slot: SlotId,
         positions: &[SpeechPosition],
-        sampler: &SpeechSampler,
+        sampler: Option<&SpeechSampler>,
     ) -> Result<(), PassError>;
 
     /// Make at most `max` frames in the slot and decode their audio. It stops at the end of speech.

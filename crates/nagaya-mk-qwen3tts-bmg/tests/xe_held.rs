@@ -69,7 +69,7 @@ fn sampler(seed: u64) -> SpeechSampler {
 /// Feed `positions` into `slot` and make frames to the end of the line. Give the codes of each frame.
 fn speak(engine: &mut Qwen3TtsEngine, slot: u32, positions: &[SpeechPosition], seed: u64) -> Vec<Vec<u32>> {
     let speech = engine.speech().expect("a speech engine");
-    speech.speech_feed(slot, positions, &sampler(seed)).expect("feed");
+    speech.speech_feed(slot, positions, Some(&sampler(seed))).expect("feed");
     let mut codes = Vec::new();
     loop {
         let out = speech.speech_frames(slot, 6).expect("frames");
@@ -142,7 +142,7 @@ fn fed_frames_give_the_talker_kv_of_the_frames_that_the_engine_made() {
     engine
         .speech()
         .unwrap()
-        .speech_feed(1, &fed, &sampler(5))
+        .speech_feed(1, &fed, Some(&sampler(5)))
         .expect("feed of frames");
     let again = kv(&mut engine, 1);
     assert_eq!(
@@ -182,12 +182,59 @@ fn a_feed_during_a_line_and_a_short_frame_are_refused() {
     let mut engine = engine();
     let speech = engine.speech().unwrap();
     speech.speech_clear(0);
-    speech.speech_feed(0, &line("One.", VOICE), &sampler(1)).expect("feed");
-    let during = speech.speech_feed(0, &line("Two.", ""), &sampler(1)).unwrap_err();
+    speech
+        .speech_feed(0, &line("One.", VOICE), Some(&sampler(1)))
+        .expect("feed");
+    let during = speech.speech_feed(0, &line("Two.", ""), Some(&sampler(1))).unwrap_err();
     assert!(during.message.contains("has not ended"), "{}", during.message);
     speech.speech_clear(0);
     let short = speech
-        .speech_feed(0, &[SpeechPosition::Frame(vec![1, 2, 3])], &sampler(1))
+        .speech_feed(0, &[SpeechPosition::Frame(vec![1, 2, 3])], Some(&sampler(1)))
         .unwrap_err();
     assert!(short.message.contains("16 codes"), "{}", short.message);
+}
+
+/// A feed with no sampler holds its rows and starts no line. A feed of the rest with a sampler then gives the KV of one
+/// feed of all the positions, within the rounding of passes of another size.
+#[test]
+fn a_feed_with_no_sampler_holds_rows_and_starts_no_line() {
+    if common::absent() {
+        return;
+    }
+    let mut engine = engine();
+    for slot in [0, 1] {
+        engine.speech().unwrap().speech_clear(slot);
+    }
+    let positions = line("Docking clamps released.", VOICE);
+    let cut = positions.len() / 2;
+    let speech = engine.speech().unwrap();
+    speech
+        .speech_feed(0, &positions[..cut], None)
+        .expect("feed with no sampler");
+    let idle = speech.speech_frames(0, 6).unwrap_err();
+    assert!(idle.message.contains("holds no request"), "{}", idle.message);
+    speech
+        .speech_feed(0, &positions[cut..], Some(&sampler(3)))
+        .expect("feed of the rest");
+    speech.speech_feed(1, &positions, Some(&sampler(3))).expect("one feed");
+    assert_eq!(engine.slots().unwrap().slot_high(0), positions.len() as u64);
+    let (split, whole) = (kv(&mut engine, 0), kv(&mut engine, 1));
+    let floats = |b: &[u8]| {
+        b.as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
+            .collect::<Vec<f32>>()
+    };
+    let (a, b) = (floats(&whole), floats(&split));
+    let scale = a.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
+    let worst = a.iter().zip(&b).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
+    eprintln!("a split feed: the largest difference is {worst} of a largest value {scale}");
+    assert!(
+        worst <= scale * 1e-3,
+        "a split feed gives another KV: {worst} of {scale}"
+    );
+    for slot in [0, 1] {
+        engine.speech().unwrap().speech_clear(slot);
+    }
 }

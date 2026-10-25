@@ -192,7 +192,7 @@ impl JobBody for SpeechBody {
             // A job that passed its deadline after its begin left its slot full. A clear of an empty slot does nothing.
             speech.speech_clear(self.slot);
             let positions: Vec<SpeechPosition> = self.prompt.iter().map(|p| SpeechPosition::Pair(*p)).collect();
-            if let Err(error) = speech.speech_feed(self.slot, &positions, &self.sampler) {
+            if let Err(error) = speech.speech_feed(self.slot, &positions, Some(&self.sampler)) {
                 let failure = match error.kind {
                     PassErrorKind::Refused => SpeechError::Invalid {
                         param: "input",

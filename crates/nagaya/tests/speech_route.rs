@@ -44,8 +44,9 @@ impl Speech for FakeSpeech {
         &mut self,
         slot: SlotId,
         prompt: &[SpeechPosition],
-        sampler: &SpeechSampler,
+        sampler: Option<&SpeechSampler>,
     ) -> Result<(), PassError> {
+        let sampler = sampler.expect("the route feeds with a sampler");
         if prompt.len() > MAX_PROMPT {
             return Err(PassError {
                 kind: PassErrorKind::Refused,

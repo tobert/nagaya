@@ -19,7 +19,7 @@ fn begin(
     sampler: &nagaya_abi::SpeechSampler,
 ) -> Result<(), nagaya_abi::PassError> {
     let positions: Vec<_> = prompt.iter().map(|p| nagaya_abi::SpeechPosition::Pair(*p)).collect();
-    engine.speech_feed(slot, &positions, sampler)
+    engine.speech_feed(slot, &positions, Some(sampler))
 }
 
 const MAX_FRAMES: u32 = 96;

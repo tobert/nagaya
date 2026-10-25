@@ -388,7 +388,7 @@ impl Speech for Qwen3TtsEngine {
         &mut self,
         slot: SlotId,
         positions: &[SpeechPosition],
-        sampler: &SpeechSampler,
+        sampler: Option<&SpeechSampler>,
     ) -> Result<(), PassError> {
         let index = self.slot_index(slot)?;
         if self.slots[index].1.is_some_and(|line| !line.end) {
@@ -396,8 +396,9 @@ impl Speech for Qwen3TtsEngine {
                 "slot {slot} speaks a line that has not ended; make its frames to the end, or clear the slot"
             )));
         }
-        if !(sampler.temperature > 0.0 && sampler.temperature.is_finite())
-            || !(sampler.repetition_penalty > 0.0 && sampler.repetition_penalty.is_finite())
+        if let Some(sampler) = sampler
+            && (!(sampler.temperature > 0.0 && sampler.temperature.is_finite())
+                || !(sampler.repetition_penalty > 0.0 && sampler.repetition_penalty.is_finite()))
         {
             return Err(refused(format!(
                 "the sampler has temperature {} and repetition penalty {}; give positive finite numbers",
@@ -414,22 +415,24 @@ impl Speech for Qwen3TtsEngine {
                 positions.len()
             )));
         }
-        let s = &self.slots[index].0;
-        let state = model::sampler_state(sampler.seed);
-        self.device.write(self.card(), s.state, &state);
-        // The code predictor draws from its own stream, so the draws of codebook 0 do not move with it.
-        let cp_state = model::sampler_state(sampler.seed ^ 0x9e37_79b9_7f4a_7c15);
-        self.device.write(self.card(), s.cp_state, &cp_state);
-        for (at, bytes) in s.codec_state(&self.config) {
-            self.card().fill_zero_sync(at as *mut std::ffi::c_void, bytes);
-        }
-        let sampling = Sampling {
-            temperature: sampler.temperature,
-            top_k: sampler.top_k,
-            penalty: sampler.repetition_penalty,
-        };
-        // A feed longer than the work buffers runs in chunks. The last chunk samples codebook 0 of the line's first
-        // frame.
+        let sampling = sampler.map(|sampler| {
+            let s = &self.slots[index].0;
+            let state = model::sampler_state(sampler.seed);
+            self.device.write(self.card(), s.state, &state);
+            // The code predictor draws from its own stream, so the draws of codebook 0 do not move with it.
+            let cp_state = model::sampler_state(sampler.seed ^ 0x9e37_79b9_7f4a_7c15);
+            self.device.write(self.card(), s.cp_state, &cp_state);
+            for (at, bytes) in s.codec_state(&self.config) {
+                self.card().fill_zero_sync(at as *mut std::ffi::c_void, bytes);
+            }
+            Sampling {
+                temperature: sampler.temperature,
+                top_k: sampler.top_k,
+                penalty: sampler.repetition_penalty,
+            }
+        });
+        // A feed longer than the work buffers runs in chunks. With a sampler, the last chunk samples codebook 0 of the
+        // line's first frame.
         let chunk = self.config.max_prompt as usize;
         let mut at = base;
         let count = positions.len().div_ceil(chunk);
@@ -439,7 +442,7 @@ impl Speech for Qwen3TtsEngine {
             self.device.write(self.card(), self.work.ids_codec, &codec);
             self.device.write(self.card(), self.work.ids_cp, &cp);
             self.device.write(self.card(), self.work.ids_pad, &pad);
-            let sample = (k + 1 == count).then_some(sampling);
+            let sample = sampling.filter(|_| k + 1 == count);
             let tasks = model::feed(
                 &self.weights,
                 &self.work,
@@ -452,6 +455,11 @@ impl Speech for Qwen3TtsEngine {
             self.run(tasks);
             at += part.len();
         }
+        let Some(sampling) = sampling else {
+            self.slots[index].1 = None;
+            self.held[index] = at;
+            return Ok(());
+        };
         let first = self.read_u32(self.slots[index].0.code(0, 0), 1)[0];
         self.held[index] = 0;
         self.slots[index].1 = Some(Request {
