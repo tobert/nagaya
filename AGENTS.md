@@ -199,6 +199,20 @@ is done on gfx1151host, and milestone 15s is done on b70host. Milestones 16 and 
        fake engines.
     6. **Routes.** Show the states `loading` and `unloaded` on the HTTP routes and on the status feed.
     7. **Gates and deploy.** Run the gates on the cards, then deploy on b70host.
+
+    Done on 2026-10-24 at 20:09, on b70host. A drop of the Gemma 4 engine frees its device memory, and it declares
+    `close`. On the cards, a swap to an on-demand engine took 244 ms and freed 56.9 GB. The swap back and a generation
+    took 8.0 s, with the same reply. `nagaya.service` runs the build of `ff197d2`, and `gogi-conformance` gave 266 ok,
+    0 FAIL and 11 skip.
+
+    Amy decides the Proposed notes of spec 3.3a. The commits:
+
+    - step 2, close: `a82e59f`;
+    - step 3, the ledger check: `589bfbc`;
+    - step 4, residency, admission and the swap on a group: `043b02a`, `c542f9e`, `5be9a0c`, `36c6162`;
+    - step 5, the swap back: `7421fa5`;
+    - step 6, the states: `1efdad5`;
+    - step 7, the ledger of an unloaded engine and the swap on the cards: `ff197d2`.
 17. **Voice.** Serve Qwen3-TTS from an engine on the B70 cards. Amy chose the model on 2026-10-24 after she
     listened to CPU samples. She decided these rules on 2026-10-24, by interview:
     - **Weights:** `Qwen3-TTS-12Hz-1.7B-VoiceDesign` only. A text prompt designs each voice.
