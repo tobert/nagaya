@@ -88,7 +88,7 @@ in a lock: one thread owns it (3.2).
 
 Do them in this order. Each milestone ends with all checks green and one or more commits. Milestones 1 to 14 are
 done, and `docs/history.md` keeps their full text, and the merges where the run recorded them. Milestone 15
-is done on gfx1151host, and milestone 15s is done on b70host. Milestones 16 and 17 run now, on b70host.
+is done on gfx1151host, and milestones 15s, 16 and 17 are done on b70host. Milestone 18 is next.
 
 1. **Workspace.** The Cargo workspace, its crates, `rustfmt.toml` and the dev profile. Done.
 2. **Engine trait.** The ABI core and capabilities as traits, with a fake engine and a broken fake for the gates. Done.
@@ -245,6 +245,20 @@ is done on gfx1151host, and milestone 15s is done on b70host. Milestones 16 and 
     7. **Route.** Serve `POST /v1/audio/speech`, with the audio in chunks.
     8. **Cards in one group.** Build the passes on separate cards in one group.
     9. **Deploy.** Add the speech engine to the profile of b70host as an engine on demand.
+
+    Done on 2026-10-24 at 22:18, on b70host. The forced oracle on the card gave relative errors of 7.3e-7 for the
+    talker logits and 9.6e-7 for the audio. The live route swapped gemma out in 691 ms and sent its first byte after
+    1.2 s. The swap back took 7.2 s. `nagaya.service` runs the build of `3fd481d`, and `gogi-conformance` gave 266
+    ok, 0 FAIL and 11 skip. The speech engine plans 5.6 GB on card 0, and gemma leaves 4.4 GB, so they swap.
+
+    Amy decides the Proposed notes of spec 11.8 and of engine-abi "Speech" and "How a group loads both". The commits:
+
+    - steps 1 to 3, the spec, the oracle and the family: `cc7ffa7`, `529cf4f`, `5d78334`, `94760ba`, `5600fda`;
+    - steps 4 and 5, the shared interpreter and the ops: `44a5545`, `b4c53a8`, `9610748`, `dadbde0`;
+    - step 6, the engine: `804c3f3`, `91bd122`;
+    - step 7, the route: `1d3e11d`, `91728f2`, `7d46c93`;
+    - step 8, the cards in one group: `30143a5`, `0b15ba3`, `83d6f6c`;
+    - step 9, the deploy: `3450734`, `12d6a9e`, and the stall fix of milestone 16, `3fd481d`.
 18. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
