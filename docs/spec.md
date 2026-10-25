@@ -459,6 +459,29 @@ inside a process today: "the HIP runtime's own teardown segfaults" (mk `service/
 arenas in the file-descriptor store (10.2) and exits with code 4, and systemd starts it again. Later, an engine whose
 `close()` is safe loads and unloads in place (README door 1).
 
+**A profile change in place.** Proposed by senpai (Claude Opus 5.5), 2026-10-25. Amy decides each rule. Reason: a
+client sets the work of the fleet with one `PUT /nagaya/v1/profile` to each machine (Amy: "the whole profile PUT is
+good for now"). A named set of profiles, such as agent time or live performance, is the client's policy. The nagaya
+keeps no such name.
+
+- **Admission first.** The nagaya admits the new profile as a whole (2.4). A refusal is a 507 with the shortfall,
+  and nothing changes.
+- **Compare by name.** The nagaya compares each `[[engines]]` entry of the new profile with the active entry of the
+  same name.
+- **The actions.** Each engine gets one action:
+  - `keep`: the entry is the same, or only its `share` changes. A new share takes effect through admission (4.4).
+  - `residency`: only `residency` or `idle_unload_s` changes. A resident engine that is not loaded loads. An engine
+    that becomes on demand unloads after its idle time (3.3a, "The swap back").
+  - `load`: the entry is new. It loads if it is resident.
+  - `unload`: the entry is gone.
+  - `reload`: `kind`, `devices`, `config` or `family` changes. The engine unloads, then it loads with the new entry.
+- **Swaps do the work.** Each load and unload is a swap of 3.3a, on the group thread of the engine. Each job keeps
+  its deadline.
+- **A restart only when it must.** When an action unloads an engine without `close`, the nagaya persists the profile
+  and restarts as above (exit 4). A change of the `[store]` table also restarts.
+- **The response** is 202 after admission, with each engine and its action. The swaps run after the response, and
+  the status feed shows each state (9.4).
+
 **Swaps in place on demand.** Decided 2026-10-24 (Amy, by interview). An engine whose `close()` is safe loads and
 unloads in place, with no restart. The nagaya swaps by itself. A request for an engine that is not loaded starts
 the swap, and the request waits for the load (Amy: "Nagaya swaps itself"). The placement profile chooses the
