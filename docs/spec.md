@@ -532,28 +532,6 @@ that is not loaded, that read would start a load at each start of the process. g
 `model_unavailable` to a served model that is not `ready` (11.1), but Amy decided that a request waits for the load.
 A route of our own can wait.
 
-**3.3b Stances.** Proposed by senpai (Claude Opus 5.5), 2026-10-25. Amy decides each rule. Reason: the work of the
-fleet changes a few times a day, not each minute (Amy: "the cluster will have 'stances' where models are up and
-hot"). Her examples are agent time, live performance and a research config.
-
-- **A stance** is a name, and for each machine the set of its engines that are resident.
-- **In the profile.** A machine's profile (2.4) can have a `[stances]` table. Each key is a stance name. Its value
-  lists the names of the resident engines, for example `performance = ["beats", "tagger"]`.
-- **The other engines.** An engine that the active stance does not name is on demand in that stance (3.3a). Thus it
-  must declare `close`. An engine without `close` must be in each stance of its machine.
-- **Admission.** The resident engines of each stance must fit together (2.4). A profile with a stance that does not
-  fit is refused, with the stance's name and the shortfall in bytes.
-- **One stance for the cluster.** Gossip carries the name of the active stance and the time it started (2.3).
-  `PUT /nagaya/v1/stance` on any machine sets it. A machine that has no entry for that name keeps its last stance.
-- **A change of stance** is swaps of 3.3a on each group. The group unloads each engine that the new stance does not
-  name, then it loads each engine that the new stance names. Each job keeps its deadline.
-- **No new scheduler class.** A stance sets which engines are hot and their shares (D9). Amy: "let's not
-  overcomplicate our scheduler from here; the stance sets up priority where we need it."
-- **A timer is a client.** The nagaya keeps no calendar. A client that changes the stance at night calls the route.
-
-A stance can later name a served model outside the cluster, for example a cloud API, for a coordinator to forward to
-(11.1). That is not in v0. Amy, 2026-10-25: "we design for possibility space now".
-
 **Open:** Do the GPU queues of an idle engine slow the other engines on its device? mk has a note that its idle
 queues slow another process, but we did not find the source. A measurement answers the question.
 
