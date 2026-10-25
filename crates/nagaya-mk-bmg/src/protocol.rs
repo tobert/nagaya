@@ -30,10 +30,33 @@ pub const OP_MOE_GATHER: u16 = 20;
 pub const OP_COPY: u16 = 21;
 pub const OP_HALT: u16 = 255;
 
+// The ops of the speech binary (`kernels/qwen3tts_ops.cl`, `MK_QWEN3TTS`); the Gemma 4 binary does not hold them.
+pub const OP_SAMPLE: u16 = 40;
+pub const OP_EMBED: u16 = 41;
+pub const OP_MASK_ROWS: u16 = 42;
+pub const OP_BIAS: u16 = 43;
+pub const OP_SILU_MUL: u16 = 44;
+pub const OP_CONV1D: u16 = 45;
+pub const OP_CONVT1D: u16 = 46;
+pub const OP_LAYERNORM: u16 = 47;
+pub const OP_GELU: u16 = 48;
+pub const OP_SNAKE: u16 = 49;
+pub const OP_SCALE_ADD: u16 = 50;
+pub const OP_PCM: u16 = 51;
+
 pub const FLAG_ACCUMULATE: u16 = 1 << 0;
 pub const FLAG_SOFTCAP_30: u16 = 1 << 2;
 pub const FLAG_ROPE_GLOBAL: u16 = 1 << 3;
 pub const FLAG_ROPE: u16 = 1 << 5;
+// The flags of the speech binary.
+/// `OP_RMSNORM` with `FLAG_ROPE`: theta 1e6 over the whole head (Qwen3).
+pub const FLAG_ROPE_FULL: u16 = 1 << 6;
+/// `OP_SAMPLE`: append the id to the history of the sampler.
+pub const FLAG_HISTORY: u16 = 1 << 7;
+/// The weights, the table or the bias are F32, not BF16.
+pub const FLAG_F32: u16 = 1 << 8;
+/// `OP_RMSNORM`: scale and rotate the rows, with no normalization.
+pub const FLAG_NO_NORM: u16 = 1 << 9;
 
 pub const NO_EVENT: u32 = u32::MAX;
 pub const NUM_EXPERTS: usize = 128;

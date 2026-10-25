@@ -16,10 +16,17 @@
 #[cfg(feature = "xe")]
 pub mod level_zero;
 pub mod protocol;
+#[cfg(feature = "xe")]
+pub mod ring;
 
 /// The kernel binary of the Gemma 4 engine for `bmg-g31`, from `kernels/megakernel.cl`.
 #[cfg(feature = "xe")]
 pub const GEMMA4_KERNEL: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_bmg.bin"));
+
+/// The kernel binary of the speech engine (Qwen3-TTS) for `bmg-g31`: `kernels/megakernel.cl` with `MK_QWEN3TTS`, which
+/// adds the ops of `kernels/qwen3tts_ops.cl`.
+#[cfg(feature = "xe")]
+pub const QWEN3TTS_KERNEL: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_qwen3tts_bmg.bin"));
 
 /// The name of the entry point of each kernel binary.
 pub const KERNEL_ENTRY: &str = "mk_persistent_interpreter";

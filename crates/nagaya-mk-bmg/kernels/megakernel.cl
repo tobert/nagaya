@@ -47,6 +47,26 @@
 #define FLAG_ROPE           32u  // OP_RMSNORM on head rows: rotate each normalized row; see there
 
 #define NO_EVENT            0xFFFFFFFFu
+
+#ifdef MK_QWEN3TTS
+// The ops of the speech engine (qwen3tts_ops.cl); must match src/protocol.rs.
+#define OP_SAMPLE           40
+#define OP_EMBED            41
+#define OP_MASK_ROWS        42
+#define OP_BIAS             43
+#define OP_SILU_MUL         44
+#define OP_CONV1D           45
+#define OP_CONVT1D          46
+#define OP_LAYERNORM        47
+#define OP_GELU             48
+#define OP_SNAKE            49
+#define OP_SCALE_ADD        50
+#define OP_PCM              51
+#define FLAG_ROPE_FULL      64u  // OP_RMSNORM with FLAG_ROPE: theta 1e6 over the whole head (Qwen3)
+#define FLAG_HISTORY        128u // OP_SAMPLE: append the id to the history of the sampler
+#define FLAG_F32            256u // the weights, the table or the bias are F32, not BF16
+#define FLAG_NO_NORM        512u // OP_RMSNORM: scale and rotate the rows, with no normalization
+#endif
 #define NUM_EXPERTS         128
 #define TOP_K               8
 #define XMX_TOKENS          32  // tokens per XMX work item: four dpas tiles of 8 rows
@@ -121,6 +141,13 @@ inline float bf16_to_f32(ushort b) {
 inline float4 bf16x4_to_f32(ushort4 w) {
     return (float4)(bf16_to_f32(w.s0), bf16_to_f32(w.s1), bf16_to_f32(w.s2), bf16_to_f32(w.s3));
 }
+
+#ifdef MK_QWEN3TTS
+// The GLU of the speech build is SwiGLU (Qwen3): silu(gate) * up.
+#define GLU_ACT(X) ((X) / (1.0f + exp(-(X))))
+#else
+#define GLU_ACT(X) gelu_tanh(X)
+#endif
 
 // gelu_pytorch_tanh
 inline float gelu_tanh(float x) {
@@ -316,6 +343,21 @@ inline void attn_chunk_##DPL##_##G(__global const float* Q, __global const float
 
 DEFINE_ATTN_CHUNK(16, 2)
 DEFINE_ATTN_CHUNK(32, 1)
+#ifdef MK_QWEN3TTS
+// Head size 128 with two query heads for each KV head (the talker, the code predictor), and head size 64 (the codec).
+DEFINE_ATTN_CHUNK(8, 2)
+DEFINE_ATTN_CHUNK(4, 1)
+
+// A uniform value in [0, 1) from the 64-bit seed and the draw count: splitmix64, the top 24 bits. The draw keeps no
+// state, so the same seed and count give the same value (spec 11.2).
+inline float rng_uniform(uint lo, uint hi, uint n) {
+    ulong z = (((ulong)hi << 32) | lo) + ((ulong)n + 1ul) * 0x9E3779B97F4A7C15ul;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ul;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBul;
+    z = z ^ (z >> 31);
+    return (float)(z >> 40) * (1.0f / 16777216.0f);
+}
+#endif
 
 // The causal key range of the one-token attention at position p0 and its chunk count.
 inline uint attn_keys(uint p0, uint window, uint* lo) {
@@ -527,6 +569,20 @@ __kernel void mk_persistent_interpreter(
         const bool accumulate = (flags & FLAG_ACCUMULATE) != 0;
 
         if (op == OP_RMSNORM) {
+#ifdef MK_QWEN3TTS
+            // The speech build: x = the bits of eps (0: 1e-6) | the bits of a scale of each rotated row << 32 (0: 1),
+            // which applies Qwen3's 1 / sqrt(head_dim) to the queries in f32. FLAG_F32 reads F32 weights.
+            float rms_eps = (uint)(task.x & 0xFFFFFFFFul) ? as_float((uint)(task.x & 0xFFFFFFFFul)) : 1e-6f;
+            float rms_qs = (uint)(task.x >> 32) ? as_float((uint)(task.x >> 32)) : 1.0f;
+            bool rms_f32 = (flags & FLAG_F32) != 0, rms_nonorm = (flags & FLAG_NO_NORM) != 0;
+#define RMS_INV(SS, K) (rms_nonorm ? 1.0f : rsqrt((SS) / (float)(K) + rms_eps))
+#define RMS_W(I) (W ? (rms_f32 ? ((__global const float*)W)[I] : bf16_to_f32(W[I])) : 1.0f)
+#define ROPE_OUT(V) ((V) * rms_qs)
+#else
+#define RMS_INV(SS, K) rsqrt((SS) / (float)(K) + 1e-6f)
+#define RMS_W(I) (W ? bf16_to_f32(W[I]) : 1.0f)
+#define ROPE_OUT(V) (V)
+#endif
             // c[r] = a[r] * (mean(a[r]^2) + 1e-6)^-0.5 * w for n rows of k; w = 1 when b == 0.
             // FLAG_ACCUMULATE adds to c[r]. With FLAG_ROPE (head rows, in place), row r belongs
             // to token r / m at position p0 + r / m, and pairs (i, i + k/2) of the normalized row
@@ -543,9 +599,9 @@ __kernel void mk_persistent_interpreter(
                     __global float*       y = C + (ulong)r * K;
                     float ss = 0.0f;
                     for (uint i = lid; i < K; i += lsize) ss += x[i] * x[i];
-                    float inv = rsqrt(wg_sum(ss, slm_reduce, lane, sg_id, num_sgs) / (float)K + 1e-6f);
+                    float inv = RMS_INV(wg_sum(ss, slm_reduce, lane, sg_id, num_sgs), K);
                     for (uint i = lid; i < K; i += lsize) {
-                        float v = x[i] * inv * (W ? bf16_to_f32(W[i]) : 1.0f);
+                        float v = x[i] * inv * RMS_W(i);
                         y[i] = accumulate ? y[i] + v : v;
                     }
                 }
@@ -553,7 +609,11 @@ __kernel void mk_persistent_interpreter(
             else if (flags & FLAG_ROPE) {
                 uint half_d = K / 2, heads = task.m;
                 bool global_rope = (flags & FLAG_ROPE_GLOBAL) != 0;
+#ifdef MK_QWEN3TTS
+                float theta = (global_rope || (flags & FLAG_ROPE_FULL)) ? 1000000.0f : 10000.0f;
+#else
                 float theta = global_rope ? 1000000.0f : 10000.0f;
+#endif
                 uint n_rot = global_rope ? K / 8 : half_d;
                 for (uint r = gsg; r < task.n; r += n_gsg) {
                     __global const float* x = A + (ulong)r * K;
@@ -561,21 +621,21 @@ __kernel void mk_persistent_interpreter(
                     float ss = 0.0f;
                     for (uint i = lane; i < K; i += 16) ss += x[i] * x[i];
                     ss = sub_group_reduce_add(ss);
-                    float inv = rsqrt(ss / (float)K + 1e-6f);
+                    float inv = RMS_INV(ss, K);
                     uint t = r / heads;
                     float pos = (float)(token_meta ? token_meta[t].x : task.p0 + t);
                     for (uint i = lane; i < half_d; i += 16) {
-                        float x0 = x[i] * inv * (W ? bf16_to_f32(W[i]) : 1.0f);
-                        float x1 = x[i + half_d] * inv * (W ? bf16_to_f32(W[i + half_d]) : 1.0f);
+                        float x0 = x[i] * inv * RMS_W(i);
+                        float x1 = x[i + half_d] * inv * RMS_W(i + half_d);
                         if (i < n_rot) {
                             float inv_freq = 1.0f / pow(theta, (float)(2 * i) / (float)K);
                             float ang = pos * inv_freq;
                             float cs = cos(ang), sn = sin(ang);
-                            y[i]          = x0 * cs - x1 * sn;
-                            y[i + half_d] = x1 * cs + x0 * sn;
+                            y[i]          = ROPE_OUT(x0 * cs - x1 * sn);
+                            y[i + half_d] = ROPE_OUT(x1 * cs + x0 * sn);
                         } else {
-                            y[i] = x0;
-                            y[i + half_d] = x1;
+                            y[i] = ROPE_OUT(x0);
+                            y[i + half_d] = ROPE_OUT(x1);
                         }
                     }
                 }
@@ -586,9 +646,9 @@ __kernel void mk_persistent_interpreter(
                 float ss = 0.0f;
                 for (uint i = lane; i < K; i += 16) ss += x[i] * x[i];
                 ss = sub_group_reduce_add(ss);
-                float inv = rsqrt(ss / (float)K + 1e-6f);
+                float inv = RMS_INV(ss, K);
                 for (uint i = lane; i < K; i += 16) {
-                    float v = x[i] * inv * (W ? bf16_to_f32(W[i]) : 1.0f);
+                    float v = x[i] * inv * RMS_W(i);
                     y[i] = accumulate ? y[i] + v : v;
                 }
             }
@@ -777,7 +837,7 @@ __kernel void mk_persistent_interpreter(
                     if (k_part == 0 && lane == 0 && r < M) {
                         float gs = 0.0f, us = 0.0f;
                         for (uint p = 0; p < SPLIT_K; p++) { gs += slm_reduce[sg_id + p]; us += slm_reduce2[sg_id + p]; }
-                        Y[r] = gelu_tanh(gs) * us;
+                        Y[r] = GLU_ACT(gs) * us;
                     }
                     barrier(CLK_LOCAL_MEM_FENCE);
                 }
@@ -804,7 +864,7 @@ __kernel void mk_persistent_interpreter(
                                 gs += slm_part[0][(sg_id + p) * 128 + t * 16 + lane];
                                 us += slm_part[1][(sg_id + p) * 128 + t * 16 + lane];
                             }
-                            Y[(ulong)t * M + tile * 16 + lane] = gelu_tanh(gs) * us;
+                            Y[(ulong)t * M + tile * 16 + lane] = GLU_ACT(gs) * us;
                         }
                     }
                     barrier(CLK_LOCAL_MEM_FENCE);
@@ -820,7 +880,7 @@ __kernel void mk_persistent_interpreter(
                     for (uint mt = 0; mt < 2; mt++) {
                         for (uint r = 0; r < 8; r++) {
                             uint t = 8 * mt + r;
-                            if (t < tn) Y[(ulong)(t0 + t) * M + r0 + lane] = gelu_tanh(g[mt][r]) * u[mt][r];
+                            if (t < tn) Y[(ulong)(t0 + t) * M + r0 + lane] = GLU_ACT(g[mt][r]) * u[mt][r];
                         }
                     }
                 }
@@ -842,7 +902,11 @@ __kernel void mk_persistent_interpreter(
             uint ring = task.layer;
             __global const float* Vc = Kc + kv_plane_rows(max_seq, ring) * KV * D;
             uint lo, chunks = attn_keys(task.p0, window, &lo);
+#ifdef MK_QWEN3TTS
+            uint G = (D == 256 || D == 128) ? 2 : 1, QG = H / KV / G;
+#else
             uint G = D == 256 ? 2 : 1, QG = H / KV / G;
+#endif
             for (uint item = gsg; item < chunks * KV * QG; item += n_gsg) {
                 uint qg = item % QG, kvh = (item / QG) % KV, c = item / (QG * KV);
                 uint h0 = kvh * (H / KV) + qg * G;
@@ -850,6 +914,10 @@ __kernel void mk_persistent_interpreter(
                 __global float* part = scratch + (ulong)c * (D + 2);
                 ulong stride = (ulong)chunks * (D + 2);
                 if (D == 256) attn_chunk_16_2(Q, Kc, Vc, part, stride, h0, kvh, D, KV, k_lo, k_hi, ring, lane);
+#ifdef MK_QWEN3TTS
+                else if (D == 128) attn_chunk_8_2(Q, Kc, Vc, part, stride, h0, kvh, D, KV, k_lo, k_hi, ring, lane);
+                else if (D == 64) attn_chunk_4_1(Q, Kc, Vc, part, stride, h0, kvh, D, KV, k_lo, k_hi, ring, lane);
+#endif
                 else          attn_chunk_32_1(Q, Kc, Vc, part, stride, h0, kvh, D, KV, k_lo, k_hi, ring, lane);
             }
         }
@@ -1303,6 +1371,9 @@ __kernel void mk_persistent_interpreter(
                 }
             }
         }
+#ifdef MK_QWEN3TTS
+#include "qwen3tts_ops.cl"
+#endif
         else if (op == OP_MEAN_POOL_L2) {
             // c[0..k) = L2-normalized mean of the first k columns of n rows with stride m.
             __global const float* A = (__global const float*)task.a;

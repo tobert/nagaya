@@ -1139,6 +1139,9 @@ dependencies = [
 [[package]]
 name = "nagaya-mk-bmg"
 version = "0.1.0"
+dependencies = [
+ "sha2",
+]
 
 [[package]]
 name = "nagaya-mk-gemma4-bmg"

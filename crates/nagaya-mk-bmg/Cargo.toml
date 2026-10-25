@@ -8,3 +8,6 @@ edition = "2024"
 xe = []
 
 [dependencies]
+
+[dev-dependencies]
+sha2 = "0.10.9"
