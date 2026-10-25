@@ -2284,6 +2284,14 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
 
   Reason: gogi types `head` as required, and gogi is the contract. This settles a note of Claude Sonnet 5.5.
   Decided by senpai 2026-10-20 night (vetoable).
+
+  **Proposed** (claude-opus-5-5, 2026-10-25): a dry run head that the store does not hold is `blake3:` and the
+  recipe's hex. The form `recipe:` goes. Reason: gogi now allows only `blake3:` and 64 digits as a
+  snapshot id (spec 6.2, gogi `33b78b7`), and gogi is the contract. A recipe is a whole BLAKE3 hash already (6.2).
+
+  No store entry has the id, so a read or a pin of it is still a 404 or `held: false`. The id no longer shows that it
+  is a recipe: a client tells that from `dry_run: true`. This replaces the `recipe:` form of the two rules below and
+  of the rule of Amy, 2026-10-21, in 11.3c.
 - **The pin owner.** gogi names an owner with text, and the store names it with a `u64`. The service keeps the
   text and gives the store the first 8 bytes of the BLAKE3 hash of the text. A restart keeps the text in `pins.json`
   in the store directory. Entries that builds put have the owner 1. Decided by senpai 2026-10-22 (vetoable).
