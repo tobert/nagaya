@@ -530,6 +530,7 @@ impl StagedJobs {
                         .unwrap_or_else(|_| panic!("the thread of stage {stage} stopped"));
                 }
                 Work::Restore { .. } => unreachable!("the job path makes no restore quantum; it restores in a copy"),
+                Work::On { .. } => unreachable!("the group makes no quantum on one device until it loads two engines"),
             }
             self.forget_ended_jobs();
         }

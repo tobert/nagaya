@@ -351,3 +351,79 @@ fn a_whole_quantum_waits_for_a_higher_rank_stage_on_another_device() {
     let quanta = run.complete(1, 1);
     assert_eq!(started(&quanta), vec![(3, Work::Whole, vec![0, 1])]);
 }
+
+/// A decode pass of another engine of the group, which holds device 1 only (engine-abi "Passes on separate cards of
+/// one group").
+const ON_ONE: Item = Item::On(Kind::Decode, 1);
+
+fn on_one() -> Work {
+    Work::On { device: 1 }
+}
+
+#[test]
+fn a_pass_of_an_engine_with_one_device_runs_beside_stage_zero() {
+    let mut run = Run::new();
+    run.arrive(job(1, Class::Interactive, &[Item::Block(Kind::Decode)]));
+    assert_eq!(run.on(0), Some((1, stage(0, 0))));
+    // Job 2 is batch, so the interactive stage 1 of job 1 ranks first on device 1 (spec 5.3).
+    let quanta = run.arrive(job(2, Class::Batch, &[ON_ONE, ON_ONE]));
+    assert_eq!(
+        started(&quanta),
+        vec![(2, on_one(), vec![1])],
+        "device 1 is free while stage 0 runs"
+    );
+    assert_eq!(quanta[0].kind, Kind::Decode);
+    // Stage 1 of job 1 waits for device 1, and the next pass of job 2 waits for the one before it.
+    assert!(run.complete(0, 5).is_empty());
+    assert_eq!(started(&run.complete(1, 3)), vec![(1, stage(0, 1), vec![1])]);
+    assert_eq!(run.job(2).state, JobState::Ready);
+    assert_eq!(started(&run.complete(1, 5)), vec![(2, on_one(), vec![1])]);
+    assert_eq!(run.job(1).state, JobState::Done);
+    assert!(run.complete(1, 3).is_empty());
+    assert_eq!(run.job(2).state, JobState::Done);
+}
+
+#[test]
+fn a_pass_on_one_device_ranks_with_the_stages_of_that_device() {
+    let mut run = Run::new();
+    // Device 1 runs a filler pass while an interactive block runs stage 0.
+    run.arrive(job(1, Class::Filler, &[ON_ONE, ON_ONE]));
+    run.arrive(job(2, Class::Interactive, &[PREFILL]));
+    assert_eq!((run.on(0), run.on(1)), (Some((2, stage(0, 0))), Some((1, on_one()))));
+    // The interactive stage 1 is ready when the filler pass ends, and it goes first.
+    run.complete(0, 2);
+    assert_eq!(started(&run.complete(1, 2)), vec![(2, stage(0, 1), vec![1])]);
+    assert_eq!(started(&run.complete(1, 2)), vec![(1, on_one(), vec![1])]);
+}
+
+#[test]
+fn a_whole_copy_waits_for_a_pass_on_one_device() {
+    let mut run = Run::new();
+    run.arrive(job(1, Class::Interactive, &[ON_ONE]));
+    assert!(
+        run.arrive(job(2, Class::Interactive, &[Item::Whole(Kind::Copy)]))
+            .is_empty()
+    );
+    assert_eq!(run.on(0), None, "a whole copy holds device 0 for none until it starts");
+    assert_eq!(started(&run.complete(1, 2)), vec![(2, Work::Whole, vec![0, 1])]);
+}
+
+#[test]
+fn a_pass_on_a_device_with_no_stage_is_an_error() {
+    let mut run = Run::new();
+    let refused = stage_step(
+        run.state.take().unwrap(),
+        StageEvent::Arrive {
+            now_ms: 0,
+            job: job(1, Class::Batch, &[Item::On(Kind::Decode, 7)]),
+        },
+    );
+    assert_eq!(refused.unwrap_err(), StageError::NoStageDevice(1, 7));
+    let mut run = Run::new();
+    run.arrive(job(1, Class::Batch, &[ON_ONE]));
+    let mut state = run.state.take().unwrap();
+    assert_eq!(
+        state.append_items(1, &[Item::On(Kind::Decode, 7)]),
+        Err(StageError::NoStageDevice(1, 7))
+    );
+}

@@ -12,7 +12,8 @@
 //!
 //! The rules of "The stage path in v0" (engine-abi D1) also hold. A block holds a residual buffer from the
 //! start of stage s to the end of stage s + 1, and stage s waits for a free buffer. A copy quantum that is not a
-//! restore holds every device. Between quanta on each device, the ready quantum of the highest rank for that device
+//! restore holds every device. A quantum of another engine of the group holds only its own device (`Item::On`).
+//! Between quanta on each device, the ready quantum of the highest rank for that device
 //! starts (spec 5.3, 5.4): the class first, then the order in the class.
 
 use std::collections::{BTreeMap, VecDeque};
@@ -46,6 +47,9 @@ pub enum Item {
     Restore,
     /// A copy quantum that reads or writes the parts of every stage. It holds every device of the group.
     Whole(Kind),
+    /// A quantum of another engine of the group, which holds only this device (engine-abi "Passes on separate cards
+    /// of one group"). The device has a stage.
+    On(Kind, Device),
 }
 
 /// What one quantum runs.
@@ -67,6 +71,11 @@ pub enum Work {
     },
     /// A copy quantum that holds every device.
     Whole,
+    /// A quantum of another engine of the group on one device.
+    On {
+        /// The device.
+        device: Device,
+    },
 }
 
 /// One quantum that starts.
@@ -224,6 +233,8 @@ pub enum StageError {
     NothingRunning(Device),
     /// A caller adds items to a job that has no quantum that runs.
     AppendToIdleJob(JobId, JobState),
+    /// A job has an item on a device that has no stage.
+    NoStageDevice(JobId, Device),
 }
 
 impl std::fmt::Display for StageError {
@@ -243,6 +254,10 @@ impl std::fmt::Display for StageError {
             StageError::AppendToIdleJob(id, state) => write!(
                 f,
                 "job {id} is in state {state:?}: add items only while a quantum of the job runs"
+            ),
+            StageError::NoStageDevice(id, device) => write!(
+                f,
+                "job {id} has a quantum on device {device}, which has no stage: name a device of a stage"
             ),
         }
     }
@@ -317,8 +332,20 @@ impl StageScheduler {
             .collect()
     }
 
+    /// The first item of `items` on a device that has no stage.
+    fn stray_device(&self, job: JobId, items: &[Item]) -> Result<(), StageError> {
+        match items.iter().find_map(|item| match item {
+            Item::On(_, device) if !self.engine.devices.contains(device) => Some(*device),
+            _ => None,
+        }) {
+            Some(device) => Err(StageError::NoStageDevice(job, device)),
+            None => Ok(()),
+        }
+    }
+
     /// Add items to the end of a job, while a quantum of it runs. A refusal changes nothing.
     pub fn append_items(&mut self, job: JobId, items: &[Item]) -> Result<(), StageError> {
+        self.stray_device(job, items)?;
         let held = self
             .jobs
             .iter_mut()
@@ -439,6 +466,16 @@ impl StageScheduler {
                     });
                 }
             }
+            Item::On(kind, on) => {
+                if on == device && flights.is_empty() && !self.job_runs(job.id) {
+                    out.push(Candidate {
+                        job: index,
+                        kind,
+                        work: Work::On { device },
+                        starts_item: true,
+                    });
+                }
+            }
         }
     }
 
@@ -526,9 +563,9 @@ impl StageScheduler {
             let (kind, restore) = match item {
                 Item::Block(kind) => (kind, false),
                 Item::Restore => (Kind::Copy, true),
-                Item::Whole(_) => (candidate.kind, false),
+                Item::Whole(_) | Item::On(..) => (candidate.kind, false),
             };
-            if !matches!(item, Item::Whole(_)) {
+            if matches!(item, Item::Block(_) | Item::Restore) {
                 self.flights.entry(job.id).or_default().push_back(Flight {
                     block: self.next_block,
                     kind,
@@ -546,6 +583,7 @@ impl StageScheduler {
                 devices.sort_unstable();
                 devices
             }
+            Work::On { device } => vec![device],
             Work::Stage { block, stage } | Work::Restore { block, stage } => {
                 let flight = self
                     .flights
@@ -672,6 +710,8 @@ pub fn stage_step(
             if job.state != JobState::Ready {
                 return Err(StageError::ArrivalNotReady(job.id, job.state));
             }
+            let items: Vec<Item> = job.items.iter().copied().collect();
+            state.stray_device(job.id, &items)?;
             state.jobs.push(job);
         }
         StageEvent::Admit { job, .. } => {
