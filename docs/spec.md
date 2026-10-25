@@ -2863,10 +2863,13 @@ of that machinery, because each message end is in the chain.
 
 - The audio of a line is a WAV, but the model state needs its codes. The service keeps the codes of each output that
   it wrote, beside the object, under its content id.
-- An `assistant` part names an output of this served model. An audio object that it did not write is a 400 that
-  names the part. Reason: the engine has no codec encoder, so it cannot make codes from audio.
-- An eviction can drop the codes of an output. The server then answers as for an object that it does not hold: a 404
-  that names the part. The client speaks that line again.
+- An `assistant` part names an output of this served model. Reason: the engine has no codec encoder, so it cannot
+  make codes from audio.
+- The server drops the codes of an output when the object store drops the object.
+- Audio whose codes the server does not hold is a 404 that names the part, as an object that it does not hold. The
+  client speaks that line again. Proposed by senpai (Claude Opus 5.5), 2026-10-25. This replaces a 400 for audio
+  that the model did not write. Reason: the server cannot tell that audio from audio whose codes it dropped, and the
+  client does the same for both.
 
 **The WAV of an output.** Proposed by senpai (Claude Opus 5.5), 2026-10-25. gogi leaves the bytes of a stream open.
 
