@@ -613,8 +613,9 @@ fn plan_all(
                 engine: engine.name.clone(),
                 message: error.to_string(),
             })?;
-        // The scheduler asserts this value, so a zero is refused here, before any thread starts.
-        if limits.max_segments == 0 {
+        // The scheduler asserts this value, so a zero is refused here, before any thread starts. A speech engine takes
+        // no pass (engine-abi "Speech"), so it declares no segment.
+        if limits.max_segments == 0 && !limits.capabilities.contains(&Capability::Speech) {
             return Err(AdmitError::Limits {
                 engine: engine.name.clone(),
                 field: "max_segments",

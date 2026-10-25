@@ -287,6 +287,22 @@ fn an_engine_with_no_segments_is_refused_with_its_name_and_the_field() {
 }
 
 #[test]
+fn a_speech_engine_takes_no_pass_so_it_needs_no_segment() {
+    // engine-abi "Speech": a speech engine takes no pass, so its plan gives max_segments 0.
+    let mut limits = FakeAlways::new().limits();
+    limits.max_segments = 0;
+    limits.capabilities = vec![nagaya_abi::Capability::Speech];
+    let mut registry = Registry::new();
+    registry.register("speech", Box::new(FixedLimits(limits)));
+    let profile = PlacementProfile {
+        engines: vec![engine("voice", "speech", 1)],
+        budgets: vec![device_budget(0, 4096), host_budget(256)],
+        store: None,
+    };
+    admit(&profile, &registry, &inventory(&[0]), &mut Ledger::new()).expect("a speech engine with no segment");
+}
+
+#[test]
 fn one_segment_is_admitted() {
     let mut limits = FakeAlways::new().limits();
     limits.max_segments = 1;
