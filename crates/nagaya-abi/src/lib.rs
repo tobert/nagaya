@@ -348,6 +348,8 @@ pub enum Capability {
     Train,
     /// Close.
     Close,
+    /// Speech: `speech_begin`, `speech_frames` and `speech_clear` (engine-abi "Speech").
+    Speech,
 }
 
 /// The limits that an engine declares.
@@ -800,6 +802,55 @@ pub trait Arena {
     fn arena_export(&mut self) -> Result<Vec<ArenaFd>, String>;
 }
 
+/// One position of a speech prompt (engine-abi "Speech"): an id of the text vocabulary and an id of the codec
+/// vocabulary. Either can be absent. The family library makes the pairs; the engine never takes text (D2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PromptPair {
+    /// The id of the text vocabulary, or `None`.
+    pub text: Option<u32>,
+    /// The id of the codec vocabulary, or `None`.
+    pub codec: Option<u32>,
+}
+
+/// The sampler of a speech request (engine-abi "Speech", spec 11.2). The same identity, prompt, sampler and seed give
+/// the same codes and the same audio.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpeechSampler {
+    /// The temperature.
+    pub temperature: f32,
+    /// The ids with the largest scores that stay; 0 keeps every id.
+    pub top_k: u32,
+    /// The repetition penalty of the first codebook.
+    pub repetition_penalty: f32,
+    /// The seed of the random stream.
+    pub seed: u64,
+}
+
+/// What one `speech_frames` call made.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SpeechOut {
+    /// The frames that the call made.
+    pub frames: u32,
+    /// The codes of each frame, frame after frame, `codebooks` codes for each frame.
+    pub codes: Vec<u32>,
+    /// The audio of the frames: signed 16-bit samples, mono, at the rate of the engine.
+    pub audio: Vec<i16>,
+    /// True when the engine sampled the end of speech. The slot makes no more frames.
+    pub end: bool,
+}
+
+/// The speech capability (engine-abi "Speech").
+pub trait Speech {
+    /// Feed the prompt into an empty slot, and keep the sampler there.
+    fn speech_begin(&mut self, slot: SlotId, prompt: &[PromptPair], sampler: &SpeechSampler) -> Result<(), PassError>;
+
+    /// Make at most `max` frames in the slot and decode their audio. It stops at the end of speech.
+    fn speech_frames(&mut self, slot: SlotId, max: u32) -> Result<SpeechOut, PassError>;
+
+    /// Free the state of the slot. A slot that holds no request is not a failure.
+    fn speech_clear(&mut self, slot: SlotId);
+}
+
 /// The core trait that every engine implements.
 pub trait Engine {
     /// The identity of the engine and its weights.
@@ -841,6 +892,11 @@ pub trait Engine {
 
     /// The arena capability, when the engine has it. Call it before `Stages::take_handles`.
     fn arena(&mut self) -> Option<&mut dyn Arena> {
+        None
+    }
+
+    /// The speech capability, when the engine has it (engine-abi "Speech").
+    fn speech(&mut self) -> Option<&mut dyn Speech> {
         None
     }
 }
