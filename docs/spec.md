@@ -2876,6 +2876,16 @@ of that machinery, because each message end is in the chain.
 
 Reason: a reader of the object gets a valid WAV, and a reader of the stream gets audio before the end.
 
+**The served speech model.** Proposed by senpai (Claude Opus 5.5), 2026-10-25.
+
+- Identity lists the speech model with `media.outputs` of `audio/wav`, no inputs, and the capability `generate`. Its
+  `context_tokens` is the positions of a slot.
+- Its `weight_hash` and `tokenizer_hash` are the engine's after its first open since the start, and empty before.
+  Reason: an engine on demand does not open at the start, and a hash of the weights reads 4 GB.
+- `sample` takes `seed` only; another member is a 400 that names it. `output.options` takes `language` only.
+- The reply has no text, `finish` is `end_turn`, and `usage` counts positions. `snapshots` names the held ends and the
+  head.
+
 **The held state of a speech context.** Proposed by senpai (Claude Opus 5.5), 2026-10-25.
 
 - A speech snapshot holds the talker KV of each position, as the part `talker_kv` (D10). The store keeps it as any
