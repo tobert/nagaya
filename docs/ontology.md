@@ -129,6 +129,10 @@ the content id. Whether a snapshot fits a slot is a check on coverage, not part 
 An object also has a content id. The printed form of each content id is `blake3:` and 64 hex digits, always whole
 (`docs/spec.md` 6.2).
 
+**Object.** Bytes and a media type that a client or an engine gives to the store: an image, a sound, a video, a MIDI
+file. It is named by its content id. The store can evict a **cached** object. A **kept** object has a **keep**: a
+lease with an owner and an expiry (`docs/spec.md` 6.15). kaijutsu's CAS holds the same kind of thing.
+
 **Recipe.** What a snapshot was made from: a hash of the engine identity, the inputs and the boundaries. For an
 engine that declares a geometry key, the recipe holds that key too. The store maps a recipe to the content ids made
 from it, so the nagaya can ask "do we already have this?" before it builds. mkviolet's `snapshot_id` is the input

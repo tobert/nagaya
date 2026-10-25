@@ -1180,6 +1180,41 @@ engine. The nagaya's generation job makes the prompt-lookup drafts, as mkviolet 
 keys of 4 and 3 tokens, at most 7 drafts). Reason: drafts change no row that the store keeps. Thus a change of the
 setting must not change the identity and lose the store.
 
+**6.15 Objects.** Proposed by senpai (Claude Opus 5.5), 2026-10-25. Amy decides each rule. Reason: council requests
+will carry images, audio, video and MIDI (Amy: "I kinda want our API to be comprehensive"). gogi's contract gets
+the text of the API. This section is how the nagaya implements it.
+
+- **Object.** An object is bytes and a media type, named by its content id (6.2). The id is the BLAKE3 hash of the
+  bytes, with no canonical form. A message, a reply or a case names an object by `{"id", "mime"}`.
+- **The routes.** `PUT /council/v2/objects/{id}` sends the bytes. The server hashes them as they arrive. A
+  mismatch is a 400 that names both ids, and the server keeps nothing. A put of a held object takes no bytes.
+  `GET` and `HEAD` on the same path read the object, and `GET` accepts `Range`.
+- **Two classes.** An object is `cached` or `kept`. A cached object is evicted as an entry with no pin is (6.9).
+  A kept object has a keep: a lease with an owner and an expiry, as a pin has (6.10). The store never evicts an
+  object while a keep on it is live.
+- **The term of a keep.** A keep lasts at most 30 days, and a client renews it. Reason: the one-day maximum of a
+  pin (6.10) is for model state that the server can build again. A client cannot always make an object again.
+- **A miss.** A request that names an object that the cluster does not hold is a 404 `object_not_found` that names
+  the id. The client sends the object again. Thus the rule of the contract stays: an eviction costs a send, never a
+  wrong answer.
+- **Home machines.** Each kept object has two home machines, by rendezvous hash of its id over the machines in gossip
+  that hold a store (2.3). A machine that receives a kept object tells its homes, and each home pulls a copy.
+  Gossip carries which machines hold a store, never a list of objects.
+- **A pull.** A machine that does not hold an object asks its homes first, then the other machines. It checks each
+  range of the bytes against the id with the BLAKE3 tree (the Bao encoding). Thus parts of one large object can
+  come from several machines.
+- **Outputs.** An image, audio or other output of a generation is a cached object. A client that keeps the result
+  puts a keep on it.
+- **On disk.** The reference store keeps an object as a file under the store directory, at
+  `objects/<the first 2 hex digits>/<the other 62>`. Its media type and keeps are in the index, not in the file.
+
+Snapshots stay entries (6.4) for now. They can become objects of their own media type later, with their own order of
+eviction.
+
+Some names in an identity are short today: the council `engine` (11.3c), and the template and tokenizer hashes
+(12.1). Each has 16 hex digits. They are names that a client compares, not addresses. Amy decides whether they
+become whole at the next change of identity.
+
 **Open** (Amy, 2026-10-22: "leave open for testing on b70host"): do drafts change the bits? A drafted verify pass
 has a shape that a plain decode does not have. Gemma 4 declares `segments_exact: false`, and its feed rule (6.14)
 exists because its bits depend on the split of a pass. The test runs on the B70 cards:
