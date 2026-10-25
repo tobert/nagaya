@@ -24,7 +24,7 @@ pub mod gemma4;
 #[cfg(feature = "xe")]
 pub use nagaya_mk_bmg::level_zero;
 pub use nagaya_mk_bmg::protocol;
-pub mod safetensors;
+pub use nagaya_mk_bmg::safetensors;
 pub mod sharding;
 pub mod spec;
 

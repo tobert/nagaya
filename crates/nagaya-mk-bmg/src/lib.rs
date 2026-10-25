@@ -18,6 +18,7 @@ pub mod level_zero;
 pub mod protocol;
 #[cfg(feature = "xe")]
 pub mod ring;
+pub mod safetensors;
 
 /// The kernel binary of the Gemma 4 engine for `bmg-g31`, from `kernels/megakernel.cl`.
 #[cfg(feature = "xe")]
