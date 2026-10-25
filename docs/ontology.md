@@ -52,6 +52,9 @@ device id (`docs/spec.md` 2.4, "One name for each device").
 **Placement profile.** The list of a machine's engines, their devices, their config, the budgets, the shares, the
 store's budgets and pinned identities (`docs/spec.md` 2.4). It is one TOML file in the store directory.
 
+**Stance.** A name for what the fleet does now, for example agent time or live performance. For each machine, it
+names the engines that are resident. The cluster has one active stance (`docs/spec.md` 3.3b).
+
 **Bootstrap config.** The small TOML file, `nagaya.toml`, that a process reads at start. It holds the bind
 addresses, the store directory, the seed peers, the node name and the park budget (`docs/spec.md` 2.1). It holds no
 engine.
