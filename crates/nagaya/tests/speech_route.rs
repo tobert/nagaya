@@ -494,18 +494,20 @@ fn speak(service: &SpeechService, input: &str) -> Result<Vec<Chunk>, SpeechError
 #[test]
 fn a_full_wait_for_a_slot_is_busy_and_a_late_job_times_out() {
     let f = Fixture::new();
-    let service = Arc::new(f.service(1, Duration::from_millis(400)));
+    let service = Arc::new(f.service(1, Duration::from_secs(1)));
     f.hold.store(true, Ordering::SeqCst);
     let held = {
         let service = Arc::clone(&service);
         std::thread::spawn(move || speak(&service, "Ship."))
     };
-    // The first request holds the only slot while its engine holds its frames.
+    // The first request holds the only slot while its engine holds its frames. The second request starts only when
+    // the first job is in that quantum, so the first job cannot expire before the hold and free the slot.
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while service.free_slots() != 0 {
-        assert!(std::time::Instant::now() < deadline, "the first request took no slot");
+    while !f.log().contains(&"frames:0".to_owned()) {
+        assert!(std::time::Instant::now() < deadline, "the first job made no frames");
         std::thread::sleep(Duration::from_millis(5));
     }
+    assert_eq!(service.free_slots(), 0);
     let error = speak(&service, "Ship.").unwrap_err();
     assert!(matches!(error, SpeechError::Busy(_)), "{error:?}");
     f.hold.store(false, Ordering::SeqCst);

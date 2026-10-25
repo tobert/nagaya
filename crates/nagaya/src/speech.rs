@@ -152,12 +152,23 @@ struct SpeechBody {
     out: SyncSender<Result<Chunk, SpeechError>>,
     pool: Arc<SlotPool>,
     begun: bool,
+    /// True when the slot went back to the pool.
+    released: bool,
     /// True when the job sent its end or its failure.
     told: bool,
     timeout: Duration,
 }
 
 impl SpeechBody {
+    /// Give the slot back to the pool, once. The job does it before it tells its end, so a client that reads the end
+    /// finds the slot free.
+    fn release(&mut self) {
+        if !self.released {
+            self.released = true;
+            self.pool.give(self.slot);
+        }
+    }
+
     fn tell(&mut self, item: Result<Chunk, SpeechError>) -> bool {
         self.told |= !matches!(item, Ok(Chunk::Audio(_)));
         match self.out.try_send(item) {
@@ -188,6 +199,7 @@ impl JobBody for SpeechBody {
                     },
                     PassErrorKind::Ran(_) => SpeechError::Failed(error.message),
                 };
+                self.release();
                 self.tell(Err(failure));
                 return Ran::Failed;
             }
@@ -199,6 +211,7 @@ impl JobBody for SpeechBody {
             Err(error) => {
                 speech.speech_clear(self.slot);
                 tracing::error!("a speech quantum failed: {}", error.message);
+                self.release();
                 self.tell(Err(SpeechError::Failed(error.message)));
                 return Ran::Failed;
             }
@@ -206,10 +219,12 @@ impl JobBody for SpeechBody {
         let end = out.end;
         if !out.audio.is_empty() && !self.tell(Ok(Chunk::Audio(out.audio))) {
             speech.speech_clear(self.slot);
+            self.release();
             return Ran::Cancelled;
         }
         if end {
             speech.speech_clear(self.slot);
+            self.release();
             self.tell(Ok(Chunk::End));
             return Ran::Done;
         }
@@ -217,7 +232,7 @@ impl JobBody for SpeechBody {
     }
 
     fn ended(&mut self, state: JobState) {
-        self.pool.give(self.slot);
+        self.release();
         if !self.told {
             let message = match state {
                 JobState::Expired => SpeechError::Timeout(format!(
@@ -305,6 +320,7 @@ impl SpeechService {
             out,
             pool: Arc::clone(&self.pool),
             begun: false,
+            released: false,
             told: false,
             timeout: self.config.timeout,
         };
