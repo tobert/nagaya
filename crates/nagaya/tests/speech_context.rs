@@ -71,6 +71,8 @@ struct Voice {
     slots: Vec<SlotState>,
     /// While it is set, a frames call waits.
     hold: Arc<AtomicBool>,
+    /// The top_k and the temperature of the last feed with a sampler.
+    sampled: Arc<Mutex<Option<(u32, f32)>>>,
 }
 
 impl Voice {
@@ -99,6 +101,9 @@ impl Speech for Voice {
             .push(format!("feed:{slot}:{}:{}", positions.len(), sampler.is_some()));
         for position in positions {
             self.push(slot, position);
+        }
+        if let Some(sampler) = sampler {
+            *self.sampled.lock().unwrap() = Some((sampler.top_k, sampler.temperature));
         }
         let s = &mut self.slots[slot as usize];
         s.line = sampler.map(|sampler| Line {
@@ -264,7 +269,7 @@ impl Engine for Voice {
     }
 }
 
-struct Voices(Log, Arc<AtomicBool>);
+struct Voices(Log, Arc<AtomicBool>, Arc<Mutex<Option<(u32, f32)>>>);
 
 impl Factory for Voices {
     fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
@@ -276,6 +281,7 @@ impl Factory for Voices {
             log: Arc::clone(&self.0),
             slots: vec![SlotState::default(), SlotState::default()],
             hold: Arc::clone(&self.1),
+            sampled: Arc::clone(&self.2),
         }))
     }
 }
@@ -345,6 +351,7 @@ struct Fixture {
     process: Process,
     log: Log,
     hold: Arc<AtomicBool>,
+    sampled: Arc<Mutex<Option<(u32, f32)>>>,
     directory: tempfile::TempDir,
 }
 
@@ -359,7 +366,11 @@ impl Fixture {
         let log: Log = Arc::default();
         let hold = Arc::new(AtomicBool::new(false));
         let mut registry = Registry::new();
-        registry.register("voices", Box::new(Voices(Arc::clone(&log), Arc::clone(&hold))));
+        let sampled = Arc::default();
+        registry.register(
+            "voices",
+            Box::new(Voices(Arc::clone(&log), Arc::clone(&hold), Arc::clone(&sampled))),
+        );
         let profile = PlacementProfile {
             engines: vec![EnginePlacement {
                 name: "voice".to_owned(),
@@ -411,6 +422,7 @@ impl Fixture {
             process,
             log,
             hold,
+            sampled,
             directory,
         }
     }
@@ -431,6 +443,7 @@ impl Fixture {
     fn service(&self) -> SpeechService {
         let mut config = SpeechConfig::new(MODEL, "voice", 2);
         config.context_positions = ROOM;
+        config.snapshot_bytes = 8;
         SpeechService::new(config, Arc::new(Letters), self.process.ports()).unwrap()
     }
 
@@ -461,6 +474,8 @@ fn first(line: &str, snap_voice: bool) -> SpeechContext {
         snaps: vec![snap_voice, false],
         language: "en".to_owned(),
         seed: 5,
+        temperature: None,
+        top_k: None,
         schedule: Schedule::default(),
     }
 }
@@ -740,10 +755,10 @@ fn a_generation_names_each_member_that_a_speech_model_does_not_take() {
         (StatusCode::BAD_REQUEST, "output.options.seconds".to_owned())
     );
     let mut warm = messages(std::slice::from_ref(&line));
-    warm["sample"]["temperature"] = json!(0.5);
+    warm["sample"]["min_p"] = json!(0.5);
     assert_eq!(
         refused(&council, warm),
-        (StatusCode::BAD_REQUEST, "sample.temperature".to_owned())
+        (StatusCode::BAD_REQUEST, "sample.min_p".to_owned())
     );
     let mut image = messages(std::slice::from_ref(&line));
     image["output"]["mime"] = json!("image/png");
@@ -936,4 +951,70 @@ fn a_refused_copy_of_a_snapshot_is_busy_and_no_internal_error() {
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{v}");
     assert!(council.failure().is_none(), "{:?}", council.failure());
     assert_eq!(council.speech_service(MODEL).unwrap().free_slots(), 2);
+}
+
+/// The gogi suite against the speech model, served in process over HTTP: a model with no text replies (gogi
+/// `media.text_replies`).
+#[test]
+fn the_gogi_suite_passes_for_the_speech_model() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let server = runtime.spawn(async move {
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        axum::serve(listener, router(council)).await.unwrap();
+    });
+    let url = format!("http://{address}");
+    let report = std::thread::spawn(move || {
+        gogi_conformance::run(
+            gogi_conformance::Opts {
+                url,
+                restart: None,
+                model: Some(MODEL.to_owned()),
+            },
+            true,
+        )
+    })
+    .join()
+    .unwrap();
+    server.abort();
+    assert_eq!(report.failures(), 0, "{}", report.summary());
+}
+
+#[test]
+fn temperature_0_samples_greedily_and_top_k_and_temperature_reach_the_engine() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let line = || messages(&[json!({"role": "user", "content": "hello"})]);
+    let mut greedy = line();
+    greedy["sample"]["temperature"] = json!(0);
+    assert_eq!(generate(&council, greedy).0, StatusCode::OK);
+    assert_eq!(
+        *fixture.sampled.lock().unwrap(),
+        Some((1, 1.0)),
+        "temperature 0 is top_k 1"
+    );
+    let mut warm = line();
+    warm["sample"]["temperature"] = json!(0.5);
+    warm["sample"]["top_k"] = json!(7);
+    assert_eq!(generate(&council, warm).0, StatusCode::OK);
+    assert_eq!(*fixture.sampled.lock().unwrap(), Some((7, 0.5)));
+    assert_eq!(generate(&council, line()).0, StatusCode::OK);
+    assert_eq!(
+        *fixture.sampled.lock().unwrap(),
+        Some((50, 0.9)),
+        "the checkpoint's sampler"
+    );
+    let mut none = line();
+    none["sample"]["top_k"] = json!(0);
+    assert_eq!(
+        refused(&council, none),
+        (StatusCode::BAD_REQUEST, "sample.top_k".to_owned())
+    );
 }

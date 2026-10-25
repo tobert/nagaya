@@ -554,7 +554,7 @@ dependencies = [
 [[package]]
 name = "gogi-conformance"
 version = "0.1.0"
-source = "git+file:///home/atobey/src/gogi?rev=1f56952db49318721a10fe4330ac3406a88c464a#1f56952db49318721a10fe4330ac3406a88c464a"
+source = "git+file:///home/atobey/src/gogi?rev=c3acffe41e08dd281c496cbf67f6ebccf6d76c4e#c3acffe41e08dd281c496cbf67f6ebccf6d76c4e"
 dependencies = [
  "gogi-proto",
  "serde",
@@ -565,7 +565,7 @@ dependencies = [
 [[package]]
 name = "gogi-fake"
 version = "0.1.0"
-source = "git+file:///home/atobey/src/gogi?rev=1f56952db49318721a10fe4330ac3406a88c464a#1f56952db49318721a10fe4330ac3406a88c464a"
+source = "git+file:///home/atobey/src/gogi?rev=c3acffe41e08dd281c496cbf67f6ebccf6d76c4e#c3acffe41e08dd281c496cbf67f6ebccf6d76c4e"
 dependencies = [
  "blake3",
  "gogi-proto",
@@ -578,7 +578,7 @@ dependencies = [
 [[package]]
 name = "gogi-proto"
 version = "0.1.0"
-source = "git+file:///home/atobey/src/gogi?rev=1f56952db49318721a10fe4330ac3406a88c464a#1f56952db49318721a10fe4330ac3406a88c464a"
+source = "git+file:///home/atobey/src/gogi?rev=c3acffe41e08dd281c496cbf67f6ebccf6d76c4e#c3acffe41e08dd281c496cbf67f6ebccf6d76c4e"
 dependencies = [
  "blake3",
  "indexmap",
@@ -590,7 +590,7 @@ dependencies = [
 [[package]]
 name = "gogi-toy"
 version = "0.1.0"
-source = "git+file:///home/atobey/src/gogi?rev=1f56952db49318721a10fe4330ac3406a88c464a#1f56952db49318721a10fe4330ac3406a88c464a"
+source = "git+file:///home/atobey/src/gogi?rev=c3acffe41e08dd281c496cbf67f6ebccf6d76c4e#c3acffe41e08dd281c496cbf67f6ebccf6d76c4e"
 dependencies = [
  "gogi-proto",
  "serde_json",

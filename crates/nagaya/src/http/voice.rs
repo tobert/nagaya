@@ -111,21 +111,39 @@ pub fn check(
             }
         }
     }
+    // The engine samples with a temperature and top_k. Temperature 0 is greedy: top_k 1 (spec 11.8a).
+    let mut temperature = None;
+    let mut top_k = None;
     if let Some(sample) = &request.sample {
-        let named = [
-            ("temperature", sample.temperature.is_some()),
-            ("top_p", sample.top_p.is_some()),
-            ("top_k", sample.top_k.is_some()),
-            ("min_p", sample.min_p.is_some()),
-        ];
-        if let Some((key, _)) = named.iter().find(|(_, given)| *given) {
+        if let Some((key, value)) = [("top_p", sample.top_p, 1.0), ("min_p", sample.min_p, 0.0)]
+            .into_iter()
+            .find_map(|(key, given, off)| given.filter(|v| *v != off).map(|v| (key, v)))
+        {
             return Err(invalid(
                 format!("sample.{key}"),
                 format!(
-                    "nothing ran: {} samples with the sampler of its checkpoint; send `seed` only",
+                    "nothing ran: sample.{key} is {value}, and {} samples with temperature and top_k only",
                     model.model
                 ),
             ));
+        }
+        if sample.top_k == Some(0) {
+            return Err(invalid(
+                "sample.top_k",
+                format!(
+                    "nothing ran: {} samples from top_k codes; give a top_k of 1 or more",
+                    model.model
+                ),
+            ));
+        }
+        top_k = sample.top_k.map(|k| u32::try_from(k).unwrap_or(u32::MAX));
+        match sample.temperature {
+            Some(0.0) => {
+                temperature = Some(1.0);
+                top_k = Some(1);
+            }
+            Some(t) => temperature = Some(t as f32),
+            None => {}
         }
     }
     if !request.decisions.is_empty() {
@@ -251,6 +269,8 @@ pub fn check(
             snaps,
             language,
             seed,
+            temperature,
+            top_k,
             schedule: crate::council::Schedule::of(request.class, request.priority),
         },
         read,
@@ -455,7 +475,7 @@ pub fn served_model(service: &SpeechService, status: gogi_proto::identity::Model
         limits: gogi_proto::identity::ModelLimits {
             context_tokens: config.context_positions,
             decision_context_tokens: 0,
-            snapshot_bytes: 0,
+            snapshot_bytes: config.snapshot_bytes,
             contexts_per_decision: 0,
             default_timeout_ms: config.timeout.as_millis() as u64,
             text_tokens: None,
@@ -464,6 +484,8 @@ pub fn served_model(service: &SpeechService, status: gogi_proto::identity::Model
         media: Some(gogi_proto::identity::Media {
             inputs: Vec::new(),
             outputs: vec![WAV.to_owned()],
+            // A reply holds audio and no text, so the model takes no build, decision or raw read (gogi c3acffe).
+            text_replies: false,
         }),
     }
 }

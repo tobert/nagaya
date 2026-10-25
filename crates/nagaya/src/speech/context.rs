@@ -37,7 +37,7 @@ pub enum ContextItem {
 }
 
 /// A speech context, checked, with the codes of its outputs.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SpeechContext {
     /// The text of the `system` message: the voice design.
     pub voice: Option<String>,
@@ -48,6 +48,9 @@ pub struct SpeechContext {
     /// The language of each line.
     pub language: String,
     pub seed: u64,
+    /// The temperature and top_k of the request, or the checkpoint's when absent.
+    pub temperature: Option<f32>,
+    pub top_k: Option<u32>,
     /// The class and the priority of the job.
     pub schedule: Schedule,
 }

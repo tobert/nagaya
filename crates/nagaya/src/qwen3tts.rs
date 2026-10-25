@@ -215,6 +215,13 @@ pub fn speech_services(
         })?;
         let mut speech = SpeechConfig::new(MODEL, &placement.name, config.slots);
         speech.context_positions = u64::from(config.max_positions());
+        let limits = nagaya_mk_qwen3tts_bmg::plan(&config)
+            .map_err(|message| format!("cannot plan `{}`: {message}", placement.name))?;
+        speech.snapshot_bytes = limits
+            .parts
+            .iter()
+            .map(|part| part.dtype.element_bytes() * part.shape.iter().product::<u64>())
+            .sum();
         let service = SpeechService::new(speech, Arc::new(Family(family)), ports.clone())?
             .with_codes(crate::speech::codes::CodeBook::open(store_dir)?);
         tracing::info!("serving speech model `{MODEL}` on engine `{}`", placement.name);

@@ -65,6 +65,8 @@ pub struct SpeechConfig {
     pub repetition_penalty: f32,
     /// The positions that a slot holds: a speech context and the frames of its last line.
     pub context_positions: u64,
+    /// The bytes of one position of a snapshot.
+    pub snapshot_bytes: u64,
 }
 
 impl SpeechConfig {
@@ -79,6 +81,7 @@ impl SpeechConfig {
             top_k: 50,
             repetition_penalty: 1.05,
             context_positions: 0,
+            snapshot_bytes: 0,
         }
     }
 }
@@ -441,8 +444,8 @@ impl SpeechService {
             ends: rendering.ends,
             snaps: context.snaps.clone(),
             sampler: SpeechSampler {
-                temperature: self.config.temperature,
-                top_k: self.config.top_k,
+                temperature: context.temperature.unwrap_or(self.config.temperature),
+                top_k: context.top_k.unwrap_or(self.config.top_k),
                 repetition_penalty: self.config.repetition_penalty,
                 seed: context.seed,
             },
