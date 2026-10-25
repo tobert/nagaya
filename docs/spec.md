@@ -1934,6 +1934,11 @@ to the same gogi before the nagaya served them (Amy, 2026-10-18).
 gogi is normative today. This spec says how the nagaya serves the API, and it never restates the API. When this
 spec and gogi differ about the API, gogi is the rule, and this spec is corrected.
 
+**Text only.** Decided by senpai 2026-10-25 (vetoable). Each served model of the nagaya reads and writes text only,
+until a family renders an object. Its identity declares no `media`, and the server declares no `objects` yet. The
+routes refuse an object part, `case_media` and `output` with a 400 that names the member (gogi "Contexts",
+"Outputs"). A content of text parts is the context of their string.
+
 **The text stays in gogi.** Decided 2026-10-25 (Amy: "council api docs should stay with gogi except where we have
 implementation details"). This rule replaces a Proposed note of 2026-10-22, which moved the text here. gogi keeps
 the text, the types, the suite and the toy family. This spec keeps only how the nagaya implements the API.
@@ -2280,8 +2285,8 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
   that eviction removed, below the start of the build, is not made again. A dry run feeds nothing and lists no
   snapshot. Decided by senpai 2026-10-22 (vetoable).
 - The head of a dry run. A dry run reports the held head when the store holds it. Otherwise the head is `recipe:` and
-  the hex of the head's recipe. It names the state that a build would make. No store entry has the id, so a snapshot
-  read or a pin of it finds nothing.
+  the hex of the head's recipe (the Proposed note below makes the scheme `blake3:`). It names the state that a build
+  would make. No store entry has the id, so a snapshot read or a pin of it finds nothing.
 
   Reason: gogi types `head` as required, and gogi is the contract. This settles a note of Claude Sonnet 5.5.
   Decided by senpai 2026-10-20 night (vetoable).
@@ -2291,8 +2296,8 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
   snapshot id (spec 6.2, gogi `33b78b7`), and gogi is the contract. A recipe is a whole BLAKE3 hash already (6.2).
 
   No store entry has the id, so a read or a pin of it is still a 404 or `held: false`. The id no longer shows that it
-  is a recipe: a client tells that from `dry_run: true`. This replaces the `recipe:` form of the two rules below and
-  of the rule of Amy, 2026-10-21, in 11.3c.
+  is a recipe: a client tells that from `dry_run: true`. It replaces the `recipe:` form of the rule above and of
+  the continuation dry run (Amy, 2026-10-21). Section 16 has the same line.
 - **The pin owner.** gogi names an owner with text, and the store names it with a `u64`. The service keeps the
   text and gives the store the first 8 bytes of the BLAKE3 hash of the text. A restart keeps the text in `pins.json`
   in the store directory. Entries that builds put have the owner 1. Decided by senpai 2026-10-22 (vetoable).
@@ -2426,7 +2431,8 @@ these ways. Each served model declares the capability `continuation` (`crates/na
     Claude Opus 5.5; decided by Amy 2026-10-21.
 - The dry run: a build with an open message and `dry_run: true` looks up the plan of the continuation and its seam.
   Its `kept` and `fed` are what the generation keeps and feeds. Its `head` is `recipe:` and the recipe of the open
-  rendering, which the store never holds. Decided by Amy 2026-10-21.
+  rendering, which the store never holds. Decided by Amy 2026-10-21. (The Proposed note of the dry run head above
+  makes the scheme `blake3:`.)
 - The template id: the test sets of the families have no open message, so the open rendering is not in the template
   id (11.3a). Adding one would change the id of each family once, and a fitted threshold does not carry over.
   Decided by Amy 2026-10-21.
@@ -3004,6 +3010,7 @@ gives the section and the rule in a few words. The lists before the last one are
 - 11.3a: `rendered_hash` hashes the text that the read was conditioned on.
 - 11.3a: the reply parser takes the stop token as a pushed token and puts early-phase text in no step.
 - 11.3c: a dry run reports `recipe:` and the hex of the head's recipe when the store does not hold the head.
+  `blake3:` is Proposed in its place.
 - 11.3c: a raw read, a decision read and a generation are each one job for each context.
 - 11.3c: a decision read feeds its prefix once and writes a kept copy back for each later question.
 - 11.3c: the usage of a read counts the shared prefix once.

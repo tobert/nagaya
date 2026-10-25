@@ -237,7 +237,8 @@ impl Qwen38Family {
     ) -> Result<Rendered, FamilyError> {
         let mut all = before.to_vec();
         let stand_in = messages::stand_in_prefix(&all, tools).replace("system-turn", "open-text");
-        let (closed, field) = match nagaya_council::family::content_text(open) {
+        // An open message's content is a string: gogi's check_open refuses parts.
+        let (closed, field) = match open.text() {
             Some(content) => (
                 Message {
                     content: Some(stand_in.clone().into()),

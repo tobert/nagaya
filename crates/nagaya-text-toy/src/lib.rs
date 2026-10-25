@@ -144,7 +144,7 @@ impl Family for ToyFamily {
             .enumerate()
             .flat_map(|(i, m)| {
                 let place = format!("message:{i}");
-                let content = hits(&place, nagaya_council::family::content_text(m).unwrap_or(""));
+                let content = hits(&place, &nagaya_council::family::content_text(m).unwrap_or_default());
                 let reasoning = hits(&place, m.reasoning.as_deref().unwrap_or(""));
                 content.into_iter().chain(reasoning).collect::<Vec<_>>()
             })

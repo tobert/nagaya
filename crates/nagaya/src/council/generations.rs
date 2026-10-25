@@ -234,9 +234,7 @@ impl GenerateThen {
         self.finish = Some(finish);
         if let Some(open) = &self.open {
             parsed.reasoning.insert_str(0, open.reasoning.as_deref().unwrap_or(""));
-            parsed
-                .content
-                .insert_str(0, nagaya_council::family::content_text(open).unwrap_or(""));
+            parsed.content.insert_str(0, open.text().unwrap_or(""));
         }
         let done = GenerationDone {
             finish,

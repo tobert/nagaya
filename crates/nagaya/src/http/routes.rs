@@ -126,8 +126,8 @@ async fn contexts(State(council): Shared, Extension(id): Id, body: Body) -> Resp
     answer(&id, result)
 }
 
-/// The head of a dry run that finds no held head: `blake3:` and the hex of the head's recipe (spec 11.3c, Proposed). No
-/// store entry has this id, so a snapshot read or a pin of it finds nothing.
+/// The head of a build that names no held head, such as a dry run: `blake3:` and the hex of the head's recipe (spec
+/// 11.3c, Proposed). No store entry has this id, so a snapshot read or a pin of it finds nothing.
 fn recipe_head(recipe: &nagaya_store::RecipeId) -> SnapshotId {
     SnapshotId::parse(format!("blake3:{}", recipe.hex())).expect("a recipe id is a whole BLAKE3 hash")
 }

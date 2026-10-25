@@ -191,7 +191,8 @@ impl Gemma4Family {
         } else {
             ""
         };
-        let content = nagaya_council::family::content_text(open).unwrap_or("");
+        // An open message's content is a string: gogi's check_open refuses parts.
+        let content = open.text().unwrap_or("");
         self.chat
             .render_open(before, tools, thinking, &[(reasoning, close), (content, "")])
             .map_err(refusal)

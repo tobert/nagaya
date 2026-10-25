@@ -527,8 +527,8 @@ impl ReadPlan for QueuePlan {
         }
         let Some(step) = self.steps.get(self.cursor.given) else {
             // The hash covers all the text the read was conditioned on, up to the last letter and its quote (gogi).
-            let sha256 = hash_of_escaped(&self.tokenizer, &self.escaped)?;
-            return Ok(self.cursor.done(sha256));
+            let hash = hash_of_escaped(&self.tokenizer, &self.escaped)?;
+            return Ok(self.cursor.done(hash));
         };
         self.escaped
             .push_str(if self.cursor.given == 0 { "{\"" } else { ", \"" });

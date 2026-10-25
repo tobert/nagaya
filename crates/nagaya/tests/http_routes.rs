@@ -716,3 +716,96 @@ fn a_server_answers_unavailable_until_the_council_attaches() {
     assert!(status.starts_with("HTTP/1.1 200"), "{status}: {body}");
     server.stop(Duration::from_secs(1));
 }
+
+/// gogi reads a string as one text part, so a context whose content is text parts is the context of that string. A
+/// family panics on an object part, and a panic stops the process, so the text parts must reach it as text.
+#[test]
+fn text_parts_build_the_context_of_their_string() {
+    let f = Fixture::new();
+    let council = council(&f);
+    let parts = json!({"messages": [{"role": "user", "content": [
+        {"type": "text", "text": "Delete the "}, {"type": "text", "text": "build directory."}], "snap": true}]});
+    let (status, _, by_parts) = send(
+        &council,
+        "POST",
+        "/council/v2/contexts",
+        Some(json!({"model": "toy", "context": parts})),
+    );
+    assert_eq!(status, StatusCode::OK, "{by_parts}");
+    let (_, _, by_text) = send(
+        &council,
+        "POST",
+        "/council/v2/contexts",
+        Some(json!({"model": "toy", "context": context()})),
+    );
+    assert_eq!(by_parts["head"], by_text["head"]);
+}
+
+/// Each route that reads a context refuses an object part, case_media and an output by name, because the served
+/// models of the nagaya read and write text only (gogi "Contexts", "Outputs").
+#[test]
+fn every_route_that_reads_a_context_refuses_media_by_name() {
+    let f = Fixture::new();
+    let council = council(&f);
+    let id = format!("blake3:{}", "a".repeat(64));
+    let with_object = json!({"messages": [{"role": "user", "content": [
+        {"type": "text", "text": "Hear this:"}, {"type": "object", "id": id, "mime": "audio/wav"}], "snap": true}]});
+    let spec = json!({"name": "media", "instructions": "Judge it.", "input_label": "Case", "questions": [
+        {"id": "verdict", "type": "choice", "instructions": "What happens.",
+         "criteria": [{"option": "allow", "means": "fine"}, {"option": "ask", "means": "not fine"}]}]});
+    let (_, _, held) = send(&council, "POST", "/council/v2/specs", Some(spec));
+    let spec_id = held["spec_id"].clone();
+    let cases = [
+        (
+            "/council/v2/contexts",
+            json!({"model": "toy", "context": with_object}),
+            "messages[0].content[1]",
+        ),
+        (
+            "/council/v2/generations",
+            json!({"model": "toy", "context": with_object, "max_tokens": 4}),
+            "messages[0].content[1]",
+        ),
+        (
+            "/council/v2/reads",
+            json!({"model": "toy", "contexts": [with_object], "suffixes": ["A"], "letters": ["A", "B"]}),
+            "contexts[0].messages[0].content[1]",
+        ),
+        (
+            "/council/v2/decisions",
+            json!({"model": "toy", "spec_id": spec_id, "case": "x", "contexts": [with_object]}),
+            "contexts[0].messages[0].content[1]",
+        ),
+        (
+            "/council/v2/decisions",
+            json!({"model": "toy", "spec_id": spec_id, "case": "x", "case_media": [{"id": id, "mime": "audio/wav"}]}),
+            "case_media[0]",
+        ),
+        (
+            "/council/v2/generations",
+            json!({"model": "toy", "context": context(), "max_tokens": 4, "output": {"mime": "image/png"}}),
+            "output.mime",
+        ),
+        (
+            "/nagaya/v1/render",
+            json!({"model": "toy", "context": with_object}),
+            "messages[0].content[1]",
+        ),
+    ];
+    for (path, body, param) in cases {
+        let (status, _, value) = send(&council, "POST", path, Some(body));
+        assert_eq!(
+            (status, value["error"]["param"].as_str()),
+            (StatusCode::BAD_REQUEST, Some(param)),
+            "{path}: {value}"
+        );
+    }
+    // The process still answers.
+    let (status, _, _) = send(
+        &council,
+        "POST",
+        "/council/v2/contexts",
+        Some(json!({"model": "toy", "context": context()})),
+    );
+    assert_eq!(status, StatusCode::OK);
+}

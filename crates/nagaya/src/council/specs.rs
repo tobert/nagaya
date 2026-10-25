@@ -16,7 +16,7 @@ pub const SPEC_DIR: &str = "specs";
 
 /// The specs that the service holds.
 ///
-/// Each spec is a file `specs/<hex>.json`. The hex digits are the spec id without its scheme.
+/// Each spec is a file `specs/<spec id>.json`, such as `specs/blake3:5d61….json`.
 #[derive(Debug)]
 pub struct Specs {
     dir: PathBuf,
@@ -25,7 +25,14 @@ pub struct Specs {
 }
 
 fn file_name(id: &str) -> String {
-    format!("{}.json", id.trim_start_matches("sha256:"))
+    format!("{id}.json")
+}
+
+/// Whether a file name is the form of a spec file before gogi's BLAKE3 ids: the 64 hex digits of a SHA-256 id, with
+/// no scheme.
+fn is_old_name(name: &str) -> bool {
+    name.strip_suffix(".json")
+        .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
 }
 
 fn io_error(what: &str, path: &Path, error: std::io::Error) -> ServiceError {
@@ -34,7 +41,8 @@ fn io_error(what: &str, path: &Path, error: std::io::Error) -> ServiceError {
 
 impl Specs {
     /// Open the specs under a store directory, and read every file. A file that the rules refuse, or whose name is
-    /// not the id of its content, is an error: the open stops (spec 8.5).
+    /// not the id of its content, is an error: the open stops (spec 8.5). A file with the bare hex name of an older
+    /// nagaya takes the name of the spec id of its content.
     pub fn open(store_dir: &Path, rules: SpecRules) -> Result<Self, ServiceError> {
         let dir = store_dir.join(SPEC_DIR);
         std::fs::create_dir_all(&dir).map_err(|error| io_error("make", &dir, error))?;
@@ -65,7 +73,11 @@ impl Specs {
                     path.display()
                 ))
             })?;
-            if file_name(&id) != name {
+            if file_name(&id) != name && is_old_name(&name) {
+                // The content names the spec, so the file takes the name of its spec id.
+                let new = dir.join(file_name(&id));
+                std::fs::rename(&path, &new).map_err(|error| io_error("rename", &path, error))?;
+            } else if file_name(&id) != name {
                 return Err(ServiceError::internal(format!(
                     "the spec file `{}` in the specs directory holds the spec {id}, not the spec its name says. \
                      Remove the file",

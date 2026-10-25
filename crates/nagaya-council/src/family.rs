@@ -166,16 +166,35 @@ pub struct ReadDone {
     pub rendered_hash: String,
 }
 
-/// The text of a message's content. A family renders text only, because each served model of the nagaya declares no
-/// media inputs, and the route refuses an object part before a family sees it (gogi `objects::check_reads`). Parts
-/// here are a defect, so the call panics instead of rendering them as empty text.
-pub fn content_text(m: &gogi_proto::Message) -> Option<&str> {
+/// The text of a message's content: a string, or its text parts joined in order, as gogi reads a string as one text
+/// part. A family renders text only, because each served model of the nagaya declares no media inputs, and the route
+/// refuses an object part before a family sees it (gogi `objects::check_reads`). An object part here is a defect, so
+/// the call panics instead of rendering it as no text.
+pub fn content_text(m: &gogi_proto::Message) -> Option<std::borrow::Cow<'_, str>> {
     match &m.content {
         None => None,
-        Some(gogi_proto::Content::Text(s)) => Some(s),
-        Some(gogi_proto::Content::Parts(_)) => {
-            panic!("a family got content parts, which the route refuses for a served model with no media inputs")
-        }
+        Some(gogi_proto::Content::Text(s)) => Some(std::borrow::Cow::Borrowed(s)),
+        Some(gogi_proto::Content::Parts(_)) => Some(std::borrow::Cow::Owned(text_pieces(m).concat())),
+    }
+}
+
+/// The pieces of text of a message's content: the string, or each text part. It panics on an object part, as
+/// [`content_text`] does.
+pub fn text_pieces(m: &gogi_proto::Message) -> Vec<&str> {
+    match &m.content {
+        None => Vec::new(),
+        Some(gogi_proto::Content::Text(s)) => vec![s],
+        Some(gogi_proto::Content::Parts(parts)) => parts
+            .iter()
+            .map(|p| match p {
+                gogi_proto::Part::Text { text } => text.as_str(),
+                gogi_proto::Part::Object { .. } => {
+                    panic!(
+                        "a family got an object part, which the route refuses for a served model with no media inputs"
+                    )
+                }
+            })
+            .collect(),
     }
 }
 

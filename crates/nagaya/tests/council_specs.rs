@@ -90,10 +90,7 @@ fn a_file_whose_content_does_not_match_its_name_stops_the_open() {
         specs.hold(spec("a")).unwrap().spec_id
     };
     let other = serde_json::to_vec(&spec("b")).unwrap();
-    let file = directory
-        .path()
-        .join("specs")
-        .join(format!("{}.json", id.as_str().trim_start_matches("sha256:")));
+    let file = directory.path().join("specs").join(format!("{}.json", id.as_str()));
     std::fs::write(&file, other).unwrap();
     let error = Specs::open(directory.path(), Default::default()).unwrap_err();
     assert!(matches!(error, ServiceError::Internal(_)), "{error:?}");
@@ -127,4 +124,31 @@ fn a_file_that_breaks_the_rules_stops_the_open() {
     let error = Specs::open(directory.path(), Default::default()).unwrap_err();
     assert!(matches!(error, ServiceError::Internal(_)), "{error:?}");
     assert!(error.to_string().contains("breaks the rules"), "{error}");
+}
+
+/// A spec file is `specs/<spec id>.json`, the whole id with its scheme.
+#[test]
+fn a_spec_file_is_named_by_the_whole_spec_id() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut specs = open(directory.path());
+    let held = specs.hold(spec("a")).unwrap();
+    let name = format!("{}.json", held.spec_id.as_str());
+    assert!(name.starts_with("blake3:"), "{name}");
+    assert!(directory.path().join("specs").join(&name).exists(), "{name}");
+}
+
+/// Before gogi's BLAKE3 ids, a spec file was the hex of a SHA-256 id with no scheme. The open renames such a file to
+/// the spec id of its content, so a store directory of an older nagaya opens and keeps its specs.
+#[test]
+fn a_spec_file_with_the_old_bare_hex_name_is_renamed_to_its_spec_id() {
+    let directory = tempfile::tempdir().unwrap();
+    let dir = directory.path().join("specs");
+    std::fs::create_dir_all(&dir).unwrap();
+    let old = dir.join(format!("{}.json", "5".repeat(64)));
+    std::fs::write(&old, serde_json::to_vec(&spec("old")).unwrap()).unwrap();
+    let specs = open(directory.path());
+    let id = spec_id_of(&spec("old")).unwrap();
+    assert!(specs.get(&id).is_ok());
+    assert!(!old.exists());
+    assert!(dir.join(format!("{id}.json")).exists());
 }

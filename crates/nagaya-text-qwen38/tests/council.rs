@@ -699,7 +699,7 @@ fn asked(question: usize, options: &[usize]) -> Asked {
 struct Run {
     prefix: Vec<u32>,
     steps: Vec<ReadStep>,
-    sha256: String,
+    hash: String,
 }
 
 /// Run a plan to its end. The letter log probabilities fall by position, so the first letter is the likeliest,
@@ -714,7 +714,7 @@ fn drive(plan: &mut dyn ReadPlan, likeliest: &[usize]) -> Run {
                 return Run {
                     prefix,
                     steps,
-                    sha256: done.rendered_hash,
+                    hash: done.rendered_hash,
                 };
             }
             Advance::Step(step) => {
@@ -744,7 +744,7 @@ fn plan_for(
     })
 }
 
-fn sha256_text(s: &str) -> String {
+fn hash_text(s: &str) -> String {
     gogi_proto::content_id(s.as_bytes())
 }
 
@@ -793,11 +793,7 @@ fn a_plain_read_has_the_tokens_of_the_layout_of_mkviolet() {
         );
         assert_eq!(digest(&base), pc["ids_sha256"].as_str().unwrap(), "ids of {label}");
         assert_eq!(text(&run.prefix), want_tail, "the text after the context of {label}");
-        assert_eq!(
-            run.sha256,
-            sha256_text(&text(&base)),
-            "the hash covers the text of {label}"
-        );
+        assert_eq!(run.hash, hash_text(&text(&base)), "the hash covers the text of {label}");
         assert_eq!(run.steps.len(), 3);
         for (i, step) in run.steps.iter().enumerate() {
             let mut all = base.clone();
@@ -1090,7 +1086,7 @@ fn a_queue_read_has_the_tokens_of_the_call_that_the_template_writes() {
     }
     // The hash covers all the text that the read was conditioned on: the call through the last letter that the read
     // chose, which is the first letter here, and its closing quote (gogi "Decisions").
-    assert_eq!(run.sha256, sha256_text(&format!("{}A\"", text(&all))));
+    assert_eq!(run.hash, hash_text(&format!("{}A\"", text(&all))));
 }
 
 #[test]

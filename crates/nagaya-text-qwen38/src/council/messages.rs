@@ -65,7 +65,7 @@ pub(crate) fn message_json(m: &Message) -> Json {
     match (nagaya_council::family::content_text(m), failed) {
         (Some(c), true) => o.push(("content".to_string(), Json::Str(format!("{ERROR_PREFIX}{c}")))),
         (None, true) => o.push(("content".to_string(), text(ERROR_PREFIX))),
-        (Some(c), false) => o.push(("content".to_string(), text(c))),
+        (Some(c), false) => o.push(("content".to_string(), text(&c))),
         (None, false) => {}
     }
     if let Some(r) = &m.reasoning {
@@ -109,7 +109,7 @@ pub(crate) fn message_strings(m: &Message) -> Vec<&str> {
         }
     }
     let mut out: Vec<&str> = Vec::new();
-    out.extend(nagaya_council::family::content_text(m));
+    out.extend(nagaya_council::family::text_pieces(m));
     out.extend(m.reasoning.as_deref());
     for call in &m.tool_calls {
         out.push(&call.name);
