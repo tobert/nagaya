@@ -5,6 +5,12 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+/// The model name in the identity: the served speech model (spec 11.8).
+pub const MODEL: &str = "Qwen3-TTS-12Hz-1.7B-VoiceDesign";
+
+/// The engine kind in a placement profile.
+pub const KIND: &str = "qwen3tts-bmg";
+
 /// The talker: a Qwen3 decoder over text and codec embeddings.
 pub const HIDDEN: usize = 2048;
 pub const LAYERS: usize = 28;

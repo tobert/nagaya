@@ -8,8 +8,9 @@ edition = "2024"
 fake = ["nagaya-abi/fake", "dep:nagaya-text-toy"]
 # The mk engine on the GPU. A normal build leaves it out, so a machine without mk builds and tests the workspace.
 hip = ["dep:nagaya-mk-qwen38-gfx1151", "nagaya-mk-qwen38-gfx1151/hip", "dep:nagaya-text-qwen38"]
-# The Gemma 4 engine on the two B70 cards. The config parse and the family library build with no feature.
-xe = ["nagaya-mk-gemma4-bmg/xe"]
+# The B70 engines: Gemma 4 on two cards and Qwen3-TTS on one. The config parse and the family libraries build with
+# no feature.
+xe = ["nagaya-mk-gemma4-bmg/xe", "nagaya-mk-qwen3tts-bmg/xe"]
 
 [dependencies]
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio", "matched-path"] }
@@ -23,6 +24,8 @@ nagaya-council = { version = "0.1.0", path = "../nagaya-council" }
 nagaya-ledger = { version = "0.1.0", path = "../nagaya-ledger" }
 nagaya-mk-gemma4-bmg = { version = "0.1.0", path = "../nagaya-mk-gemma4-bmg" }
 nagaya-text-gemma4 = { version = "0.1.0", path = "../nagaya-text-gemma4" }
+nagaya-mk-qwen3tts-bmg = { version = "0.1.0", path = "../nagaya-mk-qwen3tts-bmg" }
+nagaya-text-qwen3tts = { version = "0.1.0", path = "../nagaya-text-qwen3tts" }
 nagaya-mk-qwen38-gfx1151 = { version = "0.1.0", path = "../nagaya-mk-qwen38-gfx1151", optional = true }
 nagaya-text-qwen38 = { version = "0.1.0", path = "../nagaya-text-qwen38", optional = true }
 nagaya-text-toy = { version = "0.1.0", path = "../nagaya-text-toy", optional = true }

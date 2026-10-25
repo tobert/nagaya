@@ -193,6 +193,8 @@ impl Registry {
         registry.register(crate::mk::KIND, Box::new(crate::mk::MkFactory));
         #[cfg(feature = "xe")]
         registry.register(crate::gemma4::KIND, Box::new(crate::gemma4::Gemma4Factory));
+        #[cfg(feature = "xe")]
+        registry.register(crate::qwen3tts::KIND, Box::new(crate::qwen3tts::Qwen3TtsFactory));
         #[cfg(feature = "fake")]
         registry.register_fakes();
         registry

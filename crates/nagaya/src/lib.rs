@@ -23,6 +23,7 @@ pub mod placement;
 pub mod probe;
 pub mod process;
 pub mod profile;
+pub mod qwen3tts;
 pub mod serving;
 pub mod signal;
 pub mod speech;

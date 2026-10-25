@@ -18,9 +18,6 @@ use crate::plan::{SCRATCH_FLOATS, limits, weights_bytes};
 use crate::spec::*;
 use crate::weights::{Weights, f32_values, load};
 
-/// The model name in the identity.
-pub const MODEL: &str = "Qwen3-TTS-12Hz-1.7B-VoiceDesign";
-
 /// The request in a slot.
 #[derive(Clone, Copy, Debug)]
 struct Request {

@@ -305,7 +305,9 @@ fn serve(
         &ports,
         &config.store_dir,
         call_cpus,
-    ) {
+    )
+    .and_then(|council| Ok(council.with_speech(nagaya::qwen3tts::speech_services(&served_profile, &ports)?)))
+    {
         Ok(council) => Arc::new(council),
         Err(error) => {
             tracing::error!("{error}");
