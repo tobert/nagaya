@@ -2885,7 +2885,11 @@ Reason: a reader of the object gets a valid WAV, and a reader of the stream gets
   `context_tokens` is the positions of a slot.
 - Its `weight_hash` and `tokenizer_hash` are the engine's after its first open since the start, and empty before.
   Reason: an engine on demand does not open at the start, and a hash of the weights reads 4 GB.
-- `sample` takes `seed` only; another member is a 400 that names it. `output.options` takes `language` only.
+- `sample` takes `seed`, `temperature` and `top_k`. Temperature 0 is greedy: top_k 1. A `top_p` other than 1, a
+  `min_p` other than 0, and a `top_k` of 0 are each a 400 that names it. Reason: the engine samples with a
+  temperature and top_k, and the gogi suite sends temperature 0. `output.options` takes `language` only.
+- Identity marks the model with `media.text_replies: false` (gogi `c3acffe`, Proposed). A build, a decision or a raw
+  read that names it is a 400 that names `model`. Its `snapshot_bytes` is one row of `talker_kv`.
 - The reply has no text, `finish` is `end_turn`, and `usage` counts positions. `snapshots` names the held ends and the
   head.
 
