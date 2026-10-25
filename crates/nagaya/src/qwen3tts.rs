@@ -7,15 +7,15 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use nagaya_abi::{Limits, PromptPair};
+use nagaya_abi::{Limits, PromptPair, SpeechPosition};
 use nagaya_mk_qwen3tts_bmg::Config;
 use nagaya_mk_qwen3tts_bmg::spec::{KIND as ENGINE_KIND, MODEL};
-use nagaya_text_qwen3tts::{Error as FamilyError, Qwen3TtsFamily};
+use nagaya_text_qwen3tts::{Error as FamilyError, Qwen3TtsFamily, SpeechItem, SpeechPosition as TextPosition};
 
 use crate::admission::{GroupDevice, PlanError};
 use crate::process::Ports;
 use crate::profile::PlacementProfile;
-use crate::speech::{SpeechConfig, SpeechError, SpeechFamily, SpeechService};
+use crate::speech::{ContextItem, ContextRendering, SpeechConfig, SpeechError, SpeechFamily, SpeechService};
 
 /// The engine kind in a placement profile.
 pub const KIND: &str = ENGINE_KIND;
@@ -121,6 +121,67 @@ impl SpeechFamily for Family {
                 codec: p.codec,
             })
             .collect())
+    }
+
+    fn context(
+        &self,
+        voice: Option<&str>,
+        items: &[ContextItem],
+        language: &str,
+    ) -> Result<ContextRendering, SpeechError> {
+        let failed = |error: FamilyError| match error {
+            FamilyError::Language { .. } => SpeechError::Invalid {
+                param: "output.options.language",
+                message: error.to_string(),
+            },
+            other => SpeechError::Failed(other.to_string()),
+        };
+        let voice = voice.map(|text| self.0.voice_ids(text)).transpose().map_err(failed)?;
+        let lines: Vec<Option<Vec<u32>>> = items
+            .iter()
+            .map(|item| match item {
+                ContextItem::Line(text) => self.0.line_ids(text).map(Some),
+                ContextItem::Audio(_) => Ok(None),
+            })
+            .collect::<Result<_, _>>()
+            .map_err(failed)?;
+        let rendered: Vec<SpeechItem> = items
+            .iter()
+            .zip(&lines)
+            .map(|(item, ids)| match (item, ids) {
+                (ContextItem::Audio(frames), _) => SpeechItem::Audio(frames),
+                (ContextItem::Line(_), Some(ids)) => SpeechItem::Line(ids),
+                (ContextItem::Line(_), None) => unreachable!("a line has its ids"),
+            })
+            .collect();
+        let rendering = self
+            .0
+            .ids()
+            .context(voice.as_deref(), &rendered, language)
+            .map_err(|error| match error {
+                FamilyError::Context { item, message } => SpeechError::Invalid {
+                    param: "messages",
+                    message: format!(
+                        "message {} of the context: {message}",
+                        item + usize::from(voice.is_some())
+                    ),
+                },
+                other => failed(other),
+            })?;
+        Ok(ContextRendering {
+            positions: rendering
+                .positions
+                .into_iter()
+                .map(|position| match position {
+                    TextPosition::Pair(p) => SpeechPosition::Pair(PromptPair {
+                        text: p.text,
+                        codec: p.codec,
+                    }),
+                    TextPosition::Frame(codes) => SpeechPosition::Frame(codes.to_vec()),
+                })
+                .collect(),
+            ends: rendering.ends,
+        })
     }
 }
 

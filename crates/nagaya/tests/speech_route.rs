@@ -204,6 +204,15 @@ impl Factory for Factories {
 struct Letters;
 
 impl SpeechFamily for Letters {
+    fn context(
+        &self,
+        _voice: Option<&str>,
+        _items: &[nagaya::speech::ContextItem],
+        _language: &str,
+    ) -> Result<nagaya::speech::ContextRendering, SpeechError> {
+        Err(SpeechError::Failed("the route tests render no context".to_owned()))
+    }
+
     fn prompt(&self, text: &str, _instructions: &str, language: &str) -> Result<Vec<PromptPair>, SpeechError> {
         if !matches!(language, "auto" | "english") {
             return Err(SpeechError::Invalid {

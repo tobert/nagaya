@@ -15,6 +15,22 @@ use nagaya_sched::{Class, JobState};
 use crate::jobs::{JobBody, JobSpec, Ran};
 use crate::process::{Ports, SubmitError};
 
+pub mod codes;
+pub mod context;
+
+pub use context::{ContextItem, SpeechContext, Spoken, Told};
+
+/// The codes of one frame: one code of each of the 16 codebooks.
+pub type Frame = [u32; 16];
+
+/// The positions of a speech context, and the position count at the end of each message (spec 11.8a).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContextRendering {
+    pub positions: Vec<SpeechPosition>,
+    /// The position count after the voice design, when the context has one, then after each item.
+    pub ends: Vec<usize>,
+}
+
 /// The chunks that wait for a slow client. A full queue holds the job back at its next quantum; it drops nothing.
 const QUEUE: usize = 64;
 
@@ -22,6 +38,14 @@ const QUEUE: usize = 64;
 pub trait SpeechFamily: Send + Sync {
     /// The prompt positions of `text` in the voice of `instructions`, in `language`.
     fn prompt(&self, text: &str, instructions: &str, language: &str) -> Result<Vec<PromptPair>, SpeechError>;
+
+    /// The rendering of a speech context in one language (spec 11.8a). `voice` is the text of the `system` message.
+    fn context(
+        &self,
+        voice: Option<&str>,
+        items: &[ContextItem],
+        language: &str,
+    ) -> Result<ContextRendering, SpeechError>;
 }
 
 /// The config of a speech service.
@@ -259,6 +283,7 @@ pub struct SpeechService {
     group: usize,
     engine: usize,
     pool: Arc<SlotPool>,
+    clock: crate::council::Clock,
 }
 
 impl SpeechService {
@@ -280,7 +305,111 @@ impl SpeechService {
             ports,
             group,
             engine,
+            clock: crate::council::system_clock(),
         })
+    }
+
+    /// The service with a clock that the caller chooses, for the times of the store.
+    pub fn with_clock(mut self, clock: crate::council::Clock) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// Start a generation of a speech context (spec 11.8a): render it, wait for a slot, and send its job. The
+    /// receiver gives the audio of each quantum in order, then `Told::End` or an error. It blocks while it waits for
+    /// a slot.
+    pub fn generate(&self, context: &SpeechContext) -> Result<Receiver<Result<Told, SpeechError>>, SpeechError> {
+        let deadline = Instant::now() + self.config.timeout;
+        if !matches!(context.items.last(), Some(ContextItem::Line(_))) {
+            return Err(SpeechError::Invalid {
+                param: "messages",
+                message: "the last message of a speech context is not a `user` line; end the context with the line \
+                          to speak"
+                    .to_owned(),
+            });
+        }
+        let messages = context.items.len() + usize::from(context.voice.is_some());
+        assert_eq!(
+            context.snaps.len(),
+            messages,
+            "a speech context has one snap for each message"
+        );
+        let rendering = self
+            .family
+            .context(context.voice.as_deref(), &context.items, &context.language)?;
+        if rendering.ends.len() != messages || rendering.ends.last() != Some(&rendering.positions.len()) {
+            return Err(SpeechError::Failed(format!(
+                "the family rendered {} message ends for {messages} messages, the last at {:?} of {} positions; \
+                 report this defect of the family library",
+                rendering.ends.len(),
+                rendering.ends.last(),
+                rendering.positions.len()
+            )));
+        }
+        let store = self.ports.store().cloned().ok_or_else(|| {
+            SpeechError::Failed("the process has no store; start it with a store directory".to_owned())
+        })?;
+        let slot = self.pool.take(deadline).ok_or_else(|| {
+            SpeechError::Busy(format!(
+                "nothing ran: the {} slots of the speech engine stayed full for {} ms; try again later",
+                self.config.slots,
+                self.config.timeout.as_millis()
+            ))
+        })?;
+        let (out, told) = sync_channel(QUEUE);
+        let body = context::ContextJob {
+            engine: self.engine,
+            engine_name: self.config.engine.clone(),
+            slot,
+            positions: rendering.positions,
+            ends: rendering.ends,
+            snaps: context.snaps.clone(),
+            sampler: SpeechSampler {
+                temperature: self.config.temperature,
+                top_k: self.config.top_k,
+                repetition_penalty: self.config.repetition_penalty,
+                seed: context.seed,
+            },
+            out,
+            pool: Arc::clone(&self.pool),
+            store,
+            ports: self.ports.clone(),
+            clock: Arc::clone(&self.clock),
+            timeout: self.config.timeout,
+            started: false,
+            released: false,
+            told: false,
+            kept: 0,
+            codes: Vec::new(),
+            held: Vec::new(),
+            recipes: Vec::new(),
+            digest: [0; 32],
+        };
+        self.submit(slot, deadline, Box::new(body))?;
+        Ok(told)
+    }
+
+    /// Send a job that holds `slot`. A refused job drops its body with no call of `ended`, so the slot comes back
+    /// here.
+    fn submit(&self, slot: SlotId, deadline: Instant, body: Box<dyn JobBody>) -> Result<(), SpeechError> {
+        let job = JobSpec {
+            class: Class::Interactive,
+            priority: 0,
+            deadline: Some(deadline),
+            first: Kind::Prefill,
+            engine: self.engine,
+            body,
+        };
+        if let Err(error) = self.ports.submit_job(self.group, job) {
+            self.pool.give(slot);
+            return Err(match error {
+                SubmitError::Stopping | SubmitError::Stopped => {
+                    SpeechError::Stopping(format!("nothing ran: {error}; send the request to another node"))
+                }
+                SubmitError::UnknownGroup => SpeechError::Failed(format!("the speech service has no group: {error}")),
+            });
+        }
+        Ok(())
     }
 
     /// The served speech model.
@@ -325,24 +454,7 @@ impl SpeechService {
             told: false,
             timeout: self.config.timeout,
         };
-        let job = JobSpec {
-            class: Class::Interactive,
-            priority: 0,
-            deadline: Some(deadline),
-            first: Kind::Prefill,
-            engine: self.engine,
-            body: Box::new(body),
-        };
-        // A refused job drops its body with no call of `ended`, so the slot comes back here.
-        if let Err(error) = self.ports.submit_job(self.group, job) {
-            self.pool.give(slot);
-            return Err(match error {
-                SubmitError::Stopping | SubmitError::Stopped => {
-                    SpeechError::Stopping(format!("nothing ran: {error}; send the request to another node"))
-                }
-                SubmitError::UnknownGroup => SpeechError::Failed(format!("the speech service has no group: {error}")),
-            });
-        }
+        self.submit(slot, deadline, Box::new(body))?;
         Ok(chunks)
     }
 }
