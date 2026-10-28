@@ -63,6 +63,12 @@ pub const ADD_IN: usize = POOLED + 6 * TIME_ID_PROJ;
 /// The channels of each level of the VAE decoder, from the latent side.
 pub const VAE_LEVELS: [usize; 4] = [512, 512, 256, 128];
 
+/// The model name of the identity.
+pub const MODEL: &str = "stable-diffusion-xl-base-1.0";
+
+/// The engine kind in a placement profile (spec 11.9, "The served image model").
+pub const KIND: &str = "mk-sdxl-bmg";
+
 /// The config of the engine, from the `[engines.config]` table of the profile.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {

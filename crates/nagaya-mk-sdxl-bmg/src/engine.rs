@@ -21,8 +21,7 @@ use crate::sampler::{self, History, Schedule};
 use crate::spec::*;
 use crate::weights::{Weights, f32_bytes, f32_values, files};
 
-/// The model name of the identity.
-pub const MODEL: &str = "stable-diffusion-xl-base-1.0";
+pub use crate::spec::MODEL;
 
 /// A job in the slot.
 struct Job {
