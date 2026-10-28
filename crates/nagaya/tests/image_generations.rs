@@ -366,7 +366,7 @@ fn identity_lists_the_image_model_as_a_writer_of_png() {
     assert_eq!(model["media"]["text_replies"], json!(false), "{model}");
     assert_eq!(model["capabilities"], json!(["generate"]), "{model}");
     assert_eq!(model["limits"]["context_tokens"], json!(225), "{model}");
-    assert_eq!(model["limits"]["snapshot_bytes"], json!(1), "{model}");
+    assert_eq!(model["limits"]["snapshot_bytes"], json!(0), "{model}");
     assert_eq!(model["status"], json!("ready"), "{model}");
 }
 

@@ -491,7 +491,7 @@ pub fn served_model(service: &ImageService, status: gogi_proto::identity::ModelS
         limits: gogi_proto::identity::ModelLimits {
             context_tokens: config.context_tokens,
             decision_context_tokens: 0,
-            snapshot_bytes: 1,
+            snapshot_bytes: 0,
             contexts_per_decision: 0,
             default_timeout_ms: config.timeout.as_millis() as u64,
             text_tokens: None,
