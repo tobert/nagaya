@@ -47,15 +47,17 @@ pub(super) fn routes() -> Router<Arc<Council>> {
         )
 }
 
-/// Read and drop the rest of a body, up to [`DRAIN_BYTES`].
-async fn drain(stream: &mut axum::body::BodyDataStream) {
+/// Read and drop the rest of a body, up to [`DRAIN_BYTES`]. Give true when the body ended.
+async fn drain(stream: &mut axum::body::BodyDataStream) -> bool {
     let mut dropped: u64 = 0;
     while dropped < DRAIN_BYTES {
         match stream.next().await {
             Some(Ok(chunk)) => dropped += chunk.len() as u64,
-            _ => break,
+            Some(Err(_)) => return false,
+            None => return true,
         }
     }
+    false
 }
 
 fn now_ms() -> u64 {
@@ -112,6 +114,11 @@ async fn put_object(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
+    let declared = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok());
+    let mut stream = body.into_data_stream();
     let result = async {
         let store = store(&council)?;
         if council.draining() {
@@ -143,14 +150,9 @@ async fn put_object(
                 })
                 .await?
         };
-        let declared = headers
-            .get(header::CONTENT_LENGTH)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok());
-        let mut stream = body.into_data_stream();
         if let Some(n) = declared.filter(|n| *n > limit) {
             if n <= limit + DRAIN_BYTES {
-                drain(&mut stream).await;
+                let _ = drain(&mut stream).await;
             }
             return Err(too_large(
                 "object_bytes",
@@ -174,7 +176,7 @@ async fn put_object(
                 })?;
                 size += chunk.len() as u64;
                 if size > limit {
-                    drain(&mut stream).await;
+                    let _ = drain(&mut stream).await;
                     return Err(too_large(
                         "object_bytes",
                         format!("nothing is held: the object is more than {limit} bytes, which is object_bytes"),
@@ -218,7 +220,18 @@ async fn put_object(
     .await;
     match result {
         Ok((status, value)) => (status, axum::Json(value)).into_response(),
-        Err(failure) => failure.respond(&id),
+        Err(failure) => {
+            // A refusal can come before the body arrives. Read the rest of the body first, so that the client can
+            // send its next request on this connection. A body that is too large to read gets `connection: close`.
+            let ended = declared.is_none_or(|n| n <= DRAIN_BYTES) && drain(&mut stream).await;
+            let mut response = failure.respond(&id);
+            if !ended {
+                response
+                    .headers_mut()
+                    .insert(header::CONNECTION, header::HeaderValue::from_static("close"));
+            }
+            response
+        }
     }
 }
 

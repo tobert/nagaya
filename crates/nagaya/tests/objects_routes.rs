@@ -138,3 +138,93 @@ fn a_put_while_the_process_stops_is_a_503() {
         StatusCode::SERVICE_UNAVAILABLE
     );
 }
+
+/// Read one response with a `content-length` from a stream. Give its head and its body, or `None` at an early end.
+fn read_response(stream: &mut std::net::TcpStream) -> Option<(String, Vec<u8>)> {
+    use std::io::Read;
+    let mut data = Vec::new();
+    let mut byte = [0u8; 1];
+    while !data.ends_with(b"\r\n\r\n") {
+        match stream.read(&mut byte) {
+            Ok(1) => data.push(byte[0]),
+            _ => return None,
+        }
+    }
+    let head = String::from_utf8(data).unwrap().to_ascii_lowercase();
+    let length: usize = head
+        .lines()
+        .find_map(|line| line.strip_prefix("content-length:"))
+        .expect("the response has a content-length")
+        .trim()
+        .parse()
+        .unwrap();
+    let mut body = vec![0u8; length];
+    stream.read_exact(&mut body).ok()?;
+    Some((head, body))
+}
+
+/// A client such as ureq sends the head of a put, then its body, and keeps the connection for the next request. A
+/// refused put must not leave a connection that the server closes in silence: the next request then sees an early
+/// end. So after each refusal, the server either serves the next request or says `connection: close`.
+#[test]
+fn a_put_refused_before_its_body_leaves_a_connection_that_serves_or_says_close() {
+    use std::io::Write;
+    let directory = tempfile::tempdir().unwrap();
+    let council = council_with_store(directory.path());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let served = Arc::clone(&council);
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            axum::serve(listener, router(served)).await.unwrap();
+        });
+    });
+    let body = vec![7u8; 300];
+    let hex = blake3::hash(&body).to_hex().to_string();
+    let refusals = [
+        (format!("sha256:{hex}"), "content-type: application/octet-stream\r\n"),
+        (
+            format!("blake3:{}", &hex[..16]),
+            "content-type: application/octet-stream\r\n",
+        ),
+        (format!("blake3:{hex}"), ""),
+        (format!("blake3:{hex}"), "content-type: Text/Plain\r\n"),
+    ];
+    for round in 0..5 {
+        for (id, content_type) in &refusals {
+            let mut stream = std::net::TcpStream::connect(address).unwrap();
+            stream.set_nodelay(true).unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
+            let head = format!(
+                "PUT /council/v2/objects/{id} HTTP/1.1\r\nhost: test\r\n{content_type}content-length: {}\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(head.as_bytes()).unwrap();
+            // The body comes after the server answers, as it can from a client that writes the head first.
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            let _ = stream.write_all(&body);
+            let (head, _) = read_response(&mut stream).expect("the refused put gets a response");
+            assert!(head.starts_with("http/1.1 400"), "round {round}, {id}: {head}");
+            if head.contains("connection: close") {
+                continue;
+            }
+            let next = format!("GET /council/v2/objects/blake3:{hex} HTTP/1.1\r\nhost: test\r\n\r\n");
+            let sent = stream.write_all(next.as_bytes());
+            let answer = sent.ok().and_then(|()| read_response(&mut stream));
+            assert!(
+                answer.is_some(),
+                "round {round}, {id}: the server closed the connection after a 400 with no `connection: close`, so \
+                 the next request on it sees an early end"
+            );
+        }
+    }
+}
