@@ -90,7 +90,7 @@ in a lock: one thread owns it (3.2).
 
 Do them in this order. Each milestone ends with all checks green and one or more commits. Milestones 1 to 14 are
 done, and `docs/history.md` keeps their full text, and the merges where the run recorded them. Milestone 15
-is done on gfx1151host, and milestones 15s, 16 and 17 are done on b70host. Milestone 18 runs now.
+is done on gfx1151host, and milestones 15s, 16, 17 and 18 are done on b70host. Ask Amy for milestone 19.
 
 1. **Workspace.** The Cargo workspace, its crates, `rustfmt.toml` and the dev profile. Done.
 2. **Engine trait.** The ABI core and capabilities as traits, with a fake engine and a broken fake for the gates. Done.
@@ -326,8 +326,20 @@ is done on gfx1151host, and milestones 15s, 16 and 17 are done on b70host. Miles
     - step 9, the route: `e4c5c87`, `4557225`, `eb3c12e`, `158383f`, and the admission fix `16a0107`;
     - step 10, the deploy: `04299e6`, deployed at 14:58 on 2026-10-28. `sdxl-0` and `sdxl-1` are on demand.
 
-    Amy decides the Proposed notes of `fab01eb`, `e4c5c87` and `4557225`. These are not built: the single-file
-    loader (11.9), and the device threads of a group (3.2). Thus the two image engines take turns on the group thread.
+    - after step 10, Amy's decisions `10b4bcd`, and gogi `48d2d1a` with its pin `ed07837`;
+    - the hashes from the open, `e21f3d6`, and the single file, `baddb59` (Proposed) and `a8a27f3`;
+    - the device threads of spec 3.2, `48c3370`;
+    - the fixes of a review by a fresh Claude session and kaibo: `47e31bb`, `a96b8ce` and `2985888`.
+
+    Done on 2026-10-28, on b70host. `nagaya.service` runs the build of the deploy commit of `signoff.md`. Live, an
+    image of 1024 by 1024 with 30 steps takes 57 s on each card, and the two cards run at once. The gogi suite gave
+    343 ok, 0 FAIL and 15 skip for gemma, and 88 ok, 0 FAIL and 2 skip for `sdxl-0`.
+
+    Amy decides the Proposed note `baddb59`, the single-file checkpoint. Two limits stay open:
+
+    - A load or an unload beside running work blocks the group thread for the open. The other card then waits after
+      its current quantum.
+    - A full queue of a slow stream client blocks the thread of the engine, as for speech.
 19. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
