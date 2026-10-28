@@ -717,8 +717,8 @@ pub fn admit_loaded(
     })
 }
 
-/// The rules of residency (spec 3.3a): an idle time only on an on-demand engine, and more than zero; no council model
-/// on demand; and `close` on each engine of the device group of an on-demand engine.
+/// The rules of residency (spec 3.3a): an idle time only on an on-demand engine, and more than zero; no text model on
+/// demand; and `close` on each engine of the device group of an on-demand engine.
 fn check_residency(profile: &PlacementProfile, planned: &[AdmittedEngine]) -> Result<(), AdmitError> {
     let fail = |engine: &str, why: String| AdmitError::Residency {
         engine: engine.to_owned(),
@@ -769,11 +769,15 @@ fn check_residency(profile: &PlacementProfile, planned: &[AdmittedEngine]) -> Re
         if placement.residency != Residency::OnDemand {
             continue;
         }
-        if !placement.family.is_empty() {
+        // An image or speech engine builds its service from the profile, so its served model exists on demand (spec
+        // 3.3a, "Council models on demand"). A text service attaches only to an engine that opens at the start.
+        let capabilities = &planned[index].limits.capabilities;
+        let from_profile = capabilities.contains(&Capability::Image) || capabilities.contains(&Capability::Speech);
+        if !placement.family.is_empty() && !from_profile {
             return Err(fail(
                 name,
-                "an on-demand engine serves no council model in v0, so its entry has no `family` table; remove the \
-                 table, or make the engine resident"
+                "a text model on demand is not built, so an on-demand engine of text has no `family` table; remove \
+                 the table, or make the engine resident"
                     .to_owned(),
             ));
         }

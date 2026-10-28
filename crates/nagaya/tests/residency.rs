@@ -29,6 +29,9 @@ fn weights_limits(config: &toml::Table) -> Limits {
     if config.get("stages").and_then(toml::Value::as_bool) == Some(true) {
         limits.capabilities.push(Capability::Stages);
     }
+    if config.get("image").and_then(toml::Value::as_bool) == Some(true) {
+        limits.capabilities.push(Capability::Image);
+    }
     limits
 }
 
@@ -232,19 +235,34 @@ fn an_engine_without_close_in_another_group_does_not_matter() {
     admit(&profile(vec![chat, voice]), &registry(), &inventory(), &mut ledger).unwrap();
 }
 
+/// A text model on demand is not built: its service attaches only to an engine that opens at the start (spec 3.3a,
+/// "Council models on demand"). Its family table would name a served model that never comes, so it is refused.
 #[test]
-fn an_on_demand_engine_serves_no_council_model() {
-    let mut voice = engine("voice", 0, 100, Residency::OnDemand);
-    voice
-        .family
-        .insert("model_dir".to_owned(), toml::Value::String("/models/voice".to_owned()));
-    let (error, before, after) = refused(&profile(vec![voice]));
+fn an_on_demand_text_engine_takes_no_family_table() {
+    let mut chat = engine("chat", 0, 100, Residency::OnDemand);
+    chat.family
+        .insert("model_dir".to_owned(), toml::Value::String("/models/chat".to_owned()));
+    let (error, before, after) = refused(&profile(vec![chat]));
     assert_eq!(after, before);
     assert!(
-        matches!(&error, AdmitError::Residency { engine, .. } if engine == "voice"),
+        matches!(&error, AdmitError::Residency { engine, .. } if engine == "chat"),
         "{error:?}"
     );
-    assert!(error.to_string().contains("family"), "{error}");
+    assert!(
+        error.to_string().contains("family") && error.to_string().contains("text model"),
+        "{error}"
+    );
+}
+
+/// An image engine builds its service from the profile, so its served model exists on demand, and its family table
+/// gives the defaults of that model, such as `clip_skip` (spec 11.9a).
+#[test]
+fn an_on_demand_image_engine_takes_its_family_table() {
+    let mut pony = engine("pony", 0, 100, Residency::OnDemand);
+    pony.config.insert("image".to_owned(), toml::Value::Boolean(true));
+    pony.family.insert("clip_skip".to_owned(), toml::Value::Integer(2));
+    admit(&profile(vec![pony]), &registry(), &inventory(), &mut Ledger::new())
+        .expect("an image engine on demand with a family table");
 }
 
 #[test]
