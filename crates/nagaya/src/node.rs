@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
+use std::time::Instant;
 
 use serde_json::{Value, json};
 
@@ -9,8 +10,9 @@ use crate::gossip::{ClusterView, Gossip, Key, PublishError};
 use crate::inventory::Inventory;
 use crate::notify::EngineState;
 use crate::park::identity_digest;
-use crate::process::OpenedEngine;
+use crate::process::{OpenedEngine, Ports};
 use crate::profile::PlacementProfile;
+use crate::state_feed::StateFeed;
 use crate::swap::Refusal;
 
 /// What the node last wrote for one engine. A new state keeps the rest.
@@ -138,6 +140,51 @@ impl Node {
             self.write_engine(&engine.name, record)?;
         }
         Ok(())
+    }
+
+    /// Keep the identity and the models of engines that a swap opened, with no write. The state feed writes them with
+    /// the next state of the engine (spec 2.3, "The state of an engine in gossip").
+    pub fn set_identity(&mut self, opened: &[OpenedEngine]) {
+        for engine in opened {
+            let record = self.engines.get_mut(&engine.name).unwrap_or_else(|| {
+                panic!(
+                    "engine `{}` has no gossip record; write loading or ready first",
+                    engine.name
+                )
+            });
+            let digest = blake3::Hash::from_bytes(identity_digest(&engine.identity));
+            record.identity = Some(digest.to_hex().to_string());
+            record.models = vec![engine.identity.model.clone()];
+        }
+    }
+
+    /// Write the state of each engine of `names` that changed since its last write, through the feed (spec 2.3, "The
+    /// state of an engine in gossip"). The feed writes one engine at most once each second.
+    pub fn publish_states(
+        &mut self,
+        feed: &mut StateFeed,
+        ports: &Ports,
+        names: &[String],
+        now: Instant,
+    ) -> Result<(), PublishError> {
+        let states: Vec<_> = names
+            .iter()
+            .map(|name| {
+                let state = ports
+                    .engine_state(name)
+                    .unwrap_or_else(|| panic!("engine `{name}` of the profile has no state"));
+                (name.clone(), state, self.published_state(name))
+            })
+            .collect();
+        for (name, state) in feed.due(&states, now) {
+            self.engines_state(&[name], state)?;
+        }
+        Ok(())
+    }
+
+    /// The state of an engine that the node wrote last, or `None` for an engine that it never wrote.
+    pub fn published_state(&self, engine: &str) -> Option<EngineState> {
+        self.engines.get(engine).map(|record| record.state)
     }
 
     /// Write a new state for engines that the node already wrote. An engine that the node did not write is a defect.

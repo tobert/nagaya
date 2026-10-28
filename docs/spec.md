@@ -238,6 +238,19 @@ state:
 
 Pins and snapshot entries never go in gossip.
 
+**The state of an engine in gossip.** Proposed by senpai (Claude Opus 5.5), 2026-10-28. Reason: a swap changes the
+state of an engine while the process runs (3.3a), and a client reads the state of the fleet from gossip. A loop of
+loads and unloads must not flood gossip. `chitchat` 0.13.0 has no control for a key that changes often: its failure
+detector watches nodes, not keys.
+
+- The main loop compares the state of each engine with the state in `engine:<name>`, and it writes a changed state.
+  Thus gossip shows `loading`, `ready`, `draining` and `unloaded` for each swap.
+- It writes the key of one engine at most once each second. The newest state wins, so a state that changes and changes
+  back within the second makes one write or none.
+- It counts the writes of each engine in the last 60 seconds. At more than 10, it logs one warning that names the
+  engine. Reason: this count is where a later rule for flaps starts. It takes no other action now.
+- The start and the stop write their states at once (10.1, 10.3).
+
 Each gossip value is compact JSON, and it has at most 8192 bytes. The nagaya refuses to publish a larger value. The
 refusal names the key and the size. Reason: `chitchat` sends a delta in one UDP datagram of at most 65,507 bytes. A
 node writes a few keys, plus one key for each engine.

@@ -268,3 +268,29 @@ fn the_inventory_key_marks_a_device_that_is_not_ignored_as_false() {
     let value: serde_json::Value = serde_json::from_str(&value).unwrap();
     assert_eq!(value["devices"][0]["ignored"], false);
 }
+
+/// A swap gives the node the identity of the engine that it opened. The state feed writes the state later, with that
+/// identity (spec 2.3, "The state of an engine in gossip").
+#[test]
+fn a_new_identity_waits_for_the_next_state_write() {
+    let mut a = Node::new(
+        Gossip::start(config("solo")).unwrap(),
+        "127.0.0.1:8090".parse().unwrap(),
+    );
+    a.engines_loading(&["fake-one".to_owned()]).unwrap();
+    assert_eq!(a.published_state("fake-one"), Some(EngineState::Loading));
+    assert_eq!(a.published_state("nobody"), None);
+    let mut swapped = opened();
+    swapped.identity.model = "another-model".to_owned();
+    a.set_identity(&[swapped]);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let value = a.gossip().view().live[0].keys["engine:fake-one"].clone();
+    assert!(value.contains("loading") && !value.contains("another-model"), "{value}");
+    a.engines_state(&["fake-one".to_owned()], EngineState::Ready).unwrap();
+    assert_eq!(a.published_state("fake-one"), Some(EngineState::Ready));
+    wait_for_view(a.gossip(), "the ready engine with its new model", |view| {
+        view.live[0].keys["engine:fake-one"].contains("another-model")
+            && view.live[0].keys["engine:fake-one"].contains("ready")
+    });
+    a.shutdown();
+}

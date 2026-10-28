@@ -28,5 +28,6 @@ pub mod reprofile;
 pub mod serving;
 pub mod signal;
 pub mod speech;
+pub mod state_feed;
 pub mod swap;
 pub mod telemetry;

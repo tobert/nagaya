@@ -336,17 +336,19 @@ fn serve(
         let process = &ready.process;
         let opened = &mut ready.opened;
         let council = &council;
-        // The swaps in place that the wait heard of. The tick publishes them, because it holds the node (spec 3.3a).
+        let mut feed = nagaya::state_feed::StateFeed::new();
+        // The swaps in place that the wait heard of. The tick keeps their identities, because it holds the node.
         let swaps = std::cell::RefCell::new(Vec::new());
         let mut on_event = |event| swaps.borrow_mut().push(event);
         let mut tick = || {
             for event in swaps.borrow_mut().drain(..) {
-                if let nagaya::process::Event::Swapped { unloaded, loaded, .. } = &event {
-                    published(node.engines_state(unloaded, EngineState::Unloaded));
-                    published(node.engines_ready(loaded));
+                if let nagaya::process::Event::Swapped { loaded, .. } = &event {
+                    node.set_identity(loaded);
                 }
                 lifecycle::apply_swap(opened, &event);
             }
+            // The feed writes each changed state of an engine, at most once each second (spec 2.3).
+            published(node.publish_states(&mut feed, &ports, &names, std::time::Instant::now()));
             node.check_name();
             // An internal error of a route, or of a profile change, stops the process (spec 8.5, 11.5).
             if council.failure().is_some() || process.ports().failure().is_some() {
