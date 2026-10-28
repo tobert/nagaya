@@ -47,13 +47,21 @@ fn checkpoint() -> Option<PathBuf> {
     }
 }
 
-/// The fake engine with `close`. It takes no device memory.
+/// The fake engine with `close`. It allocates nothing, but it declares 30 GiB of its card in a budget of 32 GiB, so it
+/// does not fit beside Gemma 4 and its load unloads Gemma 4 (engine-abi "How a group loads both"). With no term it
+/// loaded beside Gemma 4, and Gemma 4 stayed loaded.
 struct Closing;
 
 fn closing_limits() -> Limits {
     let mut limits = FakeAlways::new().limits();
     limits.capabilities.push(Capability::Close);
-    limits.memory.mandatory.clear();
+    limits.memory.mandatory = vec![nagaya_abi::MandatoryTerm {
+        name: "weights".to_owned(),
+        tier: nagaya_abi::Tier::Device(0),
+        bytes: 30 << 30,
+        lifetime: nagaya_abi::Lifetime::Engine,
+        kinds: Vec::new(),
+    }];
     limits.memory.elastic.clear();
     limits
 }
