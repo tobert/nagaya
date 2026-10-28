@@ -316,10 +316,11 @@ impl Weights {
                 sink.upload(&item.bytes)
             };
             if needs_f32(&item.name) {
-                let copy = if !sink.writes() {
-                    sink.upload(&vec![0u8; item.shape.iter().product::<usize>() * 4])
-                } else if f32 {
+                // An F32 tensor is its own copy. A count must count the same bytes as the upload.
+                let copy = if f32 {
                     at
+                } else if !sink.writes() {
+                    sink.upload(&vec![0u8; item.shape.iter().product::<usize>() * 4])
                 } else {
                     let values: Vec<f32> = item
                         .bytes
@@ -438,4 +439,52 @@ fn plane_bytes(item: &Item, writes: bool) -> (u32, Vec<u8>) {
     };
     let planes = nagaya_mk_bmg::tasks::gemm_planes(&values, cout, cin, kernel, count as usize);
     (count, planes.iter().flat_map(|v| v.to_le_bytes()).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A sink that uploads, and counts its bytes as [`Count`] does.
+    #[derive(Default)]
+    struct Uploads {
+        bytes: u64,
+        next: u64,
+    }
+
+    impl Upload for Uploads {
+        fn upload(&mut self, data: &[u8]) -> u64 {
+            self.bytes += data.len().div_ceil(256) as u64 * 256;
+            self.next += 256;
+            self.next
+        }
+
+        fn writes(&self) -> bool {
+            true
+        }
+    }
+
+    fn item(name: &str, dtype: Dtype, values: usize) -> Item<'static> {
+        Item {
+            name: name.to_owned(),
+            dtype,
+            shape: vec![values],
+            bytes: Cow::Owned(vec![0u8; values * dtype.size_bytes()]),
+        }
+    }
+
+    /// The plan counts the bytes that the open uploads, so the limits of both agree (`in_place::open`). An F32 tensor
+    /// that needs an F32 copy is its own copy.
+    #[test]
+    fn the_count_equals_the_upload_for_f16_and_f32_tensors_that_need_f32() {
+        let items = [
+            item("te1.text_model.final_layer_norm.weight", Dtype::F32, 768),
+            item("te1.text_model.final_layer_norm.bias", Dtype::F16, 768),
+            item("unet.conv_in.bias", Dtype::F16, 320),
+        ];
+        let (mut count, mut uploads) = (Count::default(), Uploads::default());
+        Weights::from_items(&items, &mut count).unwrap();
+        Weights::from_items(&items, &mut uploads).unwrap();
+        assert_eq!(count.bytes, uploads.bytes);
+    }
 }
