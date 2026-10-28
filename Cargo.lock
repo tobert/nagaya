@@ -554,7 +554,7 @@ dependencies = [
 [[package]]
 name = "gogi-conformance"
 version = "0.1.0"
-source = "git+file:///home/atobey/src/gogi?rev=c3acffe41e08dd281c496cbf67f6ebccf6d76c4e#c3acffe41e08dd281c496cbf67f6ebccf6d76c4e"
+source = "git+file:///home/atobey/src/gogi?rev=33fbe4024a47487a481db638d4fc4208bd8a00bf#33fbe4024a47487a481db638d4fc4208bd8a00bf"
 dependencies = [
  "gogi-proto",
  "serde",
@@ -565,7 +565,7 @@ dependencies = [
 [[package]]
 name = "gogi-fake"
 version = "0.1.0"
-source = "git+file:///home/atobey/src/gogi?rev=c3acffe41e08dd281c496cbf67f6ebccf6d76c4e#c3acffe41e08dd281c496cbf67f6ebccf6d76c4e"
+source = "git+file:///home/atobey/src/gogi?rev=33fbe4024a47487a481db638d4fc4208bd8a00bf#33fbe4024a47487a481db638d4fc4208bd8a00bf"
 dependencies = [
  "blake3",
  "gogi-proto",
@@ -578,7 +578,7 @@ dependencies = [
 [[package]]
 name = "gogi-proto"
 version = "0.1.0"
-source = "git+file:///home/atobey/src/gogi?rev=c3acffe41e08dd281c496cbf67f6ebccf6d76c4e#c3acffe41e08dd281c496cbf67f6ebccf6d76c4e"
+source = "git+file:///home/atobey/src/gogi?rev=33fbe4024a47487a481db638d4fc4208bd8a00bf#33fbe4024a47487a481db638d4fc4208bd8a00bf"
 dependencies = [
  "blake3",
  "indexmap",
@@ -590,7 +590,7 @@ dependencies = [
 [[package]]
 name = "gogi-toy"
 version = "0.1.0"
-source = "git+file:///home/atobey/src/gogi?rev=c3acffe41e08dd281c496cbf67f6ebccf6d76c4e#c3acffe41e08dd281c496cbf67f6ebccf6d76c4e"
+source = "git+file:///home/atobey/src/gogi?rev=33fbe4024a47487a481db638d4fc4208bd8a00bf#33fbe4024a47487a481db638d4fc4208bd8a00bf"
 dependencies = [
  "gogi-proto",
  "serde_json",
@@ -1849,7 +1849,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys",
