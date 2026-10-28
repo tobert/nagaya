@@ -3,8 +3,8 @@
 //! The first quantum (`embed`) begins the job in its slot. Each `step` quantum runs one step of every image, and the
 //! `step` after the last one decodes them. The body sends what each quantum made to the route.
 
+use std::sync::Arc;
 use std::sync::mpsc::{SyncSender, TrySendError};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use nagaya_abi::{Engine, ImageJob, Kind, SlotId};
@@ -23,7 +23,6 @@ pub(crate) struct Parts {
     pub out: SyncSender<Result<Made, ImageError>>,
     pub pool: Arc<SlotPool>,
     pub timeout: Duration,
-    pub identity: Arc<Mutex<Option<nagaya_abi::Identity>>>,
 }
 
 /// Where the job is.
@@ -113,7 +112,6 @@ impl JobBody for ImageJobBody {
         let slot = self.parts.slot;
         match self.phase {
             Phase::Begin => {
-                *self.parts.identity.lock().expect("the identity lock is poisoned") = Some(engine.identity());
                 let image = engine.image().expect("checked above");
                 if let Err(error) = image.image_begin(slot, &self.parts.image) {
                     return self.fail(engine, failed(format!("an image job did not begin: {}", error.message)));

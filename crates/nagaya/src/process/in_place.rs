@@ -263,6 +263,7 @@ pub(super) fn swap(
         members[index].handles = handles;
         members[index].loaded = true;
         members[index].last_busy = Instant::now();
+        links.states.opened(&name, &opened.identity);
         links.states.record(&name, EngineState::Ready);
         if let Some(handoff) = opened.handoff {
             instruments.arena_handoff(&name, handoff.status());

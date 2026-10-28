@@ -18,9 +18,30 @@ use crate::profile::{EnginePlacement, Residency};
 /// The group threads write it, and the routes read it. A route can read a state that a swap changes a moment later,
 /// so the group checks the state of each job again (spec 3.3a, "A job for an engine that is not ready").
 #[derive(Clone, Debug, Default)]
-pub struct EngineStates(Arc<Mutex<BTreeMap<String, EngineState>>>);
+pub struct EngineStates(
+    Arc<Mutex<BTreeMap<String, EngineState>>>,
+    /// The identity of each engine at its last open since the start. A served model shows its hashes from it.
+    Arc<Mutex<BTreeMap<String, nagaya_abi::Identity>>>,
+);
 
 impl EngineStates {
+    /// The identity of the engine at its last open since the start, or `None` before its first open.
+    pub fn identity(&self, engine: &str) -> Option<nagaya_abi::Identity> {
+        self.1
+            .lock()
+            .expect("the engine identities lock is poisoned")
+            .get(engine)
+            .cloned()
+    }
+
+    /// Keep the identity of an engine that opened.
+    pub(super) fn opened(&self, engine: &str, identity: &nagaya_abi::Identity) {
+        self.1
+            .lock()
+            .expect("the engine identities lock is poisoned")
+            .insert(engine.to_owned(), identity.clone());
+    }
+
     /// The state of the engine with this name, or `None` for a name that is not in the profile.
     pub fn get(&self, engine: &str) -> Option<EngineState> {
         self.0

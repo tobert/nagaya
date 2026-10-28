@@ -308,6 +308,7 @@ fn swapped(process: &Process, within: Duration) -> (Vec<String>, Vec<String>) {
 fn a_load_of_an_engine_with_one_device_loads_it_beside_the_engine_with_stages() {
     let directory = tempfile::tempdir().unwrap();
     let (process, log) = start(directory.path(), None);
+    assert!(process.ports().engine_identity("voice").is_none(), "voice never opened");
     assert_eq!(
         process.load("voice").unwrap(),
         LoadReply::Started {
@@ -318,6 +319,11 @@ fn a_load_of_an_engine_with_one_device_loads_it_beside_the_engine_with_stages() 
     assert_eq!(
         swapped(&process, Duration::from_secs(5)),
         (Vec::new(), vec!["voice".to_owned()])
+    );
+    // The process keeps the identity of an engine that loads beside the stages, as of any engine (spec 3.3a).
+    assert_eq!(
+        process.ports().engine_identity("voice").map(|identity| identity.model),
+        Some(fake("voice").identity().model)
     );
     let (job, finished) = voice(&log, None);
     process.submit_job(0, job).unwrap();

@@ -5,8 +5,8 @@
 //! its images to the route. An image job holds no state in the store. A job for an engine that is not `ready` ends
 //! at once (spec 3.3a).
 
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, sync_channel};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use nagaya_abi::{ImageChunk, ImageJob, Kind, RgbImage, SlotId};
@@ -111,8 +111,6 @@ pub struct ImageService {
     group: usize,
     engine: usize,
     pool: Arc<SlotPool>,
-    /// The identity of the engine after its first open since the start.
-    identity: Arc<Mutex<Option<nagaya_abi::Identity>>>,
 }
 
 impl ImageService {
@@ -131,7 +129,6 @@ impl ImageService {
             ports,
             group,
             engine,
-            identity: Arc::default(),
         })
     }
 
@@ -157,9 +154,9 @@ impl ImageService {
             .unwrap_or_else(|| panic!("engine `{}` of the image service has no state", self.config.engine))
     }
 
-    /// The identity of the engine, once it opened since the start.
+    /// The identity of the engine at its last open since the start, and `None` before its first open.
     pub fn identity(&self) -> Option<nagaya_abi::Identity> {
-        self.identity.lock().expect("the identity lock is poisoned").clone()
+        self.ports.engine_identity(&self.config.engine)
     }
 
     /// The slots that no request holds.
@@ -190,7 +187,6 @@ impl ImageService {
             out,
             pool: Arc::clone(&self.pool),
             timeout: self.config.timeout,
-            identity: Arc::clone(&self.identity),
         });
         let spec = JobSpec {
             class: schedule.class,

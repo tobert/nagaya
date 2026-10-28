@@ -368,6 +368,12 @@ fn identity_lists_the_image_model_as_a_writer_of_png() {
     assert_eq!(model["limits"]["context_tokens"], json!(225), "{model}");
     assert_eq!(model["limits"]["snapshot_bytes"], json!(0), "{model}");
     assert_eq!(model["status"], json!("ready"), "{model}");
+    // A resident engine opened at the start, so its hashes show before any job.
+    assert_eq!(
+        model["weight_hash"],
+        json!(FakeAlways::new().identity().checkpoint_digest),
+        "{model}"
+    );
 }
 
 #[test]
@@ -631,6 +637,19 @@ fn an_unloaded_image_model_is_a_503_and_a_build_that_names_it_is_a_400() {
         );
         std::thread::sleep(Duration::from_millis(5));
     }
+    // The served model shows the hashes of its engine from its open, before any job (spec "The served image model").
+    let (_, _, _, bytes) = send(&council, "GET", "/council/v2/identity", None);
+    let models = json(&bytes)["models"].clone();
+    let model = models
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["model"] == MODEL)
+        .unwrap()
+        .clone();
+    let digest = FakeAlways::new().identity().checkpoint_digest;
+    assert!(!digest.is_empty());
+    assert_eq!(model["weight_hash"], json!(digest), "{model}");
     let (code, body) = generate(&council, request("a fox", json!({"steps": 1}), json!({})));
     assert_eq!(code, StatusCode::OK, "{body}");
     let build = json!({"model": MODEL, "context": {"messages": [{"role": "user", "content": "hello"}]}});

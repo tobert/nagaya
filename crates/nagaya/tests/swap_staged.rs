@@ -352,6 +352,28 @@ fn start_with_stages_on_demand(directory: &std::path::Path) -> (Process, Log) {
     (process, log)
 }
 
+/// The process keeps the identity of an engine with stages from its load, so a served model can show its hashes before
+/// its first job (spec 3.3a).
+#[test]
+fn a_load_of_an_engine_with_stages_keeps_its_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, _log) = start_with_stages_on_demand(directory.path());
+    let ports = process.ports();
+    assert!(
+        ports.engine_identity("chat").is_none(),
+        "an engine that never opened has no identity"
+    );
+    assert!(
+        ports.engine_identity("voice").is_some(),
+        "a resident engine opened at the start"
+    );
+    load(&process, "chat");
+    assert_eq!(
+        ports.engine_identity("chat").map(|identity| identity.model),
+        Some(fake("chat").identity().model)
+    );
+}
+
 #[test]
 fn an_idle_engine_with_stages_on_demand_unloads_through_its_stage_threads() {
     let directory = tempfile::tempdir().unwrap();

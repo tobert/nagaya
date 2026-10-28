@@ -1290,6 +1290,7 @@ fn swap_beside(
         members[member].last_busy = Instant::now();
         engines[member] = Elsewhere::hosted(&members[member]);
         hosted.insert(member, stage);
+        links.states.opened(&engine, &opened.identity);
         links.states.record(&engine, EngineState::Ready);
         loaded.push(opened);
     }

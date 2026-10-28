@@ -1060,6 +1060,21 @@ fn an_unloaded_speech_model_is_unloaded_and_its_generation_is_a_503() {
         std::thread::sleep(Duration::from_millis(5));
     }
     assert_eq!(status(&council), json!("ready"));
+    // The served model shows the hashes of its engine from its open, before any line (spec 3.3a).
+    let (_, _, _, bytes) = send(&council, "GET", "/council/v2/identity", None);
+    let models = json(&bytes)["models"].clone();
+    let model = models
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["model"] == MODEL)
+        .unwrap()
+        .clone();
+    assert_eq!(
+        model["weight_hash"],
+        json!(FakeAlways::new().identity().checkpoint_digest),
+        "{model}"
+    );
     let (code, body) = generate(&council, messages(&[json!({"role": "user", "content": "hello"})]));
     assert_eq!(code, StatusCode::OK, "{body}");
 }

@@ -176,8 +176,6 @@ pub struct SpeechService {
     clock: crate::council::Clock,
     /// The codes of the outputs that the service wrote, when it serves speech contexts (spec 11.8a).
     codes: Option<codes::CodeBook>,
-    /// The identity of the engine after its first open since the start.
-    identity: Arc<Mutex<Option<nagaya_abi::Identity>>>,
     /// The code puts since the start.
     puts: std::sync::atomic::AtomicU64,
 }
@@ -203,7 +201,6 @@ impl SpeechService {
             engine,
             clock: crate::council::system_clock(),
             codes: None,
-            identity: Arc::default(),
             puts: std::sync::atomic::AtomicU64::new(0),
         })
     }
@@ -227,9 +224,9 @@ impl SpeechService {
             .unwrap_or_else(|| panic!("engine `{}` of the speech service has no state", self.config.engine))
     }
 
-    /// The identity of the engine, once it opened since the start.
+    /// The identity of the engine at its last open since the start, and `None` before its first open.
     pub fn identity(&self) -> Option<nagaya_abi::Identity> {
-        self.identity.lock().expect("the identity lock is poisoned").clone()
+        self.ports.engine_identity(&self.config.engine)
     }
 
     /// True when the service serves speech contexts: it has a code book.
@@ -348,7 +345,6 @@ impl SpeechService {
             held: Vec::new(),
             recipes: Vec::new(),
             digest: [0; 32],
-            identity: Arc::clone(&self.identity),
         };
         self.submit(slot, deadline, context.schedule, Box::new(body))?;
         Ok(told)

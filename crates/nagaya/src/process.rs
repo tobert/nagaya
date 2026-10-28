@@ -1071,6 +1071,7 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
                 engines[index] = engine;
                 members[index].handles = handles;
                 members[index].loaded = true;
+                links.states.opened(members[index].name(), &info.identity);
                 links.states.set(members[index].name(), EngineState::Ready);
                 opened.push(info);
             }
@@ -1693,6 +1694,11 @@ impl Ports {
     /// The state of the engine with this name, or `None` for a name that is not in the profile (spec 3.3b).
     pub fn engine_state(&self, engine: &str) -> Option<EngineState> {
         self.states.get(engine)
+    }
+
+    /// The identity of an engine at its last open since the start, or `None` before its first open.
+    pub fn engine_identity(&self, engine: &str) -> Option<Identity> {
+        self.states.identity(engine)
     }
 
     /// Load an engine, as [`Process::load`] does.

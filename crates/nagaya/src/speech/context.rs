@@ -146,8 +146,6 @@ pub(super) struct ContextJob {
     /// The recipe at the end of each message, and the identity digest, from the first quantum on.
     pub recipes: Vec<RecipeId>,
     pub digest: [u8; 32],
-    /// The identity of the engine, which the service shows once the engine opened.
-    pub identity: Arc<Mutex<Option<nagaya_abi::Identity>>>,
 }
 
 /// The failure of a job: what the route sees.
@@ -326,7 +324,6 @@ impl ContextJob {
     fn start(&mut self, engine: &mut dyn Engine) -> Result<(), SpeechError> {
         let identity = engine.identity();
         self.digest = identity_digest(&identity);
-        *self.identity.lock().expect("the identity lock is poisoned") = Some(identity.clone());
         self.recipes = end_recipes(speech_root(&identity), &self.positions, &self.ends);
         // A slot can hold rows of a job that passed its deadline. A clear of an empty slot does nothing.
         engine
