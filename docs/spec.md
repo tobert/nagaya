@@ -482,6 +482,30 @@ policy. The nagaya keeps no such name.
 - **The response** is 202 after admission, with each engine and its action. The swaps run after the response, and
   the status feed shows each state (9.4).
 
+**Which actions run in place.** Decided 2026-10-28 (Amy). `keep`, `residency` and `unload` run in place. `load` and
+`reload` restart the process (exit 4). Reason: the engines of a device group are fixed at start, so a new entry has no
+group thread. Amy: "I think reconfigurations of models will end up being fairly deliberate; nagaya should make that
+work well, trusting eg kaijutsu or the user's scripts to do the config and understand this will cause brief 503s."
+Amy: "we can reconsider some more automatic config later but I think it would be extremely difficult to get right
+and therefore probably smart to have good APIs for configuring and let an agent like you handle it."
+
+**The profile routes.** Proposed by senpai (Claude Opus 5.5), 2026-10-28. Reason: a client needs a fixed shape for
+the change of 3.3, and for a read of the active profile.
+
+- `PUT /nagaya/v1/profile` takes the profile as JSON, in the shape of `profile.toml`. It changes only this machine.
+  Thus question 15.5 stays open for a `PUT` to another machine.
+- A profile that does not parse, or that breaks a rule of 2.4 or 3.3a, is a 400 `invalid_request` with the param
+  `profile`. A profile that does not fit is a 507 with the type `too_large`, the param `profile` and `shortfall`.
+- A profile equal to the active profile is a 200, with the action `keep` for each engine.
+- An accepted profile is a 202 with `{"actions": [{"engine", "action"}], "restart"}`. With `restart` true, the
+  process persists the profile and stops with exit 4.
+- A change of `pin_identity` is a `reload`, because the pin checks the identity at the open (12.1).
+- A change of `[[budgets]]` runs in place: the ledger admits the loaded engines with the new budgets.
+- An engine that unloads in place stays in its group as a retired engine until the next start. A load of it is a 404,
+  and its served model stays in identity with the status `unloaded`.
+- A `PUT` while a change in place runs is a 409 `invalid_request` with the param `profile`.
+- `GET /nagaya/v1/profile` gives the active profile as JSON.
+
 **Swaps in place.** Decided 2026-10-24 (Amy, by interview). An engine whose `close()` is safe loads and unloads in
 place, with no restart. The placement profile chooses the devices of each engine.
 
