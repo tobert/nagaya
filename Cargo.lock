@@ -1265,6 +1265,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nagaya-text-sdxl"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tokenizers",
+]
+
+[[package]]
 name = "nagaya-text-toy"
 version = "0.1.0"
 dependencies = [

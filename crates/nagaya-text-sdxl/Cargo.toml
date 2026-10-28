@@ -1,0 +1,12 @@
+[package]
+name = "nagaya-text-sdxl"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# The same crate and features as nagaya-text-qwen3tts. The reference `CLIPTokenizer` of transformers 5 is a
+# `tokenizers` tokenizer.
+tokenizers = { version = "0.23.1", default-features = false, features = ["onig"] }
+
+[dev-dependencies]
+serde_json = { version = "1.0.154", features = ["float_roundtrip", "preserve_order"] }

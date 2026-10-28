@@ -405,6 +405,9 @@ get ran sometimes, perhaps just a bump in our AGENTS.md"
   `nagaya-mk-qwen3tts-bmg` read it from `QWEN3TTS_MODEL_DIR`, which has no default. `signoff.md` gives the path.
 - The oracle of `nagaya-mk-qwen3tts-bmg` reads `target/qwen3tts-golden` or `QWEN3TTS_GOLDEN_DIR`. Write the files
   with `tools/qwen3tts_golden.sh`, with no GPU job.
+- b70host holds SDXL base 1.0 in the Hugging Face cache. The tests of `nagaya-text-sdxl` read it from
+  `SDXL_MODEL_DIR`, which has no default. `signoff.md` gives the path. `tools/sdxl_golden.sh` writes the oracle into
+  `target/sdxl-golden` or `SDXL_GOLDEN_DIR`, with no GPU job.
 - The report of a check names how many tests skipped for a missing model.
 
 On gfx1151host, run the oracle bench with `MK_SHARDS` set and both units inactive:
