@@ -14,6 +14,7 @@ use nagaya_sched::JobState;
 use nagaya_store::{
     ContentId, EngineFacts, EntryState, Put, Reason, RecipeId, Restored, Store, StoreError, Tier, Tolerance,
 };
+use nagaya_telemetry::EngineState;
 
 use super::{Frame, SlotPool, SpeechError};
 use crate::council::build::COUNCIL_OWNER;
@@ -457,6 +458,14 @@ impl JobBody for ContextJob {
 
     fn request(&self) -> &'static str {
         "speech_generation"
+    }
+
+    fn unavailable(&mut self, engine: &str, state: EngineState) {
+        self.release();
+        self.tell(Err(SpeechError::Unavailable {
+            engine: engine.to_owned(),
+            state,
+        }));
     }
 }
 

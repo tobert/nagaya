@@ -35,6 +35,10 @@ struct Moves {
 }
 
 impl JobBody for Moves {
+    fn unavailable(&mut self, engine: &str, state: nagaya::notify::EngineState) {
+        panic!("engine `{engine}` is {}, and this test keeps it ready", state.as_str());
+    }
+
     fn run(&mut self, _kind: Kind, _engines: &mut [Box<dyn Engine>]) -> Ran {
         self.runs.fetch_add(1, Ordering::SeqCst);
         tree(&self.root, self.stall_after);

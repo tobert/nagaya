@@ -307,6 +307,16 @@ impl Fixture {
             .start()
             .unwrap();
         process.wait_opens(Duration::from_secs(5)).unwrap();
+        // A request never starts a load (spec 3.3), so the fixture loads the speech engine.
+        process.load("voice").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while process.ports().engine_state("voice") != Some(nagaya::notify::EngineState::Ready) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the speech engine did not load in 5 s"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
         Self {
             process,
             log,

@@ -91,6 +91,10 @@ struct BadPass {
 }
 
 impl JobBody for BadPass {
+    fn unavailable(&mut self, engine: &str, state: nagaya::notify::EngineState) {
+        panic!("engine `{engine}` is {}, and this test keeps it ready", state.as_str());
+    }
+
     fn run(&mut self, _kind: Kind, engines: &mut [Box<dyn Engine>]) -> Ran {
         let segment = Segment {
             state: State::Slot(0),

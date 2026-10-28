@@ -72,6 +72,18 @@ fn request_id() -> RequestId {
     RequestId(format!("req_{start:016x}_{}", NEXT.fetch_add(1, Ordering::SeqCst)))
 }
 
+/// The status of a served model whose engine has this state (spec 3.3, 11.1). A fatal engine takes no new request,
+/// and the process stops (spec 8.5).
+pub(crate) fn model_status(state: nagaya_telemetry::EngineState) -> ModelStatus {
+    use nagaya_telemetry::EngineState;
+    match state {
+        EngineState::Loading => ModelStatus::Loading,
+        EngineState::Ready => ModelStatus::Ready,
+        EngineState::Draining | EngineState::Fatal => ModelStatus::Draining,
+        EngineState::Unloaded => ModelStatus::Unloaded,
+    }
+}
+
 /// The status of the served models of the process. Every served model has the status of the process.
 const READY: u8 = 0;
 const DRAINING: u8 = 1;

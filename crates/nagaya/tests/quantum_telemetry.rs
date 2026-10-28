@@ -222,6 +222,10 @@ fn a_job_span_is_the_child_of_the_span_that_submitted_the_job() {
 struct Spanning;
 
 impl nagaya::jobs::JobBody for Spanning {
+    fn unavailable(&mut self, engine: &str, state: nagaya::notify::EngineState) {
+        panic!("engine `{engine}` is {}, and this test keeps it ready", state.as_str());
+    }
+
     fn run(&mut self, _kind: nagaya_abi::Kind, _engines: &mut [Box<dyn nagaya_abi::Engine>]) -> nagaya::jobs::Ran {
         tracing::info_span!("engine.pass").in_scope(|| {});
         nagaya::jobs::Ran::Done

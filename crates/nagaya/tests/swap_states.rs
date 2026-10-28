@@ -156,6 +156,10 @@ fn state(capture: &Capture, engine: &str, state: &str) -> Option<f64> {
 struct Done(mpsc::Sender<()>);
 
 impl JobBody for Done {
+    fn unavailable(&mut self, engine: &str, state: nagaya::notify::EngineState) {
+        panic!("engine `{engine}` is {}, and this test keeps it ready", state.as_str());
+    }
+
     fn run(&mut self, _kind: Kind, _engines: &mut [Box<dyn Engine>]) -> Ran {
         let _ = self.0.send(());
         Ran::Done
@@ -175,6 +179,20 @@ fn job(engine: usize) -> (JobSpec, mpsc::Receiver<()>) {
     (spec, finished)
 }
 
+/// Load an engine, and wait until it is ready. A job for the engine runs only after that (spec 3.3).
+fn load(process: &nagaya::process::Process, engine: &str) {
+    process.load(engine).unwrap();
+    let ports = process.ports();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while ports.engine_state(engine) != Some(nagaya::notify::EngineState::Ready) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "engine `{engine}` did not load in 5 s"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 #[test]
 fn an_on_demand_engine_starts_unloaded() {
     let capture = Capture::start(Vec::new());
@@ -191,11 +209,13 @@ fn a_swap_records_the_new_state_of_each_engine() {
     let capture = Capture::start(Vec::new());
     let directory = tempfile::tempdir().unwrap();
     let mut ready = start(directory.path());
+    load(&ready.process, "voice");
     let (spec, finished) = job(1);
     ready.process.submit_job(0, spec).unwrap();
     finished.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_eq!(state(&capture, "chat", "unloaded"), Some(1.0));
     assert_eq!(state(&capture, "voice", "ready"), Some(1.0));
+    load(&ready.process, "chat");
     let (spec, finished) = job(0);
     ready.process.submit_job(0, spec).unwrap();
     finished.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -208,6 +228,7 @@ fn a_swap_records_the_new_state_of_each_engine() {
 fn the_wait_gives_each_swap_to_the_main_loop_and_goes_on() {
     let directory = tempfile::tempdir().unwrap();
     let mut ready = start(directory.path());
+    load(&ready.process, "voice");
     let (spec, finished) = job(1);
     ready.process.submit_job(0, spec).unwrap();
     finished.recv_timeout(Duration::from_secs(5)).unwrap();

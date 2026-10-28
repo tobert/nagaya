@@ -289,7 +289,7 @@ fn serve(
         }
     };
     published(node.engines_ready(&ready.opened));
-    // An on-demand engine stays unloaded until its first job (spec 3.3a).
+    // An on-demand engine stays unloaded until a load (spec 3.3a, 3.3b).
     let waiting: Vec<String> = names
         .iter()
         .filter(|name| ready.opened.iter().all(|engine| &engine.name != *name))

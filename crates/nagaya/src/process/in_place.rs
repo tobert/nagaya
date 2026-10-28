@@ -1,9 +1,9 @@
 //! The swap in place on a group thread (spec 3.3a).
 //!
 //! A group keeps every engine of its profile entries, in profile order. An engine that is not loaded has an
-//! [`Unloaded`] place. A job for such an engine waits, and the group plans a swap with the ledger thread. When the
+//! [`Unloaded`] place. A load or an unload of the process plans a swap with the ledger thread (spec 3.3b). When the
 //! engines that must unload hold no job, the group parks and closes them, admits the new set of loaded engines, and
-//! opens the engine of the job.
+//! opens the engines of the plan.
 
 use std::sync::mpsc::{self, Sender};
 use std::thread;
@@ -12,6 +12,8 @@ use std::time::{Duration, Instant};
 use nagaya_abi::{Capability, Engine, Identity, Limits, PassError, PassOut, Segment, StageHandle, Tap};
 use nagaya_ledger::LedgerError;
 use nagaya_telemetry::{EngineState, instruments};
+
+use super::loads::EngineStates;
 
 use super::{Event, GroupJob, LedgerMessage, OpenBeat, OpenedEngine, ParkReport, WatchMessage, handoff, park};
 use crate::admission::{AdmitError, OpenErrorKind};
@@ -45,7 +47,7 @@ impl Member {
     }
 
     /// The time with no job after which an on-demand engine unloads (spec 3.3a).
-    fn idle_time(&self) -> Duration {
+    pub(super) fn idle_time(&self) -> Duration {
         Duration::from_secs(self.job.placement.idle_unload_s.unwrap_or(DEFAULT_IDLE_UNLOAD_S))
     }
 }
@@ -158,15 +160,20 @@ pub(super) fn plan(target: usize, members: &[Member], ledger: &Sender<LedgerMess
 }
 
 /// The swap back of an on-demand engine that held no job for its idle time, or `None` (spec 3.3a).
-///
-/// The swap unloads that engine and loads each resident engine of the group that is not loaded. When the resident
-/// engines do not fit beside the engines that stay loaded, or an engine with stages would not load alone, the swap only
-/// unloads.
 pub(super) fn idle_plan(members: &[Member], now: Instant, ledger: &Sender<LedgerMessage>) -> Option<Plan> {
     let idle = (0..members.len()).find(|index| {
         let member = &members[*index];
         member.loaded && !member.resident() && now.duration_since(member.last_busy) >= member.idle_time()
     })?;
+    Some(back_plan(idle, members, ledger))
+}
+
+/// The swap that unloads the on-demand engine at `idle`, after its idle time or by an unload (spec 3.3a, 3.3b).
+///
+/// The swap unloads that engine and loads each resident engine of the group that is not loaded. When the resident
+/// engines do not fit beside the engines that stay loaded, or an engine with stages would not load alone, the swap only
+/// unloads.
+pub(super) fn back_plan(idle: usize, members: &[Member], ledger: &Sender<LedgerMessage>) -> Plan {
     let residents: Vec<usize> = (0..members.len())
         .filter(|index| !members[*index].loaded && members[*index].resident())
         .collect();
@@ -175,10 +182,10 @@ pub(super) fn idle_plan(members: &[Member], now: Instant, ledger: &Sender<Ledger
     let name = |index: &usize| members[*index].name().to_owned();
     let fits = alone
         && (residents.is_empty() || check(ledger, residents.iter().map(name).collect(), vec![name(&idle)]).is_ok());
-    Some(Plan {
+    Plan {
         load: if fits { residents } else { Vec::new() },
         unload: vec![idle],
-    })
+    }
 }
 
 /// The ways out of the group thread that a swap uses.
@@ -188,6 +195,7 @@ pub(super) struct SwapLinks<'a> {
     pub(super) ledger: &'a Sender<LedgerMessage>,
     pub(super) store: Option<&'a Sender<StoreMessage>>,
     pub(super) fd_store: Option<&'a FdStore>,
+    pub(super) states: &'a EngineStates,
 }
 
 /// Run a swap on the group thread (spec 3.3a). A failure is a crash, because the group no longer has a known set of
@@ -226,7 +234,7 @@ pub(super) fn swap(
     for &index in &plan.unload {
         // A serve loop of stages unloads its engine while its stage threads still run.
         if members[index].loaded {
-            unload(index, members, engines, links.store, links.fd_store);
+            unload(index, members, engines, links.store, links.fd_store, links.states);
         }
     }
     span.record("unload_ms", started.elapsed().as_millis() as u64);
@@ -246,14 +254,14 @@ pub(super) fn swap(
     let mut loaded = Vec::with_capacity(plan.load.len());
     for &index in &plan.load {
         let name = members[index].name().to_owned();
-        instruments.engine_state(&name, EngineState::Loading);
+        links.states.record(&name, EngineState::Loading);
         let (engine, handles, opened) = open(&mut members[index].job, links.fd_store)
             .unwrap_or_else(|(_, message)| panic!("the swap cannot open engine `{name}`: {message}"));
         engines[index] = engine;
         members[index].handles = handles;
         members[index].loaded = true;
         members[index].last_busy = Instant::now();
-        instruments.engine_state(&name, EngineState::Ready);
+        links.states.record(&name, EngineState::Ready);
         if let Some(handoff) = opened.handoff {
             instruments.arena_handoff(&name, handoff.status());
         }
@@ -287,10 +295,10 @@ pub(super) fn unload(
     engines: &mut [Box<dyn Engine>],
     store: Option<&Sender<StoreMessage>>,
     fd_store: Option<&FdStore>,
+    states: &EngineStates,
 ) {
-    let instruments = instruments();
     let name = members[index].name().to_owned();
-    instruments.engine_state(&name, EngineState::Draining);
+    states.record(&name, EngineState::Draining);
     let mut report = ParkReport::default();
     park::park_engine(&name, engines[index].as_mut(), store, &mut report);
     if !report.failures.is_empty() {
@@ -305,7 +313,7 @@ pub(super) fn unload(
     engines[index] = Unloaded::of(&members[index]);
     members[index].handles.clear();
     members[index].loaded = false;
-    instruments.engine_state(&name, EngineState::Unloaded);
+    states.record(&name, EngineState::Unloaded);
     tracing::info!(
         "engine `{name}` unloaded: parked {} states ({} bytes)",
         report.states,

@@ -210,13 +210,19 @@ fn start(stored: ArenaSet, systemd: &Systemd, store_dir: &Path) -> lifecycle::Re
 struct Done(mpsc::Sender<()>);
 
 impl JobBody for Done {
+    fn unavailable(&mut self, engine: &str, state: nagaya::notify::EngineState) {
+        panic!("engine `{engine}` is {}, and this test keeps it ready", state.as_str());
+    }
+
     fn run(&mut self, _kind: Kind, _engines: &mut [Box<dyn Engine>]) -> Ran {
         let _ = self.0.send(());
         Ran::Done
     }
 }
 
+/// Load an engine of the profile by its place, and run a job on it.
 fn run_on(ready: &lifecycle::Ready, engine: usize) {
+    load(&ready.process, ["chat", "voice"][engine]);
     let (done, finished) = mpsc::channel();
     ready
         .process
@@ -233,6 +239,20 @@ fn run_on(ready: &lifecycle::Ready, engine: usize) {
         )
         .unwrap();
     finished.recv_timeout(Duration::from_secs(5)).expect("the job ran");
+}
+
+/// Load an engine, and wait until it is ready. A job for the engine runs only after that (spec 3.3).
+fn load(process: &nagaya::process::Process, engine: &str) {
+    process.load(engine).unwrap();
+    let ports = process.ports();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while ports.engine_state(engine) != Some(nagaya::notify::EngineState::Ready) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "engine `{engine}` did not load in 5 s"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 const CHAT: &str = "chat/device0/w";

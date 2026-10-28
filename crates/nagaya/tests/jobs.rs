@@ -30,6 +30,10 @@ struct Script {
 }
 
 impl JobBody for Script {
+    fn unavailable(&mut self, engine: &str, state: nagaya::notify::EngineState) {
+        panic!("engine `{engine}` is {}, and this test keeps it ready", state.as_str());
+    }
+
     fn run(&mut self, kind: Kind, _engines: &mut [Box<dyn Engine>]) -> Ran {
         self.log.lock().unwrap().push(format!("{}:{kind:?}", self.name));
         std::thread::sleep(self.sleep);

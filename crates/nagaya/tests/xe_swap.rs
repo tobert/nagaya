@@ -1,6 +1,6 @@
 //! The swap in place on the two B70 cards (spec 3.3a, milestone 16 step 7): Gemma 4 is resident on both cards, and an
-//! on-demand fake engine with `close` shares card 1. A job for the fake unloads Gemma 4 and frees its device memory. A
-//! generation after it loads Gemma 4 again, and the reply is the same as before the swap.
+//! on-demand fake engine with `close` shares card 1. A load of the fake unloads Gemma 4 and frees its device memory.
+//! An unload of the fake loads Gemma 4 again, and the reply is the same as before the swap (spec 3.3b).
 //!
 //! It needs both cards and the checkpoint in `GEMMA4_MODEL_DIR`. Stop `nagaya.service` first. Run it alone:
 //! `cargo test --release -p nagaya --features xe --test xe_swap -- --test-threads=1 --nocapture`.
@@ -181,6 +181,10 @@ fn process_vram() -> u64 {
 struct Done(mpsc::Sender<()>);
 
 impl JobBody for Done {
+    fn unavailable(&mut self, engine: &str, state: nagaya::notify::EngineState) {
+        panic!("engine `{engine}` is {}, and this test keeps it ready", state.as_str());
+    }
+
     fn run(&mut self, _kind: Kind, engines: &mut [Box<dyn Engine>]) -> Ran {
         let _ = engines[1].identity();
         let _ = self.0.send(());
@@ -240,9 +244,13 @@ fn gemma4_unloads_for_an_engine_on_demand_and_loads_again_with_the_same_reply() 
     println!("generation before the swap in {ms} ms: {before}");
     let loaded = process_vram();
 
+    // A request never starts a load, so the test loads the fake (spec 3.3b).
+    let started = Instant::now();
+    ready.process.load("voice").expect("a load of `voice`");
+    assert_eq!(swapped(&ready), (vec!["gemma".to_owned()], vec!["voice".to_owned()]));
+    println!("swap to the fake in {} ms", started.elapsed().as_millis());
     let (done, finished) = mpsc::channel();
     let (group, index) = ready.process.ports().locate("voice").expect("the profile has `voice`");
-    let started = Instant::now();
     ready
         .process
         .submit_job(
@@ -260,8 +268,6 @@ fn gemma4_unloads_for_an_engine_on_demand_and_loads_again_with_the_same_reply() 
     finished
         .recv_timeout(Duration::from_secs(120))
         .expect("the job on the fake ran");
-    println!("swap to the fake in {} ms", started.elapsed().as_millis());
-    assert_eq!(swapped(&ready), (vec!["gemma".to_owned()], vec!["voice".to_owned()]));
     let unloaded = process_vram();
     println!("device bytes: {loaded} with Gemma 4, {unloaded} after its unload");
     assert!(
@@ -269,9 +275,12 @@ fn gemma4_unloads_for_an_engine_on_demand_and_loads_again_with_the_same_reply() 
         "Gemma 4 freed its device memory: {unloaded} bytes stay, and Gemma 4 held {loaded}"
     );
 
+    let started = Instant::now();
+    ready.process.unload("voice").expect("an unload of `voice`");
+    assert_eq!(swapped(&ready), (vec!["voice".to_owned()], vec!["gemma".to_owned()]));
+    println!("swap back to Gemma 4 in {} ms", started.elapsed().as_millis());
     let (after, ms) = generate(&council);
     println!("generation after the swap back in {ms} ms: {after}");
-    assert_eq!(swapped(&ready), (vec!["voice".to_owned()], vec!["gemma".to_owned()]));
     assert_eq!(after, before, "Gemma 4 gives the same reply after the swap back");
 
     council.drain();

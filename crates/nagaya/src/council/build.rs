@@ -18,6 +18,7 @@ use nagaya_store::{
     ContentId, EngineFacts, EntryState, Put, Reason, RecipeId, Restored, Snapshot, Store, StoreError, Tier, Tolerance,
     recipe_boundary, recipe_not_sealed, write_snapshots,
 };
+use nagaya_telemetry::EngineState;
 
 use super::Clock;
 use super::error::ServiceError;
@@ -354,6 +355,15 @@ impl JobBody for LookupBody {
             let _ = tx.send(result);
         }
         if failed { Ran::Failed } else { Ran::Done }
+    }
+
+    fn unavailable(&mut self, engine: &str, state: EngineState) {
+        if let Some(tx) = self.tx.take() {
+            let _ = tx.send(Err(ServiceError::Unavailable {
+                engine: engine.to_owned(),
+                state,
+            }));
+        }
     }
 }
 
@@ -1412,5 +1422,12 @@ impl<T: Then> JobBody for ContextBody<T> {
             _ => ServiceError::Cancelled,
         };
         self.send(Err(error));
+    }
+
+    fn unavailable(&mut self, engine: &str, state: EngineState) {
+        self.send(Err(ServiceError::Unavailable {
+            engine: engine.to_owned(),
+            state,
+        }));
     }
 }

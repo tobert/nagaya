@@ -3,6 +3,7 @@
 use gogi_proto::Invalid;
 use nagaya_council::family::FamilyError;
 use nagaya_ledger::LedgerError;
+use nagaya_telemetry::EngineState;
 
 /// Why a service call failed.
 #[derive(Clone, Debug, PartialEq)]
@@ -38,6 +39,14 @@ pub enum ServiceError {
     ContextRefused(LedgerError),
     /// The process is stopping. The route answers 503 `unavailable`.
     Stopping,
+    /// The engine of the served model is not `ready`, so nothing ran (spec 3.3). The route answers 503
+    /// `model_unavailable`.
+    Unavailable {
+        /// The name of the engine in the profile.
+        engine: String,
+        /// The state of the engine.
+        state: EngineState,
+    },
     /// The job ended before it gave a result: a stop cancelled it, or its client went away.
     Cancelled,
     /// The deadline of the request passed before the job ended (spec 5.8). The route answers 504 `timeout`.
@@ -81,6 +90,11 @@ impl std::fmt::Display for ServiceError {
             ServiceError::Busy(message) => write!(formatter, "{message}"),
             ServiceError::ContextRefused(error) => write!(formatter, "{error}"),
             ServiceError::Stopping => write!(formatter, "the process is stopping"),
+            ServiceError::Unavailable { engine, state } => write!(
+                formatter,
+                "nothing ran: engine `{engine}` is {}, not ready; load it, then retry",
+                state.as_str()
+            ),
             ServiceError::Cancelled => write!(formatter, "the job was cancelled before it gave a result"),
             ServiceError::Timeout => write!(
                 formatter,

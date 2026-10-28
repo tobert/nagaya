@@ -12,6 +12,7 @@ use std::time::Instant;
 
 use nagaya_abi::{Engine, Kind, PassError, PassOut, Segment};
 use nagaya_sched::{Class, Completion, Event, Item, Job, JobId, JobState, ObservedScheduler, Scheduler};
+use nagaya_telemetry::EngineState;
 use tracing::Span;
 
 use crate::evidence::{self, Machine};
@@ -41,6 +42,10 @@ pub trait JobBody: Send {
     /// Hear that the job reached a terminal state. The group calls it once, before it drops the body. A job can end
     /// with no quantum that ran, for example when it passed its deadline (spec 5.8).
     fn ended(&mut self, _state: JobState) {}
+
+    /// Hear that the job ended before it ran, because its engine has this state and not `ready` (spec 3.3a). The group
+    /// calls it once, instead of `ended`, and then it drops the body.
+    fn unavailable(&mut self, engine: &str, state: EngineState);
 
     /// The kind of request that the job serves, for the span `nagaya.job` (spec 9.2). The set of values is bounded.
     fn request(&self) -> &'static str {
@@ -77,7 +82,7 @@ pub struct JobSpec {
     /// The kind of the first quantum. The body adds the others when it runs the first one.
     pub first: Kind,
     /// The engine of the job: its place in the engines of the group, in profile order. A job for an engine that is
-    /// not loaded waits for a swap (spec 3.3a).
+    /// not `ready` ends at once (spec 3.3a).
     pub engine: usize,
     /// The work.
     pub body: Box<dyn JobBody>,

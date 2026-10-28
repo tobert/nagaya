@@ -275,7 +275,7 @@ fn start_engines(
         }
     }) {
         Ok(opened) => {
-            // An on-demand engine stays unloaded until its first job (spec 3.3a).
+            // An on-demand engine stays unloaded until a load (spec 3.3a, 3.3b).
             let waiting = names
                 .iter()
                 .filter(|name| opened.iter().all(|engine| &engine.name != *name));

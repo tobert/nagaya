@@ -1,5 +1,5 @@
-//! The swap in place on a group thread (spec 3.3a): a job for an engine that is not loaded starts the swap. The
-//! group unloads the engines that must give their memory, closes them, and opens the engine of the job.
+//! The swap in place on a group thread (spec 3.3a): a load of an engine that is not loaded starts the swap (spec
+//! 3.3b). The group unloads the engines that must give their memory, closes them, and opens the engine.
 
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use nagaya::admission::{Factory, GroupDevice, OpenError, PlanError, Registry};
 use nagaya::inventory::{Device, Inventory};
 use nagaya::jobs::{JobBody, JobSpec, Ran};
-use nagaya::process::{Event, Process, Start};
+use nagaya::process::{Event, LoadError, Process, Start};
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, Residency, StoreSpec, TierSpec};
 use nagaya::signal::SignalFlag;
 use nagaya_abi::fake::FakeAlways;
@@ -183,6 +183,10 @@ struct Probe {
 }
 
 impl JobBody for Probe {
+    fn unavailable(&mut self, engine: &str, state: nagaya::notify::EngineState) {
+        panic!("engine `{engine}` is {}, and this test keeps it ready", state.as_str());
+    }
+
     fn run(&mut self, _kind: Kind, engines: &mut [Box<dyn Engine>]) -> Ran {
         assert_eq!(engines.len(), 2, "the group holds both engines of the profile");
         let _ = engines[self.engine].identity();
@@ -224,6 +228,12 @@ fn log_of(log: &Log) -> Vec<String> {
     log.lock().unwrap().clone()
 }
 
+/// Load an engine, and wait for the end of its swap. A job for the engine runs only after that (spec 3.3).
+fn load(process: &Process, engine: &str) -> (Vec<String>, Vec<String>) {
+    process.load(engine).unwrap();
+    swapped(process)
+}
+
 /// The next `Swapped` event of the process, skipping none.
 fn swapped(process: &Process) -> (Vec<String>, Vec<String>) {
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -240,27 +250,32 @@ fn swapped(process: &Process) -> (Vec<String>, Vec<String>) {
 }
 
 #[test]
-fn a_job_for_an_engine_on_demand_loads_it_in_place_of_the_resident_engine() {
+fn a_load_of_an_engine_on_demand_loads_it_in_place_of_the_resident_engine() {
     let directory = tempfile::tempdir().unwrap();
     let (process, log) = start(directory.path(), 1000);
+    assert_eq!(
+        load(&process, "voice"),
+        (vec!["chat".to_owned()], vec!["voice".to_owned()])
+    );
     let (job, finished) = probe(VOICE, &log);
     process.submit_job(0, job).unwrap();
     finished
         .recv_timeout(Duration::from_secs(5))
         .expect("the voice job ran");
     assert_eq!(log_of(&log), ["open:chat", "close:chat", "open:voice", "run:voice"]);
-    assert_eq!(swapped(&process), (vec!["chat".to_owned()], vec!["voice".to_owned()]));
 }
 
 #[test]
-fn a_job_for_the_resident_engine_swaps_it_back() {
+fn a_load_of_the_resident_engine_swaps_it_back() {
     let directory = tempfile::tempdir().unwrap();
     let (process, log) = start(directory.path(), 1000);
+    load(&process, "voice");
     let (job, finished) = probe(VOICE, &log);
     process.submit_job(0, job).unwrap();
     finished
         .recv_timeout(Duration::from_secs(5))
         .expect("the voice job ran");
+    load(&process, "chat");
     let (job, finished) = probe(CHAT, &log);
     process.submit_job(0, job).unwrap();
     finished.recv_timeout(Duration::from_secs(5)).expect("the chat job ran");
@@ -282,6 +297,10 @@ fn a_job_for_the_resident_engine_swaps_it_back() {
 fn an_engine_that_fits_beside_the_loaded_engines_loads_with_no_unload() {
     let directory = tempfile::tempdir().unwrap();
     let (process, log) = start(directory.path(), 2000);
+    assert_eq!(
+        load(&process, "voice"),
+        (Vec::<String>::new(), vec!["voice".to_owned()])
+    );
     let (job, finished) = probe(VOICE, &log);
     process.submit_job(0, job).unwrap();
     finished
@@ -291,7 +310,6 @@ fn an_engine_that_fits_beside_the_loaded_engines_loads_with_no_unload() {
     process.submit_job(0, job).unwrap();
     finished.recv_timeout(Duration::from_secs(5)).expect("the chat job ran");
     assert_eq!(log_of(&log), ["open:chat", "open:voice", "run:voice", "run:chat"]);
-    assert_eq!(swapped(&process), (Vec::<String>::new(), vec!["voice".to_owned()]));
 }
 
 #[test]
@@ -328,23 +346,20 @@ fn the_swap_waits_for_the_running_job_of_the_engine_that_unloads() {
         );
         std::thread::sleep(Duration::from_millis(5));
     }
-    let (job, voice_finished) = probe(VOICE, &log);
-    process.submit_job(0, job).unwrap();
+    // The gate blocks the group thread in the chat quantum, so the load comes from another thread.
+    let ports = process.ports();
+    let loader = std::thread::spawn(move || ports.load("voice"));
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(log_of(&log), ["open:chat", "run:chat"], "the chat job holds its engine");
     gate_tx.send(()).unwrap();
     chat_finished.recv_timeout(Duration::from_secs(5)).unwrap();
-    voice_finished
-        .recv_timeout(Duration::from_secs(5))
-        .expect("the voice job ran");
-    assert_eq!(
-        log_of(&log),
-        ["open:chat", "run:chat", "close:chat", "open:voice", "run:voice"]
-    );
+    loader.join().unwrap().unwrap();
+    swapped(&process);
+    assert_eq!(log_of(&log), ["open:chat", "run:chat", "close:chat", "open:voice"]);
 }
 
 #[test]
-fn a_stop_cancels_a_job_that_waits_for_a_swap() {
+fn a_stop_drops_a_load_that_waits_for_the_group() {
     let directory = tempfile::tempdir().unwrap();
     let (mut process, log) = start(directory.path(), 1000);
     let (gate_tx, gate_rx) = mpsc::channel();
@@ -372,8 +387,9 @@ fn a_stop_cancels_a_job_that_waits_for_a_swap() {
         assert!(Instant::now() < deadline, "the chat job did not start");
         std::thread::sleep(Duration::from_millis(5));
     }
-    let (job, voice_finished) = probe(VOICE, &log);
-    process.submit_job(0, job).unwrap();
+    // The gate blocks the group thread, so the load waits in the channel of the group.
+    let ports = process.ports();
+    let loader = std::thread::spawn(move || ports.load("voice"));
     std::thread::sleep(Duration::from_millis(50));
     let stopper = std::thread::spawn(move || {
         let report = process.stop(Duration::from_secs(5), &SignalFlag::new());
@@ -382,18 +398,22 @@ fn a_stop_cancels_a_job_that_waits_for_a_swap() {
     std::thread::sleep(Duration::from_millis(50));
     gate_tx.send(()).unwrap();
     let (_process, _report) = stopper.join().unwrap();
-    assert!(
-        voice_finished.recv_timeout(Duration::from_secs(1)).is_err(),
-        "the waiting job was cancelled, so it sent nothing"
+    assert_eq!(
+        loader.join().unwrap(),
+        Err(LoadError::Stopped),
+        "the stop dropped the load"
     );
     assert!(!log_of(&log).contains(&"open:voice".to_owned()), "{:?}", log_of(&log));
-    assert!(!log_of(&log).contains(&"run:voice".to_owned()), "{:?}", log_of(&log));
 }
 
 /// A job that feeds four tokens into slot 0 of `chat`, so that the slot holds a state.
 struct Fill(Sender<()>);
 
 impl JobBody for Fill {
+    fn unavailable(&mut self, engine: &str, state: nagaya::notify::EngineState) {
+        panic!("engine `{engine}` is {}, and this test keeps it ready", state.as_str());
+    }
+
     fn run(&mut self, _kind: Kind, engines: &mut [Box<dyn Engine>]) -> Ran {
         let segment = Segment {
             state: State::Slot(0),
@@ -411,7 +431,7 @@ impl JobBody for Fill {
 #[test]
 fn the_unload_parks_each_state_that_holds_tokens() {
     let directory = tempfile::tempdir().unwrap();
-    let (process, log) = start(directory.path(), 1000);
+    let (process, _log) = start(directory.path(), 1000);
     let (done, filled) = mpsc::channel();
     process
         .submit_job(
@@ -432,11 +452,7 @@ fn the_unload_parks_each_state_that_holds_tokens() {
         store.lock().unwrap().entries().is_empty(),
         "nothing is parked before the swap"
     );
-    let (job, finished) = probe(VOICE, &log);
-    process.submit_job(0, job).unwrap();
-    finished
-        .recv_timeout(Duration::from_secs(5))
-        .expect("the voice job ran");
+    load(&process, "voice");
     assert_eq!(
         store.lock().unwrap().entries().len(),
         1,
@@ -447,7 +463,7 @@ fn the_unload_parks_each_state_that_holds_tokens() {
 #[test]
 fn the_ledger_charges_the_engine_that_loaded() {
     let directory = tempfile::tempdir().unwrap();
-    let (process, log) = start(directory.path(), 1000);
+    let (process, _log) = start(directory.path(), 1000);
     let device = |process: &Process| {
         process
             .ports()
@@ -458,23 +474,15 @@ fn the_ledger_charges_the_engine_that_loaded() {
             .1
     };
     assert_eq!(device(&process), 400, "`chat` holds 600 of 1000 bytes");
-    let (job, finished) = probe(VOICE, &log);
-    process.submit_job(0, job).unwrap();
-    finished
-        .recv_timeout(Duration::from_secs(5))
-        .expect("the voice job ran");
+    load(&process, "voice");
     assert_eq!(
         device(&process),
         400,
         "`voice` holds the 600 bytes that `chat` gave back"
     );
     let directory = tempfile::tempdir().unwrap();
-    let (process, log) = start(directory.path(), 2000);
-    let (job, finished) = probe(VOICE, &log);
-    process.submit_job(0, job).unwrap();
-    finished
-        .recv_timeout(Duration::from_secs(5))
-        .expect("the voice job ran");
+    let (process, _log) = start(directory.path(), 2000);
+    load(&process, "voice");
     assert_eq!(device(&process), 800, "both engines hold 600 bytes each of 2000");
 }
 
@@ -507,86 +515,21 @@ fn the_swap_waits_for_the_queued_jobs_of_the_engine_that_unloads() {
         assert!(Instant::now() < deadline, "the chat job did not start");
         std::thread::sleep(Duration::from_millis(5));
     }
-    // A second chat job queues behind the first, and then the voice job comes.
+    // A second chat job queues behind the first, and then the load of voice comes.
     let (second, second_finished) = probe(CHAT, &log);
     process.submit_job(0, second).unwrap();
-    let (voice, voice_finished) = probe(VOICE, &log);
-    process.submit_job(0, voice).unwrap();
+    let ports = process.ports();
+    let loader = std::thread::spawn(move || ports.load("voice"));
     std::thread::sleep(Duration::from_millis(50));
     gate_tx.send(()).unwrap();
     second_finished
         .recv_timeout(Duration::from_secs(5))
         .expect("the queued chat job ran");
-    voice_finished
-        .recv_timeout(Duration::from_secs(5))
-        .expect("the voice job ran");
+    loader.join().unwrap().unwrap();
+    swapped(&process);
     assert_eq!(
         log_of(&log),
-        [
-            "open:chat",
-            "run:chat",
-            "run:chat",
-            "close:chat",
-            "open:voice",
-            "run:voice"
-        ]
-    );
-}
-
-#[test]
-fn a_job_for_the_engine_that_unloads_waits_for_its_next_load() {
-    let directory = tempfile::tempdir().unwrap();
-    let (process, log) = start(directory.path(), 1000);
-    let (gate_tx, gate_rx) = mpsc::channel();
-    process
-        .submit_job(
-            0,
-            JobSpec {
-                class: Class::Interactive,
-                priority: 0,
-                deadline: None,
-                first: Kind::Read,
-                engine: CHAT,
-                body: Box::new(Probe {
-                    engine: CHAT,
-                    name: "chat",
-                    log: Arc::clone(&log),
-                    gate: Some(gate_rx),
-                    done: None,
-                }),
-            },
-        )
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !log_of(&log).contains(&"run:chat".to_owned()) {
-        assert!(Instant::now() < deadline, "the chat job did not start");
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    let (voice, voice_finished) = probe(VOICE, &log);
-    process.submit_job(0, voice).unwrap();
-    std::thread::sleep(Duration::from_millis(50));
-    let (late, late_finished) = probe(CHAT, &log);
-    process.submit_job(0, late).unwrap();
-    std::thread::sleep(Duration::from_millis(50));
-    gate_tx.send(()).unwrap();
-    voice_finished
-        .recv_timeout(Duration::from_secs(5))
-        .expect("the voice job ran");
-    late_finished
-        .recv_timeout(Duration::from_secs(5))
-        .expect("the late chat job ran");
-    assert_eq!(
-        log_of(&log),
-        [
-            "open:chat",
-            "run:chat",
-            "close:chat",
-            "open:voice",
-            "run:voice",
-            "close:voice",
-            "open:chat",
-            "run:chat"
-        ]
+        ["open:chat", "run:chat", "run:chat", "close:chat", "open:voice"]
     );
 }
 
@@ -616,13 +559,16 @@ fn an_idle_engine_on_demand_unloads_and_the_resident_engine_loads_again() {
         .start()
         .unwrap();
     process.wait_opens(Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        load(&process, "voice"),
+        (vec!["chat".to_owned()], vec!["voice".to_owned()])
+    );
     let (job, finished) = probe(VOICE, &log);
     let submitted = Instant::now();
     process.submit_job(0, job).unwrap();
     finished
         .recv_timeout(Duration::from_secs(5))
         .expect("the voice job ran");
-    assert_eq!(swapped(&process), (vec!["chat".to_owned()], vec!["voice".to_owned()]));
     // No job comes. After its idle time, `voice` unloads and `chat` loads again.
     assert_eq!(swapped(&process), (vec!["voice".to_owned()], vec!["chat".to_owned()]));
     let after = submitted.elapsed();
@@ -681,12 +627,12 @@ fn an_idle_resident_engine_stays_loaded() {
 fn a_job_in_the_idle_time_starts_the_idle_time_again() {
     let directory = tempfile::tempdir().unwrap();
     let (process, log) = start_idle(directory.path(), 1);
+    load(&process, "voice");
     let (job, finished) = probe(VOICE, &log);
     process.submit_job(0, job).unwrap();
     finished
         .recv_timeout(Duration::from_secs(5))
         .expect("the first voice job ran");
-    assert_eq!(swapped(&process), (vec!["chat".to_owned()], vec!["voice".to_owned()]));
     std::thread::sleep(Duration::from_millis(700));
     let (job, finished) = probe(VOICE, &log);
     let second = Instant::now();
@@ -702,20 +648,16 @@ fn a_job_in_the_idle_time_starts_the_idle_time_again() {
     );
 }
 
-/// A council request charges its context before its job waits for a swap (spec 3.3a, 4.2), so the ledger knows the
-/// context terms of an engine that is not loaded.
+/// The terms of the contexts of an engine stay admitted while it is not loaded (spec 3.3a, "The ledger of a swap"),
+/// so a context of an unloaded engine can be charged.
 #[test]
 fn a_context_of_an_engine_that_is_not_loaded_can_be_charged() {
     let directory = tempfile::tempdir().unwrap();
-    let (process, log) = start(directory.path(), 1000);
+    let (process, _log) = start(directory.path(), 1000);
     let ports = process.ports();
     ports.admit_context("voice").expect("a context of the unloaded `voice`");
     ports.release_context("voice").unwrap();
-    let (job, finished) = probe(VOICE, &log);
-    process.submit_job(0, job).unwrap();
-    finished
-        .recv_timeout(Duration::from_secs(5))
-        .expect("the voice job ran");
+    load(&process, "voice");
     ports.admit_context("chat").expect("a context of the unloaded `chat`");
     ports.release_context("chat").unwrap();
 }

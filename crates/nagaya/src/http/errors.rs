@@ -82,6 +82,11 @@ impl From<ServiceError> for Failure {
             ServiceError::Busy(_) | ServiceError::ContextRefused(_) => {
                 Self::new(StatusCode::TOO_MANY_REQUESTS, ErrorType::Busy, message)
             }
+            ServiceError::Unavailable { state, .. } => {
+                let mut failure = Self::new(StatusCode::SERVICE_UNAVAILABLE, ErrorType::ModelUnavailable, message);
+                failure.body.error.status = Some(super::model_status(state));
+                failure
+            }
             ServiceError::Stopping | ServiceError::Cancelled => {
                 Self::new(StatusCode::SERVICE_UNAVAILABLE, ErrorType::Unavailable, message)
             }

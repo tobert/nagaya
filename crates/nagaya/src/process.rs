@@ -1,6 +1,6 @@
 //! The process threads: the ledger, the watchdog, and one thread per device group (spec 3.2).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use nagaya_abi::{ArenaPart, CheckStrength, DeviceId, Engine, Identity, Limits, Tier};
 use nagaya_ledger::{Ledger, LedgerError};
 use nagaya_store::Store;
-use nagaya_telemetry::Inherit;
+use nagaya_telemetry::{EngineState, Inherit};
 use tracing::Span;
 
 use crate::admission::{
@@ -31,9 +31,12 @@ use crate::placement::{self, DeviceGroup};
 use crate::profile::{EnginePlacement, PlacementProfile, Residency};
 use crate::signal::SignalFlag;
 use in_place::{Exit, Member, Unloaded};
+use loads::Ask;
+pub use loads::{EngineStates, LoadError, LoadReply};
 
 mod handoff;
 mod in_place;
+mod loads;
 mod staged;
 
 /// The default watchdog timeout. Three times the longest declared quantum bound (mk: 10 s).
@@ -834,6 +837,15 @@ impl Start {
         }
 
         let accepting = Arc::new(AtomicBool::new(true));
+        // A resident engine loads at start, and an on-demand engine waits for a load (spec 3.3a).
+        let states = EngineStates::default();
+        for placement in &profile.engines {
+            let state = match placement.residency {
+                Residency::Resident => EngineState::Loading,
+                Residency::OnDemand => EngineState::Unloaded,
+            };
+            states.set(&placement.name, state);
+        }
         let groups = placement::device_groups(&profile);
         let mut group_threads = Vec::with_capacity(groups.len());
         let mut group_stops = Vec::with_capacity(groups.len());
@@ -855,6 +867,7 @@ impl Start {
             let group_own = stop_tx.clone();
             let group_fd_store = fd_store.clone();
             let group_ledger = ledger_tx.clone();
+            let group_states = states.clone();
             let handle = spawn_named(format!("nagaya-group-{index}"), move || {
                 guard("group", &group_guard, || {
                     pin("group", group_cpus.as_deref());
@@ -869,6 +882,7 @@ impl Start {
                         sets: group_sets,
                         fd_store: group_fd_store,
                         ledger: group_ledger,
+                        states: group_states,
                     };
                     group_thread(index, jobs, links, heartbeat);
                 });
@@ -901,6 +915,7 @@ impl Start {
                 .collect(),
             accepting,
             failure: Arc::new(Mutex::new(None)),
+            states,
             stopped: false,
         })
     }
@@ -979,6 +994,8 @@ struct GroupLinks {
     fd_store: Option<FdStore>,
     /// The ledger thread, which checks and admits a swap (spec 3.3a).
     ledger: Sender<LedgerMessage>,
+    /// The state of each engine. The group writes the states of its own engines (spec 3.3b).
+    states: EngineStates,
 }
 
 fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: Duration) {
@@ -1001,7 +1018,7 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
     // An open can take minutes, and it blocks this thread. The guard beats for the group until the open ends (7.4).
     let open_beat = OpenBeat::start(group, links.heartbeats.clone(), interval);
     for index in 0..members.len() {
-        // An on-demand engine opens at its first job (spec 3.3a).
+        // An on-demand engine stays unloaded until a load (spec 3.3a, 3.3b).
         if members[index].job.placement.residency != Residency::Resident {
             continue;
         }
@@ -1010,6 +1027,7 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
                 engines[index] = engine;
                 members[index].handles = handles;
                 members[index].loaded = true;
+                links.states.set(members[index].name(), EngineState::Ready);
                 opened.push(info);
             }
             Err((kind, message)) => {
@@ -1030,18 +1048,18 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
         jobs: GroupJobs::new(group as u32, names.join("+")).machine(links.machine.clone()),
         cancelled: 0,
     };
-    // The jobs for an engine that is not loaded, or that a planned swap unloads, in order of arrival (spec 3.3a).
-    let mut waiting: Vec<(JobSpec, Span)> = Vec::new();
+    // The loads and the unloads that wait for the group to plan them, in order of arrival (spec 3.3b).
+    let mut asks: VecDeque<Ask> = VecDeque::new();
     loop {
         let staged = (0..members.len()).find(|index| members[*index].loaded && members[*index].staged());
         let exit = match staged {
-            Some(index) => staged::serve(group, index, &mut members, &mut engines, &mut waiting, &links, interval),
+            Some(index) => staged::serve(group, index, &mut members, &mut engines, &mut asks, &links, interval),
             None => serve_plain(
                 group,
                 &mut members,
                 &mut engines,
                 &mut plain,
-                &mut waiting,
+                &mut asks,
                 &links,
                 interval,
             ),
@@ -1055,6 +1073,7 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
                     ledger: &links.ledger,
                     store: links.store.as_ref(),
                     fd_store: links.fd_store.as_ref(),
+                    states: &links.states,
                 };
                 in_place::swap(group, &mut members, &mut engines, plan, swap_links, interval);
                 if links
@@ -1086,19 +1105,11 @@ fn serve_plain(
     members: &mut [Member],
     engines: &mut [Box<dyn Engine>],
     plain: &mut Plain,
-    waiting: &mut Vec<(JobSpec, Span)>,
+    asks: &mut VecDeque<Ask>,
     links: &GroupLinks,
     interval: Duration,
 ) -> Exit {
     let Plain { jobs, cancelled } = plain;
-    // The jobs that waited for an engine that is loaded now run. The others wait for the next swap.
-    for (spec, parent) in std::mem::take(waiting) {
-        if members[spec.engine].loaded {
-            jobs.add_under(spec, parent);
-        } else {
-            waiting.push((spec, parent));
-        }
-    }
     let mut pending: Option<in_place::Plan> = None;
     let beat = || WatchMessage::Beat {
         group,
@@ -1139,20 +1150,19 @@ fn serve_plain(
                             members.len()
                         )
                     });
-                    let unloads = pending.as_ref().is_some_and(|plan| plan.unload.contains(&spec.engine));
-                    if member.loaded && !unloads {
-                        jobs.add_under(spec, parent);
-                    } else {
-                        // The plan starts at the arrival, so a later job for an engine that unloads waits (3.3a).
-                        if pending.is_none() && links.accepting.load(Ordering::SeqCst) {
-                            pending = Some(in_place::plan(spec.engine, members, &links.ledger));
+                    // A planned swap set the states of its engines, so a job for an engine that unloads ends here.
+                    match links.states.get(member.name()) {
+                        Some(EngineState::Ready) => {
+                            jobs.add_under(spec, parent);
                         }
-                        waiting.push((spec, parent));
+                        state => refuse(spec, member.name(), state),
                     }
                 }
+                Ok(GroupMessage::Ask(ask)) => asks.push_back(ask),
                 Ok(GroupMessage::Park(reply)) => {
-                    *cancelled += jobs.cancel_all() + waiting.len();
-                    waiting.clear();
+                    *cancelled += jobs.cancel_all();
+                    // An ask that waits gets no reply. Its caller hears that the group stopped.
+                    asks.clear();
                     // The drain ends here. The park budget of the group starts now.
                     let _ = reply.send(ParkProgress::Draining { ended: Instant::now() });
                     let mut report = park_loaded(members, engines, links.store.as_ref());
@@ -1180,14 +1190,10 @@ fn serve_plain(
                 break;
             }
         }
-        // A stop plans no swap. Its park cancels the jobs that wait, as it cancels queued quanta (spec 10.3). The jobs
-        // that waited through a swap plan the next one here.
+        // A stop plans no swap. The asks that waited through a swap plan the next one here (spec 3.3b).
         let serving = links.accepting.load(Ordering::SeqCst);
-        if serving
-            && pending.is_none()
-            && let Some((spec, _)) = waiting.first()
-        {
-            pending = Some(in_place::plan(spec.engine, members, &links.ledger));
+        if serving && pending.is_none() {
+            pending = loads::next_plan(asks, members, &links.ledger, &links.states, |plan| plan);
         }
         // The swap waits until the engines that unload hold no job. Jobs of the other engines go on (spec 3.3a).
         if serving
@@ -1205,9 +1211,10 @@ fn serve_plain(
         }
         if serving
             && pending.is_none()
-            && waiting.is_empty()
+            && asks.is_empty()
             && let Some(plan) = in_place::idle_plan(members, now, &links.ledger)
         {
+            loads::mark(&plan, members, &links.states);
             return Exit::Swap(plan);
         }
         if !jobs.idle() {
@@ -1221,6 +1228,12 @@ fn serve_plain(
             }
         }
     }
+}
+
+/// End a job whose engine is not `ready`. Nothing ran, and the body tells its caller the state (spec 3.3a).
+fn refuse(mut spec: JobSpec, engine: &str, state: Option<EngineState>) {
+    let state = state.unwrap_or_else(|| panic!("engine `{engine}` of a group has no state"));
+    spec.body.unavailable(engine, state);
 }
 
 /// Park each loaded engine of a group. An engine that is not loaded holds no state (spec 3.3a).
@@ -1472,6 +1485,8 @@ enum GroupMessage {
     StageDone(staged::StageDone),
     /// A stage thread ended a quantum of an engine that it holds (engine-abi "How a group loads both").
     HostedDone(staged::HostedDone),
+    /// Load or unload one engine of the group by a swap (spec 3.3b).
+    Ask(Ask),
 }
 
 /// Why a context charge did not happen.
@@ -1507,6 +1522,8 @@ pub struct Ports {
     accepting: Arc<AtomicBool>,
     /// The first failure that a service saw outside a call. The main loop reads it (spec 8.5).
     failure: Arc<Mutex<Option<String>>>,
+    /// The state of each engine (spec 3.3b).
+    states: EngineStates,
 }
 
 impl Ports {
@@ -1622,6 +1639,23 @@ impl Ports {
     pub fn store(&self) -> Option<&Arc<Mutex<Store>>> {
         self.store.as_ref()
     }
+
+    /// The state of the engine with this name, or `None` for a name that is not in the profile (spec 3.3b).
+    pub fn engine_state(&self, engine: &str) -> Option<EngineState> {
+        self.states.get(engine)
+    }
+
+    /// Load an engine, as [`Process::load`] does.
+    pub fn load(&self, engine: &str) -> Result<LoadReply, LoadError> {
+        let accepting = self.accepting.load(Ordering::SeqCst);
+        loads::ask(&self.groups, &self.group_engines, accepting, engine, true)
+    }
+
+    /// Unload an engine, as [`Process::unload`] does.
+    pub fn unload(&self, engine: &str) -> Result<LoadReply, LoadError> {
+        let accepting = self.accepting.load(Ordering::SeqCst);
+        loads::ask(&self.groups, &self.group_engines, accepting, engine, false)
+    }
 }
 
 /// The started process threads.
@@ -1645,6 +1679,8 @@ pub struct Process {
     accepting: Arc<AtomicBool>,
     /// The first failure that a service saw outside a call. [`Ports::release_failed`] sets it.
     failure: Arc<Mutex<Option<String>>>,
+    /// The state of each engine (spec 3.3b).
+    states: EngineStates,
     stopped: bool,
 }
 
@@ -1686,7 +1722,22 @@ impl Process {
             store: self.store_handle.clone(),
             accepting: Arc::clone(&self.accepting),
             failure: Arc::clone(&self.failure),
+            states: self.states.clone(),
         }
+    }
+
+    /// Load the engine with this name by a swap on its group thread (spec 3.3b). It waits until the group plans the
+    /// swap, not for the swap to end.
+    pub fn load(&self, engine: &str) -> Result<LoadReply, LoadError> {
+        let accepting = self.accepting.load(Ordering::SeqCst);
+        loads::ask(&self.group_stops, &self.group_engines, accepting, engine, true)
+    }
+
+    /// Unload the on-demand engine with this name, as after its idle time (spec 3.3b). The resident engines of its
+    /// group load again.
+    pub fn unload(&self, engine: &str) -> Result<LoadReply, LoadError> {
+        let accepting = self.accepting.load(Ordering::SeqCst);
+        loads::ask(&self.group_stops, &self.group_engines, accepting, engine, false)
     }
 
     /// Send one job to a group thread. A stop refuses every later job (spec 10.3 step 1).

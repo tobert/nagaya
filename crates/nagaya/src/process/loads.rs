@@ -1,0 +1,184 @@
+//! Explicit loads and the state of each engine (spec 3.3, 3.3a, 3.3b).
+//!
+//! A request never starts a load. A client asks the process to load or unload an engine, and the group thread of the
+//! engine plans the swap. The group threads write the state of each engine, and the routes read it.
+
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, Mutex};
+
+use nagaya_telemetry::{EngineState, instruments};
+
+use super::in_place::{self, Member, Plan};
+use super::{GroupMessage, LedgerMessage};
+
+/// The state of each engine of the profile, by name (spec 3.3, 9.4).
+///
+/// The group threads write it, and the routes read it. A route can read a state that a swap changes a moment later,
+/// so the group checks the state of each job again (spec 3.3a, "A job for an engine that is not ready").
+#[derive(Clone, Debug, Default)]
+pub struct EngineStates(Arc<Mutex<BTreeMap<String, EngineState>>>);
+
+impl EngineStates {
+    /// The state of the engine with this name, or `None` for a name that is not in the profile.
+    pub fn get(&self, engine: &str) -> Option<EngineState> {
+        self.0
+            .lock()
+            .expect("the engine states lock is poisoned")
+            .get(engine)
+            .copied()
+    }
+
+    /// Set the state of an engine. The start records its own states as metrics (`lifecycle`), so this records none.
+    pub(super) fn set(&self, engine: &str, state: EngineState) {
+        self.0
+            .lock()
+            .expect("the engine states lock is poisoned")
+            .insert(engine.to_owned(), state);
+    }
+
+    /// Set the state of an engine in a swap, and record it as the metric `nagaya.engine.state` (spec 9.4).
+    pub(super) fn record(&self, engine: &str, state: EngineState) {
+        self.set(engine, state);
+        instruments().engine_state(engine, state);
+    }
+}
+
+/// What a group did with a load or an unload (spec 3.3b).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LoadReply {
+    /// The group planned a swap. It unloads the engines of `unload`, then it loads the engines of `load`.
+    Started {
+        /// The engines that unload, in the order of the swap.
+        unload: Vec<String>,
+        /// The engines that load, in the order of the swap.
+        load: Vec<String>,
+    },
+    /// No swap is necessary: the engine has this state, or a planned swap gives it this state.
+    Already(EngineState),
+}
+
+/// Why a load or an unload did not start (spec 3.3b).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LoadError {
+    /// No engine of the profile has this name.
+    Unknown(String),
+    /// The engine is resident. A resident engine leaves only by a profile change.
+    Resident(String),
+    /// The process is stopping and takes no new work (spec 10.3 step 1).
+    Stopping,
+    /// The group thread stopped.
+    Stopped,
+}
+
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoadError::Unknown(name) => write!(
+                formatter,
+                "no engine of the profile has the name `{name}`; the profile names each engine"
+            ),
+            LoadError::Resident(name) => write!(
+                formatter,
+                "engine `{name}` is resident, so it does not unload; change the profile to remove it"
+            ),
+            LoadError::Stopping => write!(formatter, "the process is stopping"),
+            LoadError::Stopped => write!(formatter, "the group of the engine stopped"),
+        }
+    }
+}
+
+impl std::error::Error for LoadError {}
+
+/// A load or an unload of one engine of a group, by its place in the group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Request {
+    Load(usize),
+    Unload(usize),
+}
+
+/// A load or an unload that waits for its group to plan it, with the sender of its reply.
+pub(super) struct Ask {
+    pub(super) request: Request,
+    pub(super) reply: Sender<Result<LoadReply, LoadError>>,
+}
+
+/// Send a load or an unload to the group of `engine`, and wait for the reply of the group.
+pub(super) fn ask(
+    groups: &[Sender<GroupMessage>],
+    group_engines: &[Vec<String>],
+    accepting: bool,
+    engine: &str,
+    load: bool,
+) -> Result<LoadReply, LoadError> {
+    let (group, index) = group_engines
+        .iter()
+        .enumerate()
+        .find_map(|(group, names)| names.iter().position(|name| name == engine).map(|index| (group, index)))
+        .ok_or_else(|| LoadError::Unknown(engine.to_owned()))?;
+    if !accepting {
+        return Err(LoadError::Stopping);
+    }
+    let request = if load {
+        Request::Load(index)
+    } else {
+        Request::Unload(index)
+    };
+    let (reply, answer) = mpsc::channel();
+    groups[group]
+        .send(GroupMessage::Ask(Ask { request, reply }))
+        .map_err(|_| LoadError::Stopped)?;
+    answer.recv().map_err(|_| LoadError::Stopped)?
+}
+
+/// Answer the asks that wait, in order of arrival, until one plans a swap (spec 3.3b). The group calls it only when
+/// it has no planned swap.
+///
+/// `widen` gives the swap that the serve loop runs for a plan. A serve loop of stages can unload more engines than
+/// the plan names. The states of the engines of the swap change here: an engine that unloads is `draining`, and an
+/// engine that loads is `loading`.
+pub(super) fn next_plan(
+    asks: &mut VecDeque<Ask>,
+    members: &[Member],
+    ledger: &Sender<LedgerMessage>,
+    states: &EngineStates,
+    widen: impl Fn(Plan) -> Plan,
+) -> Option<Plan> {
+    while let Some(Ask { request, reply }) = asks.pop_front() {
+        let plan = match request {
+            Request::Load(index) if members[index].loaded => {
+                let _ = reply.send(Ok(LoadReply::Already(EngineState::Ready)));
+                continue;
+            }
+            Request::Load(index) => in_place::plan(index, members, ledger),
+            Request::Unload(index) if members[index].resident() => {
+                let _ = reply.send(Err(LoadError::Resident(members[index].name().to_owned())));
+                continue;
+            }
+            Request::Unload(index) if !members[index].loaded => {
+                let _ = reply.send(Ok(LoadReply::Already(EngineState::Unloaded)));
+                continue;
+            }
+            Request::Unload(index) => in_place::back_plan(index, members, ledger),
+        };
+        let plan = widen(plan);
+        mark(&plan, members, states);
+        let name = |index: &usize| members[*index].name().to_owned();
+        let _ = reply.send(Ok(LoadReply::Started {
+            unload: plan.unload.iter().map(name).collect(),
+            load: plan.load.iter().map(name).collect(),
+        }));
+        return Some(plan);
+    }
+    None
+}
+
+/// Set the states of a planned swap: each engine that unloads is `draining`, and each engine that loads is `loading`.
+pub(super) fn mark(plan: &Plan, members: &[Member], states: &EngineStates) {
+    for &index in &plan.unload {
+        states.record(members[index].name(), EngineState::Draining);
+    }
+    for &index in &plan.load {
+        states.record(members[index].name(), EngineState::Loading);
+    }
+}

@@ -137,7 +137,7 @@ pub enum Residency {
     /// The engine opens at start. It unloads only while a swap gives its memory to another engine.
     #[default]
     Resident,
-    /// The engine opens at its first job, and it unloads after its idle time.
+    /// The engine opens at a load (spec 3.3b), and it unloads after its idle time.
     OnDemand,
 }
 

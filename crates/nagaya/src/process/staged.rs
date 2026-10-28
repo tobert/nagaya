@@ -23,10 +23,11 @@ use nagaya_sched::{
     Class, Completion, Device, Item, JobId, JobState, StageEvent, StageJob, StageQuantum, StageScheduler,
     StagedEngine as Facts, Work, stage_step,
 };
-use nagaya_telemetry::{QuantumLabels, instruments};
+use nagaya_telemetry::{EngineState, QuantumLabels, instruments};
 use tracing::Span;
 
 use super::in_place::{self, Exit, Member, Plan, Unloaded};
+use super::loads::{self, Ask};
 use super::{
     Event, GroupJob, GroupLinks, GroupMessage, LedgerMessage, OpenBeat, OpenedEngine, ParkProgress, ParkReport,
     WatchMessage, guard, handoff, park, park_group, pin, spawn_named,
@@ -1184,8 +1185,7 @@ fn unload_hosted(
     links: &GroupLinks,
 ) {
     let name = members[member].name().to_owned();
-    let instruments = instruments();
-    instruments.engine_state(&name, nagaya_telemetry::EngineState::Draining);
+    links.states.record(&name, EngineState::Draining);
     let (reply, answer) = mpsc::channel();
     threads.senders[stage]
         .send(StageWork::Unload {
@@ -1208,7 +1208,7 @@ fn unload_hosted(
     handoff::remove_arena(&members[member].job, links.fd_store.as_ref());
     engines[member] = Unloaded::of(&members[member]);
     members[member].loaded = false;
-    instruments.engine_state(&name, nagaya_telemetry::EngineState::Unloaded);
+    links.states.record(&name, EngineState::Unloaded);
     tracing::info!(
         "engine `{name}` unloaded from stage {stage}: parked {} states",
         report.states
@@ -1264,12 +1264,11 @@ fn swap_beside(
         panic!("the ledger refused the swap to {}: {error}", loading.join(", "));
     }
     let opening = Instant::now();
-    let instruments = instruments();
     let mut loaded = Vec::with_capacity(plan.load.len());
     for &member in &plan.load {
         let stage = stages[&member];
         let engine = members[member].name().to_owned();
-        instruments.engine_state(&engine, nagaya_telemetry::EngineState::Loading);
+        links.states.record(&engine, EngineState::Loading);
         let shell = members[member].job.shell();
         let job = Box::new(std::mem::replace(&mut members[member].job, shell));
         let (reply, answer) = mpsc::channel();
@@ -1291,7 +1290,7 @@ fn swap_beside(
         members[member].last_busy = Instant::now();
         engines[member] = Elsewhere::hosted(&members[member]);
         hosted.insert(member, stage);
-        instruments.engine_state(&engine, nagaya_telemetry::EngineState::Ready);
+        links.states.record(&engine, EngineState::Ready);
         loaded.push(opened);
     }
     span.record("load_ms", opening.elapsed().as_millis() as u64);
@@ -1312,16 +1311,16 @@ fn swap_beside(
 /// Serve the engine with stages at `index` of the group until the group stops or swaps (engine-abi D1, spec 3.3a).
 ///
 /// An engine with one device loads beside it when the ledger admits both. Its engine opens on the stage thread of its
-/// device, and its quanta run there (engine-abi "How a group loads both"). Another job for an engine that is not
-/// loaded waits, and the first one plans a swap. A plan that unloads the engine with stages waits until the engine
-/// holds no job. Then the loop unloads the engines on the stage threads and the engine itself while the threads still
-/// run, ends the threads, and gives the swap.
+/// device, and its quanta run there (engine-abi "How a group loads both"). A load or an unload plans a swap (spec
+/// 3.3b). A plan that unloads the engine with stages waits until the engine holds no job. Then the loop unloads the
+/// engines on the stage threads and the engine itself while the threads still run, ends the threads, and gives the
+/// swap.
 pub(super) fn serve(
     group: usize,
     index: usize,
     members: &mut [Member],
     engines: &mut [Box<dyn Engine>],
-    waiting: &mut Vec<(JobSpec, Span)>,
+    asks: &mut VecDeque<Ask>,
     links: &GroupLinks,
     interval: Duration,
 ) -> Exit {
@@ -1348,14 +1347,6 @@ pub(super) fn serve(
         .collect();
     let mut hosted: Hosted = BTreeMap::new();
     let mut jobs = StagedJobs::new(group as u32, name.clone(), &limits, links.machine.clone());
-    // The jobs that waited for this engine run now. The others wait for a swap.
-    for (spec, parent) in std::mem::take(waiting) {
-        if spec.engine == index {
-            jobs.add(spec, parent, None, engines, &threads);
-        } else {
-            waiting.push((spec, parent));
-        }
-    }
     let mut pending: Option<Plan> = None;
     let mut cancelled = 0;
     let beat = || WatchMessage::Beat {
@@ -1379,22 +1370,28 @@ pub(super) fn serve(
                     spec.engine,
                     members.len()
                 );
-                if pending.is_some() {
-                    // This loop takes one message at a time and plans after it, so a later job waits (3.3a).
-                    waiting.push((spec, parent));
-                } else if spec.engine == index {
-                    jobs.add(spec, parent, None, engines, &threads);
-                } else if let Some(&stage) = hosted.get(&spec.engine) {
-                    jobs.add(spec, parent, Some(devices[stage]), engines, &threads);
-                } else {
-                    waiting.push((spec, parent));
+                // A planned swap set the states of its engines, so a job for an engine that unloads ends here.
+                let engine = members[spec.engine].name().to_owned();
+                match links.states.get(&engine) {
+                    Some(EngineState::Ready) if spec.engine == index => {
+                        jobs.add(spec, parent, None, engines, &threads);
+                    }
+                    Some(EngineState::Ready) => {
+                        let stage = *hosted.get(&spec.engine).unwrap_or_else(|| {
+                            panic!("engine `{engine}` is ready, and it is neither the engine with stages nor hosted")
+                        });
+                        jobs.add(spec, parent, Some(devices[stage]), engines, &threads);
+                    }
+                    state => super::refuse(spec, &engine, state),
                 }
             }
+            Ok(GroupMessage::Ask(ask)) => asks.push_back(ask),
             Ok(GroupMessage::StageDone(done)) => jobs.stage_done(done, engines, &threads),
             Ok(GroupMessage::HostedDone(done)) => jobs.hosted_done(done, engines, &threads),
             Ok(GroupMessage::Park(reply)) => {
-                cancelled += jobs.cancel_all() + waiting.len();
-                waiting.clear();
+                cancelled += jobs.cancel_all();
+                // An ask that waits gets no reply. Its caller hears that the group stopped.
+                asks.clear();
                 // A park call waits on each stage thread for the stage quantum before it.
                 let _ = reply.send(ParkProgress::Draining { ended: Instant::now() });
                 let mut report = park_group(
@@ -1440,11 +1437,22 @@ pub(super) fn serve(
         if !serving && !jobs.idle() {
             cancelled += jobs.cancel_all();
         }
-        if serving
-            && pending.is_none()
-            && let Some((spec, _)) = waiting.first()
-        {
-            pending = Some(in_place::plan(spec.engine, members, &links.ledger));
+        // A plan that does not keep the engine with stages beside its hosted engines unloads every loaded engine.
+        let widen = |mut plan: Plan| {
+            let beside = !plan.unload.contains(&index)
+                && plan.unload.iter().all(|member| hosted.contains_key(member))
+                && plan.load.iter().all(|member| stages.contains_key(member));
+            if !beside {
+                for member in hosted.keys().copied().chain(std::iter::once(index)) {
+                    if !plan.unload.contains(&member) {
+                        plan.unload.push(member);
+                    }
+                }
+            }
+            plan
+        };
+        if serving && pending.is_none() {
+            pending = loads::next_plan(asks, members, &links.ledger, &links.states, widen);
         }
         let now = Instant::now();
         for member in std::iter::once(index).chain(hosted.keys().copied()) {
@@ -1452,8 +1460,11 @@ pub(super) fn serve(
                 members[member].last_busy = now;
             }
         }
-        if serving && pending.is_none() && waiting.is_empty() {
-            pending = in_place::idle_plan(members, now, &links.ledger);
+        if serving && pending.is_none() && asks.is_empty() {
+            pending = in_place::idle_plan(members, now, &links.ledger).map(widen);
+            if let Some(plan) = &pending {
+                loads::mark(plan, members, &links.states);
+            }
         }
         let beside = pending.as_ref().is_some_and(|plan| {
             !plan.unload.contains(&index)
@@ -1475,16 +1486,6 @@ pub(super) fn serve(
                     links,
                     interval,
                 );
-                // The jobs that waited for an engine that is loaded now run.
-                for (spec, parent) in std::mem::take(waiting) {
-                    if spec.engine == index {
-                        jobs.add(spec, parent, None, engines, &threads);
-                    } else if let Some(&stage) = hosted.get(&spec.engine) {
-                        jobs.add(spec, parent, Some(devices[stage]), engines, &threads);
-                    } else {
-                        waiting.push((spec, parent));
-                    }
-                }
             }
         } else if serving && pending.is_some() && jobs.idle() {
             // The engines on the stage threads and the engine with stages unload while the threads still run. The
@@ -1499,7 +1500,14 @@ pub(super) fn serve(
             if !plan.unload.contains(&index) {
                 plan.unload.push(index);
             }
-            in_place::unload(index, members, engines, links.store.as_ref(), links.fd_store.as_ref());
+            in_place::unload(
+                index,
+                members,
+                engines,
+                links.store.as_ref(),
+                links.fd_store.as_ref(),
+                &links.states,
+            );
             break Exit::Swap(plan);
         }
         if links.heartbeats.send(beat()).is_err() {

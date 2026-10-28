@@ -107,6 +107,10 @@ struct Record {
 }
 
 impl JobBody for Record {
+    fn unavailable(&mut self, engine: &str, state: nagaya::notify::EngineState) {
+        panic!("engine `{engine}` is {}, and this test keeps it ready", state.as_str());
+    }
+
     fn run(&mut self, kind: Kind, engines: &mut [Box<dyn Engine>]) -> Ran {
         assert_eq!(engines.len(), 1, "the group holds the engine of the profile");
         self.log.lock().unwrap().push(format!("{}:{kind:?}", self.name));
@@ -219,6 +223,10 @@ fn a_stop_cancels_the_jobs_that_have_not_started() {
     let open = gate(&process);
     struct Holds(#[allow(dead_code)] Sender<()>);
     impl JobBody for Holds {
+        fn unavailable(&mut self, engine: &str, state: nagaya::notify::EngineState) {
+            panic!("engine `{engine}` is {}, and this test keeps it ready", state.as_str());
+        }
+
         fn run(&mut self, _kind: Kind, _engines: &mut [Box<dyn Engine>]) -> Ran {
             panic!("a cancelled job does not run");
         }
@@ -289,6 +297,10 @@ fn a_stop_cancels_a_job_that_waits_for_its_next_quantum() {
         ran: usize,
     }
     impl JobBody for TwoQuanta {
+        fn unavailable(&mut self, engine: &str, state: nagaya::notify::EngineState) {
+            panic!("engine `{engine}` is {}, and this test keeps it ready", state.as_str());
+        }
+
         fn run(&mut self, _kind: Kind, _engines: &mut [Box<dyn Engine>]) -> Ran {
             self.ran += 1;
             assert_eq!(self.ran, 1, "the stop cancels the second quantum");

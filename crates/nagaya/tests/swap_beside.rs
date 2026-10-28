@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use nagaya::admission::{Factory, GroupDevice, OpenError, PlanError, Registry};
 use nagaya::inventory::{Device, Inventory};
 use nagaya::jobs::{JobBody, JobSpec, Ran};
-use nagaya::process::{Event, Process, Start};
+use nagaya::process::{Event, LoadReply, Process, Start};
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, Residency, StoreSpec, TierSpec};
 use nagaya::signal::SignalFlag;
 use nagaya_abi::fake::FakeAlways;
@@ -183,6 +183,10 @@ struct Probe {
 }
 
 impl JobBody for Probe {
+    fn unavailable(&mut self, engine: &str, state: nagaya::notify::EngineState) {
+        panic!("engine `{engine}` is {}, and this test keeps it ready", state.as_str());
+    }
+
     fn run(&mut self, _kind: Kind, engines: &mut [Box<dyn Engine>]) -> Ran {
         let _ = engines[VOICE].identity();
         let thread = std::thread::current().name().unwrap_or("unnamed").to_owned();
@@ -222,6 +226,10 @@ struct Pass {
 }
 
 impl JobBody for Pass {
+    fn unavailable(&mut self, engine: &str, state: nagaya::notify::EngineState) {
+        panic!("engine `{engine}` is {}, and this test keeps it ready", state.as_str());
+    }
+
     fn run(&mut self, kind: Kind, _engines: &mut [Box<dyn Engine>]) -> Ran {
         panic!("a {kind:?} quantum of a pass runs stage by stage")
     }
@@ -279,6 +287,12 @@ fn wait_for(log: &Log, line: &str) {
     }
 }
 
+/// Load an engine, and wait for the end of its swap. A job for the engine runs only after that (spec 3.3).
+fn load(process: &Process, engine: &str) -> (Vec<String>, Vec<String>) {
+    process.load(engine).unwrap();
+    swapped(process, Duration::from_secs(5))
+}
+
 /// The next `Swapped` event of the process.
 fn swapped(process: &Process, within: Duration) -> (Vec<String>, Vec<String>) {
     let deadline = Instant::now() + within;
@@ -291,9 +305,20 @@ fn swapped(process: &Process, within: Duration) -> (Vec<String>, Vec<String>) {
 }
 
 #[test]
-fn a_job_for_an_engine_with_one_device_loads_it_beside_the_engine_with_stages() {
+fn a_load_of_an_engine_with_one_device_loads_it_beside_the_engine_with_stages() {
     let directory = tempfile::tempdir().unwrap();
     let (process, log) = start(directory.path(), None);
+    assert_eq!(
+        process.load("voice").unwrap(),
+        LoadReply::Started {
+            unload: Vec::new(),
+            load: vec!["voice".to_owned()],
+        }
+    );
+    assert_eq!(
+        swapped(&process, Duration::from_secs(5)),
+        (Vec::new(), vec!["voice".to_owned()])
+    );
     let (job, finished) = voice(&log, None);
     process.submit_job(0, job).unwrap();
     finished
@@ -308,10 +333,6 @@ fn a_job_for_an_engine_with_one_device_loads_it_beside_the_engine_with_stages() 
             "run:voice@nagaya-stg-0-1"
         ]
     );
-    assert_eq!(
-        swapped(&process, Duration::from_secs(5)),
-        (Vec::new(), vec!["voice".to_owned()])
-    );
     // A job that arrives while `voice` is loaded runs on the same stage thread.
     let (job, finished) = voice(&log, None);
     process.submit_job(0, job).unwrap();
@@ -325,6 +346,7 @@ fn a_job_for_an_engine_with_one_device_loads_it_beside_the_engine_with_stages() 
 fn a_stage_on_card_zero_runs_while_a_quantum_holds_card_one() {
     let directory = tempfile::tempdir().unwrap();
     let (process, log) = start(directory.path(), None);
+    load(&process, "voice");
     let (gate, held) = mpsc::channel();
     let (job, voice_done) = voice(&log, Some(held));
     process.submit_job(0, job).unwrap();
@@ -351,24 +373,22 @@ fn a_stage_on_card_zero_runs_while_a_quantum_holds_card_one() {
 fn an_idle_engine_beside_unloads_on_its_stage_thread_and_the_engine_with_stages_stays() {
     let directory = tempfile::tempdir().unwrap();
     let (process, log) = start(directory.path(), Some(1));
+    assert_eq!(load(&process, "voice"), (Vec::new(), vec!["voice".to_owned()]));
     let (job, finished) = voice(&log, None);
     process.submit_job(0, job).unwrap();
     finished.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_eq!(
         swapped(&process, Duration::from_secs(5)),
-        (Vec::new(), vec!["voice".to_owned()])
-    );
-    assert_eq!(
-        swapped(&process, Duration::from_secs(5)),
         (vec!["voice".to_owned()], Vec::new())
     );
     assert!(log_of(&log).contains(&"close:voice".to_owned()));
-    // `chat` stays loaded and runs; a new job of `voice` loads it beside `chat` again.
+    // `chat` stays loaded and runs; a new load of `voice` loads it beside `chat` again.
     let (job, finished) = chat_pass(&log);
     process.submit_job(0, job).unwrap();
     finished
         .recv_timeout(Duration::from_secs(5))
         .expect("the pass of chat ran");
+    load(&process, "voice");
     let (job, finished) = voice(&log, None);
     process.submit_job(0, job).unwrap();
     finished
@@ -393,6 +413,7 @@ fn an_idle_engine_beside_unloads_on_its_stage_thread_and_the_engine_with_stages_
 fn a_stop_parks_and_closes_the_engine_beside() {
     let directory = tempfile::tempdir().unwrap();
     let (mut process, log) = start(directory.path(), None);
+    load(&process, "voice");
     let (job, finished) = voice(&log, None);
     process.submit_job(0, job).unwrap();
     finished.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -422,25 +443,22 @@ fn an_idle_engine_with_stages_unloads_the_engine_beside_it_first() {
             engine("voice", vec![1], Residency::Resident, None),
         ],
     );
+    // A load of the engine with stages unloads the others first (engine-abi "How a group loads both").
+    assert_eq!(
+        load(&process, "chat"),
+        (vec!["voice".to_owned()], vec!["chat".to_owned()])
+    );
     let (job, finished) = chat_pass(&log);
     process.submit_job(0, job).unwrap();
     finished
         .recv_timeout(Duration::from_secs(5))
         .expect("the pass of chat ran");
-    // A load of the engine with stages unloads the others first (engine-abi "How a group loads both").
-    assert_eq!(
-        swapped(&process, Duration::from_secs(5)),
-        (vec!["voice".to_owned()], vec!["chat".to_owned()])
-    );
+    assert_eq!(load(&process, "voice"), (Vec::new(), vec!["voice".to_owned()]));
     let (job, finished) = voice(&log, None);
     process.submit_job(0, job).unwrap();
     finished
         .recv_timeout(Duration::from_secs(5))
         .expect("the voice job ran beside chat");
-    assert_eq!(
-        swapped(&process, Duration::from_secs(5)),
-        (Vec::new(), vec!["voice".to_owned()])
-    );
     // `chat` goes idle. The loop unloads `voice` on its stage thread, then `chat`, and the ledger hears of both.
     let (mut unloaded, _) = swapped(&process, Duration::from_secs(5));
     unloaded.sort();
@@ -450,4 +468,58 @@ fn an_idle_engine_with_stages_unloads_the_engine_beside_it_first() {
         .filter(|line| line.starts_with("close:"))
         .collect();
     assert_eq!(closes, ["close:voice", "close:voice", "close:chat"]);
+}
+
+/// A job that tells its caller the state of its engine when the group ends it as unavailable.
+struct Refused(Sender<String>);
+
+impl JobBody for Refused {
+    fn run(&mut self, kind: Kind, _engines: &mut [Box<dyn Engine>]) -> Ran {
+        panic!("a {kind:?} quantum ran on an engine that is not ready")
+    }
+
+    fn unavailable(&mut self, engine: &str, state: nagaya::notify::EngineState) {
+        let _ = self.0.send(format!("{engine}:{}", state.as_str()));
+    }
+}
+
+#[test]
+fn a_job_for_an_unloaded_engine_beside_the_stages_ends_as_unavailable() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start(directory.path(), None);
+    let (tx, rx) = mpsc::channel();
+    let spec = JobSpec {
+        class: Class::Interactive,
+        priority: 0,
+        deadline: None,
+        first: Kind::Read,
+        engine: VOICE,
+        body: Box::new(Refused(tx)),
+    };
+    process.submit_job(0, spec).unwrap();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "voice:unloaded");
+    assert_eq!(log_of(&log), ["open:chat@nagaya-group-0"], "nothing loaded");
+}
+
+/// An unload of the engine with stages also unloads the engines on its stage threads, and the reply names each of
+/// them (spec 3.3b, engine-abi "How a group loads both").
+#[test]
+fn an_unload_of_the_engine_with_stages_names_the_engine_beside_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, _log) = start_with(
+        directory.path(),
+        [
+            engine("chat", vec![0, 1], Residency::OnDemand, Some(60)),
+            engine("voice", vec![1], Residency::Resident, None),
+        ],
+    );
+    load(&process, "chat");
+    load(&process, "voice");
+    assert_eq!(
+        process.unload("chat").unwrap(),
+        LoadReply::Started {
+            unload: vec!["chat".to_owned(), "voice".to_owned()],
+            load: Vec::new(),
+        }
+    );
 }

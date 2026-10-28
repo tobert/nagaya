@@ -83,6 +83,9 @@ impl From<SpeechError> for OpenAiError {
             error @ SpeechError::ContextFull { .. } => OpenAiError::invalid("input", error.to_string()),
             SpeechError::Timeout(message) => OpenAiError::server(StatusCode::GATEWAY_TIMEOUT, "timeout", message),
             SpeechError::Stopping(message) => OpenAiError::server(StatusCode::SERVICE_UNAVAILABLE, "draining", message),
+            error @ SpeechError::Unavailable { .. } => {
+                OpenAiError::server(StatusCode::SERVICE_UNAVAILABLE, "model_unavailable", error.to_string())
+            }
             SpeechError::Failed(message) => {
                 OpenAiError::server(StatusCode::INTERNAL_SERVER_ERROR, "engine_failed", message)
             }

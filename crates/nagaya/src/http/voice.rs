@@ -50,6 +50,7 @@ pub fn service_error(error: SpeechError) -> ServiceError {
         },
         SpeechError::Timeout(_) => ServiceError::Timeout,
         SpeechError::Stopping(_) => ServiceError::Stopping,
+        SpeechError::Unavailable { engine, state } => ServiceError::Unavailable { engine, state },
         SpeechError::Failed(message) => ServiceError::internal(message),
     }
 }

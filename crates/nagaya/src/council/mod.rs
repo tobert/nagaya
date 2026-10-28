@@ -192,14 +192,21 @@ type Work<T> = Box<dyn FnOnce(&mut [Box<dyn Engine>]) -> T + Send>;
 /// A job body that runs a closure once.
 struct Once<T: Send + 'static> {
     work: Option<Work<T>>,
-    tx: mpsc::Sender<T>,
+    tx: mpsc::Sender<Result<T, ServiceError>>,
 }
 
 impl<T: Send + 'static> JobBody for Once<T> {
     fn run(&mut self, _kind: nagaya_abi::Kind, engines: &mut [Box<dyn Engine>]) -> Ran {
         let work = self.work.take().expect("a one-quantum job runs once");
-        let _ = self.tx.send(work(engines));
+        let _ = self.tx.send(Ok(work(engines)));
         Ran::Done
+    }
+
+    fn unavailable(&mut self, engine: &str, state: nagaya_telemetry::EngineState) {
+        let _ = self.tx.send(Err(ServiceError::Unavailable {
+            engine: engine.to_owned(),
+            state,
+        }));
     }
 
     fn request(&self) -> &'static str {
@@ -328,7 +335,7 @@ impl Service {
             }),
         )?;
         let (identity, limits, usable): (nagaya_abi::Identity, Limits, bool) =
-            rx.recv().map_err(|_| ServiceError::Cancelled)?;
+            rx.recv().map_err(|_| ServiceError::Cancelled)??;
         if !usable
             || !limits.capabilities.contains(&Capability::Parts)
             || !limits.capabilities.contains(&Capability::Slots)

@@ -1,0 +1,418 @@
+//! Explicit loads (spec 3.3, 3.3a, 3.3b): a request never starts a load. A job for an engine that is not `ready` ends
+//! at once as unavailable. A load or an unload of the process starts a swap on the group thread.
+
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use nagaya::admission::{Factory, GroupDevice, OpenError, PlanError, Registry};
+use nagaya::inventory::{Device, Inventory};
+use nagaya::jobs::{JobBody, JobSpec, Ran};
+use nagaya::notify::EngineState;
+use nagaya::process::{Event, LoadError, LoadReply, Process, Start};
+use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, Residency, StoreSpec, TierSpec};
+use nagaya_abi::fake::FakeAlways;
+use nagaya_abi::{
+    Capability, Coverage, Engine, Identity, Kind, Lifetime, Limits, MandatoryTerm, Parts, PassError, PassOut, Seal,
+    Segment, Slots, Tap, Tier,
+};
+use nagaya_sched::Class;
+
+type Log = Arc<Mutex<Vec<String>>>;
+
+/// A fake engine that writes its open and its close to a log, and declares `close`.
+struct Counted {
+    inner: FakeAlways,
+    name: String,
+    limits: Limits,
+    log: Log,
+}
+
+impl Drop for Counted {
+    fn drop(&mut self) {
+        self.log.lock().unwrap().push(format!("close:{}", self.name));
+    }
+}
+
+impl Engine for Counted {
+    fn identity(&self) -> Identity {
+        self.inner.identity()
+    }
+
+    fn limits(&self) -> Limits {
+        self.limits.clone()
+    }
+
+    fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
+        self.inner.pass(segments, taps)
+    }
+
+    fn last_error(&self) -> Option<String> {
+        self.inner.last_error()
+    }
+
+    fn parts(&mut self) -> Option<&mut dyn Parts> {
+        self.inner.parts()
+    }
+
+    fn slots(&mut self) -> Option<&mut dyn Slots> {
+        self.inner.slots()
+    }
+
+    fn coverage(&mut self) -> Option<&mut dyn Coverage> {
+        self.inner.coverage()
+    }
+
+    fn seal(&mut self) -> Option<&mut dyn Seal> {
+        self.inner.seal()
+    }
+}
+
+fn counted_limits() -> Limits {
+    let mut limits = FakeAlways::new().limits();
+    limits.capabilities.push(Capability::Close);
+    limits.memory.mandatory = vec![MandatoryTerm {
+        name: "weights".to_owned(),
+        tier: Tier::Device(0),
+        bytes: 600,
+        lifetime: Lifetime::Engine,
+        kinds: Vec::new(),
+    }];
+    limits.memory.elastic = Vec::new();
+    limits
+}
+
+struct CountedFactory(Log);
+
+impl Factory for CountedFactory {
+    fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
+        Ok(counted_limits())
+    }
+
+    fn open(&self, config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
+        let name = config["name"].as_str().unwrap().to_owned();
+        self.0.lock().unwrap().push(format!("open:{name}"));
+        Ok(Box::new(Counted {
+            inner: FakeAlways::new(),
+            name,
+            limits: counted_limits(),
+            log: Arc::clone(&self.0),
+        }))
+    }
+}
+
+fn engine(name: &str, residency: Residency) -> EnginePlacement {
+    let mut config = toml::Table::new();
+    config.insert("name".to_owned(), toml::Value::String(name.to_owned()));
+    EnginePlacement {
+        name: name.to_owned(),
+        kind: "counted".to_owned(),
+        devices: vec![0],
+        config,
+        family: toml::Table::new(),
+        share: 1,
+        pin_identity: false,
+        residency,
+        idle_unload_s: None,
+    }
+}
+
+/// A resident engine `chat` and an on-demand engine `voice` on one device. With 1000 device bytes they do not fit
+/// together, so a load of one unloads the other.
+fn start(directory: &std::path::Path) -> (Process, Log) {
+    let log: Log = Arc::default();
+    let mut registry = Registry::new();
+    registry.register("counted", Box::new(CountedFactory(Arc::clone(&log))));
+    let profile = PlacementProfile {
+        engines: vec![
+            engine("chat", Residency::Resident),
+            engine("voice", Residency::OnDemand),
+        ],
+        budgets: vec![
+            BudgetSpec {
+                tiers: vec![TierSpec::from(Tier::Device(0))],
+                bytes: 1000,
+            },
+            BudgetSpec {
+                tiers: vec![TierSpec::from(Tier::Host)],
+                bytes: 4096,
+            },
+        ],
+        store: Some(StoreSpec {
+            nvme: 1 << 20,
+            host: None,
+            interval_copies: 0,
+            objects: None,
+        }),
+    };
+    let inventory = Inventory {
+        devices: vec![Device {
+            id: 0,
+            name: "device-0".to_owned(),
+            pci_address: "0000:00:00.0".to_owned(),
+            memory_bytes: 4096,
+            unified: false,
+            ignored: false,
+        }],
+        host_bytes: 4096,
+    };
+    let mut process = Start::new(profile, registry, inventory)
+        .store(directory)
+        .heartbeat(Duration::from_millis(10))
+        .timeout(Duration::from_secs(5))
+        .start()
+        .unwrap();
+    process.wait_opens(Duration::from_secs(5)).unwrap();
+    (process, log)
+}
+
+/// A job that writes `run:<engine>` to the log, or `unavailable:<engine>:<state>` when its engine is not ready.
+///
+/// A job with a gate holds its engine until the gate opens. It runs one short quantum after another, so the group
+/// thread still takes messages.
+struct Probe {
+    name: &'static str,
+    log: Log,
+    gate: Option<Receiver<()>>,
+    started: bool,
+    done: Sender<String>,
+}
+
+impl JobBody for Probe {
+    fn run(&mut self, _kind: Kind, _engines: &mut [Box<dyn Engine>]) -> Ran {
+        if !self.started {
+            self.started = true;
+            self.log.lock().unwrap().push(format!("run:{}", self.name));
+        }
+        if let Some(gate) = &self.gate
+            && gate.try_recv().is_err()
+        {
+            std::thread::sleep(Duration::from_millis(1));
+            return Ran::More(vec![Kind::Read]);
+        }
+        let _ = self.done.send("ran".to_owned());
+        Ran::Done
+    }
+
+    fn unavailable(&mut self, engine: &str, state: EngineState) {
+        let _ = self.done.send(format!("unavailable:{engine}:{}", state.as_str()));
+    }
+}
+
+const CHAT: usize = 0;
+const VOICE: usize = 1;
+
+fn probe(engine: usize, log: &Log, gate: Option<Receiver<()>>) -> (JobSpec, Receiver<String>) {
+    let (done, finished) = mpsc::channel();
+    let name = if engine == CHAT { "chat" } else { "voice" };
+    let spec = JobSpec {
+        class: Class::Interactive,
+        priority: 0,
+        deadline: None,
+        first: Kind::Read,
+        engine,
+        body: Box::new(Probe {
+            name,
+            log: Arc::clone(log),
+            gate,
+            started: false,
+            done,
+        }),
+    };
+    (spec, finished)
+}
+
+fn log_of(log: &Log) -> Vec<String> {
+    log.lock().unwrap().clone()
+}
+
+/// The next `Swapped` event of the process.
+fn swapped(process: &Process) -> (Vec<String>, Vec<String>) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        match process.recv(Duration::from_millis(50)) {
+            Some(Event::Swapped { unloaded, loaded, .. }) => {
+                return (unloaded, loaded.into_iter().map(|engine| engine.name).collect());
+            }
+            Some(other) => panic!("expected a swap, got {other:?}"),
+            None => {}
+        }
+    }
+    panic!("no swap came in 5 s");
+}
+
+fn names(names: &[&str]) -> Vec<String> {
+    names.iter().map(|name| (*name).to_owned()).collect()
+}
+
+/// Run a chat job that holds its engine until the gate opens, and wait until it runs.
+fn hold_chat(process: &Process, log: &Log) -> (Sender<()>, Receiver<String>) {
+    let (gate_tx, gate_rx) = mpsc::channel();
+    let (job, finished) = probe(CHAT, log, Some(gate_rx));
+    process.submit_job(0, job).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !log_of(log).contains(&"run:chat".to_owned()) {
+        assert!(Instant::now() < deadline, "the chat job did not start");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    (gate_tx, finished)
+}
+
+#[test]
+fn a_job_for_an_unloaded_engine_ends_as_unavailable_and_loads_nothing() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start(directory.path());
+    let (job, finished) = probe(VOICE, &log, None);
+    process.submit_job(0, job).unwrap();
+    assert_eq!(
+        finished.recv_timeout(Duration::from_secs(5)).unwrap(),
+        "unavailable:voice:unloaded"
+    );
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(process.recv(Duration::from_millis(10)).is_none(), "no swap came");
+    assert_eq!(log_of(&log), ["open:chat"]);
+}
+
+#[test]
+fn the_ports_give_the_state_of_each_engine() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, _log) = start(directory.path());
+    let ports = process.ports();
+    assert_eq!(ports.engine_state("chat"), Some(EngineState::Ready));
+    assert_eq!(ports.engine_state("voice"), Some(EngineState::Unloaded));
+    assert_eq!(ports.engine_state("nobody"), None);
+    process.load("voice").unwrap();
+    swapped(&process);
+    assert_eq!(ports.engine_state("chat"), Some(EngineState::Unloaded));
+    assert_eq!(ports.engine_state("voice"), Some(EngineState::Ready));
+}
+
+#[test]
+fn a_load_swaps_the_engine_in_and_its_jobs_run() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start(directory.path());
+    assert_eq!(
+        process.load("voice").unwrap(),
+        LoadReply::Started {
+            unload: names(&["chat"]),
+            load: names(&["voice"]),
+        }
+    );
+    assert_eq!(swapped(&process), (names(&["chat"]), names(&["voice"])));
+    let (job, finished) = probe(VOICE, &log, None);
+    process.submit_job(0, job).unwrap();
+    assert_eq!(finished.recv_timeout(Duration::from_secs(5)).unwrap(), "ran");
+    assert_eq!(log_of(&log), ["open:chat", "close:chat", "open:voice", "run:voice"]);
+}
+
+#[test]
+fn a_load_of_a_ready_engine_changes_nothing() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start(directory.path());
+    assert_eq!(process.load("chat").unwrap(), LoadReply::Already(EngineState::Ready));
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(process.recv(Duration::from_millis(10)).is_none(), "no swap came");
+    assert_eq!(log_of(&log), ["open:chat"]);
+}
+
+#[test]
+fn a_load_or_an_unload_of_an_unknown_engine_is_refused() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, _log) = start(directory.path());
+    assert_eq!(process.load("nobody"), Err(LoadError::Unknown("nobody".to_owned())));
+    assert_eq!(process.unload("nobody"), Err(LoadError::Unknown("nobody".to_owned())));
+}
+
+#[test]
+fn an_unload_of_a_resident_engine_is_refused() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start(directory.path());
+    assert_eq!(process.unload("chat"), Err(LoadError::Resident("chat".to_owned())));
+    assert_eq!(log_of(&log), ["open:chat"]);
+}
+
+#[test]
+fn an_unload_of_an_unloaded_engine_changes_nothing() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, _log) = start(directory.path());
+    assert_eq!(
+        process.unload("voice").unwrap(),
+        LoadReply::Already(EngineState::Unloaded)
+    );
+}
+
+#[test]
+fn an_unload_of_an_on_demand_engine_loads_the_resident_engines_again() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start(directory.path());
+    process.load("voice").unwrap();
+    swapped(&process);
+    assert_eq!(
+        process.unload("voice").unwrap(),
+        LoadReply::Started {
+            unload: names(&["voice"]),
+            load: names(&["chat"]),
+        }
+    );
+    assert_eq!(swapped(&process), (names(&["voice"]), names(&["chat"])));
+    assert_eq!(
+        log_of(&log),
+        ["open:chat", "close:chat", "open:voice", "close:voice", "open:chat"]
+    );
+}
+
+#[test]
+fn a_job_for_an_engine_that_a_planned_swap_unloads_ends_as_unavailable() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start(directory.path());
+    let (gate, held) = hold_chat(&process, &log);
+    assert_eq!(
+        process.load("voice").unwrap(),
+        LoadReply::Started {
+            unload: names(&["chat"]),
+            load: names(&["voice"]),
+        }
+    );
+    assert_eq!(process.ports().engine_state("chat"), Some(EngineState::Draining));
+    assert_eq!(process.ports().engine_state("voice"), Some(EngineState::Loading));
+    let (late, late_finished) = probe(CHAT, &log, None);
+    process.submit_job(0, late).unwrap();
+    assert_eq!(
+        late_finished.recv_timeout(Duration::from_secs(5)).unwrap(),
+        "unavailable:chat:draining"
+    );
+    let (early, early_finished) = probe(VOICE, &log, None);
+    process.submit_job(0, early).unwrap();
+    assert_eq!(
+        early_finished.recv_timeout(Duration::from_secs(5)).unwrap(),
+        "unavailable:voice:loading"
+    );
+    // The held job runs to its end, and then the swap runs.
+    gate.send(()).unwrap();
+    assert_eq!(held.recv_timeout(Duration::from_secs(5)).unwrap(), "ran");
+    assert_eq!(swapped(&process), (names(&["chat"]), names(&["voice"])));
+    assert_eq!(log_of(&log), ["open:chat", "run:chat", "close:chat", "open:voice"]);
+}
+
+#[test]
+fn a_load_during_a_planned_swap_waits_for_that_swap() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start(directory.path());
+    let (gate, held) = hold_chat(&process, &log);
+    process.load("voice").unwrap();
+    let ports = process.ports();
+    let unloader = std::thread::spawn(move || ports.unload("voice"));
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(!unloader.is_finished(), "the unload waits for the planned swap");
+    gate.send(()).unwrap();
+    held.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        unloader.join().unwrap().unwrap(),
+        LoadReply::Started {
+            unload: names(&["voice"]),
+            load: names(&["chat"]),
+        }
+    );
+    assert_eq!(swapped(&process), (names(&["chat"]), names(&["voice"])));
+    assert_eq!(swapped(&process), (names(&["voice"]), names(&["chat"])));
+}

@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use nagaya_abi::{Engine, Kind, PassErrorKind, PromptPair, SlotId, SpeechPosition, SpeechSampler};
 use nagaya_sched::JobState;
+use nagaya_telemetry::EngineState;
 
 use crate::jobs::{JobBody, JobSpec, Ran};
 use crate::process::{Ports, SubmitError};
@@ -117,6 +118,8 @@ pub enum SpeechError {
     Timeout(String),
     /// The process is stopping.
     Stopping(String),
+    /// The engine of the speech model is not `ready`, so nothing ran (spec 3.3).
+    Unavailable { engine: String, state: EngineState },
     /// The engine failed. The process logs it.
     Failed(String),
 }
@@ -125,6 +128,11 @@ impl std::fmt::Display for SpeechError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SpeechError::Invalid { param, message } => write!(formatter, "`{param}`: {message}"),
+            SpeechError::Unavailable { engine, state } => write!(
+                formatter,
+                "nothing ran: engine `{engine}` is {}, not ready; load it, then retry",
+                state.as_str()
+            ),
             SpeechError::ContextFull { positions, room } => write!(
                 formatter,
                 "nothing ran: the context has {positions} positions, and a slot holds {room} with the frames of its \
@@ -285,6 +293,14 @@ impl JobBody for SpeechBody {
 
     fn request(&self) -> &'static str {
         "speech"
+    }
+
+    fn unavailable(&mut self, engine: &str, state: EngineState) {
+        self.release();
+        self.tell(Err(SpeechError::Unavailable {
+            engine: engine.to_owned(),
+            state,
+        }));
     }
 }
 
