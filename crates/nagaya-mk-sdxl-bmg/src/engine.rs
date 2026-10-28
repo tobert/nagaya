@@ -1,7 +1,6 @@
 //! The SDXL engine on its card: the `Image` capability of engine-abi "Image" over the graphs of `model`.
 
 use std::collections::BTreeMap;
-use std::path::Path;
 
 use nagaya_abi::{
     Engine, Identity, Image, ImageChunk, ImageJob, ImageStepOut, Limits, PassError, PassErrorKind, PassOut, RgbImage,
@@ -19,7 +18,7 @@ use crate::noise::{self, Purpose};
 use crate::plan::{MAX_LATENT_ROWS, arena_bytes, limits};
 use crate::sampler::{self, History, Schedule};
 use crate::spec::*;
-use crate::weights::{Weights, f32_bytes, f32_values, files};
+use crate::weights::{Weights, f32_bytes, f32_values, sources};
 
 pub use crate::spec::MODEL;
 
@@ -70,9 +69,9 @@ fn refused(message: String) -> PassError {
 }
 
 /// The BLAKE3 digest of the files of the checkpoint that the engine reads.
-fn checkpoint_digest(dir: &Path) -> Result<String, String> {
+fn checkpoint_digest(config: &Config) -> Result<String, String> {
     let mut all = blake3::Hasher::new();
-    for (_, path) in files(dir)? {
+    for (_, path) in sources(config)? {
         let map = MappedSafeTensors::open(&path)?;
         let chunks: Vec<&[u8]> = map.as_bytes().chunks(256 << 20).collect();
         let hashes: Vec<blake3::Hash> = std::thread::scope(|scope| {
@@ -104,7 +103,7 @@ fn joined(hidden1: &[f32], hidden2: &[f32], rows: std::ops::Range<usize>) -> Vec
 }
 
 impl SdxlEngine {
-    /// Open the card at the PCI address `pci`, and upload the checkpoint in `config.model_dir`.
+    /// Open the card at the PCI address `pci`, and upload the checkpoint of `config`.
     pub fn open(config: Config, pci: &str) -> Result<Self, String> {
         let dir = config.model_dir.clone();
         let mut tokenizer = Vec::new();
@@ -113,7 +112,16 @@ impl SdxlEngine {
             tokenizer.extend(std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?);
         }
         let tokenizer_hash = format!("blake3:{}", blake3::hash(&tokenizer).to_hex());
-        let checkpoint_digest = checkpoint_digest(&dir)?;
+        let checkpoint_digest = checkpoint_digest(&config)?;
+        // A single file names the model; a folder is SDXL base.
+        let model = match &config.checkpoint {
+            Some(file) => file
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.trim_end_matches(".safetensors").to_owned())
+                .ok_or_else(|| format!("the checkpoint {} has no file name", file.display()))?,
+            None => MODEL.to_owned(),
+        };
 
         let mut cluster = L0Cluster::init(SDXL_KERNEL, KERNEL_ENTRY);
         let index = cluster.cards_at(&[pci.to_owned()])?[0];
@@ -126,12 +134,14 @@ impl SdxlEngine {
 
         let mut device = Device::new(card);
         let weights = Weights::load(
-            &dir,
+            &config,
             &mut OnCard {
                 device: &mut device,
                 card,
             },
         )?;
+        // The plan checked the graphs at the admission; this checks them again for a file that changed since.
+        model::check(&weights)?;
         let weights_bytes = device.bytes as u64;
         let arena = arena_bytes();
         let at = device.zeros(card, arena as usize);
@@ -152,7 +162,7 @@ impl SdxlEngine {
         numbers.insert("driver".to_owned(), driver.to_string());
         numbers.insert("canary".to_owned(), "not run".to_owned());
         let identity = Identity {
-            model: MODEL.to_owned(),
+            model,
             checkpoint_digest,
             family: "sdxl".to_owned(),
             tokenizer_hash,

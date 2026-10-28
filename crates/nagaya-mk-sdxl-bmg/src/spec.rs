@@ -72,25 +72,18 @@ pub const KIND: &str = "mk-sdxl-bmg";
 /// The config of the engine, from the `[engines.config]` table of the profile.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
-    /// The checkpoint, in the folder layout of diffusers.
+    /// A checkpoint in the folder layout of diffusers. With `checkpoint`, only its CLIP tokenizer (`tokenizer/`).
     pub model_dir: PathBuf,
+    /// A single file with Stability's tensor names, such as a checkpoint from Civitai. The weights then come from it.
+    pub checkpoint: Option<PathBuf>,
 }
 
 impl Config {
-    /// The config of a profile table: `model_dir` only.
-    pub fn from_table(table: &[(String, String)]) -> Result<Config, String> {
-        let mut model_dir = None;
-        for (key, value) in table {
-            match key.as_str() {
-                "model_dir" => model_dir = Some(PathBuf::from(value)),
-                other => {
-                    return Err(format!(
-                        "the image engine has no config key `{other}`; it takes model_dir"
-                    ));
-                }
-            }
+    /// The config of a checkpoint in the folder layout of diffusers.
+    pub fn folder(model_dir: PathBuf) -> Config {
+        Config {
+            model_dir,
+            checkpoint: None,
         }
-        let model_dir = model_dir.ok_or("the image engine needs model_dir: the SDXL checkpoint directory")?;
-        Ok(Config { model_dir })
     }
 }

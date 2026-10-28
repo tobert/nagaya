@@ -45,13 +45,28 @@ fn model_dir(table: &toml::Table, what: &str) -> Result<PathBuf, PlanError> {
 /// Read the config of the engine. The engine refuses a key that it does not know (ABI "Rust shape").
 pub fn config(table: &toml::Table) -> Result<Config, PlanError> {
     let what = format!("the config of `{KIND}`");
-    if let Some(key) = table.keys().find(|key| key.as_str() != "model_dir") {
+    if let Some(key) = table
+        .keys()
+        .find(|key| !["model_dir", "checkpoint"].contains(&key.as_str()))
+    {
         return Err(PlanError {
-            message: format!("{what} has the key `{key}`, which the engine does not know; the key is `model_dir`"),
+            message: format!(
+                "{what} has the key `{key}`, which the engine does not know; the keys are `model_dir` and \
+                 `checkpoint`"
+            ),
         });
     }
+    let checkpoint = match table.get("checkpoint") {
+        None => None,
+        Some(value) => Some(PathBuf::from(value.as_str().ok_or_else(|| PlanError {
+            message: format!(
+                "the key `checkpoint` of {what} is not a string; write the path of a single .safetensors file"
+            ),
+        })?)),
+    };
     Ok(Config {
         model_dir: model_dir(table, &what)?,
+        checkpoint,
     })
 }
 
@@ -184,5 +199,33 @@ mod factory {
                 .map_err(|message| open_error(format!("`{KIND}` cannot open: {message}")))?;
             Ok(Box::new(engine))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn table(text: &str) -> toml::Table {
+        text.parse().unwrap()
+    }
+
+    #[test]
+    fn the_config_takes_a_folder_and_a_single_file() {
+        let folder = config(&table("model_dir = \"/sdxl\"")).unwrap();
+        assert_eq!((folder.model_dir, folder.checkpoint), (PathBuf::from("/sdxl"), None));
+        let single = config(&table(
+            "model_dir = \"/sdxl\"\ncheckpoint = \"/civitai/pony.safetensors\"",
+        ))
+        .unwrap();
+        assert_eq!(single.checkpoint, Some(PathBuf::from("/civitai/pony.safetensors")));
+    }
+
+    #[test]
+    fn the_config_refuses_an_unknown_key_and_a_checkpoint_that_is_no_path() {
+        let unknown = config(&table("model_dir = \"/sdxl\"\nvae = \"/vae\"")).unwrap_err();
+        assert!(unknown.message.contains("`vae`"), "{}", unknown.message);
+        let number = config(&table("model_dir = \"/sdxl\"\ncheckpoint = 3")).unwrap_err();
+        assert!(number.message.contains("`checkpoint`"), "{}", number.message);
     }
 }

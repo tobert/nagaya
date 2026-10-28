@@ -13,6 +13,7 @@ pub mod model;
 pub mod noise;
 pub mod plan;
 pub mod sampler;
+pub mod single;
 pub mod spec;
 pub mod weights;
 

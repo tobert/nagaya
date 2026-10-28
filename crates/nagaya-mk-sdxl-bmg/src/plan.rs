@@ -33,10 +33,12 @@ pub fn arena_bytes() -> u64 {
     after_text + (unet.used(0) - after_text).max(vae.used(0) - after_text)
 }
 
-/// The device bytes of the weights of the checkpoint in `config.model_dir`, from the tensor headers.
+/// The device bytes of the weights of the checkpoint of `config`, from the tensor headers. A checkpoint that lacks a
+/// tensor of a graph is an error here, before any open.
 pub fn weights_bytes(config: &Config) -> Result<u64, String> {
     let mut count = Count::default();
-    Weights::load(&config.model_dir, &mut count)?;
+    let weights = Weights::load(config, &mut count)?;
+    crate::model::check(&weights)?;
     Ok(count.bytes)
 }
 

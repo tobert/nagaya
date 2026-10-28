@@ -99,7 +99,7 @@ fn the_engine_follows_the_oracle_block_by_block_and_makes_an_image() {
     };
     let family = SdxlFamily::from_dir(&dir).unwrap();
     let started = Instant::now();
-    let mut engine = SdxlEngine::open(Config { model_dir: dir.clone() }, &card_address()).unwrap();
+    let mut engine = SdxlEngine::open(Config::folder(dir.clone()), &card_address()).unwrap();
     eprintln!("open: {:.1} s", started.elapsed().as_secs_f32());
 
     // The text encoders.

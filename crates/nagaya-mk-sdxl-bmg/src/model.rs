@@ -77,6 +77,31 @@ fn planes(weights: &Weights, name: &str, shape: &[usize]) -> Option<crate::weigh
     weights.planes(name, shape).unwrap_or_else(|e| panic!("{e}"))
 }
 
+/// Check that the checkpoint has each tensor of each graph, with its shape: build the graphs of both encoders with each
+/// `clip_skip`, of the UNet at the largest image, and of the VAE, and run none of them.
+pub fn check(weights: &Weights) -> Result<(), String> {
+    weights.probe(|| {
+        let mut carve = Carve::new(0, u64::MAX / 2);
+        let text = TextBufs::carve(&mut carve, 2 * MAX_CHUNKS);
+        for second in [false, true] {
+            for skip in [1, 2] {
+                text_encoder(weights, second, &text, 2 * MAX_CHUNKS, skip, [1, 1]);
+            }
+        }
+        let rows = MAX_IMAGES * MAX_IMAGE_PIXELS / (VAE_SCALE * VAE_SCALE);
+        let bufs = UnetBufs::carve(&mut carve, MAX_IMAGES, rows, MAX_CHUNKS * CHUNK_IDS);
+        let size = UnetSize {
+            images: 1,
+            h: 128,
+            w: 128,
+            ctx: MAX_CHUNKS * CHUNK_IDS,
+        };
+        unet(weights, &bufs, &size);
+        let vae_bufs = VaeBufs::carve(&mut carve, 128 * 128 * VAE_SCALE * VAE_SCALE);
+        vae(weights, &vae_bufs, 128, 128);
+    })
+}
+
 /// A linear layer of `name` (`.weight` [cout][cin], or [cout][cin][1][1] with `conv`, and an optional `.bias`). It
 /// runs on the matrix units when the weight has planes.
 #[allow(clippy::too_many_arguments)]

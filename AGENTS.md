@@ -420,6 +420,8 @@ get ran sometimes, perhaps just a bump in our AGENTS.md"
 - b70host holds SDXL base 1.0 in the Hugging Face cache. The tests of `nagaya-text-sdxl` and the `xe` tests of
   `nagaya-mk-sdxl-bmg` read it from `SDXL_MODEL_DIR`, which has no default. `signoff.md` gives the path.
   `tools/sdxl_golden.sh` writes the oracle into `target/sdxl-golden` or `SDXL_GOLDEN_DIR`, with no GPU job.
+- The single-file tests of `nagaya-mk-sdxl-bmg` also read `SDXL_SINGLE_FILE`: `sd_xl_base_1.0.safetensors` of the same
+  repository. They need `vae_1_0/` of the folder too, because the single file holds that VAE.
 - The report of a check names how many tests skipped for a missing model.
 
 On gfx1151host, run the oracle bench with `MK_SHARDS` set and both units inactive:

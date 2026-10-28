@@ -26,7 +26,7 @@ fn model_dir() -> Option<PathBuf> {
 fn every_graph_names_tensors_of_the_checkpoint_and_fits_its_rings() {
     let Some(dir) = model_dir() else { return };
     let mut count = Count::default();
-    let weights = Weights::load(&dir, &mut count).unwrap();
+    let weights = Weights::load(&nagaya_mk_sdxl_bmg::Config::folder(dir), &mut count).unwrap();
     assert!(
         count.bytes > 6 << 30,
         "the weights of SDXL are about 7 GB, and the count is {}",
