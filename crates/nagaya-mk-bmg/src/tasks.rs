@@ -590,3 +590,115 @@ pub fn add_image_row(rows: u64, y: u64, images: u32, pixels: u32, k: u32) -> MkT
         ..task(OP_ADD_IMAGE_ROW)
     }
 }
+
+/// The weight planes of `OP_GEMM` for weights `[cout][cin][k][k]` (or `[cout][cin]` with `kernel` 1): the taps
+/// relaid as `[cout][tap][cin]`, then split into `planes` BF16 planes whose sum is the weight. Each plane takes the
+/// top 16 bits of what the planes before it left, and the last one rounds, as `bf16_split3` of the kernel does. Two
+/// planes hold an F16 weight exactly; three hold an F32 weight to 24 bits.
+pub fn gemm_planes(weights: &[f32], cout: usize, cin: usize, kernel: usize, planes: usize) -> Vec<u16> {
+    let taps = kernel * kernel;
+    assert_eq!(weights.len(), cout * cin * taps, "the weights are [cout][cin][k][k]");
+    assert!((2..=3).contains(&planes), "a weight has 2 or 3 planes");
+    let k = taps * cin;
+    let mut out = vec![0u16; planes * cout * k];
+    for o in 0..cout {
+        for tap in 0..taps {
+            for i in 0..cin {
+                let mut rest = weights[(o * cin + i) * taps + tap];
+                let at = o * k + tap * cin + i;
+                for p in 0..planes {
+                    let bits = rest.to_bits();
+                    let top = if p + 1 == planes {
+                        // The last plane rounds to the nearest even.
+                        bits.wrapping_add(0x7FFF + ((bits >> 16) & 1)) & 0xFFFF_0000
+                    } else {
+                        bits & 0xFFFF_0000
+                    };
+                    out[p * cout * k + at] = (top >> 16) as u16;
+                    rest -= f32::from_bits(top);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A convolution or a linear layer on the matrix units: `x` pixel-major with `cin` inputs, the planes of
+/// [`gemm_planes`], a bias (0: none; F32, or F16 with `f16_bias`), over `images` images of `h` by `w`.
+#[allow(clippy::too_many_arguments)]
+pub fn gemm(
+    x: u64,
+    planes_at: u64,
+    bias: u64,
+    y: u64,
+    images: u32,
+    h: u32,
+    w: u32,
+    cin: u32,
+    cout: u32,
+    (kernel, stride, pad): (u32, u32, u32),
+    planes: u32,
+    f16_bias: bool,
+    accumulate: bool,
+) -> MkTaskDescriptor {
+    assert!(
+        cin.is_multiple_of(64) && cout.is_multiple_of(16),
+        "OP_GEMM takes inputs of 64s and outputs of 16s"
+    );
+    assert!(h < 1 << 16 && w < 1 << 16, "an OP_GEMM input is at most 65535 by 65535");
+    let mut flags = if f16_bias { FLAG_F16 } else { FLAG_F32 };
+    if accumulate {
+        flags |= FLAG_ACCUMULATE;
+    }
+    MkTaskDescriptor {
+        flags,
+        a: x,
+        b: planes_at,
+        c: y,
+        x: bias,
+        n: h | w << 16,
+        m: cout,
+        k: cin,
+        p0: images,
+        layer: kernel | stride << 8 | pad << 16 | planes << 24,
+        ..task(OP_GEMM)
+    }
+}
+
+/// The ushorts of the planes of [`attn_prep`] for `images` images of `nk` key rows of `heads * d` values.
+pub fn attn_planes_len(images: usize, nk: usize, heads: usize, d: usize) -> usize {
+    images * heads * 6 * nk.div_ceil(16) * 16 * d
+}
+
+/// Split the keys and the values of an attention into the BF16 planes of [`attn_xmx`].
+pub fn attn_prep(k: u64, v: u64, planes: u64, images: u32, nk: u32, heads: u32, d: u32) -> MkTaskDescriptor {
+    MkTaskDescriptor {
+        a: k,
+        x: v,
+        c: planes,
+        n: nk,
+        k: heads * d,
+        p0: d,
+        layer: images,
+        ..task(OP_ATTN_PREP)
+    }
+}
+
+/// Attention with no mask on the matrix units, from the planes of [`attn_prep`]. `d` is 16, 32, 48 or 64.
+pub fn attn_xmx(q: u64, planes: u64, y: u64, images: u32, nq: u32, nk: u32, heads: u32, d: u32) -> MkTaskDescriptor {
+    assert!(
+        d.is_multiple_of(16) && d <= 64,
+        "OP_ATTN_XMX takes heads of 16, 32, 48 or 64 values"
+    );
+    MkTaskDescriptor {
+        a: q,
+        b: planes,
+        c: y,
+        n: nq,
+        m: nk,
+        k: heads * d,
+        p0: d,
+        layer: images,
+        ..task(OP_ATTN_XMX)
+    }
+}

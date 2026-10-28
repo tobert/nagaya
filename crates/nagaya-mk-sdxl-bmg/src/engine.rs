@@ -290,6 +290,24 @@ impl SdxlEngine {
         (self.read_f32(self.unet.eps, size.rows(0) * LATENT), probes)
     }
 
+    /// Run each task of a UNet step of `size` as its own ring, on the inputs that the arena holds, and give the time
+    /// of each opcode: its count of tasks and its milliseconds. It is for measurement; a step runs its tasks in runs.
+    pub fn profile_unet(&mut self, size: UnetSize) -> BTreeMap<u16, (usize, f64)> {
+        let runs = model::unet(&self.weights, &self.unet, &size);
+        let mut out: BTreeMap<u16, (usize, f64)> = BTreeMap::new();
+        for (run, _) in &runs {
+            for task in &run.tasks {
+                let single = Run { tasks: vec![*task] };
+                let t = std::time::Instant::now();
+                self.run(&single);
+                let entry = out.entry(task.opcode).or_default();
+                entry.0 += 1;
+                entry.1 += t.elapsed().as_secs_f64() * 1000.0;
+            }
+        }
+        out
+    }
+
     /// The VAE decode of one latent of `h` by `w` rows (pixel-major, 4 channels): 3 values of each pixel, in [-1, 1]
     /// before the clamp.
     pub fn decode_latent(&mut self, latent: &[f32], h: usize, w: usize) -> Vec<f32> {

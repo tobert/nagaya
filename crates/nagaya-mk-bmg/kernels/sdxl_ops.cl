@@ -185,3 +185,204 @@
                 C[i] += A[b * K + i % K];
             }
         }
+        else if (op == OP_GEMM) {
+            // A convolution or a linear layer on the matrix units (XMX): c[row, o] (+)= bias[o] + the sum over the taps
+            // and the inputs of w[o, tap, i] * a[the pixel of the tap, i], with zero outside the image. Its K runs over
+            // the taps, then the inputs: K = kernel * kernel * k. a = x (f32, pixel-major); b = the weight planes, each
+            // [m][K] BF16, plane p at b + p * m * K * 2 bytes: 2 planes give an F16 weight exactly, 3 an F32 weight.
+            // n = H | W << 16 (the input), m = outputs (a multiple of 16), k = inputs (a multiple of 64),
+            // p0 = images (0: 1), layer = kernel | s << 8 | pad << 16 | planes << 24, x = bias (F32, or F16 with
+            // FLAG_F16) or 0. A linear layer is images of 1 by 1 with kernel 1.
+            // A work-group stages 32 output rows by 64 of K in local memory, split into three BF16 parts as OP_MATMUL
+            // does, so the products keep f32 precision: they drop only the terms below 2^-16 of the whole (2^-24 with
+            // 3 planes). Each subgroup takes 16 outputs of the rows.
+            __global const float* X = (__global const float*)task.a;
+            __global const ushort* Wt = (__global const ushort*)task.b;
+            __global float* Y = (__global float*)task.c;
+            uint H = task.n & 0xFFFFu, Wd = task.n >> 16, M = task.m, Cin = task.k, B = task.p0 ? task.p0 : 1;
+            uint kk = task.layer & 0xFFu, st = (task.layer >> 8) & 0xFFu, pad = (task.layer >> 16) & 0xFFu;
+            uint planes = task.layer >> 24;
+            uint Ho = (H + 2 * pad - kk) / st + 1, Wo = (Wd + 2 * pad - kk) / st + 1;
+            uint N = B * Ho * Wo, K = kk * kk * Cin;
+            ulong plane = (ulong)M * K;
+            uint row_tiles = M / 16, tok_tiles = (N + XMX_TOKENS - 1) / XMX_TOKENS;
+            uint blocks = (row_tiles + num_sgs - 1) / num_sgs;
+            for (uint wi = wg_id; wi < blocks * tok_tiles; wi += num_wgs) {
+                uint tile = (wi % blocks) * num_sgs + sg_id, t0 = (wi / blocks) * XMX_TOKENS;
+                uint r0 = tile * 16, tn = min((uint)XMX_TOKENS, N - t0);
+                bool live = tile < row_tiles;
+                __global const ushort* w0 = Wt + (ulong)(live ? r0 + lane : 0) * K;
+                float8 acc[4];
+                for (uint mt = 0; mt < 4; mt++) acc[mt] = 0.0f;
+                for (uint kc = 0; kc < K; kc += XKC) {
+                    barrier(CLK_LOCAL_MEM_FENCE);
+                    // A chunk of 64 lies in one tap, because the inputs are a multiple of 64.
+                    uint tap = kc / Cin, i0 = kc % Cin, ky = tap / kk, kx = tap % kk;
+                    for (uint i = lid; i < XMX_TOKENS * XKC; i += lsize) {
+                        uint t = i / XKC, k = i % XKC, row = t0 + t;
+                        float v = 0.0f;
+                        if (row < N) {
+                            uint xo = row % Wo, yo = (row / Wo) % Ho, b = row / (Wo * Ho);
+                            int y = (int)(yo * st + ky) - (int)pad, x = (int)(xo * st + kx) - (int)pad;
+                            if (y >= 0 && y < (int)H && x >= 0 && x < (int)Wd) {
+                                v = X[(((ulong)b * H + y) * Wd + x) * Cin + i0 + k];
+                            }
+                        }
+                        ulong p = bf16_split3(v);
+                        uint at = ((k / 16) * 4 + t / 8) * 128 + (t % 8) * 16 + k % 16;
+                        slm_x[at] = (ushort)p;
+                        slm_x[XMX_TOKENS * XKC + at] = (ushort)(p >> 16);
+                        slm_x[2 * XMX_TOKENS * XKC + at] = (ushort)(p >> 32);
+                    }
+                    barrier(CLK_LOCAL_MEM_FENCE);
+                    if (!live) continue;
+                    for (uint ks = 0; ks < XKC / 16; ks++) {
+                        __global const uint* wk = (__global const uint*)(w0 + kc + 16 * ks);
+                        int8 bh = as_int8(vload8(0, wk));
+                        int8 bm = as_int8(vload8(0, (__global const uint*)(w0 + plane + kc + 16 * ks)));
+                        int8 bl = planes == 3 ? as_int8(vload8(0, (__global const uint*)(w0 + 2 * plane + kc + 16 * ks))) : (int8)(0);
+                        for (uint mt = 0; mt < 4; mt++) {
+                            __local const ushort* a = slm_x + (ks * 4 + mt) * 128;
+                            short8 ah = as_short8(intel_sub_group_block_read_us8(a));
+                            short8 am = as_short8(intel_sub_group_block_read_us8(a + XMX_TOKENS * XKC));
+                            short8 al = as_short8(intel_sub_group_block_read_us8(a + 2 * XMX_TOKENS * XKC));
+                            if (planes == 3) {
+                                acc[mt] = dpas_split6(ah, am, al, bh, bm, bl, acc[mt]);
+                            } else {
+                                // The F16 weight is bh + bm exactly. Smallest terms first; al * bm is below 2^-24.
+                                acc[mt] = intel_sub_group_bf16_bf16_matrix_mad_k16(al, bh, acc[mt]);
+                                acc[mt] = intel_sub_group_bf16_bf16_matrix_mad_k16(am, bm, acc[mt]);
+                                acc[mt] = intel_sub_group_bf16_bf16_matrix_mad_k16(ah, bm, acc[mt]);
+                                acc[mt] = intel_sub_group_bf16_bf16_matrix_mad_k16(am, bh, acc[mt]);
+                                acc[mt] = intel_sub_group_bf16_bf16_matrix_mad_k16(ah, bh, acc[mt]);
+                            }
+                        }
+                    }
+                }
+                if (!live) continue;
+                float bias = task.x ? SDXL_W(task.x, r0 + lane) : 0.0f;
+                for (uint mt = 0; mt < 4; mt++) {
+                    for (uint r = 0; r < 8; r++) {
+                        uint t = 8 * mt + r;
+                        if (t < tn) {
+                            __global float* y = Y + (ulong)(t0 + t) * M + r0 + lane;
+                            float v = acc[mt][r] + bias;
+                            *y = accumulate ? *y + v : v;
+                        }
+                    }
+                }
+            }
+        }
+        else if (op == OP_ATTN_PREP) {
+            // The keys and the values of OP_ATTN_XMX, split into three BF16 planes (bf16_split3) for each image b and
+            // head h: the key planes [3][Nkp][D], then the value planes transposed, [3][D][Nkp]. Nkp is Nk rounded up to
+            // 16; the rows past Nk are zero. a = K rows, x = V rows, each [b][Nk][heads * D]; c = the planes, the block
+            // of (b, h) at ((b * heads + h) * 6 * Nkp * D) ushorts. n = Nk, k = heads * D, p0 = D, layer = images.
+            __global const float* Kt = (__global const float*)task.a;
+            __global const float* V = (__global const float*)task.x;
+            __global ushort* P = (__global ushort*)task.c;
+            uint Nk = task.n, R = task.k, D = task.p0, heads = R / D, B = task.layer ? task.layer : 1;
+            uint Nkp = (Nk + 15) / 16 * 16;
+            ulong plane = (ulong)Nkp * D;
+            ulong total = (ulong)B * heads * Nkp * D;
+            for (ulong i = (ulong)gsg * 16 + lane; i < total; i += (ulong)n_gsg * 16) {
+                uint d = (uint)(i % D);
+                uint s = (uint)((i / D) % Nkp);
+                ulong bh = i / plane;
+                uint h = (uint)(bh % heads), b = (uint)(bh / heads);
+                float kv = 0.0f, vv = 0.0f;
+                if (s < Nk) {
+                    ulong at = ((ulong)b * Nk + s) * R + (ulong)h * D + d;
+                    kv = Kt[at];
+                    vv = V[at];
+                }
+                __global ushort* base = P + bh * 6 * plane;
+                ulong pk = bf16_split3(kv), pv = bf16_split3(vv);
+                ulong kat = (ulong)s * D + d, vat = (ulong)d * Nkp + s;
+                for (uint p = 0; p < 3; p++) {
+                    base[p * plane + kat] = (ushort)(pk >> (16 * p));
+                    base[(3 + p) * plane + vat] = (ushort)(pv >> (16 * p));
+                }
+            }
+        }
+        else if (op == OP_ATTN_XMX) {
+            // Attention with no mask on the matrix units, as OP_SDPA computes it: a = Q rows [b][Nq][heads * D], b = the
+            // planes of OP_ATTN_PREP, c = out rows. n = Nq, m = Nk, k = heads * D, p0 = D (16, 32, 48 or 64),
+            // layer = images. One subgroup takes 8 query rows of one image and head. For each 16 keys it gets the
+            // scores with dpas (the dpas A tile of the probabilities is their own layout: lane = key, element = row),
+            // keeps an online softmax per row, and adds the probabilities times the values with dpas. Every operand is
+            // in three BF16 parts (dpas_split6), so the result keeps f32 precision.
+            __global const float* Q = (__global const float*)task.a;
+            __global const ushort* P = (__global const ushort*)task.b;
+            __global float* C = (__global float*)task.c;
+            uint Nq = task.n, Nk = task.m, R = task.k, D = task.p0, heads = R / D, B = task.layer ? task.layer : 1;
+            uint Nkp = (Nk + 15) / 16 * 16, kd = D / 16;
+            ulong plane = (ulong)Nkp * D;
+            float scale = rsqrt((float)D);
+            uint qtiles = (Nq + 7) / 8;
+            ulong total = (ulong)B * heads * qtiles;
+            for (ulong item = gsg; item < total; item += n_gsg) {
+                uint qt = (uint)(item % qtiles);
+                ulong bh = item / qtiles;
+                uint h = (uint)(bh % heads), b = (uint)(bh / heads);
+                uint q0 = qt * 8;
+                __global const ushort* base = P + bh * 6 * plane;
+                // The query tile as dpas A operands: lane = d within its 16, element r = query row.
+                short8 qh[4], qm[4], ql[4];
+                for (uint ks = 0; ks < kd; ks++) {
+                    for (uint r = 0; r < 8; r++) {
+                        uint row = q0 + r;
+                        float v = row < Nq ? Q[((ulong)b * Nq + row) * R + (ulong)h * D + ks * 16 + lane] * scale : 0.0f;
+                        ulong p = bf16_split3(v);
+                        qh[ks][r] = (short)p;
+                        qm[ks][r] = (short)(p >> 16);
+                        ql[ks][r] = (short)(p >> 32);
+                    }
+                }
+                float8 acc[4];
+                for (uint nt = 0; nt < 4; nt++) acc[nt] = 0.0f;
+                float mrow[8], lrow[8];
+                for (uint r = 0; r < 8; r++) {
+                    mrow[r] = -INFINITY;
+                    lrow[r] = 0.0f;
+                }
+                for (uint k0 = 0; k0 < Nkp; k0 += 16) {
+                    float8 s = 0.0f;
+                    for (uint ks = 0; ks < kd; ks++) {
+                        __global const uint* kp = (__global const uint*)(base + (ulong)(k0 + lane) * D + ks * 16);
+                        int8 kh = as_int8(vload8(0, kp));
+                        int8 km = as_int8(vload8(0, kp + plane / 2));
+                        int8 kl = as_int8(vload8(0, kp + plane));
+                        s = dpas_split6(qh[ks], qm[ks], ql[ks], kh, km, kl, s);
+                    }
+                    bool key = k0 + lane < Nk;
+                    short8 ph, pm, pl;
+                    for (uint r = 0; r < 8; r++) {
+                        float sr = key ? s[r] : -INFINITY;
+                        float mnew = fmax(mrow[r], sub_group_reduce_max(sr));
+                        float corr = exp(mrow[r] - mnew);
+                        float p = key ? exp(sr - mnew) : 0.0f;
+                        lrow[r] = lrow[r] * corr + sub_group_reduce_add(p);
+                        mrow[r] = mnew;
+                        for (uint nt = 0; nt < kd; nt++) acc[nt][r] *= corr;
+                        ulong sp = bf16_split3(p);
+                        ph[r] = (short)sp;
+                        pm[r] = (short)(sp >> 16);
+                        pl[r] = (short)(sp >> 32);
+                    }
+                    for (uint nt = 0; nt < kd; nt++) {
+                        __global const uint* vp = (__global const uint*)(base + 3 * plane + (ulong)(nt * 16 + lane) * Nkp + k0);
+                        int8 vh = as_int8(vload8(0, vp));
+                        int8 vm = as_int8(vload8(0, vp + plane / 2));
+                        int8 vl = as_int8(vload8(0, vp + plane));
+                        acc[nt] = dpas_split6(ph, pm, pl, vh, vm, vl, acc[nt]);
+                    }
+                }
+                for (uint nt = 0; nt < kd; nt++) {
+                    for (uint r = 0; r < 8; r++) {
+                        uint row = q0 + r;
+                        if (row < Nq) C[((ulong)b * Nq + row) * R + (ulong)h * D + nt * 16 + lane] = acc[nt][r] / lrow[r];
+                    }
+                }
+            }
+        }

@@ -106,10 +106,34 @@ pub fn f32_values(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
-/// The tensors of the engine on its card, by their prefixed names.
+/// The planes of a weight for `OP_GEMM` on the card: their address and their count (2 for F16, 3 for F32).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Planes {
+    pub at: u64,
+    pub planes: u32,
+}
+
+/// True for a weight that runs on the matrix units: a linear or a convolution weight with inputs in 64s and outputs
+/// in 16s, which is not an embedding table.
+pub fn gemm_eligible(name: &str, shape: &[usize]) -> bool {
+    let kernel_ok = match shape {
+        [_, _] => true,
+        [_, _, k, k2] => k == k2 && (*k == 1 || *k == 3),
+        _ => false,
+    };
+    kernel_ok
+        && name.ends_with(".weight")
+        && !name.contains("embedding.weight")
+        && shape[1].is_multiple_of(64)
+        && shape[0].is_multiple_of(16)
+}
+
+/// The tensors of the engine on its card, by their prefixed names. A weight with planes has no native copy on the
+/// card: its address in `tensors` is 0.
 pub struct Weights {
     tensors: HashMap<String, (Tensor, Vec<usize>)>,
     f32_copies: HashMap<String, u64>,
+    planes: HashMap<String, Planes>,
 }
 
 impl Weights {
@@ -117,11 +141,39 @@ impl Weights {
     pub fn load(dir: &Path, sink: &mut dyn Upload) -> Result<Weights, String> {
         let mut tensors = HashMap::new();
         let mut f32_copies = HashMap::new();
+        let mut planes = HashMap::new();
         for (prefix, path) in files(dir)? {
             let mapped = MappedSafeTensors::open(&path)?;
             let view = mapped.view()?;
             let mut names: Vec<&String> = view.tensors.keys().collect();
             names.sort();
+            // The planes of the weights of the matrix units, made on host threads in batches, then uploaded in order.
+            let eligible: Vec<&String> = names
+                .iter()
+                .copied()
+                .filter(|n| gemm_eligible(&format!("{prefix}{n}"), &view.tensors[*n].shape))
+                .collect();
+            for batch in eligible.chunks(32) {
+                let made: Vec<(String, u32, Vec<u8>)> = std::thread::scope(|scope| {
+                    let threads: Vec<_> = batch
+                        .iter()
+                        .map(|name| {
+                            let meta = &view.tensors[*name];
+                            let bytes = view.tensor_bytes(name).expect("a tensor of the header");
+                            let writes = sink.writes();
+                            scope.spawn(move || plane_bytes(name, meta, bytes, writes))
+                        })
+                        .collect();
+                    threads
+                        .into_iter()
+                        .map(|t| t.join().expect("a plane thread panicked"))
+                        .collect::<Result<_, _>>()
+                })?;
+                for (name, count, bytes) in made {
+                    let at = sink.upload(&bytes);
+                    planes.insert(format!("{prefix}{name}"), Planes { at, planes: count });
+                }
+            }
             for name in names {
                 let meta = &view.tensors[name];
                 let full = format!("{prefix}{name}");
@@ -135,7 +187,11 @@ impl Weights {
                     }
                 };
                 let bytes = view.tensor_bytes(name).expect("a tensor of the header");
-                let at = sink.upload(bytes);
+                let at = if planes.contains_key(&full) {
+                    0
+                } else {
+                    sink.upload(bytes)
+                };
                 if needs_f32(&full) {
                     let copy = if !sink.writes() {
                         sink.upload(&vec![0u8; meta.shape.iter().product::<usize>() * 4])
@@ -155,11 +211,20 @@ impl Weights {
                 tensors.insert(full, (Tensor { at, f32 }, meta.shape.clone()));
             }
         }
-        Ok(Weights { tensors, f32_copies })
+        Ok(Weights {
+            tensors,
+            f32_copies,
+            planes,
+        })
     }
 
-    /// The tensor `name`, which must have `shape`.
-    pub fn get(&self, name: &str, shape: &[usize]) -> Result<Tensor, String> {
+    /// The planes of the weight `name` for the matrix units, when it has them. The shape must be `shape`.
+    pub fn planes(&self, name: &str, shape: &[usize]) -> Result<Option<Planes>, String> {
+        self.shaped(name, shape)?;
+        Ok(self.planes.get(name).copied())
+    }
+
+    fn shaped(&self, name: &str, shape: &[usize]) -> Result<Tensor, String> {
         let (tensor, got) = self.tensors.get(name).ok_or_else(|| {
             format!("the checkpoint has no tensor {name}; use an SDXL checkpoint in the layout of diffusers")
         })?;
@@ -169,12 +234,67 @@ impl Weights {
         Ok(*tensor)
     }
 
+    /// The native tensor `name`, which must have `shape`. A weight with planes has no native copy: that is an error.
+    pub fn get(&self, name: &str, shape: &[usize]) -> Result<Tensor, String> {
+        let tensor = self.shaped(name, shape)?;
+        if self.planes.contains_key(name) {
+            return Err(format!(
+                "tensor {name} has planes for the matrix units and no native copy; use the planes"
+            ));
+        }
+        Ok(tensor)
+    }
+
     /// The F32 copy of the tensor `name`, which must have `shape`.
     pub fn f32(&self, name: &str, shape: &[usize]) -> Result<u64, String> {
-        self.get(name, shape)?;
+        self.shaped(name, shape)?;
         self.f32_copies
             .get(name)
             .copied()
             .ok_or_else(|| format!("tensor {name} has no F32 copy; this is a defect of needs_f32"))
     }
+}
+
+/// The planes of one weight for the matrix units: its name, the count of planes, and their bytes. A count makes zeros
+/// of the right length and computes nothing.
+fn plane_bytes(
+    name: &str,
+    meta: &nagaya_mk_bmg::safetensors::TensorMeta,
+    bytes: &[u8],
+    writes: bool,
+) -> Result<(String, u32, Vec<u8>), String> {
+    let shape = &meta.shape;
+    let (cout, cin) = (shape[0], shape[1]);
+    let kernel = if shape.len() == 4 { shape[2] } else { 1 };
+    let count: u32 = match meta.dtype {
+        Dtype::F16 => 2,
+        Dtype::F32 => 3,
+        other => {
+            return Err(format!(
+                "tensor {name} is {other:?}; the image engine reads F16 and F32"
+            ));
+        }
+    };
+    if !writes {
+        return Ok((
+            name.to_owned(),
+            count,
+            vec![0u8; count as usize * cout * cin * kernel * kernel * 2],
+        ));
+    }
+    let values: Vec<f32> = match meta.dtype {
+        Dtype::F16 => bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| f16_to_f32(u16::from_le_bytes(*b)))
+            .collect(),
+        _ => f32_values(bytes),
+    };
+    let planes = nagaya_mk_bmg::tasks::gemm_planes(&values, cout, cin, kernel, count as usize);
+    Ok((
+        name.to_owned(),
+        count,
+        planes.iter().flat_map(|v| v.to_le_bytes()).collect(),
+    ))
 }

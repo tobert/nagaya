@@ -80,6 +80,9 @@
 #define OP_GEGLU_HALF       65
 #define OP_COPY_COLS        66
 #define OP_ADD_IMAGE_ROW    67
+#define OP_GEMM             68
+#define OP_ATTN_PREP        69
+#define OP_ATTN_XMX         70
 #endif
 #define NUM_EXPERTS         128
 #define TOP_K               8

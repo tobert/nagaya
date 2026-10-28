@@ -72,6 +72,68 @@ fn w32(weights: &Weights, name: &str, shape: &[usize]) -> u64 {
     weights.f32(name, shape).unwrap_or_else(|e| panic!("{e}"))
 }
 
+/// The planes of a weight for the matrix units, or `None` when it runs as a plain op.
+fn planes(weights: &Weights, name: &str, shape: &[usize]) -> Option<crate::weights::Planes> {
+    weights.planes(name, shape).unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// A linear layer of `name` (`.weight` [cout][cin], or [cout][cin][1][1] with `conv`, and an optional `.bias`). It
+/// runs on the matrix units when the weight has planes.
+#[allow(clippy::too_many_arguments)]
+fn linear_any(
+    run: &mut Run,
+    wt: &Weights,
+    name: &str,
+    conv: bool,
+    bias: bool,
+    x: u64,
+    y: u64,
+    rows: usize,
+    cin: usize,
+    cout: usize,
+    acc: bool,
+) {
+    let wname = format!("{name}.weight");
+    let shape: &[usize] = if conv { &[cout, cin, 1, 1] } else { &[cout, cin] };
+    let b = if bias {
+        Some(w(wt, &format!("{name}.bias"), &[cout]))
+    } else {
+        None
+    };
+    match planes(wt, &wname, shape) {
+        Some(p) => run.push(t::gemm(
+            x,
+            p.at,
+            b.map_or(0, |b| b.at),
+            y,
+            rows as u32,
+            1,
+            1,
+            cin as u32,
+            cout as u32,
+            (1, 1, 0),
+            p.planes,
+            b.is_some_and(|b| !b.f32),
+            acc,
+        )),
+        None => {
+            let weight = w(wt, &wname, shape);
+            let b = b.map_or(0, |b| b.at);
+            run.push(t::linear(
+                x,
+                weight.at,
+                b,
+                y,
+                rows as u32,
+                cin as u32,
+                cout as u32,
+                weight.f32,
+                acc,
+            ));
+        }
+    }
+}
+
 /// A linear layer of `name` (`.weight` [cout][cin] and an optional `.bias`).
 #[allow(clippy::too_many_arguments)]
 fn linear(
@@ -86,41 +148,13 @@ fn linear(
     cout: usize,
     acc: bool,
 ) {
-    let weight = w(wt, &format!("{name}.weight"), &[cout, cin]);
-    let b = if bias {
-        w(wt, &format!("{name}.bias"), &[cout]).at
-    } else {
-        0
-    };
-    run.push(t::linear(
-        x,
-        weight.at,
-        b,
-        y,
-        rows as u32,
-        cin as u32,
-        cout as u32,
-        weight.f32,
-        acc,
-    ));
+    linear_any(run, wt, name, false, bias, x, y, rows, cin, cout, acc);
 }
 
 /// A 1 x 1 convolution of `name` (`.weight` [cout][cin][1][1] and `.bias`) as a linear layer over rows.
 #[allow(clippy::too_many_arguments)]
 fn conv1x1(run: &mut Run, wt: &Weights, name: &str, x: u64, y: u64, rows: usize, cin: usize, cout: usize, acc: bool) {
-    let weight = w(wt, &format!("{name}.weight"), &[cout, cin, 1, 1]);
-    let b = w(wt, &format!("{name}.bias"), &[cout]);
-    run.push(t::linear(
-        x,
-        weight.at,
-        b.at,
-        y,
-        rows as u32,
-        cin as u32,
-        cout as u32,
-        weight.f32,
-        acc,
-    ));
+    linear_any(run, wt, name, true, true, x, y, rows, cin, cout, acc);
 }
 
 /// A convolution of `name` with a k x k kernel and its bias.
@@ -137,8 +171,27 @@ fn conv(
     (kernel, stride): (usize, usize),
     acc: bool,
 ) {
-    let weight = w(wt, &format!("{name}.weight"), &[cout, cin, kernel, kernel]);
+    let wname = format!("{name}.weight");
     let b = w(wt, &format!("{name}.bias"), &[cout]);
+    if let Some(p) = planes(wt, &wname, &[cout, cin, kernel, kernel]) {
+        run.push(t::gemm(
+            x,
+            p.at,
+            b.at,
+            y,
+            images as u32,
+            h as u32,
+            wd as u32,
+            cin as u32,
+            cout as u32,
+            (kernel as u32, stride as u32, (kernel / 2) as u32),
+            p.planes,
+            !b.f32,
+            acc,
+        ));
+        return;
+    }
+    let weight = w(wt, &wname, &[cout, cin, kernel, kernel]);
     run.push(t::conv2d(
         x,
         weight.at,
@@ -352,18 +405,18 @@ pub fn text_encoder(
                 hid as u32,
             ));
         }
-        let proj = w(wt, "te2.text_projection.weight", &[POOLED, hid]);
-        run.push(t::linear(
+        linear(
+            run,
+            wt,
+            "te2.text_projection",
+            false,
             b.eos,
-            proj.at,
-            0,
             b.pooled,
             2,
-            hid as u32,
-            POOLED as u32,
-            proj.f32,
+            hid,
+            POOLED,
             false,
-        ));
+        );
     }
     runs
 }
@@ -426,6 +479,8 @@ pub struct UnetBufs {
     pub cv: u64,
     pub ff: u64,
     pub ffh: u64,
+    /// The BF16 planes of the keys and values of one attention (`OP_ATTN_PREP`).
+    pub planes: u64,
 }
 
 impl UnetBufs {
@@ -471,6 +526,9 @@ impl UnetBufs {
             cv: carve.floats(b2 * ctx * 1280),
             ff: carve.floats(1280 * r0),
             ffh: carve.floats(640 * r0),
+            // Six ushorts of each value of the keys, padded to 16 rows: at most the rows of level 1 by 640 channels,
+            // or of the context.
+            planes: carve.floats(3 * (160 * r0 + b2 * 16 * 1280).max(b2 * (ctx + 16) * 1280)),
         }
     }
 }
@@ -588,17 +646,24 @@ fn transformer(
                 false,
             );
         }
-        run.push(t::sdpa(
-            b.q,
+        run.push(t::attn_prep(
             b.k,
             b.v,
+            b.planes,
+            batch as u32,
+            px as u32,
+            heads,
+            HEAD as u32,
+        ));
+        run.push(t::attn_xmx(
+            b.q,
+            b.planes,
             b.att,
             batch as u32,
             px as u32,
             px as u32,
             heads,
             HEAD as u32,
-            false,
         ));
         linear(
             run,
@@ -639,17 +704,24 @@ fn transformer(
             c,
             false,
         );
-        run.push(t::sdpa(
-            b.q,
+        run.push(t::attn_prep(
             b.ck,
             b.cv,
+            b.planes,
+            batch as u32,
+            size.ctx as u32,
+            heads,
+            HEAD as u32,
+        ));
+        run.push(t::attn_xmx(
+            b.q,
+            b.planes,
             b.att,
             batch as u32,
             px as u32,
             size.ctx as u32,
             heads,
             HEAD as u32,
-            false,
         ));
         linear(
             run,

@@ -587,6 +587,237 @@ fn add_image_row_adds_the_row_of_each_image_to_its_pixels() {
     assert_eq!(yb.read::<f32>(card.card(), b * p * k), want);
 }
 
+#[test]
+fn gemm_on_the_matrix_units_gives_the_convolution_in_f32_precision() {
+    use nagaya_mk_bmg::tasks::{gemm, gemm_planes};
+    let mut card = Card::open();
+    let mut rng = Rng(29);
+    // A 3 x 3 convolution with F16 weights (2 planes), the down sampler with F32 weights (3 planes) that accumulates,
+    // and a linear layer of 37 rows with more than 64 subgroups of outputs.
+    for (s, f16_weights, accumulate) in [
+        (
+            Conv {
+                b: 2,
+                h: 7,
+                w: 5,
+                cin: 64,
+                cout: 32,
+                kernel: 3,
+                stride: 1,
+                pad: 1,
+            },
+            true,
+            false,
+        ),
+        (
+            Conv {
+                b: 1,
+                h: 9,
+                w: 6,
+                cin: 128,
+                cout: 48,
+                kernel: 3,
+                stride: 2,
+                pad: 1,
+            },
+            false,
+            true,
+        ),
+        (
+            Conv {
+                b: 37,
+                h: 1,
+                w: 1,
+                cin: 192,
+                cout: 1040,
+                kernel: 1,
+                stride: 1,
+                pad: 0,
+            },
+            true,
+            false,
+        ),
+    ] {
+        let x: Vec<f32> = rng.vec(s.b * s.h * s.w * s.cin).into_iter().map(|v| 8.0 * v).collect();
+        // The test's F16 conversion takes normal numbers only, so the weights stay away from zero.
+        let raw: Vec<f32> = rng
+            .vec(s.cout * s.cin * s.kernel * s.kernel)
+            .into_iter()
+            .map(|v| v.signum() * (0.01 + v.abs()))
+            .collect();
+        let w: Vec<f32> = if f16_weights {
+            raw.iter().map(|v| from_f16(f16(*v))).collect()
+        } else {
+            raw
+        };
+        let (ho, wo) = s.out();
+        let out = s.b * ho * wo * s.cout;
+        let start = rng.vec(out);
+        let planes = if f16_weights { 2 } else { 3 };
+        let wp = gemm_planes(&w, s.cout, s.cin, s.kernel, planes);
+        let (bias_buf, bias): (Buf, Vec<f32>) = if f16_weights {
+            let b16: Vec<u16> = rng.vec(s.cout).into_iter().map(f16).collect();
+            let used = b16.iter().map(|h| from_f16(*h)).collect();
+            (Buf::of(card.card(), &b16), used)
+        } else {
+            let b = rng.vec(s.cout);
+            (Buf::of(card.card(), &b), b)
+        };
+        let (xb, wb, yb) = (
+            Buf::of(card.card(), &x),
+            Buf::of(card.card(), &wp),
+            Buf::of(card.card(), &start),
+        );
+        card.run(&[gemm(
+            xb.at(),
+            wb.at(),
+            bias_buf.at(),
+            yb.at(),
+            s.b as u32,
+            s.h as u32,
+            s.w as u32,
+            s.cin as u32,
+            s.cout as u32,
+            (s.kernel as u32, s.stride as u32, s.pad as u32),
+            planes as u32,
+            f16_weights,
+            accumulate,
+        )]);
+        let got: Vec<f32> = yb.read(card.card(), out);
+        let mut want = conv_cpu(s, &x, &w, Some(&bias));
+        if accumulate {
+            want.iter_mut().zip(&start).for_each(|(w, s)| *w += s);
+        }
+        // The bound of the other ops: f32 sums of many terms in another order differ by about 1e-6.
+        let err = rel(&got, &want);
+        assert!(err < 1e-5, "{s:?}, {planes} planes: relative error {err}");
+    }
+}
+
+/// F32 weights need their third plane: with positive weights and inputs nothing cancels, so dropping it costs about
+/// 2^-17 of each product, above the bound.
+#[test]
+fn gemm_with_three_planes_keeps_f32_weights_past_16_bits() {
+    use nagaya_mk_bmg::tasks::{gemm, gemm_planes};
+    let mut card = Card::open();
+    let mut rng = Rng(41);
+    let (rows, cin, cout) = (8usize, 128usize, 16usize);
+    let x: Vec<f32> = rng.vec(rows * cin).into_iter().map(|v| 0.75 + 0.25 * v).collect();
+    let w: Vec<f32> = rng.vec(cout * cin).into_iter().map(|v| 0.75 + 0.25 * v).collect();
+    let wp = gemm_planes(&w, cout, cin, 1, 3);
+    let (xb, wb, yb) = (
+        Buf::of(card.card(), &x),
+        Buf::of(card.card(), &wp),
+        Buf::zeros(card.card(), rows * cout * 4),
+    );
+    card.run(&[gemm(
+        xb.at(),
+        wb.at(),
+        0,
+        yb.at(),
+        rows as u32,
+        1,
+        1,
+        cin as u32,
+        cout as u32,
+        (1, 1, 0),
+        3,
+        false,
+        false,
+    )]);
+    let got: Vec<f32> = yb.read(card.card(), rows * cout);
+    let want: Vec<f32> = (0..rows * cout)
+        .map(|i| {
+            let (t, o) = (i / cout, i % cout);
+            (0..cin)
+                .map(|j| x[t * cin + j] as f64 * w[o * cin + j] as f64)
+                .sum::<f64>() as f32
+        })
+        .collect();
+    let err = rel(&got, &want);
+    assert!(err < 1e-6, "relative error {err}");
+}
+
+#[test]
+fn gemm_planes_sum_to_the_weight() {
+    use nagaya_mk_bmg::tasks::gemm_planes;
+    let mut rng = Rng(31);
+    let raw: Vec<f32> = rng
+        .vec(4 * 8 * 9)
+        .into_iter()
+        .map(|v| v.signum() * (0.01 + v.abs()))
+        .collect();
+    let f16s: Vec<f32> = raw.iter().map(|v| from_f16(f16(*v))).collect();
+    let two = gemm_planes(&f16s, 4, 8, 3, 2);
+    let three = gemm_planes(&raw, 4, 8, 3, 3);
+    let k = 9 * 8;
+    for o in 0..4 {
+        for i in 0..8 {
+            for tap in 0..9 {
+                let at = o * k + tap * 8 + i;
+                let sum2: f32 = (0..2).map(|p| f32::from_bits((two[p * 4 * k + at] as u32) << 16)).sum();
+                assert_eq!(
+                    sum2,
+                    f16s[(o * 8 + i) * 9 + tap],
+                    "two planes hold an F16 weight exactly"
+                );
+                let sum3: f64 = (0..3)
+                    .map(|p| f32::from_bits((three[p * 4 * k + at] as u32) << 16) as f64)
+                    .sum();
+                let want = raw[(o * 8 + i) * 9 + tap] as f64;
+                assert!(
+                    (sum3 - want).abs() <= want.abs() * 2f64.powi(-23),
+                    "three planes hold an F32 weight"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn attention_on_the_matrix_units_gives_sdpa() {
+    use nagaya_mk_bmg::tasks::{attn_planes_len, attn_prep, attn_xmx};
+    let mut card = Card::open();
+    let mut rng = Rng(37);
+    // Self attention with rows that are not whole tiles, cross attention to 77 keys, and heads of 16 values.
+    for (b, nq, nk, heads, d) in [
+        (2usize, 37usize, 37usize, 3usize, 64usize),
+        (2, 40, 77, 5, 64),
+        (1, 21, 50, 2, 16),
+    ] {
+        let r = heads * d;
+        let q: Vec<f32> = rng.vec(b * nq * r).into_iter().map(|v| 3.0 * v).collect();
+        let k: Vec<f32> = rng.vec(b * nk * r).into_iter().map(|v| 3.0 * v).collect();
+        let v = rng.vec(b * nk * r);
+        let (qb, kb, vb, yb) = (
+            Buf::of(card.card(), &q),
+            Buf::of(card.card(), &k),
+            Buf::of(card.card(), &v),
+            Buf::zeros(card.card(), b * nq * r * 4),
+        );
+        let pb = Buf::zeros(card.card(), attn_planes_len(b, nk, heads, d) * 2);
+        card.run(&[
+            attn_prep(kb.at(), vb.at(), pb.at(), b as u32, nk as u32, heads as u32, d as u32),
+            attn_xmx(
+                qb.at(),
+                pb.at(),
+                yb.at(),
+                b as u32,
+                nq as u32,
+                nk as u32,
+                heads as u32,
+                d as u32,
+            ),
+        ]);
+        let got: Vec<f32> = yb.read(card.card(), b * nq * r);
+        let err = rel(&got, &sdpa_cpu(&q, &k, &v, b, nq, nk, heads, d, false));
+        assert!(
+            err < 1e-5,
+            "{b} images, {nq} by {nk}, {heads} heads of {d}: relative error {err}"
+        );
+    }
+}
+
 /// The error function, by Abramowitz and Stegun 7.1.26 in f64; good to 1.5e-7.
 fn erf(x: f32) -> f32 {
     let x = x as f64;
