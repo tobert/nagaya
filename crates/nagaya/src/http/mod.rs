@@ -6,6 +6,7 @@
 
 mod errors;
 mod extensions;
+pub mod image;
 mod loads;
 mod objects;
 pub mod pending;
@@ -100,6 +101,8 @@ pub struct Council {
     failure: Mutex<Option<String>>,
     /// The speech services (spec 11.8).
     speech: Vec<Arc<crate::speech::SpeechService>>,
+    /// The image services (spec 11.9).
+    images: Vec<Arc<crate::image::ImageService>>,
     /// The objects and keeps, when the profile names an `objects` budget (spec 6.15).
     objects: Option<Arc<Mutex<nagaya_store::objects::ObjectStore>>>,
     /// `object_bytes` and `keep_bytes` of the object store. They are fixed at its open, so identity takes no lock.
@@ -130,6 +133,7 @@ impl Council {
             call_cpus,
             failure: Mutex::new(None),
             speech: Vec::new(),
+            images: Vec::new(),
             objects: None,
             object_limits: None,
             pending: pending::PendingIds::default(),
@@ -141,6 +145,12 @@ impl Council {
     /// Serve these speech services as council served models (spec 11.8a).
     pub fn with_speech(mut self, services: Vec<crate::speech::SpeechService>) -> Self {
         self.speech = services.into_iter().map(Arc::new).collect();
+        self
+    }
+
+    /// Serve these image services as council served models (spec 11.9a).
+    pub fn with_images(mut self, services: Vec<crate::image::ImageService>) -> Self {
+        self.images = services.into_iter().map(Arc::new).collect();
         self
     }
 
@@ -197,6 +207,11 @@ impl Council {
         self.speech.iter().find(|service| service.model() == model).cloned()
     }
 
+    /// The image service of a served image model.
+    pub fn image_service(&self, model: &str) -> Option<Arc<crate::image::ImageService>> {
+        self.images.iter().find(|service| service.model() == model).cloned()
+    }
+
     /// The served speech models.
     pub fn speech_models(&self) -> Vec<String> {
         self.speech.iter().map(|service| service.model().to_owned()).collect()
@@ -244,6 +259,11 @@ impl Council {
                     .iter()
                     .filter(|service| service.serves_contexts())
                     .map(|service| voice::served_model(service, self.model_status(service.engine_state()))),
+            )
+            .chain(
+                self.images
+                    .iter()
+                    .map(|service| image::served_model(service, self.model_status(service.engine_state()))),
             )
             .collect();
         let defaults = crate::council::ServiceConfig::new("", "");
@@ -313,7 +333,8 @@ impl Council {
     }
 
     /// The served model that a request names, by its `model` or an alias. A name that no served model has is a 400
-    /// that names `model`. A served model that is not `ready` is a 503 `model_unavailable`, also a speech model.
+    /// that names `model`. A served model that is not `ready` is a 503 `model_unavailable`, also a speech or an image
+    /// model.
     fn route(&self, name: &str) -> Result<Arc<Served>, Failure> {
         // A speech model takes no text route. When it is not ready, the 503 comes first, as for any served model.
         if let Some(service) = self.speech_service(name).filter(|service| service.serves_contexts()) {
@@ -321,6 +342,11 @@ impl Council {
             if model.status != ModelStatus::Ready {
                 return Err(Failure::unavailable(&model));
             }
+        }
+        if let Some((_, model)) = image::route(self, name)
+            && model.status != ModelStatus::Ready
+        {
+            return Err(Failure::unavailable(&model));
         }
         let served = self
             .models
@@ -368,6 +394,12 @@ impl Council {
                     .iter()
                     .find(|service| &service.config().engine == engine)
                     .map(|service| voice::served_model(service, self.model_status(*state)))
+            });
+            let model = model.or_else(|| {
+                self.images
+                    .iter()
+                    .find(|service| &service.config().engine == engine)
+                    .map(|service| image::served_model(service, self.model_status(*state)))
             });
             if let Some(mut model) = model {
                 model.status = self.model_status(*state);

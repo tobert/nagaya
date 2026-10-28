@@ -355,7 +355,7 @@ pub fn speak(
     let data = u32::try_from(pcm.len()).map_err(|_| ServiceError::internal("the audio of a line is over 4 GiB"))?;
     let mut wav = wav_header(Some(data)).to_vec();
     wav.extend(&pcm);
-    let id = seal(council, &wav)?;
+    let id = seal(council, &wav, WAV)?;
     let objects = council.objects();
     let held = |id: &ContentId| {
         objects.as_ref().is_some_and(|store| {
@@ -427,11 +427,11 @@ pub fn speak(
     })
 }
 
-/// Hold the bytes of a WAV in the object store, and give their content id.
-fn seal(council: &Council, wav: &[u8]) -> Result<ContentId, ServiceError> {
+/// Hold the bytes of an output of media type `mime` in the object store, and give their content id.
+pub(super) fn seal(council: &Council, wav: &[u8], mime: &str) -> Result<ContentId, ServiceError> {
     let store = council
         .objects()
-        .ok_or_else(|| ServiceError::internal("a speech model is served with no object store"))?;
+        .ok_or_else(|| ServiceError::internal("a model with outputs is served with no object store"))?;
     let text = content_id(wav);
     let id = ContentId::from_hex(text.trim_start_matches("blake3:")).expect("a content id has 64 hex digits");
     let staged = store.lock().expect("the object store lock is poisoned").staging_path();
@@ -444,7 +444,7 @@ fn seal(council: &Council, wav: &[u8]) -> Result<ContentId, ServiceError> {
         .map_err(|error| ServiceError::internal(format!("cannot write `{}`: {error}", staged.display())))?;
     let mut store = store.lock().expect("the object store lock is poisoned");
     store
-        .commit(&id, WAV, &staged, wav.len() as u64, now_ms())
+        .commit(&id, mime, &staged, wav.len() as u64, now_ms())
         .map_err(|error| match error {
             nagaya_store::objects::ObjectError::TooLarge { limit, .. } => ServiceError::TooLarge {
                 param: limit.to_owned(),

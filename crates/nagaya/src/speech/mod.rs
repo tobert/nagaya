@@ -124,13 +124,13 @@ impl std::fmt::Display for SpeechError {
 }
 
 /// The free slots of the engine. A request takes one before its job starts, and the job gives it back at its end.
-struct SlotPool {
+pub(crate) struct SlotPool {
     free: Mutex<Vec<SlotId>>,
     freed: Condvar,
 }
 
 impl SlotPool {
-    fn new(slots: u32) -> Self {
+    pub(crate) fn new(slots: u32) -> Self {
         Self {
             free: Mutex::new((0..slots).rev().collect()),
             freed: Condvar::new(),
@@ -138,7 +138,7 @@ impl SlotPool {
     }
 
     /// A free slot, or `None` when none came free before `deadline`.
-    fn take(&self, deadline: Instant) -> Option<SlotId> {
+    pub(crate) fn take(&self, deadline: Instant) -> Option<SlotId> {
         let mut free = self.free.lock().expect("the slot lock is poisoned");
         loop {
             if let Some(slot) = free.pop() {
@@ -153,14 +153,14 @@ impl SlotPool {
         }
     }
 
-    fn give(&self, slot: SlotId) {
+    pub(crate) fn give(&self, slot: SlotId) {
         let mut free = self.free.lock().expect("the slot lock is poisoned");
         assert!(!free.contains(&slot), "slot {slot} came back twice");
         free.push(slot);
         self.freed.notify_one();
     }
 
-    fn count(&self) -> usize {
+    pub(crate) fn count(&self) -> usize {
         self.free.lock().expect("the slot lock is poisoned").len()
     }
 }

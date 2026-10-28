@@ -13,6 +13,7 @@ use gogi_proto::context::{ContextBuild, ContextBuilt};
 use gogi_proto::decision::{DecisionRequest, Signals};
 use gogi_proto::error::ErrorType;
 use gogi_proto::generation::GenerationRequest;
+use gogi_proto::identity::ServedModel;
 use gogi_proto::pins::PinsPut;
 use gogi_proto::reads::ReadsRequest;
 use serde::Serialize;
@@ -253,6 +254,12 @@ async fn reads(State(council): Shared, Extension(id): Id, body: Body) -> Respons
     answer(&id, result)
 }
 
+/// A generation of a served model with no text replies.
+enum Media {
+    Speech(Arc<crate::speech::SpeechService>, ServedModel, GenerationRequest),
+    Image(Arc<crate::image::ImageService>, ServedModel, GenerationRequest),
+}
+
 async fn generations(State(council): Shared, Extension(id): Id, body: Body) -> Response {
     let request = async {
         let request: GenerationRequest = parse(&bytes(body).await?, "generation")?;
@@ -260,7 +267,13 @@ async fn generations(State(council): Shared, Extension(id): Id, body: Body) -> R
             if model.status != gogi_proto::identity::ModelStatus::Ready {
                 return Err(Failure::unavailable(&model));
             }
-            return Ok(Err((service, model, request)));
+            return Ok(Err(Media::Speech(service, model, request)));
+        }
+        if let Some((service, model)) = super::image::route(&council, &request.model) {
+            if model.status != gogi_proto::identity::ModelStatus::Ready {
+                return Err(Failure::unavailable(&model));
+            }
+            return Ok(Err(Media::Image(service, model, request)));
         }
         let served = council.route(&request.model)?;
         Ok::<_, Failure>(Ok((request, served)))
@@ -268,8 +281,11 @@ async fn generations(State(council): Shared, Extension(id): Id, body: Body) -> R
     .await;
     let (request, served) = match request {
         Ok(Ok(found)) => found,
-        Ok(Err((service, model, request))) => {
+        Ok(Err(Media::Speech(service, model, request))) => {
             return super::voice::generation(council, service, model, request, id).await;
+        }
+        Ok(Err(Media::Image(service, model, request))) => {
+            return super::image::generation(council, service, model, request, id).await;
         }
         Err(failure) => return failure.respond(&id),
     };
