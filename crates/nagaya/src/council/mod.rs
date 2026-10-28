@@ -434,6 +434,14 @@ impl Service {
         &self.config
     }
 
+    /// The state of the engine of the service (spec 3.3). The service attached to an engine of the profile, so the
+    /// engine has a state.
+    pub fn engine_state(&self) -> nagaya_telemetry::EngineState {
+        self.ports
+            .engine_state(&self.config.engine)
+            .unwrap_or_else(|| panic!("engine `{}` of the service has no state", self.config.engine))
+    }
+
     /// What one token of a snapshot costs, in bytes: one row of each cells part (gogi "Identity, limits,
     /// capabilities").
     pub fn snapshot_bytes(&self) -> u64 {

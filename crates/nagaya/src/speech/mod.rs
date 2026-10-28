@@ -358,6 +358,14 @@ impl SpeechService {
         &self.config
     }
 
+    /// The state of the engine of the service (spec 3.3). The service is on an engine of the profile, so the engine
+    /// has a state.
+    pub fn engine_state(&self) -> EngineState {
+        self.ports
+            .engine_state(&self.config.engine)
+            .unwrap_or_else(|| panic!("engine `{}` of the speech service has no state", self.config.engine))
+    }
+
     /// The identity of the engine, once it opened since the start.
     pub fn identity(&self) -> Option<nagaya_abi::Identity> {
         self.identity.lock().expect("the identity lock is poisoned").clone()

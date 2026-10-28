@@ -16,8 +16,8 @@ use nagaya::process::{OpenedEngine, Process, Start};
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, StoreSpec, TierSpec};
 use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{
-    Coverage, Engine, Identity, Kind, Lifetime, Limits, MandatoryTerm, Parts, PassError, PassOut, Seal, Segment,
-    SlotLimit, Slots, Tap, Tier,
+    Capability, Coverage, Engine, Identity, Kind, Lifetime, Limits, MandatoryTerm, Parts, PassError, PassOut, Seal,
+    Segment, SlotLimit, Slots, Tap, Tier,
 };
 
 /// The name of the engine in the profile.
@@ -66,6 +66,7 @@ pub struct WithContextTerm {
     vocab: usize,
     grain: Option<u64>,
     seal: bool,
+    close: bool,
 }
 
 impl Engine for WithContextTerm {
@@ -76,6 +77,9 @@ impl Engine for WithContextTerm {
     fn limits(&self) -> Limits {
         let mut limits = self.inner.limits();
         limits.checkpoint_grain = self.grain;
+        if self.close {
+            limits.capabilities.push(Capability::Close);
+        }
         if self.bytes > 0 {
             limits.memory.mandatory.push(MandatoryTerm {
                 name: "context".to_owned(),
@@ -140,6 +144,8 @@ pub struct TermFactory {
     pub speaking: bool,
     /// False for an engine with no `seal` capability: a seal changes no bits.
     pub seal: bool,
+    /// True for an engine that declares `close`, so that it can be on demand (spec 3.3a).
+    pub close: bool,
 }
 
 impl TermFactory {
@@ -155,6 +161,7 @@ impl TermFactory {
             interval_copies: 0,
             speaking: false,
             seal: true,
+            close: false,
         }
     }
 
@@ -174,6 +181,7 @@ impl TermFactory {
             vocab: self.vocab.unwrap_or(0),
             grain: self.grain,
             seal: self.seal,
+            close: self.close,
         }
     }
 }

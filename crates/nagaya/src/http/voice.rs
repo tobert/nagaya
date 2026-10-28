@@ -496,7 +496,7 @@ pub fn route(council: &Council, name: &str) -> Option<(Arc<SpeechService>, Serve
     let service = council
         .speech_service(name)
         .filter(|service| service.serves_contexts())?;
-    let model = served_model(&service, council.model_status());
+    let model = served_model(&service, council.model_status(service.engine_state()));
     Some((service, model))
 }
 

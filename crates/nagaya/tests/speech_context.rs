@@ -362,6 +362,15 @@ impl Fixture {
 
     /// A fixture whose host budget is `host` bytes: the ledger charges the copy of each snapshot there.
     fn with_host(host: u64) -> Self {
+        Self::with(host, Residency::Resident)
+    }
+
+    /// A fixture whose speech engine is on demand, so it starts unloaded (spec 3.3a).
+    fn on_demand() -> Self {
+        Self::with(1 << 20, Residency::OnDemand)
+    }
+
+    fn with(host: u64, residency: Residency) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let log: Log = Arc::default();
         let hold = Arc::new(AtomicBool::new(false));
@@ -380,7 +389,7 @@ impl Fixture {
                 family: toml::Table::new(),
                 share: 1,
                 pin_identity: false,
-                residency: Residency::Resident,
+                residency,
                 idle_unload_s: None,
             }],
             budgets: vec![
@@ -1017,4 +1026,41 @@ fn temperature_0_samples_greedily_and_top_k_and_temperature_reach_the_engine() {
         refused(&council, none),
         (StatusCode::BAD_REQUEST, "sample.top_k".to_owned())
     );
+}
+
+#[test]
+fn an_unloaded_speech_model_is_unloaded_and_its_generation_is_a_503() {
+    let fixture = Fixture::on_demand();
+    let council = fixture.council();
+    let status = |council: &Arc<Council>| {
+        let (_, _, _, bytes) = send(council, "GET", "/council/v2/identity", None);
+        let v = json(&bytes);
+        let model = v["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["model"] == MODEL)
+            .cloned();
+        model.expect("the speech model")["status"].clone()
+    };
+    assert_eq!(status(&council), json!("unloaded"));
+    let (code, body) = generate(&council, messages(&[json!({"role": "user", "content": "hello"})]));
+    assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["error"]["type"], json!("model_unavailable"), "{body}");
+    assert_eq!(body["error"]["model"], json!(MODEL), "{body}");
+    assert_eq!(body["error"]["status"], json!("unloaded"), "{body}");
+    assert!(fixture.take_log().is_empty(), "nothing ran");
+
+    fixture.process.load("voice").unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while fixture.process.ports().engine_state("voice") != Some(nagaya::notify::EngineState::Ready) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the speech engine did not load in 5 s"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(status(&council), json!("ready"));
+    let (code, body) = generate(&council, messages(&[json!({"role": "user", "content": "hello"})]));
+    assert_eq!(code, StatusCode::OK, "{body}");
 }

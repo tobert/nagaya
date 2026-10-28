@@ -84,7 +84,7 @@ pub(crate) fn model_status(state: nagaya_telemetry::EngineState) -> ModelStatus 
     }
 }
 
-/// The status of the served models of the process. Every served model has the status of the process.
+/// The status of the process: it takes requests, or it drains (spec 10.3 step 1).
 const READY: u8 = 0;
 const DRAINING: u8 = 1;
 
@@ -154,9 +154,13 @@ impl Council {
         &self.pending
     }
 
-    /// The status of each served model: the status of the process.
-    pub(crate) fn model_status(&self) -> ModelStatus {
-        self.status()
+    /// The status of a served model whose engine has this state. A drain makes every model `draining` (spec 3.3,
+    /// 10.3 step 1).
+    pub(crate) fn model_status(&self, state: nagaya_telemetry::EngineState) -> ModelStatus {
+        match self.status.load(Ordering::SeqCst) {
+            READY => model_status(state),
+            _ => ModelStatus::Draining,
+        }
     }
 
     /// The speech service of a served speech model.
@@ -199,13 +203,6 @@ impl Council {
         }
     }
 
-    fn status(&self) -> ModelStatus {
-        match self.status.load(Ordering::SeqCst) {
-            READY => ModelStatus::Ready,
-            _ => ModelStatus::Draining,
-        }
-    }
-
     /// The identity of the server (gogi "Identity, limits, capabilities").
     pub fn identity(&self) -> ServerIdentity {
         // A speech service with a code book serves speech contexts, so it is a served model too (spec 11.8a).
@@ -217,7 +214,7 @@ impl Council {
                 self.speech
                     .iter()
                     .filter(|service| service.serves_contexts())
-                    .map(|service| voice::served_model(service, self.status())),
+                    .map(|service| voice::served_model(service, self.model_status(service.engine_state()))),
             )
             .collect();
         let defaults = crate::council::ServiceConfig::new("", "");
@@ -258,7 +255,7 @@ impl Council {
         ServedModel {
             model: identity.model,
             aliases: served.aliases.clone(),
-            status: self.status(),
+            status: self.model_status(service.engine_state()),
             weight_hash: identity.weight_hash,
             tokenizer_hash: identity.tokenizer_hash,
             template: identity.template,
@@ -316,9 +313,30 @@ impl Council {
     }
 
     /// The failure of a service error. An internal error stops the process (spec 8.5).
+    ///
+    /// A job whose engine was not ready names only its engine. The 503 names the served model of that engine and its
+    /// status (gogi "Errors").
     fn failed(&self, error: ServiceError) -> Failure {
         if let ServiceError::Internal(message) = &error {
             self.fail(message);
+        }
+        if let ServiceError::Unavailable { engine, state } = &error {
+            let text = self
+                .models
+                .iter()
+                .filter(|served| &served.service.config().engine == engine)
+                .map(|served| self.served_model(served))
+                .next();
+            let model = text.or_else(|| {
+                self.speech
+                    .iter()
+                    .find(|service| &service.config().engine == engine)
+                    .map(|service| voice::served_model(service, self.model_status(*state)))
+            });
+            if let Some(mut model) = model {
+                model.status = self.model_status(*state);
+                return Failure::unavailable(&model);
+            }
         }
         Failure::from(error)
     }
