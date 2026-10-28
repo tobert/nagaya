@@ -1381,7 +1381,7 @@ fn swap_beside(
     span.record("load_ms", opening.elapsed().as_millis() as u64);
     drop(beat);
     tracing::info!(
-        "swap beside the stages of group {group}: unloaded [{}], loaded [{}] in {} ms",
+        "swap on the threads of group {group}: unloaded [{}], loaded [{}] in {} ms",
         unloaded.join(", "),
         loading.join(", "),
         started.elapsed().as_millis()
