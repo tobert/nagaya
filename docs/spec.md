@@ -3002,12 +3002,12 @@ Decided 2026-10-28 (Amy, by interview):
 
 - The last `user` message is the prompt. The negative prompt is `output.options.negative`.
 - The output is `image/png` with an A1111 `parameters` text chunk, so A1111 and Civitai tools read the settings.
-- The engine makes the noise from `sample.seed` with its own random stream on the card. A seed from another tool does
-  not give its image. Reason: Amy chose the simpler stream.
-- **Proposed** (senpai, Claude Opus 5.5, 2026-10-28): the engine makes its stream and runs its sampler on the host,
-  not on the card. The stream is still the engine's own (`noise.rs` of `nagaya-mk-sdxl-bmg`). Reason: the latents of
-  4 images of 1.5 MP are about 6 MB, so a step reads and writes them cheaply. On the host, the sampler follows the f32
-  math of diffusers step by step, and its test needs no card. The choice of 2026-10-28 was the stream, not its place.
+- The engine makes the noise from `sample.seed` with its own random stream. A seed from another tool does not give
+  its image. Reason: Amy chose the simpler stream.
+- The engine makes its stream and runs its sampler on the host, not on the card (`noise.rs` and `sampler.rs` of
+  `nagaya-mk-sdxl-bmg`). Decided 2026-10-28 (Amy, by interview). Reason: the latents of 4 images of 1.5 MP are about
+  6 MB, so a step reads and writes them cheaply. On the host, the sampler follows the f32 math of diffusers step by
+  step, and its test needs no card.
 - A preview is a stream event, `preview`, that names a small PNG object. The server caches it and does not keep it.
 - Width and height are multiples of 64 from 512 to 2048, with at most 1,572,864 pixels. The default is 1024 by 1024.
 - The quanta are one `embed` for the text encoders, one `step` for each step, and one `step` for the VAE decode. The
@@ -3052,15 +3052,12 @@ interview). Reason: the rules of 11.9 need names, ranges and errors before the f
   one eighth of the size of the image. The store caches it as any object, and no keep holds it.
 - The A1111 chunk is the text `parameters`, in A1111's form: the prompt, then `Negative prompt: ...`, then `Steps,
   Sampler, CFG scale, Seed, Size, Model, Clip skip` on one line. The model is the served model name.
-- **Proposed** (senpai, Claude Opus 5.5, 2026-10-28): three changes to the rules above, so that the gogi suite
-  passes. The suite at gogi `33fbe40` checks every served model with media outputs in the same way.
+- Two changes to the rules above, so that the gogi suite passes. Decided 2026-10-28 (Amy, by interview).
   - A `system` message is not a 400. The server does not render it, as it does not render the other messages before
     the last `user` message. Reason: the suite opens the context of its output check with a `system` message
-    (gogi-conformance `checks/mod.rs:179`).
+    (gogi-conformance `checks/mod.rs:179` at gogi `33fbe40`).
   - `sample.temperature` is not a 400, and it has no effect. `top_p`, `top_k` and `min_p` stay a 400. Reason: the
     suite sends `temperature` 0 with its output check (`checks/outputs.rs:36`).
-  - `snapshot_bytes` is 1, not 0. Reason: the suite asks for a positive `snapshot_bytes` from a model with no text
-    replies (`checks/mod.rs:225`). gogi's doc does not say so, so Amy can also choose to change gogi instead.
 
 **The served image model.** Proposed by senpai (Claude Opus 5.5), 2026-10-28, and Decided 2026-10-28 (Amy, by
 interview).
@@ -3068,13 +3065,14 @@ interview).
 - Identity lists it with `media.outputs` of `image/png`, no inputs, `media.text_replies: false`, and the capability
   `generate`. A build, a decision or a raw read that names it is a 400 that names `model`.
 - Its `context_tokens` is the tokens of the prompt that the family takes: 3 chunks of 75 tokens. Its `snapshot_bytes`
-  is 0, because it holds no state.
+  is 0, because it holds no state. The gogi suite at `33fbe40` asked for a positive value. Amy chose to change the
+  check of gogi, and to keep 0 (2026-10-28, by interview).
 - Its `weight_hash` and `tokenizer_hash` are the engine's after its first open since the start, and empty before
   (3.3a "Council models on demand").
-- **Proposed** (senpai, Claude Opus 5.5, 2026-10-28): the name of the served image model is the name of its engine
-  in the profile, such as `sdxl-0`. The A1111 chunk names it too. Reason: 11.9 gives each engine its own name, and
+- The name of the served image model is the name of its engine in the profile, such as `sdxl-0`. Decided
+  2026-10-28 (Amy, by interview). The A1111 chunk names it too. Reason: 11.9 gives each engine its own name, and
   the checkpoint name is the same for two engines of one checkpoint. The profile already keeps engine names apart.
-- **Proposed** (senpai, Claude Opus 5.5, 2026-10-28): the engine kind is `mk-sdxl-bmg`, in a build with `xe`. Its
+- The engine kind is `mk-sdxl-bmg`, in a build with `xe`. Decided 2026-10-28 (Amy, by interview). Its
   config and `[engines.family]` take the key `model_dir`, and read `SDXL_MODEL_DIR` with no key, as `gemma4` does.
   `[engines.family]` also takes `clip_skip`, 1 or 2, with the default 1. Reason: these follow the rules of the other
   engine kinds of b70host.
