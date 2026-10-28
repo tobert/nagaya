@@ -3052,6 +3052,15 @@ interview). Reason: the rules of 11.9 need names, ranges and errors before the f
   one eighth of the size of the image. The store caches it as any object, and no keep holds it.
 - The A1111 chunk is the text `parameters`, in A1111's form: the prompt, then `Negative prompt: ...`, then `Steps,
   Sampler, CFG scale, Seed, Size, Model, Clip skip` on one line. The model is the served model name.
+- **Proposed** (senpai, Claude Opus 5.5, 2026-10-28): three changes to the rules above, so that the gogi suite
+  passes. The suite at gogi `33fbe40` checks every served model with media outputs in the same way.
+  - A `system` message is not a 400. The server does not render it, as it does not render the other messages before
+    the last `user` message. Reason: the suite opens the context of its output check with a `system` message
+    (gogi-conformance `checks/mod.rs:179`).
+  - `sample.temperature` is not a 400, and it has no effect. `top_p`, `top_k` and `min_p` stay a 400. Reason: the
+    suite sends `temperature` 0 with its output check (`checks/outputs.rs:36`).
+  - `snapshot_bytes` is 1, not 0. Reason: the suite asks for a positive `snapshot_bytes` from a model with no text
+    replies (`checks/mod.rs:225`). gogi's doc does not say so, so Amy can also choose to change gogi instead.
 
 **The served image model.** Proposed by senpai (Claude Opus 5.5), 2026-10-28, and Decided 2026-10-28 (Amy, by
 interview).
