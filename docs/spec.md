@@ -519,7 +519,16 @@ interview), with the explicit loads of 3.3. Reason: these rules make each swap o
   does not fit, the group unloads loaded engines of its own group, the last in profile order first, until it fits.
   Engines of other groups never unload for a swap.
 - **The wait before an unload.** An engine that must unload takes no new job. Its jobs that the group holds run to
-  their end, and new jobs for it wait for its next load. Jobs of engines that stay loaded go on.
+  their end. Jobs of engines that stay loaded go on.
+
+**A job for an engine that is not ready.** Proposed by senpai (Claude Opus 5.5), 2026-10-28. Reason: the explicit
+loads of 3.3 remove the wait for a load. The text of 2026-10-24 let a job wait for the next load of its engine.
+
+- The group thread decides. A job for an engine that is not `ready` ends at once, and nothing runs. Its request gets a
+  503 `model_unavailable`.
+- An engine is not ready when it is unloaded, or when a planned swap loads or unloads it.
+- A request checks the state of its served model before it charges a context (3.3). The check of the group catches a
+  swap that the group planned after that check.
 
 **The steps of a swap.** Proposed by senpai (Claude Opus 5.5), 2026-10-24, and Decided 2026-10-27 (Amy, by interview).
 
@@ -575,6 +584,8 @@ decides their shape.
 - An unknown name is a 404 `not_found` that names `name`. A resident engine, or an engine without `close`, is a 409 that
   names `name`. A resident engine leaves only by a profile `PUT`.
 - A load does not change the profile. The next start of the process loads the resident engines only.
+- A load or an unload that arrives while the group has a planned swap waits for the end of that swap. Then the group
+  plans it.
 - The status feed and the identity show each state: `loading`, `ready` and `unloaded` (9.4, 11.1).
 
 **Open:** Do the GPU queues of an idle engine slow the other engines on its device? mk has a note that its idle
