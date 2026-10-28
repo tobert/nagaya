@@ -103,26 +103,6 @@ pub fn plan(table: &toml::Table, devices: &[GroupDevice]) -> Result<Limits, Plan
 pub struct Family(pub Qwen3TtsFamily);
 
 impl SpeechFamily for Family {
-    fn prompt(&self, text: &str, instructions: &str, language: &str) -> Result<Vec<PromptPair>, SpeechError> {
-        let positions = self
-            .0
-            .prompt(text, instructions, language)
-            .map_err(|error| match error {
-                FamilyError::Language { .. } => SpeechError::Invalid {
-                    param: "language",
-                    message: error.to_string(),
-                },
-                other => SpeechError::Failed(other.to_string()),
-            })?;
-        Ok(positions
-            .into_iter()
-            .map(|p| PromptPair {
-                text: p.text,
-                codec: p.codec,
-            })
-            .collect())
-    }
-
     fn context(
         &self,
         voice: Option<&str>,

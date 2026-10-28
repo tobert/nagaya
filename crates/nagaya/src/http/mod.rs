@@ -10,7 +10,6 @@ mod loads;
 mod objects;
 pub mod pending;
 mod routes;
-pub mod speech;
 mod stream;
 pub mod voice;
 
@@ -135,7 +134,7 @@ impl Council {
         })
     }
 
-    /// Serve these speech services on `POST /v1/audio/speech` (spec 11.8).
+    /// Serve these speech services as council served models (spec 11.8a).
     pub fn with_speech(mut self, services: Vec<crate::speech::SpeechService>) -> Self {
         self.speech = services.into_iter().map(Arc::new).collect();
         self

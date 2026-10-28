@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use nagaya::admission::{GroupDevice, Registry};
 use nagaya::qwen3tts::{Family, KIND, config, plan};
-use nagaya::speech::{SpeechError, SpeechFamily};
+use nagaya::speech::{ContextItem, SpeechError, SpeechFamily};
 use nagaya_abi::{Capability, Tier};
 use nagaya_text_qwen3tts::Qwen3TtsFamily;
 
@@ -92,12 +92,11 @@ fn the_plan_gives_speech_on_one_card_with_no_card() {
 fn the_family_names_the_language_param_of_an_unknown_language() {
     let Some(dir) = checkpoint() else { return };
     let family = Family(Qwen3TtsFamily::from_dir(&dir).unwrap());
-    let prompt = family
-        .prompt("The nagaya is awake.", "A calm voice.", "english")
-        .unwrap();
-    assert!(prompt.len() > 10);
-    match family.prompt("Hi.", "A calm voice.", "klingon") {
-        Err(SpeechError::Invalid { param, .. }) => assert_eq!(param, "language"),
+    let items = [ContextItem::Line("The nagaya is awake.".to_owned())];
+    let rendering = family.context(Some("A calm voice."), &items, "english").unwrap();
+    assert!(rendering.positions.len() > 10);
+    match family.context(Some("A calm voice."), &items, "klingon") {
+        Err(SpeechError::Invalid { param, .. }) => assert_eq!(param, "output.options.language"),
         other => panic!("an unknown language gave {other:?}"),
     }
 }

@@ -300,16 +300,6 @@ fn chars(text: &str) -> impl Iterator<Item = SpeechPosition> + '_ {
 }
 
 impl SpeechFamily for Letters {
-    fn prompt(&self, text: &str, _instructions: &str, _language: &str) -> Result<Vec<PromptPair>, SpeechError> {
-        Ok(text
-            .chars()
-            .map(|c| PromptPair {
-                text: Some(c as u32),
-                codec: None,
-            })
-            .collect())
-    }
-
     fn context(
         &self,
         voice: Option<&str>,
