@@ -210,7 +210,11 @@ fn the_b70host_config_binds_mkviolets_address_and_ignores_the_igpu() {
 #[test]
 fn the_b70host_profile_names_the_gemma4_engine_on_both_cards() {
     let profile = b70host_profile();
-    assert_eq!(profile.engines.len(), 2, "gemma, and the speech engine on demand");
+    assert_eq!(
+        profile.engines.len(),
+        4,
+        "gemma, and the speech engine and an image engine on each card on demand"
+    );
     let engine = &profile.engines[0];
     assert_eq!(engine.residency, Residency::Resident);
     assert_eq!(engine.kind, nagaya::gemma4::KIND);
@@ -290,6 +294,31 @@ impl Factory for SpeechPlanOnly {
     }
 }
 
+/// The plan of the SDXL engine, from the headers of its checkpoint and no card.
+struct ImagePlanOnly;
+
+impl Factory for ImagePlanOnly {
+    fn plan(&self, config: &toml::Table, devices: &[GroupDevice]) -> Result<Limits, PlanError> {
+        nagaya::sdxl::plan(config, devices)
+    }
+
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
+        panic!("a deploy test opens no engine")
+    }
+}
+
+/// True when the SDXL checkpoint is named, as the unit names it. Without it, the test skips.
+fn image_checkpoint() -> bool {
+    if std::env::var_os(nagaya::sdxl::MODEL_VARIABLE).is_some() {
+        return true;
+    }
+    if std::env::var("NAGAYA_REQUIRE_MODELS").is_ok_and(|v| v == "1") {
+        panic!("SDXL_MODEL_DIR is not set and NAGAYA_REQUIRE_MODELS is set; name the SDXL checkpoint");
+    }
+    eprintln!("skipped: SDXL_MODEL_DIR is not set; set it to the SDXL base 1.0 checkpoint directory");
+    false
+}
+
 /// True when the Qwen3-TTS checkpoint is named, as the unit names it. Without it, the test skips.
 fn speech_checkpoint() -> bool {
     if std::env::var_os(nagaya::qwen3tts::MODEL_VARIABLE).is_some() {
@@ -357,9 +386,34 @@ fn the_b70host_profile_names_the_speech_engine_on_demand_on_card_zero() {
 }
 
 #[test]
+fn the_b70host_profile_names_an_image_engine_on_demand_on_each_card() {
+    // Amy, 2026-10-27: "one model per card", and each engine is its own served model (spec 11.9).
+    let profile = b70host_profile();
+    assert_eq!(
+        profile.engines.len(),
+        4,
+        "the two image engines follow gemma and the speech engine"
+    );
+    for (engine, (name, device)) in profile.engines[2..].iter().zip([("sdxl-0", 0), ("sdxl-1", 1)]) {
+        assert_eq!((engine.name.as_str(), engine.kind.as_str()), (name, nagaya::sdxl::KIND));
+        assert_eq!(engine.devices, vec![device]);
+        assert_eq!(engine.residency, Residency::OnDemand);
+        assert_eq!(
+            engine.idle_unload_s,
+            Some(600),
+            "{name}: an image session keeps its engine for 10 min"
+        );
+        assert!(
+            engine.config.is_empty() && engine.family.is_empty(),
+            "{name}: the checkpoint comes from SDXL_MODEL_DIR in the unit, and clip_skip is 1"
+        );
+    }
+}
+
+#[test]
 fn the_b70host_profile_admits_on_the_probed_b70host() {
     // The start path up to the open: the probe, the ignored iGPU, the plan and the ledger.
-    if checkpoint().is_none() || !speech_checkpoint() {
+    if checkpoint().is_none() || !speech_checkpoint() || !image_checkpoint() {
         return;
     }
     let config = b70host_bootstrap();
@@ -373,8 +427,12 @@ fn the_b70host_profile_admits_on_the_probed_b70host() {
     let mut registry = Registry::new();
     registry.register(nagaya::gemma4::KIND, Box::new(PlanOnly));
     registry.register(nagaya::qwen3tts::KIND, Box::new(SpeechPlanOnly));
+    registry.register(nagaya::sdxl::KIND, Box::new(ImagePlanOnly));
     let admitted = admit(&b70host_profile(), &registry, &inventory, &mut Ledger::new()).expect("b70host admits");
-    assert_eq!(admitted.engines.len(), 2);
+    assert_eq!(admitted.engines.len(), 4);
+    for engine in &admitted.engines[2..] {
+        assert!(engine.limits.capabilities.contains(&nagaya_abi::Capability::Image));
+    }
     assert!(
         admitted.engines[1]
             .limits
@@ -409,6 +467,10 @@ fn the_b70host_unit_reads_its_config_and_the_checkpoint_and_hides_no_card() {
     assert!(environment.contains(
         &"QWEN3TTS_MODEL_DIR=%h/.cache/huggingface/hub/models--Qwen--Qwen3-TTS-12Hz-1.7B-VoiceDesign/snapshots/\
           5ecdb67327fd37bb2e042aab12ff7391903235d3"
+    ));
+    assert!(environment.contains(
+        &"SDXL_MODEL_DIR=%h/.cache/huggingface/hub/models--stabilityai--stable-diffusion-xl-base-1.0/snapshots/\
+          462165984030d82259a11f4367a4eed129e94a7b"
     ));
     // The engine finds its cards by PCI address, so no Level Zero variable may hide one.
     assert!(
