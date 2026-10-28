@@ -3062,13 +3062,11 @@ interview).
 **The family of SDXL.** Proposed by senpai (Claude Opus 5.5), 2026-10-28, and Decided 2026-10-28 (Amy, by interview).
 The crate `nagaya-text-sdxl` holds it (11.3).
 
-- The CLIP tokenizer of both text encoders, from the files of the checkpoint. Both encoders use the same ids, with one
-  difference below.
-- **Proposed** (senpai, Claude Opus 5.5, 2026-10-28): the family gives both encoders the ids of `tokenizer`. It pads
-  the first encoder with the end id 49407 and the second with 0, as A1111 does. Reason: in diffusers, `tokenizer_2`
-  has the pad token `!`, so it reads each `!` of a prompt as id 0. Thus `!!!` is 1 token for one encoder and 3 for
-  the other, and the chunks of the two encoders would not align. The oracle prompts have no `!`
-  (`tests/fixtures/ids.json` of `nagaya-text-sdxl` shows the difference).
+- The CLIP tokenizer of the checkpoint, from `tokenizer/vocab.json` and `tokenizer/merges.txt`. Both encoders take
+  its ids. The first encoder pads with the end id 49407, and the second pads with 0, as A1111 does. Decided
+  2026-10-28 (Amy). Reason: in diffusers, `tokenizer_2` has the pad token `!`, so it reads each `!` of a prompt as id
+  0. Thus `!!!` would be 1 token for one encoder and 3 for the other, and the chunks would not align. The oracle
+  prompts have no `!` (`tests/fixtures/ids.json` of `nagaya-text-sdxl` shows the difference).
 - The A1111 prompt: `(text)` multiplies the weight of its tokens by 1.1, `[text]` divides it by 1.1, and `(text:w)`
   sets it to `w`. `\(` and `\)` are plain brackets. `BREAK` starts a new chunk.
 - A chunk is 75 tokens with a start token and an end token. A longer prompt makes up to 3 chunks, and the encoder
