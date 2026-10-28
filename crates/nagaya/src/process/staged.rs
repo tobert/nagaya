@@ -64,7 +64,7 @@ enum StageWork {
         count: usize,
         job: Box<GroupJob>,
         fd_store: Option<FdStore>,
-        reply: Sender<(Box<GroupJob>, Result<OpenedEngine, String>)>,
+        reply: Sender<(Box<GroupJob>, Result<OpenedEngine, OpenFailure>)>,
     },
     /// Run one quantum of a job of an engine on this thread. The body comes back in [`HostedDone`].
     Run {
@@ -81,6 +81,9 @@ enum StageWork {
         reply: Sender<ParkReport>,
     },
 }
+
+/// Why an open on a stage or device thread failed: the kind, which decides the exit code (spec 10.4), and the message.
+type OpenFailure = (super::OpenErrorKind, String);
 
 /// The end of a quantum of an engine that a stage thread holds.
 pub(crate) struct HostedDone {
@@ -257,7 +260,7 @@ fn stage_thread(
                         hosted[index] = engine;
                         Ok(opened)
                     }
-                    Err((_, message)) => Err(message),
+                    Err(failure) => Err(failure),
                 };
                 if reply.send((job, answer)).is_err() {
                     return;
@@ -557,6 +560,18 @@ struct RunningStage {
     span: Option<Span>,
 }
 
+/// Where the engine of a job is, which decides where its quanta run.
+#[derive(Clone, Copy, Debug)]
+enum Place {
+    /// The engine with stages: its passes run stage by stage.
+    Stages,
+    /// An engine on the stage or device thread of this device.
+    On(Device),
+    /// Another engine on the group thread, such as an engine of more devices with no stages. Its quanta hold every
+    /// device.
+    Group,
+}
+
 /// The jobs of a group with stages, on its scheduler.
 struct StagedJobs {
     group: u32,
@@ -583,6 +598,9 @@ struct StagedJobs {
     engine_of: BTreeMap<JobId, usize>,
     /// The device of each job of an engine on a stage thread (engine-abi "How a group loads both").
     on: BTreeMap<JobId, Device>,
+    /// The jobs of an engine on the group thread that is not the engine with stages. Each of their quanta holds
+    /// every device and runs there, where the engine is.
+    whole: std::collections::BTreeSet<JobId>,
     /// The quanta of those jobs that run on a stage thread. Their bodies are there.
     running_on: BTreeMap<JobId, RunningStage>,
 }
@@ -626,6 +644,7 @@ impl StagedJobs {
             next_id: 1,
             engine_of: BTreeMap::new(),
             on: BTreeMap::new(),
+            whole: std::collections::BTreeSet::new(),
             running_on: BTreeMap::new(),
         }
     }
@@ -657,26 +676,29 @@ impl StagedJobs {
         self.started.extend(started);
     }
 
-    /// Add a job. A job of an engine on a stage thread names the device of that thread, and each of its quanta holds
-    /// only that device.
+    /// Add a job of the engine at `place`. A job of an engine on a stage thread holds only the device of that thread
+    /// with each quantum.
     fn add(
         &mut self,
         spec: JobSpec,
         parent: Span,
-        on: Option<Device>,
+        place: Place,
         engines: &mut [Box<dyn Engine>],
         threads: &StageThreads,
     ) {
         let id = self.next_id;
         self.next_id += 1;
         let now_ms = self.now_ms();
-        let item = match on {
-            Some(device) => {
+        match place {
+            Place::Stages => {}
+            Place::On(device) => {
                 self.on.insert(id, device);
-                Item::On(spec.first, device)
             }
-            None => spec.body.item(spec.first),
-        };
+            Place::Group => {
+                self.whole.insert(id);
+            }
+        }
+        let item = self.item(id, spec.first, spec.body.as_ref());
         self.engine_of.insert(id, spec.engine);
         let mut job = StageJob::new(id, spec.class, now_ms, [item]);
         job.priority = spec.priority;
@@ -1080,16 +1102,23 @@ impl StagedJobs {
         };
     }
 
+    /// The item of a quantum of `kind` of a job, by the place of its engine.
+    fn item(&self, job: JobId, kind: Kind, body: &dyn JobBody) -> Item {
+        match self.on.get(&job) {
+            Some(device) => Item::On(kind, *device),
+            None if self.whole.contains(&job) => Item::Whole(kind),
+            None => body.item(kind),
+        }
+    }
+
     /// Apply what a body reported to the scheduler, and give the end of the quantum.
     fn apply(&mut self, job: JobId, ran: Ran) -> Completion {
         match ran {
             Ran::Done => Completion::Done,
+            Ran::More(kinds) | Ran::First(kinds) if kinds.is_empty() => Completion::Done,
             Ran::More(kinds) => {
                 let body = self.bodies.get(&job).expect("a body that adds quanta lives");
-                let items: Vec<Item> = match self.on.get(&job) {
-                    Some(device) => kinds.iter().map(|kind| Item::On(*kind, *device)).collect(),
-                    None => kinds.iter().map(|kind| body.item(*kind)).collect(),
-                };
+                let items: Vec<Item> = kinds.iter().map(|kind| self.item(job, *kind, body.as_ref())).collect();
                 self.scheduler
                     .as_mut()
                     .expect("the scheduler is in place between steps")
@@ -1097,7 +1126,17 @@ impl StagedJobs {
                     .expect("a job that ran a quantum is running");
                 Completion::Done
             }
-            Ran::First(_) => panic!("an engine with stages declares no checkpoint grain, so no job makes a copy first"),
+            // A copy first, such as an interval copy (spec 6.13), on the place of the job's engine.
+            Ran::First(kinds) => {
+                let body = self.bodies.get(&job).expect("a body that adds quanta lives");
+                let items: Vec<Item> = kinds.iter().map(|kind| self.item(job, *kind, body.as_ref())).collect();
+                self.scheduler
+                    .as_mut()
+                    .expect("the scheduler is in place between steps")
+                    .prepend_items(job, &items)
+                    .expect("a job that ran a quantum is running");
+                Completion::Done
+            }
             Ran::Failed => Completion::Failed,
             Ran::Cancelled => {
                 // The quantum ran to its end. The cancel takes effect when it completes (spec 5.9).
@@ -1136,6 +1175,7 @@ impl StagedJobs {
             self.order.remove(&id);
             self.engine_of.remove(&id);
             self.on.remove(&id);
+            self.whole.remove(&id);
             if let Some(mut body) = self.bodies.remove(&id) {
                 body.ended(state);
             }
@@ -1144,7 +1184,10 @@ impl StagedJobs {
 
     /// Cancel every job (spec 10.3, 5.9). The stage quanta that run go to their end. It gives the number of jobs.
     fn cancel_all(&mut self) -> usize {
-        let ids: Vec<JobId> = self.bodies.keys().copied().collect();
+        // A job whose quantum runs on a stage or device thread has its body there, so it is in `running_on`.
+        let mut ids: Vec<JobId> = self.bodies.keys().chain(self.running_on.keys()).copied().collect();
+        ids.sort_unstable();
+        ids.dedup();
         self.bodies.clear();
         self.requests.clear();
         self.ready_since.clear();
@@ -1244,7 +1287,7 @@ fn open_hosted(
     engines: &mut [Box<dyn Engine>],
     threads: &StageThreads,
     links: &GroupLinks,
-) -> Result<OpenedEngine, String> {
+) -> Result<OpenedEngine, OpenFailure> {
     let engine = members[member].name().to_owned();
     links.states.record(&engine, EngineState::Loading);
     let shell = members[member].job.shell();
@@ -1331,7 +1374,7 @@ fn swap_beside(
         let stage = stages[&member];
         let engine = members[member].name().to_owned();
         let opened = open_hosted(member, stage, members, engines, threads, links)
-            .unwrap_or_else(|message| panic!("the swap cannot open engine `{engine}`: {message}"));
+            .unwrap_or_else(|(_, message)| panic!("the swap cannot open engine `{engine}`: {message}"));
         hosted.insert(member, stage);
         loaded.push(opened);
     }
@@ -1459,12 +1502,12 @@ pub(super) fn serve(
                         hosted.insert(member, stage);
                         opened.push(engine);
                     }
-                    Err(message) => {
+                    Err((kind, message)) => {
                         drop(beat);
                         let _ = links.events.send(Event::OpenFailed {
                             group,
                             engine: names[member].clone(),
-                            kind: super::OpenErrorKind::Other,
+                            kind,
                             message,
                         });
                         return end_threads(group, index, members, engines, hosted, threads, links, Exit::Stop);
@@ -1511,8 +1554,12 @@ pub(super) fn serve(
                     // An engine on a stage or device thread holds its device. Another engine, such as an engine of
                     // more than one device that loaded on the group thread, holds every device.
                     Some(EngineState::Ready) => {
-                        let on = hosted.get(&spec.engine).map(|stage| devices[*stage]);
-                        jobs.add(spec, parent, on, engines, &threads);
+                        let place = match hosted.get(&spec.engine) {
+                            Some(stage) => Place::On(devices[*stage]),
+                            None if Some(spec.engine) == index => Place::Stages,
+                            None => Place::Group,
+                        };
+                        jobs.add(spec, parent, place, engines, &threads);
                     }
                     state => super::refuse(spec, &engine, state),
                 }

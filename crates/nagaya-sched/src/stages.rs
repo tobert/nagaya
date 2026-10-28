@@ -358,6 +358,24 @@ impl StageScheduler {
         Ok(())
     }
 
+    /// Put items first in a job, in their order, while a quantum of it runs: an interval copy, for example (spec
+    /// 6.13). A refusal changes nothing.
+    pub fn prepend_items(&mut self, job: JobId, items: &[Item]) -> Result<(), StageError> {
+        self.stray_device(job, items)?;
+        let held = self
+            .jobs
+            .iter_mut()
+            .find(|candidate| candidate.id == job)
+            .ok_or(StageError::UnknownJob(job))?;
+        if held.state != JobState::Running {
+            return Err(StageError::AppendToIdleJob(job, held.state));
+        }
+        for item in items.iter().rev() {
+            held.items.push_front(*item);
+        }
+        Ok(())
+    }
+
     fn stages(&self) -> usize {
         self.engine.devices.len()
     }

@@ -8,14 +8,14 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use nagaya::admission::{Factory, GroupDevice, OpenError, PlanError, Registry};
+use nagaya::admission::{Factory, GroupDevice, OpenError, OpenErrorKind, PlanError, Registry};
 use nagaya::inventory::{Device, Inventory};
 use nagaya::jobs::{JobBody, JobSpec, Ran};
-use nagaya::process::{Event, Process, Start};
+use nagaya::process::{Event, Process, Start, WaitError};
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, Residency, StoreSpec, TierSpec};
 use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{Capability, Engine, Identity, Kind, Limits, PassError, PassOut, Segment, Stages, Tap, Tier};
-use nagaya_sched::Class;
+use nagaya_sched::{Class, Item};
 
 type Log = Arc<Mutex<Vec<String>>>;
 
@@ -71,16 +71,54 @@ impl Engine for Closing {
     }
 }
 
+/// An engine of two devices with no stages: the plain fake, with its device terms on each card.
+struct Wide(FakeAlways);
+
+impl Engine for Wide {
+    fn identity(&self) -> Identity {
+        self.0.identity()
+    }
+
+    fn limits(&self) -> Limits {
+        let mut limits = self.0.limits();
+        let second: Vec<_> = limits
+            .memory
+            .mandatory
+            .iter()
+            .filter(|term| term.tier == Tier::Device(0))
+            .map(|term| {
+                let mut term = term.clone();
+                term.tier = Tier::Device(1);
+                term.name = format!("{}-1", term.name);
+                term
+            })
+            .collect();
+        limits.memory.mandatory.extend(second);
+        limits.devices = vec![0, 1];
+        limits
+    }
+
+    fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
+        self.0.pass(segments, taps)
+    }
+
+    fn last_error(&self) -> Option<String> {
+        self.0.last_error()
+    }
+}
+
 fn fake(name: &str) -> Box<dyn Engine + Send> {
     match name {
         "chat" => Box::new(feed_support::engine(2)),
         "left" | "right" => Box::new(FakeAlways::new()),
+        "wide" => Box::new(Wide(FakeAlways::new())),
         other => panic!("no fake named {other}"),
     }
 }
 
-/// The factory of the fakes. It writes each open with the name of the thread that opens.
-struct Fakes(Log);
+/// The factory of the fakes. It writes each open with the name of the thread that opens. An open of `broken` fails
+/// with this kind.
+struct Fakes(Log, Option<OpenErrorKind>);
 
 impl Factory for Fakes {
     fn plan(&self, config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
@@ -91,6 +129,12 @@ impl Factory for Fakes {
         let name = config["name"].as_str().unwrap().to_owned();
         let thread = std::thread::current().name().unwrap_or("unnamed").to_owned();
         self.0.lock().unwrap().push(format!("open:{name}@{thread}"));
+        if let (Some(kind), "left") = (self.1, name.as_str()) {
+            return Err(OpenError {
+                kind,
+                message: "a part size differs from the plan".to_owned(),
+            });
+        }
         Ok(Box::new(Closing {
             inner: fake(&name),
             name,
@@ -133,16 +177,35 @@ fn device_bytes(name: &str) -> u64 {
 /// Start `chat`, `left` and `right` with these residencies. `card0` is the budget of card 0. Give the process, the
 /// log, and the names of the engines that opened at the start.
 fn start(residency: [Residency; 3], card0: u64, directory: &std::path::Path) -> (Process, Log, Vec<String>) {
+    let (mut process, log) = start_failing(residency, card0, directory, None, false);
+    let opened = process.wait_opens(Duration::from_secs(5)).unwrap();
+    let names = opened.into_iter().map(|engine| engine.name).collect();
+    (process, log, names)
+}
+
+/// Start the engines, and do not wait for the opens. With `fail`, an open of `left` fails with that kind.
+fn start_failing(
+    residency: [Residency; 3],
+    card0: u64,
+    directory: &std::path::Path,
+    fail: Option<OpenErrorKind>,
+    wide: bool,
+) -> (Process, Log) {
     let log: Log = Arc::default();
     let mut registry = Registry::new();
-    registry.register("fakes", Box::new(Fakes(Arc::clone(&log))));
+    registry.register("fakes", Box::new(Fakes(Arc::clone(&log), fail)));
     let budget = |tier: Tier, bytes| BudgetSpec {
         tiers: vec![TierSpec::from(tier)],
         bytes,
     };
+    // `wide` takes the place of `chat`: an engine of both cards with no stages.
+    let first = match wide {
+        true => engine("wide", vec![0, 1], residency[CHAT]),
+        false => engine("chat", vec![0, 1], residency[CHAT]),
+    };
     let profile = PlacementProfile {
         engines: vec![
-            engine("chat", vec![0, 1], residency[CHAT]),
+            first,
             engine("left", vec![0], residency[LEFT]),
             engine("right", vec![1], residency[RIGHT]),
         ],
@@ -171,15 +234,13 @@ fn start(residency: [Residency; 3], card0: u64, directory: &std::path::Path) -> 
             .collect(),
         host_bytes: 1 << 20,
     };
-    let mut process = Start::new(profile, registry, inventory)
+    let process = Start::new(profile, registry, inventory)
         .store(directory)
         .heartbeat(Duration::from_millis(10))
         .timeout(Duration::from_secs(5))
         .start()
         .unwrap();
-    let opened = process.wait_opens(Duration::from_secs(5)).unwrap();
-    let names = opened.into_iter().map(|engine| engine.name).collect();
-    (process, log, names)
+    (process, log)
 }
 
 /// A job that writes `run:<engine>@<thread>` to the log, tells `started`, and can wait for a gate before it ends.
@@ -336,4 +397,141 @@ fn a_swap_out_of_the_engine_with_stages_opens_the_engine_on_its_device_thread() 
     process.unload("left").unwrap();
     assert_eq!(swapped(&process), (vec!["left".to_owned()], vec!["chat".to_owned()]));
     assert_eq!(log_of(&log)[4..], ["close:left", "open:chat@nagaya-group-0"]);
+}
+
+/// A resident engine whose open on its device thread fails keeps the kind of its failure, so a part size that differs
+/// from the plan refuses the start (spec 10.4 row 3), as on the group thread.
+#[test]
+fn a_failed_open_on_a_device_thread_keeps_its_kind() {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut process, log) = start_failing(
+        [Residency::OnDemand, Residency::Resident, Residency::OnDemand],
+        1 << 20,
+        directory.path(),
+        Some(OpenErrorKind::PartSize),
+        false,
+    );
+    let error = process.wait_opens(Duration::from_secs(5)).unwrap_err();
+    let WaitError::Event(event) = error else {
+        panic!("the start ends with an event, not {error:?}");
+    };
+    assert_eq!(
+        event.exit_code(),
+        Some(nagaya::exit::ExitCode::RefusedStart),
+        "{event:?}"
+    );
+    assert_eq!(log_of(&log), ["open:left@nagaya-dev-0-0"]);
+    process.abort();
+}
+
+/// A job of a council text engine wants a block for its pass and can ask for a copy first. On an engine that is not
+/// the engine with stages, such as an engine of two devices with no stages, its quanta hold every device and run on
+/// the group thread, where the engine is.
+struct Text {
+    log: Log,
+    first: bool,
+    done: Sender<()>,
+}
+
+impl JobBody for Text {
+    fn unavailable(&mut self, engine: &str, state: nagaya::notify::EngineState) {
+        panic!("engine `{engine}` is {}, and this test keeps it ready", state.as_str());
+    }
+
+    /// The prefill adds two decodes. The first decode asks for a copy first, so the copy runs before the second.
+    fn run(&mut self, kind: Kind, engines: &mut [Box<dyn Engine>]) -> Ran {
+        let _ = engines[CHAT].identity();
+        let thread = std::thread::current().name().unwrap_or("unnamed").to_owned();
+        self.log.lock().unwrap().push(format!("run:{kind:?}@{thread}"));
+        match kind {
+            Kind::Prefill => Ran::More(vec![Kind::Decode, Kind::Decode]),
+            Kind::Decode if self.first => {
+                self.first = false;
+                Ran::First(vec![Kind::Copy])
+            }
+            Kind::Decode => {
+                let _ = self.done.send(());
+                Ran::Done
+            }
+            _ => Ran::Done,
+        }
+    }
+
+    fn item(&self, kind: Kind) -> Item {
+        match kind {
+            Kind::Copy => Item::Whole(kind),
+            _ => Item::Block(kind),
+        }
+    }
+}
+
+#[test]
+fn a_text_job_of_an_engine_on_the_group_thread_runs_there_with_its_copy_first() {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut process, log) = start_failing(
+        [Residency::Resident, Residency::OnDemand, Residency::OnDemand],
+        1 << 20,
+        directory.path(),
+        None,
+        true,
+    );
+    let opened: Vec<String> = process
+        .wait_opens(Duration::from_secs(5))
+        .unwrap()
+        .into_iter()
+        .map(|engine| engine.name)
+        .collect();
+    assert_eq!(opened, ["wide"]);
+    let (done, finished) = mpsc::channel();
+    let spec = JobSpec {
+        class: Class::Interactive,
+        priority: 0,
+        deadline: None,
+        first: Kind::Prefill,
+        engine: CHAT,
+        body: Box::new(Text {
+            log: Arc::clone(&log),
+            first: true,
+            done,
+        }),
+    };
+    process.submit_job(0, spec).unwrap();
+    finished
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the text job of wide ran");
+    let runs: Vec<String> = log_of(&log)
+        .into_iter()
+        .filter(|line| line.starts_with("run:"))
+        .collect();
+    assert_eq!(
+        runs,
+        [
+            "run:Prefill@nagaya-group-0",
+            "run:Decode@nagaya-group-0",
+            "run:Copy@nagaya-group-0",
+            "run:Decode@nagaya-group-0"
+        ]
+    );
+}
+
+/// A stop counts a job whose quantum runs on a device thread as cancelled, as a job that waits.
+#[test]
+fn a_stop_cancels_a_job_whose_quantum_runs_on_a_device_thread() {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut process, log, _) = start([Residency::OnDemand; 3], 1 << 20, directory.path());
+    load(&process, "left");
+    let (gate_tx, gate) = mpsc::channel();
+    let (job, started, _done) = probe(LEFT, &log, Some(gate));
+    process.submit_job(0, job).unwrap();
+    started
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the left job started");
+    // The quantum ends a moment after the stop begins, so the stop waits for it.
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        let _ = gate_tx.send(());
+    });
+    let report = process.stop(Duration::from_secs(5), &nagaya::signal::SignalFlag::new());
+    release.join().unwrap();
+    assert_eq!(report.parked.cancelled, 1, "{report:?}");
 }

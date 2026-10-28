@@ -327,6 +327,36 @@ fn items_that_a_running_job_adds_run_after_its_blocks() {
 }
 
 #[test]
+fn items_that_a_running_job_puts_first_run_before_its_other_items_in_order() {
+    let mut run = Run::new();
+    run.arrive(job(
+        1,
+        Class::Interactive,
+        &[Item::Whole(Kind::Prefill), Item::Whole(Kind::Decode)],
+    ));
+    let mut state = run.state.take().unwrap();
+    state
+        .prepend_items(1, &[Item::Whole(Kind::Copy), Item::Whole(Kind::Read)])
+        .unwrap();
+    let items: Vec<Item> = state.jobs()[0].items.iter().copied().collect();
+    assert_eq!(
+        items,
+        [
+            Item::Whole(Kind::Copy),
+            Item::Whole(Kind::Read),
+            Item::Whole(Kind::Decode)
+        ]
+    );
+    run.state = Some(state);
+    let mut idle = run.state.clone().unwrap();
+    idle.jobs_mut()[0].state = nagaya_sched::JobState::Ready;
+    assert!(matches!(
+        idle.prepend_items(1, &[PREFILL]),
+        Err(StageError::AppendToIdleJob(1, _))
+    ));
+}
+
+#[test]
 fn a_whole_quantum_waits_for_a_higher_rank_stage_on_another_device() {
     let mut run = Run::new();
     // Job 1 (batch) finishes stage 0 on device 0 and occupies device 1 with stage 1.
