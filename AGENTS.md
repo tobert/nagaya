@@ -271,28 +271,43 @@ is done on gfx1151host, and milestones 15s, 16 and 17 are done on b70host. Miles
     - **Few steps:** Lightning, DMD2 or Turbo weights come after the engine, as other weights and settings. Read the
       license of each first.
     - Qwen-Image 2.1 with FUSAL (`~/src/diffusepal`) stays a later engine for batch work.
+    - **Route:** council v2 only. An image is an output object, with a pending id while it decodes.
+    - **Prompt weights:** the family parses A1111 weights, such as `(word:1.2)` and `[word]`. Thus a prompt from
+      Civitai works as it is.
+    - **Previews:** a request can ask for a preview at each step. First a linear map from latent to RGB, and TAESD
+      later as a second choice.
+    - **VAE:** the stock VAE of the checkpoint, in fp32. Not the fp16 fix.
+    - **Samplers:** Euler, Euler a, DPM++ 2M Karras and DPM++ 2M SDE Karras.
+    - **Batch:** a request asks for at most 4 images, and each is its own output object.
+    - **Cards:** one image engine on each card, each its own device group. Amy, 2026-10-27: "if higher quality
+      models fit on these cards, we'll run them in parallel, one model per card".
+    - **Loads:** a request never starts a load (spec 3.3, Decided 2026-10-27). A client loads an engine with a
+      profile `PUT` or a load route. `POST /v1/audio/speech` goes.
 
     Do the steps in this order:
     1. **Objects.** Objects and keeps in `nagaya-store`, and their routes (spec 6.15). Done.
     2. **Speech in council.** The speech engine as a council served model, with held state (spec 11.8a). Done.
-    3. **Spec.** Write the image rules into the docs: the route, the outputs, the `step` quanta, and the image engine
+    3. **Explicit loads.** A request for a served model that is not ready gets a 503 `model_unavailable`. Build
+       the load routes (spec 3.3b) and the profile `PUT` in place (spec 3.3). Remove `POST /v1/audio/speech`.
+    4. **Spec.** Write the image rules into the docs: the route, the outputs, the `step` quanta, and the image engine
        in engine-abi. Amy decides each Proposed note.
-    4. **Oracle fixture.** Write the fixed inputs and outputs of SDXL base from diffusers once, on the CPU (8.3).
+    5. **Oracle fixture.** Write the fixed inputs and outputs of SDXL base from diffusers once, on the CPU (8.3).
        Keep the image small.
-    5. **Family.** Write `nagaya-text-sdxl`: the CLIP tokenizer and the prompt of an image request.
-    6. **Ops.** Add the 2D convolution, GroupNorm, attention, and the up and down samplers to the shared interpreter.
+    6. **Family.** Write `nagaya-text-sdxl`: the CLIP tokenizer and the prompt of an image request.
+    7. **Ops.** Add the 2D convolution, GroupNorm, attention, and the up and down samplers to the shared interpreter.
        Give each op a test.
-    7. **Engine.** Write `nagaya-mk-sdxl-bmg`: the text encoders, the UNet steps and the VAE decode. Run the
+    8. **Engine.** Write `nagaya-mk-sdxl-bmg`: the text encoders, the UNet steps and the VAE decode. Run the
        conformance gates and the oracle.
-    8. **Route.** Serve images through council v2, with each image as an object.
-    9. **Deploy.** Add the image engine to the profile of b70host as an engine on demand.
+    9. **Route.** Serve images through council v2, with each image as an object.
+    10. **Deploy.** Add an image engine on each card to the profile of b70host, each on demand.
 
     The commits so far:
 
     - before step 1, the council contract with `blake3:` ids and media: `3a5c106`, `5b4fece`, `8173c95`, `e9eb276`,
       `abef7af`;
     - step 1, objects: `69a4f0d`, `6469b63`, `5eaed78`;
-    - step 2, speech in council: `e57eaeb` to `7c414b0`, deployed at 17:53 on 2026-10-25.
+    - step 2, speech in council: `e57eaeb` to `7c414b0`, deployed at 17:53 on 2026-10-25;
+    - Amy's decisions of 2026-10-27: `6d61ea2`, `483b81c`, and the gogi pin `af34fa7`.
 19. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
