@@ -70,6 +70,7 @@ The crates live in directories under `crates/`. Use these crates:
 | `nagaya-text-gemma4` | the Gemma 4 family library: tokenizer, template, escapes, council rendering, reply parser | 11.3, 11.3a |
 | `nagaya-mk-qwen3tts-bmg` | the Qwen3-TTS VoiceDesign engine on one B70 card: weights, the passes as rings, the speech calls | ABI "Speech" |
 | `nagaya-text-qwen3tts` | the Qwen3-TTS family library: tokenizer, the prompt of a speech request, the codec ids | 11.3, 11.8 |
+| `nagaya-text-sdxl` | the SDXL family library: CLIP tokenizer, the A1111 prompt, its chunks and weights | 11.9a |
 | `nagaya-text-toy` | the toy family library on gogi's `gogi-toy`, for tests with the fake engine | 11.3b |
 | `nagaya-conformance` | the conformance suite (8.3), generic over the `Engine` trait | 8.3 |
 | `nagaya-telemetry` | the instruments, the stderr log, the OTLP export and the sampler | 9 |
