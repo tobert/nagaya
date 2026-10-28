@@ -96,6 +96,8 @@ impl Image for Painter {
 fn limits() -> Limits {
     let mut limits = FakeAlways::new().limits();
     limits.capabilities = vec![Capability::Image, Capability::Close];
+    // An image engine takes no pass, so it declares no segment, as the SDXL engine does.
+    limits.max_segments = 0;
     limits.parts = Vec::new();
     limits.slots = vec![SlotLimit {
         bytes: 0,

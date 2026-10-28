@@ -303,6 +303,22 @@ fn a_speech_engine_takes_no_pass_so_it_needs_no_segment() {
 }
 
 #[test]
+fn an_image_engine_takes_no_pass_so_it_needs_no_segment() {
+    // engine-abi "The image capability": an image engine takes no pass, so its plan gives max_segments 0.
+    let mut limits = FakeAlways::new().limits();
+    limits.max_segments = 0;
+    limits.capabilities = vec![nagaya_abi::Capability::Image];
+    let mut registry = Registry::new();
+    registry.register("image", Box::new(FixedLimits(limits)));
+    let profile = PlacementProfile {
+        engines: vec![engine("sdxl-0", "image", 1)],
+        budgets: vec![device_budget(0, 4096), host_budget(256)],
+        store: None,
+    };
+    admit(&profile, &registry, &inventory(&[0]), &mut Ledger::new()).expect("an image engine with no segment");
+}
+
+#[test]
 fn one_segment_is_admitted() {
     let mut limits = FakeAlways::new().limits();
     limits.max_segments = 1;
