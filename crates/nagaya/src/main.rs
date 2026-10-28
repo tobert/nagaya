@@ -308,11 +308,13 @@ fn serve(
         call_cpus,
     )
     .and_then(|council| {
-        Ok(council.with_speech(nagaya::qwen3tts::speech_services(
-            &served_profile,
-            &ports,
-            &config.store_dir,
-        )?))
+        Ok(council
+            .with_speech(nagaya::qwen3tts::speech_services(
+                &served_profile,
+                &ports,
+                &config.store_dir,
+            )?)
+            .with_loads(ports.clone()))
     }) {
         Ok(council) => Arc::new(council),
         Err(error) => {

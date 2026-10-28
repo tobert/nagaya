@@ -6,6 +6,7 @@
 
 mod errors;
 mod extensions;
+mod loads;
 mod objects;
 pub mod pending;
 mod routes;
@@ -105,6 +106,8 @@ pub struct Council {
     object_limits: Option<(u64, u64)>,
     /// The pending ids of the outputs that replies make now (gogi "Outputs").
     pending: pending::PendingIds,
+    /// The ways into the process for the load routes (spec 3.3b). A council with none has no load routes.
+    loads: Option<crate::process::Ports>,
 }
 
 impl Council {
@@ -128,6 +131,7 @@ impl Council {
             objects: None,
             object_limits: None,
             pending: pending::PendingIds::default(),
+            loads: None,
         })
     }
 
@@ -142,6 +146,17 @@ impl Council {
         self.object_limits = Some((store.object_bytes(), store.keep_bytes()));
         self.objects = Some(Arc::new(Mutex::new(store)));
         self
+    }
+
+    /// Serve the load routes of the engines of this process (spec 3.3b).
+    pub fn with_loads(mut self, ports: crate::process::Ports) -> Self {
+        self.loads = Some(ports);
+        self
+    }
+
+    /// The ports of the load routes, when the council has them.
+    fn loads(&self) -> Option<crate::process::Ports> {
+        self.loads.clone()
     }
 
     /// The object store, when the process has one.

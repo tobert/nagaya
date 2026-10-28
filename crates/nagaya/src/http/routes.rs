@@ -45,6 +45,7 @@ pub fn routes() -> Router<Arc<Council>> {
         .route("/v1/audio/speech", post(super::speech::speech))
         .merge(super::extensions::routes())
         .merge(super::objects::routes())
+        .merge(super::loads::routes())
         .fallback(unknown)
         .method_not_allowed_fallback(unknown)
 }

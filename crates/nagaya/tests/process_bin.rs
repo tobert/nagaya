@@ -147,10 +147,18 @@ fn ready_and_a_sigterm_exit_zero() {
 
 /// Send one HTTP request on a new connection and give the status line. A refused connection is an error.
 fn http_status(addr: std::net::SocketAddr, path: &str) -> io::Result<String> {
+    http_request(addr, "GET", path)
+}
+
+/// Send one HTTP request with no body on a new connection and give the status line.
+fn http_request(addr: std::net::SocketAddr, method: &str, path: &str) -> io::Result<String> {
     use std::io::{BufRead, BufReader, Write};
     let mut stream = std::net::TcpStream::connect(addr)?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-    write!(stream, "GET {path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n")?;
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nHost: test\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )?;
     let mut line = String::new();
     BufReader::new(stream).read_line(&mut line)?;
     Ok(line.trim_end().to_owned())
@@ -183,6 +191,9 @@ fn ready_comes_after_the_http_server_listens() {
     }
     let addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
     let status = http_status(addr, "/council/v2/identity").expect("the HTTP server listens at READY=1");
+    assert_eq!(status, "HTTP/1.1 200 OK");
+    // The process serves the load routes of its engines (spec 3.3b). The engine is ready, so a load changes nothing.
+    let status = http_request(addr, "POST", "/nagaya/v1/engines/fake-one/load").expect("a load route answers");
     assert_eq!(status, "HTTP/1.1 200 OK");
     // SAFETY: the child pid is live, and SIGTERM is the stop signal of spec 10.3.
     assert_eq!(unsafe { kill(child.id() as i32, SIGTERM) }, 0);
