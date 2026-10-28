@@ -3062,6 +3062,13 @@ interview).
   is 0, because it holds no state.
 - Its `weight_hash` and `tokenizer_hash` are the engine's after its first open since the start, and empty before
   (3.3a "Council models on demand").
+- **Proposed** (senpai, Claude Opus 5.5, 2026-10-28): the name of the served image model is the name of its engine
+  in the profile, such as `sdxl-0`. The A1111 chunk names it too. Reason: 11.9 gives each engine its own name, and
+  the checkpoint name is the same for two engines of one checkpoint. The profile already keeps engine names apart.
+- **Proposed** (senpai, Claude Opus 5.5, 2026-10-28): the engine kind is `mk-sdxl-bmg`, in a build with `xe`. Its
+  config and `[engines.family]` take the key `model_dir`, and read `SDXL_MODEL_DIR` with no key, as `gemma4` does.
+  `[engines.family]` also takes `clip_skip`, 1 or 2, with the default 1. Reason: these follow the rules of the other
+  engine kinds of b70host.
 
 **The family of SDXL.** Proposed by senpai (Claude Opus 5.5), 2026-10-28, and Decided 2026-10-28 (Amy, by interview).
 The crate `nagaya-text-sdxl` holds it (11.3).
