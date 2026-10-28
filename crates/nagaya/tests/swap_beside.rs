@@ -466,14 +466,15 @@ fn an_idle_engine_with_stages_unloads_the_engine_beside_it_first() {
         .recv_timeout(Duration::from_secs(5))
         .expect("the voice job ran beside chat");
     // `chat` goes idle. The loop unloads `voice` on its stage thread, then `chat`, and the ledger hears of both.
-    // `voice` is resident, so it loads again on the group thread: the group reaches the state of its profile.
+    // `voice` is resident, so it loads again, on the device thread of card 1 (spec 3.2, Decided 2026-10-28): the
+    // group reaches the state of its profile.
     let (mut unloaded, loaded) = swapped(&process, Duration::from_secs(5));
     unloaded.sort();
     assert_eq!(unloaded, ["chat", "voice"]);
     assert_eq!(loaded, ["voice"]);
     assert_eq!(
         log_of(&log).last().map(String::as_str),
-        Some("open:voice@nagaya-group-0")
+        Some("open:voice@nagaya-dev-0-1")
     );
     let closes: Vec<String> = log_of(&log)
         .into_iter()

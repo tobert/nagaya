@@ -1059,11 +1059,22 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
         .collect();
     let mut engines: Vec<Box<dyn Engine>> = members.iter().map(Unloaded::of).collect();
     let mut opened = Vec::with_capacity(members.len());
+    // A group of more than one device has a device thread for each device (spec 3.2). With no resident engine with
+    // stages, each resident engine with one device opens on its device thread, in the serve loop.
+    let devices = staged::group_devices(&members);
+    let threads = devices.len() > 1;
+    let resident_staged = members.iter().any(|member| member.resident() && member.staged());
+    let on_thread = |member: &Member| threads && !resident_staged && !member.staged() && member.job.devices.len() == 1;
+    let mut later = Vec::new();
     // An open can take minutes, and it blocks this thread. The guard beats for the group until the open ends (7.4).
     let open_beat = OpenBeat::start(group, links.heartbeats.clone(), interval);
     for index in 0..members.len() {
         // An on-demand engine stays unloaded until a load (spec 3.3a, 3.3b).
         if members[index].job.placement.residency != Residency::Resident {
+            continue;
+        }
+        if on_thread(&members[index]) {
+            later.push(index);
             continue;
         }
         match in_place::open(&mut members[index].job, links.fd_store.as_ref()) {
@@ -1087,7 +1098,12 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
         }
     }
     drop(open_beat);
-    let _ = links.events.send(Event::Opened { group, engines: opened });
+    let mut entry = if later.is_empty() {
+        let _ = links.events.send(Event::Opened { group, engines: opened });
+        staged::Entry::Serve
+    } else {
+        staged::Entry::Start { open: later, opened }
+    };
     let names: Vec<String> = members.iter().map(|member| member.name().to_owned()).collect();
     let mut plain = Plain {
         jobs: GroupJobs::new(group as u32, names.join("+")).machine(links.machine.clone()),
@@ -1097,8 +1113,28 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
     let mut asks: VecDeque<Ask> = VecDeque::new();
     loop {
         let staged = (0..members.len()).find(|index| members[*index].loaded && members[*index].staged());
+        let begin = std::mem::replace(&mut entry, staged::Entry::Serve);
         let exit = match staged {
-            Some(index) => staged::serve(group, index, &mut members, &mut engines, &mut asks, &links, interval),
+            Some(_) => staged::serve(
+                group,
+                staged,
+                begin,
+                &mut members,
+                &mut engines,
+                &mut asks,
+                &links,
+                interval,
+            ),
+            None if threads => staged::serve(
+                group,
+                None,
+                begin,
+                &mut members,
+                &mut engines,
+                &mut asks,
+                &links,
+                interval,
+            ),
             None => serve_plain(
                 group,
                 &mut members,
@@ -1111,6 +1147,30 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
         };
         match exit {
             Exit::Stop => break,
+            // A swap that loads only engines with one device in a group of device threads unloads here, and the next
+            // serve loop opens the engines on their device threads (spec 3.2).
+            Exit::Swap(plan)
+                if threads
+                    && !plan.load.is_empty()
+                    && plan
+                        .load
+                        .iter()
+                        .all(|index| !members[*index].staged() && members[*index].job.devices.len() == 1) =>
+            {
+                for &index in &plan.unload {
+                    if members[index].loaded {
+                        in_place::unload(
+                            index,
+                            &mut members,
+                            &mut engines,
+                            links.store.as_ref(),
+                            links.fd_store.as_ref(),
+                            &links.states,
+                        );
+                    }
+                }
+                entry = staged::Entry::Swap(plan);
+            }
             Exit::Swap(plan) => {
                 let swap_links = in_place::SwapLinks {
                     events: &links.events,
