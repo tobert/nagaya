@@ -317,6 +317,9 @@ is done on gfx1151host, and milestones 15s, 16 and 17 are done on b70host. Miles
       `5a80b25`, deployed at 10:54 on 2026-10-28;
     - step 4, the image rules: `362f3fc`, `00f2682` and Amy's decisions `db5f5f6`;
     - step 5, the oracle of SDXL base from diffusers: `15b94b6`. `tools/sdxl_golden.sh` writes it.
+    - step 6, the family `nagaya-text-sdxl`: `a9c1ce7`, and Amy's decision on the ids `061efed`;
+    - step 7, the image ops on the shared interpreter: `8dc7277`. The card tests are in
+      `crates/nagaya-mk-bmg/tests/xe_sdxl_ops.rs`.
 19. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
