@@ -212,8 +212,8 @@ fn the_b70host_profile_names_the_gemma4_engine_on_both_cards() {
     let profile = b70host_profile();
     assert_eq!(
         profile.engines.len(),
-        4,
-        "gemma, and the speech engine and an image engine on each card on demand"
+        6,
+        "gemma, then the speech engine and four image engines, on demand"
     );
     let engine = &profile.engines[0];
     assert_eq!(engine.residency, Residency::Resident);
@@ -391,10 +391,10 @@ fn the_b70host_profile_names_an_image_engine_on_demand_on_each_card() {
     let profile = b70host_profile();
     assert_eq!(
         profile.engines.len(),
-        4,
-        "the two image engines follow gemma and the speech engine"
+        6,
+        "the image engines follow gemma and the speech engine"
     );
-    for (engine, (name, device)) in profile.engines[2..].iter().zip([("sdxl-0", 0), ("sdxl-1", 1)]) {
+    for (engine, (name, device)) in profile.engines[2..4].iter().zip([("sdxl-0", 0), ("sdxl-1", 1)]) {
         assert_eq!((engine.name.as_str(), engine.kind.as_str()), (name, nagaya::sdxl::KIND));
         assert_eq!(engine.devices, vec![device]);
         assert_eq!(engine.residency, Residency::OnDemand);
@@ -411,9 +411,69 @@ fn the_b70host_profile_names_an_image_engine_on_demand_on_each_card() {
 }
 
 #[test]
+fn the_b70host_profile_names_pony_on_card_zero_and_autismmix_on_card_one() {
+    // Amy, 2026-10-28: Pony V6 and AutismMix from Civitai, beside SDXL base, one engine on each card. The profile
+    // names the files; this test checks only their form.
+    let profile = b70host_profile();
+    assert_eq!(profile.engines.len(), 6);
+    for (engine, (name, device)) in profile.engines[4..].iter().zip([("pony-0", 0), ("autismmix-1", 1)]) {
+        assert_eq!((engine.name.as_str(), engine.kind.as_str()), (name, nagaya::sdxl::KIND));
+        assert_eq!(engine.devices, vec![device]);
+        assert_eq!(engine.residency, Residency::OnDemand);
+        assert_eq!(engine.idle_unload_s, Some(600));
+        assert!(
+            !engine.config.contains_key("model_dir") && !engine.family.contains_key("model_dir"),
+            "{name}: the tokenizer comes from SDXL_MODEL_DIR in the unit"
+        );
+        let config = nagaya::sdxl::config(&{
+            let mut table = engine.config.clone();
+            table.insert("model_dir".to_owned(), toml::Value::String("/sdxl".to_owned()));
+            table
+        })
+        .unwrap();
+        let file = config
+            .checkpoint
+            .unwrap_or_else(|| panic!("{name} names a single file"));
+        assert!(
+            file.is_absolute() && file.extension().is_some_and(|ext| ext == "safetensors"),
+            "{name}: {}",
+            file.display()
+        );
+        // Pony V6 asks for clip skip 2 (its Civitai page), and AutismMix is a Pony merge.
+        let mut family = engine.family.clone();
+        family.insert("model_dir".to_owned(), toml::Value::String("/sdxl".to_owned()));
+        assert_eq!(nagaya::sdxl::family_config(&family).unwrap().1, 2, "{name}");
+    }
+}
+
+/// True when each single file that the profile names exists. Without one, the test skips; a machine that does not
+/// hold the files is normal (AGENTS.md, "Tests that need a model file").
+fn named_checkpoints(profile: &PlacementProfile) -> bool {
+    let absent: Vec<String> = profile
+        .engines
+        .iter()
+        .filter_map(|engine| engine.config.get("checkpoint").and_then(|value| value.as_str()))
+        .filter(|path| !std::path::Path::new(path).exists())
+        .map(str::to_owned)
+        .collect();
+    if absent.is_empty() {
+        return true;
+    }
+    if std::env::var("NAGAYA_REQUIRE_MODELS").is_ok_and(|v| v == "1") {
+        panic!("NAGAYA_REQUIRE_MODELS is set, and the profile names absent files: {absent:?}");
+    }
+    eprintln!("skipped: the profile names checkpoints that this machine lacks: {absent:?}");
+    false
+}
+
+#[test]
 fn the_b70host_profile_admits_on_the_probed_b70host() {
     // The start path up to the open: the probe, the ignored iGPU, the plan and the ledger.
-    if checkpoint().is_none() || !speech_checkpoint() || !image_checkpoint() {
+    if checkpoint().is_none()
+        || !speech_checkpoint()
+        || !image_checkpoint()
+        || !named_checkpoints(&b70host_profile())
+    {
         return;
     }
     let config = b70host_bootstrap();
@@ -429,7 +489,7 @@ fn the_b70host_profile_admits_on_the_probed_b70host() {
     registry.register(nagaya::qwen3tts::KIND, Box::new(SpeechPlanOnly));
     registry.register(nagaya::sdxl::KIND, Box::new(ImagePlanOnly));
     let admitted = admit(&b70host_profile(), &registry, &inventory, &mut Ledger::new()).expect("b70host admits");
-    assert_eq!(admitted.engines.len(), 4);
+    assert_eq!(admitted.engines.len(), 6);
     for engine in &admitted.engines[2..] {
         assert!(engine.limits.capabilities.contains(&nagaya_abi::Capability::Image));
     }
