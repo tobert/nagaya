@@ -1237,7 +1237,7 @@ fn serve_plain(
         // A stop plans no swap. The asks that waited through a swap plan the next one here (spec 3.3b).
         let serving = links.accepting.load(Ordering::SeqCst);
         if serving && pending.is_none() {
-            pending = loads::next_plan(asks, members, &links.ledger, &links.states, |plan| plan);
+            pending = loads::next_plan(asks, members, &links.ledger, &links.states, |plan, _| plan);
         }
         // The swap waits until the engines that unload hold no job. Jobs of the other engines go on (spec 3.3a).
         if serving

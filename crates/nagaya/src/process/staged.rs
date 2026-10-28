@@ -1437,15 +1437,22 @@ pub(super) fn serve(
         if !serving && !jobs.idle() {
             cancelled += jobs.cancel_all();
         }
-        // A plan that does not keep the engine with stages beside its hosted engines unloads every loaded engine.
-        let widen = |mut plan: Plan| {
+        // A plan that does not keep the engine with stages beside its hosted engines unloads every loaded engine. A
+        // resident hosted engine then loads again on the group thread, so the group reaches the state of its profile
+        // (spec 3.3). An engine with stages loads alone, so a plan that loads one loads no other engine.
+        let widen = |mut plan: Plan, members: &[Member]| {
             let beside = !plan.unload.contains(&index)
                 && plan.unload.iter().all(|member| hosted.contains_key(member))
                 && plan.load.iter().all(|member| stages.contains_key(member));
             if !beside {
+                let loads_staged = plan.load.iter().any(|member| members[*member].staged());
                 for member in hosted.keys().copied().chain(std::iter::once(index)) {
                     if !plan.unload.contains(&member) {
                         plan.unload.push(member);
+                    }
+                    let again = member != index && members[member].resident() && !members[member].retired;
+                    if again && !loads_staged && !plan.load.contains(&member) {
+                        plan.load.push(member);
                     }
                 }
             }
@@ -1461,7 +1468,7 @@ pub(super) fn serve(
             }
         }
         if serving && pending.is_none() && asks.is_empty() {
-            pending = in_place::idle_plan(members, now, &links.ledger).map(widen);
+            pending = in_place::idle_plan(members, now, &links.ledger).map(|plan| widen(plan, members));
             if let Some(plan) = &pending {
                 loads::mark(plan, members, &links.states);
             }

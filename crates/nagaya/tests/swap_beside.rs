@@ -76,12 +76,12 @@ impl Engine for Closing {
     }
 }
 
-/// `chat` is the fake of two stages on devices 0 and 1. `voice` is the plain fake on device 1.
+/// `chat` and `paint` are fakes of two stages on devices 0 and 1. `voice` is the plain fake on device 1.
 struct Pair(Log);
 
 fn fake(name: &str) -> Box<dyn Engine + Send> {
     match name {
-        "chat" => Box::new(feed_support::engine(2)),
+        "chat" | "paint" => Box::new(feed_support::engine(2)),
         "voice" => Box::new(FakeAlways::new()),
         other => panic!("no fake named {other}"),
     }
@@ -124,14 +124,14 @@ fn engine(name: &str, devices: Vec<u32>, residency: Residency, idle_unload_s: Op
 fn start(directory: &std::path::Path, idle_unload_s: Option<u64>) -> (Process, Log) {
     start_with(
         directory,
-        [
+        &[
             engine("chat", vec![0, 1], Residency::Resident, None),
             engine("voice", vec![1], Residency::OnDemand, idle_unload_s),
         ],
     )
 }
 
-fn start_with(directory: &std::path::Path, engines: [EnginePlacement; 2]) -> (Process, Log) {
+fn start_with(directory: &std::path::Path, engines: &[EnginePlacement]) -> (Process, Log) {
     let log: Log = Arc::default();
     let mut registry = Registry::new();
     registry.register("pair", Box::new(Pair(Arc::clone(&log))));
@@ -438,7 +438,7 @@ fn an_idle_engine_with_stages_unloads_the_engine_beside_it_first() {
     // `voice` is resident on card 1, and `chat` with stages is on demand with an idle time of one second.
     let (process, log) = start_with(
         directory.path(),
-        [
+        &[
             engine("chat", vec![0, 1], Residency::OnDemand, Some(1)),
             engine("voice", vec![1], Residency::Resident, None),
         ],
@@ -460,9 +460,15 @@ fn an_idle_engine_with_stages_unloads_the_engine_beside_it_first() {
         .recv_timeout(Duration::from_secs(5))
         .expect("the voice job ran beside chat");
     // `chat` goes idle. The loop unloads `voice` on its stage thread, then `chat`, and the ledger hears of both.
-    let (mut unloaded, _) = swapped(&process, Duration::from_secs(5));
+    // `voice` is resident, so it loads again on the group thread: the group reaches the state of its profile.
+    let (mut unloaded, loaded) = swapped(&process, Duration::from_secs(5));
     unloaded.sort();
     assert_eq!(unloaded, ["chat", "voice"]);
+    assert_eq!(loaded, ["voice"]);
+    assert_eq!(
+        log_of(&log).last().map(String::as_str),
+        Some("open:voice@nagaya-group-0")
+    );
     let closes: Vec<String> = log_of(&log)
         .into_iter()
         .filter(|line| line.starts_with("close:"))
@@ -502,13 +508,14 @@ fn a_job_for_an_unloaded_engine_beside_the_stages_ends_as_unavailable() {
 }
 
 /// An unload of the engine with stages also unloads the engines on its stage threads, and the reply names each of
-/// them (spec 3.3b, engine-abi "How a group loads both").
+/// them (spec 3.3b, engine-abi "How a group loads both"). A resident engine among them loads again, so the group
+/// reaches the state of its profile.
 #[test]
-fn an_unload_of_the_engine_with_stages_names_the_engine_beside_it() {
+fn an_unload_of_the_engine_with_stages_names_the_engine_beside_it_and_loads_it_again() {
     let directory = tempfile::tempdir().unwrap();
     let (process, _log) = start_with(
         directory.path(),
-        [
+        &[
             engine("chat", vec![0, 1], Residency::OnDemand, Some(60)),
             engine("voice", vec![1], Residency::Resident, None),
         ],
@@ -519,7 +526,39 @@ fn an_unload_of_the_engine_with_stages_names_the_engine_beside_it() {
         process.unload("chat").unwrap(),
         LoadReply::Started {
             unload: vec!["chat".to_owned(), "voice".to_owned()],
-            load: Vec::new(),
+            load: vec!["voice".to_owned()],
+        }
+    );
+    assert_eq!(
+        swapped(&process, Duration::from_secs(5)),
+        (vec!["chat".to_owned(), "voice".to_owned()], vec!["voice".to_owned()])
+    );
+    assert_eq!(
+        process.ports().engine_state("voice"),
+        Some(nagaya::notify::EngineState::Ready)
+    );
+}
+
+/// An engine with stages loads alone (engine-abi "How a group loads both"). A load of a second engine with stages
+/// unloads the resident engine beside the first one, and does not load it again in the same swap.
+#[test]
+fn a_load_of_another_engine_with_stages_does_not_load_the_resident_engine_beside_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, _log) = start_with(
+        directory.path(),
+        &[
+            engine("chat", vec![0, 1], Residency::OnDemand, Some(60)),
+            engine("voice", vec![1], Residency::Resident, None),
+            engine("paint", vec![0, 1], Residency::OnDemand, Some(60)),
+        ],
+    );
+    load(&process, "chat");
+    load(&process, "voice");
+    assert_eq!(
+        process.load("paint").unwrap(),
+        LoadReply::Started {
+            unload: vec!["chat".to_owned(), "voice".to_owned()],
+            load: vec!["paint".to_owned()],
         }
     );
 }

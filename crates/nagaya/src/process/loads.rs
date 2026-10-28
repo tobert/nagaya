@@ -156,7 +156,7 @@ pub(super) fn next_plan(
     members: &mut [Member],
     ledger: &Sender<LedgerMessage>,
     states: &EngineStates,
-    widen: impl Fn(Plan) -> Plan,
+    widen: impl Fn(Plan, &[Member]) -> Plan,
 ) -> Option<Plan> {
     while let Some(Ask { request, reply }) = asks.pop_front() {
         let plan = match request {
@@ -209,7 +209,7 @@ pub(super) fn next_plan(
             }
             Request::Unload(index) => in_place::back_plan(index, members, ledger),
         };
-        let plan = widen(plan);
+        let plan = widen(plan, members);
         mark(&plan, members, states);
         let name = |index: &usize| members[*index].name().to_owned();
         let _ = reply.send(Ok(LoadReply::Started {
