@@ -67,6 +67,15 @@
 #define FLAG_F32            256u // the weights, the table or the bias are F32, not BF16
 #define FLAG_NO_NORM        512u // OP_RMSNORM: scale and rotate the rows, with no normalization
 #endif
+#ifdef MK_SDXL
+// The ops of the image engine (sdxl_ops.cl); must match src/protocol.rs.
+#define OP_CONV2D           60
+#define OP_GROUPNORM        61
+#define OP_SDPA             62
+#define OP_UPSAMPLE2X       63
+#define FLAG_F16            1024u // the weights and the bias are F16
+#define FLAG_SILU           2048u // OP_GROUPNORM: apply silu after the norm
+#endif
 #define NUM_EXPERTS         128
 #define TOP_K               8
 #define XMX_TOKENS          32  // tokens per XMX work item: four dpas tiles of 8 rows
@@ -1373,6 +1382,9 @@ __kernel void mk_persistent_interpreter(
         }
 #ifdef MK_QWEN3TTS
 #include "qwen3tts_ops.cl"
+#endif
+#ifdef MK_SDXL
+#include "sdxl_ops.cl"
 #endif
         else if (op == OP_MEAN_POOL_L2) {
             // c[0..k) = L2-normalized mean of the first k columns of n rows with stride m.

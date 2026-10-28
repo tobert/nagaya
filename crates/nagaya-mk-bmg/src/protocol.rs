@@ -44,6 +44,12 @@ pub const OP_SNAKE: u16 = 49;
 pub const OP_SCALE_ADD: u16 = 50;
 pub const OP_PCM: u16 = 51;
 
+// The ops of the image binary (`kernels/sdxl_ops.cl`, `MK_SDXL`). It also holds the ops of the speech binary.
+pub const OP_CONV2D: u16 = 60;
+pub const OP_GROUPNORM: u16 = 61;
+pub const OP_SDPA: u16 = 62;
+pub const OP_UPSAMPLE2X: u16 = 63;
+
 pub const FLAG_ACCUMULATE: u16 = 1 << 0;
 pub const FLAG_SOFTCAP_30: u16 = 1 << 2;
 pub const FLAG_ROPE_GLOBAL: u16 = 1 << 3;
@@ -57,6 +63,11 @@ pub const FLAG_HISTORY: u16 = 1 << 7;
 pub const FLAG_F32: u16 = 1 << 8;
 /// `OP_RMSNORM`: scale and rotate the rows, with no normalization.
 pub const FLAG_NO_NORM: u16 = 1 << 9;
+// The flags of the image binary.
+/// The weights and the bias are F16.
+pub const FLAG_F16: u16 = 1 << 10;
+/// `OP_GROUPNORM`: apply silu after the norm.
+pub const FLAG_SILU: u16 = 1 << 11;
 
 pub const NO_EVENT: u32 = u32::MAX;
 pub const NUM_EXPERTS: usize = 128;

@@ -30,6 +30,11 @@ pub const GEMMA4_KERNEL: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/megak
 #[cfg(feature = "xe")]
 pub const QWEN3TTS_KERNEL: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_qwen3tts_bmg.bin"));
 
+/// The kernel binary of the image engine (SDXL) for `bmg-g31`: `kernels/megakernel.cl` with `MK_QWEN3TTS` and
+/// `MK_SDXL`, which add the ops of `kernels/qwen3tts_ops.cl` and `kernels/sdxl_ops.cl`.
+#[cfg(feature = "xe")]
+pub const SDXL_KERNEL: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_sdxl_bmg.bin"));
+
 /// The name of the entry point of each kernel binary.
 pub const KERNEL_ENTRY: &str = "mk_persistent_interpreter";
 

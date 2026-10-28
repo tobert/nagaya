@@ -9,6 +9,7 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-changed=kernels/megakernel.cl");
     println!("cargo:rerun-if-changed=kernels/qwen3tts_ops.cl");
+    println!("cargo:rerun-if-changed=kernels/sdxl_ops.cl");
     if std::env::var_os("CARGO_FEATURE_XE").is_none() {
         return;
     }
@@ -53,6 +54,29 @@ fn main() {
         "ocloc did not compile {} with MK_QWEN3TTS for bmg-g31: {status}",
         source.display()
     );
+    // The image engine's binary: the speech ops and its own (MK_SDXL). Neither other binary holds the image ops.
+    let options = format!("-cl-std=CL3.0 -D MK_QWEN3TTS -D MK_SDXL -I {}", kernels.display());
+    let status = Command::new("ocloc")
+        .arg("compile")
+        .arg("-file")
+        .arg(&source)
+        .args([
+            "-device",
+            "bmg-g31",
+            "-options",
+            &options,
+            "-output",
+            "megakernel_sdxl",
+            "-out_dir",
+        ])
+        .arg(&out)
+        .status()
+        .unwrap_or_else(|e| panic!("cannot run ocloc: {e}. Install ocloc, or build without the feature xe."));
+    assert!(
+        status.success(),
+        "ocloc did not compile {} with MK_SDXL for bmg-g31: {status}",
+        source.display()
+    );
     // The compiler is in the plan table lineage of the identity (spec 12.1).
     let version = Command::new("ocloc")
         .arg("--version")
@@ -75,7 +99,11 @@ fn main() {
         revision => revision.to_owned(),
     };
     println!("cargo:rustc-env=BMG_IGC_REVISION={igc}");
-    for name in ["megakernel_bmg.bin", "megakernel_qwen3tts_bmg.bin"] {
+    for name in [
+        "megakernel_bmg.bin",
+        "megakernel_qwen3tts_bmg.bin",
+        "megakernel_sdxl_bmg.bin",
+    ] {
         let binary = out.join(name);
         assert!(
             binary.is_file(),
