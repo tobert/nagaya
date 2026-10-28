@@ -3076,6 +3076,18 @@ interview).
   config and `[engines.family]` take the key `model_dir`, and read `SDXL_MODEL_DIR` with no key, as `gemma4` does.
   `[engines.family]` also takes `clip_skip`, 1 or 2, with the default 1. Reason: these follow the rules of the other
   engine kinds of b70host.
+- **Proposed** (senpai, Claude Opus 5.5, 2026-10-28): the single file of 11.9. Reason: a Civitai checkpoint is one
+  file with Stability's tensor names, and it holds no tokenizer.
+  - The key `checkpoint` of `[engines.config]` names the file. The engine then reads its weights from the file only.
+    `model_dir` still names a diffusers folder, for the CLIP tokenizer in `tokenizer/`, which every SDXL checkpoint
+    shares. The family reads the tokenizer from it, as before.
+  - The map from Stability's names to the names of diffusers is the map of diffusers 0.42.1
+    (`loaders/single_file_utils.py`). It splits the fused query, key and value of the second text encoder, and it
+    transposes its text projection. It drops `position_ids` and `logit_scale`, which no op reads.
+  - A tensor that the map does not know, or a tensor that the engine needs and the file lacks, refuses the plan and
+    the open. A file with F16 weights of the VAE gives F32 at the load, because the VAE runs in F32. F16 to F32 is
+    exact.
+  - The identity names the file: `model` is its name with no `.safetensors`, and `checkpoint_digest` covers it.
 
 **The family of SDXL.** Proposed by senpai (Claude Opus 5.5), 2026-10-28, and Decided 2026-10-28 (Amy, by interview).
 The crate `nagaya-text-sdxl` holds it (11.3).
