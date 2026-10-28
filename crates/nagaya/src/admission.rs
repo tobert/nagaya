@@ -515,6 +515,29 @@ pub fn admit_with_fd_ceiling(
     ledger: &mut Ledger,
     fd_ceiling: Option<usize>,
 ) -> Result<Admitted, AdmitError> {
+    admit_or_check(profile, registry, inventory, ledger, fd_ceiling, true)
+}
+
+/// Check a placement profile as [`admit_with_fd_ceiling`] does, with no change and no record (spec 3.3). A profile
+/// change checks the whole new profile before it changes anything.
+pub fn check_with_fd_ceiling(
+    profile: &PlacementProfile,
+    registry: &Registry,
+    inventory: &Inventory,
+    ledger: &mut Ledger,
+    fd_ceiling: Option<usize>,
+) -> Result<Admitted, AdmitError> {
+    admit_or_check(profile, registry, inventory, ledger, fd_ceiling, false)
+}
+
+fn admit_or_check(
+    profile: &PlacementProfile,
+    registry: &Registry,
+    inventory: &Inventory,
+    ledger: &mut Ledger,
+    fd_ceiling: Option<usize>,
+    commit: bool,
+) -> Result<Admitted, AdmitError> {
     let Planned {
         budgets,
         engines,
@@ -544,7 +567,12 @@ pub fn admit_with_fd_ceiling(
             error,
         })?;
     }
-    let admission = ledger.admit(&residents).map_err(AdmitError::Ledger)?;
+    let admission = if commit {
+        ledger.admit(&residents)
+    } else {
+        ledger.check(&residents)
+    }
+    .map_err(AdmitError::Ledger)?;
     Ok(Admitted {
         admission,
         engines: planned,

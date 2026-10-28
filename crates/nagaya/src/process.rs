@@ -17,7 +17,7 @@ use tracing::Span;
 
 use crate::admission::{
     AdmitError, Admitted, Factory, GroupDevice, OpenErrorKind, Registry, admit_loaded, admit_with_fd_ceiling,
-    group_devices,
+    check_with_fd_ceiling, group_devices,
 };
 use crate::affinity::{pin_current_thread, set_batch_policy};
 use crate::arena::{ArenaSet, FdName, FdStore};
@@ -300,6 +300,40 @@ impl OwnedLedger {
         let loaded = self.swapped(load, unload);
         let admitted = admit_loaded(&profile, registry, inventory, &mut self.ledger, &loaded, true)?;
         self.loaded = loaded;
+        Ok(admitted)
+    }
+
+    /// Check a whole profile on an empty ledger, with no change (spec 3.3). Only the owner thread may call this.
+    pub fn check_profile(
+        &self,
+        profile: &PlacementProfile,
+        registry: &Registry,
+        inventory: &Inventory,
+    ) -> Result<Admitted, AdmitError> {
+        self.check_owner();
+        check_with_fd_ceiling(profile, registry, inventory, &mut Ledger::new(), self.fd_ceiling)
+    }
+
+    /// Admit the loaded engines under a new profile, as a swap does (spec 3.3). A refusal changes nothing. Only the
+    /// owner thread may call this.
+    ///
+    /// Each loaded engine must be in the new profile: the change retires an engine before it changes the ledger. A
+    /// loaded engine that the profile lacks holds memory that the ledger would not count, so it is a defect (8.5).
+    pub fn reprofile(
+        &mut self,
+        profile: &PlacementProfile,
+        registry: &Registry,
+        inventory: &Inventory,
+    ) -> Result<Admitted, AdmitError> {
+        self.check_owner();
+        for name in &self.loaded {
+            assert!(
+                profile.engines.iter().any(|engine| &engine.name == name),
+                "engine `{name}` is loaded, and the new profile lacks it; retire it before the ledger takes the profile"
+            );
+        }
+        let admitted = admit_loaded(profile, registry, inventory, &mut self.ledger, &self.loaded, true)?;
+        self.active = Some(profile.clone());
         Ok(admitted)
     }
 
@@ -726,6 +760,12 @@ impl Start {
                         LedgerMessage::Swap { load, unload, reply } => {
                             let _ = reply.send(ledger.swap(&load, &unload, &ledger_registry, &ledger_inventory));
                         }
+                        LedgerMessage::CheckProfile(profile, reply) => {
+                            let _ = reply.send(ledger.check_profile(&profile, &ledger_registry, &ledger_inventory));
+                        }
+                        LedgerMessage::Reprofile(profile, reply) => {
+                            let _ = reply.send(ledger.reprofile(&profile, &ledger_registry, &ledger_inventory));
+                        }
                         LedgerMessage::Stop => break,
                     }
                 }
@@ -1011,6 +1051,7 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
             loaded: false,
             handles: Vec::new(),
             last_busy: Instant::now(),
+            retired: false,
         })
         .collect();
     let mut engines: Vec<Box<dyn Engine>> = members.iter().map(Unloaded::of).collect();
@@ -1448,6 +1489,10 @@ enum LedgerMessage {
         unload: Vec<String>,
         reply: Sender<Result<Admitted, AdmitError>>,
     },
+    /// Check a whole profile, with no change (spec 3.3).
+    CheckProfile(PlacementProfile, Sender<Result<Admitted, AdmitError>>),
+    /// Admit the loaded engines under a new profile (spec 3.3).
+    Reprofile(PlacementProfile, Sender<Result<Admitted, AdmitError>>),
     Stop,
 }
 
@@ -1647,14 +1692,47 @@ impl Ports {
 
     /// Load an engine, as [`Process::load`] does.
     pub fn load(&self, engine: &str) -> Result<LoadReply, LoadError> {
-        let accepting = self.accepting.load(Ordering::SeqCst);
-        loads::ask(&self.groups, &self.group_engines, accepting, engine, true)
+        self.ask(engine, loads::Asking::Load)
     }
 
     /// Unload an engine, as [`Process::unload`] does.
     pub fn unload(&self, engine: &str) -> Result<LoadReply, LoadError> {
+        self.ask(engine, loads::Asking::Unload)
+    }
+
+    /// Unload an engine that a new profile lacks, and keep it unloaded until the next start (spec 3.3). A resident
+    /// engine retires too.
+    pub fn retire(&self, engine: &str) -> Result<LoadReply, LoadError> {
+        self.ask(engine, loads::Asking::Retire)
+    }
+
+    /// Give an engine the residency, the idle time and the share of its new profile entry (spec 3.3). An engine that
+    /// becomes resident loads.
+    pub fn place(&self, entry: &EnginePlacement) -> Result<LoadReply, LoadError> {
+        self.ask(&entry.name, loads::Asking::Place(Box::new(entry.clone())))
+    }
+
+    fn ask(&self, engine: &str, asking: loads::Asking) -> Result<LoadReply, LoadError> {
         let accepting = self.accepting.load(Ordering::SeqCst);
-        loads::ask(&self.groups, &self.group_engines, accepting, engine, false)
+        loads::ask(&self.groups, &self.group_engines, accepting, engine, asking)
+    }
+
+    /// Check a whole profile, with no change, as [`Process::check_profile`] does.
+    pub fn check_profile(&self, profile: &PlacementProfile) -> Result<Admitted, AdmitError> {
+        let (reply, answer) = mpsc::channel();
+        self.ledger
+            .send(LedgerMessage::CheckProfile(profile.clone(), reply))
+            .expect("the ledger thread stopped");
+        answer.recv().expect("the ledger thread stopped")
+    }
+
+    /// Admit the loaded engines under a new profile (spec 3.3). The engines that it lacks must be unloaded first.
+    pub fn reprofile(&self, profile: &PlacementProfile) -> Result<Admitted, AdmitError> {
+        let (reply, answer) = mpsc::channel();
+        self.ledger
+            .send(LedgerMessage::Reprofile(profile.clone(), reply))
+            .expect("the ledger thread stopped");
+        answer.recv().expect("the ledger thread stopped")
     }
 }
 
@@ -1729,15 +1807,18 @@ impl Process {
     /// Load the engine with this name by a swap on its group thread (spec 3.3b). It waits until the group plans the
     /// swap, not for the swap to end.
     pub fn load(&self, engine: &str) -> Result<LoadReply, LoadError> {
-        let accepting = self.accepting.load(Ordering::SeqCst);
-        loads::ask(&self.group_stops, &self.group_engines, accepting, engine, true)
+        self.ports().load(engine)
     }
 
     /// Unload the on-demand engine with this name, as after its idle time (spec 3.3b). The resident engines of its
     /// group load again.
     pub fn unload(&self, engine: &str) -> Result<LoadReply, LoadError> {
-        let accepting = self.accepting.load(Ordering::SeqCst);
-        loads::ask(&self.group_stops, &self.group_engines, accepting, engine, false)
+        self.ports().unload(engine)
+    }
+
+    /// Check a whole profile with the registry and the inventory of the process, with no change (spec 3.3).
+    pub fn check_profile(&self, profile: &PlacementProfile) -> Result<Admitted, AdmitError> {
+        self.ports().check_profile(profile)
     }
 
     /// Send one job to a group thread. A stop refuses every later job (spec 10.3 step 1).

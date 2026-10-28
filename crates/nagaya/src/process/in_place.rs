@@ -29,6 +29,8 @@ pub(super) struct Member {
     pub(super) handles: Vec<Box<dyn StageHandle + Send>>,
     /// The last time that the engine held a job, or its load. The idle time of an on-demand engine counts from it.
     pub(super) last_busy: Instant,
+    /// True for an engine that a new profile lacks. It stays unloaded until the next start (spec 3.3).
+    pub(super) retired: bool,
 }
 
 impl Member {
@@ -175,7 +177,7 @@ pub(super) fn idle_plan(members: &[Member], now: Instant, ledger: &Sender<Ledger
 /// unloads.
 pub(super) fn back_plan(idle: usize, members: &[Member], ledger: &Sender<LedgerMessage>) -> Plan {
     let residents: Vec<usize> = (0..members.len())
-        .filter(|index| !members[*index].loaded && members[*index].resident())
+        .filter(|index| !members[*index].loaded && !members[*index].retired && members[*index].resident())
         .collect();
     let others_stay = (0..members.len()).any(|index| index != idle && members[index].loaded);
     let alone = !residents.iter().any(|index| members[*index].staged()) || (!others_stay && residents.len() == 1);

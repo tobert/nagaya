@@ -11,6 +11,7 @@ use nagaya_telemetry::{EngineState, instruments};
 
 use super::in_place::{self, Member, Plan};
 use super::{GroupMessage, LedgerMessage};
+use crate::profile::{EnginePlacement, Residency};
 
 /// The state of each engine of the profile, by name (spec 3.3, 9.4).
 ///
@@ -90,11 +91,23 @@ impl std::fmt::Display for LoadError {
 
 impl std::error::Error for LoadError {}
 
-/// A load or an unload of one engine of a group, by its place in the group.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A load, an unload or a profile change of one engine of a group, by its place in the group.
+#[derive(Clone, Debug, PartialEq)]
 pub(super) enum Request {
     Load(usize),
     Unload(usize),
+    /// Unload the engine for good: the new profile lacks it (spec 3.3, "unload").
+    Retire(usize),
+    /// Take the residency, the idle time and the share of a new profile entry (spec 3.3, "residency" and "keep").
+    Place(usize, Box<EnginePlacement>),
+}
+
+/// What an ask asks of the engine with a name.
+pub(super) enum Asking {
+    Load,
+    Unload,
+    Retire,
+    Place(Box<EnginePlacement>),
 }
 
 /// A load or an unload that waits for its group to plan it, with the sender of its reply.
@@ -109,7 +122,7 @@ pub(super) fn ask(
     group_engines: &[Vec<String>],
     accepting: bool,
     engine: &str,
-    load: bool,
+    asking: Asking,
 ) -> Result<LoadReply, LoadError> {
     let (group, index) = group_engines
         .iter()
@@ -119,10 +132,11 @@ pub(super) fn ask(
     if !accepting {
         return Err(LoadError::Stopping);
     }
-    let request = if load {
-        Request::Load(index)
-    } else {
-        Request::Unload(index)
+    let request = match asking {
+        Asking::Load => Request::Load(index),
+        Asking::Unload => Request::Unload(index),
+        Asking::Retire => Request::Retire(index),
+        Asking::Place(entry) => Request::Place(index, entry),
     };
     let (reply, answer) = mpsc::channel();
     groups[group]
@@ -139,13 +153,47 @@ pub(super) fn ask(
 /// engine that loads is `loading`.
 pub(super) fn next_plan(
     asks: &mut VecDeque<Ask>,
-    members: &[Member],
+    members: &mut [Member],
     ledger: &Sender<LedgerMessage>,
     states: &EngineStates,
     widen: impl Fn(Plan) -> Plan,
 ) -> Option<Plan> {
     while let Some(Ask { request, reply }) = asks.pop_front() {
         let plan = match request {
+            Request::Load(index) | Request::Unload(index) | Request::Place(index, _) | Request::Retire(index)
+                if members[index].retired =>
+            {
+                let answer = match request {
+                    Request::Retire(_) => Ok(LoadReply::Already(EngineState::Unloaded)),
+                    _ => Err(LoadError::Unknown(members[index].name().to_owned())),
+                };
+                let _ = reply.send(answer);
+                continue;
+            }
+            Request::Retire(index) => {
+                members[index].retired = true;
+                if !members[index].loaded {
+                    let _ = reply.send(Ok(LoadReply::Already(EngineState::Unloaded)));
+                    continue;
+                }
+                in_place::back_plan(index, members, ledger)
+            }
+            Request::Place(index, entry) => {
+                let placement = &mut members[index].job.placement;
+                placement.residency = entry.residency;
+                placement.idle_unload_s = entry.idle_unload_s;
+                placement.share = entry.share;
+                if members[index].loaded || entry.residency != Residency::Resident {
+                    let state = if members[index].loaded {
+                        EngineState::Ready
+                    } else {
+                        EngineState::Unloaded
+                    };
+                    let _ = reply.send(Ok(LoadReply::Already(state)));
+                    continue;
+                }
+                in_place::plan(index, members, ledger)
+            }
             Request::Load(index) if members[index].loaded => {
                 let _ = reply.send(Ok(LoadReply::Already(EngineState::Ready)));
                 continue;
