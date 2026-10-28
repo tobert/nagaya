@@ -190,7 +190,6 @@ fn gogi_conformance_passes_against_the_process_with_the_fake_engine() {
         "a decision replays bit for bit across a restart",
         "generation holds its head",
         "stream reasoning and content pieces join to done's text",
-        "a build without dry_run refuses an open message, naming continue",
         "an empty content after reasoning closes the thinking",
         "a continuation of open content the client wrote starts with it",
         "a dry run of an open message the client wrote reports what it would feed",
@@ -218,6 +217,7 @@ fn gogi_conformance_passes_against_the_process_with_the_fake_engine() {
     if !short {
         for name in [
             "a cut reply names the phase of its next token",
+            "a build without dry_run refuses an open message, naming continue",
             "a cut reply's head is listed last in snapshots",
             "a dry run of a cut reply sent back open keeps its head",
             "a continuation resumed from the head feeds at most the last sampled token",
