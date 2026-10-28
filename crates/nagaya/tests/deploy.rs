@@ -439,10 +439,9 @@ fn the_b70host_profile_names_pony_on_card_zero_and_autismmix_on_card_one() {
             "{name}: {}",
             file.display()
         );
-        // Pony V6 asks for clip skip 2 (its Civitai page), and AutismMix is a Pony merge.
-        let mut family = engine.family.clone();
-        family.insert("model_dir".to_owned(), toml::Value::String("/sdxl".to_owned()));
-        assert_eq!(nagaya::sdxl::family_config(&family).unwrap().1, 2, "{name}");
+        // Pony's "clip skip 2" (A1111's count) is the penultimate layer: the engine's default `clip_skip` 1. Its 2 is
+        // layer -3, which gave Pony's "blobs" on the cards on 2026-10-28.
+        assert!(engine.family.is_empty(), "{name}: the default clip_skip 1");
     }
 }
 

@@ -66,8 +66,9 @@ idle_unload_s = 600
 
 # Pony Diffusion V6 XL on card 0 and AutismMix (its Pony merge) on card 1, each a single file from Civitai (Amy,
 # 2026-10-28). The SDXL engine reads Stability's tensor names (docs/spec.md 11.9, the single file), and its CLIP
-# tokenizer still comes from `SDXL_MODEL_DIR`. Each plans the 21,018,307,972 bytes of SDXL base. Pony V6 asks for clip
-# skip 2 on its Civitai page, and AutismMix is a Pony merge, so each family table gives 2.
+# tokenizer still comes from `SDXL_MODEL_DIR`. Each plans the 21,018,307,972 bytes of SDXL base. Pony V6 asks for "clip
+# skip 2" on its Civitai page: in A1111's count, the penultimate layer. That is `clip_skip` 1 of the engine, the
+# default, so the entries have no family table. The engine's `clip_skip` 2 is layer -3, and it gave Pony's "blobs".
 [[engines]]
 name = "pony-0"
 kind = "mk-sdxl-bmg"
@@ -80,9 +81,6 @@ idle_unload_s = 600
 [engines.config]
 checkpoint = "/home/atobey/models/sdxl/ponyDiffusionV6XL_v6StartWithThisOne.safetensors"
 
-[engines.family]
-clip_skip = 2
-
 [[engines]]
 name = "autismmix-1"
 kind = "mk-sdxl-bmg"
@@ -94,9 +92,6 @@ idle_unload_s = 600
 
 [engines.config]
 checkpoint = "/home/atobey/models/sdxl/autismmixSDXL_autismmixPony.safetensors"
-
-[engines.family]
-clip_skip = 2
 
 # One budget for each card's device memory, and one for host memory (spec 4.1). Each B70 has 32 GiB of GDDR6
 # (BAR 2 of `resource`, spec 2.1). The budget of a card is all of it: the device has no safety floor. The plan of
