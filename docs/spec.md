@@ -238,10 +238,10 @@ state:
 
 Pins and snapshot entries never go in gossip.
 
-**The state of an engine in gossip.** Proposed by senpai (Claude Opus 5.5), 2026-10-28. Reason: a swap changes the
-state of an engine while the process runs (3.3a), and a client reads the state of the fleet from gossip. A loop of
-loads and unloads must not flood gossip. `chitchat` 0.13.0 has no control for a key that changes often: its failure
-detector watches nodes, not keys.
+**The state of an engine in gossip.** Proposed by senpai (Claude Opus 5.5), 2026-10-28, and Decided 2026-10-28 (Amy, by
+interview). Reason: a swap changes the state of an engine while the process runs (3.3a), and a client reads the state of
+the fleet from gossip. A loop of loads and unloads must not flood gossip. `chitchat` 0.13.0 has no control for a key
+that changes often: its failure detector watches nodes, not keys.
 
 - The main loop compares the state of each engine with the state in `engine:<name>`, and it writes a changed state.
   Thus gossip shows `loading`, `ready`, `draining` and `unloaded` for each swap.
@@ -314,8 +314,8 @@ adds the entries does not count a pooled budget twice. On gfx1151host, `device(0
 2026-10-20 (reading).
 
 The placement profile is one TOML file. Each `[[engines]]` entry has `name`, `kind`, `devices`, `config`, an optional
-`family` table (11.3), `share` and `pin_identity`. An entry can also have `residency` and `idle_unload_s` (3.3a,
-Proposed). Each `[[budgets]]` entry has `tiers` and `bytes`, and a tier is
+`family` table (11.3), `share` and `pin_identity`. An entry can also have `residency` and `idle_unload_s` (3.3a).
+Each `[[budgets]]` entry has `tiers` and `bytes`, and a tier is
 `host` or `device(i)`. The `[store]` table has `nvme`, an optional `host` (4.1a), an optional `interval_copies`
 (6.13), 0 by default, and an optional `objects` (6.15). Decided 2026-10-20 (reading).
 
@@ -502,8 +502,8 @@ work well, trusting eg kaijutsu or the user's scripts to do the config and under
 Amy: "we can reconsider some more automatic config later but I think it would be extremely difficult to get right
 and therefore probably smart to have good APIs for configuring and let an agent like you handle it."
 
-**The profile routes.** Proposed by senpai (Claude Opus 5.5), 2026-10-28. Reason: a client needs a fixed shape for
-the change of 3.3, and for a read of the active profile.
+**The profile routes.** Proposed by senpai (Claude Opus 5.5), 2026-10-28, and Decided 2026-10-28 (Amy, by interview).
+Reason: a client needs a fixed shape for the change of 3.3, and for a read of the active profile.
 
 - `PUT /nagaya/v1/profile` takes the profile as JSON, in the shape of `profile.toml`. It changes only this machine.
   Thus question 15.5 stays open for a `PUT` to another machine.
@@ -558,8 +558,9 @@ interview), with the explicit loads of 3.3. Reason: these rules make each swap o
 - **The wait before an unload.** An engine that must unload takes no new job. Its jobs that the group holds run to
   their end. Jobs of engines that stay loaded go on.
 
-**A job for an engine that is not ready.** Proposed by senpai (Claude Opus 5.5), 2026-10-28. Reason: the explicit
-loads of 3.3 remove the wait for a load. The text of 2026-10-24 let a job wait for the next load of its engine.
+**A job for an engine that is not ready.** Proposed by senpai (Claude Opus 5.5), 2026-10-28, and Decided 2026-10-28
+(Amy, by interview). Reason: the explicit loads of 3.3 remove the wait for a load. The text of 2026-10-24 let a job wait
+for the next load of its engine.
 
 - The group thread decides. A job for an engine that is not `ready` ends at once, and nothing runs. Its request gets a
   503 `model_unavailable`.
@@ -611,8 +612,8 @@ on demand" of 2026-10-24.
 - A request for it is a 503 `model_unavailable` (3.3).
 - Its `weight_hash` and `tokenizer_hash` come from its first open since the start, and they are empty before (11.8a).
 
-**3.3b The load routes.** Proposed by senpai (Claude Opus 5.5), 2026-10-27. Amy decided that the routes exist (3.3). Amy
-decides their shape.
+**3.3b The load routes.** Proposed by senpai (Claude Opus 5.5), 2026-10-27. Amy decided that the routes exist (3.3), and
+the shape was Decided 2026-10-28 (Amy, by interview).
 
 - `POST /nagaya/v1/engines/{name}/load` loads the engine of the profile with that name, by a swap (3.3a). The reply is a
   202 when the swap starts, and it names the engines that unload. A loaded or loading engine gives a 200.
@@ -1272,10 +1273,11 @@ does that feed only when a client asks for it.
 `chunk` of a build). A build starts each span at a held boundary or at 0, and a generation holds no head. Thus no job
 continues a span today, and rule 7 has no code yet. The tests are in `crates/nagaya/tests/council_feed.rs`.
 
-**Proposed** (claude-opus-5-5, 2026-10-21): drafts are a setting of the served model, not a bit setting of the
-engine. The nagaya's generation job makes the prompt-lookup drafts, as mkviolet does (`draft`, `mk_api.rs:336-347`,
-keys of 4 and 3 tokens, at most 7 drafts). Reason: drafts change no row that the store keeps. Thus a change of the
-setting must not change the identity and lose the store.
+**Proposed** (claude-opus-5-5, 2026-10-21), and Decided 2026-10-28 (Amy, by interview): drafts are a setting of the
+served model, not a bit setting of the engine. The nagaya's generation job makes the prompt-lookup drafts, as mkviolet
+does (`draft`, `mk_api.rs:336-347`, keys of 4 and 3 tokens, at most 7 drafts). Reason: drafts change no row that the
+store keeps. Thus a change of the setting must not change the identity and lose the store. A test on the cards must
+still show that drafts change no bit of a kept row (`docs/new-engine.md`).
 
 **6.15 Objects.** Proposed by senpai (Claude Opus 5.5), 2026-10-25, and Decided 2026-10-27 (Amy, by interview). The
 budget, the limits and the order of the work are Decided 2026-10-25 (Amy, by interview); see "The budget of objects"
@@ -2222,10 +2224,11 @@ mkviolet's rules do not carry over, or where the rules above leave a choice open
 - **The reply parser** ports the reply splitter of `mk_api.rs` (`Splitter`, council wire), because `chat.rs` has
   only `parse_tool_call`. Its stop tokens are `<turn|>`, `<eos>`, `<|tool_response>` and `<|turn>` (`mk_api.rs:654`).
   A marker token gives an empty piece.
-- **Proposed** (claude-opus-5-5, 2026-10-24): a character that a run of text does not finish. At `<|channel>`,
-  `<channel|>`, `<|tool_call>` or `<tool_call|>`, the parser drops its bytes, as mkviolet does
-  (`Splitter::new_segment`, `mk_api.rs:1306`). At a stop token or a cut, `finish` gives them as U+FFFD in the tail,
-  in the phase of the last token. Reason: a marker gives an empty piece, and the pieces of a part join to its text.
+- **Proposed** (claude-opus-5-5, 2026-10-24), and Decided 2026-10-28 (Amy, by interview): a character that a run of text
+  does not finish. At `<|channel>`, `<channel|>`, `<|tool_call>` or `<tool_call|>`, the parser drops its bytes, as
+  mkviolet does (`Splitter::new_segment`, `mk_api.rs:1306`). At a stop token or a cut, `finish` gives them as U+FFFD in
+  the tail, in the phase of the last token. Reason: a marker gives an empty piece, and the pieces of a part join to its
+  text.
 - **Boundaries.** A marked message is a boundary when the tokens of its rendering begin the tokens of the whole, as
   in the Qwen3.8 library. Two boundaries with the same token count keep the first.
 - **Reads.** A plain read and a queue read keep mkviolet's text and its tokenization piece by piece. A read hashes the

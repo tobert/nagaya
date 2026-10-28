@@ -372,8 +372,8 @@ not choose. Amy decides.
 
 - Spec 8.3 (`docs/spec.md:1207-1208`) says that a bench reports the Gemma 4 oracle numbers. No test or bench in
   `crates/nagaya-mk-gemma4-bmg` reads `oracle.json`; only `crates/nagaya-text-gemma4/tests/oracle.rs` reads it.
-- Spec 6.14 (`docs/spec.md:1062`): whether drafts change the bits of Gemma 4. Proposed, and open until a test on the
-  B70 cards. `f1ab9ad` decided the notes on the build in the digest, the wake call and the pause rule. This one
-  stays open.
+- Spec 6.14: drafts are a setting of the served model (Decided 2026-10-28). A test on the B70 cards must still show
+  that drafts change no bit of Gemma 4. `f1ab9ad` decided the notes on the build in the digest, the wake call and the
+  pause rule. The test stays open.
 - Three copies of the model-file helper exist (section 3). `AGENTS.md:287` names only the Qwen3.8 copy. Where the
   helper of the third model lives is not decided.

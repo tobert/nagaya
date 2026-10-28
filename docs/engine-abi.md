@@ -193,7 +193,8 @@ close        close()                     frees the engine in the process
 An engine without `close` stays open until the process exits. The nagaya changes such an engine only through a
 planned restart (spec 3.3, exit code 4). Its `Drop` does not free it, and a comment says why. Decided 2026-10-18.
 
-**`close` in Rust.** Proposed by senpai (Claude Opus 5.5), 2026-10-24, for the swap in place (spec 3.3a).
+**`close` in Rust.** Proposed by senpai (Claude Opus 5.5), 2026-10-24, for the swap in place (spec 3.3a), and
+Decided 2026-10-28 (Amy, by interview).
 
 - `close` is the `Drop` of the engine. The trait gets no new method.
 - An engine that declares `close` frees each device allocation and each host allocation of its own in `Drop`. After
@@ -793,7 +794,8 @@ group of one card: a smaller Gemma, "or probably a qwen and lfm".
 
 **D2. Inputs.** An engine declares tokens, rows, or both. mk needs token ids even when it gets rows. Its per-layer
 embeddings (PLE) hash the token ids, and its PLE history is a fixed part (`engine.h:75`, `ple_rows`). gmk's audio rows
-and diffusion latents have no tokens. Proposed: `inputs = tokens | rows | tokens+rows`, declared per engine.
+and diffusion latents have no tokens. Proposed, and Decided 2026-10-28 (Amy, by interview): `inputs = tokens | rows |
+tokens+rows`, declared per engine.
 
 Deferred 2026-10-17 (Amy: "sort it out with the first engine"). mkviolet's Gemma 4 is the first port.
 
