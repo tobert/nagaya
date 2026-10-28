@@ -70,6 +70,7 @@ The crates live in directories under `crates/`. Use these crates:
 | `nagaya-text-gemma4` | the Gemma 4 family library: tokenizer, template, escapes, council rendering, reply parser | 11.3, 11.3a |
 | `nagaya-mk-qwen3tts-bmg` | the Qwen3-TTS VoiceDesign engine on one B70 card: weights, the passes as rings, the speech calls | ABI "Speech" |
 | `nagaya-text-qwen3tts` | the Qwen3-TTS family library: tokenizer, the prompt of a speech request, the codec ids | 11.3, 11.8 |
+| `nagaya-mk-sdxl-bmg` | the SDXL engine on one B70 card: weights and their planes, encoders, UNet, VAE, the sampler | ABI "Image" |
 | `nagaya-text-sdxl` | the SDXL family library: CLIP tokenizer, the A1111 prompt, its chunks and weights | 11.9a |
 | `nagaya-text-toy` | the toy family library on gogi's `gogi-toy`, for tests with the fake engine | 11.3b |
 | `nagaya-conformance` | the conformance suite (8.3), generic over the `Engine` trait | 8.3 |
@@ -320,6 +321,13 @@ is done on gfx1151host, and milestones 15s, 16 and 17 are done on b70host. Miles
     - step 6, the family `nagaya-text-sdxl`: `a9c1ce7`, and Amy's decision on the ids `061efed`;
     - step 7, the image ops on the shared interpreter: `8dc7277`. The card tests are in
       `crates/nagaya-mk-bmg/tests/xe_sdxl_ops.rs`.
+    - step 8, the engine: `38ae84c`, `fab01eb`, `a7d0b09`, `cae1560`, and the matrix units `c13d5a6`. A step of a
+      1024 by 1024 image takes 1.77 s. `tests/xe_oracle.rs` compares it with diffusers on the card.
+    - step 9, the route: `e4c5c87`, `4557225`, `eb3c12e`, `158383f`, and the admission fix `16a0107`;
+    - step 10, the deploy: `04299e6`, deployed at 14:58 on 2026-10-28. `sdxl-0` and `sdxl-1` are on demand.
+
+    Amy decides the Proposed notes of `fab01eb`, `e4c5c87` and `4557225`. These are not built: the single-file
+    loader (11.9), and the device threads of a group (3.2). Thus the two image engines take turns on the group thread.
 19. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
@@ -409,9 +417,9 @@ get ran sometimes, perhaps just a bump in our AGENTS.md"
   `nagaya-mk-qwen3tts-bmg` read it from `QWEN3TTS_MODEL_DIR`, which has no default. `signoff.md` gives the path.
 - The oracle of `nagaya-mk-qwen3tts-bmg` reads `target/qwen3tts-golden` or `QWEN3TTS_GOLDEN_DIR`. Write the files
   with `tools/qwen3tts_golden.sh`, with no GPU job.
-- b70host holds SDXL base 1.0 in the Hugging Face cache. The tests of `nagaya-text-sdxl` read it from
-  `SDXL_MODEL_DIR`, which has no default. `signoff.md` gives the path. `tools/sdxl_golden.sh` writes the oracle into
-  `target/sdxl-golden` or `SDXL_GOLDEN_DIR`, with no GPU job.
+- b70host holds SDXL base 1.0 in the Hugging Face cache. The tests of `nagaya-text-sdxl` and the `xe` tests of
+  `nagaya-mk-sdxl-bmg` read it from `SDXL_MODEL_DIR`, which has no default. `signoff.md` gives the path.
+  `tools/sdxl_golden.sh` writes the oracle into `target/sdxl-golden` or `SDXL_GOLDEN_DIR`, with no GPU job.
 - The report of a check names how many tests skipped for a missing model.
 
 On gfx1151host, run the oracle bench with `MK_SHARDS` set and both units inactive:
