@@ -366,6 +366,11 @@ thread priorities:
   a chain of shared devices, are in one group with the union of their devices. A group has one thread and one
   scheduler. Every engine call for a group comes from its thread, and the call
   is synchronous.
+- **One device thread per device of a group with more than one device.** Decided 2026-10-28 (Amy, by interview). An
+  engine with one device opens on the thread of its device, and its quanta run there. Thus engines on separate cards of
+  one group run at once. Reason: Gemma 4 spans both B70 cards, so each engine of b70host is in its group. The image
+  engines on the two cards must run in parallel (11.9). This extends the rule of engine-abi "How a group loads both" to
+  a group with no loaded engine with stages.
 - **One stage thread per device of a staged engine.** An engine that declares `stages` gets one more thread for
   each device of its stages (D1). The group thread runs the scheduler and sends each stage quantum to the thread of
   its device. Each call that touches a device comes from the stage thread of that device. Decided 2026-10-21 (Amy:
@@ -770,7 +775,9 @@ service, and that split moves into mk's engine wrapper.) The watchdog reports ea
 (7.4).
 
 **5.2 Kinds.** Each quantum has a kind: `read`, `prefill`, `decode`, `embed`, `copy`, `step` (an image step), or
-`train` (a micro-batch). Metrics and the cost model use kinds. A kind does not set urgency (mk `mk.gpu.kind`).
+`train` (a micro-batch). Metrics and the cost model use kinds. A kind does not set urgency (mk `mk.gpu.kind`). An
+image job runs one `embed` for its text encoders, one `step` for each denoising step, and one `step` for the VAE decode
+(11.9).
 
 **5.3 Classes.** The classes are `interactive`, `batch` and `filler`. A client sends `interactive` or `batch` in
 council v2's `class` field (gogi). Only jobs that the nagaya or a profile starts, such as training and the audit, are
@@ -2972,6 +2979,105 @@ by interview).
   that starts a line samples its first code.
 - The random value of a code depends on the seed, the frame within its line, and the codebook (11.2). Thus the same
   context and seed give the same codes, held or fed.
+
+**11.9 Images.** Amy decided these rules on 2026-10-25, 2026-10-27 and 2026-10-28, by interview (`AGENTS.md`
+milestone 18).
+
+- The first image model is SDXL base 1.0. Amy, 2026-10-27: "could we start with a general sdxl and pony etc would be
+  easier later?" Pony Diffusion V6 and its merges come later, as other weights on the same engine.
+- The loader reads the diffusers folders and the single file with Stability's tensor names. Thus a Civitai
+  checkpoint loads with no new code.
+- There is no refiner. The VAE is the stock VAE of the checkpoint, in fp32.
+- The route is council v2 only. An image is an output object, with a pending id while it decodes (gogi "Outputs").
+- The family parses A1111 weights, such as `(word:1.2)` and `[word]`. Thus a prompt from Civitai works as it is.
+- A request can ask for a preview at each step. First a linear map from latent to RGB, and TAESD later.
+- The samplers are Euler, Euler a, DPM++ 2M Karras and DPM++ 2M SDE Karras.
+- A request asks for at most 4 images, and each is its own output object.
+- An image engine has one card. Amy, 2026-10-27: "if higher quality models fit on these cards, we'll run them in
+  parallel, one model per card". Each engine is its own served model with its own name (Decided 2026-10-28).
+- Engines on separate cards of one group run their quanta at once (3.2, Decided 2026-10-28).
+- A request never starts a load (3.3).
+
+Decided 2026-10-28 (Amy, by interview):
+
+- The last `user` message is the prompt. The negative prompt is `output.options.negative`.
+- The output is `image/png` with an A1111 `parameters` text chunk, so A1111 and Civitai tools read the settings.
+- The engine makes the noise from `sample.seed` with its own random stream on the card. A seed from another tool does
+  not give its image. Reason: Amy chose the simpler stream.
+- A preview is a stream event, `preview`, that names a small PNG object. The server caches it and does not keep it.
+- Width and height are multiples of 64 from 512 to 2048, with at most 1,572,864 pixels. The default is 1024 by 1024.
+- The quanta are one `embed` for the text encoders, one `step` for each step, and one `step` for the VAE decode. The
+  images of a request share each quantum (5.2).
+- The defaults are 30 steps, a CFG scale of 7, and the sampler `dpm++ 2m karras`. A request asks for 1 image by
+  default and previews are off.
+- `clip_skip` is an option now. The family config of the served model gives its default.
+- An image job holds no state in the store. Each request starts with empty latents.
+- img2img, inpainting, LoRAs and a hires pass are not built now, and the design leaves room for each. Amy: "We don't
+  necessarily need to build img2img or inpainting right now, but we need to design for them. same for lora and
+  highres/upscale."
+
+**11.9a An image request.** Proposed by senpai (Claude Opus 5.5), 2026-10-28. Reason: the rules of 11.9 need names,
+ranges and errors before the family and the engine can test them.
+
+- A generation names the image model and has `output` with `mime` `image/png`. A generation with no `output` is a 400
+  that names `output`, as for any model with `media.text_replies: false`.
+- The context has one `user` message, or a `user` message after other messages that the server does not render. The
+  text of the last `user` message is the prompt. A `system` message is a 400 that names `messages`. Reason: a later
+  rule can give it a meaning.
+- `output.options` takes these members. A member out of range, or an unknown member, is a 400 that names it, such
+  as `output.options.steps`.
+
+| Member | Range | Default |
+|---|---|---|
+| `negative` | a string | `""` |
+| `width`, `height` | multiples of 64 from 512 to 2048; at most 1,572,864 pixels together | 1024 |
+| `steps` | 1 to 150 | 30 |
+| `cfg` | 1.0 to 30.0 | 7.0 |
+| `sampler` | `euler`, `euler a`, `dpm++ 2m karras`, `dpm++ 2m sde karras` | `dpm++ 2m karras` |
+| `count` | 1 to 4 | 1 |
+| `clip_skip` | 1 or 2 | from the family config of the served model; 1 for SDXL base |
+| `previews` | `true` or `false` | `false` |
+
+- `sample` takes `seed` only. Image `i` of a request uses the seed plus `i`, as A1111 does for a batch. A request with
+  no seed gets a random seed, and the A1111 chunk records it. Any other member of `sample` is a 400 that names it.
+- `max_tokens` bounds no image. The reply has no text, `finish` is `end_turn`, and `completion` is 0.
+- `done.outputs` holds one PNG for each image, in index order. `usage.media.written` counts them and their bytes.
+- A stream sends an `output` event for each image when its decode starts. `GET` of a pending id gives the PNG when it
+  is sealed, because a PNG has no useful part before its end.
+- With `previews`, a stream sends `{"index", "step", "id"}` as the event `preview` after each step. `id` names a PNG at
+  one eighth of the size of the image. The store caches it as any object, and no keep holds it.
+- The A1111 chunk is the text `parameters`, in A1111's form: the prompt, then `Negative prompt: ...`, then `Steps,
+  Sampler, CFG scale, Seed, Size, Model, Clip skip` on one line. The model is the served model name.
+
+**The served image model.** Proposed by senpai (Claude Opus 5.5), 2026-10-28.
+
+- Identity lists it with `media.outputs` of `image/png`, no inputs, `media.text_replies: false`, and the capability
+  `generate`. A build, a decision or a raw read that names it is a 400 that names `model`.
+- Its `context_tokens` is the tokens of the prompt that the family takes: 3 chunks of 75 tokens. Its `snapshot_bytes`
+  is 0, because it holds no state.
+- Its `weight_hash` and `tokenizer_hash` are the engine's after its first open since the start, and empty before
+  (3.3a "Council models on demand").
+
+**The family of SDXL.** Proposed by senpai (Claude Opus 5.5), 2026-10-28. The crate `nagaya-text-sdxl` holds it (11.3).
+
+- The CLIP tokenizer of both text encoders, from the files of the checkpoint. Both encoders use the same ids.
+- The A1111 prompt: `(text)` multiplies the weight of its tokens by 1.1, `[text]` divides it by 1.1, and `(text:w)`
+  sets it to `w`. `\(` and `\)` are plain brackets. `BREAK` starts a new chunk.
+- A chunk is 75 tokens with a start token and an end token. A longer prompt makes up to 3 chunks, and the encoder
+  output of the chunks joins along the tokens, as A1111 does. A longer prompt is a 400 that names `messages`.
+- The family gives the engine the ids and the weight of each token. The engine scales the encoder output by the
+  weights, and keeps its mean, as A1111 does.
+
+**The design of later image work.** Proposed by senpai (Claude Opus 5.5), 2026-10-28. Nothing here is built now.
+
+- **img2img.** The last `user` message also holds an `image/png` object part. The engine encodes it with the VAE
+  into the start latent, and `output.options.strength` sets how many steps run. This needs a VAE encode quantum.
+- **Inpainting.** A second object part is the mask. The engine keeps the latent outside the mask at each step.
+- **LoRAs.** `output.options.loras` lists objects of safetensors weights, each with a weight. The engine adds them to
+  its weights for the job and removes them after it. Their ids go into the A1111 chunk.
+- **Hires pass.** `output.options.hires` names a scale and a step count. After the steps, the engine scales the
+  latent up and runs img2img steps on it. Each is one more quantum of kind `step`.
+- The engine calls (engine-abi "Image") take these inputs as optional members. Thus each one adds members and no call.
 
 ## 12. Identity
 

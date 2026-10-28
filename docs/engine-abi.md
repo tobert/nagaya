@@ -984,13 +984,41 @@ Decided 2026-10-18. A training engine declares the `train` capability:
 
 ## Image
 
-Decided 2026-10-18. An image engine uses `pass(segments, taps)` with quantum kind `step`:
+Decided 2026-10-18, before any image engine. An image engine used `pass(segments, taps)` with quantum kind `step`. A
+diffusion latent was a fixed part, and each `step` quantum replaced it. mk's painter was the first case (mk
+`docs/painter.md`). mk's `YieldHook` showed that a paused run matched the unpaused one, max pixel difference 0.
 
-- A diffusion latent is a fixed part. Each `step` quantum replaces it. There is no `n` to extend.
-- The outputs are a latent tap or an image tap.
-- The seed is an input, so it is in the recipe.
-- mk's painter is the first case (mk `docs/painter.md`). mk's `YieldHook` showed that a paused run matched the
-  unpaused one, max pixel difference 0 (ontology "Quantum").
+**The image capability.** Proposed by senpai (Claude Opus 5.5), 2026-10-28, for spec 11.9. It replaces the rule of
+2026-10-18 above. Reason: SDXL has two text encoders, token weights, a sampler with history, a VAE decode and
+previews. A segment of tokens has no place for them, as it had none for speech ("Speech").
+
+An image engine declares the `image` capability. Its `pass` refuses. It has these calls:
+
+```
+image_begin(slot, job) -> ok | why      encodes the prompts, makes the noise, and keeps the job in the slot
+image_step(slot) -> {step, previews}    runs one step of each image of the slot
+image_decode(slot) -> images            decodes each latent with the VAE into RGB
+image_clear(slot)                       frees the state of the slot
+```
+
+- **The job.** It holds the ids and the weight of each token of both prompts, in chunks of 75 (spec 11.9a). It
+  holds `clip_skip`. It also holds the width, the height, the step count, the CFG scale, the sampler,
+  the image count and the seed. The engine never takes text (D2): its inputs are tokens.
+- **Quanta.** `image_begin` is one quantum of kind `embed`. `image_step` and `image_decode` are each one quantum of
+  kind `step`. Each one runs every image of the slot. The engine declares the most pixels of a slot that keep a
+  quantum within `max_quantum_ms` (D8). The nagaya refuses a larger request before it runs.
+- **CFG.** One step runs the prompt and the negative prompt of each image in one pass of the UNet.
+- **Random stream.** The engine makes each noise value from the seed, the image, the step and the purpose, as the
+  draws of spec 11.2. Thus the image of seed `s` does not depend on the other images of its slot.
+- **Previews.** With previews on, `image_step` also gives each latent in RGB at one eighth of the size, by a linear
+  map. The nagaya makes the PNG.
+- **Images.** `image_decode` gives 8-bit RGB. The nagaya makes the PNG and its A1111 chunk.
+- **State.** A slot holds the latents, the encoder output, the sampler history and the counters of the random stream.
+  It declares no part, because the store keeps no image state (spec 11.9).
+- **Determinism.** The same identity, job and seed give the same bits.
+- **Later inputs.** img2img, inpainting, LoRAs and a hires pass are optional members of the job (spec 11.9, "The
+  design of later image work"). An engine that lacks one refuses a job that names it. A VAE encode is one more
+  quantum of kind `step`.
 
 ## Speech
 

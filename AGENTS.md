@@ -279,8 +279,12 @@ is done on gfx1151host, and milestones 15s, 16 and 17 are done on b70host. Miles
     - **VAE:** the stock VAE of the checkpoint, in fp32. Not the fp16 fix.
     - **Samplers:** Euler, Euler a, DPM++ 2M Karras and DPM++ 2M SDE Karras.
     - **Batch:** a request asks for at most 4 images, and each is its own output object.
-    - **Cards:** one image engine on each card, each its own device group. Amy, 2026-10-27: "if higher quality
-      models fit on these cards, we'll run them in parallel, one model per card".
+    - **Cards:** one image engine on each card, and each engine is its own served model. Amy, 2026-10-27: "if higher
+      quality models fit on these cards, we'll run them in parallel, one model per card". Gemma 4 spans both cards,
+      so they are one group. A device thread for each card runs them at once (spec 3.2, Decided 2026-10-28).
+    - **Request:** Amy decided the rest on 2026-10-28, by interview (spec 11.9): the prompt, the PNG with its A1111
+      chunk, the seed, the previews, the sizes, the quanta, the defaults, and `clip_skip`. img2img, inpainting,
+      LoRAs and a hires pass are designed, not built.
     - **Loads:** a request never starts a load (spec 3.3, Decided 2026-10-27). A client loads an engine with a
       profile `PUT` or a load route. `POST /v1/audio/speech` goes.
 
