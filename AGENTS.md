@@ -312,6 +312,10 @@ is done on gfx1151host, and milestones 15s, 16 and 17 are done on b70host. Miles
     - step 1, objects: `69a4f0d`, `6469b63`, `5eaed78`;
     - step 2, speech in council: `e57eaeb` to `7c414b0`, deployed at 17:53 on 2026-10-25;
     - Amy's decisions of 2026-10-27: `6d61ea2`, `483b81c`, and the gogi pin `af34fa7`.
+    - step 3, explicit loads, the load routes, the profile routes and the swap states in gossip: `70a3f1a` to
+      `5a80b25`, deployed at 10:54 on 2026-10-28;
+    - step 4, the image rules: `362f3fc`, `00f2682` and Amy's decisions `db5f5f6`;
+    - step 5, the oracle of SDXL base from diffusers: `15b94b6`. `tools/sdxl_golden.sh` writes it.
 19. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
