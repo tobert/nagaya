@@ -318,16 +318,21 @@ pub fn parameters(checked: &Checked, model: &str, index: u32) -> String {
     text
 }
 
-/// The bytes of a PNG of 8-bit RGB, with a `tEXt` chunk `parameters` when `text` is given.
+/// The bytes of a PNG of 8-bit RGB, with a chunk `parameters` when `text` is given: `tEXt` for Latin-1 text, else
+/// `iTXt`.
 pub fn png(image: &RgbImage, text: Option<&str>) -> Result<Vec<u8>, ServiceError> {
     let mut bytes = Vec::new();
     let mut encoder = png::Encoder::new(&mut bytes, image.width, image.height);
     encoder.set_color(png::ColorType::Rgb);
     encoder.set_depth(png::BitDepth::Eight);
     if let Some(text) = text {
-        encoder
-            .add_text_chunk("parameters".to_owned(), text.to_owned())
-            .map_err(|error| ServiceError::internal(format!("cannot add the parameters chunk of a PNG: {error}")))?;
+        // A1111 writes tEXt for Latin-1 text and iTXt for other text, which tEXt cannot hold.
+        let added = if text.chars().all(|c| u32::from(c) <= 0xff) {
+            encoder.add_text_chunk("parameters".to_owned(), text.to_owned())
+        } else {
+            encoder.add_itxt_chunk("parameters".to_owned(), text.to_owned())
+        };
+        added.map_err(|error| ServiceError::internal(format!("cannot add the parameters chunk of a PNG: {error}")))?;
     }
     let mut writer = encoder
         .write_header()
@@ -350,6 +355,8 @@ enum Item {
     },
     /// The outputs begin: one pending id for each image.
     Outputs(Vec<OutputEvent>),
+    /// A step ended. It sends no event; its send fails when the client went away.
+    Step,
     End(Box<Result<GenerationDone, ServiceError>>),
 }
 
@@ -370,13 +377,21 @@ fn make(
     let result = (|| {
         for item in made.iter() {
             match item.map_err(service_error)? {
+                // A reply with no stream names no preview, so it makes none (spec 11.9a).
+                Made::Previews { .. } | Made::Step { .. } if !stream => {}
+                // A step with no previews tells only whether the client still listens.
+                Made::Step { .. } => {
+                    if !tell(Item::Step) {
+                        return Err(ServiceError::Cancelled);
+                    }
+                }
                 Made::Previews { step, previews } => {
                     let mut ids = Vec::with_capacity(previews.len());
                     for preview in &previews {
                         let bytes = png(preview, None)?;
                         ids.push(format!("blake3:{}", super::voice::seal(council, &bytes, PNG)?.hex()));
                     }
-                    if stream && !tell(Item::Previews { step, ids }) {
+                    if !tell(Item::Previews { step, ids }) {
                         return Err(ServiceError::Cancelled);
                     }
                 }
@@ -583,6 +598,7 @@ pub async fn generation(
                     .collect(),
                 false,
             ),
+            Some(Item::Step) => (Vec::new(), false),
             Some(Item::Outputs(outputs)) => (
                 outputs
                     .into_iter()

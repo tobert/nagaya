@@ -42,12 +42,10 @@ pub struct ImageConfig {
     pub context_tokens: u64,
     /// The `clip_skip` of a request that gives none (spec 11.9a).
     pub clip_skip: u32,
-    /// The most pixels of all the images of one request.
-    pub max_pixels: u64,
 }
 
 impl ImageConfig {
-    /// The config of SDXL: one slot, 225 prompt tokens, `clip_skip` 1, and 4 images of 1,572,864 pixels.
+    /// The config of SDXL: one slot, 225 prompt tokens, and `clip_skip` 1.
     pub fn new(model: &str, engine: &str) -> Self {
         Self {
             model: model.to_owned(),
@@ -56,7 +54,6 @@ impl ImageConfig {
             timeout: Duration::from_secs(600),
             context_tokens: 225,
             clip_skip: 1,
-            max_pixels: 4 * 1_572_864,
         }
     }
 }
@@ -97,6 +94,9 @@ impl std::fmt::Display for ImageError {
 pub enum Made {
     /// The previews after a step: one for each image, at one eighth of its size.
     Previews { step: u32, previews: Vec<RgbImage> },
+    /// A step ended, and the job makes no previews. A route that went away hears of it here, so the job ends at its
+    /// next step.
+    Step { step: u32 },
     /// The steps ended, and the decode starts.
     Decoding,
     /// The images, in index order. Nothing follows.
@@ -116,6 +116,12 @@ pub struct ImageService {
 impl ImageService {
     /// Make the service of the engine `config.engine`. The engine must be in the profile of the process.
     pub fn new(config: ImageConfig, family: Arc<dyn ImageFamily>, ports: Ports) -> Result<Self, String> {
+        if config.slots == 0 {
+            return Err(format!(
+                "the image engine `{}` has no slot; give it one or more",
+                config.engine
+            ));
+        }
         let (group, engine) = ports.locate(&config.engine).ok_or_else(|| {
             format!(
                 "the image engine `{}` is not in the profile of the process",

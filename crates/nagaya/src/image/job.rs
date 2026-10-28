@@ -148,6 +148,8 @@ impl JobBody for ImageJobBody {
                     if !self.tell(Ok(made)) {
                         return self.cancel(engine);
                     }
+                } else if !self.tell(Ok(Made::Step { step: out.step })) {
+                    return self.cancel(engine);
                 }
                 if out.step < steps {
                     return Ran::More(vec![Kind::Step]);

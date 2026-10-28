@@ -30,10 +30,14 @@ type Jobs = Arc<Mutex<Vec<ImageJob>>>;
 /// The `image_clear` calls of the fake.
 type Clears = Arc<std::sync::atomic::AtomicUsize>;
 
+/// The `image_step` calls of the fake.
+type Steps = Arc<std::sync::atomic::AtomicUsize>;
+
 /// An image engine with one slot that paints each image in the low byte of its seed.
 struct Painter {
     jobs: Jobs,
     clears: Clears,
+    steps: Steps,
     job: Option<ImageJob>,
     step: u32,
 }
@@ -54,6 +58,7 @@ impl Image for Painter {
     fn image_step(&mut self, _slot: SlotId) -> Result<ImageStepOut, PassError> {
         let job = self.job.as_ref().expect("a step after a begin");
         self.step += 1;
+        self.steps.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let previews = if job.previews {
             (0..job.count)
                 .map(|i| {
@@ -143,7 +148,7 @@ impl Engine for Painter {
     }
 }
 
-struct Painters(Jobs, Clears);
+struct Painters(Jobs, Clears, Steps);
 
 impl Factory for Painters {
     fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
@@ -154,6 +159,7 @@ impl Factory for Painters {
         Ok(Box::new(Painter {
             jobs: Arc::clone(&self.0),
             clears: Arc::clone(&self.1),
+            steps: Arc::clone(&self.2),
             job: None,
             step: 0,
         }))
@@ -182,6 +188,7 @@ struct Fixture {
     process: Process,
     jobs: Jobs,
     clears: Clears,
+    steps: Steps,
     directory: tempfile::TempDir,
 }
 
@@ -194,8 +201,12 @@ impl Fixture {
         let directory = tempfile::tempdir().unwrap();
         let jobs: Jobs = Arc::default();
         let clears: Clears = Arc::default();
+        let steps: Steps = Arc::default();
         let mut registry = Registry::new();
-        registry.register("painters", Box::new(Painters(Arc::clone(&jobs), Arc::clone(&clears))));
+        registry.register(
+            "painters",
+            Box::new(Painters(Arc::clone(&jobs), Arc::clone(&clears), Arc::clone(&steps))),
+        );
         let profile = PlacementProfile {
             engines: vec![EnginePlacement {
                 name: MODEL.to_owned(),
@@ -241,6 +252,7 @@ impl Fixture {
             process,
             jobs,
             clears,
+            steps,
             directory,
         }
     }
@@ -248,9 +260,7 @@ impl Fixture {
     /// A council that serves the image model with an object store, and no text model. Its `clip_skip` default is 2,
     /// so a test sees the default of the config.
     fn council(&self) -> Arc<Council> {
-        let mut config = ImageConfig::new(MODEL, MODEL);
-        config.clip_skip = 2;
-        let service = ImageService::new(config, Arc::new(Characters), self.process.ports()).unwrap();
+        let service = self.service();
         let objects = ObjectStore::open(&self.directory.path().join("objects"), 1 << 26).unwrap();
         Arc::new(
             Council::new(Vec::new(), None)
@@ -258,6 +268,12 @@ impl Fixture {
                 .with_images(vec![service])
                 .with_objects(objects),
         )
+    }
+
+    fn service(&self) -> ImageService {
+        let mut config = ImageConfig::new(MODEL, MODEL);
+        config.clip_skip = 2;
+        ImageService::new(config, Arc::new(Characters), self.process.ports()).unwrap()
     }
 
     fn take_jobs(&self) -> Vec<ImageJob> {
@@ -332,11 +348,19 @@ fn read_png(bytes: &[u8]) -> (u32, u32, u8, Option<String>) {
     let frame = reader.next_frame(&mut pixels).unwrap();
     assert_eq!(frame.color_type, png::ColorType::Rgb);
     let info = reader.info();
-    let text = info
+    // A1111 writes tEXt for Latin-1 text and iTXt for other text.
+    let latin1 = info
         .uncompressed_latin1_text
         .iter()
         .find(|chunk| chunk.keyword == "parameters")
         .map(|chunk| chunk.text.clone());
+    let utf8 = info
+        .utf8_text
+        .iter()
+        .find(|chunk| chunk.keyword == "parameters")
+        .map(|chunk| chunk.get_text().unwrap());
+    assert!(latin1.is_none() || utf8.is_none(), "one parameters chunk");
+    let text = latin1.or(utf8);
     (info.width, info.height, pixels[0], text)
 }
 
@@ -438,6 +462,40 @@ fn a_generation_writes_one_png_for_each_image_with_its_seed_in_the_a1111_chunk()
     assert_eq!(media["objects"], json!(2), "{done}");
     assert_eq!(media["bytes"], json!(written), "{done}");
     assert_eq!(media["pixels"], json!(2 * 512 * 768), "{done}");
+}
+
+/// A prompt outside Latin-1, as from Civitai, keeps its text in an iTXt chunk. A tEXt chunk cannot hold it.
+#[test]
+fn a_prompt_outside_latin_1_writes_its_chunk_as_utf_8() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let prompt = "a cat — “cute” 🐱, 猫";
+    let (status, done) = generate(
+        &council,
+        request(
+            prompt,
+            json!({"steps": 1, "width": 512, "height": 512}),
+            json!({"seed": 2}),
+        ),
+    );
+    assert_eq!(status, StatusCode::OK, "{done}");
+    let bytes = object(&council, done["outputs"][0]["id"].as_str().unwrap());
+    let text = read_png(&bytes).3.unwrap();
+    assert!(text.starts_with(&format!("{prompt}\nSteps: 1,")), "{text}");
+    // A Latin-1 prompt keeps a tEXt chunk.
+    let (status, done) = generate(
+        &council,
+        request("café", json!({"steps": 1, "width": 512, "height": 512}), json!({})),
+    );
+    assert_eq!(status, StatusCode::OK, "{done}");
+    let bytes = object(&council, done["outputs"][0]["id"].as_str().unwrap());
+    let info = png::Decoder::new(std::io::Cursor::new(&bytes))
+        .read_info()
+        .unwrap()
+        .info()
+        .clone();
+    assert_eq!(info.uncompressed_latin1_text.len(), 1);
+    assert!(info.utf8_text.is_empty());
 }
 
 #[test]
@@ -691,4 +749,59 @@ fn the_gogi_suite_passes_for_the_image_model() {
     .unwrap();
     server.abort();
     assert_eq!(report.failures(), 0, "{}", report.summary());
+}
+
+/// A route that goes away cancels its job at the next step, also with no previews: each step tells the route.
+#[test]
+fn a_job_with_no_previews_ends_soon_after_its_route_goes_away() {
+    let fixture = Fixture::new();
+    let service = fixture.service();
+    let job = ImageJob {
+        prompt: Vec::new(),
+        negative: Vec::new(),
+        clip_skip: 1,
+        width: 512,
+        height: 512,
+        steps: 50,
+        cfg: 7.0,
+        sampler: ImageSampler::Euler,
+        count: 1,
+        seed: 1,
+        previews: false,
+    };
+    let made = service.generate(job, nagaya::council::Schedule::default()).unwrap();
+    made.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+    drop(made);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while service.free_slots() == 0 {
+        assert!(std::time::Instant::now() < deadline, "the job did not end");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let steps = fixture.steps.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        steps < 50,
+        "the job ran {steps} of its 50 steps after its route went away"
+    );
+    assert_eq!(
+        fixture.clears.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the cancel clears the slot"
+    );
+}
+
+/// A reply with no stream has nowhere to name a preview, so it makes none.
+#[test]
+fn a_reply_with_no_stream_keeps_no_previews() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let options = json!({"width": 512, "height": 512, "steps": 3, "previews": true});
+    let (status, done) = generate(&council, request("a fox", options, json!({"seed": 4})));
+    assert_eq!(status, StatusCode::OK, "{done}");
+    let objects = council.objects().unwrap();
+    let used = objects.lock().unwrap().used();
+    assert_eq!(
+        used,
+        done["outputs"][0]["bytes"].as_u64().unwrap(),
+        "only the image is held"
+    );
 }
