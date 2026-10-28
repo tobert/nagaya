@@ -335,7 +335,7 @@ is done on gfx1151host, and milestones 15s, 16, 17 and 18 are done on b70host. A
     image of 1024 by 1024 with 30 steps takes 57 s on each card, and the two cards run at once. The gogi suite gave
     343 ok, 0 FAIL and 15 skip for gemma, and 88 ok, 0 FAIL and 2 skip for `sdxl-0`.
 
-    Amy decides the Proposed note `baddb59`, the single-file checkpoint. Two limits stay open:
+    Amy accepted the single-file checkpoint of `baddb59` on 2026-10-28. Two limits stay open:
 
     - A load or an unload beside running work blocks the group thread for the open. The other card then waits after
       its current quantum.

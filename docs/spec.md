@@ -3076,8 +3076,8 @@ interview).
   config and `[engines.family]` take the key `model_dir`, and read `SDXL_MODEL_DIR` with no key, as `gemma4` does.
   `[engines.family]` also takes `clip_skip`, 1 or 2, with the default 1. Reason: these follow the rules of the other
   engine kinds of b70host.
-- **Proposed** (senpai, Claude Opus 5.5, 2026-10-28): the single file of 11.9. Reason: a Civitai checkpoint is one
-  file with Stability's tensor names, and it holds no tokenizer.
+- The single file of 11.9. Decided 2026-10-28 (Amy: "proposed note looks good"). Reason: a Civitai checkpoint is
+  one file with Stability's tensor names, and it holds no tokenizer.
   - The key `checkpoint` of `[engines.config]` names the file. The engine then reads its weights from the file only.
     `model_dir` still names a diffusers folder, for the CLIP tokenizer in `tokenizer/`, which every SDXL checkpoint
     shares. The family reads the tokenizer from it, as before.
