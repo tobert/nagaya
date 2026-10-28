@@ -173,3 +173,15 @@
                 C[t * M + off + j] = A[i];
             }
         }
+        else if (op == OP_ADD_IMAGE_ROW) {
+            // c[b, p, j] += a[b, j] for each image b of its n pixels of k values: the time embedding of a resnet, which
+            // differs by image because the pooled text differs. layer = images (0: 1).
+            __global const float* A = (__global const float*)task.a;
+            __global float* C = (__global float*)task.c;
+            uint K = task.k, P = task.n, B = task.layer ? task.layer : 1;
+            ulong total = (ulong)B * P * K;
+            for (ulong i = (ulong)gsg * 16 + lane; i < total; i += (ulong)n_gsg * 16) {
+                ulong b = i / ((ulong)P * K);
+                C[i] += A[b * K + i % K];
+            }
+        }

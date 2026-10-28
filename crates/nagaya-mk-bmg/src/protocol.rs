@@ -52,6 +52,7 @@ pub const OP_UPSAMPLE2X: u16 = 63;
 pub const OP_QUICK_GELU: u16 = 64;
 pub const OP_GEGLU_HALF: u16 = 65;
 pub const OP_COPY_COLS: u16 = 66;
+pub const OP_ADD_IMAGE_ROW: u16 = 67;
 
 pub const FLAG_ACCUMULATE: u16 = 1 << 0;
 pub const FLAG_SOFTCAP_30: u16 = 1 << 2;

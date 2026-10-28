@@ -4,5 +4,19 @@
 //! small work of each step runs on the host: the guidance, the sampler, its noise, the token weights and the previews.
 //! The latents of 4 images of 1.5 MP are a few MB, so a step reads and writes them cheaply.
 
+#[cfg(feature = "xe")]
+pub mod device;
+#[cfg(feature = "xe")]
+pub mod engine;
+pub mod host;
+pub mod model;
 pub mod noise;
+pub mod plan;
 pub mod sampler;
+pub mod spec;
+pub mod weights;
+
+#[cfg(feature = "xe")]
+pub use engine::SdxlEngine;
+pub use plan::plan;
+pub use spec::Config;

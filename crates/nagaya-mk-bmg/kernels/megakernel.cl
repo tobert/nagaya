@@ -79,6 +79,7 @@
 #define OP_QUICK_GELU       64
 #define OP_GEGLU_HALF       65
 #define OP_COPY_COLS        66
+#define OP_ADD_IMAGE_ROW    67
 #endif
 #define NUM_EXPERTS         128
 #define TOP_K               8

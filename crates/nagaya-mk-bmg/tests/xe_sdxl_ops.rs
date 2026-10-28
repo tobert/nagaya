@@ -564,6 +564,29 @@ fn quick_gelu_geglu_half_and_copy_cols_match_their_cpu_forms() {
     assert_eq!(yb.read::<f32>(card.card(), n * m), want);
 }
 
+#[test]
+fn add_image_row_adds_the_row_of_each_image_to_its_pixels() {
+    let mut card = Card::open();
+    let mut rng = Rng(23);
+    let (b, p, k) = (3usize, 7usize, 40usize);
+    let rows = rng.vec(b * k);
+    let start = rng.vec(b * p * k);
+    let (rb, yb) = (Buf::of(card.card(), &rows), Buf::of(card.card(), &start));
+    card.run(&[MkTaskDescriptor {
+        a: rb.at(),
+        c: yb.at(),
+        n: p as u32,
+        k: k as u32,
+        layer: b as u32,
+        ..task(OP_ADD_IMAGE_ROW)
+    }]);
+    let mut want = start.clone();
+    for (i, v) in want.iter_mut().enumerate() {
+        *v += rows[(i / (p * k)) * k + i % k];
+    }
+    assert_eq!(yb.read::<f32>(card.card(), b * p * k), want);
+}
+
 /// The error function, by Abramowitz and Stegun 7.1.26 in f64; good to 1.5e-7.
 fn erf(x: f32) -> f32 {
     let x = x as f64;
