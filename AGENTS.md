@@ -88,7 +88,7 @@ in a lock: one thread owns it (3.2).
 
 Do them in this order. Each milestone ends with all checks green and one or more commits. Milestones 1 to 14 are
 done, and `docs/history.md` keeps their full text, and the merges where the run recorded them. Milestone 15
-is done on gfx1151host, and milestones 15s, 16 and 17 are done on b70host. Milestone 18 is next.
+is done on gfx1151host, and milestones 15s, 16 and 17 are done on b70host. Milestone 18 runs now.
 
 1. **Workspace.** The Cargo workspace, its crates, `rustfmt.toml` and the dev profile. Done.
 2. **Engine trait.** The ABI core and capabilities as traits, with a fake engine and a broken fake for the gates. Done.
@@ -259,7 +259,41 @@ is done on gfx1151host, and milestones 15s, 16 and 17 are done on b70host. Miles
     - step 7, the route: `1d3e11d`, `91728f2`, `7d46c93`;
     - step 8, the cards in one group: `30143a5`, `0b15ba3`, `83d6f6c`;
     - step 9, the deploy: `3450734`, `12d6a9e`, and the stall fix of milestone 16, `3fd481d`.
-18. Stop and ask Amy for the next milestone.
+18. **Media.** Council v2 carries media as objects with `blake3:` ids. The B70 cards do image generation "mostly
+    for a while" (Amy, 2026-10-25). Council moves to gfx1151host's Strix Halo later, and Gemma 4 goes on demand on
+    b70host. Amy decided the plan on 2026-10-25 and 2026-10-27, by interview.
+    - **Image model:** start with SDXL base 1.0. Amy, 2026-10-27: "could we start with a general sdxl and pony etc
+      would be easier later?" Pony Diffusion V6 and its merges, such as AutismMix, are SDXL fine-tunes. They come
+      later as other weights on the same engine.
+    - **Weights:** the loader reads the diffusers folders and the single file with Stability's tensor names. Thus a
+      Civitai checkpoint loads with no new code.
+    - **No refiner.** Pony and its merges do not use it.
+    - **Few steps:** Lightning, DMD2 or Turbo weights come after the engine, as other weights and settings. Read the
+      license of each first.
+    - Qwen-Image 2.1 with FUSAL (`~/src/diffusepal`) stays a later engine for batch work.
+
+    Do the steps in this order:
+    1. **Objects.** Objects and keeps in `nagaya-store`, and their routes (spec 6.15). Done.
+    2. **Speech in council.** The speech engine as a council served model, with held state (spec 11.8a). Done.
+    3. **Spec.** Write the image rules into the docs: the route, the outputs, the `step` quanta, and the image engine
+       in engine-abi. Amy decides each Proposed note.
+    4. **Oracle fixture.** Write the fixed inputs and outputs of SDXL base from diffusers once, on the CPU (8.3).
+       Keep the image small.
+    5. **Family.** Write `nagaya-text-sdxl`: the CLIP tokenizer and the prompt of an image request.
+    6. **Ops.** Add the 2D convolution, GroupNorm, attention, and the up and down samplers to the shared interpreter.
+       Give each op a test.
+    7. **Engine.** Write `nagaya-mk-sdxl-bmg`: the text encoders, the UNet steps and the VAE decode. Run the
+       conformance gates and the oracle.
+    8. **Route.** Serve images through council v2, with each image as an object.
+    9. **Deploy.** Add the image engine to the profile of b70host as an engine on demand.
+
+    The commits so far:
+
+    - before step 1, the council contract with `blake3:` ids and media: `3a5c106`, `5b4fece`, `8173c95`, `e9eb276`,
+      `abef7af`;
+    - step 1, objects: `69a4f0d`, `6469b63`, `5eaed78`;
+    - step 2, speech in council: `e57eaeb` to `7c414b0`, deployed at 17:53 on 2026-10-25.
+19. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
 
