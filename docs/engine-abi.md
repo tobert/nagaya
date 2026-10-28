@@ -988,9 +988,10 @@ Decided 2026-10-18, before any image engine. An image engine used `pass(segments
 diffusion latent was a fixed part, and each `step` quantum replaced it. mk's painter was the first case (mk
 `docs/painter.md`). mk's `YieldHook` showed that a paused run matched the unpaused one, max pixel difference 0.
 
-**The image capability.** Proposed by senpai (Claude Opus 5.5), 2026-10-28, for spec 11.9. It replaces the rule of
-2026-10-18 above. Reason: SDXL has two text encoders, token weights, a sampler with history, a VAE decode and
-previews. A segment of tokens has no place for them, as it had none for speech ("Speech").
+**The image capability.** Proposed by senpai (Claude Opus 5.5), 2026-10-28, for spec 11.9, and Decided 2026-10-28 (Amy,
+by interview). It replaces the rule of 2026-10-18 above. Reason: SDXL has two text encoders, token weights, a sampler
+with history, a VAE decode and previews. A segment of tokens has no place for them, as it had none for speech
+("Speech").
 
 An image engine declares the `image` capability. Its `pass` refuses. It has these calls:
 

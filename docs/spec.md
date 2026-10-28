@@ -3016,8 +3016,8 @@ Decided 2026-10-28 (Amy, by interview):
   necessarily need to build img2img or inpainting right now, but we need to design for them. same for lora and
   highres/upscale."
 
-**11.9a An image request.** Proposed by senpai (Claude Opus 5.5), 2026-10-28. Reason: the rules of 11.9 need names,
-ranges and errors before the family and the engine can test them.
+**11.9a An image request.** Proposed by senpai (Claude Opus 5.5), 2026-10-28, and Decided 2026-10-28 (Amy, by
+interview). Reason: the rules of 11.9 need names, ranges and errors before the family and the engine can test them.
 
 - A generation names the image model and has `output` with `mime` `image/png`. A generation with no `output` is a 400
   that names `output`, as for any model with `media.text_replies: false`.
@@ -3049,7 +3049,8 @@ ranges and errors before the family and the engine can test them.
 - The A1111 chunk is the text `parameters`, in A1111's form: the prompt, then `Negative prompt: ...`, then `Steps,
   Sampler, CFG scale, Seed, Size, Model, Clip skip` on one line. The model is the served model name.
 
-**The served image model.** Proposed by senpai (Claude Opus 5.5), 2026-10-28.
+**The served image model.** Proposed by senpai (Claude Opus 5.5), 2026-10-28, and Decided 2026-10-28 (Amy, by
+interview).
 
 - Identity lists it with `media.outputs` of `image/png`, no inputs, `media.text_replies: false`, and the capability
   `generate`. A build, a decision or a raw read that names it is a 400 that names `model`.
@@ -3058,7 +3059,8 @@ ranges and errors before the family and the engine can test them.
 - Its `weight_hash` and `tokenizer_hash` are the engine's after its first open since the start, and empty before
   (3.3a "Council models on demand").
 
-**The family of SDXL.** Proposed by senpai (Claude Opus 5.5), 2026-10-28. The crate `nagaya-text-sdxl` holds it (11.3).
+**The family of SDXL.** Proposed by senpai (Claude Opus 5.5), 2026-10-28, and Decided 2026-10-28 (Amy, by interview).
+The crate `nagaya-text-sdxl` holds it (11.3).
 
 - The CLIP tokenizer of both text encoders, from the files of the checkpoint. Both encoders use the same ids.
 - The A1111 prompt: `(text)` multiplies the weight of its tokens by 1.1, `[text]` divides it by 1.1, and `(text:w)`
@@ -3068,7 +3070,8 @@ ranges and errors before the family and the engine can test them.
 - The family gives the engine the ids and the weight of each token. The engine scales the encoder output by the
   weights, and keeps its mean, as A1111 does.
 
-**The design of later image work.** Proposed by senpai (Claude Opus 5.5), 2026-10-28. Nothing here is built now.
+**The design of later image work.** Proposed by senpai (Claude Opus 5.5), 2026-10-28, and Decided 2026-10-28 (Amy, by
+interview). Nothing here is built now.
 
 - **img2img.** The last `user` message also holds an `image/png` object part. The engine encodes it with the VAE
   into the start latent, and `output.options.strength` sets how many steps run. This needs a VAE encode quantum.
