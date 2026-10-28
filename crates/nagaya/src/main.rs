@@ -254,6 +254,8 @@ fn serve(
     };
     let names: Vec<String> = profile.engines.iter().map(|engine| engine.name.clone()).collect();
     let served_profile = profile.clone();
+    // The profile routes call the main loop, which owns the active profile (spec 3.3).
+    let (mut changer, profile_calls) = nagaya::reprofile::Changer::new();
     let call_cpus = Some(cpu_sets.pool.clone());
     // Spec 10.1: the HTTP server listens before the engines open, and it answers 503 until the routes attach.
     let server = match http::Server::bind(&node.gossip().runtime(), config.http_bind) {
@@ -314,7 +316,8 @@ fn serve(
                 &ports,
                 &config.store_dir,
             )?)
-            .with_loads(ports.clone()))
+            .with_loads(ports.clone())
+            .with_profile(profile_calls.clone()))
     }) {
         Ok(council) => Arc::new(council),
         Err(error) => {
@@ -345,9 +348,20 @@ fn serve(
                 lifecycle::apply_swap(opened, &event);
             }
             node.check_name();
-            // An internal error of a route stops the process (spec 8.5, 11.5).
-            if council.failure().is_some() {
+            // An internal error of a route, or of a profile change, stops the process (spec 8.5, 11.5).
+            if council.failure().is_some() || process.ports().failure().is_some() {
                 return Some(ExitCode::Crash);
+            }
+            match changer.tick(&mut swap, process) {
+                Ok(true) => {
+                    tracing::info!("the profile of a PUT needs a restart; the process stops to restart");
+                    return Some(ExitCode::PlannedRestart);
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::error!("cannot persist the profile of a PUT: {error}");
+                    return Some(ExitCode::Crash);
+                }
             }
             desired_profile(&mut swap, node, process)
         };

@@ -9,6 +9,7 @@ mod extensions;
 mod loads;
 mod objects;
 pub mod pending;
+mod profile;
 mod routes;
 mod stream;
 pub mod voice;
@@ -107,6 +108,8 @@ pub struct Council {
     pending: pending::PendingIds,
     /// The ways into the process for the load routes (spec 3.3b). A council with none has no load routes.
     loads: Option<crate::process::Ports>,
+    /// The calls to the main loop for the profile routes (spec 3.3). A council with none has no profile routes.
+    profile: Option<std::sync::mpsc::Sender<crate::reprofile::ProfileCall>>,
 }
 
 impl Council {
@@ -131,6 +134,7 @@ impl Council {
             object_limits: None,
             pending: pending::PendingIds::default(),
             loads: None,
+            profile: None,
         })
     }
 
@@ -151,6 +155,17 @@ impl Council {
     pub fn with_loads(mut self, ports: crate::process::Ports) -> Self {
         self.loads = Some(ports);
         self
+    }
+
+    /// Serve the profile routes through the main loop that receives these calls (spec 3.3).
+    pub fn with_profile(mut self, calls: std::sync::mpsc::Sender<crate::reprofile::ProfileCall>) -> Self {
+        self.profile = Some(calls);
+        self
+    }
+
+    /// The calls of the profile routes, when the council has them.
+    fn profile_calls(&self) -> Option<std::sync::mpsc::Sender<crate::reprofile::ProfileCall>> {
+        self.profile.clone()
     }
 
     /// The ports of the load routes, when the council has them.

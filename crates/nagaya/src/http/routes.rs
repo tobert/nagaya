@@ -45,6 +45,7 @@ pub fn routes() -> Router<Arc<Council>> {
         .merge(super::extensions::routes())
         .merge(super::objects::routes())
         .merge(super::loads::routes())
+        .merge(super::profile::routes())
         .fallback(unknown)
         .method_not_allowed_fallback(unknown)
 }

@@ -3085,8 +3085,8 @@ The inventories found these items. We correct each one when its code moves. We d
 4. Answered 2026-10-20: on mk, one pass of many tokens gives the same bits as one pass for each token (6.13).
    On 2026-10-21, splits across 256 and 512 tokens gave the same bits in both classes of context (6.13).
 5. How does a profile `PUT` work across machines (2.3, 2.4, 11.5)? The machine that takes the `PUT` cannot
-   return the target's 507, and 2.3 ignores an old version where 11.5 answers 409 (kaibo, 2026-10-20). The route
-   `PUT /nagaya/v1/profile` is not built, so the question stays open.
+   return the target's 507, and 2.3 ignores an old version where 11.5 answers 409 (kaibo, 2026-10-20). Since
+   2026-10-28, `PUT /nagaya/v1/profile` changes only its own machine (3.3), so the question stays open.
 6. The template engine differs from jinja2 on integers past 2^127 and on a float key that is not finite (milestone
    11.5 text step). The chat template uses none of them. Which ones do we match?
 7. How far does mk's fast path (`MK_FAST_QMM` unset) move council decisions? At 249 tokens it moved logits by up to

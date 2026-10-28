@@ -152,12 +152,19 @@ fn http_status(addr: std::net::SocketAddr, path: &str) -> io::Result<String> {
 
 /// Send one HTTP request with no body on a new connection and give the status line.
 fn http_request(addr: std::net::SocketAddr, method: &str, path: &str) -> io::Result<String> {
+    http_send(addr, method, path, "")
+}
+
+/// Send one HTTP request with a JSON body on a new connection and give the status line.
+fn http_send(addr: std::net::SocketAddr, method: &str, path: &str, body: &str) -> io::Result<String> {
     use std::io::{BufRead, BufReader, Write};
     let mut stream = std::net::TcpStream::connect(addr)?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     write!(
         stream,
-        "{method} {path} HTTP/1.1\r\nHost: test\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        "{method} {path} HTTP/1.1\r\nHost: test\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+         Connection: close\r\n\r\n{body}",
+        body.len()
     )?;
     let mut line = String::new();
     BufReader::new(stream).read_line(&mut line)?;
@@ -383,4 +390,42 @@ fn the_log_shows_a_device_that_is_not_ignored_as_active() {
     // SAFETY: the child pid is live, and SIGTERM is the stop signal of spec 10.3.
     assert_eq!(unsafe { kill(child.id() as i32, SIGTERM) }, 0);
     wait_timeout(&mut child, Duration::from_secs(10));
+}
+
+/// A `PUT` of a profile whose engine changes `pin_identity` is a `reload`. The process answers 202, persists the
+/// profile, and stops with exit 4 (spec 3.3).
+#[test]
+fn a_put_of_a_profile_that_needs_a_restart_exits_four() {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let fixture = Fixture::new("fake");
+    let config = std::fs::read_to_string(&fixture.config).unwrap();
+    std::fs::write(
+        &fixture.config,
+        config.replace("127.0.0.1:0\"\ngossip", &format!("127.0.0.1:{port}\"\ngossip")),
+    )
+    .unwrap();
+    let socket = UnixDatagram::bind(&fixture.notify).unwrap();
+    socket.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let mut child = fixture.spawn(Some(&fixture.notify));
+    let mut buffer = [0u8; 512];
+    loop {
+        let count = socket.recv(&mut buffer).expect("the process sends READY");
+        if buffer[..count].starts_with(b"READY=1") {
+            break;
+        }
+    }
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    assert_eq!(http_status(addr, "/nagaya/v1/profile").unwrap(), "HTTP/1.1 200 OK");
+    let path = fixture.store.join("profile.toml");
+    let mut profile = nagaya::profile::PlacementProfile::read(&path).unwrap();
+    profile.engines[0].pin_identity = true;
+    let body = serde_json::to_string(&profile).unwrap();
+    let status = http_send(addr, "PUT", "/nagaya/v1/profile", &body).unwrap();
+    assert_eq!(status, "HTTP/1.1 202 Accepted");
+    assert_eq!(wait_timeout(&mut child, Duration::from_secs(10)).code(), Some(4));
+    assert_eq!(nagaya::profile::PlacementProfile::read(&path).unwrap(), profile);
 }
