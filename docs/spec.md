@@ -459,10 +459,10 @@ inside a process today: "the HIP runtime's own teardown segfaults" (mk `service/
 arenas in the file-descriptor store (10.2) and exits with code 4, and systemd starts it again. Later, an engine whose
 `close()` is safe loads and unloads in place (README door 1).
 
-**A profile change in place.** Proposed by senpai (Claude Opus 5.5), 2026-10-25. Amy decides each rule. Reason: a
-client sets the work of the fleet with one `PUT /nagaya/v1/profile` to each machine (Amy: "the whole profile PUT is
-good for now"). A named set of profiles, such as agent time or live performance, is the client's policy. The nagaya
-keeps no such name.
+**A profile change in place.** Proposed by senpai (Claude Opus 5.5), 2026-10-25, and Decided 2026-10-27 (Amy, by
+interview). Reason: a client sets the work of the fleet with one `PUT /nagaya/v1/profile` to each machine (Amy: "the
+whole profile PUT is good for now"). A named set of profiles, such as agent time or live performance, is the client's
+policy. The nagaya keeps no such name.
 
 - **Admission first.** The nagaya admits the new profile as a whole (2.4). A refusal is a 507 with the shortfall,
   and nothing changes.
@@ -482,16 +482,29 @@ keeps no such name.
 - **The response** is 202 after admission, with each engine and its action. The swaps run after the response, and
   the status feed shows each state (9.4).
 
-**Swaps in place on demand.** Decided 2026-10-24 (Amy, by interview). An engine whose `close()` is safe loads and
-unloads in place, with no restart. The nagaya swaps by itself. A request for an engine that is not loaded starts
-the swap, and the request waits for the load (Amy: "Nagaya swaps itself"). The placement profile chooses the
-devices of each engine.
+**Swaps in place.** Decided 2026-10-24 (Amy, by interview). An engine whose `close()` is safe loads and unloads in
+place, with no restart. The placement profile chooses the devices of each engine.
 
-Reason: voice and image engines can then use the B70 cards when Gemma 4 is idle. Milestone 16
-builds it (`AGENTS.md`).
+**Explicit loads.** Decided 2026-10-27 (Amy, by interview). This replaces the rule of 2026-10-24 that a request starts a
+swap and waits for the load (Amy then: "Nagaya swaps itself").
 
-**3.3a The swap in place.** Proposed by senpai (Claude Opus 5.5), 2026-10-24. Reason: Amy decided the swap on demand
-(3.3), and these rules make it one choice on one thread. Amy decides each rule.
+- A request never starts a load. A request for a served model that is not `ready` gets a 503 `model_unavailable`, with
+  `model` and `status` (gogi). Amy: "hmm this could get churny... I think we should 503 until models are explicitly
+  swapped."
+- A client loads and unloads an engine in two ways: a profile `PUT` (above), and the load routes (3.3b).
+- An on-demand engine still unloads after its idle time. Then the resident engines of its group load again (3.3a, "The
+  swap back").
+- The route `POST /v1/audio/speech` goes, because speech is a council served model (11.8a). Amy: "remove that route if
+  we have the one in council/gogi now".
+
+Reason: a load takes seconds, and it can unload another engine of the group. When requests start loads, the cards can
+churn between engines. The client knows its plan, so the client loads.
+
+Reason for swaps in place: voice and image engines can use the B70 cards when Gemma 4 is idle. Milestone 16 builds it
+(`AGENTS.md`).
+
+**3.3a The swap in place.** Proposed by senpai (Claude Opus 5.5), 2026-10-24, and Decided 2026-10-27 (Amy, by
+interview), with the explicit loads of 3.3. Reason: these rules make each swap one choice on one thread.
 
 - **Residency.** Each engine in the profile has `residency`: `resident` or `on_demand`. The default is `resident`.
   At start the process opens each resident engine, and an on-demand engine stays unloaded.
@@ -500,21 +513,21 @@ builds it (`AGENTS.md`).
   safe. mk has no `close`, so gfx1151host keeps its restart (3.3).
 - **Admission.** The resident engines must fit together (2.4). Each on-demand engine must also fit with the resident
   engines of the other device groups. Reason: in the worst case, a swap unloads every other engine of the group.
-- **One thread decides.** The group thread of an engine runs its swaps. A job names its engine. A job for an engine
-  that is not loaded waits on the group thread, and the swap starts.
+- **One thread decides.** The group thread of an engine runs its swaps. A load (3.3) names its engine, and the group
+  thread starts the swap.
 - **The engines that unload.** The group asks the ledger whether the engine fits beside the loaded engines. When it
   does not fit, the group unloads loaded engines of its own group, the last in profile order first, until it fits.
   Engines of other groups never unload for a swap.
 - **The wait before an unload.** An engine that must unload takes no new job. Its jobs that the group holds run to
   their end, and new jobs for it wait for its next load. Jobs of engines that stay loaded go on.
 
-**The steps of a swap.** Proposed by senpai (Claude Opus 5.5), 2026-10-24.
+**The steps of a swap.** Proposed by senpai (Claude Opus 5.5), 2026-10-24, and Decided 2026-10-27 (Amy, by interview).
 
 1. Unload each engine that must go. Park its states, as the stop does (10.3 step 3), in the park budget.
 2. Release the charges of its contexts. Remove its arena fds from systemd's store (`FDSTOREREMOVE=1`, 10.2).
 3. Drop the engine, which closes it. Admit the profile of the engines that stay loaded, so their shares grow (4.4).
 4. Admit the profile of the loaded engines with the new engine. Open the new engine cold, and export its arena (10.2).
-5. Run the jobs that waited. A job keeps its deadline (5.8), so a long swap can end it.
+5. Set the new engine to `ready`. Its served models then take requests.
 
 An open that fails during a swap is a crash (8.5): the process exits 1, and systemd starts it with the resident
 engines. Reason: the displaced engines are unloaded, and no rule says which engine serves next. A crash restarts in
@@ -523,37 +536,46 @@ a known state.
 Reason for the fd removal: an fd in systemd's store holds the device memory of its arena. An engine that closes while
 its fds stay in the store frees no device memory.
 
-**The ledger of a swap.** Proposed by senpai (Claude Opus 5.5), 2026-10-24.
+**The ledger of a swap.** Proposed by senpai (Claude Opus 5.5), 2026-10-24, and Decided 2026-10-27 (Amy, by interview).
 
 - The ledger admits the set of loaded engines, and the ledger thread keeps that set.
 - An engine that is not loaded stays in the ledger with its context terms only, and with a share of 0. It takes no
   memory and no part of the spare memory (4.4).
-- Thus a request can charge its context before its job waits for the load (4.2).
+- Thus the terms of its contexts stay admitted while it is unloaded (4.2).
 
 Reason: a council request charges its context on the request thread, before it submits its job (11.3c). On the cards
 on 2026-10-24, a generation for an unloaded Gemma 4 failed with "engine gemma is not admitted" until this rule.
 
-**The swap back.** Proposed by senpai (Claude Opus 5.5), 2026-10-24.
+**The swap back.** Proposed by senpai (Claude Opus 5.5), 2026-10-24, and Decided 2026-10-27 (Amy, by interview).
 
 - An on-demand engine unloads after `idle_unload_s` seconds with no job. The key is in its profile entry, and the
   default is 60. Then the group loads each resident engine of the group that is not loaded.
 - The key is at least 1, and only an on-demand entry has it. Admission refuses any other entry that names it.
   Reason: 0 unloads the engine after each job, and a key on a resident engine does nothing.
-- A job for a resident engine that is not loaded starts a swap, as for any engine.
+- An unload by the route (3.3b) also loads the resident engines of the group again.
 - A swap is one span `nagaya.swap`, with the engines that unload, the engine that loads, and each step's time (9.2).
 
-**What a swap does not change.** A profile `PUT` that changes engines still restarts the process (3.3). The device
-groups, the group threads and the routes stay as the profile made them. An unloaded engine is in its group, with the
-state `unloaded` (9.4, 11.1).
+**What a swap does not change.** A swap changes no device group, group thread or route. An unloaded engine is in its
+group, with the state `unloaded` (9.4, 11.1).
 
-**No council model on demand.** Proposed by senpai (Claude Opus 5.5), 2026-10-24. In v0, an on-demand engine serves
-no council model, so its profile entry has no `family` table. Speech (milestone 17) and image engines serve their own
-routes.
+**Council models on demand.** Decided 2026-10-27 (Amy, by interview). This replaces the Proposed note "No council model
+on demand" of 2026-10-24.
 
-Reason: a council service reads the identity and the limits of its engine when it attaches (11.7). For an engine
-that is not loaded, that read would start a load at each start of the process. gogi also gives 503
-`model_unavailable` to a served model that is not `ready` (11.1), but Amy decided that a request waits for the load.
-A route of our own can wait.
+- Any served model can be on demand. Identity lists an unloaded model with the status `unloaded`.
+- A request for it is a 503 `model_unavailable` (3.3).
+- Its `weight_hash` and `tokenizer_hash` come from its first open since the start, and they are empty before (11.8a).
+
+**3.3b The load routes.** Proposed by senpai (Claude Opus 5.5), 2026-10-27. Amy decided that the routes exist (3.3). Amy
+decides their shape.
+
+- `POST /nagaya/v1/engines/{name}/load` loads the engine of the profile with that name, by a swap (3.3a). The reply is a
+  202 when the swap starts, and it names the engines that unload. A loaded or loading engine gives a 200.
+- `POST /nagaya/v1/engines/{name}/unload` unloads an on-demand engine. The resident engines of its group then load
+  again, as after the idle time. An engine that is not loaded gives a 200.
+- An unknown name is a 404 `not_found` that names `name`. A resident engine, or an engine without `close`, is a 409 that
+  names `name`. A resident engine leaves only by a profile `PUT`.
+- A load does not change the profile. The next start of the process loads the resident engines only.
+- The status feed and the identity show each state: `loading`, `ready` and `unloaded` (9.4, 11.1).
 
 **Open:** Do the GPU queues of an idle engine slow the other engines on its device? mk has a note that its idle
 queues slow another process, but we did not find the source. A measurement answers the question.
@@ -1203,8 +1225,9 @@ engine. The nagaya's generation job makes the prompt-lookup drafts, as mkviolet 
 keys of 4 and 3 tokens, at most 7 drafts). Reason: drafts change no row that the store keeps. Thus a change of the
 setting must not change the identity and lose the store.
 
-**6.15 Objects.** Proposed by senpai (Claude Opus 5.5), 2026-10-25. Amy decides each rule. The budget, the limits
-and the order of the work are Decided 2026-10-25 (Amy, by interview); see "The budget of objects" below.
+**6.15 Objects.** Proposed by senpai (Claude Opus 5.5), 2026-10-25, and Decided 2026-10-27 (Amy, by interview). The
+budget, the limits and the order of the work are Decided 2026-10-25 (Amy, by interview); see "The budget of objects"
+below.
 
 Reason: council requests will carry images, audio, video and MIDI (Amy: "I kinda want our API to be
 comprehensive"). gogi's contract holds the text of the API: "Objects and keeps", "Outputs" and "Contexts" (gogi
@@ -1406,9 +1429,9 @@ the store cannot drift apart. Decided 2026-10-20 (reading, kaibo job-2 finding 1
 The suite compares values by integer bit pattern. NaN or Inf fails, even when the bit patterns are equal. Counts
 must also match. Each gate keeps a broken variant that it must fail (ds4-recipe `01-correctness-and-measurement.md`).
 
-**The speech oracle.** Proposed by senpai (Claude Opus 5.5), 2026-10-24. The random stream of the card differs
-from PyTorch's, so the oracle of a speech engine forces the codes. The fixture holds a prompt, the codes that the
-reference sampled for it, and the reference outputs:
+**The speech oracle.** Proposed by senpai (Claude Opus 5.5), 2026-10-24, and Decided 2026-10-27 (Amy, by interview). The
+random stream of the card differs from PyTorch's, so the oracle of a speech engine forces the codes. The fixture holds a
+prompt, the codes that the reference sampled for it, and the reference outputs:
 
 - the logits of codebook 0 at each frame, and the logits of the code predictor for codebooks 1 to 15;
 - the audio that the codec decoder makes from those codes.
@@ -1779,9 +1802,10 @@ an http not ready if it's not ready yet".
 Reason: on 2026-10-23, the HTTP server listened about 0.45 s after `READY=1` on b70host. A client that connected
 when `systemctl restart` returned got a refused connection.
 
-**Proposed** (claude-opus-5-5, 2026-10-23): a request during the start gets `unavailable`, not `model_unavailable`.
-Reason: `model_unavailable` names the model and its status, and the identity is known only after the engines open.
-gogi lists `unavailable` for a server that stops. A start is the same case for a client: it tries again later.
+**Decided 2026-10-27 (Amy, by interview)**, proposed by claude-opus-5-5 on 2026-10-23: a request during the start gets
+`unavailable`, not `model_unavailable`. Reason: `model_unavailable` names the model and its status, and the identity is
+known only after the engines open. gogi lists `unavailable` for a server that starts or stops (gogi `33fbe40`). A client
+tries again later.
 
 While the engines open, the process tells systemd that the start goes on. Every 5 s (the heartbeat interval), it
 sends one datagram. The datagram holds `EXTEND_TIMEOUT_USEC=` and a `STATUS=` line that says `loading` for each
@@ -1998,10 +2022,11 @@ Pooling and the decision numbers come from `gogi_proto::math`, which all engines
 The draw is seeded, and the response reports the seed. Each engine has its own defaults. All engines share the SSE
 framing.
 
-**A speech engine samples on the card.** Proposed by senpai (Claude Opus 5.5), 2026-10-24. The one sampler is for
-text. A speech engine makes 16 samples for each 80 ms frame, each from the one before (engine-abi "Speech"). The engine
-draws them on the card, from the seed of the request. Its draw keeps no state either: the random value depends on the
-seed, the frame and the codebook. Reason: 16 host round trips for each frame would cost more than the frame.
+**A speech engine samples on the card.** Proposed by senpai (Claude Opus 5.5), 2026-10-24, and Decided 2026-10-27 (Amy,
+by interview). The one sampler is for text. A speech engine makes 16 samples for each 80 ms frame, each from the one
+before (engine-abi "Speech"). The engine draws them on the card, from the seed of the request. Its draw keeps no state
+either: the random value depends on the seed, the frame and the codebook. Reason: 16 host round trips for each frame
+would cost more than the frame.
 
 **The draw keeps no state.** The random value for a token depends on three things: the seed, the position of the
 token, and the purpose of the draw. The purposes are a sample, a resample and the test of a draft.
@@ -2305,15 +2330,16 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
   that eviction removed, below the start of the build, is not made again. A dry run feeds nothing and lists no
   snapshot. Decided by senpai 2026-10-22 (vetoable).
 - The head of a dry run. A dry run reports the held head when the store holds it. Otherwise the head is `recipe:` and
-  the hex of the head's recipe (the Proposed note below makes the scheme `blake3:`). It names the state that a build
-  would make. No store entry has the id, so a snapshot read or a pin of it finds nothing.
+  the hex of the head's recipe (the note below makes the scheme `blake3:`). It names the state that a build would make.
+  No store entry has the id, so a snapshot read or a pin of it finds nothing.
 
   Reason: gogi types `head` as required, and gogi is the contract. This settles a note of Claude Sonnet 5.5.
   Decided by senpai 2026-10-20 night (vetoable).
 
-  **Proposed** (claude-opus-5-5, 2026-10-25): a dry run head that the store does not hold is `blake3:` and the
-  recipe's hex. The form `recipe:` goes. Reason: gogi now allows only `blake3:` and 64 digits as a
-  snapshot id (spec 6.2, gogi `33b78b7`), and gogi is the contract. A recipe is a whole BLAKE3 hash already (6.2).
+  **Decided 2026-10-27 (Amy, by interview)**, proposed by claude-opus-5-5 on 2026-10-25: a dry run head that the store
+  does not hold is `blake3:` and the recipe's hex. The form `recipe:` goes. Reason: gogi now allows only `blake3:` and
+  64 digits as a snapshot id (spec 6.2, gogi `33b78b7`), and gogi is the contract. A recipe is a whole BLAKE3 hash
+  already (6.2).
 
   No store entry has the id, so a read or a pin of it is still a 404 or `held: false`. The id no longer shows that it
   is a recipe: a client tells that from `dry_run: true`. It replaces the `recipe:` form of the rule above and of
@@ -2760,40 +2786,21 @@ has a tailnet address in its code.)
 - One request is a line or a paragraph. The agent orders the requests and paces them. The nagaya has no stream for
   speech, and a speech job can wait behind other work.
 - The reply sends the audio in chunks while the frames decode.
-- The route is `POST /v1/audio/speech`, in the shape of OpenAI's speech API.
+- The route was `POST /v1/audio/speech`, in the shape of OpenAI's speech API. It went on 2026-10-27 (3.3).
 - The engine is Qwen3-TTS VoiceDesign. A text prompt designs each voice, so the voice drifts a little between
   requests. Amy: "a bit of drift, hmm, inevitable for now, let's let it be and fix up later".
 - The speech engine is on demand (3.3a), and the placement profile chooses its card.
 
-**The request.** Proposed by senpai (Claude Opus 5.5), 2026-10-24. The body is JSON.
+**The route `/v1/audio/speech` goes.** Decided 2026-10-27 (Amy, by interview). Amy: "remove that route if we have the
+one in council/gogi now". A council generation of the speech model (11.8a) does its work. Commit `1d3e11d` built the
+route, and Git keeps its rules.
 
-| Key | Rule |
-|---|---|
-| `model` | The served speech model, the `model` of the engine identity. Another value is 404 `model_not_found`. |
-| `input` | The text to speak: one line or paragraph, at most 4,096 characters. Empty text is 400. |
-| `instructions` | The voice design prompt. It is required, because VoiceDesign designs each voice from it. |
-| `voice` | Accepted and ignored, because OpenAI's clients always send it. The log records it. |
-| `response_format` | `wav` (the default) or `pcm`. Another value is 400 with the param named. |
-| `speed` | Absent or 1.0. Another value is 400, because the engine has no time stretch. |
-| `language` | An extension: a Qwen3-TTS language name, or `auto` (the default). |
-| `seed` | An extension: the seed of the sampler. Without it, the seed is the hash of the request id. |
+**The sampler of a line.** Proposed by senpai (Claude Opus 5.5), 2026-10-24, and Decided 2026-10-27 (Amy, by
+interview). The default sampler is the generation config of the checkpoint: `temperature` 0.9, `top_k` 50, `top_p`
+1.0, and `repetition_penalty` 1.05 for codebook 0. A generation can set `temperature` and `top_k` (11.8a).
 
-**The reply.** Proposed by senpai (Claude Opus 5.5), 2026-10-24.
-
-- The status is 200 when the first chunk is ready. The body is chunked: each quantum of frames sends its audio.
-- `pcm` is signed 16-bit little-endian, mono, 24 kHz, with no header. `wav` is the same samples after a RIFF header.
-  Its two size fields are `0xFFFFFFFF`, because the length is not known when the header goes.
-- An error before the first chunk is a JSON error body in OpenAI's shape: `{"error": {"message", "type", "param",
-  "code"}}`. An error after it ends the body early, and the log names the request.
-- The sampler of a request is the generation config of the checkpoint: `temperature` 0.9, `top_k` 50, `top_p` 1.0,
-  and `repetition_penalty` 1.05 for codebook 0. A request does not change them in v0.
-- A request waits for the swap that loads the engine (3.3a), and the wait counts toward its timeout.
-
-Reason: OpenAI's shape lets an agent's existing speech client use the route with no change. The chunked body starts
-playback before the line ends. The WAV header with unknown sizes is the usual form for streamed WAV.
-
-**The speech family.** Proposed by senpai (Claude Opus 5.5), 2026-10-24. The crate `nagaya-text-qwen3tts` holds the
-family library of Qwen3-TTS (11.3):
+**The speech family.** Proposed by senpai (Claude Opus 5.5), 2026-10-24, and Decided 2026-10-27 (Amy, by interview). The
+crate `nagaya-text-qwen3tts` holds the family library of Qwen3-TTS (11.3):
 
 - the tokenizer of the text vocabulary, from `vocab.json` and `merges.txt` of the checkpoint;
 - the prompt of a request, as pairs of a text id and a codec id (engine-abi "Speech"), with the template of the
@@ -2802,10 +2809,11 @@ family library of Qwen3-TTS (11.3):
 
 The family has no detokenizer and no reply parser, because the output is audio.
 
-**The split of the speech tokenizer.** Proposed by senpai (Claude Opus 5.5), 2026-10-24. The tokenizer splits text
-with Mistral's pattern, as the reference runs. `Qwen3TTSModel.from_pretrained` passes `fix_mistral_regex=True`, and
-transformers 4.57.3 applies it to this checkpoint, whose config names 4.57.3. Reason: the oracle compares with the
-reference as it runs. Of 28 fixture texts, only text in camel case gave other ids under Qwen2's pattern.
+**The split of the speech tokenizer.** Proposed by senpai (Claude Opus 5.5), 2026-10-24, and Decided 2026-10-27 (Amy, by
+interview). The tokenizer splits text with Mistral's pattern, as the reference runs. `Qwen3TTSModel.from_pretrained`
+passes `fix_mistral_regex=True`, and transformers 4.57.3 applies it to this checkpoint, whose config names 4.57.3.
+Reason: the oracle compares with the reference as it runs. Of 28 fixture texts, only text in camel case gave other ids
+under Qwen2's pattern.
 
 The family keeps text that spells a special token as that token, as the reference does. Spec 11.3 gives each family
 its escapes; the speech route has none in v0.
@@ -2813,7 +2821,7 @@ its escapes; the speech route has none in v0.
 **11.8a Speech in the council API.** Amy decided these rules on 2026-10-25, by interview (M18 step 2).
 
 - A speech engine is a council served model too. A generation with an `output` of `audio/wav` speaks a line, and the
-  route `/v1/audio/speech` stays for clients in OpenAI's shape.
+  route `/v1/audio/speech` stayed for clients in OpenAI's shape until 2026-10-27 (11.8).
 - A speech context renders its input as it is, and the generation speaks the most recent message. Amy: "I think a
   tts context would take the exact input and render it ... just process most recent".
 - A speech context holds state as a chat holds it: a snapshot of the voice, and the head after each spoken line. The
@@ -2822,7 +2830,7 @@ its escapes; the speech route has none in v0.
 - The frame is built whether or not Qwen3-TTS keeps its voice better with it. Amy: "I think the frame is right even
   if qwen doesn't adapt right away. Maybe we can tune it later." A later model may use it better.
 
-**The speech context.** Proposed by senpai (Claude Opus 5.5), 2026-10-25. Amy decides each rule.
+**The speech context.** Proposed by senpai (Claude Opus 5.5), 2026-10-25, and Decided 2026-10-27 (Amy, by interview).
 
 - The `system` message is the voice design: the text that `generate_voice_design` takes as `instruct`, such as the
   ship AI of `~/tts-proto`. A context has one `system` message, first, or none.
@@ -2833,23 +2841,24 @@ its escapes; the speech route has none in v0.
   a 400 that names `messages`.
 - `language` is `output.options.language`, `auto` by default. The seed is `sample.seed`. The sampler is the
   checkpoint's, as in 11.8.
-- One language renders each line of a context. Proposed by senpai (Claude Opus 5.5), 2026-10-25. Reason: a line in
-  the context has no language of its own. A generation in another language renders another context, and feeds it.
+- One language renders each line of a context. Decided 2026-10-27 (Amy, by interview). Reason: a line in the context has
+  no language of its own. A generation in another language renders another context, and feeds it.
 
-**The rendering of a speech context.** Proposed by senpai (Claude Opus 5.5), 2026-10-25.
+**The rendering of a speech context.** Proposed by senpai (Claude Opus 5.5), 2026-10-25, and Decided 2026-10-27 (Amy, by
+interview).
 
 1. The voice design: `<|im_start|>user\n{system}<|im_end|>\n`, text positions only.
 2. For each line: the assistant role, the codec prefill of its language, its text with the codec pad, `tts_eos`, and
    `tts_pad` with the codec bos. These are the positions of one request today (`nagaya-text-qwen3tts`).
 3. After a line with audio: one frame position for each frame of the audio. A frame position is the 16 codes of the
    frame and the trailing text `tts_pad`, as the engine feeds a frame that it made.
-4. Before a line that follows audio: one text position of `tts_pad` with the codec end. Proposed by senpai (Claude
-   Opus 5.5), 2026-10-25. Reason: the head after a line then holds the rows that the engine holds after the line.
-   Thus a generation holds its head with no feed.
+4. Before a line that follows audio: one text position of `tts_pad` with the codec end. Reason: the head after a line
+   then holds the rows that the engine holds after the line. Thus a generation holds its head with no feed.
 
 A boundary can follow the voice design and each message, by `snap: true`. The end of the context is a boundary.
 
-**Each message ends a recipe.** Proposed by senpai (Claude Opus 5.5), 2026-10-25.
+**Each message ends a recipe.** Proposed by senpai (Claude Opus 5.5), 2026-10-25, and Decided 2026-10-27 (Amy, by
+interview).
 
 - The recipe of a speech context chains at the end of each message, not only at a boundary. A position count ends it.
 - `snap: true` marks where a build holds a snapshot. A lookup tries the end of each message before the last line.
@@ -2859,7 +2868,8 @@ A boundary can follow the voice design and each message, by `snap: true`. The en
 Reason: a text build finds the head of a reply through the seals of its chain (11.3c). A speech context needs none
 of that machinery, because each message end is in the chain.
 
-**The codes of an output.** Proposed by senpai (Claude Opus 5.5), 2026-10-25.
+**The codes of an output.** Proposed by senpai (Claude Opus 5.5), 2026-10-25, and Decided 2026-10-27 (Amy, by
+interview).
 
 - The audio of a line is a WAV, but the model state needs its codes. The service keeps the codes of each output that
   it wrote, beside the object, under its content id.
@@ -2867,19 +2877,20 @@ of that machinery, because each message end is in the chain.
   make codes from audio.
 - The server drops the codes of an output when the object store drops the object.
 - Audio whose codes the server does not hold is a 404 that names the part, as an object that it does not hold. The
-  client speaks that line again. Proposed by senpai (Claude Opus 5.5), 2026-10-25. This replaces a 400 for audio
-  that the model did not write. Reason: the server cannot tell that audio from audio whose codes it dropped, and the
-  client does the same for both.
+  client speaks that line again. This replaces a 400 for audio that the model did not write. Reason: the server cannot
+  tell that audio from audio whose codes it dropped, and the client does the same for both.
 
-**The WAV of an output.** Proposed by senpai (Claude Opus 5.5), 2026-10-25. gogi leaves the bytes of a stream open.
+**The WAV of an output.** Proposed by senpai (Claude Opus 5.5), 2026-10-25, and Decided 2026-10-27 (Amy, by interview).
+gogi leaves the bytes of a stream open.
 
 - The sealed object is a whole WAV: PCM, mono, 16 bits, 24 kHz, with the true sizes in its header.
-- A `GET` of the pending id streams the same bytes, except the two size fields of the header. They are `0xFFFFFFFF`,
-  as on `/v1/audio/speech`, because the length is not known while the frames decode.
+- A `GET` of the pending id streams the same bytes, except the two size fields of the header. They are `0xFFFFFFFF`, as
+  the old route `/v1/audio/speech` did, because the length is not known while the frames decode.
 
 Reason: a reader of the object gets a valid WAV, and a reader of the stream gets audio before the end.
 
-**The served speech model.** Proposed by senpai (Claude Opus 5.5), 2026-10-25.
+**The served speech model.** Proposed by senpai (Claude Opus 5.5), 2026-10-25, and Decided 2026-10-27 (Amy, by
+interview).
 
 - Identity lists the speech model with `media.outputs` of `audio/wav`, no inputs, and the capability `generate`. Its
   `context_tokens` is the positions of a slot.
@@ -2888,12 +2899,13 @@ Reason: a reader of the object gets a valid WAV, and a reader of the stream gets
 - `sample` takes `seed`, `temperature` and `top_k`. Temperature 0 is greedy: top_k 1. A `top_p` other than 1, a
   `min_p` other than 0, and a `top_k` of 0 are each a 400 that names it. Reason: the engine samples with a
   temperature and top_k, and the gogi suite sends temperature 0. `output.options` takes `language` only.
-- Identity marks the model with `media.text_replies: false` (gogi `c3acffe`, Proposed). A build, a decision or a raw
-  read that names it is a 400 that names `model`. Its `snapshot_bytes` is one row of `talker_kv`.
+- Identity marks the model with `media.text_replies: false` (gogi `c3acffe`, Decided 2026-10-27). A build, a decision or
+  a raw read that names it is a 400 that names `model`. Its `snapshot_bytes` is one row of `talker_kv`.
 - The reply has no text, `finish` is `end_turn`, and `usage` counts positions. `snapshots` names the held ends and the
   head.
 
-**The held state of a speech context.** Proposed by senpai (Claude Opus 5.5), 2026-10-25.
+**The held state of a speech context.** Proposed by senpai (Claude Opus 5.5), 2026-10-25, and Decided 2026-10-27 (Amy,
+by interview).
 
 - A speech snapshot holds the talker KV of each position, as the part `talker_kv` (D10). The store keeps it as any
   snapshot. Each line starts its sampler and its codec again (engine-abi "Held speech state"), so they hold nothing.
@@ -3125,8 +3137,8 @@ gives the section and the rule in a few words. The lists before the last one are
 - 11.3a: the template keeps the reasoning of every assistant message.
 - 11.3a: `rendered_hash` hashes the text that the read was conditioned on.
 - 11.3a: the reply parser takes the stop token as a pushed token and puts early-phase text in no step.
-- 11.3c: a dry run reports `recipe:` and the hex of the head's recipe when the store does not hold the head.
-  `blake3:` is Proposed in its place.
+- 11.3c: a dry run reports `recipe:` and the hex of the head's recipe when the store does not hold the head. `blake3:`
+  is Decided in its place (2026-10-27).
 - 11.3c: a raw read, a decision read and a generation are each one job for each context.
 - 11.3c: a decision read feeds its prefix once and writes a kept copy back for each later question.
 - 11.3c: the usage of a read counts the shared prefix once.

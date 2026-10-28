@@ -992,8 +992,8 @@ Decided 2026-10-18. An image engine uses `pass(segments, taps)` with quantum kin
 
 ## Speech
 
-Proposed by senpai (Claude Opus 5.5), 2026-10-24, for milestone 17. Amy decides each rule. The first speech engine
-is Qwen3-TTS VoiceDesign on a B70 card (`AGENTS.md` milestone 17).
+Proposed by senpai (Claude Opus 5.5), 2026-10-24, for milestone 17, and Decided 2026-10-27 (Amy, by interview). The
+first speech engine is Qwen3-TTS VoiceDesign on a B70 card (`AGENTS.md` milestone 17).
 
 A speech engine declares the `speech` capability. It takes no pass through `pass`; its `pass` refuses, as the pass of
 an engine with stages does. It has these calls:
@@ -1020,9 +1020,9 @@ speech_clear(slot)                                frees the state of the slot
   the counter of the random stream and the codes of the left context. Until M18, the store kept no speech state:
   a request started with an empty slot, and `speech_clear` ended it.
 
-**Held speech state.** Proposed by senpai (Claude Opus 5.5), 2026-10-25, for spec 11.8a. Amy decided that a speech
-context holds state as a chat does ("Level 2 sounds awesome"). This replaces the reason that a speech slot had no
-part to snapshot. The speech calls become these:
+**Held speech state.** Proposed by senpai (Claude Opus 5.5), 2026-10-25, for spec 11.8a. Decided 2026-10-27 (Amy, by
+interview). Amy decided that a speech context holds state as a chat does ("Level 2 sounds awesome"). This replaces the
+reason that a speech slot had no part to snapshot. The speech calls become these:
 
 ```
 speech_feed(slot, positions, sampler?) -> ok | why  feeds positions after the state of the slot
@@ -1040,19 +1040,19 @@ the store keeps a speech snapshot as it keeps any snapshot, with no call of its 
   after the last one. A slot whose line has not ended refuses a feed.
 - **A feed with a sampler starts a line.** The sampler, the history of codebook 0 and the codec state start again.
   The frame counter of the random stream starts at 0. The feed ends with the sample of the line's first codebook 0.
-- **A feed with no sampler holds its rows** and starts no line. Proposed by senpai (Claude Opus 5.5), 2026-10-25.
-  Reason: a build holds a snapshot at each boundary inside a context, and a line starts only after the last one.
-- **Parts.** The engine declares one cells part, `talker_kv`: the talker KV of each position, one row each. Proposed
-  by senpai (Claude Opus 5.5), 2026-10-25. This replaces a second part `speech_tail` for the history of codebook 0
-  and the codec's left context. Reason: each line starts both again, so only the KV carries over. Two slots with the
-  same state give the same bytes.
+- **A feed with no sampler holds its rows** and starts no line. Reason: a build holds a snapshot at each boundary inside
+  a context, and a line starts only after the last one.
+- **Parts.** The engine declares one cells part, `talker_kv`: the talker KV of each position, one row each. This
+  replaces a second part `speech_tail` for the history of codebook 0 and the codec's left context. Reason: each line
+  starts both again, so only the KV carries over. Two slots with the same state give the same bytes.
 - **Restore.** The nagaya writes the parts of a snapshot into an empty slot and sets its row count, as for a text
   engine (6.8). A feed then goes on from the last row.
 - **Determinism.** A restore and a feed can give the same codes as one feed of all the positions into an empty slot.
   They do when the engine's passes keep the bits of a split (`segments_exact`), which the engine declares.
 
-**Passes on separate cards of one group.** Proposed by senpai (Claude Opus 5.5), 2026-10-24. Amy decided the rule on
-2026-10-24 (`AGENTS.md` milestone 17, "Yes, design it now"); this is its text.
+**Passes on separate cards of one group.** Proposed by senpai (Claude Opus 5.5), 2026-10-24, and Decided 2026-10-27
+(Amy, by interview). Amy decided the rule on 2026-10-24 (`AGENTS.md` milestone 17, "Yes, design it now"); this is its
+text.
 
 - A pass of an engine with one device can run on its device. A stage of an engine with stages can run at that time
   on another device of the group.
@@ -1063,8 +1063,8 @@ the store keeps a speech snapshot as it keeps any snapshot, with no call of its 
 Reason: during one-token decode of an engine with two stages, each card waits while the other runs its stage. A pass
 of a small engine on the waiting card costs the large engine nothing.
 
-**How a group loads both.** Proposed by senpai (Claude Opus 5.5), 2026-10-24, for milestone 17 step 8. The rule
-above leaves the load open.
+**How a group loads both.** Proposed by senpai (Claude Opus 5.5), 2026-10-24, for milestone 17 step 8. Decided
+2026-10-27 (Amy, by interview). The rule above leaves the load open.
 
 - An engine with one device loads beside a loaded engine with stages when the ledger admits both. It opens on the
   stage thread of its device, and its quanta run there. No engine unloads.

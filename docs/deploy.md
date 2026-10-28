@@ -313,8 +313,9 @@ checkpoint, so run it with `GEMMA4_MODEL_DIR` set.
 - The profile puts the engine `gemma` of kind `mk-gemma4-bmg` on devices 0 and 1, the cards at `0000:03:00.0`
   and `0000:08:00.0`.
 - The slots are mkviolet's: one of 4,096 positions and one of 65,536. A block holds 512 tokens.
-- The profile puts the speech engine `voice` of kind `qwen3tts-bmg` on device 0, on demand (spec 3.3a, 11.8). It
-  serves `POST /v1/audio/speech` with the model `Qwen3-TTS-12Hz-1.7B-VoiceDesign`.
+- The profile puts the speech engine `voice` of kind `qwen3tts-bmg` on device 0, on demand (spec 3.3a, 11.8). It serves
+  the council model `Qwen3-TTS-12Hz-1.7B-VoiceDesign` (spec 11.8a). Until M18 step 3 it also served
+  `POST /v1/audio/speech`.
 - The unit sets `QWEN3TTS_MODEL_DIR` to the Qwen3-TTS checkpoint in the Hugging Face cache.
 - The unit sets `GEMMA4_MODEL_DIR` to `~/src/mkviolet/checkpoints/gemma-4-26B-A4B`. The engine and the family read
   the checkpoint there.
