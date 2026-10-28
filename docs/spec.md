@@ -3004,6 +3004,10 @@ Decided 2026-10-28 (Amy, by interview):
 - The output is `image/png` with an A1111 `parameters` text chunk, so A1111 and Civitai tools read the settings.
 - The engine makes the noise from `sample.seed` with its own random stream on the card. A seed from another tool does
   not give its image. Reason: Amy chose the simpler stream.
+- **Proposed** (senpai, Claude Opus 5.5, 2026-10-28): the engine makes its stream and runs its sampler on the host,
+  not on the card. The stream is still the engine's own (`noise.rs` of `nagaya-mk-sdxl-bmg`). Reason: the latents of
+  4 images of 1.5 MP are about 6 MB, so a step reads and writes them cheaply. On the host, the sampler follows the f32
+  math of diffusers step by step, and its test needs no card. The choice of 2026-10-28 was the stream, not its place.
 - A preview is a stream event, `preview`, that names a small PNG object. The server caches it and does not keep it.
 - Width and height are multiples of 64 from 512 to 2048, with at most 1,572,864 pixels. The default is 1024 by 1024.
 - The quanta are one `embed` for the text encoders, one `step` for each step, and one `step` for the VAE decode. The
