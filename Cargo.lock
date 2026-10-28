@@ -1194,6 +1194,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nagaya-mk-sdxl-bmg"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "nagaya-abi",
+ "nagaya-conformance",
+ "nagaya-mk-bmg",
+ "nagaya-text-sdxl",
+ "serde_json",
+]
+
+[[package]]
 name = "nagaya-sched"
 version = "0.1.0"
 dependencies = [

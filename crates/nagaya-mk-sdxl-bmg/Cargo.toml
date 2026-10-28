@@ -1,0 +1,19 @@
+[package]
+name = "nagaya-mk-sdxl-bmg"
+version = "0.1.0"
+edition = "2024"
+
+# The feature `xe` loads the engine on a B70 card. With no feature, the crate plans and samples with no card.
+[features]
+xe = ["nagaya-mk-bmg/xe"]
+
+[dependencies]
+nagaya-abi = { version = "0.1.0", path = "../nagaya-abi" }
+# The interpreter of the B70 megakernels, which this engine shares with the Gemma 4 and speech engines.
+nagaya-mk-bmg = { version = "0.1.0", path = "../nagaya-mk-bmg" }
+blake3 = "1.8.2"
+serde_json = "1.0.154"
+
+[dev-dependencies]
+nagaya-conformance = { version = "0.1.0", path = "../nagaya-conformance" }
+nagaya-text-sdxl = { version = "0.1.0", path = "../nagaya-text-sdxl" }

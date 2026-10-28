@@ -350,6 +350,8 @@ pub enum Capability {
     Close,
     /// Speech: `speech_feed`, `speech_frames` and `speech_clear` (engine-abi "Speech").
     Speech,
+    /// Images: `image_begin`, `image_step`, `image_decode` and `image_clear` (engine-abi "Image").
+    Image,
 }
 
 /// The limits that an engine declares.
@@ -868,6 +870,92 @@ pub trait Speech {
     fn speech_clear(&mut self, slot: SlotId);
 }
 
+/// The ids of one chunk of a prompt for an image engine (spec 11.9a): the start id, 75 tokens and the end id, padded.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImageChunk {
+    /// The 77 ids of the first text encoder.
+    pub ids1: Vec<u32>,
+    /// The 77 ids of the second text encoder.
+    pub ids2: Vec<u32>,
+    /// The weight of each id. The start, the end and the pad ids have weight 1.
+    pub weights: Vec<f32>,
+}
+
+/// A sampler of an image job (spec 11.9a).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageSampler {
+    /// `euler`.
+    Euler,
+    /// `euler a`.
+    EulerAncestral,
+    /// `dpm++ 2m karras`.
+    DpmPp2mKarras,
+    /// `dpm++ 2m sde karras`.
+    DpmPp2mSdeKarras,
+}
+
+/// One image job (engine-abi "Image"). The engine never takes text: the family makes the chunks (D2).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImageJob {
+    /// The chunks of the prompt.
+    pub prompt: Vec<ImageChunk>,
+    /// The chunks of the negative prompt.
+    pub negative: Vec<ImageChunk>,
+    /// 1 or 2: the encoders give the hidden state of layer `-(clip_skip + 1)`.
+    pub clip_skip: u32,
+    /// The size of each image, in pixels.
+    pub width: u32,
+    pub height: u32,
+    /// The steps of the sampler.
+    pub steps: u32,
+    /// The scale of classifier-free guidance.
+    pub cfg: f32,
+    pub sampler: ImageSampler,
+    /// The images of the job, 1 to 4. Image `i` uses the seed `seed + i`.
+    pub count: u32,
+    pub seed: u64,
+    /// True when each step gives a preview of each image.
+    pub previews: bool,
+}
+
+/// An image in 8-bit RGB, row after row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RgbImage {
+    pub width: u32,
+    pub height: u32,
+    /// `width * height * 3` bytes.
+    pub rgb: Vec<u8>,
+}
+
+/// What one `image_step` call did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageStepOut {
+    /// The steps that ran, after this one.
+    pub step: u32,
+    /// The steps of the job.
+    pub steps: u32,
+    /// With previews on, one preview of each image at one eighth of its size; else empty.
+    pub previews: Vec<RgbImage>,
+}
+
+/// The image capability (engine-abi "Image").
+pub trait Image {
+    /// The most pixels of all the images of a slot, which keeps a quantum within `max_quantum_ms`.
+    fn image_max_pixels(&self) -> u64;
+
+    /// Encode the prompts, make the noise, and keep the job in the slot. It is one quantum of kind `embed`.
+    fn image_begin(&mut self, slot: SlotId, job: &ImageJob) -> Result<(), PassError>;
+
+    /// Run one step of each image of the slot. It is one quantum of kind `step`.
+    fn image_step(&mut self, slot: SlotId) -> Result<ImageStepOut, PassError>;
+
+    /// Decode each latent of the slot with the VAE, after the last step. It is one quantum of kind `step`.
+    fn image_decode(&mut self, slot: SlotId) -> Result<Vec<RgbImage>, PassError>;
+
+    /// Free the state of the slot. A slot that holds no job is not a failure.
+    fn image_clear(&mut self, slot: SlotId);
+}
+
 /// The core trait that every engine implements.
 pub trait Engine {
     /// The identity of the engine and its weights.
@@ -914,6 +1002,11 @@ pub trait Engine {
 
     /// The speech capability, when the engine has it (engine-abi "Speech").
     fn speech(&mut self) -> Option<&mut dyn Speech> {
+        None
+    }
+
+    /// The image capability, when the engine has it (engine-abi "Image").
+    fn image(&mut self) -> Option<&mut dyn Image> {
         None
     }
 }
