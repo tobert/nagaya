@@ -86,7 +86,8 @@
             // Attention with no mask: c[b, t, h * D + j] = the sum over the keys s of
             // softmax_s(q[b, t, h] . k[b, s, h] / sqrt(D)) * v[b, s, h * D + j]. a = q, b = k, x = v, c = out, each in
             // rows of k values (heads * D). n = query rows, m = key rows, p0 = D (a multiple of 16, at most 512),
-            // layer = images (0: 1). One subgroup for each image, query row and head, with an online softmax.
+            // layer = images (0: 1). FLAG_CAUSAL keeps the keys s <= t. One subgroup for each image, query row and
+            // head, with an online softmax.
             __global const float* Q = (__global const float*)task.a;
             __global const float* Kt = (__global const float*)task.b;
             __global const float* V = (__global const float*)task.x;
@@ -106,7 +107,8 @@
                     acc[r] = 0.0f;
                 }
                 float mx = -INFINITY, l = 0.0f;
-                for (uint s = 0; s < Nk; s++) {
+                uint keys = (flags & FLAG_CAUSAL) ? min(Nk, (uint)(bt % Nq) + 1) : Nk;
+                for (uint s = 0; s < keys; s++) {
                     ulong row = ((ulong)b * Nk + s) * R + (ulong)h * D;
                     float dot = 0.0f;
                     for (uint r = 0; r < per; r++) dot += qv[r] * Kt[row + lane + 16 * r];
@@ -134,5 +136,40 @@
                 uint x = (uint)(pix % (2 * Wd)), y = (uint)((pix / (2 * Wd)) % (2 * H));
                 uint b = (uint)(pix / (4ul * H * Wd));
                 C[i] = A[(((ulong)b * H + y / 2) * Wd + x / 2) * K + ch];
+            }
+        }
+        else if (op == OP_QUICK_GELU) {
+            // c[i] = a[i] * sigmoid(1.702 * a[i]) for n rows of k values: the activation of CLIP ViT-L's text encoder.
+            __global const float* A = (__global const float*)task.a;
+            __global float* C = (__global float*)task.c;
+            ulong total = (ulong)task.n * task.k;
+            for (ulong i = (ulong)gsg * 16 + lane; i < total; i += (ulong)n_gsg * 16) {
+                float v = A[i];
+                C[i] = v / (1.0f + exp(-1.702f * v));
+            }
+        }
+        else if (op == OP_GEGLU_HALF) {
+            // c[t, j] = a[t, j] * gelu(a[t, k + j]) for n rows: a has rows of 2k values, c rows of k. GELU uses erf. This
+            // is the GEGLU of the feed-forward of SDXL, after its projection to 2k values.
+            __global const float* A = (__global const float*)task.a;
+            __global float* C = (__global float*)task.c;
+            uint K = task.k;
+            ulong total = (ulong)task.n * K;
+            for (ulong i = (ulong)gsg * 16 + lane; i < total; i += (ulong)n_gsg * 16) {
+                ulong t = i / K, j = i % K;
+                float h = A[t * 2 * K + j], g = A[t * 2 * K + K + j];
+                C[i] = h * 0.5f * g * (1.0f + erf(g * 0.7071067811865476f));
+            }
+        }
+        else if (op == OP_COPY_COLS) {
+            // c[t, p0 + j] = a[t, j] for n rows of k values: a has rows of k values, c has rows of m values. A skip of the
+            // UNet joins two tensors along the channels this way, because a row holds the channels of one pixel.
+            __global const float* A = (__global const float*)task.a;
+            __global float* C = (__global float*)task.c;
+            uint K = task.k, M = task.m, off = task.p0;
+            ulong total = (ulong)task.n * K;
+            for (ulong i = (ulong)gsg * 16 + lane; i < total; i += (ulong)n_gsg * 16) {
+                ulong t = i / K, j = i % K;
+                C[t * M + off + j] = A[i];
             }
         }

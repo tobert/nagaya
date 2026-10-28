@@ -390,14 +390,25 @@ fn groupnorm_normalizes_each_group_of_each_image_and_can_apply_silu() {
 /// Plain attention with no mask, in rows of heads * d values.
 // The shape of the op is its arguments, as in the task descriptor.
 #[allow(clippy::too_many_arguments)]
-fn sdpa_cpu(q: &[f32], k: &[f32], v: &[f32], b: usize, nq: usize, nk: usize, heads: usize, d: usize) -> Vec<f32> {
+fn sdpa_cpu(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    b: usize,
+    nq: usize,
+    nk: usize,
+    heads: usize,
+    d: usize,
+    causal: bool,
+) -> Vec<f32> {
     let r = heads * d;
     let mut out = vec![0.0f32; b * nq * r];
     for img in 0..b {
         for t in 0..nq {
             for h in 0..heads {
                 let qrow = &q[(img * nq + t) * r + h * d..][..d];
-                let scores: Vec<f64> = (0..nk)
+                let keys = if causal { nk.min(t + 1) } else { nk };
+                let scores: Vec<f64> = (0..keys)
                     .map(|s| {
                         let krow = &k[(img * nk + s) * r + h * d..][..d];
                         qrow.iter()
@@ -411,7 +422,7 @@ fn sdpa_cpu(q: &[f32], k: &[f32], v: &[f32], b: usize, nq: usize, nk: usize, hea
                 let e: Vec<f64> = scores.iter().map(|s| (s - mx).exp()).collect();
                 let sum: f64 = e.iter().sum();
                 for j in 0..d {
-                    let acc: f64 = (0..nk).map(|s| e[s] * v[(img * nk + s) * r + h * d + j] as f64).sum();
+                    let acc: f64 = (0..keys).map(|s| e[s] * v[(img * nk + s) * r + h * d + j] as f64).sum();
                     out[(img * nq + t) * r + h * d + j] = (acc / sum) as f32;
                 }
             }
@@ -424,11 +435,13 @@ fn sdpa_cpu(q: &[f32], k: &[f32], v: &[f32], b: usize, nq: usize, nk: usize, hea
 fn sdpa_attends_over_the_keys_of_its_own_image_for_each_head() {
     let mut card = Card::open();
     let mut rng = Rng(13);
-    // Cross attention to 77 text rows with heads of 64, self attention, and the one head of 512 of the VAE.
-    for (b, nq, nk, heads, d) in [
-        (2usize, 33usize, 77usize, 5usize, 64usize),
-        (2, 40, 40, 2, 64),
-        (1, 24, 24, 1, 512),
+    // Cross attention to 77 text rows with heads of 64, self attention, the one head of 512 of the VAE, and the causal
+    // self attention of CLIP's text encoders.
+    for (b, nq, nk, heads, d, causal) in [
+        (2usize, 33usize, 77usize, 5usize, 64usize, false),
+        (2, 40, 40, 2, 64, false),
+        (1, 24, 24, 1, 512, false),
+        (2, 77, 77, 3, 64, true),
     ] {
         let r = heads * d;
         let scale = 2.0;
@@ -442,6 +455,7 @@ fn sdpa_attends_over_the_keys_of_its_own_image_for_each_head() {
             Buf::zeros(card.card(), b * nq * r * 4),
         );
         card.run(&[MkTaskDescriptor {
+            flags: if causal { FLAG_CAUSAL } else { 0 },
             a: qb.at(),
             b: kb.at(),
             x: vb.at(),
@@ -454,10 +468,10 @@ fn sdpa_attends_over_the_keys_of_its_own_image_for_each_head() {
             ..task(OP_SDPA)
         }]);
         let got: Vec<f32> = yb.read(card.card(), b * nq * r);
-        let err = rel(&got, &sdpa_cpu(&q, &k, &v, b, nq, nk, heads, d));
+        let err = rel(&got, &sdpa_cpu(&q, &k, &v, b, nq, nk, heads, d, causal));
         assert!(
             err < 1e-5,
-            "{b} images, {nq} by {nk}, {heads} heads of {d}: relative error {err}"
+            "{b} images, {nq} by {nk}, {heads} heads of {d}, causal {causal}: relative error {err}"
         );
     }
 }
@@ -489,6 +503,74 @@ fn upsample2x_repeats_each_pixel_in_a_2_by_2_block() {
         }
     }
     assert_eq!(got, want);
+}
+
+#[test]
+fn quick_gelu_geglu_half_and_copy_cols_match_their_cpu_forms() {
+    let mut card = Card::open();
+    let mut rng = Rng(19);
+    let (n, k) = (5usize, 48usize);
+    let erf_gelu = |g: f32| 0.5 * g * (1.0 + erf(g / std::f32::consts::SQRT_2));
+
+    let x: Vec<f32> = rng.vec(n * k).into_iter().map(|v| 4.0 * v).collect();
+    let (xb, yb) = (Buf::of(card.card(), &x), Buf::zeros(card.card(), n * k * 4));
+    card.run(&[MkTaskDescriptor {
+        a: xb.at(),
+        c: yb.at(),
+        n: n as u32,
+        k: k as u32,
+        ..task(OP_QUICK_GELU)
+    }]);
+    let want: Vec<f32> = x.iter().map(|v| v / (1.0 + (-1.702 * v).exp())).collect();
+    let err = rel(&yb.read(card.card(), n * k), &want);
+    assert!(err < 1e-6, "quick gelu: relative error {err}");
+
+    let x: Vec<f32> = rng.vec(n * 2 * k).into_iter().map(|v| 4.0 * v).collect();
+    let (xb, yb) = (Buf::of(card.card(), &x), Buf::zeros(card.card(), n * k * 4));
+    card.run(&[MkTaskDescriptor {
+        a: xb.at(),
+        c: yb.at(),
+        n: n as u32,
+        k: k as u32,
+        ..task(OP_GEGLU_HALF)
+    }]);
+    let mut want = vec![0.0f32; n * k];
+    for t in 0..n {
+        for j in 0..k {
+            want[t * k + j] = x[t * 2 * k + j] * erf_gelu(x[t * 2 * k + k + j]);
+        }
+    }
+    let err = rel(&yb.read(card.card(), n * k), &want);
+    assert!(err < 1e-5, "geglu half: relative error {err}");
+
+    // Join rows of 48 into rows of 80 at offset 20; the other values stay.
+    let (m, off) = (80usize, 20usize);
+    let x = rng.vec(n * k);
+    let start = rng.vec(n * m);
+    let (xb, yb) = (Buf::of(card.card(), &x), Buf::of(card.card(), &start));
+    card.run(&[MkTaskDescriptor {
+        a: xb.at(),
+        c: yb.at(),
+        n: n as u32,
+        k: k as u32,
+        m: m as u32,
+        p0: off as u32,
+        ..task(OP_COPY_COLS)
+    }]);
+    let mut want = start.clone();
+    for t in 0..n {
+        want[t * m + off..t * m + off + k].copy_from_slice(&x[t * k..(t + 1) * k]);
+    }
+    assert_eq!(yb.read::<f32>(card.card(), n * m), want);
+}
+
+/// The error function, by Abramowitz and Stegun 7.1.26 in f64; good to 1.5e-7.
+fn erf(x: f32) -> f32 {
+    let x = x as f64;
+    let t = 1.0 / (1.0 + 0.3275911 * x.abs());
+    let poly = ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t;
+    let y = 1.0 - poly * (-x * x).exp();
+    (if x < 0.0 { -y } else { y }) as f32
 }
 
 /// The bytes and the shape of one tensor of a safetensors file. It reads the header, then only that tensor.

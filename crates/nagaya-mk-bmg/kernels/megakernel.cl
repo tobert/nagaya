@@ -75,6 +75,10 @@
 #define OP_UPSAMPLE2X       63
 #define FLAG_F16            1024u // the weights and the bias are F16
 #define FLAG_SILU           2048u // OP_GROUPNORM: apply silu after the norm
+#define FLAG_CAUSAL         4096u // OP_SDPA: query row t attends to the key rows s <= t
+#define OP_QUICK_GELU       64
+#define OP_GEGLU_HALF       65
+#define OP_COPY_COLS        66
 #endif
 #define NUM_EXPERTS         128
 #define TOP_K               8

@@ -49,6 +49,9 @@ pub const OP_CONV2D: u16 = 60;
 pub const OP_GROUPNORM: u16 = 61;
 pub const OP_SDPA: u16 = 62;
 pub const OP_UPSAMPLE2X: u16 = 63;
+pub const OP_QUICK_GELU: u16 = 64;
+pub const OP_GEGLU_HALF: u16 = 65;
+pub const OP_COPY_COLS: u16 = 66;
 
 pub const FLAG_ACCUMULATE: u16 = 1 << 0;
 pub const FLAG_SOFTCAP_30: u16 = 1 << 2;
@@ -68,6 +71,8 @@ pub const FLAG_NO_NORM: u16 = 1 << 9;
 pub const FLAG_F16: u16 = 1 << 10;
 /// `OP_GROUPNORM`: apply silu after the norm.
 pub const FLAG_SILU: u16 = 1 << 11;
+/// `OP_SDPA`: query row `t` attends to the key rows `s <= t`, as the text encoders of CLIP do.
+pub const FLAG_CAUSAL: u16 = 1 << 12;
 
 pub const NO_EVENT: u32 = u32::MAX;
 pub const NUM_EXPERTS: usize = 128;
