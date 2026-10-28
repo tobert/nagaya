@@ -1040,6 +1040,15 @@ fn an_unloaded_speech_model_is_unloaded_and_its_generation_is_a_503() {
     assert_eq!(body["error"]["model"], json!(MODEL), "{body}");
     assert_eq!(body["error"]["status"], json!("unloaded"), "{body}");
     assert!(fixture.take_log().is_empty(), "nothing ran");
+    // Any route that names the model gives the same 503 first (gogi "models": a build naming a model that is not
+    // ready).
+    let build = json!({"model": MODEL, "context": {"messages": [{"role": "user", "content": "hello"}]}});
+    let (code, _, _, bytes) = send(&council, "POST", "/council/v2/contexts", Some(build));
+    let body = json(&bytes);
+    assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["error"]["type"], json!("model_unavailable"), "{body}");
+    assert_eq!(body["error"]["model"], json!(MODEL), "{body}");
+    assert_eq!(body["error"]["status"], json!("unloaded"), "{body}");
 
     fixture.process.load("voice").unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(5);

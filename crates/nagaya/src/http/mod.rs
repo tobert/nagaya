@@ -313,8 +313,15 @@ impl Council {
     }
 
     /// The served model that a request names, by its `model` or an alias. A name that no served model has is a 400
-    /// that names `model`. A served model that is not `ready` is a 503 `model_unavailable`.
+    /// that names `model`. A served model that is not `ready` is a 503 `model_unavailable`, also a speech model.
     fn route(&self, name: &str) -> Result<Arc<Served>, Failure> {
+        // A speech model takes no text route. When it is not ready, the 503 comes first, as for any served model.
+        if let Some(service) = self.speech_service(name).filter(|service| service.serves_contexts()) {
+            let model = voice::served_model(&service, self.model_status(service.engine_state()));
+            if model.status != ModelStatus::Ready {
+                return Err(Failure::unavailable(&model));
+            }
+        }
         let served = self
             .models
             .iter()
