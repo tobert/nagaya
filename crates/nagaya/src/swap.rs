@@ -158,6 +158,14 @@ impl Swap {
         &self.active
     }
 
+    /// Persist a profile that a `PUT` changed (spec 3.3), and make it the active profile. The handled version of the
+    /// gossip path stays.
+    pub fn accept(&mut self, profile: PlacementProfile) -> Result<(), SwapError> {
+        profile.write(&self.store_dir).map_err(SwapError::Profile)?;
+        self.active = profile;
+        Ok(())
+    }
+
     /// The newest desired profile for this host in the view, when its version is above the handled version.
     pub fn candidate(&mut self, view: &ClusterView) -> Option<Candidate> {
         let key = Key::ProfileDesired(self.host.clone()).name();

@@ -760,6 +760,9 @@ impl Start {
                         LedgerMessage::Swap { load, unload, reply } => {
                             let _ = reply.send(ledger.swap(&load, &unload, &ledger_registry, &ledger_inventory));
                         }
+                        LedgerMessage::Loaded(reply) => {
+                            let _ = reply.send(ledger.loaded.clone());
+                        }
                         LedgerMessage::CheckProfile(profile, reply) => {
                             let _ = reply.send(ledger.check_profile(&profile, &ledger_registry, &ledger_inventory));
                         }
@@ -1489,6 +1492,8 @@ enum LedgerMessage {
         unload: Vec<String>,
         reply: Sender<Result<Admitted, AdmitError>>,
     },
+    /// Read the names of the loaded engines.
+    Loaded(Sender<BTreeSet<String>>),
     /// Check a whole profile, with no change (spec 3.3).
     CheckProfile(PlacementProfile, Sender<Result<Admitted, AdmitError>>),
     /// Admit the loaded engines under a new profile (spec 3.3).
@@ -1724,6 +1729,22 @@ impl Ports {
             .send(LedgerMessage::CheckProfile(profile.clone(), reply))
             .expect("the ledger thread stopped");
         answer.recv().expect("the ledger thread stopped")
+    }
+
+    /// The names of the engines that the ledger counts as loaded, or `None` when the ledger thread stopped.
+    pub fn loaded_engines(&self) -> Option<BTreeSet<String>> {
+        let (reply, answer) = mpsc::channel();
+        self.ledger.send(LedgerMessage::Loaded(reply)).ok()?;
+        answer.recv().ok()
+    }
+
+    /// Record a failure outside a call. The process must stop (spec 8.5). The first failure stays.
+    pub fn fail(&self, message: String) {
+        let mut failure = self.failure.lock().expect("the failure lock is poisoned");
+        if failure.is_none() {
+            tracing::error!("{message}; the process stops (spec 8.5)");
+            *failure = Some(message);
+        }
     }
 
     /// Admit the loaded engines under a new profile (spec 3.3). The engines that it lacks must be unloaded first.
