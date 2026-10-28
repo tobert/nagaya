@@ -586,6 +586,10 @@ decides their shape.
 - A load does not change the profile. The next start of the process loads the resident engines only.
 - A load or an unload that arrives while the group has a planned swap waits for the end of that swap. Then the group
   plans it.
+- The body of a 202 is `{"engine", "unload", "load"}`: the name, then the engines that unload and load, in the order
+  of the swap. The body of a 200 is `{"engine", "status"}`, with the state of the engine.
+- A 409 has the type `invalid_request` and the param `name`, because gogi has no type for a conflict. A stop gives a
+  503 `unavailable`.
 - The status feed and the identity show each state: `loading`, `ready` and `unloaded` (9.4, 11.1).
 
 **Open:** Do the GPU queues of an idle engine slow the other engines on its device? mk has a note that its idle
