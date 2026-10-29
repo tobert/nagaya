@@ -3086,6 +3086,11 @@ interview). Reason: the rules of 11.9 need names, ranges and errors before the f
   no seed gets a random seed, and the A1111 chunk records it. Any other member of `sample` is a 400 that names it.
 - `max_tokens` bounds no image. The reply has no text, `finish` is `end_turn`, and `completion` is 0.
 - `done.outputs` holds one PNG for each image, in index order. `usage.media.written` counts them and their bytes.
+- A full queue of a stream ends that stream, and the job runs on. Each image is sealed into the store by the job, so
+  its pending id still gives the PNG. The encode of a PNG runs on a helper thread, not on the group thread. Proposed
+  by senpai (Claude Haiku 5.5), 2026-10-29, for Amy's choices of 2026-10-29 (by interview: "drop the stream, seal in
+  the job", and the helper thread). Reason: a slow client then never stalls another engine.
+  - Speech is not changed here. Its audio is not an object, so a dropped speech stream loses its audio. It needs its own rule.
 - A stream sends an `output` event for each image when its decode starts. `GET` of a pending id gives the PNG when it
   is sealed, because a PNG has no useful part before its end.
 - A stream sends the events `progress` and `preview` of gogi's council API ("Steps and previews"). Decided 2026-10-29
