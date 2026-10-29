@@ -50,6 +50,13 @@ impl Image for Painter {
 
     fn image_begin(&mut self, slot: SlotId, job: &ImageJob) -> Result<(), PassError> {
         assert_eq!(slot, 0, "the fake has one slot");
+        // The fake refuses a LoRA whose bytes are `refuse`, as the engine refuses a file it cannot read.
+        if job.loras.iter().any(|lora| lora.file.as_slice() == b"refuse") {
+            return Err(PassError {
+                kind: PassErrorKind::Refused,
+                message: "nothing ran: the LoRA is refused".to_owned(),
+            });
+        }
         self.jobs.lock().unwrap().push(job.clone());
         self.job = Some(job.clone());
         self.step = 0;
@@ -456,6 +463,22 @@ fn the_a1111_chunk_names_the_loras_by_id_and_weight() {
          Lora ids: \"{id} 0.5\""
     );
     assert_eq!(text.as_deref(), Some(want.as_str()));
+}
+
+/// An engine that refuses a LoRA refuses the job: a 400 that names the LoRA part, and the process stays up (spec 11.9a).
+#[test]
+fn an_engine_that_refuses_a_lora_gives_a_400_that_names_it() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let id = put_object(&council, b"refuse");
+    let (status, got) = refused(
+        &council,
+        request("a fox", json!({"loras": [{"id": id, "weight": 1.0}]}), json!({})),
+    );
+    assert_eq!(
+        (status, got.as_str()),
+        (StatusCode::BAD_REQUEST, "output.options.loras")
+    );
 }
 
 /// A LoRA the store does not hold is a 404 that names its part. A bad LoRA entry is a 400 that names its member.

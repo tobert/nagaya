@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::time::Duration;
 
-use nagaya_abi::{Engine, ImageJob, Kind, SlotId};
+use nagaya_abi::{Engine, ImageJob, Kind, PassErrorKind, SlotId};
 use nagaya_sched::JobState;
 use nagaya_telemetry::EngineState;
 
@@ -114,7 +114,22 @@ impl JobBody for ImageJobBody {
             Phase::Begin => {
                 let image = engine.image().expect("checked above");
                 if let Err(error) = image.image_begin(slot, &self.parts.image) {
-                    return self.fail(engine, failed(format!("an image job did not begin: {}", error.message)));
+                    // A refusal is the client's fault: the job names a part the engine cannot take (spec 11.9a).
+                    let error = match error.kind {
+                        PassErrorKind::Refused => {
+                            let param = if self.parts.image.loras.is_empty() {
+                                "output"
+                            } else {
+                                "output.options.loras"
+                            };
+                            ImageError::Refused {
+                                param: param.to_owned(),
+                                message: error.message,
+                            }
+                        }
+                        _ => failed(format!("an image job did not begin: {}", error.message)),
+                    };
+                    return self.fail(engine, error);
                 }
                 self.phase = Phase::Steps;
                 Ran::More(vec![Kind::Step])

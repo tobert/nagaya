@@ -69,6 +69,8 @@ pub enum ImageError {
     Stopping(String),
     /// The engine of the image model is not `ready`, so nothing ran (spec 3.3).
     Unavailable { engine: String, state: EngineState },
+    /// The engine refused the job, so nothing ran. `param` names the part of the request at fault (spec 11.9a).
+    Refused { param: String, message: String },
     /// The engine failed. The process logs it.
     Failed(String),
 }
@@ -85,6 +87,7 @@ impl std::fmt::Display for ImageError {
             | ImageError::Timeout(message)
             | ImageError::Stopping(message)
             | ImageError::Failed(message) => formatter.write_str(message),
+            ImageError::Refused { message, .. } => formatter.write_str(message),
         }
     }
 }

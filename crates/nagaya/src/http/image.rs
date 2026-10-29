@@ -60,6 +60,7 @@ pub fn service_error(error: ImageError) -> ServiceError {
         ImageError::Stopping(_) => ServiceError::Stopping,
         ImageError::Unavailable { engine, state } => ServiceError::Unavailable { engine, state },
         ImageError::Failed(message) => ServiceError::internal(message),
+        ImageError::Refused { param, message } => invalid(param, message),
     }
 }
 
