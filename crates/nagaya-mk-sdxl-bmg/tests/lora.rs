@@ -2,7 +2,7 @@
 //!
 //! The files are made here, in safetensors form, so no test reads a model.
 
-use nagaya_mk_sdxl_bmg::lora::{Module, Namespace, Target, delta, parse};
+use nagaya_mk_sdxl_bmg::lora::{MAX_RANK, Module, Namespace, Target, delta, parse};
 
 const UNET_TO_Q: &str = "down_blocks.1.attentions.0.transformer_blocks.0.attn1.to_q";
 const TE2_Q: &str = "text_model.encoder.layers.0.self_attn.q_proj";
@@ -145,6 +145,24 @@ fn a_down_matrix_that_does_not_fit_the_module_is_an_error_that_names_the_key() {
         err.contains(&format!("lora_unet_{}", UNET_TO_Q.replace('.', "_"))),
         "{err}"
     );
+}
+
+#[test]
+fn a_rank_above_the_cap_is_an_error_that_names_the_key_and_the_cap() {
+    let tensors = kohya_unet(UNET_TO_Q, MAX_RANK + 1, 4, 3);
+    let err = parse(&file(&tensors), 1.0, &targets()).expect_err("the rank is above the cap");
+    assert!(
+        err.contains(&format!("lora_unet_{}", UNET_TO_Q.replace('.', "_"))),
+        "{err}"
+    );
+    assert!(err.contains(&MAX_RANK.to_string()), "{err}");
+}
+
+#[test]
+fn a_rank_at_the_cap_is_accepted() {
+    let tensors = kohya_unet(UNET_TO_Q, MAX_RANK, 4, 3);
+    let lora = parse(&file(&tensors), 1.0, &targets()).expect("the cap itself is allowed");
+    assert_eq!(lora.modules[0].rank, MAX_RANK);
 }
 
 #[test]

@@ -3051,23 +3051,27 @@ interview). Reason: the rules of 11.9 need names, ranges and errors before the f
 - `spacing` sets the timesteps of `euler` and `euler a`, as diffusers' `timestep_spacing` does. `leading` is the
   spacing of SDXL base. `trailing` gives the steps that a few-step checkpoint, such as SDXL-Lightning, needs. The
   DPM++ samplers take their timesteps from their sigmas, so `spacing` with them is a 400 that names `spacing`.
-  Proposed by senpai (Claude Haiku 5.5), 2026-10-29. Reason: Amy chose a setting, not a sampler name, for Lightning
-  (2026-10-29, by interview).
+  Decided 2026-10-29 (Amy, by interview): `spacing` is a request option, not a setting of the served model. Reason:
+  one served model can run both kinds of weights.
 - `loras` lists objects of safetensors weights, each with its `weight` from -2.0 to 2.0. Each `id` is a `blake3:` id of
-  an object (6.15). An id that the store does not hold is a 404 `not_found`, as for any object (6.15). Proposed by
-  senpai (Claude Haiku 5.5), 2026-10-29. Reason: Amy chose runtime deltas (2026-10-29, by interview), so the base
-  weights never change and each job picks its own set.
+  an object (6.15). An id that the store does not hold is a 404 `not_found`, as for any object (6.15).
+  Decided 2026-10-29 (Amy, by interview): at most 8 entries, and the weight range above. Reason: the base weights never
+  change, and each job picks its own set.
+  - The scale of a LoRA is folded into its up matrix on upload. Proposed by senpai (Claude Haiku 5.5), 2026-10-29.
   - A LoRA key is `lora_unet_` or `lora_te1_` or `lora_te2_` with the kohya names, or `unet.`, `text_encoder.` or
     `text_encoder_2.` with the diffusers names. Each module has `lora_down` and `lora_up`, or `lora_A` and `lora_B`,
     and it may have `alpha`. A key that names no module of SDXL base is a 400 that names the key. Reason: a silent
     skip would give an image with less of the LoRA than the recipe says.
   - The scale of a module is `weight * alpha / rank`. Its rank is the first dimension of `lora_down`. Without
     `alpha`, the scale is `weight`.
+  - The rank of a module is at most 128. A larger rank is a 400 that names the key and the cap. Decided 2026-10-29
+    (Amy, by interview). Reason: the job's scratch memory grows with the largest rank.
   - Each targeted linear and convolution adds `scale * up(down(x))` to its output. The base weights are not changed,
     so a job with no LoRA gives the same bits as before. Reason: a removal by subtraction leaves rounding drift.
   - The text encoders take their LoRAs in the same way, on each encoder's linears.
   - The A1111 chunk writes the ids and the weights in the field `Lora ids`, in the order of `loras`. Each entry is
-    `<id> <weight>`, and the list is in double quotes, as A1111 writes its lists.
+    `<id> <weight>`, and the list is in double quotes, as A1111 writes its lists. Decided 2026-10-29 (Amy, by
+    interview).
 
 - `sample` takes `seed` only. Image `i` of a request uses the seed plus `i`, as A1111 does for a batch. A request with
   no seed gets a random seed, and the A1111 chunk records it. Any other member of `sample` is a 400 that names it.

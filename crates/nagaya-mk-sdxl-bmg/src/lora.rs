@@ -9,6 +9,9 @@ use std::collections::BTreeMap;
 
 use crate::weights::{f16_to_f32, f32_values};
 
+/// The largest rank of a LoRA module that a request may use. It bounds the scratch memory of a job (spec 11.9a).
+pub const MAX_RANK: usize = 128;
+
 /// The part of the engine that a module belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Namespace {
@@ -250,6 +253,12 @@ pub fn parse(bytes: &[u8], weight: f32, targets: &[Target]) -> Result<Lora, Stri
             .up
             .ok_or_else(|| format!("the LoRA key {} has no up matrix", parts.key))?;
         let rank = *down_shape.first().unwrap_or(&0);
+        if rank > MAX_RANK {
+            return Err(format!(
+                "the LoRA key {} has rank {rank}; a LoRA takes at most {MAX_RANK}",
+                parts.key
+            ));
+        }
         let fits_down = rank > 0
             && down_shape.get(1) == Some(&target.cin)
             && down.len() == rank * target.cin * target.kernel * target.kernel;
