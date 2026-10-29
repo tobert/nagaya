@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use common::{Tensors, golden, rel};
-use nagaya_abi::{Image, ImageChunk, ImageJob, ImageSampler};
+use nagaya_abi::{Image, ImageChunk, ImageJob, ImageSampler, ImageSpacing};
 use nagaya_mk_sdxl_bmg::host;
 use nagaya_mk_sdxl_bmg::model::UnetSize;
 use nagaya_mk_sdxl_bmg::sampler::{History, Schedule, step};
@@ -177,7 +177,7 @@ fn the_engine_follows_the_oracle_block_by_block_and_makes_an_image() {
     );
 
     // Four Euler steps from the start latent of the oracle, then the decode.
-    let schedule = Schedule::new(ImageSampler::Euler, 4);
+    let schedule = Schedule::new(ImageSampler::Euler, ImageSpacing::Leading, 4);
     let mut x: Vec<f32> = pixels(oracle.samplers.values("start"), 1, LATENT, h, w)
         .iter()
         .map(|v| v * schedule.init_noise_sigma())
@@ -220,6 +220,7 @@ fn the_engine_follows_the_oracle_block_by_block_and_makes_an_image() {
         steps: 20,
         cfg: 7.0,
         sampler: ImageSampler::DpmPp2mKarras,
+        spacing: ImageSpacing::Leading,
         count: 1,
         seed: 1234,
         previews: true,

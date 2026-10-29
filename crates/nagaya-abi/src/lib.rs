@@ -894,6 +894,16 @@ pub enum ImageSampler {
     DpmPp2mSdeKarras,
 }
 
+/// The timesteps of an Euler sampler (spec 11.9a). `Leading` is the spacing of SDXL base; `Trailing` ends at the first
+/// step, as few-step checkpoints need.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageSpacing {
+    /// `leading`: the steps start at 0, with an offset of 1.
+    Leading,
+    /// `trailing`: the steps start at the last training step.
+    Trailing,
+}
+
 /// One image job (engine-abi "Image"). The engine never takes text: the family makes the chunks (D2).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ImageJob {
@@ -912,6 +922,8 @@ pub struct ImageJob {
     /// The scale of classifier-free guidance.
     pub cfg: f32,
     pub sampler: ImageSampler,
+    /// The spacing of the Euler timesteps. The DPM++ samplers refuse `Trailing`.
+    pub spacing: ImageSpacing,
     /// The images of the job, 1 to 4. Image `i` uses the seed `seed + i`.
     pub count: u32,
     pub seed: u64,

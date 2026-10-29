@@ -17,8 +17,8 @@ use nagaya::process::{Process, Start};
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, Residency, StoreSpec, TierSpec};
 use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{
-    Capability, Engine, Identity, Image, ImageChunk, ImageJob, ImageSampler, ImageStepOut, Lifetime, Limits,
-    MandatoryTerm, PassError, PassErrorKind, PassOut, RgbImage, Segment, SlotId, SlotLimit, Tap, Tier,
+    Capability, Engine, Identity, Image, ImageChunk, ImageJob, ImageSampler, ImageSpacing, ImageStepOut, Lifetime,
+    Limits, MandatoryTerm, PassError, PassErrorKind, PassOut, RgbImage, Segment, SlotId, SlotLimit, Tap, Tier,
 };
 use nagaya_store::objects::ObjectStore;
 use serde_json::{Value, json};
@@ -401,6 +401,23 @@ fn identity_lists_the_image_model_as_a_writer_of_png() {
     );
 }
 
+/// `spacing: trailing` reaches the job with an Euler sampler, and `leading` is the default.
+#[test]
+fn trailing_spacing_reaches_the_job_with_an_euler_sampler() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let (status, done) = generate(
+        &council,
+        request("a fox", json!({"sampler": "euler", "spacing": "trailing"}), json!({})),
+    );
+    assert_eq!(status, StatusCode::OK, "{done}");
+    let (status, done) = generate(&council, request("a fox", json!({"sampler": "euler a"}), json!({})));
+    assert_eq!(status, StatusCode::OK, "{done}");
+    let jobs = fixture.take_jobs();
+    let spacings: Vec<ImageSpacing> = jobs.iter().map(|job| job.spacing).collect();
+    assert_eq!(spacings, [ImageSpacing::Trailing, ImageSpacing::Leading]);
+}
+
 #[test]
 fn a_generation_writes_one_png_for_each_image_with_its_seed_in_the_a1111_chunk() {
     let fixture = Fixture::new();
@@ -550,6 +567,15 @@ fn a_generation_names_each_member_out_of_range() {
         (json!({"cfg": 0.5}), "output.options.cfg"),
         (json!({"cfg": 30.5}), "output.options.cfg"),
         (json!({"sampler": "ddim"}), "output.options.sampler"),
+        (json!({"spacing": "even"}), "output.options.spacing"),
+        (
+            json!({"spacing": "trailing", "sampler": "dpm++ 2m karras"}),
+            "output.options.spacing",
+        ),
+        (
+            json!({"spacing": "trailing", "sampler": "dpm++ 2m sde karras"}),
+            "output.options.spacing",
+        ),
         (json!({"count": 0}), "output.options.count"),
         (json!({"count": 5}), "output.options.count"),
         (json!({"clip_skip": 1}), "output.options.clip_skip"),
@@ -784,6 +810,7 @@ fn a_job_with_no_previews_ends_soon_after_its_route_goes_away() {
         steps: 50,
         cfg: 7.0,
         sampler: ImageSampler::Euler,
+        spacing: ImageSpacing::Leading,
         count: 1,
         seed: 1,
         previews: false,

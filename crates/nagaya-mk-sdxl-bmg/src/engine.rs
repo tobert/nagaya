@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use nagaya_abi::{
-    Engine, Identity, Image, ImageChunk, ImageJob, ImageStepOut, Limits, PassError, PassErrorKind, PassOut, RgbImage,
-    Segment, SlotId, Tap,
+    Engine, Identity, Image, ImageChunk, ImageJob, ImageSampler, ImageSpacing, ImageStepOut, Limits, PassError,
+    PassErrorKind, PassOut, RgbImage, Segment, SlotId, Tap,
 };
 use nagaya_mk_bmg::level_zero::{B70Card, L0Cluster};
 use nagaya_mk_bmg::ring::Ring;
@@ -329,46 +329,54 @@ impl SdxlEngine {
 
     /// Check a job against the limits of the engine. The council checks the ranges of spec 11.9a before it.
     fn check(&self, job: &ImageJob) -> Result<(), PassError> {
-        let pixels = job.width as usize * job.height as usize;
-        let chunk_ok =
-            |c: &ImageChunk| c.ids1.len() == CHUNK_IDS && c.ids2.len() == CHUNK_IDS && c.weights.len() == CHUNK_IDS;
-        let problem = if job.count == 0 || job.count as usize > MAX_IMAGES {
-            Some(format!(
-                "the job asks for {} images; the engine makes 1 to {MAX_IMAGES}",
-                job.count
-            ))
-        } else if !job.width.is_multiple_of(64) || !job.height.is_multiple_of(64) || job.width == 0 || job.height == 0 {
-            Some(format!(
-                "the size {} by {} is not a multiple of 64",
-                job.width, job.height
-            ))
-        } else if pixels > MAX_IMAGE_PIXELS {
-            Some(format!(
-                "an image of {pixels} pixels is more than the {MAX_IMAGE_PIXELS} of the engine"
-            ))
-        } else if job.steps == 0 {
-            Some("the job has 0 steps".to_owned())
-        } else if !(2..=3).contains(&job.clip_skip) {
-            Some(format!("clip_skip {} is not 2 or 3", job.clip_skip))
-        } else if !job.cfg.is_finite() {
-            Some("the CFG scale is not a finite number".to_owned())
-        } else if job.prompt.is_empty()
-            || job.prompt.len() > MAX_CHUNKS
-            || job.negative.len() > MAX_CHUNKS
-            || !job.prompt.iter().chain(&job.negative).all(chunk_ok)
-        {
-            Some(format!(
-                "a prompt has 1 to {MAX_CHUNKS} chunks of {CHUNK_IDS} ids and weights"
-            ))
-        } else {
-            None
-        };
-        problem.map_or(Ok(()), |m| Err(refused(format!("nothing ran: {m}"))))
+        job_problem(job).map_or(Ok(()), |m| Err(refused(format!("nothing ran: {m}"))))
     }
 
     fn fail(&mut self, error: PassError) -> PassError {
         self.last_error = Some(error.message.clone());
         error
+    }
+}
+
+/// The reason an image job is refused, or `None` when the engine can run it.
+pub fn job_problem(job: &ImageJob) -> Option<String> {
+    let pixels = job.width as usize * job.height as usize;
+    let chunk_ok =
+        |c: &ImageChunk| c.ids1.len() == CHUNK_IDS && c.ids2.len() == CHUNK_IDS && c.weights.len() == CHUNK_IDS;
+    if job.count == 0 || job.count as usize > MAX_IMAGES {
+        Some(format!(
+            "the job asks for {} images; the engine makes 1 to {MAX_IMAGES}",
+            job.count
+        ))
+    } else if !job.width.is_multiple_of(64) || !job.height.is_multiple_of(64) || job.width == 0 || job.height == 0 {
+        Some(format!(
+            "the size {} by {} is not a multiple of 64",
+            job.width, job.height
+        ))
+    } else if pixels > MAX_IMAGE_PIXELS {
+        Some(format!(
+            "an image of {pixels} pixels is more than the {MAX_IMAGE_PIXELS} of the engine"
+        ))
+    } else if job.steps == 0 {
+        Some("the job has 0 steps".to_owned())
+    } else if !(2..=3).contains(&job.clip_skip) {
+        Some(format!("clip_skip {} is not 2 or 3", job.clip_skip))
+    } else if !job.cfg.is_finite() {
+        Some("the CFG scale is not a finite number".to_owned())
+    } else if job.spacing == ImageSpacing::Trailing
+        && !matches!(job.sampler, ImageSampler::Euler | ImageSampler::EulerAncestral)
+    {
+        Some("trailing spacing needs euler or euler a; the DPM++ samplers take their sigmas".to_owned())
+    } else if job.prompt.is_empty()
+        || job.prompt.len() > MAX_CHUNKS
+        || job.negative.len() > MAX_CHUNKS
+        || !job.prompt.iter().chain(&job.negative).all(chunk_ok)
+    {
+        Some(format!(
+            "a prompt has 1 to {MAX_CHUNKS} chunks of {CHUNK_IDS} ids and weights"
+        ))
+    } else {
+        None
     }
 }
 
@@ -403,7 +411,7 @@ impl Image for SdxlEngine {
             .collect();
         self.write_f32(self.unet.ctx, &batch_ctx);
         self.write_f32(self.unet.add_proj, &add);
-        let schedule = Schedule::new(job.sampler, job.steps as usize);
+        let schedule = Schedule::new(job.sampler, job.spacing, job.steps as usize);
         let latents = (0..images)
             .map(|i| {
                 noise::normal(job.seed.wrapping_add(i as u64), 0, 0, Purpose::Start, h * w * LATENT)

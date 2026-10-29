@@ -13,7 +13,7 @@ use gogi_proto::generation::{
 use gogi_proto::identity::ServedModel;
 use gogi_proto::message::{Content, Part, Role};
 use gogi_proto::objects::{Named, check_reads, objects_of};
-use nagaya_abi::{ImageJob, ImageSampler, RgbImage};
+use nagaya_abi::{ImageJob, ImageSampler, ImageSpacing, RgbImage};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -156,6 +156,7 @@ pub fn check(
     let (mut width, mut height, mut steps, mut count) = (1024u64, 1024u64, 30u64, 1u64);
     let mut cfg = 7.0f64;
     let mut sampler = ImageSampler::DpmPp2mKarras;
+    let mut spacing = ImageSpacing::Leading;
     let mut clip_skip = u64::from(config.clip_skip);
     // A request asks for previews in the member `previews`, which needs `stream` (gogi "Steps and previews").
     let previews = request.previews == Some(true);
@@ -195,6 +196,18 @@ pub fn check(
                     )
                 })?;
             }
+            "spacing" => {
+                spacing = match value.as_str() {
+                    Some("leading") => ImageSpacing::Leading,
+                    Some("trailing") => ImageSpacing::Trailing,
+                    _ => {
+                        return Err(invalid(
+                            &at,
+                            format!("nothing ran: {at} is {value}; give `leading` or `trailing`"),
+                        ));
+                    }
+                };
+            }
             "sampler" => {
                 sampler = value
                     .as_str()
@@ -215,12 +228,21 @@ pub fn check(
                     at,
                     format!(
                         "nothing ran: {} takes the output options `negative`, `width`, `height`, `steps`, `cfg`, \
-                         `sampler`, `count` and `clip_skip`, not `{key}`; ask for previews with the request's `previews`",
+                         `sampler`, `spacing`, `count` and `clip_skip`, not `{key}`; ask for previews with the request's \
+                         `previews`",
                         model.model
                     ),
                 ));
             }
         }
+    }
+    if spacing == ImageSpacing::Trailing && !matches!(sampler, ImageSampler::Euler | ImageSampler::EulerAncestral) {
+        return Err(invalid(
+            "output.options.spacing",
+            "nothing ran: output.options.spacing is trailing, and the DPM++ samplers take their timesteps from their \
+             sigmas; give `euler` or `euler a`"
+                .to_owned(),
+        ));
     }
     if width * height > MAX_PIXELS {
         return Err(invalid(
@@ -273,6 +295,7 @@ pub fn check(
             steps: steps as u32,
             cfg: cfg as f32,
             sampler,
+            spacing,
             count: count as u32,
             seed: seed.unwrap_or_else(chosen_seed),
             previews,

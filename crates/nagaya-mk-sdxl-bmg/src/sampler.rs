@@ -6,7 +6,7 @@
 //! The schedule is computed in f64 and kept in f32, as numpy and torch keep it. Each step runs in f32 in the order of
 //! diffusers' operations, so a latent follows the reference within rounding.
 
-use nagaya_abi::ImageSampler;
+use nagaya_abi::{ImageSampler, ImageSpacing};
 
 const TRAIN_STEPS: usize = 1000;
 const BETA_START: f64 = 0.00085;
@@ -71,14 +71,31 @@ fn sigma_to_t(sigma: f64, log_sigmas: &[f32]) -> f64 {
 }
 
 impl Schedule {
-    /// The schedule of `steps` steps of a sampler.
-    pub fn new(sampler: ImageSampler, steps: usize) -> Schedule {
+    /// The schedule of `steps` steps of a sampler, with the spacing of the job.
+    pub fn new(sampler: ImageSampler, spacing: ImageSpacing, steps: usize) -> Schedule {
         assert!(steps >= 1, "a job has at least one step");
         let sigmas = train_sigmas();
+        if spacing == ImageSpacing::Trailing {
+            assert!(
+                matches!(sampler, ImageSampler::Euler | ImageSampler::EulerAncestral),
+                "the DPM++ samplers take their timesteps from their sigmas; the engine refuses trailing spacing"
+            );
+        }
         match sampler {
             ImageSampler::Euler | ImageSampler::EulerAncestral => {
-                let ratio = TRAIN_STEPS / steps;
-                let timesteps: Vec<f64> = (0..steps).rev().map(|i| (i * ratio) as f64 + STEPS_OFFSET).collect();
+                let timesteps: Vec<f64> = match spacing {
+                    ImageSpacing::Leading => {
+                        let ratio = TRAIN_STEPS / steps;
+                        (0..steps).rev().map(|i| (i * ratio) as f64 + STEPS_OFFSET).collect()
+                    }
+                    // diffusers' trailing: the steps count down from the last training step, rounded, less 1.
+                    ImageSpacing::Trailing => {
+                        let ratio = TRAIN_STEPS as f64 / steps as f64;
+                        (0..steps)
+                            .map(|i| (TRAIN_STEPS as f64 - i as f64 * ratio).round_ties_even() - 1.0)
+                            .collect()
+                    }
+                };
                 let mut out: Vec<f32> = timesteps.iter().map(|t| interp(*t, &sigmas) as f32).collect();
                 out.push(0.0);
                 Schedule {
