@@ -562,6 +562,12 @@ interview), with the explicit loads of 3.3. Reason: these rules make each swap o
   Engines of other groups never unload for a swap.
 - **The wait before an unload.** An engine that must unload takes no new job. Its jobs that the group holds run to
   their end. Jobs of engines that stay loaded go on.
+- **Single-card swaps.** Proposed by senpai (Claude Haiku 5.5), 2026-10-29, for Amy's choice of 2026-10-29 (by
+  interview: "split the group by card"). A swap of an engine on one device runs on that device's thread, not on the
+  group thread. The ledger still decides each swap, on its one thread. The group thread keeps the swaps of an engine
+  that spans devices, such as Gemma 4 on both cards, and that stall is accepted. Reason: a 244 ms image swap then no
+  longer waits on the other card. The cost: two threads run swaps, so the ledger check orders them.
+  - Amy accepted the Gemma stall on 2026-10-29.
 
 **A job for an engine that is not ready.** Proposed by senpai (Claude Opus 5.5), 2026-10-28, and Decided 2026-10-28
 (Amy, by interview). Reason: the explicit loads of 3.3 remove the wait for a load. The text of 2026-10-24 let a job wait
