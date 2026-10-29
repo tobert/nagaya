@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use gogi_proto::generation::{StreamEvent, check_steps};
 use nagaya::admission::{Factory, GroupDevice, OpenError, PlanError, Registry};
 use nagaya::http::{Council, router};
 use nagaya::image::{ImageConfig, ImageFamily, ImageService};
@@ -553,7 +554,8 @@ fn a_generation_names_each_member_out_of_range() {
         (json!({"count": 5}), "output.options.count"),
         (json!({"clip_skip": 1}), "output.options.clip_skip"),
         (json!({"clip_skip": 4}), "output.options.clip_skip"),
-        (json!({"previews": "yes"}), "output.options.previews"),
+        // `previews` is a member of the request (gogi "Steps and previews"), not an option of the output.
+        (json!({"previews": true}), "output.options.previews"),
         (json!({"negative": 3}), "output.options.negative"),
         (json!({"negative": "n".repeat(76)}), "output.options.negative"),
         (json!({"strength": 0.5}), "output.options.strength"),
@@ -620,16 +622,26 @@ fn events(body: &[u8]) -> Vec<(String, Value)> {
         .collect()
 }
 
+/// The events of a stream as gogi decodes them, checked by gogi's rules of steps and previews.
+fn checked_steps(events: &[(String, Value)], previews: bool) {
+    let decoded: Vec<StreamEvent> = events
+        .iter()
+        .map(|(name, data)| StreamEvent::parse(name, &data.to_string()).unwrap().unwrap())
+        .collect();
+    check_steps(&decoded, previews).unwrap();
+}
+
 #[test]
-fn a_stream_sends_a_preview_of_each_image_after_each_step_then_the_outputs_and_done() {
+fn a_stream_sends_the_progress_and_a_preview_of_each_image_after_each_step_then_the_outputs_and_done() {
     let fixture = Fixture::new();
     let council = fixture.council();
     let mut body = request(
         "a fox",
-        json!({"width": 512, "height": 512, "steps": 2, "count": 2, "previews": true}),
+        json!({"width": 512, "height": 512, "steps": 2, "count": 2}),
         json!({"seed": 40}),
     );
     body["stream"] = json!(true);
+    body["previews"] = json!(true);
     let (status, kind, _, bytes) = send(&council, "POST", "/council/v2/generations", Some(body));
     assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&bytes));
     assert!(kind.starts_with("text/event-stream"), "{kind}");
@@ -637,22 +649,28 @@ fn a_stream_sends_a_preview_of_each_image_after_each_step_then_the_outputs_and_d
     let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
     assert_eq!(
         names,
-        ["preview", "preview", "preview", "preview", "output", "output", "done"]
+        [
+            "progress", "preview", "progress", "preview", "progress", "preview", "progress", "preview", "output",
+            "output", "done"
+        ]
     );
-    for (k, (_, data)) in events[..4].iter().enumerate() {
+    checked_steps(&events, true);
+    for (k, pair) in events[..8].chunks(2).enumerate() {
         let (step, index) = (k / 2 + 1, k % 2);
+        let (progress, preview) = (&pair[0].1, &pair[1].1);
+        assert_eq!(progress, &json!({"index": index, "step": step, "of": 2}));
         assert_eq!(
-            (data["step"].clone(), data["index"].clone()),
-            (json!(step), json!(index)),
-            "{data}"
+            (&preview["index"], &preview["step"], &preview["of"], &preview["mime"]),
+            (&json!(index), &json!(step), &json!(2), &json!("image/png")),
+            "{preview}"
         );
-        let (width, height, first, text) = read_png(&object(&council, data["id"].as_str().unwrap()));
-        assert_eq!((width, height, first), (64, 64, (16 * step + index) as u8), "{data}");
+        let (width, height, first, text) = read_png(&object(&council, preview["id"].as_str().unwrap()));
+        assert_eq!((width, height, first), (64, 64, (16 * step + index) as u8), "{preview}");
         assert!(text.is_none(), "a preview has no parameters chunk");
     }
-    let done = &events[6].1;
+    let done = &events[10].1;
     for i in 0..2 {
-        let output = &events[4 + i].1;
+        let output = &events[8 + i].1;
         assert_eq!(
             (output["index"].clone(), output["mime"].clone()),
             (json!(i), json!("image/png"))
@@ -790,19 +808,47 @@ fn a_job_with_no_previews_ends_soon_after_its_route_goes_away() {
     );
 }
 
-/// A reply with no stream has nowhere to name a preview, so it makes none.
+/// A stream with no `previews` sends the progress of each image after each step, and no preview.
 #[test]
-fn a_reply_with_no_stream_keeps_no_previews() {
+fn a_stream_with_no_previews_sends_the_progress_and_holds_no_preview() {
     let fixture = Fixture::new();
     let council = fixture.council();
-    let options = json!({"width": 512, "height": 512, "steps": 3, "previews": true});
-    let (status, done) = generate(&council, request("a fox", options, json!({"seed": 4})));
-    assert_eq!(status, StatusCode::OK, "{done}");
+    let mut body = request(
+        "a fox",
+        json!({"width": 512, "height": 512, "steps": 3}),
+        json!({"seed": 4}),
+    );
+    body["stream"] = json!(true);
+    let (status, _, _, bytes) = send(&council, "POST", "/council/v2/generations", Some(body));
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&bytes));
+    let events = events(&bytes);
+    let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["progress", "progress", "progress", "output", "done"]);
+    checked_steps(&events, false);
+    assert!(!fixture.take_jobs()[0].previews, "the engine makes no previews");
     let objects = council.objects().unwrap();
     let used = objects.lock().unwrap().used();
+    let done = &events[4].1;
     assert_eq!(
         used,
         done["outputs"][0]["bytes"].as_u64().unwrap(),
         "only the image is held"
+    );
+}
+
+/// A reply with no stream has nowhere to send a preview, so `previews` needs `stream` (gogi "Steps and previews").
+#[test]
+fn previews_with_no_stream_are_a_400_naming_previews() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let mut body = request(
+        "a fox",
+        json!({"width": 512, "height": 512, "steps": 3}),
+        json!({"seed": 4}),
+    );
+    body["previews"] = json!(true);
+    assert_eq!(
+        refused(&council, body),
+        (StatusCode::BAD_REQUEST, "previews".to_owned())
     );
 }

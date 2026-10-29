@@ -3040,7 +3040,6 @@ interview). Reason: the rules of 11.9 need names, ranges and errors before the f
 | `sampler` | `euler`, `euler a`, `dpm++ 2m karras`, `dpm++ 2m sde karras` | `dpm++ 2m karras` |
 | `count` | 1 to 4 | 1 |
 | `clip_skip` | 2 or 3 | from the family config of the served model; 2 for SDXL base |
-| `previews` | `true` or `false` | `false` |
 
 - `clip_skip` counts the layers of the text encoders as A1111 does. `clip_skip` n takes the hidden state of layer -n,
   so 2 is the penultimate layer. Decided 2026-10-29 (Amy: "yeah we should match a1111 numbering"). Reason: a recipe
@@ -3052,8 +3051,15 @@ interview). Reason: the rules of 11.9 need names, ranges and errors before the f
 - `done.outputs` holds one PNG for each image, in index order. `usage.media.written` counts them and their bytes.
 - A stream sends an `output` event for each image when its decode starts. `GET` of a pending id gives the PNG when it
   is sealed, because a PNG has no useful part before its end.
-- With `previews`, a stream sends `{"index", "step", "id"}` as the event `preview` after each step. `id` names a PNG at
-  one eighth of the size of the image. The store caches it as any object, and no keep holds it.
+- A stream sends the events `progress` and `preview` of gogi's council API ("Steps and previews"). Decided 2026-10-29
+  (Amy, by interview). Reason: other models that run in steps use the same events, such as a text diffusion model.
+  - After each step, a stream sends `progress`, `{"index", "step", "of"}`, for each image. `of` is the step count of
+    the request. The VAE decode is not a step of `progress`.
+  - The request member `previews: true` asks for previews, and needs `stream: true`. It is not an option of
+    `output`. Without `stream`, it is a 400 that names `previews`.
+  - With `previews`, the `progress` event of each image has its `preview` after it: `{"index", "step", "of", "id",
+    "mime"}`. `id` names a PNG at one eighth of the size of the image. The store caches it as any object, and no
+    keep holds it. `usage.media` does not count it.
 - The A1111 chunk is the text `parameters`, in A1111's form: the prompt, then `Negative prompt: ...`, then `Steps,
   Sampler, CFG scale, Seed, Size, Model, Clip skip` on one line. The model is the served model name.
 - Two changes to the rules above, so that the gogi suite passes. Decided 2026-10-28 (Amy, by interview).

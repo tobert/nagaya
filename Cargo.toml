@@ -24,10 +24,10 @@ resolver = "3"
 
 # gogi is not pushed yet. Senpai changes the URL later. A path dependency breaks in a worktree.
 [workspace.dependencies]
-gogi-proto = { git = "file:///home/atobey/src/gogi", rev = "48d2d1a3a199b7c01c0cc10d5e73cd201ec99860" }
-gogi-fake = { git = "file:///home/atobey/src/gogi", rev = "48d2d1a3a199b7c01c0cc10d5e73cd201ec99860" }
-gogi-toy = { git = "file:///home/atobey/src/gogi", rev = "48d2d1a3a199b7c01c0cc10d5e73cd201ec99860" }
-gogi-conformance = { git = "file:///home/atobey/src/gogi", rev = "48d2d1a3a199b7c01c0cc10d5e73cd201ec99860" }
+gogi-proto = { git = "file:///home/atobey/src/gogi", rev = "9aa356a5ec8a01aefc5b451741d2ec96959a9208" }
+gogi-fake = { git = "file:///home/atobey/src/gogi", rev = "9aa356a5ec8a01aefc5b451741d2ec96959a9208" }
+gogi-toy = { git = "file:///home/atobey/src/gogi", rev = "9aa356a5ec8a01aefc5b451741d2ec96959a9208" }
+gogi-conformance = { git = "file:///home/atobey/src/gogi", rev = "9aa356a5ec8a01aefc5b451741d2ec96959a9208" }
 
 [profile.dev]
 debug = "line-tables-only"

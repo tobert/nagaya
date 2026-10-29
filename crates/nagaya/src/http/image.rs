@@ -7,7 +7,9 @@ use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use gogi_proto::Invalid;
 use gogi_proto::context::{MediaCount, MediaUsage, Usage};
-use gogi_proto::generation::{Finish, GenerationDone, GenerationRequest, OutputEvent, SealedOutput, StreamEvent};
+use gogi_proto::generation::{
+    Finish, GenerationDone, GenerationRequest, OutputEvent, PreviewEvent, ProgressEvent, SealedOutput, StreamEvent,
+};
 use gogi_proto::identity::ServedModel;
 use gogi_proto::message::{Content, Part, Role};
 use gogi_proto::objects::{Named, check_reads, objects_of};
@@ -155,7 +157,8 @@ pub fn check(
     let mut cfg = 7.0f64;
     let mut sampler = ImageSampler::DpmPp2mKarras;
     let mut clip_skip = u64::from(config.clip_skip);
-    let mut previews = false;
+    // A request asks for previews in the member `previews`, which needs `stream` (gogi "Steps and previews").
+    let previews = request.previews == Some(true);
     for (key, value) in &output.options {
         let at = format!("output.options.{key}");
         match key.as_str() {
@@ -207,17 +210,12 @@ pub fn check(
                         )
                     })?;
             }
-            "previews" => {
-                previews = value
-                    .as_bool()
-                    .ok_or_else(|| invalid(&at, format!("nothing ran: {at} is {value}, not true or false")))?;
-            }
             _ => {
                 return Err(invalid(
                     at,
                     format!(
                         "nothing ran: {} takes the output options `negative`, `width`, `height`, `steps`, `cfg`, \
-                         `sampler`, `count`, `clip_skip` and `previews`, not `{key}`",
+                         `sampler`, `count` and `clip_skip`, not `{key}`; ask for previews with the request's `previews`",
                         model.model
                     ),
                 ));
@@ -348,15 +346,11 @@ pub fn png(image: &RgbImage, text: Option<&str>) -> Result<Vec<u8>, ServiceError
 
 /// What a generation tells its route as it runs.
 enum Item {
-    /// The previews of a step, sealed: one id for each image.
-    Previews {
-        step: u32,
-        ids: Vec<String>,
-    },
+    /// A step of each image ended: a `progress` event for each image, each with its `preview` when the request
+    /// asked for previews (gogi "Steps and previews").
+    Step(Vec<(ProgressEvent, Option<PreviewEvent>)>),
     /// The outputs begin: one pending id for each image.
     Outputs(Vec<OutputEvent>),
-    /// A step ended. It sends no event; its send fails when the client went away.
-    Step,
     End(Box<Result<GenerationDone, ServiceError>>),
 }
 
@@ -377,21 +371,31 @@ fn make(
     let result = (|| {
         for item in made.iter() {
             match item.map_err(service_error)? {
-                // A reply with no stream names no preview, so it makes none (spec 11.9a).
+                // A reply with no stream sends no event. The check refused `previews` with no stream.
                 Made::Previews { .. } | Made::Step { .. } if !stream => {}
-                // A step with no previews tells only whether the client still listens.
-                Made::Step { .. } => {
-                    if !tell(Item::Step) {
+                Made::Step { step } => {
+                    let events = (0..checked.job.count).map(|index| (progress(&checked, index, step), None));
+                    if !tell(Item::Step(events.collect())) {
                         return Err(ServiceError::Cancelled);
                     }
                 }
                 Made::Previews { step, previews } => {
-                    let mut ids = Vec::with_capacity(previews.len());
-                    for preview in &previews {
+                    let mut events = Vec::with_capacity(previews.len());
+                    for (index, preview) in previews.iter().enumerate() {
                         let bytes = png(preview, None)?;
-                        ids.push(format!("blake3:{}", super::voice::seal(council, &bytes, PNG)?.hex()));
+                        let id = format!("blake3:{}", super::voice::seal(council, &bytes, PNG)?.hex());
+                        let progress = progress(&checked, index as u32, step);
+                        let preview = PreviewEvent {
+                            index: progress.index,
+                            step: progress.step,
+                            of: progress.of,
+                            id: Some(gogi_proto::ids::ContentId::parse(id).expect("a content id parses")),
+                            mime: Some(PNG.to_owned()),
+                            text: None,
+                        };
+                        events.push((progress, Some(preview)));
                     }
-                    if !tell(Item::Previews { step, ids }) {
+                    if !tell(Item::Step(events)) {
                         return Err(ServiceError::Cancelled);
                     }
                 }
@@ -424,6 +428,15 @@ fn make(
         }
     }
     result
+}
+
+/// The `progress` event of image `index` after step `step` of the job.
+fn progress(checked: &Checked, index: u32, step: u32) -> ProgressEvent {
+    ProgressEvent {
+        index: Some(u64::from(index)),
+        step: u64::from(step),
+        of: u64::from(checked.job.steps),
+    }
 }
 
 /// Seal the PNG of each image, and give the reply.
@@ -528,7 +541,8 @@ pub fn route(council: &Council, name: &str) -> Option<(Arc<ImageService>, Served
     Some((service, model))
 }
 
-/// Serve a generation of an image model: a reply with no stream, or a stream of `preview`, `output` and `done`.
+/// Serve a generation of an image model: a reply with no stream, or a stream of `progress`, `preview`, `output` and
+/// `done`.
 pub async fn generation(
     council: Arc<Council>,
     service: Arc<ImageService>,
@@ -588,17 +602,16 @@ pub async fn generation(
             None => items.recv().await,
         };
         let (events, ended) = match item {
-            Some(Item::Previews { step, ids }) => (
-                ids.into_iter()
-                    .enumerate()
-                    .map(|(index, object)| {
-                        let data = serde_json::json!({"index": index, "step": step, "id": object});
-                        Event::default().event("preview").data(data.to_string())
+            Some(Item::Step(steps)) => (
+                steps
+                    .into_iter()
+                    .flat_map(|(progress, preview)| {
+                        std::iter::once(StreamEvent::Progress(progress)).chain(preview.map(StreamEvent::Preview))
                     })
+                    .map(|event| Event::default().event(event.name()).data(event.data()))
                     .collect(),
                 false,
             ),
-            Some(Item::Step) => (Vec::new(), false),
             Some(Item::Outputs(outputs)) => (
                 outputs
                     .into_iter()
