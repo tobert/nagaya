@@ -10,7 +10,8 @@ use crate::weights::Upload;
 /// The device memory of the engine on one card. Each allocation stays until `free_all`, so a drop of the engine frees
 /// all of it (engine-abi "`close` in Rust").
 pub struct Device {
-    allocs: Vec<*mut c_void>,
+    /// Each allocation with its size, in the order of the allocations.
+    allocs: Vec<(*mut c_void, usize)>,
     staging: *mut u8,
     /// The device bytes that the engine allocated.
     pub bytes: usize,
@@ -30,9 +31,23 @@ impl Device {
         let bytes = crate::model::rounded(bytes);
         let ptr = card.alloc_device_usm::<u8>(bytes) as *mut c_void;
         card.fill_zero_sync(ptr, bytes);
-        self.allocs.push(ptr);
+        self.allocs.push((ptr, bytes));
         self.bytes += bytes;
         ptr as u64
+    }
+
+    /// The number of allocations so far. A later `release_to` frees the ones after this mark.
+    pub fn mark(&self) -> usize {
+        self.allocs.len()
+    }
+
+    /// Free the allocations after `mark`, in reverse order. The memory of the others stays.
+    pub fn release_to(&mut self, card: &B70Card, mark: usize) {
+        while self.allocs.len() > mark {
+            let (ptr, bytes) = self.allocs.pop().expect("an allocation after the mark");
+            card.free(ptr);
+            self.bytes -= bytes;
+        }
     }
 
     /// Device memory that holds `data`.
@@ -72,7 +87,7 @@ impl Device {
 
     /// Free every allocation and the staging buffer. The engine runs no ring after this.
     pub fn free_all(&mut self, card: &B70Card) {
-        for ptr in self.allocs.drain(..) {
+        for (ptr, _) in self.allocs.drain(..) {
             card.free(ptr);
         }
         if !self.staging.is_null() {

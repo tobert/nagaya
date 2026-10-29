@@ -13,12 +13,14 @@ use nagaya_mk_bmg::{IGC_REVISION, KERNEL_ENTRY, OCLOC_VERSION, SDXL_KERNEL};
 
 use crate::device::{Device, OnCard};
 use crate::host;
+use crate::lora::{self, Target};
 use crate::model::{self, Carve, Run, TextBufs, UnetBufs, UnetSize, VaeBufs};
 use crate::noise::{self, Purpose};
 use crate::plan::{MAX_LATENT_ROWS, arena_bytes, limits};
 use crate::sampler::{self, History, Schedule};
 use crate::spec::*;
-use crate::weights::{Weights, f32_bytes, f32_values, sources};
+use crate::weights::{Adapter, Weights, f32_bytes, f32_values, sources};
+use std::collections::HashMap;
 
 pub use crate::spec::MODEL;
 
@@ -46,6 +48,8 @@ pub struct SdxlEngine {
     unet: UnetBufs,
     vae: VaeBufs,
     job: Option<Job>,
+    /// The device mark before the LoRA files of the job were uploaded; `None` when the job has no LoRA.
+    lora_mark: Option<usize>,
 }
 
 // The engine holds USM pointers of its card, and one thread at a time calls it.
@@ -103,6 +107,69 @@ fn joined(hidden1: &[f32], hidden2: &[f32], rows: std::ops::Range<usize>) -> Vec
 }
 
 impl SdxlEngine {
+    /// Upload the LoRA files of a job, and set their deltas on the weights (spec 11.9a). Each file is parsed before any
+    /// upload, so a bad file leaves the card as it was. A job with no LoRA changes nothing.
+    fn attach_loras(&mut self, job: &ImageJob) -> Result<(), String> {
+        if self.lora_mark.is_some() {
+            return Err("the slot still holds the LoRAs of an earlier job; clear the slot first".to_owned());
+        }
+        if job.loras.is_empty() {
+            return Ok(());
+        }
+        let targets: Vec<Target> = self
+            .weights
+            .modules()
+            .iter()
+            .filter_map(|(name, shape)| Target::of_weight(name, shape))
+            .collect();
+        let mut parsed = Vec::new();
+        for input in &job.loras {
+            let file = lora::parse(&input.file, input.weight, &targets)
+                .map_err(|e| format!("nothing ran: the LoRA {} is refused: {e}", input.id))?;
+            parsed.push(file);
+        }
+        let card = &self.cluster.cards[0];
+        let mark = self.device.mark();
+        let mut adapters: HashMap<String, Vec<Adapter>> = HashMap::new();
+        let mut scratch_floats = 0;
+        for module in parsed.iter().flat_map(|file| &file.modules) {
+            // The scale goes into the up matrix, so the engine adds the delta with no further scale.
+            let up: Vec<f32> = module.up.iter().map(|v| v * module.scale).collect();
+            let down = self.device.upload(card, &f32_bytes(&module.down));
+            let up = self.device.upload(card, &f32_bytes(&up));
+            scratch_floats = scratch_floats.max(module.rank);
+            adapters.entry(module.target.prefixed()).or_default().push(Adapter {
+                down,
+                up,
+                rank: module.rank,
+                kernel: module.target.kernel,
+                scratch: 0,
+            });
+        }
+        // The hidden values of the largest batch: a UNet step of each image, or the text rows of a prompt.
+        let (h, w) = (job.height as usize / VAE_SCALE, job.width as usize / VAE_SCALE);
+        let rows = (2 * job.count as usize * h * w).max(2 * MAX_CHUNKS * CHUNK_IDS);
+        if !adapters.is_empty() {
+            let scratch = self.device.zeros(card, rows * scratch_floats * 4);
+            for list in adapters.values_mut() {
+                for adapter in list {
+                    adapter.scratch = scratch;
+                }
+            }
+        }
+        self.weights.set_adapters(adapters);
+        self.lora_mark = Some(mark);
+        Ok(())
+    }
+
+    /// Free the LoRA files of the job and their deltas. The job's base weights are not changed by a LoRA.
+    fn release_loras(&mut self) {
+        if let Some(mark) = self.lora_mark.take() {
+            self.weights.set_adapters(HashMap::new());
+            self.device.release_to(&self.cluster.cards[0], mark);
+        }
+    }
+
     /// Open the card at the PCI address `pci`, and upload the checkpoint of `config`.
     pub fn open(config: Config, pci: &str) -> Result<Self, String> {
         let dir = config.model_dir.clone();
@@ -187,6 +254,7 @@ impl SdxlEngine {
             unet,
             vae,
             job: None,
+            lora_mark: None,
         })
     }
 
@@ -367,8 +435,6 @@ pub fn job_problem(job: &ImageJob) -> Option<String> {
         && !matches!(job.sampler, ImageSampler::Euler | ImageSampler::EulerAncestral)
     {
         Some("trailing spacing needs euler or euler a; the DPM++ samplers take their sigmas".to_owned())
-    } else if !job.loras.is_empty() {
-        Some("this engine does not add LoRAs yet; the job names one, and the engine refuses it".to_owned())
     } else if job.prompt.is_empty()
         || job.prompt.len() > MAX_CHUNKS
         || job.negative.len() > MAX_CHUNKS
@@ -393,6 +459,9 @@ impl Image for SdxlEngine {
         }
         if let Err(error) = self.check(job) {
             return Err(self.fail(error));
+        }
+        if let Err(message) = self.attach_loras(job) {
+            return Err(self.fail(refused(message)));
         }
         let negative = if job.negative.is_empty() {
             vec![host::empty_chunk()]
@@ -504,6 +573,8 @@ impl Image for SdxlEngine {
             return Err(self.fail(refused(message)));
         }
         let (h, w) = (job.size.h, job.size.w);
+        // The VAE decode has no LoRA, so the LoRA files of the job go here, before the decode.
+        self.release_loras();
         let images = job
             .latents
             .iter()
@@ -519,6 +590,7 @@ impl Image for SdxlEngine {
 
     fn image_clear(&mut self, _slot: SlotId) {
         self.job = None;
+        self.release_loras();
     }
 }
 

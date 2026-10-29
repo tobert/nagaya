@@ -252,12 +252,29 @@ fn take_item<'a>(
     })
 }
 
+/// A LoRA delta of one module on the card (spec 11.9a): `up` holds the scale, and `scratch` holds the hidden values
+/// between the two matrices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Adapter {
+    /// The down matrix: `rank` filters of `cin * kernel * kernel` values, in F32.
+    pub down: u64,
+    /// The up matrix, scaled: `cout` rows of `rank` values, in F32.
+    pub up: u64,
+    pub rank: usize,
+    /// The kernel of the module: 1 for a linear layer, 3 for a 3 x 3 convolution.
+    pub kernel: usize,
+    /// Rows of `rank` values, for the hidden values of the largest batch of the job.
+    pub scratch: u64,
+}
+
 /// The tensors of the engine on its card, by their prefixed names. A weight with planes has no native copy on the
 /// card: its address in `tensors` is 0.
 pub struct Weights {
     tensors: HashMap<String, (Tensor, Vec<usize>)>,
     f32_copies: HashMap<String, u64>,
     planes: HashMap<String, Planes>,
+    /// The LoRA deltas of the job, by the prefixed name of their module, in the order of the request.
+    adapters: RefCell<HashMap<String, Vec<Adapter>>>,
     /// True while [`Weights::probe`] runs: a lookup that fails records its error and gives address 0.
     probing: Cell<bool>,
     missing: RefCell<Vec<String>>,
@@ -339,9 +356,41 @@ impl Weights {
             tensors,
             f32_copies,
             planes,
+            adapters: RefCell::new(HashMap::new()),
             probing: Cell::new(false),
             missing: RefCell::new(Vec::new()),
         })
+    }
+
+    /// Set the LoRA deltas of the job. An empty map is no LoRA.
+    pub fn set_adapters(&self, adapters: HashMap<String, Vec<Adapter>>) {
+        *self.adapters.borrow_mut() = adapters;
+    }
+
+    /// The LoRA deltas of the module `name`, with its prefix and no `.weight`.
+    pub fn adapters(&self, name: &str) -> Vec<Adapter> {
+        self.adapters.borrow().get(name).cloned().unwrap_or_default()
+    }
+
+    /// The modules that a LoRA can change: each name with no `.weight`, and its shape. These are the linear layers and
+    /// the convolutions of the UNet and of both text encoders, not the embedding tables.
+    pub fn modules(&self) -> Vec<(String, Vec<usize>)> {
+        let mut out: Vec<(String, Vec<usize>)> = self
+            .tensors
+            .iter()
+            .filter_map(|(name, (_, shape))| {
+                let module = name.strip_suffix(".weight")?;
+                let prefixed = ["unet.", "te1.", "te2."].iter().any(|p| module.starts_with(p));
+                let kind_ok = match shape[..] {
+                    [_, _] => true,
+                    [_, _, k, k2] => k == k2 && (k == 1 || k == 3),
+                    _ => false,
+                };
+                (prefixed && kind_ok && !module.contains("embeddings.")).then(|| (module.to_owned(), shape.clone()))
+            })
+            .collect();
+        out.sort();
+        out
     }
 
     /// Run `build`, which looks up tensors, and give each lookup that failed. During the probe a failed lookup gives

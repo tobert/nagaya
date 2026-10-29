@@ -221,3 +221,18 @@ fn the_delta_gives_one_row_for_each_row_of_x() {
     // Row 0 is [1, 0] and row 1 is [0, 2]: down gives 1 and 2, and up gives 3 and 6.
     assert_eq!(delta(&module, &[1.0, 0.0, 0.0, 2.0], 2), vec![3.0, 6.0]);
 }
+
+#[test]
+fn a_weight_name_maps_to_its_target_with_the_shape_of_the_weight() {
+    let linear = Target::of_weight("te2.text_model.encoder.layers.0.self_attn.q_proj", &[1280, 1280]).unwrap();
+    assert_eq!(linear.namespace, Namespace::TextEncoder2);
+    assert_eq!((linear.cin, linear.cout, linear.kernel), (1280, 1280, 1));
+    assert_eq!(linear.prefixed(), "te2.text_model.encoder.layers.0.self_attn.q_proj");
+    let conv = Target::of_weight("unet.down_blocks.0.resnets.0.conv1", &[320, 320, 3, 3]).unwrap();
+    assert_eq!(
+        (conv.namespace, conv.cin, conv.cout, conv.kernel),
+        (Namespace::Unet, 320, 320, 3)
+    );
+    assert_eq!(conv.prefixed(), "unet.down_blocks.0.resnets.0.conv1");
+    assert!(Target::of_weight("vae.decoder.conv_in", &[512, 4, 3, 3]).is_none());
+}

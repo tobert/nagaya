@@ -48,6 +48,37 @@ pub struct Lora {
     pub modules: Vec<Module>,
 }
 
+impl Target {
+    /// The target of a module with its prefix and no `.weight`, such as `unet.down_blocks.0.resnets.0.conv1`, and the
+    /// shape of its weight. `None` for a name with no prefix of the engine.
+    pub fn of_weight(name: &str, shape: &[usize]) -> Option<Target> {
+        let (namespace, module) = [
+            ("unet.", Namespace::Unet),
+            ("te1.", Namespace::TextEncoder),
+            ("te2.", Namespace::TextEncoder2),
+        ]
+        .iter()
+        .find_map(|(prefix, namespace)| name.strip_prefix(prefix).map(|module| (*namespace, module)))?;
+        Some(Target {
+            namespace,
+            name: module.to_owned(),
+            cin: shape[1],
+            cout: shape[0],
+            kernel: if shape.len() == 4 { shape[2] } else { 1 },
+        })
+    }
+
+    /// The prefixed name of the module, as the graphs name it: `unet.`, `te1.` or `te2.`, then the module name.
+    pub fn prefixed(&self) -> String {
+        let prefix = match self.namespace {
+            Namespace::Unet => "unet.",
+            Namespace::TextEncoder => "te1.",
+            Namespace::TextEncoder2 => "te2.",
+        };
+        format!("{prefix}{}", self.name)
+    }
+}
+
 /// The matrices of one module as the keys give them.
 #[derive(Default)]
 struct Parts {

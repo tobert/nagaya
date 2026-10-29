@@ -102,6 +102,95 @@ pub fn check(weights: &Weights) -> Result<(), String> {
     })
 }
 
+/// The LoRA deltas of a linear layer or a 1 x 1 convolution `name` (spec 11.9a). Each adds `up(down(x))` to `y`, after the
+/// base layer has written `y`: the down matrix into the scratch, then the up matrix into `y`.
+#[allow(clippy::too_many_arguments)]
+fn adapt_linear(run: &mut Run, wt: &Weights, name: &str, x: u64, y: u64, rows: usize, cin: usize, cout: usize) {
+    for a in wt.adapters(name) {
+        assert_eq!(
+            a.kernel, 1,
+            "{name}: a LoRA of a 3 x 3 convolution is on a linear layer; this is a defect"
+        );
+        run.push(t::linear(
+            x,
+            a.down,
+            0,
+            a.scratch,
+            rows as u32,
+            cin as u32,
+            a.rank as u32,
+            true,
+            false,
+        ));
+        run.push(t::linear(
+            a.scratch,
+            a.up,
+            0,
+            y,
+            rows as u32,
+            a.rank as u32,
+            cout as u32,
+            true,
+            true,
+        ));
+    }
+}
+
+/// The LoRA deltas of a convolution `name`, with the kernel and stride of the base layer (spec 11.9a). The down matrix is
+/// a convolution of the same kernel and stride, and the up matrix is a 1 x 1 layer over its output pixels.
+#[allow(clippy::too_many_arguments)]
+fn adapt_conv(
+    run: &mut Run,
+    wt: &Weights,
+    name: &str,
+    x: u64,
+    y: u64,
+    images: usize,
+    (h, wd): (usize, usize),
+    (cin, cout): (usize, usize),
+    (kernel, stride): (usize, usize),
+) {
+    let pad = kernel / 2;
+    let (ho, wo) = (
+        (h + 2 * pad - kernel) / stride + 1,
+        (wd + 2 * pad - kernel) / stride + 1,
+    );
+    for a in wt.adapters(name) {
+        assert_eq!(
+            a.kernel, kernel,
+            "{name}: the LoRA has the kernel {}, and the module {kernel}",
+            a.kernel
+        );
+        run.push(t::conv2d(
+            x,
+            a.down,
+            0,
+            a.scratch,
+            images as u32,
+            h as u32,
+            wd as u32,
+            cin as u32,
+            a.rank as u32,
+            kernel as u32,
+            stride as u32,
+            pad as u32,
+            true,
+            false,
+        ));
+        run.push(t::linear(
+            a.scratch,
+            a.up,
+            0,
+            y,
+            (images * ho * wo) as u32,
+            a.rank as u32,
+            cout as u32,
+            true,
+            true,
+        ));
+    }
+}
+
 /// A linear layer of `name` (`.weight` [cout][cin], or [cout][cin][1][1] with `conv`, and an optional `.bias`). It
 /// runs on the matrix units when the weight has planes.
 #[allow(clippy::too_many_arguments)]
@@ -157,6 +246,7 @@ fn linear_any(
             ));
         }
     }
+    adapt_linear(run, wt, name, x, y, rows, cin, cout);
 }
 
 /// A linear layer of `name` (`.weight` [cout][cin] and an optional `.bias`).
@@ -214,6 +304,7 @@ fn conv(
             !b.f32,
             acc,
         ));
+        adapt_conv(run, wt, name, x, y, images, (h, wd), (cin, cout), (kernel, stride));
         return;
     }
     let weight = w(wt, &wname, &[cout, cin, kernel, kernel]);
@@ -233,6 +324,7 @@ fn conv(
         weight.f32,
         acc,
     ));
+    adapt_conv(run, wt, name, x, y, images, (h, wd), (cin, cout), (kernel, stride));
 }
 
 /// A GroupNorm of `name` (`.weight` and `.bias` of `k` channels) in 32 groups.
