@@ -3057,7 +3057,10 @@ interview). Reason: the rules of 11.9 need names, ranges and errors before the f
   an object (6.15). An id that the store does not hold is a 404 `not_found`, as for any object (6.15).
   Decided 2026-10-29 (Amy, by interview): at most 8 entries, and the weight range above. Reason: the base weights never
   change, and each job picks its own set.
-  - The scale of a LoRA is folded into its up matrix on upload. Proposed by senpai (Claude Haiku 5.5), 2026-10-29.
+  - The scale of a LoRA is folded into its up matrix on upload. Decided 2026-10-29 (Amy, by interview). Reason: the
+    engine adds each delta with no further scale, and the base weights never change.
+  - A LoRA that the engine refuses makes the job a 400. The message names `output.options.loras` and the key. Decided
+    2026-10-29 (Amy, by interview). Reason: nothing ran, so it follows the other refusals of an image job.
   - A LoRA key is `lora_unet_` or `lora_te1_` or `lora_te2_` with the kohya names, or `unet.`, `text_encoder.` or
     `text_encoder_2.` with the diffusers names. Each module has `lora_down` and `lora_up`, or `lora_A` and `lora_B`,
     and it may have `alpha`. A key that names no module of SDXL base is a 400 that names the key. Reason: a silent
