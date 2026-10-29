@@ -31,7 +31,12 @@ pub fn golden_dir() -> PathBuf {
 
 /// The f32 tensors of an oracle file, or `None` when it is absent and absence may skip.
 pub fn golden(file: &str) -> Option<Tensors> {
-    let path = golden_dir().join(file);
+    golden_in(&golden_dir(), file)
+}
+
+/// The f32 tensors of a file of the oracle directory `dir`, or `None` when it is absent and absence may skip.
+pub fn golden_in(dir: &std::path::Path, file: &str) -> Option<Tensors> {
+    let path = dir.join(file);
     if !path.is_file() {
         let require = std::env::var("NAGAYA_REQUIRE_MODELS").is_ok_and(|v| v == "1");
         assert!(
