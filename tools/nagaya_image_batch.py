@@ -166,8 +166,8 @@ def read_settings(path, where, table, base):
     if values["sampler"] not in nagaya_image.SAMPLERS:
         raise JobError(f"{path}: {where}.sampler must be one of {', '.join(nagaya_image.SAMPLERS)}.")
     clip_skip = values["clip_skip"]
-    if clip_skip is not None and clip_skip not in (1, 2):
-        raise JobError(f"{path}: {where}.clip_skip must be 1 or 2, not {clip_skip!r}.")
+    if clip_skip is not None and clip_skip not in (2, 3):
+        raise JobError(f"{path}: {where}.clip_skip must be 2 or 3 (A1111's count), not {clip_skip!r}.")
     if type(values["previews"]) is not bool:
         raise JobError(f"{path}: {where}.previews must be true or false, not {values['previews']!r}.")
     return Settings(

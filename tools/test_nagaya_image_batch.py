@@ -20,7 +20,7 @@ dusk = "score_9, a fox at dusk"
 
 [render]
 steps = 20
-clip_skip = 1
+clip_skip = 2
 
 [[variant]]
 name = "hot"
@@ -50,6 +50,14 @@ class JobFile(unittest.TestCase):
                 batch.load_job(path)
         self.assertIn("width", str(caught.exception))
 
+    def test_a_clip_skip_of_1_is_refused(self):
+        # clip_skip counts as A1111 does, and the server takes 2 or 3 (docs/spec.md 11.9a).
+        with tempfile.TemporaryDirectory() as d:
+            path = write_job(JOB.replace("clip_skip = 2", "clip_skip = 1"), d)
+            with self.assertRaises(batch.JobError) as caught:
+                batch.load_job(path)
+        self.assertIn("2 or 3", str(caught.exception))
+
     def test_a_render_over_the_pixel_limit_is_refused(self):
         with tempfile.TemporaryDirectory() as d:
             path = write_job(JOB.replace("[render]", "[render]\nwidth = 2048\nheight = 2048"), d)
@@ -62,7 +70,7 @@ class JobFile(unittest.TestCase):
             job = batch.load_job(write_job(JOB, d))
         hot = job.variants[0]
         self.assertEqual((hot.name, hot.model), ("hot", "autismmix-1"))
-        self.assertEqual((hot.settings.steps, hot.settings.cfg, hot.settings.clip_skip), (20, 5.0, 1))
+        self.assertEqual((hot.settings.steps, hot.settings.cfg, hot.settings.clip_skip), (20, 5.0, 2))
 
     def test_no_variant_gives_one_base_variant_on_the_job_model(self):
         with tempfile.TemporaryDirectory() as d:
@@ -111,16 +119,16 @@ class RequestBody(unittest.TestCase):
         options = body["output"]["options"]
         self.assertEqual(options["steps"], 20)
         self.assertEqual(options["negative"], "blurry")
-        self.assertEqual(options["clip_skip"], 1)
+        self.assertEqual(options["clip_skip"], 2)
         self.assertEqual(options["count"], 1)
         self.assertNotIn("stream", body)
 
     def test_clip_skip_is_left_out_when_the_job_does_not_name_it(self):
-        body = self.first_render(JOB.replace("clip_skip = 1", "")).body()
+        body = self.first_render(JOB.replace("clip_skip = 2", "")).body()
         self.assertNotIn("clip_skip", body["output"]["options"])
 
     def test_previews_make_the_request_a_stream(self):
-        body = self.first_render(JOB.replace("clip_skip = 1", "previews = true")).body()
+        body = self.first_render(JOB.replace("clip_skip = 2", "previews = true")).body()
         self.assertTrue(body["stream"])
         self.assertTrue(body["output"]["options"]["previews"])
 

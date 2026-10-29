@@ -15,7 +15,8 @@ and gives it to diffusers: the start latent through `latents`, and the noise of 
 
 The script stops with an AssertionError when a self check fails. The checks:
 
-  - the A1111 encoding with clip_skip 1 gives diffusers' `encode_prompt` for both prompts;
+  - the A1111 encoding with clip_skip 1 gives diffusers' `encode_prompt` for both prompts. Here `clip_skip` counts
+    as diffusers does, 1 less than A1111 and the engine (docs/spec.md 11.9a);
   - each step of each sampler used the noise that the script gave it, and no other draw;
   - the explicit guidance of the recorded UNet outputs gives the latent of the next step;
   - the manual VAE decode gives the image of the pipeline;

@@ -155,7 +155,8 @@ def main():
     parser.add_argument("--sampler", choices=SAMPLERS, default="dpm++ 2m karras")
     parser.add_argument("--count", type=int, default=1, help="1 to 4 images; image i uses the seed plus i")
     parser.add_argument("--seed", type=int, help="the seed; with none, the server chooses one and the PNG records it")
-    parser.add_argument("--clip-skip", type=int, choices=[1, 2], help="the default comes from the served model")
+    parser.add_argument("--clip-skip", type=int, choices=[2, 3],
+                        help="in A1111's count: 2 is the penultimate layer; the default comes from the served model")
     parser.add_argument("--previews", action="store_true", help="stream, and write the preview of each step")
     parser.add_argument("--out", default=".", help="the directory of the PNGs (default: the current directory)")
     parser.add_argument("--no-load", action="store_true", help="do not load the engine; a model not ready is a 503")
