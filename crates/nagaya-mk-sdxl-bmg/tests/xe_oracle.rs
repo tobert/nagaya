@@ -104,20 +104,21 @@ fn the_engine_follows_the_oracle_block_by_block_and_makes_an_image() {
 
     // The text encoders.
     let (prompt, negative) = (chunks(&family, PROMPT), chunks(&family, NEGATIVE));
-    for skip in [1usize, 2] {
+    // The engine counts `clip_skip` as A1111 does, and diffusers counts 1 less: the fixture's `clip_skip1` is our 2.
+    for skip in [2usize, 3] {
         let t = Instant::now();
         let (context, pooled) = engine.encode(&prompt, &negative, skip);
         eprintln!("encode with clip_skip {skip}: {} ms", t.elapsed().as_millis());
         check(
             &format!("context, clip_skip {skip}"),
             &context,
-            oracle.encode.values(&format!("clip_skip{skip}.prompt_embeds")),
+            oracle.encode.values(&format!("clip_skip{}.prompt_embeds", skip - 1)),
             1e-3,
         );
         check(
             &format!("pooled, clip_skip {skip}"),
             &pooled,
-            oracle.encode.values(&format!("clip_skip{skip}.pooled")),
+            oracle.encode.values(&format!("clip_skip{}.pooled", skip - 1)),
             1e-3,
         );
     }
@@ -213,7 +214,7 @@ fn the_engine_follows_the_oracle_block_by_block_and_makes_an_image() {
     let job = ImageJob {
         prompt: prompt.clone(),
         negative: negative.clone(),
-        clip_skip: 1,
+        clip_skip: 2,
         width: 512,
         height: 512,
         steps: 20,

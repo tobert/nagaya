@@ -3039,8 +3039,12 @@ interview). Reason: the rules of 11.9 need names, ranges and errors before the f
 | `cfg` | 1.0 to 30.0 | 7.0 |
 | `sampler` | `euler`, `euler a`, `dpm++ 2m karras`, `dpm++ 2m sde karras` | `dpm++ 2m karras` |
 | `count` | 1 to 4 | 1 |
-| `clip_skip` | 1 or 2 | from the family config of the served model; 1 for SDXL base |
+| `clip_skip` | 2 or 3 | from the family config of the served model; 2 for SDXL base |
 | `previews` | `true` or `false` | `false` |
+
+- `clip_skip` counts the layers of the text encoders as A1111 does. `clip_skip` n takes the hidden state of layer -n,
+  so 2 is the penultimate layer. Decided 2026-10-29 (Amy: "yeah we should match a1111 numbering"). Reason: a recipe
+  from Civitai then works as written. The `clip_skip` of diffusers is 1 less. The last layer, A1111's 1, is not built.
 
 - `sample` takes `seed` only. Image `i` of a request uses the seed plus `i`, as A1111 does for a batch. A request with
   no seed gets a random seed, and the A1111 chunk records it. Any other member of `sample` is a 400 that names it.
@@ -3074,7 +3078,7 @@ interview).
   the checkpoint name is the same for two engines of one checkpoint. The profile already keeps engine names apart.
 - The engine kind is `mk-sdxl-bmg`, in a build with `xe`. Decided 2026-10-28 (Amy, by interview). Its
   config and `[engines.family]` take the key `model_dir`, and read `SDXL_MODEL_DIR` with no key, as `gemma4` does.
-  `[engines.family]` also takes `clip_skip`, 1 or 2, with the default 1. Reason: these follow the rules of the other
+  `[engines.family]` also takes `clip_skip`, 2 or 3, with the default 2. Reason: these follow the rules of the other
   engine kinds of b70host.
 - The single file of 11.9. Decided 2026-10-28 (Amy: "proposed note looks good"). Reason: a Civitai checkpoint is
   one file with Stability's tensor names, and it holds no tokenizer.

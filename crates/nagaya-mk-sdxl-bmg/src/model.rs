@@ -84,7 +84,7 @@ pub fn check(weights: &Weights) -> Result<(), String> {
         let mut carve = Carve::new(0, u64::MAX / 2);
         let text = TextBufs::carve(&mut carve, 2 * MAX_CHUNKS);
         for second in [false, true] {
-            for skip in [1, 2] {
+            for skip in [2, 3] {
                 text_encoder(weights, second, &text, 2 * MAX_CHUNKS, skip, [1, 1]);
             }
         }
@@ -318,7 +318,7 @@ impl TextBufs {
     }
 }
 
-/// The runs of one text encoder over `seqs` sequences: the hidden state of layer `layers - clip_skip` goes to
+/// The runs of one text encoder over `seqs` sequences: the hidden state `-clip_skip`, in A1111's count, goes to
 /// `hidden`. For encoder 2 also the pooled output: the final norm and the projection of the rows `eos_rows` (one of
 /// the negative prompt, one of the prompt).
 pub fn text_encoder(
@@ -416,8 +416,8 @@ pub fn text_encoder(
             hid,
             true,
         );
-        // hidden_states[-(clip_skip + 1)] is the output of layer `layers - clip_skip - 1`.
-        if layer + clip_skip + 1 == shape.layers {
+        // hidden_states[-clip_skip] is the output of layer `layers - clip_skip`, with layers counted from 0.
+        if layer + clip_skip == shape.layers {
             run.push(t::copy(b.x, hidden, (rows * hid) as u32));
         }
     }

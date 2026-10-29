@@ -348,8 +348,8 @@ impl SdxlEngine {
             ))
         } else if job.steps == 0 {
             Some("the job has 0 steps".to_owned())
-        } else if !(1..=2).contains(&job.clip_skip) {
-            Some(format!("clip_skip {} is not 1 or 2", job.clip_skip))
+        } else if !(2..=3).contains(&job.clip_skip) {
+            Some(format!("clip_skip {} is not 2 or 3", job.clip_skip))
         } else if !job.cfg.is_finite() {
             Some("the CFG scale is not a finite number".to_owned())
         } else if job.prompt.is_empty()

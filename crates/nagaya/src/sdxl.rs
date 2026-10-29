@@ -82,12 +82,12 @@ pub fn family_config(table: &toml::Table) -> Result<(PathBuf, u32), PlanError> {
         });
     }
     let clip_skip = match table.get("clip_skip") {
-        None => 1,
+        None => 2,
         Some(value) => value
             .as_integer()
-            .filter(|v| (1..=2).contains(v))
+            .filter(|v| (2..=3).contains(v))
             .ok_or_else(|| PlanError {
-                message: format!("`clip_skip` in {what} is {value}; give 1 or 2"),
+                message: format!("`clip_skip` in {what} is {value}; give 2 or 3"),
             })? as u32,
     };
     Ok((model_dir(table, &what)?, clip_skip))
@@ -227,5 +227,19 @@ mod tests {
         assert!(unknown.message.contains("`vae`"), "{}", unknown.message);
         let number = config(&table("model_dir = \"/sdxl\"\ncheckpoint = 3")).unwrap_err();
         assert!(number.message.contains("`checkpoint`"), "{}", number.message);
+    }
+
+    /// `clip_skip` counts as A1111 does: 2 is the penultimate layer (spec 11.9a, Decided 2026-10-29).
+    #[test]
+    fn the_family_table_takes_clip_skip_2_or_3_with_the_default_2() {
+        assert_eq!(family_config(&table("model_dir = \"/sdxl\"")).unwrap().1, 2);
+        assert_eq!(
+            family_config(&table("model_dir = \"/sdxl\"\nclip_skip = 3")).unwrap().1,
+            3
+        );
+        for skip in [1, 4] {
+            let error = family_config(&table(&format!("model_dir = \"/sdxl\"\nclip_skip = {skip}"))).unwrap_err();
+            assert!(error.message.contains("give 2 or 3"), "{}", error.message);
+        }
     }
 }

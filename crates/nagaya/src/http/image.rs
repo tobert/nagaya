@@ -183,7 +183,7 @@ pub fn check(
             }
             "steps" => steps = integer(key, value, 1..=150)?,
             "count" => count = integer(key, value, 1..=u64::from(MAX_COUNT))?,
-            "clip_skip" => clip_skip = integer(key, value, 1..=2)?,
+            "clip_skip" => clip_skip = integer(key, value, 2..=3)?,
             "cfg" => {
                 cfg = value.as_f64().filter(|v| (1.0..=30.0).contains(v)).ok_or_else(|| {
                     invalid(

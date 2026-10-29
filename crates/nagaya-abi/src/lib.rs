@@ -901,7 +901,8 @@ pub struct ImageJob {
     pub prompt: Vec<ImageChunk>,
     /// The chunks of the negative prompt.
     pub negative: Vec<ImageChunk>,
-    /// 1 or 2: the encoders give the hidden state of layer `-(clip_skip + 1)`.
+    /// 2 or 3, in A1111's count: the encoders give the hidden state of layer `-clip_skip`. 2 is the penultimate
+    /// layer. The `clip_skip` of diffusers is 1 less.
     pub clip_skip: u32,
     /// The size of each image, in pixels.
     pub width: u32,

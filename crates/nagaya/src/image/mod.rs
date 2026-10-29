@@ -45,7 +45,7 @@ pub struct ImageConfig {
 }
 
 impl ImageConfig {
-    /// The config of SDXL: one slot, 225 prompt tokens, and `clip_skip` 1.
+    /// The config of SDXL: one slot, 225 prompt tokens, and `clip_skip` 2, the penultimate layer.
     pub fn new(model: &str, engine: &str) -> Self {
         Self {
             model: model.to_owned(),
@@ -53,7 +53,7 @@ impl ImageConfig {
             slots: 1,
             timeout: Duration::from_secs(600),
             context_tokens: 225,
-            clip_skip: 1,
+            clip_skip: 2,
         }
     }
 }

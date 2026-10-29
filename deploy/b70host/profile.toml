@@ -45,7 +45,7 @@ frames_per_quantum = 8
 # planes, 6,707,675,524 on its card for the activations of 4 images of 1.5 MP, and 67,241,984 of host memory. Thus
 # neither one loads beside gemma, and a load unloads gemma. The two load together, and the speech engine fits beside
 # sdxl-0. An engine unloads after 600 s with no job, so a session of image requests keeps it. The checkpoint comes from
-# the unit's environment (`SDXL_MODEL_DIR`), and `clip_skip` is 1, the default of the family.
+# the unit's environment (`SDXL_MODEL_DIR`), and `clip_skip` is 2, the default of the family.
 [[engines]]
 name = "sdxl-0"
 kind = "mk-sdxl-bmg"
@@ -67,8 +67,8 @@ idle_unload_s = 600
 # Pony Diffusion V6 XL on card 0 and AutismMix (its Pony merge) on card 1, each a single file from Civitai (Amy,
 # 2026-10-28). The SDXL engine reads Stability's tensor names (docs/spec.md 11.9, the single file), and its CLIP
 # tokenizer still comes from `SDXL_MODEL_DIR`. Each plans the 21,018,307,972 bytes of SDXL base. Pony V6 asks for "clip
-# skip 2" on its Civitai page: in A1111's count, the penultimate layer. That is `clip_skip` 1 of the engine, the
-# default, so the entries have no family table. The engine's `clip_skip` 2 is layer -3, and it gave Pony's "blobs".
+# skip 2" on its Civitai page, the penultimate layer. `clip_skip` counts as A1111 does (docs/spec.md 11.9a), so 2 is
+# the default of the family, and the entries have no family table.
 [[engines]]
 name = "pony-0"
 kind = "mk-sdxl-bmg"

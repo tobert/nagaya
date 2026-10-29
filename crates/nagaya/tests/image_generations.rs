@@ -257,7 +257,7 @@ impl Fixture {
         }
     }
 
-    /// A council that serves the image model with an object store, and no text model. Its `clip_skip` default is 2,
+    /// A council that serves the image model with an object store, and no text model. Its `clip_skip` default is 3,
     /// so a test sees the default of the config.
     fn council(&self) -> Arc<Council> {
         let service = self.service();
@@ -272,7 +272,7 @@ impl Fixture {
 
     fn service(&self) -> ImageService {
         let mut config = ImageConfig::new(MODEL, MODEL);
-        config.clip_skip = 2;
+        config.clip_skip = 3;
         ImageService::new(config, Arc::new(Characters), self.process.ports()).unwrap()
     }
 
@@ -405,7 +405,7 @@ fn a_generation_writes_one_png_for_each_image_with_its_seed_in_the_a1111_chunk()
     let fixture = Fixture::new();
     let council = fixture.council();
     let options = json!({"negative": "blurry", "width": 512, "height": 768, "steps": 3, "cfg": 5.5,
-                         "sampler": "euler a", "count": 2});
+                         "sampler": "euler a", "count": 2, "clip_skip": 2});
     let (status, done) = generate(&council, request("a red fox", options, json!({"seed": 9})));
     assert_eq!(status, StatusCode::OK, "{done}");
     let jobs = fixture.take_jobs();
@@ -518,7 +518,7 @@ fn a_request_with_no_options_gets_the_defaults_and_a_chosen_seed() {
             job.clip_skip,
             job.previews
         ),
-        (1024, 1024, 30, 7.0, ImageSampler::DpmPp2mKarras, 1, 2, false)
+        (1024, 1024, 30, 7.0, ImageSampler::DpmPp2mKarras, 1, 3, false)
     );
     assert!(job.negative.is_empty(), "an empty negative prompt has no chunk");
     assert_eq!(done["seed"], json!(job.seed), "{done}");
@@ -528,7 +528,7 @@ fn a_request_with_no_options_gets_the_defaults_and_a_chosen_seed() {
         text,
         format!(
             "a fox\nSteps: 30, Sampler: DPM++ 2M Karras, CFG scale: 7, Seed: {}, Size: 1024x1024, Model: painter, \
-             Clip skip: 2",
+             Clip skip: 3",
             job.seed
         )
     );
@@ -551,7 +551,8 @@ fn a_generation_names_each_member_out_of_range() {
         (json!({"sampler": "ddim"}), "output.options.sampler"),
         (json!({"count": 0}), "output.options.count"),
         (json!({"count": 5}), "output.options.count"),
-        (json!({"clip_skip": 3}), "output.options.clip_skip"),
+        (json!({"clip_skip": 1}), "output.options.clip_skip"),
+        (json!({"clip_skip": 4}), "output.options.clip_skip"),
         (json!({"previews": "yes"}), "output.options.previews"),
         (json!({"negative": 3}), "output.options.negative"),
         (json!({"negative": "n".repeat(76)}), "output.options.negative"),
@@ -759,7 +760,7 @@ fn a_job_with_no_previews_ends_soon_after_its_route_goes_away() {
     let job = ImageJob {
         prompt: Vec::new(),
         negative: Vec::new(),
-        clip_skip: 1,
+        clip_skip: 2,
         width: 512,
         height: 512,
         steps: 50,

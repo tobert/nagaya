@@ -36,7 +36,7 @@ fn every_graph_names_tensors_of_the_checkpoint_and_fits_its_rings() {
     let text = TextBufs::carve(&mut carve, 2 * MAX_CHUNKS);
     let mut sizes = Vec::new();
     for second in [false, true] {
-        for skip in [1, 2] {
+        for skip in [2, 3] {
             for run in text_encoder(&weights, second, &text, 2 * MAX_CHUNKS, skip, [1, 80]) {
                 sizes.push(run.tasks.len());
             }

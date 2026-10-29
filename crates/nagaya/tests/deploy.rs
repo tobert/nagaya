@@ -405,7 +405,7 @@ fn the_b70host_profile_names_an_image_engine_on_demand_on_each_card() {
         );
         assert!(
             engine.config.is_empty() && engine.family.is_empty(),
-            "{name}: the checkpoint comes from SDXL_MODEL_DIR in the unit, and clip_skip is 1"
+            "{name}: the checkpoint comes from SDXL_MODEL_DIR in the unit, and clip_skip is 2"
         );
     }
 }
@@ -439,9 +439,8 @@ fn the_b70host_profile_names_pony_on_card_zero_and_autismmix_on_card_one() {
             "{name}: {}",
             file.display()
         );
-        // Pony's "clip skip 2" (A1111's count) is the penultimate layer: the engine's default `clip_skip` 1. Its 2 is
-        // layer -3, which gave Pony's "blobs" on the cards on 2026-10-28.
-        assert!(engine.family.is_empty(), "{name}: the default clip_skip 1");
+        // Pony asks for "clip skip 2", the penultimate layer. `clip_skip` counts as A1111 does, so that is the default.
+        assert!(engine.family.is_empty(), "{name}: the default clip_skip 2");
     }
 }
 
