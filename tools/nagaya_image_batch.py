@@ -117,8 +117,6 @@ class Render:
         }
         if self.settings.clip_skip is not None:
             options["clip_skip"] = self.settings.clip_skip
-        if self.settings.previews:
-            options["previews"] = True
         body = {
             "model": self.model,
             "max_tokens": 1,
@@ -128,6 +126,7 @@ class Render:
         }
         if self.settings.previews:
             body["stream"] = True
+            body["previews"] = True
         return body
 
 

@@ -129,8 +129,10 @@ class RequestBody(unittest.TestCase):
 
     def test_previews_make_the_request_a_stream(self):
         body = self.first_render(JOB.replace("clip_skip = 2", "previews = true")).body()
+        # `previews` is a member of the request, not an option of the output (gogi "Steps and previews").
         self.assertTrue(body["stream"])
-        self.assertTrue(body["output"]["options"]["previews"])
+        self.assertTrue(body["previews"])
+        self.assertNotIn("previews", body["output"]["options"])
 
 
 class FakeServer(http.server.BaseHTTPRequestHandler):

@@ -82,8 +82,6 @@ def request_body(args):
         options["negative"] = args.negative
     if args.clip_skip is not None:
         options["clip_skip"] = args.clip_skip
-    if args.previews:
-        options["previews"] = True
     body = {
         "model": args.model,
         "max_tokens": 1,
@@ -94,6 +92,7 @@ def request_body(args):
         body["sample"] = {"seed": args.seed}
     if args.previews:
         body["stream"] = True
+        body["previews"] = True
     return body
 
 
@@ -118,7 +117,7 @@ def events(response):
 
 
 def generate_stream(base, body, out, stem):
-    """Stream a generation: write each preview as it comes, and give the `done` reply."""
+    """Stream a generation: print each `progress` event, write each preview as it comes, and give the `done` reply."""
     request = urllib.request.Request(
         f"{base}/council/v2/generations",
         data=json.dumps(body).encode(),
@@ -131,7 +130,9 @@ def generate_stream(base, body, out, stem):
         sys.exit(f"the generation failed with {error.code}: {error.read().decode()}")
     with response:
         for name, data in events(response):
-            if name == "preview":
+            if name == "progress":
+                print(f"image {data['index']}: step {data['step']} of {data['of']}", file=sys.stderr)
+            elif name == "preview":
                 path = out / f"{stem}-{data['index']}-step{data['step']:03d}.png"
                 path.write_bytes(fetch(base, data["id"]))
                 print(f"preview {path}", file=sys.stderr)
