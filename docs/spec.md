@@ -3016,7 +3016,8 @@ Decided 2026-10-28 (Amy, by interview):
   default and previews are off.
 - `clip_skip` is an option now. The family config of the served model gives its default.
 - An image job holds no state in the store. Each request starts with empty latents.
-- img2img, inpainting, LoRAs and a hires pass are not built now, and the design leaves room for each. Amy: "We don't
+- img2img, inpainting and a hires pass are not built now, and the design leaves room for each. LoRAs are built
+  (11.9a). Amy: "We don't
   necessarily need to build img2img or inpainting right now, but we need to design for them. same for lora and
   highres/upscale."
 
@@ -3040,10 +3041,32 @@ interview). Reason: the rules of 11.9 need names, ranges and errors before the f
 | `sampler` | `euler`, `euler a`, `dpm++ 2m karras`, `dpm++ 2m sde karras` | `dpm++ 2m karras` |
 | `count` | 1 to 4 | 1 |
 | `clip_skip` | 2 or 3 | from the family config of the served model; 2 for SDXL base |
+| `spacing` | `leading` or `trailing` | `leading` |
+| `loras` | a list of at most 8 `{"id", "weight"}` | an empty list |
 
 - `clip_skip` counts the layers of the text encoders as A1111 does. `clip_skip` n takes the hidden state of layer -n,
   so 2 is the penultimate layer. Decided 2026-10-29 (Amy: "yeah we should match a1111 numbering"). Reason: a recipe
   from Civitai then works as written. The `clip_skip` of diffusers is 1 less. The last layer, A1111's 1, is not built.
+
+- `spacing` sets the timesteps of `euler` and `euler a`, as diffusers' `timestep_spacing` does. `leading` is the
+  spacing of SDXL base. `trailing` gives the steps that a few-step checkpoint, such as SDXL-Lightning, needs. The
+  DPM++ samplers take their timesteps from their sigmas, so `spacing` with them is a 400 that names `spacing`.
+  Proposed by senpai (Claude Haiku 5.5), 2026-10-29. Reason: Amy chose a setting, not a sampler name, for Lightning
+  (2026-10-29, by interview).
+- `loras` lists objects of safetensors weights, each with its `weight` from -2.0 to 2.0. Each `id` is a `blake3:` id of
+  an object (6.15). An id that the store does not hold is a 404 `not_found`, as for any object (6.15). Proposed by
+  senpai (Claude Haiku 5.5), 2026-10-29. Reason: Amy chose runtime deltas (2026-10-29, by interview), so the base
+  weights never change and each job picks its own set.
+  - A LoRA key is `lora_unet_` or `lora_te1_` or `lora_te2_` with the kohya names, or `unet.`, `text_encoder.` or
+    `text_encoder_2.` with the diffusers names. Each module has `lora_down` and `lora_up`, or `lora_A` and `lora_B`,
+    and it may have `alpha`. A key that names no module of SDXL base is a 400 that names the key. Reason: a silent
+    skip would give an image with less of the LoRA than the recipe says.
+  - The scale of a module is `weight * alpha / rank`. Its rank is the first dimension of `lora_down`. Without
+    `alpha`, the scale is `weight`.
+  - Each targeted linear and convolution adds `scale * up(down(x))` to its output. The base weights are not changed,
+    so a job with no LoRA gives the same bits as before. Reason: a removal by subtraction leaves rounding drift.
+  - The text encoders take their LoRAs in the same way, on each encoder's linears.
+  - The A1111 chunk writes the ids and the weights in the field `Lora ids`, in the order of `loras`.
 
 - `sample` takes `seed` only. Image `i` of a request uses the seed plus `i`, as A1111 does for a batch. A request with
   no seed gets a random seed, and the A1111 chunk records it. Any other member of `sample` is a 400 that names it.
@@ -3120,8 +3143,8 @@ interview). Nothing here is built now.
 - **img2img.** The last `user` message also holds an `image/png` object part. The engine encodes it with the VAE
   into the start latent, and `output.options.strength` sets how many steps run. This needs a VAE encode quantum.
 - **Inpainting.** A second object part is the mask. The engine keeps the latent outside the mask at each step.
-- **LoRAs.** `output.options.loras` lists objects of safetensors weights, each with a weight. The engine adds them to
-  its weights for the job and removes them after it. Their ids go into the A1111 chunk.
+- **LoRAs.** Built, as `output.options.loras` (11.9a). The engine adds each delta to the output of its module, and the
+  base weights stay as they are.
 - **Hires pass.** `output.options.hires` names a scale and a step count. After the steps, the engine scales the
   latent up and runs img2img steps on it. Each is one more quantum of kind `step`.
 - The engine calls (engine-abi "Image") take these inputs as optional members. Thus each one adds members and no call.
