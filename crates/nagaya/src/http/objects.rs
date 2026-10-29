@@ -60,7 +60,8 @@ async fn drain(stream: &mut axum::body::BodyDataStream) -> bool {
     false
 }
 
-fn now_ms() -> u64 {
+/// The wall clock in milliseconds, as the store takes it.
+pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)

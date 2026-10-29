@@ -929,6 +929,28 @@ pub struct ImageJob {
     pub seed: u64,
     /// True when each step gives a preview of each image.
     pub previews: bool,
+    /// The LoRAs of the job, in the order of the request (spec 11.9a). The engine adds each one's delta to its module.
+    pub loras: Vec<LoraInput>,
+}
+
+/// One LoRA of a job: the bytes of its safetensors file, and its weight from -2.0 to 2.0.
+#[derive(Clone, PartialEq)]
+pub struct LoraInput {
+    /// The `blake3:` id of the object that holds the file.
+    pub id: String,
+    pub weight: f32,
+    pub file: std::sync::Arc<Vec<u8>>,
+}
+
+impl std::fmt::Debug for LoraInput {
+    /// The bytes are left out of a debug print: a LoRA file is megabytes.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoraInput")
+            .field("id", &self.id)
+            .field("weight", &self.weight)
+            .field("bytes", &self.file.len())
+            .finish()
+    }
 }
 
 /// An image in 8-bit RGB, row after row.

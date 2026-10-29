@@ -367,6 +367,8 @@ pub fn job_problem(job: &ImageJob) -> Option<String> {
         && !matches!(job.sampler, ImageSampler::Euler | ImageSampler::EulerAncestral)
     {
         Some("trailing spacing needs euler or euler a; the DPM++ samplers take their sigmas".to_owned())
+    } else if !job.loras.is_empty() {
+        Some("this engine does not add LoRAs yet; the job names one, and the engine refuses it".to_owned())
     } else if job.prompt.is_empty()
         || job.prompt.len() > MAX_CHUNKS
         || job.negative.len() > MAX_CHUNKS

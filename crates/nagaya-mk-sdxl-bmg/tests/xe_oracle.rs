@@ -224,6 +224,7 @@ fn the_engine_follows_the_oracle_block_by_block_and_makes_an_image() {
         count: 1,
         seed: 1234,
         previews: true,
+        loras: Vec::new(),
     };
     let mut made = Vec::new();
     for _ in 0..2 {

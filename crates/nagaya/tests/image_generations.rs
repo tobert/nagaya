@@ -401,6 +401,100 @@ fn identity_lists_the_image_model_as_a_writer_of_png() {
     );
 }
 
+/// Put `bytes` in the object store of the council, as a client does: `PUT /council/v2/objects/{id}`.
+fn put_object(council: &Arc<Council>, bytes: &[u8]) -> String {
+    let id = format!("blake3:{}", blake3::hash(bytes).to_hex());
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let request = Request::builder()
+            .method("PUT")
+            .uri(format!("/council/v2/objects/{id}"))
+            .header("content-type", "application/octet-stream")
+            .body(Body::from(bytes.to_vec()))
+            .unwrap();
+        let status = router(Arc::clone(council)).oneshot(request).await.unwrap().status();
+        assert_eq!(status, StatusCode::CREATED);
+    });
+    id
+}
+
+/// A LoRA of a request reaches the job with its bytes and its weight, read from the object store (spec 11.9a).
+#[test]
+fn a_lora_of_the_store_reaches_the_job_with_its_bytes_and_weight() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let file = b"not really safetensors, but the route only reads bytes".to_vec();
+    let id = put_object(&council, &file);
+    let options = json!({"loras": [{"id": id, "weight": 0.8}]});
+    let (status, done) = generate(&council, request("a fox", options, json!({})));
+    assert_eq!(status, StatusCode::OK, "{done}");
+    let jobs = fixture.take_jobs();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].loras.len(), 1);
+    assert_eq!(jobs[0].loras[0].id, id);
+    assert_eq!(jobs[0].loras[0].weight, 0.8);
+    assert_eq!(*jobs[0].loras[0].file, file);
+}
+
+/// The A1111 chunk names each LoRA of the request by its id and weight, after the settings (spec 11.9a).
+#[test]
+fn the_a1111_chunk_names_the_loras_by_id_and_weight() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let id = put_object(&council, b"lora one");
+    let options = json!({"loras": [{"id": id, "weight": 0.5}], "width": 512, "height": 512});
+    let (status, done) = generate(&council, request("a fox", options, json!({"seed": 4})));
+    assert_eq!(status, StatusCode::OK, "{done}");
+    let output = &done["outputs"][0];
+    let bytes = object(&council, output["id"].as_str().unwrap());
+    let (_, _, _, text) = read_png(&bytes);
+    let want = format!(
+        "a fox\nSteps: 30, Sampler: DPM++ 2M Karras, CFG scale: 7, Seed: 4, Size: 512x512, Model: painter, Clip skip: 3, \
+         Lora ids: \"{id} 0.5\""
+    );
+    assert_eq!(text.as_deref(), Some(want.as_str()));
+}
+
+/// A LoRA the store does not hold is a 404 that names its part. A bad LoRA entry is a 400 that names its member.
+#[test]
+fn loras_that_are_unheld_or_malformed_are_refused_and_name_their_part() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let unheld = format!("blake3:{}", blake3::hash(b"never put").to_hex());
+    let (status, param) = refused(
+        &council,
+        request("a fox", json!({"loras": [{"id": unheld, "weight": 1.0}]}), json!({})),
+    );
+    assert_eq!(
+        (status, param.as_str()),
+        (StatusCode::NOT_FOUND, "output.options.loras[0]")
+    );
+    let held = put_object(&council, b"a lora");
+    let cases = [
+        (json!({"loras": "x"}), "output.options.loras"),
+        (
+            json!({"loras": vec![json!({"id": held, "weight": 1.0}); 9]}),
+            "output.options.loras",
+        ),
+        (
+            json!({"loras": [{"id": held, "weight": 2.5}]}),
+            "output.options.loras[0].weight",
+        ),
+        (json!({"loras": [{"id": held}]}), "output.options.loras[0].weight"),
+        (
+            json!({"loras": [{"id": held.trim_start_matches("blake3:"), "weight": 1.0}]}),
+            "output.options.loras[0].id",
+        ),
+    ];
+    for (options, param) in cases {
+        let (status, got) = refused(&council, request("a fox", options.clone(), json!({})));
+        assert_eq!((status, got.as_str()), (StatusCode::BAD_REQUEST, param), "{options}");
+    }
+}
+
 /// `spacing: trailing` reaches the job with an Euler sampler, and `leading` is the default.
 #[test]
 fn trailing_spacing_reaches_the_job_with_an_euler_sampler() {
@@ -814,6 +908,7 @@ fn a_job_with_no_previews_ends_soon_after_its_route_goes_away() {
         count: 1,
         seed: 1,
         previews: false,
+        loras: Vec::new(),
     };
     let made = service.generate(job, nagaya::council::Schedule::default()).unwrap();
     made.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();

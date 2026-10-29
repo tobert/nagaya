@@ -3066,7 +3066,8 @@ interview). Reason: the rules of 11.9 need names, ranges and errors before the f
   - Each targeted linear and convolution adds `scale * up(down(x))` to its output. The base weights are not changed,
     so a job with no LoRA gives the same bits as before. Reason: a removal by subtraction leaves rounding drift.
   - The text encoders take their LoRAs in the same way, on each encoder's linears.
-  - The A1111 chunk writes the ids and the weights in the field `Lora ids`, in the order of `loras`.
+  - The A1111 chunk writes the ids and the weights in the field `Lora ids`, in the order of `loras`. Each entry is
+    `<id> <weight>`, and the list is in double quotes, as A1111 writes its lists.
 
 - `sample` takes `seed` only. Image `i` of a request uses the seed plus `i`, as A1111 does for a batch. A request with
   no seed gets a random seed, and the A1111 chunk records it. Any other member of `sample` is a 400 that names it.

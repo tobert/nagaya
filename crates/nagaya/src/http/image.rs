@@ -13,13 +13,16 @@ use gogi_proto::generation::{
 use gogi_proto::identity::ServedModel;
 use gogi_proto::message::{Content, Part, Role};
 use gogi_proto::objects::{Named, check_reads, objects_of};
-use nagaya_abi::{ImageJob, ImageSampler, ImageSpacing, RgbImage};
+use nagaya_abi::{ImageJob, ImageSampler, ImageSpacing, LoraInput, RgbImage};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
 use super::{Council, RequestId, guarded};
 use crate::council::error::ServiceError;
 use crate::image::{ImageError, ImageService, Made};
+use nagaya_store::ContentId;
+use nagaya_store::objects::ObjectStore;
+use std::sync::Mutex;
 
 /// The media type of every output of an image model.
 pub const PNG: &str = "image/png";
@@ -29,6 +32,9 @@ const MAX_PIXELS: u64 = 1_572_864;
 
 /// The most images of one request.
 const MAX_COUNT: u32 = 4;
+
+/// The most LoRAs of one request (spec 11.9a).
+const MAX_LORAS: usize = 8;
 
 /// The sampler names of a request, as A1111 writes them in its chunk (spec 11.9a).
 const SAMPLERS: [(&str, ImageSampler, &str); 4] = [
@@ -105,6 +111,7 @@ pub fn check(
     service: &ImageService,
     model: &ServedModel,
     request: &GenerationRequest,
+    store: Option<&Mutex<ObjectStore>>,
 ) -> Result<Checked, ServiceError> {
     request.validate().map_err(ServiceError::Invalid)?;
     let Some(output) = &request.output else {
@@ -158,6 +165,7 @@ pub fn check(
     let mut sampler = ImageSampler::DpmPp2mKarras;
     let mut spacing = ImageSpacing::Leading;
     let mut clip_skip = u64::from(config.clip_skip);
+    let mut lora_refs = Vec::new();
     // A request asks for previews in the member `previews`, which needs `stream` (gogi "Steps and previews").
     let previews = request.previews == Some(true);
     for (key, value) in &output.options {
@@ -196,6 +204,7 @@ pub fn check(
                     )
                 })?;
             }
+            "loras" => lora_refs = lora_list(value)?,
             "spacing" => {
                 spacing = match value.as_str() {
                     Some("leading") => ImageSpacing::Leading,
@@ -236,6 +245,7 @@ pub fn check(
             }
         }
     }
+    let loras = held_loras(store, &lora_refs)?;
     if spacing == ImageSpacing::Trailing && !matches!(sampler, ImageSampler::Euler | ImageSampler::EulerAncestral) {
         return Err(invalid(
             "output.options.spacing",
@@ -299,12 +309,106 @@ pub fn check(
             count: count as u32,
             seed: seed.unwrap_or_else(chosen_seed),
             previews,
+            loras,
         },
         prompt,
         negative,
         tokens,
         schedule: crate::council::Schedule::of(request.class, request.priority),
     })
+}
+
+/// A LoRA of a request as the client names it: the id and the weight of its object.
+struct LoraRef {
+    id: ContentId,
+    text: String,
+    weight: f32,
+}
+
+/// The list of `output.options.loras`: at most 8 objects, each with an `id` and a `weight` from -2.0 to 2.0 (spec 11.9a).
+fn lora_list(value: &Value) -> Result<Vec<LoraRef>, ServiceError> {
+    let items = value
+        .as_array()
+        .filter(|items| items.len() <= MAX_LORAS)
+        .ok_or_else(|| {
+            invalid(
+                "output.options.loras",
+                format!("nothing ran: output.options.loras is {value}; give a list of at most {MAX_LORAS} LoRAs"),
+            )
+        })?;
+    items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let at = format!("output.options.loras[{i}]");
+            let text = item
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|t| t.starts_with("blake3:"));
+            let id = text.and_then(|t| ContentId::from_hex(t.trim_start_matches("blake3:")).ok());
+            let (Some(text), Some(id)) = (text, id) else {
+                return Err(invalid(
+                    format!("{at}.id"),
+                    format!(
+                        "nothing ran: {at}.id is {}; give a `blake3:` id of a LoRA object",
+                        item["id"]
+                    ),
+                ));
+            };
+            let weight = item
+                .get("weight")
+                .and_then(Value::as_f64)
+                .filter(|w| (-2.0..=2.0).contains(w))
+                .ok_or_else(|| {
+                    invalid(
+                        format!("{at}.weight"),
+                        format!(
+                            "nothing ran: {at}.weight is {}; give a number from -2.0 to 2.0",
+                            item["weight"]
+                        ),
+                    )
+                })?;
+            Ok(LoraRef {
+                id,
+                text: text.to_owned(),
+                weight: weight as f32,
+            })
+        })
+        .collect()
+}
+
+/// The LoRA files of a request, read from the object store. A LoRA that the store does not hold is a 404 that names
+/// its part, as for any object (spec 11.9a, 6.15).
+fn held_loras(objects: Option<&Mutex<ObjectStore>>, refs: &[LoraRef]) -> Result<Vec<LoraInput>, ServiceError> {
+    refs.iter()
+        .enumerate()
+        .map(|(i, lora)| {
+            let at = format!("output.options.loras[{i}]");
+            let found = match objects {
+                Some(store) => store
+                    .lock()
+                    .expect("the object store lock is poisoned")
+                    .get(&lora.id, super::objects::now_ms())
+                    .map_err(|e| ServiceError::internal(e.to_string()))?,
+                None => None,
+            };
+            let Some(found) = found else {
+                return Err(ServiceError::NotHeld {
+                    message: format!(
+                        "nothing ran: {at} is {}, which the server does not hold; PUT it again",
+                        lora.text
+                    ),
+                    param: at,
+                });
+            };
+            let file = std::fs::read(&found.path).map_err(|e| ServiceError::internal(e.to_string()))?;
+            Ok(LoraInput {
+                id: lora.text.clone(),
+                weight: lora.weight,
+                file: Arc::new(file),
+            })
+        })
+        .collect()
 }
 
 /// A seed for a request that names none: from the clock, so two requests differ.
@@ -336,6 +440,15 @@ pub fn parameters(checked: &Checked, model: &str, index: u32) -> String {
         job.height,
         job.clip_skip
     ));
+    // The LoRAs follow the settings, each as its id and its weight, in the order of the request (spec 11.9a).
+    if !job.loras.is_empty() {
+        let ids: Vec<String> = job
+            .loras
+            .iter()
+            .map(|lora| format!("{} {}", lora.id, lora.weight))
+            .collect();
+        text.push_str(&format!(", Lora ids: \"{}\"", ids.join(", ")));
+    }
     text
 }
 
@@ -573,11 +686,12 @@ pub async fn generation(
     request: GenerationRequest,
     id: RequestId,
 ) -> Response {
+    let objects = council.objects();
     if !request.stream.unwrap_or(false) {
         let inner = Arc::clone(&council);
         let result = council
             .call(move || {
-                let checked = check(&service, &model, &request)?;
+                let checked = check(&service, &model, &request, objects.as_deref())?;
                 make(&inner, &service, &model.model, checked, false, &|_| true)
             })
             .await;
@@ -591,7 +705,7 @@ pub async fn generation(
     let inner = Arc::clone(&council);
     let started = council.spawn(move || {
         let result = guarded(|| {
-            let checked = check(&service, &model, &request)?;
+            let checked = check(&service, &model, &request, objects.as_deref())?;
             make(&inner, &service, &model.model, checked, true, &|item| {
                 out.blocking_send(item).is_ok()
             })
