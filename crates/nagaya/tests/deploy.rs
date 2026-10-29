@@ -212,8 +212,8 @@ fn the_b70host_profile_names_the_gemma4_engine_on_both_cards() {
     let profile = b70host_profile();
     assert_eq!(
         profile.engines.len(),
-        6,
-        "gemma, then the speech engine and four image engines, on demand"
+        7,
+        "gemma, then the speech engine and five image engines, on demand"
     );
     let engine = &profile.engines[0];
     assert_eq!(engine.residency, Residency::Resident);
@@ -391,7 +391,7 @@ fn the_b70host_profile_names_an_image_engine_on_demand_on_each_card() {
     let profile = b70host_profile();
     assert_eq!(
         profile.engines.len(),
-        6,
+        7,
         "the image engines follow gemma and the speech engine"
     );
     for (engine, (name, device)) in profile.engines[2..4].iter().zip([("sdxl-0", 0), ("sdxl-1", 1)]) {
@@ -415,8 +415,10 @@ fn the_b70host_profile_names_pony_on_card_zero_and_autismmix_on_card_one() {
     // Amy, 2026-10-28: Pony V6 and AutismMix from Civitai, beside SDXL base, one engine on each card. The profile
     // names the files; this test checks only their form.
     let profile = b70host_profile();
-    assert_eq!(profile.engines.len(), 6);
-    for (engine, (name, device)) in profile.engines[4..].iter().zip([("pony-0", 0), ("autismmix-1", 1)]) {
+    assert_eq!(profile.engines.len(), 7);
+    // Amy, 2026-10-29: SDXL-Lightning 4-step, a single file on card 0, shares that card with pony-0 (spec 11.9a).
+    let singles = [("pony-0", 0), ("autismmix-1", 1), ("lightning-0", 0)];
+    for (engine, (name, device)) in profile.engines[4..7].iter().zip(singles) {
         assert_eq!((engine.name.as_str(), engine.kind.as_str()), (name, nagaya::sdxl::KIND));
         assert_eq!(engine.devices, vec![device]);
         assert_eq!(engine.residency, Residency::OnDemand);
