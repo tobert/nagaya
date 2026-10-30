@@ -29,8 +29,8 @@ Each engine runs on a **device group**: the set of devices that one or more engi
 nagaya thread. Calls for the engines in the group come only from that thread, and they are synchronous. A pass
 blocks the thread.
 
-An engine that spans devices declares stages (D1). The group then has one stage thread for each device of its
-stages, and each stage quantum runs on the thread of its device. mk has a group of one device and no stages.
+An engine that spans devices declares stages (D1). Each stage quantum runs on the device thread of its device. The
+device threads live as long as the group (spec 3.2). mk has a group of one device and no stages.
 mkviolet's group is both B70 cards, with two stages.
 
 ### Rust shape

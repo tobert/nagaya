@@ -371,10 +371,10 @@ thread priorities:
   one group run at once. Reason: Gemma 4 spans both B70 cards, so each engine of b70host is in its group. The image
   engines on the two cards must run in parallel (11.9). This extends the rule of engine-abi "How a group loads both" to
   a group with no loaded engine with stages.
-- **One stage thread per device of a staged engine.** An engine that declares `stages` gets one more thread for
-  each device of its stages (D1). The group thread runs the scheduler and sends each stage quantum to the thread of
-  its device. Each call that touches a device comes from the stage thread of that device. Decided 2026-10-21 (Amy:
-  "move stage_pass up"). The thread layout is in engine-abi D1.
+- **One stage thread per device of a staged engine.** An engine that declares `stages` runs each stage on the device
+  thread of its device (D1, and the next rule). The group thread runs the scheduler and sends each stage quantum to
+  the thread of its device. Each call that touches a device comes from the stage thread of that device. Decided
+  2026-10-21 (Amy: "move stage_pass up"). The thread layout is in engine-abi D1.
 - **The device threads live as long as the group.** Proposed by Claude Opus 5.5, 2026-10-30. A group of more than one
   device starts its device threads once, and they end when the group stops. At its open, the engine with stages gives
   each stage handle to the thread of its device. Its unload takes the handles back. Thus the stage thread of a device

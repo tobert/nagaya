@@ -237,7 +237,7 @@ pub(super) fn swap(
     let beat = OpenBeat::start(group, links.heartbeats.clone(), interval);
     let instruments = instruments();
     for &index in &plan.unload {
-        // A serve loop of stages unloads its engine while its stage threads still run.
+        // A serve loop with device threads unloaded the engines of the plan before it ended, so they are not loaded.
         if members[index].loaded {
             unload(index, members, engines, links.store, links.fd_store, links.states);
         }
@@ -292,8 +292,8 @@ type Open = (Box<dyn Engine>, Vec<Box<dyn StageHandle + Send>>, OpenedEngine);
 
 /// Unload the engine at `index`: park its states, remove its arena fds from systemd's store, and drop it (spec 3.3a).
 ///
-/// An engine with stages parks through its stage threads, so its serve loop calls this before the threads end. A
-/// part that cannot be parked is a crash (spec 8.5).
+/// An engine with stages parks through its stage handles, so its serve loop calls this before the device threads give
+/// the handles back. A part that cannot be parked is a crash (spec 8.5).
 pub(super) fn unload(
     index: usize,
     members: &mut [Member],
