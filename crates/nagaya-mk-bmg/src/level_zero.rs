@@ -800,47 +800,68 @@ unsafe impl Send for L0Cluster {}
 unsafe impl Sync for L0Cluster {}
 
 impl L0Cluster {
+    /// Open every card of the first driver.
     pub fn init(kernel_bin: &[u8], kernel_name: &str) -> Self {
-        unsafe {
-            check_ze(zeInit(0), "zeInit");
-            let mut drv_count = 0;
-            check_ze(zeDriverGet(&mut drv_count, ptr::null_mut()), "zeDriverGet count");
-            assert!(drv_count > 0, "No Level Zero driver found");
-            let mut driver = ptr::null_mut();
-            let mut one = 1;
-            check_ze(zeDriverGet(&mut one, &mut driver), "zeDriverGet");
+        let driver = driver();
+        let cards = devices(driver)
+            .into_iter()
+            .enumerate()
+            .map(|(idx, (dev, pci_address))| open_card(driver, idx, dev, pci_address, kernel_bin, kernel_name))
+            .collect();
+        Self { driver, cards }
+    }
 
-            let mut dev_count = 0;
-            check_ze(
-                zeDeviceGet(driver, &mut dev_count, ptr::null_mut()),
-                "zeDeviceGet count",
-            );
-            let mut raw_devs = vec![ptr::null_mut(); dev_count as usize];
-            check_ze(
-                zeDeviceGet(driver, &mut dev_count, raw_devs.as_mut_ptr()),
-                "zeDeviceGet",
-            );
+    /// The PCI address of each card of the first driver, in the order of `zeDeviceGet`. It opens no card.
+    pub fn addresses() -> Vec<String> {
+        devices(driver()).into_iter().map(|(_, pci)| pci).collect()
+    }
 
-            let c_kname = CString::new(kernel_name).unwrap();
-            let mut cards = Vec::with_capacity(dev_count as usize);
+    /// Open only the cards at `addresses`, in their order. A card that another engine uses gets no context, queue or
+    /// module from this open, so its work does not wait for them.
+    pub fn init_at(kernel_bin: &[u8], kernel_name: &str, addresses: &[String]) -> Result<Self, String> {
+        let driver = driver();
+        let mut found = devices(driver);
+        let pcis: Vec<String> = found.iter().map(|(_, pci)| pci.clone()).collect();
+        let wanted = crate::match_addresses(&pcis, addresses)?;
+        let mut cards = Vec::with_capacity(wanted.len());
+        for idx in wanted {
+            let (dev, pci_address) = std::mem::replace(&mut found[idx], (ptr::null_mut(), String::new()));
+            cards.push(open_card(driver, idx, dev, pci_address, kernel_bin, kernel_name));
+        }
+        Ok(Self { driver, cards })
+    }
+}
 
-            for (idx, &dev) in raw_devs.iter().enumerate() {
-                let ctx_desc = ze_context_desc_t {
-                    stype: ZE_STRUCTURE_TYPE_CONTEXT_DESC,
-                    pNext: ptr::null(),
-                    flags: 0,
-                };
-                let mut context = ptr::null_mut();
-                check_ze(
-                    zeContextCreate(driver, &ctx_desc, &mut context),
-                    "zeContextCreate(per-card)",
-                );
+/// The first Level Zero driver, after `zeInit`.
+fn driver() -> ze_driver_handle_t {
+    unsafe {
+        check_ze(zeInit(0), "zeInit");
+        let mut drv_count = 0;
+        check_ze(zeDriverGet(&mut drv_count, ptr::null_mut()), "zeDriverGet count");
+        assert!(drv_count > 0, "No Level Zero driver found");
+        let mut driver = ptr::null_mut();
+        let mut one = 1;
+        check_ze(zeDriverGet(&mut one, &mut driver), "zeDriverGet");
+        driver
+    }
+}
 
-                let mut props: ze_device_properties_t = std::mem::zeroed();
-                props.stype = ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES;
-                check_ze(zeDeviceGetProperties(dev, &mut props), "zeDeviceGetProperties");
-
-                let name = CStr::from_ptr(props.name.as_ptr()).to_string_lossy().into_owned();
+/// Each device of the driver with its PCI address, as `dddd:bb:dd.f`. This makes no context on any device.
+fn devices(driver: ze_driver_handle_t) -> Vec<(ze_device_handle_t, String)> {
+    unsafe {
+        let mut dev_count = 0;
+        check_ze(
+            zeDeviceGet(driver, &mut dev_count, ptr::null_mut()),
+            "zeDeviceGet count",
+        );
+        let mut raw_devs = vec![ptr::null_mut(); dev_count as usize];
+        check_ze(
+            zeDeviceGet(driver, &mut dev_count, raw_devs.as_mut_ptr()),
+            "zeDeviceGet",
+        );
+        raw_devs
+            .into_iter()
+            .map(|dev| {
                 let mut pci: ze_pci_ext_properties_t = std::mem::zeroed();
                 pci.stype = ZE_STRUCTURE_TYPE_PCI_EXT_PROPERTIES;
                 check_ze(
@@ -851,113 +872,141 @@ impl L0Cluster {
                     "{:04x}:{:02x}:{:02x}.{:x}",
                     pci.address.domain, pci.address.bus, pci.address.device, pci.address.function
                 );
+                (dev, pci_address)
+            })
+            .collect()
+    }
+}
 
-                let q_desc = ze_command_queue_desc_t {
-                    stype: ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC,
-                    pNext: ptr::null(),
-                    ordinal: 0,
-                    index: 0,
-                    flags: 0,
-                    mode: ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS,
-                    priority: 0,
-                };
-                let mut compute_queue = ptr::null_mut();
-                check_ze(
-                    zeCommandQueueCreate(context, dev, &q_desc, &mut compute_queue),
-                    "zeCommandQueueCreate(compute)",
-                );
+/// Make the context, the queues, the command lists and the kernel of one card.
+fn open_card(
+    driver: ze_driver_handle_t,
+    idx: usize,
+    dev: ze_device_handle_t,
+    pci_address: String,
+    kernel_bin: &[u8],
+    kernel_name: &str,
+) -> B70Card {
+    let c_kname = CString::new(kernel_name).unwrap();
+    unsafe {
+        let ctx_desc = ze_context_desc_t {
+            stype: ZE_STRUCTURE_TYPE_CONTEXT_DESC,
+            pNext: ptr::null(),
+            flags: 0,
+        };
+        let mut context = ptr::null_mut();
+        check_ze(
+            zeContextCreate(driver, &ctx_desc, &mut context),
+            "zeContextCreate(per-card)",
+        );
 
-                let copy_q_desc = ze_command_queue_desc_t {
-                    stype: ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC,
-                    pNext: ptr::null(),
-                    ordinal: 1,
-                    index: 0,
-                    flags: 0,
-                    mode: ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS,
-                    priority: 0,
-                };
-                let mut copy_queue = ptr::null_mut();
-                check_ze(
-                    zeCommandQueueCreate(context, dev, &copy_q_desc, &mut copy_queue),
-                    "zeCommandQueueCreate(copy)",
-                );
+        let mut props: ze_device_properties_t = std::mem::zeroed();
+        props.stype = ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES;
+        check_ze(zeDeviceGetProperties(dev, &mut props), "zeDeviceGetProperties");
 
-                let cl_desc = ze_command_list_desc_t {
-                    stype: ZE_STRUCTURE_TYPE_COMMAND_LIST_DESC,
-                    pNext: ptr::null(),
-                    commandQueueGroupOrdinal: 0,
-                    flags: 0,
-                };
-                let mut cmd_list = ptr::null_mut();
-                check_ze(
-                    zeCommandListCreate(context, dev, &cl_desc, &mut cmd_list),
-                    "zeCommandListCreate",
-                );
-                let wake_desc = ze_command_list_desc_t {
-                    commandQueueGroupOrdinal: 1,
-                    ..cl_desc
-                };
-                let mut wake_list = ptr::null_mut();
-                check_ze(
-                    zeCommandListCreate(context, dev, &wake_desc, &mut wake_list),
-                    "zeCommandListCreate(wake)",
-                );
+        let name = CStr::from_ptr(props.name.as_ptr()).to_string_lossy().into_owned();
+        let q_desc = ze_command_queue_desc_t {
+            stype: ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC,
+            pNext: ptr::null(),
+            ordinal: 0,
+            index: 0,
+            flags: 0,
+            mode: ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS,
+            priority: 0,
+        };
+        let mut compute_queue = ptr::null_mut();
+        check_ze(
+            zeCommandQueueCreate(context, dev, &q_desc, &mut compute_queue),
+            "zeCommandQueueCreate(compute)",
+        );
 
-                let mod_desc = ze_module_desc_t {
-                    stype: ZE_STRUCTURE_TYPE_MODULE_DESC,
-                    pNext: ptr::null(),
-                    format: ZE_MODULE_FORMAT_NATIVE,
-                    inputSize: kernel_bin.len(),
-                    pInputModule: kernel_bin.as_ptr(),
-                    pBuildFlags: ptr::null(),
-                    pConstants: ptr::null(),
-                };
-                let mut module = ptr::null_mut();
-                check_ze(
-                    zeModuleCreate(context, dev, &mod_desc, &mut module, ptr::null_mut()),
-                    "zeModuleCreate(NATIVE bmg-g31)",
-                );
+        let copy_q_desc = ze_command_queue_desc_t {
+            stype: ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC,
+            pNext: ptr::null(),
+            ordinal: 1,
+            index: 0,
+            flags: 0,
+            mode: ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS,
+            priority: 0,
+        };
+        let mut copy_queue = ptr::null_mut();
+        check_ze(
+            zeCommandQueueCreate(context, dev, &copy_q_desc, &mut copy_queue),
+            "zeCommandQueueCreate(copy)",
+        );
 
-                let k_desc = ze_kernel_desc_t {
-                    stype: ZE_STRUCTURE_TYPE_KERNEL_DESC,
-                    pNext: ptr::null(),
-                    flags: 0,
-                    pKernelName: c_kname.as_ptr(),
-                };
-                let mut kernel = ptr::null_mut();
-                check_ze(zeKernelCreate(module, &k_desc, &mut kernel), "zeKernelCreate");
-                check_ze(zeKernelSetIndirectAccess(kernel, 7), "zeKernelSetIndirectAccess");
+        let cl_desc = ze_command_list_desc_t {
+            stype: ZE_STRUCTURE_TYPE_COMMAND_LIST_DESC,
+            pNext: ptr::null(),
+            commandQueueGroupOrdinal: 0,
+            flags: 0,
+        };
+        let mut cmd_list = ptr::null_mut();
+        check_ze(
+            zeCommandListCreate(context, dev, &cl_desc, &mut cmd_list),
+            "zeCommandListCreate",
+        );
+        let wake_desc = ze_command_list_desc_t {
+            commandQueueGroupOrdinal: 1,
+            ..cl_desc
+        };
+        let mut wake_list = ptr::null_mut();
+        check_ze(
+            zeCommandListCreate(context, dev, &wake_desc, &mut wake_list),
+            "zeCommandListCreate(wake)",
+        );
 
-                cards.push(B70Card {
-                    index: idx,
-                    driver,
-                    context,
-                    handle: dev,
-                    name,
-                    pci_address,
-                    vendor_id: props.vendorId,
-                    device_id: props.deviceId,
-                    slices: props.numSlices,
-                    subslices_per_slice: props.numSubslicesPerSlice,
-                    eus_per_subslice: props.numEUsPerSubslice,
-                    threads_per_eu: props.numThreadsPerEU,
-                    clock_mhz: props.coreClockRate,
-                    compute_queue,
-                    copy_queue,
-                    cmd_list,
-                    wake_list,
-                    wake_buf: ptr::null_mut(),
-                    wake_lock: std::sync::Mutex::new(()),
-                    ring_dev: ptr::null_mut(),
-                    module,
-                    kernel,
-                });
-                let card = cards.last_mut().unwrap();
-                card.wake_buf = card.alloc_device_usm::<u8>(128);
-                card.ring_dev = card.alloc_device_usm::<u8>(crate::protocol::MAX_TASKS_PER_CARD * 64);
-            }
+        let mod_desc = ze_module_desc_t {
+            stype: ZE_STRUCTURE_TYPE_MODULE_DESC,
+            pNext: ptr::null(),
+            format: ZE_MODULE_FORMAT_NATIVE,
+            inputSize: kernel_bin.len(),
+            pInputModule: kernel_bin.as_ptr(),
+            pBuildFlags: ptr::null(),
+            pConstants: ptr::null(),
+        };
+        let mut module = ptr::null_mut();
+        check_ze(
+            zeModuleCreate(context, dev, &mod_desc, &mut module, ptr::null_mut()),
+            "zeModuleCreate(NATIVE bmg-g31)",
+        );
 
-            Self { driver, cards }
-        }
+        let k_desc = ze_kernel_desc_t {
+            stype: ZE_STRUCTURE_TYPE_KERNEL_DESC,
+            pNext: ptr::null(),
+            flags: 0,
+            pKernelName: c_kname.as_ptr(),
+        };
+        let mut kernel = ptr::null_mut();
+        check_ze(zeKernelCreate(module, &k_desc, &mut kernel), "zeKernelCreate");
+        check_ze(zeKernelSetIndirectAccess(kernel, 7), "zeKernelSetIndirectAccess");
+
+        let mut card = B70Card {
+            index: idx,
+            driver,
+            context,
+            handle: dev,
+            name,
+            pci_address,
+            vendor_id: props.vendorId,
+            device_id: props.deviceId,
+            slices: props.numSlices,
+            subslices_per_slice: props.numSubslicesPerSlice,
+            eus_per_subslice: props.numEUsPerSubslice,
+            threads_per_eu: props.numThreadsPerEU,
+            clock_mhz: props.coreClockRate,
+            compute_queue,
+            copy_queue,
+            cmd_list,
+            wake_list,
+            wake_buf: ptr::null_mut(),
+            wake_lock: std::sync::Mutex::new(()),
+            ring_dev: ptr::null_mut(),
+            module,
+            kernel,
+        };
+        card.wake_buf = card.alloc_device_usm::<u8>(128);
+        card.ring_dev = card.alloc_device_usm::<u8>(crate::protocol::MAX_TASKS_PER_CARD * 64);
+        card
     }
 }

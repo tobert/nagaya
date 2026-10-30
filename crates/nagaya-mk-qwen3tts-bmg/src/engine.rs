@@ -140,12 +140,8 @@ impl Qwen3TtsEngine {
         let tokenizer_hash = sha256_hex(&[&read("vocab.json")?, &read("merges.txt")?]);
         let checkpoint_digest = checkpoint_digest(dir, [&model_map, &codec_map])?;
 
-        let mut cluster = L0Cluster::init(QWEN3TTS_KERNEL, KERNEL_ENTRY);
-        let index = cluster.cards_at(&[pci.to_owned()])?[0];
-        // The engine keeps its card. A drop of the other cards destroys their contexts.
-        let card = cluster.cards.swap_remove(index);
-        cluster.cards.clear();
-        cluster.cards.push(card);
+        // Only the engine's card gets a context, so the open does not stall the work of another card.
+        let cluster = L0Cluster::init_at(QWEN3TTS_KERNEL, KERNEL_ENTRY, &[pci.to_owned()])?;
         let card = &cluster.cards[0];
         let driver = cluster.driver_version();
 

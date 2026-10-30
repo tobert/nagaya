@@ -190,12 +190,8 @@ impl SdxlEngine {
             None => MODEL.to_owned(),
         };
 
-        let mut cluster = L0Cluster::init(SDXL_KERNEL, KERNEL_ENTRY);
-        let index = cluster.cards_at(&[pci.to_owned()])?[0];
-        // The engine keeps its card. A drop of the other cards destroys their contexts.
-        let card = cluster.cards.swap_remove(index);
-        cluster.cards.clear();
-        cluster.cards.push(card);
+        // Only the engine's card gets a context, so the open does not stall the work of another card.
+        let cluster = L0Cluster::init_at(SDXL_KERNEL, KERNEL_ENTRY, &[pci.to_owned()])?;
         let card = &cluster.cards[0];
         let driver = cluster.driver_version();
 
