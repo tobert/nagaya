@@ -3170,12 +3170,13 @@ interview). Reason: the rules of 11.9 need names, ranges and errors before the f
   the job", and the helper thread). Reason: a slow client then never stalls another engine.
   - Speech has its own rule (11.8a). A slow speech reader never holds the group thread.
   - The queue of a stream holds 8 events. The helper thread is the worker of the route, which encodes each PNG. The
-    worker never waits on a client, and the job waits only on the worker. A client that goes away before a cut still
-    cancels the job (11.7). After a cut, the job runs to its end.
-  - After the events in its queue, a cut stream sends one `error` event of type `busy`, and then it ends. A stream
-    cut before its decode sent no `output` event, so its client has no pending id for the sealed images.
-    **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: the rule does not say how the stream ends. A plain end
-    looks like a broken connection to the client, and `busy` is the type of gogi's errors for a load limit.
+    worker never waits on a client, and the job waits only on the worker. A client that goes away still cancels the
+    job (11.7). A full queue alone lets the job run on.
+  - The queue keeps its last two places for the `output` events and the `done` event. A full queue drops each later
+    `progress` and `preview` event, and the stream stays open. Thus each client gets the pending ids and the sealed
+    ids, and the worker never waits. **Proposed** by Claude Opus 5.5, 2026-10-30, in place of the end of the stream
+    with a `busy` event. Reason: the kaibo review found that a cut could drop the `output` event, so the client could
+    not find its images. Amy's choice "drop the stream" becomes "drop the step events".
 - A stream sends an `output` event for each image when its decode starts. `GET` of a pending id gives the PNG when it
   is sealed, because a PNG has no useful part before its end.
 - A stream sends the events `progress` and `preview` of gogi's council API ("Steps and previews"). Decided 2026-10-29
