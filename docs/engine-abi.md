@@ -1134,8 +1134,9 @@ of a small engine on the waiting card costs the large engine nothing.
 - An engine with one device loads beside a loaded engine with stages when the ledger admits both. It opens on the
   stage thread of its device, and its quanta run there. No engine unloads.
 - When it does not fit, the load is a 409. The client names the engine with stages in `unload` (spec 3.3a).
-- A load of an engine with stages first unloads each other loaded engine of its group. Each one that the load does
-  not name loads again beside it after the open (spec 3.3a, "Explicit layout", moves). Decided 2026-10-30.
+- A load of an engine with stages unloads only the engines that the load names. Each other engine stays loaded on
+  its device thread, and the engine with stages gives its handles to those threads (spec 3.2, "The device threads
+  live as long as the group"). Proposed by Claude Opus 5.5, 2026-10-30. This replaces the moves of 2026-10-30.
 - An unload of an engine on a stage thread runs there. The engine with stages stays loaded.
 - A quantum of the engine with one device holds only its device. The scheduler ranks it with the stage quanta of
   that device by class and priority (spec 5.3, 5.4).

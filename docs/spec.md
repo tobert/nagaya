@@ -375,6 +375,11 @@ thread priorities:
   each device of its stages (D1). The group thread runs the scheduler and sends each stage quantum to the thread of
   its device. Each call that touches a device comes from the stage thread of that device. Decided 2026-10-21 (Amy:
   "move stage_pass up"). The thread layout is in engine-abi D1.
+- **The device threads live as long as the group.** Proposed by Claude Opus 5.5, 2026-10-30. A group of more than one
+  device starts its device threads once, and they end when the group stops. At its open, the engine with stages gives
+  each stage handle to the thread of its device. Its unload takes the handles back. Thus the stage thread of a device
+  is its device thread. Reason: an engine with one device then stays on its thread through each swap of
+  the engine with stages (3.3a, "Explicit layout").
 - **A bounded CPU worker pool.** Rendering, tokenization, hashing, safetensors conversion, and CPU device passes
   (13.2) run on a bounded pool pinned to the remaining cores at `SCHED_BATCH`. Long CPU work yields between chunks
   to obey `max_quantum_ms`. On unified-memory machines (`gfx1151host` and `sm121host`), the scheduler pauses background CPU
@@ -558,8 +563,8 @@ interview), with the explicit loads of 3.3. Reason: these rules make each swap o
   engines of the other device groups. Reason: in the worst case, a swap unloads every other engine of the group.
 - **One thread decides.** The group thread of an engine runs its swaps. A load (3.3) names its engine, and the group
   thread starts the swap.
-- **The engines that unload.** A swap unloads only the engines that its load names (3.3b), and the engines that
-  move (3.3a, "Explicit layout"). The group asks the ledger whether the engine fits beside the engines that stay.
+- **The engines that unload.** A swap unloads only the engines that its load names (3.3b). The group asks the ledger
+  whether the engine fits beside the engines that stay.
   When it does not fit, the load is a 409, and nothing changes. Engines of other groups never unload for a swap.
 - **The wait before an unload.** An engine that must unload takes no new job. Its jobs that the group holds run to
   their end. Jobs of engines that stay loaded go on.
@@ -619,12 +624,14 @@ exactly right. the kaijutsu management agents will use the api and tools to mana
   unloads any engine. A swap that still does not fit is a 409, and nothing changes.
 - A pinned engine never unloads for a load or by the unload route. A load that needs its memory is a 409 that names
   the pin.
-- **Moves.** An engine with stages loads after the other engines of its group unload (engine-abi "How a group loads
-  both"). Thus a swap of an engine with stages moves each loaded engine that the load does not name. The engine
-  unloads and loads again, in the same swap or in the next. It is `loading` meanwhile. A move keeps
-  the layout, so it is not a choice of the nagaya.
-- A load of an engine with stages that needs a loaded engine that is not pinned to leave is a 409 that names it. The
-  client names it in `unload`.
+- **No moves.** Proposed by Claude Opus 5.5, 2026-10-30. This replaces the rule "Moves" of 2026-10-30. A swap of an
+  engine with stages unloads only the engines that its load names, as every swap does. Each other engine of the group
+  stays loaded on its device thread (3.2, "The device threads live as long as the group"). A load of an engine with
+  stages that does not fit is a 409, as for any load.
+- The group thread opens and closes the engine with stages. It waits until the group holds no job, and the jobs of
+  the other engines wait during the open. Reason: the scheduler of the group runs on that thread.
+- Reason: on 2026-10-30 on b70host, a load of an image engine that named Gemma 4 moved the pinned EmbeddingGemma 2.
+  It was not ready for 8 s. The swap back to Gemma 4 unloaded it, and nothing loaded it again until a restart.
 - A resident engine can share a device group with a resident engine with stages. At start, it loads beside that
   engine after its open, as a load does.
 - A profile change that makes an engine resident loads it when it fits beside the loaded engines (3.3). Otherwise the
