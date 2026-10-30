@@ -1131,6 +1131,36 @@ fn a_full_stream_still_sends_the_pending_id_and_done() {
     assert!(text.unwrap().contains("Seed: 41"));
 }
 
+/// A client whose queue is full and then goes away cancels its job, though the stream drops its step events (spec
+/// 11.7, 11.9a).
+#[test]
+fn a_client_that_goes_away_after_a_full_queue_cancels_its_job() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let mut body = request(
+        "a fox",
+        json!({"width": 512, "height": 512, "steps": 150}),
+        json!({"seed": SLOW_SEED}),
+    );
+    body["stream"] = json!(true);
+    let (runtime, response) = unread_stream(&council, body);
+    assert_eq!(response.status(), StatusCode::OK);
+    // The queue holds 8 events, so the stream drops step events by step 12.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while fixture.steps.load(std::sync::atomic::Ordering::SeqCst) < 12 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the slow job did not reach step 12"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    drop(response);
+    drop(runtime);
+    wait_clears(&fixture, 1, "the job of a client that went away did not end");
+    let steps = fixture.steps.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(steps < 150, "the job ran all {steps} steps after its client went away");
+}
+
 /// A client that goes away cancels its job, also after a cut. Only a full queue lets the job run on (spec 11.7).
 #[test]
 fn a_stream_whose_client_goes_away_cancels_its_job() {
