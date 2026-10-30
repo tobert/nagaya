@@ -301,16 +301,9 @@ impl OwnedLedger {
         fits
     }
 
-    /// The loaded engines after each pending swap.
-    fn after_pending(&self) -> BTreeSet<String> {
-        let mut loaded = self.loaded.clone();
-        for (load, unload) in &self.pending {
-            loaded = swapped_set(&loaded, load, unload);
-        }
-        loaded
-    }
-
-    /// Check that the live charges fit the ledger after each pending swap. It changes nothing.
+    /// Check that the live charges fit when each pending swap is charged, in any order (spec 3.3a). A swap is charged
+    /// beside every pending load, and only its own unloads ran, because the other swaps can end later. It changes
+    /// nothing.
     fn check_pending(&self) -> Result<(), LedgerError> {
         if self.pending.is_empty() {
             return Ok(());
@@ -319,12 +312,20 @@ impl OwnedLedger {
             .planned
             .as_ref()
             .expect("a swap comes after the admission of a profile");
-        let mut after = self.ledger.clone();
-        match admit_loaded_planned(plans, &mut after, &self.after_pending(), true) {
-            Ok(_) => Ok(()),
-            Err(AdmitError::Ledger(error)) => Err(error),
-            Err(error) => panic!("the ledger cannot check its pending swaps: {error}"),
+        let mut every = self.loaded.clone();
+        for (load, _) in &self.pending {
+            every.extend(load.iter().cloned());
         }
+        for (_, unload) in &self.pending {
+            let charged: BTreeSet<String> = every.iter().filter(|name| !unload.contains(name)).cloned().collect();
+            let mut after = self.ledger.clone();
+            match admit_loaded_planned(plans, &mut after, &charged, true) {
+                Ok(_) => {}
+                Err(AdmitError::Ledger(error)) => return Err(error),
+                Err(error) => panic!("the ledger cannot check its pending swaps: {error}"),
+            }
+        }
+        Ok(())
     }
 
     /// Admit the loaded engines after a swap, when its engines that unload dropped (spec 3.3a). A swap that loads an

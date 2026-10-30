@@ -12,7 +12,7 @@ use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, Residency, 
 use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{Capability, Engine, Lifetime, Limits, MandatoryTerm, Tier};
 
-/// A factory that counts the calls of `plan`. The config key `bytes` adds a weights term of that size on device 0.
+/// A factory that counts the calls of `plan`. The config key `bytes` gives one weights term of that size on device 0.
 struct Counting(Arc<AtomicUsize>);
 
 impl Counting {
@@ -23,6 +23,9 @@ impl Counting {
             limits.capabilities.push(Capability::Close);
         }
         if let Some(bytes) = config.get("bytes").and_then(|value| value.as_integer()) {
+            // The weights are then the only term, so a test can count the bytes of each engine.
+            limits.memory.mandatory.clear();
+            limits.memory.elastic.clear();
             limits.memory.mandatory.push(MandatoryTerm {
                 name: "weights".to_owned(),
                 tier: Tier::Device(0),
@@ -142,4 +145,44 @@ fn a_swap_uses_the_plans_of_the_admission_and_a_new_profile_plans_again() {
         changed,
         "a swap after the new profile planned again"
     );
+}
+
+/// An engine of `bytes` on device 0.
+fn sized(name: &str, bytes: i64, residency: Residency) -> EnginePlacement {
+    let mut placement = engine(name, residency);
+    placement.config.insert("bytes".to_owned(), toml::Value::Integer(bytes));
+    placement
+}
+
+/// Two pending swaps can end in either order, so each must fit while the other has not unloaded (spec 3.3a). In 1000
+/// bytes, a (400) and b (400) are loaded. The swap of d (100) for b fits. The swap of c (700) for a fits after both,
+/// with c and d (800), and not when it ends first, with b and c (1100), so its plan is refused.
+#[test]
+fn a_pending_swap_must_fit_in_any_order() {
+    let mut registry = Registry::new();
+    registry.register("counting", Box::new(Counting(Arc::new(AtomicUsize::new(0)))));
+    let mut profile = profile(vec![
+        sized("a", 400, Residency::Resident),
+        sized("b", 400, Residency::Resident),
+        sized("c", 700, Residency::OnDemand),
+        sized("d", 100, Residency::OnDemand),
+    ]);
+    profile.budgets[0].bytes = 1000;
+    let mut ledger = OwnedLedger::new();
+    ledger.admit(&profile, &registry, &inventory()).expect("a and b fit");
+    let names = |list: &[&str]| list.iter().map(|name| (*name).to_owned()).collect::<Vec<_>>();
+    ledger.plan_swap(&names(&["d"]), &names(&["b"])).expect("a and d fit");
+    assert!(
+        ledger.plan_swap(&names(&["c"]), &names(&["a"])).is_err(),
+        "the swap of c can end before the swap of d, with b still loaded"
+    );
+    ledger
+        .swap(&names(&["d"]), &names(&["b"]))
+        .expect("the swap of d is charged");
+    ledger
+        .plan_swap(&names(&["c"]), &names(&["a"]))
+        .expect("after the swap of d, c fits beside d");
+    ledger
+        .swap(&names(&["c"]), &names(&["a"]))
+        .expect("the swap of c is charged");
 }
