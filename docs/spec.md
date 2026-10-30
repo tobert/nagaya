@@ -571,9 +571,11 @@ interview), with the explicit loads of 3.3. Reason: these rules make each swap o
   until their drop, and the ledger charges the swap after the drop. A profile change waits for the drop of each
   engine that it retires. **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: a late charge stopped the process
   after a 202, and bytes freed too early let the staying engines over-commit.
-- Swaps of two groups can wait at one time, and they can end in either order. Each one must fit beside every
-  pending load, while the unloads of the other swaps have not run. **Proposed** by Claude Opus 5.5, 2026-10-30.
-  Reason: a check of the end state only let the first swap to end find no room.
+- Swaps of two groups can wait at one time, and they can end in either order. A swap is charged after its own
+  unloads, beside any set of other swaps that ended first, each whole with its load and unload. Each such state
+  must fit. A swap that only unloads is never refused. **Proposed** by Claude Opus 5.5,
+  2026-10-30. Reason: a check of the end state let the first swap find no room, and a load counted without its
+  unload refused an unload.
 - A profile `PUT` while any swap waits or runs is a 409 busy, and nothing changes. The client sends it again later.
   Decided 2026-10-30 (Amy: "409 while busy with swaps is good, write it in and do"). Reason: a profile checked
   beside a waiting swap could fail after that swap.
@@ -581,6 +583,10 @@ interview), with the explicit loads of 3.3. Reason: these rules make each swap o
   ledger takes it when no swap waits, and the engines that the change removes dropped and hold no context.
   **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: a load in that time could break the new profile, and a late
   context stopped the process.
+- Until the ledger takes the new profile, each context and staging charge must also fit it. A charge for an engine
+  that the change removes is refused as not ready, a 503 `model_unavailable`. The log names the wait of the change
+  at its start and every 10 s. **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: a charge that fit only the old
+  profile stopped the process, and steady traffic to a removed engine held the change off.
 - Known limit: a swap that only unloads is charged with no check. Fewer engines fit, but with elastic terms the
   spare of the staying engines can shrink under live contexts. No engine declares elastic terms today. **Proposed**
   by Claude Opus 5.5, 2026-10-30.
