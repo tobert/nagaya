@@ -90,7 +90,7 @@ in a lock: one thread owns it (3.2).
 
 Do them in this order. Each milestone ends with all checks green and one or more commits. Milestones 1 to 14 are
 done, and `docs/history.md` keeps their full text, and the merges where the run recorded them. Milestone 15
-is done on gfx1151host, and milestones 15s, 16, 17 and 18 are done on b70host. Milestones 19 and 20 are next.
+is done on gfx1151host, and milestones 15s, 16, 17 and 18 are done on b70host. Milestones 19, 20 and 21 are next.
 
 1. **Workspace.** The Cargo workspace, its crates, `rustfmt.toml` and the dev profile. Done.
 2. **Engine trait.** The ABI core and capabilities as traits, with a fake engine and a broken fake for the gates. Done.
@@ -335,15 +335,36 @@ is done on gfx1151host, and milestones 15s, 16, 17 and 18 are done on b70host. M
     image of 1024 by 1024 with 30 steps takes 57 s on each card, and the two cards run at once. The gogi suite gave
     343 ok, 0 FAIL and 15 skip for gemma, and 88 ok, 0 FAIL and 2 skip for `sdxl-0`.
 
-    Amy accepted the single-file checkpoint of `baddb59` on 2026-10-28. Two limits stay open:
+    Amy accepted the single-file checkpoint of `baddb59` on 2026-10-28.
 
-    - A load or an unload beside running work blocks the group thread for the open. The other card then waits after
-      its current quantum.
-    - A full queue of a slow stream client blocks the thread of the engine, as for speech.
     After the deploy, on 2026-10-29: Lightning and LoRAs. `lightning-0` serves SDXL-Lightning 4-step on card 0.
-    The commits are `348a3ea` to `afe40b3`. The rules for a single-card swap (`992ef0a`) and a slow stream client
-    (`917838a`) are in the spec.
-19. **img2img and inpainting.** Amy chose this milestone on 2026-10-30, and she decided these rules by interview:
+    The commits are `348a3ea` to `afe40b3`. On 2026-10-30, two limits of M18 were fixed on the host:
+
+    - A single-card swap runs on the thread of its card, so the other card does not wait (`9a0294b`). An engine on
+      both cards still swaps on the group thread, and Amy accepted that.
+    - A full queue of a slow image stream ends the stream, and the job seals its images (`3aad340`). A slow speech
+      reader never held the group thread (spec 11.8a).
+19. **Embeddings.** Serve EmbeddingGemma 2 for the semantic search of kaijutsu. Amy decided these rules on 2026-10-30,
+    by interview:
+    - **Route:** council v2 gets a native route, `POST /council/v2/embeddings`. gogi writes the contract first.
+    - **Task:** the request names its task, for example `query` or `document`. The family adds the task prompt of
+      the model. The client never writes the prompt.
+    - **Dimensions:** a request can ask for fewer dimensions (768, 512, 256 or 128). The engine cuts the vector and
+      normalizes it again.
+    - **Placement:** the engine runs on a B70 card on the shared interpreter, resident beside Gemma 4.
+    - **Repositories:** senpai may edit gogi on a branch, merge it to gogi main and move the pin. kaijutsu uses the
+      route later, in its own session.
+    - **Inputs:** text only. The model also takes audio and images, and those come later.
+
+    Do the steps in this order:
+    1. **gogi.** The route, the members of a served model, `gogi-fake` and the suite checks. Merge, then move the pin.
+    2. **Spec.** The route, the family, the embedding capability of the engine ABI and the batch quanta. Amy decides
+       each Proposed note.
+    3. **Oracle fixture.** Write the fixed inputs and outputs of sentence-transformers once, on the CPU (8.3).
+    4. **Family.** Write `nagaya-text-embeddinggemma2`: the tokenizer and the task prompts.
+    5. **Engine.** Write `nagaya-mk-embeddinggemma2-bmg` on the shared interpreter. Run the oracle on the card.
+    6. **Route and deploy.** Serve the route, and add the engine to the profile of b70host as resident.
+20. **img2img and inpainting.** Amy chose this milestone on 2026-10-30, and she decided these rules by interview:
     - **Inputs:** spec 11.9, "The design of later image work". The image and the mask are object parts.
     - **Inpainting:** the latent blend works with any checkpoint. Also load a 9-channel inpainting UNet, such as
       diffusers' `stable-diffusion-xl-1.0-inpainting-0.1`, as other weights.
@@ -362,10 +383,10 @@ is done on gfx1151host, and milestones 15s, 16, 17 and 18 are done on b70host. M
     5. **Inpainting with a blend.** The mask, the blend at each step, and the paste of the pixels after the decode.
     6. **The 9-channel UNet.** Its loader and its extra inputs. Run its oracle on the card.
     7. **Route and deploy.** Serve both through council v2, and add the inpainting weights to the profile.
-20. **Image speed.** Make the SDXL engine faster on the B70 cards. Amy decided on 2026-10-30, by interview: a faster
+21. **Image speed.** Make the SDXL engine faster on the B70 cards. Amy decided on 2026-10-30, by interview: a faster
     kernel can change the output bits if the oracle still passes. The tolerance goes into the spec as a Proposed
     note. The same identity, job and seed must still give the same bits on each run.
-21. Stop and ask Amy for the next milestone.
+22. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
 
