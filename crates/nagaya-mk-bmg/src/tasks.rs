@@ -721,6 +721,16 @@ pub fn biattn(
     window: u32,
     scale: f32,
 ) -> MkTaskDescriptor {
+    // Each of 16 lanes keeps at most 32 values of a head, and a head shorter than its 16s leaves values unwritten.
+    assert!(
+        (16..=512).contains(&d) && d.is_multiple_of(16),
+        "OP_BIATTN takes a head of 16 to 512 values in 16s, and it got {d}"
+    );
+    // The kernel reads the bits 0 as no scale.
+    assert!(
+        scale != 0.0,
+        "OP_BIATTN reads a scale of 0.0 as 1.0, so it takes no scale of 0.0"
+    );
     MkTaskDescriptor {
         a: q,
         b: k,
