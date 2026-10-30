@@ -1769,6 +1769,10 @@ pub(super) fn serve(
         links.machine.clone(),
     );
     let mut pending: Option<Plan> = None;
+    // A swap on the group thread waits for the jobs in flight. New jobs of the engines that stay wait here, so a steady
+    // stream cannot hold the swap off (spec 3.3a, "The wait before an unload"). They go back to the group after it.
+    let mut held: Vec<(JobSpec, Span)> = Vec::new();
+    let mut hold = false;
     let mut cancelled = 0;
     let beat = || WatchMessage::Beat {
         group,
@@ -1796,6 +1800,7 @@ pub(super) fn serve(
                 match links.states.get(&engine) {
                     // An engine on a stage or device thread holds its device. Another engine, such as an engine of
                     // more than one device that loaded on the group thread, holds every device.
+                    Some(EngineState::Ready) if hold => held.push((spec, parent)),
                     Some(EngineState::Ready) => {
                         let place = match hosted.get(&spec.engine) {
                             Some(stage) => Place::On(devices[*stage]),
@@ -1815,7 +1820,8 @@ pub(super) fn serve(
                 swapping = running.step(step, &mut hosted, members, engines, threads, links);
             }
             Ok(GroupMessage::Park(reply)) => {
-                cancelled += jobs.cancel_all();
+                cancelled += jobs.cancel_all() + held.len();
+                held.clear();
                 // An ask that waits gets no reply. Its caller hears that the group stopped.
                 asks.clear();
                 // A swap that runs ends first, so each engine is on one thread for the park.
@@ -1882,6 +1888,10 @@ pub(super) fn serve(
         if !serving && !jobs.idle() {
             cancelled += jobs.cancel_all();
         }
+        if !serving && !held.is_empty() {
+            cancelled += held.len();
+            held.clear();
+        }
         // The engines on the group thread: the engine with stages, or an engine of more than one device.
         let local: Vec<usize> = (0..members.len())
             .filter(|member| members[*member].loaded && !hosted.contains_key(member))
@@ -1928,8 +1938,13 @@ pub(super) fn serve(
                     threads.detach();
                 }
             }
+            // The held jobs wait in the group's own channel for the end of the swap.
+            for (spec, parent) in held.drain(..) {
+                let _ = links.own.send(GroupMessage::Job(spec, parent));
+            }
             break Exit::Swap(plan);
         }
+        hold = serving && free && pending.is_some() && !beside;
         if links.heartbeats.send(beat()).is_err() {
             break Exit::Stop;
         }

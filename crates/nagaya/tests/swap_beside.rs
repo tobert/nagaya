@@ -702,3 +702,76 @@ fn a_load_of_a_second_engine_with_stages_names_the_first_in_the_way() {
     );
     assert_eq!(log_of(&log), ["open:chat@nagaya-group-0"], "nothing changed");
 }
+
+/// A job of `voice` that holds its device thread for a while, as steady embedding traffic does.
+struct Busy {
+    done: Sender<()>,
+}
+
+impl JobBody for Busy {
+    fn unavailable(&mut self, engine: &str, state: nagaya::notify::EngineState) {
+        panic!(
+            "engine `{engine}` is {}, and a job of a staying engine waits, never fails",
+            state.as_str()
+        );
+    }
+
+    fn run(&mut self, _kind: Kind, engines: &mut [Box<dyn Engine>]) -> Ran {
+        let _ = engines[VOICE].identity();
+        std::thread::sleep(Duration::from_millis(20));
+        let _ = self.done.send(());
+        Ran::Done
+    }
+}
+
+/// A steady stream of jobs on a pinned engine beside the engine with stages does not hold off a swap of the engine with
+/// stages, and each job of the stream runs (spec 3.3a, "The wait before an unload"). The swap waited for an idle
+/// group before, so steady embeddings held it off with no end.
+#[test]
+fn a_steady_stream_on_a_pinned_engine_does_not_hold_off_a_swap_of_the_engine_with_stages() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, _log) = start_with(
+        directory.path(),
+        &[
+            engine("chat", vec![0, 1], Residency::Resident),
+            pinned(engine("voice", vec![1], Residency::Resident)),
+        ],
+    );
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (done, finished) = mpsc::channel();
+    let feeder = {
+        let ports = process.ports();
+        let stop = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            let mut sent = 0usize;
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                // Two jobs wait at each moment, so the group is never idle.
+                for _ in 0..2 {
+                    let spec = JobSpec {
+                        class: Class::Interactive,
+                        priority: 0,
+                        deadline: None,
+                        first: Kind::Decode,
+                        engine: VOICE,
+                        body: Box::new(Busy { done: done.clone() }),
+                    };
+                    ports.submit_job(0, spec).unwrap();
+                    sent += 1;
+                }
+                std::thread::sleep(Duration::from_millis(15));
+            }
+            sent
+        })
+    };
+    std::thread::sleep(Duration::from_millis(100));
+    process.unload("chat").unwrap();
+    let swap = swapped(&process, Duration::from_secs(5));
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let sent = feeder.join().unwrap();
+    assert_eq!(swap, (vec!["chat".to_owned()], Vec::new()));
+    for job in 0..sent {
+        finished
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap_or_else(|_| panic!("job {job} of {sent} of the stream did not run"));
+    }
+}
