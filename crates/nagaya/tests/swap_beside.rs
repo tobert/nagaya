@@ -142,7 +142,7 @@ struct Pair(Log);
 fn fake(name: &str) -> Box<dyn Engine + Send> {
     match name {
         "chat" | "paint" | "slow" | "slower" => Box::new(feed_support::engine(2)),
-        "voice" | "draw" => Box::new(FakeAlways::new()),
+        "voice" | "draw" | "late" => Box::new(FakeAlways::new()),
         other => panic!("no fake named {other}"),
     }
 }
@@ -156,6 +156,10 @@ impl Factory for Pair {
         let name = config["name"].as_str().unwrap().to_owned();
         let thread = std::thread::current().name().unwrap_or("unnamed").to_owned();
         self.0.lock().unwrap().push(format!("open:{name}@{thread}"));
+        // The open of `late` takes 600 ms, longer than the watch of a test with a short timeout.
+        if name == "late" {
+            std::thread::sleep(Duration::from_millis(600));
+        }
         Ok(Box::new(Closing {
             inner: fake(&name),
             name,
@@ -898,4 +902,30 @@ fn a_slow_detach_beats_for_the_stage_thread_and_the_group_thread() {
         }
     }
     assert!(swapped, "no swap came in 5 s: {:?}", log_of(&log));
+}
+
+/// A stop that comes while a single-card swap opens an engine waits for the open, and the group thread beats while it
+/// waits (spec 7.4). The open of `late` takes 600 ms, and the watch allows 300 ms.
+#[test]
+fn a_stop_during_a_single_card_swap_beats_while_it_waits() {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut process, log) = start_watched(
+        directory.path(),
+        &[
+            engine("chat", vec![0, 1], Residency::Resident),
+            engine("late", vec![1], Residency::OnDemand),
+        ],
+        Duration::from_millis(300),
+    );
+    process.load("late").unwrap();
+    wait_for(&log, "open:late@nagaya-dev-0-1");
+    let report = process.stop(Duration::from_secs(5), &SignalFlag::new());
+    assert!(report.complete, "{:?}", report.parked);
+    while let Some(event) = process.recv(Duration::from_millis(20)) {
+        assert!(
+            !matches!(event, Event::Stalled { .. }),
+            "the watch saw a stall: {event:?}"
+        );
+    }
+    assert!(log_of(&log).contains(&"close:late".to_owned()), "{:?}", log_of(&log));
 }

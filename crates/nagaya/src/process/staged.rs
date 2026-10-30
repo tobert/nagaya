@@ -1809,15 +1809,25 @@ pub(super) fn serve(
                 held.clear();
                 // An ask that waits gets no reply. Its caller hears that the group stopped.
                 asks.clear();
-                // A swap that runs ends first, so each engine is on one thread for the park.
+                // A swap that runs ends first, so each engine is on one thread for the park. An open can take seconds,
+                // so this thread beats while it waits (spec 7.4).
                 while let Some(running) = swapping.take() {
-                    match links.messages.recv() {
+                    swapping = Some(running);
+                    let _ = links.heartbeats.send(beat());
+                    match links.messages.recv_timeout(interval) {
                         Ok(GroupMessage::SwapStep(step)) => {
+                            let running = swapping.take().expect("a swap runs");
                             swapping = running.step(step, &mut hosted, members, engines, threads, links);
                         }
-                        // The jobs are cancelled, so the ends of their quanta change nothing.
-                        Ok(_) => swapping = Some(running),
-                        Err(_) => break,
+                        // The process stops, so a quantum or a job that comes now is cancelled, as at a stop.
+                        Ok(GroupMessage::Quantum(quantum)) => {
+                            quantum.cancel();
+                            cancelled += 1;
+                        }
+                        Ok(GroupMessage::Job(..)) => cancelled += 1,
+                        // An ask gets no reply, and the ends of the cancelled jobs change nothing.
+                        Ok(_) | Err(RecvTimeoutError::Timeout) => {}
+                        Err(RecvTimeoutError::Disconnected) => break,
                     }
                 }
                 // A park call waits on each stage thread for the stage quantum before it.
