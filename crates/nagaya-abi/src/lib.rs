@@ -352,6 +352,8 @@ pub enum Capability {
     Speech,
     /// Images: `image_begin`, `image_step`, `image_decode` and `image_clear` (engine-abi "Image").
     Image,
+    /// Embeddings: `embed` (engine-abi "Embedding").
+    Embedding,
 }
 
 /// The limits that an engine declares.
@@ -991,6 +993,19 @@ pub trait Image {
     fn image_clear(&mut self, slot: SlotId);
 }
 
+/// The embedding capability (engine-abi "Embedding"). The engine never takes text: the family makes the ids (D2).
+pub trait Embedding {
+    /// The most ids of one call. It keeps a call within `max_quantum_ms`.
+    fn embedding_max_tokens(&self) -> u32;
+
+    /// The length of the vector of a call.
+    fn embedding_dimension(&self) -> u32;
+
+    /// Run one input and give its vector: the mean over each position of the model's last output, in f32, before any
+    /// normalization. It is one quantum of kind `embed`, and it holds nothing after it ends.
+    fn embed(&mut self, ids: &[u32]) -> Result<Vec<f32>, PassError>;
+}
+
 /// The core trait that every engine implements.
 pub trait Engine {
     /// The identity of the engine and its weights.
@@ -1042,6 +1057,11 @@ pub trait Engine {
 
     /// The image capability, when the engine has it (engine-abi "Image").
     fn image(&mut self) -> Option<&mut dyn Image> {
+        None
+    }
+
+    /// The embedding capability, when the engine has it (engine-abi "Embedding").
+    fn embedding(&mut self) -> Option<&mut dyn Embedding> {
         None
     }
 }
