@@ -497,6 +497,10 @@ policy. The nagaya keeps no such name.
   - `keep`: the entry is the same, or only its `share` changes. A new share takes effect through admission (4.4).
   - `residency`: only `residency` or `pinned` changes. A resident engine that is not loaded loads when it fits beside
     the loaded engines (3.3a, "Explicit layout"). An engine that becomes on demand stays loaded until an unload.
+  - **One try.** Proposed by senpai (Claude Opus 5.5), 2026-10-30. The change tries the load of a resident engine
+    once. When it does not fit, the engine stays unloaded and the log names the shortfall. A client loads it later
+    with the load route (3.3b). Reason: a retry by itself is a swap that no client
+    asked for. Amy, 2026-10-30: "I'd like to avoid churning on model swaps."
   - `load`: the entry is new. It loads if it is resident.
   - `unload`: the entry is gone.
   - `reload`: `kind`, `devices`, `config` or `family` changes. The engine unloads, then it loads with the new entry.
