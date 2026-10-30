@@ -630,6 +630,13 @@ pub struct Planned {
     planned: Vec<AdmittedEngine>,
 }
 
+impl Planned {
+    /// The names of the engines, in profile order.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.planned.iter().map(|engine| engine.name.as_str())
+    }
+}
+
 /// Plan every engine of a profile, in profile order, and check its devices and its arena fds. No ledger runs here.
 pub fn plan_all(
     profile: &PlacementProfile,

@@ -371,7 +371,16 @@ impl OwnedLedger {
             .filter(|name| profile.engines.iter().any(|engine| &engine.name == *name))
             .cloned()
             .collect();
-        admit_loaded_planned(&plans, &mut self.ledger, &staying, false)?;
+        // An engine that the profile removes retires, and its contexts end, before the ledger takes the profile.
+        let mut live = self.ledger.clone();
+        if let Some(old) = &self.planned {
+            for name in old.names() {
+                if !profile.engines.iter().any(|entry| entry.name == name) {
+                    while live.release_context(name).is_ok() {}
+                }
+            }
+        }
+        admit_loaded_planned(&plans, &mut live, &staying, false)?;
         Ok(admitted)
     }
 

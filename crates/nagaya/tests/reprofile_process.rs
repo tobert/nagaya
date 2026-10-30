@@ -391,3 +391,19 @@ fn a_check_of_a_profile_counts_the_live_staging() {
     assert!(process.check_profile(&small).is_ok());
     assert_eq!(device_bytes(&process), 400, "the checks changed nothing");
 }
+
+/// A change that removes a busy engine passes its check. The engine retires and its contexts end before the ledger
+/// takes the new profile, so the check leaves out their charges (spec 3.3).
+#[test]
+fn a_check_of_a_profile_leaves_out_the_contexts_of_an_engine_that_it_removes() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, _log) = start(directory.path());
+    let ports = process.ports();
+    let mut without_chat = profile(1000);
+    without_chat.engines.remove(0);
+    ports.admit_context("chat").unwrap();
+    process
+        .check_profile(&without_chat)
+        .expect("the live context of chat ends before the new profile");
+    ports.release_context("chat").unwrap();
+}
