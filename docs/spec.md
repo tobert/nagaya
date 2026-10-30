@@ -314,7 +314,7 @@ adds the entries does not count a pooled budget twice. On gfx1151host, `device(0
 2026-10-20 (reading).
 
 The placement profile is one TOML file. Each `[[engines]]` entry has `name`, `kind`, `devices`, `config`, an optional
-`family` table (11.3), `share` and `pin_identity`. An entry can also have `residency` and `idle_unload_s` (3.3a).
+`family` table (11.3), `share` and `pin_identity`. An entry can also have `residency` and `pinned` (3.3a).
 Each `[[budgets]]` entry has `tiers` and `bytes`, and a tier is
 `host` or `device(i)`. The `[store]` table has `nvme`, an optional `host` (4.1a), an optional `interval_copies`
 (6.13), 0 by default, and an optional `objects` (6.15). Decided 2026-10-20 (reading).
@@ -488,8 +488,8 @@ policy. The nagaya keeps no such name.
   same name.
 - **The actions.** Each engine gets one action:
   - `keep`: the entry is the same, or only its `share` changes. A new share takes effect through admission (4.4).
-  - `residency`: only `residency` or `idle_unload_s` changes. A resident engine that is not loaded loads. An engine
-    that becomes on demand unloads after its idle time (3.3a, "The swap back").
+  - `residency`: only `residency` or `pinned` changes. A resident engine that is not loaded loads when it fits beside
+    the loaded engines (3.3a, "Explicit layout"). An engine that becomes on demand stays loaded until an unload.
   - `load`: the entry is new. It loads if it is resident.
   - `unload`: the entry is gone.
   - `reload`: `kind`, `devices`, `config` or `family` changes. The engine unloads, then it loads with the new entry.
@@ -534,8 +534,7 @@ swap and waits for the load (Amy then: "Nagaya swaps itself").
   `model` and `status` (gogi). Amy: "hmm this could get churny... I think we should 503 until models are explicitly
   swapped."
 - A client loads and unloads an engine in two ways: a profile `PUT` (above), and the load routes (3.3b).
-- An on-demand engine still unloads after its idle time. Then the resident engines of its group load again (3.3a, "The
-  swap back").
+- The nagaya never loads or unloads an engine by itself after the start (3.3a, "Explicit layout").
 - The route `POST /v1/audio/speech` goes, because speech is a council served model (11.8a). Amy: "remove that route if
   we have the one in council/gogi now".
 
@@ -550,6 +549,8 @@ interview), with the explicit loads of 3.3. Reason: these rules make each swap o
 
 - **Residency.** Each engine in the profile has `residency`: `resident` or `on_demand`. The default is `resident`.
   At start the process opens each resident engine, and an on-demand engine stays unloaded.
+- **Pins.** An entry can have `pinned = true`. A pinned engine is resident: admission refuses a pin on an on-demand
+  entry. No load and no unload removes a pinned engine. Only a profile `PUT` does (3.3a, "Explicit layout").
 - **Only engines that close.** A profile refuses an on-demand engine unless each engine of its device group declares
   `close` (engine-abi "Capabilities"). Reason: a swap frees an engine in the process, and only `close` makes that
   safe. mk has no `close`, so gfx1151host keeps its restart (3.3).
@@ -557,9 +558,9 @@ interview), with the explicit loads of 3.3. Reason: these rules make each swap o
   engines of the other device groups. Reason: in the worst case, a swap unloads every other engine of the group.
 - **One thread decides.** The group thread of an engine runs its swaps. A load (3.3) names its engine, and the group
   thread starts the swap.
-- **The engines that unload.** The group asks the ledger whether the engine fits beside the loaded engines. When it
-  does not fit, the group unloads loaded engines of its own group, the last in profile order first, until it fits.
-  Engines of other groups never unload for a swap.
+- **The engines that unload.** A swap unloads only the engines that its load names (3.3b), and the engines that
+  move (3.3a, "Explicit layout"). The group asks the ledger whether the engine fits beside the engines that stay.
+  When it does not fit, the load is a 409, and nothing changes. Engines of other groups never unload for a swap.
 - **The wait before an unload.** An engine that must unload takes no new job. Its jobs that the group holds run to
   their end. Jobs of engines that stay loaded go on.
 - **Single-card swaps.** Proposed by senpai (Claude Haiku 5.5), 2026-10-29, for Amy's choice of 2026-10-29 (by
@@ -604,14 +605,32 @@ its fds stay in the store frees no device memory.
 Reason: a council request charges its context on the request thread, before it submits its job (11.3c). On the cards
 on 2026-10-24, a generation for an unloaded Gemma 4 failed with "engine gemma is not admitted" until this rule.
 
-**The swap back.** Proposed by senpai (Claude Opus 5.5), 2026-10-24, and Decided 2026-10-27 (Amy, by interview).
+**Explicit layout.** Proposed by senpai (Claude Opus 5.5), 2026-10-30, and Decided 2026-10-30 (Amy, by interview).
+This replaces "The swap back" of 2026-10-24. Amy: "yeah, remove auto-swap ... Gemma not coming back on its own is
+exactly right. the kaijutsu management agents will use the api and tools to manage the model loads and unloads."
 
-- An on-demand engine unloads after `idle_unload_s` seconds with no job. The key is in its profile entry, and the
-  default is 60. Then the group loads each resident engine of the group that is not loaded.
-- The key is at least 1, and only an on-demand entry has it. Admission refuses any other entry that names it.
-  Reason: 0 unloads the engine after each job, and a key on a resident engine does nothing.
-- An unload by the route (3.3b) also loads the resident engines of the group again.
-- A swap is one span `nagaya.swap`, with the engines that unload, the engine that loads, and each step's time (9.2).
+- Engines load and unload only through the API: the load routes (3.3b) and a profile `PUT` (3.3). The start opens
+  the resident engines (above).
+- No idle time unloads an engine, and no unload loads another engine. A profile that names `idle_unload_s` is a 400
+  that says the key is gone.
+- A load that does not fit beside the loaded engines is a 409. It names the shortfall in bytes for each short budget,
+  the loaded engines in the way, and each pinned engine. The nagaya never chooses an engine to unload.
+- A load can name the engines to unload first: `{"unload": [names]}`. The group checks the whole swap before it
+  unloads any engine. A swap that still does not fit is a 409, and nothing changes.
+- A pinned engine never unloads for a load or by the unload route. A load that needs its memory is a 409 that names
+  the pin.
+- **Moves.** An engine with stages loads after the other engines of its group unload (engine-abi "How a group loads
+  both"). Thus a swap of an engine with stages moves each loaded engine that the load does not name. The engine
+  unloads and loads again, in the same swap or in the next. It is `loading` meanwhile. A move keeps
+  the layout, so it is not a choice of the nagaya.
+- A load of an engine with stages that needs a loaded engine that is not pinned to leave is a 409 that names it. The
+  client names it in `unload`.
+- A resident engine can share a device group with a resident engine with stages. At start, it loads beside that
+  engine after its open, as a load does.
+- A profile change that makes an engine resident loads it when it fits beside the loaded engines (3.3). Otherwise the
+  engine stays `unloaded`, the log names the shortfall, and a client loads it with an `unload` list.
+
+Reason: a client agent knows its plan, so it chooses the layout. A layout that changes by itself surprises it.
 
 **What a swap does not change.** A swap changes no device group, group thread or route. An unloaded engine is in its
 group, with the state `unloaded` (9.4, 11.1).
@@ -628,10 +647,14 @@ the shape was Decided 2026-10-28 (Amy, by interview).
 
 - `POST /nagaya/v1/engines/{name}/load` loads the engine of the profile with that name, by a swap (3.3a). The reply is a
   202 when the swap starts, and it names the engines that unload. A loaded or loading engine gives a 200.
-- `POST /nagaya/v1/engines/{name}/unload` unloads an on-demand engine. The resident engines of its group then load
-  again, as after the idle time. An engine that is not loaded gives a 200.
-- An unknown name is a 404 `not_found` that names `name`. A resident engine, or an engine without `close`, is a 409 that
-  names `name`. A resident engine leaves only by a profile `PUT`.
+- The body of a load is empty, or `{"unload": [names]}` (3.3a, "Explicit layout"). Decided 2026-10-30 (Amy, by
+  interview). A name of another device group, the engine itself, or a malformed body is a 400 `invalid_request` with
+  the param `unload`. An unknown name is a 404 that names it.
+- A load that does not fit is a 409 that names the shortfall, the engines in the way and the pins (3.3a).
+- `POST /nagaya/v1/engines/{name}/unload` unloads a loaded engine that is not pinned, resident or on demand. No other
+  engine loads. An engine that is not loaded gives a 200. Decided 2026-10-30 (Amy, by interview).
+- An unknown name is a 404 `not_found` that names `name`. A pinned engine, or an engine without `close`, is a 409 that
+  names `name`. A pinned engine leaves only by a profile `PUT`.
 - A load does not change the profile. The next start of the process loads the resident engines only.
 - A load or an unload that arrives while the group has a planned swap waits for the end of that swap. Then the group
   plans it.
@@ -3302,26 +3325,13 @@ the oracle recorded.
 - A job charges no context and stores nothing. The plan of the engine holds its weights and the work of one input of
   `context_tokens`.
 
-**Open: the residency of the embedding engine beside Gemma 4.** Question for Amy, from Claude Opus 5.5 (a senpai
-fork), 2026-10-30. The rule "resident beside Gemma 4" fits in memory, but the swap rules of 3.3a remove it.
+**The residency of the embedding engine.** Decided 2026-10-30 (Amy, by interview). Amy: "I will generally want an
+EmbeddingGemma always loaded somewhere. Maybe we even need a pin."
 
+- The embedding engine is resident and pinned (3.3a, "Explicit layout"). No load removes it, and no idle time unloads
+  it. A swap of Gemma 4 moves it for the time of the swap, so its requests can get a 503 for a few seconds.
 - Memory: card 1 has 2,469,944,308 bytes beside gemma, and card 0 has 4,394,792,436 (the profile of b70host,
   budgets). The text tower of EmbeddingGemma 2 is 542,005,296 bytes in bf16 (the header of `model.safetensors`).
-  Thus it fits beside gemma on either card.
-- A load of an image engine unloads gemma first (`crates/nagaya/src/process/in_place.rs:125`). The embedding engine
-  is hosted beside gemma on a stage thread, so the swap unloads it too. It then loads again on the group thread
-  (`crates/nagaya/src/process/staged.rs:1834`). Embedding requests get a 503 for the time of the swap.
-- A load of gemma unloads each other loaded engine of the group (`in_place.rs:127`), and the swap loads none of them
-  again (`staged.rs:1853`). The rule "loads again beside it at its next job" (engine-abi "How a group loads both")
-  needs a job. Since 2026-10-28, a job for an unloaded engine is a 503 (3.3a). A load route refuses a resident engine
-  (3.3b). Thus the embedding engine stays unloaded until a profile `PUT` or a restart.
-- The swap back of an idle image engine does not load gemma while another engine of the group stays loaded
-  (`in_place.rs:183`). With the embedding engine loaded, gemma thus stays unloaded until a client loads it.
-- These readings are from the code. No test covers two resident engines in a group with an engine with stages.
-- **Proposed** answer: after each swap, the group loads each resident engine that is not loaded, in profile order.
-  It loads one only when the ledger admits it beside the loaded engines. An engine with stages loads first.
-  Reason: Amy, 2026-10-28, "we arrive at the state the API configured". The alternative is an embedding engine on
-  demand, which a client loads.
 - **Proposed** placement: card 1. Reason: card 0 has four on-demand engines (`voice`, `sdxl-0`, `pony-0` and
   `lightning-0`), and card 1 has two.
 

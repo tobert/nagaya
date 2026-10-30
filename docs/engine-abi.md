@@ -1133,10 +1133,10 @@ of a small engine on the waiting card costs the large engine nothing.
 
 - An engine with one device loads beside a loaded engine with stages when the ledger admits both. It opens on the
   stage thread of its device, and its quanta run there. No engine unloads.
-- When it does not fit, the swap unloads the engine with stages, as before (spec 3.3a).
-- A load of an engine with stages first unloads each other loaded engine of its group. Each one loads again beside
-  it at its next job.
-- An idle engine on a stage thread unloads there (spec 3.3a "The swap back"). The engine with stages stays loaded.
+- When it does not fit, the load is a 409. The client names the engine with stages in `unload` (spec 3.3a).
+- A load of an engine with stages first unloads each other loaded engine of its group. Each one that the load does
+  not name loads again beside it after the open (spec 3.3a, "Explicit layout", moves). Decided 2026-10-30.
+- An unload of an engine on a stage thread runs there. The engine with stages stays loaded.
 - A quantum of the engine with one device holds only its device. The scheduler ranks it with the stage quanta of
   that device by class and priority (spec 5.3, 5.4).
 
@@ -1148,4 +1148,4 @@ loaded when the small one fits.
 
 - Streams. They need a period, a deadline and a late policy, in `limits()` or per job. A pass blocks, so the
   scheduler meets a stream's deadline, not the engine.
-- Unloading an engine while its arena stays staged in host memory for a fast swap back.
+- Unloading an engine while its arena stays staged in host memory for a fast load again.

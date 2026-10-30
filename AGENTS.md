@@ -357,6 +357,8 @@ is done on gfx1151host, and milestones 15s, 16, 17 and 18 are done on b70host. M
     - **Repositories:** senpai may edit gogi on a branch, merge it to gogi main and move the pin. kaijutsu uses the
       route later, in its own session.
     - **Inputs:** text only. The model also takes audio and images, and those come later.
+    - **Layout:** no auto-swap. Engines load and unload only through the API, and a pin keeps an engine loaded
+      (spec 3.3a, "Explicit layout"). Gemma 4 does not come back by itself after an image engine.
 
     Do the steps in this order:
     1. **gogi.** The route, the members of a served model, `gogi-fake` and the suite checks. Merge, then move the pin.
