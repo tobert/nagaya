@@ -3417,6 +3417,52 @@ Reason: the VAE changes the kept pixels a little on its way through. A1111 paste
   way (`image_processor.py:817`). Thus the oracle compares the decode before the paste. A host test checks the paste.
 - img2img has no paste. A preview has no paste.
 
+**The VAE encode quantum.** **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: engine-abi "Image" makes the encode
+one more quantum of kind `step`. "The design of later image work" adds members and no call.
+
+- A job with an image runs its quanta in this order. First is the `embed` of the prompts, then one `step` for the VAE
+  encode. Then come the `n` steps and one `step` for the decode.
+- The encode quantum encodes each input that the job needs: the image, and the masked image of a 9-channel UNet. The
+  images of a request share it, as they share each quantum (5.2).
+- The encode is not a step of `progress`, as the decode is not.
+- The engine declares the most pixels of a slot as before. That bound covers the encode quantum too.
+
+**The 9-channel UNet.** **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: this is the input of diffusers'
+inpainting UNet, and the profile then needs no new key.
+
+- The weights are diffusers' `stable-diffusion-xl-1.0-inpainting-0.1`, snapshot `115134f`. Its
+  `unet/diffusion_pytorch_model.fp16.safetensors` has `conv_in.weight` of shape `[320, 9, 3, 3]` in F16. Its
+  `add_embedding.linear_1.weight` is `[1280, 2816]`, as in SDXL base, so it takes the time ids of base.
+- The snapshot has no `config.json`, and its `tokenizer/` has no `vocab.json` (read on b70host, 2026-10-30). Thus
+  the engine reads the input channels from `conv_in.weight`: 4 or 9. Another count refuses the plan and the open.
+- The input of each step has 9 channels in this order: the scaled latent, the latent mask, and the masked image latent
+  (`inpaint.py:1612-1615`). Both halves of CFG take the same mask and masked latent (`inpaint.py:877` and `:900-902`).
+- The masked image is the image with 0 at each repainted pixel, after the map to -1 to 1 (`inpaint.py:1455`). The
+  engine encodes it as the image latent, with its own draw, the purpose `encode masked` (`inpaint.py:887`).
+- A 9-channel UNet does no blend (`inpaint.py:1648`). The paste after the decode applies to it, as to any inpainting.
+- A 9-channel UNet needs an image and a mask. A request without both is a 400 that names the content of the last
+  `user` message, such as `messages[0].content`. Reason: the UNet has no input for a job without them.
+
+The profile names the weights as any SDXL checkpoint. A single file with Stability's names and 9 input channels loads
+the same way.
+
+- The served model is `inpaint-0`, an engine of kind `mk-sdxl-bmg`. The key `model_dir` of `[engines.config]` names
+  the inpainting folder.
+- Its family table has no `model_dir`, so the family reads the tokenizer from `SDXL_MODEL_DIR` (11.9a).
+- LoRAs work on it, as on any served image model. A LoRA module whose shape does not match is a 400 that names the key
+  (11.9a).
+
+**The errors of a job with an image.** **Proposed** by Claude Opus 5.5, 2026-10-30. Each one is a 400 that names the
+part or the member, and its message says what the client can change.
+
+- A third object part in the last `user` message names that part.
+- Bytes that are not a PNG, or a PNG with 16 bits in a channel, name the part.
+- An image that breaks the size rules names its part, and gives its size and the rules.
+- A mask of another size than the image names the part of the mask, and gives both sizes.
+- A `width` or a `height` that differs from the image names that member, and gives the size of the image.
+- `strength` without an image, `mask_blur` without a mask, or a `strength` that runs no step names that member.
+- A 9-channel UNet without an image and a mask names the content of the last `user` message.
+
 **11.10 Embeddings.** Amy decided these rules on 2026-10-30, by interview (`AGENTS.md` milestone 19). gogi's contract
 is "Embeddings" in gogi `docs/council-api.md`, at gogi `6db7e98`.
 

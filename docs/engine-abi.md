@@ -1025,6 +1025,16 @@ image_clear(slot)                       frees the state of the slot
   `trailing`) and `loras`, a list of each LoRA's bytes and weight. The engine parses the bytes and adds each delta
   to its module's output (spec 11.9a). The engine refuses `trailing` with a DPM++ sampler. Reason: the spacing of the
   schedule is the engine's, and the spec gives the rule.
+- **Image inputs.** **Proposed** by Claude Opus 5.5, 2026-10-30, for spec 11.9b. Reason: the nagaya decodes and
+  checks each PNG on the route, so the engine takes pixels, as it takes tokens and not text (D2).
+  - `ImageJob` takes `init`: the RGB bytes of the image, 3 for each pixel, and `strength`. It also takes `mask`: the
+    blurred gray mask, 1 byte for each pixel. The engine makes the binary mask from it.
+  - `image_begin` cuts the schedule to its last `n` steps (spec 11.9b). The first `image_step` of a job with `init`
+    runs the VAE encode as its quantum, and it gives step 0 with no previews. The nagaya sends no `progress` for it.
+  - The random stream takes the purposes `encode` and `encode masked` for the draws of the image latents.
+  - The engine reads the input channels of its UNet from `conv_in.weight`, 4 or 9. A 9-channel UNet refuses a job
+    without `init` and `mask`. A 4-channel UNet blends the latent after each step.
+  - `image_decode` gives the decode with no paste. The nagaya pastes the kept pixels back before the PNG encode.
 
 ## Embedding
 
