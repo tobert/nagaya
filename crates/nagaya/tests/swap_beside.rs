@@ -73,7 +73,7 @@ impl Engine for Closing {
     }
 
     fn stages(&mut self) -> Option<&mut dyn Stages> {
-        if self.name == "slow" {
+        if self.name == "slow" || self.name == "slower" {
             self.inner.stages()?;
             return Some(self);
         }
@@ -81,10 +81,12 @@ impl Engine for Closing {
     }
 }
 
-/// The engine `slow` gives stage handles that take 200 ms to drop, and write `drop:slow:<stage>` after it.
+/// The engines `slow` and `slower` give stage handles that take 200 ms and 400 ms to drop, and write
+/// `drop:<engine>:<stage>` after it.
 impl Stages for Closing {
     fn take_handles(&mut self) -> Vec<Box<dyn StageHandle + Send>> {
         let handles = self.inner.stages().expect("the fake has stages").take_handles();
+        let wait = if self.name == "slower" { 400 } else { 200 };
         handles
             .into_iter()
             .enumerate()
@@ -93,6 +95,7 @@ impl Stages for Closing {
                     inner,
                     label: format!("drop:{}:{stage}", self.name),
                     log: Arc::clone(&self.log),
+                    wait: Duration::from_millis(wait),
                 }) as Box<dyn StageHandle + Send>
             })
             .collect()
@@ -104,11 +107,12 @@ struct SlowDrop {
     inner: Box<dyn StageHandle + Send>,
     label: String,
     log: Log,
+    wait: Duration,
 }
 
 impl Drop for SlowDrop {
     fn drop(&mut self) {
-        std::thread::sleep(Duration::from_millis(200));
+        std::thread::sleep(self.wait);
         self.log.lock().unwrap().push(self.label.clone());
     }
 }
@@ -137,7 +141,7 @@ struct Pair(Log);
 
 fn fake(name: &str) -> Box<dyn Engine + Send> {
     match name {
-        "chat" | "paint" | "slow" => Box::new(feed_support::engine(2)),
+        "chat" | "paint" | "slow" | "slower" => Box::new(feed_support::engine(2)),
         "voice" | "draw" => Box::new(FakeAlways::new()),
         other => panic!("no fake named {other}"),
     }
@@ -194,6 +198,11 @@ fn start(directory: &std::path::Path) -> (Process, Log) {
 }
 
 fn start_with(directory: &std::path::Path, engines: &[EnginePlacement]) -> (Process, Log) {
+    start_watched(directory, engines, Duration::from_secs(5))
+}
+
+/// As [`start_with`], with a watch that stops the process after `timeout` with no beat (spec 7.4).
+fn start_watched(directory: &std::path::Path, engines: &[EnginePlacement], timeout: Duration) -> (Process, Log) {
     let log: Log = Arc::default();
     let mut registry = Registry::new();
     registry.register("pair", Box::new(Pair(Arc::clone(&log))));
@@ -227,7 +236,7 @@ fn start_with(directory: &std::path::Path, engines: &[EnginePlacement]) -> (Proc
     let mut process = Start::new(profile, registry, inventory)
         .store(directory)
         .heartbeat(Duration::from_millis(10))
-        .timeout(Duration::from_secs(5))
+        .timeout(timeout)
         .start()
         .unwrap();
     process.wait_opens(Duration::from_secs(5)).unwrap();
@@ -858,4 +867,35 @@ fn the_next_open_waits_for_the_drop_of_each_stage_handle() {
     let open = at("open:paint@nagaya-group-0");
     assert!(at("drop:slow:0") < open, "{lines:?}");
     assert!(at("drop:slow:1") < open, "{lines:?}");
+}
+
+/// A slow detach does not stop the process: the stage thread beats while its handle drops, and the group thread beats
+/// while it waits for the detach (spec 7.4). Each handle of `slower` takes 400 ms to drop, and the watch allows 300 ms.
+#[test]
+fn a_slow_detach_beats_for_the_stage_thread_and_the_group_thread() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start_watched(
+        directory.path(),
+        &[
+            engine("slower", vec![0, 1], Residency::Resident),
+            engine("paint", vec![0, 1], Residency::OnDemand),
+        ],
+        Duration::from_millis(300),
+    );
+    process.load_with("paint", &["slower".to_owned()]).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut swapped = false;
+    // The watch may report a stall after the swap too, so the test watches a while longer.
+    let mut after: Option<Instant> = None;
+    while Instant::now() < deadline && after.is_none_or(|at| at.elapsed() < Duration::from_millis(500)) {
+        match process.recv(Duration::from_millis(20)) {
+            Some(Event::Stalled { .. }) => panic!("the watch saw a stall: {:?}", log_of(&log)),
+            Some(Event::Swapped { .. }) => {
+                swapped = true;
+                after = Some(Instant::now());
+            }
+            _ => {}
+        }
+    }
+    assert!(swapped, "no swap came in 5 s: {:?}", log_of(&log));
 }

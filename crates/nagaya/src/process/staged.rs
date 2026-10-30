@@ -308,7 +308,10 @@ fn stage_thread(
             }
             Ok(StageWork::Detach(reply)) => {
                 // The drop closes the stage of the engine with stages on this device (engine-abi "`close` in Rust").
+                // It frees device memory and can take seconds, so a helper beats for this thread (spec 7.4).
+                let beat_guard = OpenBeat::stage(group, stage, heartbeats.clone(), interval);
                 drop(handle.take());
+                drop(beat_guard);
                 if reply.send(()).is_err() {
                     return;
                 }
@@ -1934,8 +1937,11 @@ pub(super) fn serve(
                     &links.states,
                 );
                 if Some(member) == index {
-                    // The stages of the engine close on their threads before the next open (spec 3.3a).
+                    // The stages of the engine close on their threads before the next open (spec 3.3a). This thread
+                    // waits for each, so a helper beats for it (spec 7.4).
+                    let beat_guard = OpenBeat::start(group, links.heartbeats.clone(), interval);
                     threads.detach();
+                    drop(beat_guard);
                 }
             }
             // The held jobs wait in the group's own channel for the end of the swap.
