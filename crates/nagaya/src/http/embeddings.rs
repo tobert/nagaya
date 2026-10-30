@@ -182,6 +182,19 @@ pub async fn serve(
         Ok(Outcome::Failed(error)) => return failure_of(&council, error).respond(&id),
         Err(failure) => return failure.respond(&id),
     };
+    // A zero vector has no direction, so its cut cannot be normalized (spec 11.10). The request fails, and no NaN
+    // goes out.
+    if let Some(vectors) = &vectors
+        && let Some(index) = vectors
+            .iter()
+            .position(|vector| vector.iter().take(dimensions as usize).all(|value| *value == 0.0))
+    {
+        let message = format!(
+            "nothing was sent: the engine gave a zero vector for inputs[{index}] at {dimensions} dimensions, which has \
+             no direction to normalize; report the input"
+        );
+        return Failure::from(ServiceError::internal(message)).respond(&id);
+    }
     let all: u64 = tokens.iter().sum();
     let embeddings = tokens
         .iter()

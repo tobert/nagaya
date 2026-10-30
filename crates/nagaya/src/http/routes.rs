@@ -256,25 +256,25 @@ async fn reads(State(council): Shared, Extension(id): Id, body: Body) -> Respons
     answer(&id, result)
 }
 
-/// Embeddings (gogi "Embeddings"). No served model of the nagaya declares `embed` yet (milestone 19), so the route
-/// refuses each model with a 400 that names `model`, as gogi's contract asks.
+/// Embeddings (gogi "Embeddings"). A served embedding model gets its job (spec 11.10). Each other served model is a
+/// 400 that names `model`, as gogi's contract asks. gogi's checks run before the 503 of a model that is not ready.
 async fn embeddings(State(council): Shared, Extension(id): Id, body: Body) -> Response {
     let request = async {
         let request: EmbeddingsRequest = parse(&bytes(body).await?, "embeddings")?;
         if let Some((service, model)) = super::embeddings::route(&council, &request.model) {
+            request.check(&model).map_err(ServiceError::Invalid)?;
             if model.status != gogi_proto::identity::ModelStatus::Ready {
                 return Err(Failure::unavailable(&model));
             }
             return Ok((service, model, request));
         }
-        // Any other served model has no embedding service: a 503 when it is not ready, and else the 400 of gogi that
-        // names `model`.
+        // Any other served model has no embedding service, so gogi's check refuses it with a 400 that names `model`.
         let identity = council.identity();
         let served = identity.route(&request.model).map_err(ServiceError::Invalid)?;
+        request.check(served).map_err(ServiceError::Invalid)?;
         if served.status != gogi_proto::identity::ModelStatus::Ready {
             return Err(Failure::unavailable(served));
         }
-        request.check(served).map_err(ServiceError::Invalid)?;
         Err(Failure::from(ServiceError::Invalid(gogi_proto::Invalid::param(
             "model",
             format!(

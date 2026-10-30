@@ -47,6 +47,11 @@ impl Embedding for Counted {
 
     fn embed(&mut self, ids: &[u32]) -> Result<Vec<f32>, PassError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        // An input with `~` gives a zero vector, which no cut can normalize. The family gives each byte its value
+        // plus 3.
+        if ids.contains(&(u32::from(b'~') + 3)) {
+            return Ok(vec![0.0; DIMENSIONS[0] as usize]);
+        }
         self.inner.embed(ids)
     }
 }
@@ -331,6 +336,40 @@ fn a_vector_at_its_full_length_is_normalized() {
     );
     let got = vector(&body["embeddings"][0]["vector"]);
     assert_eq!(got, expected("document", "x", 8));
+}
+
+/// A zero vector has no direction, so the cut cannot normalize it. The request fails with a message that names the
+/// input, and the process goes on (spec 11.10).
+#[test]
+fn a_zero_vector_fails_the_request_and_names_the_input() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let (status, body) = embed(&council, json!({"model": MODEL, "task": "query", "inputs": ["x", "~"]}));
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("inputs[1]"), "{body}");
+    assert!(council.failure().is_none(), "a zero vector does not stop the process");
+    let (status, body) = embed(&council, json!({"model": MODEL, "task": "query", "inputs": ["x"]}));
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// The checks of gogi run before the 503 of a model that is not ready (spec 11.10), so a request that can never pass
+/// gets its 400 at once.
+#[test]
+fn a_bad_request_to_an_unloaded_embedding_model_is_a_400() {
+    let fixture = Fixture::with(Residency::OnDemand);
+    let council = fixture.council();
+    for (body, param) in [
+        (json!({"model": MODEL, "task": "bogus", "inputs": ["x"]}), "task"),
+        (
+            json!({"model": MODEL, "task": "query", "inputs": ["x"], "dimensions": 3}),
+            "dimensions",
+        ),
+    ] {
+        let (status, answer) = embed(&council, body);
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+        assert_eq!(answer["error"]["param"], json!(param), "{answer}");
+    }
 }
 
 #[test]
