@@ -102,12 +102,12 @@ fn the_group_has_a_stage_thread_for_each_device() {
     let two = FeedFixture::new(2);
     let mut names: Vec<String> = task_support::thread_names()
         .into_iter()
-        .filter(|name| name.starts_with("nagaya-stg-"))
+        .filter(|name| name.starts_with("nagaya-dev-"))
         .collect();
     names.sort();
     // Other tests of this binary run their own processes, so count the threads of this group shape only once.
     names.dedup();
-    assert_eq!(names, vec!["nagaya-stg-0-0", "nagaya-stg-0-1"]);
+    assert_eq!(names, vec!["nagaya-dev-0-0", "nagaya-dev-0-1"]);
     drop(two);
 }
 

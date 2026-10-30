@@ -692,29 +692,16 @@ fn an_unload_on_card_0_does_not_delay_a_job_on_card_1() {
 }
 
 /// An engine of both cards opens on the group thread, not on a device thread (spec 3.3a: Amy accepted that stall).
+/// The engine of a device thread stays loaded there, because the load does not name it (spec 3.3a, "No moves").
 #[test]
 fn an_engine_of_both_cards_swaps_on_the_group_thread() {
     let directory = tempfile::tempdir().unwrap();
     let (mut process, log) = start_failing([Residency::OnDemand; 3], 1 << 20, directory.path(), None, true);
     assert!(process.wait_opens(Duration::from_secs(5)).unwrap().is_empty());
     assert_eq!(load(&process, "left"), (Vec::new(), vec!["left".to_owned()]));
-    let (unloaded, loaded) = load(&process, "wide");
-    assert_eq!(
-        unloaded,
-        ["left"],
-        "a load on the group thread moves each engine of the device threads"
-    );
-    // The load does not name `left`, so it loads again: a move keeps the layout (spec 3.3a, "Explicit layout").
-    assert_eq!(loaded, ["wide", "left"]);
-    assert_eq!(
-        log_of(&log),
-        [
-            "open:left@nagaya-dev-0-0",
-            "close:left",
-            "open:wide@nagaya-group-0",
-            "open:left@nagaya-group-0"
-        ]
-    );
+    assert_eq!(load(&process, "wide"), (Vec::new(), vec!["wide".to_owned()]));
+    assert_eq!(log_of(&log), ["open:left@nagaya-dev-0-0", "open:wide@nagaya-group-0"]);
+    assert_eq!(process.ports().engine_state("left"), Some(EngineState::Ready));
 }
 
 /// A load that arrives while a swap runs on a device thread starts its swap after that swap ends, so the ledger sees

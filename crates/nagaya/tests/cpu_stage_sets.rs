@@ -44,7 +44,7 @@ fn each_stage_thread_runs_on_the_set_of_its_device_and_the_group_thread_on_the_p
     };
     let fixture = FeedFixture::with_sets(FeedFactory::new(2), Duration::from_secs(10), Some(sets.clone()));
     assert_eq!(mask_named("nagaya-group-0"), sets.pool);
-    assert_eq!(mask_named("nagaya-stg-0-0"), sets.devices[0]);
-    assert_eq!(mask_named("nagaya-stg-0-1"), sets.devices[1]);
+    assert_eq!(mask_named("nagaya-dev-0-0"), sets.devices[0]);
+    assert_eq!(mask_named("nagaya-dev-0-1"), sets.devices[1]);
     drop(fixture);
 }

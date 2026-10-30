@@ -168,8 +168,6 @@ pub(super) enum Request {
     Retire(usize),
     /// Take the residency, the pin and the share of a new profile entry (spec 3.3, "residency" and "keep").
     Place(usize, Box<EnginePlacement>),
-    /// Load an engine that a swap moved (spec 3.3a, "Explicit layout", moves). Nobody waits for the reply.
-    Move(usize),
 }
 
 /// What an ask asks of the engine with a name.
@@ -233,27 +231,21 @@ pub(super) fn ask(
 /// Answer the asks that wait, in order of arrival, until one plans a swap (spec 3.3b). The group calls it only when
 /// it has no planned swap.
 ///
-/// `widen` gives the swap that the serve loop runs for a plan. A serve loop of stages can unload more engines than
-/// the plan names. The states of the engines of the swap change here: an engine that unloads is `draining`, and an
-/// engine that loads is `loading`.
+/// The swap unloads only the engines that its ask names (spec 3.3a, "No moves"). The states of the engines of the
+/// swap change here: an engine that unloads is `draining`, and an engine that loads is `loading`.
 pub(super) fn next_plan(
     asks: &mut VecDeque<Ask>,
     members: &mut [Member],
     ledger: &Sender<LedgerMessage>,
     states: &EngineStates,
-    widen: impl Fn(Plan, &[Member]) -> Plan,
 ) -> Option<Plan> {
     while let Some(Ask { request, reply }) = asks.pop_front() {
-        let (plan, named) = match request {
-            Request::Load(index, _)
-            | Request::Unload(index)
-            | Request::Place(index, _)
-            | Request::Retire(index)
-            | Request::Move(index)
+        let plan = match request {
+            Request::Load(index, _) | Request::Unload(index) | Request::Place(index, _) | Request::Retire(index)
                 if members[index].retired =>
             {
                 let answer = match request {
-                    Request::Retire(_) | Request::Move(_) => Ok(LoadReply::Already(EngineState::Unloaded)),
+                    Request::Retire(_) => Ok(LoadReply::Already(EngineState::Unloaded)),
                     _ => Err(LoadError::Unknown(members[index].name().to_owned())),
                 };
                 let _ = reply.send(answer);
@@ -265,13 +257,10 @@ pub(super) fn next_plan(
                     let _ = reply.send(Ok(LoadReply::Already(EngineState::Unloaded)));
                     continue;
                 }
-                (
-                    Plan {
-                        load: Vec::new(),
-                        unload: vec![index],
-                    },
-                    vec![index],
-                )
+                Plan {
+                    load: Vec::new(),
+                    unload: vec![index],
+                }
             }
             Request::Place(index, entry) => {
                 let placement = &mut members[index].job.placement;
@@ -289,7 +278,7 @@ pub(super) fn next_plan(
                 }
                 // A profile change loads a new resident engine only beside the loaded engines (spec 3.3).
                 match in_place::plan(index, &[], members, ledger) {
-                    Ok(plan) => (plan, Vec::new()),
+                    Ok(plan) => plan,
                     Err(error) => {
                         tracing::warn!(
                             "the profile makes engine `{}` resident, and it stays unloaded: {error}",
@@ -300,24 +289,16 @@ pub(super) fn next_plan(
                     }
                 }
             }
-            Request::Load(index, _) | Request::Move(index) if members[index].loaded => {
+            Request::Load(index, _) if members[index].loaded => {
                 let _ = reply.send(Ok(LoadReply::Already(EngineState::Ready)));
                 continue;
             }
             Request::Load(index, named) => match in_place::plan(index, &named, members, ledger) {
-                Ok(plan) => (plan, named),
+                Ok(plan) => plan,
                 Err(error) => {
                     let _ = reply.send(Err(error));
                     continue;
                 }
-            },
-            Request::Move(index) => match in_place::plan(index, &[], members, ledger) {
-                Ok(plan) => (plan, Vec::new()),
-                // A moved engine fit before its swap, and admission keeps its memory, so a refusal is a defect.
-                Err(error) => panic!(
-                    "engine `{}` moved for a swap and cannot load again: {error}",
-                    members[index].name()
-                ),
             },
             Request::Unload(index) if members[index].pinned() => {
                 let _ = reply.send(Err(LoadError::Pinned(members[index].name().to_owned())));
@@ -331,31 +312,11 @@ pub(super) fn next_plan(
                 let _ = reply.send(Ok(LoadReply::Already(EngineState::Unloaded)));
                 continue;
             }
-            Request::Unload(index) => (
-                Plan {
-                    load: Vec::new(),
-                    unload: vec![index],
-                },
-                vec![index],
-            ),
+            Request::Unload(index) => Plan {
+                load: Vec::new(),
+                unload: vec![index],
+            },
         };
-        let plan = widen(plan, members);
-        // Each engine that the swap unloads and does not load again moved: it loads in a later swap, before the asks
-        // that wait. An engine with stages loads first, because the others load beside it (spec 3.3a, moves).
-        let mut moved: Vec<usize> = plan
-            .unload
-            .iter()
-            .copied()
-            .filter(|index| !named.contains(index) && !plan.load.contains(index) && !members[*index].retired)
-            .collect();
-        moved.sort_by_key(|index| (!members[*index].staged(), *index));
-        for index in moved.into_iter().rev() {
-            let (orphan, _) = mpsc::channel();
-            asks.push_front(Ask {
-                request: Request::Move(index),
-                reply: orphan,
-            });
-        }
         mark(&plan, members, states);
         let name = |index: &usize| members[*index].name().to_owned();
         let _ = reply.send(Ok(LoadReply::Started {

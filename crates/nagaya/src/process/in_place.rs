@@ -19,7 +19,6 @@ use super::{Event, GroupJob, LedgerMessage, OpenBeat, OpenedEngine, ParkReport, 
 use crate::admission::{AdmitError, OpenErrorKind};
 use crate::arena::FdStore;
 use crate::park::StoreMessage;
-use crate::profile::Residency;
 
 /// One engine of a group: what opens it, and whether it is loaded.
 pub(super) struct Member {
@@ -39,11 +38,6 @@ impl Member {
     /// True when the engine runs as stages on stage threads (engine-abi D1).
     pub(super) fn staged(&self) -> bool {
         self.job.limits.capabilities.contains(&Capability::Stages)
-    }
-
-    /// True for an engine that the profile makes resident (spec 3.3a).
-    pub(super) fn resident(&self) -> bool {
-        self.job.placement.residency == Residency::Resident
     }
 
     /// True for an engine that no load and no unload removes (spec 3.3a, "Explicit layout").
@@ -121,10 +115,9 @@ fn check(ledger: &Sender<LedgerMessage>, load: Vec<String>, unload: Vec<String>)
 
 /// Plan the swap that loads `target` after it unloads the engines of `named` (spec 3.3a, "Explicit layout").
 ///
-/// The group unloads only the engines that the load names. An engine with stages loads after every other engine of
-/// the group unloads (engine-abi "How a group loads both"), so a load of one also moves each pinned engine: the swap
-/// unloads it, and a later load opens it again beside the engine with stages. The whole swap is checked before any
-/// engine unloads. A refusal changes nothing.
+/// The group unloads only the engines that the load names, and each other engine stays loaded (spec 3.3a, "No
+/// moves"). A group holds one engine with stages at a time, so a load of one names a loaded one in `unload`. The whole
+/// swap is checked before any engine unloads. A refusal changes nothing.
 pub(super) fn plan(
     target: usize,
     named: &[usize],
@@ -156,34 +149,22 @@ pub(super) fn plan(
             .filter(|index| members[*index].loaded && !unload.contains(index))
             .collect()
     };
-    let mut moved = Vec::new();
     if members[target].staged() {
-        let in_the_way: Vec<usize> = stays(&unload)
+        // The device threads lend their devices to one engine with stages at a time (spec 3.2).
+        let staged: Vec<usize> = stays(&unload)
             .into_iter()
-            .filter(|index| !members[*index].pinned())
+            .filter(|index| members[*index].staged())
             .collect();
-        if !in_the_way.is_empty() {
+        if !staged.is_empty() {
             return Err(LoadError::InTheWay {
                 engine: name(&target),
-                shortfall: "an engine with stages loads only after every other engine of its group unloads".to_owned(),
-                in_the_way: in_the_way.iter().map(name).collect(),
+                shortfall: "a device group holds one engine with stages at a time".to_owned(),
+                in_the_way: staged.iter().map(name).collect(),
                 pinned: Vec::new(),
             });
         }
-        moved = stays(&unload);
-        if let Some(index) = moved.iter().find(|index| !members[**index].closes()) {
-            return Err(LoadError::NoClose(name(index)));
-        }
-        unload.extend(moved.iter().copied());
     }
-    // A moved engine loads again after the swap, so the check counts it loaded.
-    let mut load = vec![target];
-    load.extend(moved.iter().copied());
-    match check(
-        ledger,
-        load.iter().map(name).collect(),
-        unload.iter().map(name).collect(),
-    ) {
+    match check(ledger, vec![name(&target)], unload.iter().map(name).collect()) {
         Ok(()) => Ok(Plan {
             load: vec![target],
             unload,
@@ -200,7 +181,6 @@ pub(super) fn plan(
                     .collect(),
                 pinned: staying
                     .iter()
-                    .chain(moved.iter())
                     .filter(|index| members[**index].pinned())
                     .map(name)
                     .collect(),

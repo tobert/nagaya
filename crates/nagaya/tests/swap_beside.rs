@@ -1,6 +1,7 @@
 //! An engine with one device beside a loaded engine with stages (engine-abi "How a group loads both"): Gemma 4 on two
-//! cards, and an on-demand engine on card 1 that fits beside it. The engine opens on the stage thread of card 1, its
-//! quanta run there, and a stage of the engine with stages runs on card 0 at that time. `swap_staged.rs` has the two
+//! cards, and an on-demand engine on card 1 that fits beside it. The engine opens on the device thread of card 1, which
+//! is also the stage thread of card 1 (spec 3.2). Its quanta run there, and a stage of the engine with stages runs on
+//! card 0 at that time. A swap of the engine with stages never moves it (spec 3.3a, "No moves"). `swap_staged.rs` has the two
 //! when they do not fit.
 
 mod feed_support;
@@ -76,13 +77,13 @@ impl Engine for Closing {
     }
 }
 
-/// `chat` and `paint` are fakes of two stages on devices 0 and 1. `voice` is the plain fake on device 1.
+/// `chat` and `paint` are fakes of two stages on devices 0 and 1. `voice` and `draw` are plain fakes on device 1.
 struct Pair(Log);
 
 fn fake(name: &str) -> Box<dyn Engine + Send> {
     match name {
         "chat" | "paint" => Box::new(feed_support::engine(2)),
-        "voice" => Box::new(FakeAlways::new()),
+        "voice" | "draw" => Box::new(FakeAlways::new()),
         other => panic!("no fake named {other}"),
     }
 }
@@ -341,8 +342,8 @@ fn a_load_of_an_engine_with_one_device_loads_it_beside_the_engine_with_stages() 
         log_of(&log),
         [
             "open:chat@nagaya-group-0",
-            "open:voice@nagaya-stg-0-1",
-            "run:voice@nagaya-stg-0-1"
+            "open:voice@nagaya-dev-0-1",
+            "run:voice@nagaya-dev-0-1"
         ]
     );
     // A job that arrives while `voice` is loaded runs on the same stage thread.
@@ -351,7 +352,7 @@ fn a_load_of_an_engine_with_one_device_loads_it_beside_the_engine_with_stages() 
     finished
         .recv_timeout(Duration::from_secs(5))
         .expect("the second voice job ran");
-    assert_eq!(log_of(&log).last().unwrap(), "run:voice@nagaya-stg-0-1");
+    assert_eq!(log_of(&log).last().unwrap(), "run:voice@nagaya-dev-0-1");
 }
 
 #[test]
@@ -362,7 +363,7 @@ fn a_stage_on_card_zero_runs_while_a_quantum_holds_card_one() {
     let (gate, held) = mpsc::channel();
     let (job, voice_done) = voice(&log, Some(held));
     process.submit_job(0, job).unwrap();
-    wait_for(&log, "run:voice@nagaya-stg-0-1");
+    wait_for(&log, "run:voice@nagaya-dev-0-1");
     // The quantum of `voice` holds card 1. The pass of `chat` begins, and its stage 0 runs on card 0.
     let (job, chat_done) = chat_pass(&log);
     process.submit_job(0, job).unwrap();
@@ -415,8 +416,8 @@ fn an_unload_of_an_engine_beside_runs_on_its_stage_thread_and_the_engine_with_st
         opens,
         [
             "open:chat@nagaya-group-0",
-            "open:voice@nagaya-stg-0-1",
-            "open:voice@nagaya-stg-0-1"
+            "open:voice@nagaya-dev-0-1",
+            "open:voice@nagaya-dev-0-1"
         ]
     );
     assert!(!log_of(&log).contains(&"close:chat".to_owned()));
@@ -445,10 +446,10 @@ fn a_stop_parks_and_closes_the_engine_beside() {
     assert!(log.contains(&"close:voice".to_owned()), "{log:?}");
 }
 
-/// A load of an engine with stages needs the other engines of its group to leave. One that is not pinned and not named
-/// in `unload` is in the way, and the load is a refusal that names it (spec 3.3a, "Explicit layout").
+/// A load of an engine with stages unloads only the engines that it names. An engine beside it that fits stays loaded
+/// on its device thread (spec 3.3a, "No moves").
 #[test]
-fn a_load_of_an_engine_with_stages_names_the_engine_in_the_way() {
+fn a_load_of_an_engine_with_stages_keeps_an_engine_that_fits_beside_it() {
     let directory = tempfile::tempdir().unwrap();
     let (process, log) = start_with(
         directory.path(),
@@ -457,120 +458,148 @@ fn a_load_of_an_engine_with_stages_names_the_engine_in_the_way() {
             engine("voice", vec![1], Residency::Resident),
         ],
     );
-    let error = process.load("chat").unwrap_err();
-    assert!(
-        matches!(&error, LoadError::InTheWay { engine, in_the_way, pinned, .. }
-            if engine == "chat" && in_the_way == &["voice"] && pinned.is_empty()),
-        "{error:?}"
-    );
-    assert_eq!(log_of(&log), ["open:voice@nagaya-dev-0-1"], "nothing changed");
-    // With `voice` named in `unload`, the swap runs.
     assert_eq!(
-        process.load_with("chat", &["voice".to_owned()]).unwrap(),
+        process.load("chat").unwrap(),
         LoadReply::Started {
-            unload: vec!["voice".to_owned()],
+            unload: Vec::new(),
             load: vec!["chat".to_owned()],
         }
     );
     assert_eq!(
         swapped(&process, Duration::from_secs(5)),
-        (vec!["voice".to_owned()], vec!["chat".to_owned()])
+        (Vec::new(), vec!["chat".to_owned()])
     );
-}
-
-/// An unload of the engine with stages moves the engine beside it, which the unload does not name: it unloads on its
-/// stage thread and loads again on its device thread (spec 3.3a, "Explicit layout", moves).
-#[test]
-fn an_unload_of_the_engine_with_stages_moves_the_engine_beside_it() {
-    let directory = tempfile::tempdir().unwrap();
-    let (process, log) = start_with(
-        directory.path(),
-        &[
-            engine("chat", vec![0, 1], Residency::OnDemand),
-            engine("voice", vec![1], Residency::Resident),
-        ],
-    );
-    process.load_with("chat", &["voice".to_owned()]).unwrap();
-    swapped(&process, Duration::from_secs(5));
-    let (job, finished) = chat_pass(&log);
-    process.submit_job(0, job).unwrap();
-    finished
-        .recv_timeout(Duration::from_secs(5))
-        .expect("the pass of chat ran");
-    assert_eq!(load(&process, "voice"), (Vec::new(), vec!["voice".to_owned()]));
     let (job, finished) = voice(&log, None);
     process.submit_job(0, job).unwrap();
     finished
         .recv_timeout(Duration::from_secs(5))
         .expect("the voice job ran beside chat");
     assert_eq!(
-        process.unload("chat").unwrap(),
-        LoadReply::Started {
-            unload: vec!["chat".to_owned(), "voice".to_owned()],
-            load: vec!["voice".to_owned()],
-        }
+        log_of(&log),
+        [
+            "open:voice@nagaya-dev-0-1",
+            "open:chat@nagaya-group-0",
+            "run:voice@nagaya-dev-0-1"
+        ]
     );
-    let (mut unloaded, loaded) = swapped(&process, Duration::from_secs(5));
-    unloaded.sort();
-    assert_eq!(unloaded, ["chat", "voice"]);
-    assert_eq!(loaded, ["voice"]);
-    assert_eq!(
-        log_of(&log).last().map(String::as_str),
-        Some("open:voice@nagaya-dev-0-1")
-    );
-    let closes: Vec<String> = log_of(&log)
-        .into_iter()
-        .filter(|line| line.starts_with("close:"))
-        .collect();
-    assert_eq!(closes, ["close:voice", "close:voice", "close:chat"]);
+}
+
+/// Each engine that a swap of the engine with stages does not name stays loaded on its device thread. It is ready
+/// through the swap, and it never closes (spec 3.3a, "No moves").
+fn assert_kept(process: &Process, log: &Log) {
     assert_eq!(
         process.ports().engine_state("voice"),
         Some(nagaya::notify::EngineState::Ready)
     );
+    let (job, finished) = voice(log, None);
+    process.submit_job(0, job).unwrap();
+    finished
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the voice job ran");
+    let opens = log_of(log)
+        .iter()
+        .filter(|line| *line == "open:voice@nagaya-dev-0-1")
+        .count();
+    assert_eq!(opens, 1, "voice opened once: {:?}", log_of(log));
+    assert!(!log_of(log).contains(&"close:voice".to_owned()), "{:?}", log_of(log));
+    assert_eq!(log_of(log).last().unwrap(), "run:voice@nagaya-dev-0-1");
 }
 
-/// A pinned engine stays loaded through a load of an engine with stages: the swap moves it, and it loads again beside
-/// the new engine with stages (spec 3.3a, "Explicit layout", moves).
+/// An unload of the engine with stages and its load again keep the engine beside it loaded (spec 3.3a, "No moves").
 #[test]
-fn a_load_of_an_engine_with_stages_moves_a_pinned_engine_and_loads_it_beside() {
+fn an_unload_and_a_load_of_the_engine_with_stages_keep_the_engine_beside_it() {
     let directory = tempfile::tempdir().unwrap();
     let (process, log) = start_with(
         directory.path(),
         &[
-            engine("chat", vec![0, 1], Residency::OnDemand),
+            engine("chat", vec![0, 1], Residency::Resident),
             pinned(engine("voice", vec![1], Residency::Resident)),
         ],
     );
     assert_eq!(
-        process.load("chat").unwrap(),
+        process.unload("chat").unwrap(),
         LoadReply::Started {
-            unload: vec!["voice".to_owned()],
+            unload: vec!["chat".to_owned()],
+            load: Vec::new(),
+        }
+    );
+    // A job that arrives during the swap waits for its end, and runs on the device thread of `voice`.
+    let (job, during) = voice(&log, None);
+    process.submit_job(0, job).unwrap();
+    assert_eq!(
+        swapped(&process, Duration::from_secs(5)),
+        (vec!["chat".to_owned()], Vec::new())
+    );
+    during
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the job of the swap ran");
+    assert_kept(&process, &log);
+    assert_eq!(load(&process, "chat"), (Vec::new(), vec!["chat".to_owned()]));
+    assert_kept(&process, &log);
+    let (job, finished) = chat_pass(&log);
+    process.submit_job(0, job).unwrap();
+    finished
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the pass of chat ran after its load again");
+    let closes: Vec<String> = log_of(&log)
+        .into_iter()
+        .filter(|line| line.starts_with("close:"))
+        .collect();
+    assert_eq!(closes, ["close:chat"]);
+}
+
+/// The swaps of b70host on 2026-10-30: `chat` on both cards, `voice` pinned on card 1, `draw` on demand on card 1.
+/// A load of `draw` that names `chat`, then a load of `chat` that names `draw`. `voice` stays loaded through both, and
+/// each reply names only the engines of the load (spec 3.3a, "No moves").
+#[test]
+fn a_pinned_engine_stays_loaded_through_a_swap_out_and_back_of_the_engine_with_stages() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start_with(
+        directory.path(),
+        &[
+            engine("chat", vec![0, 1], Residency::Resident),
+            pinned(engine("voice", vec![1], Residency::Resident)),
+            engine("draw", vec![1], Residency::OnDemand),
+        ],
+    );
+    assert_eq!(
+        process.load_with("draw", &["chat".to_owned()]).unwrap(),
+        LoadReply::Started {
+            unload: vec!["chat".to_owned()],
+            load: vec!["draw".to_owned()],
+        }
+    );
+    assert_eq!(
+        swapped(&process, Duration::from_secs(5)),
+        (vec!["chat".to_owned()], vec!["draw".to_owned()])
+    );
+    assert_kept(&process, &log);
+    assert_eq!(
+        process.load_with("chat", &["draw".to_owned()]).unwrap(),
+        LoadReply::Started {
+            unload: vec!["draw".to_owned()],
             load: vec!["chat".to_owned()],
         }
     );
     assert_eq!(
         swapped(&process, Duration::from_secs(5)),
-        (vec!["voice".to_owned()], vec!["chat".to_owned()])
+        (vec!["draw".to_owned()], vec!["chat".to_owned()])
     );
+    assert_kept(&process, &log);
+    assert_eq!(process.unload("voice"), Err(LoadError::Pinned("voice".to_owned())));
+    let opens: Vec<String> = log_of(&log)
+        .into_iter()
+        .filter(|line| line.starts_with("open:"))
+        .collect();
     assert_eq!(
-        swapped(&process, Duration::from_secs(5)),
-        (Vec::new(), vec!["voice".to_owned()])
-    );
-    assert_eq!(
-        log_of(&log),
+        opens,
         [
-            "open:voice@nagaya-dev-0-1",
-            "close:voice",
             "open:chat@nagaya-group-0",
-            "open:voice@nagaya-stg-0-1"
+            "open:voice@nagaya-dev-0-1",
+            "open:draw@nagaya-dev-0-1",
+            "open:chat@nagaya-group-0"
         ]
     );
-    assert_eq!(
-        process.ports().engine_state("voice"),
-        Some(nagaya::notify::EngineState::Ready)
-    );
-    // The unload route never removes a pinned engine.
-    assert_eq!(process.unload("voice"), Err(LoadError::Pinned("voice".to_owned())));
 }
 
 /// A resident engine shares its group with a resident engine with stages. At start it opens on the stage thread of its
@@ -585,13 +614,13 @@ fn a_resident_engine_opens_beside_a_resident_engine_with_stages_at_start() {
             pinned(engine("voice", vec![1], Residency::Resident)),
         ],
     );
-    assert_eq!(log_of(&log), ["open:chat@nagaya-group-0", "open:voice@nagaya-stg-0-1"]);
+    assert_eq!(log_of(&log), ["open:chat@nagaya-group-0", "open:voice@nagaya-dev-0-1"]);
     let (job, finished) = voice(&log, None);
     process.submit_job(0, job).unwrap();
     finished
         .recv_timeout(Duration::from_secs(5))
         .expect("the voice job ran");
-    assert_eq!(log_of(&log).last().unwrap(), "run:voice@nagaya-stg-0-1");
+    assert_eq!(log_of(&log).last().unwrap(), "run:voice@nagaya-dev-0-1");
 }
 
 /// A job that tells its caller the state of its engine when the group ends it as unavailable.
@@ -625,12 +654,12 @@ fn a_job_for_an_unloaded_engine_beside_the_stages_ends_as_unavailable() {
     assert_eq!(log_of(&log), ["open:chat@nagaya-group-0"], "nothing loaded");
 }
 
-/// An engine with stages loads alone (engine-abi "How a group loads both"). A load of a second engine with stages
-/// that names only the first in `unload` finds the resident engine beside it in the way.
+/// A load of a second engine with stages that names only the first in `unload` keeps the resident engine beside them
+/// (spec 3.3a, "No moves").
 #[test]
-fn a_load_of_another_engine_with_stages_finds_the_resident_engine_beside_in_the_way() {
+fn a_load_of_another_engine_with_stages_keeps_the_resident_engine_beside() {
     let directory = tempfile::tempdir().unwrap();
-    let (process, _log) = start_with(
+    let (process, log) = start_with(
         directory.path(),
         &[
             engine("chat", vec![0, 1], Residency::OnDemand),
@@ -638,21 +667,38 @@ fn a_load_of_another_engine_with_stages_finds_the_resident_engine_beside_in_the_
             engine("paint", vec![0, 1], Residency::OnDemand),
         ],
     );
-    process.load_with("chat", &["voice".to_owned()]).unwrap();
-    swapped(&process, Duration::from_secs(5));
-    load(&process, "voice");
-    let error = process.load_with("paint", &["chat".to_owned()]).unwrap_err();
-    assert!(
-        matches!(&error, LoadError::InTheWay { in_the_way, .. } if in_the_way == &["voice"]),
-        "{error:?}"
-    );
+    assert_eq!(load(&process, "chat"), (Vec::new(), vec!["chat".to_owned()]));
     assert_eq!(
-        process
-            .load_with("paint", &["chat".to_owned(), "voice".to_owned()])
-            .unwrap(),
+        process.load_with("paint", &["chat".to_owned()]).unwrap(),
         LoadReply::Started {
-            unload: vec!["chat".to_owned(), "voice".to_owned()],
+            unload: vec!["chat".to_owned()],
             load: vec!["paint".to_owned()],
         }
     );
+    assert_eq!(
+        swapped(&process, Duration::from_secs(5)),
+        (vec!["chat".to_owned()], vec!["paint".to_owned()])
+    );
+    assert_kept(&process, &log);
+}
+
+/// A group holds one engine with stages at a time. A load of a second one that does not name the first is a refusal
+/// that names it, and nothing changes (spec 3.2, "The device threads live as long as the group").
+#[test]
+fn a_load_of_a_second_engine_with_stages_names_the_first_in_the_way() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start_with(
+        directory.path(),
+        &[
+            engine("chat", vec![0, 1], Residency::Resident),
+            engine("paint", vec![0, 1], Residency::OnDemand),
+        ],
+    );
+    let error = process.load("paint").unwrap_err();
+    assert!(
+        matches!(&error, LoadError::InTheWay { engine, in_the_way, .. }
+            if engine == "paint" && in_the_way == &["chat"]),
+        "{error:?}"
+    );
+    assert_eq!(log_of(&log), ["open:chat@nagaya-group-0"], "nothing changed");
 }

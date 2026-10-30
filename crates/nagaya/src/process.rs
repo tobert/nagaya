@@ -1049,23 +1049,13 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
         .collect();
     let mut engines: Vec<Box<dyn Engine>> = members.iter().map(Unloaded::of).collect();
     let mut opened = Vec::with_capacity(members.len());
-    // A group of more than one device has a device thread for each device (spec 3.2). Each resident engine with one
-    // device opens on its device thread, in the serve loop. With a resident engine with stages, that thread is the
-    // stage thread of the device, and the engine opens after the engine with stages (spec 3.3a, "Explicit layout").
+    // A group of more than one device has a device thread for each device, for the life of the group (spec 3.2).
+    // Each resident engine with one device opens on its device thread, in the serve loop. With a resident engine with
+    // stages, that thread is also the stage thread of the device, and the engine opens after the engine with stages.
     let devices = staged::group_devices(&members);
     let threads = devices.len() > 1;
-    let staged_devices: Option<Vec<DeviceId>> = members
-        .iter()
-        .find(|member| member.resident() && member.staged())
-        .map(|member| member.job.devices.iter().map(|device| device.id).collect());
-    let on_thread = |member: &Member| {
-        threads
-            && !member.staged()
-            && member.job.devices.len() == 1
-            && staged_devices
-                .as_ref()
-                .is_none_or(|devices| devices.contains(&member.job.devices[0].id))
-    };
+    let mut device_threads = threads.then(|| staged::StageThreads::start(group, &devices, &links, interval));
+    let on_thread = |member: &Member| threads && !member.staged() && member.job.devices.len() == 1;
     let mut later = Vec::new();
     // An open can take minutes, and it blocks this thread. The guard beats for the group until the open ends (7.4).
     let open_beat = OpenBeat::start(group, links.heartbeats.clone(), interval);
@@ -1115,8 +1105,8 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
     loop {
         let staged = (0..members.len()).find(|index| members[*index].loaded && members[*index].staged());
         let begin = std::mem::replace(&mut entry, staged::Entry::Serve);
-        let exit = match staged {
-            Some(_) => staged::serve(
+        let exit = match device_threads.as_mut() {
+            Some(device_threads) => staged::serve(
                 group,
                 staged,
                 begin,
@@ -1125,16 +1115,7 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
                 &mut asks,
                 &links,
                 interval,
-            ),
-            None if threads => staged::serve(
-                group,
-                None,
-                begin,
-                &mut members,
-                &mut engines,
-                &mut asks,
-                &links,
-                interval,
+                device_threads,
             ),
             None => serve_plain(
                 group,
@@ -1195,7 +1176,11 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
             }
         }
     }
+    // The engine with stages holds clones of the senders of the device threads, so it drops before the threads end.
     drop(engines);
+    if let Some(device_threads) = device_threads {
+        device_threads.end(group, &links);
+    }
 }
 
 /// The scheduler state of a group with no stages. It lives across swaps: the jobs of an engine that stays loaded go
@@ -1299,7 +1284,7 @@ fn serve_plain(
         // A stop plans no swap. The asks that waited through a swap plan the next one here (spec 3.3b).
         let serving = links.accepting.load(Ordering::SeqCst);
         if serving && pending.is_none() {
-            pending = loads::next_plan(asks, members, &links.ledger, &links.states, |plan, _| plan);
+            pending = loads::next_plan(asks, members, &links.ledger, &links.states);
         }
         // The swap waits until the engines that unload hold no job. Jobs of the other engines go on (spec 3.3a).
         if serving
