@@ -335,6 +335,11 @@ fn a_vector_at_its_full_length_is_normalized() {
         norm(&raw)
     );
     let got = vector(&body["embeddings"][0]["vector"]);
+    assert!(
+        (norm(&got) - 1.0).abs() < 1e-6,
+        "the vector has a norm of {}",
+        norm(&got)
+    );
     assert_eq!(got, expected("document", "x", 8));
 }
 
