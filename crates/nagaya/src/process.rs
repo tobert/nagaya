@@ -17,7 +17,7 @@ use tracing::Span;
 
 use crate::admission::{
     AdmitError, Admitted, Factory, GroupDevice, OpenErrorKind, Planned, Registry, admit_loaded_planned, admit_planned,
-    check_with_fd_ceiling, group_devices, plan_all,
+    group_devices, plan_all,
 };
 use crate::affinity::{pin_current_thread, set_batch_policy};
 use crate::arena::{ArenaSet, FdName, FdStore};
@@ -293,15 +293,29 @@ impl OwnedLedger {
         Ok(admitted)
     }
 
-    /// Check a whole profile on an empty ledger, with no change (spec 3.3). Only the owner thread may call this.
+    /// Check a whole profile, with no change (spec 3.3). Only the owner thread may call this.
+    ///
+    /// The profile must fit an empty machine, and its loaded engines must fit the live ledger with its contexts and
+    /// staging. The change keeps the profile before the ledger takes it, so a refusal after the keep would stop the
+    /// process.
     pub fn check_profile(
-        &self,
+        &mut self,
         profile: &PlacementProfile,
         registry: &Registry,
         inventory: &Inventory,
     ) -> Result<Admitted, AdmitError> {
         self.check_owner();
-        check_with_fd_ceiling(profile, registry, inventory, &mut Ledger::new(), self.fd_ceiling)
+        let plans = plan_all(profile, registry, inventory, self.fd_ceiling)?;
+        let admitted = admit_planned(profile, &plans, &mut Ledger::new(), false)?;
+        // The change retires each loaded engine that the profile lacks before the ledger takes it.
+        let staying: BTreeSet<String> = self
+            .loaded
+            .iter()
+            .filter(|name| profile.engines.iter().any(|engine| &engine.name == *name))
+            .cloned()
+            .collect();
+        admit_loaded_planned(&plans, &mut self.ledger, &staying, false)?;
+        Ok(admitted)
     }
 
     /// Admit the loaded engines under a new profile, as a swap does (spec 3.3). A refusal changes nothing. Only the

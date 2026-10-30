@@ -369,3 +369,25 @@ fn a_new_profile_without_a_loaded_engine_stops_the_ledger_thread() {
         other => panic!("expected the panic of the ledger thread, got {other:?}"),
     }
 }
+
+/// The check of a profile counts what the live ledger counts, so a change that fits an empty machine and not the
+/// staging that runs now is refused before it is kept (spec 3.3). A refusal after the keep stopped the process.
+#[test]
+fn a_check_of_a_profile_counts_the_live_staging() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, _log) = start(directory.path());
+    let ports = process.ports();
+    let mut small = profile(800);
+    small.engines.truncate(1);
+    assert!(process.check_profile(&small).is_ok(), "`chat` alone fits in 800 bytes");
+    ports.admit_staging("chat", Tier::Device(0), 300).unwrap();
+    match process.check_profile(&small) {
+        Err(AdmitError::Ledger(nagaya_ledger::LedgerError::Refused(refusal))) => {
+            assert_eq!(refusal.shortfall, vec![(vec![Tier::Device(0)], 100)]);
+        }
+        other => panic!("600 bytes of `chat` and 300 of staging do not fit in 800: {other:?}"),
+    }
+    ports.release_staging(Tier::Device(0), 300).unwrap();
+    assert!(process.check_profile(&small).is_ok());
+    assert_eq!(device_bytes(&process), 400, "the checks changed nothing");
+}
