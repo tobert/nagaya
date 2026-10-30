@@ -322,6 +322,7 @@ impl Council {
             },
             // Each family library renders an open message and checks its seams, so each served model continues a
             // reply (gogi "Continuations"). Riding decisions are not built, so no model declares `ride`.
+            embeddings: None,
             capabilities: vec![
                 Capability::Reads,
                 Capability::Generate,

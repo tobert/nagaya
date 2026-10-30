@@ -685,6 +685,7 @@ pub fn served_model(service: &ImageService, status: gogi_proto::identity::ModelS
             default_timeout_ms: config.timeout.as_millis() as u64,
             text_tokens: None,
         },
+        embeddings: None,
         capabilities: vec![gogi_proto::identity::Capability::Generate],
         media: Some(gogi_proto::identity::Media {
             inputs: Vec::new(),

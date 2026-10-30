@@ -11,6 +11,7 @@ use axum::routing::{get, post};
 use gogi_proto::SnapshotId;
 use gogi_proto::context::{ContextBuild, ContextBuilt};
 use gogi_proto::decision::{DecisionRequest, Signals};
+use gogi_proto::embeddings::EmbeddingsRequest;
 use gogi_proto::error::ErrorType;
 use gogi_proto::generation::GenerationRequest;
 use gogi_proto::identity::ServedModel;
@@ -43,6 +44,7 @@ pub fn routes() -> Router<Arc<Council>> {
         .route("/council/v2/decisions", post(decisions))
         .route("/council/v2/reads", post(reads))
         .route("/council/v2/generations", post(generations))
+        .route("/council/v2/embeddings", post(embeddings))
         .merge(super::extensions::routes())
         .merge(super::objects::routes())
         .merge(super::loads::routes())
@@ -249,6 +251,29 @@ async fn reads(State(council): Shared, Extension(id): Id, body: Body) -> Respons
             keep_gogi_places(signals);
         }
         Ok(response)
+    }
+    .await;
+    answer(&id, result)
+}
+
+/// Embeddings (gogi "Embeddings"). No served model of the nagaya declares `embed` yet (milestone 19), so the route
+/// refuses each model with a 400 that names `model`, as gogi's contract asks.
+async fn embeddings(State(council): Shared, Extension(id): Id, body: Body) -> Response {
+    let result = async {
+        let request: EmbeddingsRequest = parse(&bytes(body).await?, "embeddings")?;
+        let identity = council.identity();
+        let served = identity.route(&request.model).map_err(ServiceError::Invalid)?;
+        if served.status != gogi_proto::identity::ModelStatus::Ready {
+            return Err(Failure::unavailable(served));
+        }
+        request.check(served).map_err(ServiceError::Invalid)?;
+        Err::<(), _>(Failure::from(ServiceError::Invalid(gogi_proto::Invalid::param(
+            "model",
+            format!(
+                "nothing ran: model {} declares embed, but this nagaya has no embedding path",
+                served.model
+            ),
+        ))))
     }
     .await;
     answer(&id, result)
