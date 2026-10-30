@@ -72,6 +72,8 @@ The crates live in directories under `crates/`. Use these crates:
 | `nagaya-text-qwen3tts` | the Qwen3-TTS family library: tokenizer, the prompt of a speech request, the codec ids | 11.3, 11.8 |
 | `nagaya-mk-sdxl-bmg` | the SDXL engine on one B70 card: weights and their planes, encoders, UNet, VAE, the sampler | ABI "Image" |
 | `nagaya-text-sdxl` | the SDXL family library: CLIP tokenizer, the A1111 prompt, its chunks and weights | 11.9a |
+| `nagaya-mk-embeddinggemma2-bmg` | the EmbeddingGemma 2 engine on one B70 card: weights, the passes, the `embed` call | ABI "Embedding" |
+| `nagaya-text-embeddinggemma2` | the EmbeddingGemma 2 family library: tokenizer, task prompts, the template id | 11.10 |
 | `nagaya-text-toy` | the toy family library on gogi's `gogi-toy`, for tests with the fake engine | 11.3b |
 | `nagaya-conformance` | the conformance suite (8.3), generic over the `Engine` trait | 8.3 |
 | `nagaya-telemetry` | the instruments, the stderr log, the OTLP export and the sampler | 9 |
@@ -480,6 +482,11 @@ get ran sometimes, perhaps just a bump in our AGENTS.md"
   `tools/sdxl_golden.sh` writes the oracle into `target/sdxl-golden` or `SDXL_GOLDEN_DIR`, with no GPU job.
 - The single-file tests of `nagaya-mk-sdxl-bmg` also read `SDXL_SINGLE_FILE`: `sd_xl_base_1.0.safetensors` of the same
   repository. They need `vae_1_0/` of the folder too, because the single file holds that VAE.
+- b70host holds EmbeddingGemma 2 in the Hugging Face cache. The tests of `nagaya-text-embeddinggemma2` and the `xe`
+  tests of `nagaya-mk-embeddinggemma2-bmg` read it from `EMBEDDINGGEMMA2_MODEL_DIR`, which has no default.
+  `signoff.md` gives the path. `tools/embeddinggemma2_golden.sh` writes the oracle into
+  `target/embeddinggemma2-golden` or `EMBEDDINGGEMMA2_GOLDEN_DIR`, with no GPU job. The family tests read it too,
+  and an absent oracle file skips the test, as an absent model does.
 - The report of a check names how many tests skipped for a missing model.
 
 On gfx1151host, run the oracle bench with `MK_SHARDS` set and both units inactive:

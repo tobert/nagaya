@@ -783,7 +783,7 @@ service, and that split moves into mk's engine wrapper.) The watchdog reports ea
 **5.2 Kinds.** Each quantum has a kind: `read`, `prefill`, `decode`, `embed`, `copy`, `step` (an image step), or
 `train` (a micro-batch). Metrics and the cost model use kinds. A kind does not set urgency (mk `mk.gpu.kind`). An
 image job runs one `embed` for its text encoders, one `step` for each denoising step, and one `step` for the VAE decode
-(11.9).
+(11.9). An embedding job runs one `embed` for each input (11.10).
 
 **5.3 Classes.** The classes are `interactive`, `batch` and `filler`. A client sends `interactive` or `batch` in
 council v2's `class` field (gogi). Only jobs that the nagaya or a profile starts, such as training and the audit, are
@@ -1505,6 +1505,20 @@ prompt, the codes that the reference sampled for it, and the reference outputs:
 
 The engine runs with the codes of the fixture in place of its samples, and each output must be within its tolerance.
 Python writes the fixture once, on the CPU; no Python runs at test time (`AGENTS.md` "Checks").
+
+**The embedding oracle.** Proposed by Claude Opus 5.5 (a senpai fork), 2026-10-30, for milestone 19.
+`tools/embeddinggemma2_golden.sh` runs sentence-transformers 6.1.0 on the CPU, in f32 from the bf16 weights, with
+eager attention. Its venv is `~/.venvs/embed-ref`, and its header names each version. It writes `cases.json` and
+`golden.safetensors` into `target/embeddinggemma2-golden` or `EMBEDDINGGEMMA2_GOLDEN_DIR`. Neither file is committed.
+
+- The files hold 8 texts and 8 tasks. For each pair, they hold the ids, the vector, and its cuts to 512, 256 and 128.
+  They also hold a bf16 vector for `query` and `document`, and the hidden states of one input.
+- The texts include CJK, emoji, an empty text, a text past the window of 512 positions, and one of 2040 tokens.
+- The gate of the family: its ids equal the oracle's ids for each text and task.
+- The gate of the engine: after the nagaya normalizes, each vector differs from the f32 vector by at most 1e-4 in
+  each value. The first run on the card measures the gap first, as for every oracle.
+- Reason for 1e-4: the bf16 run differs by up to 3.7e-3, with a cosine of 0.99957. A gate at that level lets a wrong
+  layer pass. An engine with f32 math from the bf16 weights stays far below 1e-4.
 
 **8.4 Audit.** For some engines the tripwire is not reliable, because of their determinism class. For them, the
 nagaya runs an audit after each start, as a filler job in the same process. The audit builds a sample of stored
@@ -2575,11 +2589,11 @@ identity (gogi `docs/council-api.md`, "Terms").
 - `profile` and `cluster`: dynamic placement profiles and the `chitchat` cluster view (2.3, 2.4);
 - `cas/{content_id}`: plain HTTP `GET` and `HEAD` for content-addressed snapshots and tap artifacts across machines;
 - `render`, `tokenize` and `detokenize`: served by the family library for bench tools and semantic search;
-- `embeddings`: served by the engine through a pass with a hidden-state output;
 - `status` (9.7) and `traces` (13.1).
 
 Built on 2026-10-21: `render`, `tokenize` and `detokenize` (11.4b to 11.4d), and the prefix in `identity` (11.4f). The
 other routes in this list are not built.
+Embeddings left this list on 2026-10-30. gogi's contract has them as `POST /council/v2/embeddings` (11.10).
 
 **11.4b The text routes.** `render`, `tokenize` and `detokenize` use the family library (11.3). They share the rules
 below. The rules of 11.4b to 11.4f are each "Decided by senpai 2026-10-22 (vetoable)". Claude Sonnet 5.5 proposed
@@ -3197,6 +3211,119 @@ interview). Nothing here is built now.
 - **Hires pass.** `output.options.hires` names a scale and a step count. After the steps, the engine scales the
   latent up and runs img2img steps on it. Each is one more quantum of kind `step`.
 - The engine calls (engine-abi "Image") take these inputs as optional members. Thus each one adds members and no call.
+
+**11.10 Embeddings.** Amy decided these rules on 2026-10-30, by interview (`AGENTS.md` milestone 19). gogi's contract
+is "Embeddings" in gogi `docs/council-api.md`, at gogi `6db7e98`.
+
+- The first embedding model is EmbeddingGemma 2 (`google/embeddinggemma-2`), for the semantic search of kaijutsu.
+- The route is `POST /council/v2/embeddings`. It is native to the council API, not an extension (11.4a).
+- The request names its `task`. The family renders the prompt of the task, and a client never writes it.
+- `dimensions` asks for a shorter vector: 768, 512, 256 or 128. The nagaya cuts the vector and normalizes it again.
+- The inputs are text now. The model also reads audio and images, and those come later.
+- The engine runs on a B70 card on the shared interpreter. It is resident beside Gemma 4.
+
+Built on 2026-10-30: the route, in `432cf8b`. No served model embeds yet, so it refuses each model with a 400 that
+names `model`.
+
+**The served embedding model.** Proposed by Claude Opus 5.5 (a senpai fork), 2026-10-30. Reason: these rules follow
+the served image model (11.9a) and gogi's rules for a model that only embeds.
+
+- The name of the served model is the name of its engine in the profile, such as `embeddinggemma-2`. Reason: the
+  rule of the served image model.
+- Identity lists it with the capabilities `embed` and `dry_run`, and with no `generate`. Its `media` has no inputs,
+  no outputs and `text_replies: false`. A build, a decision, a raw read or a generation that names it is a 400 that
+  names `model` (gogi).
+- Its `embeddings` member is `{"tasks": [...], "dimensions": [768, 512, 256, 128], "inputs_per_request": 64}`. The
+  tasks are those of the table below.
+- Its `context_tokens` is 2048: the most tokens of one input, with the task prompt and the special tokens. Reason:
+  the oracle checks inputs up to 2040 tokens (8.3), and a longer input has no reference. The cost of the full
+  layers grows with the square of the length.
+- Its decision limits and its `snapshot_bytes` are 0, because it holds no state.
+- Its `inputs_per_request` is 64. Reason: gogi's example gives 64. Each input is one quantum, so a request of 64
+  inputs of 2048 tokens holds its group for 64 quanta at most.
+- Its `weight_hash` and `tokenizer_hash` are the engine's after its first open since the start, and empty before
+  (3.3a "Council models on demand").
+- Its `template` is `embeddinggemma2-tasks:<hash>`. The hash is the first 16 hex digits of the SHA-256 of the task
+  text of the family. Reason: the vectors depend on the prompts, and gogi puts the prompts in `template`.
+- The task text has one line for each task, in the order of the table: the task, a tab, the prompt, and a newline.
+  Its last line is `frame`, a tab, `<bos>{prompt}{text}<eos>`, and a newline. Thus the id changes only when a prompt
+  or the frame changes.
+- The engine kind is `mk-embeddinggemma2-bmg`, in a build with `xe`. Its config and `[engines.family]` take the key
+  `model_dir`, and read `EMBEDDINGGEMMA2_MODEL_DIR` with no key, as `mk-sdxl-bmg` does.
+
+**The tasks.** Proposed by Claude Opus 5.5 (a senpai fork), 2026-10-30. Reason: gogi asks a model for search to name
+its tasks `query` and `document`. The other six are the other prompts of the model, and the oracle checks all eight.
+The model's `config_sentence_transformers.json` holds the prompts. Its other names give one of these prompts too.
+
+| Task | Name in the model's prompts | Prompt |
+|---|---|---|
+| `query` | `query` | `task: search result \| query: ` |
+| `document` | `document` | `title: none \| text: ` |
+| `classification` | `Classification` | `task: classification \| query: ` |
+| `clustering` | `Clustering` | `task: clustering \| query: ` |
+| `similarity` | `SentenceSimilarity` | `task: sentence similarity \| query: ` |
+| `code_retrieval` | `CodeRetrieval` | `task: code retrieval \| query: ` |
+| `question_answering` | `QuestionAnswering` | `task: question answering \| query: ` |
+| `fact_checking` | `FactChecking` | `task: fact checking \| query: ` |
+
+**The family of EmbeddingGemma 2.** Proposed by Claude Opus 5.5 (a senpai fork), 2026-10-30. The crate
+`nagaya-text-embeddinggemma2` holds it (11.3). Reason: these rules give the ids of sentence-transformers 6.1.0, which
+the oracle recorded.
+
+- The tokenizer is the checkpoint's `tokenizer.json`. Its `tokenizer_hash` is `sha256:` and the hex digits of the
+  SHA-256 of the file, as for Gemma 4 (12.3).
+- The prompts come from `config_sentence_transformers.json`. A task of the table whose prompt the file lacks is an
+  error at the open.
+- The ids of an input are `<bos>` (2), the ids of the prompt and the text as one string, and `<eos>` (1). The prompt
+  ends with a space, and the tokenizer reads that space with the first word of the text.
+- The text is content. A special token that the text spells stays text. Reason: gogi never lets content be control.
+  sentence-transformers reads such text as the special token, so its ids differ for this text only.
+- The token count of an input is the count of its ids. A dry run gives it.
+
+**The job of an embedding request.** Proposed by Claude Opus 5.5 (a senpai fork), 2026-10-30. Reason: the image job
+(11.9a) gives the shape, and an embedding holds no state.
+
+1. The request thread decodes the body and checks it with gogi's rules: the model, the task, the dimensions and the
+   inputs.
+2. A served model that is not `ready` gives a 503 `model_unavailable` (3.3a).
+3. The family gives the ids of each input. An input past `context_tokens` is a 413 `too_large`, as gogi says. A dry
+   run skips this check.
+4. A dry run answers with the token count of each input, and no job runs. `usage.fed` is 0.
+5. Otherwise the route submits one job to the group of the engine, with the class and the priority of the request
+   (5.3). The job has one quantum of kind `embed` for each input, in input order.
+6. Each quantum calls the engine's `embed` with the ids of one input (engine-abi "Embedding").
+7. The nagaya cuts each vector to `dimensions` and normalizes it. It sums the squares in f64 in index order, and
+   divides each value by the root in f64. It rounds each result to f32.
+8. The response lists the vectors in input order. A client that closes its connection cancels the job between
+   quanta.
+
+- The nagaya normalizes each vector, also at the full length. Reason: one rule in one place, on the host, with a
+  test that needs no card.
+- A job charges no context and stores nothing. The plan of the engine holds its weights and the work of one input of
+  `context_tokens`.
+
+**Open: the residency of the embedding engine beside Gemma 4.** Question for Amy, from Claude Opus 5.5 (a senpai
+fork), 2026-10-30. The rule "resident beside Gemma 4" fits in memory, but the swap rules of 3.3a remove it.
+
+- Memory: card 1 has 2,469,944,308 bytes beside gemma, and card 0 has 4,394,792,436 (the profile of b70host,
+  budgets). The text tower of EmbeddingGemma 2 is 542,005,296 bytes in bf16 (the header of `model.safetensors`).
+  Thus it fits beside gemma on either card.
+- A load of an image engine unloads gemma first (`crates/nagaya/src/process/in_place.rs:125`). The embedding engine
+  is hosted beside gemma on a stage thread, so the swap unloads it too. It then loads again on the group thread
+  (`crates/nagaya/src/process/staged.rs:1834`). Embedding requests get a 503 for the time of the swap.
+- A load of gemma unloads each other loaded engine of the group (`in_place.rs:127`), and the swap loads none of them
+  again (`staged.rs:1853`). The rule "loads again beside it at its next job" (engine-abi "How a group loads both")
+  needs a job. Since 2026-10-28, a job for an unloaded engine is a 503 (3.3a). A load route refuses a resident engine
+  (3.3b). Thus the embedding engine stays unloaded until a profile `PUT` or a restart.
+- The swap back of an idle image engine does not load gemma while another engine of the group stays loaded
+  (`in_place.rs:183`). With the embedding engine loaded, gemma thus stays unloaded until a client loads it.
+- These readings are from the code. No test covers two resident engines in a group with an engine with stages.
+- **Proposed** answer: after each swap, the group loads each resident engine that is not loaded, in profile order.
+  It loads one only when the ledger admits it beside the loaded engines. An engine with stages loads first.
+  Reason: Amy, 2026-10-28, "we arrive at the state the API configured". The alternative is an embedding engine on
+  demand, which a client loads.
+- **Proposed** placement: card 1. Reason: card 0 has four on-demand engines (`voice`, `sdxl-0`, `pony-0` and
+  `lightning-0`), and card 1 has two.
 
 ## 12. Identity
 

@@ -1026,6 +1026,35 @@ image_clear(slot)                       frees the state of the slot
   to its module's output (spec 11.9a). The engine refuses `trailing` with a DPM++ sampler. Reason: the spacing of the
   schedule is the engine's, and the spec gives the rule.
 
+## Embedding
+
+**The embedding capability.** Proposed by Claude Opus 5.5 (a senpai fork), 2026-10-30, for spec 11.10. Reason: an
+embedding reads tokens and gives one vector. It has no slot state, no logits and no sampler. A segment of a pass has
+no place for the pooled vector, as it had none for an image ("Image").
+
+An embedding engine declares the `embedding` capability. Its `pass` refuses. It has one call:
+
+```
+embed(ids) -> vector | why      runs one input and gives its pooled vector
+```
+
+- **Limits.** The engine declares `embedding.max_tokens`, the most ids of one call, and `embedding.dimension`, the
+  length of its vector. EmbeddingGemma 2 gives 2048 and 768.
+- **The ids.** They are the family's ids of one input, with `<bos>` and `<eos>` (spec 11.10). The engine never takes
+  text (D2).
+- **Quanta.** Each call is one quantum of kind `embed`. The engine declares `max_tokens` so that one call stays
+  within `max_quantum_ms` (D8). The nagaya refuses a longer input before it runs.
+- **The vector.** It is the mean over every position of the model's last output, in f32, before any normalization.
+  For EmbeddingGemma 2, the last output is that of `embedding_projection`. The nagaya normalizes (spec 11.10).
+- **State.** None. A call holds nothing after it ends. The engine declares no part, no slot and no context.
+- **Determinism.** The same identity and ids give the same bits. A call does not depend on the calls before it. Thus
+  the vector of an input does not depend on the other inputs of its request, as gogi's rule asks.
+- **Batches.** One call runs one input. A later engine may run several inputs in one call only when each vector keeps
+  the bits of its call alone. Reason: in the oracle, a padded batch of 4 differed from one input at a time by
+  2.4e-7 (`cases.json`, `batch_vs_single_max_abs`). A batch that pads as torch does breaks the rule.
+- **Later inputs.** Audio and images are optional members of a later call. An engine that lacks one refuses a call
+  that names it.
+
 ## Speech
 
 Proposed by senpai (Claude Opus 5.5), 2026-10-24, for milestone 17, and Decided 2026-10-27 (Amy, by interview). The
