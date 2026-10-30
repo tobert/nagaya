@@ -1,6 +1,9 @@
 //! An open on one card beside work on another card (spec 3.3a, "Single-card swaps"). Card A runs convolutions in a
 //! loop, and card B opens in the middle. The open of a single-card engine must not stall the launches of card A.
 //!
+//! A second test uploads `XE_UPLOAD_GB` GB (4 by default) to card B in 64 MiB copies through one staging buffer, as
+//! the SDXL engine does, while card A runs.
+//!
 //! It needs two cards. Stop `nagaya.service` first: the nagaya must be the only client of the cards (spec 3.1). Run
 //! alone: `cargo test --release -p nagaya-mk-bmg --features xe --test xe_open_beside -- --test-threads=1 --nocapture`.
 #![cfg(feature = "xe")]
@@ -117,5 +120,46 @@ fn an_open_of_one_card_does_not_stall_the_launches_of_another_card() {
     assert!(
         longest <= median * 2 + Duration::from_millis(50),
         "an open of card B stalled a launch of card A: {longest:?} against a median of {median:?}"
+    );
+}
+
+/// Open card B and upload `bytes` bytes to it as the SDXL engine does: an allocation and a zero fill for each 256 MiB
+/// tensor, then copies of 64 MiB through one buffer of host memory.
+fn open_and_upload(address: String, bytes: usize) -> L0Cluster {
+    const STAGING: usize = 64 << 20;
+    const TENSOR: usize = 256 << 20;
+    let cluster = L0Cluster::init_at(SDXL_KERNEL, KERNEL_ENTRY, &[address]).expect("card B opens");
+    let card = &cluster.cards[0];
+    let staging = card.alloc_host_usm::<u8>(STAGING);
+    // SAFETY: the staging buffer holds STAGING bytes of host memory.
+    unsafe { std::ptr::write_bytes(staging, 0x3c, STAGING) };
+    let mut tensors = Vec::new();
+    for _ in 0..bytes.div_ceil(TENSOR) {
+        let at = card.alloc_device_usm::<u8>(TENSOR);
+        card.fill_zero_sync(at as *mut c_void, TENSOR);
+        for offset in (0..TENSOR).step_by(STAGING) {
+            card.memcpy_sync((at as usize + offset) as *mut c_void, staging as *const c_void, STAGING);
+        }
+        tensors.push(at);
+    }
+    for at in tensors {
+        card.free(at as *mut c_void);
+    }
+    card.free(staging as *mut c_void);
+    cluster
+}
+
+#[test]
+fn an_upload_of_gigabytes_to_one_card_does_not_stall_the_launches_of_another_card() {
+    let other = L0Cluster::addresses()[1].clone();
+    let gb: usize = std::env::var("XE_UPLOAD_GB")
+        .ok()
+        .map(|value| value.parse().expect("XE_UPLOAD_GB is a whole number of GB"))
+        .unwrap_or(4);
+    let (median, longest, took) = beside(|| open_and_upload(other, gb << 30));
+    eprintln!("upload of {gb} GB to card B: {took:?}; card A median launch {median:?}, longest beside it {longest:?}");
+    assert!(
+        longest <= median * 2 + Duration::from_millis(50),
+        "an upload to card B stalled a launch of card A: {longest:?} against a median of {median:?}"
     );
 }
