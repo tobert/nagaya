@@ -1592,6 +1592,15 @@ Decided by senpai 2026-10-20 night (vetoable):
   `generation` or `job`. A body names its value with `JobBody::request`. The value `job` is for a body that gives none.
 - The job span ends when the job reaches a terminal state, or when a stop cancels it. Its `outcome` is the job state.
 
+**The engine of a job.** Proposed by senpai (Claude Opus 5.5), 2026-10-30. Amy decides.
+
+- The attribute `engine` of the span `nagaya.job`, of its quanta, and of the quantum metrics is the name of the job's
+  engine. `GroupJobs` holds the engine of each job, so the name is known.
+- The joined name above stays for what belongs to the whole group, such as the heartbeat of the group thread.
+- Reason: the rule above came when each group had one engine. Today group 0 of b70host has seven engines, from
+  `gemma` to `lightning-0` (`deploy/b70host/profile.toml`). Thus each job has the same long name, and a metric
+  cannot tell the engines apart.
+
 Decided by senpai 2026-10-20 night (vetoable). The route template is axum's, such as `/council/v2/pins/{owner}`. A
 request that matches no route has the span `<METHOD>` alone, and the `http.route` value `unmatched`. The span has the
 attributes `http.request.method`, `http.route`, `http.response.status_code` and `request_id`. A status of 500 or more
