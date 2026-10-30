@@ -566,10 +566,11 @@ interview), with the explicit loads of 3.3. Reason: these rules make each swap o
 - **The engines that unload.** A swap unloads only the engines that its load names (3.3b). The group asks the ledger
   whether the engine fits beside the engines that stay.
   When it does not fit, the load is a 409, and nothing changes. Engines of other groups never unload for a swap.
-- The ledger takes the swap when the group plans it, before any engine unloads. Thus a later context or staging
-  charge is checked against the engines after the swap, and it cannot refuse the swap after its unload. **Proposed**
-  by Claude Opus 5.5, 2026-10-30. Reason: a review found that a charge between the check and the unload stopped the
-  process, after a 202.
+- The ledger takes a load when the group plans it, before any engine unloads. Until the swap ends, a later context
+  or staging charge must fit the ledger now and the ledger after the swap. The engines that unload keep their bytes
+  until their drop, and the ledger charges the swap after the drop. A profile change waits for the drop of each
+  engine that it retires. **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: a late charge stopped the process
+  after a 202, and bytes freed too early let the staying engines over-commit.
 - **The wait before an unload.** An engine that must unload takes no new job. Its jobs that the group holds run to
   their end. Jobs of engines that stay loaded go on.
 - **Single-card swaps.** Proposed by senpai (Claude Haiku 5.5), 2026-10-29, for Amy's choice of 2026-10-29 (by
