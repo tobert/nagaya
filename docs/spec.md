@@ -3349,8 +3349,8 @@ both run the last part of the schedule, and the oracle compares each step.
 
 - The sampler makes its schedule of `steps` timesteps as before. It runs only the last `n` of them, with
   `n = floor(steps * strength)` in f64 (`img2img.py:652-659`, `inpaint.py:913`).
-- Python computes `int(num_inference_steps * strength)` in f64. Thus `steps` 30 and `strength` 0.7 run 20 steps, not
-  21. The nagaya computes `n` in the same way, so it runs the same steps.
+- Python computes `int(num_inference_steps * strength)` in f64. Thus `steps` 90 and `strength` 0.7 run 62 steps, not
+  63. The nagaya computes `n` in the same way, so it runs the same steps.
 - An `n` of 0 is a 400 that names `output.options.strength`. diffusers refuses it too (`inpaint.py:1421-1424`).
 - The history of a DPM++ sampler starts empty at the first step that runs. Each of the four samplers has `order` 1 in
   diffusers, and `set_begin_index` starts it there (`img2img.py:655-657`).
