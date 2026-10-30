@@ -43,9 +43,9 @@ frames_per_quantum = 8
 # An SDXL base 1.0 engine on each card (milestone 18, docs/spec.md 11.9). Each one is its own served image model, with
 # the name of its engine. Each plans 21,018,307,972 bytes: 14,243,390,464 on its card for the weights and their BF16
 # planes, 6,707,675,524 on its card for the activations of 4 images of 1.5 MP, and 67,241,984 of host memory. Thus
-# neither one loads beside gemma, and a load unloads gemma. The two load together, and the speech engine fits beside
-# sdxl-0. An engine unloads after 600 s with no job, so a session of image requests keeps it. The checkpoint comes from
-# the unit's environment (`SDXL_MODEL_DIR`), and `clip_skip` is 2, the default of the family.
+# neither one loads beside gemma, and a load names gemma in `unload`. The two load together, and the speech engine
+# fits beside sdxl-0. An engine stays loaded until a client unloads it (spec 3.3a, "Explicit layout"). The checkpoint
+# comes from the unit's environment (`SDXL_MODEL_DIR`), and `clip_skip` is 2, the default of the family.
 [[engines]]
 name = "sdxl-0"
 kind = "mk-sdxl-bmg"
@@ -102,6 +102,19 @@ residency = "on_demand"
 
 [engines.config]
 checkpoint = "/home/atobey/models/sdxl/sdxl_lightning_4step.safetensors"
+
+# EmbeddingGemma 2 on card 1 (milestone 19, docs/spec.md 11.10), the served embedding model `embeddinggemma-2` for
+# the semantic search of kaijutsu. It is resident and pinned, so no load and no unload removes it (spec 3.3a,
+# "Explicit layout"). A swap of gemma moves it for a few seconds. It plans 542,005,248 bytes of weights and the work
+# of one input of 2048 tokens on card 1, and 67,241,984 bytes of host memory. Card 1 is the card with fewer image
+# engines (spec 11.10). The checkpoint comes from the unit's environment (`EMBEDDINGGEMMA2_MODEL_DIR`).
+[[engines]]
+name = "embeddinggemma-2"
+kind = "mk-embeddinggemma2-bmg"
+devices = [1]
+share = 1
+pin_identity = false
+pinned = true
 
 # One budget for each card's device memory, and one for host memory (spec 4.1). Each B70 has 32 GiB of GDDR6
 # (BAR 2 of `resource`, spec 2.1). The budget of a card is all of it: the device has no safety floor. The plan of

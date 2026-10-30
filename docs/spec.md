@@ -3245,8 +3245,8 @@ is "Embeddings" in gogi `docs/council-api.md`, at gogi `6db7e98`.
 - The inputs are text now. The model also reads audio and images, and those come later.
 - The engine runs on a B70 card on the shared interpreter. It is resident beside Gemma 4.
 
-Built on 2026-10-30: the route, in `432cf8b`. No served model embeds yet, so it refuses each model with a 400 that
-names `model`.
+Built on 2026-10-30: the route, in `432cf8b`. Milestone 19 step 6 built the served embedding model, its job and the
+cut on the host.
 
 **The served embedding model.** Proposed by Claude Opus 5.5 (a senpai fork), 2026-10-30. Reason: these rules follow
 the served image model (11.9a) and gogi's rules for a model that only embeds.

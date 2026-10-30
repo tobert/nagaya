@@ -33,6 +33,9 @@ Environment=QWEN3TTS_MODEL_DIR=%h/.cache/huggingface/hub/models--Qwen--Qwen3-TTS
 # The SDXL base 1.0 checkpoint in the Hugging Face cache (milestone 18). The engines and their family read it, because
 # the profile names no `model_dir`.
 Environment=SDXL_MODEL_DIR=%h/.cache/huggingface/hub/models--stabilityai--stable-diffusion-xl-base-1.0/snapshots/462165984030d82259a11f4367a4eed129e94a7b
+# The EmbeddingGemma 2 checkpoint in the Hugging Face cache (milestone 19). The engine and its family read it, because
+# the profile names no `model_dir`.
+Environment=EMBEDDINGGEMMA2_MODEL_DIR=%h/.cache/huggingface/hub/models--google--embeddinggemma-2/snapshots/f9972ac22e696a105c482202646979e33e4b5a1e
 # No Level Zero variable. ZE_AFFINITY_MASK would hide a card, and the engine finds its two cards by PCI address
 # (engine-abi "The factory gets its devices"). mkviolet's unit sets none either. The process sets its own CPU sets for
 # each card (spec 3.2b), so the unit sets no CPUAffinity.

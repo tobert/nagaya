@@ -185,7 +185,8 @@ impl Registry {
     }
 
     /// Make a registry with a factory for each engine kind that this build has: the mk engine with the feature
-    /// `hip`, the Gemma 4, Qwen3-TTS and SDXL engines with the feature `xe`, and the fake kinds with the feature `fake`.
+    /// `hip`, the Gemma 4, Qwen3-TTS, SDXL and EmbeddingGemma 2 engines with the feature `xe`, and the fake kinds with
+    /// the feature `fake`.
     pub fn compiled_in() -> Self {
         #[allow(unused_mut)]
         let mut registry = Self::new();
@@ -197,6 +198,11 @@ impl Registry {
         registry.register(crate::qwen3tts::KIND, Box::new(crate::qwen3tts::Qwen3TtsFactory));
         #[cfg(feature = "xe")]
         registry.register(crate::sdxl::KIND, Box::new(crate::sdxl::SdxlFactory));
+        #[cfg(feature = "xe")]
+        registry.register(
+            crate::embeddinggemma2::KIND,
+            Box::new(crate::embeddinggemma2::EmbeddingGemma2Factory),
+        );
         #[cfg(feature = "fake")]
         registry.register_fakes();
         registry
@@ -655,10 +661,12 @@ pub fn plan_all(
                 engine: engine.name.clone(),
                 message: error.to_string(),
             })?;
-        // The scheduler asserts this value, so a zero is refused here, before any thread starts. A speech engine and
-        // an image engine take no pass (engine-abi "Speech", "The image capability"), so they declare no segment.
-        let passes =
-            !limits.capabilities.contains(&Capability::Speech) && !limits.capabilities.contains(&Capability::Image);
+        // The scheduler asserts this value, so a zero is refused here, before any thread starts. A speech, image or
+        // embedding engine takes no pass (engine-abi "Speech", "The image capability", "Embedding"), so it declares no
+        // segment.
+        let passes = ![Capability::Speech, Capability::Image, Capability::Embedding]
+            .iter()
+            .any(|capability| limits.capabilities.contains(capability));
         if limits.max_segments == 0 && passes {
             return Err(AdmitError::Limits {
                 engine: engine.name.clone(),
@@ -762,10 +770,13 @@ fn check_residency(profile: &PlacementProfile, planned: &[AdmittedEngine]) -> Re
         if placement.residency != Residency::OnDemand {
             continue;
         }
-        // An image or speech engine builds its service from the profile, so its served model exists on demand (spec
-        // 3.3a, "Council models on demand"). A text service attaches only to an engine that opens at the start.
+        // An image, speech or embedding engine builds its service from the profile, so its served model exists on
+        // demand (spec 3.3a, "Council models on demand"). A text service attaches only to an engine that opens at the
+        // start.
         let capabilities = &planned[index].limits.capabilities;
-        let from_profile = capabilities.contains(&Capability::Image) || capabilities.contains(&Capability::Speech);
+        let from_profile = [Capability::Image, Capability::Speech, Capability::Embedding]
+            .iter()
+            .any(|capability| capabilities.contains(capability));
         if !placement.family.is_empty() && !from_profile {
             return Err(fail(
                 name,

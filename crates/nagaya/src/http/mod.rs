@@ -4,6 +4,7 @@
 //! `model`, and runs the blocking call of the [`Service`] on a call thread. The control runtime never runs a service
 //! call (spec 3.2). Every response carries a `request-id` header, and every error body carries the same id (11.5).
 
+pub mod embeddings;
 mod errors;
 mod extensions;
 pub mod image;
@@ -103,6 +104,8 @@ pub struct Council {
     speech: Vec<Arc<crate::speech::SpeechService>>,
     /// The image services (spec 11.9).
     images: Vec<Arc<crate::image::ImageService>>,
+    /// The embedding services (spec 11.10).
+    embeddings: Vec<Arc<crate::embedding::EmbeddingService>>,
     /// The objects and keeps, when the profile names an `objects` budget (spec 6.15).
     objects: Option<Arc<Mutex<nagaya_store::objects::ObjectStore>>>,
     /// `object_bytes` and `keep_bytes` of the object store. They are fixed at its open, so identity takes no lock.
@@ -134,6 +137,7 @@ impl Council {
             failure: Mutex::new(None),
             speech: Vec::new(),
             images: Vec::new(),
+            embeddings: Vec::new(),
             objects: None,
             object_limits: None,
             pending: pending::PendingIds::default(),
@@ -151,6 +155,12 @@ impl Council {
     /// Serve these image services as council served models (spec 11.9a).
     pub fn with_images(mut self, services: Vec<crate::image::ImageService>) -> Self {
         self.images = services.into_iter().map(Arc::new).collect();
+        self
+    }
+
+    /// Serve these embedding services as council served models (spec 11.10).
+    pub fn with_embeddings(mut self, services: Vec<crate::embedding::EmbeddingService>) -> Self {
+        self.embeddings = services.into_iter().map(Arc::new).collect();
         self
     }
 
@@ -212,6 +222,11 @@ impl Council {
         self.images.iter().find(|service| service.model() == model).cloned()
     }
 
+    /// The embedding service of a served embedding model.
+    pub fn embedding_service(&self, model: &str) -> Option<Arc<crate::embedding::EmbeddingService>> {
+        self.embeddings.iter().find(|service| service.model() == model).cloned()
+    }
+
     /// The served speech models.
     pub fn speech_models(&self) -> Vec<String> {
         self.speech.iter().map(|service| service.model().to_owned()).collect()
@@ -264,6 +279,11 @@ impl Council {
                 self.images
                     .iter()
                     .map(|service| image::served_model(service, self.model_status(service.engine_state()))),
+            )
+            .chain(
+                self.embeddings
+                    .iter()
+                    .map(|service| embeddings::served_model(service, self.model_status(service.engine_state()))),
             )
             .collect();
         let defaults = crate::council::ServiceConfig::new("", "");
@@ -349,6 +369,12 @@ impl Council {
         {
             return Err(Failure::unavailable(&model));
         }
+        // A model that only embeds takes no text route: a 503 when it is not ready, and else the 400 below.
+        if let Some((_, model)) = embeddings::route(self, name)
+            && model.status != ModelStatus::Ready
+        {
+            return Err(Failure::unavailable(&model));
+        }
         let served = self
             .models
             .iter()
@@ -401,6 +427,12 @@ impl Council {
                     .iter()
                     .find(|service| &service.config().engine == engine)
                     .map(|service| image::served_model(service, self.model_status(*state)))
+            });
+            let model = model.or_else(|| {
+                self.embeddings
+                    .iter()
+                    .find(|service| &service.config().engine == engine)
+                    .map(|service| embeddings::served_model(service, self.model_status(*state)))
             });
             if let Some(mut model) = model {
                 model.status = self.model_status(*state);

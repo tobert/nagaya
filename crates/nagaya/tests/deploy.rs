@@ -212,8 +212,8 @@ fn the_b70host_profile_names_the_gemma4_engine_on_both_cards() {
     let profile = b70host_profile();
     assert_eq!(
         profile.engines.len(),
-        7,
-        "gemma, then the speech engine and five image engines, on demand"
+        8,
+        "gemma, the speech engine and five image engines on demand, and the pinned embedding engine"
     );
     let engine = &profile.engines[0];
     assert_eq!(engine.residency, Residency::Resident);
@@ -307,6 +307,31 @@ impl Factory for ImagePlanOnly {
     }
 }
 
+/// The plan of the EmbeddingGemma 2 engine, from the headers of its checkpoint and no card.
+struct EmbeddingPlanOnly;
+
+impl Factory for EmbeddingPlanOnly {
+    fn plan(&self, config: &toml::Table, devices: &[GroupDevice]) -> Result<Limits, PlanError> {
+        nagaya::embeddinggemma2::plan(config, devices)
+    }
+
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
+        panic!("a deploy test opens no engine")
+    }
+}
+
+/// True when the EmbeddingGemma 2 checkpoint is named, as the unit names it. Without it, the test skips.
+fn embedding_checkpoint() -> bool {
+    if std::env::var_os(nagaya::embeddinggemma2::MODEL_VARIABLE).is_some() {
+        return true;
+    }
+    if std::env::var("NAGAYA_REQUIRE_MODELS").is_ok_and(|v| v == "1") {
+        panic!("EMBEDDINGGEMMA2_MODEL_DIR is not set and NAGAYA_REQUIRE_MODELS is set; name the checkpoint");
+    }
+    eprintln!("skipped: EMBEDDINGGEMMA2_MODEL_DIR is not set; set it to the EmbeddingGemma 2 checkpoint directory");
+    false
+}
+
 /// True when the SDXL checkpoint is named, as the unit names it. Without it, the test skips.
 fn image_checkpoint() -> bool {
     if std::env::var_os(nagaya::sdxl::MODEL_VARIABLE).is_some() {
@@ -394,7 +419,7 @@ fn the_b70host_profile_names_an_image_engine_on_demand_on_each_card() {
     let profile = b70host_profile();
     assert_eq!(
         profile.engines.len(),
-        7,
+        8,
         "the image engines follow gemma and the speech engine"
     );
     for (engine, (name, device)) in profile.engines[2..4].iter().zip([("sdxl-0", 0), ("sdxl-1", 1)]) {
@@ -417,7 +442,7 @@ fn the_b70host_profile_names_pony_on_card_zero_and_autismmix_on_card_one() {
     // Amy, 2026-10-28: Pony V6 and AutismMix from Civitai, beside SDXL base, one engine on each card. The profile
     // names the files; this test checks only their form.
     let profile = b70host_profile();
-    assert_eq!(profile.engines.len(), 7);
+    assert_eq!(profile.engines.len(), 8);
     // Amy, 2026-10-29: SDXL-Lightning 4-step, a single file on card 0, shares that card with pony-0 (spec 11.9a).
     let singles = [("pony-0", 0), ("autismmix-1", 1), ("lightning-0", 0)];
     for (engine, (name, device)) in profile.engines[4..7].iter().zip(singles) {
@@ -468,12 +493,31 @@ fn named_checkpoints(profile: &PlacementProfile) -> bool {
     false
 }
 
+/// The embedding engine is resident and pinned on card 1 (spec 11.10, 3.3a "Explicit layout").
+#[test]
+fn the_b70host_profile_names_the_pinned_embedding_engine_on_card_one() {
+    let profile = b70host_profile();
+    let engine = &profile.engines[7];
+    assert_eq!(
+        (engine.name.as_str(), engine.kind.as_str()),
+        ("embeddinggemma-2", nagaya::embeddinggemma2::KIND)
+    );
+    assert_eq!(engine.devices, vec![1]);
+    assert_eq!(engine.residency, Residency::Resident);
+    assert!(engine.pinned, "no load and no unload removes the embedding engine");
+    assert!(
+        engine.config.is_empty() && engine.family.is_empty(),
+        "the checkpoint comes from EMBEDDINGGEMMA2_MODEL_DIR in the unit"
+    );
+}
+
 #[test]
 fn the_b70host_profile_admits_on_the_probed_b70host() {
     // The start path up to the open: the probe, the ignored iGPU, the plan and the ledger.
     if checkpoint().is_none()
         || !speech_checkpoint()
         || !image_checkpoint()
+        || !embedding_checkpoint()
         || !named_checkpoints(&b70host_profile())
     {
         return;
@@ -490,11 +534,21 @@ fn the_b70host_profile_admits_on_the_probed_b70host() {
     registry.register(nagaya::gemma4::KIND, Box::new(PlanOnly));
     registry.register(nagaya::qwen3tts::KIND, Box::new(SpeechPlanOnly));
     registry.register(nagaya::sdxl::KIND, Box::new(ImagePlanOnly));
+    registry.register(nagaya::embeddinggemma2::KIND, Box::new(EmbeddingPlanOnly));
     let admitted = admit(&b70host_profile(), &registry, &inventory, &mut Ledger::new()).expect("b70host admits");
-    assert_eq!(admitted.engines.len(), 6);
-    for engine in &admitted.engines[2..] {
+    assert_eq!(admitted.engines.len(), 8);
+    for engine in &admitted.engines[2..7] {
         assert!(engine.limits.capabilities.contains(&nagaya_abi::Capability::Image));
     }
+    assert!(
+        admitted.engines[7]
+            .limits
+            .capabilities
+            .contains(&nagaya_abi::Capability::Embedding)
+    );
+    // The resident engines take memory at the start: gemma on both cards, and the embedding engine beside it on card 1.
+    let unassigned = admitted.admission.unassigned.clone();
+    println!("unassigned at the start: {unassigned:?}");
     assert!(
         admitted.engines[1]
             .limits
@@ -533,6 +587,10 @@ fn the_b70host_unit_reads_its_config_and_the_checkpoint_and_hides_no_card() {
     assert!(environment.contains(
         &"SDXL_MODEL_DIR=%h/.cache/huggingface/hub/models--stabilityai--stable-diffusion-xl-base-1.0/snapshots/\
           462165984030d82259a11f4367a4eed129e94a7b"
+    ));
+    assert!(environment.contains(
+        &"EMBEDDINGGEMMA2_MODEL_DIR=%h/.cache/huggingface/hub/models--google--embeddinggemma-2/snapshots/\
+          f9972ac22e696a105c482202646979e33e4b5a1e"
     ));
     // The engine finds its cards by PCI address, so no Level Zero variable may hide one.
     assert!(

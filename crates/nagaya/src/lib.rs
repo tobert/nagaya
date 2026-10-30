@@ -6,6 +6,8 @@ pub mod arena;
 pub mod bootstrap;
 pub mod council;
 pub mod cpu_sets;
+pub mod embedding;
+pub mod embeddinggemma2;
 pub mod evidence;
 pub mod exit;
 pub mod gemma4;

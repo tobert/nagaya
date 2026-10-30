@@ -2,8 +2,10 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
+mod embedder;
 mod feed;
 
+pub use embedder::FakeEmbedder;
 pub use feed::FakeFeed;
 
 use std::fs::File;
