@@ -74,6 +74,13 @@ h2 { font-size: 14px; margin: 18px 0 8px; color: var(--muted); font-weight: 600;
 .lines { display: flex; flex-direction: column; gap: 10px; }
 .line { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
 audio { width: 100%; }
+.lora { display: grid; grid-template-columns: 1fr 70px auto; gap: 6px; align-items: center; margin-top: 6px; }
+.lora .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.score { display: grid; grid-template-columns: 56px 120px 1fr; gap: 10px; align-items: center; padding: 6px 0;
+         border-bottom: 1px solid var(--line); }
+.score .bar > div { transition: none; }
+.matrix td { text-align: center; font-size: 12px; padding: 4px; border: 0; }
+.matrix th { font-size: 11px; padding: 4px; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -83,6 +90,7 @@ audio { width: 100%; }
     <button data-tab="images" class="on">Images</button>
     <button data-tab="chat">Chat</button>
     <button data-tab="speech">Speech</button>
+    <button data-tab="embed">Embeddings</button>
     <button data-tab="engines">Engines</button>
   </nav>
   <div id="chips"></div>
@@ -112,10 +120,19 @@ audio { width: 100%; }
       <select id="img-sampler">
         <option>dpm++ 2m karras</option><option>dpm++ 2m sde karras</option><option>euler a</option><option>euler</option>
       </select>
+      <label>Spacing <span class="note">— Euler only; few-step weights such as Lightning need trailing</span></label>
+      <select id="img-spacing"><option>leading</option><option>trailing</option></select>
       <div class="row">
         <div><label>Seed <span class="note">— empty: random</span></label><input id="img-seed" type="number" min="0"></div>
         <div><label>Clip skip</label>
           <select id="img-clip"><option value="">model default</option><option>2</option><option>3</option></select></div>
+      </div>
+      <label>LoRAs <span class="note">— at most 8; weight from -2 to 2</span></label>
+      <div id="img-loras"></div>
+      <div class="actions" style="margin-top:6px">
+        <label class="plain" style="margin:0;cursor:pointer;color:var(--ink)">Add a LoRA file…
+          <input id="img-lora-file" type="file" accept=".safetensors" hidden></label>
+        <span id="img-lora-status" class="note"></span>
       </div>
       <label class="inline" style="margin-top:12px"><input id="img-previews" type="checkbox" checked> Show a preview at each step</label>
       <div class="actions">
@@ -193,6 +210,39 @@ audio { width: 100%; }
   </div>
 </section>
 
+<section id="embed">
+  <div class="cols">
+    <div class="card">
+      <label>Model</label>
+      <div class="row"><select id="em-model"></select><span id="em-model-state" class="note"></span></div>
+      <div class="row">
+        <div><label>Query task</label><select id="em-qtask"></select></div>
+        <div><label>Document task</label><select id="em-dtask"></select></div>
+      </div>
+      <label>Dimensions</label>
+      <select id="em-dims"></select>
+      <p class="note">The family writes the prompt of each task. The vectors come back normalized, so a dot product is
+        the cosine.</p>
+    </div>
+    <div class="card">
+      <label>Query <span class="note">— empty: compare the documents with each other</span></label>
+      <input id="em-query" value="how does the nagaya swap an engine">
+      <label>Documents <span class="note">— one on each line</span></label>
+      <textarea id="em-docs" rows="7">A load that does not fit names the engines in its way, and the client unloads them.
+The ledger admits a profile from the plan of each engine.
+SDXL-Lightning makes an image in four steps with trailing spacing.
+A pinned engine stays loaded through every swap.
+Qwen3-TTS designs a voice from a text prompt.</textarea>
+      <div class="actions">
+        <button class="go" id="em-go">Embed</button>
+        <span id="em-status" class="note"></span>
+      </div>
+      <div id="em-error" class="err"></div>
+      <div id="em-out"></div>
+    </div>
+  </div>
+</section>
+
 <section id="engines">
   <div class="card">
     <table>
@@ -229,7 +279,11 @@ async function call(method, path, body) {
   const text = await r.text();
   let v = null;
   try { v = text ? JSON.parse(text) : null; } catch (e) { v = {error: {message: text}}; }
-  if (!r.ok) throw new Error(v?.error?.message || `${method} ${path} returned ${r.status}`);
+  if (!r.ok) {
+    const error = new Error(v?.error?.message || `${method} ${path} returned ${r.status}`);
+    error.status = r.status;
+    throw error;
+  }
   return v;
 }
 
@@ -273,6 +327,7 @@ async function stream(body, signal, on) {
 }
 
 const kindOf = (m) => {
+  if (m.capabilities?.includes("embed")) return "embed";
   const out = m.media?.outputs || [];
   if (out.some((o) => o.startsWith("image/"))) return "image";
   if (out.some((o) => o.startsWith("audio/"))) return "speech";
@@ -300,13 +355,16 @@ async function refresh() {
   $("chips").innerHTML = models.map((m) =>
     `<span class="chip"><b>${esc(m.model)}</b> <span class="${esc(m.status)}">${esc(m.status)}</span></span>`).join("");
   fillSelect("img-model", "image"); fillSelect("chat-model", "text"); fillSelect("sp-model", "speech");
+  fillSelect("em-model", "embed"); fillEmbed();
   $("eng-rows").innerHTML = engines.map((e) => {
     const m = modelOf(e.name), st = m?.status || "absent";
+    const loaded = st === "ready" || st === "loading";
     return `<tr><td><b>${esc(e.name)}</b></td><td><code>${esc(e.kind)}</code></td><td>${esc(e.devices.join(", "))}</td>
       <td>${esc(e.residency || "resident")}${e.pinned ? ", pinned" : ""}</td>
       <td>${esc(m?.model || "")}</td><td class="${esc(st)}">${esc(st)}</td>
-      <td><button class="plain" data-load="${esc(e.name)}">Load</button>
-          <button class="plain" data-unload="${esc(e.name)}">Unload</button></td></tr>`;
+      <td><button class="plain" data-load="${esc(e.name)}" ${loaded ? "disabled" : ""}>Load</button>
+          <button class="plain" data-unload="${esc(e.name)}" ${!loaded || e.pinned ? "disabled" : ""}
+            ${e.pinned ? `title="pinned: change the profile to unload it"` : ""}>Unload</button></td></tr>`;
   }).join("");
 }
 
@@ -323,7 +381,7 @@ function fillSelect(id, kind) {
   state.innerHTML = m ? `<span class="${esc(m.status)}">${esc(m.status)}</span>` +
     (m.status === "ready" ? "" : ` <button class="plain" data-load="${esc(engineOf(m) || "")}">Load</button>`) : "none served";
 }
-for (const id of ["img-model", "chat-model", "sp-model"]) {
+for (const id of ["img-model", "chat-model", "sp-model", "em-model"]) {
   $(id).onchange = () => { try { localStorage.setItem(`nagaya-${id}`, $(id).value); } catch (e) {} refresh(); };
 }
 
@@ -333,7 +391,8 @@ document.addEventListener("click", async (ev) => {
   const name = load || unload;
   ev.target.disabled = true;
   try {
-    const r = await call("POST", `/nagaya/v1/engines/${encodeURIComponent(name)}/${load ? "load" : "unload"}`);
+    const r = load ? await loadEngine(name)
+                   : await call("POST", `/nagaya/v1/engines/${encodeURIComponent(name)}/unload`);
     if (r?.unload?.length) $("eng-error").textContent = `loading ${name} unloads ${r.unload.join(", ")}`;
   } catch (e) {
     $("eng-error").textContent = e.message; alert(e.message);
@@ -342,13 +401,33 @@ document.addEventListener("click", async (ev) => {
   refresh();
 });
 
+/**
+ * Load an engine. A load that does not fit is a 409 that names the engines in its way (spec 3.3a). Then ask to
+ * unload the loaded engines on its cards that are not pinned, and send the load again with them in `unload`.
+ */
+async function loadEngine(name) {
+  const path = `/nagaya/v1/engines/${encodeURIComponent(name)}/load`;
+  try {
+    return await call("POST", path);
+  } catch (e) {
+    if (e.status !== 409 || !/does not fit/.test(e.message)) throw e;
+    const target = engines.find((x) => x.name === name);
+    const way = engines.filter((x) => x.name !== name && !x.pinned && target &&
+      x.devices.some((d) => target.devices.includes(d)) && ["ready", "loading"].includes(modelOf(x.name)?.status));
+    if (!way.length) throw e;
+    const names = way.map((x) => x.name);
+    if (!confirm(`${e.message}\n\nUnload ${names.join(", ")} and load ${name}?`)) throw e;
+    return await call("POST", path, {unload: names});
+  }
+}
+
 /** Wait until a served model is ready, and load its engine when it is not. */
 async function ready(model, status) {
   let m = models.find((x) => x.model === model);
   if (m?.status === "ready") return;
   status(`loading ${model}…`);
   if (m && m.status !== "loading") {
-    const r = await call("POST", `/nagaya/v1/engines/${encodeURIComponent(engineOf(m))}/load`);
+    const r = await loadEngine(engineOf(m));
     if (r?.unload?.length) status(`loading ${model}; it unloads ${r.unload.join(", ")}…`);
   }
   for (let i = 0; i < 600; i++) {
@@ -375,7 +454,106 @@ function tile(item) {
 }
 function drawGallery() { $("img-gallery").innerHTML = gallery.map(tile).join("") || `<p class="note">None yet.</p>`; }
 drawGallery();
-$("img-clear").onclick = () => { gallery = []; saveGallery(); drawGallery(); };
+$("img-clear").onclick = () => { gallery = []; saveGallery(); drawGallery(); keepAll(); };
+
+// The spacing applies to the Euler samplers only; with DPM++ it is a 400 (spec 11.9a).
+const euler = () => $("img-sampler").value.startsWith("euler");
+function drawSpacing() { $("img-spacing").disabled = !euler(); }
+$("img-sampler").addEventListener("change", drawSpacing); drawSpacing();
+// SDXL-Lightning 4-step needs 4 steps, CFG 1, Euler and trailing spacing (its model card).
+$("img-model").addEventListener("change", () => {
+  if (!/lightning/i.test($("img-model").value)) return;
+  $("img-steps").value = 4; $("img-cfg").value = 1; $("img-sampler").value = "euler"; $("img-spacing").value = "trailing";
+  drawSpacing();
+});
+
+// LoRAs are objects (spec 6.15). The page keeps its list in this browser, and a keep holds the objects in the store.
+let loras = [];
+try { loras = JSON.parse(localStorage.getItem("nagaya-loras") || "[]"); } catch (e) {}
+function saveLoras() { try { localStorage.setItem("nagaya-loras", JSON.stringify(loras)); } catch (e) {} }
+function drawLoras() {
+  $("img-loras").innerHTML = loras.map((l, i) => `<div class="lora">
+    <label class="inline name" title="${esc(l.id)}"><input type="checkbox" data-lora-on="${i}" ${l.on ? "checked" : ""}>
+      ${esc(l.name)}</label>
+    <input type="number" min="-2" max="2" step="0.05" value="${esc(l.weight)}" data-lora-weight="${i}">
+    <button class="plain" data-lora-drop="${i}" title="remove from this list">×</button></div>`).join("") ||
+    `<p class="note">None.</p>`;
+}
+drawLoras();
+$("img-loras").addEventListener("change", (ev) => {
+  const on = ev.target.dataset.loraOn, weight = ev.target.dataset.loraWeight;
+  if (on !== undefined) loras[+on].on = ev.target.checked;
+  if (weight !== undefined) loras[+weight].weight = +ev.target.value;
+  saveLoras();
+});
+$("img-loras").addEventListener("click", (ev) => {
+  const drop = ev.target.dataset.loraDrop;
+  if (drop === undefined) return;
+  loras.splice(+drop, 1); saveLoras(); drawLoras(); keepAll();
+});
+
+/** Put a keep on the LoRAs and the gallery, so the store does not evict them. A keep lasts 30 days (spec 6.15). */
+async function keepAll() {
+  const objects = [...new Set(loras.map((l) => l.id).concat(gallery.map((g) => g.id)))]
+    .filter((id) => /^blake3:[0-9a-f]{64}$/.test(id));
+  try {
+    await call("PUT", "/council/v2/keeps/nagaya-web", {objects, ttl_s: 30 * 86400});
+  } catch (e) {
+    $("img-lora-status").textContent = `the keep failed: ${e.message}`;
+  }
+}
+
+let hashWasm = null;
+/** The BLAKE3 id of a file, from hash-wasm, which loads on the first use. */
+async function blake3Id(file, status) {
+  if (!hashWasm) {
+    hashWasm = new Promise((ok, fail) => {
+      const tag = document.createElement("script");
+      tag.src = "https://cdn.jsdelivr.net/npm/hash-wasm@4.11.0/dist/index.umd.min.js";
+      tag.onload = () => ok(window.hashwasm);
+      tag.onerror = () => { hashWasm = null; fail(new Error("hash-wasm did not load from cdn.jsdelivr.net")); };
+      document.head.appendChild(tag);
+    });
+  }
+  const hasher = await (await hashWasm).createBLAKE3();
+  hasher.init();
+  const reader = file.stream().getReader();
+  let done = 0;
+  for (;;) {
+    const {value, done: end} = await reader.read();
+    if (end) break;
+    hasher.update(value); done += value.length;
+    status(`hashing ${(100 * done / file.size).toFixed(0)}%`);
+  }
+  return `blake3:${hasher.digest("hex")}`;
+}
+
+$("img-lora-file").onchange = async (ev) => {
+  const file = ev.target.files[0], status = (t) => { $("img-lora-status").textContent = t; };
+  ev.target.value = "";
+  if (!file) return;
+  try {
+    const id = await blake3Id(file, status);
+    const head = await fetch(objectUrl(id), {method: "HEAD"});
+    if (head.status === 404) {
+      status(`sending ${(file.size / 1e6).toFixed(0)} MB…`);
+      const r = await fetch(objectUrl(id), {method: "PUT", body: file,
+                                            headers: {"content-type": "application/octet-stream"}});
+      if (!r.ok) {
+        const v = await r.json().catch(() => ({}));
+        throw new Error(v?.error?.message || `the put returned ${r.status}`);
+      }
+    } else if (!head.ok) {
+      throw new Error(`HEAD of the object returned ${head.status}`);
+    }
+    if (!loras.some((l) => l.id === id)) loras.push({name: file.name.replace(/\.safetensors$/, ""), id, weight: 1, on: true});
+    saveLoras(); drawLoras(); await keepAll();
+    status(`${file.name} is held`);
+  } catch (e) {
+    status(e.message);
+  }
+};
+keepAll();
 
 let imgAbort = null;
 $("img-stop").onclick = () => imgAbort?.abort();
@@ -388,6 +566,10 @@ $("img-go").onclick = async () => {
   const options = {width, height, steps, cfg: +$("img-cfg").value, sampler: $("img-sampler").value, count,
                    negative: $("img-negative").value};
   if ($("img-clip").value) options.clip_skip = +$("img-clip").value;
+  if (euler()) options.spacing = $("img-spacing").value;
+  const on = loras.filter((l) => l.on);
+  if (on.length > 8) { $("img-error").textContent = "a request takes at most 8 LoRAs"; return; }
+  if (on.length) options.loras = on.map((l) => ({id: l.id, weight: l.weight}));
   const body = {model, max_tokens: 1, context: {messages: [{role: "user", content: $("img-prompt").value}]},
                 output: {mime: "image/png", options}, previews: $("img-previews").checked};
   if ($("img-seed").value !== "") body.sample = {seed: +$("img-seed").value};
@@ -415,7 +597,7 @@ $("img-go").onclick = async () => {
     const made = done.outputs.map((o) => ({id: o.id, model, prompt: $("img-prompt").value, seed: done.seed + o.index,
                                            size: `${width}x${height}`, steps}));
     $("img-current").innerHTML = made.map(tile).join("");
-    gallery = made.concat(gallery); saveGallery(); drawGallery();
+    gallery = made.concat(gallery); saveGallery(); drawGallery(); keepAll();
     status(`${made.length} image${made.length > 1 ? "s" : ""} in ${seconds} s, seed ${done.seed}`);
   } catch (e) {
     $("img-error").textContent = e.name === "AbortError" ? "stopped" : e.message; status("");
@@ -515,6 +697,70 @@ $("sp-go").onclick = async () => {
     $("sp-error").textContent = e.message;
   }
   $("sp-go").disabled = false;
+};
+
+// ---- embeddings
+function fillEmbed() {
+  const e = models.find((x) => x.model === $("em-model").value)?.embeddings;
+  const fill = (id, list, want) => {
+    const html = (list || []).map((t) => `<option>${esc(t)}</option>`).join("");
+    if ($(id).dataset.html === html) return;
+    $(id).innerHTML = html; $(id).dataset.html = html;
+    if (list?.includes(want)) $(id).value = want;
+  };
+  fill("em-qtask", e?.tasks, "query"); fill("em-dtask", e?.tasks, "document");
+  fill("em-dims", e?.dimensions, e?.dimensions?.[0]);
+}
+$("em-model").addEventListener("change", fillEmbed);
+
+/** The vectors of the inputs, in their order, and the count of their tokens. */
+async function embed(model, task, inputs) {
+  const r = await call("POST", "/council/v2/embeddings", {model, task, inputs, dimensions: +$("em-dims").value});
+  const vectors = [];
+  for (const x of r.embeddings) vectors[x.index] = x.vector;
+  return {vectors, tokens: r.embeddings.reduce((n, x) => n + x.tokens, 0)};
+}
+const dot = (a, b) => a.reduce((s, x, i) => s + x * b[i], 0);
+
+$("em-go").onclick = async () => {
+  const model = $("em-model").value, query = $("em-query").value.trim();
+  const docs = $("em-docs").value.split("\n").map((t) => t.trim()).filter(Boolean);
+  const status = (t) => { $("em-status").textContent = t; };
+  const most = models.find((x) => x.model === model)?.embeddings?.inputs_per_request || 64;
+  $("em-error").textContent = "";
+  if (!model) { $("em-error").textContent = "the nagaya serves no embedding model"; return; }
+  if (!docs.length) { $("em-error").textContent = "write one document or more"; return; }
+  if (docs.length > most) { $("em-error").textContent = `a request takes at most ${most} inputs`; return; }
+  $("em-go").disabled = true;
+  try {
+    await ready(model, status);
+    status("embedding…");
+    const started = performance.now();
+    const d = await embed(model, $("em-dtask").value, docs);
+    if (query) {
+      const q = await embed(model, $("em-qtask").value, [query]);
+      const ranked = docs.map((text, i) => ({text, score: dot(q.vectors[0], d.vectors[i])}))
+        .sort((a, b) => b.score - a.score);
+      $("em-out").innerHTML = `<h2>Documents by cosine to the query</h2>` + ranked.map((r) =>
+        `<div class="score"><b>${r.score.toFixed(3)}</b><div class="bar"><div style="width:${
+          Math.max(0, 100 * r.score).toFixed(1)}%"></div></div><span>${esc(r.text)}</span></div>`).join("");
+      status(`${docs.length + 1} inputs, ${d.tokens + q.tokens} tokens, ${d.vectors[0].length} dimensions, ${
+        ((performance.now() - started) / 1000).toFixed(2)} s`);
+    } else {
+      const head = docs.map((t, i) => `<th title="${esc(t)}">${i + 1}</th>`).join("");
+      const rows = docs.map((t, i) => `<tr><th title="${esc(t)}">${i + 1}. ${esc(t)}</th>${docs.map((_, j) => {
+        const c = dot(d.vectors[i], d.vectors[j]);
+        return `<td style="background:color-mix(in srgb, var(--accent) ${Math.max(0, 100 * c).toFixed(0)}%, transparent)">${
+          c.toFixed(2)}</td>`;
+      }).join("")}</tr>`).join("");
+      $("em-out").innerHTML = `<h2>Cosine between the documents</h2><table class="matrix"><tr><th></th>${head}</tr>${rows}</table>`;
+      status(`${docs.length} inputs, ${d.tokens} tokens, ${d.vectors[0].length} dimensions, ${
+        ((performance.now() - started) / 1000).toFixed(2)} s`);
+    }
+  } catch (e) {
+    $("em-error").textContent = e.message; status("");
+  }
+  $("em-go").disabled = false;
 };
 
 refresh();
