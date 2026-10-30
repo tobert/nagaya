@@ -3113,8 +3113,7 @@ interview). Reason: the rules of 11.9 need names, ranges and errors before the f
   its pending id still gives the PNG. The encode of a PNG runs on a helper thread, not on the group thread. Proposed
   by senpai (Claude Haiku 5.5), 2026-10-29, for Amy's choices of 2026-10-29 (by interview: "drop the stream, seal in
   the job", and the helper thread). Reason: a slow client then never stalls another engine.
-  - Speech is not changed here. Its audio is not an object, so a dropped speech stream loses its audio. It needs its
-    own rule.
+  - Speech has its own rule (11.8a). A slow speech reader never holds the group thread.
   - The queue of a stream holds 8 events. The helper thread is the worker of the route, which encodes each PNG. The
     worker never waits on a client, and the job waits only on the worker. A client that goes away before a cut still
     cancels the job (11.7). After a cut, the job runs to its end.
