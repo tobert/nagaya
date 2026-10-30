@@ -2995,6 +2995,20 @@ by interview).
 - The random value of a code depends on the seed, the frame within its line, and the codebook (11.2). Thus the same
   context and seed give the same codes, held or fed.
 
+**A slow reader of speech.** Proposed by senpai (Claude Opus 5.5), 2026-10-30. Amy decides.
+
+- A slow reader of a speech stream, or of its pending id, never holds the group thread. No change to the code.
+- The job gives each chunk of audio to the call thread through a queue of 64 chunks (`crates/nagaya/src/speech/mod.rs`,
+  `QUEUE`). The call thread copies each chunk into the pending output, and it does not wait for a reader.
+- The stream itself carries the `output` event and `done` only. The audio goes through the pending id, which each
+  reader reads at its own pace. Thus no queue fills because of a client.
+- The queue fills only when the call thread stops. Then the group thread waits after its quantum, as today. That wait
+  is a defect of the call thread, not of the client.
+- A closed stream cancels the line at its next chunk, and the pending id is then a `404` (gogi "Outputs"). The job
+  gives its slot back. The client speaks the line again.
+- Reason: the rule for images (11.9a) is for a stream that carries events at each step. Since M18 step 2, the audio of
+  a line is an object, and its stream holds no audio. Thus the rule for images does not apply to speech.
+
 **11.9 Images.** Amy decided these rules on 2026-10-25, 2026-10-27 and 2026-10-28, by interview (`AGENTS.md`
 milestone 18).
 
