@@ -32,6 +32,9 @@ fn weights_limits(config: &toml::Table) -> Limits {
     if config.get("image").and_then(toml::Value::as_bool) == Some(true) {
         limits.capabilities.push(Capability::Image);
     }
+    if config.get("wide").and_then(toml::Value::as_bool) == Some(true) {
+        limits.devices = vec![0, 1];
+    }
     limits
 }
 
@@ -304,6 +307,59 @@ fn a_resident_engine_shares_its_group_with_a_resident_engine_with_stages() {
     let too_big = engine("big", 0, 950, Residency::Resident);
     let (error, _, _) = refused(&profile(vec![gemma, too_big]));
     assert!(matches!(&error, AdmitError::Ledger(_)), "{error:?}");
+}
+
+/// A device group holds one engine with stages at a time (spec 3.2), so two resident engines with stages in one group
+/// are refused at admission. They both opened at start before, and the serve loop then broke. An on-demand engine with
+/// stages beside a resident one is admitted: its load names the resident one in `unload`.
+#[test]
+fn two_resident_engines_with_stages_in_one_group_are_refused() {
+    let with_stages = |name: &str, residency: Residency| {
+        let mut placement = engine(name, 0, 100, residency);
+        placement.config.insert("stages".to_owned(), toml::Value::Boolean(true));
+        placement
+    };
+    let (error, before, after) = refused(&profile(vec![
+        with_stages("gemma", Residency::Resident),
+        with_stages("paint", Residency::Resident),
+    ]));
+    match &error {
+        AdmitError::Residency { engine, why } => {
+            assert_eq!(engine, "paint");
+            assert!(why.contains("`gemma`"), "{why}");
+        }
+        other => panic!("two resident engines with stages in one group: {other:?}"),
+    }
+    assert_eq!(before, after, "a refusal changes nothing");
+    admit(
+        &profile(vec![
+            with_stages("gemma", Residency::Resident),
+            with_stages("paint", Residency::OnDemand),
+        ]),
+        &registry(),
+        &inventory(),
+        &mut Ledger::new(),
+    )
+    .expect("an on-demand engine with stages beside a resident one");
+}
+
+/// An engine with stages spans its whole group, with one stage on each device in order (spec 3.2). Another shape is
+/// refused at admission. It stopped the serve loop with a panic before.
+#[test]
+fn an_engine_with_stages_that_does_not_span_its_group_is_refused() {
+    let mut gemma = engine("gemma", 0, 100, Residency::Resident);
+    gemma.config.insert("stages".to_owned(), toml::Value::Boolean(true));
+    let mut wide = engine("wide", 0, 100, Residency::Resident);
+    wide.devices = vec![0, 1];
+    wide.config.insert("wide".to_owned(), toml::Value::Boolean(true));
+    let (error, _, _) = refused(&profile(vec![gemma, wide]));
+    match &error {
+        AdmitError::Residency { engine, why } => {
+            assert_eq!(engine, "gemma");
+            assert!(why.contains("[0, 1]"), "{why}");
+        }
+        other => panic!("an engine with stages on device 0 of a group of devices 0 and 1: {other:?}"),
+    }
 }
 
 #[test]

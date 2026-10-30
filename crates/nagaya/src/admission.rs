@@ -757,6 +757,47 @@ fn check_residency(profile: &PlacementProfile, planned: &[AdmittedEngine]) -> Re
         why,
     };
     let groups = crate::placement::device_groups(profile);
+    // A group holds one engine with stages at a time, and its stages cover the group's devices in order (spec 3.2).
+    // The serve loop of a group cannot run another shape, so admission refuses it.
+    for group in &groups {
+        let mut devices = group.devices.clone();
+        devices.sort_unstable();
+        let mut resident: Option<&str> = None;
+        for &member in &group.engines {
+            let limits = &planned[member].limits;
+            if !limits.capabilities.contains(&Capability::Stages) {
+                continue;
+            }
+            let placement = &profile.engines[member];
+            let name = placement.name.as_str();
+            let stages: Vec<u32> = limits.stages.iter().map(|stage| stage.device).collect();
+            let order: Vec<u32> = (0..devices.len() as u32).collect();
+            if placement.devices != devices || stages != order {
+                return Err(fail(
+                    name,
+                    format!(
+                        "an engine with stages spans its whole device group, one stage on each device in order; it \
+                         names devices {:?} with stages on group devices {stages:?}, and its group has devices \
+                         {devices:?}; place it on all of them, or move the other engines to other devices",
+                        placement.devices
+                    ),
+                ));
+            }
+            if placement.residency != Residency::Resident {
+                continue;
+            }
+            if let Some(first) = resident {
+                return Err(fail(
+                    name,
+                    format!(
+                        "a device group holds one engine with stages at a time, and `{first}` is resident in it too; \
+                         make one of them on demand"
+                    ),
+                ));
+            }
+            resident = Some(name);
+        }
+    }
     for (index, placement) in profile.engines.iter().enumerate() {
         let name = placement.name.as_str();
         if placement.pinned && placement.residency != Residency::Resident {
