@@ -1048,10 +1048,10 @@ fn wait_sealed(council: &Arc<Council>) -> u64 {
     objects.lock().unwrap().used()
 }
 
-/// A client that reads nothing fills its stream queue. The stream then ends, and the job runs to its end and seals
-/// its image. Thus the next job of the engine runs while the first client still reads nothing (spec 11.9a).
+/// A client that reads nothing fills its stream queue. The later step events then drop, and the job runs to its end
+/// and seals its image. Thus the next job of the engine runs while the first client still reads nothing (spec 11.9a).
 #[test]
-fn a_full_stream_queue_ends_the_stream_and_the_job_runs_on_and_seals_its_image() {
+fn a_full_stream_queue_drops_step_events_and_the_job_runs_on_and_seals_its_image() {
     let fixture = Fixture::new();
     let council = fixture.council();
     let options = json!({"width": 512, "height": 512, "steps": 20});
@@ -1078,29 +1078,31 @@ fn a_full_stream_queue_ends_the_stream_and_the_job_runs_on_and_seals_its_image()
     );
     assert_eq!(done["outputs"][0]["bytes"].as_u64().unwrap(), held);
 
-    // The client reads at last: the events in the queue, and then an error event that ends the stream.
+    // The client reads at last: the step events of the queue, then the output and done events.
     let events = read_late(&runtime, response);
     let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
-    assert!(names.len() < 20, "the stream lost the events past its queue: {names:?}");
     assert!(
-        names[..names.len() - 1].iter().all(|name| *name == "progress"),
+        names.len() < 20,
+        "the stream dropped the step events past its queue: {names:?}"
+    );
+    assert_eq!(names[names.len() - 2..], ["output", "done"], "{names:?}");
+    assert!(
+        names[..names.len() - 2].iter().all(|name| *name == "progress"),
         "{names:?}"
     );
-    let (last, error) = events.last().unwrap();
-    assert_eq!(last, "error", "{names:?}");
-    assert_eq!(error["error"]["type"], json!("busy"), "{error}");
-    assert!(council.failure().is_none(), "a cut stream does not stop the process");
+    assert!(council.failure().is_none(), "a full queue does not stop the process");
 }
 
-/// A stream that is cut after its `output` events still gives each PNG through its pending id (spec 11.9a).
+/// The steps fill the queue of a client that reads nothing before the decode. The stream still sends the `output`
+/// event and the `done` event, so the pending id gives the PNG (spec 11.9a). Before, the full queue dropped the
+/// `output` event, and the client could not find its image.
 #[test]
-fn the_pending_id_of_a_cut_stream_gives_the_png() {
+fn a_full_stream_still_sends_the_pending_id_and_done() {
     let fixture = Fixture::new();
     let council = fixture.council();
-    // The route takes one event, and its queue holds 8: seven steps and the outputs. The `done` finds it full.
     let mut body = request(
         "a fox",
-        json!({"width": 512, "height": 512, "steps": 8}),
+        json!({"width": 512, "height": 512, "steps": 20}),
         json!({"seed": 41}),
     );
     body["stream"] = json!(true);
@@ -1108,53 +1110,25 @@ fn the_pending_id_of_a_cut_stream_gives_the_png() {
     assert_eq!(response.status(), StatusCode::OK);
     wait_clears(&fixture, 1, "the job did not reach its end");
     wait_sealed(&council);
-    // The worker sends `done` at once after the seal. A read before that send would make room for it.
-    std::thread::sleep(Duration::from_millis(200));
     let events = read_late(&runtime, response);
     let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
-    assert_eq!(names[8..], ["output", "error"], "{names:?}");
-    let pending = events[8].1["pending"].as_str().unwrap();
+    let output = names
+        .iter()
+        .position(|name| *name == "output")
+        .unwrap_or_else(|| panic!("no output event: {names:?}"));
+    assert_eq!(names[output..], ["output", "done"], "{names:?}");
+    let pending = events[output].1["pending"].as_str().unwrap();
     let (status, _, location, _) = send(&council, "GET", &format!("/council/v2/objects/{pending}"), None);
     assert_eq!(status, StatusCode::PERMANENT_REDIRECT, "the job sealed the pending id");
     let id = location.strip_prefix("/council/v2/objects/").unwrap();
+    assert_eq!(
+        events[output + 1].1["outputs"][0]["id"],
+        json!(id),
+        "done names the sealed id"
+    );
     let (width, height, first, text) = read_png(&object(&council, id));
     assert_eq!((width, height, first), (512, 512, 41));
     assert!(text.unwrap().contains("Seed: 41"));
-}
-
-/// A cut stream ends at once, not at the end of its job. A client that reads after the cut gets the events of its
-/// queue and the error, and no event of a later step.
-#[test]
-fn a_cut_stream_ends_before_its_job_and_sends_no_later_step() {
-    let fixture = Fixture::new();
-    let council = fixture.council();
-    let mut body = request(
-        "a fox",
-        json!({"width": 512, "height": 512, "steps": 150}),
-        json!({"seed": SLOW_SEED}),
-    );
-    body["stream"] = json!(true);
-    let (runtime, response) = unread_stream(&council, body);
-    assert_eq!(response.status(), StatusCode::OK);
-    // The queue holds 8 events, so the stream is cut by step 10.
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while fixture.steps.load(std::sync::atomic::Ordering::SeqCst) < 20 {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the slow job did not reach step 20"
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    let events = read_late(&runtime, response);
-    let steps = fixture.steps.load(std::sync::atomic::Ordering::SeqCst);
-    assert!(steps < 150, "the stream ended only at the end of its job");
-    let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
-    assert_eq!(names.len(), 10, "{names:?}");
-    for (k, (_, progress)) in events[..9].iter().enumerate() {
-        assert_eq!(progress["step"], json!(k + 1), "{names:?}");
-    }
-    assert_eq!(names[9], "error");
-    wait_clears(&fixture, 1, "the slow job did not reach its end");
 }
 
 /// A client that goes away cancels its job, also after a cut. Only a full queue lets the job run on (spec 11.7).

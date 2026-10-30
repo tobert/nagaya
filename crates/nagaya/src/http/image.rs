@@ -492,25 +492,28 @@ enum Item {
     End(Box<Result<GenerationDone, ServiceError>>),
 }
 
-/// The events of a stream that wait for a slow client. A full queue ends the stream, and the job runs on (spec
-/// 11.9a).
+/// The events of a stream that wait for a slow client (spec 11.9a).
 const QUEUE: usize = 8;
 
-/// Send an item to the stream. A full queue cuts the stream: the sender drops, and later items go nowhere. Thus the
-/// worker never waits on a client, and the job does not wait on the worker. False when the client went away.
-fn send_or_cut(out: &Mutex<Option<mpsc::Sender<Item>>>, cut: &AtomicBool, item: Item) -> bool {
-    let mut out = out.lock().expect("the lock of a stream sender is poisoned");
-    let Some(sender) = out.as_ref() else {
-        return true;
-    };
-    match sender.try_send(item) {
-        Ok(()) => true,
-        Err(mpsc::error::TrySendError::Full(_)) => {
-            tracing::warn!("an image stream ended: its queue of {QUEUE} events filled; the job runs on");
-            cut.store(true, Ordering::SeqCst);
-            *out = None;
-            true
+/// The places of the queue that the `output` events and the `done` event keep. A job sends each of them once.
+const KEPT: usize = 2;
+
+/// Send an item to the stream. A step goes only to a queue with more than [`KEPT`] free places, and else it drops, so
+/// the `output` and `done` events always find a place. Thus the worker never waits on a client, and the job does not
+/// wait on the worker. False when the client went away.
+fn send_or_drop(out: &mpsc::Sender<Item>, dropped: &AtomicBool, item: Item) -> bool {
+    if matches!(item, Item::Step(_)) && out.capacity() <= KEPT {
+        if !dropped.swap(true, Ordering::SeqCst) {
+            tracing::warn!("an image stream drops its step events: its queue of {QUEUE} events is full");
         }
+        return !out.is_closed();
+    }
+    match out.try_send(item) {
+        Ok(()) => true,
+        Err(mpsc::error::TrySendError::Full(_)) => panic!(
+            "an output or done event of an image stream found its queue full, though the queue keeps {KEPT} places \
+             for them"
+        ),
         Err(mpsc::error::TrySendError::Closed(_)) => false,
     }
 }
@@ -728,12 +731,10 @@ pub async fn generation(
         Err(failure) => return failure.respond(&id),
     };
     let (out, mut items) = mpsc::channel::<Item>(QUEUE);
-    let cut = Arc::new(AtomicBool::new(false));
     let inner = Arc::clone(&council);
-    let cut_by_worker = Arc::clone(&cut);
     let started = council.spawn(move || {
-        let out = Mutex::new(Some(out));
-        let send = |item| send_or_cut(&out, &cut_by_worker, item);
+        let dropped = AtomicBool::new(false);
+        let send = |item| send_or_drop(&out, &dropped, item);
         let result = guarded(|| {
             let checked = check(&service, &model, &request, objects.as_deref())?;
             make(&inner, &service, &model.model, checked, true, &send)
@@ -757,8 +758,8 @@ pub async fn generation(
                 .respond(&id);
         }
     };
-    let state = (Some(first), items, council, id, false, cut);
-    let stream = futures_util::stream::unfold(state, |(first, mut items, council, id, ended, cut)| async move {
+    let state = (Some(first), items, council, id, false);
+    let stream = futures_util::stream::unfold(state, |(first, mut items, council, id, ended)| async move {
         if ended {
             return None;
         }
@@ -795,20 +796,13 @@ pub async fn generation(
                 (vec![Event::default().event(event.name()).data(event.data())], true)
             }
             None => {
-                let error = if cut.load(Ordering::SeqCst) {
-                    ServiceError::Busy(format!(
-                        "the stream ended: its queue of {QUEUE} events filled, because the client read too slowly; \
-                         the job runs on, so GET the pending id of each output event for its PNG"
-                    ))
-                } else {
-                    ServiceError::internal("an image generation ended with no result")
-                };
+                let error = ServiceError::internal("an image generation ended with no result");
                 let event = super::stream::error_event(&council, error, &id);
                 (vec![Event::default().event(event.name()).data(event.data())], true)
             }
         };
         let events = futures_util::stream::iter(events.into_iter().map(Ok::<Event, std::convert::Infallible>));
-        Some((events, (None, items, council, id, ended, cut)))
+        Some((events, (None, items, council, id, ended)))
     });
     Sse::new(futures_util::StreamExt::flatten(stream)).into_response()
 }
