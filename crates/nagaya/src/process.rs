@@ -212,6 +212,9 @@ pub struct OwnedLedger {
     /// True from the accept of a profile change until the ledger takes the new profile. No load is planned then
     /// (spec 3.3a).
     changing: bool,
+    /// The plans and the engine names of the profile of an accepted change, until the ledger takes it. Each charge
+    /// must also fit it (spec 3.3a).
+    incoming: Option<(Planned, BTreeSet<String>)>,
 }
 
 /// The loaded engines after a swap that loads `load` and unloads `unload`.
@@ -249,6 +252,7 @@ impl OwnedLedger {
             planned: None,
             pending: Vec::new(),
             changing: false,
+            incoming: None,
         }
     }
 
@@ -303,6 +307,11 @@ impl OwnedLedger {
             ));
         }
         self.pending.push((load.to_vec(), unload.to_vec()));
+        // A swap that only unloads leaves fewer engines, so the ledger never refuses it. It is pending so that a
+        // profile change waits for it.
+        if load.is_empty() {
+            return Ok(());
+        }
         let fits = self.check_pending().map_err(AdmitError::Ledger);
         if fits.is_err() {
             self.pending.pop();
@@ -311,8 +320,9 @@ impl OwnedLedger {
     }
 
     /// Check that the live charges fit when each pending swap is charged, in any order (spec 3.3a). A swap is charged
-    /// beside every pending load, and only its own unloads ran, because the other swaps can end later. It changes
-    /// nothing.
+    /// after its own unloads, beside any set of the other pending swaps that ended before it. A swap that ended is
+    /// whole: its load is charged only after its unload. There are few pending swaps, one for each group at most. It
+    /// changes nothing.
     fn check_pending(&self) -> Result<(), LedgerError> {
         if self.pending.is_empty() {
             return Ok(());
@@ -321,20 +331,75 @@ impl OwnedLedger {
             .planned
             .as_ref()
             .expect("a swap comes after the admission of a profile");
-        let mut every = self.loaded.clone();
-        for (load, _) in &self.pending {
-            every.extend(load.iter().cloned());
+        let apply = |loaded: &mut BTreeSet<String>, (load, unload): &(Vec<String>, Vec<String>)| {
+            for name in unload {
+                loaded.remove(name);
+            }
+            loaded.extend(load.iter().cloned());
+        };
+        let count = self.pending.len();
+        for (index, swap) in self.pending.iter().enumerate() {
+            for ended in 0..1u32 << (count - 1) {
+                let mut charged = self.loaded.clone();
+                let others = (0..count).filter(|other| *other != index);
+                for (bit, other) in others.enumerate() {
+                    if ended & 1 << bit != 0 {
+                        apply(&mut charged, &self.pending[other]);
+                    }
+                }
+                apply(&mut charged, swap);
+                self.check_charged(plans, &charged)?;
+            }
         }
-        for (_, unload) in &self.pending {
-            let charged: BTreeSet<String> = every.iter().filter(|name| !unload.contains(name)).cloned().collect();
+        Ok(())
+    }
+
+    /// Check that the live charges fit beside the engines of `charged`. It changes nothing.
+    fn check_charged(&self, plans: &Planned, charged: &BTreeSet<String>) -> Result<(), LedgerError> {
+        {
             let mut after = self.ledger.clone();
-            match admit_loaded_planned(plans, &mut after, &charged, true) {
+            match admit_loaded_planned(plans, &mut after, charged, true) {
                 Ok(_) => {}
                 Err(AdmitError::Ledger(error)) => return Err(error),
                 Err(error) => panic!("the ledger cannot check its pending swaps: {error}"),
             }
         }
         Ok(())
+    }
+
+    /// Check that the live charges fit the profile of an accepted change, as the ledger will take it: without the
+    /// contexts of the engines that it removes, and with the loaded engines that it keeps (spec 3.3a). It changes
+    /// nothing.
+    fn check_incoming(&self) -> Result<(), LedgerError> {
+        let Some((plans, names)) = &self.incoming else {
+            return Ok(());
+        };
+        let mut live = self.ledger.clone();
+        if let Some(old) = &self.planned {
+            for name in old.names() {
+                if !names.contains(name) {
+                    while live.release_context(name).is_ok() {}
+                }
+            }
+        }
+        let staying: BTreeSet<String> = self.loaded.intersection(names).cloned().collect();
+        match admit_loaded_planned(plans, &mut live, &staying, true) {
+            Ok(_) => Ok(()),
+            Err(AdmitError::Ledger(error)) => Err(error),
+            Err(error) => panic!("the ledger cannot check the profile of the change: {error}"),
+        }
+    }
+
+    /// True when an accepted change removes the engine, so it takes no new charge (spec 3.3a).
+    pub fn leaving(&self, engine: &str) -> bool {
+        self.incoming.as_ref().is_some_and(|(_, names)| !names.contains(engine))
+    }
+
+    /// Check a charge that the ledger just took, and take it back when it does not fit after the pending swaps or in
+    /// the profile of an accepted change.
+    fn check_charge(&self) -> Result<(), LedgerError> {
+        self.check_pending()?;
+        self.check_incoming()
     }
 
     /// Admit the loaded engines after a swap, when its engines that unload dropped (spec 3.3a). A swap that loads an
@@ -371,6 +436,17 @@ impl OwnedLedger {
         registry: &Registry,
         inventory: &Inventory,
     ) -> Result<Admitted, AdmitError> {
+        self.check_profile_plans(profile, registry, inventory)
+            .map(|(admitted, _)| admitted)
+    }
+
+    /// Check a whole profile as [`OwnedLedger::check_profile`] does, and give its plans too.
+    fn check_profile_plans(
+        &mut self,
+        profile: &PlacementProfile,
+        registry: &Registry,
+        inventory: &Inventory,
+    ) -> Result<(Admitted, Planned), AdmitError> {
         self.check_owner();
         let plans = plan_all(profile, registry, inventory, self.fd_ceiling)?;
         let admitted = admit_planned(profile, &plans, &mut Ledger::new(), false)?;
@@ -391,7 +467,7 @@ impl OwnedLedger {
             }
         }
         admit_loaded_planned(&plans, &mut live, &staying, false)?;
-        Ok(admitted)
+        Ok((admitted, plans))
     }
 
     /// Check a profile change and begin it (spec 3.3a). A swap that waits or runs makes it busy, and so does another
@@ -410,7 +486,9 @@ impl OwnedLedger {
         if self.changing {
             return Err(AdmitError::Busy("a profile change runs now".to_owned()));
         }
-        let admitted = self.check_profile(profile, registry, inventory)?;
+        let (admitted, plans) = self.check_profile_plans(profile, registry, inventory)?;
+        let names = profile.engines.iter().map(|engine| engine.name.clone()).collect();
+        self.incoming = Some((plans, names));
         self.changing = true;
         Ok(admitted)
     }
@@ -419,27 +497,35 @@ impl OwnedLedger {
     pub fn end_change(&mut self) {
         self.check_owner();
         self.changing = false;
+        self.incoming = None;
     }
 
     /// Take a new profile when no swap waits or runs, and the engines of `gone` dropped and hold no context (spec
-    /// 3.3a). `None` means not yet. Only the owner thread may call this.
+    /// 3.3a). `Err` in the inner result names what it waits for. Only the owner thread may call this.
     pub fn try_reprofile(
         &mut self,
         profile: &PlacementProfile,
         registry: &Registry,
         inventory: &Inventory,
         gone: &[String],
-    ) -> Result<Option<Admitted>, AdmitError> {
+    ) -> Result<Result<Admitted, String>, AdmitError> {
         self.check_owner();
-        let busy = gone
-            .iter()
-            .any(|name| self.loaded.contains(name) || self.ledger.live_contexts(name) > 0);
-        if !self.pending.is_empty() || busy {
-            return Ok(None);
+        if !self.pending.is_empty() {
+            return Ok(Err(format!("{} swaps that wait or run", self.pending.len())));
+        }
+        for name in gone {
+            if self.loaded.contains(name) {
+                return Ok(Err(format!("the drop of engine `{name}`")));
+            }
+            let live = self.ledger.live_contexts(name);
+            if live > 0 {
+                return Ok(Err(format!("{live} contexts of engine `{name}`")));
+            }
         }
         let admitted = self.reprofile(profile, registry, inventory)?;
         self.changing = false;
-        Ok(Some(admitted))
+        self.incoming = None;
+        Ok(Ok(admitted))
     }
 
     /// Admit the loaded engines under a new profile, as a swap does (spec 3.3). A refusal changes nothing. Only the
@@ -471,7 +557,7 @@ impl OwnedLedger {
         self.check_owner();
         self.ledger.admit_context(engine)?;
         // The charge must also fit after the pending swaps, so that no charge refuses a swap after its unload.
-        if let Err(error) = self.check_pending() {
+        if let Err(error) = self.check_charge() {
             self.ledger
                 .release_context(engine)
                 .expect("a context that was just charged releases");
@@ -494,7 +580,7 @@ impl OwnedLedger {
         self.check_owner();
         self.ledger.admit_staging(engine, tier, bytes)?;
         // The charge must also fit after the pending swaps, as a context does.
-        if let Err(error) = self.check_pending() {
+        if let Err(error) = self.check_charge() {
             self.ledger
                 .release_staging(tier, bytes)
                 .expect("staging that was just charged releases");
@@ -891,13 +977,26 @@ impl Start {
                             let _ = reply.send(result);
                         }
                         LedgerMessage::AdmitContext(engine, reply) => {
-                            let _ = reply.send(ledger.admit_context(&engine));
+                            // An engine that an accepted change removes takes no new context (spec 3.3a).
+                            let answer = if ledger.leaving(&engine) {
+                                Err(ContextChargeError::Leaving(engine))
+                            } else {
+                                ledger.admit_context(&engine).map_err(ContextChargeError::Ledger)
+                            };
+                            let _ = reply.send(answer);
                         }
                         LedgerMessage::ReleaseContext(engine, reply) => {
                             let _ = reply.send(ledger.release_context(&engine));
                         }
                         LedgerMessage::AdmitStaging(engine, tier, bytes, reply) => {
-                            let _ = reply.send(ledger.admit_staging(&engine, tier, bytes));
+                            let answer = if ledger.leaving(&engine) {
+                                Err(ContextChargeError::Leaving(engine))
+                            } else {
+                                ledger
+                                    .admit_staging(&engine, tier, bytes)
+                                    .map_err(ContextChargeError::Ledger)
+                            };
+                            let _ = reply.send(answer);
                         }
                         LedgerMessage::ReleaseStaging(tier, bytes, reply) => {
                             let _ = reply.send(ledger.release_staging(tier, bytes));
@@ -1672,11 +1771,11 @@ enum WatchMessage {
 enum LedgerMessage {
     Admit(PlacementProfile, Sender<Result<Admitted, AdmitError>>),
     /// Charge a new context of the named engine (spec 4.2).
-    AdmitContext(String, Sender<Result<(), LedgerError>>),
+    AdmitContext(String, Sender<Result<(), ContextChargeError>>),
     /// Release the charge of an ended context of the named engine.
     ReleaseContext(String, Sender<Result<(), LedgerError>>),
     /// Charge staging bytes of the named engine in one tier (spec 4.2).
-    AdmitStaging(String, Tier, u64, Sender<Result<(), LedgerError>>),
+    AdmitStaging(String, Tier, u64, Sender<Result<(), ContextChargeError>>),
     /// Release staging bytes in one tier.
     ReleaseStaging(Tier, u64, Sender<Result<(), LedgerError>>),
     /// Read the unassigned bytes of each budget.
@@ -1707,7 +1806,7 @@ enum LedgerMessage {
     TryReprofile(
         PlacementProfile,
         Vec<String>,
-        Sender<Result<Option<Admitted>, AdmitError>>,
+        Sender<Result<Result<Admitted, String>, AdmitError>>,
     ),
     Stop,
 }
@@ -1759,6 +1858,8 @@ pub enum ContextChargeError {
     Stopping,
     /// The ledger refused, or the call was wrong.
     Ledger(LedgerError),
+    /// An accepted profile change removes the engine, so it takes no new charge (spec 3.3a).
+    Leaving(String),
 }
 
 impl std::fmt::Display for ContextChargeError {
@@ -1766,6 +1867,12 @@ impl std::fmt::Display for ContextChargeError {
         match self {
             ContextChargeError::Stopping => write!(formatter, "the process is stopping"),
             ContextChargeError::Ledger(error) => write!(formatter, "{error}"),
+            ContextChargeError::Leaving(engine) => {
+                write!(
+                    formatter,
+                    "engine `{engine}` leaves the profile, so it takes no new charge"
+                )
+            }
         }
     }
 }
@@ -1821,10 +1928,7 @@ impl Ports {
         self.ledger
             .send(LedgerMessage::AdmitContext(engine.to_owned(), reply_tx))
             .map_err(|_| ContextChargeError::Stopping)?;
-        reply_rx
-            .recv()
-            .map_err(|_| ContextChargeError::Stopping)?
-            .map_err(ContextChargeError::Ledger)
+        reply_rx.recv().map_err(|_| ContextChargeError::Stopping)?
     }
 
     /// Release the charge of an ended context. A release must follow each charge, also after a failure.
@@ -1851,10 +1955,7 @@ impl Ports {
         self.ledger
             .send(LedgerMessage::AdmitStaging(engine.to_owned(), tier, bytes, reply_tx))
             .map_err(|_| ContextChargeError::Stopping)?;
-        reply_rx
-            .recv()
-            .map_err(|_| ContextChargeError::Stopping)?
-            .map_err(ContextChargeError::Ledger)
+        reply_rx.recv().map_err(|_| ContextChargeError::Stopping)?
     }
 
     /// Release staging bytes that `admit_staging` charged.
@@ -1962,6 +2063,16 @@ impl Ports {
     }
 
     /// Record a failure outside a call. The process must stop (spec 8.5). The first failure stays.
+    /// Run `body`, and stop the process when it panics (spec 8.5). A thread outside the group threads uses it.
+    pub fn guard(&self, thread: &str, body: impl FnOnce()) {
+        if let Err(payload) = catch_unwind(AssertUnwindSafe(body)) {
+            self.fail(format!(
+                "the thread {thread} panicked: {}",
+                panic_text(payload.as_ref())
+            ));
+        }
+    }
+
     pub fn fail(&self, message: String) {
         let mut failure = self.failure.lock().expect("the failure lock is poisoned");
         if failure.is_none() {
@@ -1993,13 +2104,13 @@ impl Ports {
         let _ = self.ledger.send(LedgerMessage::EndChange);
     }
 
-    /// Take a new profile when no swap runs and the engines of `gone` dropped and hold no context. `Ok(None)` means
-    /// not yet, and `None` in the outer option means the ledger thread stopped.
+    /// Take a new profile when no swap runs and the engines of `gone` dropped and hold no context. `Ok(Err(why))`
+    /// names what it waits for, and `None` means the ledger thread stopped.
     pub fn try_reprofile(
         &self,
         profile: &PlacementProfile,
         gone: &[String],
-    ) -> Option<Result<Option<Admitted>, AdmitError>> {
+    ) -> Option<Result<Result<Admitted, String>, AdmitError>> {
         let (reply, answer) = mpsc::channel();
         self.ledger
             .send(LedgerMessage::TryReprofile(profile.clone(), gone.to_vec(), reply))

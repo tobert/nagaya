@@ -230,6 +230,11 @@ impl<'a> Charge<'a> {
                 ServiceError::ContextRefused(error)
             }
             ContextChargeError::Ledger(error) => ServiceError::internal(error.to_string()),
+            // The engine leaves the profile and drains, so it is not ready (spec 3.3a).
+            ContextChargeError::Leaving(engine) => ServiceError::Unavailable {
+                engine,
+                state: nagaya_telemetry::EngineState::Draining,
+            },
         })?;
         Ok(Self {
             ports,
@@ -244,7 +249,9 @@ impl<'a> Charge<'a> {
             Ok(()) => Ok(()),
             // A stopped ledger has no charge left to release.
             Err(ContextChargeError::Stopping) => Ok(()),
-            Err(ContextChargeError::Ledger(error)) => Err(ServiceError::internal(error.to_string())),
+            Err(error @ (ContextChargeError::Ledger(_) | ContextChargeError::Leaving(_))) => {
+                Err(ServiceError::internal(error.to_string()))
+            }
         }
     }
 }

@@ -489,3 +489,82 @@ fn a_change_waits_for_the_contexts_of_a_removed_engine() {
     assert_eq!(main.persisted(), without_chat);
     assert!(ports.loaded_engines().is_some(), "the process runs on");
 }
+
+/// Start a change that removes `chat` and lowers the budget to 800, and keep it waiting on a context of `chat`.
+/// `voice` (600 bytes) is loaded, and `chat` is not.
+fn waiting_change(main: &mut Main) -> nagaya::process::Ports {
+    main.process.load_with("voice", &["chat".to_owned()]).unwrap();
+    swapped(&main.process);
+    let ports = main.process.ports();
+    ports.admit_context("chat").unwrap();
+    let mut new = profile(800);
+    new.engines.remove(0);
+    let (answer, _) = main.put(&new);
+    assert!(matches!(answer, PutAnswer::Accepted(_)), "{answer:?}");
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(main.changer.applying(), "the change waits for the context of chat");
+    ports
+}
+
+/// While a change waits, a charge must also fit the new profile (spec 3.3a). 300 bytes of staging fit beside `voice`
+/// in 1000 bytes, not in 800, so they are refused, and the change ends when the context of `chat` ends. Before, the
+/// staging was admitted, and the ledger then refused the new profile, which stopped the process.
+#[test]
+fn a_charge_during_a_change_must_fit_the_new_profile() {
+    let mut main = Main::new();
+    let ports = waiting_change(&mut main);
+    assert!(
+        ports.admit_staging("voice", Tier::Device(0), 300).is_err(),
+        "300 bytes beside voice do not fit the new budget of 800"
+    );
+    ports.admit_staging("voice", Tier::Device(0), 100).unwrap();
+    ports.release_context("chat").unwrap();
+    main.applied();
+    assert!(ports.failure().is_none(), "{:?}", ports.failure());
+    ports.release_staging(Tier::Device(0), 100).unwrap();
+}
+
+/// While a change waits, a context of an engine that it removes is refused as not ready, so steady traffic to that
+/// engine cannot hold the change off (spec 3.3a).
+#[test]
+fn a_context_of_a_removed_engine_is_refused_during_a_change() {
+    let mut main = Main::new();
+    let ports = waiting_change(&mut main);
+    assert_eq!(
+        ports.admit_context("chat"),
+        Err(nagaya::process::ContextChargeError::Leaving("chat".to_owned()))
+    );
+    ports.release_context("chat").unwrap();
+    main.applied();
+    assert!(ports.failure().is_none(), "{:?}", ports.failure());
+}
+
+/// A PUT while a swap that only unloads drains is busy too (spec 3.3a, Decided 2026-10-30).
+#[test]
+fn a_put_during_an_unload_drain_is_busy() {
+    let mut main = Main::new();
+    let gate = hold_chat(&main);
+    main.process.unload("chat").unwrap();
+    let (answer, _) = main.put(&profile(2000));
+    assert!(matches!(answer, PutAnswer::Busy), "{answer:?}");
+    gate.send(()).unwrap();
+    assert_eq!(swapped(&main.process), (names(&["chat"]), Vec::new()));
+}
+
+/// A change whose profile cannot be kept ends, so a later load is not busy.
+#[test]
+fn a_change_that_cannot_be_kept_ends() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut main = Main::new();
+    let path = main.directory.path().to_owned();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let (reply, _answer) = mpsc::channel();
+    main.calls.send(ProfileCall::Put(profile(2000), reply)).unwrap();
+    let kept = main.changer.tick(&mut main.swap, &main.process);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(kept.is_err(), "a read-only store keeps no profile");
+    assert!(
+        !matches!(main.process.load("voice"), Err(LoadError::Busy(_))),
+        "the change ended"
+    );
+}

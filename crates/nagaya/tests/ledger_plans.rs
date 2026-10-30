@@ -186,3 +186,40 @@ fn a_pending_swap_must_fit_in_any_order() {
         .swap(&names(&["c"]), &names(&["a"]))
         .expect("the swap of c is charged");
 }
+
+/// A swap is checked beside each set of other pending swaps, each one whole, so no check counts a load without its
+/// unload (spec 3.3a). In 1000 bytes, a (500) and b (400) are loaded, and the swap of c (550) for a waits. An unload of
+/// b fits in each order, and its check once counted a and c together (1050).
+#[test]
+fn a_pending_swap_counts_each_other_swap_whole() {
+    let mut registry = Registry::new();
+    registry.register("counting", Box::new(Counting(Arc::new(AtomicUsize::new(0)))));
+    let mut profile = profile(vec![
+        sized("a", 500, Residency::Resident),
+        sized("b", 400, Residency::Resident),
+        sized("c", 550, Residency::OnDemand),
+        sized("d", 100, Residency::OnDemand),
+    ]);
+    profile.budgets[0].bytes = 1000;
+    let mut ledger = OwnedLedger::new();
+    ledger.admit(&profile, &registry, &inventory()).expect("a and b fit");
+    let names = |list: &[&str]| list.iter().map(|name| (*name).to_owned()).collect::<Vec<_>>();
+    ledger.plan_swap(&names(&["c"]), &names(&["a"])).expect("b and c fit");
+    ledger
+        .plan_swap(&[], &names(&["b"]))
+        .expect("an unload of b fits in each order");
+    ledger.swap(&[], &names(&["b"])).expect("the unload of b is charged");
+    ledger
+        .swap(&names(&["c"]), &names(&["a"]))
+        .expect("the swap of c is charged");
+    // Now c (550) and b (400) are loaded, and the swap of a (500) for c waits. A swap of d (100) for b fits in each
+    // order: beside c (650), or beside a (600). With a and c both counted, it would be 1150.
+    ledger.plan_swap(&names(&["b"]), &[]).expect("b fits beside c");
+    ledger.swap(&names(&["b"]), &[]).expect("the load of b is charged");
+    ledger
+        .plan_swap(&names(&["a"]), &names(&["c"]))
+        .expect("a fits beside b");
+    ledger
+        .plan_swap(&names(&["d"]), &names(&["b"]))
+        .expect("d fits beside c, and beside a");
+}

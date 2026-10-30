@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use nagaya_abi::Capability;
 use nagaya_ledger::LedgerError;
@@ -250,7 +250,8 @@ impl Changer {
             std::thread::Builder::new()
                 .name("nagaya-reprofile".to_owned())
                 .spawn(move || {
-                    apply(&ports, &profile, &in_place);
+                    // A panic of the change stops the process (spec 8.5). Else every later PUT and load stays busy.
+                    ports.guard("nagaya-reprofile", || apply(&ports, &profile, &in_place));
                     applying.store(false, Ordering::SeqCst);
                 })
                 .expect("cannot start the thread of a profile change");
@@ -279,11 +280,19 @@ fn apply(ports: &Ports, profile: &PlacementProfile, change: &Change) {
     // The ledger takes the new profile when no swap waits or runs, and each gone engine dropped and holds no context
     // (spec 3.3a). A council request can end its context after the drop of its engine.
     let gone: Vec<String> = gone.iter().map(|engine| (*engine).to_owned()).collect();
+    let mut told: Option<Instant> = None;
     loop {
         match ports.try_reprofile(profile, &gone) {
             None => return,
-            Some(Ok(Some(_))) => break,
-            Some(Ok(None)) => std::thread::sleep(Duration::from_millis(10)),
+            Some(Ok(Ok(_))) => break,
+            Some(Ok(Err(why))) => {
+                // The log names the wait at its start and every 10 s after (spec 9.1).
+                if told.is_none_or(|at| at.elapsed() >= Duration::from_secs(10)) {
+                    tracing::info!("the profile change waits for {why} before the ledger takes the profile");
+                    told = Some(Instant::now());
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
             Some(Err(error)) => {
                 return ports.fail(format!(
                     "the ledger refused the profile that its check admitted: {error}"

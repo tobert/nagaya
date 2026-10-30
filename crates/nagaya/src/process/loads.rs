@@ -244,11 +244,12 @@ pub(super) fn ask(
 }
 
 /// Plan a swap that unloads one engine and loads none. The ledger counts it as a swap that runs until its charge after
-/// the drop, so a profile change waits for it (spec 3.3a). Fewer engines always fit, so a refusal is a defect.
+/// the drop, so a profile change waits for it (spec 3.3a). The ledger takes it with no check, because fewer engines
+/// leave more room. The unload runs even if the ledger did not answer, because it frees memory.
 fn unload_only(index: usize, members: &[Member], ledger: &Sender<LedgerMessage>) -> Plan {
     let name = members[index].name().to_owned();
     if let Err(error) = in_place::take(ledger, Vec::new(), vec![name.clone()]) {
-        panic!("the ledger refused the unload of engine `{name}`: {error}");
+        tracing::error!("the ledger did not take the unload of engine `{name}`, and the unload runs: {error}");
     }
     Plan {
         load: Vec::new(),

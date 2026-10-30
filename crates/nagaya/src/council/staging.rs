@@ -31,6 +31,11 @@ impl Staging {
                     ServiceError::ContextRefused(error)
                 }
                 ContextChargeError::Ledger(error) => ServiceError::internal(error.to_string()),
+                // The engine leaves the profile and drains, so it is not ready (spec 3.3a).
+                ContextChargeError::Leaving(engine) => ServiceError::Unavailable {
+                    engine,
+                    state: nagaya_telemetry::EngineState::Draining,
+                },
             })?;
         Ok(Self {
             ports: ports.clone(),
