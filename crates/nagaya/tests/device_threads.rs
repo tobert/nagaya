@@ -22,7 +22,8 @@ use nagaya_sched::{Class, Item};
 
 type Log = Arc<Mutex<Vec<String>>>;
 
-/// The gates that hold an open or a close until the test opens them, by `open:<name>` or `close:<name>`.
+/// The gates that hold a plan, an open or a close until the test opens them, by `plan:<name>`, `open:<name>` or
+/// `close:<name>`.
 type Gates = Arc<Mutex<BTreeMap<String, Receiver<()>>>>;
 
 /// Wait at the gate of `key`, when the test set one. Before the wait, write `waits:<key>` to the log.
@@ -139,7 +140,9 @@ struct Fakes(Log, Option<OpenErrorKind>, Gates);
 
 impl Factory for Fakes {
     fn plan(&self, config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
-        Ok(with_close(fake(config["name"].as_str().unwrap()).limits()))
+        let name = config["name"].as_str().unwrap();
+        wait_at(&self.2, &self.0, &format!("plan:{name}"));
+        Ok(with_close(fake(name).limits()))
     }
 
     fn open(&self, config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
@@ -625,6 +628,49 @@ fn a_load_on_card_0_does_not_delay_the_next_quantum_on_card_1() {
     process.submit_job(0, job).unwrap();
     done.recv_timeout(Duration::from_secs(5)).expect("the left job ran");
     assert_eq!(log_of(&log).last().unwrap(), "run:left@nagaya-dev-0-0");
+}
+
+/// A swap admits from the plans of the start, so a slow plan does not hold the group thread (spec 3.3, 3.3a). A plan
+/// of a real checkpoint takes about a second, and each swap check planned every engine of the profile.
+#[test]
+fn a_swap_on_card_0_plans_no_engine_and_card_1_runs_on() {
+    let directory = tempfile::tempdir().unwrap();
+    let gates = Gates::default();
+    let (mut process, log) = start_gated(
+        [Residency::OnDemand; 3],
+        1 << 20,
+        directory.path(),
+        None,
+        false,
+        Arc::clone(&gates),
+    );
+    assert!(process.wait_opens(Duration::from_secs(5)).unwrap().is_empty());
+    assert_eq!(load(&process, "right"), (Vec::new(), vec!["right".to_owned()]));
+    // From here, a plan of `chat` waits at its gate for 10 s. The test never opens it.
+    let (_never, gate) = mpsc::channel();
+    gates.lock().unwrap().insert("plan:chat".to_owned(), gate);
+    let (gate_tx, gate) = mpsc::channel();
+    let (job, started, held) = probe(RIGHT, &log, Some(gate));
+    process.submit_job(0, job).unwrap();
+    started
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the right job started");
+    let ports = process.ports();
+    std::thread::scope(|scope| {
+        let loading = scope.spawn(move || ports.load("left").unwrap());
+        std::thread::sleep(Duration::from_millis(200));
+        gate_tx.send(()).unwrap();
+        held.recv_timeout(Duration::from_secs(2))
+            .expect("the held right job ended while card 0 swapped");
+        right_runs_while_card_0_swaps(&process, &log);
+        loading.join().unwrap();
+    });
+    assert_eq!(swapped(&process), (Vec::new(), vec!["left".to_owned()]));
+    assert!(
+        !log_of(&log).iter().any(|line| line.starts_with("waits:plan")),
+        "a swap planned an engine: {:?}",
+        log_of(&log)
+    );
 }
 
 /// An unload of `left` closes it on the thread of card 0. A job of `right` runs while the close waits.

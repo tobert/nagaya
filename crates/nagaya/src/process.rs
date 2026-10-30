@@ -16,8 +16,8 @@ use nagaya_telemetry::{EngineState, Inherit};
 use tracing::Span;
 
 use crate::admission::{
-    AdmitError, Admitted, Factory, GroupDevice, OpenErrorKind, Registry, admit_loaded, admit_with_fd_ceiling,
-    check_with_fd_ceiling, group_devices,
+    AdmitError, Admitted, Factory, GroupDevice, OpenErrorKind, Planned, Registry, admit_loaded_planned, admit_planned,
+    check_with_fd_ceiling, group_devices, plan_all,
 };
 use crate::affinity::{pin_current_thread, set_batch_policy};
 use crate::arena::{ArenaSet, FdName, FdStore};
@@ -201,10 +201,11 @@ pub struct OwnedLedger {
     ledger: Ledger,
     owner: ThreadId,
     fd_ceiling: Option<usize>,
-    /// The profile that the ledger admitted last. A swap admits the loaded engines of it (spec 3.3a).
-    active: Option<PlacementProfile>,
     /// The names of the loaded engines of the active profile.
     loaded: BTreeSet<String>,
+    /// The plans of the engines of the profile that the ledger admitted last. A swap admits the loaded engines from
+    /// them, so it runs no plan (spec 3.3, 3.3a).
+    planned: Option<Planned>,
 }
 
 impl OwnedLedger {
@@ -220,8 +221,8 @@ impl OwnedLedger {
             ledger: Ledger::new(),
             owner: thread::current().id(),
             fd_ceiling,
-            active: None,
             loaded: BTreeSet::new(),
+            planned: None,
         }
     }
 
@@ -237,14 +238,15 @@ impl OwnedLedger {
             self.owner,
             "the ledger is written off its thread"
         );
-        let admitted = admit_with_fd_ceiling(profile, registry, inventory, &mut self.ledger, self.fd_ceiling)?;
+        let plans = plan_all(profile, registry, inventory, self.fd_ceiling)?;
+        let admitted = admit_planned(profile, &plans, &mut self.ledger, true)?;
+        self.planned = Some(plans);
         self.loaded = profile
             .engines
             .iter()
             .filter(|engine| engine.residency == Residency::Resident)
             .map(|engine| engine.name.clone())
             .collect();
-        self.active = Some(profile.clone());
         Ok(admitted)
     }
 
@@ -267,38 +269,26 @@ impl OwnedLedger {
     }
 
     /// Check whether a swap fits, and change nothing (spec 3.3a). Only the owner thread may call this.
-    pub fn check_swap(
-        &mut self,
-        load: &[String],
-        unload: &[String],
-        registry: &Registry,
-        inventory: &Inventory,
-    ) -> Result<(), AdmitError> {
+    pub fn check_swap(&mut self, load: &[String], unload: &[String]) -> Result<(), AdmitError> {
         self.check_owner();
-        let profile = self
-            .active
+        let plans = self
+            .planned
             .as_ref()
             .expect("a swap comes after the admission of a profile");
         let loaded = self.swapped(load, unload);
-        admit_loaded(profile, registry, inventory, &mut self.ledger, &loaded, false).map(|_| ())
+        admit_loaded_planned(plans, &mut self.ledger, &loaded, false).map(|_| ())
     }
 
     /// Admit the loaded engines after a swap (spec 3.3a). A refusal changes nothing. Only the owner thread may call
     /// this.
-    pub fn swap(
-        &mut self,
-        load: &[String],
-        unload: &[String],
-        registry: &Registry,
-        inventory: &Inventory,
-    ) -> Result<Admitted, AdmitError> {
+    pub fn swap(&mut self, load: &[String], unload: &[String]) -> Result<Admitted, AdmitError> {
         self.check_owner();
-        let profile = self
-            .active
-            .clone()
+        let plans = self
+            .planned
+            .as_ref()
             .expect("a swap comes after the admission of a profile");
         let loaded = self.swapped(load, unload);
-        let admitted = admit_loaded(&profile, registry, inventory, &mut self.ledger, &loaded, true)?;
+        let admitted = admit_loaded_planned(plans, &mut self.ledger, &loaded, true)?;
         self.loaded = loaded;
         Ok(admitted)
     }
@@ -332,8 +322,9 @@ impl OwnedLedger {
                 "engine `{name}` is loaded, and the new profile lacks it; retire it before the ledger takes the profile"
             );
         }
-        let admitted = admit_loaded(profile, registry, inventory, &mut self.ledger, &self.loaded, true)?;
-        self.active = Some(profile.clone());
+        let plans = plan_all(profile, registry, inventory, None)?;
+        let admitted = admit_loaded_planned(&plans, &mut self.ledger, &self.loaded, true)?;
+        self.planned = Some(plans);
         Ok(admitted)
     }
 
@@ -755,10 +746,10 @@ impl Start {
                             let _ = reply.send(ledger.ledger().unassigned());
                         }
                         LedgerMessage::CheckSwap { load, unload, reply } => {
-                            let _ = reply.send(ledger.check_swap(&load, &unload, &ledger_registry, &ledger_inventory));
+                            let _ = reply.send(ledger.check_swap(&load, &unload));
                         }
                         LedgerMessage::Swap { load, unload, reply } => {
-                            let _ = reply.send(ledger.swap(&load, &unload, &ledger_registry, &ledger_inventory));
+                            let _ = reply.send(ledger.swap(&load, &unload));
                         }
                         LedgerMessage::Loaded(reply) => {
                             let _ = reply.send(ledger.loaded.clone());
