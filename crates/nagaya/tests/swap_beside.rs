@@ -18,8 +18,8 @@ use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, Residency, 
 use nagaya::signal::SignalFlag;
 use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{
-    Capability, Engine, Identity, Kind, Limits, OutputsWanted, PassError, PassOut, Segment, SegmentInputs, Stages,
-    State, Tap, Tier,
+    Capability, Engine, Identity, Kind, Limits, OutputsWanted, PassError, PassOut, Residual, Segment, SegmentInputs,
+    StageHandle, StageOut, Stages, State, Tap, Tier,
 };
 use nagaya_sched::{Class, Item};
 
@@ -73,16 +73,71 @@ impl Engine for Closing {
     }
 
     fn stages(&mut self) -> Option<&mut dyn Stages> {
+        if self.name == "slow" {
+            self.inner.stages()?;
+            return Some(self);
+        }
         self.inner.stages()
     }
 }
 
-/// `chat` and `paint` are fakes of two stages on devices 0 and 1. `voice` and `draw` are plain fakes on device 1.
+/// The engine `slow` gives stage handles that take 200 ms to drop, and write `drop:slow:<stage>` after it.
+impl Stages for Closing {
+    fn take_handles(&mut self) -> Vec<Box<dyn StageHandle + Send>> {
+        let handles = self.inner.stages().expect("the fake has stages").take_handles();
+        handles
+            .into_iter()
+            .enumerate()
+            .map(|(stage, inner)| {
+                Box::new(SlowDrop {
+                    inner,
+                    label: format!("drop:{}:{stage}", self.name),
+                    log: Arc::clone(&self.log),
+                }) as Box<dyn StageHandle + Send>
+            })
+            .collect()
+    }
+}
+
+/// A stage handle whose drop is slow, as a drop that frees device memory is.
+struct SlowDrop {
+    inner: Box<dyn StageHandle + Send>,
+    label: String,
+    log: Log,
+}
+
+impl Drop for SlowDrop {
+    fn drop(&mut self) {
+        std::thread::sleep(Duration::from_millis(200));
+        self.log.lock().unwrap().push(self.label.clone());
+    }
+}
+
+impl StageHandle for SlowDrop {
+    fn stage_pass(&mut self, segments: &[Segment], residual: &mut Residual) -> Result<StageOut, PassError> {
+        self.inner.stage_pass(segments, residual)
+    }
+
+    fn parts(&mut self) -> Option<&mut dyn nagaya_abi::Parts> {
+        self.inner.parts()
+    }
+
+    fn slots(&mut self) -> Option<&mut dyn nagaya_abi::Slots> {
+        self.inner.slots()
+    }
+
+    fn coverage(&mut self) -> Option<&mut dyn nagaya_abi::Coverage> {
+        self.inner.coverage()
+    }
+}
+
+/// `chat`, `paint` and `slow` are fakes of two stages on devices 0 and 1. `voice` and `draw` are plain fakes on device
+/// 1.
 struct Pair(Log);
 
 fn fake(name: &str) -> Box<dyn Engine + Send> {
     match name {
-        "chat" | "paint" => Box::new(feed_support::engine(2)),
+        "chat" | "paint" | "slow" => Box::new(feed_support::engine(2)),
         "voice" | "draw" => Box::new(FakeAlways::new()),
         other => panic!("no fake named {other}"),
     }
@@ -774,4 +829,33 @@ fn a_steady_stream_on_a_pinned_engine_does_not_hold_off_a_swap_of_the_engine_wit
             .recv_timeout(Duration::from_secs(5))
             .unwrap_or_else(|_| panic!("job {job} of {sent} of the stream did not run"));
     }
+}
+
+/// The detach of an engine with stages waits until each stage handle drops, so its device memory is free before the
+/// next open (spec 3.3a). The handles of `slow` take 200 ms each to drop.
+#[test]
+fn the_next_open_waits_for_the_drop_of_each_stage_handle() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start_with(
+        directory.path(),
+        &[
+            engine("slow", vec![0, 1], Residency::Resident),
+            engine("paint", vec![0, 1], Residency::OnDemand),
+        ],
+    );
+    process.load_with("paint", &["slow".to_owned()]).unwrap();
+    assert_eq!(
+        swapped(&process, Duration::from_secs(5)),
+        (vec!["slow".to_owned()], vec!["paint".to_owned()])
+    );
+    let lines = log_of(&log);
+    let at = |line: &str| {
+        lines
+            .iter()
+            .position(|entry| entry == line)
+            .unwrap_or_else(|| panic!("no `{line}`: {lines:?}"))
+    };
+    let open = at("open:paint@nagaya-group-0");
+    assert!(at("drop:slow:0") < open, "{lines:?}");
+    assert!(at("drop:slow:1") < open, "{lines:?}");
 }
