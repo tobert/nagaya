@@ -630,6 +630,10 @@ exactly right. the kaijutsu management agents will use the api and tools to mana
   stages that does not fit is a 409, as for any load.
 - The group thread opens and closes the engine with stages. It waits until the group holds no job, and the jobs of
   the other engines wait during the open. Reason: the scheduler of the group runs on that thread.
+- While such a swap waits, a new job of an engine that stays waits too. It runs after the swap, and it never fails
+  for the swap. Thus the jobs in flight end, and a steady stream of jobs cannot hold off the swap. **Proposed** by
+  Claude Opus 5.5, 2026-10-30. Reason: a review found that steady embeddings kept the group busy, so a load of Gemma
+  4 never ran.
 - Reason: on 2026-10-30 on b70host, a load of an image engine that named Gemma 4 moved the pinned EmbeddingGemma 2.
   It was not ready for 8 s. The swap back to Gemma 4 unloaded it, and nothing loaded it again until a restart.
 - A resident engine can share a device group with a resident engine with stages. At start, it loads beside that
