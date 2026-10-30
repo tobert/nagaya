@@ -3281,6 +3281,95 @@ interview). Nothing here is built now.
   latent up and runs img2img steps on it. Each is one more quantum of kind `step`.
 - The engine calls (engine-abi "Image") take these inputs as optional members. Thus each one adds members and no call.
 
+**11.9b Image inputs.** Amy decided these rules on 2026-10-30, by interview (`AGENTS.md` milestone 20). Milestone 20
+builds img2img and inpainting from "The design of later image work" (11.9a).
+
+- The image and the mask are object parts of the request.
+- The blend of the latent works with any checkpoint. An inpainting UNet with 9 input channels, such as diffusers'
+  `stable-diffusion-xl-1.0-inpainting-0.1`, loads as other weights.
+- With no size in the request, the input image sets it. An image that breaks the size rules is a 400 that names the
+  part. A request size that does not match the image is a 400 too.
+
+The notes below fill the choices that these rules leave open. Each one follows diffusers 0.42.1, the version of the
+oracle, unless it says otherwise. `img2img.py` is its `pipeline_stable_diffusion_xl_img2img.py`, and `inpaint.py` is
+its `pipeline_stable_diffusion_xl_inpaint.py`. `image_processor.py`, `vae.py` and the schedulers are files of the same
+package. The venv `~/.venvs/sdxl-ref` holds it.
+
+**The request.** **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: the family, the route and the oracle need the
+names, the ranges and the errors before they can test them.
+
+- The object parts of the last `user` message are the inputs. The first is the image, and the second is the mask.
+  Each has the `mime` `image/png`. A third object part is a 400 that names it, such as `messages[0].content[3]`.
+- The text parts of the last `user` message, joined in order, are the prompt.
+- The other messages are checked by the rules of gogi's council API ("A server checks each object part"). The server
+  does not read their objects, as it does not render their text.
+- A job with an image and no mask is img2img. A job with an image and a mask is inpainting.
+- The served image model lists `media.inputs` as `["image/png"]`. This replaces "no inputs" of "The served image
+  model" (11.9a). Reason: gogi refuses an object part of a media type that `media.inputs` does not list.
+- `usage.media.read` counts the image and the mask, as for any object that a request reads.
+
+`output.options` takes two more members. The rules of 11.9a for a member out of range stay.
+
+| Member | Range | Default |
+|---|---|---|
+| `strength` | above 0.0, at most 1.0 | 0.75 for img2img; 0.99 for inpainting |
+| `mask_blur` | an integer from 0 to 64, in pixels | 4 |
+
+- `strength` without an image is a 400 that names `output.options.strength`. `mask_blur` without a mask is a 400 that
+  names `output.options.mask_blur`. Reason: an option with no effect hides a fault of the client.
+- 0.75 and 4 are A1111's defaults for img2img. 0.99 is below 1.0, as diffusers' default of 0.9999 for inpainting is
+  (`inpaint.py:1092`). Thus the start latent of an inpainting job keeps a trace of the image.
+- `count`, `seed`, `loras`, `cfg`, `sampler` and `clip_skip` work with an image as without one. Image `i` still uses
+  the seed plus `i`.
+
+**The size of a job with an image.** **Proposed** by Claude Opus 5.5, 2026-10-30, for Amy's rules above. Reason: a
+resize would change the pixels that the client sent, and it would move the edge of the mask.
+
+- The image sets the width and the height. A request with no `width` and no `height` takes the size of the image.
+- The image must keep the size rules of 11.9a: multiples of 64 from 512 to 2048, with at most 1,572,864 pixels. An
+  image that breaks them is a 400 that names its part, and the message gives its size.
+- A `width` or a `height` that differs from the image is a 400 that names that member, such as
+  `output.options.width`.
+- A mask of another size than the image is a 400 that names the part of the mask.
+- The nagaya never resizes an input. diffusers resizes the image and the mask to the job size
+  (`inpaint.py:1440-1447`), so the oracle gives inputs of the job size.
+
+**The input PNG.** **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: the route decodes each input before the job
+starts, so a bad input is a 400, not a failed job.
+
+- An input is a PNG with 8 bits in each channel: gray, gray with alpha, RGB, RGBA, or a palette. Other bytes, or 16
+  bits in a channel, are a 400 that names the part. Reason: Pillow reads 16 bits in another mode, and the oracle has
+  no such case.
+- The nagaya ignores an alpha channel, as Pillow's `convert("RGB")` does (`image_processor.py:250`). diffusers takes
+  an RGB image.
+- Each channel `v` of the image becomes `2 * v / 255 - 1` in f32 (`image_processor.py:167` and `:220`).
+
+**The schedule of a job with an image.** **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: diffusers and A1111
+both run the last part of the schedule, and the oracle compares each step.
+
+- The sampler makes its schedule of `steps` timesteps as before. It runs only the last `n` of them, with
+  `n = floor(steps * strength)` in f64 (`img2img.py:652-659`, `inpaint.py:913`).
+- Python computes `int(num_inference_steps * strength)` in f64. Thus `steps` 30 and `strength` 0.7 run 20 steps, not
+  21. The nagaya computes `n` in the same way, so it runs the same steps.
+- An `n` of 0 is a 400 that names `output.options.strength`. diffusers refuses it too (`inpaint.py:1421-1424`).
+- The history of a DPM++ sampler starts empty at the first step that runs. Each of the four samplers has `order` 1 in
+  diffusers, and `set_begin_index` starts it there (`img2img.py:655-657`).
+- The start latent of img2img is the image latent with the noise of the first timestep that runs. The scheduler's
+  `add_noise` gives it, at a strength of 1.0 too (`img2img.py:764-768`).
+- An inpainting job with a strength of exactly 1.0 starts from the noise times `init_noise_sigma`, as text to image
+  does (`inpaint.py:813-815`). With less strength, it starts as img2img does.
+- `add_noise` of Euler and Euler a is `x + sigma * noise` (`scheduling_euler_discrete.py:847`,
+  `scheduling_euler_ancestral_discrete.py:524`). That of the DPM++ samplers is `alpha_t * x + sigma_t * noise`
+  (`scheduling_dpmsolver_multistep.py:1349`).
+
+**Steps and the A1111 chunk of a job with an image.** **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: gogi says
+that `step` rises by 1 up to `of` (council API, "Steps and previews"), and A1111 tools read the chunk by its keys.
+
+- `progress.of` is `n`, the count of steps that run. This changes "`of` is the step count of the request" of 11.9a
+  for a job with an image.
+- `Steps` in the A1111 chunk stays the `steps` of the request, as A1111 writes it.
+- The chunk adds `Denoising strength: <strength>` after `Clip skip`. With a mask, it then adds `Mask blur: <n>`.
+
 **11.10 Embeddings.** Amy decided these rules on 2026-10-30, by interview (`AGENTS.md` milestone 19). gogi's contract
 is "Embeddings" in gogi `docs/council-api.md`, at gogi `6db7e98`.
 
