@@ -1,6 +1,7 @@
 //! The device memory that the engine owns on its card.
 
 use std::ffi::c_void;
+use std::time::{Duration, Instant};
 
 use nagaya_mk_bmg::level_zero::B70Card;
 
@@ -15,6 +16,18 @@ pub struct Device {
     staging: *mut u8,
     /// The device bytes that the engine allocated.
     pub bytes: usize,
+    /// The time in the allocations, the zero fills and the copies, for the log of an open.
+    spent: Spent,
+}
+
+/// The time of the device calls of an upload.
+#[derive(Default)]
+struct Spent {
+    allocs: usize,
+    alloc: Duration,
+    fill: Duration,
+    copies: usize,
+    copy: Duration,
 }
 
 impl Device {
@@ -23,14 +36,20 @@ impl Device {
             allocs: Vec::new(),
             staging: card.alloc_host_usm::<u8>(STAGING_BYTES),
             bytes: 0,
+            spent: Spent::default(),
         }
     }
 
     /// Device memory of `bytes` bytes, filled with zeros.
     pub fn zeros(&mut self, card: &B70Card, bytes: usize) -> u64 {
         let bytes = crate::model::rounded(bytes);
+        let at = Instant::now();
         let ptr = card.alloc_device_usm::<u8>(bytes) as *mut c_void;
+        let filled = Instant::now();
         card.fill_zero_sync(ptr, bytes);
+        self.spent.allocs += 1;
+        self.spent.alloc += filled - at;
+        self.spent.fill += filled.elapsed();
         self.allocs.push((ptr, bytes));
         self.bytes += bytes;
         ptr as u64
@@ -54,6 +73,33 @@ impl Device {
     pub fn upload(&mut self, card: &B70Card, data: &[u8]) -> u64 {
         let at = self.zeros(card, data.len());
         self.write(card, at, data);
+        at
+    }
+
+    /// The time of the allocations, fills and copies so far, for the log of an open.
+    pub fn times(&self) -> String {
+        let Spent {
+            allocs,
+            alloc,
+            fill,
+            copies,
+            copy,
+        } = &self.spent;
+        format!(
+            "{allocs} allocations in {} ms, their fills in {} ms, {copies} copies in {} ms",
+            alloc.as_millis(),
+            fill.as_millis(),
+            copy.as_millis()
+        )
+    }
+
+    /// Device memory that holds `data`, with the time of its copy in the log of an open.
+    fn upload_timed(&mut self, card: &B70Card, data: &[u8]) -> u64 {
+        let at = self.zeros(card, data.len());
+        let started = Instant::now();
+        self.write(card, at, data);
+        self.spent.copies += data.len().div_ceil(STAGING_BYTES);
+        self.spent.copy += started.elapsed();
         at
     }
 
@@ -106,7 +152,7 @@ pub struct OnCard<'a> {
 
 impl Upload for OnCard<'_> {
     fn upload(&mut self, data: &[u8]) -> u64 {
-        self.device.upload(self.card, data)
+        self.device.upload_timed(self.card, data)
     }
 
     fn writes(&self) -> bool {

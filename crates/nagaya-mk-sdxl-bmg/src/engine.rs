@@ -73,6 +73,42 @@ fn refused(message: String) -> PassError {
 }
 
 /// The BLAKE3 digest of the files of the checkpoint that the engine reads.
+/// The phases of an open, written to stderr when `NAGAYA_OPEN_TIMES` is `1`. Each line has the wall clock in ms since
+/// the Unix epoch, so it lines up with the work of another card.
+struct Phases {
+    on: bool,
+    pci: String,
+    last: std::time::Instant,
+}
+
+impl Phases {
+    fn new(pci: &str) -> Self {
+        let phases = Self {
+            on: std::env::var("NAGAYA_OPEN_TIMES").is_ok_and(|value| value == "1"),
+            pci: pci.to_owned(),
+            last: std::time::Instant::now(),
+        };
+        phases.write("open starts", 0);
+        phases
+    }
+
+    /// Write the end of a phase and its time.
+    fn mark(&mut self, phase: &str) {
+        let ms = self.last.elapsed().as_millis();
+        self.last = std::time::Instant::now();
+        self.write(phase, ms);
+    }
+
+    fn write(&self, phase: &str, ms: u128) {
+        if self.on {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| since.as_millis());
+            eprintln!("sdxl open {} at {now} ms: {phase} took {ms} ms", self.pci);
+        }
+    }
+}
+
 fn checkpoint_digest(config: &Config) -> Result<String, String> {
     let mut all = blake3::Hasher::new();
     for (_, path) in sources(config)? {
@@ -172,6 +208,7 @@ impl SdxlEngine {
 
     /// Open the card at the PCI address `pci`, and upload the checkpoint of `config`.
     pub fn open(config: Config, pci: &str) -> Result<Self, String> {
+        let mut phases = Phases::new(pci);
         let dir = config.model_dir.clone();
         let mut tokenizer = Vec::new();
         for name in ["tokenizer/vocab.json", "tokenizer/merges.txt"] {
@@ -179,7 +216,9 @@ impl SdxlEngine {
             tokenizer.extend(std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?);
         }
         let tokenizer_hash = format!("blake3:{}", blake3::hash(&tokenizer).to_hex());
+        phases.mark("tokenizer");
         let checkpoint_digest = checkpoint_digest(&config)?;
+        phases.mark("checkpoint digest");
         // A single file names the model; a folder is SDXL base.
         let model = match &config.checkpoint {
             Some(file) => file
@@ -194,8 +233,10 @@ impl SdxlEngine {
         let cluster = L0Cluster::init_at(SDXL_KERNEL, KERNEL_ENTRY, &[pci.to_owned()])?;
         let card = &cluster.cards[0];
         let driver = cluster.driver_version();
+        phases.mark("level zero init");
 
         let mut device = Device::new(card);
+        phases.mark("staging buffer");
         let weights = Weights::load(
             &config,
             &mut OnCard {
@@ -203,17 +244,21 @@ impl SdxlEngine {
                 card,
             },
         )?;
+        phases.mark(&format!("weights: {}", device.times()));
         // The plan checked the graphs at the admission; this checks them again for a file that changed since.
         model::check(&weights)?;
+        phases.mark("graph check");
         let weights_bytes = device.bytes as u64;
         let arena = arena_bytes();
         let at = device.zeros(card, arena as usize);
+        phases.mark("arena");
         let mut carve = Carve::new(at, arena);
         let text = TextBufs::carve(&mut carve, 2 * MAX_CHUNKS);
         let (mut unet_carve, mut vae_carve) = (carve, carve);
         let unet = UnetBufs::carve(&mut unet_carve, MAX_IMAGES, MAX_LATENT_ROWS, MAX_CHUNKS * CHUNK_IDS);
         let vae = VaeBufs::carve(&mut vae_carve, MAX_IMAGE_PIXELS);
         let ring = Ring::new(card, 1);
+        phases.mark("ring");
 
         let mut numbers = BTreeMap::new();
         numbers.insert(
