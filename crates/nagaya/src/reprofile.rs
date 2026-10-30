@@ -244,25 +244,36 @@ impl Changer {
         );
         if !change.restart {
             self.applying.store(true, Ordering::SeqCst);
-            let ports = process.ports();
-            let applying = Arc::clone(&self.applying);
             let in_place = change.clone();
-            // The change logs to the subscriber of the main loop, so a test that reads the log sees it too.
-            let dispatch = tracing::dispatcher::get_default(tracing::Dispatch::clone);
-            std::thread::Builder::new()
-                .name("nagaya-reprofile".to_owned())
-                .spawn(move || {
-                    tracing::dispatcher::with_default(&dispatch, || {
-                        // A panic of the change stops the process (spec 8.5). Else every later PUT and load stays
-                        // busy.
-                        ports.guard("nagaya-reprofile", || apply(&ports, &profile, &in_place));
-                    });
-                    applying.store(false, Ordering::SeqCst);
-                })
-                .expect("cannot start the thread of a profile change");
+            spawn_change(process.ports(), Arc::clone(&self.applying), move |ports| {
+                apply(ports, &profile, &in_place)
+            });
         }
         Ok(PutAnswer::Accepted(change))
     }
+}
+
+/// Run `change` on the thread `nagaya-reprofile`, and set `applying` false at its end. The change logs to the
+/// subscriber of the caller, so a test that reads the log sees it too.
+fn spawn_change(ports: Ports, applying: Arc<AtomicBool>, change: impl FnOnce(&Ports) + Send + 'static) {
+    let dispatch = tracing::dispatcher::get_default(tracing::Dispatch::clone);
+    std::thread::Builder::new()
+        .name("nagaya-reprofile".to_owned())
+        .spawn(move || {
+            tracing::dispatcher::with_default(&dispatch, || {
+                // A panic of the change stops the process (spec 8.5). Else every later PUT and load stays busy.
+                ports.guard("nagaya-reprofile", || change(&ports));
+            });
+            applying.store(false, Ordering::SeqCst);
+        })
+        .expect("cannot start the thread of a profile change");
+}
+
+/// Run `change` on the thread of a change in place, as [`Changer::tick`] does. Only the `fake` feature builds this
+/// function, so a test can give a change that panics.
+#[cfg(feature = "fake")]
+pub fn spawn_test_change(ports: Ports, applying: Arc<AtomicBool>, change: impl FnOnce(&Ports) + Send + 'static) {
+    spawn_change(ports, applying, change);
 }
 
 /// Run a change in place (spec 3.3): retire the engines that are gone, wait until the ledger counts them unloaded,

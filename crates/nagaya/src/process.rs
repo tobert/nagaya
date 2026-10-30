@@ -2062,7 +2062,6 @@ impl Ports {
         answer.recv().ok()
     }
 
-    /// Record a failure outside a call. The process must stop (spec 8.5). The first failure stays.
     /// Run `body`, and stop the process when it panics (spec 8.5). A thread outside the group threads uses it.
     pub fn guard(&self, thread: &str, body: impl FnOnce()) {
         if let Err(payload) = catch_unwind(AssertUnwindSafe(body)) {
@@ -2073,6 +2072,7 @@ impl Ports {
         }
     }
 
+    /// Record a failure outside a call. The process must stop (spec 8.5). The first failure stays.
     pub fn fail(&self, message: String) {
         let mut failure = self.failure.lock().expect("the failure lock is poisoned");
         if failure.is_none() {

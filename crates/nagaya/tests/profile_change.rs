@@ -600,3 +600,27 @@ fn a_change_that_waits_names_the_wait_once_in_the_log() {
         "{lines:#?}"
     );
 }
+
+/// A panic of a change in place stops the process (spec 8.5), and the change ends. Else the change stayed open, and
+/// every later PUT and load stayed busy.
+#[test]
+fn a_panic_of_a_change_in_place_stops_the_process_and_ends_the_change() {
+    let main = Main::new();
+    let ports = main.process.ports();
+    let applying = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    nagaya::reprofile::spawn_test_change(ports.clone(), Arc::clone(&applying), |_| {
+        panic!("a test panic in the change")
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while applying.load(std::sync::atomic::Ordering::SeqCst) {
+        assert!(
+            Instant::now() < deadline,
+            "the change did not end in 5 s after its panic"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        ports.failure().as_deref(),
+        Some("the thread nagaya-reprofile panicked: a test panic in the change")
+    );
+}
