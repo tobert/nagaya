@@ -104,13 +104,15 @@ pub(super) enum Exit {
     Swap(Plan),
 }
 
-/// Ask the ledger thread whether a swap fits. It changes nothing.
-fn check(ledger: &Sender<LedgerMessage>, load: Vec<String>, unload: Vec<String>) -> Result<(), AdmitError> {
+/// Give a swap to the ledger thread when the group plans it, before any engine unloads (spec 3.3a). A refusal changes
+/// nothing. The ledger then counts each later charge against the engines after the swap, so no charge can refuse the
+/// swap after its unload.
+pub(super) fn take(ledger: &Sender<LedgerMessage>, load: Vec<String>, unload: Vec<String>) -> Result<(), AdmitError> {
     let (reply, answer) = mpsc::channel();
     ledger
-        .send(LedgerMessage::CheckSwap { load, unload, reply })
+        .send(LedgerMessage::Swap { load, unload, reply })
         .expect("the ledger thread stopped");
-    answer.recv().expect("the ledger thread stopped")
+    answer.recv().expect("the ledger thread stopped").map(|_| ())
 }
 
 /// Plan the swap that loads `target` after it unloads the engines of `named` (spec 3.3a, "Explicit layout").
@@ -164,7 +166,7 @@ pub(super) fn plan(
             });
         }
     }
-    match check(ledger, vec![name(&target)], unload.iter().map(name).collect()) {
+    match take(ledger, vec![name(&target)], unload.iter().map(name).collect()) {
         Ok(()) => Ok(Plan {
             load: vec![target],
             unload,
@@ -197,7 +199,6 @@ pub(super) fn plan(
 pub(super) struct SwapLinks<'a> {
     pub(super) events: &'a Sender<Event>,
     pub(super) heartbeats: &'a Sender<WatchMessage>,
-    pub(super) ledger: &'a Sender<LedgerMessage>,
     pub(super) store: Option<&'a Sender<StoreMessage>>,
     pub(super) fd_store: Option<&'a FdStore>,
     pub(super) states: &'a EngineStates,
@@ -243,18 +244,7 @@ pub(super) fn swap(
         }
     }
     span.record("unload_ms", started.elapsed().as_millis() as u64);
-    let (reply, answer) = mpsc::channel();
-    links
-        .ledger
-        .send(LedgerMessage::Swap {
-            load: loading.clone(),
-            unload: unloaded.clone(),
-            reply,
-        })
-        .expect("the ledger thread stopped");
-    if let Err(error) = answer.recv().expect("the ledger thread stopped") {
-        panic!("the ledger refused the swap to {}: {error}", loading.join(", "));
-    }
+    // The ledger took the swap when the group planned it (`take`).
     let opening = Instant::now();
     let mut loaded = Vec::with_capacity(plan.load.len());
     for &index in &plan.load {

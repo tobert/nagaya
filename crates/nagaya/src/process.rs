@@ -759,9 +759,6 @@ impl Start {
                         LedgerMessage::Unassigned(reply) => {
                             let _ = reply.send(ledger.ledger().unassigned());
                         }
-                        LedgerMessage::CheckSwap { load, unload, reply } => {
-                            let _ = reply.send(ledger.check_swap(&load, &unload));
-                        }
                         LedgerMessage::Swap { load, unload, reply } => {
                             let _ = reply.send(ledger.swap(&load, &unload));
                         }
@@ -1171,7 +1168,6 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
                 let swap_links = in_place::SwapLinks {
                     events: &links.events,
                     heartbeats: &links.heartbeats,
-                    ledger: &links.ledger,
                     store: links.store.as_ref(),
                     fd_store: links.fd_store.as_ref(),
                     states: &links.states,
@@ -1527,13 +1523,7 @@ enum LedgerMessage {
     ReleaseStaging(Tier, u64, Sender<Result<(), LedgerError>>),
     /// Read the unassigned bytes of each budget.
     Unassigned(Sender<Vec<(Vec<Tier>, u64)>>),
-    /// Check whether a swap fits, with no change (spec 3.3a).
-    CheckSwap {
-        load: Vec<String>,
-        unload: Vec<String>,
-        reply: Sender<Result<(), AdmitError>>,
-    },
-    /// Admit the loaded engines after a swap (spec 3.3a).
+    /// Admit the loaded engines after a swap, when the group plans it (spec 3.3a). A refusal changes nothing.
     Swap {
         load: Vec<String>,
         unload: Vec<String>,

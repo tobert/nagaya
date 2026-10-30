@@ -68,13 +68,15 @@ impl Engine for Counted {
     }
 }
 
-fn counted_limits() -> Limits {
+/// The limits of an engine whose weights take `bytes` of the config, or 600 bytes.
+fn counted_limits(config: &toml::Table) -> Limits {
+    let bytes = config.get("bytes").and_then(toml::Value::as_integer).unwrap_or(600) as u64;
     let mut limits = FakeAlways::new().limits();
     limits.capabilities.push(Capability::Close);
     limits.memory.mandatory = vec![MandatoryTerm {
         name: "weights".to_owned(),
         tier: Tier::Device(0),
-        bytes: 600,
+        bytes,
         lifetime: Lifetime::Engine,
         kinds: Vec::new(),
     }];
@@ -85,8 +87,8 @@ fn counted_limits() -> Limits {
 struct CountedFactory(Log);
 
 impl Factory for CountedFactory {
-    fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
-        Ok(counted_limits())
+    fn plan(&self, config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
+        Ok(counted_limits(config))
     }
 
     fn open(&self, config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
@@ -95,7 +97,7 @@ impl Factory for CountedFactory {
         Ok(Box::new(Counted {
             inner: FakeAlways::new(),
             name,
-            limits: counted_limits(),
+            limits: counted_limits(config),
             log: Arc::clone(&self.0),
         }))
     }
@@ -120,14 +122,20 @@ fn engine(name: &str, residency: Residency) -> EnginePlacement {
 /// A resident engine `chat` and an on-demand engine `voice` on one device. With 1000 device bytes they do not fit
 /// together, so a load of one unloads the other.
 fn start(directory: &std::path::Path) -> (Process, Log) {
+    start_sized(directory, 600)
+}
+
+/// As [`start`], with weights of `voice_bytes` for `voice`.
+fn start_sized(directory: &std::path::Path, voice_bytes: i64) -> (Process, Log) {
     let log: Log = Arc::default();
     let mut registry = Registry::new();
     registry.register("counted", Box::new(CountedFactory(Arc::clone(&log))));
+    let mut voice = engine("voice", Residency::OnDemand);
+    voice
+        .config
+        .insert("bytes".to_owned(), toml::Value::Integer(voice_bytes));
     let profile = PlacementProfile {
-        engines: vec![
-            engine("chat", Residency::Resident),
-            engine("voice", Residency::OnDemand),
-        ],
+        engines: vec![engine("chat", Residency::Resident), voice],
         budgets: vec![
             BudgetSpec {
                 tiers: vec![TierSpec::from(Tier::Device(0))],
@@ -447,6 +455,27 @@ fn a_job_for_an_engine_that_a_planned_swap_unloads_ends_as_unavailable() {
     assert_eq!(held.recv_timeout(Duration::from_secs(5)).unwrap(), "ran");
     assert_eq!(swapped(&process), (names(&["chat"]), names(&["voice"])));
     assert_eq!(log_of(&log), ["open:chat", "run:chat", "close:chat", "open:voice"]);
+}
+
+/// The ledger takes a swap when the group plans it, before any unload (spec 3.3a). A charge between the plan and the
+/// swap is checked against the engines after the swap, so it cannot make the swap fail after its unload. Before, the
+/// swap asked the ledger after the unload, and a refusal there stopped the process.
+#[test]
+fn a_charge_while_a_swap_waits_cannot_refuse_the_swap_after_its_unload() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start_sized(directory.path(), 700);
+    let (gate, held) = hold_chat(&process, &log);
+    process.load_with("voice", &["chat".to_owned()]).unwrap();
+    // 600 bytes of chat and 350 of staging fit in 1000 now, and 700 bytes of voice and 350 of staging do not.
+    let ports = process.ports();
+    assert!(
+        ports.admit_staging("chat", Tier::Device(0), 350).is_err(),
+        "the ledger counts the planned swap, so the staging does not fit"
+    );
+    gate.send(()).unwrap();
+    assert_eq!(held.recv_timeout(Duration::from_secs(5)).unwrap(), "ran");
+    assert_eq!(swapped(&process), (names(&["chat"]), names(&["voice"])));
+    assert_eq!(ports.engine_state("voice"), Some(EngineState::Ready));
 }
 
 #[test]

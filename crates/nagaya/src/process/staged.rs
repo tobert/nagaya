@@ -38,8 +38,8 @@ use tracing::Span;
 use super::in_place::{self, Exit, Member, Plan, Unloaded};
 use super::loads::{self, Ask};
 use super::{
-    Event, GroupJob, GroupLinks, GroupMessage, LedgerMessage, OpenBeat, OpenedEngine, ParkProgress, ParkReport,
-    WatchMessage, guard, handoff, park, park_group, pin, spawn_named,
+    Event, GroupJob, GroupLinks, GroupMessage, OpenBeat, OpenedEngine, ParkProgress, ParkReport, WatchMessage, guard,
+    handoff, park, park_group, pin, spawn_named,
 };
 use crate::arena::FdStore;
 use crate::evidence::{self, Machine, Watch};
@@ -1461,9 +1461,9 @@ fn open_hosted(
 /// A swap that runs on the stage or device threads while the group thread serves (spec 3.3a, "Single-card swaps").
 /// It keeps the engine with stages, when one is loaded (engine-abi "How a group loads both").
 ///
-/// Each unload goes to the thread of its device. When every unload ended, the group asks the ledger for the swap, on
-/// its one thread. Then each open goes to the thread of its device. A failure is a crash (spec 8.5). The group starts
-/// no other swap until this one ends, so the ledger sees the swaps in order.
+/// The ledger took the swap when the group planned it. Each unload goes to the thread of its device. When every unload
+/// ended, each open goes to the thread of its device. A failure is a crash (spec 8.5). The group starts no other swap
+/// until this one ends, so the ledger sees the swaps in order.
 struct Swapping {
     group: usize,
     plan: Plan,
@@ -1575,7 +1575,7 @@ impl Swapping {
         }
         if self.opening.is_none() {
             self.span.record("unload_ms", self.started.elapsed().as_millis() as u64);
-            self.admit(members, links);
+            // The ledger took the swap when the group planned it (`in_place::take`).
             self.opening = Some(Instant::now());
             for &member in &self.plan.load {
                 let stage = *self.stages.get(&member).unwrap_or_else(|| {
@@ -1593,24 +1593,6 @@ impl Swapping {
         }
         self.end(members, links);
         None
-    }
-
-    /// Ask the ledger for the swap. A refusal is a crash (spec 8.5): the plan fit when the group made it.
-    fn admit(&self, members: &[Member], links: &GroupLinks) {
-        let name = |index: &usize| members[*index].name().to_owned();
-        let (reply, answer) = mpsc::channel();
-        let loading: Vec<String> = self.plan.load.iter().map(name).collect();
-        links
-            .ledger
-            .send(LedgerMessage::Swap {
-                load: loading.clone(),
-                unload: self.plan.unload.iter().map(name).collect(),
-                reply,
-            })
-            .expect("the ledger thread stopped");
-        if let Err(error) = answer.recv().expect("the ledger thread stopped") {
-            panic!("the ledger refused the swap to {}: {error}", loading.join(", "));
-        }
     }
 
     /// Report the swap, with the engines that opened in the order of the plan.
