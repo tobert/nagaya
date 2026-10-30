@@ -84,6 +84,12 @@
 #define OP_ATTN_PREP        69
 #define OP_ATTN_XMX         70
 #endif
+#ifdef MK_EMBEDDINGGEMMA2
+// The ops of the embedding engine (embeddinggemma2_ops.cl); must match src/protocol.rs.
+#define OP_BIATTN           80
+#define OP_GELU_MUL         81
+#define OP_SCALE            82
+#endif
 #define NUM_EXPERTS         128
 #define TOP_K               8
 #define XMX_TOKENS          32  // tokens per XMX work item: four dpas tiles of 8 rows
@@ -159,8 +165,8 @@ inline float4 bf16x4_to_f32(ushort4 w) {
     return (float4)(bf16_to_f32(w.s0), bf16_to_f32(w.s1), bf16_to_f32(w.s2), bf16_to_f32(w.s3));
 }
 
-#ifdef MK_QWEN3TTS
-// The GLU of the speech build is SwiGLU (Qwen3): silu(gate) * up.
+#if defined(MK_QWEN3TTS) && !defined(MK_EMBEDDINGGEMMA2)
+// The GLU of the speech build is SwiGLU (Qwen3): silu(gate) * up. The embedding build keeps GeGLU.
 #define GLU_ACT(X) ((X) / (1.0f + exp(-(X))))
 #else
 #define GLU_ACT(X) gelu_tanh(X)
@@ -1393,6 +1399,9 @@ __kernel void mk_persistent_interpreter(
 #endif
 #ifdef MK_SDXL
 #include "sdxl_ops.cl"
+#endif
+#ifdef MK_EMBEDDINGGEMMA2
+#include "embeddinggemma2_ops.cl"
 #endif
         else if (op == OP_MEAN_POOL_L2) {
             // c[0..k) = L2-normalized mean of the first k columns of n rows with stride m.

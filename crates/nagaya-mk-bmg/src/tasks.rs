@@ -702,3 +702,74 @@ pub fn attn_xmx(q: u64, planes: u64, y: u64, images: u32, nq: u32, nk: u32, head
         ..task(OP_ATTN_XMX)
     }
 }
+
+// The ops of the embedding binary (`kernels/embeddinggemma2_ops.cl`).
+
+/// Attention in both directions over `n` tokens: `heads` query heads share `kv_heads` key and value heads of `d`
+/// values. `window` 0 gives every key; else the keys within `window` positions of the query, both sides. `scale`
+/// multiplies each score.
+#[allow(clippy::too_many_arguments)]
+pub fn biattn(
+    q: u64,
+    k: u64,
+    v: u64,
+    y: u64,
+    n: u32,
+    heads: u32,
+    kv_heads: u32,
+    d: u32,
+    window: u32,
+    scale: f32,
+) -> MkTaskDescriptor {
+    MkTaskDescriptor {
+        a: q,
+        b: k,
+        x: v,
+        c: y,
+        n,
+        m: heads | kv_heads << 16,
+        k: window,
+        p0: d,
+        layer: scale.to_bits(),
+        ..task(OP_BIATTN)
+    }
+}
+
+/// `y[t, r] = gelu_tanh(x[t] . w[r]) * (x[t] . w[m + r])` for `m` gate rows followed by `m` up rows (BF16). It is
+/// `OP_GEGLU` of the embedding binary, whose GLU is GeGLU.
+pub fn geglu(x: u64, w: u64, y: u64, n: u32, m: u32, k: u32) -> MkTaskDescriptor {
+    MkTaskDescriptor {
+        a: x,
+        b: w,
+        c: y,
+        m,
+        n,
+        k,
+        ..task(OP_GEGLU)
+    }
+}
+
+/// `y[t, j] = gelu_tanh(a[t, j]) * b[t * stride + j]` for `n` rows of `k`; `stride` 0 means `k`.
+pub fn gelu_mul(a: u64, b: u64, y: u64, n: u32, k: u32, stride: u32) -> MkTaskDescriptor {
+    MkTaskDescriptor {
+        a,
+        b,
+        c: y,
+        n,
+        k,
+        m: stride,
+        ..task(OP_GELU_MUL)
+    }
+}
+
+/// `y = x * s` for `n` rows of `k`; `x` may be `y`.
+pub fn scale(x: u64, y: u64, n: u32, k: u32, s: f32) -> MkTaskDescriptor {
+    MkTaskDescriptor {
+        a: x,
+        c: y,
+        n,
+        k,
+        p0: s.to_bits(),
+        ..task(OP_SCALE)
+    }
+}

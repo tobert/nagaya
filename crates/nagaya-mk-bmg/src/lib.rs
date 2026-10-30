@@ -35,6 +35,13 @@ pub const QWEN3TTS_KERNEL: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/meg
 #[cfg(feature = "xe")]
 pub const SDXL_KERNEL: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_sdxl_bmg.bin"));
 
+/// The kernel binary of the embedding engine (EmbeddingGemma 2) for `bmg-g31`: `kernels/megakernel.cl` with
+/// `MK_QWEN3TTS` and `MK_EMBEDDINGGEMMA2`, which add the ops of `kernels/qwen3tts_ops.cl` and
+/// `kernels/embeddinggemma2_ops.cl`. Its `OP_GEGLU` uses gelu_tanh, as the MLP of EmbeddingGemma 2 does.
+#[cfg(feature = "xe")]
+pub const EMBEDDINGGEMMA2_KERNEL: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_embeddinggemma2_bmg.bin"));
+
 /// The name of the entry point of each kernel binary.
 pub const KERNEL_ENTRY: &str = "mk_persistent_interpreter";
 

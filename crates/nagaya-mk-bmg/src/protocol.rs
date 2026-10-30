@@ -57,6 +57,12 @@ pub const OP_GEMM: u16 = 68;
 pub const OP_ATTN_PREP: u16 = 69;
 pub const OP_ATTN_XMX: u16 = 70;
 
+// The ops of the embedding binary (`kernels/embeddinggemma2_ops.cl`, `MK_EMBEDDINGGEMMA2`). It also holds the ops of the
+// speech binary, and its `OP_GEGLU` is GeGLU.
+pub const OP_BIATTN: u16 = 80;
+pub const OP_GELU_MUL: u16 = 81;
+pub const OP_SCALE: u16 = 82;
+
 pub const FLAG_ACCUMULATE: u16 = 1 << 0;
 pub const FLAG_SOFTCAP_30: u16 = 1 << 2;
 pub const FLAG_ROPE_GLOBAL: u16 = 1 << 3;
