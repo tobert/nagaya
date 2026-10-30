@@ -247,11 +247,16 @@ impl Changer {
             let ports = process.ports();
             let applying = Arc::clone(&self.applying);
             let in_place = change.clone();
+            // The change logs to the subscriber of the main loop, so a test that reads the log sees it too.
+            let dispatch = tracing::dispatcher::get_default(tracing::Dispatch::clone);
             std::thread::Builder::new()
                 .name("nagaya-reprofile".to_owned())
                 .spawn(move || {
-                    // A panic of the change stops the process (spec 8.5). Else every later PUT and load stays busy.
-                    ports.guard("nagaya-reprofile", || apply(&ports, &profile, &in_place));
+                    tracing::dispatcher::with_default(&dispatch, || {
+                        // A panic of the change stops the process (spec 8.5). Else every later PUT and load stays
+                        // busy.
+                        ports.guard("nagaya-reprofile", || apply(&ports, &profile, &in_place));
+                    });
                     applying.store(false, Ordering::SeqCst);
                 })
                 .expect("cannot start the thread of a profile change");

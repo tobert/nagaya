@@ -568,3 +568,35 @@ fn a_change_that_cannot_be_kept_ends() {
         "the change ended"
     );
 }
+
+/// A change that waits names what it waits for in the log, once at the start and then every 10 s (spec 9.1). The
+/// change waits about 100 ms here, so the log holds one line of the wait.
+#[test]
+fn a_change_that_waits_names_the_wait_once_in_the_log() {
+    let mut main = Main::new();
+    let ports = main.process.ports();
+    ports.admit_context("chat").unwrap();
+    let mut without_chat = profile(1000);
+    without_chat.engines.remove(0);
+    let lines = nagaya_telemetry::testing::log_lines(|| {
+        let (answer, _) = main.put(&without_chat);
+        assert!(matches!(answer, PutAnswer::Accepted(_)), "{answer:?}");
+        assert_eq!(swapped(&main.process), (names(&["chat"]), Vec::new()));
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(main.changer.applying(), "the change waits for the context of chat");
+        ports.release_context("chat").unwrap();
+        main.applied();
+    });
+    let waits: Vec<&String> = lines
+        .iter()
+        .filter(|line| line.contains("the profile change waits for"))
+        .collect();
+    assert_eq!(waits.len(), 1, "{lines:#?}");
+    assert!(waits[0].contains("before the ledger takes the profile"), "{lines:#?}");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("the profile change in place ended")),
+        "{lines:#?}"
+    );
+}
