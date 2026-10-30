@@ -1,0 +1,13 @@
+[package]
+name = "nagaya-text-embeddinggemma2"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde_json = { version = "1.0.154", features = ["float_roundtrip", "preserve_order"] }
+sha2 = "0.10.9"
+# The same crate and features as nagaya-text-gemma4. The tokenizer of the reference is a `tokenizers` tokenizer.
+tokenizers = { version = "0.23.1", default-features = false, features = ["onig"] }
+
+[dev-dependencies]
+sha2 = "0.10.9"
