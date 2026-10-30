@@ -92,7 +92,7 @@ in a lock: one thread owns it (3.2).
 
 Do them in this order. Each milestone ends with all checks green and one or more commits. Milestones 1 to 14 are
 done, and `docs/history.md` keeps their full text, and the merges where the run recorded them. Milestone 15
-is done on gfx1151host, and milestones 15s, 16, 17 and 18 are done on b70host. Milestones 19, 20 and 21 are next.
+is done on gfx1151host, and milestones 15s, 16, 17, 18 and 19 are done on b70host. Milestones 20 and 21 are next.
 
 1. **Workspace.** The Cargo workspace, its crates, `rustfmt.toml` and the dev profile. Done.
 2. **Engine trait.** The ABI core and capabilities as traits, with a fake engine and a broken fake for the gates. Done.
@@ -368,6 +368,20 @@ is done on gfx1151host, and milestones 15s, 16, 17 and 18 are done on b70host. M
     4. **Family.** Write `nagaya-text-embeddinggemma2`: the tokenizer and the task prompts.
     5. **Engine.** Write `nagaya-mk-embeddinggemma2-bmg` on the shared interpreter. Run the oracle on the card.
     6. **Route and deploy.** Serve the route, and add the engine to the profile of b70host as resident.
+
+    Done on 2026-10-30, on b70host. On the card, the engine matches sentence-transformers to 9.5e-7. An embedding
+    of a short input takes 11 ms, and one of 2048 tokens takes 601 ms. `nagaya.service` runs the build of `b4fb5a1`,
+    with `embeddinggemma-2` pinned on card 1 beside Gemma 4. The gogi suite gave 70 ok, 0 FAIL and 0 skip for
+    `embeddinggemma-2`, and 367 ok, 0 FAIL and 15 skip for gemma.
+
+    Amy decides the Proposed notes of spec 3.3a, 3.3b, 11.9a and 11.10. The commits:
+
+    - step 1, gogi `9f60194`, `a3a0006` and `6db7e98`, and the pin `432cf8b`;
+    - steps 2 to 4, the spec, the oracle and the family: `f3d78cb`, `ce6d967`, `62ef500`;
+    - step 5, the engine: `6bec50b`, `df0ba2a`, `1a8250e`;
+    - step 6, the route and the deploy: `93f9d8d`;
+    - the explicit layout: `38662d4`, `8ec6afb`, and the device threads of the group `8a29dc4`, `61120b7`, `920dabe`;
+    - the fixes of four reviews: `9f9bb44` to `b4fb5a1`.
 20. **img2img and inpainting.** Amy chose this milestone on 2026-10-30, and she decided these rules by interview:
     - **Inputs:** spec 11.9, "The design of later image work". The image and the mask are object parts.
     - **Inpainting:** the latent blend works with any checkpoint. Also load a 9-channel inpainting UNet, such as
