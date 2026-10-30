@@ -110,7 +110,7 @@ async fn change(State(council): Shared, Extension(id): Id, body: Body) -> Respon
             let mut failure = Failure::new(
                 StatusCode::CONFLICT,
                 ErrorType::InvalidRequest,
-                "nothing changed: a profile change runs now; send the profile again when it ends",
+                "nothing changed: a swap or a profile change runs now; send the profile again when it ends",
             );
             failure.body.error.param = Some("profile".to_owned());
             failure.respond(&id)

@@ -107,7 +107,7 @@ pub(super) enum Exit {
 /// Give a planned swap to the ledger thread, before any engine unloads (spec 3.3a). A refusal changes nothing. The
 /// ledger then checks each later charge against the engines after the swap too, so no charge can refuse the swap
 /// after its unload. The engines that unload keep their bytes until the swap is charged after their drop.
-fn take(ledger: &Sender<LedgerMessage>, load: Vec<String>, unload: Vec<String>) -> Result<(), AdmitError> {
+pub(super) fn take(ledger: &Sender<LedgerMessage>, load: Vec<String>, unload: Vec<String>) -> Result<(), AdmitError> {
     let (reply, answer) = mpsc::channel();
     ledger
         .send(LedgerMessage::PlanSwap { load, unload, reply })
@@ -188,6 +188,7 @@ pub(super) fn plan(
                     .collect(),
             })
         }
+        Err(AdmitError::Busy(why)) => Err(LoadError::Busy(why)),
         Err(error) => panic!(
             "the ledger cannot check the swap to engine `{}`: {error}",
             name(&target)

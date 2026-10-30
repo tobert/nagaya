@@ -418,3 +418,74 @@ fn a_put_while_a_change_in_place_runs_is_busy() {
     main.applied();
     assert_eq!(main.persisted(), without_chat);
 }
+
+/// Submit a job of `chat` that holds it until the gate gets a message.
+fn hold_chat(main: &Main) -> Sender<()> {
+    let (gate, held) = mpsc::channel();
+    let spec = JobSpec {
+        class: Class::Interactive,
+        priority: 0,
+        deadline: None,
+        first: Kind::Read,
+        engine: 0,
+        body: Box::new(Hold(held)),
+    };
+    main.process.submit_job(0, spec).unwrap();
+    gate
+}
+
+/// A PUT while a swap waits is a 409 busy, and nothing changes (spec 3.3a, Decided 2026-10-30). A budget checked
+/// beside the waiting swap could refuse the engines after it.
+#[test]
+fn a_put_while_a_swap_waits_is_busy() {
+    let mut main = Main::new();
+    let gate = hold_chat(&main);
+    main.process.load_with("voice", &["chat".to_owned()]).unwrap();
+    let (answer, _) = main.put(&profile(2000));
+    assert!(matches!(answer, PutAnswer::Busy), "{answer:?}");
+    assert_eq!(main.persisted(), profile(1000), "nothing changed");
+    gate.send(()).unwrap();
+    assert_eq!(swapped(&main.process), (names(&["chat"]), names(&["voice"])));
+    let (answer, _) = main.put(&profile(2000));
+    assert!(matches!(answer, PutAnswer::Accepted(_)), "{answer:?}");
+    main.applied();
+}
+
+/// After a change is accepted, a load is busy until the ledger takes the new profile (spec 3.3a).
+#[test]
+fn a_load_while_a_change_waits_for_the_ledger_is_busy() {
+    let mut main = Main::new();
+    let gate = hold_chat(&main);
+    let mut without_chat = profile(2000);
+    without_chat.engines.remove(0);
+    let (answer, _) = main.put(&without_chat);
+    assert!(matches!(answer, PutAnswer::Accepted(_)), "{answer:?}");
+    assert!(
+        matches!(main.process.load("voice"), Err(LoadError::Busy(_))),
+        "a load during the change"
+    );
+    gate.send(()).unwrap();
+    main.applied();
+    assert_eq!(main.persisted(), without_chat);
+    assert!(main.process.load("voice").is_ok(), "a load after the change");
+}
+
+/// The ledger takes the new profile only when the engines that it removes hold no context. A council request can end
+/// its context after the drop of its engine, and the ledger refused the profile then, which stopped the process.
+#[test]
+fn a_change_waits_for_the_contexts_of_a_removed_engine() {
+    let mut main = Main::new();
+    let ports = main.process.ports();
+    ports.admit_context("chat").unwrap();
+    let mut without_chat = profile(1000);
+    without_chat.engines.remove(0);
+    let (answer, _) = main.put(&without_chat);
+    assert!(matches!(answer, PutAnswer::Accepted(_)), "{answer:?}");
+    assert_eq!(swapped(&main.process), (names(&["chat"]), Vec::new()));
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(main.changer.applying(), "the change waits for the context of chat");
+    ports.release_context("chat").unwrap();
+    main.applied();
+    assert_eq!(main.persisted(), without_chat);
+    assert!(ports.loaded_engines().is_some(), "the process runs on");
+}

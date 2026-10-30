@@ -134,7 +134,7 @@ fn refusal(error: &LoadError) -> Failure {
     match error {
         LoadError::Unknown(_) => named(StatusCode::NOT_FOUND, ErrorType::NotFound, "name"),
         // gogi has no type for a conflict, so the 409 is an invalid request (spec 3.3b).
-        LoadError::Pinned(_) | LoadError::NoClose(_) | LoadError::InTheWay { .. } => {
+        LoadError::Pinned(_) | LoadError::NoClose(_) | LoadError::InTheWay { .. } | LoadError::Busy(_) => {
             named(StatusCode::CONFLICT, ErrorType::InvalidRequest, "name")
         }
         LoadError::BadUnload(_) => named(StatusCode::BAD_REQUEST, ErrorType::InvalidRequest, "unload"),

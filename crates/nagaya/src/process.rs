@@ -209,6 +209,9 @@ pub struct OwnedLedger {
     /// The swaps that groups planned and did not charge yet, as the loads and the unloads of each. Their engines that
     /// unload keep their bytes until the drop, and a charge must also fit the ledger after them (spec 3.3a).
     pending: Vec<(Vec<String>, Vec<String>)>,
+    /// True from the accept of a profile change until the ledger takes the new profile. No load is planned then
+    /// (spec 3.3a).
+    changing: bool,
 }
 
 /// The loaded engines after a swap that loads `load` and unloads `unload`.
@@ -245,6 +248,7 @@ impl OwnedLedger {
             loaded: BTreeSet::new(),
             planned: None,
             pending: Vec::new(),
+            changing: false,
         }
     }
 
@@ -293,6 +297,11 @@ impl OwnedLedger {
     /// while they drain. A refusal changes nothing. Only the owner thread may call this.
     pub fn plan_swap(&mut self, load: &[String], unload: &[String]) -> Result<(), AdmitError> {
         self.check_owner();
+        if self.changing && !load.is_empty() {
+            return Err(AdmitError::Busy(
+                "a profile change waits for the ledger, and no load runs until the ledger takes it".to_owned(),
+            ));
+        }
         self.pending.push((load.to_vec(), unload.to_vec()));
         let fits = self.check_pending().map_err(AdmitError::Ledger);
         if fits.is_err() {
@@ -383,6 +392,54 @@ impl OwnedLedger {
         }
         admit_loaded_planned(&plans, &mut live, &staying, false)?;
         Ok(admitted)
+    }
+
+    /// Check a profile change and begin it (spec 3.3a). A swap that waits or runs makes it busy, and so does another
+    /// change. No load is planned after it until [`OwnedLedger::try_reprofile`] takes the profile. Only the owner
+    /// thread may call this.
+    pub fn begin_change(
+        &mut self,
+        profile: &PlacementProfile,
+        registry: &Registry,
+        inventory: &Inventory,
+    ) -> Result<Admitted, AdmitError> {
+        self.check_owner();
+        if !self.pending.is_empty() {
+            return Err(AdmitError::Busy("a swap waits or runs now".to_owned()));
+        }
+        if self.changing {
+            return Err(AdmitError::Busy("a profile change runs now".to_owned()));
+        }
+        let admitted = self.check_profile(profile, registry, inventory)?;
+        self.changing = true;
+        Ok(admitted)
+    }
+
+    /// End a profile change that was begun and not kept. Only the owner thread may call this.
+    pub fn end_change(&mut self) {
+        self.check_owner();
+        self.changing = false;
+    }
+
+    /// Take a new profile when no swap waits or runs, and the engines of `gone` dropped and hold no context (spec
+    /// 3.3a). `None` means not yet. Only the owner thread may call this.
+    pub fn try_reprofile(
+        &mut self,
+        profile: &PlacementProfile,
+        registry: &Registry,
+        inventory: &Inventory,
+        gone: &[String],
+    ) -> Result<Option<Admitted>, AdmitError> {
+        self.check_owner();
+        let busy = gone
+            .iter()
+            .any(|name| self.loaded.contains(name) || self.ledger.live_contexts(name) > 0);
+        if !self.pending.is_empty() || busy {
+            return Ok(None);
+        }
+        let admitted = self.reprofile(profile, registry, inventory)?;
+        self.changing = false;
+        Ok(Some(admitted))
     }
 
     /// Admit the loaded engines under a new profile, as a swap does (spec 3.3). A refusal changes nothing. Only the
@@ -859,6 +916,14 @@ impl Start {
                         }
                         LedgerMessage::CheckProfile(profile, reply) => {
                             let _ = reply.send(ledger.check_profile(&profile, &ledger_registry, &ledger_inventory));
+                        }
+                        LedgerMessage::BeginChange(profile, reply) => {
+                            let _ = reply.send(ledger.begin_change(&profile, &ledger_registry, &ledger_inventory));
+                        }
+                        LedgerMessage::EndChange => ledger.end_change(),
+                        LedgerMessage::TryReprofile(profile, gone, reply) => {
+                            let _ =
+                                reply.send(ledger.try_reprofile(&profile, &ledger_registry, &ledger_inventory, &gone));
                         }
                         LedgerMessage::Reprofile(profile, reply) => {
                             let _ = reply.send(ledger.reprofile(&profile, &ledger_registry, &ledger_inventory));
@@ -1634,6 +1699,16 @@ enum LedgerMessage {
     CheckProfile(PlacementProfile, Sender<Result<Admitted, AdmitError>>),
     /// Admit the loaded engines under a new profile (spec 3.3).
     Reprofile(PlacementProfile, Sender<Result<Admitted, AdmitError>>),
+    /// Check a profile change and begin it, or give busy (spec 3.3a).
+    BeginChange(PlacementProfile, Sender<Result<Admitted, AdmitError>>),
+    /// End a profile change that was not kept.
+    EndChange,
+    /// Take a new profile when no swap runs and the gone engines are free, or give `None` (spec 3.3a).
+    TryReprofile(
+        PlacementProfile,
+        Vec<String>,
+        Sender<Result<Option<Admitted>, AdmitError>>,
+    ),
     Stop,
 }
 
@@ -1903,6 +1978,34 @@ impl Ports {
             .expect("the ledger thread stopped");
         answer.recv().expect("the ledger thread stopped")
     }
+
+    /// Check a profile change and begin it, or give busy when a swap or another change runs (spec 3.3a).
+    pub fn begin_change(&self, profile: &PlacementProfile) -> Result<Admitted, AdmitError> {
+        let (reply, answer) = mpsc::channel();
+        self.ledger
+            .send(LedgerMessage::BeginChange(profile.clone(), reply))
+            .expect("the ledger thread stopped");
+        answer.recv().expect("the ledger thread stopped")
+    }
+
+    /// End a profile change that was begun and not kept.
+    pub fn end_change(&self) {
+        let _ = self.ledger.send(LedgerMessage::EndChange);
+    }
+
+    /// Take a new profile when no swap runs and the engines of `gone` dropped and hold no context. `Ok(None)` means
+    /// not yet, and `None` in the outer option means the ledger thread stopped.
+    pub fn try_reprofile(
+        &self,
+        profile: &PlacementProfile,
+        gone: &[String],
+    ) -> Option<Result<Option<Admitted>, AdmitError>> {
+        let (reply, answer) = mpsc::channel();
+        self.ledger
+            .send(LedgerMessage::TryReprofile(profile.clone(), gone.to_vec(), reply))
+            .ok()?;
+        answer.recv().ok()
+    }
 }
 
 /// The started process threads.
@@ -1993,6 +2096,16 @@ impl Process {
     /// Check a whole profile with the registry and the inventory of the process, with no change (spec 3.3).
     pub fn check_profile(&self, profile: &PlacementProfile) -> Result<Admitted, AdmitError> {
         self.ports().check_profile(profile)
+    }
+
+    /// Check a profile change and begin it, or give busy (spec 3.3a).
+    pub fn begin_change(&self, profile: &PlacementProfile) -> Result<Admitted, AdmitError> {
+        self.ports().begin_change(profile)
+    }
+
+    /// End a profile change that was begun and not kept.
+    pub fn end_change(&self) {
+        self.ports().end_change();
     }
 
     /// Send one job to a group thread. A stop refuses every later job (spec 10.3 step 1).

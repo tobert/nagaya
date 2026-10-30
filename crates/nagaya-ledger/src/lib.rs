@@ -153,6 +153,11 @@ impl Ledger {
             .collect()
     }
 
+    /// The live contexts of an engine.
+    pub fn live_contexts(&self, engine: &str) -> u64 {
+        self.contexts.get(engine).copied().unwrap_or(0)
+    }
+
     /// Admit a new context of an engine (spec 4.2, 4.3).
     ///
     /// The ledger charges every term of the engine with the lifetime `context` against the unassigned bytes of its

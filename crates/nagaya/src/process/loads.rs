@@ -91,6 +91,8 @@ pub enum LoadError {
     NoClose(String),
     /// The `unload` list of a load is wrong: it names the engine itself, or an engine of another device group.
     BadUnload(String),
+    /// A profile change waits for the ledger, so the load must wait too (spec 3.3a). The client sends it again.
+    Busy(String),
     /// The engine does not fit beside the engines that stay loaded (spec 3.3a, "Explicit layout").
     InTheWay {
         /// The engine that does not load.
@@ -124,6 +126,7 @@ impl std::fmt::Display for LoadError {
                 "engine `{name}` has no `close`, so a swap cannot unload it; change the profile, which restarts"
             ),
             LoadError::BadUnload(why) => write!(formatter, "{why}; name other loaded engines of the same group"),
+            LoadError::Busy(why) => write!(formatter, "nothing changed: {why}; send the load again when it ends"),
             LoadError::InTheWay {
                 engine,
                 shortfall,
@@ -240,6 +243,19 @@ pub(super) fn ask(
     answer.recv().map_err(|_| LoadError::Stopped)?
 }
 
+/// Plan a swap that unloads one engine and loads none. The ledger counts it as a swap that runs until its charge after
+/// the drop, so a profile change waits for it (spec 3.3a). Fewer engines always fit, so a refusal is a defect.
+fn unload_only(index: usize, members: &[Member], ledger: &Sender<LedgerMessage>) -> Plan {
+    let name = members[index].name().to_owned();
+    if let Err(error) = in_place::take(ledger, Vec::new(), vec![name.clone()]) {
+        panic!("the ledger refused the unload of engine `{name}`: {error}");
+    }
+    Plan {
+        load: Vec::new(),
+        unload: vec![index],
+    }
+}
+
 /// Answer the asks that wait, in order of arrival, until one plans a swap (spec 3.3b). The group calls it only when
 /// it has no planned swap.
 ///
@@ -269,10 +285,7 @@ pub(super) fn next_plan(
                     let _ = reply.send(Ok(LoadReply::Already(EngineState::Unloaded)));
                     continue;
                 }
-                Plan {
-                    load: Vec::new(),
-                    unload: vec![index],
-                }
+                unload_only(index, members, ledger)
             }
             Request::Place(index, entry) => {
                 let placement = &mut members[index].job.placement;
@@ -324,10 +337,7 @@ pub(super) fn next_plan(
                 let _ = reply.send(Ok(LoadReply::Already(EngineState::Unloaded)));
                 continue;
             }
-            Request::Unload(index) => Plan {
-                load: Vec::new(),
-                unload: vec![index],
-            },
+            Request::Unload(index) => unload_only(index, members, ledger),
         };
         mark(&plan, members, states);
         let name = |index: &usize| members[*index].name().to_owned();

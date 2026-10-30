@@ -264,6 +264,8 @@ pub enum AdmitError {
     },
     /// The process is stopping and takes no new work (spec 10.3).
     Stopping,
+    /// A swap or a profile change runs, so the ledger takes no other change now (spec 3.3a).
+    Busy(String),
     /// An entry breaks a rule of residency (spec 3.3a).
     Residency {
         /// The engine name.
@@ -307,6 +309,7 @@ impl std::fmt::Display for AdmitError {
                  FileDescriptorStoreMax in the unit, or remove an engine"
             ),
             AdmitError::Stopping => write!(formatter, "the process is stopping"),
+            AdmitError::Busy(why) => write!(formatter, "{why}"),
             AdmitError::Residency { engine, why } => write!(formatter, "engine `{engine}`: {why}"),
             AdmitError::OnDemand { engine, error } => write!(
                 formatter,
@@ -328,7 +331,8 @@ impl std::error::Error for AdmitError {
             | AdmitError::Limits { .. }
             | AdmitError::ArenaFds { .. }
             | AdmitError::Residency { .. }
-            | AdmitError::Stopping => None,
+            | AdmitError::Stopping
+            | AdmitError::Busy(_) => None,
         }
     }
 }

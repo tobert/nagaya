@@ -209,6 +209,13 @@ impl Changer {
         if self.applying() {
             return Ok(PutAnswer::Busy);
         }
+        // A swap that waits or runs makes the change busy (spec 3.3a, Decided 2026-10-30). From here, no load is
+        // planned until the ledger takes the new profile.
+        match process.begin_change(&profile) {
+            Ok(_) => {}
+            Err(AdmitError::Busy(_)) => return Ok(PutAnswer::Busy),
+            Err(error) => return Ok(PutAnswer::Invalid(error.to_string())),
+        }
         // The active profile was admitted at start, so its check gives the limits of each engine.
         let planned = process
             .check_profile(&active)
@@ -221,7 +228,10 @@ impl Changer {
                 .is_some_and(|engine| engine.limits.capabilities.contains(&Capability::Close))
         };
         let change = change(&active, &profile, closes);
-        swap.accept(profile.clone())?;
+        if let Err(error) = swap.accept(profile.clone()) {
+            process.end_change();
+            return Err(error);
+        }
         tracing::info!(
             "profile accepted: {}{}",
             change
@@ -266,19 +276,20 @@ fn apply(ports: &Ports, profile: &PlacementProfile, change: &Change) {
             Err(error) => return ports.fail(format!("the profile change cannot retire `{engine}`: {error}")),
         }
     }
-    // A swap that retires an engine tells the ledger after the unload. The new profile lacks the engine, so the ledger
-    // takes it only after that.
+    // The ledger takes the new profile when no swap waits or runs, and each gone engine dropped and holds no context
+    // (spec 3.3a). A council request can end its context after the drop of its engine.
+    let gone: Vec<String> = gone.iter().map(|engine| (*engine).to_owned()).collect();
     loop {
-        let Some(loaded) = ports.loaded_engines() else { return };
-        if gone.iter().all(|engine| !loaded.contains(*engine)) {
-            break;
+        match ports.try_reprofile(profile, &gone) {
+            None => return,
+            Some(Ok(Some(_))) => break,
+            Some(Ok(None)) => std::thread::sleep(Duration::from_millis(10)),
+            Some(Err(error)) => {
+                return ports.fail(format!(
+                    "the ledger refused the profile that its check admitted: {error}"
+                ));
+            }
         }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    if let Err(error) = ports.reprofile(profile) {
-        return ports.fail(format!(
-            "the ledger refused the profile that its check admitted: {error}"
-        ));
     }
     for entry in &profile.engines {
         match ports.place(entry) {
