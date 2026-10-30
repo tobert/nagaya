@@ -478,6 +478,52 @@ fn a_charge_while_a_swap_waits_cannot_refuse_the_swap_after_its_unload() {
     assert_eq!(ports.engine_state("voice"), Some(EngineState::Ready));
 }
 
+/// The engine that unloads keeps its bytes in the ledger until its drop, so a charge while it drains must fit beside
+/// it too (spec 3.3a). voice takes 300 bytes and chat 600, in 1000. Staging of 450 bytes fits beside voice, and not
+/// beside chat, so it is refused until chat drops.
+#[test]
+fn an_engine_that_drains_keeps_its_bytes_until_its_drop() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start_sized(directory.path(), 300);
+    let (gate, held) = hold_chat(&process, &log);
+    process.load_with("voice", &["chat".to_owned()]).unwrap();
+    let ports = process.ports();
+    assert!(
+        ports.admit_staging("chat", Tier::Device(0), 450).is_err(),
+        "chat still holds 600 bytes, so 450 bytes of staging do not fit"
+    );
+    ports
+        .admit_staging("chat", Tier::Device(0), 350)
+        .expect("350 bytes fit beside chat and beside voice");
+    gate.send(()).unwrap();
+    assert_eq!(held.recv_timeout(Duration::from_secs(5)).unwrap(), "ran");
+    assert_eq!(swapped(&process), (names(&["chat"]), names(&["voice"])));
+    ports.release_staging(Tier::Device(0), 350).unwrap();
+    ports
+        .admit_staging("voice", Tier::Device(0), 450)
+        .expect("after the drop of chat, 450 bytes fit beside voice");
+}
+
+/// A retire is not done in the ledger until the engine drops (spec 3.3). A profile change waits for that before the
+/// ledger takes the new profile, so a context that the engine still holds is released first.
+#[test]
+fn a_retired_engine_stays_loaded_in_the_ledger_until_its_drop() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start(directory.path());
+    let (gate, held) = hold_chat(&process, &log);
+    let ports = process.ports();
+    ports.retire("chat").unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(
+        ports.loaded_engines().unwrap().contains("chat"),
+        "chat holds a job, so it has not dropped"
+    );
+    gate.send(()).unwrap();
+    assert_eq!(held.recv_timeout(Duration::from_secs(5)).unwrap(), "ran");
+    assert_eq!(swapped(&process), (names(&["chat"]), Vec::new()));
+    assert!(!ports.loaded_engines().unwrap().contains("chat"));
+}
+
 #[test]
 fn a_load_during_a_planned_swap_waits_for_that_swap() {
     let directory = tempfile::tempdir().unwrap();

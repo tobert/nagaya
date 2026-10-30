@@ -105,9 +105,9 @@ fn a_swap_uses_the_plans_of_the_admission_and_a_new_profile_plans_again() {
     assert!(admitted >= 2, "the admission planned {admitted} times for two engines");
 
     let (b, none) = (vec!["b".to_owned()], Vec::<String>::new());
-    ledger.check_swap(&b, &none).expect("the swap fits");
+    ledger.plan_swap(&b, &none).expect("the swap fits");
     ledger.swap(&b, &none).expect("the swap fits");
-    ledger.check_swap(&none, &b).expect("the swap back fits");
+    ledger.plan_swap(&none, &b).expect("the swap back fits");
     ledger.swap(&none, &b).expect("the swap back fits");
     assert_eq!(
         plans.load(Ordering::SeqCst),

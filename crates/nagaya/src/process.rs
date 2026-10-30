@@ -206,6 +206,27 @@ pub struct OwnedLedger {
     /// The plans of the engines of the profile that the ledger admitted last. A swap admits the loaded engines from
     /// them, so it runs no plan (spec 3.3, 3.3a).
     planned: Option<Planned>,
+    /// The swaps that groups planned and did not charge yet, as the loads and the unloads of each. Their engines that
+    /// unload keep their bytes until the drop, and a charge must also fit the ledger after them (spec 3.3a).
+    pending: Vec<(Vec<String>, Vec<String>)>,
+}
+
+/// The loaded engines after a swap that loads `load` and unloads `unload`.
+fn swapped_set(loaded: &BTreeSet<String>, load: &[String], unload: &[String]) -> BTreeSet<String> {
+    let mut loaded = loaded.clone();
+    for name in unload {
+        assert!(
+            loaded.remove(name),
+            "the swap unloads engine `{name}`, which is not loaded"
+        );
+    }
+    for name in load {
+        assert!(
+            loaded.insert(name.clone()),
+            "the swap loads engine `{name}`, which is loaded"
+        );
+    }
+    loaded
 }
 
 impl OwnedLedger {
@@ -223,6 +244,7 @@ impl OwnedLedger {
             fd_ceiling,
             loaded: BTreeSet::new(),
             planned: None,
+            pending: Vec::new(),
         }
     }
 
@@ -252,20 +274,7 @@ impl OwnedLedger {
 
     /// The loaded engines after a swap that loads `load` and unloads `unload`.
     fn swapped(&self, load: &[String], unload: &[String]) -> BTreeSet<String> {
-        let mut loaded = self.loaded.clone();
-        for name in unload {
-            assert!(
-                loaded.remove(name),
-                "the swap unloads engine `{name}`, which is not loaded"
-            );
-        }
-        for name in load {
-            assert!(
-                loaded.insert(name.clone()),
-                "the swap loads engine `{name}`, which is loaded"
-            );
-        }
-        loaded
+        swapped_set(&self.loaded, load, unload)
     }
 
     /// Check whether a swap fits, and change nothing (spec 3.3a). Only the owner thread may call this.
@@ -279,8 +288,47 @@ impl OwnedLedger {
         admit_loaded_planned(plans, &mut self.ledger, &loaded, false).map(|_| ())
     }
 
-    /// Admit the loaded engines after a swap (spec 3.3a). A refusal changes nothing. Only the owner thread may call
-    /// this.
+    /// Take a swap that a group plans, before any engine unloads (spec 3.3a). It must fit after every pending swap, with
+    /// the live charges. Nothing is charged until [`OwnedLedger::swap`], so the engines that unload keep their bytes
+    /// while they drain. A refusal changes nothing. Only the owner thread may call this.
+    pub fn plan_swap(&mut self, load: &[String], unload: &[String]) -> Result<(), AdmitError> {
+        self.check_owner();
+        self.pending.push((load.to_vec(), unload.to_vec()));
+        let fits = self.check_pending().map_err(AdmitError::Ledger);
+        if fits.is_err() {
+            self.pending.pop();
+        }
+        fits
+    }
+
+    /// The loaded engines after each pending swap.
+    fn after_pending(&self) -> BTreeSet<String> {
+        let mut loaded = self.loaded.clone();
+        for (load, unload) in &self.pending {
+            loaded = swapped_set(&loaded, load, unload);
+        }
+        loaded
+    }
+
+    /// Check that the live charges fit the ledger after each pending swap. It changes nothing.
+    fn check_pending(&self) -> Result<(), LedgerError> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        let plans = self
+            .planned
+            .as_ref()
+            .expect("a swap comes after the admission of a profile");
+        let mut after = self.ledger.clone();
+        match admit_loaded_planned(plans, &mut after, &self.after_pending(), true) {
+            Ok(_) => Ok(()),
+            Err(AdmitError::Ledger(error)) => Err(error),
+            Err(error) => panic!("the ledger cannot check its pending swaps: {error}"),
+        }
+    }
+
+    /// Admit the loaded engines after a swap, when its engines that unload dropped (spec 3.3a). A swap that loads an
+    /// engine was taken by [`OwnedLedger::plan_swap`]. A refusal changes nothing. Only the owner thread may call this.
     pub fn swap(&mut self, load: &[String], unload: &[String]) -> Result<Admitted, AdmitError> {
         self.check_owner();
         let plans = self
@@ -290,6 +338,15 @@ impl OwnedLedger {
         let loaded = self.swapped(load, unload);
         let admitted = admit_loaded_planned(plans, &mut self.ledger, &loaded, true)?;
         self.loaded = loaded;
+        if let Some(at) = self
+            .pending
+            .iter()
+            .position(|(planned_load, planned_unload)| planned_load == load && planned_unload == unload)
+        {
+            self.pending.remove(at);
+        } else {
+            assert!(load.is_empty(), "a swap loads {load:?}, and no group planned it");
+        }
         Ok(admitted)
     }
 
@@ -345,7 +402,18 @@ impl OwnedLedger {
     /// Charge a new context of an engine (spec 4.2). Only the owner thread may call this.
     pub fn admit_context(&mut self, engine: &str) -> Result<(), LedgerError> {
         self.check_owner();
-        self.ledger.admit_context(engine)
+        self.ledger.admit_context(engine)?;
+        // The charge must also fit after the pending swaps, so that no charge refuses a swap after its unload.
+        if let Err(error) = self.check_pending() {
+            self.ledger
+                .release_context(engine)
+                .expect("a context that was just charged releases");
+            return Err(match error {
+                LedgerError::Refused(refusal) => LedgerError::ContextRefused(refusal),
+                other => other,
+            });
+        }
+        Ok(())
     }
 
     /// Release the charge of an ended context. Only the owner thread may call this.
@@ -357,7 +425,18 @@ impl OwnedLedger {
     /// Charge staging bytes of an engine (spec 4.2). Only the owner thread may call this.
     pub fn admit_staging(&mut self, engine: &str, tier: Tier, bytes: u64) -> Result<(), LedgerError> {
         self.check_owner();
-        self.ledger.admit_staging(engine, tier, bytes)
+        self.ledger.admit_staging(engine, tier, bytes)?;
+        // The charge must also fit after the pending swaps, as a context does.
+        if let Err(error) = self.check_pending() {
+            self.ledger
+                .release_staging(tier, bytes)
+                .expect("staging that was just charged releases");
+            return Err(match error {
+                LedgerError::Refused(refusal) => LedgerError::StagingRefused(refusal),
+                other => other,
+            });
+        }
+        Ok(())
     }
 
     /// Release staging bytes. Only the owner thread may call this.
@@ -758,6 +837,9 @@ impl Start {
                         }
                         LedgerMessage::Unassigned(reply) => {
                             let _ = reply.send(ledger.ledger().unassigned());
+                        }
+                        LedgerMessage::PlanSwap { load, unload, reply } => {
+                            let _ = reply.send(ledger.plan_swap(&load, &unload));
                         }
                         LedgerMessage::Swap { load, unload, reply } => {
                             let _ = reply.send(ledger.swap(&load, &unload));
@@ -1169,6 +1251,7 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
                     events: &links.events,
                     heartbeats: &links.heartbeats,
                     store: links.store.as_ref(),
+                    ledger: &links.ledger,
                     fd_store: links.fd_store.as_ref(),
                     states: &links.states,
                 };
@@ -1523,7 +1606,13 @@ enum LedgerMessage {
     ReleaseStaging(Tier, u64, Sender<Result<(), LedgerError>>),
     /// Read the unassigned bytes of each budget.
     Unassigned(Sender<Vec<(Vec<Tier>, u64)>>),
-    /// Admit the loaded engines after a swap, when the group plans it (spec 3.3a). A refusal changes nothing.
+    /// Take a swap that a group plans, before any unload (spec 3.3a). A refusal changes nothing.
+    PlanSwap {
+        load: Vec<String>,
+        unload: Vec<String>,
+        reply: Sender<Result<(), AdmitError>>,
+    },
+    /// Admit the loaded engines after a swap, when its engines that unload dropped (spec 3.3a).
     Swap {
         load: Vec<String>,
         unload: Vec<String>,

@@ -240,19 +240,6 @@ pub(super) fn ask(
     answer.recv().map_err(|_| LoadError::Stopped)?
 }
 
-/// Plan the swap that unloads one engine and loads none, and give it to the ledger now (spec 3.3a). Fewer loaded
-/// engines always fit, so a refusal is a defect (spec 8.5).
-fn unload_only(index: usize, members: &[Member], ledger: &Sender<LedgerMessage>) -> Plan {
-    let name = members[index].name().to_owned();
-    if let Err(error) = in_place::take(ledger, Vec::new(), vec![name.clone()]) {
-        panic!("the ledger refused the unload of engine `{name}`: {error}");
-    }
-    Plan {
-        load: Vec::new(),
-        unload: vec![index],
-    }
-}
-
 /// Answer the asks that wait, in order of arrival, until one plans a swap (spec 3.3b). The group calls it only when
 /// it has no planned swap.
 ///
@@ -282,7 +269,10 @@ pub(super) fn next_plan(
                     let _ = reply.send(Ok(LoadReply::Already(EngineState::Unloaded)));
                     continue;
                 }
-                unload_only(index, members, ledger)
+                Plan {
+                    load: Vec::new(),
+                    unload: vec![index],
+                }
             }
             Request::Place(index, entry) => {
                 let placement = &mut members[index].job.placement;
@@ -334,7 +324,10 @@ pub(super) fn next_plan(
                 let _ = reply.send(Ok(LoadReply::Already(EngineState::Unloaded)));
                 continue;
             }
-            Request::Unload(index) => unload_only(index, members, ledger),
+            Request::Unload(index) => Plan {
+                load: Vec::new(),
+                unload: vec![index],
+            },
         };
         mark(&plan, members, states);
         let name = |index: &usize| members[*index].name().to_owned();
