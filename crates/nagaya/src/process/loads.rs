@@ -203,9 +203,21 @@ pub(super) fn ask(
     }
     let request = match asking {
         Asking::Load(names) => {
+            // The list is checked here, before the group sees it, so a loaded engine cannot hide a bad list behind
+            // its 200 (spec 3.3b). A repeat would unload one engine twice.
             let mut unload = Vec::with_capacity(names.len());
             for name in names {
                 match group_engines[group].iter().position(|other| *other == name) {
+                    Some(other) if other == index => {
+                        return Err(LoadError::BadUnload(format!(
+                            "the load of `{engine}` names the engine itself in `unload`"
+                        )));
+                    }
+                    Some(other) if unload.contains(&other) => {
+                        return Err(LoadError::BadUnload(format!(
+                            "the load of `{engine}` names `{name}` twice in `unload`"
+                        )));
+                    }
                     Some(other) => unload.push(other),
                     None if group_engines.iter().any(|names| names.contains(&name)) => {
                         return Err(LoadError::BadUnload(format!(

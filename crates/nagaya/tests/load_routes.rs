@@ -274,6 +274,42 @@ fn a_load_with_a_bad_unload_list_is_a_400_that_names_unload() {
     assert_eq!(log_of(&log), ["open:chat"]);
 }
 
+/// A name that comes twice in `unload` is a 400 that names `unload`, and nothing changes. A repeat once crashed the
+/// ledger thread (spec 3.3b).
+#[test]
+fn a_repeated_name_in_unload_is_a_400_and_the_process_lives() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start(directory.path());
+    let council = council(&process);
+    let (status, answer) = post_json(
+        &council,
+        "/nagaya/v1/engines/voice/load",
+        &json!({"unload": ["chat", "chat"]}),
+    );
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+    assert_eq!(answer["error"]["param"], json!("unload"), "{answer}");
+    assert_eq!(log_of(&log), ["open:chat"]);
+    let (status, body) = post_json(&council, "/nagaya/v1/engines/voice/load", &json!({"unload": ["chat"]}));
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(swapped(&process), (vec!["chat".to_owned()], vec!["voice".to_owned()]));
+}
+
+/// A load of a loaded engine checks its `unload` list before the 200 (spec 3.3b).
+#[test]
+fn a_load_of_a_loaded_engine_checks_its_unload_list() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start(directory.path());
+    let council = council(&process);
+    for body in [json!({"unload": ["chat"]}), json!({"unload": ["voice", "voice"]})] {
+        let (status, answer) = post_json(&council, "/nagaya/v1/engines/chat/load", &body);
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body} gave {answer}");
+        assert_eq!(answer["error"]["param"], json!("unload"), "{answer}");
+    }
+    let (status, body) = post_json(&council, "/nagaya/v1/engines/chat/load", &json!({}));
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(log_of(&log), ["open:chat"]);
+}
+
 #[test]
 fn an_unload_is_a_202_and_no_engine_loads() {
     let directory = tempfile::tempdir().unwrap();

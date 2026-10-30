@@ -142,8 +142,8 @@ pub(super) fn plan(
             return Err(LoadError::NoClose(name(&index)));
         }
     }
-    let mut unload: Vec<usize> = named.iter().copied().filter(|index| members[*index].loaded).collect();
-    unload.dedup();
+    // `loads::ask` refuses a repeat, so each engine of the list unloads once.
+    let unload: Vec<usize> = named.iter().copied().filter(|index| members[*index].loaded).collect();
     let stays = |unload: &[usize]| -> Vec<usize> {
         (0..members.len())
             .filter(|index| members[*index].loaded && !unload.contains(index))
