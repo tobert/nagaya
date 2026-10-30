@@ -113,7 +113,7 @@ fn engine(name: &str, residency: Residency) -> EnginePlacement {
         share: 1,
         pin_identity: false,
         residency,
-        idle_unload_s: None,
+        pinned: false,
     }
 }
 
@@ -281,7 +281,7 @@ fn the_ports_give_the_state_of_each_engine() {
     assert_eq!(ports.engine_state("chat"), Some(EngineState::Ready));
     assert_eq!(ports.engine_state("voice"), Some(EngineState::Unloaded));
     assert_eq!(ports.engine_state("nobody"), None);
-    process.load("voice").unwrap();
+    process.load_with("voice", &["chat".to_owned()]).unwrap();
     swapped(&process);
     assert_eq!(ports.engine_state("chat"), Some(EngineState::Unloaded));
     assert_eq!(ports.engine_state("voice"), Some(EngineState::Ready));
@@ -292,7 +292,7 @@ fn a_load_swaps_the_engine_in_and_its_jobs_run() {
     let directory = tempfile::tempdir().unwrap();
     let (process, log) = start(directory.path());
     assert_eq!(
-        process.load("voice").unwrap(),
+        process.load_with("voice", &["chat".to_owned()]).unwrap(),
         LoadReply::Started {
             unload: names(&["chat"]),
             load: names(&["voice"]),
@@ -323,11 +323,56 @@ fn a_load_or_an_unload_of_an_unknown_engine_is_refused() {
     assert_eq!(process.unload("nobody"), Err(LoadError::Unknown("nobody".to_owned())));
 }
 
+/// A resident engine that is not pinned unloads by the route, so an agent can make room (spec 3.3b). No other engine
+/// loads.
 #[test]
-fn an_unload_of_a_resident_engine_is_refused() {
+fn an_unload_of_a_resident_engine_unloads_it_and_loads_nothing() {
     let directory = tempfile::tempdir().unwrap();
     let (process, log) = start(directory.path());
-    assert_eq!(process.unload("chat"), Err(LoadError::Resident("chat".to_owned())));
+    assert_eq!(
+        process.unload("chat").unwrap(),
+        LoadReply::Started {
+            unload: names(&["chat"]),
+            load: Vec::new(),
+        }
+    );
+    assert_eq!(swapped(&process), (names(&["chat"]), Vec::new()));
+    assert_eq!(log_of(&log), ["open:chat", "close:chat"]);
+    assert_eq!(process.ports().engine_state("chat"), Some(EngineState::Unloaded));
+}
+
+/// A load that does not fit beside the loaded engines is a refusal that names the shortfall and the engines in the
+/// way, and nothing changes (spec 3.3a, "Explicit layout").
+#[test]
+fn a_load_that_does_not_fit_names_the_engine_in_the_way_and_changes_nothing() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start(directory.path());
+    let error = process.load("voice").unwrap_err();
+    assert!(
+        matches!(&error, LoadError::InTheWay { engine, in_the_way, pinned, shortfall }
+            if engine == "voice" && in_the_way == &names(&["chat"]) && pinned.is_empty()
+                && shortfall.contains("bytes")),
+        "{error:?}"
+    );
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(process.recv(Duration::from_millis(10)).is_none(), "no swap came");
+    assert_eq!(log_of(&log), ["open:chat"]);
+    assert_eq!(process.ports().engine_state("chat"), Some(EngineState::Ready));
+}
+
+/// An `unload` list must name engines of the group of the load, and not the engine itself.
+#[test]
+fn a_load_that_names_itself_or_an_unknown_engine_in_unload_is_refused() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start(directory.path());
+    assert!(matches!(
+        process.load_with("voice", &names(&["voice"])),
+        Err(LoadError::BadUnload(_))
+    ));
+    assert_eq!(
+        process.load_with("voice", &names(&["nobody"])),
+        Err(LoadError::Unknown("nobody".to_owned()))
+    );
     assert_eq!(log_of(&log), ["open:chat"]);
 }
 
@@ -341,20 +386,30 @@ fn an_unload_of_an_unloaded_engine_changes_nothing() {
     );
 }
 
+/// No unload loads another engine (spec 3.3a, "Explicit layout"). The client loads the resident engine again.
 #[test]
-fn an_unload_of_an_on_demand_engine_loads_the_resident_engines_again() {
+fn an_unload_of_an_on_demand_engine_loads_nothing() {
     let directory = tempfile::tempdir().unwrap();
     let (process, log) = start(directory.path());
-    process.load("voice").unwrap();
+    process.load_with("voice", &["chat".to_owned()]).unwrap();
     swapped(&process);
     assert_eq!(
         process.unload("voice").unwrap(),
         LoadReply::Started {
             unload: names(&["voice"]),
+            load: Vec::new(),
+        }
+    );
+    assert_eq!(swapped(&process), (names(&["voice"]), Vec::new()));
+    assert_eq!(process.ports().engine_state("chat"), Some(EngineState::Unloaded));
+    assert_eq!(
+        process.load("chat").unwrap(),
+        LoadReply::Started {
+            unload: Vec::new(),
             load: names(&["chat"]),
         }
     );
-    assert_eq!(swapped(&process), (names(&["voice"]), names(&["chat"])));
+    assert_eq!(swapped(&process), (Vec::new(), names(&["chat"])));
     assert_eq!(
         log_of(&log),
         ["open:chat", "close:chat", "open:voice", "close:voice", "open:chat"]
@@ -367,7 +422,7 @@ fn a_job_for_an_engine_that_a_planned_swap_unloads_ends_as_unavailable() {
     let (process, log) = start(directory.path());
     let (gate, held) = hold_chat(&process, &log);
     assert_eq!(
-        process.load("voice").unwrap(),
+        process.load_with("voice", &["chat".to_owned()]).unwrap(),
         LoadReply::Started {
             unload: names(&["chat"]),
             load: names(&["voice"]),
@@ -399,7 +454,7 @@ fn a_load_during_a_planned_swap_waits_for_that_swap() {
     let directory = tempfile::tempdir().unwrap();
     let (process, log) = start(directory.path());
     let (gate, held) = hold_chat(&process, &log);
-    process.load("voice").unwrap();
+    process.load_with("voice", &["chat".to_owned()]).unwrap();
     let ports = process.ports();
     let unloader = std::thread::spawn(move || ports.unload("voice"));
     std::thread::sleep(Duration::from_millis(100));
@@ -410,9 +465,9 @@ fn a_load_during_a_planned_swap_waits_for_that_swap() {
         unloader.join().unwrap().unwrap(),
         LoadReply::Started {
             unload: names(&["voice"]),
-            load: names(&["chat"]),
+            load: Vec::new(),
         }
     );
     assert_eq!(swapped(&process), (names(&["chat"]), names(&["voice"])));
-    assert_eq!(swapped(&process), (names(&["voice"]), names(&["chat"])));
+    assert_eq!(swapped(&process), (names(&["voice"]), Vec::new()));
 }

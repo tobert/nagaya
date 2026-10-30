@@ -115,7 +115,7 @@ fn engine(name: &str, residency: Residency) -> EnginePlacement {
         share: 1,
         pin_identity: false,
         residency,
-        idle_unload_s: None,
+        pinned: false,
     }
 }
 
@@ -297,7 +297,8 @@ fn a_profile_that_does_not_fit_is_refused_with_its_shortfall_and_nothing_persist
 fn a_profile_that_breaks_a_rule_is_invalid() {
     let mut main = Main::new();
     let mut bad = profile(1000);
-    bad.engines[0].idle_unload_s = Some(5);
+    // A pin on an on-demand engine breaks a rule of 3.3a.
+    bad.engines[1].pinned = true;
     let (answer, _) = main.put(&bad);
     assert!(matches!(answer, PutAnswer::Invalid(_)), "{answer:?}");
     let mut storeless = profile(1000);
@@ -326,7 +327,7 @@ fn a_new_engine_persists_and_restarts() {
 #[test]
 fn a_gone_engine_unloads_in_place_and_the_ledger_takes_the_profile() {
     let mut main = Main::new();
-    main.process.load("voice").unwrap();
+    main.process.load_with("voice", &["chat".to_owned()]).unwrap();
     swapped(&main.process);
     let mut new = profile(2000);
     new.engines.truncate(1);
@@ -336,7 +337,9 @@ fn a_gone_engine_unloads_in_place_and_the_ledger_takes_the_profile() {
         pairs(&[("chat", Action::Keep), ("voice", Action::Unload)])
     );
     assert!(!restart);
-    assert_eq!(swapped(&main.process), (names(&["voice"]), names(&["chat"])));
+    // The retire only unloads. The place of `chat`, resident and not loaded, then loads it beside nothing (spec 3.3).
+    assert_eq!(swapped(&main.process), (names(&["voice"]), Vec::new()));
+    assert_eq!(swapped(&main.process), (Vec::new(), names(&["chat"])));
     main.applied();
     assert_eq!(main.persisted(), new);
     assert_eq!(main.get(), new);
@@ -361,6 +364,7 @@ fn an_engine_that_becomes_resident_loads_in_place() {
     let mut main = Main::new();
     let mut new = profile(2000);
     new.engines[1].residency = Residency::Resident;
+    new.engines[1].pinned = true;
     let (answer, restart) = main.put(&new);
     assert_eq!(
         actions(&answer),
@@ -369,10 +373,7 @@ fn an_engine_that_becomes_resident_loads_in_place() {
     assert!(!restart);
     assert_eq!(swapped(&main.process), (Vec::new(), names(&["voice"])));
     main.applied();
-    assert_eq!(
-        main.process.unload("voice"),
-        Err(LoadError::Resident("voice".to_owned()))
-    );
+    assert_eq!(main.process.unload("voice"), Err(LoadError::Pinned("voice".to_owned())));
 }
 
 /// A job that holds its engine until the gate opens. It runs one short quantum after another.

@@ -50,7 +50,7 @@ fn profile() -> PlacementProfile {
             share: 1,
             pin_identity: false,
             residency: Default::default(),
-            idle_unload_s: None,
+            pinned: false,
         }],
         budgets: vec![
             BudgetSpec {

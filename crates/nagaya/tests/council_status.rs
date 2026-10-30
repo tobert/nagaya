@@ -112,7 +112,7 @@ fn a_text_model_whose_engine_unloads_is_unloaded_and_its_requests_are_a_503() {
     let (status, body) = send(&council, "POST", "/council/v2/contexts", Some(build()));
     assert_eq!(status, StatusCode::OK, "{body}");
 
-    process.load(SPARE).unwrap();
+    process.load_with(SPARE, &[ENGINE.to_owned()]).unwrap();
     wait_for(&process, ENGINE, EngineState::Unloaded);
     assert_eq!(status_of(&council), json!("unloaded"));
     let (status, body) = send(&council, "POST", "/council/v2/contexts", Some(build()));
@@ -121,7 +121,10 @@ fn a_text_model_whose_engine_unloads_is_unloaded_and_its_requests_are_a_503() {
     assert_eq!(body["error"]["model"], json!("toy"), "{body}");
     assert_eq!(body["error"]["status"], json!("unloaded"), "{body}");
 
+    // No unload loads another engine (spec 3.3a, "Explicit layout"), so the client loads the text engine again.
     process.unload(SPARE).unwrap();
+    wait_for(&process, SPARE, EngineState::Unloaded);
+    process.load(ENGINE).unwrap();
     wait_for(&process, ENGINE, EngineState::Ready);
     assert_eq!(status_of(&council), json!("ready"));
     let (status, body) = send(&council, "POST", "/council/v2/contexts", Some(build()));

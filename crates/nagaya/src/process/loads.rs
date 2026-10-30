@@ -80,13 +80,28 @@ pub enum LoadReply {
     Already(EngineState),
 }
 
-/// Why a load or an unload did not start (spec 3.3b).
+/// Why a load or an unload did not start (spec 3.3b). Nothing changed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoadError {
     /// No engine of the profile has this name.
     Unknown(String),
-    /// The engine is resident. A resident engine leaves only by a profile change.
-    Resident(String),
+    /// The engine is pinned. A pinned engine leaves only by a profile change (spec 3.3a, "Explicit layout").
+    Pinned(String),
+    /// The engine has no `close`, so a swap cannot unload it (spec 3.3a).
+    NoClose(String),
+    /// The `unload` list of a load is wrong: it names the engine itself, or an engine of another device group.
+    BadUnload(String),
+    /// The engine does not fit beside the engines that stay loaded (spec 3.3a, "Explicit layout").
+    InTheWay {
+        /// The engine that does not load.
+        engine: String,
+        /// Why it does not fit: the shortfall of each short budget, or the rule of an engine with stages.
+        shortfall: String,
+        /// The loaded engines that are not pinned. A load can name them in `unload`.
+        in_the_way: Vec<String>,
+        /// The pinned engines that stay loaded.
+        pinned: Vec<String>,
+    },
     /// The process is stopping and takes no new work (spec 10.3 step 1).
     Stopping,
     /// The group thread stopped.
@@ -100,10 +115,41 @@ impl std::fmt::Display for LoadError {
                 formatter,
                 "no engine of the profile has the name `{name}`; the profile names each engine"
             ),
-            LoadError::Resident(name) => write!(
+            LoadError::Pinned(name) => write!(
                 formatter,
-                "engine `{name}` is resident, so it does not unload; change the profile to remove it"
+                "engine `{name}` is pinned, so no load and no unload removes it; change the profile to remove it"
             ),
+            LoadError::NoClose(name) => write!(
+                formatter,
+                "engine `{name}` has no `close`, so a swap cannot unload it; change the profile, which restarts"
+            ),
+            LoadError::BadUnload(why) => write!(formatter, "{why}; name other loaded engines of the same group"),
+            LoadError::InTheWay {
+                engine,
+                shortfall,
+                in_the_way,
+                pinned,
+            } => {
+                write!(formatter, "engine `{engine}` does not fit: {shortfall}")?;
+                let list = |names: &[String]| {
+                    names
+                        .iter()
+                        .map(|name| format!("`{name}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                if !in_the_way.is_empty() {
+                    write!(
+                        formatter,
+                        "; the loaded engines in the way are {}, and a load can name them in `unload`",
+                        list(in_the_way)
+                    )?;
+                }
+                if !pinned.is_empty() {
+                    write!(formatter, "; the pinned engines {} stay loaded", list(pinned))?;
+                }
+                Ok(())
+            }
             LoadError::Stopping => write!(formatter, "the process is stopping"),
             LoadError::Stopped => write!(formatter, "the group of the engine stopped"),
         }
@@ -115,17 +161,21 @@ impl std::error::Error for LoadError {}
 /// A load, an unload or a profile change of one engine of a group, by its place in the group.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Request {
-    Load(usize),
+    /// Load the engine after the engines of the list unload, in one swap (spec 3.3a, "Explicit layout").
+    Load(usize, Vec<usize>),
     Unload(usize),
     /// Unload the engine for good: the new profile lacks it (spec 3.3, "unload").
     Retire(usize),
-    /// Take the residency, the idle time and the share of a new profile entry (spec 3.3, "residency" and "keep").
+    /// Take the residency, the pin and the share of a new profile entry (spec 3.3, "residency" and "keep").
     Place(usize, Box<EnginePlacement>),
+    /// Load an engine that a swap moved (spec 3.3a, "Explicit layout", moves). Nobody waits for the reply.
+    Move(usize),
 }
 
 /// What an ask asks of the engine with a name.
 pub(super) enum Asking {
-    Load,
+    /// Load the engine after the engines with these names unload.
+    Load(Vec<String>),
     Unload,
     Retire,
     Place(Box<EnginePlacement>),
@@ -154,7 +204,21 @@ pub(super) fn ask(
         return Err(LoadError::Stopping);
     }
     let request = match asking {
-        Asking::Load => Request::Load(index),
+        Asking::Load(names) => {
+            let mut unload = Vec::with_capacity(names.len());
+            for name in names {
+                match group_engines[group].iter().position(|other| *other == name) {
+                    Some(other) => unload.push(other),
+                    None if group_engines.iter().any(|names| names.contains(&name)) => {
+                        return Err(LoadError::BadUnload(format!(
+                            "the load of `{engine}` names `{name}` in `unload`, and `{name}` is in another device group"
+                        )));
+                    }
+                    None => return Err(LoadError::Unknown(name)),
+                }
+            }
+            Request::Load(index, unload)
+        }
         Asking::Unload => Request::Unload(index),
         Asking::Retire => Request::Retire(index),
         Asking::Place(entry) => Request::Place(index, entry),
@@ -180,12 +244,16 @@ pub(super) fn next_plan(
     widen: impl Fn(Plan, &[Member]) -> Plan,
 ) -> Option<Plan> {
     while let Some(Ask { request, reply }) = asks.pop_front() {
-        let plan = match request {
-            Request::Load(index) | Request::Unload(index) | Request::Place(index, _) | Request::Retire(index)
+        let (plan, named) = match request {
+            Request::Load(index, _)
+            | Request::Unload(index)
+            | Request::Place(index, _)
+            | Request::Retire(index)
+            | Request::Move(index)
                 if members[index].retired =>
             {
                 let answer = match request {
-                    Request::Retire(_) => Ok(LoadReply::Already(EngineState::Unloaded)),
+                    Request::Retire(_) | Request::Move(_) => Ok(LoadReply::Already(EngineState::Unloaded)),
                     _ => Err(LoadError::Unknown(members[index].name().to_owned())),
                 };
                 let _ = reply.send(answer);
@@ -197,12 +265,18 @@ pub(super) fn next_plan(
                     let _ = reply.send(Ok(LoadReply::Already(EngineState::Unloaded)));
                     continue;
                 }
-                in_place::back_plan(index, members, ledger)
+                (
+                    Plan {
+                        load: Vec::new(),
+                        unload: vec![index],
+                    },
+                    vec![index],
+                )
             }
             Request::Place(index, entry) => {
                 let placement = &mut members[index].job.placement;
                 placement.residency = entry.residency;
-                placement.idle_unload_s = entry.idle_unload_s;
+                placement.pinned = entry.pinned;
                 placement.share = entry.share;
                 if members[index].loaded || entry.residency != Residency::Resident {
                     let state = if members[index].loaded {
@@ -213,24 +287,75 @@ pub(super) fn next_plan(
                     let _ = reply.send(Ok(LoadReply::Already(state)));
                     continue;
                 }
-                in_place::plan(index, members, ledger)
+                // A profile change loads a new resident engine only beside the loaded engines (spec 3.3).
+                match in_place::plan(index, &[], members, ledger) {
+                    Ok(plan) => (plan, Vec::new()),
+                    Err(error) => {
+                        tracing::warn!(
+                            "the profile makes engine `{}` resident, and it stays unloaded: {error}",
+                            members[index].name()
+                        );
+                        let _ = reply.send(Ok(LoadReply::Already(EngineState::Unloaded)));
+                        continue;
+                    }
+                }
             }
-            Request::Load(index) if members[index].loaded => {
+            Request::Load(index, _) | Request::Move(index) if members[index].loaded => {
                 let _ = reply.send(Ok(LoadReply::Already(EngineState::Ready)));
                 continue;
             }
-            Request::Load(index) => in_place::plan(index, members, ledger),
-            Request::Unload(index) if members[index].resident() => {
-                let _ = reply.send(Err(LoadError::Resident(members[index].name().to_owned())));
+            Request::Load(index, named) => match in_place::plan(index, &named, members, ledger) {
+                Ok(plan) => (plan, named),
+                Err(error) => {
+                    let _ = reply.send(Err(error));
+                    continue;
+                }
+            },
+            Request::Move(index) => match in_place::plan(index, &[], members, ledger) {
+                Ok(plan) => (plan, Vec::new()),
+                // A moved engine fit before its swap, and admission keeps its memory, so a refusal is a defect.
+                Err(error) => panic!(
+                    "engine `{}` moved for a swap and cannot load again: {error}",
+                    members[index].name()
+                ),
+            },
+            Request::Unload(index) if members[index].pinned() => {
+                let _ = reply.send(Err(LoadError::Pinned(members[index].name().to_owned())));
+                continue;
+            }
+            Request::Unload(index) if !members[index].closes() => {
+                let _ = reply.send(Err(LoadError::NoClose(members[index].name().to_owned())));
                 continue;
             }
             Request::Unload(index) if !members[index].loaded => {
                 let _ = reply.send(Ok(LoadReply::Already(EngineState::Unloaded)));
                 continue;
             }
-            Request::Unload(index) => in_place::back_plan(index, members, ledger),
+            Request::Unload(index) => (
+                Plan {
+                    load: Vec::new(),
+                    unload: vec![index],
+                },
+                vec![index],
+            ),
         };
         let plan = widen(plan, members);
+        // Each engine that the swap unloads and does not load again moved: it loads in a later swap, before the asks
+        // that wait. An engine with stages loads first, because the others load beside it (spec 3.3a, moves).
+        let mut moved: Vec<usize> = plan
+            .unload
+            .iter()
+            .copied()
+            .filter(|index| !named.contains(index) && !plan.load.contains(index) && !members[*index].retired)
+            .collect();
+        moved.sort_by_key(|index| (!members[*index].staged(), *index));
+        for index in moved.into_iter().rev() {
+            let (orphan, _) = mpsc::channel();
+            asks.push_front(Ask {
+                request: Request::Move(index),
+                reply: orphan,
+            });
+        }
         mark(&plan, members, states);
         let name = |index: &usize| members[*index].name().to_owned();
         let _ = reply.send(Ok(LoadReply::Started {

@@ -177,7 +177,7 @@ fn engine(name: &str, devices: Vec<u32>, residency: Residency) -> EnginePlacemen
         share: 1,
         pin_identity: false,
         residency,
-        idle_unload_s: None,
+        pinned: false,
     }
 }
 
@@ -411,10 +411,8 @@ fn a_swap_out_of_the_engine_with_stages_opens_the_engine_on_its_device_thread() 
         directory.path(),
     );
     assert_eq!(opened, ["chat"]);
-    assert_eq!(
-        load(&process, "left"),
-        (vec!["chat".to_owned()], vec!["left".to_owned()])
-    );
+    process.load_with("left", &["chat".to_owned()]).unwrap();
+    assert_eq!(swapped(&process), (vec!["chat".to_owned()], vec!["left".to_owned()]));
     let (job, _, done) = probe(LEFT, &log, None);
     process.submit_job(0, job).unwrap();
     done.recv_timeout(Duration::from_secs(5)).expect("the left job ran");
@@ -427,9 +425,10 @@ fn a_swap_out_of_the_engine_with_stages_opens_the_engine_on_its_device_thread() 
             "run:left@nagaya-dev-0-0"
         ]
     );
-    // An unload of `left` loads the resident `chat` again, on the group thread.
+    // An unload of `left` loads nothing (spec 3.3a, "Explicit layout"). A load of `chat` opens it on the group thread.
     process.unload("left").unwrap();
-    assert_eq!(swapped(&process), (vec!["left".to_owned()], vec!["chat".to_owned()]));
+    assert_eq!(swapped(&process), (vec!["left".to_owned()], Vec::new()));
+    assert_eq!(load(&process, "chat"), (Vec::new(), vec!["chat".to_owned()]));
     assert_eq!(log_of(&log)[4..], ["close:left", "open:chat@nagaya-group-0"]);
 }
 
@@ -700,15 +699,21 @@ fn an_engine_of_both_cards_swaps_on_the_group_thread() {
     assert!(process.wait_opens(Duration::from_secs(5)).unwrap().is_empty());
     assert_eq!(load(&process, "left"), (Vec::new(), vec!["left".to_owned()]));
     let (unloaded, loaded) = load(&process, "wide");
-    assert_eq!(loaded, ["wide"]);
     assert_eq!(
         unloaded,
         ["left"],
-        "a load on the group thread unloads each engine of the device threads"
+        "a load on the group thread moves each engine of the device threads"
     );
+    // The load does not name `left`, so it loads again: a move keeps the layout (spec 3.3a, "Explicit layout").
+    assert_eq!(loaded, ["wide", "left"]);
     assert_eq!(
         log_of(&log),
-        ["open:left@nagaya-dev-0-0", "close:left", "open:wide@nagaya-group-0"]
+        [
+            "open:left@nagaya-dev-0-0",
+            "close:left",
+            "open:wide@nagaya-group-0",
+            "open:left@nagaya-group-0"
+        ]
     );
 }
 

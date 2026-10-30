@@ -20,10 +20,10 @@ slots = [4096, 65536]
 max_block = 512
 
 # The Qwen3-TTS VoiceDesign engine on card 0 (milestone 17, docs/spec.md 11.8). It is on demand: a load route or a
-# profile `PUT` loads it (spec 3.3, 3.3b), and it unloads after 60 s with no job (spec 3.3a). Its plan gives 5,645,096,644 bytes on its card:
-# 4,321,971,520 of weights, 1,223,336,064 for two slots, and 99,789,060 of work. Card 0 has 4,394,792,436 bytes beside
-# gemma, so its load unloads gemma, and gemma loads again when the speech engine goes idle. The checkpoint
-# comes from the unit's environment (`QWEN3TTS_MODEL_DIR`).
+# profile `PUT` loads it, and only an unload removes it (spec 3.3a, "Explicit layout"). Its plan gives 5,645,096,644
+# bytes on its card: 4,321,971,520 of weights, 1,223,336,064 for two slots, and 99,789,060 of work. Card 0 has
+# 4,394,792,436 bytes beside gemma, so its load names gemma in `unload`, and a client loads gemma again after it. The
+# checkpoint comes from the unit's environment (`QWEN3TTS_MODEL_DIR`).
 [[engines]]
 name = "voice"
 kind = "qwen3tts-bmg"
@@ -53,7 +53,6 @@ devices = [0]
 share = 1
 pin_identity = false
 residency = "on_demand"
-idle_unload_s = 600
 
 [[engines]]
 name = "sdxl-1"
@@ -62,7 +61,6 @@ devices = [1]
 share = 1
 pin_identity = false
 residency = "on_demand"
-idle_unload_s = 600
 
 # Pony Diffusion V6 XL on card 0 and AutismMix (its Pony merge) on card 1, each a single file from Civitai (Amy,
 # 2026-10-28). The SDXL engine reads Stability's tensor names (docs/spec.md 11.9, the single file), and its CLIP
@@ -76,7 +74,6 @@ devices = [0]
 share = 1
 pin_identity = false
 residency = "on_demand"
-idle_unload_s = 600
 
 [engines.config]
 checkpoint = "/home/atobey/models/sdxl/ponyDiffusionV6XL_v6StartWithThisOne.safetensors"
@@ -88,7 +85,6 @@ devices = [1]
 share = 1
 pin_identity = false
 residency = "on_demand"
-idle_unload_s = 600
 
 [engines.config]
 checkpoint = "/home/atobey/models/sdxl/autismmixSDXL_autismmixPony.safetensors"
@@ -103,7 +99,6 @@ devices = [0]
 share = 1
 pin_identity = false
 residency = "on_demand"
-idle_unload_s = 600
 
 [engines.config]
 checkpoint = "/home/atobey/models/sdxl/sdxl_lightning_4step.safetensors"

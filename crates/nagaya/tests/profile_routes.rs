@@ -116,7 +116,7 @@ fn engine(name: &str, residency: Residency) -> EnginePlacement {
         share: 1,
         pin_identity: false,
         residency,
-        idle_unload_s: None,
+        pinned: false,
     }
 }
 
@@ -326,14 +326,31 @@ fn a_body_that_does_not_decode_or_breaks_a_rule_is_a_400_that_names_profile() {
     let main = Main::new();
     let mut unknown = as_json(&profile(1000));
     unknown["engines"][0]["weights"] = json!("x");
-    let mut idle = profile(1000);
-    idle.engines[0].idle_unload_s = Some(5);
-    for body in [unknown, json!("not a profile"), as_json(&idle)] {
+    // A pin on an on-demand engine breaks a rule of 3.3a.
+    let mut pinned = profile(1000);
+    pinned.engines[1].pinned = true;
+    for body in [unknown, json!("not a profile"), as_json(&pinned)] {
         let (status, answer) = main.send("PUT", Some(body.clone()));
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body} gave {answer}");
         assert_eq!(answer["error"]["type"], json!("invalid_request"), "{answer}");
         assert_eq!(answer["error"]["param"], json!("profile"), "{answer}");
     }
+}
+
+/// The idle time is gone (spec 3.3a, "Explicit layout"). A `PUT` that names it is a 400, and the message says so.
+#[test]
+fn a_profile_with_an_idle_time_is_a_400_that_says_the_key_is_gone() {
+    let main = Main::new();
+    let mut idle = as_json(&profile(1000));
+    idle["engines"][1]["idle_unload_s"] = json!(600);
+    let (status, answer) = main.send("PUT", Some(idle));
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+    assert_eq!(answer["error"]["param"], json!("profile"), "{answer}");
+    let message = answer["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("idle_unload_s") && message.contains("the key is gone"),
+        "{answer}"
+    );
 }
 
 #[test]

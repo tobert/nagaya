@@ -16,7 +16,7 @@ fn engine(name: &str, kind: &str, share: u64) -> EnginePlacement {
         share,
         pin_identity: false,
         residency: Default::default(),
-        idle_unload_s: None,
+        pinned: false,
     }
 }
 

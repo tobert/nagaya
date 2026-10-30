@@ -111,7 +111,7 @@ fn engine(name: &str, residency: Residency) -> EnginePlacement {
         share: 1,
         pin_identity: false,
         residency,
-        idle_unload_s: None,
+        pinned: false,
     }
 }
 
@@ -246,26 +246,23 @@ fn a_new_profile_without_an_engine_that_holds_a_context_is_refused() {
 fn a_retired_engine_unloads_and_takes_no_load() {
     let directory = tempfile::tempdir().unwrap();
     let (process, log) = start(directory.path());
-    process.load("voice").unwrap();
+    process.load_with("voice", &["chat".to_owned()]).unwrap();
     swapped(&process);
     let ports = process.ports();
     assert_eq!(
         ports.retire("voice").unwrap(),
         LoadReply::Started {
             unload: names(&["voice"]),
-            load: names(&["chat"]),
+            load: Vec::new(),
         }
     );
-    assert_eq!(swapped(&process), (names(&["voice"]), names(&["chat"])));
+    assert_eq!(swapped(&process), (names(&["voice"]), Vec::new()));
     assert_eq!(process.load("voice"), Err(LoadError::Unknown("voice".to_owned())));
     assert_eq!(
         ports.retire("voice").unwrap(),
         LoadReply::Already(EngineState::Unloaded)
     );
-    assert_eq!(
-        log_of(&log),
-        ["open:chat", "close:chat", "open:voice", "close:voice", "open:chat"]
-    );
+    assert_eq!(log_of(&log), ["open:chat", "close:chat", "open:voice", "close:voice"]);
 }
 
 #[test]
@@ -299,6 +296,7 @@ fn an_engine_that_becomes_resident_loads() {
     swapped(&process);
     let mut voice = profile(1000).engines[1].clone();
     voice.residency = Residency::Resident;
+    voice.pinned = true;
     assert_eq!(
         ports.place(&voice).unwrap(),
         LoadReply::Started {
@@ -307,24 +305,37 @@ fn an_engine_that_becomes_resident_loads() {
         }
     );
     assert_eq!(swapped(&process), (Vec::new(), names(&["voice"])));
-    // A resident engine leaves only by a profile change.
-    assert_eq!(process.unload("voice"), Err(LoadError::Resident("voice".to_owned())));
+    // A pinned engine leaves only by a profile change.
+    assert_eq!(process.unload("voice"), Err(LoadError::Pinned("voice".to_owned())));
 }
 
+/// No idle time unloads an engine (spec 3.3a, "Explicit layout"): an engine that becomes on demand stays loaded until
+/// an unload.
 #[test]
-fn an_engine_that_becomes_on_demand_unloads_after_its_idle_time() {
+fn an_engine_that_becomes_on_demand_stays_loaded_until_an_unload() {
     let directory = tempfile::tempdir().unwrap();
     let (process, _log) = start(directory.path());
     let mut chat = profile(1000).engines[0].clone();
     chat.residency = Residency::OnDemand;
-    chat.idle_unload_s = Some(1);
-    let placed = Instant::now();
     assert_eq!(
         process.ports().place(&chat).unwrap(),
         LoadReply::Already(EngineState::Ready)
     );
+    let quiet = Instant::now() + Duration::from_millis(1500);
+    while Instant::now() < quiet {
+        if let Some(event @ Event::Swapped { .. }) = process.recv(Duration::from_millis(50)) {
+            panic!("no swap may come without an unload: {event:?}");
+        }
+    }
+    assert_eq!(process.ports().engine_state("chat"), Some(EngineState::Ready));
+    assert_eq!(
+        process.unload("chat").unwrap(),
+        LoadReply::Started {
+            unload: names(&["chat"]),
+            load: Vec::new(),
+        }
+    );
     assert_eq!(swapped(&process), (names(&["chat"]), Vec::new()));
-    assert!(placed.elapsed() >= Duration::from_millis(900), "{:?}", placed.elapsed());
 }
 
 #[test]

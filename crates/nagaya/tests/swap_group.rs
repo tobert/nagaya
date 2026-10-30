@@ -114,7 +114,7 @@ fn engine(name: &str, residency: Residency) -> EnginePlacement {
         share: 1,
         pin_identity: false,
         residency,
-        idle_unload_s: None,
+        pinned: false,
     }
 }
 
@@ -229,8 +229,17 @@ fn log_of(log: &Log) -> Vec<String> {
 }
 
 /// Load an engine, and wait for the end of its swap. A job for the engine runs only after that (spec 3.3).
+/// Load an engine, and give the swap. The load names the engines in its way in `unload`, as a client does after a
+/// refusal (spec 3.3a, "Explicit layout").
 fn load(process: &Process, engine: &str) -> (Vec<String>, Vec<String>) {
-    process.load(engine).unwrap();
+    match process.load(engine) {
+        Err(nagaya::process::LoadError::InTheWay { in_the_way, .. }) => {
+            process.load_with(engine, &in_the_way).unwrap();
+        }
+        answer => {
+            answer.unwrap();
+        }
+    }
     swapped(process)
 }
 
@@ -348,7 +357,7 @@ fn the_swap_waits_for_the_running_job_of_the_engine_that_unloads() {
     }
     // The gate blocks the group thread in the chat quantum, so the load comes from another thread.
     let ports = process.ports();
-    let loader = std::thread::spawn(move || ports.load("voice"));
+    let loader = std::thread::spawn(move || ports.load_with("voice", &["chat".to_owned()]));
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(log_of(&log), ["open:chat", "run:chat"], "the chat job holds its engine");
     gate_tx.send(()).unwrap();
@@ -389,7 +398,7 @@ fn a_stop_drops_a_load_that_waits_for_the_group() {
     }
     // The gate blocks the group thread, so the load waits in the channel of the group.
     let ports = process.ports();
-    let loader = std::thread::spawn(move || ports.load("voice"));
+    let loader = std::thread::spawn(move || ports.load_with("voice", &["chat".to_owned()]));
     std::thread::sleep(Duration::from_millis(50));
     let stopper = std::thread::spawn(move || {
         let report = process.stop(Duration::from_secs(5), &SignalFlag::new());
@@ -519,7 +528,7 @@ fn the_swap_waits_for_the_queued_jobs_of_the_engine_that_unloads() {
     let (second, second_finished) = probe(CHAT, &log);
     process.submit_job(0, second).unwrap();
     let ports = process.ports();
-    let loader = std::thread::spawn(move || ports.load("voice"));
+    let loader = std::thread::spawn(move || ports.load_with("voice", &["chat".to_owned()]));
     std::thread::sleep(Duration::from_millis(50));
     gate_tx.send(()).unwrap();
     second_finished
@@ -533,119 +542,22 @@ fn the_swap_waits_for_the_queued_jobs_of_the_engine_that_unloads() {
     );
 }
 
+/// No idle time unloads an engine (spec 3.3a, "Explicit layout"). An on-demand engine with no job stays loaded, and
+/// the resident engine that it displaced does not load again by itself.
 #[test]
-fn an_idle_engine_on_demand_unloads_and_the_resident_engine_loads_again() {
+fn an_idle_engine_on_demand_stays_loaded_and_nothing_loads_again() {
     let directory = tempfile::tempdir().unwrap();
-    let log: Log = Arc::default();
-    let mut registry = Registry::new();
-    registry.register("counted", Box::new(CountedFactory(Arc::clone(&log))));
-    let mut profile = profile(1000);
-    profile.engines[VOICE].idle_unload_s = Some(1);
-    let inventory = Inventory {
-        devices: vec![Device {
-            id: 0,
-            name: "device-0".to_owned(),
-            pci_address: "0000:00:00.0".to_owned(),
-            memory_bytes: 4096,
-            unified: false,
-            ignored: false,
-        }],
-        host_bytes: 4096,
-    };
-    let mut process = Start::new(profile, registry, inventory)
-        .store(directory.path())
-        .heartbeat(Duration::from_millis(10))
-        .timeout(Duration::from_secs(5))
-        .start()
-        .unwrap();
-    process.wait_opens(Duration::from_secs(5)).unwrap();
-    assert_eq!(
-        load(&process, "voice"),
-        (vec!["chat".to_owned()], vec!["voice".to_owned()])
-    );
+    let (process, log) = start(directory.path(), 1000);
+    process.load_with("voice", &["chat".to_owned()]).unwrap();
+    assert_eq!(swapped(&process), (vec!["chat".to_owned()], vec!["voice".to_owned()]));
     let (job, finished) = probe(VOICE, &log);
-    let submitted = Instant::now();
     process.submit_job(0, job).unwrap();
     finished
         .recv_timeout(Duration::from_secs(5))
         .expect("the voice job ran");
-    // No job comes. After its idle time, `voice` unloads and `chat` loads again.
-    assert_eq!(swapped(&process), (vec!["voice".to_owned()], vec!["chat".to_owned()]));
-    let after = submitted.elapsed();
-    assert!(after >= Duration::from_secs(1), "the swap back came after {after:?}");
-    assert_eq!(
-        log_of(&log),
-        [
-            "open:chat",
-            "close:chat",
-            "open:voice",
-            "run:voice",
-            "close:voice",
-            "open:chat"
-        ]
-    );
-}
-
-/// Start with `voice` unloading after `idle_s` seconds with no job.
-fn start_idle(directory: &std::path::Path, idle_s: u64) -> (Process, Log) {
-    let log: Log = Arc::default();
-    let mut registry = Registry::new();
-    registry.register("counted", Box::new(CountedFactory(Arc::clone(&log))));
-    let mut profile = profile(1000);
-    profile.engines[VOICE].idle_unload_s = Some(idle_s);
-    let inventory = Inventory {
-        devices: vec![Device {
-            id: 0,
-            name: "device-0".to_owned(),
-            pci_address: "0000:00:00.0".to_owned(),
-            memory_bytes: 4096,
-            unified: false,
-            ignored: false,
-        }],
-        host_bytes: 4096,
-    };
-    let mut process = Start::new(profile, registry, inventory)
-        .store(directory)
-        .heartbeat(Duration::from_millis(10))
-        .timeout(Duration::from_secs(5))
-        .start()
-        .unwrap();
-    process.wait_opens(Duration::from_secs(5)).unwrap();
-    (process, log)
-}
-
-#[test]
-fn an_idle_resident_engine_stays_loaded() {
-    let directory = tempfile::tempdir().unwrap();
-    let (process, log) = start_idle(directory.path(), 1);
     std::thread::sleep(Duration::from_millis(1500));
     assert!(process.recv(Duration::from_millis(10)).is_none(), "no swap came");
-    assert_eq!(log_of(&log), ["open:chat"]);
-}
-
-#[test]
-fn a_job_in_the_idle_time_starts_the_idle_time_again() {
-    let directory = tempfile::tempdir().unwrap();
-    let (process, log) = start_idle(directory.path(), 1);
-    load(&process, "voice");
-    let (job, finished) = probe(VOICE, &log);
-    process.submit_job(0, job).unwrap();
-    finished
-        .recv_timeout(Duration::from_secs(5))
-        .expect("the first voice job ran");
-    std::thread::sleep(Duration::from_millis(700));
-    let (job, finished) = probe(VOICE, &log);
-    let second = Instant::now();
-    process.submit_job(0, job).unwrap();
-    finished
-        .recv_timeout(Duration::from_secs(5))
-        .expect("the second voice job ran");
-    assert_eq!(swapped(&process), (vec!["voice".to_owned()], vec!["chat".to_owned()]));
-    let after = second.elapsed();
-    assert!(
-        after >= Duration::from_millis(950),
-        "the swap back came {after:?} after the second job; the idle time counts from it"
-    );
+    assert_eq!(log_of(&log), ["open:chat", "close:chat", "open:voice", "run:voice"]);
 }
 
 /// The terms of the contexts of an engine stay admitted while it is not loaded (spec 3.3a, "The ledger of a swap"),

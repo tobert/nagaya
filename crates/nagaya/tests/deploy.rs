@@ -355,7 +355,10 @@ fn the_b70host_profile_names_the_speech_engine_on_demand_on_card_zero() {
     );
     assert_eq!(engine.devices, vec![0]);
     assert_eq!(engine.residency, Residency::OnDemand);
-    assert_eq!(engine.idle_unload_s, None, "the default idle time of 60 s");
+    assert!(
+        !engine.pinned,
+        "a client unloads the speech engine (spec 3.3a, \"Explicit layout\")"
+    );
     assert!(
         engine.family.is_empty(),
         "an on-demand engine serves no council model (spec 3.3a)"
@@ -398,10 +401,9 @@ fn the_b70host_profile_names_an_image_engine_on_demand_on_each_card() {
         assert_eq!((engine.name.as_str(), engine.kind.as_str()), (name, nagaya::sdxl::KIND));
         assert_eq!(engine.devices, vec![device]);
         assert_eq!(engine.residency, Residency::OnDemand);
-        assert_eq!(
-            engine.idle_unload_s,
-            Some(600),
-            "{name}: an image session keeps its engine for 10 min"
+        assert!(
+            !engine.pinned,
+            "{name}: a client unloads an image engine (spec 3.3a, \"Explicit layout\")"
         );
         assert!(
             engine.config.is_empty() && engine.family.is_empty(),
@@ -422,7 +424,7 @@ fn the_b70host_profile_names_pony_on_card_zero_and_autismmix_on_card_one() {
         assert_eq!((engine.name.as_str(), engine.kind.as_str()), (name, nagaya::sdxl::KIND));
         assert_eq!(engine.devices, vec![device]);
         assert_eq!(engine.residency, Residency::OnDemand);
-        assert_eq!(engine.idle_unload_s, Some(600));
+        assert!(!engine.pinned, "{name}");
         assert!(
             !engine.config.contains_key("model_dir") && !engine.family.contains_key("model_dir"),
             "{name}: the tokenizer comes from SDXL_MODEL_DIR in the unit"

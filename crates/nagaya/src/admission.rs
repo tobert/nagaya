@@ -741,54 +741,23 @@ pub fn admit_loaded_planned(
     })
 }
 
-/// The rules of residency (spec 3.3a): an idle time only on an on-demand engine, and more than zero; no text model on
-/// demand; and `close` on each engine of the device group of an on-demand engine.
+/// The rules of residency (spec 3.3a): a pin only on a resident engine; no text model on demand; and `close` on each
+/// engine of the device group of an on-demand engine.
 fn check_residency(profile: &PlacementProfile, planned: &[AdmittedEngine]) -> Result<(), AdmitError> {
     let fail = |engine: &str, why: String| AdmitError::Residency {
         engine: engine.to_owned(),
         why,
     };
     let groups = crate::placement::device_groups(profile);
-    // A load of an engine with stages first unloads the other engines of its group (engine-abi "How a group loads
-    // both"), so they are on demand. Each one loads beside it again at its next job.
-    for group in &groups {
-        let staged = group.engines.iter().find(|index| {
-            profile.engines[**index].residency == Residency::Resident
-                && planned[**index].limits.capabilities.contains(&Capability::Stages)
-        });
-        if let Some(&staged) = staged
-            && let Some(&other) = group
-                .engines
-                .iter()
-                .find(|index| **index != staged && profile.engines[**index].residency == Residency::Resident)
-        {
-            return Err(fail(
-                &profile.engines[other].name,
-                format!(
-                    "the resident engine `{}` has stages, and its load unloads the others; make this engine \
-                     `residency = \"on_demand\"`, or move it to other devices",
-                    profile.engines[staged].name
-                ),
-            ));
-        }
-    }
     for (index, placement) in profile.engines.iter().enumerate() {
         let name = placement.name.as_str();
-        match (placement.residency, placement.idle_unload_s) {
-            (Residency::Resident, Some(_)) => {
-                return Err(fail(
-                    name,
-                    "a resident engine has no `idle_unload_s`; remove the key, or set `residency = \"on_demand\"`"
-                        .to_owned(),
-                ));
-            }
-            (Residency::OnDemand, Some(0)) => {
-                return Err(fail(
-                    name,
-                    "`idle_unload_s` is 0, which unloads the engine after each job; give one second or more".to_owned(),
-                ));
-            }
-            _ => {}
+        if placement.pinned && placement.residency != Residency::Resident {
+            return Err(fail(
+                name,
+                "a pinned engine is resident, so it cannot be on demand; remove `pinned`, or remove \
+                 `residency = \"on_demand\"`"
+                    .to_owned(),
+            ));
         }
         if placement.residency != Residency::OnDemand {
             continue;

@@ -56,7 +56,7 @@ fn engine(name: &str, residency: Residency) -> EnginePlacement {
         share: 1,
         pin_identity: false,
         residency,
-        idle_unload_s: (residency == Residency::OnDemand).then_some(600),
+        pinned: false,
     }
 }
 

@@ -16,7 +16,7 @@ fn engine(name: &str, residency: Residency) -> EnginePlacement {
         share: 1,
         pin_identity: false,
         residency,
-        idle_unload_s: None,
+        pinned: false,
     }
 }
 
@@ -74,10 +74,10 @@ fn a_new_share_and_new_budgets_keep_the_engine_in_place() {
 }
 
 #[test]
-fn a_new_residency_or_idle_time_is_a_residency_action_in_place() {
+fn a_new_residency_or_pin_is_a_residency_action_in_place() {
     let mut new = active();
     new.engines[0].residency = Residency::OnDemand;
-    new.engines[1].idle_unload_s = Some(30);
+    new.engines[1].pinned = true;
     let change = change(&active(), &new, closes);
     assert_eq!(
         actions(&change),

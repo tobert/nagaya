@@ -1044,18 +1044,28 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
             job,
             loaded: false,
             handles: Vec::new(),
-            last_busy: Instant::now(),
             retired: false,
         })
         .collect();
     let mut engines: Vec<Box<dyn Engine>> = members.iter().map(Unloaded::of).collect();
     let mut opened = Vec::with_capacity(members.len());
-    // A group of more than one device has a device thread for each device (spec 3.2). With no resident engine with
-    // stages, each resident engine with one device opens on its device thread, in the serve loop.
+    // A group of more than one device has a device thread for each device (spec 3.2). Each resident engine with one
+    // device opens on its device thread, in the serve loop. With a resident engine with stages, that thread is the
+    // stage thread of the device, and the engine opens after the engine with stages (spec 3.3a, "Explicit layout").
     let devices = staged::group_devices(&members);
     let threads = devices.len() > 1;
-    let resident_staged = members.iter().any(|member| member.resident() && member.staged());
-    let on_thread = |member: &Member| threads && !resident_staged && !member.staged() && member.job.devices.len() == 1;
+    let staged_devices: Option<Vec<DeviceId>> = members
+        .iter()
+        .find(|member| member.resident() && member.staged())
+        .map(|member| member.job.devices.iter().map(|device| device.id).collect());
+    let on_thread = |member: &Member| {
+        threads
+            && !member.staged()
+            && member.job.devices.len() == 1
+            && staged_devices
+                .as_ref()
+                .is_none_or(|devices| devices.contains(&member.job.devices[0].id))
+    };
     let mut later = Vec::new();
     // An open can take minutes, and it blocks this thread. The guard beats for the group until the open ends (7.4).
     let open_beat = OpenBeat::start(group, links.heartbeats.clone(), interval);
@@ -1298,20 +1308,6 @@ fn serve_plain(
                 .is_some_and(|plan| plan.unload.iter().all(|index| !jobs.holds(*index)))
         {
             return Exit::Swap(pending.take().expect("a pending swap"));
-        }
-        let now = Instant::now();
-        for (index, member) in members.iter_mut().enumerate() {
-            if member.loaded && jobs.holds(index) {
-                member.last_busy = now;
-            }
-        }
-        if serving
-            && pending.is_none()
-            && asks.is_empty()
-            && let Some(plan) = in_place::idle_plan(members, now, &links.ledger)
-        {
-            loads::mark(&plan, members, &links.states);
-            return Exit::Swap(plan);
         }
         if !jobs.idle() {
             if serving {
@@ -1756,7 +1752,12 @@ impl Ports {
 
     /// Load an engine, as [`Process::load`] does.
     pub fn load(&self, engine: &str) -> Result<LoadReply, LoadError> {
-        self.ask(engine, loads::Asking::Load)
+        self.load_with(engine, &[])
+    }
+
+    /// Load an engine after the engines of `unload` unload, as [`Process::load_with`] does.
+    pub fn load_with(&self, engine: &str, unload: &[String]) -> Result<LoadReply, LoadError> {
+        self.ask(engine, loads::Asking::Load(unload.to_vec()))
     }
 
     /// Unload an engine, as [`Process::unload`] does.
@@ -1770,8 +1771,8 @@ impl Ports {
         self.ask(engine, loads::Asking::Retire)
     }
 
-    /// Give an engine the residency, the idle time and the share of its new profile entry (spec 3.3). An engine that
-    /// becomes resident loads.
+    /// Give an engine the residency, the pin and the share of its new profile entry (spec 3.3). An engine that becomes
+    /// resident loads when it fits beside the loaded engines.
     pub fn place(&self, entry: &EnginePlacement) -> Result<LoadReply, LoadError> {
         self.ask(&entry.name, loads::Asking::Place(Box::new(entry.clone())))
     }
@@ -1890,8 +1891,13 @@ impl Process {
         self.ports().load(engine)
     }
 
-    /// Unload the on-demand engine with this name, as after its idle time (spec 3.3b). The resident engines of its
-    /// group load again.
+    /// Load the engine with this name after the engines of `unload` unload, in one swap (spec 3.3a, "Explicit
+    /// layout"). A swap that does not fit is a refusal, and nothing changes.
+    pub fn load_with(&self, engine: &str, unload: &[String]) -> Result<LoadReply, LoadError> {
+        self.ports().load_with(engine, unload)
+    }
+
+    /// Unload the engine with this name (spec 3.3b). No other engine loads.
     pub fn unload(&self, engine: &str) -> Result<LoadReply, LoadError> {
         self.ports().unload(engine)
     }

@@ -1,6 +1,7 @@
 //! The swap in place on the two B70 cards (spec 3.3a, milestone 16 step 7): Gemma 4 is resident on both cards, and an
-//! on-demand fake engine with `close` shares card 1. A load of the fake unloads Gemma 4 and frees its device memory.
-//! An unload of the fake loads Gemma 4 again, and the reply is the same as before the swap (spec 3.3b).
+//! on-demand fake engine with `close` shares card 1. A load of the fake that names Gemma 4 in `unload` frees its device
+//! memory. An unload of the fake and a load of Gemma 4 give the same reply as before the swap (spec 3.3a, "Explicit
+//! layout", and 3.3b).
 //!
 //! It needs both cards and the checkpoint in `GEMMA4_MODEL_DIR`. Stop `nagaya.service` first. Run it alone:
 //! `cargo test --release -p nagaya --features xe --test xe_swap -- --test-threads=1 --nocapture`.
@@ -254,7 +255,10 @@ fn gemma4_unloads_for_an_engine_on_demand_and_loads_again_with_the_same_reply() 
 
     // A request never starts a load, so the test loads the fake (spec 3.3b).
     let started = Instant::now();
-    ready.process.load("voice").expect("a load of `voice`");
+    ready
+        .process
+        .load_with("voice", &["gemma".to_owned()])
+        .expect("a load of `voice` that names `gemma`");
     assert_eq!(swapped(&ready), (vec!["gemma".to_owned()], vec!["voice".to_owned()]));
     println!("swap to the fake in {} ms", started.elapsed().as_millis());
     let (done, finished) = mpsc::channel();
@@ -285,7 +289,9 @@ fn gemma4_unloads_for_an_engine_on_demand_and_loads_again_with_the_same_reply() 
 
     let started = Instant::now();
     ready.process.unload("voice").expect("an unload of `voice`");
-    assert_eq!(swapped(&ready), (vec!["voice".to_owned()], vec!["gemma".to_owned()]));
+    assert_eq!(swapped(&ready), (vec!["voice".to_owned()], Vec::new()));
+    ready.process.load("gemma").expect("a load of `gemma`");
+    assert_eq!(swapped(&ready), (Vec::new(), vec!["gemma".to_owned()]));
     println!("swap back to Gemma 4 in {} ms", started.elapsed().as_millis());
     let (after, ms) = generate(&council);
     println!("generation after the swap back in {ms} ms: {after}");

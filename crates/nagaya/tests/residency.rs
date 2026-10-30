@@ -63,7 +63,7 @@ fn engine(name: &str, device: u32, bytes: u64, residency: Residency) -> EnginePl
         share: 1,
         pin_identity: false,
         residency,
-        idle_unload_s: None,
+        pinned: false,
     }
 }
 
@@ -265,46 +265,45 @@ fn an_on_demand_image_engine_takes_its_family_table() {
         .expect("an image engine on demand with a family table");
 }
 
+/// A pinned engine is resident (spec 3.3a, "Pins"), so a pin on an on-demand engine is refused.
 #[test]
-fn an_idle_time_on_a_resident_engine_is_refused() {
-    let mut chat = engine("chat", 0, 100, Residency::Resident);
-    chat.idle_unload_s = Some(30);
-    let (error, before, after) = refused(&profile(vec![chat]));
-    assert_eq!(after, before);
-    assert!(
-        matches!(&error, AdmitError::Residency { engine, .. } if engine == "chat"),
-        "{error:?}"
-    );
-    assert!(error.to_string().contains("idle_unload_s"), "{error}");
-}
-
-#[test]
-fn an_idle_time_of_zero_is_refused() {
+fn a_pin_on_an_on_demand_engine_is_refused() {
     let mut voice = engine("voice", 0, 100, Residency::OnDemand);
-    voice.idle_unload_s = Some(0);
-    let (error, _, _) = refused(&profile(vec![voice]));
+    voice.pinned = true;
+    let (error, before, after) = refused(&profile(vec![voice]));
+    assert_eq!(after, before);
     assert!(
         matches!(&error, AdmitError::Residency { engine, .. } if engine == "voice"),
         "{error:?}"
     );
+    assert!(error.to_string().contains("pinned"), "{error}");
 }
 
 #[test]
-fn an_engine_with_stages_shares_its_group_only_with_on_demand_engines() {
+fn a_pin_on_a_resident_engine_is_admitted() {
+    let mut chat = engine("chat", 0, 100, Residency::Resident);
+    chat.pinned = true;
+    admit(&profile(vec![chat]), &registry(), &inventory(), &mut Ledger::new()).expect("a pinned resident engine");
+}
+
+/// No swap unloads an engine by itself now (spec 3.3a, "Explicit layout"), so a resident engine can share its group
+/// with a resident engine with stages. Both must fit together, as every resident engine must.
+#[test]
+fn a_resident_engine_shares_its_group_with_a_resident_engine_with_stages() {
     let mut gemma = engine("gemma", 0, 100, Residency::Resident);
     gemma.config.insert("stages".to_owned(), toml::Value::Boolean(true));
-    let helper = engine("helper", 0, 100, Residency::Resident);
-    let (error, before, after) = refused(&profile(vec![gemma.clone(), helper]));
-    assert_eq!(after, before);
-    assert!(
-        matches!(&error, AdmitError::Residency { engine, .. } if engine == "helper"),
-        "{error:?}"
-    );
-    assert!(error.to_string().contains("stages"), "{error}");
-    // With the other engine on demand, the profile is admitted: a swap unloads one for the other.
-    let voice = engine("voice", 0, 100, Residency::OnDemand);
-    let mut ledger = Ledger::new();
-    admit(&profile(vec![gemma, voice]), &registry(), &inventory(), &mut ledger).unwrap();
+    let mut helper = engine("helper", 0, 100, Residency::Resident);
+    helper.pinned = true;
+    admit(
+        &profile(vec![gemma.clone(), helper]),
+        &registry(),
+        &inventory(),
+        &mut Ledger::new(),
+    )
+    .expect("two resident engines that fit together");
+    let too_big = engine("big", 0, 950, Residency::Resident);
+    let (error, _, _) = refused(&profile(vec![gemma, too_big]));
+    assert!(matches!(&error, AdmitError::Ledger(_)), "{error:?}");
 }
 
 #[test]

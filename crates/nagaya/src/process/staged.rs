@@ -1382,7 +1382,6 @@ fn end_open(
     let opened = opened?;
     let engine = members[member].name().to_owned();
     members[member].loaded = true;
-    members[member].last_busy = Instant::now();
     engines[member] = Elsewhere::hosted(&members[member]);
     links.states.opened(&engine, &opened.identity);
     links.states.record(&engine, EngineState::Ready);
@@ -1831,11 +1830,10 @@ pub(super) fn serve(
         if !serving && !jobs.idle() {
             cancelled += jobs.cancel_all();
         }
-        // A plan that does not keep the engine with stages beside its hosted engines unloads every loaded engine. A
-        // resident hosted engine then loads again on the group thread, so the group reaches the state of its profile
-        // (spec 3.3). An engine with stages loads alone, so a plan that loads one loads no other engine.
-        // With no engine with stages, the same holds for the engines on the group thread: a plan that does not keep
-        // them unloads them.
+        // A plan that does not keep the engine with stages beside its hosted engines unloads every loaded engine. Each
+        // engine that the plan does not name moves: it loads again in this swap, on its device thread, when the engine
+        // with stages leaves for good. Else it loads in the next swap, after the engine with stages (spec 3.3a,
+        // "Explicit layout", moves). With no engine with stages, the same holds for the engines on the group thread.
         let local: Vec<usize> = (0..members.len())
             .filter(|member| members[*member].loaded && !hosted.contains_key(member))
             .collect();
@@ -1844,13 +1842,16 @@ pub(super) fn serve(
                 && plan.unload.iter().all(|member| hosted.contains_key(member))
                 && plan.load.iter().all(|member| stages.contains_key(member));
             if !beside {
+                let named = plan.unload.clone();
                 let loads_staged = plan.load.iter().any(|member| members[*member].staged());
+                // The engine with stages that leaves and is not named comes back first, so nothing loads beside it now.
+                let staged_returns = index.is_some_and(|staged| !named.contains(&staged));
                 for member in hosted.keys().copied().chain(local.iter().copied()) {
                     if !plan.unload.contains(&member) {
                         plan.unload.push(member);
                     }
-                    let again = Some(member) != index && members[member].resident() && !members[member].retired;
-                    if again && !loads_staged && !plan.load.contains(&member) {
+                    let again = Some(member) != index && !named.contains(&member) && !members[member].retired;
+                    if again && !loads_staged && !staged_returns && !plan.load.contains(&member) {
                         plan.load.push(member);
                     }
                 }
@@ -1861,18 +1862,6 @@ pub(super) fn serve(
         let free = swapping.is_none();
         if serving && free && pending.is_none() {
             pending = loads::next_plan(asks, members, &links.ledger, &links.states, widen);
-        }
-        let now = Instant::now();
-        for member in local.iter().copied().chain(hosted.keys().copied()) {
-            if jobs.holds(member) {
-                members[member].last_busy = now;
-            }
-        }
-        if serving && free && pending.is_none() && asks.is_empty() {
-            pending = in_place::idle_plan(members, now, &links.ledger).map(|plan| widen(plan, members));
-            if let Some(plan) = &pending {
-                loads::mark(plan, members, &links.states);
-            }
         }
         let beside = pending.as_ref().is_some_and(|plan| {
             local.iter().all(|member| !plan.unload.contains(member))

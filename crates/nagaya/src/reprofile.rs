@@ -25,7 +25,7 @@ use crate::swap::{Shortfall, Swap, SwapError};
 pub enum Action {
     /// The entry is the same, or only its `share` changes.
     Keep,
-    /// Only `residency` or `idle_unload_s` changes.
+    /// Only `residency` or `pinned` changes.
     Residency,
     /// The entry is new.
     Load,
@@ -97,7 +97,7 @@ fn compare(old: &EnginePlacement, new: &EnginePlacement) -> Action {
         && old.pin_identity == new.pin_identity;
     if !opens_the_same {
         Action::Reload
-    } else if old.residency != new.residency || old.idle_unload_s != new.idle_unload_s {
+    } else if old.residency != new.residency || old.pinned != new.pinned {
         Action::Residency
     } else {
         Action::Keep

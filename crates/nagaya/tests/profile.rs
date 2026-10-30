@@ -11,6 +11,7 @@ kind = "fake"
 devices = [0]
 share = 1
 pin_identity = true
+pinned = true
 
 [engines.config]
 slots = 2
@@ -21,7 +22,6 @@ kind = "fake"
 devices = [0]
 share = 3
 residency = "on_demand"
-idle_unload_s = 30
 
 [[budgets]]
 tiers = ["device(0)", "host"]
@@ -45,7 +45,7 @@ fn example_profile() -> PlacementProfile {
                 share: 1,
                 pin_identity: true,
                 residency: Residency::Resident,
-                idle_unload_s: None,
+                pinned: true,
             },
             EnginePlacement {
                 name: "helper".to_owned(),
@@ -56,7 +56,7 @@ fn example_profile() -> PlacementProfile {
                 share: 3,
                 pin_identity: false,
                 residency: Residency::OnDemand,
-                idle_unload_s: Some(30),
+                pinned: false,
             },
         ],
         budgets: vec![BudgetSpec {
@@ -133,14 +133,28 @@ fn the_optional_engine_fields_have_defaults() {
     assert!(!profile.engines[1].pin_identity);
     assert_eq!(profile.engines[1].family, toml::Table::new());
     assert_eq!(profile.engines[0].residency, Residency::Resident);
-    assert_eq!(profile.engines[0].idle_unload_s, None);
+    assert!(!profile.engines[1].pinned);
 }
 
 #[test]
-fn an_engine_on_demand_names_its_idle_time() {
+fn an_engine_names_its_pin() {
     let profile = PlacementProfile::parse(EXAMPLE).unwrap();
+    assert!(profile.engines[0].pinned);
     assert_eq!(profile.engines[1].residency, Residency::OnDemand);
-    assert_eq!(profile.engines[1].idle_unload_s, Some(30));
+}
+
+/// The idle time is gone (spec 3.3a, "Explicit layout"). A profile that names it does not parse, and the message
+/// says that the key is gone.
+#[test]
+fn a_profile_that_names_an_idle_time_is_refused_and_says_the_key_is_gone() {
+    let text = EXAMPLE.replace(
+        "residency = \"on_demand\"\n",
+        "residency = \"on_demand\"\nidle_unload_s = 30\n",
+    );
+    let error = PlacementProfile::parse(&text).unwrap_err().to_string();
+    assert!(error.contains("`idle_unload_s`"), "{error}");
+    assert!(error.contains("the key is gone"), "{error}");
+    assert!(error.contains("helper"), "the message names the engine: {error}");
 }
 
 #[test]
@@ -157,9 +171,13 @@ fn a_residency_that_is_not_known_is_refused_with_its_text() {
 fn a_resident_engine_writes_no_residency_key() {
     let mut profile = example_profile();
     profile.engines.truncate(1);
+    profile.engines[0].pinned = false;
     let text = profile.to_toml().unwrap();
     assert!(!text.contains("residency"), "{text}");
-    assert!(!text.contains("idle_unload_s"), "{text}");
+    assert!(
+        !text.contains("pinned"),
+        "an engine that is not pinned writes no key: {text}"
+    );
 }
 
 #[test]

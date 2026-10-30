@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use nagaya::admission::{Factory, GroupDevice, OpenError, PlanError, Registry};
 use nagaya::inventory::{Device, Inventory};
 use nagaya::jobs::{JobBody, JobSpec, Ran};
-use nagaya::process::{Event, LoadReply, Process, Start};
+use nagaya::process::{Event, LoadError, LoadReply, Process, Start};
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, Residency, StoreSpec, TierSpec};
 use nagaya::signal::SignalFlag;
 use nagaya_abi::fake::FakeAlways;
@@ -104,7 +104,7 @@ impl Factory for Pair {
     }
 }
 
-fn engine(name: &str, devices: Vec<u32>, residency: Residency, idle_unload_s: Option<u64>) -> EnginePlacement {
+fn engine(name: &str, devices: Vec<u32>, residency: Residency) -> EnginePlacement {
     let mut config = toml::Table::new();
     config.insert("name".to_owned(), toml::Value::String(name.to_owned()));
     EnginePlacement {
@@ -116,17 +116,23 @@ fn engine(name: &str, devices: Vec<u32>, residency: Residency, idle_unload_s: Op
         share: 1,
         pin_identity: false,
         residency,
-        idle_unload_s,
+        pinned: false,
     }
 }
 
-/// Both engines fit on card 1 together. `voice` unloads after `idle_unload_s` with no job.
-fn start(directory: &std::path::Path, idle_unload_s: Option<u64>) -> (Process, Log) {
+/// A pinned engine (spec 3.3a, "Explicit layout").
+fn pinned(mut placement: EnginePlacement) -> EnginePlacement {
+    placement.pinned = true;
+    placement
+}
+
+/// Both engines fit on card 1 together.
+fn start(directory: &std::path::Path) -> (Process, Log) {
     start_with(
         directory,
         &[
-            engine("chat", vec![0, 1], Residency::Resident, None),
-            engine("voice", vec![1], Residency::OnDemand, idle_unload_s),
+            engine("chat", vec![0, 1], Residency::Resident),
+            engine("voice", vec![1], Residency::OnDemand),
         ],
     )
 }
@@ -307,7 +313,7 @@ fn swapped(process: &Process, within: Duration) -> (Vec<String>, Vec<String>) {
 #[test]
 fn a_load_of_an_engine_with_one_device_loads_it_beside_the_engine_with_stages() {
     let directory = tempfile::tempdir().unwrap();
-    let (process, log) = start(directory.path(), None);
+    let (process, log) = start(directory.path());
     assert!(process.ports().engine_identity("voice").is_none(), "voice never opened");
     assert_eq!(
         process.load("voice").unwrap(),
@@ -351,7 +357,7 @@ fn a_load_of_an_engine_with_one_device_loads_it_beside_the_engine_with_stages() 
 #[test]
 fn a_stage_on_card_zero_runs_while_a_quantum_holds_card_one() {
     let directory = tempfile::tempdir().unwrap();
-    let (process, log) = start(directory.path(), None);
+    let (process, log) = start(directory.path());
     load(&process, "voice");
     let (gate, held) = mpsc::channel();
     let (job, voice_done) = voice(&log, Some(held));
@@ -376,13 +382,14 @@ fn a_stage_on_card_zero_runs_while_a_quantum_holds_card_one() {
 }
 
 #[test]
-fn an_idle_engine_beside_unloads_on_its_stage_thread_and_the_engine_with_stages_stays() {
+fn an_unload_of_an_engine_beside_runs_on_its_stage_thread_and_the_engine_with_stages_stays() {
     let directory = tempfile::tempdir().unwrap();
-    let (process, log) = start(directory.path(), Some(1));
+    let (process, log) = start(directory.path());
     assert_eq!(load(&process, "voice"), (Vec::new(), vec!["voice".to_owned()]));
     let (job, finished) = voice(&log, None);
     process.submit_job(0, job).unwrap();
     finished.recv_timeout(Duration::from_secs(5)).unwrap();
+    process.unload("voice").unwrap();
     assert_eq!(
         swapped(&process, Duration::from_secs(5)),
         (vec!["voice".to_owned()], Vec::new())
@@ -418,7 +425,7 @@ fn an_idle_engine_beside_unloads_on_its_stage_thread_and_the_engine_with_stages_
 #[test]
 fn a_stop_parks_and_closes_the_engine_beside() {
     let directory = tempfile::tempdir().unwrap();
-    let (mut process, log) = start(directory.path(), None);
+    let (mut process, log) = start(directory.path());
     load(&process, "voice");
     let (job, finished) = voice(&log, None);
     process.submit_job(0, job).unwrap();
@@ -438,22 +445,53 @@ fn a_stop_parks_and_closes_the_engine_beside() {
     assert!(log.contains(&"close:voice".to_owned()), "{log:?}");
 }
 
+/// A load of an engine with stages needs the other engines of its group to leave. One that is not pinned and not named
+/// in `unload` is in the way, and the load is a refusal that names it (spec 3.3a, "Explicit layout").
 #[test]
-fn an_idle_engine_with_stages_unloads_the_engine_beside_it_first() {
+fn a_load_of_an_engine_with_stages_names_the_engine_in_the_way() {
     let directory = tempfile::tempdir().unwrap();
-    // `voice` is resident on card 1, and `chat` with stages is on demand with an idle time of one second.
     let (process, log) = start_with(
         directory.path(),
         &[
-            engine("chat", vec![0, 1], Residency::OnDemand, Some(1)),
-            engine("voice", vec![1], Residency::Resident, None),
+            engine("chat", vec![0, 1], Residency::OnDemand),
+            engine("voice", vec![1], Residency::Resident),
         ],
     );
-    // A load of the engine with stages unloads the others first (engine-abi "How a group loads both").
+    let error = process.load("chat").unwrap_err();
+    assert!(
+        matches!(&error, LoadError::InTheWay { engine, in_the_way, pinned, .. }
+            if engine == "chat" && in_the_way == &["voice"] && pinned.is_empty()),
+        "{error:?}"
+    );
+    assert_eq!(log_of(&log), ["open:voice@nagaya-dev-0-1"], "nothing changed");
+    // With `voice` named in `unload`, the swap runs.
     assert_eq!(
-        load(&process, "chat"),
+        process.load_with("chat", &["voice".to_owned()]).unwrap(),
+        LoadReply::Started {
+            unload: vec!["voice".to_owned()],
+            load: vec!["chat".to_owned()],
+        }
+    );
+    assert_eq!(
+        swapped(&process, Duration::from_secs(5)),
         (vec!["voice".to_owned()], vec!["chat".to_owned()])
     );
+}
+
+/// An unload of the engine with stages moves the engine beside it, which the unload does not name: it unloads on its
+/// stage thread and loads again on its device thread (spec 3.3a, "Explicit layout", moves).
+#[test]
+fn an_unload_of_the_engine_with_stages_moves_the_engine_beside_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start_with(
+        directory.path(),
+        &[
+            engine("chat", vec![0, 1], Residency::OnDemand),
+            engine("voice", vec![1], Residency::Resident),
+        ],
+    );
+    process.load_with("chat", &["voice".to_owned()]).unwrap();
+    swapped(&process, Duration::from_secs(5));
     let (job, finished) = chat_pass(&log);
     process.submit_job(0, job).unwrap();
     finished
@@ -465,9 +503,13 @@ fn an_idle_engine_with_stages_unloads_the_engine_beside_it_first() {
     finished
         .recv_timeout(Duration::from_secs(5))
         .expect("the voice job ran beside chat");
-    // `chat` goes idle. The loop unloads `voice` on its stage thread, then `chat`, and the ledger hears of both.
-    // `voice` is resident, so it loads again, on the device thread of card 1 (spec 3.2, Decided 2026-10-28): the
-    // group reaches the state of its profile.
+    assert_eq!(
+        process.unload("chat").unwrap(),
+        LoadReply::Started {
+            unload: vec!["chat".to_owned(), "voice".to_owned()],
+            load: vec!["voice".to_owned()],
+        }
+    );
     let (mut unloaded, loaded) = swapped(&process, Duration::from_secs(5));
     unloaded.sort();
     assert_eq!(unloaded, ["chat", "voice"]);
@@ -481,6 +523,75 @@ fn an_idle_engine_with_stages_unloads_the_engine_beside_it_first() {
         .filter(|line| line.starts_with("close:"))
         .collect();
     assert_eq!(closes, ["close:voice", "close:voice", "close:chat"]);
+    assert_eq!(
+        process.ports().engine_state("voice"),
+        Some(nagaya::notify::EngineState::Ready)
+    );
+}
+
+/// A pinned engine stays loaded through a load of an engine with stages: the swap moves it, and it loads again beside
+/// the new engine with stages (spec 3.3a, "Explicit layout", moves).
+#[test]
+fn a_load_of_an_engine_with_stages_moves_a_pinned_engine_and_loads_it_beside() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start_with(
+        directory.path(),
+        &[
+            engine("chat", vec![0, 1], Residency::OnDemand),
+            pinned(engine("voice", vec![1], Residency::Resident)),
+        ],
+    );
+    assert_eq!(
+        process.load("chat").unwrap(),
+        LoadReply::Started {
+            unload: vec!["voice".to_owned()],
+            load: vec!["chat".to_owned()],
+        }
+    );
+    assert_eq!(
+        swapped(&process, Duration::from_secs(5)),
+        (vec!["voice".to_owned()], vec!["chat".to_owned()])
+    );
+    assert_eq!(
+        swapped(&process, Duration::from_secs(5)),
+        (Vec::new(), vec!["voice".to_owned()])
+    );
+    assert_eq!(
+        log_of(&log),
+        [
+            "open:voice@nagaya-dev-0-1",
+            "close:voice",
+            "open:chat@nagaya-group-0",
+            "open:voice@nagaya-stg-0-1"
+        ]
+    );
+    assert_eq!(
+        process.ports().engine_state("voice"),
+        Some(nagaya::notify::EngineState::Ready)
+    );
+    // The unload route never removes a pinned engine.
+    assert_eq!(process.unload("voice"), Err(LoadError::Pinned("voice".to_owned())));
+}
+
+/// A resident engine shares its group with a resident engine with stages. At start it opens on the stage thread of its
+/// device, after the engine with stages (spec 3.3a, "Explicit layout").
+#[test]
+fn a_resident_engine_opens_beside_a_resident_engine_with_stages_at_start() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start_with(
+        directory.path(),
+        &[
+            engine("chat", vec![0, 1], Residency::Resident),
+            pinned(engine("voice", vec![1], Residency::Resident)),
+        ],
+    );
+    assert_eq!(log_of(&log), ["open:chat@nagaya-group-0", "open:voice@nagaya-stg-0-1"]);
+    let (job, finished) = voice(&log, None);
+    process.submit_job(0, job).unwrap();
+    finished
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the voice job ran");
+    assert_eq!(log_of(&log).last().unwrap(), "run:voice@nagaya-stg-0-1");
 }
 
 /// A job that tells its caller the state of its engine when the group ends it as unavailable.
@@ -499,7 +610,7 @@ impl JobBody for Refused {
 #[test]
 fn a_job_for_an_unloaded_engine_beside_the_stages_ends_as_unavailable() {
     let directory = tempfile::tempdir().unwrap();
-    let (process, log) = start(directory.path(), None);
+    let (process, log) = start(directory.path());
     let (tx, rx) = mpsc::channel();
     let spec = JobSpec {
         class: Class::Interactive,
@@ -514,55 +625,31 @@ fn a_job_for_an_unloaded_engine_beside_the_stages_ends_as_unavailable() {
     assert_eq!(log_of(&log), ["open:chat@nagaya-group-0"], "nothing loaded");
 }
 
-/// An unload of the engine with stages also unloads the engines on its stage threads, and the reply names each of
-/// them (spec 3.3b, engine-abi "How a group loads both"). A resident engine among them loads again, so the group
-/// reaches the state of its profile.
-#[test]
-fn an_unload_of_the_engine_with_stages_names_the_engine_beside_it_and_loads_it_again() {
-    let directory = tempfile::tempdir().unwrap();
-    let (process, _log) = start_with(
-        directory.path(),
-        &[
-            engine("chat", vec![0, 1], Residency::OnDemand, Some(60)),
-            engine("voice", vec![1], Residency::Resident, None),
-        ],
-    );
-    load(&process, "chat");
-    load(&process, "voice");
-    assert_eq!(
-        process.unload("chat").unwrap(),
-        LoadReply::Started {
-            unload: vec!["chat".to_owned(), "voice".to_owned()],
-            load: vec!["voice".to_owned()],
-        }
-    );
-    assert_eq!(
-        swapped(&process, Duration::from_secs(5)),
-        (vec!["chat".to_owned(), "voice".to_owned()], vec!["voice".to_owned()])
-    );
-    assert_eq!(
-        process.ports().engine_state("voice"),
-        Some(nagaya::notify::EngineState::Ready)
-    );
-}
-
 /// An engine with stages loads alone (engine-abi "How a group loads both"). A load of a second engine with stages
-/// unloads the resident engine beside the first one, and does not load it again in the same swap.
+/// that names only the first in `unload` finds the resident engine beside it in the way.
 #[test]
-fn a_load_of_another_engine_with_stages_does_not_load_the_resident_engine_beside_it() {
+fn a_load_of_another_engine_with_stages_finds_the_resident_engine_beside_in_the_way() {
     let directory = tempfile::tempdir().unwrap();
     let (process, _log) = start_with(
         directory.path(),
         &[
-            engine("chat", vec![0, 1], Residency::OnDemand, Some(60)),
-            engine("voice", vec![1], Residency::Resident, None),
-            engine("paint", vec![0, 1], Residency::OnDemand, Some(60)),
+            engine("chat", vec![0, 1], Residency::OnDemand),
+            engine("voice", vec![1], Residency::Resident),
+            engine("paint", vec![0, 1], Residency::OnDemand),
         ],
     );
-    load(&process, "chat");
+    process.load_with("chat", &["voice".to_owned()]).unwrap();
+    swapped(&process, Duration::from_secs(5));
     load(&process, "voice");
+    let error = process.load_with("paint", &["chat".to_owned()]).unwrap_err();
+    assert!(
+        matches!(&error, LoadError::InTheWay { in_the_way, .. } if in_the_way == &["voice"]),
+        "{error:?}"
+    );
     assert_eq!(
-        process.load("paint").unwrap(),
+        process
+            .load_with("paint", &["chat".to_owned(), "voice".to_owned()])
+            .unwrap(),
         LoadReply::Started {
             unload: vec!["chat".to_owned(), "voice".to_owned()],
             load: vec!["paint".to_owned()],

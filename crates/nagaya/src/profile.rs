@@ -100,44 +100,89 @@ impl<'de> Deserialize<'de> for TierSpec {
 
 /// One engine in the profile.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "PlacementInput")]
 pub struct EnginePlacement {
     /// The engine name. It has the characters of a node name and at most `MAX_ENGINE_NAME_BYTES` bytes.
-    #[serde(deserialize_with = "engine_name")]
     pub name: String,
     /// The engine kind, which selects the factory.
     pub kind: String,
     /// The devices of the engine's device group.
     pub devices: Vec<DeviceId>,
     /// The engine's own config (ABI "Rust shape").
-    #[serde(default)]
     pub config: toml::Table,
     /// The files of the engine's family library (spec 11.3, "The engine registry"). The family opens from this
     /// table and from the engine identity.
-    #[serde(default)]
     pub family: toml::Table,
     /// The engine's share of the spare memory (D9).
     pub share: u64,
     /// True when the profile pins the engine's identity (spec 12.1).
-    #[serde(default)]
     pub pin_identity: bool,
     /// When the engine is loaded (spec 3.3a). The default is `resident`, and a resident entry writes no key.
-    #[serde(default, skip_serializing_if = "Residency::is_resident")]
+    #[serde(skip_serializing_if = "Residency::is_resident")]
     pub residency: Residency,
-    /// The seconds with no job after which an on-demand engine unloads (spec 3.3a). Only an on-demand entry has it;
-    /// without it, the time is [`DEFAULT_IDLE_UNLOAD_S`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub idle_unload_s: Option<u64>,
+    /// True for an engine that no load and no unload removes (spec 3.3a, "Explicit layout"). A pinned engine is
+    /// resident. An entry that is not pinned writes no key.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
+}
+
+/// An `[[engines]]` entry as it is written, before the check of the keys that are gone.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlacementInput {
+    #[serde(deserialize_with = "engine_name")]
+    name: String,
+    kind: String,
+    devices: Vec<DeviceId>,
+    #[serde(default)]
+    config: toml::Table,
+    #[serde(default)]
+    family: toml::Table,
+    share: u64,
+    #[serde(default)]
+    pin_identity: bool,
+    #[serde(default)]
+    residency: Residency,
+    #[serde(default)]
+    pinned: bool,
+    /// A key that is gone (spec 3.3a, "Explicit layout"). A profile that names it does not parse.
+    #[serde(default)]
+    idle_unload_s: Option<serde::de::IgnoredAny>,
+}
+
+impl TryFrom<PlacementInput> for EnginePlacement {
+    type Error = String;
+
+    fn try_from(input: PlacementInput) -> Result<Self, String> {
+        if input.idle_unload_s.is_some() {
+            return Err(format!(
+                "engine `{}` names `idle_unload_s`, and the key is gone: no idle time unloads an engine (spec 3.3a, \
+                 \"Explicit layout\"); remove the key, and unload the engine with the unload route",
+                input.name
+            ));
+        }
+        Ok(EnginePlacement {
+            name: input.name,
+            kind: input.kind,
+            devices: input.devices,
+            config: input.config,
+            family: input.family,
+            share: input.share,
+            pin_identity: input.pin_identity,
+            residency: input.residency,
+            pinned: input.pinned,
+        })
+    }
 }
 
 /// When an engine is loaded (spec 3.3a).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Residency {
-    /// The engine opens at start. It unloads only while a swap gives its memory to another engine.
+    /// The engine opens at start. It unloads only by the unload route or a profile change.
     #[default]
     Resident,
-    /// The engine opens at a load (spec 3.3b), and it unloads after its idle time.
+    /// The engine opens at a load (spec 3.3b). It unloads by the unload route or a profile change.
     OnDemand,
 }
 
@@ -147,9 +192,6 @@ impl Residency {
         *self == Residency::Resident
     }
 }
-
-/// The seconds with no job after which an on-demand engine unloads, when its entry names none (spec 3.3a).
-pub const DEFAULT_IDLE_UNLOAD_S: u64 = 60;
 
 /// One budget in the profile (spec 4.1).
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]

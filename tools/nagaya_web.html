@@ -200,8 +200,8 @@ audio { width: 100%; }
       <tbody id="eng-rows"></tbody>
     </table>
     <div id="eng-error" class="err"></div>
-    <p class="note">A load can unload other engines to make room on their cards. An engine on demand unloads by itself
-      after its idle time.</p>
+    <p class="note">A load that does not fit names the engines in its way. Unload them first. No engine loads or
+      unloads by itself, and a pinned engine stays loaded.</p>
   </div>
 </section>
 
@@ -303,7 +303,7 @@ async function refresh() {
   $("eng-rows").innerHTML = engines.map((e) => {
     const m = modelOf(e.name), st = m?.status || "absent";
     return `<tr><td><b>${esc(e.name)}</b></td><td><code>${esc(e.kind)}</code></td><td>${esc(e.devices.join(", "))}</td>
-      <td>${esc(e.residency || "resident")}${e.idle_unload_s ? `, idle ${e.idle_unload_s} s` : ""}</td>
+      <td>${esc(e.residency || "resident")}${e.pinned ? ", pinned" : ""}</td>
       <td>${esc(m?.model || "")}</td><td class="${esc(st)}">${esc(st)}</td>
       <td><button class="plain" data-load="${esc(e.name)}">Load</button>
           <button class="plain" data-unload="${esc(e.name)}">Unload</button></td></tr>`;

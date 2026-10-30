@@ -115,21 +115,25 @@ fn engine(name: &str, residency: Residency) -> EnginePlacement {
         share: 1,
         pin_identity: false,
         residency,
-        idle_unload_s: None,
+        pinned: false,
     }
 }
 
 /// A resident engine `chat` and an on-demand engine `voice` on one device. With 1000 device bytes they do not fit
-/// together, so a load of one unloads the other.
+/// together, so a load of one must name the other in `unload`.
 fn start(directory: &std::path::Path) -> (Process, Log) {
+    start_pinned(directory, false)
+}
+
+/// As [`start`], with `chat` pinned when `pinned` is true (spec 3.3a, "Explicit layout").
+fn start_pinned(directory: &std::path::Path, pinned: bool) -> (Process, Log) {
     let log: Log = Arc::default();
     let mut registry = Registry::new();
     registry.register("counted", Box::new(CountedFactory(Arc::clone(&log))));
+    let mut chat = engine("chat", Residency::Resident);
+    chat.pinned = pinned;
     let profile = PlacementProfile {
-        engines: vec![
-            engine("chat", Residency::Resident),
-            engine("voice", Residency::OnDemand),
-        ],
+        engines: vec![chat, engine("voice", Residency::OnDemand)],
         budgets: vec![
             BudgetSpec {
                 tiers: vec![TierSpec::from(Tier::Device(0))],
@@ -192,12 +196,20 @@ fn post(council: &Arc<Council>, path: &str) -> (StatusCode, Value) {
 }
 
 fn send(council: &Arc<Council>, method: &str, path: &str) -> (StatusCode, Value) {
+    send_body(council, method, path, Body::empty())
+}
+
+fn post_json(council: &Arc<Council>, path: &str, body: &Value) -> (StatusCode, Value) {
+    send_body(council, "POST", path, Body::from(body.to_string()))
+}
+
+fn send_body(council: &Arc<Council>, method: &str, path: &str, body: Body) -> (StatusCode, Value) {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap();
     runtime.block_on(async {
-        let request = Request::builder().method(method).uri(path).body(Body::empty()).unwrap();
+        let request = Request::builder().method(method).uri(path).body(body).unwrap();
         let response = router(Arc::clone(council)).oneshot(request).await.unwrap();
         let status = response.status();
         let bytes = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
@@ -206,11 +218,11 @@ fn send(council: &Arc<Council>, method: &str, path: &str) -> (StatusCode, Value)
 }
 
 #[test]
-fn a_load_is_a_202_that_names_the_engines_of_the_swap() {
+fn a_load_with_an_unload_list_is_a_202_that_names_the_engines_of_the_swap() {
     let directory = tempfile::tempdir().unwrap();
     let (process, log) = start(directory.path());
     let council = council(&process);
-    let (status, body) = post(&council, "/nagaya/v1/engines/voice/load");
+    let (status, body) = post_json(&council, "/nagaya/v1/engines/voice/load", &json!({"unload": ["chat"]}));
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     assert_eq!(body, json!({"engine": "voice", "unload": ["chat"], "load": ["voice"]}));
     assert_eq!(swapped(&process), (vec!["chat".to_owned()], vec!["voice".to_owned()]));
@@ -227,17 +239,52 @@ fn a_load_of_a_ready_engine_is_a_200_with_its_status() {
     assert_eq!(body, json!({"engine": "chat", "status": "ready"}));
 }
 
+/// A load that does not fit is a 409 that names the shortfall and the engine in the way, and nothing changes (spec
+/// 3.3a, "Explicit layout").
 #[test]
-fn an_unload_is_a_202_and_the_resident_engine_loads_again() {
+fn a_load_that_does_not_fit_is_a_409_that_names_the_engine_in_the_way() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start(directory.path());
+    let council = council(&process);
+    let (status, body) = post(&council, "/nagaya/v1/engines/voice/load");
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["type"], json!("invalid_request"), "{body}");
+    assert_eq!(body["error"]["param"], json!("name"), "{body}");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("short by 200 bytes"), "{body}");
+    assert!(message.contains("`chat`") && message.contains("`unload`"), "{body}");
+    assert_eq!(log_of(&log), ["open:chat"]);
+}
+
+/// A body that does not decode, or an `unload` that names the engine itself, is a 400 that names `unload`.
+#[test]
+fn a_load_with_a_bad_unload_list_is_a_400_that_names_unload() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start(directory.path());
+    let council = council(&process);
+    for body in [
+        json!({"unload": "chat"}),
+        json!({"drop": ["chat"]}),
+        json!({"unload": ["voice"]}),
+    ] {
+        let (status, answer) = post_json(&council, "/nagaya/v1/engines/voice/load", &body);
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body} gave {answer}");
+        assert_eq!(answer["error"]["param"], json!("unload"), "{answer}");
+    }
+    assert_eq!(log_of(&log), ["open:chat"]);
+}
+
+#[test]
+fn an_unload_is_a_202_and_no_engine_loads() {
     let directory = tempfile::tempdir().unwrap();
     let (process, _log) = start(directory.path());
     let council = council(&process);
-    post(&council, "/nagaya/v1/engines/voice/load");
+    post_json(&council, "/nagaya/v1/engines/voice/load", &json!({"unload": ["chat"]}));
     swapped(&process);
     let (status, body) = post(&council, "/nagaya/v1/engines/voice/unload");
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
-    assert_eq!(body, json!({"engine": "voice", "unload": ["voice"], "load": ["chat"]}));
-    assert_eq!(swapped(&process), (vec!["voice".to_owned()], vec!["chat".to_owned()]));
+    assert_eq!(body, json!({"engine": "voice", "unload": ["voice"], "load": []}));
+    assert_eq!(swapped(&process), (vec!["voice".to_owned()], Vec::new()));
 }
 
 #[test]
@@ -265,15 +312,40 @@ fn an_unknown_engine_is_a_404_that_names_name() {
 }
 
 #[test]
-fn an_unload_of_a_resident_engine_is_a_409_that_names_name() {
+fn an_unload_of_a_pinned_engine_is_a_409_that_names_name() {
     let directory = tempfile::tempdir().unwrap();
-    let (process, log) = start(directory.path());
+    let (process, log) = start_pinned(directory.path(), true);
     let council = council(&process);
     let (status, body) = post(&council, "/nagaya/v1/engines/chat/unload");
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["error"]["type"], json!("invalid_request"), "{body}");
     assert_eq!(body["error"]["param"], json!("name"), "{body}");
+    assert!(body["error"]["message"].as_str().unwrap().contains("pinned"), "{body}");
+    // A load that needs the memory of the pin is a 409 that names the pin, and an `unload` of it is refused too.
+    let (status, body) = post(&council, "/nagaya/v1/engines/voice/load");
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("pinned engines `chat`"),
+        "{body}"
+    );
+    let (status, body) = post_json(&council, "/nagaya/v1/engines/voice/load", &json!({"unload": ["chat"]}));
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(log_of(&log), ["open:chat"]);
+}
+
+/// A resident engine that is not pinned unloads by the route, so a client can make room (spec 3.3b).
+#[test]
+fn an_unload_of_a_resident_engine_that_is_not_pinned_is_a_202() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, _log) = start(directory.path());
+    let council = council(&process);
+    let (status, body) = post(&council, "/nagaya/v1/engines/chat/unload");
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body, json!({"engine": "chat", "unload": ["chat"], "load": []}));
+    assert_eq!(swapped(&process), (vec!["chat".to_owned()], Vec::new()));
 }
 
 #[test]

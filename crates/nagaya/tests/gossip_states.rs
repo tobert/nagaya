@@ -116,7 +116,7 @@ fn engine(name: &str, residency: Residency) -> EnginePlacement {
         share: 1,
         pin_identity: false,
         residency,
-        idle_unload_s: None,
+        pinned: false,
     }
 }
 
@@ -195,7 +195,7 @@ fn a_load_writes_each_state_of_its_swap_to_gossip() {
     node.engines_state(&["chat".to_owned()], EngineState::Ready).unwrap();
     let ports = process.ports();
     let mut feed = StateFeed::new();
-    process.load("voice").unwrap();
+    process.load_with("voice", &["chat".to_owned()]).unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         node.publish_states(&mut feed, &ports, &names, Instant::now()).unwrap();

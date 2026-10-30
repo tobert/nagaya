@@ -125,7 +125,7 @@ fn engine(name: &str, residency: Residency) -> EnginePlacement {
         share: 1,
         pin_identity: false,
         residency,
-        idle_unload_s: None,
+        pinned: false,
     }
 }
 
@@ -241,9 +241,17 @@ fn run_on(ready: &lifecycle::Ready, engine: usize) {
     finished.recv_timeout(Duration::from_secs(5)).expect("the job ran");
 }
 
-/// Load an engine, and wait until it is ready. A job for the engine runs only after that (spec 3.3).
+/// Load an engine, and wait until it is ready. A job for the engine runs only after that (spec 3.3). The load names
+/// the engines in its way in `unload`, as a client does after a refusal (spec 3.3a, "Explicit layout").
 fn load(process: &nagaya::process::Process, engine: &str) {
-    process.load(engine).unwrap();
+    match process.load(engine) {
+        Err(nagaya::process::LoadError::InTheWay { in_the_way, .. }) => {
+            process.load_with(engine, &in_the_way).unwrap();
+        }
+        answer => {
+            answer.unwrap();
+        }
+    }
     let ports = process.ports();
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while ports.engine_state(engine) != Some(nagaya::notify::EngineState::Ready) {

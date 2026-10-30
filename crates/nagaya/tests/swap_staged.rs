@@ -110,7 +110,7 @@ fn engine(name: &str, devices: Vec<u32>, residency: Residency) -> EnginePlacemen
         share: 1,
         pin_identity: false,
         residency,
-        idle_unload_s: None,
+        pinned: false,
     }
 }
 
@@ -235,8 +235,17 @@ fn ready(process: &Process, engine: &str) {
 }
 
 /// Load an engine, and wait until it is ready.
+/// Load an engine, and wait until it is ready. The load names the engines in its way in `unload`, as a client does
+/// after a refusal (spec 3.3a, "Explicit layout").
 fn load(process: &Process, engine: &str) {
-    process.load(engine).unwrap();
+    match process.load(engine) {
+        Err(nagaya::process::LoadError::InTheWay { in_the_way, .. }) => {
+            process.load_with(engine, &in_the_way).unwrap();
+        }
+        answer => {
+            answer.unwrap();
+        }
+    }
     ready(process, engine);
 }
 
@@ -303,7 +312,7 @@ fn the_swap_waits_for_the_jobs_of_the_engine_with_stages() {
     process.submit_job(0, second).unwrap();
     // The gate can block the group thread, so the load comes from another thread.
     let ports = process.ports();
-    let loader = std::thread::spawn(move || ports.load("voice"));
+    let loader = std::thread::spawn(move || ports.load_with("voice", &["chat".to_owned()]));
     std::thread::sleep(Duration::from_millis(50));
     gate_tx.send(()).unwrap();
     first_finished.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -318,14 +327,13 @@ fn the_swap_waits_for_the_jobs_of_the_engine_with_stages() {
     );
 }
 
-/// `chat`, with stages, is on demand with an idle time of one second, and `voice` is resident.
+/// `chat`, with stages, is on demand, and `voice` is resident.
 fn start_with_stages_on_demand(directory: &std::path::Path) -> (Process, Log) {
     let log: Log = Arc::default();
     let mut registry = Registry::new();
     registry.register("pair", Box::new(Pair(Arc::clone(&log))));
     let mut profile = profile();
     profile.engines[CHAT].residency = Residency::OnDemand;
-    profile.engines[CHAT].idle_unload_s = Some(1);
     profile.engines[VOICE].residency = Residency::Resident;
     let inventory = Inventory {
         devices: (0..2)
@@ -374,30 +382,35 @@ fn a_load_of_an_engine_with_stages_keeps_its_identity() {
     );
 }
 
+/// An unload of an engine with stages runs through its stage threads. No other engine loads after it (spec 3.3a,
+/// "Explicit layout").
 #[test]
-fn an_idle_engine_with_stages_on_demand_unloads_through_its_stage_threads() {
+fn an_unload_of_an_engine_with_stages_runs_through_its_stage_threads_and_loads_nothing() {
     let directory = tempfile::tempdir().unwrap();
     let (process, log) = start_with_stages_on_demand(directory.path());
-    load(&process, "chat");
+    process.load_with("chat", &["voice".to_owned()]).unwrap();
+    wait_swap(&process);
     let (job, finished) = probe(CHAT, &log, None);
     process.submit_job(0, job).unwrap();
     finished.recv_timeout(Duration::from_secs(5)).expect("the chat job ran");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while log_of(&log).len() < 6 {
-        assert!(Instant::now() < deadline, "no swap back: {:?}", log_of(&log));
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    process.unload("chat").unwrap();
+    wait_swap(&process);
+    std::thread::sleep(Duration::from_millis(300));
     assert_eq!(
         log_of(&log),
-        [
-            "open:voice",
-            "close:voice",
-            "open:chat",
-            "run:chat",
-            "close:chat",
-            "open:voice"
-        ]
+        ["open:voice", "close:voice", "open:chat", "run:chat", "close:chat"]
     );
+}
+
+/// Wait for the next swap of the process.
+fn wait_swap(process: &Process) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if let Some(Event::Swapped { .. }) = process.recv(Duration::from_millis(20)) {
+            return;
+        }
+    }
+    panic!("no swap came in 5 s");
 }
 
 /// The stage threads of an engine that unloads end, and the watchdog stops watching them (spec 7.4). On b70host on

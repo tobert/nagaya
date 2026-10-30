@@ -13,13 +13,13 @@ use nagaya_abi::{Capability, Engine, Identity, Limits, PassError, PassOut, Segme
 use nagaya_ledger::LedgerError;
 use nagaya_telemetry::{EngineState, instruments};
 
-use super::loads::EngineStates;
+use super::loads::{EngineStates, LoadError};
 
 use super::{Event, GroupJob, LedgerMessage, OpenBeat, OpenedEngine, ParkReport, WatchMessage, handoff, park};
 use crate::admission::{AdmitError, OpenErrorKind};
 use crate::arena::FdStore;
 use crate::park::StoreMessage;
-use crate::profile::{DEFAULT_IDLE_UNLOAD_S, Residency};
+use crate::profile::Residency;
 
 /// One engine of a group: what opens it, and whether it is loaded.
 pub(super) struct Member {
@@ -27,8 +27,6 @@ pub(super) struct Member {
     pub(super) loaded: bool,
     /// The stage handles of a loaded engine with stages, from its open until its stage threads take them.
     pub(super) handles: Vec<Box<dyn StageHandle + Send>>,
-    /// The last time that the engine held a job, or its load. The idle time of an on-demand engine counts from it.
-    pub(super) last_busy: Instant,
     /// True for an engine that a new profile lacks. It stays unloaded until the next start (spec 3.3).
     pub(super) retired: bool,
 }
@@ -48,9 +46,14 @@ impl Member {
         self.job.placement.residency == Residency::Resident
     }
 
-    /// The time with no job after which an on-demand engine unloads (spec 3.3a).
-    pub(super) fn idle_time(&self) -> Duration {
-        Duration::from_secs(self.job.placement.idle_unload_s.unwrap_or(DEFAULT_IDLE_UNLOAD_S))
+    /// True for an engine that no load and no unload removes (spec 3.3a, "Explicit layout").
+    pub(super) fn pinned(&self) -> bool {
+        self.job.placement.pinned
+    }
+
+    /// True for an engine that a swap can close (engine-abi "Capabilities").
+    pub(super) fn closes(&self) -> bool {
+        self.job.limits.capabilities.contains(&Capability::Close)
     }
 }
 
@@ -116,77 +119,97 @@ fn check(ledger: &Sender<LedgerMessage>, load: Vec<String>, unload: Vec<String>)
     answer.recv().expect("the ledger thread stopped")
 }
 
-/// Plan the swap that loads `target` (spec 3.3a).
+/// Plan the swap that loads `target` after it unloads the engines of `named` (spec 3.3a, "Explicit layout").
 ///
-/// An engine with stages loads after the group unloads every other engine (engine-abi "How a group loads both").
-/// Another engine first tries to load beside the loaded engines. Then the group unloads its engines with stages, and
-/// then its other loaded engines, the last in profile order first, until the target fits. Admission checked that the
-/// target fits with its whole group unloaded, so a plan that still does not fit is a defect.
-pub(super) fn plan(target: usize, members: &[Member], ledger: &Sender<LedgerMessage>) -> Plan {
-    let loaded: Vec<usize> = (0..members.len()).filter(|index| members[*index].loaded).collect();
-    let mut unload: Vec<usize> = if members[target].staged() {
-        loaded.clone()
-    } else {
-        Vec::new()
-    };
-    let staged = loaded.iter().copied().filter(|index| members[*index].staged());
-    let others = loaded.iter().rev().copied().filter(|index| !members[*index].staged());
-    let mut candidates = staged
-        .chain(others)
-        .filter(|index| !unload.contains(index))
-        .collect::<Vec<_>>()
-        .into_iter();
+/// The group unloads only the engines that the load names. An engine with stages loads after every other engine of
+/// the group unloads (engine-abi "How a group loads both"), so a load of one also moves each pinned engine: the swap
+/// unloads it, and a later load opens it again beside the engine with stages. The whole swap is checked before any
+/// engine unloads. A refusal changes nothing.
+pub(super) fn plan(
+    target: usize,
+    named: &[usize],
+    members: &[Member],
+    ledger: &Sender<LedgerMessage>,
+) -> Result<Plan, LoadError> {
     let name = |index: &usize| members[*index].name().to_owned();
-    loop {
-        match check(ledger, vec![name(&target)], unload.iter().map(name).collect()) {
-            Ok(()) => {
-                return Plan {
-                    load: vec![target],
-                    unload,
-                };
-            }
-            Err(AdmitError::Ledger(LedgerError::Refused(refusal))) => match candidates.next() {
-                Some(index) => unload.push(index),
-                None => panic!(
-                    "engine `{}` does not fit with every other engine of its group unloaded, and admission let it \
-                     in: {refusal:?}",
-                    name(&target)
-                ),
-            },
-            Err(error) => panic!(
-                "the ledger cannot check the swap to engine `{}`: {error}",
+    for &index in named {
+        if index == target {
+            return Err(LoadError::BadUnload(format!(
+                "the load of `{}` names the engine itself in `unload`",
                 name(&target)
-            ),
+            )));
+        }
+        if members[index].retired {
+            return Err(LoadError::Unknown(name(&index)));
+        }
+        if members[index].pinned() {
+            return Err(LoadError::Pinned(name(&index)));
+        }
+        if !members[index].closes() {
+            return Err(LoadError::NoClose(name(&index)));
         }
     }
-}
-
-/// The swap back of an on-demand engine that held no job for its idle time, or `None` (spec 3.3a).
-pub(super) fn idle_plan(members: &[Member], now: Instant, ledger: &Sender<LedgerMessage>) -> Option<Plan> {
-    let idle = (0..members.len()).find(|index| {
-        let member = &members[*index];
-        member.loaded && !member.resident() && now.duration_since(member.last_busy) >= member.idle_time()
-    })?;
-    Some(back_plan(idle, members, ledger))
-}
-
-/// The swap that unloads the on-demand engine at `idle`, after its idle time or by an unload (spec 3.3a, 3.3b).
-///
-/// The swap unloads that engine and loads each resident engine of the group that is not loaded. When the resident
-/// engines do not fit beside the engines that stay loaded, or an engine with stages would not load alone, the swap only
-/// unloads.
-pub(super) fn back_plan(idle: usize, members: &[Member], ledger: &Sender<LedgerMessage>) -> Plan {
-    let residents: Vec<usize> = (0..members.len())
-        .filter(|index| !members[*index].loaded && !members[*index].retired && members[*index].resident())
-        .collect();
-    let others_stay = (0..members.len()).any(|index| index != idle && members[index].loaded);
-    let alone = !residents.iter().any(|index| members[*index].staged()) || (!others_stay && residents.len() == 1);
-    let name = |index: &usize| members[*index].name().to_owned();
-    let fits = alone
-        && (residents.is_empty() || check(ledger, residents.iter().map(name).collect(), vec![name(&idle)]).is_ok());
-    Plan {
-        load: if fits { residents } else { Vec::new() },
-        unload: vec![idle],
+    let mut unload: Vec<usize> = named.iter().copied().filter(|index| members[*index].loaded).collect();
+    unload.dedup();
+    let stays = |unload: &[usize]| -> Vec<usize> {
+        (0..members.len())
+            .filter(|index| members[*index].loaded && !unload.contains(index))
+            .collect()
+    };
+    let mut moved = Vec::new();
+    if members[target].staged() {
+        let in_the_way: Vec<usize> = stays(&unload)
+            .into_iter()
+            .filter(|index| !members[*index].pinned())
+            .collect();
+        if !in_the_way.is_empty() {
+            return Err(LoadError::InTheWay {
+                engine: name(&target),
+                shortfall: "an engine with stages loads only after every other engine of its group unloads".to_owned(),
+                in_the_way: in_the_way.iter().map(name).collect(),
+                pinned: Vec::new(),
+            });
+        }
+        moved = stays(&unload);
+        if let Some(index) = moved.iter().find(|index| !members[**index].closes()) {
+            return Err(LoadError::NoClose(name(index)));
+        }
+        unload.extend(moved.iter().copied());
+    }
+    // A moved engine loads again after the swap, so the check counts it loaded.
+    let mut load = vec![target];
+    load.extend(moved.iter().copied());
+    match check(
+        ledger,
+        load.iter().map(name).collect(),
+        unload.iter().map(name).collect(),
+    ) {
+        Ok(()) => Ok(Plan {
+            load: vec![target],
+            unload,
+        }),
+        Err(AdmitError::Ledger(LedgerError::Refused(refusal))) => {
+            let staying = stays(&unload);
+            Err(LoadError::InTheWay {
+                engine: name(&target),
+                shortfall: LedgerError::Refused(refusal).to_string(),
+                in_the_way: staying
+                    .iter()
+                    .filter(|index| !members[**index].pinned())
+                    .map(name)
+                    .collect(),
+                pinned: staying
+                    .iter()
+                    .chain(moved.iter())
+                    .filter(|index| members[**index].pinned())
+                    .map(name)
+                    .collect(),
+            })
+        }
+        Err(error) => panic!(
+            "the ledger cannot check the swap to engine `{}`: {error}",
+            name(&target)
+        ),
     }
 }
 
@@ -262,7 +285,6 @@ pub(super) fn swap(
         engines[index] = engine;
         members[index].handles = handles;
         members[index].loaded = true;
-        members[index].last_busy = Instant::now();
         links.states.opened(&name, &opened.identity);
         links.states.record(&name, EngineState::Ready);
         if let Some(handoff) = opened.handoff {

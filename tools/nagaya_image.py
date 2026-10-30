@@ -10,6 +10,7 @@ Examples:
     tools/nagaya_image.py --model sdxl-0 "a red fox in a snowy forest, (watercolor:1.2)"
     tools/nagaya_image.py --model sdxl-1 --count 4 --seed 7 --negative "blurry" --out foxes "a fox"
     tools/nagaya_image.py --model sdxl-0 --unload-after --previews "a lighthouse at dusk"
+    tools/nagaya_image.py --model sdxl-0 --unload gemma "a fox"
 
 It needs only the Python standard library.
 """
@@ -48,15 +49,19 @@ def status_of(base, model):
     return None
 
 
-def load(base, model, wait_s):
-    """Load the engine of the model, and wait until the model is ready. The served image model has the name of its
-    engine (spec 11.9a, "The served image model")."""
+def load(base, model, wait_s, unload=()):
+    """Load the engine of the model after the engines of `unload` unload, and wait until the model is ready. The served
+    image model has the name of its engine (spec 11.9a, "The served image model"). A load that does not fit is a 409
+    that names the engines in its way (spec 3.3a, "Explicit layout")."""
     status = status_of(base, model)
     if status is None:
         sys.exit(f"the server serves no model `{model}`; GET {base}/council/v2/identity lists the served models")
     if status == "ready":
         return
-    code, reply = call(f"{base}/nagaya/v1/engines/{model}/load", "POST")
+    code, reply = call(f"{base}/nagaya/v1/engines/{model}/load", "POST", {"unload": list(unload)})
+    if code == 409:
+        sys.exit(f"the load of `{model}` does not fit: {reply['error']['message']}; give each engine in the way with "
+                 f"--unload")
     if code not in (200, 202):
         sys.exit(f"the load of `{model}` failed with {code}: {reply}")
     if reply.get("unload"):
@@ -161,6 +166,8 @@ def main():
     parser.add_argument("--previews", action="store_true", help="stream, and write the preview of each step")
     parser.add_argument("--out", default=".", help="the directory of the PNGs (default: the current directory)")
     parser.add_argument("--no-load", action="store_true", help="do not load the engine; a model not ready is a 503")
+    parser.add_argument("--unload", action="append", default=[], metavar="ENGINE",
+                        help="an engine to unload before the load, such as gemma; give it once for each engine")
     parser.add_argument("--unload-after", action="store_true", help="unload the engine after the images")
     parser.add_argument("--load-wait", type=int, default=300, help="seconds to wait for a load (default 300)")
     args = parser.parse_args()
@@ -169,7 +176,7 @@ def main():
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     if not args.no_load:
-        load(base, args.model, args.load_wait)
+        load(base, args.model, args.load_wait, args.unload)
     started = time.monotonic()
     stem = f"{args.model}-{time.strftime('%Y%m%d-%H%M%S')}"
     if args.previews:
