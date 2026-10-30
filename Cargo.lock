@@ -1196,6 +1196,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nagaya-mk-embeddinggemma2-bmg"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "nagaya-abi",
+ "nagaya-conformance",
+ "nagaya-mk-bmg",
+ "nagaya-text-embeddinggemma2",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "nagaya-mk-gemma4-bmg"
 version = "0.1.0"
 dependencies = [
