@@ -35,6 +35,17 @@ fn weights_limits(config: &toml::Table) -> Limits {
     if config.get("wide").and_then(toml::Value::as_bool) == Some(true) {
         limits.devices = vec![0, 1];
     }
+    // Two stages: stage 0 on group index 0, and stage 1 on group index 1 (engine-abi D1).
+    if config.get("two_stages").and_then(toml::Value::as_bool) == Some(true) {
+        limits.devices = vec![0, 1];
+        limits.stages = (0..2)
+            .map(|device| nagaya_abi::Stage {
+                device,
+                layers: device..device + 1,
+                head: device == 1,
+            })
+            .collect();
+    }
     limits
 }
 
@@ -360,6 +371,29 @@ fn an_engine_with_stages_that_does_not_span_its_group_is_refused() {
         }
         other => panic!("an engine with stages on device 0 of a group of devices 0 and 1: {other:?}"),
     }
+}
+
+/// The profile's `devices` list is in group order (spec 2.4), so `[1, 0]` puts stage 0 on machine device 1. The
+/// term on `device(0)` charges the budget of machine device 1.
+#[test]
+fn an_engine_with_stages_on_devices_one_then_zero_is_admitted() {
+    let mut gemma = engine("gemma", 1, 300, Residency::Resident);
+    gemma.devices = vec![1, 0];
+    gemma.config.insert("stages".to_owned(), toml::Value::Boolean(true));
+    gemma.config.insert("two_stages".to_owned(), toml::Value::Boolean(true));
+    let left = engine("left", 0, 100, Residency::Resident);
+    let mut ledger = Ledger::new();
+    admit(&profile(vec![gemma, left]), &registry(), &inventory(), &mut ledger)
+        .expect("an engine with stages on devices [1, 0]");
+    let unassigned = ledger.unassigned();
+    assert!(
+        unassigned.contains(&(vec![Tier::Device(1)], 700)),
+        "the weights of stage 0 are on machine device 1: {unassigned:?}"
+    );
+    assert!(
+        unassigned.contains(&(vec![Tier::Device(0)], 900)),
+        "`left` alone is on machine device 0: {unassigned:?}"
+    );
 }
 
 #[test]

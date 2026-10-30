@@ -225,6 +225,19 @@ fn start_gated(
     wide: bool,
     gates: Gates,
 ) -> (Process, Log) {
+    start_on(residency, card0, directory, fail, wide, gates, vec![0, 1])
+}
+
+/// Start the engines with `chat` (or `wide`) on the machine devices `first`, in this order.
+fn start_on(
+    residency: [Residency; 3],
+    card0: u64,
+    directory: &std::path::Path,
+    fail: Option<OpenErrorKind>,
+    wide: bool,
+    gates: Gates,
+    first: Vec<u32>,
+) -> (Process, Log) {
     let log: Log = Arc::default();
     let mut registry = Registry::new();
     registry.register("fakes", Box::new(Fakes(Arc::clone(&log), fail, gates)));
@@ -234,8 +247,8 @@ fn start_gated(
     };
     // `wide` takes the place of `chat`: an engine of both cards with no stages.
     let first = match wide {
-        true => engine("wide", vec![0, 1], residency[CHAT]),
-        false => engine("chat", vec![0, 1], residency[CHAT]),
+        true => engine("wide", first, residency[CHAT]),
+        false => engine("chat", first, residency[CHAT]),
     };
     let profile = PlacementProfile {
         engines: vec![
@@ -372,6 +385,41 @@ fn engines_on_two_cards_open_on_their_device_threads_and_run_at_once() {
     left_done
         .recv_timeout(Duration::from_secs(5))
         .expect("the left job ended");
+    let runs: Vec<String> = log_of(&log)
+        .into_iter()
+        .filter(|line| line.starts_with("run:"))
+        .collect();
+    assert_eq!(runs, ["run:left@nagaya-dev-0-0", "run:right@nagaya-dev-0-1"]);
+}
+
+/// With `chat` on `devices = [1, 0]`, its stage 0 is on card 1 (spec 2.4). The device threads stay in machine order,
+/// so `left` on card 0 still opens and runs on the thread of card 0, and `right` on the thread of card 1.
+#[test]
+fn engines_on_one_card_keep_the_thread_of_their_card_beside_an_engine_on_devices_one_then_zero() {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut process, log) = start_on(
+        [Residency::Resident, Residency::Resident, Residency::Resident],
+        1 << 20,
+        directory.path(),
+        None,
+        false,
+        Gates::default(),
+        vec![1, 0],
+    );
+    let opened = process.wait_opens(Duration::from_secs(5)).unwrap();
+    let mut names: Vec<String> = opened.into_iter().map(|engine| engine.name).collect();
+    names.sort();
+    assert_eq!(names, ["chat", "left", "right"]);
+    let opens: Vec<String> = log_of(&log)
+        .into_iter()
+        .filter(|line| !line.starts_with("open:chat"))
+        .collect();
+    assert_eq!(opens, ["open:left@nagaya-dev-0-0", "open:right@nagaya-dev-0-1"]);
+    for engine in [LEFT, RIGHT] {
+        let (job, _, done) = probe(engine, &log, None);
+        process.submit_job(0, job).unwrap();
+        done.recv_timeout(Duration::from_secs(5)).expect("the job ran");
+    }
     let runs: Vec<String> = log_of(&log)
         .into_iter()
         .filter(|line| line.starts_with("run:"))

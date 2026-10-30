@@ -48,3 +48,44 @@ fn each_stage_thread_runs_on_the_set_of_its_device_and_the_group_thread_on_the_p
     assert_eq!(mask_named("nagaya-dev-0-1"), sets.devices[1]);
     drop(fixture);
 }
+
+/// With `devices = [1, 0]`, stage 0 is on machine device 1 (spec 2.4), so its calls run on the CPUs of card 1.
+#[test]
+fn a_stage_on_machine_device_one_runs_on_the_set_of_card_one() {
+    let allowed = current_affinity().unwrap();
+    if allowed.len() < 6 {
+        eprintln!(
+            "skipped: this test needs six CPUs, and the process may use {}",
+            allowed.len()
+        );
+        return;
+    }
+    let sets = CpuSets {
+        housekeeping: allowed[..2].to_vec(),
+        pool: allowed[2..6].to_vec(),
+        devices: vec![allowed[2..4].to_vec(), allowed[4..6].to_vec()],
+    };
+    let mut factory = FeedFactory::new(2);
+    factory.devices = Some(vec![1, 0]);
+    let fixture = FeedFixture::with_sets(factory.clone(), Duration::from_secs(10), Some(sets.clone()));
+    let context: gogi_proto::context::Context = serde_json::from_value(serde_json::json!({
+        "thinking": false,
+        "tools": [],
+        "messages": [{"role": "user", "content": "List the crates.", "snap": true}],
+    }))
+    .unwrap();
+    fixture.service.build(&context, false, Default::default()).unwrap();
+    let threads = factory.threads.lock().unwrap().clone();
+    for (stage, card) in [(0, 1), (1, 0)] {
+        let (_, name) = threads
+            .iter()
+            .find(|(ran, _)| *ran == stage)
+            .unwrap_or_else(|| panic!("stage {stage} has no call"));
+        assert_eq!(
+            mask_named(name),
+            sets.devices[card],
+            "stage {stage} runs on the CPUs of card {card}"
+        );
+    }
+    drop(fixture);
+}

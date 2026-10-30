@@ -97,6 +97,48 @@ fn a_build_a_generation_and_a_read_on_two_stages_give_the_bits_of_one_stage() {
     );
 }
 
+/// The profile's `devices` list is in group order (spec 2.4). With `devices = [1, 0]`, stage 0 runs on the device
+/// thread of machine device 1, and stage 1 on the thread of machine device 0. The device threads go in machine order,
+/// so `nagaya-dev-0-1` is the thread of machine device 1. The bits stay those of one stage.
+#[test]
+fn an_engine_on_devices_one_then_zero_runs_each_stage_on_the_thread_of_its_device() {
+    let one = FeedFixture::new(1);
+    let mut factory = FeedFactory::new(2);
+    factory.devices = Some(vec![1, 0]);
+    let two = FeedFixture::with(factory.clone(), Duration::from_secs(10));
+    let opened: Vec<Vec<u32>> = factory
+        .opened_on
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|devices| devices.iter().map(|device| device.id).collect())
+        .collect();
+    assert_eq!(opened, vec![vec![1, 0]], "the open gets the devices in group order");
+
+    let reply = two.service.generate(&generation(), None).unwrap();
+    let expected = one.service.generate(&generation(), None).unwrap();
+    assert_eq!(
+        (&reply.content, &reply.reasoning),
+        (&expected.content, &expected.reasoning)
+    );
+    let read = two.service.read(&reads()).unwrap();
+    assert_eq!(read.reads, one.service.read(&reads()).unwrap().reads);
+
+    let threads = factory.threads.lock().unwrap();
+    for (stage, thread) in [(0, "nagaya-dev-0-1"), (1, "nagaya-dev-0-0")] {
+        assert!(threads.iter().any(|(ran, _)| *ran == stage), "stage {stage} has a call");
+        let wrong: Vec<&String> = threads
+            .iter()
+            .filter(|(ran, name)| *ran == stage && name != thread)
+            .map(|(_, name)| name)
+            .collect();
+        assert!(
+            wrong.is_empty(),
+            "stage {stage} runs only on {thread}, not on {wrong:?}"
+        );
+    }
+}
+
 #[test]
 fn the_group_has_a_stage_thread_for_each_device() {
     let two = FeedFixture::new(2);

@@ -44,6 +44,19 @@ pub struct FeedFactory {
     pub panic_stage: Arc<AtomicUsize>,
     /// The stage whose next quantum returns an error, or `NO_STAGE`.
     pub fail_stage: Arc<AtomicUsize>,
+    /// The stage and the thread name of each stage pass and each part, slot or coverage call of a stage handle.
+    pub threads: ThreadLog,
+    /// The profile's `devices` list of the engine. `None` gives `0` to `stages - 1`.
+    pub devices: Option<Vec<u32>>,
+}
+
+/// The stage and the thread name of each call of a stage handle.
+pub type ThreadLog = Arc<Mutex<Vec<(usize, String)>>>;
+
+/// Write the stage and the name of the current thread to the log.
+fn log_thread(log: &ThreadLog, stage: usize) {
+    let name = std::thread::current().name().unwrap_or("unnamed").to_owned();
+    log.lock().unwrap().push((stage, name));
 }
 
 /// The value of `panic_stage` when no stage panics.
@@ -61,6 +74,8 @@ impl FeedFactory {
             log: Arc::default(),
             panic_stage: Arc::new(AtomicUsize::new(NO_STAGE)),
             fail_stage: Arc::new(AtomicUsize::new(NO_STAGE)),
+            threads: Arc::default(),
+            devices: None,
         }
     }
 }
@@ -72,6 +87,7 @@ pub struct Traced {
     log: StageLog,
     panic_stage: Arc<AtomicUsize>,
     fail_stage: Arc<AtomicUsize>,
+    threads: ThreadLog,
 }
 
 impl Engine for Traced {
@@ -127,6 +143,7 @@ impl Stages for Traced {
                     log: Arc::clone(&self.log),
                     panic_stage: Arc::clone(&self.panic_stage),
                     fail_stage: Arc::clone(&self.fail_stage),
+                    threads: Arc::clone(&self.threads),
                 }) as Box<dyn StageHandle + Send>
             })
             .collect()
@@ -140,6 +157,7 @@ struct TracedStage {
     log: StageLog,
     panic_stage: Arc<AtomicUsize>,
     fail_stage: Arc<AtomicUsize>,
+    threads: ThreadLog,
 }
 
 impl StageHandle for TracedStage {
@@ -153,6 +171,7 @@ impl StageHandle for TracedStage {
                 message: format!("stage {} failed on purpose", self.stage),
             });
         }
+        log_thread(&self.threads, self.stage);
         let start = Instant::now();
         std::thread::sleep(Duration::from_millis(self.delay_ms.load(Ordering::SeqCst)));
         let out = self.inner.stage_pass(segments, residual);
@@ -161,14 +180,17 @@ impl StageHandle for TracedStage {
     }
 
     fn parts(&mut self) -> Option<&mut dyn nagaya_abi::Parts> {
+        log_thread(&self.threads, self.stage);
         self.inner.parts()
     }
 
     fn slots(&mut self) -> Option<&mut dyn nagaya_abi::Slots> {
+        log_thread(&self.threads, self.stage);
         self.inner.slots()
     }
 
     fn coverage(&mut self) -> Option<&mut dyn nagaya_abi::Coverage> {
+        log_thread(&self.threads, self.stage);
         self.inner.coverage()
     }
 }
@@ -217,6 +239,7 @@ impl Factory for FeedFactory {
             log: Arc::clone(&self.log),
             panic_stage: Arc::clone(&self.panic_stage),
             fail_stage: Arc::clone(&self.fail_stage),
+            threads: Arc::clone(&self.threads),
         }))
     }
 }
@@ -308,7 +331,11 @@ impl FeedFixture {
         let directory = tempfile::tempdir().unwrap();
         let mut registry = Registry::new();
         registry.register("feed", Box::new(factory.clone()));
-        let mut start = Start::new(profile(stages), registry, inventory(stages));
+        let mut profile = profile(stages);
+        if let Some(devices) = &factory.devices {
+            profile.engines[0].devices = devices.clone();
+        }
+        let mut start = Start::new(profile, registry, inventory(stages));
         if let Some(sets) = sets {
             start = start.cpu_sets(sets);
         }

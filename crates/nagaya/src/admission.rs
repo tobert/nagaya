@@ -768,8 +768,9 @@ fn check_residency(profile: &PlacementProfile, planned: &[AdmittedEngine]) -> Re
         why,
     };
     let groups = crate::placement::device_groups(profile);
-    // A group holds one engine with stages at a time, and its stages cover the group's devices in order (spec 3.2).
-    // The serve loop of a group cannot run another shape, so admission refuses it.
+    // A group holds one engine with stages at a time, and its stages cover the group's devices (spec 3.2). Stage `s`
+    // runs on group index `s`, which is machine device `devices[s]` of the profile (spec 2.4). Thus the list can have
+    // any order, and it must hold each device of the group once. The serve loop cannot run another shape.
     for group in &groups {
         let mut devices = group.devices.clone();
         devices.sort_unstable();
@@ -783,13 +784,15 @@ fn check_residency(profile: &PlacementProfile, planned: &[AdmittedEngine]) -> Re
             let name = placement.name.as_str();
             let stages: Vec<u32> = limits.stages.iter().map(|stage| stage.device).collect();
             let order: Vec<u32> = (0..devices.len() as u32).collect();
-            if placement.devices != devices || stages != order {
+            let mut own = placement.devices.clone();
+            own.sort_unstable();
+            if own != devices || stages != order {
                 return Err(fail(
                     name,
                     format!(
-                        "an engine with stages spans its whole device group, one stage on each device in order; it \
-                         names devices {:?} with stages on group devices {stages:?}, and its group has devices \
-                         {devices:?}; place it on all of them, or move the other engines to other devices",
+                        "an engine with stages spans its whole device group, and stage s runs on group index s; it \
+                         names devices {:?} with stages on group indexes {stages:?}, and its group has devices \
+                         {devices:?}; list each device of the group once, or move the other engines to other devices",
                         placement.devices
                     ),
                 ));

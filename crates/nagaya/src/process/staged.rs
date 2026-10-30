@@ -78,8 +78,12 @@ enum StageWork {
         body: Box<dyn JobBody>,
         span: Option<Span>,
     },
-    /// Take the handle of this thread's stage from the engine with stages that opened.
-    Attach(Box<dyn StageHandle + Send>),
+    /// Take the handle of a stage from the engine with stages that opened. The stage is the one whose device is the
+    /// device of this thread.
+    Attach {
+        stage: usize,
+        handle: Box<dyn StageHandle + Send>,
+    },
     /// Drop the handle of the engine with stages that unloaded, and answer when it is gone.
     Detach(Sender<()>),
     /// Park the states of an engine on this thread, and drop it, which closes it (spec 3.3a).
@@ -184,8 +188,11 @@ pub(crate) struct StageDone {
     ms: u64,
 }
 
-/// The device threads of a group of more than one device, one for each device in group order (spec 3.2). They live
+/// The device threads of a group of more than one device, one for each device in machine order (spec 3.2). They live
 /// as long as the group, so an engine with one device stays on its thread through each swap.
+///
+/// The place of a thread is the position of its machine device in the group's sorted list. It is not a stage: stage
+/// `s` of an engine with stages runs on the thread of machine device `devices[s]` of its profile entry (spec 2.4).
 pub(super) struct StageThreads {
     senders: Vec<Sender<StageWork>>,
     handles: Vec<JoinHandle<()>>,
@@ -196,12 +203,12 @@ pub(super) struct StageThreads {
 }
 
 impl StageThreads {
-    /// Start a thread for each device of the group. `machine` holds the machine devices of the group by group index
-    /// (spec 2.4). A thread has no handle until an engine with stages loads.
+    /// Start a thread for each device of the group. `machine` holds the machine devices of the group in machine
+    /// order. A thread has no handle until an engine with stages loads.
     pub(super) fn start(group: usize, machine: &[DeviceId], links: &GroupLinks, interval: Duration) -> Self {
         let mut senders = Vec::with_capacity(machine.len());
         let mut threads = Vec::with_capacity(machine.len());
-        for (stage, &device) in machine.iter().enumerate() {
+        for (place, &device) in machine.iter().enumerate() {
             let (work_tx, work_rx) = mpsc::channel();
             let events = links.events.clone();
             let done = links.own.clone();
@@ -209,14 +216,14 @@ impl StageThreads {
             let cpus = links.sets.as_ref().map(|sets| sets.device(device).to_vec());
             let _ = heartbeats.send(WatchMessage::StartStage {
                 group,
-                stage,
+                stage: place,
                 devices: vec![device],
             });
-            let thread = spawn_named(format!("nagaya-dev-{group}-{stage}"), move || {
+            let thread = spawn_named(format!("nagaya-dev-{group}-{place}"), move || {
                 guard("stage", &events, || {
                     // A device thread takes the CPUs of its card (spec 3.2b).
                     pin("stage", cpus.as_deref());
-                    stage_thread(group, stage, None, work_rx, done, heartbeats, interval);
+                    stage_thread(group, place, work_rx, done, heartbeats, interval);
                 });
             });
             senders.push(work_tx);
@@ -230,16 +237,18 @@ impl StageThreads {
         }
     }
 
-    /// Give the handle of each stage of the engine at `index` to the thread of its device.
-    fn attach(&mut self, index: usize, handles: Vec<Box<dyn StageHandle + Send>>) {
+    /// Give the handle of each stage of the engine at `index` to the thread of its device. `places` holds the
+    /// thread of each stage, in stage order.
+    fn attach(&mut self, index: usize, handles: Vec<Box<dyn StageHandle + Send>>, places: &[usize]) {
         assert!(
             self.attached.is_none(),
             "engine {index} attaches its stages while another engine with stages holds the threads"
         );
         for (stage, handle) in handles.into_iter().enumerate() {
-            self.senders[stage]
-                .send(StageWork::Attach(handle))
-                .unwrap_or_else(|_| panic!("the thread of stage {stage} stopped"));
+            let place = places[stage];
+            self.senders[place]
+                .send(StageWork::Attach { stage, handle })
+                .unwrap_or_else(|_| panic!("device thread {place} stopped"));
         }
         self.attached = Some(index);
     }
@@ -273,38 +282,46 @@ impl StageThreads {
 }
 
 /// The handle of a stage thread. A device thread has none, so a stage call there is a defect.
-fn own(handle: &mut Option<Box<dyn StageHandle + Send>>, stage: usize) -> &mut dyn StageHandle {
+fn own(handle: &mut Option<(usize, Box<dyn StageHandle + Send>)>, place: usize) -> &mut dyn StageHandle {
     handle
-        .as_deref_mut()
-        .map(|handle| handle as &mut dyn StageHandle)
-        .unwrap_or_else(|| panic!("a stage call reached device thread {stage}, which holds no engine with stages"))
+        .as_mut()
+        .map(|(_, handle)| handle.as_mut() as &mut dyn StageHandle)
+        .unwrap_or_else(|| panic!("a stage call reached device thread {place}, which holds no engine with stages"))
 }
 
-/// The loop of one stage thread. It beats its own heartbeat between its quanta (spec 7.4).
+/// The loop of the device thread at `place`. It beats its own heartbeat between its quanta (spec 7.4).
 fn stage_thread(
     group: usize,
-    stage: usize,
-    mut handle: Option<Box<dyn StageHandle + Send>>,
+    place: usize,
     work: Receiver<StageWork>,
     done: Sender<GroupMessage>,
     heartbeats: Sender<WatchMessage>,
     interval: Duration,
 ) {
+    let stage = place;
     let beat = || WatchMessage::BeatStage {
         group,
         stage,
         at: Instant::now(),
     };
+    // The stage of the engine with stages on this device, with its handle.
+    let mut handle: Option<(usize, Box<dyn StageHandle + Send>)> = None;
     let _ = heartbeats.send(beat());
     // The engines with one device that this thread holds, at their places in the group (engine-abi "How a group loads
     // both"). They drop with the thread, which closes them.
     let mut hosted: Vec<Box<dyn Engine>> = Vec::new();
     loop {
         match work.recv_timeout(interval) {
-            Ok(StageWork::Call(call)) => call(own(&mut handle, stage)),
-            Ok(StageWork::Attach(new)) => {
-                assert!(handle.is_none(), "stage {stage} takes a handle while it holds one");
-                handle = Some(new);
+            Ok(StageWork::Call(call)) => call(own(&mut handle, place)),
+            Ok(StageWork::Attach {
+                stage: held,
+                handle: new,
+            }) => {
+                assert!(
+                    handle.is_none(),
+                    "device thread {place} takes the handle of stage {held} while it holds one"
+                );
+                handle = Some((held, new));
             }
             Ok(StageWork::Detach(reply)) => {
                 // The drop closes the stage of the engine with stages on this device (engine-abi "`close` in Rust").
@@ -405,20 +422,22 @@ fn stage_thread(
                 mut residual,
                 span,
             }) => {
+                let held = handle.as_ref().map(|(held, _)| *held);
                 assert_eq!(
-                    named, stage,
-                    "the group sent the quantum of stage {named} to stage {stage}"
+                    held,
+                    Some(named),
+                    "the group sent the quantum of stage {named} to device thread {place}"
                 );
                 let started = Instant::now();
                 let result = match &span {
-                    Some(span) => span.in_scope(|| own(&mut handle, stage).stage_pass(&segments, &mut residual)),
-                    None => own(&mut handle, stage).stage_pass(&segments, &mut residual),
+                    Some(span) => span.in_scope(|| own(&mut handle, place).stage_pass(&segments, &mut residual)),
+                    None => own(&mut handle, place).stage_pass(&segments, &mut residual),
                 };
                 let ms = started.elapsed().as_millis() as u64;
                 let end = StageDone {
                     job,
                     block,
-                    stage,
+                    stage: named,
                     result,
                     residual,
                     ms,
@@ -442,6 +461,7 @@ fn stage_thread(
 pub(crate) struct StagedEngine {
     inner: Box<dyn Engine>,
     limits: Limits,
+    /// The sender of the device thread of each stage, in stage order.
     senders: Vec<Sender<StageWork>>,
 }
 
@@ -748,6 +768,11 @@ impl StagedJobs {
         }
     }
 
+    /// The device thread of `stage`. The scheduler's device of a stage is the place of its thread.
+    fn place_of(&self, stage: usize) -> usize {
+        self.scheduler().engine().devices[stage] as usize
+    }
+
     /// True when a job of the engine at `member` has not ended.
     fn holds(&self, member: usize) -> bool {
         self.engine_of.values().any(|engine| *engine == member)
@@ -834,6 +859,7 @@ impl StagedJobs {
                     let wait_ms = now_ms.saturating_sub(ready);
                     let span = self.start_quantum(&quantum, wait_ms);
                     let watch = (quantum.kind != Kind::Decode).then(|| self.machine.watch());
+                    let place = self.place_of(stage);
                     let entry = self.blocks.get_mut(&(job, block)).expect("a later stage has its block");
                     let residual = entry.residual.take().expect("the stage before wrote the residual");
                     self.running_stages.insert(
@@ -846,7 +872,7 @@ impl StagedJobs {
                             span: span.clone(),
                         },
                     );
-                    threads.senders[stage]
+                    threads.senders[place]
                         .send(StageWork::Pass {
                             job,
                             block,
@@ -892,21 +918,20 @@ impl StagedJobs {
                 span: span.clone(),
             },
         );
-        let stage = self
-            .scheduler()
-            .engine()
-            .devices
-            .iter()
-            .position(|candidate| *candidate == device)
-            .expect("the scheduler starts a quantum on one device only on a device of a stage");
-        threads.senders[stage]
+        // A device of the scheduler is the place of its device thread.
+        assert!(
+            self.scheduler().engine().devices.contains(&device),
+            "the scheduler started a quantum on device {device}, which has no device thread"
+        );
+        let place = device as usize;
+        threads.senders[place]
             .send(StageWork::Run {
                 job,
                 kind: quantum.kind,
                 body,
                 span,
             })
-            .unwrap_or_else(|_| panic!("the thread of stage {stage} stopped"));
+            .unwrap_or_else(|_| panic!("device thread {place} stopped"));
     }
 
     /// The end of a quantum of an engine on a stage thread.
@@ -1040,7 +1065,7 @@ impl StagedJobs {
             },
         );
         self.order.entry(job).or_default().push_back(block);
-        threads.senders[0]
+        threads.senders[self.place_of(0)]
             .send(StageWork::Pass {
                 job,
                 block,
@@ -1330,15 +1355,29 @@ fn kind_label(kind: Kind) -> &'static str {
 /// stage of each (engine-abi "How a group loads both").
 type Hosted = BTreeMap<usize, usize>;
 
-/// The stage whose device is the one device of `member`, or `None` when the member cannot run on a stage thread.
-fn stage_of(member: &Member, machine: &[DeviceId], devices: &[DeviceId]) -> Option<usize> {
+/// The place of the device thread of the one device of `member`, or `None` when the member cannot run on a device
+/// thread.
+fn stage_of(member: &Member, machine: &[DeviceId]) -> Option<usize> {
     if member.staged() || member.job.devices.len() != 1 {
         return None;
     }
     let id = member.job.devices[0].id;
-    devices
+    machine.iter().position(|device| *device == id)
+}
+
+/// The place of the device thread of each stage, in stage order. Stage `s` runs on group index `stages[s].device`,
+/// which is machine device `own[stages[s].device]` (spec 2.4). `machine` gives the place of each machine device.
+fn places_of_stages(stages: &[nagaya_abi::Stage], own: &[DeviceId], machine: &[DeviceId]) -> Vec<usize> {
+    stages
         .iter()
-        .position(|device| machine.get(*device as usize) == Some(&id))
+        .map(|stage| {
+            let id = own[stage.device as usize];
+            machine
+                .iter()
+                .position(|device| *device == id)
+                .unwrap_or_else(|| panic!("stage device {id} is not a device of the group {machine:?}"))
+        })
+        .collect()
 }
 
 /// Send the unload of the engine at `member` to the thread of its stage, and mark the engine draining (spec 3.3a).
@@ -1699,23 +1738,30 @@ pub(super) fn serve(
 ) -> Exit {
     let names: Vec<String> = members.iter().map(|member| member.name().to_owned()).collect();
     let machine = group_devices(members);
-    let devices: Vec<DeviceId> = (0..machine.len() as DeviceId).collect();
-    let (name, limits) = match index {
+    let order: Vec<DeviceId> = (0..machine.len() as DeviceId).collect();
+    // The scheduler's device of each stage is the place of its device thread. With no engine with stages, the
+    // devices are the places in order.
+    let (name, limits, places) = match index {
         Some(index) => {
             let limits = members[index].job.limits.clone();
             let own: Vec<DeviceId> = members[index].job.devices.iter().map(|device| device.id).collect();
+            let mut sorted = own.clone();
+            sorted.sort_unstable();
             let stages: Vec<DeviceId> = limits.stages.iter().map(|stage| stage.device).collect();
-            // A stage runs on the device thread of its device, so the stages cover the devices of the group in order.
+            // A stage runs on the device thread of its device, so the stages cover the devices of the group, each
+            // once. Admission refuses another shape (spec 3.2).
             assert!(
-                own == machine && stages == devices,
-                "engine `{}` has stages on group devices {stages:?} of machine devices {own:?}, and its group has \
+                sorted == machine && stages == order,
+                "engine `{}` has stages on group indexes {stages:?} of machine devices {own:?}, and its group has \
                  machine devices {machine:?}: an engine with stages spans its whole group, one stage on each device",
                 names[index]
             );
-            (members[index].name().to_owned(), Some(limits))
+            let places = places_of_stages(&limits.stages, &own, &machine);
+            (members[index].name().to_owned(), Some(limits), places)
         }
-        None => (names.join("+"), None),
+        None => (names.join("+"), None, (0..machine.len()).collect()),
     };
+    let devices: Vec<DeviceId> = places.iter().map(|place| *place as DeviceId).collect();
     if let (Some(index), Some(limits)) = (index, &limits)
         && threads.attached != Some(index)
     {
@@ -1725,17 +1771,17 @@ pub(super) fn serve(
             devices.len(),
             "the open of engine `{name}` gave a handle for each stage"
         );
-        threads.attach(index, handles);
+        threads.attach(index, handles, &places);
         let inner = std::mem::replace(&mut engines[index], Unloaded::of(&members[index]));
         engines[index] = Box::new(StagedEngine {
             inner,
             limits: limits.clone(),
-            senders: threads.senders.clone(),
+            senders: places.iter().map(|place| threads.senders[*place].clone()).collect(),
         });
     }
     // The device thread of each engine with one device.
     let stages: BTreeMap<usize, usize> = (0..members.len())
-        .filter_map(|member| stage_of(&members[member], &machine, &devices).map(|stage| (member, stage)))
+        .filter_map(|member| stage_of(&members[member], &machine).map(|stage| (member, stage)))
         .collect();
     let mut hosted: Hosted = std::mem::take(&mut threads.hosted);
     // The swap that runs on the stage or device threads, while this thread serves (spec 3.3a, "Single-card swaps").
@@ -1815,7 +1861,7 @@ pub(super) fn serve(
                     Some(EngineState::Ready) if hold => held.push((spec, parent)),
                     Some(EngineState::Ready) => {
                         let place = match hosted.get(&spec.engine) {
-                            Some(stage) => Place::On(devices[*stage]),
+                            Some(place) => Place::On(*place as DeviceId),
                             None if Some(spec.engine) == index => Place::Stages,
                             None => Place::Group,
                         };
