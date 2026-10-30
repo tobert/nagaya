@@ -90,7 +90,7 @@ in a lock: one thread owns it (3.2).
 
 Do them in this order. Each milestone ends with all checks green and one or more commits. Milestones 1 to 14 are
 done, and `docs/history.md` keeps their full text, and the merges where the run recorded them. Milestone 15
-is done on gfx1151host, and milestones 15s, 16, 17 and 18 are done on b70host. Ask Amy for milestone 19.
+is done on gfx1151host, and milestones 15s, 16, 17 and 18 are done on b70host. Milestones 19 and 20 are next.
 
 1. **Workspace.** The Cargo workspace, its crates, `rustfmt.toml` and the dev profile. Done.
 2. **Engine trait.** The ABI core and capabilities as traits, with a fake engine and a broken fake for the gates. Done.
@@ -340,7 +340,32 @@ is done on gfx1151host, and milestones 15s, 16, 17 and 18 are done on b70host. A
     - A load or an unload beside running work blocks the group thread for the open. The other card then waits after
       its current quantum.
     - A full queue of a slow stream client blocks the thread of the engine, as for speech.
-19. Stop and ask Amy for the next milestone.
+    After the deploy, on 2026-10-29: Lightning and LoRAs. `lightning-0` serves SDXL-Lightning 4-step on card 0.
+    The commits are `348a3ea` to `afe40b3`. The rules for a single-card swap (`992ef0a`) and a slow stream client
+    (`917838a`) are in the spec.
+19. **img2img and inpainting.** Amy chose this milestone on 2026-10-30, and she decided these rules by interview:
+    - **Inputs:** spec 11.9, "The design of later image work". The image and the mask are object parts.
+    - **Inpainting:** the latent blend works with any checkpoint. Also load a 9-channel inpainting UNet, such as
+      diffusers' `stable-diffusion-xl-1.0-inpainting-0.1`, as other weights.
+    - **Size:** with no size in the request, the input image sets it. An image that breaks the size rules is a 400
+      that names the part. A request size that does not match the image is a 400 too.
+    - **Cards:** senpai may stop and start `nagaya.service` on b70host for gates, and deploy at will. Write each
+      stop and start in `signoff.md`.
+
+    Do the steps in this order:
+    1. **Spec.** Write the request, the mask rules, the VAE encode quantum and the 9-channel UNet into the docs.
+       Amy decides each Proposed note.
+    2. **Oracle fixture.** Write the fixed inputs and outputs of img2img and both kinds of inpainting from diffusers
+       once, on the CPU (8.3). Keep the images small.
+    3. **VAE encode.** Add the VAE encoder to the engine, with an op test for each new op.
+    4. **img2img.** The start latent, the strength and the shorter schedule. Run the oracle on the card.
+    5. **Inpainting with a blend.** The mask, the blend at each step, and the paste of the pixels after the decode.
+    6. **The 9-channel UNet.** Its loader and its extra inputs. Run its oracle on the card.
+    7. **Route and deploy.** Serve both through council v2, and add the inpainting weights to the profile.
+20. **Image speed.** Make the SDXL engine faster on the B70 cards. Amy decided on 2026-10-30, by interview: a faster
+    kernel can change the output bits if the oracle still passes. The tolerance goes into the spec as a Proposed
+    note. The same identity, job and seed must still give the same bits on each run.
+21. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
 
