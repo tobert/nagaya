@@ -3370,6 +3370,53 @@ that `step` rises by 1 up to `of` (council API, "Steps and previews"), and A1111
 - `Steps` in the A1111 chunk stays the `steps` of the request, as A1111 writes it.
 - The chunk adds `Denoising strength: <strength>` after `Clip skip`. With a mask, it then adds `Mask blur: <n>`.
 
+**The image latent.** **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: diffusers draws the latent from the
+distribution of the encoder, and A1111 does too. The mean alone would give other bits than the oracle.
+
+- The VAE encoder gives a mean and a log variance for each latent value. The engine draws the latent
+  `mean + exp(0.5 * clamp(logvar, -30, 20)) * z` (`vae.py:694-696` and `:703`).
+- diffusers calls this `latent_dist.sample` (`img2img.py:115-119`). Then the engine multiplies the latent by the
+  `scaling_factor` of the VAE, 0.13025 for SDXL base (`img2img.py:751`).
+- `z` comes from the random stream of the engine, with the purpose `encode`. Image `i` of a request draws its own
+  `z` from the seed plus `i`. Reason: the image of a seed must not depend on `count` (engine-abi "Image").
+- The encoder runs once for a request, because each image has the same input. Only the draws differ.
+
+**The mask.** **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: these rules give the bits of diffusers'
+`StableDiffusionXLInpaintPipeline` and the soft edge of A1111.
+
+- The mask becomes gray, as Pillow's `convert("L")` makes it (`image_processor.py:267`). For RGB, the gray value is
+  `(19595 R + 38470 G + 7471 B + 32768) >> 16`. The nagaya ignores an alpha channel of the mask.
+- White repaints, and black keeps. diffusers sets a repainted pixel to 1 (`image_processor.py:536-537`), and it
+  keeps the image where the mask is below 0.5 (`inpaint.py:1455`).
+- The nagaya blurs the gray mask as Pillow's `ImageFilter.GaussianBlur(mask_blur)` does. diffusers' `blur` calls it
+  (`image_processor.py:284`), and A1111 blurs its mask too. A `mask_blur` of 0 gives the mask with no change.
+- The binary mask repaints a pixel whose blurred value is 128 or more. Reason: diffusers binarizes the mask at 0.5
+  of 255 (`inpaint.py:322-324`, `image_processor.py:536-537`).
+- The latent mask takes the binary mask at pixel `(8x, 8y)` for latent `(x, y)`. torch's `interpolate` in its mode
+  `nearest` does this (`inpaint.py:862-864`).
+
+**The blend.** **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: this is the latent blend of diffusers for a UNet
+with 4 input channels, so it works with any checkpoint.
+
+- After each step, the latent becomes `(1 - m) * known + m * latent`, with `m` the latent mask
+  (`inpaint.py:1648-1661`).
+- `known` is the image latent with the noise of the next timestep, from the scheduler's `add_noise`. After the last
+  step, `known` is the image latent with no noise.
+- The noise of `known` is the start noise of that image, not a new draw (`inpaint.py:811` and `:1657`).
+- A preview shows the latent after the blend.
+
+**The paste after the decode.** **Proposed** by Claude Opus 5.5, 2026-10-30, as senpai proposed on 2026-10-30.
+Reason: the VAE changes the kept pixels a little on its way through. A1111 pastes the kept pixels back by default.
+
+- After the decode, the nagaya pastes the image back where the mask keeps it. It uses the blurred mask `a`, from 0 to
+  255, so the edge is soft.
+- Each channel of each pixel becomes `(a * new + (255 - a) * old + 127) / 255` in integers. `new` is the decoded
+  pixel, and `old` is the pixel of the input image.
+- The paste runs on the worker of the route, before the PNG encode. The engine gives its decode, as before.
+- diffusers pastes only with `padding_mask_crop` (`inpaint.py:1727-1728`), and its `apply_overlay` rounds in another
+  way (`image_processor.py:817`). Thus the oracle compares the decode before the paste. A host test checks the paste.
+- img2img has no paste. A preview has no paste.
+
 **11.10 Embeddings.** Amy decided these rules on 2026-10-30, by interview (`AGENTS.md` milestone 19). gogi's contract
 is "Embeddings" in gogi `docs/council-api.md`, at gogi `6db7e98`.
 
