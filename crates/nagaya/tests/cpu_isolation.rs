@@ -3,7 +3,8 @@
 //! This file holds one test. The test starts the control runtime and the process threads in this process, and it
 //! reads every thread of this process by name. Another test in the file would add threads.
 
-use std::fs;
+mod task_support;
+
 use std::mem::size_of;
 use std::time::Duration;
 
@@ -15,6 +16,7 @@ use nagaya::lifecycle::{self, Options};
 use nagaya::probe::FileProbe;
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, StoreSpec, TierSpec};
 use nagaya_abi::Tier;
+use task_support::threads_named;
 
 /// The thread names of the nagaya (spec 3.2). The kernel keeps 15 bytes of a name.
 const CONTROL: &str = "nagaya-control";
@@ -39,16 +41,7 @@ fn mask_of(tid: i32) -> Vec<u32> {
 
 /// The masks of the threads of this process that have the name, in thread-id order.
 fn masks_named(name: &str) -> Vec<Vec<u32>> {
-    let mut found = Vec::new();
-    for entry in fs::read_dir("/proc/self/task").unwrap() {
-        let entry = entry.unwrap();
-        let comm = fs::read_to_string(entry.path().join("comm")).unwrap();
-        if comm.trim() == name {
-            let tid: i32 = entry.file_name().to_str().unwrap().parse().unwrap();
-            found.push(mask_of(tid));
-        }
-    }
-    found
+    threads_named(name).into_iter().map(mask_of).collect()
 }
 
 fn profile() -> PlacementProfile {

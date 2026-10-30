@@ -1,33 +1,30 @@
 //! The CPU set of each stage thread (spec 3.2b). The test reads the mask of each thread with `sched_getaffinity`.
 
 mod feed_support;
+mod task_support;
 
-use std::fs;
 use std::time::Duration;
 
 use feed_support::{FeedFactory, FeedFixture};
 use nagaya::affinity::current_affinity;
 use nagaya::cpu_sets::CpuSets;
+use task_support::threads_named;
 
 /// The mask of the thread of this process that has `name`.
 fn mask_named(name: &str) -> Vec<u32> {
-    for entry in fs::read_dir("/proc/self/task").unwrap() {
-        let entry = entry.unwrap();
-        if fs::read_to_string(entry.path().join("comm")).unwrap().trim() == name {
-            let tid: i32 = entry.file_name().to_str().unwrap().parse().unwrap();
-            // SAFETY: an all-zero `cpu_set_t` is an empty mask.
-            let mut mask: libc::cpu_set_t = unsafe { std::mem::zeroed() };
-            // SAFETY: `mask` is writable and has the size that the call is given.
-            let result = unsafe { libc::sched_getaffinity(tid, std::mem::size_of::<libc::cpu_set_t>(), &mut mask) };
-            assert_eq!(result, 0, "sched_getaffinity failed for thread {tid}");
-            // SAFETY: each index is below the mask size.
-            return (0..libc::CPU_SETSIZE as usize)
-                .filter(|&cpu| unsafe { libc::CPU_ISSET(cpu, &mask) })
-                .map(|cpu| cpu as u32)
-                .collect();
-        }
-    }
-    panic!("no thread has the name {name}");
+    let Some(&tid) = threads_named(name).first() else {
+        panic!("no thread has the name {name}");
+    };
+    // SAFETY: an all-zero `cpu_set_t` is an empty mask.
+    let mut mask: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+    // SAFETY: `mask` is writable and has the size that the call is given.
+    let result = unsafe { libc::sched_getaffinity(tid, std::mem::size_of::<libc::cpu_set_t>(), &mut mask) };
+    assert_eq!(result, 0, "sched_getaffinity failed for thread {tid}");
+    // SAFETY: each index is below the mask size.
+    (0..libc::CPU_SETSIZE as usize)
+        .filter(|&cpu| unsafe { libc::CPU_ISSET(cpu, &mask) })
+        .map(|cpu| cpu as u32)
+        .collect()
 }
 
 #[test]

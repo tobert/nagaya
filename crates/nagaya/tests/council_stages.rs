@@ -2,6 +2,7 @@
 //! in two stages. Its bits equal those of the same fake in one stage, so the one-stage process is the oracle.
 
 mod feed_support;
+mod task_support;
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -99,10 +100,8 @@ fn a_build_a_generation_and_a_read_on_two_stages_give_the_bits_of_one_stage() {
 #[test]
 fn the_group_has_a_stage_thread_for_each_device() {
     let two = FeedFixture::new(2);
-    let mut names: Vec<String> = std::fs::read_dir("/proc/self/task")
-        .unwrap()
-        .filter_map(|task| std::fs::read_to_string(task.unwrap().path().join("comm")).ok())
-        .map(|name| name.trim().to_owned())
+    let mut names: Vec<String> = task_support::thread_names()
+        .into_iter()
         .filter(|name| name.starts_with("nagaya-stg-"))
         .collect();
     names.sort();
