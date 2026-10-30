@@ -571,6 +571,17 @@ interview), with the explicit loads of 3.3. Reason: these rules make each swap o
   until their drop, and the ledger charges the swap after the drop. A profile change waits for the drop of each
   engine that it retires. **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: a late charge stopped the process
   after a 202, and bytes freed too early let the staying engines over-commit.
+- Swaps of two groups can wait at one time, and they can end in either order. Each one must fit beside every
+  pending load, while the unloads of the other swaps have not run. **Proposed** by Claude Opus 5.5, 2026-10-30.
+  Reason: a check of the end state only let the first swap to end find no room.
+- A profile `PUT` while a swap waits or runs is a 409 that says to send it again later. After the nagaya accepts a
+  change, a load is a 409 of the same kind until the ledger takes the new profile. The ledger takes it when no swap
+  waits, and the engines that the change removes dropped and hold no context. **Proposed** by Claude Opus 5.5,
+  2026-10-30. Reason: a profile checked beside a waiting swap could fail after it, and a late context stopped the
+  process.
+- Known limit: a swap that only unloads is charged with no check. Fewer engines fit, but with elastic terms the
+  spare of the staying engines can shrink under live contexts. No engine declares elastic terms today. **Proposed**
+  by Claude Opus 5.5, 2026-10-30.
 - **The wait before an unload.** An engine that must unload takes no new job. Its jobs that the group holds run to
   their end. Jobs of engines that stay loaded go on. A swap of an engine with stages is the one exception: new jobs
   of the staying engines wait for it (see "No moves" below).
