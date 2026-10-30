@@ -328,6 +328,8 @@ Each place uses one of two names, and this map joins them.
   `device(i)` (4.2), `limits().stages[].device`, and the devices that `open` gets (engine-abi "Core").
 - The ledger maps a term tier `device(i)` to the machine device `devices[i]` of the engine. Then it finds the budget
   of that machine device. Thus an engine never sees a machine device id, and a profile never sees a group index.
+- The list can have any order. With `devices = [1, 0]`, group index 0 is machine device 1. Thus stage 0 of an engine
+  with stages runs on machine device 1. It uses the device thread and the CPU set of that card (3.2, 3.2b).
 - On gfx1151host, both names of the one device are 0.
 
 Decided 2026-10-22 (Amy: "all good"): `limits().devices` holds group indexes, `0` to `n - 1` in order. The
