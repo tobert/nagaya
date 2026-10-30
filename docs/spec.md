@@ -572,7 +572,8 @@ interview), with the explicit loads of 3.3. Reason: these rules make each swap o
   engine that it retires. **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: a late charge stopped the process
   after a 202, and bytes freed too early let the staying engines over-commit.
 - **The wait before an unload.** An engine that must unload takes no new job. Its jobs that the group holds run to
-  their end. Jobs of engines that stay loaded go on.
+  their end. Jobs of engines that stay loaded go on. A swap of an engine with stages is the one exception: new jobs
+  of the staying engines wait for it (see "No moves" below).
 - **Single-card swaps.** Proposed by senpai (Claude Haiku 5.5), 2026-10-29, for Amy's choice of 2026-10-29 (by
   interview: "split the group by card"). A swap of an engine on one device runs on that device's thread, not on the
   group thread. The ledger still decides each swap, on its one thread. The group thread keeps the swaps of an engine
@@ -3342,6 +3343,9 @@ the oracle recorded.
 
 - The nagaya normalizes each vector, also at the full length. Reason: one rule in one place, on the host, with a
   test that needs no card.
+- A cut vector of zeros has no direction, so it cannot be normalized. The request then fails with a 500 `internal`
+  that names the input, and no vector goes out. **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: the division
+  gave NaN, and a 200 with NaN values hides a defect of the engine.
 - A job charges no context and stores nothing. The plan of the engine holds its weights and the work of one input of
   `context_tokens`.
 
