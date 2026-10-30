@@ -1,9 +1,11 @@
 //! A group of two devices with no engine with stages loaded (spec 3.2, "One device thread per device", Decided
 //! 2026-10-28). `chat` with stages spans both cards, so the cards are one group. `left` on card 0 and `right` on
-//! card 1 each open on the device thread of their card, and their quanta run there at once.
+//! card 1 each open on the device thread of their card, and their quanta run there at once. A swap of an engine on one
+//! card runs on the thread of that card, so the other card serves meanwhile (spec 3.3a, "Single-card swaps").
 
 mod feed_support;
 
+use std::collections::BTreeMap;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -11,6 +13,7 @@ use std::time::{Duration, Instant};
 use nagaya::admission::{Factory, GroupDevice, OpenError, OpenErrorKind, PlanError, Registry};
 use nagaya::inventory::{Device, Inventory};
 use nagaya::jobs::{JobBody, JobSpec, Ran};
+use nagaya::notify::EngineState;
 use nagaya::process::{Event, Process, Start, WaitError};
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, Residency, StoreSpec, TierSpec};
 use nagaya_abi::fake::FakeAlways;
@@ -19,15 +22,29 @@ use nagaya_sched::{Class, Item};
 
 type Log = Arc<Mutex<Vec<String>>>;
 
+/// The gates that hold an open or a close until the test opens them, by `open:<name>` or `close:<name>`.
+type Gates = Arc<Mutex<BTreeMap<String, Receiver<()>>>>;
+
+/// Wait at the gate of `key`, when the test set one. Before the wait, write `waits:<key>` to the log.
+fn wait_at(gates: &Gates, log: &Log, key: &str) {
+    let gate = gates.lock().unwrap().remove(key);
+    if let Some(gate) = gate {
+        log.lock().unwrap().push(format!("waits:{key}"));
+        let _ = gate.recv_timeout(Duration::from_secs(10));
+    }
+}
+
 /// An engine that writes its close to a log, declares `close`, and forwards the rest.
 struct Closing {
     inner: Box<dyn Engine + Send>,
     name: String,
     log: Log,
+    gates: Gates,
 }
 
 impl Drop for Closing {
     fn drop(&mut self) {
+        wait_at(&self.gates, &self.log, &format!("close:{}", self.name));
         self.log.lock().unwrap().push(format!("close:{}", self.name));
     }
 }
@@ -116,9 +133,9 @@ fn fake(name: &str) -> Box<dyn Engine + Send> {
     }
 }
 
-/// The factory of the fakes. It writes each open with the name of the thread that opens. An open of `broken` fails
-/// with this kind.
-struct Fakes(Log, Option<OpenErrorKind>);
+/// The factory of the fakes. It writes each open with the name of the thread that opens. An open of `left` fails
+/// with this kind. An open waits at its gate.
+struct Fakes(Log, Option<OpenErrorKind>, Gates);
 
 impl Factory for Fakes {
     fn plan(&self, config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
@@ -129,6 +146,7 @@ impl Factory for Fakes {
         let name = config["name"].as_str().unwrap().to_owned();
         let thread = std::thread::current().name().unwrap_or("unnamed").to_owned();
         self.0.lock().unwrap().push(format!("open:{name}@{thread}"));
+        wait_at(&self.2, &self.0, &format!("open:{name}"));
         if let (Some(kind), "left") = (self.1, name.as_str()) {
             return Err(OpenError {
                 kind,
@@ -139,6 +157,7 @@ impl Factory for Fakes {
             inner: fake(&name),
             name,
             log: Arc::clone(&self.0),
+            gates: Arc::clone(&self.2),
         }))
     }
 }
@@ -191,9 +210,21 @@ fn start_failing(
     fail: Option<OpenErrorKind>,
     wide: bool,
 ) -> (Process, Log) {
+    start_gated(residency, card0, directory, fail, wide, Gates::default())
+}
+
+/// Start the engines with these gates on their opens and closes, and do not wait for the opens.
+fn start_gated(
+    residency: [Residency; 3],
+    card0: u64,
+    directory: &std::path::Path,
+    fail: Option<OpenErrorKind>,
+    wide: bool,
+    gates: Gates,
+) -> (Process, Log) {
     let log: Log = Arc::default();
     let mut registry = Registry::new();
-    registry.register("fakes", Box::new(Fakes(Arc::clone(&log), fail)));
+    registry.register("fakes", Box::new(Fakes(Arc::clone(&log), fail, gates)));
     let budget = |tier: Tier, bytes| BudgetSpec {
         tiers: vec![TierSpec::from(tier)],
         bytes,
@@ -534,4 +565,154 @@ fn a_stop_cancels_a_job_whose_quantum_runs_on_a_device_thread() {
     let report = process.stop(Duration::from_secs(5), &nagaya::signal::SignalFlag::new());
     release.join().unwrap();
     assert_eq!(report.parked.cancelled, 1, "{report:?}");
+}
+
+/// Wait until the log holds `line`.
+fn wait_for_line(log: &Log, line: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if log_of(log).iter().any(|held| held == line) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("the log has no line `{line}` in 5 s: {:?}", log_of(log));
+}
+
+/// A gate on the open or the close with this key, and the sender that opens it.
+fn gate_on(key: &str) -> (Gates, Sender<()>) {
+    let gates = Gates::default();
+    let (open, gate) = mpsc::channel();
+    gates.lock().unwrap().insert(key.to_owned(), gate);
+    (gates, open)
+}
+
+/// A job of `right` on card 1 runs to its end while an engine of card 0 waits in a swap.
+fn right_runs_while_card_0_swaps(process: &Process, log: &Log) {
+    let (job, _, done) = probe(RIGHT, log, None);
+    process.submit_job(0, job).unwrap();
+    done.recv_timeout(Duration::from_secs(2))
+        .expect("a job of right on card 1 ran while the swap of card 0 waited");
+}
+
+/// A load of `left` runs on the thread of card 0. A job of `right` that holds card 1 ends, and the next job of
+/// `right` runs, while the open of `left` waits (spec 3.3a, "Single-card swaps").
+#[test]
+fn a_load_on_card_0_does_not_delay_the_next_quantum_on_card_1() {
+    let directory = tempfile::tempdir().unwrap();
+    let (gates, open_left) = gate_on("open:left");
+    let (mut process, log) = start_gated([Residency::OnDemand; 3], 1 << 20, directory.path(), None, false, gates);
+    assert!(process.wait_opens(Duration::from_secs(5)).unwrap().is_empty());
+    assert_eq!(load(&process, "right"), (Vec::new(), vec!["right".to_owned()]));
+    // A job of `right` holds card 1 when the swap of card 0 begins.
+    let (gate_tx, gate) = mpsc::channel();
+    let (job, started, held) = probe(RIGHT, &log, Some(gate));
+    process.submit_job(0, job).unwrap();
+    started
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the right job started");
+    process.load("left").unwrap();
+    wait_for_line(&log, "waits:open:left");
+    gate_tx.send(()).unwrap();
+    held.recv_timeout(Duration::from_secs(5))
+        .expect("the held right job ended");
+    right_runs_while_card_0_swaps(&process, &log);
+    assert_eq!(process.ports().engine_state("left"), Some(EngineState::Loading));
+    open_left.send(()).unwrap();
+    assert_eq!(swapped(&process), (Vec::new(), vec!["left".to_owned()]));
+    assert_eq!(process.ports().engine_state("left"), Some(EngineState::Ready));
+    let (job, _, done) = probe(LEFT, &log, None);
+    process.submit_job(0, job).unwrap();
+    done.recv_timeout(Duration::from_secs(5)).expect("the left job ran");
+    assert_eq!(log_of(&log).last().unwrap(), "run:left@nagaya-dev-0-0");
+}
+
+/// An unload of `left` closes it on the thread of card 0. A job of `right` runs while the close waits.
+#[test]
+fn an_unload_on_card_0_does_not_delay_a_job_on_card_1() {
+    let directory = tempfile::tempdir().unwrap();
+    let (gates, close_left) = gate_on("close:left");
+    let (mut process, log) = start_gated([Residency::OnDemand; 3], 1 << 20, directory.path(), None, false, gates);
+    assert!(process.wait_opens(Duration::from_secs(5)).unwrap().is_empty());
+    load(&process, "left");
+    load(&process, "right");
+    process.unload("left").unwrap();
+    wait_for_line(&log, "waits:close:left");
+    right_runs_while_card_0_swaps(&process, &log);
+    assert_eq!(process.ports().engine_state("left"), Some(EngineState::Draining));
+    close_left.send(()).unwrap();
+    assert_eq!(swapped(&process), (vec!["left".to_owned()], Vec::new()));
+    assert!(log_of(&log).contains(&"close:left".to_owned()));
+    assert_eq!(process.ports().engine_state("left"), Some(EngineState::Unloaded));
+}
+
+/// An engine of both cards opens on the group thread, not on a device thread (spec 3.3a: Amy accepted that stall).
+#[test]
+fn an_engine_of_both_cards_swaps_on_the_group_thread() {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut process, log) = start_failing([Residency::OnDemand; 3], 1 << 20, directory.path(), None, true);
+    assert!(process.wait_opens(Duration::from_secs(5)).unwrap().is_empty());
+    assert_eq!(load(&process, "left"), (Vec::new(), vec!["left".to_owned()]));
+    let (unloaded, loaded) = load(&process, "wide");
+    assert_eq!(loaded, ["wide"]);
+    assert_eq!(
+        unloaded,
+        ["left"],
+        "a load on the group thread unloads each engine of the device threads"
+    );
+    assert_eq!(
+        log_of(&log),
+        ["open:left@nagaya-dev-0-0", "close:left", "open:wide@nagaya-group-0"]
+    );
+}
+
+/// A load that arrives while a swap runs on a device thread starts its swap after that swap ends, so the ledger sees
+/// the swaps in order (spec 3.3a, "Single-card swaps").
+#[test]
+fn a_second_swap_waits_for_the_swap_that_runs() {
+    let directory = tempfile::tempdir().unwrap();
+    let (gates, open_left) = gate_on("open:left");
+    let (mut process, log) = start_gated([Residency::OnDemand; 3], 1 << 20, directory.path(), None, false, gates);
+    assert!(process.wait_opens(Duration::from_secs(5)).unwrap().is_empty());
+    process.load("left").unwrap();
+    wait_for_line(&log, "waits:open:left");
+    // The ask waits for its group to plan it, so it runs on its own thread.
+    let ports = process.ports();
+    let right = std::thread::spawn(move || ports.load("right"));
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(!log_of(&log).iter().any(|line| line.starts_with("open:right")));
+    open_left.send(()).unwrap();
+    assert_eq!(swapped(&process), (Vec::new(), vec!["left".to_owned()]));
+    assert_eq!(swapped(&process), (Vec::new(), vec!["right".to_owned()]));
+    right.join().unwrap().unwrap();
+    assert_eq!(
+        log_of(&log),
+        [
+            "open:left@nagaya-dev-0-0",
+            "waits:open:left",
+            "open:right@nagaya-dev-0-1"
+        ]
+    );
+}
+
+/// A stop during a swap on a device thread waits for the open, and then parks the engine that opened.
+#[test]
+fn a_stop_during_a_swap_parks_the_engine_that_opens() {
+    let directory = tempfile::tempdir().unwrap();
+    let (gates, open_left) = gate_on("open:left");
+    let (mut process, log) = start_gated([Residency::OnDemand; 3], 1 << 20, directory.path(), None, false, gates);
+    assert!(process.wait_opens(Duration::from_secs(5)).unwrap().is_empty());
+    load(&process, "right");
+    process.load("left").unwrap();
+    wait_for_line(&log, "waits:open:left");
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        let _ = open_left.send(());
+    });
+    let report = process.stop(Duration::from_secs(5), &nagaya::signal::SignalFlag::new());
+    release.join().unwrap();
+    assert!(report.complete, "{report:?}");
+    let mut parked = report.parked.parked_engines.clone();
+    parked.sort();
+    assert_eq!(parked, ["left", "right"], "{report:?}");
 }

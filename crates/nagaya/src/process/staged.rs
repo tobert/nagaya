@@ -8,6 +8,10 @@
 //! each device, and no handle (spec 3.2, "One device thread per device"). An engine with one device opens on the
 //! thread of its device, and its quanta run there, so engines on separate devices run at once.
 //!
+//! A swap of engines with one device runs on their threads (spec 3.3a, "Single-card swaps"). The group thread sends
+//! each unload and open to the thread of its device, and it serves the other devices until the answers come back
+//! ([`Swapping`]). The swap of an engine of more than one device still runs on the group thread.
+//!
 //! A copy quantum holds every device, and it runs on the group thread through [`StagedEngine`]. That type is the
 //! `Engine` of the job bodies. It sends each part call to the stage thread of the part and waits for the answer. A
 //! stage thread runs one call at a time, in order, so a call waits for the stage quantum before it.
@@ -64,7 +68,7 @@ enum StageWork {
         count: usize,
         job: Box<GroupJob>,
         fd_store: Option<FdStore>,
-        reply: Sender<(Box<GroupJob>, Result<OpenedEngine, OpenFailure>)>,
+        reply: Answer<Opening>,
     },
     /// Run one quantum of a job of an engine on this thread. The body comes back in [`HostedDone`].
     Run {
@@ -78,8 +82,27 @@ enum StageWork {
         index: usize,
         name: String,
         store: Option<Sender<StoreMessage>>,
-        reply: Sender<ParkReport>,
+        reply: Answer<ParkReport>,
     },
+}
+
+/// The job of an engine that a stage thread opened, with the result of the open.
+type Opening = (Box<GroupJob>, Result<OpenedEngine, OpenFailure>);
+
+/// Where a stage thread sends the answer of an open or an unload.
+enum Answer<T> {
+    /// A caller waits for the answer on this channel.
+    Wait(Sender<T>),
+    /// The answer is a step of a swap that runs while the group thread serves (spec 3.3a, "Single-card swaps").
+    Swap,
+}
+
+/// The end of one unload or one open of a swap on a stage or device thread, for the group thread.
+pub(crate) enum SwapStep {
+    /// The thread parked and closed the engine at `member`.
+    Unloaded { member: usize, report: ParkReport },
+    /// The thread opened the engine at `member`, or failed to open it. The box keeps the group message small.
+    Opened { member: usize, opening: Box<Opening> },
 }
 
 /// Why an open on a stage or device thread failed: the kind, which decides the exit code (spec 10.4), and the message.
@@ -262,7 +285,17 @@ fn stage_thread(
                     }
                     Err(failure) => Err(failure),
                 };
-                if reply.send((job, answer)).is_err() {
+                let sent = match reply {
+                    Answer::Wait(reply) => reply.send((job, answer)).is_ok(),
+                    Answer::Swap => {
+                        let step = SwapStep::Opened {
+                            member: index,
+                            opening: Box::new((job, answer)),
+                        };
+                        done.send(GroupMessage::SwapStep(step)).is_ok()
+                    }
+                };
+                if !sent {
                     return;
                 }
             }
@@ -294,11 +327,20 @@ fn stage_thread(
                 store,
                 reply,
             }) => {
+                // The park and the close block this thread, so a helper beats for it (spec 7.4).
+                let beat_guard = OpenBeat::stage(group, stage, heartbeats.clone(), interval);
                 let mut report = ParkReport::default();
                 park::park_engine(&name, hosted[index].as_mut(), store.as_ref(), &mut report);
                 // The drop closes the engine (engine-abi "`close` in Rust").
                 hosted[index] = Elsewhere::absent(index);
-                if reply.send(report).is_err() {
+                drop(beat_guard);
+                let sent = match reply {
+                    Answer::Wait(reply) => reply.send(report).is_ok(),
+                    Answer::Swap => done
+                        .send(GroupMessage::SwapStep(SwapStep::Unloaded { member: index, report }))
+                        .is_ok(),
+                };
+                if !sent {
                     return;
                 }
             }
@@ -1238,30 +1280,38 @@ fn stage_of(member: &Member, machine: &[DeviceId], devices: &[DeviceId]) -> Opti
         .position(|device| machine.get(*device as usize) == Some(&id))
 }
 
-/// Park and close the engine at `member` on the thread of its stage (spec 3.3a). A part that cannot be parked is a
-/// crash (spec 8.5).
-fn unload_hosted(
+/// Send the unload of the engine at `member` to the thread of its stage, and mark the engine draining (spec 3.3a).
+fn send_unload(
     member: usize,
     stage: usize,
-    members: &mut [Member],
-    engines: &mut [Box<dyn Engine>],
+    members: &[Member],
     threads: &StageThreads,
     links: &GroupLinks,
+    reply: Answer<ParkReport>,
 ) {
     let name = members[member].name().to_owned();
     links.states.record(&name, EngineState::Draining);
-    let (reply, answer) = mpsc::channel();
     threads.senders[stage]
         .send(StageWork::Unload {
             index: member,
-            name: name.clone(),
+            name,
             store: links.store.clone(),
             reply,
         })
         .unwrap_or_else(|_| panic!("the thread of stage {stage} stopped"));
-    let report = answer
-        .recv()
-        .unwrap_or_else(|_| panic!("the thread of stage {stage} stopped during an unload"));
+}
+
+/// Mark the engine at `member` unloaded after its thread parked and closed it. A part that cannot be parked is a
+/// crash (spec 8.5).
+fn end_unload(
+    member: usize,
+    stage: usize,
+    report: ParkReport,
+    members: &mut [Member],
+    engines: &mut [Box<dyn Engine>],
+    links: &GroupLinks,
+) {
+    let name = members[member].name().to_owned();
     if !report.failures.is_empty() {
         panic!(
             "the swap cannot park the states of engine `{name}`: {}",
@@ -1279,20 +1329,36 @@ fn unload_hosted(
     );
 }
 
-/// Open the engine at `member` on the thread of `stage`, and mark it ready (engine-abi "How a group loads both").
-fn open_hosted(
+/// Park and close the engine at `member` on the thread of its stage, and wait for the end (spec 3.3a).
+fn unload_hosted(
     member: usize,
     stage: usize,
     members: &mut [Member],
     engines: &mut [Box<dyn Engine>],
     threads: &StageThreads,
     links: &GroupLinks,
-) -> Result<OpenedEngine, OpenFailure> {
-    let engine = members[member].name().to_owned();
-    links.states.record(&engine, EngineState::Loading);
+) {
+    let (reply, answer) = mpsc::channel();
+    send_unload(member, stage, members, threads, links, Answer::Wait(reply));
+    let report = answer
+        .recv()
+        .unwrap_or_else(|_| panic!("the thread of stage {stage} stopped during an unload"));
+    end_unload(member, stage, report, members, engines, links);
+}
+
+/// Send the open of the engine at `member` to the thread of `stage`, and mark the engine loading. The job of the
+/// engine goes with the open, and a shell holds its place until the answer.
+fn send_open(
+    member: usize,
+    stage: usize,
+    members: &mut [Member],
+    threads: &StageThreads,
+    links: &GroupLinks,
+    reply: Answer<Opening>,
+) {
+    links.states.record(members[member].name(), EngineState::Loading);
     let shell = members[member].job.shell();
     let job = Box::new(std::mem::replace(&mut members[member].job, shell));
-    let (reply, answer) = mpsc::channel();
     threads.senders[stage]
         .send(StageWork::Open {
             index: member,
@@ -1302,11 +1368,19 @@ fn open_hosted(
             reply,
         })
         .unwrap_or_else(|_| panic!("the thread of stage {stage} stopped"));
-    let (job, opened) = answer
-        .recv()
-        .unwrap_or_else(|_| panic!("the thread of stage {stage} stopped during an open"));
+}
+
+/// Take back the job of the engine at `member` after its open, and mark the engine ready when it opened.
+fn end_open(
+    member: usize,
+    (job, opened): Opening,
+    members: &mut [Member],
+    engines: &mut [Box<dyn Engine>],
+    links: &GroupLinks,
+) -> Result<OpenedEngine, OpenFailure> {
     members[member].job = *job;
     let opened = opened?;
+    let engine = members[member].name().to_owned();
     members[member].loaded = true;
     members[member].last_busy = Instant::now();
     engines[member] = Elsewhere::hosted(&members[member]);
@@ -1315,82 +1389,205 @@ fn open_hosted(
     Ok(opened)
 }
 
-/// Run a swap that keeps the engine with stages loaded: unload engines on stage threads, then open engines on the
-/// stage threads of their devices (engine-abi "How a group loads both"). A failure is a crash (spec 8.5).
-#[allow(clippy::too_many_arguments)]
-fn swap_beside(
-    group: usize,
-    plan: Plan,
-    stages: &BTreeMap<usize, usize>,
+/// Open the engine at `member` on the thread of `stage`, and wait for the end (engine-abi "How a group loads both").
+fn open_hosted(
+    member: usize,
+    stage: usize,
     members: &mut [Member],
     engines: &mut [Box<dyn Engine>],
-    hosted: &mut Hosted,
     threads: &StageThreads,
     links: &GroupLinks,
-    interval: Duration,
-) {
-    let started = Instant::now();
-    let name = |index: &usize| members[*index].name().to_owned();
-    let unloaded: Vec<String> = plan.unload.iter().map(name).collect();
-    let loading: Vec<String> = plan.load.iter().map(name).collect();
-    let span = tracing::info_span!(
-        "nagaya.swap",
-        group,
-        unload = unloaded.join(",").as_str(),
-        load = loading.join(",").as_str(),
-        unload_ms = tracing::field::Empty,
-        load_ms = tracing::field::Empty,
-    );
-    let _entered = span.enter();
-    // An open blocks this thread for seconds, so a helper beats for the group (spec 7.4).
-    let beat = OpenBeat::start(group, links.heartbeats.clone(), interval);
-    for &member in &plan.unload {
-        match hosted.remove(&member) {
-            Some(stage) => unload_hosted(member, stage, members, engines, threads, links),
-            // The group thread unloaded it before this loop began (`Entry::Swap`).
-            None => assert!(
-                !members[member].loaded,
-                "a swap beside the stages unloads engine `{}`, which is on no stage thread",
-                members[member].name()
-            ),
+) -> Result<OpenedEngine, OpenFailure> {
+    let (reply, answer) = mpsc::channel();
+    send_open(member, stage, members, threads, links, Answer::Wait(reply));
+    let opening = answer
+        .recv()
+        .unwrap_or_else(|_| panic!("the thread of stage {stage} stopped during an open"));
+    end_open(member, opening, members, engines, links)
+}
+
+/// A swap that runs on the stage or device threads while the group thread serves (spec 3.3a, "Single-card swaps").
+/// It keeps the engine with stages, when one is loaded (engine-abi "How a group loads both").
+///
+/// Each unload goes to the thread of its device. When every unload ended, the group asks the ledger for the swap, on
+/// its one thread. Then each open goes to the thread of its device. A failure is a crash (spec 8.5). The group starts
+/// no other swap until this one ends, so the ledger sees the swaps in order.
+struct Swapping {
+    group: usize,
+    plan: Plan,
+    /// The stage of each engine with one device on a device of a stage.
+    stages: BTreeMap<usize, usize>,
+    /// The unloads that run, as the stage of each engine.
+    unloads: BTreeMap<usize, usize>,
+    /// The opens that run, as the stage of each engine. It is empty until the unloads end.
+    opens: BTreeMap<usize, usize>,
+    /// The engines that opened.
+    loaded: BTreeMap<usize, OpenedEngine>,
+    started: Instant,
+    opening: Option<Instant>,
+    span: Span,
+}
+
+impl Swapping {
+    /// Start the swap of `plan`: send each unload of an engine on a stage thread. An engine of the plan on no stage
+    /// thread unloaded on the group thread before this serve loop began (`Entry::Swap`).
+    #[allow(clippy::too_many_arguments)]
+    fn start(
+        group: usize,
+        plan: Plan,
+        stages: &BTreeMap<usize, usize>,
+        members: &mut [Member],
+        hosted: &Hosted,
+        threads: &StageThreads,
+        links: &GroupLinks,
+    ) -> Option<Self> {
+        let names = |list: &[usize]| {
+            list.iter()
+                .map(|index| members[*index].name().to_owned())
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let span = tracing::info_span!(
+            "nagaya.swap",
+            group,
+            unload = names(&plan.unload).as_str(),
+            load = names(&plan.load).as_str(),
+            unload_ms = tracing::field::Empty,
+            load_ms = tracing::field::Empty,
+        );
+        let mut unloads = BTreeMap::new();
+        for &member in &plan.unload {
+            match hosted.get(&member) {
+                Some(&stage) => {
+                    send_unload(member, stage, members, threads, links, Answer::Swap);
+                    unloads.insert(member, stage);
+                }
+                None => assert!(
+                    !members[member].loaded,
+                    "a swap on the stage threads unloads engine `{}`, which is on no stage thread",
+                    members[member].name()
+                ),
+            }
+        }
+        let swapping = Self {
+            group,
+            plan,
+            stages: stages.clone(),
+            unloads,
+            opens: BTreeMap::new(),
+            loaded: BTreeMap::new(),
+            started: Instant::now(),
+            opening: None,
+            span,
+        };
+        swapping.advance(members, threads, links)
+    }
+
+    /// Take the end of one step from a stage thread, and give the swap when it has more steps.
+    fn step(
+        mut self,
+        step: SwapStep,
+        hosted: &mut Hosted,
+        members: &mut [Member],
+        engines: &mut [Box<dyn Engine>],
+        threads: &StageThreads,
+        links: &GroupLinks,
+    ) -> Option<Self> {
+        match step {
+            SwapStep::Unloaded { member, report } => {
+                let stage = self.unloads.remove(&member).unwrap_or_else(|| {
+                    panic!("a stage thread unloaded engine {member}, which the swap does not unload")
+                });
+                hosted.remove(&member);
+                end_unload(member, stage, report, members, engines, links);
+            }
+            SwapStep::Opened { member, opening } => {
+                let stage = self
+                    .opens
+                    .remove(&member)
+                    .unwrap_or_else(|| panic!("a stage thread opened engine {member}, which the swap does not load"));
+                let engine = members[member].name().to_owned();
+                let opened = end_open(member, *opening, members, engines, links)
+                    .unwrap_or_else(|(_, message)| panic!("the swap cannot open engine `{engine}`: {message}"));
+                hosted.insert(member, stage);
+                self.loaded.insert(member, opened);
+            }
+        }
+        self.advance(members, threads, links)
+    }
+
+    /// Start the opens when the unloads ended, and end the swap when the opens ended.
+    fn advance(mut self, members: &mut [Member], threads: &StageThreads, links: &GroupLinks) -> Option<Self> {
+        if !self.unloads.is_empty() {
+            return Some(self);
+        }
+        if self.opening.is_none() {
+            self.span.record("unload_ms", self.started.elapsed().as_millis() as u64);
+            self.admit(members, links);
+            self.opening = Some(Instant::now());
+            for &member in &self.plan.load {
+                let stage = *self.stages.get(&member).unwrap_or_else(|| {
+                    panic!(
+                        "a swap on the stage threads loads engine `{}`, which has no stage thread",
+                        members[member].name()
+                    )
+                });
+                send_open(member, stage, members, threads, links, Answer::Swap);
+                self.opens.insert(member, stage);
+            }
+        }
+        if !self.opens.is_empty() {
+            return Some(self);
+        }
+        self.end(members, links);
+        None
+    }
+
+    /// Ask the ledger for the swap. A refusal is a crash (spec 8.5): the plan fit when the group made it.
+    fn admit(&self, members: &[Member], links: &GroupLinks) {
+        let name = |index: &usize| members[*index].name().to_owned();
+        let (reply, answer) = mpsc::channel();
+        let loading: Vec<String> = self.plan.load.iter().map(name).collect();
+        links
+            .ledger
+            .send(LedgerMessage::Swap {
+                load: loading.clone(),
+                unload: self.plan.unload.iter().map(name).collect(),
+                reply,
+            })
+            .expect("the ledger thread stopped");
+        if let Err(error) = answer.recv().expect("the ledger thread stopped") {
+            panic!("the ledger refused the swap to {}: {error}", loading.join(", "));
         }
     }
-    span.record("unload_ms", started.elapsed().as_millis() as u64);
-    let (reply, answer) = mpsc::channel();
-    links
-        .ledger
-        .send(LedgerMessage::Swap {
-            load: loading.clone(),
-            unload: unloaded.clone(),
-            reply,
-        })
-        .expect("the ledger thread stopped");
-    if let Err(error) = answer.recv().expect("the ledger thread stopped") {
-        panic!("the ledger refused the swap to {}: {error}", loading.join(", "));
+
+    /// Report the swap, with the engines that opened in the order of the plan.
+    fn end(mut self, members: &[Member], links: &GroupLinks) {
+        let opening = self.opening.expect("a swap ends after its opens");
+        self.span.record("load_ms", opening.elapsed().as_millis() as u64);
+        let name = |index: &usize| members[*index].name().to_owned();
+        let unloaded: Vec<String> = self.plan.unload.iter().map(name).collect();
+        let loading: Vec<String> = self.plan.load.iter().map(name).collect();
+        let loaded: Vec<OpenedEngine> = self
+            .plan
+            .load
+            .iter()
+            .map(|member| self.loaded.remove(member).expect("each engine of the swap opened"))
+            .collect();
+        tracing::info!(
+            parent: &self.span,
+            "swap on the threads of group {}: unloaded [{}], loaded [{}] in {} ms",
+            self.group,
+            unloaded.join(", "),
+            loading.join(", "),
+            self.started.elapsed().as_millis()
+        );
+        let _ = links.events.send(Event::Swapped {
+            group: self.group,
+            unloaded,
+            loaded,
+        });
     }
-    let opening = Instant::now();
-    let mut loaded = Vec::with_capacity(plan.load.len());
-    for &member in &plan.load {
-        let stage = stages[&member];
-        let engine = members[member].name().to_owned();
-        let opened = open_hosted(member, stage, members, engines, threads, links)
-            .unwrap_or_else(|(_, message)| panic!("the swap cannot open engine `{engine}`: {message}"));
-        hosted.insert(member, stage);
-        loaded.push(opened);
-    }
-    span.record("load_ms", opening.elapsed().as_millis() as u64);
-    drop(beat);
-    tracing::info!(
-        "swap on the threads of group {group}: unloaded [{}], loaded [{}] in {} ms",
-        unloaded.join(", "),
-        loading.join(", "),
-        started.elapsed().as_millis()
-    );
-    let _ = links.events.send(Event::Swapped {
-        group,
-        unloaded,
-        loaded,
-    });
 }
 
 /// How a serve loop begins.
@@ -1426,7 +1623,8 @@ pub(super) fn group_devices(members: &[Member]) -> Vec<DeviceId> {
 /// 3.3b). A plan that unloads the engine with stages waits until the engine holds no job. Then the loop unloads the
 /// engines on the stage threads and the engine itself while the threads still run, ends the threads, and gives the
 /// swap. With no engine with stages, the threads are device threads, and an engine with one device loads on its
-/// device thread in the same way (spec 3.2).
+/// device thread in the same way (spec 3.2). A swap on those threads runs while the loop serves, and the loop plans
+/// no other swap until it ends (spec 3.3a, "Single-card swaps").
 #[allow(clippy::too_many_arguments)]
 pub(super) fn serve(
     group: usize,
@@ -1478,19 +1676,13 @@ pub(super) fn serve(
         .filter_map(|member| stage_of(&members[member], &machine, &devices).map(|stage| (member, stage)))
         .collect();
     let mut hosted: Hosted = BTreeMap::new();
+    // The swap that runs on the stage or device threads, while this thread serves (spec 3.3a, "Single-card swaps").
+    let mut swapping: Option<Swapping> = None;
     match entry {
         Entry::Serve => {}
-        Entry::Swap(plan) => swap_beside(
-            group,
-            plan,
-            &stages,
-            members,
-            engines,
-            &mut hosted,
-            &threads,
-            links,
-            interval,
-        ),
+        Entry::Swap(plan) => {
+            swapping = Swapping::start(group, plan, &stages, members, &hosted, &threads, links);
+        }
         Entry::Start { open, mut opened } => {
             let beat = OpenBeat::start(group, links.heartbeats.clone(), interval);
             for member in open {
@@ -1567,10 +1759,25 @@ pub(super) fn serve(
             Ok(GroupMessage::Ask(ask)) => asks.push_back(ask),
             Ok(GroupMessage::StageDone(done)) => jobs.stage_done(done, engines, &threads),
             Ok(GroupMessage::HostedDone(done)) => jobs.hosted_done(done, engines, &threads),
+            Ok(GroupMessage::SwapStep(step)) => {
+                let running = swapping.take().expect("a swap step comes from a swap that runs");
+                swapping = running.step(step, &mut hosted, members, engines, &threads, links);
+            }
             Ok(GroupMessage::Park(reply)) => {
                 cancelled += jobs.cancel_all();
                 // An ask that waits gets no reply. Its caller hears that the group stopped.
                 asks.clear();
+                // A swap that runs ends first, so each engine is on one thread for the park.
+                while let Some(running) = swapping.take() {
+                    match links.messages.recv() {
+                        Ok(GroupMessage::SwapStep(step)) => {
+                            swapping = running.step(step, &mut hosted, members, engines, &threads, links);
+                        }
+                        // The jobs are cancelled, so the ends of their quanta change nothing.
+                        Ok(_) => swapping = Some(running),
+                        Err(_) => break,
+                    }
+                }
                 // A park call waits on each stage thread for the stage quantum before it.
                 let _ = reply.send(ParkProgress::Draining { ended: Instant::now() });
                 // The engines on the group thread park here: the engine with stages, or an engine of more devices.
@@ -1594,7 +1801,7 @@ pub(super) fn serve(
                         index: member,
                         name: engine.clone(),
                         store: links.store.clone(),
-                        reply: answer,
+                        reply: Answer::Wait(answer),
                     });
                     report.engines += 1;
                     match sent.ok().and_then(|()| parked.recv().ok()) {
@@ -1650,7 +1857,9 @@ pub(super) fn serve(
             }
             plan
         };
-        if serving && pending.is_none() {
+        // The group plans no swap while one runs, so the ledger sees the swaps in order (spec 3.3a).
+        let free = swapping.is_none();
+        if serving && free && pending.is_none() {
             pending = loads::next_plan(asks, members, &links.ledger, &links.states, widen);
         }
         let now = Instant::now();
@@ -1659,7 +1868,7 @@ pub(super) fn serve(
                 members[member].last_busy = now;
             }
         }
-        if serving && pending.is_none() && asks.is_empty() {
+        if serving && free && pending.is_none() && asks.is_empty() {
             pending = in_place::idle_plan(members, now, &links.ledger).map(|plan| widen(plan, members));
             if let Some(plan) = &pending {
                 loads::mark(plan, members, &links.states);
@@ -1670,23 +1879,13 @@ pub(super) fn serve(
                 && plan.unload.iter().all(|member| hosted.contains_key(member))
                 && plan.load.iter().all(|member| stages.contains_key(member))
         });
-        if serving && beside {
+        if serving && free && beside {
             let plan = pending.as_ref().expect("a pending swap");
             if plan.unload.iter().all(|member| !jobs.holds(*member)) {
                 let plan = pending.take().expect("a pending swap");
-                swap_beside(
-                    group,
-                    plan,
-                    &stages,
-                    members,
-                    engines,
-                    &mut hosted,
-                    &threads,
-                    links,
-                    interval,
-                );
+                swapping = Swapping::start(group, plan, &stages, members, &hosted, &threads, links);
             }
-        } else if serving && pending.is_some() && jobs.idle() {
+        } else if serving && free && pending.is_some() && jobs.idle() {
             // The engines on the stage threads and the engine with stages unload while the threads still run. The
             // ledger hears of each of them in the swap.
             let mut plan = pending.take().expect("a pending swap");

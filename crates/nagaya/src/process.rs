@@ -1277,7 +1277,7 @@ fn serve_plain(
                 }
                 Ok(GroupMessage::Stop) | Err(RecvTimeoutError::Disconnected) => return Exit::Stop,
                 Ok(GroupMessage::StageDone(_)) => unreachable!("a group with no stages gets no end of a stage quantum"),
-                Ok(GroupMessage::HostedDone(_)) => {
+                Ok(GroupMessage::HostedDone(_)) | Ok(GroupMessage::SwapStep(_)) => {
                     unreachable!("a group with no stages holds no engine on a stage thread")
                 }
                 Err(RecvTimeoutError::Timeout) => {
@@ -1596,6 +1596,8 @@ enum GroupMessage {
     StageDone(staged::StageDone),
     /// A stage thread ended a quantum of an engine that it holds (engine-abi "How a group loads both").
     HostedDone(staged::HostedDone),
+    /// A stage or device thread ended one unload or one open of a swap (spec 3.3a, "Single-card swaps").
+    SwapStep(staged::SwapStep),
     /// Load or unload one engine of the group by a swap (spec 3.3b).
     Ask(Ask),
 }
