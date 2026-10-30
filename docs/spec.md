@@ -657,6 +657,9 @@ the shape was Decided 2026-10-28 (Amy, by interview).
 - The body of a load is empty, or `{"unload": [names]}` (3.3a, "Explicit layout"). Decided 2026-10-30 (Amy, by
   interview). A name of another device group, the engine itself, or a malformed body is a 400 `invalid_request` with
   the param `unload`. An unknown name is a 404 that names it.
+- A name that comes twice in `unload` is a 400 with the param `unload` too. The checks of the list run before the 200
+  of a loaded engine. **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: a repeat crashed the ledger thread, and a
+  loaded engine hid a bad list behind a 200.
 - A load that does not fit is a 409 that names the shortfall, the engines in the way and the pins (3.3a).
 - `POST /nagaya/v1/engines/{name}/unload` unloads a loaded engine that is not pinned, resident or on demand. No other
   engine loads. An engine that is not loaded gives a 200. Decided 2026-10-30 (Amy, by interview).
