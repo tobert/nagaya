@@ -698,6 +698,9 @@ struct StagedJobs {
     whole: std::collections::BTreeSet<JobId>,
     /// The quanta of those jobs that run on a stage thread. Their bodies are there.
     running_on: BTreeMap<JobId, RunningStage>,
+    /// The jobs that a cancel counted. A cancelled job stays in `running_on` until its quantum ends, so a later
+    /// cancel does not count it again.
+    cancelled: std::collections::BTreeSet<JobId>,
 }
 
 impl StagedJobs {
@@ -741,6 +744,7 @@ impl StagedJobs {
             on: BTreeMap::new(),
             whole: std::collections::BTreeSet::new(),
             running_on: BTreeMap::new(),
+            cancelled: std::collections::BTreeSet::new(),
         }
     }
 
@@ -1271,18 +1275,22 @@ impl StagedJobs {
             self.engine_of.remove(&id);
             self.on.remove(&id);
             self.whole.remove(&id);
+            self.cancelled.remove(&id);
             if let Some(mut body) = self.bodies.remove(&id) {
                 body.ended(state);
             }
         }
     }
 
-    /// Cancel every job (spec 10.3, 5.9). The stage quanta that run go to their end. It gives the number of jobs.
+    /// Cancel every job (spec 10.3, 5.9). The stage quanta that run go to their end. It gives the number of jobs
+    /// that no cancel counted before.
     fn cancel_all(&mut self) -> usize {
         // A job whose quantum runs on a stage or device thread has its body there, so it is in `running_on`.
         let mut ids: Vec<JobId> = self.bodies.keys().chain(self.running_on.keys()).copied().collect();
         ids.sort_unstable();
         ids.dedup();
+        ids.retain(|id| !self.cancelled.contains(id));
+        self.cancelled.extend(ids.iter().copied());
         self.bodies.clear();
         self.requests.clear();
         self.ready_since.clear();
@@ -1968,4 +1976,64 @@ pub(super) fn serve(
     };
     threads.hosted = hosted;
     exit
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A body that the test never runs: its quantum stays on the device thread.
+    struct Held;
+
+    impl JobBody for Held {
+        fn run(&mut self, _kind: Kind, _engines: &mut [Box<dyn Engine>]) -> Ran {
+            unreachable!("the quantum of this job stays on its device thread")
+        }
+
+        fn unavailable(&mut self, engine: &str, state: crate::notify::EngineState) {
+            panic!(
+                "engine `{engine}` is {}, and this test does not ask for it",
+                state.as_str()
+            );
+        }
+    }
+
+    /// The jobs of a group of one device, with the thread of that device as a channel that the test holds.
+    fn jobs_on_one_device() -> (StagedJobs, StageThreads, Receiver<StageWork>) {
+        let jobs = StagedJobs::new(0, "left".to_owned(), None, &[0], Machine::at("/nonexistent", 1));
+        let (sender, work) = mpsc::channel();
+        let threads = StageThreads {
+            senders: vec![sender],
+            handles: Vec::new(),
+            hosted: Hosted::new(),
+            attached: None,
+        };
+        (jobs, threads, work)
+    }
+
+    /// A stop can cancel the jobs of a group twice: once when the group sees that the process refuses work, and again
+    /// at the park. A job whose quantum runs on a device thread counts once (spec 10.3).
+    #[test]
+    fn a_second_cancel_does_not_count_a_job_whose_quantum_runs_on_a_device_thread() {
+        let (mut jobs, threads, work) = jobs_on_one_device();
+        let spec = JobSpec {
+            class: Class::Interactive,
+            priority: 0,
+            deadline: None,
+            first: Kind::Decode,
+            engine: 0,
+            body: Box::new(Held),
+        };
+        jobs.add(spec, Span::none(), Place::On(0), &mut [], &threads);
+        assert!(
+            matches!(work.try_recv(), Ok(StageWork::Run { job: 1, .. })),
+            "the quantum went to the device thread"
+        );
+        assert_eq!(jobs.cancel_all(), 1);
+        assert!(
+            !jobs.idle(),
+            "the quantum still runs, so the group cancels again on its next pass"
+        );
+        assert_eq!(jobs.cancel_all(), 0);
+    }
 }
