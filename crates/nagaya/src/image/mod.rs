@@ -18,7 +18,8 @@ use crate::speech::SlotPool;
 
 mod job;
 
-/// The items that wait for a slow client. A full queue holds the job back at its next quantum; it drops nothing.
+/// The items that wait for the worker of the route, which encodes the PNGs. A full queue holds the job back at its
+/// next quantum; it drops nothing. The worker never waits on a client (spec 11.9a).
 const QUEUE: usize = 8;
 
 /// A family library of an image engine: it makes the chunks of a prompt (spec 11.3, 11.9).

@@ -34,6 +34,9 @@ type Clears = Arc<std::sync::atomic::AtomicUsize>;
 /// The `image_step` calls of the fake.
 type Steps = Arc<std::sync::atomic::AtomicUsize>;
 
+/// The seed of a slow job: each step of the fake takes 10 ms, so a test can act while the job runs.
+const SLOW_SEED: u64 = 777;
+
 /// An image engine with one slot that paints each image in the low byte of its seed.
 struct Painter {
     jobs: Jobs,
@@ -65,6 +68,9 @@ impl Image for Painter {
 
     fn image_step(&mut self, _slot: SlotId) -> Result<ImageStepOut, PassError> {
         let job = self.job.as_ref().expect("a step after a begin");
+        if job.seed == SLOW_SEED {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         self.step += 1;
         self.steps.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let previews = if job.previews {
@@ -996,4 +1002,177 @@ fn previews_with_no_stream_are_a_400_naming_previews() {
         refused(&council, body),
         (StatusCode::BAD_REQUEST, "previews".to_owned())
     );
+}
+
+/// Start a stream of `body`, and give its response with the body not read: a client that reads nothing.
+fn unread_stream(council: &Arc<Council>, body: Value) -> (tokio::runtime::Runtime, axum::response::Response) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let request = Request::builder()
+        .method("POST")
+        .uri("/council/v2/generations")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let response = runtime.block_on(router(Arc::clone(council)).oneshot(request)).unwrap();
+    (runtime, response)
+}
+
+/// Wait until the fake cleared its slot `count` times. A job clears its slot after its decode.
+fn wait_clears(fixture: &Fixture, count: usize, what: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while fixture.clears.load(std::sync::atomic::Ordering::SeqCst) < count {
+        assert!(std::time::Instant::now() < deadline, "{what}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// The events of a response body that the client reads at last.
+fn read_late(runtime: &tokio::runtime::Runtime, response: axum::response::Response) -> Vec<(String, Value)> {
+    let bytes = runtime
+        .block_on(axum::body::to_bytes(response.into_body(), 1 << 26))
+        .unwrap();
+    events(&bytes)
+}
+
+/// Wait until the store holds bytes, and give them. The worker of the route seals each image after the decode.
+fn wait_sealed(council: &Arc<Council>) -> u64 {
+    let objects = council.objects().unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while objects.lock().unwrap().used() == 0 {
+        assert!(std::time::Instant::now() < deadline, "the job sealed no image");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    objects.lock().unwrap().used()
+}
+
+/// A client that reads nothing fills its stream queue. The stream then ends, and the job runs to its end and seals
+/// its image. Thus the next job of the engine runs while the first client still reads nothing (spec 11.9a).
+#[test]
+fn a_full_stream_queue_ends_the_stream_and_the_job_runs_on_and_seals_its_image() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let options = json!({"width": 512, "height": 512, "steps": 20});
+    let mut body = request("a fox", options.clone(), json!({"seed": 9}));
+    body["stream"] = json!(true);
+    let (runtime, response) = unread_stream(&council, body);
+    assert_eq!(response.status(), StatusCode::OK);
+    wait_clears(
+        &fixture,
+        1,
+        "the job of a client that reads nothing did not reach its end",
+    );
+    assert_eq!(fixture.steps.load(std::sync::atomic::Ordering::SeqCst), 20);
+    let held = wait_sealed(&council);
+    let objects = council.objects().unwrap();
+
+    // The next job runs on the one slot. The same request gives the same PNG, so the store holds no new bytes.
+    let (status, done) = generate(&council, request("a fox", options, json!({"seed": 9})));
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(
+        objects.lock().unwrap().used(),
+        held,
+        "the cut job sealed the same object"
+    );
+    assert_eq!(done["outputs"][0]["bytes"].as_u64().unwrap(), held);
+
+    // The client reads at last: the events in the queue, and then an error event that ends the stream.
+    let events = read_late(&runtime, response);
+    let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
+    assert!(names.len() < 20, "the stream lost the events past its queue: {names:?}");
+    assert!(
+        names[..names.len() - 1].iter().all(|name| *name == "progress"),
+        "{names:?}"
+    );
+    let (last, error) = events.last().unwrap();
+    assert_eq!(last, "error", "{names:?}");
+    assert_eq!(error["error"]["type"], json!("busy"), "{error}");
+    assert!(council.failure().is_none(), "a cut stream does not stop the process");
+}
+
+/// A stream that is cut after its `output` events still gives each PNG through its pending id (spec 11.9a).
+#[test]
+fn the_pending_id_of_a_cut_stream_gives_the_png() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    // The route takes one event, and its queue holds 8: seven steps and the outputs. The `done` finds it full.
+    let mut body = request(
+        "a fox",
+        json!({"width": 512, "height": 512, "steps": 8}),
+        json!({"seed": 41}),
+    );
+    body["stream"] = json!(true);
+    let (runtime, response) = unread_stream(&council, body);
+    assert_eq!(response.status(), StatusCode::OK);
+    wait_clears(&fixture, 1, "the job did not reach its end");
+    wait_sealed(&council);
+    // The worker sends `done` at once after the seal. A read before that send would make room for it.
+    std::thread::sleep(Duration::from_millis(200));
+    let events = read_late(&runtime, response);
+    let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names[8..], ["output", "error"], "{names:?}");
+    let pending = events[8].1["pending"].as_str().unwrap();
+    let (status, _, location, _) = send(&council, "GET", &format!("/council/v2/objects/{pending}"), None);
+    assert_eq!(status, StatusCode::PERMANENT_REDIRECT, "the job sealed the pending id");
+    let id = location.strip_prefix("/council/v2/objects/").unwrap();
+    let (width, height, first, text) = read_png(&object(&council, id));
+    assert_eq!((width, height, first), (512, 512, 41));
+    assert!(text.unwrap().contains("Seed: 41"));
+}
+
+/// A cut stream ends at once, not at the end of its job. A client that reads after the cut gets the events of its
+/// queue and the error, and no event of a later step.
+#[test]
+fn a_cut_stream_ends_before_its_job_and_sends_no_later_step() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let mut body = request(
+        "a fox",
+        json!({"width": 512, "height": 512, "steps": 150}),
+        json!({"seed": SLOW_SEED}),
+    );
+    body["stream"] = json!(true);
+    let (runtime, response) = unread_stream(&council, body);
+    assert_eq!(response.status(), StatusCode::OK);
+    // The queue holds 8 events, so the stream is cut by step 10.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while fixture.steps.load(std::sync::atomic::Ordering::SeqCst) < 20 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the slow job did not reach step 20"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let events = read_late(&runtime, response);
+    let steps = fixture.steps.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(steps < 150, "the stream ended only at the end of its job");
+    let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names.len(), 10, "{names:?}");
+    for (k, (_, progress)) in events[..9].iter().enumerate() {
+        assert_eq!(progress["step"], json!(k + 1), "{names:?}");
+    }
+    assert_eq!(names[9], "error");
+    wait_clears(&fixture, 1, "the slow job did not reach its end");
+}
+
+/// A client that goes away cancels its job, also after a cut. Only a full queue lets the job run on (spec 11.7).
+#[test]
+fn a_stream_whose_client_goes_away_cancels_its_job() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let mut body = request(
+        "a fox",
+        json!({"width": 512, "height": 512, "steps": 150}),
+        json!({"seed": SLOW_SEED}),
+    );
+    body["stream"] = json!(true);
+    let (runtime, response) = unread_stream(&council, body);
+    assert_eq!(response.status(), StatusCode::OK);
+    drop(response);
+    drop(runtime);
+    wait_clears(&fixture, 1, "the job of a client that went away did not end");
+    let steps = fixture.steps.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(steps < 150, "the job ran all {steps} steps after its client went away");
 }

@@ -69,7 +69,8 @@ impl ImageJobBody {
         self.told |= matches!(item, Ok(Made::Images(_)) | Err(_));
         match self.parts.out.try_send(item) {
             Ok(()) => true,
-            // A full queue waits for the client; the quantum ended, so the wait holds no device work.
+            // A full queue waits for the worker of the route, which never waits on a client (spec 11.9a). The
+            // quantum ended, so the wait holds no device work.
             Err(TrySendError::Full(item)) => self.parts.out.send(item).is_ok(),
             Err(TrySendError::Disconnected(_)) => false,
         }

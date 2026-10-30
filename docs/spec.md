@@ -3116,8 +3116,8 @@ interview). Reason: the rules of 11.9 need names, ranges and errors before the f
   - Speech is not changed here. Its audio is not an object, so a dropped speech stream loses its audio. It needs its
     own rule.
   - The queue of a stream holds 8 events. The helper thread is the worker of the route, which encodes each PNG. The
-    worker never waits on a client, and the job waits only on the worker. A client that went away still cancels the
-    job (11.7).
+    worker never waits on a client, and the job waits only on the worker. A client that goes away before a cut still
+    cancels the job (11.7). After a cut, the job runs to its end.
   - After the events in its queue, a cut stream sends one `error` event of type `busy`, and then it ends. A stream
     cut before its decode sent no `output` event, so its client has no pending id for the sealed images.
     **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: the rule does not say how the stream ends. A plain end

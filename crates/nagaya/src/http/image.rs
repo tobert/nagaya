@@ -23,6 +23,7 @@ use crate::image::{ImageError, ImageService, Made};
 use nagaya_store::ContentId;
 use nagaya_store::objects::ObjectStore;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The media type of every output of an image model.
 pub const PNG: &str = "image/png";
@@ -491,6 +492,29 @@ enum Item {
     End(Box<Result<GenerationDone, ServiceError>>),
 }
 
+/// The events of a stream that wait for a slow client. A full queue ends the stream, and the job runs on (spec
+/// 11.9a).
+const QUEUE: usize = 8;
+
+/// Send an item to the stream. A full queue cuts the stream: the sender drops, and later items go nowhere. Thus the
+/// worker never waits on a client, and the job does not wait on the worker. False when the client went away.
+fn send_or_cut(out: &Mutex<Option<mpsc::Sender<Item>>>, cut: &AtomicBool, item: Item) -> bool {
+    let mut out = out.lock().expect("the lock of a stream sender is poisoned");
+    let Some(sender) = out.as_ref() else {
+        return true;
+    };
+    match sender.try_send(item) {
+        Ok(()) => true,
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            tracing::warn!("an image stream ended: its queue of {QUEUE} events filled; the job runs on");
+            cut.store(true, Ordering::SeqCst);
+            *out = None;
+            true
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => false,
+    }
+}
+
 /// Run a checked generation to its end. `tell` hears the previews and the pending outputs, and gives false when the
 /// client went away. The pending ids are sealed or cancelled before it returns.
 fn make(
@@ -702,16 +726,18 @@ pub async fn generation(
         Ok(permit) => permit,
         Err(failure) => return failure.respond(&id),
     };
-    let (out, mut items) = mpsc::channel::<Item>(8);
+    let (out, mut items) = mpsc::channel::<Item>(QUEUE);
+    let cut = Arc::new(AtomicBool::new(false));
     let inner = Arc::clone(&council);
+    let cut_by_worker = Arc::clone(&cut);
     let started = council.spawn(move || {
+        let out = Mutex::new(Some(out));
+        let send = |item| send_or_cut(&out, &cut_by_worker, item);
         let result = guarded(|| {
             let checked = check(&service, &model, &request, objects.as_deref())?;
-            make(&inner, &service, &model.model, checked, true, &|item| {
-                out.blocking_send(item).is_ok()
-            })
+            make(&inner, &service, &model.model, checked, true, &send)
         });
-        let _ = out.blocking_send(Item::End(Box::new(result)));
+        send(Item::End(Box::new(result)));
         drop(permit);
     });
     if let Err(failure) = started {
@@ -730,8 +756,8 @@ pub async fn generation(
                 .respond(&id);
         }
     };
-    let state = (Some(first), items, council, id, false);
-    let stream = futures_util::stream::unfold(state, |(first, mut items, council, id, ended)| async move {
+    let state = (Some(first), items, council, id, false, cut);
+    let stream = futures_util::stream::unfold(state, |(first, mut items, council, id, ended, cut)| async move {
         if ended {
             return None;
         }
@@ -768,13 +794,20 @@ pub async fn generation(
                 (vec![Event::default().event(event.name()).data(event.data())], true)
             }
             None => {
-                let error = ServiceError::internal("an image generation ended with no result");
+                let error = if cut.load(Ordering::SeqCst) {
+                    ServiceError::Busy(format!(
+                        "the stream ended: its queue of {QUEUE} events filled, because the client read too slowly; \
+                         the job runs on, so GET the pending id of each output event for its PNG"
+                    ))
+                } else {
+                    ServiceError::internal("an image generation ended with no result")
+                };
                 let event = super::stream::error_event(&council, error, &id);
                 (vec![Event::default().event(event.name()).data(event.data())], true)
             }
         };
         let events = futures_util::stream::iter(events.into_iter().map(Ok::<Event, std::convert::Infallible>));
-        Some((events, (None, items, council, id, ended)))
+        Some((events, (None, items, council, id, ended, cut)))
     });
     Sse::new(futures_util::StreamExt::flatten(stream)).into_response()
 }
