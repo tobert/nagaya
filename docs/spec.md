@@ -1619,6 +1619,44 @@ eager attention. Its venv is `~/.venvs/embed-ref`, and its header names each ver
 - Reason for 1e-4: the bf16 run differs by up to 3.7e-3, with a cosine of 0.99957. A gate at that level lets a wrong
   layer pass. An engine with f32 math from the bf16 weights stays far below 1e-4.
 
+**The Qwen-Image oracle.** **Proposed** by Claude Opus 5.5, 2026-10-31, for milestone 22. Reason: this follows
+the oracles of SDXL and EmbeddingGemma 2, with one gate for each stage of the engine.
+
+- `tools/qwenimage21_golden.sh` runs diffusers 0.41.0.dev0 in the venv of `~/src/diffusepal`, on the CPU only. It
+  computes in f32 from the bf16 weights, and loads one model at a time. Its peak is about 33 GiB of RAM.
+- Run it with `nagaya.service` stopped and no GPU job. It writes `encode.safetensors`, `steps.safetensors` and
+  `parts.safetensors` into `target/qwenimage21-golden` or `QWENIMAGE21_GOLDEN_DIR`. No file is committed.
+- The request: the prompt `fusal style. a red fox in a snowy forest, watercolor`, 256 by 256, 4 steps, seed 1234. It
+  uses CFG 1.0, the Heretic encoder and the FUSAL LoRA at 1.0. The size is below the request minimum, as for SDXL.
+- The start latent comes from `torch.Generator().manual_seed(1234)`, and the engine takes it in place of its own
+  stream. The template has 36 ids, the cut is 14, and 22 conditioning rows follow.
+- The sigmas are 1.0, 0.7446, 0.4267, 0.02 and 0. The reference gives the LoRA to diffusers as an adapter, with no
+  fold. It also records step 0 with the LoRA at weight 0.
+- The metadata `template.hidden_states_last` records what `hidden_states[-1]` was in its transformers version. The
+  conditioning is the input of the final norm in either case (11.9c, "The load").
+
+The gates. A reference in f32 does not give the bits of an engine in bf16. 11.9c also rounds in bf16 where the
+pipeline in bf16 rounds, and the reference does not. Thus each gate has a tolerance. The first run on gfx1151host measures
+each gap, as for every oracle. Then a Decided note sets each gate at about 4 times its gap, at most the cap below.
+
+| Gate | What the engine runs | Compares with | Cap |
+|---|---|---|---|
+| ids | the family on the prompt | `ids` and `drop` | equal |
+| conditioning | the encoder on `ids` | `prompt_embeds` | cosine 0.9999 for each row |
+| step | one step from each `latents[k]` | `transformer_out[k]` | cosine 0.999 |
+| run | 4 steps from `start` | `final_latent` | cosine 0.999 |
+| decode | the decode of `vae.in` | `rgba` | 4 in each byte |
+| image | the whole job | `rgba` | 16 in each byte, 2 on average |
+
+- The LoRA gate: the engine with no LoRA runs step 0 against `tr.step0_no_lora`. The step gate must fail when the
+  engine drops the LoRA. A LoRA that changes less than the tolerance is a defect of the gate, to report.
+- The cache gate: a job on a hit and a job on a miss give equal bits (6.16). Two runs of a job give equal bits. Image
+  0 of a job with `count` 2 has the bits of the same job with `count` 1.
+- Each gate keeps a broken variant that it must fail (8.3, above). The variants are the final norm applied, no LoRA,
+  the timestep in place of 0 for the conditioning rows, and the bytes in BGRA order.
+- `parts.safetensors` holds the encoder layers, the transformer modules of step 0 and the VAE stages. They are
+  references for kernel bring-up, not gates.
+
 **8.4 Audit.** For some engines the tripwire is not reliable, because of their determinism class. For them, the
 nagaya runs an audit after each start, as a filler job in the same process. The audit builds a sample of stored
 recipes again and compares the content ids (D3). A restart is the fresh process that the audit needs, so the audit
