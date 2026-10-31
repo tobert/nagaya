@@ -1428,6 +1428,37 @@ exists because its bits depend on the split of a pass. The test runs on the B70 
 gfx1151host cannot run this test. mk declares `segments_exact: true` (`crates/nagaya-mk-qwen38-gfx1151/src/spec.rs:463`),
 so the test cannot fail there for this reason.
 
+**6.16 Conditionings.** Amy decided on 2026-10-31 that the store keeps the encoder output of each prompt (`AGENTS.md`
+milestone 22). The rules below are **Proposed** by Claude Opus 5.5, 2026-10-31. Reason: a conditioning is sealed
+state with a recipe. Thus the rules of 6.2 to 6.11 give its key, its lookup, its eviction and its tripwire.
+
+- A **conditioning** is the output of an image engine's text encoder for one prompt. It has one row for each id after
+  the cut (11.9c). Qwen-Image 2.1 gives rows of 4096 bf16 values, 8 KiB each.
+- The store keeps it as a snapshot of one cells part, `conditioning`. The canonical file (D10) holds that tensor, of
+  shape `[rows, 4096]` in BF16. Its coverage is the positions from the cut to the last id.
+- Its recipe is a root recipe with the identity digest of the engine and the fixed key `nagaya conditioning v1` as
+  tag 2. It has no approximation tags and no lab state. Reason: the park recipe of 6.2 uses a fixed key in this way.
+- One boundary follows at the end of the ids. Its tag 5 is the root recipe, tag 6 the template ids, and tag 7 the id
+  count. Thus the recipe covers the weights, the tokenizer, the template and the ids.
+- The nagaya looks up the recipe before `image_begin`. On a hit, the job carries the rows, and the engine skips the
+  encoder (engine-abi "Image"). On a miss, `image_begin` gives the rows, and the nagaya puts the entry.
+- The reason of the entry is `prefill done` (6.4). Its owner is the owner of the request. It lives in the host tier.
+  The engine declares `max_depth: 0` (6.5), so eviction ranks it as an entry with no chain (6.9).
+- The engine declares the determinism `pinned` (12.1, "The plan table of a HIP engine"). Thus two content ids under
+  one recipe fire the tripwire (6.7).
+- A hit and a miss give the same image bits, because the engine reads the same rows in both. The conformance suite
+  checks this (8.3).
+- No route reads, pins or lists a conditioning in v0. The `snapshot_bytes` of the served model stays 0 (11.9a),
+  because a client holds no context of it.
+- A template of 1024 ids gives at most 1010 rows, about 7.9 MiB. The prompt of the oracle gives 22 rows, 176 KiB.
+
+Two choices are left for later. Each one is a design, and nothing builds it now.
+
+- The identity digest covers the transformer and its LoRA. Thus a variant with the same encoder encodes its prompts
+  again. A later rule can give the encoder its own identity, so that variants share their conditionings.
+- The keys and values of the conditioning rows in the 32 blocks take 512 KiB for each row. They depend on the
+  transformer and its LoRA. A later rule can keep them as entries too, so that a hit skips all of `image_begin`.
+
 ## 7. IO
 
 **7.1 One IO service per machine.** Engines (through the `io` capability) and the store send IO requests
