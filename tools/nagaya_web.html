@@ -663,7 +663,9 @@ $("chat-go").onclick = async () => {
 let lines = [];
 function drawLines() {
   $("sp-lines").innerHTML = lines.map((l) =>
-    `<div class="line"><div><div>${esc(l.text)}</div><audio controls src="${objectUrl(l.id)}"></audio></div>
+    `<div class="line"><div><div>${esc(l.text)}</div><audio controls src="${objectUrl(l.id)}"
+       onerror="this.nextElementSibling.textContent = 'the browser cannot play this audio'"></audio>
+       <div class="note">${l.ms == null ? "" : `${(l.ms / 1000).toFixed(1)} s`}</div></div>
      <a class="note" href="${objectUrl(l.id)}" download="line.wav">wav</a></div>`).join("") ||
     `<p class="note">No lines yet.</p>`;
 }
@@ -690,7 +692,7 @@ $("sp-go").onclick = async () => {
     await ready(model, (t) => { $("sp-error").textContent = t; });
     $("sp-error").textContent = "speaking…";
     const done = await call("POST", "/council/v2/generations", body);
-    lines.push({text, id: done.outputs[0].id}); $("sp-input").value = ""; drawLines();
+    lines.push({text, id: done.outputs[0].id, ms: done.usage?.media?.written?.audio_ms}); $("sp-input").value = ""; drawLines();
     $("sp-lines").querySelector(".line:last-child audio")?.play().catch(() => {});
     $("sp-error").textContent = "";
   } catch (e) {

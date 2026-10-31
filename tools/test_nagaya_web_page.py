@@ -28,6 +28,8 @@ IDENTITY = {"models": [
      "media": {"inputs": [], "outputs": [], "text_replies": False},
      "embeddings": {"tasks": ["query", "document", "similarity"], "dimensions": [768, 512, 256, 128],
                     "inputs_per_request": 64}},
+    {"model": "voice", "engine": "voice", "status": "ready", "capabilities": ["generate"],
+     "media": {"inputs": ["audio/wav"], "outputs": ["audio/wav"], "text_replies": False}},
 ]}
 PROFILE = {"engines": [
     {"name": "gemma", "kind": "mk-gemma4-bmg", "devices": [0, 1]},
@@ -66,6 +68,10 @@ function fetch(path, o) {
     const b = JSON.parse(o.body);
     const v = b.inputs.map((t, i) => b.task === "query" ? [1, 0] : [Math.cos(i), Math.sin(i)]);
     return reply(200, {embeddings: v.map((vector, index) => ({index, tokens: 3, vector}))});
+  }
+  if (path === "/council/v2/generations") {
+    return reply(200, {outputs: [{index: 0, id: "blake3:" + "a".repeat(64), mime: "audio/wav"}],
+                       usage: {media: {written: {objects: 1, bytes: 80684, audio_ms: 1680}}}});
   }
   return reply(200, {});
 }
@@ -108,6 +114,17 @@ class Page(unittest.TestCase):
         self.assertEqual(out["error_text"], "")
         self.assertEqual(out["ranked"], ["<span>zero</span>", "<span>one</span>", "<span>two</span>"])
         self.assertEqual([(b["task"], b["dimensions"]) for b in out["bodies"]], [("document", 768), ("query", 768)])
+
+    def test_a_line_of_speech_shows_the_length_of_its_audio_and_a_playback_error(self):
+        out = self.run_page("""
+            document.getElementById("sp-model").value = "voice";
+            document.getElementById("sp-input").value = "hello";
+            await document.getElementById("sp-go").onclick();
+            out.error_text = document.getElementById("sp-error").textContent;
+            out.lines = document.getElementById("sp-lines").innerHTML;""")
+        self.assertEqual(out["error_text"], "")
+        self.assertIn("1.7 s", out["lines"])
+        self.assertIn("onerror=", out["lines"])
 
     def test_the_engine_table_turns_off_the_buttons_that_do_nothing(self):
         out = self.run_page('out.rows = document.getElementById("eng-rows").innerHTML;')
