@@ -3618,6 +3618,8 @@ holds it (11.3). Reason: these rules give the ids of the processor that FUSAL tr
   computes the cut from the tokenizer, and a test checks that it is 14.
 - The template has at most 1024 ids. A longer prompt is a 400 that names `messages`. Reason: the bound fixes the
   prefix rows of a slot (engine-abi "Image").
+- The family does not parse A1111 weights, such as `(word:1.2)`. Brackets are plain text. Reason: this encoder has no
+  weight for each token, and diffusers gives it the text as it is.
 - The family does not add the trigger phrase `fusal style.` The client writes it, as diffusepal and the FUSAL README
   do. Reason: the family never changes a prompt, and the A1111 chunk then gives the request's prompt.
 - The identity's `template` is the template text above. Thus a new template is a new recipe (12.1).
