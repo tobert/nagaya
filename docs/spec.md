@@ -3585,6 +3585,11 @@ load catches a wrong file before a job runs, as diffusepal's `models.py:44-50` d
 - The engine loads the VAE decoder and `post_quant_conv` only. The VAE encoder comes with img2img (11.9b).
 - The VAE file holds F32. The engine rounds it to bf16 at the open, because diffusers runs the VAE in bf16
   (diffusepal `models.py:44`).
+- The plan counts the weights from the file headers, with no load: the transformer is 13.25 GiB and the text tower
+  14.10 GiB. The VAE decoder adds less than 1 GiB in bf16. The scratch of a slot is a mandatory term (engine-abi
+  "Core").
+- Step 7 of milestone 22 measures the scratch of the largest slot. The pool of gfx1151host waits for the deploy step
+  (`AGENTS.md` milestone 22).
 
 **The LoRA fold.** **Proposed** by Claude Opus 5.5, 2026-10-31. Reason: a LoRA of the profile is part of the weights
 of the variant. A fold costs nothing at each step and needs no more memory than the base.
