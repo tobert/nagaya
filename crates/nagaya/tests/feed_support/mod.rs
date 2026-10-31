@@ -44,6 +44,8 @@ pub struct FeedFactory {
     pub panic_stage: Arc<AtomicUsize>,
     /// The stage whose next quantum returns an error, or `NO_STAGE`.
     pub fail_stage: Arc<AtomicUsize>,
+    /// The stage whose next quantum panics as a defect would, with no plan, or `NO_STAGE`.
+    pub surprise_stage: Arc<AtomicUsize>,
     /// The stage and the thread name of each stage pass and each part, slot or coverage call of a stage handle.
     pub threads: ThreadLog,
     /// The profile's `devices` list of the engine. `None` gives `0` to `stages - 1`.
@@ -74,6 +76,7 @@ impl FeedFactory {
             log: Arc::default(),
             panic_stage: Arc::new(AtomicUsize::new(NO_STAGE)),
             fail_stage: Arc::new(AtomicUsize::new(NO_STAGE)),
+            surprise_stage: Arc::new(AtomicUsize::new(NO_STAGE)),
             threads: Arc::default(),
             devices: None,
         }
@@ -87,6 +90,7 @@ pub struct Traced {
     log: StageLog,
     panic_stage: Arc<AtomicUsize>,
     fail_stage: Arc<AtomicUsize>,
+    surprise_stage: Arc<AtomicUsize>,
     threads: ThreadLog,
 }
 
@@ -143,6 +147,7 @@ impl Stages for Traced {
                     log: Arc::clone(&self.log),
                     panic_stage: Arc::clone(&self.panic_stage),
                     fail_stage: Arc::clone(&self.fail_stage),
+                    surprise_stage: Arc::clone(&self.surprise_stage),
                     threads: Arc::clone(&self.threads),
                 }) as Box<dyn StageHandle + Send>
             })
@@ -157,6 +162,7 @@ struct TracedStage {
     log: StageLog,
     panic_stage: Arc<AtomicUsize>,
     fail_stage: Arc<AtomicUsize>,
+    surprise_stage: Arc<AtomicUsize>,
     threads: ThreadLog,
 }
 
@@ -164,6 +170,9 @@ impl StageHandle for TracedStage {
     fn stage_pass(&mut self, segments: &[nagaya_abi::Segment], residual: &mut Residual) -> Result<StageOut, PassError> {
         if self.panic_stage.load(Ordering::SeqCst) == self.stage {
             panic!("stage {} breaks on purpose", self.stage);
+        }
+        if self.surprise_stage.load(Ordering::SeqCst) == self.stage {
+            panic!("stage {} breaks", self.stage);
         }
         if self.fail_stage.load(Ordering::SeqCst) == self.stage {
             return Err(PassError {
@@ -239,6 +248,7 @@ impl Factory for FeedFactory {
             log: Arc::clone(&self.log),
             panic_stage: Arc::clone(&self.panic_stage),
             fail_stage: Arc::clone(&self.fail_stage),
+            surprise_stage: Arc::clone(&self.surprise_stage),
             threads: Arc::clone(&self.threads),
         }))
     }
@@ -327,6 +337,7 @@ impl FeedFixture {
         sets: Option<nagaya::cpu_sets::CpuSets>,
         machine: Option<nagaya::evidence::Machine>,
     ) -> Self {
+        abort_on_a_panic_with_no_plan();
         let stages = factory.stages;
         let directory = tempfile::tempdir().unwrap();
         let mut registry = Registry::new();
@@ -366,6 +377,31 @@ impl FeedFixture {
             factory,
         }
     }
+}
+
+/// Abort the test binary when a thread of the process panics with no plan.
+///
+/// The process turns such a panic into an event (spec 8.5), and a call of the service then waits for a reply that
+/// never comes. Thus a defect that panics would hang the test, not fail it. A planned panic says "on purpose". It
+/// makes other threads of its process panic after it, so the hook stops in a binary after a planned panic.
+fn abort_on_a_panic_with_no_plan() {
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    static PLANNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            previous(info);
+            let thread = std::thread::current().name().unwrap_or("unnamed").to_owned();
+            let message = info.payload_as_str().unwrap_or("");
+            if message.contains("on purpose") {
+                PLANNED.store(true, Ordering::SeqCst);
+            }
+            if thread.starts_with("nagaya-") && !PLANNED.load(Ordering::SeqCst) {
+                eprintln!("thread `{thread}` panicked with no plan, so the test binary aborts: {message}");
+                std::process::abort();
+            }
+        }));
+    });
 }
 
 /// A direct run of the fake by the feed rule, with no process: the oracle of the tests.

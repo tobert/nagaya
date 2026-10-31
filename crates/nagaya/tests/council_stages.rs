@@ -212,45 +212,45 @@ fn a_stop_parks_the_states_of_both_stages() {
     );
 }
 
-/// The exit code that the lifecycle wait gives for `process`. A timer raises a signal at `bound`, so a wait that
-/// reads no event ends with `Clean` and the test fails. It does not hang.
-fn code_within(process: &nagaya::process::Process, bound: Duration) -> ExitCode {
-    let signals = std::sync::Arc::new(SignalFlag::new());
-    let timer = std::sync::Arc::clone(&signals);
-    std::thread::spawn(move || {
-        std::thread::sleep(bound);
-        timer.raise();
-    });
-    nagaya::lifecycle::wait(process, &signals, None, Duration::from_millis(20))
-}
-
+/// The child of the next test: a stage panics with no plan, and the build waits for a reply that never comes.
 #[test]
-fn a_stage_thread_that_panics_stops_the_process_with_exit_one() {
+#[ignore = "the next test runs it in a child process"]
+fn child_a_stage_panics_with_no_plan() {
     let factory = FeedFactory::new(2);
     let fixture = FeedFixture::with(factory.clone(), Duration::from_secs(10));
-    factory.panic_stage.store(1, Ordering::SeqCst);
-    let service = std::sync::Arc::new(fixture.service);
-    std::thread::spawn(move || {
-        let _ = service.build(&context(), false, Default::default());
-    });
-    assert_eq!(code_within(&fixture.process, Duration::from_secs(3)), ExitCode::Crash);
+    factory.surprise_stage.store(1, Ordering::SeqCst);
+    let _ = fixture.service.build(&context(), false, Default::default());
 }
 
 #[test]
-fn a_stop_after_a_stage_panic_ends_with_exit_one_within_the_budget() {
-    let factory = FeedFactory::new(2);
-    let mut fixture = FeedFixture::with(factory.clone(), Duration::from_secs(10));
-    factory.panic_stage.store(0, Ordering::SeqCst);
-    let service = std::sync::Arc::new(fixture.service);
-    let builder = std::sync::Arc::clone(&service);
-    std::thread::spawn(move || {
-        let _ = builder.build(&context(), false, Default::default());
-    });
-    assert_eq!(code_within(&fixture.process, Duration::from_secs(3)), ExitCode::Crash);
+fn a_stage_panic_with_no_plan_aborts_the_test_binary_instead_of_a_wait() {
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "child_a_stage_panics_with_no_plan",
+            "--test-threads=1",
+            "--nocapture",
+        ])
+        .stderr(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
     let started = std::time::Instant::now();
-    let report = fixture.process.stop(Duration::from_secs(2), &SignalFlag::new());
-    assert!(started.elapsed() < Duration::from_secs(6), "the stop returned late");
-    assert_eq!(report.exit_code(), ExitCode::Crash, "{report:?}");
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if started.elapsed() > Duration::from_secs(30) {
+            child.kill().unwrap();
+            panic!("the child still waits after 30 s, so a panic with no plan does not fail the test");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut child.stderr.take().unwrap(), &mut stderr).unwrap();
+    assert!(!status.success(), "{stderr}");
+    assert!(stderr.contains("panicked with no plan"), "{stderr}");
 }
 
 #[test]
