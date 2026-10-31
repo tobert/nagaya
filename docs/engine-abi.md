@@ -1036,6 +1036,31 @@ image_clear(slot)                       frees the state of the slot
     without `init` and `mask`. A 4-channel UNet blends the latent after each step.
   - `image_decode` gives the decode with no paste. The nagaya pastes the kept pixels back before the PNG encode.
 
+**Qwen-Image 2.1.** **Proposed** by Claude Opus 5.5, 2026-10-31, for spec 11.9c and 6.16. Reason: the job above has
+the shape of SDXL. Qwen-Image has one encoder with no chunks, a flow sampler, a cached conditioning and an RGBA
+decode. Each change adds a form or a member, and no call.
+
+- `ImageJob.prompt` takes one of two forms. `chunks` is the form of SDXL above. `tokens` is the form of Qwen-Image:
+  the ids of the whole template, and the cut (spec 11.9c). An engine refuses the form that it does not read.
+- `clip_skip` moves into the `chunks` form, because only a CLIP encoder reads it. The `tokens` form has no negative
+  prompt, because Qwen-Image refuses one (spec 11.9c).
+- `ImageSampler` gets `FlowEuler`. The request value `euler` gives it on a flow model, and `Euler` on SDXL. Qwen-Image
+  refuses every other sampler, `Trailing`, a `cfg` other than 1.0, LoRAs and previews. SDXL refuses `FlowEuler`.
+- `ImageJob` gets `conditioning`: the rows of a hit in the store (spec 6.16), or none. With rows, the engine skips the
+  encoder. It refuses rows whose count is not the id count less the cut.
+- `image_begin` returns the rows that the encoder made on a miss. It returns none on a hit, and none on an engine
+  with no `conditioning` capability. The nagaya makes the canonical file of spec 6.16 from them.
+- The capability `conditioning: {row_bytes, max_rows}` names the size of the rows. Qwen-Image declares 8192 and 1010.
+  An engine without it never gets rows.
+- The engine still declares no part. The nagaya keeps the rows in the store, and the engine never reads the store.
+- `image_decode` gives 8-bit images with a channel count: 3 for RGB, or 4 for RGBA. Qwen-Image gives RGBA, because
+  its VAE has 4 output channels. SDXL gives RGB. The nagaya writes the PNG with the same channels.
+- A slot of Qwen-Image holds the latents, the conditioning rows, and their keys and values in each of the 32 blocks.
+  The keys and values of a template of 1024 ids take 505 MiB. The plan counts them for each slot.
+- `image_begin` is one quantum of kind `embed`, and each step and the decode are one quantum of kind `step` (spec
+  11.9c). The engine declares the most pixels of a slot: 4 images of 2,097,152 pixels.
+- The engine declares the determinism `pinned`, with the plan table of spec 12.1.
+
 ## Embedding
 
 **The embedding capability.** Proposed by Claude Opus 5.5 (a senpai fork), 2026-10-30, for spec 11.10. Reason: an

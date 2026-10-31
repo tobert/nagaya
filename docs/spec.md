@@ -1428,6 +1428,37 @@ exists because its bits depend on the split of a pass. The test runs on the B70 
 gfx1151host cannot run this test. mk declares `segments_exact: true` (`crates/nagaya-mk-qwen38-gfx1151/src/spec.rs:463`),
 so the test cannot fail there for this reason.
 
+**6.16 Conditionings.** Amy decided on 2026-10-31 that the store keeps the encoder output of each prompt (`AGENTS.md`
+milestone 22). The rules below are **Proposed** by Claude Opus 5.5, 2026-10-31. Reason: a conditioning is sealed
+state with a recipe. Thus the rules of 6.2 to 6.11 give its key, its lookup, its eviction and its tripwire.
+
+- A **conditioning** is the output of an image engine's text encoder for one prompt. It has one row for each id after
+  the cut (11.9c). Qwen-Image 2.1 gives rows of 4096 bf16 values, 8 KiB each.
+- The store keeps it as a snapshot of one cells part, `conditioning`. The canonical file (D10) holds that tensor, of
+  shape `[rows, 4096]` in BF16. Its coverage is the positions from the cut to the last id.
+- Its recipe is a root recipe with the identity digest of the engine and the fixed key `nagaya conditioning v1` as
+  tag 2. It has no approximation tags and no lab state. Reason: the park recipe of 6.2 uses a fixed key in this way.
+- One boundary follows at the end of the ids. Its tag 5 is the root recipe, tag 6 the template ids, and tag 7 the id
+  count. Thus the recipe covers the weights, the tokenizer, the template and the ids.
+- The nagaya looks up the recipe before `image_begin`. On a hit, the job carries the rows, and the engine skips the
+  encoder (engine-abi "Image"). On a miss, `image_begin` gives the rows, and the nagaya puts the entry.
+- The reason of the entry is `prefill done` (6.4). Its owner is the owner of the request. It lives in the host tier.
+  The engine declares `max_depth: 0` (6.5), so eviction ranks it as an entry with no chain (6.9).
+- The engine declares the determinism `pinned` (12.1, "The plan table of a HIP engine"). Thus two content ids under
+  one recipe fire the tripwire (6.7).
+- A hit and a miss give the same image bits, because the engine reads the same rows in both. The conformance suite
+  checks this (8.3).
+- No route reads, pins or lists a conditioning in v0. The `snapshot_bytes` of the served model stays 0 (11.9a),
+  because a client holds no context of it.
+- A template of 1024 ids gives at most 1010 rows, about 7.9 MiB. The prompt of the oracle gives 22 rows, 176 KiB.
+
+Two choices are left for later. Each one is a design, and nothing builds it now.
+
+- The identity digest covers the transformer and its LoRA. Thus a variant with the same encoder encodes its prompts
+  again. A later rule can give the encoder its own identity, so that variants share their conditionings.
+- The keys and values of the conditioning rows in the 32 blocks take 512 KiB for each row. They depend on the
+  transformer and its LoRA. A later rule can keep them as entries too, so that a hit skips all of `image_begin`.
+
 ## 7. IO
 
 **7.1 One IO service per machine.** Engines (through the `io` capability) and the store send IO requests
@@ -1587,6 +1618,44 @@ eager attention. Its venv is `~/.venvs/embed-ref`, and its header names each ver
   each value. The first run on the card measures the gap first, as for every oracle.
 - Reason for 1e-4: the bf16 run differs by up to 3.7e-3, with a cosine of 0.99957. A gate at that level lets a wrong
   layer pass. An engine with f32 math from the bf16 weights stays far below 1e-4.
+
+**The Qwen-Image oracle.** **Proposed** by Claude Opus 5.5, 2026-10-31, for milestone 22. Reason: this follows
+the oracles of SDXL and EmbeddingGemma 2, with one gate for each stage of the engine.
+
+- `tools/qwenimage21_golden.sh` runs diffusers 0.41.0.dev0 in the venv of `~/src/diffusepal`, on the CPU only. It
+  computes in f32 from the bf16 weights, and loads one model at a time. Its peak is about 33 GiB of RAM.
+- Run it with `nagaya.service` stopped and no GPU job. It writes `encode.safetensors`, `steps.safetensors` and
+  `parts.safetensors` into `target/qwenimage21-golden` or `QWENIMAGE21_GOLDEN_DIR`. No file is committed.
+- The request: the prompt `fusal style. a red fox in a snowy forest, watercolor`, 256 by 256, 4 steps, seed 1234. It
+  uses CFG 1.0, the Heretic encoder and the FUSAL LoRA at 1.0. The size is below the request minimum, as for SDXL.
+- The start latent comes from `torch.Generator().manual_seed(1234)`, and the engine takes it in place of its own
+  stream. The template has 36 ids, the cut is 14, and 22 conditioning rows follow.
+- The sigmas are 1.0, 0.7446, 0.4267, 0.02 and 0. The reference gives the LoRA to diffusers as an adapter, with no
+  fold. It also records step 0 with the LoRA at weight 0.
+- The metadata `template.hidden_states_last` records what `hidden_states[-1]` was in its transformers version. The
+  conditioning is the input of the final norm in either case (11.9c, "The load").
+
+The gates. A reference in f32 does not give the bits of an engine in bf16. 11.9c also rounds in bf16 where the
+pipeline in bf16 rounds, and the reference does not. Thus each gate has a tolerance. The first run on gfx1151host measures
+each gap, as for every oracle. Then a Decided note sets each gate at about 4 times its gap, at most the cap below.
+
+| Gate | What the engine runs | Compares with | Cap |
+|---|---|---|---|
+| ids | the family on the prompt | `ids` and `drop` | equal |
+| conditioning | the encoder on `ids` | `prompt_embeds` | cosine 0.9999 for each row |
+| step | one step from each `latents[k]` | `transformer_out[k]` | cosine 0.999 |
+| run | 4 steps from `start` | `final_latent` | cosine 0.999 |
+| decode | the decode of `vae.in` | `rgba` | 4 in each byte |
+| image | the whole job | `rgba` | 16 in each byte, 2 on average |
+
+- The LoRA gate: the engine with no LoRA runs step 0 against `tr.step0_no_lora`. The step gate must fail when the
+  engine drops the LoRA. A LoRA that changes less than the tolerance is a defect of the gate, to report.
+- The cache gate: a job on a hit and a job on a miss give equal bits (6.16). Two runs of a job give equal bits. Image
+  0 of a job with `count` 2 has the bits of the same job with `count` 1.
+- Each gate keeps a broken variant that it must fail (8.3, above). The variants are the final norm applied, no LoRA,
+  the timestep in place of 0 for the conditioning rows, and the bytes in BGRA order.
+- `parts.safetensors` holds the encoder layers, the transformer modules of step 0 and the VAE stages. They are
+  references for kernel bring-up, not gates.
 
 **8.4 Audit.** For some engines the tripwire is not reliable, because of their determinism class. For them, the
 nagaya runs an audit after each start, as a filler job in the same process. The audit builds a sample of stored
@@ -3463,6 +3532,186 @@ part or the member, and its message says what the client can change.
 - `strength` without an image, `mask_blur` without a mask, or a `strength` that runs no step names that member.
 - A 9-channel UNet without an image and a mask names the content of the last `user` message.
 
+**11.9c Qwen-Image 2.1.** Amy decided these rules on 2026-10-31, by interview (`AGENTS.md` milestone 22). Amy: "I'm
+thinking about adding qwen-image to the nagaya. we'd use nagaya instead of diffusepal and retire that project."
+
+- The model is Qwen-Image 2.1 (`Qwen/Qwen-Image-2.1`) with the FUSAL Anime LoRA, text to image only. Amy: "fusal
+  only to start. we'll add more variants over time so keep that in mind but just build one."
+- The engine runs on gfx1151host's gfx1151. Amy: "the goal of nagaya is to make our lab flexible, eventually we'll have
+  models across all the hosts to choose from."
+- The text encoder is the Heretic Qwen3-VL-8B of FUSAL, in bf16 (Amy: "keep bf16"). FUSAL trained its LoRA against
+  the output of this encoder.
+- The store keeps the encoder output of each prompt (Amy: "yes"). 6.16 gives the rules.
+- hipBLASLt does the large bf16 matrix multiplies. Amy: "hipBLASLt for GEMMs but we let it ride with changes over
+  time, ok with some change in behavior if upstream changes". 12.1, "The plan table of a HIP engine", gives the rules.
+- Qwen3.8 and Qwen-Image are both loaded while gfx1151host only serves. Before a large build, a client unloads Qwen-Image
+  through the load routes (3.3b).
+- The base model and the LoRA are under the Qwen Research License: non-commercial research and evaluation only. The
+  Heretic encoder keeps its Apache 2.0 license (FUSAL `text_encoders/ORIGIN.md`).
+
+The notes below fill the choices that these rules leave open. Each one follows diffusers 0.41.0.dev0 in the venv of
+`~/src/diffusepal`, unless it says otherwise. `pipeline.py` is its `pipelines/qwenimage21/pipeline_qwenimage21.py`,
+and `transformer.py` is its `models/transformers/transformer_qwenimage21.py`. `vae.py` is its
+`models/autoencoders/autoencoder_kl_qwenimage21.py`, and `scheduler.py` is its
+`schedulers/scheduling_flow_match_euler_discrete.py`.
+
+**The engine and its weights.** **Proposed** by Claude Opus 5.5, 2026-10-31. Reason: a variant is other weights
+(Amy, above). Thus the profile names each file, and the code names none.
+
+- The engine kind is `mk-qwenimage21-gfx1151`, in a build with `hip`. Its crate is `nagaya-mk-qwenimage21-gfx1151`.
+- The key `model_dir` of `[engines.config]` names the base folder of diffusers. With no key, the engine reads
+  `QWENIMAGE21_MODEL_DIR`, as `mk-sdxl-bmg` reads `SDXL_MODEL_DIR`.
+- The key `encoder` names one safetensors file of the text encoder. With no key, the engine reads the base folder's
+  `text_encoder/`. FUSAL's profile names `text_encoders/qwen3-vl-8b-heretic-1.3.0_bf16.safetensors`.
+- The key `loras` is a list of `{file, strength}`. FUSAL's profile has one entry: its rank 56 file with strength 1.0.
+  An empty list gives the base model.
+- The served model name is the name of the engine in the profile, as for SDXL (11.9a). FUSAL's engine is
+  `qwen-image-fusal`.
+- The checkpoint digest covers the transformer, the VAE decoder, the encoder file, and each LoRA file with its
+  strength. Thus each variant has its own identity.
+
+**The load.** **Proposed** by Claude Opus 5.5, 2026-10-31. Reason: text to image reads only some of the files. A strict
+load catches a wrong file before a job runs, as diffusepal's `models.py:44-50` does.
+
+- The engine loads the text tower of the encoder: `embed_tokens` and the 36 layers. It does not load the vision tower
+  (`visual`), `lm_head`, or the final norm. Thus the encoder holds about 14.10 GiB of the 16.33 GiB file.
+- The engine skips the final RMSNorm of the text tower. The conditioning is the input of that norm, not its output
+  (`pipeline.py:303-316`). Reason: the transformer trained on the input. transformers 5.x returns the output of the
+  norm in `hidden_states[-1]`, so the pipeline neutralizes the norm with a hook.
+- The Heretic file has the names of ComfyUI: `model.layers.*`, `model.embed_tokens.*` and `model.norm.*`. The base
+  folder has the names of transformers, with `model.language_model.` in their place. The engine reads both forms.
+- A tensor that the engine needs and the file lacks refuses the plan and the open. So does a tensor that is in no
+  list of the engine, whether it loads it or skips it.
+- The engine loads the VAE decoder and `post_quant_conv` only. The VAE encoder comes with img2img (11.9b).
+- The VAE file holds F32. The engine rounds it to bf16 at the open, because diffusers runs the VAE in bf16
+  (diffusepal `models.py:44`).
+- The plan counts the weights from the file headers, with no load: the transformer is 13.25 GiB and the text tower
+  14.10 GiB. The VAE decoder adds less than 1 GiB in bf16. The scratch of a slot is a mandatory term (engine-abi
+  "Core").
+- Step 7 of milestone 22 measures the scratch of the largest slot. The pool of gfx1151host waits for the deploy step
+  (`AGENTS.md` milestone 22).
+
+**The LoRA fold.** **Proposed** by Claude Opus 5.5, 2026-10-31. Reason: a LoRA of the profile is part of the weights
+of the variant. A fold costs nothing at each step and needs no more memory than the base.
+
+- At the open, each module `W` of a LoRA becomes `W + strength * scale * B A`, with one rounding to bf16. The engine
+  computes the sum in f32. `A` is `lora_A` (rank by input), and `B` is `lora_B` (output by rank).
+- `scale` is `alpha / rank` when the file has `alpha`, and 1 when it has none. FUSAL has no `alpha` tensor. Its
+  metadata gives `ss_network_alpha` 56 and rank 56, so its scale is 1 either way.
+- A key is `transformer.transformer_blocks.<i>.<module>.lora_A.weight` or `.lora_B.weight`. The modules are `attn.to_q`,
+  `attn.to_k`, `attn.to_v`, `attn.to_out.0`, `img_mlp.proj`, `img_mlp.gate_layer` and `img_mlp.out`.
+- A key that names no module of the transformer, or a shape that does not match, refuses the plan and the open.
+- diffusers adds `B(A(x))` to the output at each step and does not fold. The fold gives other bits at the size of one
+  bf16 rounding of each weight. The oracle tolerance holds this (8.3).
+- The LoRAs of a request (11.9a) stay a design for this engine, and the engine refuses them now.
+
+**The family of Qwen-Image 2.1.** **Proposed** by Claude Opus 5.5, 2026-10-31. The crate `nagaya-text-qwenimage21`
+holds it (11.3). Reason: these rules give the ids of the processor that FUSAL trained with.
+
+- The tokenizer is the base folder's `processor/tokenizer.json`, not a file of the Heretic repository (FUSAL README).
+  Its `tokenizer_hash` is `sha256:` and the hex digits of the SHA-256 of that file.
+- The prompt is the text of the last `user` message, as in 11.9a. An empty prompt becomes one space, because Qwen has
+  no start token (`pipeline.py:249`).
+- The family puts the prompt into this template. `\n` is a newline, and `{}` is the prompt (`pipeline.py:217-221`):
+  `<|im_start|>system\nComprehend and analyze the provided prompt.<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n`
+  then `<|im_start|>assistant\n`.
+- The family tokenizes the whole template with no added start token. The text of each special token in the template
+  gives its special id.
+- A prompt that holds the text of a special token is a 400 that names `messages`. Reason: diffusers would read it as a
+  special id. Then a prompt could change the frame of the template.
+- The cut is 14 ids: the system message, `<|im_start|>system\n...<|im_end|>\n` (`pipeline.py:228-231`). The family
+  computes the cut from the tokenizer, and a test checks that it is 14.
+- The template has at most 1024 ids. A longer prompt is a 400 that names `messages`. Reason: the bound fixes the
+  prefix rows of a slot (engine-abi "Image").
+- The family does not parse A1111 weights, such as `(word:1.2)`. Brackets are plain text. Reason: this encoder has no
+  weight for each token, and diffusers gives it the text as it is.
+- The family does not add the trigger phrase `fusal style.` The client writes it, as diffusepal and the FUSAL README
+  do. Reason: the family never changes a prompt, and the A1111 chunk then gives the request's prompt.
+- The identity's `template` is the template text above. Thus a new template is a new recipe (12.1).
+
+**The served Qwen-Image model.** **Proposed** by Claude Opus 5.5, 2026-10-31. Reason: these rules follow the served
+image model of 11.9a, and they refuse each member that this engine cannot run.
+
+- Identity lists it as 11.9a lists a served image model, with no inputs. Its `context_tokens` is 1024.
+- `output.options` takes these members. A member out of range is a 400 that names it, as in 11.9a.
+
+| Member | Range | Default |
+|---|---|---|
+| `negative` | `""` only | `""` |
+| `width`, `height` | multiples of 32 from 512 to 2048; at most 2,097,152 pixels together | 1024 |
+| `steps` | 1 to 150 | 40 |
+| `cfg` | 1.0 only | 1.0 |
+| `sampler` | `euler` only | `euler` |
+| `count` | 1 to 4 | 1 |
+
+- `clip_skip`, `spacing`, `loras`, `strength` and `mask_blur` are a 400 that names the member. An object part in a
+  message is a 400 that names it, because the model lists no inputs.
+- `previews: true` is a 400 that names `previews`. The latent has 64 channels, and no map to RGB is fitted yet.
+- The sizes are multiples of 32. The VAE scales by 16, and the transformer reads the latent in groups of 2 by 2
+  (`pipeline.py:396`, `:752-754`). 2,097,152 pixels is 8192 latent tokens, the `max_image_seq_len` of the scheduler.
+- The default of 40 steps is the default of `pipeline.py:519`. The FUSAL README asks for 30 to 40.
+- `cfg` above 1.0 and a `negative` prompt are refused now. FUSAL and the pipeline both use 1.0 (`pipeline.py:550`). A
+  later rule can add true CFG, which runs a second pass for each step.
+- The output is `image/png` in RGBA, because the VAE gives 4 channels (`vae.py` config `out_channels` 4). diffusepal
+  writes RGBA PNGs too.
+- The A1111 chunk gives `Steps`, `Sampler: Euler`, `CFG scale: 1`, `Seed`, `Size` and `Model`, with no `Clip skip`.
+
+**The schedule.** **Proposed** by Claude Opus 5.5, 2026-10-31. Reason: these rules give the sigmas of
+`pipeline.py:733-746` and `scheduler.py`, bit for bit. The engine computes them on the host, as for SDXL (11.9).
+
+- `n` is the step count. The sigmas start as `linspace(1, 1/n, n)` in f64, then round to f32 (`pipeline.py:735`).
+- `seq` is the latent token count, `(height / 16) * (width / 16)`. With `m = (0.9 - 0.5) / (8192 - 256)` and
+  `b = 0.5 - 256 m`, `mu = seq m + b` in f64. The scheduler config gives 256, 8192, 0.5 and 0.9.
+- Each sigma becomes `e^mu / (e^mu + (1 / sigma - 1))` in f32 (`scheduler.py:655-656`). numpy 2 rounds `e^mu`
+  to f32 before each operation.
+- Then the sigmas stretch to the terminal 0.02 in f32: with `z = 1 - sigma`, each sigma becomes
+  `1 - z / (z_last / 0.98)` (`scheduler.py:262-281`). A last sigma of 0 follows.
+- The timestep of step `k` is `1000 * sigma_k` in f32. The transformer reads it rounded to bf16, then divided by
+  1000 in bf16. It then multiplies by 1000 in f32 (`pipeline.py:782`, `:786`, and `transformer.py:149`).
+- A step makes `x + (sigma_k+1 - sigma_k) v` in f32 from the bf16 latent `x` and the bf16 output `v`. It rounds the
+  result to bf16 (`scheduler.py:493-526`).
+
+**The steps.** **Proposed** by Claude Opus 5.5, 2026-10-31. Reason: these rules give the math of `transformer.py`
+for text to image. The cache of the condition keys and values is exact, so it is a rule and not an approximation.
+
+- The start latent of image `i` comes from the random stream of the SDXL engine (`noise.rs`), with the purpose of the
+  start latent. It fills the shape `[64, height / 16, width / 16]` in order, and each value rounds to bf16.
+- The sequence of a step is the conditioning rows, then the latent tokens in row order (`transformer.py:931-939`).
+- A conditioning row attends to each conditioning row up to itself. A latent token attends to every row
+  (`transformer.py:295`). Thus no conditioning row reads the latent.
+- The conditioning rows take their modulation from the timestep 0 (`transformer.py:238-252`, `:948`). Thus their
+  keys and values are the same at each step. `image_begin` computes them once, and the slot keeps them for each step
+  (`pipeline.py:759-762`).
+- The rotary positions have three axes of 16, 56 and 56 dimensions, with theta 10000 (`transformer.py:655-713`).
+  Conditioning row `j` has position `j` on each axis.
+- Latent token `(y, x)` has the position `L` on the first axis, with `L` the conditioning row count. It has `y - h / 2`
+  and `x - w / 2` on the other two, with `h` and `w` the latent height and width.
+- Each step gives the output of the latent tokens only (`pipeline.py:796`).
+
+**The decode.** **Proposed** by Claude Opus 5.5, 2026-10-31. Reason: these rules give the bits of the pipeline's
+decode and of diffusers' `postprocess`, which round in bf16.
+
+- The latent becomes `x * std + mean` in bf16, with the 64 values of `latents_std` and `latents_mean` of the VAE
+  config (`pipeline.py:842-852`).
+- The VAE decoder runs in bf16. Its norms and its up samplers compute in f32 and round to bf16, as `vae.py:187-235`
+  does. The output clamps to -1 to 1 (`vae.py:1328`).
+- Each channel `x` becomes `u = bf16(x * 0.5 + 0.5)`, clamped to 0 to 1 (`image_processor.py:223-235`). The byte is
+  `u * 255` in f32, rounded half to even, as numpy's `round` does (`image_processor.py:143`).
+- The engine gives 8-bit RGBA. The nagaya makes the PNG and its chunk, as for SDXL.
+
+**The quanta.** **Proposed** by Claude Opus 5.5, 2026-10-31. Reason: these follow the quanta of 11.9, with the
+conditioning cache of 6.16.
+
+- `image_begin` is one quantum of kind `embed`. On a miss, it runs the encoder over the template ids. Then it computes
+  the keys and values of the conditioning rows in each of the 32 blocks. On a hit, it does only the second part.
+- Each `image_step` is one quantum of kind `step`. The decode is one quantum of kind `step`. The images of a request
+  share each quantum (5.2).
+- A step of 1024 by 1024 runs 4096 latent tokens through 7.1 billion parameters. diffusepal took 4.5 s for it on
+  gfx1151host (diffusepal `README.md`, "Speed"). `max_quantum_ms` is 60000 until step 6 of milestone 22 measures it, as for
+  SDXL.
+- Thus a step of Qwen-Image can hold gfx1151host's device for seconds. A Qwen3.8 job then waits up to one quantum (D8).
+  Amy decides if a step splits into quanta of some blocks each.
+
 **11.10 Embeddings.** Amy decided these rules on 2026-10-30, by interview (`AGENTS.md` milestone 19). gogi's contract
 is "Embeddings" in gogi `docs/council-api.md`, at gogi `6db7e98`.
 
@@ -3611,6 +3860,30 @@ different most of the time."
 
 Reason: the bits decide if a build changed the numbers, not the facts of the build. A canary covers only the paths
 that it runs, so its inputs must run each path that the limits allow.
+
+**The plan table of a HIP engine.** Amy decided on 2026-10-31 that hipBLASLt does the large bf16 matrix multiplies
+of Qwen-Image (11.9c). Amy: "hipBLASLt for GEMMs but we let it ride with changes over time, ok with some change in
+behavior if upstream changes". The rules below are **Proposed** by Claude Opus 5.5, 2026-10-31. Reason: the plan table
+of the ontology holds such choices, and mk has none (ontology "Plan table").
+
+- The engine declares the determinism `pinned` (D3). Each GEMM runs the hipBLASLt algorithm that the plan table names
+  for its shape.
+- A shape is M, N and K, the data types, the transposes and the epilogue. The table maps each shape to one solution
+  index of hipBLASLt.
+- The first GEMM of a new shape picks its algorithm. The engine takes the heuristic candidates of hipBLASLt in order.
+  It keeps the first one that gives equal bits in two runs on the same inputs.
+- The engine also refuses a candidate that splits the sum over K with atomic adds, because its bits can change from
+  run to run. Step 4 of milestone 22 finds how hipBLASLt shows this, and writes it here.
+- The table only grows: a shape keeps its pick. It is a file in the store directory, one for each lineage. The engine
+  writes a pick to the file before a job uses it. Thus a restart keeps each pick.
+- Each image of a slot runs its own GEMMs, so `count` changes no shape. Thus image `i` of a request does not depend
+  on the other images (engine-abi "Image").
+- The lineage is the hipBLASLt version, the HIP runtime version, the gfx target and the PCI ids of the device. A new
+  lineage is a new identity (ontology "Plan table").
+- Thus an update of ROCm can give new bits and a new digest. Each held conditioning (6.16) then fills again once. Amy
+  accepts this ("let it ride").
+- The `build` of the identity holds the hipBLASLt version too. The oracle tolerance (8.3) holds the change of bits
+  from a new lineage. A new lineage that breaks a gate is a defect to report.
 
 **12.2 Two weight ids.** The checkpoint digest is logical. It hashes the canonical config and each tensor's payload,
 so a new packing does not change it. The arena id is the content id of the packed bytes that the engine runs.
