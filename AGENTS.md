@@ -423,10 +423,13 @@ work on b70host is paused (Amy, 2026-10-31). Milestone 22 is next, on gfx1151hos
     - **Ops:** the new crate `nagaya-mk-hip` holds the shared HIP ops of gfx1151, as `nagaya-mk-bmg` does for the B70
       cards. The engine is `nagaya-mk-qwenimage21-gfx1151`, and the family is `nagaya-text-qwenimage21`. mk's Qwen3.8
       code stays in its own crate.
-    - **Memory:** Amy chose a larger pool, so Qwen3.8 and Qwen-Image are both resident. Senpai's estimate of
-      2026-10-31: Qwen3.8 holds 72.7 GiB, Qwen-Image about 31.6 GiB, and the store's host tier 16 GiB. That is
-      120.3 GiB of gfx1151host's 125.1 GiB. The deploy step measures the real sizes. Write the pool, the store tier and
-      the floor (4.7) as a Proposed note.
+    - **Memory:** Qwen3.8 and Qwen-Image are both loaded while gfx1151host only serves. Amy: "what if we make it possible
+      to load both models when gfx1151host is just doing inference, and we can unload them and restart nagaya as we do
+      when we're doing builds of nagaya here." Large builds move to b70host, which has host memory for them.
+      Before a large build on gfx1151host, unload Qwen-Image through the load routes (3.3b), or stop the nagaya.
+    - **Pool:** the pool grows to hold both engines. Senpai's estimate of 2026-10-31: Qwen3.8 holds 72.7 GiB,
+      Qwen-Image about 31.6 GiB, and the store's host tier 16 GiB. That is 120.3 GiB of gfx1151host's 125.1 GiB. The
+      deploy step measures the real sizes. Write the pool, the store tier and the floor (4.7) as a Proposed note.
     - **Service:** senpai may stop and start `nagaya.service` on gfx1151host for fixtures and gates (Amy: "Yes, at will").
       Write each stop and start in `signoff.md`. End each session with `nagaya.service` running.
     - **Weights:** tests read the base model's directory from `QWENIMAGE21_MODEL_DIR`, and FUSAL's directory from
