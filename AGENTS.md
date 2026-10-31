@@ -92,7 +92,8 @@ in a lock: one thread owns it (3.2).
 
 Do them in this order. Each milestone ends with all checks green and one or more commits. Milestones 1 to 14 are
 done, and `docs/history.md` keeps their full text, and the merges where the run recorded them. Milestone 15
-is done on gfx1151host, and milestones 15s, 16, 17, 18 and 19 are done on b70host. Milestones 20 and 21 are next.
+is done on gfx1151host, and milestones 15s, 16, 17, 18 and 19 are done on b70host. Milestones 20 and 21 wait, because
+work on b70host is paused (Amy, 2026-10-31). Milestone 22 is next, on gfx1151host.
 
 1. **Workspace.** The Cargo workspace, its crates, `rustfmt.toml` and the dev profile. Done.
 2. **Engine trait.** The ABI core and capabilities as traits, with a fake engine and a broken fake for the gates. Done.
@@ -404,7 +405,52 @@ is done on gfx1151host, and milestones 15s, 16, 17, 18 and 19 are done on b70hos
 21. **Image speed.** Make the SDXL engine faster on the B70 cards. Amy decided on 2026-10-30, by interview: a faster
     kernel can change the output bits if the oracle still passes. The tolerance goes into the spec as a Proposed
     note. The same identity, job and seed must still give the same bits on each run.
-22. Stop and ask Amy for the next milestone.
+22. **Qwen-Image on gfx1151host.** Serve Qwen-Image 2.1 with the FUSAL LoRA from the nagaya on gfx1151host, and retire
+    `~/src/diffusepal`. Amy, 2026-10-31: "I'm thinking about adding qwen-image to the nagaya. we'd use nagaya instead
+    of diffusepal and retire that project." She decided these rules on 2026-10-31, by interview:
+    - **Machine:** gfx1151host. Amy: "the goal of nagaya is to make our lab flexible, eventually we'll have models across
+      all the hosts to choose from."
+    - **Variant:** text-to-image with FUSAL only. Amy: "we'll add more variants over time so keep that in mind but
+      just build one." The profile names the base, the text encoder and the LoRA. Thus a variant is other weights.
+    - **Text encoder:** the Heretic Qwen3-VL-8B of FUSAL, in bf16 (Amy: "keep bf16"). FUSAL trained against its
+      output. Use the tokenizer of the base model's `processor/`, not Heretic's (FUSAL README). Load only the text
+      tower: 14.10 GiB of the 16.33 GiB file.
+    - **Conditioning cache:** the store keeps the encoder output of each prompt (Amy: "yes"). Its recipe names the
+      encoder's content id, the tokenizer and the tokens. A hit skips the encoder.
+    - **Kernels:** hipBLASLt does the large bf16 matrix multiplies, and our HIP kernels do the rest. Amy: "hipBLASLt
+      for GEMMs but we let it ride with changes over time, ok with some change in behavior if upstream changes". The
+      hipBLASLt version is a build fact of the identity (12.1). A new version gives a new identity.
+    - **Ops:** the new crate `nagaya-mk-hip` holds the shared HIP ops of gfx1151, as `nagaya-mk-bmg` does for the B70
+      cards. The engine is `nagaya-mk-qwenimage21-gfx1151`, and the family is `nagaya-text-qwenimage21`. mk's Qwen3.8
+      code stays in its own crate.
+    - **Memory:** Amy chose a larger pool, so Qwen3.8 and Qwen-Image are both resident. Senpai's estimate of
+      2026-10-31: Qwen3.8 holds 72.7 GiB, Qwen-Image about 31.6 GiB, and the store's host tier 16 GiB. That is
+      120.3 GiB of gfx1151host's 125.1 GiB. The deploy step measures the real sizes. Write the pool, the store tier and
+      the floor (4.7) as a Proposed note.
+    - **Service:** senpai may stop and start `nagaya.service` on gfx1151host for fixtures and gates (Amy: "Yes, at will").
+      Write each stop and start in `signoff.md`. End each session with `nagaya.service` running.
+    - **Weights:** tests read the base model's directory from `QWENIMAGE21_MODEL_DIR`, and FUSAL's directory from
+      `QWENIMAGE21_FUSAL_DIR`. Do not put the paths in code. Today both are under `~/src/diffusepal/models/`.
+    - **Reference:** diffusepal's venv has diffusers 0.41.0.dev0 with `QwenImage21Pipeline`. Run it with `-I`, on the
+      CPU only, with `nagaya.service` stopped. Its weights need 31 GiB of RAM.
+
+    Do the steps in this order. Each step ends with the checks green.
+    1. **Spec.** Write the Qwen-Image rules into the docs: the served model, the family, the job and the sampler.
+       Also write the sizes, the conditioning cache and hipBLASLt in the identity. Amy decides each Proposed note.
+    2. **Oracle fixture.** Write the fixed inputs and outputs of diffusers once, on the CPU (8.3). Keep the image
+       small. Keep the conditioning, the output of one step and the decoded pixels, so each stage has a gate.
+    3. **Family.** Write `nagaya-text-qwenimage21`: the tokenizer, the prompt template and the cut of the system
+       tokens.
+    4. **Ops.** Write `nagaya-mk-hip`: its `build.rs`, the hipBLASLt binding and the ops of the three models. Give
+       each op a test.
+    5. **Encoder.** The text tower of Qwen3-VL, and the conditioning cache in the store. Run the conditioning gate.
+    6. **Transformer and sampler.** The steps, the cached keys and values of the condition, and FlowMatch Euler with
+       its shift. Run the step gate.
+    7. **VAE and engine.** The VAE decode, and the `Engine` trait with the image calls. Run the conformance gates and
+       the whole oracle.
+    8. **Route and deploy.** Serve the model through council v2, and add it to the profile of gfx1151host. Run the gogi
+       suite. Then Amy retires diffusepal.
+23. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
 
