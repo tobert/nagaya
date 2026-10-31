@@ -3816,6 +3816,30 @@ different most of the time."
 Reason: the bits decide if a build changed the numbers, not the facts of the build. A canary covers only the paths
 that it runs, so its inputs must run each path that the limits allow.
 
+**The plan table of a HIP engine.** Amy decided on 2026-10-31 that hipBLASLt does the large bf16 matrix multiplies
+of Qwen-Image (11.9c). Amy: "hipBLASLt for GEMMs but we let it ride with changes over time, ok with some change in
+behavior if upstream changes". The rules below are **Proposed** by Claude Opus 5.5, 2026-10-31. Reason: the plan table
+of the ontology holds such choices, and mk has none (ontology "Plan table").
+
+- The engine declares the determinism `pinned` (D3). Each GEMM runs the hipBLASLt algorithm that the plan table names
+  for its shape.
+- A shape is M, N and K, the data types, the transposes and the epilogue. The table maps each shape to one solution
+  index of hipBLASLt.
+- The first GEMM of a new shape picks its algorithm. The engine takes the heuristic candidates of hipBLASLt in order.
+  It keeps the first one that gives equal bits in two runs on the same inputs.
+- The engine also refuses a candidate that splits the sum over K with atomic adds, because its bits can change from
+  run to run. Step 4 of milestone 22 finds how hipBLASLt shows this, and writes it here.
+- The table only grows: a shape keeps its pick. It is a file in the store directory, one for each lineage. The engine
+  writes a pick to the file before a job uses it. Thus a restart keeps each pick.
+- Each image of a slot runs its own GEMMs, so `count` changes no shape. Thus image `i` of a request does not depend
+  on the other images (engine-abi "Image").
+- The lineage is the hipBLASLt version, the HIP runtime version, the gfx target and the PCI ids of the device. A new
+  lineage is a new identity (ontology "Plan table").
+- Thus an update of ROCm can give new bits and a new digest. Each held conditioning (6.16) then fills again once. Amy
+  accepts this ("let it ride").
+- The `build` of the identity holds the hipBLASLt version too. The oracle tolerance (8.3) holds the change of bits
+  from a new lineage. A new lineage that breaks a gate is a defect to report.
+
 **12.2 Two weight ids.** The checkpoint digest is logical. It hashes the canonical config and each tensor's payload,
 so a new packing does not change it. The arena id is the content id of the packed bytes that the engine runs.
 `arena_export` returns it.
