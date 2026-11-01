@@ -11,6 +11,24 @@ use crate::hip::{DeviceBuffer, Stream, check};
 use crate::plan::{DataType, GemmShape};
 
 unsafe extern "C" {
+    fn nmk_flash(
+        q: *const c_void,
+        q_stride: i64,
+        k: *const c_void,
+        k_stride: i64,
+        v: *const c_void,
+        v_stride: i64,
+        out: *mut c_void,
+        out_stride: i64,
+        lq: c_int,
+        lk: c_int,
+        heads: c_int,
+        group: c_int,
+        scale: f32,
+        causal: c_int,
+        causal_offset: c_int,
+        stream: *mut c_void,
+    ) -> c_int;
     fn nmk_softmax(
         scores: *const f32,
         probabilities: *mut c_void,
@@ -186,4 +204,59 @@ impl Attention {
         }
         Ok(())
     }
+}
+
+/// The head size of `flash`.
+pub const FLASH_HEAD_DIM: usize = 128;
+
+/// `out = softmax(q k^T / sqrt(d)) v` for each head in one fused kernel (`hip/flash.hip`): the scores stay in
+/// registers, so no scratch holds them. The head size must be 128. The probabilities round to bf16 before the values,
+/// as `Attention::run` rounds them.
+///
+/// # Safety
+///
+/// As for [`Attention::run`].
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn flash(
+    s: &AttentionShape,
+    q: *const c_void,
+    k: *const c_void,
+    v: *const c_void,
+    out: *mut c_void,
+    stream: &Stream,
+) -> Result<(), crate::hip::HipError> {
+    assert_eq!(
+        s.head_dim, FLASH_HEAD_DIM,
+        "{s:?}: the flash kernel takes heads of {FLASH_HEAD_DIM}"
+    );
+    assert!(
+        s.kv_heads > 0 && s.heads.is_multiple_of(s.kv_heads),
+        "{s:?}: the heads must split into the key groups"
+    );
+    let (causal, offset) = match s.mask {
+        Mask::None => (0, 0),
+        Mask::Causal { offset } => (1, offset),
+    };
+    let int = |x: usize| c_int::try_from(x).expect("an attention size fits i32");
+    // SAFETY: the caller keeps the rules of `Attention::run`.
+    check("nmk_flash", unsafe {
+        nmk_flash(
+            q,
+            s.q_stride as i64,
+            k,
+            s.k_stride as i64,
+            v,
+            s.v_stride as i64,
+            out,
+            s.out_stride as i64,
+            int(s.lq),
+            int(s.lk),
+            int(s.heads),
+            int(s.heads / s.kv_heads),
+            1.0 / (s.head_dim as f32).sqrt(),
+            causal,
+            int(offset),
+            stream.raw(),
+        )
+    })
 }
