@@ -1178,6 +1178,18 @@ of one pin are larger than the tier's budget, the pin loses its protection, so e
 fits the quota and the tier's total fits the budget. Reason: memory and NVMe are separate budgets in 6.1. A byte in
 one tier does not make room in the other. Decided 2026-10-18.
 
+**A host victim moves to NVMe.** Decided 2026-11-01 (Amy, by interview). When a put to the host tier needs room,
+the store first parks the victims to the NVMe tier (10.3, ontology "Park"). It parks a parent before its children.
+The NVMe tier makes room by its own rules. The put removes a victim that a park refuses, as before:
+
+- an interval copy, which never goes to NVMe (6.13);
+- a child whose parent stays in the host tier, because a restart would cut the chain (6.11);
+- a victim with no room on NVMe.
+
+Reason: with two engines on gfx1151host, the host tier is 2 GiB (`docs/deploy.md`, "Two engines on gfx1151host"). mk's snapshots
+of about 135 MB left the tier before a client read them again, and gogi's suite failed 7 checks on 2026-11-01. The
+NVMe tier has 50 GiB. A refused put still changes nothing: the store checks the room before it parks a victim.
+
 **6.10 Pins.** A pin is a lease on a snapshot, with an owner and an expiry (mkviolet v2: one day at most). A request
 pin holds a snapshot from its lookup to the end of its load. Pins stay through a restart (mkviolet `pins.json`).
 
@@ -1451,8 +1463,9 @@ a recipe. Thus the rules of 6.2 to 6.11 give its key, its lookup, its eviction a
   count. Thus the recipe covers the weights, the tokenizer, the template and the ids.
 - The nagaya looks up the recipe before `image_begin`. On a hit, the job carries the rows, and the engine skips the
   encoder (engine-abi "Image"). On a miss, `image_begin` gives the rows, and the nagaya puts the entry.
-- The reason of the entry is `prefill done` (6.4). Its owner is the owner of the request. It lives in the host tier.
-  The engine declares `max_depth: 0` (6.5), so eviction ranks it as an entry with no chain (6.9).
+- The reason of the entry is `prefill done` (6.4). Its owner is the owner of the request. It lives in the host
+  tier, until a full tier parks it (6.9). The engine declares `max_depth: 0` (6.5), so eviction ranks it as an
+  entry with no chain (6.9).
 - The engine declares the determinism `pinned` (12.1, "The plan table of a HIP engine"). Thus two content ids under
   one recipe fire the tripwire (6.7).
 - A hit and a miss give the same image bits, because the engine reads the same rows in both. The conformance suite

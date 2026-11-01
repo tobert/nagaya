@@ -244,7 +244,8 @@ leave no room for the old store budget.
 
 - The pool stays 112 GiB, and the floor of spec 4.7 stays 12 GiB.
 - The store's host budget goes from 16 GiB to 2 GiB. The NVMe budget stays 50 GiB, so a parked context still has a
-  place. A conditioning of Qwen-Image (spec 6.16) takes at most 7.9 MiB, and the prompt of the oracle 176 KiB.
+  place. A host victim moves to the NVMe tier (spec 6.9, Decided 2026-11-01), so mk's snapshots stay in the store.
+  A conditioning of Qwen-Image (spec 6.16) takes at most 7.9 MiB, and the prompt of the oracle 176 KiB.
 - Qwen-Image declares 29,873,193,256 bytes of weights and 7 GiB of scratch. `examples/measure.rs` measured the
   scratch on 2026-11-01. A job of 1440 by 1440 peaked at 6.41 GiB over the loaded engine, with the picks of the
   GEMMs. With the picks in the plan table, it peaked at 3.63 GiB. The open loads 28.11 GiB in 9.5 s.

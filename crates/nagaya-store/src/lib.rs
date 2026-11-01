@@ -1460,10 +1460,25 @@ impl Store {
         let capped_set: BTreeSet<ContentId> = capped.iter().copied().collect();
 
         // 6.9: choose the victims before the store writes the new entry.
-        let need = self.need_bytes(put.tier, put.owner, size, &capped_set);
+        let mut need = self.need_bytes(put.tier, put.owner, size, &capped_set);
         // 6.5: the new entry needs its whole chain. A victim is never an ancestor of the new entry.
         let mut spared = capped_set.clone();
         spared.extend(self.ancestors(put.snapshot.parent));
+        // 6.9: a host victim moves to NVMe when a park takes it. The room is checked first, so a refused put moves
+        // nothing.
+        if put.tier == Tier::Host && need > 0 {
+            let victims = self.choose_victims(put.owner, Tier::Host, need, put.now_ms, &spared);
+            let freed: u64 = victims
+                .iter()
+                .filter_map(|victim| self.index.entries.get(victim))
+                .map(|entry| entry.size)
+                .sum();
+            if freed < need {
+                return Err(StoreError::NoSpace);
+            }
+            self.park_victims(&victims, put.now_ms)?;
+            need = self.need_bytes(put.tier, put.owner, size, &capped_set);
+        }
         let mut victims = if need == 0 {
             Vec::new()
         } else {
@@ -1531,6 +1546,27 @@ impl Store {
         }
         self.remove_blobs(&victims)?;
         Ok(id)
+    }
+
+    /// Park each host victim that a park takes, a parent before its children (6.9). A park refuses an interval copy,
+    /// a child whose parent stays in the host tier, and a victim with no room on NVMe; the put then removes it. Any
+    /// other failure stops the put.
+    fn park_victims(&mut self, victims: &[ContentId], now_ms: u64) -> Result<(), StoreError> {
+        let mut ordered: Vec<(usize, ContentId)> = victims
+            .iter()
+            .map(|victim| {
+                let parent = self.index.entries.get(victim).and_then(|entry| entry.parent);
+                (self.ancestors(parent).len(), *victim)
+            })
+            .collect();
+        ordered.sort();
+        for (_, victim) in ordered {
+            match self.park(&victim, now_ms) {
+                Ok(()) | Err(StoreError::NoSpace) | Err(StoreError::Invalid(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
     }
 
     /// The tripwire path: store the new entry and quarantine both content ids.

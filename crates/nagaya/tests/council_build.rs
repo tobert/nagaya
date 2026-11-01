@@ -299,7 +299,7 @@ fn a_context_with_no_message_is_a_client_error() {
 }
 
 #[test]
-fn a_pin_keeps_a_snapshot_from_eviction() {
+fn a_pin_keeps_a_snapshot_in_the_host_tier() {
     // The host tier of the store holds two snapshots of one boundary each, not three.
     let probe = fixture();
     let probe_built = build(
@@ -336,8 +336,14 @@ fn a_pin_keeps_a_snapshot_from_eviction() {
             &f,
             &ctx(vec![json!({"role": "user", "content": "probe c", "snap": true})]),
         );
-        let held = f.service.snapshot(&head).is_ok();
-        assert_eq!(held, pinned, "pinned: {pinned}");
+        // A pin keeps the snapshot in the host tier. Without a pin, the full host tier moves it to disk (spec 6.9).
+        let detail = f.service.snapshot(&head).expect("the store still holds the snapshot");
+        let want = if pinned {
+            gogi_proto::context::Tier::Host
+        } else {
+            gogi_proto::context::Tier::Disk
+        };
+        assert_eq!(detail.tier, want, "pinned: {pinned}");
     }
 }
 

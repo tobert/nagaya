@@ -1630,11 +1630,12 @@ fn a_put_over_the_owner_quota_evicts_that_owner() {
 #[test]
 fn a_put_does_not_take_a_budget_from_another_tier() {
     let dir = tempfile::tempdir().unwrap();
-    let mut store = Store::open_with_limits(dir.path(), 5_000, 5_000, u64::MAX, 0).unwrap();
+    // NVMe has room for two entries, so the host victim moves there (6.9) and evicts nothing on NVMe.
+    let mut store = Store::open_with_limits(dir.path(), 5_000, 10_000, u64::MAX, 0).unwrap();
     let host_first = put_in(&mut store, &base_snapshot(1), recipe(146), 1, Tier::Host);
     let nvme = try_put(&mut store, &base_snapshot(2), recipe(147), None, 1, Tier::Nvme, 10).unwrap();
     let host_second = put_in(&mut store, &base_snapshot(3), recipe(148), 1, Tier::Host);
-    assert!(!store.entries().contains_key(&host_first));
+    assert_eq!(store.entries()[&host_first].tier, Tier::Nvme);
     assert!(store.entries().contains_key(&host_second));
     assert!(store.entries().contains_key(&nvme));
 }
@@ -2167,7 +2168,8 @@ fn an_nvme_delta_needs_an_nvme_parent() {
 #[test]
 fn the_tiers_have_separate_budgets_and_eviction_runs_in_one_tier() {
     let dir = tempfile::tempdir().unwrap();
-    let mut store = Store::open_with_limits(dir.path(), 5_000, 5_000, u64::MAX, 0).unwrap();
+    // NVMe has room for two entries, so the old host entry moves there (6.9).
+    let mut store = Store::open_with_limits(dir.path(), 5_000, 10_000, u64::MAX, 0).unwrap();
     let size = base_snapshot(1).encode().unwrap().len() as u64;
     assert!(
         size > 2_500 && size <= 5_000,
@@ -2175,13 +2177,15 @@ fn the_tiers_have_separate_budgets_and_eviction_runs_in_one_tier() {
     );
     let nvme = put_in(&mut store, &base_snapshot(1), recipe(68), 1, Tier::Nvme);
     let host_old = put_in(&mut store, &base_snapshot(2), recipe(69), 1, Tier::Host);
-    // A new host entry evicts the old host entry. The NVMe entry stays, though it is the older one.
+    // A new host entry moves the old host entry out of memory. The NVMe entry stays, though it is the older one.
     let host_new = put_in(&mut store, &base_snapshot(3), recipe(70), 1, Tier::Host);
     assert!(store.entries().contains_key(&nvme));
-    assert!(!store.entries().contains_key(&host_old));
+    assert_eq!(store.entries()[&host_old].tier, Tier::Nvme);
     assert!(store.entries().contains_key(&host_new));
-    assert_eq!(store.host_resident_bytes(), size, "the evicted bytes leave memory");
-    assert_eq!(blob_names(dir.path()), vec![nvme.hex()]);
+    assert_eq!(store.host_resident_bytes(), size, "the moved bytes leave memory");
+    let mut on_disk = vec![nvme.hex(), host_old.hex()];
+    on_disk.sort();
+    assert_eq!(blob_names(dir.path()), on_disk);
 }
 
 #[test]
@@ -3098,4 +3102,153 @@ fn a_park_of_pins_reports_a_park_with_no_room() {
     assert_eq!(report.failures.len(), 1, "{:?}", report.failures);
     assert!(report.failures[0].contains(&id.hex()), "{:?}", report.failures);
     assert_eq!(store.entries()[&id].tier, Tier::Host);
+}
+
+// A host victim moves to NVMe (spec 6.9, "A host victim moves to NVMe", Decided 2026-11-01).
+
+fn host_put(store: &mut Store, snapshot: &Snapshot, recipe: RecipeId, now_ms: u64) -> Result<ContentId, StoreError> {
+    try_put(store, snapshot, recipe, None, 1, Tier::Host, now_ms)
+}
+
+fn base_size() -> u64 {
+    base_snapshot(1).encode().unwrap().len() as u64
+}
+
+#[test]
+fn a_put_that_needs_host_room_parks_the_victim_on_nvme() {
+    let dir = tempfile::tempdir().unwrap();
+    let size = base_size();
+    let mut store = Store::open_with_limits(dir.path(), 2 * size, u64::MAX, u64::MAX, 0).unwrap();
+    let ids: Vec<ContentId> = (0..3u8)
+        .map(|i| host_put(&mut store, &base_snapshot(i + 1), recipe(180 + i), 10 + u64::from(i)).unwrap())
+        .collect();
+    let moved: Vec<ContentId> = ids
+        .iter()
+        .copied()
+        .filter(|id| store.entries()[id].tier == Tier::Nvme)
+        .collect();
+    assert_eq!(moved.len(), 1, "one victim moves, and no entry goes");
+    assert_eq!(
+        store.entries()[&ids[2]].tier,
+        Tier::Host,
+        "the new entry is in the host tier"
+    );
+    assert_eq!(store.host_resident_bytes(), 2 * size);
+    assert_eq!(
+        blob_names(dir.path()),
+        vec![moved[0].hex()],
+        "the moved entry has its file"
+    );
+    let moved_recipe = store.entries()[&moved[0]].recipe;
+    drop(store);
+
+    let mut store = Store::open(dir.path()).unwrap();
+    assert_eq!(
+        lookup(&mut store, moved_recipe).unwrap(),
+        vec![moved[0]],
+        "a restart keeps the moved entry"
+    );
+}
+
+#[test]
+fn a_host_victim_with_no_room_on_nvme_goes_as_before() {
+    let dir = tempfile::tempdir().unwrap();
+    let size = base_size();
+    let mut store = Store::open_with_limits(dir.path(), 2 * size, size - 1, u64::MAX, 0).unwrap();
+    for i in 0..3u8 {
+        host_put(&mut store, &base_snapshot(i + 1), recipe(185 + i), 10 + u64::from(i)).unwrap();
+    }
+    assert_eq!(store.entries().len(), 2, "the victim goes");
+    assert!(store.entries().values().all(|entry| entry.tier == Tier::Host));
+    assert!(blob_names(dir.path()).is_empty());
+}
+
+#[test]
+fn an_interval_copy_never_moves_to_nvme() {
+    let dir = tempfile::tempdir().unwrap();
+    let size = base_size();
+    let mut store = Store::open_with_limits(dir.path(), 2 * size, u64::MAX, u64::MAX, 4).unwrap();
+    let copy = put_copy(&mut store, &base_snapshot(1), recipe(190), 1, 10).unwrap();
+    let a = host_put(&mut store, &base_snapshot(2), recipe(191), 11).unwrap();
+    let b = host_put(&mut store, &base_snapshot(3), recipe(192), 12).unwrap();
+    assert!(!store.entries().contains_key(&copy), "the copy goes first (6.13)");
+    assert_eq!(
+        (store.entries()[&a].tier, store.entries()[&b].tier),
+        (Tier::Host, Tier::Host)
+    );
+    assert!(blob_names(dir.path()).is_empty());
+}
+
+/// A host tier that holds a root and its tip, and nothing more.
+fn chain_in_host(dir: &Path) -> (Store, ContentId, ContentId) {
+    let root_snapshot = base_snapshot(1);
+    let root_id = root_snapshot.content_id().unwrap();
+    let budget = root_snapshot.encode().unwrap().len() + delta_at(root_id, 2).encode().unwrap().len();
+    let mut store = Store::open_with_limits(dir, budget as u64, u64::MAX, u64::MAX, 0).unwrap();
+    let root = host_put(&mut store, &root_snapshot, recipe(195), 10).unwrap();
+    let tip_recipe = next_recipe(recipe(195), 2);
+    let tip = try_put(
+        &mut store,
+        &delta_at(root, 2),
+        tip_recipe,
+        Some(recipe(195)),
+        1,
+        Tier::Host,
+        11,
+    )
+    .unwrap();
+    (store, root, tip)
+}
+
+#[test]
+fn a_chain_moves_to_nvme_parent_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut store, root, tip) = chain_in_host(dir.path());
+    let tip_recipe = store.entries()[&tip].recipe;
+    // The wide put needs more room than the tip alone, so the root goes and takes its chain (6.9).
+    host_put(&mut store, &wide_snapshot(3), recipe(196), 12).unwrap();
+    assert_eq!(store.entries()[&root].tier, Tier::Nvme);
+    assert_eq!(store.entries()[&tip].tier, Tier::Nvme);
+    assert_eq!(store.entries()[&tip].parent, Some(root));
+    drop(store);
+    let mut store = Store::open(dir.path()).unwrap();
+    assert_eq!(
+        lookup(&mut store, tip_recipe).unwrap(),
+        vec![root, tip],
+        "a restart keeps the chain"
+    );
+}
+
+#[test]
+fn a_tip_whose_parent_stays_in_the_host_tier_goes_as_before() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut store, root, tip) = chain_in_host(dir.path());
+    // A put of one base's size takes only the tip. A park would cut the chain at a restart, so the tip goes.
+    host_put(&mut store, &base_snapshot(3), recipe(197), 12).unwrap();
+    assert!(!store.entries().contains_key(&tip));
+    assert_eq!(store.entries()[&root].tier, Tier::Host);
+    assert!(blob_names(dir.path()).is_empty());
+}
+
+#[test]
+fn a_refused_host_put_moves_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let size = base_size();
+    let mut store = Store::open_with_limits(dir.path(), 2 * size, u64::MAX, u64::MAX, 0).unwrap();
+    let a = host_put(&mut store, &base_snapshot(1), recipe(201), 10).unwrap();
+    host_put(&mut store, &base_snapshot(2), recipe(198), 11).unwrap();
+    store.pin(a, 1, 1000, 11).unwrap();
+    let before = store.entries().clone();
+    // One victim can move, but the pin keeps the other, so the put cannot get its room.
+    let big = wide_snapshot(3);
+    assert!(
+        big.encode().unwrap().len() as u64 > size,
+        "the wide snapshot needs more than one entry's room"
+    );
+    assert!(matches!(
+        host_put(&mut store, &big, recipe(199), 12),
+        Err(StoreError::NoSpace)
+    ));
+    assert_eq!(store.entries(), &before, "a refused put changes nothing");
+    assert!(blob_names(dir.path()).is_empty());
 }
