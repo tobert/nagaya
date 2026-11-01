@@ -1,6 +1,6 @@
 //! The conditioning gate of Qwen-Image 2.1 (spec 8.3, "The Qwen-Image oracle"): the encoder on the ids of the oracle
 //! against `prompt_embeds` of diffusers in f32. The gap of a row is 1 minus its cosine. Each row's gap must be at most
-//! 4 times the gap of the same encoder in bf16 under torch (`prompt_embeds_bf16`), or at most 1e-4. Stop
+//! 4 times the gap of the same encoder in bf16 under torch (`prompt_embeds_bf16`), with a floor of 1e-5. Stop
 //! `nagaya.service` first (spec 3.1).
 //!
 //! The test reads FUSAL's directory from `QWENIMAGE21_FUSAL_DIR`, and the oracle from `QWENIMAGE21_GOLDEN_DIR` or
@@ -10,6 +10,9 @@
 #![cfg(feature = "hip")]
 
 mod common;
+
+/// The floor of a bound (spec 8.3, "The bf16 baseline of each gate").
+const FLOOR: f64 = 1e-5;
 
 use nagaya_mk_hip::attention::Attention;
 use nagaya_mk_hip::bf16;
@@ -85,7 +88,7 @@ fn the_encoder_gives_the_conditioning_of_the_oracle() {
         let w = &want[row * HIDDEN..(row + 1) * HIDDEN];
         let b = &baseline[row * HIDDEN..(row + 1) * HIDDEN];
         let (gap, torch_gap) = (1.0 - cosine(&g, w), 1.0 - cosine(b, w));
-        let bound = (4.0 * torch_gap).max(1e-4);
+        let bound = (4.0 * torch_gap).max(FLOOR);
         eprintln!("row {row:>2}: gap {gap:.2e}, torch bf16 gap {torch_gap:.2e}, bound {bound:.2e}");
         worst_ratio = worst_ratio.max(gap / torch_gap.max(1e-12));
         if gap > bound {

@@ -1673,13 +1673,18 @@ bf16, which diffusepal runs, does not reach it either.
 - The oracle also runs each stage in bf16 under torch, from the same inputs: `prompt_embeds_bf16`,
   `transformer_out_bf16`, `latents_bf16` and `rgba_bf16` (`tools/qwenimage21_golden.sh`). These are the baselines.
 - The gap of the engine and the gap of the baseline are each measured against the f32 reference. A gate passes when
-  the engine's gap is at most 4 times the gap of the baseline, or within the cap above. Thus the engine may differ
-  from f32 as much as diffusers in bf16 does, with a margin of 4, and no more.
+  the engine's gap is at most 4 times the gap of the baseline. Thus the engine may differ from f32 as much as
+  diffusers in bf16 does, with a margin of 4, and no more. A floor of 1e-5 keeps a gate from failing on noise.
+- The caps of the table no longer decide. A first rule took the looser of the cap and 4 times the baseline. Then a
+  broken variant passed the step gate under the cap of 1e-3: its condition rows had the timestep 0.5. 4 times the
+  baseline caught it.
 - The conditioning gate applies the rule to each row, with the gap 1 minus the cosine. The first run was on
   2026-11-01. Row 0, the `<|im_start|>` after the cut, had a gap of 8.8e-2, and the baseline 3.3e-2. The worst ratio
   was 3.1, on row 21. Most rows had a smaller gap than the baseline. diffusers in bf16 had cosines from 0.967 to
   0.99991.
-- The step, run, decode and image gates get their rule from their first measurement, in the same form.
+- The first run of the step and run gates on 2026-11-01: the steps had gaps of 2.2e-5 to 1.8e-4, at most 1.5 times
+  the baseline. The run had 5.1e-5, and the baseline 9.1e-5.
+- The decode and image gates get their rule from their first measurement, in the same form.
 
 **8.4 Audit.** For some engines the tripwire is not reliable, because of their determinism class. For them, the
 nagaya runs an audit after each start, as a filler job in the same process. The audit builds a sample of stored
