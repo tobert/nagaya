@@ -437,6 +437,13 @@ work on b70host is paused (Amy, 2026-10-31). Milestone 22 is next, on gfx1151hos
       `QWENIMAGE21_FUSAL_DIR`. Do not put the paths in code. Today both are under `~/src/diffusepal/models/`.
     - **Reference:** diffusepal's venv has diffusers 0.41.0.dev0 with `QwenImage21Pipeline`. Run it with `-I`, on the
       CPU only, with `nagaya.service` stopped. Its weights need 31 GiB of RAM.
+    - **Decisions of 2026-11-01**, by interview. Senpai decided the other notes of step 1 (vetoable).
+      - A step never splits into smaller quanta.
+      - The client writes the trigger phrase, and the PNG stays RGBA.
+      - True CFG and the negative prompt are a design for later.
+      - Variants with the same encoder share their conditionings.
+      - The LoRA folds into the weights at the load.
+      - gfx1151host gets an object budget of 200 GiB at step 8, as b70host has.
 
     Do the steps in this order. Each step ends with the checks green.
     1. **Spec.** Write the Qwen-Image rules into the docs: the served model, the family, the job and the sampler.

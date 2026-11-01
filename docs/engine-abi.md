@@ -1036,9 +1036,9 @@ image_clear(slot)                       frees the state of the slot
     without `init` and `mask`. A 4-channel UNet blends the latent after each step.
   - `image_decode` gives the decode with no paste. The nagaya pastes the kept pixels back before the PNG encode.
 
-**Qwen-Image 2.1.** **Proposed** by Claude Opus 5.5, 2026-10-31, for spec 11.9c and 6.16. Reason: the job above has
-the shape of SDXL. Qwen-Image has one encoder with no chunks, a flow sampler, a cached conditioning and an RGBA
-decode. Each change adds a form or a member, and no call.
+**Qwen-Image 2.1.** Decided by senpai 2026-11-01 (vetoable). Proposed by Claude Opus 5.5, 2026-10-31, for spec 11.9c and
+6.16. Reason: the job above has the shape of SDXL. Qwen-Image has one encoder with no chunks, a flow sampler, a cached
+conditioning and an RGBA decode. Each change adds a form or a member, and no call.
 
 - `ImageJob.prompt` takes one of two forms. `chunks` is the form of SDXL above. `tokens` is the form of Qwen-Image:
   the ids of the whole template, and the cut (spec 11.9c). An engine refuses the form that it does not read.
@@ -1050,8 +1050,10 @@ decode. Each change adds a form or a member, and no call.
   encoder. It refuses rows whose count is not the id count less the cut.
 - `image_begin` returns the rows that the encoder made on a miss. It returns none on a hit, and none on an engine
   with no `conditioning` capability. The nagaya makes the canonical file of spec 6.16 from them.
-- The capability `conditioning: {row_bytes, max_rows}` names the size of the rows. Qwen-Image declares 8192 and 1010.
-  An engine without it never gets rows.
+- The capability `conditioning: {row_bytes, max_rows, encoder_digest}` names the size of the rows and the encoder.
+  Qwen-Image declares 8192 and 1010. An engine without it never gets rows.
+- `encoder_digest` is the encoder digest of spec 6.16. It does not cover the transformer or its LoRA. Thus variants
+  with the same encoder share their conditionings (Amy, 2026-11-01, by interview).
 - The engine still declares no part. The nagaya keeps the rows in the store, and the engine never reads the store.
 - `image_decode` gives 8-bit images with a channel count: 3 for RGB, or 4 for RGBA. Qwen-Image gives RGBA, because
   its VAE has 4 output channels. SDXL gives RGB. The nagaya writes the PNG with the same channels.
