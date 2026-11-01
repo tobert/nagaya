@@ -2290,6 +2290,18 @@ Pooling and the decision numbers come from `gogi_proto::math`, which all engines
 `identity.engine` covers two things: the engine identity, and the nagaya code that turns logits into decisions.
 (mk: `libmkengine:<sha>+numbers:<sha>`.)
 
+**A text engine on demand.** **Proposed** by Claude Opus 5.5, 2026-11-01. Reason: Amy made mk on demand on gfx1151host
+(`docs/deploy.md`, "The layout of gfx1151host"), and the council served only the engines that opened at the start. Then
+mk was no served model, and gogi found no ready model.
+
+- A factory can describe an engine: the identity and the limits that its open will report, with no GPU and no load
+  (`Factory::describe`). mk describes itself from its shards, its build and its knobs.
+- At the start, the council serves each engine on demand that its factory describes, from the description. The model
+  is `unloaded` until a load, and a request for it gets a 503 `model_unavailable` (3.3).
+- An open that reports another identity than the description is an open error. The council's recipes would have
+  the wrong root (6.2).
+- A kind that cannot describe its engine is not a text model while its engine is on demand, as before.
+
 **11.2 Generation.** The nagaya runs one sampler for all engines. It applies top_k, top_p, min_p, then temperature.
 The draw is seeded, and the response reports the seed. Each engine has its own defaults. All engines share the SSE
 framing.
