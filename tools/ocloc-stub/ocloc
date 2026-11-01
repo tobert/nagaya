@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# A stub of ocloc for a type-check on a machine with no B70 card. It writes an empty kernel file where ocloc would,
+# answers --version, and writes IGC_REVISION for `query`. Nothing it makes can run on a card.
+set -euo pipefail
+case "${1:-}" in
+  --version) echo "stub ocloc for a type-check"; exit 0;;
+  query) printf 'stub' > "${2:-IGC_REVISION}"; exit 0;;
+esac
+file=""; output=""; out_dir=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -file) file="$2"; shift 2;;
+    -output) output="$2"; shift 2;;
+    -out_dir) out_dir="$2"; shift 2;;
+    *) shift;;
+  esac
+done
+[ -n "$output" ] || output="$(basename "$file" .cl)"
+: > "$out_dir/${output}_bmg.bin"

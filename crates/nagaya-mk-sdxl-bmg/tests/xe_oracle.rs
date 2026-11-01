@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use common::{Tensors, golden, rel};
-use nagaya_abi::{Image, ImageChunk, ImageJob, ImageSampler, ImageSpacing};
+use nagaya_abi::{Image, ImageChunk, ImageJob, ImagePrompt, ImageSampler, ImageSpacing};
 use nagaya_mk_sdxl_bmg::host;
 use nagaya_mk_sdxl_bmg::model::UnetSize;
 use nagaya_mk_sdxl_bmg::sampler::{History, Schedule, step};
@@ -212,9 +212,11 @@ fn the_engine_follows_the_oracle_block_by_block_and_makes_an_image() {
 
     // A real image through the capability: 512 by 512, 20 steps. The same seed gives the same bytes.
     let job = ImageJob {
-        prompt: prompt.clone(),
-        negative: negative.clone(),
-        clip_skip: 2,
+        prompt: ImagePrompt::Chunks {
+            prompt: prompt.clone(),
+            negative: negative.clone(),
+            clip_skip: 2,
+        },
         width: 512,
         height: 512,
         steps: 20,
@@ -225,6 +227,7 @@ fn the_engine_follows_the_oracle_block_by_block_and_makes_an_image() {
         seed: 1234,
         previews: true,
         loras: Vec::new(),
+        conditioning: None,
     };
     let mut made = Vec::new();
     for _ in 0..2 {
@@ -252,9 +255,12 @@ fn the_engine_follows_the_oracle_block_by_block_and_makes_an_image() {
     }
     assert_eq!(made[0], made[1], "the same job and seed give the same bytes");
     let image = &made[0][0];
-    assert_eq!((image.width, image.height, image.rgb.len()), (512, 512, 512 * 512 * 3));
+    assert_eq!(
+        (image.width, image.height, image.pixels.len()),
+        (512, 512, 512 * 512 * 3)
+    );
     if let Some(out) = std::env::var_os("SDXL_IMAGE_OUT") {
-        let ppm = [b"P6 512 512 255\n".to_vec(), image.rgb.clone()].concat();
+        let ppm = [b"P6 512 512 255\n".to_vec(), image.pixels.clone()].concat();
         std::fs::write(&out, ppm).unwrap();
         eprintln!("wrote {}", PathBuf::from(out).display());
     }

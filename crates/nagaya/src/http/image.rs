@@ -13,7 +13,7 @@ use gogi_proto::generation::{
 use gogi_proto::identity::ServedModel;
 use gogi_proto::message::{Content, Part, Role};
 use gogi_proto::objects::{Named, check_reads, objects_of};
-use nagaya_abi::{ImageJob, ImageSampler, ImageSpacing, LoraInput, RgbImage};
+use nagaya_abi::{DecodedImage, ImageJob, ImagePrompt, ImageSampler, ImageSpacing, LoraInput};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -299,9 +299,11 @@ pub fn check(
     };
     Ok(Checked {
         job: ImageJob {
-            prompt: prompt_chunks,
-            negative: negative_chunks,
-            clip_skip: clip_skip as u32,
+            prompt: ImagePrompt::Chunks {
+                prompt: prompt_chunks,
+                negative: negative_chunks,
+                clip_skip: clip_skip as u32,
+            },
             width: width as u32,
             height: height as u32,
             steps: steps as u32,
@@ -312,6 +314,7 @@ pub fn check(
             seed: seed.unwrap_or_else(chosen_seed),
             previews,
             loras,
+            conditioning: None,
         },
         prompt,
         negative,
@@ -424,24 +427,31 @@ fn chosen_seed() -> u64 {
 /// negative prompt is empty, and so does this.
 pub fn parameters(checked: &Checked, model: &str, index: u32) -> String {
     let job = &checked.job;
-    let sampler = SAMPLERS
-        .iter()
-        .find(|(_, sampler, _)| *sampler == job.sampler)
-        .map(|(_, _, name)| *name)
-        .expect("each sampler has a name");
+    // A1111 calls the flow sampler of Qwen-Image Euler too (spec 11.9c).
+    let sampler = match job.sampler {
+        ImageSampler::FlowEuler => "Euler",
+        _ => SAMPLERS
+            .iter()
+            .find(|(_, sampler, _)| *sampler == job.sampler)
+            .map(|(_, _, name)| *name)
+            .expect("each sampler has a name"),
+    };
     let mut text = checked.prompt.clone();
     if !checked.negative.is_empty() {
         text.push_str(&format!("\nNegative prompt: {}", checked.negative));
     }
     text.push_str(&format!(
-        "\nSteps: {}, Sampler: {sampler}, CFG scale: {}, Seed: {}, Size: {}x{}, Model: {model}, Clip skip: {}",
+        "\nSteps: {}, Sampler: {sampler}, CFG scale: {}, Seed: {}, Size: {}x{}, Model: {model}",
         job.steps,
         job.cfg,
         job.seed.wrapping_add(u64::from(index)),
         job.width,
         job.height,
-        job.clip_skip
     ));
+    // Only a CLIP encoder reads a clip_skip (spec 11.9c gives no `Clip skip` for Qwen-Image).
+    if let ImagePrompt::Chunks { clip_skip, .. } = &job.prompt {
+        text.push_str(&format!(", Clip skip: {clip_skip}"));
+    }
     // The LoRAs follow the settings, each as its id and its weight, in the order of the request (spec 11.9a).
     if !job.loras.is_empty() {
         let ids: Vec<String> = job
@@ -454,12 +464,21 @@ pub fn parameters(checked: &Checked, model: &str, index: u32) -> String {
     text
 }
 
-/// The bytes of a PNG of 8-bit RGB, with a chunk `parameters` when `text` is given: `tEXt` for Latin-1 text, else
-/// `iTXt`.
-pub fn png(image: &RgbImage, text: Option<&str>) -> Result<Vec<u8>, ServiceError> {
+/// The bytes of a PNG of 8-bit RGB or RGBA, as the image has 3 or 4 channels, with a chunk `parameters` when `text` is
+/// given: `tEXt` for Latin-1 text, else `iTXt`.
+pub fn png(image: &DecodedImage, text: Option<&str>) -> Result<Vec<u8>, ServiceError> {
+    let color = match image.channels {
+        3 => png::ColorType::Rgb,
+        4 => png::ColorType::Rgba,
+        other => {
+            return Err(ServiceError::internal(format!(
+                "an image of {other} channels has no PNG form here; the engines give 3 or 4"
+            )));
+        }
+    };
     let mut bytes = Vec::new();
     let mut encoder = png::Encoder::new(&mut bytes, image.width, image.height);
-    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_color(color);
     encoder.set_depth(png::BitDepth::Eight);
     if let Some(text) = text {
         // A1111 writes tEXt for Latin-1 text and iTXt for other text, which tEXt cannot hold.
@@ -474,7 +493,7 @@ pub fn png(image: &RgbImage, text: Option<&str>) -> Result<Vec<u8>, ServiceError
         .write_header()
         .map_err(|error| ServiceError::internal(format!("cannot write the header of a PNG: {error}")))?;
     writer
-        .write_image_data(&image.rgb)
+        .write_image_data(&image.pixels)
         .map_err(|error| ServiceError::internal(format!("cannot write the pixels of a PNG: {error}")))?;
     writer
         .finish()
@@ -608,7 +627,7 @@ fn done(
     council: &Council,
     model: &str,
     checked: &Checked,
-    images: &[RgbImage],
+    images: &[DecodedImage],
     pending: &[(String, Arc<super::pending::PendingOutput>)],
 ) -> Result<GenerationDone, ServiceError> {
     let mut outputs = Vec::with_capacity(images.len());

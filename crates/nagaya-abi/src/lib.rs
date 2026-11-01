@@ -894,6 +894,8 @@ pub enum ImageSampler {
     DpmPp2mKarras,
     /// `dpm++ 2m sde karras`.
     DpmPp2mSdeKarras,
+    /// `euler` on a flow model: FlowMatch Euler with its shift (spec 11.9c). SDXL refuses it.
+    FlowEuler,
 }
 
 /// The timesteps of an Euler sampler (spec 11.9a). `Leading` is the spacing of SDXL base; `Trailing` ends at the first
@@ -906,16 +908,30 @@ pub enum ImageSpacing {
     Trailing,
 }
 
-/// One image job (engine-abi "Image"). The engine never takes text: the family makes the chunks (D2).
+/// The prompt of an image job, in the form that its engine reads (engine-abi "Image", "Qwen-Image 2.1"). An engine
+/// refuses the form that it does not read.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ImagePrompt {
+    /// The form of SDXL (spec 11.9a).
+    Chunks {
+        /// The chunks of the prompt.
+        prompt: Vec<ImageChunk>,
+        /// The chunks of the negative prompt.
+        negative: Vec<ImageChunk>,
+        /// 2 or 3, in A1111's count: the encoders give the hidden state of layer `-clip_skip`. 2 is the
+        /// penultimate layer. The `clip_skip` of diffusers is 1 less.
+        clip_skip: u32,
+    },
+    /// The form of Qwen-Image (spec 11.9c): the ids of the whole template, and the count of system ids that the
+    /// engine cuts from the encoder output. There is no negative prompt.
+    Tokens { ids: Vec<u32>, cut: u32 },
+}
+
+/// One image job (engine-abi "Image"). The engine never takes text: the family makes the prompt (D2).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ImageJob {
-    /// The chunks of the prompt.
-    pub prompt: Vec<ImageChunk>,
-    /// The chunks of the negative prompt.
-    pub negative: Vec<ImageChunk>,
-    /// 2 or 3, in A1111's count: the encoders give the hidden state of layer `-clip_skip`. 2 is the penultimate
-    /// layer. The `clip_skip` of diffusers is 1 less.
-    pub clip_skip: u32,
+    /// The prompt, in the form of the engine.
+    pub prompt: ImagePrompt,
     /// The size of each image, in pixels.
     pub width: u32,
     pub height: u32,
@@ -933,6 +949,21 @@ pub struct ImageJob {
     pub previews: bool,
     /// The LoRAs of the job, in the order of the request (spec 11.9a). The engine adds each one's delta to its module.
     pub loras: Vec<LoraInput>,
+    /// The rows of a conditioning hit in the store (spec 6.16), or none. With rows, the engine skips its encoder. An
+    /// engine with no `image_conditioning` refuses rows.
+    pub conditioning: Option<std::sync::Arc<Vec<u8>>>,
+}
+
+/// What an engine with cached conditionings declares (spec 6.16, engine-abi "Image").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageConditioning {
+    /// The bytes of one row.
+    pub row_bytes: u32,
+    /// The most rows of one conditioning.
+    pub max_rows: u32,
+    /// The encoder digest: `blake3:` and 64 hex digits. It names the encoder, the tokenizer, the template, the cut
+    /// and the build, and not the rest of the engine. Thus variants with the same encoder share their conditionings.
+    pub encoder_digest: String,
 }
 
 /// One LoRA of a job: the bytes of its safetensors file, and its weight from -2.0 to 2.0.
@@ -955,13 +986,14 @@ impl std::fmt::Debug for LoraInput {
     }
 }
 
-/// An image in 8-bit RGB, row after row.
+/// An image of 8-bit channels, row after row: 3 channels for RGB, or 4 for RGBA.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RgbImage {
+pub struct DecodedImage {
     pub width: u32,
     pub height: u32,
-    /// `width * height * 3` bytes.
-    pub rgb: Vec<u8>,
+    pub channels: u32,
+    /// `width * height * channels` bytes.
+    pub pixels: Vec<u8>,
 }
 
 /// What one `image_step` call did.
@@ -972,7 +1004,7 @@ pub struct ImageStepOut {
     /// The steps of the job.
     pub steps: u32,
     /// With previews on, one preview of each image at one eighth of its size; else empty.
-    pub previews: Vec<RgbImage>,
+    pub previews: Vec<DecodedImage>,
 }
 
 /// The image capability (engine-abi "Image").
@@ -980,14 +1012,20 @@ pub trait Image {
     /// The most pixels of all the images of a slot, which keeps a quantum within `max_quantum_ms`.
     fn image_max_pixels(&self) -> u64;
 
-    /// Encode the prompts, make the noise, and keep the job in the slot. It is one quantum of kind `embed`.
-    fn image_begin(&mut self, slot: SlotId, job: &ImageJob) -> Result<(), PassError>;
+    /// What the engine declares for cached conditionings, or none when it has no such cache (spec 6.16).
+    fn image_conditioning(&self) -> Option<ImageConditioning> {
+        None
+    }
+
+    /// Encode the prompts, make the noise, and keep the job in the slot. It is one quantum of kind `embed`. It gives
+    /// the conditioning rows that its encoder made, or none on a hit or with no `image_conditioning`.
+    fn image_begin(&mut self, slot: SlotId, job: &ImageJob) -> Result<Option<Vec<u8>>, PassError>;
 
     /// Run one step of each image of the slot. It is one quantum of kind `step`.
     fn image_step(&mut self, slot: SlotId) -> Result<ImageStepOut, PassError>;
 
     /// Decode each latent of the slot with the VAE, after the last step. It is one quantum of kind `step`.
-    fn image_decode(&mut self, slot: SlotId) -> Result<Vec<RgbImage>, PassError>;
+    fn image_decode(&mut self, slot: SlotId) -> Result<Vec<DecodedImage>, PassError>;
 
     /// Free the state of the slot. A slot that holds no job is not a failure.
     fn image_clear(&mut self, slot: SlotId);

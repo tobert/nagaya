@@ -74,6 +74,10 @@ impl Schedule {
     /// The schedule of `steps` steps of a sampler, with the spacing of the job.
     pub fn new(sampler: ImageSampler, spacing: ImageSpacing, steps: usize) -> Schedule {
         assert!(steps >= 1, "a job has at least one step");
+        assert!(
+            sampler != ImageSampler::FlowEuler,
+            "the SDXL engine has no flow sampler; its job check refuses FlowEuler first"
+        );
         let sigmas = train_sigmas();
         if spacing == ImageSpacing::Trailing {
             assert!(
@@ -127,6 +131,7 @@ impl Schedule {
                     sigmas: out,
                 }
             }
+            ImageSampler::FlowEuler => unreachable!("an assert above refuses FlowEuler"),
         }
     }
 
@@ -138,6 +143,7 @@ impl Schedule {
                 (max * max + 1.0).sqrt()
             }
             ImageSampler::DpmPp2mKarras | ImageSampler::DpmPp2mSdeKarras => 1.0,
+            ImageSampler::FlowEuler => unreachable!("a schedule refuses FlowEuler"),
         }
     }
 
@@ -149,6 +155,7 @@ impl Schedule {
                 1.0 / (s * s + 1.0).sqrt()
             }
             ImageSampler::DpmPp2mKarras | ImageSampler::DpmPp2mSdeKarras => 1.0,
+            ImageSampler::FlowEuler => unreachable!("a schedule refuses FlowEuler"),
         }
     }
 
@@ -238,5 +245,6 @@ pub fn step(schedule: &Schedule, i: usize, x: &mut [f32], eps: &[f32], noise: Op
             }
             history.last = Some(model);
         }
+        ImageSampler::FlowEuler => unreachable!("a schedule refuses FlowEuler"),
     }
 }

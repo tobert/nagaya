@@ -1051,7 +1051,8 @@ conditioning and an RGBA decode. Each change adds a form or a member, and no cal
 - `image_begin` returns the rows that the encoder made on a miss. It returns none on a hit, and none on an engine
   with no `conditioning` capability. The nagaya makes the canonical file of spec 6.16 from them.
 - The capability `conditioning: {row_bytes, max_rows, encoder_digest}` names the size of the rows and the encoder.
-  Qwen-Image declares 8192 and 1010. An engine without it never gets rows.
+  Qwen-Image declares 8192 and 1010. An engine without it never gets rows. The call `image_conditioning` of the image
+  capability gives it, and gives none for an engine with no such cache, such as SDXL.
 - `encoder_digest` is the encoder digest of spec 6.16. It does not cover the transformer or its LoRA. Thus variants
   with the same encoder share their conditionings (Amy, 2026-11-01, by interview).
 - The engine still declares no part. The nagaya keeps the rows in the store, and the engine never reads the store.

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, sync_channel};
 use std::time::{Duration, Instant};
 
-use nagaya_abi::{ImageChunk, ImageJob, Kind, RgbImage, SlotId};
+use nagaya_abi::{DecodedImage, ImageChunk, ImageJob, Kind, SlotId};
 use nagaya_telemetry::EngineState;
 
 use crate::jobs::JobSpec;
@@ -97,14 +97,14 @@ impl std::fmt::Display for ImageError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Made {
     /// The previews after a step: one for each image, at one eighth of its size.
-    Previews { step: u32, previews: Vec<RgbImage> },
+    Previews { step: u32, previews: Vec<DecodedImage> },
     /// A step ended, and the job makes no previews. A route that went away hears of it here, so the job ends at its
     /// next step.
     Step { step: u32 },
     /// The steps ended, and the decode starts.
     Decoding,
     /// The images, in index order. Nothing follows.
-    Images(Vec<RgbImage>),
+    Images(Vec<DecodedImage>),
 }
 
 /// The image service of one engine.

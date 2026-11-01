@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use common::{golden_in, rel};
-use nagaya_abi::{Image, ImageChunk, ImageJob, ImageSampler, ImageSpacing, LoraInput};
+use nagaya_abi::{Image, ImageChunk, ImageJob, ImagePrompt, ImageSampler, ImageSpacing, LoraInput};
 use nagaya_mk_sdxl_bmg::host;
 use nagaya_mk_sdxl_bmg::model::UnetSize;
 use nagaya_mk_sdxl_bmg::spec::*;
@@ -107,9 +107,11 @@ fn a_lora_on_the_card_moves_the_encodings_and_a_unet_step_as_diffusers_does() {
     let id = format!("blake3:{}", blake3::hash(&file).to_hex());
     let (h, w) = (40, 32);
     let job = ImageJob {
-        prompt: prompt.clone(),
-        negative: negative.clone(),
-        clip_skip: 2,
+        prompt: ImagePrompt::Chunks {
+            prompt: prompt.clone(),
+            negative: negative.clone(),
+            clip_skip: 2,
+        },
         width: 256,
         height: 320,
         steps: 1,
@@ -124,6 +126,7 @@ fn a_lora_on_the_card_moves_the_encodings_and_a_unet_step_as_diffusers_does() {
             weight: WEIGHT,
             file: Arc::new(file),
         }],
+        conditioning: None,
     };
     // The job attaches the LoRA, then encodes with it.
     engine.image_begin(0, &job).unwrap();

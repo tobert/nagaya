@@ -520,9 +520,16 @@ python3 tools/ste_check.py README.md AGENTS.md docs/*.md
 awk 'length > 120 && !/^\|/ {print FILENAME":"FNR; bad = 1} END {exit bad}' README.md AGENTS.md docs/*.md
 ```
 
-The check with `--features xe` needs `ocloc`, because `build.rs` compiles the kernels. Run it on b70host, and skip it
-on a machine with no `ocloc`. Run `cargo fmt --all` often, not only before a commit. On gfx1151host, after a change to
-`nagaya-mk-qwen38-gfx1151`, also run this:
+The check with `--features xe` needs `ocloc`, because `build.rs` compiles the kernels. Run it on b70host. On a
+machine with no `ocloc`, such as gfx1151host, run it with the stub, which writes empty kernels. It checks the xe code;
+nothing that it builds runs on a card:
+
+```
+PATH="$PWD/tools/ocloc-stub:$PATH" cargo clippy --workspace --all-targets --features xe -- -D warnings
+```
+
+Run `cargo fmt --all` often, not only before a commit. On gfx1151host, after a change to `nagaya-mk-qwen38-gfx1151`, also
+run this:
 
 ```
 cargo test -p nagaya-mk-qwen38-gfx1151 --tests --features hip -- --test-threads=1

@@ -17,8 +17,9 @@ use nagaya::process::{Process, Start};
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, Residency, StoreSpec, TierSpec};
 use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{
-    Capability, Engine, Identity, Image, ImageChunk, ImageJob, ImageSampler, ImageSpacing, ImageStepOut, Lifetime,
-    Limits, MandatoryTerm, PassError, PassErrorKind, PassOut, RgbImage, Segment, SlotId, SlotLimit, Tap, Tier,
+    Capability, DecodedImage, Engine, Identity, Image, ImageChunk, ImageJob, ImagePrompt, ImageSampler, ImageSpacing,
+    ImageStepOut, Lifetime, Limits, MandatoryTerm, PassError, PassErrorKind, PassOut, Segment, SlotId, SlotLimit, Tap,
+    Tier,
 };
 use nagaya_store::objects::ObjectStore;
 use serde_json::{Value, json};
@@ -51,7 +52,7 @@ impl Image for Painter {
         4 * 1_572_864
     }
 
-    fn image_begin(&mut self, slot: SlotId, job: &ImageJob) -> Result<(), PassError> {
+    fn image_begin(&mut self, slot: SlotId, job: &ImageJob) -> Result<Option<Vec<u8>>, PassError> {
         assert_eq!(slot, 0, "the fake has one slot");
         // The fake refuses a LoRA whose bytes are `refuse`, as the engine refuses a file it cannot read.
         if job.loras.iter().any(|lora| lora.file.as_slice() == b"refuse") {
@@ -63,7 +64,7 @@ impl Image for Painter {
         self.jobs.lock().unwrap().push(job.clone());
         self.job = Some(job.clone());
         self.step = 0;
-        Ok(())
+        Ok(None)
     }
 
     fn image_step(&mut self, _slot: SlotId) -> Result<ImageStepOut, PassError> {
@@ -77,10 +78,11 @@ impl Image for Painter {
             (0..job.count)
                 .map(|i| {
                     let (width, height) = (job.width / 8, job.height / 8);
-                    RgbImage {
+                    DecodedImage {
                         width,
                         height,
-                        rgb: vec![(16 * self.step + i) as u8; (width * height * 3) as usize],
+                        channels: 3,
+                        pixels: vec![(16 * self.step + i) as u8; (width * height * 3) as usize],
                     }
                 })
                 .collect()
@@ -94,14 +96,15 @@ impl Image for Painter {
         })
     }
 
-    fn image_decode(&mut self, _slot: SlotId) -> Result<Vec<RgbImage>, PassError> {
+    fn image_decode(&mut self, _slot: SlotId) -> Result<Vec<DecodedImage>, PassError> {
         let job = self.job.as_ref().expect("a decode after a begin");
         assert_eq!(self.step, job.steps, "the decode comes after the last step");
         Ok((0..job.count)
-            .map(|i| RgbImage {
+            .map(|i| DecodedImage {
                 width: job.width,
                 height: job.height,
-                rgb: vec![job.seed.wrapping_add(u64::from(i)) as u8; (job.width * job.height * 3) as usize],
+                channels: 3,
+                pixels: vec![job.seed.wrapping_add(u64::from(i)) as u8; (job.width * job.height * 3) as usize],
             })
             .collect())
     }
@@ -563,17 +566,17 @@ fn a_generation_writes_one_png_for_each_image_with_its_seed_in_the_a1111_chunk()
             job.sampler,
             job.count,
             job.seed,
-            job.clip_skip,
+            chunks(job).2,
             job.previews
         ),
         (512, 768, 3, 5.5, ImageSampler::EulerAncestral, 2, 9, 2, false)
     );
     assert_eq!(
-        job.prompt[0].ids1,
+        chunks(job).0[0].ids1,
         "a red fox".chars().map(u32::from).collect::<Vec<_>>()
     );
     assert_eq!(
-        job.negative[0].ids1,
+        chunks(job).1[0].ids1,
         "blurry".chars().map(u32::from).collect::<Vec<_>>()
     );
     assert_eq!(done["content"], json!(""), "{done}");
@@ -656,12 +659,12 @@ fn a_request_with_no_options_gets_the_defaults_and_a_chosen_seed() {
             job.cfg,
             job.sampler,
             job.count,
-            job.clip_skip,
+            chunks(&job).2,
             job.previews
         ),
         (1024, 1024, 30, 7.0, ImageSampler::DpmPp2mKarras, 1, 3, false)
     );
-    assert!(job.negative.is_empty(), "an empty negative prompt has no chunk");
+    assert!(chunks(&job).1.is_empty(), "an empty negative prompt has no chunk");
     assert_eq!(done["seed"], json!(job.seed), "{done}");
     let bytes = object(&council, done["outputs"][0]["id"].as_str().unwrap());
     let text = read_png(&bytes).3.unwrap();
@@ -748,7 +751,22 @@ fn the_last_user_message_is_the_prompt() {
     let (status, done) = generate(&council, body);
     assert_eq!(status, StatusCode::OK, "{done}");
     let job = fixture.take_jobs().remove(0);
-    assert_eq!(job.prompt[0].ids1, "a dog".chars().map(u32::from).collect::<Vec<_>>());
+    assert_eq!(
+        chunks(&job).0[0].ids1,
+        "a dog".chars().map(u32::from).collect::<Vec<_>>()
+    );
+}
+
+/// The chunks of the prompt and of the negative prompt of an SDXL job, and its clip_skip.
+fn chunks(job: &ImageJob) -> (&[ImageChunk], &[ImageChunk], u32) {
+    match &job.prompt {
+        ImagePrompt::Chunks {
+            prompt,
+            negative,
+            clip_skip,
+        } => (prompt, negative, *clip_skip),
+        ImagePrompt::Tokens { .. } => panic!("an SDXL job has the chunks form"),
+    }
 }
 
 /// The events of a stream body: their names and data.
@@ -925,9 +943,11 @@ fn a_job_with_no_previews_ends_soon_after_its_route_goes_away() {
     let fixture = Fixture::new();
     let service = fixture.service();
     let job = ImageJob {
-        prompt: Vec::new(),
-        negative: Vec::new(),
-        clip_skip: 2,
+        prompt: ImagePrompt::Chunks {
+            prompt: Vec::new(),
+            negative: Vec::new(),
+            clip_skip: 2,
+        },
         width: 512,
         height: 512,
         steps: 50,
@@ -938,6 +958,7 @@ fn a_job_with_no_previews_ends_soon_after_its_route_goes_away() {
         seed: 1,
         previews: false,
         loras: Vec::new(),
+        conditioning: None,
     };
     let made = service.generate(job, nagaya::council::Schedule::default()).unwrap();
     made.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
@@ -1179,4 +1200,32 @@ fn a_stream_whose_client_goes_away_cancels_its_job() {
     wait_clears(&fixture, 1, "the job of a client that went away did not end");
     let steps = fixture.steps.load(std::sync::atomic::Ordering::SeqCst);
     assert!(steps < 150, "the job ran all {steps} steps after its client went away");
+}
+
+/// An engine of 4 channels gives an RGBA PNG with the same bytes; another count is an error (engine-abi "Image",
+/// "Qwen-Image 2.1").
+#[test]
+fn an_image_of_four_channels_is_an_rgba_png() {
+    let image = DecodedImage {
+        width: 3,
+        height: 2,
+        channels: 4,
+        pixels: (0u8..24).collect(),
+    };
+    let bytes = nagaya::http::image::png(&image, Some("a fox")).unwrap();
+    let decoder = png::Decoder::new(std::io::Cursor::new(&bytes));
+    let mut reader = decoder.read_info().unwrap();
+    let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+    let frame = reader.next_frame(&mut pixels).unwrap();
+    assert_eq!(frame.color_type, png::ColorType::Rgba);
+    assert_eq!(pixels, image.pixels);
+    let wrong = DecodedImage {
+        channels: 5,
+        pixels: vec![0; 30],
+        ..image
+    };
+    assert!(
+        nagaya::http::image::png(&wrong, None).is_err(),
+        "5 channels have no PNG form"
+    );
 }

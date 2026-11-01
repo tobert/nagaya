@@ -185,9 +185,12 @@ impl JobBody for ImageJobBody {
                 };
                 let job = &self.parts.image;
                 let (count, width, height) = (job.count as usize, job.width, job.height);
-                let wrong = images
-                    .iter()
-                    .find(|i| i.width != width || i.height != height || i.rgb.len() != (width * height * 3) as usize);
+                let wrong = images.iter().find(|i| {
+                    i.width != width
+                        || i.height != height
+                        || !(3..=4).contains(&i.channels)
+                        || i.pixels.len() != (width * height * i.channels) as usize
+                });
                 if images.len() != count || wrong.is_some() {
                     let message = format!(
                         "the engine gave {} images, and the job asked for {count} of {width} by {height}",

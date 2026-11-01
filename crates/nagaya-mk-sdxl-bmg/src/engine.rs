@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use nagaya_abi::{
-    Engine, Identity, Image, ImageChunk, ImageJob, ImageSampler, ImageSpacing, ImageStepOut, Limits, PassError,
-    PassErrorKind, PassOut, RgbImage, Segment, SlotId, Tap,
+    DecodedImage, Engine, Identity, Image, ImageChunk, ImageJob, ImagePrompt, ImageSampler, ImageSpacing, ImageStepOut,
+    Limits, PassError, PassErrorKind, PassOut, Segment, SlotId, Tap,
 };
 use nagaya_mk_bmg::level_zero::{B70Card, L0Cluster};
 use nagaya_mk_bmg::ring::Ring;
@@ -452,6 +452,20 @@ pub fn job_problem(job: &ImageJob) -> Option<String> {
     let pixels = job.width as usize * job.height as usize;
     let chunk_ok =
         |c: &ImageChunk| c.ids1.len() == CHUNK_IDS && c.ids2.len() == CHUNK_IDS && c.weights.len() == CHUNK_IDS;
+    let ImagePrompt::Chunks {
+        prompt,
+        negative,
+        clip_skip,
+    } = &job.prompt
+    else {
+        return Some("the SDXL engine reads the chunks form of a prompt, not tokens".to_owned());
+    };
+    if job.sampler == ImageSampler::FlowEuler {
+        return Some("the SDXL engine has no flow sampler; give euler, euler a or a DPM++ sampler".to_owned());
+    }
+    if job.conditioning.is_some() {
+        return Some("the SDXL engine keeps no conditioning, so it takes no rows".to_owned());
+    }
     if job.count == 0 || job.count as usize > MAX_IMAGES {
         Some(format!(
             "the job asks for {} images; the engine makes 1 to {MAX_IMAGES}",
@@ -468,18 +482,18 @@ pub fn job_problem(job: &ImageJob) -> Option<String> {
         ))
     } else if job.steps == 0 {
         Some("the job has 0 steps".to_owned())
-    } else if !(2..=3).contains(&job.clip_skip) {
-        Some(format!("clip_skip {} is not 2 or 3", job.clip_skip))
+    } else if !(2..=3).contains(clip_skip) {
+        Some(format!("clip_skip {clip_skip} is not 2 or 3"))
     } else if !job.cfg.is_finite() {
         Some("the CFG scale is not a finite number".to_owned())
     } else if job.spacing == ImageSpacing::Trailing
         && !matches!(job.sampler, ImageSampler::Euler | ImageSampler::EulerAncestral)
     {
         Some("trailing spacing needs euler or euler a; the DPM++ samplers take their sigmas".to_owned())
-    } else if job.prompt.is_empty()
-        || job.prompt.len() > MAX_CHUNKS
-        || job.negative.len() > MAX_CHUNKS
-        || !job.prompt.iter().chain(&job.negative).all(chunk_ok)
+    } else if prompt.is_empty()
+        || prompt.len() > MAX_CHUNKS
+        || negative.len() > MAX_CHUNKS
+        || !prompt.iter().chain(negative).all(chunk_ok)
     {
         Some(format!(
             "a prompt has 1 to {MAX_CHUNKS} chunks of {CHUNK_IDS} ids and weights"
@@ -494,7 +508,7 @@ impl Image for SdxlEngine {
         (MAX_IMAGES * MAX_IMAGE_PIXELS) as u64
     }
 
-    fn image_begin(&mut self, slot: SlotId, job: &ImageJob) -> Result<(), PassError> {
+    fn image_begin(&mut self, slot: SlotId, job: &ImageJob) -> Result<Option<Vec<u8>>, PassError> {
         if slot != 0 {
             return Err(self.fail(refused(format!("slot {slot} does not exist; the engine has slot 0"))));
         }
@@ -504,12 +518,20 @@ impl Image for SdxlEngine {
         if let Err(message) = self.attach_loras(job) {
             return Err(self.fail(refused(message)));
         }
-        let negative = if job.negative.is_empty() {
+        let ImagePrompt::Chunks {
+            prompt,
+            negative,
+            clip_skip,
+        } = &job.prompt
+        else {
+            unreachable!("check refused the tokens form");
+        };
+        let negative = if negative.is_empty() {
             vec![host::empty_chunk()]
         } else {
-            job.negative.clone()
+            negative.clone()
         };
-        let (context, pooled) = self.encode(&job.prompt, &negative, job.clip_skip as usize);
+        let (context, pooled) = self.encode(prompt, &negative, *clip_skip as usize);
         let images = job.count as usize;
         let (h, w) = (job.height as usize / VAE_SCALE, job.width as usize / VAE_SCALE);
         let ctx = context.len() / (2 * CONTEXT);
@@ -540,7 +562,7 @@ impl Image for SdxlEngine {
             history: vec![History::default(); images],
             step: 0,
         });
-        Ok(())
+        Ok(None)
     }
 
     fn image_step(&mut self, slot: SlotId) -> Result<ImageStepOut, PassError> {
@@ -598,7 +620,7 @@ impl Image for SdxlEngine {
         Ok(out)
     }
 
-    fn image_decode(&mut self, slot: SlotId) -> Result<Vec<RgbImage>, PassError> {
+    fn image_decode(&mut self, slot: SlotId) -> Result<Vec<DecodedImage>, PassError> {
         let Some(job) = self.job.take().filter(|_| slot == 0) else {
             return Err(self.fail(refused(format!(
                 "slot {slot} holds no image job; call image_begin first"
@@ -619,10 +641,11 @@ impl Image for SdxlEngine {
         let images = job
             .latents
             .iter()
-            .map(|latent| RgbImage {
+            .map(|latent| DecodedImage {
                 width: (w * VAE_SCALE) as u32,
                 height: (h * VAE_SCALE) as u32,
-                rgb: host::rgb_bytes(&self.decode_latent(latent, h, w)),
+                channels: 3,
+                pixels: host::rgb_bytes(&self.decode_latent(latent, h, w)),
             })
             .collect();
         self.job = Some(job);

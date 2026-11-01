@@ -90,7 +90,7 @@ pub const PREVIEW: [[f32; 4]; 3] = [
 pub const PREVIEW_BIAS: [f32; 3] = [0.5404, 0.5110, 0.4772];
 
 /// The preview of a pixel-major latent of `w` by `h` rows, at one eighth of the size of the image.
-pub fn preview(latent: &[f32], w: usize, h: usize) -> nagaya_abi::RgbImage {
+pub fn preview(latent: &[f32], w: usize, h: usize) -> nagaya_abi::DecodedImage {
     let rgb = latent
         .as_chunks::<4>()
         .0
@@ -102,9 +102,10 @@ pub fn preview(latent: &[f32], w: usize, h: usize) -> nagaya_abi::RgbImage {
             })
         })
         .collect();
-    nagaya_abi::RgbImage {
+    nagaya_abi::DecodedImage {
         width: w as u32,
         height: h as u32,
-        rgb,
+        channels: 3,
+        pixels: rgb,
     }
 }
