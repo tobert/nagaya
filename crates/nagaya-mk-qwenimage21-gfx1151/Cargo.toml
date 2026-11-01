@@ -21,3 +21,7 @@ tempfile = "3"
 [[test]]
 name = "hip_transformer"
 required-features = ["hip"]
+
+[[test]]
+name = "hip_vae"
+required-features = ["hip"]

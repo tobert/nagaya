@@ -12,3 +12,5 @@ pub mod sampler;
 pub mod encoder;
 #[cfg(feature = "hip")]
 pub mod transformer;
+#[cfg(feature = "hip")]
+pub mod vae;
