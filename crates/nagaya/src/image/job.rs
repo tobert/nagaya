@@ -3,12 +3,13 @@
 //! The first quantum (`embed`) begins the job in its slot. Each `step` quantum runs one step of every image, and the
 //! `step` after the last one decodes them. The body sends what each quantum made to the route.
 
-use std::sync::Arc;
 use std::sync::mpsc::{SyncSender, TrySendError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use nagaya_abi::{Engine, ImageJob, Kind, PassErrorKind, SlotId};
+use nagaya_abi::{Engine, ImageConditioning, ImageJob, ImagePrompt, Kind, PassErrorKind, SlotId};
 use nagaya_sched::JobState;
+use nagaya_store::{EngineFacts, Put, Reason, Store, Tier, conditioning};
 use nagaya_telemetry::EngineState;
 
 use super::{ImageError, Made};
@@ -23,6 +24,10 @@ pub(crate) struct Parts {
     pub out: SyncSender<Result<Made, ImageError>>,
     pub pool: Arc<SlotPool>,
     pub timeout: Duration,
+    /// The store, which keeps the conditionings of an engine that declares them (spec 6.16).
+    pub store: Option<Arc<Mutex<Store>>>,
+    /// The name of the engine in the profile, for the facts of a put.
+    pub engine_name: String,
 }
 
 /// Where the job is.
@@ -31,6 +36,87 @@ enum Phase {
     Begin,
     Steps,
     Decode,
+}
+
+/// The current time in milliseconds since the epoch, as the store records it.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock is after 1970")
+        .as_millis() as u64
+}
+
+/// The rows of the conditioning of `job` in the store, or none on a miss (spec 6.16). A store that fails gives none,
+/// with a log line: the encoder then runs, and the image is the same.
+fn cached_rows(store: &Mutex<Store>, declared: &ImageConditioning, job: &ImageJob) -> Option<Vec<u8>> {
+    let ImagePrompt::Tokens { ids, cut } = &job.prompt else {
+        return None;
+    };
+    let digest = match conditioning::digest_bytes(&declared.encoder_digest) {
+        Ok(digest) => digest,
+        Err(error) => {
+            tracing::error!("the engine declares a bad encoder digest, so no conditioning is cached: {error}");
+            return None;
+        }
+    };
+    let recipe = conditioning::recipe(&digest, ids);
+    let rows = ids.len().saturating_sub(*cut as usize);
+    let found = store.lock().expect("the store lock is poisoned").find(recipe, now_ms());
+    match found {
+        Ok(Some((id, snapshot))) => match conditioning::rows(&snapshot, declared.row_bytes as usize, rows) {
+            Ok(bytes) => {
+                tracing::debug!("a conditioning hit: entry {}", id.hex());
+                Some(bytes)
+            }
+            Err(error) => {
+                tracing::error!(
+                    "the conditioning entry {} has another form, and the encoder runs: {error}",
+                    id.hex()
+                );
+                None
+            }
+        },
+        Ok(None) => None,
+        Err(error) => {
+            tracing::error!("the lookup of a conditioning failed, and the encoder runs: {error}");
+            None
+        }
+    }
+}
+
+/// Put the conditioning that the encoder made for `job` in the host tier of the store (spec 6.16). A put that fails
+/// costs only a later encode, so it is a log line.
+fn put_rows(
+    store: &Mutex<Store>,
+    declared: &ImageConditioning,
+    job: &ImageJob,
+    rows: &[u8],
+    engine: &str,
+    limits: &nagaya_abi::Limits,
+) {
+    let ImagePrompt::Tokens { ids, cut } = &job.prompt else {
+        return;
+    };
+    let result = conditioning::digest_bytes(&declared.encoder_digest).and_then(|digest| {
+        let snapshot = conditioning::snapshot(rows, declared.row_bytes as usize, u64::from(*cut), ids.len() as u64)?;
+        store.lock().expect("the store lock is poisoned").put(Put {
+            snapshot: &snapshot,
+            recipe: conditioning::recipe(&digest, ids),
+            previous_recipe: None,
+            chains_from: None,
+            engine: EngineFacts::of(engine, limits),
+            identity: digest,
+            owner: 0,
+            tier: Tier::Host,
+            reason: Reason::PrefillDone,
+            sealed_recipe: None,
+            provenance: None,
+            now_ms: now_ms(),
+        })
+    });
+    if let Err(error) = result {
+        tracing::warn!("the store did not keep a conditioning of engine `{engine}`: {error}");
+    }
 }
 
 /// The body of an image job.
@@ -113,8 +199,24 @@ impl JobBody for ImageJobBody {
         let slot = self.parts.slot;
         match self.phase {
             Phase::Begin => {
+                let limits = engine.limits();
                 let image = engine.image().expect("checked above");
-                if let Err(error) = image.image_begin(slot, &self.parts.image) {
+                let declared = image.image_conditioning();
+                if let (Some(store), Some(declared)) = (&self.parts.store, &declared) {
+                    self.parts.image.conditioning = cached_rows(store, declared, &self.parts.image).map(Arc::new);
+                }
+                let begun = image.image_begin(slot, &self.parts.image);
+                if let (Ok(Some(rows)), Some(store), Some(declared)) = (&begun, &self.parts.store, &declared) {
+                    put_rows(
+                        store,
+                        declared,
+                        &self.parts.image,
+                        rows,
+                        &self.parts.engine_name,
+                        &limits,
+                    );
+                }
+                if let Err(error) = begun {
                     // A refusal is the client's fault: the job names a part the engine cannot take (spec 11.9a).
                     let error = match error.kind {
                         PassErrorKind::Refused => {

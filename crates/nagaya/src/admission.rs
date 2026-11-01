@@ -192,6 +192,11 @@ impl Registry {
         let mut registry = Self::new();
         #[cfg(feature = "hip")]
         registry.register(crate::mk::KIND, Box::new(crate::mk::MkFactory));
+        #[cfg(feature = "hip")]
+        registry.register(
+            crate::qwenimage21::KIND,
+            Box::new(crate::qwenimage21::QwenImage21Factory),
+        );
         #[cfg(feature = "xe")]
         registry.register(crate::gemma4::KIND, Box::new(crate::gemma4::Gemma4Factory));
         #[cfg(feature = "xe")]

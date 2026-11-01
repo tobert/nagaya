@@ -7,7 +7,13 @@ edition = "2024"
 # The fake engine is for tests only. A normal build leaves it out (AGENTS.md "Milestones" 10).
 fake = ["nagaya-abi/fake", "dep:nagaya-text-toy"]
 # The mk engine on the GPU. A normal build leaves it out, so a machine without mk builds and tests the workspace.
-hip = ["dep:nagaya-mk-qwen38-gfx1151", "nagaya-mk-qwen38-gfx1151/hip", "dep:nagaya-text-qwen38"]
+# The Qwen-Image engine on the same GPU (milestone 22). Its config parse, plan and family build with no feature.
+hip = [
+    "dep:nagaya-mk-qwen38-gfx1151",
+    "nagaya-mk-qwen38-gfx1151/hip",
+    "dep:nagaya-text-qwen38",
+    "nagaya-mk-qwenimage21-gfx1151/hip",
+]
 # The B70 engines: Gemma 4 on two cards, and Qwen3-TTS, SDXL and EmbeddingGemma 2 on one each. The config parse and
 # the family libraries build with no feature.
 xe = ["nagaya-mk-gemma4-bmg/xe", "nagaya-mk-qwen3tts-bmg/xe", "nagaya-mk-sdxl-bmg/xe", "nagaya-mk-embeddinggemma2-bmg/xe"]
@@ -28,6 +34,8 @@ nagaya-mk-qwen3tts-bmg = { version = "0.1.0", path = "../nagaya-mk-qwen3tts-bmg"
 nagaya-text-qwen3tts = { version = "0.1.0", path = "../nagaya-text-qwen3tts" }
 nagaya-mk-sdxl-bmg = { version = "0.1.0", path = "../nagaya-mk-sdxl-bmg" }
 nagaya-text-sdxl = { version = "0.1.0", path = "../nagaya-text-sdxl" }
+nagaya-mk-qwenimage21-gfx1151 = { version = "0.1.0", path = "../nagaya-mk-qwenimage21-gfx1151" }
+nagaya-text-qwenimage21 = { version = "0.1.0", path = "../nagaya-text-qwenimage21" }
 nagaya-mk-embeddinggemma2-bmg = { version = "0.1.0", path = "../nagaya-mk-embeddinggemma2-bmg" }
 nagaya-text-embeddinggemma2 = { version = "0.1.0", path = "../nagaya-text-embeddinggemma2" }
 nagaya-mk-qwen38-gfx1151 = { version = "0.1.0", path = "../nagaya-mk-qwen38-gfx1151", optional = true }

@@ -5,11 +5,12 @@
 //! its images to the route. An image job holds no state in the store. A job for an engine that is not `ready` ends
 //! at once (spec 3.3a).
 
-use std::sync::Arc;
 use std::sync::mpsc::{Receiver, sync_channel};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use nagaya_abi::{DecodedImage, ImageChunk, ImageJob, Kind, SlotId};
+use nagaya_store::Store;
 use nagaya_telemetry::EngineState;
 
 use crate::jobs::JobSpec;
@@ -22,10 +23,29 @@ mod job;
 /// next quantum; it drops nothing. The worker never waits on a client (spec 11.9a).
 const QUEUE: usize = 8;
 
-/// A family library of an image engine: it makes the chunks of a prompt (spec 11.3, 11.9).
+/// The form of the prompts of a family (engine-abi "Image", "Qwen-Image 2.1").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageForm {
+    /// SDXL: chunks of an A1111 prompt (spec 11.9a).
+    Chunks,
+    /// Qwen-Image: the ids of a template and the cut (spec 11.9c).
+    Tokens,
+}
+
+/// A family library of an image engine: it makes the prompt of the engine's form (spec 11.3, 11.9).
 pub trait ImageFamily: Send + Sync {
+    /// The form of the family's prompts.
+    fn form(&self) -> ImageForm {
+        ImageForm::Chunks
+    }
+
     /// The chunks of an A1111 prompt, and the count of its tokens. An error says what is wrong with the text.
     fn prompt(&self, text: &str) -> Result<(Vec<ImageChunk>, u64), String>;
+
+    /// The ids of the template of a prompt, and the cut: the tokens form. An error says what is wrong with the text.
+    fn tokens(&self, _text: &str) -> Result<(Vec<u32>, u32), String> {
+        Err("is not a prompt of tokens: this family makes chunks".to_owned())
+    }
 }
 
 /// The config of an image service.
@@ -115,6 +135,8 @@ pub struct ImageService {
     group: usize,
     engine: usize,
     pool: Arc<SlotPool>,
+    /// The store of the process, which keeps the conditionings of an engine that declares them (spec 6.16).
+    store: Option<Arc<Mutex<Store>>>,
 }
 
 impl ImageService {
@@ -134,6 +156,7 @@ impl ImageService {
         })?;
         Ok(Self {
             pool: Arc::new(SlotPool::new(config.slots)),
+            store: ports.store().cloned(),
             config,
             family,
             ports,
@@ -197,6 +220,8 @@ impl ImageService {
             out,
             pool: Arc::clone(&self.pool),
             timeout: self.config.timeout,
+            store: self.store.clone(),
+            engine_name: self.config.engine.clone(),
         });
         let spec = JobSpec {
             class: schedule.class,

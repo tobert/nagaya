@@ -27,6 +27,7 @@ pub mod probe;
 pub mod process;
 pub mod profile;
 pub mod qwen3tts;
+pub mod qwenimage21;
 pub mod reprofile;
 pub mod sdxl;
 pub mod serving;

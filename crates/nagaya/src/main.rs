@@ -316,7 +316,11 @@ fn serve(
                 &ports,
                 &config.store_dir,
             )?)
-            .with_images(nagaya::sdxl::image_services(&served_profile, &ports)?)
+            .with_images({
+                let mut services = nagaya::sdxl::image_services(&served_profile, &ports)?;
+                services.extend(nagaya::qwenimage21::image_services(&served_profile, &ports)?);
+                services
+            })
             .with_embeddings(nagaya::embeddinggemma2::embedding_services(&served_profile, &ports)?)
             .with_loads(ports.clone())
             .with_profile(profile_calls.clone()))

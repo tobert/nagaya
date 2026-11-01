@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 
 use super::{Council, RequestId, guarded};
 use crate::council::error::ServiceError;
-use crate::image::{ImageError, ImageService, Made};
+use crate::image::{ImageError, ImageForm, ImageService, Made};
 use nagaya_store::ContentId;
 use nagaya_store::objects::ObjectStore;
 use std::sync::Mutex;
@@ -160,6 +160,9 @@ pub fn check(
         )
     })?;
 
+    if service.family().form() == ImageForm::Tokens {
+        return check_tokens(service, model, request, prompt);
+    }
     let config = service.config();
     let mut negative = String::new();
     let (mut width, mut height, mut steps, mut count) = (1024u64, 1024u64, 30u64, 1u64);
@@ -262,24 +265,7 @@ pub fn check(
             format!("nothing ran: {width} by {height} is more than {MAX_PIXELS} pixels; give a smaller size"),
         ));
     }
-    let mut seed = None;
-    if let Some(sample) = &request.sample {
-        let others = [
-            ("top_p", sample.top_p.is_some()),
-            ("top_k", sample.top_k.is_some()),
-            ("min_p", sample.min_p.is_some()),
-        ];
-        if let Some((key, _)) = others.iter().find(|(_, given)| *given) {
-            return Err(invalid(
-                format!("sample.{key}"),
-                format!(
-                    "nothing ran: {} takes `sample.seed` only, not `sample.{key}`",
-                    model.model
-                ),
-            ));
-        }
-        seed = sample.seed;
-    }
+    let seed = seed_of(model, request)?;
     let family = service.family();
     let (prompt_chunks, tokens) = family
         .prompt(&prompt)
@@ -318,6 +304,146 @@ pub fn check(
         },
         prompt,
         negative,
+        tokens,
+        schedule: crate::council::Schedule::of(request.class, request.priority),
+    })
+}
+
+/// The seed of a request: `sample.seed`, or none. Any other member of `sample` is a 400 that names it.
+fn seed_of(model: &ServedModel, request: &GenerationRequest) -> Result<Option<u64>, ServiceError> {
+    let Some(sample) = &request.sample else {
+        return Ok(None);
+    };
+    let others = [
+        ("top_p", sample.top_p.is_some()),
+        ("top_k", sample.top_k.is_some()),
+        ("min_p", sample.min_p.is_some()),
+    ];
+    if let Some((key, _)) = others.iter().find(|(_, given)| *given) {
+        return Err(invalid(
+            format!("sample.{key}"),
+            format!(
+                "nothing ran: {} takes `sample.seed` only, not `sample.{key}`",
+                model.model
+            ),
+        ));
+    }
+    Ok(sample.seed)
+}
+
+/// The most pixels of one image of Qwen-Image (spec 11.9c): 8192 latent tokens.
+const MAX_TOKENS_PIXELS: u64 = 2_097_152;
+
+/// Check a generation of a served model whose family makes the tokens form, Qwen-Image (spec 11.9c), and make its
+/// job. A member that the engine cannot run is a 400 that names it.
+fn check_tokens(
+    service: &ImageService,
+    model: &ServedModel,
+    request: &GenerationRequest,
+    prompt: String,
+) -> Result<Checked, ServiceError> {
+    let (mut width, mut height, mut steps, mut count) = (1024u64, 1024u64, 40u64, 1u64);
+    if request.previews == Some(true) {
+        return Err(invalid(
+            "previews",
+            format!(
+                "nothing ran: {} gives no previews; its latent has 64 channels and no map to RGB yet",
+                model.model
+            ),
+        ));
+    }
+    let Some(output) = &request.output else {
+        unreachable!("check refused a request with no output");
+    };
+    for (key, value) in &output.options {
+        let at = format!("output.options.{key}");
+        match key.as_str() {
+            "negative" => {
+                if value.as_str() != Some("") {
+                    return Err(invalid(
+                        &at,
+                        format!(
+                            "nothing ran: {} takes no negative prompt; give \"\" or leave it out",
+                            model.model
+                        ),
+                    ));
+                }
+            }
+            "width" | "height" => {
+                let size = value
+                    .as_u64()
+                    .filter(|v| (512..=2048).contains(v) && v % 32 == 0)
+                    .ok_or_else(|| {
+                        invalid(
+                            &at,
+                            format!("nothing ran: {at} is {value}; give a multiple of 32 from 512 to 2048"),
+                        )
+                    })?;
+                if key == "width" {
+                    width = size;
+                } else {
+                    height = size;
+                }
+            }
+            "steps" => steps = integer(key, value, 1..=150)?,
+            "count" => count = integer(key, value, 1..=u64::from(MAX_COUNT))?,
+            "cfg" => {
+                if value.as_f64() != Some(1.0) {
+                    return Err(invalid(
+                        &at,
+                        format!("nothing ran: {at} is {value}; {} runs a cfg of 1.0 only", model.model),
+                    ));
+                }
+            }
+            "sampler" => {
+                if value.as_str() != Some("euler") {
+                    return Err(invalid(
+                        &at,
+                        format!("nothing ran: {at} is {value}; {} runs `euler` only", model.model),
+                    ));
+                }
+            }
+            _ => {
+                return Err(invalid(
+                    at,
+                    format!(
+                        "nothing ran: {} takes the output options `negative`, `width`, `height`, `steps`, `cfg`, \
+                         `sampler` and `count`, not `{key}`",
+                        model.model
+                    ),
+                ));
+            }
+        }
+    }
+    if width * height > MAX_TOKENS_PIXELS {
+        return Err(invalid(
+            "output.options.width",
+            format!("nothing ran: {width} by {height} is more than {MAX_TOKENS_PIXELS} pixels; give a smaller size"),
+        ));
+    }
+    let seed = seed_of(model, request)?;
+    let (ids, cut) = service
+        .family()
+        .tokens(&prompt)
+        .map_err(|message| invalid("messages", format!("nothing ran: the prompt {message}")))?;
+    let tokens = (ids.len() - cut as usize) as u64;
+    Ok(Checked {
+        job: ImageJob {
+            prompt: ImagePrompt::Tokens { ids, cut },
+            width: width as u32,
+            height: height as u32,
+            steps: steps as u32,
+            cfg: 1.0,
+            sampler: ImageSampler::FlowEuler,
+            spacing: ImageSpacing::Leading,
+            count: count as u32,
+            seed: seed.unwrap_or_else(chosen_seed),
+            previews: false,
+            loras: Vec::new(),
+            conditioning: None,
+        },
+        prompt,
+        negative: String::new(),
         tokens,
         schedule: crate::council::Schedule::of(request.class, request.priority),
     })
