@@ -6,6 +6,9 @@
 
 pub mod names;
 pub mod safetensors;
+pub mod sampler;
 
 #[cfg(feature = "hip")]
 pub mod encoder;
+#[cfg(feature = "hip")]
+pub mod transformer;

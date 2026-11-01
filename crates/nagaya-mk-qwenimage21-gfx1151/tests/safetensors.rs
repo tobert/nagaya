@@ -14,15 +14,20 @@ fn a_tensor_reads_back_with_its_metadata() {
     let a: Vec<u8> = (0..12).collect();
     let b: Vec<u8> = (100..108).collect();
     let bytes = write_bytes(
-        &[("a", "BF16", &[2, 3], &a), ("b", "F32", &[2], &b)],
+        &[
+            ("a", "BF16", &[2, 3], &a),
+            ("b", "F32", &[2], &b),
+            ("c", "U8", &[3], &[7, 8, 9]),
+        ],
         &[("request", "{\"x\": 1}")],
     );
     let (_dir, path) = file(&bytes);
     let st = Safetensors::open(&path).unwrap();
     assert_eq!(st.read("a", Dtype::Bf16, &[2, 3]).unwrap(), a);
     assert_eq!(st.read("b", Dtype::F32, &[2]).unwrap(), b);
+    assert_eq!(st.read("c", Dtype::U8, &[3]).unwrap(), [7, 8, 9]);
     assert_eq!(st.metadata()["request"], "{\"x\": 1}");
-    assert_eq!(st.tensors().len(), 2);
+    assert_eq!(st.tensors().len(), 3);
 }
 
 #[test]

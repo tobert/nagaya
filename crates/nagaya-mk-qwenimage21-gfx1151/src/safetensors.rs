@@ -17,6 +17,7 @@ pub enum Dtype {
     Bf16,
     F16,
     I64,
+    U8,
 }
 
 impl Dtype {
@@ -26,6 +27,7 @@ impl Dtype {
             "BF16" => Some(Dtype::Bf16),
             "F16" => Some(Dtype::F16),
             "I64" => Some(Dtype::I64),
+            "U8" => Some(Dtype::U8),
             _ => None,
         }
     }
@@ -35,6 +37,7 @@ impl Dtype {
             Dtype::F32 => 4,
             Dtype::Bf16 | Dtype::F16 => 2,
             Dtype::I64 => 8,
+            Dtype::U8 => 1,
         }
     }
 }
