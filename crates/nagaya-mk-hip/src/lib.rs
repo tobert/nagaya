@@ -9,6 +9,8 @@ pub mod plan;
 pub mod rope;
 
 #[cfg(feature = "hip")]
+pub mod attention;
+#[cfg(feature = "hip")]
 pub mod gemm;
 #[cfg(feature = "hip")]
 pub mod hip;

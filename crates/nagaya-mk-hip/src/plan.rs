@@ -113,6 +113,15 @@ impl GemmShape {
         )
     }
 
+    /// The index of each element of D that one call writes, over the whole batch.
+    pub fn output_elements(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..self.batch as usize).flat_map(move |b| {
+            (0..self.n as usize).flat_map(move |j| {
+                (0..self.m as usize).map(move |i| b * self.stride_c as usize + j * self.ldc as usize + i)
+            })
+        })
+    }
+
     fn line(&self, index: i32) -> String {
         format!(
             "m={} n={} k={} ta={} tb={} lda={} ldb={} ldc={} batch={} sa={} sb={} sc={} ab={} cd={} index={}",
@@ -420,6 +429,16 @@ mod tests {
         assert!(s.trans_a && !s.trans_b);
         assert_eq!((s.lda, s.ldb, s.ldc), (64, 64, 32));
         assert_eq!(s.elements(), (64 * 32, 64 * 10, 32 * 10));
+    }
+
+    #[test]
+    fn the_output_elements_skip_the_padding_of_each_column() {
+        let mut s = GemmShape::linear(2, 8, 3, DataType::Bf16);
+        s.ldc = 5;
+        s.batch = 2;
+        s.stride_c = 3;
+        let got: Vec<usize> = s.output_elements().collect();
+        assert_eq!(got, [0, 1, 2, 5, 6, 7, 3, 4, 5, 8, 9, 10]);
     }
 
     #[test]

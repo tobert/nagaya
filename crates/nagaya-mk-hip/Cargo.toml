@@ -26,3 +26,7 @@ required-features = ["hip"]
 [[test]]
 name = "hip_ops"
 required-features = ["hip"]
+
+[[test]]
+name = "hip_attention"
+required-features = ["hip"]

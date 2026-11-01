@@ -411,7 +411,13 @@ impl Gemms {
                 }
             }
             stream.synchronize()?;
-            if first.to_vec::<u8>()? == second.to_vec::<u8>()? {
+            // Only the elements of D count: a leading dimension past `m` leaves the rest of each column as it was.
+            let (one, two) = (first.to_vec::<u8>()?, second.to_vec::<u8>()?);
+            let size = shape.type_cd.bytes();
+            if shape
+                .output_elements()
+                .all(|e| one[e * size..(e + 1) * size] == two[e * size..(e + 1) * size])
+            {
                 return Ok(gemm);
             }
             tried.push(format!("{index} {name}: two runs gave other bits"));
