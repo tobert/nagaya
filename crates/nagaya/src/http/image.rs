@@ -343,15 +343,6 @@ fn check_tokens(
     prompt: String,
 ) -> Result<Checked, ServiceError> {
     let (mut width, mut height, mut steps, mut count) = (1024u64, 1024u64, 40u64, 1u64);
-    if request.previews == Some(true) {
-        return Err(invalid(
-            "previews",
-            format!(
-                "nothing ran: {} gives no previews; its latent has 64 channels and no map to RGB yet",
-                model.model
-            ),
-        ));
-    }
     let Some(output) = &request.output else {
         unreachable!("check refused a request with no output");
     };

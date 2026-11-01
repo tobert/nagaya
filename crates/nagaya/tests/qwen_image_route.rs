@@ -297,6 +297,26 @@ fn generate(council: &Arc<Council>, body: Value) -> (StatusCode, Value) {
     })
 }
 
+/// Send a request and give its status and its body as text, for a stream.
+fn generate_text(council: &Arc<Council>, body: Value) -> (StatusCode, String) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/council/v2/generations")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = router(Arc::clone(council)).oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8(bytes.to_vec()).unwrap())
+    })
+}
+
 fn request(prompt: &str, options: Value) -> Value {
     json!({"model": MODEL,
            "context": {"messages": [{"role": "user", "content": prompt}]},
@@ -387,4 +407,21 @@ fn the_second_request_of_a_prompt_takes_its_conditioning_from_the_store() {
         first["outputs"][0]["bytes"], second["outputs"][0]["bytes"],
         "{first} {second}"
     );
+}
+
+/// gogi's contract, "Steps and previews": a served model that makes no previews sends none, and that is not an error.
+#[test]
+fn a_stream_that_asks_for_previews_gets_its_steps_and_no_preview() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let mut body = request("a fox", json!({"width": 512, "height": 512, "steps": 3}));
+    body["stream"] = json!(true);
+    body["previews"] = json!(true);
+    let (status, text) = generate_text(&council, body);
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(text.matches("event: progress").count(), 3, "{text}");
+    assert!(!text.contains("event: preview"), "{text}");
+    assert!(text.contains("event: done"), "{text}");
+    let jobs = fixture.jobs.lock().unwrap();
+    assert!(!jobs.last().unwrap().previews, "the job asks the engine for no preview");
 }

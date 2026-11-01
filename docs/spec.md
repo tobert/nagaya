@@ -3682,7 +3682,9 @@ these rules give the ids of the processor that FUSAL trained with.
 
 - `clip_skip`, `spacing`, `loras`, `strength` and `mask_blur` are a 400 that names the member. An object part in a
   message is a 400 that names it, because the model lists no inputs.
-- `previews: true` is a 400 that names `previews`. The latent has 64 channels, and no map to RGB is fitted yet.
+- `previews: true` gives the `progress` events and no `preview`. The latent has 64 channels, and no map to RGB is
+  fitted yet. Decided by senpai 2026-11-01 (vetoable). Reason: gogi's contract lets a served model send no
+  preview, and that is not an error ("Steps and previews"). The first rule here was a 400, and gogi's suite failed it.
 - The sizes are multiples of 32. The VAE scales by 16, and the transformer reads the latent in groups of 2 by 2
   (`pipeline.py:396`, `:752-754`). 2,097,152 pixels is 8192 latent tokens, the `max_image_seq_len` of the scheduler.
 - The default of 40 steps is the default of `pipeline.py:519`. The FUSAL README asks for 30 to 40.
