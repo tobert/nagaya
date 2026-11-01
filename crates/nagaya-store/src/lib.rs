@@ -14,6 +14,7 @@ use safetensors::{Dtype as SafeDtype, SafeTensors};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+pub mod conditioning;
 pub mod objects;
 
 /// The alignment of the data section.
@@ -1605,6 +1606,31 @@ impl Store {
         self.check(id)?;
         self.touch(id, now_ms);
         Ok(self.index.entries.get(id))
+    }
+
+    /// The snapshot of a live entry with `recipe` and no parent, after its check (spec 6.16). A conditioning is such
+    /// an entry: one snapshot with no chain, which no engine restores. A miss is `None`. A tripwire refuses the
+    /// recipe. An entry that fails its check is skipped, as a lookup skips its chain (6.8). A hit counts as a use.
+    pub fn find(&mut self, recipe: RecipeId, now_ms: u64) -> Result<Option<(ContentId, Snapshot)>, StoreError> {
+        if self.index.refused.contains(&recipe) {
+            return Err(self.tripwire_error(recipe));
+        }
+        let ids: Vec<ContentId> = self
+            .index
+            .entries
+            .values()
+            .filter(|entry| entry.recipe == recipe && entry.state == EntryState::Live && entry.parent.is_none())
+            .map(|entry| entry.content_id)
+            .collect();
+        for id in ids {
+            if self.check(&id).is_err() {
+                continue;
+            }
+            let snapshot = self.read_snapshot(&id)?;
+            self.touch(&id, now_ms);
+            return Ok(Some((id, snapshot)));
+        }
+        Ok(None)
     }
 
     /// Look up a chain by recipe. A miss is an empty result, not an error.
