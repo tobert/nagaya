@@ -1,0 +1,24 @@
+[package]
+name = "nagaya-mk-hip"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+# Build the HIP ops and the hipBLASLt shim with ROCm, and link them. A build without it needs no ROCm.
+hip = []
+
+[[test]]
+name = "hip_gemm"
+required-features = ["hip"]
+
+[dependencies]
+
+[build-dependencies]
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[example]]
+name = "gemm_candidates"
+required-features = ["hip"]

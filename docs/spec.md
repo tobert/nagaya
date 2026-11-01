@@ -3889,7 +3889,10 @@ of the ontology holds such choices, and mk has none (ontology "Plan table").
 - The first GEMM of a new shape picks its algorithm. The engine takes the heuristic candidates of hipBLASLt in order.
   It keeps the first one that gives equal bits in two runs on the same inputs.
 - The engine also refuses a candidate that splits the sum over K with atomic adds, because its bits can change from
-  run to run. Step 4 of milestone 22 finds how hipBLASLt shows this, and writes it here.
+  run to run. Tensile writes the split into the kernel name. `GSUAMB` sums the parts of each buffer in order, with no
+  atomics. `GSUASB` adds the parts with atomics, and `SK<n>` with `n` other than 0 is stream-K. The engine refuses
+  the last two (`nagaya-mk-hip` `plan::refused`). hipBLASLt 1.2.2 on gfx1151 gave 128 candidates for 8 shapes of
+  Qwen-Image, each `GSUAMB` with `SK0` (milestone 22 step 4, 2026-11-01).
 - The table only grows: a shape keeps its pick. It is a file in the store directory, one for each lineage. The engine
   writes a pick to the file before a job uses it. Thus a restart keeps each pick.
 - Each image of a slot runs its own GEMMs, so `count` changes no shape. Thus image `i` of a request does not depend

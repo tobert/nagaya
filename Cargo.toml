@@ -5,6 +5,7 @@ members = [
     "crates/nagaya-ledger",
     "crates/nagaya-sched",
     "crates/nagaya-mk-qwen38-gfx1151",
+    "crates/nagaya-mk-hip",
     "crates/nagaya-mk-bmg",
     "crates/nagaya-mk-gemma4-bmg",
     "crates/nagaya-mk-qwen3tts-bmg",
