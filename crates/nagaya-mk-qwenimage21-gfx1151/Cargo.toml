@@ -35,3 +35,7 @@ required-features = ["hip"]
 [[test]]
 name = "hip_engine"
 required-features = ["hip"]
+
+[[example]]
+name = "measure"
+required-features = ["hip"]
