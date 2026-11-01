@@ -159,6 +159,25 @@ def encode(base, fusal, processor, scheduler):
     return enc, parts, embeds.detach().clone(), template
 
 
+def encode_bf16(base, fusal, ids):
+    """The Heretic encoder in bf16, as diffusepal runs it: the baseline of the conditioning gate (spec 8.3)."""
+    config = AutoConfig.from_pretrained(os.path.join(base, "text_encoder"))
+    te = Qwen3VLForConditionalGeneration._from_config(config, dtype=torch.bfloat16)
+    state = load_file(os.path.join(fusal, HERETIC))
+    te.load_state_dict({heretic_to_transformers(k): v for k, v in state.items()}, strict=True)
+    del state
+    gc.collect()
+    te = te.eval()
+    norm_in = {}
+    hook = te.model.language_model.norm.register_forward_hook(lambda m, a, o: norm_in.setdefault("x", a[0]))
+    te(input_ids=ids, attention_mask=torch.ones_like(ids))
+    hook.remove()
+    out = f32(norm_in["x"])
+    del te
+    gc.collect()
+    return out
+
+
 def denoise(base, fusal, processor, scheduler, embeds):
     """Run the transformer in f32 with the FUSAL LoRA. Return the steps tensors and the parts tensors."""
     transformer = QwenImage21Transformer2DModel.from_pretrained(
@@ -255,6 +274,39 @@ def denoise(base, fusal, processor, scheduler, embeds):
     parts["tr.step0_no_lora"] = base_out
     parts["tr.timestep0"] = timesteps[0]
 
+    # The baselines of the step and run gates (spec 8.3): the same transformer and LoRA in bf16, as diffusepal runs
+    # them. Each call replays from its f32 inputs rounded to bf16, and the whole run starts from the same latent.
+    transformer.to(torch.bfloat16)
+
+    def bf16(value):
+        return value.to(torch.bfloat16) if torch.is_tensor(value) and value.is_floating_point() else value
+
+    def replay16(i):
+        kwargs = {key: bf16(value) for key, value in calls[i]["kwargs"].items()}
+        kwargs["kv_cache"] = None
+        kwargs["kv_cache_mode"] = None
+        return f32(first_tensor(transformer(**kwargs))[:, -n:])
+
+    outs16 = torch.stack([replay16(i) for i in range(STEPS)])
+    latents16 = [f32(packed)]
+
+    def on_step16(p, i, t, kw):
+        latents16.append(f32(kw["latents"]))
+        return {}
+
+    pipe(
+        prompt_embeds=embeds.to(torch.bfloat16),
+        height=HEIGHT,
+        width=WIDTH,
+        num_inference_steps=STEPS,
+        latents=packed.to(torch.bfloat16),
+        output_type="latent",
+        callback_on_step_end=on_step16,
+        callback_on_step_end_tensor_inputs=["latents"],
+        use_kv_cache=True,
+    )
+    assert len(latents16) == STEPS + 1, f"{len(latents16)} bf16 latents"
+
     first = calls[0]["kwargs"]
     steps = {
         "start": f32(start),
@@ -264,6 +316,8 @@ def denoise(base, fusal, processor, scheduler, embeds):
         "latents": lat,
         "transformer_out": outs,
         "final_latent": lat[-1].clone(),
+        "transformer_out_bf16": outs16,
+        "latents_bf16": torch.stack(latents16),
     }
     config = scheduler.config
     mu = calculate_shift(
@@ -319,9 +373,17 @@ def decode(base, final_latent):
     processor = diffusers.image_processor.VaeImageProcessor(vae_scale_factor=16)
     pil = processor.postprocess(image[None], output_type="pil")[0]
     assert pil.mode == "RGBA" and rgba.numpy().tobytes() == pil.tobytes(), "the manual bytes are the pipeline's"
+
+    # The baseline of the decode gate (spec 8.3): the VAE in bf16, with the latent made in bf16 as the pipeline does.
+    vae.to(torch.bfloat16)
+    z16 = final_latent.to(torch.bfloat16).transpose(1, 2).reshape(1, 64, 1, h, w)
+    z16 = z16 * std.to(torch.bfloat16) + mean.to(torch.bfloat16)
+    image16 = vae.decode(z16, return_dict=False)[0][:, :, 0]
+    pil16 = processor.postprocess(image16, output_type="pil")[0]
+    rgba16 = torch.frombuffer(bytearray(pil16.tobytes()), dtype=torch.uint8).view(HEIGHT, WIDTH, 4).clone()
     del vae
     gc.collect()
-    return {"image": image, "rgba": rgba}, parts
+    return {"image": image, "rgba": rgba, "rgba_bf16": rgba16}, parts
 
 
 def main():
@@ -340,6 +402,8 @@ def main():
 
     enc, enc_parts, embeds, template = encode(args.model, args.fusal, processor, scheduler)
     print(f"encode done, {time.time() - began:.0f} s, {embeds.shape[1]} tokens after the cut")
+    enc["prompt_embeds_bf16"] = encode_bf16(args.model, args.fusal, enc["ids"])[:, int(enc["drop"][0]) :].contiguous()
+    print(f"bf16 encode done, {time.time() - began:.0f} s")
     steps, tr_parts, tr_meta = denoise(args.model, args.fusal, processor, scheduler, embeds)
     print(f"denoise done, {time.time() - began:.0f} s")
     images, vae_parts = decode(args.model, steps["final_latent"])
@@ -363,7 +427,7 @@ def main():
         "img_shapes": tr_meta["img_shapes"],
         "mu": tr_meta["mu"],
         "encoder_hidden_states_mask": tr_meta["encoder_hidden_states_mask"],
-        "precision": "bf16 weights, f32 compute, CPU",
+        "precision": "bf16 weights, f32 compute, CPU; the *_bf16 tensors are the bf16 baselines of the gates",
     }
     save_file(enc, os.path.join(args.out, "encode.safetensors"), metadata=meta)
     save_file({**steps, **images}, os.path.join(args.out, "steps.safetensors"), metadata=meta)

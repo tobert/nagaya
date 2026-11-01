@@ -23,6 +23,8 @@
 #   ids                  [1, T]         i64 ids of the whole template, with the system tokens
 #   drop                 [1]            the count of leading system tokens that the cut removes
 #   prompt_embeds        [1, L, 4096]   the input of the encoder's final norm, after the cut
+#   prompt_embeds_bf16   [1, L, 4096]   the same from the encoder in bf16, as diffusepal runs it: the baseline
+#                                       of the conditioning gate (spec 8.3)
 #
 # steps.safetensors: the oracle.
 #   start                [1, 1, 64, H, W]   the start noise
@@ -35,6 +37,11 @@
 #   final_latent         [1, N, 64]         the latent after the last step
 #   image                [4, 256, 256]      the VAE decode, RGBA in [-1, 1] after the VAE's clamp
 #   rgba                 [256, 256, 4]      u8 RGBA: round(clamp(image / 2 + 0.5, 0, 1) * 255)
+#   transformer_out_bf16 [4, 1, N, 64]      each call of the transformer again in bf16, from the f32 inputs
+#                                           rounded to bf16: the baseline of the step gate
+#   latents_bf16         [5, 1, N, 64]      the whole run in bf16 from the same start: the baseline of the run gate
+#   rgba_bf16            [256, 256, 4]      the decode of final_latent in bf16, through the pipeline's postprocess:
+#                                           the baseline of the decode gate
 #
 # parts.safetensors: references for kernel bring-up.
 #   enc.hidden0, enc.hidden1, enc.hidden18, enc.hidden36
