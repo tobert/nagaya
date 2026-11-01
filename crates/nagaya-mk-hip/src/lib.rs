@@ -16,6 +16,8 @@ pub mod gemm;
 pub mod hip;
 #[cfg(feature = "hip")]
 pub mod ops;
+#[cfg(feature = "hip")]
+pub mod vae;
 
 /// The build facts of the static library (spec 12.1): its SHA-256, the compiler, the HIP version and the hipBLASLt
 /// version. `None` in a build without `hip`.

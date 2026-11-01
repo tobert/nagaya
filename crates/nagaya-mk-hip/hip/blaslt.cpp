@@ -13,7 +13,7 @@
 extern "C" {
 
 // The shape of one GEMM: D = alpha * op(A) op(B) + beta * C, in column-major order.
-// The type codes are 0 for bf16 and 1 for f32. The epilogue is 0 for none.
+// The type codes are 0 for bf16 and 1 for f32. The epilogue is 0 for none, or 1 for a bf16 bias of m values.
 struct nmk_gemm_shape {
     int32_t m, n, k;
     int32_t trans_a, trans_b;
@@ -30,6 +30,7 @@ struct nmk_gemm {
     hipblasLtMatrixLayout_t a, b, c, d;
     hipblasLtMatmulAlgo_t algo;
     size_t workspace;
+    int32_t epilogue;
 };
 
 }  // extern "C"
@@ -67,7 +68,7 @@ int layout(hipblasLtMatrixLayout_t* out, hipDataType type, int64_t rows, int64_t
 
 // Make the descriptors of a shape. The caller destroys them.
 int describe(const nmk_gemm_shape* s, nmk_gemm* g) {
-    if (s->m <= 0 || s->n <= 0 || s->k <= 0 || s->batch <= 0 || s->epilogue != 0) {
+    if (s->m <= 0 || s->n <= 0 || s->k <= 0 || s->batch <= 0 || s->epilogue < 0 || s->epilogue > 1) {
         return kBadArgument;
     }
     hipblasOperation_t ta = s->trans_a ? HIPBLAS_OP_T : HIPBLAS_OP_N;
@@ -75,6 +76,14 @@ int describe(const nmk_gemm_shape* s, nmk_gemm* g) {
     NMK_TRY(hipblasLtMatmulDescCreate(&g->desc, HIPBLAS_COMPUTE_32F, HIP_R_32F));
     NMK_TRY(hipblasLtMatmulDescSetAttribute(g->desc, HIPBLASLT_MATMUL_DESC_TRANSA, &ta, sizeof(ta)));
     NMK_TRY(hipblasLtMatmulDescSetAttribute(g->desc, HIPBLASLT_MATMUL_DESC_TRANSB, &tb, sizeof(tb)));
+    g->epilogue = s->epilogue;
+    if (s->epilogue == 1) {
+        hipblasLtEpilogue_t epilogue = HIPBLASLT_EPILOGUE_BIAS;
+        hipDataType bias_type = HIP_R_16BF;
+        NMK_TRY(hipblasLtMatmulDescSetAttribute(g->desc, HIPBLASLT_MATMUL_DESC_EPILOGUE, &epilogue, sizeof(epilogue)));
+        NMK_TRY(hipblasLtMatmulDescSetAttribute(g->desc, HIPBLASLT_MATMUL_DESC_BIAS_DATA_TYPE, &bias_type,
+                                                sizeof(bias_type)));
+    }
     hipDataType ab = data_type(s->type_ab);
     hipDataType cd = data_type(s->type_cd);
     // op(A) is m by k, so A is stored k by m when it is transposed.
@@ -184,8 +193,25 @@ int nmk_gemm_prepare(void* handle, const nmk_gemm_shape* s, int32_t index, uint6
             g->algo = results[0].algo;
             float one = 1.0f;
             size_t bytes = max_workspace;
-            st = hipblaslt_ext::matmulIsAlgoSupported(static_cast<hipblasLtHandle_t>(handle), g->desc, &one, g->a,
-                                                      g->b, &one, g->c, g->d, g->algo, bytes);
+            // The check of a bias epilogue needs a bias pointer. Each run sets its own (nmk_gemm_run).
+            void* bias = nullptr;
+            if (g->epilogue == 1) {
+                if (hipMalloc(&bias, static_cast<size_t>(s->m) * 2) != hipSuccess) {
+                    st = HIPBLAS_STATUS_ALLOC_FAILED;
+                } else {
+                    st = hipblasLtMatmulDescSetAttribute(g->desc, HIPBLASLT_MATMUL_DESC_BIAS_POINTER, &bias,
+                                                         sizeof(bias));
+                }
+            }
+            if (st == HIPBLAS_STATUS_SUCCESS) {
+                st = hipblaslt_ext::matmulIsAlgoSupported(static_cast<hipblasLtHandle_t>(handle), g->desc, &one,
+                                                          g->a, g->b, &one, g->c, g->d, g->algo, bytes);
+            }
+            if (bias) {
+                void* none = nullptr;
+                hipblasLtMatmulDescSetAttribute(g->desc, HIPBLASLT_MATMUL_DESC_BIAS_POINTER, &none, sizeof(none));
+                if (hipFree(bias) != hipSuccess && st == HIPBLAS_STATUS_SUCCESS) st = HIPBLAS_STATUS_INTERNAL_ERROR;
+            }
             if (st != HIPBLAS_STATUS_SUCCESS) {
                 rc = status(st);
             } else if (bytes > max_workspace) {
@@ -205,10 +231,15 @@ int nmk_gemm_prepare(void* handle, const nmk_gemm_shape* s, int32_t index, uint6
     return 0;
 }
 
+// `bias` is the bias vector of a shape with the bias epilogue, and null for a shape without it.
 int nmk_gemm_run(void* handle, void* gemm, float alpha, const void* a, const void* b, float beta, const void* c,
-                 void* d, void* workspace, uint64_t workspace_bytes, void* stream) {
+                 void* d, const void* bias, void* workspace, uint64_t workspace_bytes, void* stream) {
     auto* g = static_cast<nmk_gemm*>(gemm);
     if (workspace_bytes < g->workspace) return kBadArgument;
+    if ((g->epilogue == 1) != (bias != nullptr)) return kBadArgument;
+    if (bias) {
+        NMK_TRY(hipblasLtMatmulDescSetAttribute(g->desc, HIPBLASLT_MATMUL_DESC_BIAS_POINTER, &bias, sizeof(bias)));
+    }
     NMK_TRY(hipblasLtMatmul(static_cast<hipblasLtHandle_t>(handle), g->desc, &alpha, a, g->a, b, g->b, &beta, c, g->c,
                             d, g->d, &g->algo, workspace, workspace_bytes, static_cast<hipStream_t>(stream)));
     return 0;

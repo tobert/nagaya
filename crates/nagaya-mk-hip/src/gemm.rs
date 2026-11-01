@@ -59,6 +59,7 @@ unsafe extern "C" {
         beta: f32,
         c: *const c_void,
         d: *mut c_void,
+        bias: *const c_void,
         workspace: *mut c_void,
         workspace_bytes: u64,
         stream: *mut c_void,
@@ -84,7 +85,7 @@ fn shim(shape: &GemmShape) -> ShimShape {
         stride_c: long(shape.stride_c),
         type_ab: shape.type_ab.code(),
         type_cd: shape.type_cd.code(),
-        epilogue: 0,
+        epilogue: i32::from(shape.bias),
     }
 }
 
@@ -228,12 +229,13 @@ impl Blaslt {
         })
     }
 
-    /// Run a prepared GEMM on `stream`: `D = alpha op(A) op(B) + beta C`.
+    /// Run a prepared GEMM on `stream`: `D = alpha op(A) op(B) + beta C`, plus the bias of each row of D when the
+    /// shape has a bias. `bias` is null for a shape without one.
     ///
     /// # Safety
     ///
     /// Each pointer must be device memory that holds the elements of the shape (`GemmShape::elements`). `c` and `d`
-    /// can be the same. The workspace must hold `gemm.workspace()` bytes.
+    /// can be the same. The bias holds `m` bf16 values. The workspace must hold `gemm.workspace()` bytes.
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn run(
         &self,
@@ -244,6 +246,7 @@ impl Blaslt {
         beta: f32,
         c: *const c_void,
         d: *mut c_void,
+        bias: *const c_void,
         workspace: &DeviceBuffer,
         stream: &Stream,
     ) -> Result<(), GemmError> {
@@ -258,6 +261,7 @@ impl Blaslt {
                 beta,
                 c,
                 d,
+                bias,
                 workspace.ptr(),
                 workspace.bytes() as u64,
                 stream.raw(),
@@ -374,6 +378,12 @@ impl Gemms {
         let a = DeviceBuffer::from_slice(&random_values(a_count, shape.type_ab, 1))?;
         let b = DeviceBuffer::from_slice(&random_values(b_count, shape.type_ab, 2))?;
         let c = DeviceBuffer::from_slice(&random_values(c_count, shape.type_cd, 3))?;
+        let bias = DeviceBuffer::from_slice(&random_values(shape.m as usize, DataType::Bf16, 4))?;
+        let bias = if shape.bias {
+            bias.ptr().cast_const()
+        } else {
+            std::ptr::null()
+        };
         let d_bytes = c_count * shape.type_cd.bytes();
         let first = DeviceBuffer::new(d_bytes)?;
         let second = DeviceBuffer::new(d_bytes)?;
@@ -405,6 +415,7 @@ impl Gemms {
                         0.5,
                         c.ptr(),
                         out.ptr(),
+                        bias,
                         &self.workspace,
                         stream,
                     )?;
@@ -425,7 +436,8 @@ impl Gemms {
         Err(GemmError::NoCandidate { shape: *shape, tried })
     }
 
-    /// Run `shape` on `stream`: `D = alpha op(A) op(B) + beta C`. It prepares the shape first when it must.
+    /// Run `shape` on `stream`: `D = alpha op(A) op(B) + beta C`. It prepares the shape first when it must. The shape
+    /// must have no bias.
     ///
     /// # Safety
     ///
@@ -442,9 +454,56 @@ impl Gemms {
         d: *mut c_void,
         stream: &Stream,
     ) -> Result<(), GemmError> {
+        assert!(!shape.bias, "{shape:?}: a shape with a bias runs with run_bias");
+        // SAFETY: the caller keeps the rules of the pointers.
+        unsafe { self.run_any(shape, alpha, a, b, beta, c, d, std::ptr::null(), stream) }
+    }
+
+    /// Run `shape`, a shape with a bias, on `stream`: `D = alpha op(A) op(B) + beta C + bias`.
+    ///
+    /// # Safety
+    ///
+    /// As for [`Gemms::run`]. The bias holds `m` bf16 values.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn run_bias(
+        &mut self,
+        shape: &GemmShape,
+        alpha: f32,
+        a: *const c_void,
+        b: *const c_void,
+        beta: f32,
+        c: *const c_void,
+        d: *mut c_void,
+        bias: *const c_void,
+        stream: &Stream,
+    ) -> Result<(), GemmError> {
+        assert!(
+            shape.bias && !bias.is_null(),
+            "{shape:?}: run_bias needs a shape with a bias, and the bias"
+        );
+        // SAFETY: the caller keeps the rules of the pointers.
+        unsafe { self.run_any(shape, alpha, a, b, beta, c, d, bias, stream) }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn run_any(
+        &mut self,
+        shape: &GemmShape,
+        alpha: f32,
+        a: *const c_void,
+        b: *const c_void,
+        beta: f32,
+        c: *const c_void,
+        d: *mut c_void,
+        bias: *const c_void,
+        stream: &Stream,
+    ) -> Result<(), GemmError> {
         self.prepare(shape, stream)?;
         let gemm = &self.prepared[shape];
         // SAFETY: the caller keeps the rules of the pointers, and the workspace holds the bytes of the pick.
-        unsafe { self.blaslt.run(gemm, alpha, a, b, beta, c, d, &self.workspace, stream) }
+        unsafe {
+            self.blaslt
+                .run(gemm, alpha, a, b, beta, c, d, bias, &self.workspace, stream)
+        }
     }
 }

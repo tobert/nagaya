@@ -30,3 +30,7 @@ required-features = ["hip"]
 [[test]]
 name = "hip_attention"
 required-features = ["hip"]
+
+[[test]]
+name = "hip_vae"
+required-features = ["hip"]

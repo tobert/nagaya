@@ -131,6 +131,7 @@ impl Attention {
                     stride_c: if n > 1 { matrix as u64 } else { 0 },
                     type_ab: DataType::Bf16,
                     type_cd: DataType::F32,
+                    bias: false,
                 };
                 // SAFETY: the caller gives the rows of the shape; the scratch holds `n` score matrices.
                 unsafe {
@@ -173,6 +174,7 @@ impl Attention {
                     stride_c: if n > 1 { d as u64 } else { 0 },
                     type_ab: DataType::Bf16,
                     type_cd: DataType::Bf16,
+                    bias: false,
                 };
                 let o = at(out, h0 * d).cast_mut();
                 // SAFETY: the caller gives the rows of the shape; the probabilities hold `n` matrices.

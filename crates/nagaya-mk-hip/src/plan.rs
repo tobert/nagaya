@@ -71,6 +71,8 @@ pub struct GemmShape {
     pub stride_c: u64,
     pub type_ab: DataType,
     pub type_cd: DataType,
+    /// True when the epilogue adds a bf16 bias of `m` values to each column of D.
+    pub bias: bool,
 }
 
 impl GemmShape {
@@ -93,7 +95,14 @@ impl GemmShape {
             stride_c: 0,
             type_ab: DataType::Bf16,
             type_cd,
+            bias: false,
         }
+    }
+
+    /// The same shape with a bias in its epilogue.
+    pub fn with_bias(mut self) -> GemmShape {
+        self.bias = true;
+        self
     }
 
     /// The elements of A, B and C (also D) that one call reads or writes, over the whole batch.
@@ -124,7 +133,7 @@ impl GemmShape {
 
     fn line(&self, index: i32) -> String {
         format!(
-            "m={} n={} k={} ta={} tb={} lda={} ldb={} ldc={} batch={} sa={} sb={} sc={} ab={} cd={} index={}",
+            "m={} n={} k={} ta={} tb={} lda={} ldb={} ldc={} batch={} sa={} sb={} sc={} ab={} cd={} bias={} index={}",
             self.m,
             self.n,
             self.k,
@@ -139,6 +148,7 @@ impl GemmShape {
             self.stride_c,
             self.type_ab.name(),
             self.type_cd.name(),
+            u8::from(self.bias),
             index
         )
     }
@@ -151,7 +161,7 @@ impl GemmShape {
                 return None;
             }
         }
-        if fields.len() != 15 {
+        if fields.len() != 16 {
             return None;
         }
         let int = |key: &str| fields.get(key)?.parse::<u64>().ok();
@@ -175,6 +185,7 @@ impl GemmShape {
             stride_c: int("sc")?,
             type_ab: DataType::parse(fields.get("ab")?)?,
             type_cd: DataType::parse(fields.get("cd")?)?,
+            bias: flag("bias")?,
         };
         let index = fields.get("index")?.parse::<i32>().ok()?;
         Some((shape, index))
@@ -409,6 +420,9 @@ mod tests {
         s.stride_c = 11;
         s.type_cd = DataType::F32;
         assert_eq!(GemmShape::parse(&s.line(-5)), Some((s, -5)));
+        let b = s.with_bias();
+        assert_eq!(GemmShape::parse(&b.line(1)), Some((b, 1)));
+        assert_ne!(b.line(1), s.line(1));
         assert_eq!(GemmShape::parse(&s.line(12)), Some((s, 12)));
     }
 

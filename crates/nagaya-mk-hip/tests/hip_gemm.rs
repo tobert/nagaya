@@ -166,6 +166,7 @@ fn a_strided_batch_runs_each_matrix_on_its_own_inputs() {
         stride_c: (m * n) as u64,
         type_ab: DataType::Bf16,
         type_cd: DataType::F32,
+        bias: false,
     };
     let stream = Stream::new().unwrap();
     let mut gemms = gemms();
@@ -224,4 +225,46 @@ fn a_pick_comes_from_the_heuristic_candidates_and_the_name_rule_allows_it() {
     );
     let name = gemms.blaslt().kernel_name(index).unwrap();
     assert_eq!(nagaya_mk_hip::plan::refused(&name), None, "{name}");
+}
+
+#[test]
+fn a_bias_adds_one_value_to_each_output_column() {
+    let (rows, inputs, outputs) = (21, 96, 40);
+    let mut rng = Rng(23);
+    let x = rng.vec(rows * inputs);
+    let w = rng.vec(outputs * inputs);
+    let bias = rng.vec(outputs);
+    let residual = rng.vec(rows * outputs);
+    let stream = Stream::new().unwrap();
+    let mut gemms = gemms();
+    let shape = GemmShape::linear(rows as u32, inputs as u32, outputs as u32, DataType::Bf16).with_bias();
+    let xd = DeviceBuffer::from_slice(&bits(&x)).unwrap();
+    let wd = DeviceBuffer::from_slice(&bits(&w)).unwrap();
+    let bd = DeviceBuffer::from_slice(&bits(&bias)).unwrap();
+    let yd = DeviceBuffer::from_slice(&bits(&residual)).unwrap();
+    // SAFETY: the buffers hold the elements of the shape and the bias, and C and D are the same buffer.
+    unsafe {
+        gemms
+            .run_bias(
+                &shape,
+                1.0,
+                wd.ptr(),
+                xd.ptr(),
+                1.0,
+                yd.ptr(),
+                yd.ptr(),
+                bd.ptr(),
+                &stream,
+            )
+            .unwrap();
+    }
+    stream.synchronize().unwrap();
+    let got = values(&yd.to_vec::<u16>().unwrap());
+    let want: Vec<f32> = linear_cpu(&x, &w, rows, inputs, outputs)
+        .iter()
+        .enumerate()
+        .map(|(i, p)| p + bias[i % outputs] + residual[i])
+        .collect();
+    let error = rel(&got, &want);
+    assert!(error < 4e-3, "relative error {error}");
 }
