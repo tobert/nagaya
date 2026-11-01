@@ -1348,6 +1348,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nagaya-text-qwenimage21"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "sha2",
+ "tokenizers",
+]
+
+[[package]]
 name = "nagaya-text-sdxl"
 version = "0.1.0"
 dependencies = [

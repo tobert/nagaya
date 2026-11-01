@@ -16,6 +16,7 @@ members = [
     "crates/nagaya-text-qwen3tts",
     "crates/nagaya-text-sdxl",
     "crates/nagaya-text-embeddinggemma2",
+    "crates/nagaya-text-qwenimage21",
     "crates/nagaya-council",
     "crates/nagaya-text-toy",
     "crates/nagaya-telemetry",
