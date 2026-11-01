@@ -7,7 +7,7 @@
 #   QWENIMAGE21_MODEL_DIR=<Qwen-Image-2.1> QWENIMAGE21_FUSAL_DIR=<Qwen-Image-2.1-Anime-Fusal> \
 #       tools/qwenimage21_golden.sh
 #
-# REF_PYTHON overrides the python (default ~/src/diffusepal/.venv/bin/python). The files go to
+# REF_PYTHON overrides the python (default ~/.venvs/nagaya-qwenimage21-ref/bin/python). The files go to
 # $QWENIMAGE21_GOLDEN_DIR, or to target/qwenimage21-golden. Do not commit them. Each file carries the request, the
 # template, the scheduler config, mu, the image shapes and the versions in its safetensors metadata.
 #
@@ -60,7 +60,7 @@
 # rgba.npy: the same RGBA bytes, for a look with any viewer of numpy files.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-PY="${REF_PYTHON:-$HOME/src/diffusepal/.venv/bin/python}"
+PY="${REF_PYTHON:-$HOME/.venvs/nagaya-qwenimage21-ref/bin/python}"
 MODEL="${QWENIMAGE21_MODEL_DIR:?set QWENIMAGE21_MODEL_DIR to the Qwen-Image-2.1 directory}"
 FUSAL="${QWENIMAGE21_FUSAL_DIR:?set QWENIMAGE21_FUSAL_DIR to the Qwen-Image-2.1-Anime-Fusal directory}"
 OUT="${QWENIMAGE21_GOLDEN_DIR:-target/qwenimage21-golden}"

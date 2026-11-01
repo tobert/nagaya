@@ -437,9 +437,10 @@ and milestone 23 is next.
     - **Service:** senpai may stop and start `nagaya.service` on gfx1151host for fixtures and gates (Amy: "Yes, at will").
       Write each stop and start in `signoff.md`. End each session with `nagaya.service` running.
     - **Weights:** tests read the base model's directory from `QWENIMAGE21_MODEL_DIR`, and FUSAL's directory from
-      `QWENIMAGE21_FUSAL_DIR`. Do not put the paths in code. Today both are under `~/src/diffusepal/models/`.
-    - **Reference:** diffusepal's venv has diffusers 0.41.0.dev0 with `QwenImage21Pipeline`. Run it with `-I`, on the
-      CPU only, with `nagaya.service` stopped. Its weights need 31 GiB of RAM.
+      `QWENIMAGE21_FUSAL_DIR`. Do not put the paths in code. Both are under `/tank/ml/models/qwen-image-2.1/`.
+    - **Reference:** `~/.venvs/nagaya-qwenimage21-ref` has diffusers 0.41.0.dev0 with `QwenImage21Pipeline`. It is a
+      copy of diffusepal's venv, without diffusepal. Run it with `-I`, on the CPU only, with `nagaya.service`
+      stopped. Its weights need 31 GiB of RAM.
     - **Decisions of 2026-11-01**, by interview. Senpai decided the other notes of step 1 (vetoable).
       - A step never splits into smaller quanta.
       - The client writes the trigger phrase, and the PNG stays RGBA.
@@ -478,9 +479,9 @@ and milestone 23 is next.
     and 12 skip.
 
     Amy decides the Proposed notes of spec 11.1 ("A text engine on demand") and of `docs/deploy.md` ("Two engines on
-    gfx1151host"). The notes "Decided by senpai" are vetoable: spec 11.9c "The attention" and the previews of 11.9c. Move
-    the weights out of `~/src/diffusepal/models` before the retirement, because the profile reads them there. The
-    commits:
+    gfx1151host"). The notes "Decided by senpai" are vetoable: spec 11.9c "The attention" and the previews of 11.9c. The
+    nagaya needs nothing in `~/src/diffusepal` now: the weights and the reference venv have copies (`b1694e6` and
+    after). The commits:
 
     - step 1, the spec: `74034db` to `ca7c6e1`, the merge `9a559eb`, and Amy's decisions `65246fe`;
     - step 2, the oracle: `ae47b39`, and the bf16 baselines `7021537`;
@@ -611,9 +612,9 @@ get ran sometimes, perhaps just a bump in our AGENTS.md"
   `signoff.md` gives the path. `tools/embeddinggemma2_golden.sh` writes the oracle into
   `target/embeddinggemma2-golden` or `EMBEDDINGGEMMA2_GOLDEN_DIR`, with no GPU job. The family tests read it too,
   and an absent oracle file skips the test, as an absent model does.
-- gfx1151host holds Qwen-Image 2.1 and FUSAL under `~/src/diffusepal/models/`. The tests of `nagaya-text-qwenimage21` read
-  the base folder from `QWENIMAGE21_MODEL_DIR`. The `hip` tests of `nagaya-mk-qwenimage21-gfx1151` read FUSAL's folder
-  from `QWENIMAGE21_FUSAL_DIR`, and the base folder too. Neither variable has a default.
+- gfx1151host holds Qwen-Image 2.1 and FUSAL under `/tank/ml/models/qwen-image-2.1/`. The tests of `nagaya-text-qwenimage21`
+  read the base folder from `QWENIMAGE21_MODEL_DIR`. The `hip` tests of `nagaya-mk-qwenimage21-gfx1151` read FUSAL's
+  folder from `QWENIMAGE21_FUSAL_DIR`, and the base folder too. Neither variable has a default.
   `tools/qwenimage21_golden.sh` writes the oracle into `target/qwenimage21-golden` or `QWENIMAGE21_GOLDEN_DIR`, with
   `nagaya.service` stopped. An absent oracle file skips a test, as an absent model does.
 - The report of a check names how many tests skipped for a missing model.

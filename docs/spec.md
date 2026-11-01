@@ -1642,7 +1642,7 @@ eager attention. Its venv is `~/.venvs/embed-ref`, and its header names each ver
 **The Qwen-Image oracle.** Decided by senpai 2026-11-01 (vetoable). Proposed by Claude Opus 5.5, 2026-10-31, for
 milestone 22. Reason: this follows the oracles of SDXL and EmbeddingGemma 2, with one gate for each stage of the engine.
 
-- `tools/qwenimage21_golden.sh` runs diffusers 0.41.0.dev0 in the venv of `~/src/diffusepal`, on the CPU only. It
+- `tools/qwenimage21_golden.sh` runs diffusers 0.41.0.dev0 in `~/.venvs/nagaya-qwenimage21-ref`, on the CPU only. It
   computes in f32 from the bf16 weights, and loads one model at a time. Its peak is about 33 GiB of RAM.
 - Run it with `nagaya.service` stopped and no GPU job. It writes `encode.safetensors`, `steps.safetensors` and
   `parts.safetensors` into `target/qwenimage21-golden` or `QWENIMAGE21_GOLDEN_DIR`. No file is committed.
@@ -3607,7 +3607,8 @@ thinking about adding qwen-image to the nagaya. we'd use nagaya instead of diffu
   Heretic encoder keeps its Apache 2.0 license (FUSAL `text_encoders/ORIGIN.md`).
 
 The notes below fill the choices that these rules leave open. Each one follows diffusers 0.41.0.dev0 in the venv of
-`~/src/diffusepal`, unless it says otherwise. `pipeline.py` is its `pipelines/qwenimage21/pipeline_qwenimage21.py`,
+`~/src/diffusepal`, unless it says otherwise. Since 2026-11-01, a copy of that venv is
+`~/.venvs/nagaya-qwenimage21-ref`. `pipeline.py` is its `pipelines/qwenimage21/pipeline_qwenimage21.py`,
 and `transformer.py` is its `models/transformers/transformer_qwenimage21.py`. `vae.py` is its
 `models/autoencoders/autoencoder_kl_qwenimage21.py`, and `scheduler.py` is its
 `schedulers/scheduling_flow_match_euler_discrete.py`.

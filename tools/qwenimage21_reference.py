@@ -3,7 +3,8 @@
 
 Run it through tools/qwenimage21_golden.sh. The tensor names, shapes and meanings are in that script.
 
-The script uses diffusers in diffusepal's venv, on the CPU only. It loads the bf16 weights as float32, one model at a
+The script uses diffusers in ~/.venvs/nagaya-qwenimage21-ref (a copy of diffusepal's venv),
+on the CPU only. It loads the bf16 weights as float32, one model at a
 time: the text encoder, then the transformer, then the VAE. Each model is freed before the next one loads, so the peak
 is about 33 GiB of RAM. The pipeline itself runs each stage: the text encoder through `_get_qwen_prompt_embeds`, and
 the transformer and the scheduler through `__call__` with the recorded `prompt_embeds`.

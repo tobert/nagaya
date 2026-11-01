@@ -37,9 +37,9 @@ share = 1
 pin_identity = false
 
 [engines.config]
-model = "/home/atobey/src/diffusepal/models/Qwen-Image-2.1"
-encoder = "/home/atobey/src/diffusepal/models/Qwen-Image-2.1-Anime-Fusal/text_encoders/qwen3-vl-8b-heretic-1.3.0_bf16.safetensors"
-lora = "/home/atobey/src/diffusepal/models/Qwen-Image-2.1-Anime-Fusal/loras/fusal-qwen-image-2.1-style-hires-exact-r56.safetensors"
+model = "/tank/ml/models/qwen-image-2.1/Qwen-Image-2.1"
+encoder = "/tank/ml/models/qwen-image-2.1/Qwen-Image-2.1-Anime-Fusal/text_encoders/qwen3-vl-8b-heretic-1.3.0_bf16.safetensors"
+lora = "/tank/ml/models/qwen-image-2.1/Qwen-Image-2.1-Anime-Fusal/loras/fusal-qwen-image-2.1-style-hires-exact-r56.safetensors"
 plan_dir = "/home/atobey/.local/share/nagaya/store"
 
 # gfx1151host has one pool for device(0) and host (spec 4.1): the unified memory.

@@ -3,10 +3,11 @@
 
 For each fixed prompt the fixture holds the text-to-image template, the ids that the reference processor gives for
 it, and the count of system tokens that the pipeline cuts from the encoder output. The reference is
-QwenImage21Pipeline of diffusers in diffusepal's venv. The tool reads only the processor files, so it needs no GPU
+QwenImage21Pipeline of diffusers
+in ~/.venvs/nagaya-qwenimage21-ref. The tool reads only the processor files, so it needs no GPU
 and little memory:
 
-  PYTHONDONTWRITEBYTECODE=1 ~/src/diffusepal/.venv/bin/python -I tools/qwenimage21_family_fixture.py \
+  PYTHONDONTWRITEBYTECODE=1 ~/.venvs/nagaya-qwenimage21-ref/bin/python -I tools/qwenimage21_family_fixture.py \
       --model "$QWENIMAGE21_MODEL_DIR" --out crates/nagaya-text-qwenimage21/tests/fixtures
 """
 
