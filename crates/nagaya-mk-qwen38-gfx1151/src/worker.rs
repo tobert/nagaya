@@ -170,6 +170,16 @@ struct ThreadState {
     next_id: u64,
     fast_qmm: bool,
     tiles: bool,
+    /// What a load after a close needs (engine-abi "close"): the shards, the spot digest and the arena size of the
+    /// first load. A load whose shards differ is refused, because the identity names the first ones. A stub has none.
+    reload: Option<Reload>,
+}
+
+/// The facts of the first load, which a later load must give again.
+struct Reload {
+    paths: MkPaths,
+    digest: String,
+    arena_bytes: u64,
 }
 
 /// One context that a handle owns.
@@ -272,6 +282,14 @@ enum Command {
         n: u32,
         reply: mpsc::Sender<u64>,
     },
+    /// Load the weights again after an unload. A loaded engine does nothing.
+    Load {
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    /// Free the weights: the arena, the shard maps, the PLE table and the weight table. Every context must be free.
+    Unload {
+        reply: mpsc::Sender<Result<(), String>>,
+    },
 }
 
 /// The handle's side of the worker: a channel and the engine's declared facts.
@@ -279,6 +297,8 @@ pub(crate) struct Worker {
     sender: Mutex<mpsc::Sender<Command>>,
     spec: Spec,
     paths: MkPaths,
+    /// The handles and holds that use the weights. The last one to go unloads them; the first one loads them again.
+    handles: Mutex<usize>,
 }
 
 impl Worker {
@@ -299,6 +319,30 @@ impl Worker {
         sender.send(make(reply)).ok()?;
         drop(sender);
         answer.recv().ok()
+    }
+
+    /// Count one more user of the weights. The first user after an unload loads them again.
+    pub fn acquire(&self) -> Result<(), MkError> {
+        let mut handles = self.handles.lock().expect("the lock of the mk handles is poisoned");
+        if *handles == 0 {
+            self.ask(|reply| Command::Load { reply })
+                .unwrap_or_else(|| Err("the mk worker stopped".to_owned()))
+                .map_err(MkError::from)?;
+        }
+        *handles += 1;
+        Ok(())
+    }
+
+    /// Count one user less. The last user unloads the weights (engine-abi "close"). An unload that fails is a defect:
+    /// the ledger would count memory as free that mk still holds, so the program stops.
+    pub fn release(&self) {
+        let mut handles = self.handles.lock().expect("the lock of the mk handles is poisoned");
+        *handles = handles.checked_sub(1).expect("an mk release without an acquire");
+        if *handles == 0
+            && let Some(Err(error)) = self.ask(|reply| Command::Unload { reply })
+        {
+            panic!("mk could not free its weights: {error}");
+        }
     }
 
     /// Create a context pool for one handle. The ids follow the order of the classes.
@@ -447,7 +491,35 @@ pub(crate) fn start(paths: MkPaths) -> Result<Arc<Worker>, MkError> {
         sender: Mutex::new(sender),
         spec,
         paths,
+        handles: Mutex::new(0),
     }))
+}
+
+/// Read the shards, plan the arena and fill it (milestone 15 step 6): the shard maps, the PLE table, the arena and the
+/// weight table.
+fn load_weights(
+    binding: &Binding,
+    paths: &MkPaths,
+    tiles: bool,
+) -> Result<(gguf::Model, PleTable, Arena, Weights), MkError> {
+    let model = gguf::Model::open(&paths.shards)?;
+    let ple = PleTable::new(&model)?;
+    let (planned, arena_bytes) = arena::plan(model.tensors(), tiles)?;
+    let arena = unsafe { arena::create(binding, &model, &planned, arena_bytes, tiles) }?;
+    let tensors = planned
+        .iter()
+        .map(|p| {
+            let tensor = pass::Tensor {
+                kind: p.kind,
+                ne: p.ne,
+                row_bytes: p.row_bytes,
+                d: arena.tensor(p),
+            };
+            (p.name.clone(), tensor)
+        })
+        .collect();
+    let weights = Weights::new(&tensors)?;
+    Ok((model, ple, arena, weights))
 }
 
 /// Read `MK_FAST_QMM` as mk reads it: unset or 1 is fast, 0 is exact, and any other value stops mk.
@@ -651,24 +723,8 @@ impl ThreadState {
         // The tokenizer is in the first shard. Hash it before the weights load, so a shard with no tokenizer fails fast.
         let text = gguf::text_keys(&paths.shards[0])?;
 
-        // The Rust reader parses the shards, and the host plans and fills the weight arena (milestone 15 step 6).
-        let model = gguf::Model::open(&paths.shards)?;
-        let ple = PleTable::new(&model)?;
-        let (planned, arena_bytes) = arena::plan(model.tensors(), tiles)?;
-        let arena = unsafe { arena::create(&binding, &model, &planned, arena_bytes, tiles) }?;
-        let tensors = planned
-            .iter()
-            .map(|p| {
-                let tensor = pass::Tensor {
-                    kind: p.kind,
-                    ne: p.ne,
-                    row_bytes: p.row_bytes,
-                    d: arena.tensor(p),
-                };
-                (p.name.clone(), tensor)
-            })
-            .collect();
-        let weights = Weights::new(&tensors)?;
+        let (model, ple, arena, weights) = load_weights(&binding, paths, tiles)?;
+        let arena_bytes = arena.bytes;
         let deadline = watchdog_deadline(env_text("MK_WATCHDOG_DEADLINE_S").as_deref())?;
         let engine = unsafe { (binding.engine_open)(deadline) };
         if engine.is_null() {
@@ -689,6 +745,11 @@ impl ThreadState {
             next_id: 0,
             fast_qmm,
             tiles,
+            reload: Some(Reload {
+                paths: paths.clone(),
+                digest: digest.clone(),
+                arena_bytes,
+            }),
         };
         // mk has no call for the pool's size. Measure it here, before a caller's pass, so a larger pool is an open
         // error and the ledger's term is what the engine holds.
@@ -705,6 +766,56 @@ impl ThreadState {
                 pass_scratch,
             },
         ))
+    }
+
+    /// Load the weights again after an unload, from the same shards. A loaded engine does nothing.
+    fn load_again(&mut self) -> Result<(), String> {
+        if self.weights.is_some() {
+            return Ok(());
+        }
+        let Some(reload) = &self.reload else {
+            return Err("this engine has no shards to load".to_owned());
+        };
+        let headers = reload.paths.validate().map_err(|error| error.to_string())?;
+        check_memory(headers.iter().map(|header| header.size).sum()).map_err(|error| error.to_string())?;
+        let digest = gguf::spot_digest(&reload.paths.shards).map_err(|error| error.to_string())?;
+        if digest != reload.digest {
+            return Err(
+                "the shards changed since the first load, and the identity names the first ones; restart the \
+                        process"
+                    .to_owned(),
+            );
+        }
+        let (model, ple, arena, weights) =
+            load_weights(&self.binding, &reload.paths, self.tiles).map_err(|error| error.to_string())?;
+        if arena.bytes != reload.arena_bytes {
+            return Err(format!(
+                "the arena of the load has {} bytes, and the first load had {}; restart the process",
+                arena.bytes, reload.arena_bytes
+            ));
+        }
+        self.model = Some(model);
+        self.ple = Some(ple);
+        self._arena = Some(arena);
+        self.weights = Some(weights);
+        Ok(())
+    }
+
+    /// Free the weights (engine-abi "close"). The weight table and the PLE table point into the arena and the shard
+    /// maps, so they go first. The pass host, the C++ engine and the HIP runtime stay (Amy, 2026-11-01: "mk can stay
+    /// loaded and use some memory").
+    fn unload(&mut self) -> Result<(), String> {
+        if !self.contexts.is_empty() {
+            return Err(format!(
+                "{} contexts are open; free them before the weights",
+                self.contexts.len()
+            ));
+        }
+        self.weights = None;
+        self.ple = None;
+        self._arena = None;
+        self.model = None;
+        Ok(())
     }
 
     /// The free device memory in bytes, on the worker thread's current device.
@@ -828,6 +939,12 @@ impl ThreadState {
             }
             Command::PartBytes { part, n, reply } => {
                 let _ = reply.send(unsafe { (self.binding.part_bytes)(part, n) });
+            }
+            Command::Load { reply } => {
+                let _ = reply.send(self.load_again());
+            }
+            Command::Unload { reply } => {
+                let _ = reply.send(self.unload());
             }
         }
     }
@@ -1473,7 +1590,26 @@ mod tests {
             next_id: 2,
             fast_qmm: true,
             tiles: false,
+            reload: None,
         }
+    }
+
+    #[test]
+    fn an_unload_waits_until_every_context_is_free() {
+        let context = StubContext::new(false);
+        let mut state = stub_state(&context);
+        let error = state.unload().unwrap_err();
+        assert!(error.contains("1 contexts are open"), "{error}");
+        state.contexts.clear();
+        state.unload().unwrap();
+        assert!(state.weights.is_none() && state.model.is_none() && state._arena.is_none());
+    }
+
+    #[test]
+    fn a_load_of_a_stub_has_no_shards() {
+        let context = StubContext::new(false);
+        let mut state = stub_state(&context);
+        assert_eq!(state.load_again().unwrap_err(), "this engine has no shards to load");
     }
 
     fn is_refused(call: &Call) -> bool {

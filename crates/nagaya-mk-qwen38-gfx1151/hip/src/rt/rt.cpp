@@ -350,6 +350,8 @@ extern "C" {
 // HIP registers host memory fine-grained by default (hip_runtime_api.h). Measured 2026-09-30, 51-token fused read p50:
 // fine-grained arena 452-456 ms, coarse-grained 448 ms, hipMalloc baseline 454 ms: no difference that decides it.
 void mk_rt_host_register(void *p, uint64_t n) { MK_CHECK(hipHostRegister(p, n, hipExtHostRegisterCoarseGrained)); }
+// Removes the registration of mk_rt_host_register, so the host memory can be unmapped (the close of the weights).
+void mk_rt_host_unregister(void *p) { MK_CHECK(hipHostUnregister(p)); }
 // n bytes of pinned host memory.
 void *mk_rt_host_malloc(uint64_t n) {
   void *p = nullptr;

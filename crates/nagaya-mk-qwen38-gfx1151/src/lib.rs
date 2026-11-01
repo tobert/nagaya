@@ -25,7 +25,7 @@ mod spec;
 mod stage;
 mod worker;
 
-pub use engine::{MkEngine, open};
+pub use engine::{Hold, MkEngine, hold, open};
 pub use spec::{CONTEXT_CLASSES, ContextClass, MAX_CONTEXT};
 pub use worker::{ClassReading, MkError, MkPaths};
 

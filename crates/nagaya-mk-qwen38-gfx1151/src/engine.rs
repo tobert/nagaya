@@ -11,14 +11,12 @@ use nagaya_abi::{
 use crate::spec;
 use crate::worker::{Call, ClassReading, MkError, MkPaths, PassProblem, PassRequest, Worker, start};
 
-/// The one engine in this process. mk aborts on close, so the engine stays open until the process exits (spec 3.3).
+/// The one worker in this process. Its HIP runtime and C++ engine stay until the process exits, because HIP teardown
+/// stops the process (spec 3.3). The weights come and go with the handles (engine-abi "close").
 static WORKER: OnceLock<Result<Arc<Worker>, MkError>> = OnceLock::new();
 
-/// Open the mk engine, or make a new handle on the one that is open.
-///
-/// The first call loads the weights. Every later call creates a new context pool for the handle. Every mk call goes
-/// to one worker thread, because the HIP device is the calling thread's current device.
-pub fn open() -> Result<MkEngine, MkError> {
+/// The worker, started on the first call. The shards must be the ones of the first call.
+fn worker() -> Result<Arc<Worker>, MkError> {
     let paths = MkPaths::from_env()?;
     let worker = match WORKER.get_or_init(|| start(paths.clone())) {
         Ok(worker) => Arc::clone(worker),
@@ -27,7 +25,24 @@ pub fn open() -> Result<MkEngine, MkError> {
     if worker.paths() != &paths {
         return Err(MkError::new("MK_SHARDS changed after the engine opened".to_owned()));
     }
-    let pool = worker.open_states(&spec::CONTEXT_CLASSES)?;
+    Ok(worker)
+}
+
+/// Open the mk engine, or make a new handle on the one that is open.
+///
+/// The first call loads the weights, and so does the first call after the last handle dropped. Every call creates a
+/// new context pool for the handle. Every mk call goes to one worker thread, because the HIP device is the calling
+/// thread's current device.
+pub fn open() -> Result<MkEngine, MkError> {
+    let worker = worker()?;
+    worker.acquire()?;
+    let pool = match worker.open_states(&spec::CONTEXT_CLASSES) {
+        Ok(pool) => pool,
+        Err(error) => {
+            worker.release();
+            return Err(error);
+        }
+    };
     Ok(MkEngine {
         worker,
         states: pool.ids.into_iter().map(Some).collect(),
@@ -121,10 +136,31 @@ fn write_from(from: u64) -> Result<(), String> {
     }
 }
 
+/// The close of mk (engine-abi "close"): the handle frees its contexts, and the last handle or hold frees the weights.
 impl Drop for MkEngine {
     fn drop(&mut self) {
         let ids = std::mem::take(&mut self.states).into_iter().flatten().collect();
         self.worker.free_states(ids);
+        self.worker.release();
+    }
+}
+
+/// A hold keeps mk's weights loaded with no context pool. A test binary or a bench keeps one, so that each handle it
+/// opens and drops does not load the weights again.
+pub struct Hold {
+    worker: Arc<Worker>,
+}
+
+/// Hold mk's weights: load them when no handle or hold has them.
+pub fn hold() -> Result<Hold, MkError> {
+    let worker = worker()?;
+    worker.acquire()?;
+    Ok(Hold { worker })
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        self.worker.release();
     }
 }
 

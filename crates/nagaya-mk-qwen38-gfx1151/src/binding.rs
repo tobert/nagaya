@@ -43,6 +43,9 @@ pub(crate) type Relayout = unsafe extern "C" fn(u32, *const u8, *mut u8, u32, u3
 /// `void mk_rt_host_register(void *p, uint64_t n)`.
 pub(crate) type RtHostRegister = unsafe extern "C" fn(*mut c_void, u64);
 
+/// `void mk_rt_host_unregister(void *p)`.
+pub(crate) type RtHostUnregister = unsafe extern "C" fn(*mut c_void);
+
 /// `void *mk_rt_host_malloc(uint64_t n)`.
 pub(crate) type RtHostMalloc = unsafe extern "C" fn(u64) -> *mut c_void;
 
@@ -117,6 +120,7 @@ pub(crate) struct Binding {
     pub engine_open: EngineOpen,
     pub relayout: Relayout,
     pub rt_host_register: RtHostRegister,
+    pub rt_host_unregister: RtHostUnregister,
     pub rt_host_malloc: RtHostMalloc,
     pub rt_host_free: RtHostFree,
     pub rt_malloc: RtMalloc,
@@ -217,6 +221,7 @@ mod linked {
         pub(super) fn mk_max_coop_grid() -> i32;
         pub(super) fn mk_status_name(status: u32) -> *const c_char;
         pub(super) fn mk_rt_host_register(p: *mut c_void, n: u64);
+        pub(super) fn mk_rt_host_unregister(p: *mut c_void);
         pub(super) fn mk_rt_host_malloc(n: u64) -> *mut c_void;
         pub(super) fn mk_rt_host_free(p: *mut c_void);
         pub(crate) fn mk_rt_malloc(n: u64) -> *mut c_void;
@@ -253,6 +258,7 @@ pub(crate) fn linked() -> Result<(Binding, Build), String> {
             engine_open: mk_engine_open,
             relayout: mk_relayout,
             rt_host_register: mk_rt_host_register,
+            rt_host_unregister: mk_rt_host_unregister,
             rt_host_malloc: mk_rt_host_malloc,
             rt_host_free: mk_rt_host_free,
             rt_malloc: mk_rt_malloc,
@@ -301,8 +307,8 @@ pub(crate) mod stub {
 
     use super::{
         Binding, CtxFree, CtxMax, CtxNew, EngineOpen, LaunchEach, LaunchFused, MaxCoopGrid, MemGetInfo, PartBytes,
-        Relayout, RoundGdn, RtHostFree, RtHostMalloc, RtHostRegister, RtMalloc, RtMemcpy, RtMemset, StateBytes,
-        StateRead, StatusName,
+        Relayout, RoundGdn, RtHostFree, RtHostMalloc, RtHostRegister, RtHostUnregister, RtMalloc, RtMemcpy, RtMemset,
+        StateBytes, StateRead, StatusName,
     };
 
     /// What the stub calls know about one context. A test passes a pointer to this in place of mk's context.
@@ -380,6 +386,7 @@ pub(crate) mod stub {
                 engine_open: std::mem::transmute::<unsafe extern "C" fn(), EngineOpen>(never),
                 relayout: std::mem::transmute::<unsafe extern "C" fn(), Relayout>(never),
                 rt_host_register: std::mem::transmute::<unsafe extern "C" fn(), RtHostRegister>(never),
+                rt_host_unregister: std::mem::transmute::<unsafe extern "C" fn(), RtHostUnregister>(never),
                 rt_host_malloc: std::mem::transmute::<unsafe extern "C" fn(), RtHostMalloc>(never),
                 rt_host_free: std::mem::transmute::<unsafe extern "C" fn(), RtHostFree>(never),
                 rt_malloc: std::mem::transmute::<unsafe extern "C" fn(), RtMalloc>(never),

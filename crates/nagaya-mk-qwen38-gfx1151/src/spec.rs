@@ -402,12 +402,13 @@ pub fn scratch_problem(measured: u64) -> Result<(), String> {
 pub fn limits(arena_bytes: u64) -> Limits {
     Limits {
         // The ABI takes each capability from its accessor. This binding has `parts()`, `coverage()`, `seal()` and
-        // `slots()`.
+        // `slots()`. `close` is the drop of the last handle, which frees the weights (engine-abi "close").
         capabilities: vec![
             Capability::Parts,
             Capability::Coverage,
             Capability::Seal,
             Capability::Slots,
+            Capability::Close,
         ],
         parts: parts(),
         inputs: Inputs::Tokens,
@@ -760,7 +761,8 @@ mod tests {
     #[test]
     fn the_limits_declare_only_the_reachable_capabilities() {
         // The ABI takes a capability from its accessor. mk has parts(), coverage(), seal() and slots(), and no
-        // accessor for contexts, poison or the pass check, so the limits must not declare those.
+        // accessor for contexts, poison or the pass check, so the limits must not declare those. The drop of the last
+        // handle frees the weights, so mk declares close.
         let limits = limits(0);
         assert_eq!(
             limits.capabilities,
@@ -768,7 +770,8 @@ mod tests {
                 Capability::Parts,
                 Capability::Coverage,
                 Capability::Seal,
-                Capability::Slots
+                Capability::Slots,
+                Capability::Close
             ]
         );
     }

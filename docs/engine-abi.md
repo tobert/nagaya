@@ -206,6 +206,19 @@ Decided 2026-10-28 (Amy, by interview).
 Reason: the `Box<dyn Engine>` already drops at the end of the group thread. A drop that frees everything needs no
 second path, and a test can count the memory after it.
 
+**The close of mk.** Decided 2026-11-01 (Amy, by interview): "mk can stay loaded and use some memory. I was thinking
+we'd let some model weights get freed, should clear up a bulk of memory". HIP teardown stops the process (spec 3.3),
+so mk's close frees the weights and keeps the runtime.
+
+- The drop of the last handle frees the contexts and the weights. The HIP runtime, the C++ engine and the pass host
+  stay. A test binary keeps a `Hold`, so its handles do not load the weights again.
+- The residue is not "what it was before `open`". `tests/hip_close.rs` measured it on gfx1151 on 2026-11-01: 0.16
+  GiB of the process and 0.83 GiB of GTT, the same after each of three closes.
+- A drop gives back 61 GiB of the process. Each open after a close gave the same logits bits, and the oracle hashes
+  did not change.
+- A load after a close refuses shards whose spot digest or arena size changed, because the identity names the first
+  ones. A restart takes the new shards.
+
 **Per-part coverage.** Decided 2026-10-22 (Amy: "accepted"). This closes the old note: the park used one row
 count, `slot_high`, for every row part of a slot.
 
@@ -365,7 +378,7 @@ Reason: the fake engine must serve a family with a vocabulary, and the output ro
 | seal | `mk_ctx_round_gdn_bf16` | changes bits in place |
 | poison / last_error | `MkContext::poisoned`, `mk_last_error` | |
 | part writes | `context::state_write`, `cells_write`, `set_n` | return nothing and stop the program on input they refuse; the wrapper checks every precondition first (part index, bytes, an empty context for parts 3-5, n within `max`, not poisoned) and returns refused; a write to a context that is already poisoned is refused, because this call changes nothing; after the call, the poison flag gives failed (decided 2026-10-18) |
-| close | none | `Engine::~Engine` exists, but HIP teardown segfaults in the process; mk does not declare `close` |
+| close | the drop of the last handle or `Hold` (`engine.rs`) | frees the contexts, then the weights: the arena, the shard maps, the PLE table, the weight table (`worker.rs` `unload`); the next `open` loads them again from the same shards; the HIP runtime, the C++ engine and the pass host stay (see below) |
 | pass_check / pass | `host::segments_problem`, `host::run_pass` in Rust; `mk_launch_fused` | tokens only (PLE needs token ids); the worker refuses a segment count outside 1 to 16, then a problem of `segments_problem`, then a poisoned context, then a bad knob; the host gathers the PLE rows (`ple.rs`), builds the stages (`pass.rs`), and launches them; outputs are logits per segment |
 | taps | none | milestone 15 step 6 removed the taps (layers, routes, gates), which had no call |
 | telemetry | none | milestone 15 step 6 removed the op times and the event ring of a pass, which had no call |

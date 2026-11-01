@@ -52,3 +52,7 @@ nagaya-sched = { version = "0.1.0", path = "../nagaya-sched" }
 nagaya-store = { version = "0.1.0", path = "../nagaya-store" }
 serde_json = "1.0.154"
 tempfile = "3"
+
+[[test]]
+name = "hip_close"
+required-features = ["hip"]

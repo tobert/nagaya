@@ -493,6 +493,8 @@ work on b70host is paused (Amy, 2026-10-31). Milestone 22 is next, on gfx1151hos
   runs before each pass.
 - mk's HIP device is the device that is current on the calling thread. Make every mk call from one thread.
 - Do not call `mk_engine_close` or free the engine in tests. HIP teardown in a process segfaults (spec 3.3).
+- The drop of the last mk handle frees the weights (engine-abi "The close of mk"). A test binary that opens many
+  handles keeps a `hold()`, as `tests/hip.rs` does. `tests/hip_close.rs` tests the close.
 - GPU tests are behind the cargo feature `hip`, so `cargo test` with no features needs no GPU.
 
 ### mkviolet on b70host

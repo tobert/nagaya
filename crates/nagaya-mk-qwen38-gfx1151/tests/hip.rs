@@ -1,7 +1,8 @@
 //! The mk engine on gfx1151: the binding calls, the write rules, one pass, and the conformance suite.
 //!
 //! Every test calls `open()`. The first call loads the weights; every later call makes a new context pool on the same
-//! engine. All mk calls go to one worker thread. Run with `--test-threads=1`.
+//! engine. A hold keeps the weights for the whole binary, so a dropped handle does not unload them (engine-abi
+//! "close"; `hip_close.rs` tests the unload). All mk calls go to one worker thread. Run with `--test-threads=1`.
 
 #![cfg(feature = "hip")]
 
@@ -10,7 +11,16 @@ use nagaya_abi::{
     WriteResult,
 };
 use nagaya_conformance::{compare_f32_rows, run_all};
-use nagaya_mk_qwen38_gfx1151::{MkEngine, open};
+use nagaya_mk_qwen38_gfx1151::{Hold, MkEngine, MkError, hold};
+
+/// The hold of this binary on mk's weights.
+static HOLD: std::sync::OnceLock<Hold> = std::sync::OnceLock::new();
+
+/// Open a handle, with the weights held for the binary.
+fn open() -> Result<MkEngine, MkError> {
+    HOLD.get_or_init(|| hold().expect("hold mk's weights"));
+    nagaya_mk_qwen38_gfx1151::open()
+}
 
 #[path = "support/oracle.rs"]
 mod oracle;

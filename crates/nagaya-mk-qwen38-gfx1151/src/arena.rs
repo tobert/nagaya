@@ -8,7 +8,7 @@
 use std::ffi::c_void;
 use std::path::Path;
 
-use crate::binding::Binding;
+use crate::binding::{Binding, RtHostUnregister};
 use crate::dequant::GgmlType;
 use crate::gguf::{Model, TensorInfo};
 
@@ -272,6 +272,33 @@ pub(crate) struct Arena {
     pub bytes: u64,
     /// The memfd. It stays open for the life of the arena.
     _fd: libc::c_int,
+    /// The call that removes the device's registration of the map, before the drop unmaps it. A test arena has none.
+    unregister: Option<RtHostUnregister>,
+}
+
+/// The close of the weights (engine-abi "close"): the drop removes the registration, unmaps the arena, and closes the
+/// memfd. The kernels must be done with the arena; the worker drops it only when no context is open.
+impl Drop for Arena {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            if let Some(unregister) = self.unregister {
+                // SAFETY: `create` registered this map, and no kernel reads it now.
+                unsafe { unregister(self.ptr.cast()) };
+            }
+            // SAFETY: `create` mapped `bytes` bytes at `ptr`, and nothing holds a slice of them after the drop.
+            let code = unsafe { libc::munmap(self.ptr.cast(), self.bytes as usize) };
+            assert_eq!(
+                code,
+                0,
+                "munmap of the arena failed: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+        if self._fd >= 0 {
+            // SAFETY: the arena owns the fd. systemd's store holds its own copy (spec 3.3a).
+            unsafe { libc::close(self._fd) };
+        }
+    }
 }
 
 impl Arena {
@@ -425,6 +452,7 @@ pub(crate) unsafe fn create(
         ptr: map as *mut u8,
         bytes,
         _fd: fd,
+        unregister: Some(binding.rt_host_unregister),
     })
 }
 
@@ -544,6 +572,7 @@ mod tests {
             ptr: std::ptr::null_mut(),
             bytes: 4096,
             _fd: -1,
+            unregister: None,
         };
         let (planned, _) = plan(&model_like(), false).unwrap();
         arena.tensor(&planned[0]);
