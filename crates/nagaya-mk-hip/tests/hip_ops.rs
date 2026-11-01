@@ -6,7 +6,7 @@
 use std::ffi::c_void;
 
 use nagaya_mk_hip::bf16;
-use nagaya_mk_hip::hip::{DeviceBuffer, Stream};
+use nagaya_mk_hip::hip::{DeviceBuffer, Stream, copy_2d};
 use nagaya_mk_hip::ops::{self, RopePairs};
 use nagaya_mk_hip::rope;
 
@@ -357,5 +357,30 @@ fn gather_rows_copies_the_rows_of_the_ids() {
             table[id * dim..(id + 1) * dim],
             "row {row}"
         );
+    }
+}
+
+#[test]
+fn copy_2d_moves_a_block_of_rows_between_pitches() {
+    // 5 rows of 6 values, from rows of 9 into rows of 11 that start 3 values in.
+    let (rows, width, src_pitch, dst_pitch) = (5usize, 6usize, 9usize, 11usize);
+    let mut rng = Rng(23);
+    let src = rng.vec(rows * src_pitch, 1.0);
+    let dst = rng.vec(rows * dst_pitch + 3, 1.0);
+    let stream = Stream::new().unwrap();
+    let (sd, dd) = (upload(&src), upload(&dst));
+    let target = unsafe { dd.ptr().cast::<u16>().add(3) }.cast();
+    // SAFETY: both buffers hold the rows at their pitches.
+    unsafe { copy_2d(target, dst_pitch * 2, sd.ptr(), src_pitch * 2, width * 2, rows, &stream).unwrap() };
+    stream.synchronize().unwrap();
+    let got = dd.to_vec::<u16>().unwrap();
+    for i in 0..got.len() {
+        let (row, col) = ((i.max(3) - 3) / dst_pitch, (i.max(3) - 3) % dst_pitch);
+        let want = if i >= 3 && row < rows && col < width {
+            src[row * src_pitch + col]
+        } else {
+            dst[i]
+        };
+        assert_eq!(got[i], want, "value {i}");
     }
 }

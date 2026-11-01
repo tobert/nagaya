@@ -10,6 +10,16 @@ unsafe extern "C" {
     fn hipFree(ptr: *mut c_void) -> c_int;
     fn hipMemcpy(dst: *mut c_void, src: *const c_void, size: usize, kind: c_int) -> c_int;
     fn hipMemsetAsync(dst: *mut c_void, value: c_int, size: usize, stream: *mut c_void) -> c_int;
+    fn hipMemcpy2DAsync(
+        dst: *mut c_void,
+        dpitch: usize,
+        src: *const c_void,
+        spitch: usize,
+        width: usize,
+        height: usize,
+        kind: c_int,
+        stream: *mut c_void,
+    ) -> c_int;
     fn hipStreamCreate(stream: *mut *mut c_void) -> c_int;
     fn hipStreamDestroy(stream: *mut c_void) -> c_int;
     fn hipStreamSynchronize(stream: *mut c_void) -> c_int;
@@ -94,6 +104,34 @@ pub fn pci_ids() -> Result<String, HipError> {
             })
     };
     Ok(format!("{}:{}", read("vendor")?, read("device")?))
+}
+
+/// Copy `height` rows of `width` bytes on `stream`, from rows `spitch` bytes apart to rows `dpitch` bytes apart, in
+/// device memory.
+///
+/// # Safety
+///
+/// Both pointers must be device memory that holds the rows at their pitches, and the regions must not overlap.
+pub unsafe fn copy_2d(
+    dst: *mut c_void,
+    dpitch: usize,
+    src: *const c_void,
+    spitch: usize,
+    width: usize,
+    height: usize,
+    stream: &Stream,
+) -> Result<(), HipError> {
+    assert!(
+        width <= dpitch && width <= spitch,
+        "a row of {width} bytes is wider than its pitch"
+    );
+    if height == 0 {
+        return Ok(());
+    }
+    // SAFETY: the caller keeps the rules above.
+    check("hipMemcpy2DAsync", unsafe {
+        hipMemcpy2DAsync(dst, dpitch, src, spitch, width, height, DEVICE_TO_DEVICE, stream.0)
+    })
 }
 
 /// Device memory. It is freed on drop.
