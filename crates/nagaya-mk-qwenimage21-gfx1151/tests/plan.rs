@@ -17,6 +17,9 @@ fn the_config_names_each_file_and_refuses_an_unknown_key() {
     .unwrap();
     assert_eq!(config.lora, Some(("/l.safetensors".into(), 0.5)));
     assert_eq!(config.plan_dir, Some("/p".into()));
+    assert!(config.flash, "the flash kernel is the default");
+    let gemm = Config::from_toml(&table("model = \"/m\"\nencoder = \"/e\"\nattention = \"gemm\"")).unwrap();
+    assert!(!gemm.flash);
     let plain = Config::from_toml(&table("model = \"/m\"\nencoder = \"/e\"")).unwrap();
     assert_eq!((plain.lora, plain.plan_dir), (None, None));
     for (text, word) in [
@@ -24,6 +27,7 @@ fn the_config_names_each_file_and_refuses_an_unknown_key() {
         ("model = \"/m\"\nencoder = \"/e\"\nvae = \"/v\"", "`vae`"),
         ("model = \"/m\"\nencoder = 3", "`encoder`"),
         ("model = \"/m\"\nencoder = \"/e\"\nlora_strength = 1.0", "no `lora`"),
+        ("model = \"/m\"\nencoder = \"/e\"\nattention = \"fast\"", "`attention`"),
     ] {
         let error = Config::from_toml(&table(text)).unwrap_err();
         assert!(error.contains(word), "{text}: {error}");
@@ -43,6 +47,7 @@ fn the_plan_counts_the_bf16_weights_of_the_load() {
         encoder: fusal.join(request["encoder"].as_str().unwrap()),
         lora: None,
         plan_dir: None,
+        flash: false,
     };
     let bytes = plan::weights_bytes(&config).unwrap();
     let gib = bytes as f64 / (1u64 << 30) as f64;

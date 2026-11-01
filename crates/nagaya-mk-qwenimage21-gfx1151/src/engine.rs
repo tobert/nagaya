@@ -6,9 +6,7 @@
 //! latent into RGBA. The engine holds one job at a time, in slot 0.
 
 use std::collections::BTreeMap;
-use std::fs::File;
-use std::os::unix::fs::FileExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use nagaya_abi::{
     DecodedImage, Engine, Identity, Image, ImageConditioning, ImageJob, ImagePrompt, ImageSampler, ImageSpacing,
@@ -20,6 +18,7 @@ use nagaya_mk_hip::gemm::{Gemms, lineage};
 use nagaya_mk_hip::hip::{DeviceBuffer, Stream};
 use nagaya_mk_hip::plan::PlanTable;
 
+use crate::digest::file_hash;
 use crate::encoder::Encoder;
 use crate::noise::{Purpose, normal};
 pub use crate::plan::Config;
@@ -36,40 +35,6 @@ const WORKSPACE: u64 = 64 << 20;
 /// The template of the family (spec 11.9c). The identity holds it, so a new template is a new recipe.
 pub const TEMPLATE: &str = "<|im_start|>system\nComprehend and analyze the provided prompt.<|im_end|>\n<|im_start|>user\n\
 {}<|im_end|>\n<|im_start|>assistant\n";
-
-/// The BLAKE3 hash of a file, in chunks of 256 MiB on threads, as the SDXL engine hashes its checkpoint.
-pub fn file_hash(path: &Path) -> Result<blake3::Hash, String> {
-    let file = File::open(path).map_err(|e| format!("cannot open {}: {e}", path.display()))?;
-    let size = file
-        .metadata()
-        .map_err(|e| format!("cannot stat {}: {e}", path.display()))?
-        .len();
-    const CHUNK: u64 = 256 << 20;
-    let chunks = size.div_ceil(CHUNK).max(1);
-    let hashes: Vec<Result<blake3::Hash, String>> = std::thread::scope(|scope| {
-        let threads: Vec<_> = (0..chunks)
-            .map(|i| {
-                let file = &file;
-                scope.spawn(move || {
-                    let start = i * CHUNK;
-                    let mut bytes = vec![0u8; (size - start).min(CHUNK) as usize];
-                    file.read_exact_at(&mut bytes, start)
-                        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-                    Ok(blake3::hash(&bytes))
-                })
-            })
-            .collect();
-        threads
-            .into_iter()
-            .map(|t| t.join().expect("a hash thread panicked"))
-            .collect()
-    });
-    let mut all = blake3::Hasher::new();
-    for hash in hashes {
-        all.update(hash?.as_bytes());
-    }
-    Ok(all.finalize())
-}
 
 /// The state of the job in slot 0.
 struct Job {
@@ -94,6 +59,8 @@ pub struct QwenImageEngine {
     conditioning: ImageConditioning,
     job: Option<Job>,
     last_error: Option<String>,
+    /// True when attention runs in the flash kernel (`Config::flash`).
+    flash: bool,
 }
 
 fn refused(message: String) -> PassError {
@@ -125,7 +92,26 @@ impl QwenImageEngine {
                 digest.iter().map(|b| format!("{b:02x}")).collect::<String>()
             )
         };
-        let encoder_hash = file_hash(&config.encoder)?;
+        // The hashes of the weight files run on a thread while the load reads the same files, so a cold open reads
+        // each file from the disk once, and the page cache gives it to the other reader. On 2026-11-01 a cold open
+        // that hashed first took 225.7 s.
+        let mut files = vec![config.encoder.clone()];
+        let transformer_dir = config.model.join("transformer");
+        let mut shards: Vec<PathBuf> = std::fs::read_dir(&transformer_dir)
+            .map_err(|e| format!("cannot list {}: {e}", transformer_dir.display()))?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|e| e == "safetensors"))
+            .collect();
+        shards.sort();
+        files.extend(shards);
+        files.push(config.model.join("vae/diffusion_pytorch_model.safetensors"));
+        if let Some((path, _)) = &config.lora {
+            files.push(path.clone());
+        }
+        let hashing = std::thread::Builder::new()
+            .name("qwenimage21-hash".to_owned())
+            .spawn(move || files.iter().map(|f| file_hash(f)).collect::<Result<Vec<_>, String>>())
+            .map_err(|e| format!("cannot start the hash thread: {e}"))?;
         let encoder = Encoder::load(&Safetensors::open(&config.encoder).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
         let lora_file = match &config.lora {
@@ -140,22 +126,17 @@ impl QwenImageEngine {
         )
         .map_err(|e| e.to_string())?;
         let vae = VaeDecoder::load(&config.model.join("vae")).map_err(|e| e.to_string())?;
-        // The checkpoint digest covers every weight file of the variant, as the SDXL engine's does.
+        let mut encoder = encoder;
+        let mut transformer = transformer;
+        encoder.flash = config.flash;
+        transformer.flash = config.flash;
+        // The checkpoint digest covers every weight file of the variant, as the SDXL engine's does: the encoder
+        // first, then the transformer's shards, the VAE and the LoRA.
+        let hashes = hashing.join().map_err(|_| "the hash thread panicked".to_owned())??;
+        let encoder_hash = hashes[0];
         let mut checkpoint = blake3::Hasher::new();
-        checkpoint.update(encoder_hash.as_bytes());
-        let transformer_dir = config.model.join("transformer");
-        let mut shards: Vec<PathBuf> = std::fs::read_dir(&transformer_dir)
-            .map_err(|e| format!("cannot list {}: {e}", transformer_dir.display()))?
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.extension().is_some_and(|e| e == "safetensors"))
-            .collect();
-        shards.sort();
-        shards.push(config.model.join("vae/diffusion_pytorch_model.safetensors"));
-        if let Some((path, _)) = &config.lora {
-            shards.push(path.clone());
-        }
-        for shard in &shards {
-            checkpoint.update(file_hash(shard)?.as_bytes());
+        for hash in &hashes {
+            checkpoint.update(hash.as_bytes());
         }
         let mut numbers = BTreeMap::new();
         if let Some((path, strength)) = &config.lora {
@@ -217,6 +198,7 @@ impl QwenImageEngine {
             },
             job: None,
             last_error: None,
+            flash: config.flash,
         })
     }
 
@@ -277,6 +259,8 @@ impl QwenImageEngine {
             rows,
             (job.width as usize / SCALE) * (job.height as usize / SCALE),
         ));
+        // The flash kernel keeps its scores in registers, so it needs no scratch for them.
+        let attention_capacity = if self.flash { 1 } else { attention_capacity };
         let attention = Attention::new(attention_capacity).map_err(|e| self.fail(refused(e.to_string())))?;
         let made;
         let conditioning = match &job.conditioning {
@@ -374,8 +358,12 @@ impl Image for QwenImageEngine {
         }
         let (sigma, next) = (job.sigmas[job.step], job.sigmas[job.step + 1]);
         let rows = job.conditioned.rows();
-        let attention = Attention::new(Transformer::attention_capacity(rows, job.h * job.w))
-            .map_err(|e| self.fail(refused(e.to_string())))?;
+        let capacity = if self.flash {
+            1
+        } else {
+            Transformer::attention_capacity(rows, job.h * job.w)
+        };
+        let attention = Attention::new(capacity).map_err(|e| self.fail(refused(e.to_string())))?;
         for latent in &mut job.latents {
             let x = DeviceBuffer::from_slice(latent).map_err(|e| self.fail(refused(e.to_string())))?;
             let v = self

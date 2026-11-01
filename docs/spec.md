@@ -3730,6 +3730,19 @@ rule and not an approximation.
   The oracle size of 256 also gives an even side.
 - Each step gives the output of the latent tokens only (`pipeline.py:796`).
 
+**The attention.** Decided by senpai 2026-11-01 (vetoable), under Amy's goal: "choose a balance of accuracy &
+speed". The engine runs attention in a fused flash kernel (`nagaya-mk-hip`, `hip/flash.hip`). The scores stay in
+registers, with a running max and sum for each row, and the probabilities round to bf16 before the values.
+
+- The other path runs the scores as a GEMM in f32, a softmax kernel, and a GEMM with the values. The profile key
+  `attention = "gemm"` selects it. Both paths pass every gate of 8.3.
+- On gfx1151host on 2026-11-01, a step of 1024 by 1024 took 5.8 s on the GEMM path and 4.2 s with flash. A step of 1440
+  by 1440 took 18.3 s and 11.0 s. The GEMM path moved about 200 GB of scores through memory for each step.
+- The gaps were nearly the same. The step gate gave 2.24e-5 and 2.51e-5 at step 0. The run gave 5.14e-5 and
+  5.58e-5. The image gate gave mean byte gaps of 0.721 and 0.680.
+- The flash kernel takes heads of 128 values. The single head of the VAE's attention, of 1152 values, keeps the GEMM
+  path.
+
 **The decode.** Decided by senpai 2026-11-01 (vetoable). Proposed by Claude Opus 5.5, 2026-10-31. Reason: these rules
 give the bits of the pipeline's decode and of diffusers' `postprocess`, which round in bf16.
 

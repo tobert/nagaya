@@ -132,49 +132,30 @@ fn the_step_and_run_gates() {
     let (rows, n, side) = (oracle.rows, oracle.tokens, oracle.side);
     let attention = Attention::new(Transformer::attention_capacity(rows, n) * 8).unwrap();
     let embeds = DeviceBuffer::from_slice(&to_bf16(&Oracle::floats(&oracle.encode, "prompt_embeds"))).unwrap();
-    let started = std::time::Instant::now();
-    let conditioned = r
-        .transformer
-        .begin(&mut r.gemms, &attention, &embeds, 0, rows, &r.stream)
-        .unwrap();
-    eprintln!(
-        "begin of {rows} rows in {:.0} ms",
-        started.elapsed().as_secs_f64() * 1e3
-    );
-    let sigmas = sampler::sigmas(4, n);
-    assert_eq!(sigmas, oracle.steps("sigmas"), "the schedule of the oracle");
-    let latents = oracle.steps("latents");
-    let outs = oracle.steps("transformer_out");
-    let outs16 = oracle.steps("transformer_out_bf16");
-    let one = n * LATENT;
     let mut failed = Vec::new();
-    for k in 0..4 {
-        let x = DeviceBuffer::from_slice(&to_bf16(&latents[k * one..(k + 1) * one])).unwrap();
+    // Both paths of the attention: the GEMMs with the softmax kernel, and the fused flash kernel.
+    for flash in [false, true] {
+        r.transformer.flash = flash;
+        eprintln!("the attention of the flash kernel: {flash}");
         let started = std::time::Instant::now();
-        let v = r
+        let conditioned = r
             .transformer
-            .step(
-                &mut r.gemms,
-                &attention,
-                &conditioned,
-                &x,
-                side,
-                side,
-                sampler::timestep(sigmas[k]),
-                &r.stream,
-            )
+            .begin(&mut r.gemms, &attention, &embeds, 0, rows, &r.stream)
             .unwrap();
-        let ms = started.elapsed().as_secs_f64() * 1e3;
-        let got = v.to_vec::<u16>().unwrap();
-        let want = &outs[k * one..(k + 1) * one];
-        let (g, b) = (gap(&got, want), baseline_gap(&outs16[k * one..(k + 1) * one], want));
-        let bound = (4.0 * b).max(FLOOR);
-        eprintln!("step {k}: gap {g:.2e}, torch bf16 gap {b:.2e}, bound {bound:.2e}, {ms:.0} ms");
-        if g > bound {
-            failed.push(format!("step {k}"));
-        }
-        if k == 0 {
-            let again = r
+        eprintln!(
+            "begin of {rows} rows in {:.0} ms",
+            started.elapsed().as_secs_f64() * 1e3
+        );
+        let sigmas = sampler::sigmas(4, n);
+        assert_eq!(sigmas, oracle.steps("sigmas"), "the schedule of the oracle");
+        let latents = oracle.steps("latents");
+        let outs = oracle.steps("transformer_out");
+        let outs16 = oracle.steps("transformer_out_bf16");
+        let one = n * LATENT;
+        for k in 0..4 {
+            let x = DeviceBuffer::from_slice(&to_bf16(&latents[k * one..(k + 1) * one])).unwrap();
+            let started = std::time::Instant::now();
+            let v = r
                 .transformer
                 .step(
                     &mut r.gemms,
@@ -183,44 +164,68 @@ fn the_step_and_run_gates() {
                     &x,
                     side,
                     side,
-                    sampler::timestep(sigmas[0]),
+                    sampler::timestep(sigmas[k]),
                     &r.stream,
                 )
                 .unwrap();
-            assert_eq!(got, again.to_vec::<u16>().unwrap(), "two steps give the same bits");
+            let ms = started.elapsed().as_secs_f64() * 1e3;
+            let got = v.to_vec::<u16>().unwrap();
+            let want = &outs[k * one..(k + 1) * one];
+            let (g, b) = (gap(&got, want), baseline_gap(&outs16[k * one..(k + 1) * one], want));
+            let bound = (4.0 * b).max(FLOOR);
+            eprintln!("step {k}: gap {g:.2e}, torch bf16 gap {b:.2e}, bound {bound:.2e}, {ms:.0} ms");
+            if g > bound {
+                failed.push(format!("flash {flash}: step {k}"));
+            }
+            if k == 0 {
+                let again = r
+                    .transformer
+                    .step(
+                        &mut r.gemms,
+                        &attention,
+                        &conditioned,
+                        &x,
+                        side,
+                        side,
+                        sampler::timestep(sigmas[0]),
+                        &r.stream,
+                    )
+                    .unwrap();
+                assert_eq!(got, again.to_vec::<u16>().unwrap(), "two steps give the same bits");
+            }
         }
+        // The run: 4 steps from the start latent, with the Euler steps on the host.
+        let mut x = to_bf16(&oracle.steps("packed"));
+        for k in 0..4 {
+            let xd = DeviceBuffer::from_slice(&x).unwrap();
+            let v = r
+                .transformer
+                .step(
+                    &mut r.gemms,
+                    &attention,
+                    &conditioned,
+                    &xd,
+                    side,
+                    side,
+                    sampler::timestep(sigmas[k]),
+                    &r.stream,
+                )
+                .unwrap();
+            sampler::euler(&mut x, &v.to_vec::<u16>().unwrap(), sigmas[k], sigmas[k + 1]);
+        }
+        let want = oracle.steps("final_latent");
+        let base = &oracle.steps("latents_bf16")[4 * one..5 * one];
+        let (g, b) = (gap(&x, &want), baseline_gap(base, &want));
+        let bound = (4.0 * b).max(FLOOR);
+        eprintln!("run: gap {g:.2e}, torch bf16 gap {b:.2e}, bound {bound:.2e}");
+        if g > bound {
+            failed.push(format!("flash {flash}: run"));
+        }
+        eprintln!(
+            "conditioned keys and values: {:.1} MiB",
+            conditioned.bytes() as f64 / (1 << 20) as f64
+        );
     }
-    // The run: 4 steps from the start latent, with the Euler steps on the host.
-    let mut x = to_bf16(&oracle.steps("packed"));
-    for k in 0..4 {
-        let xd = DeviceBuffer::from_slice(&x).unwrap();
-        let v = r
-            .transformer
-            .step(
-                &mut r.gemms,
-                &attention,
-                &conditioned,
-                &xd,
-                side,
-                side,
-                sampler::timestep(sigmas[k]),
-                &r.stream,
-            )
-            .unwrap();
-        sampler::euler(&mut x, &v.to_vec::<u16>().unwrap(), sigmas[k], sigmas[k + 1]);
-    }
-    let want = oracle.steps("final_latent");
-    let base = &oracle.steps("latents_bf16")[4 * one..5 * one];
-    let (g, b) = (gap(&x, &want), baseline_gap(base, &want));
-    let bound = (4.0 * b).max(FLOOR);
-    eprintln!("run: gap {g:.2e}, torch bf16 gap {b:.2e}, bound {bound:.2e}");
-    if g > bound {
-        failed.push("run".to_owned());
-    }
-    eprintln!(
-        "conditioned keys and values: {:.1} MiB",
-        conditioned.bytes() as f64 / (1 << 20) as f64
-    );
     assert!(failed.is_empty(), "the gates failed: {failed:?}");
 }
 

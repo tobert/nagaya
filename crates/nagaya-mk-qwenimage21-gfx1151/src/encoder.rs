@@ -76,6 +76,8 @@ struct Layer {
 
 /// The text tower in device memory.
 pub struct Encoder {
+    /// True when attention runs in the fused flash kernel, false for the GEMMs and the softmax kernel.
+    pub flash: bool,
     embed: DeviceBuffer,
     layers: Vec<Layer>,
 }
@@ -121,7 +123,11 @@ impl Encoder {
                 down: upload(n("mlp.down_proj.weight"), &[HIDDEN, FFN])?,
             });
         }
-        Ok(Encoder { embed, layers })
+        Ok(Encoder {
+            flash: false,
+            embed,
+            layers,
+        })
     }
 
     /// The bytes of the weights in device memory.
@@ -235,7 +241,11 @@ impl Encoder {
                 };
                 rope(qkv.ptr(), HEADS, &layer.q_norm)?;
                 rope(k, KV_HEADS, &layer.k_norm)?;
-                attention.run(gemms, &attend, qkv.ptr(), k, v, mixed.ptr(), stream)?;
+                if self.flash {
+                    nagaya_mk_hip::attention::flash(&attend, qkv.ptr(), k, v, mixed.ptr(), stream)?;
+                } else {
+                    attention.run(gemms, &attend, qkv.ptr(), k, v, mixed.ptr(), stream)?;
+                }
                 // The residual adds in the GEMM: h = h + mixed o^T.
                 gemms.run(&o_shape, 1.0, layer.o.ptr(), mixed.ptr(), 1.0, h.ptr(), h.ptr(), stream)?;
                 ops::rmsnorm(

@@ -61,6 +61,7 @@ fn inputs() -> Option<Inputs> {
             encoder: fusal.join(request["encoder"].as_str().unwrap()),
             lora: Some((fusal.join(request["lora"].as_str().unwrap()), 1.0)),
             plan_dir: None,
+            flash: true,
         },
         ids,
         cut,

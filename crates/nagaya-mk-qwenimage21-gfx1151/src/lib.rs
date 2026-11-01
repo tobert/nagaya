@@ -4,6 +4,7 @@
 //! The file reader and the tensor names are plain Rust and run with no GPU. The parts that run on the device are
 //! behind the feature `hip`.
 
+pub mod digest;
 pub mod names;
 pub mod noise;
 pub mod plan;

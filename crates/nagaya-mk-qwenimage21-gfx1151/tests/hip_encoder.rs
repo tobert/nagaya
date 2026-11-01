@@ -57,7 +57,7 @@ fn the_encoder_gives_the_conditioning_of_the_oracle() {
     let path = fusal.join(request["encoder"].as_str().unwrap());
     let started = std::time::Instant::now();
     let file = Safetensors::open(&path).unwrap();
-    let encoder = Encoder::load(&file).unwrap();
+    let mut encoder = Encoder::load(&file).unwrap();
     eprintln!(
         "loaded {:.2} GiB in {:.1} s",
         encoder.bytes() as f64 / (1u64 << 30) as f64,
@@ -66,33 +66,38 @@ fn the_encoder_gives_the_conditioning_of_the_oracle() {
     let stream = Stream::new().unwrap();
     let mut gemms = Gemms::new(PlanTable::in_memory(&lineage().unwrap()), 32 << 20).unwrap();
     let attention = Attention::new(Encoder::attention_capacity(ids.len())).unwrap();
-    let started = std::time::Instant::now();
-    let out = encoder.encode(&mut gemms, &attention, &ids, &stream).unwrap();
-    eprintln!(
-        "first encode of {} ids in {:.0} ms, with the picks",
-        ids.len(),
-        started.elapsed().as_secs_f64() * 1e3
-    );
-    let started = std::time::Instant::now();
-    let again = encoder.encode(&mut gemms, &attention, &ids, &stream).unwrap();
-    eprintln!("second encode in {:.0} ms", started.elapsed().as_secs_f64() * 1e3);
-    let got: Vec<u16> = out.to_vec::<u16>().unwrap();
-    assert_eq!(got, again.to_vec::<u16>().unwrap(), "two encodes give the same bits");
     let mut worst_ratio = 0.0f64;
     let mut failed = Vec::new();
-    for row in 0..rows {
-        let g: Vec<f64> = got[(cut + row) * HIDDEN..(cut + row + 1) * HIDDEN]
-            .iter()
-            .map(|&h| f64::from(bf16::to_f32(h)))
-            .collect();
-        let w = &want[row * HIDDEN..(row + 1) * HIDDEN];
-        let b = &baseline[row * HIDDEN..(row + 1) * HIDDEN];
-        let (gap, torch_gap) = (1.0 - cosine(&g, w), 1.0 - cosine(b, w));
-        let bound = (4.0 * torch_gap).max(FLOOR);
-        eprintln!("row {row:>2}: gap {gap:.2e}, torch bf16 gap {torch_gap:.2e}, bound {bound:.2e}");
-        worst_ratio = worst_ratio.max(gap / torch_gap.max(1e-12));
-        if gap > bound {
-            failed.push(row);
+    // Both paths of the attention: the GEMMs with the softmax kernel, and the fused flash kernel.
+    for flash in [false, true] {
+        encoder.flash = flash;
+        eprintln!("the attention of the flash kernel: {flash}");
+        let started = std::time::Instant::now();
+        let out = encoder.encode(&mut gemms, &attention, &ids, &stream).unwrap();
+        eprintln!(
+            "first encode of {} ids in {:.0} ms, with the picks",
+            ids.len(),
+            started.elapsed().as_secs_f64() * 1e3
+        );
+        let started = std::time::Instant::now();
+        let again = encoder.encode(&mut gemms, &attention, &ids, &stream).unwrap();
+        eprintln!("second encode in {:.0} ms", started.elapsed().as_secs_f64() * 1e3);
+        let got: Vec<u16> = out.to_vec::<u16>().unwrap();
+        assert_eq!(got, again.to_vec::<u16>().unwrap(), "two encodes give the same bits");
+        for row in 0..rows {
+            let g: Vec<f64> = got[(cut + row) * HIDDEN..(cut + row + 1) * HIDDEN]
+                .iter()
+                .map(|&h| f64::from(bf16::to_f32(h)))
+                .collect();
+            let w = &want[row * HIDDEN..(row + 1) * HIDDEN];
+            let b = &baseline[row * HIDDEN..(row + 1) * HIDDEN];
+            let (gap, torch_gap) = (1.0 - cosine(&g, w), 1.0 - cosine(b, w));
+            let bound = (4.0 * torch_gap).max(FLOOR);
+            eprintln!("row {row:>2}: gap {gap:.2e}, torch bf16 gap {torch_gap:.2e}, bound {bound:.2e}");
+            worst_ratio = worst_ratio.max(gap / torch_gap.max(1e-12));
+            if gap > bound {
+                failed.push((flash, row));
+            }
         }
     }
     eprintln!("conditioning gate: the worst row has {worst_ratio:.2} times the gap of torch in bf16");

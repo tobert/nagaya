@@ -168,6 +168,8 @@ impl Shards {
 
 /// The transformer in device memory.
 pub struct Transformer {
+    /// True when attention runs in the fused flash kernel, false for the GEMMs and the softmax kernel.
+    pub flash: bool,
     img_in: DeviceBuffer,
     txt_norm: DeviceBuffer,
     txt_in: DeviceBuffer,
@@ -321,6 +323,7 @@ impl Transformer {
             });
         }
         let transformer = Transformer {
+            flash: false,
             img_in: upload("img_in.weight", &[DIM, LATENT])?,
             txt_norm: upload("txt_in.text_norm.weight", &[DIM])?,
             txt_in: upload("txt_in.in_layer.weight", &[DIM, DIM])?,
@@ -585,15 +588,26 @@ impl Transformer {
                 out_stride: DIM,
                 mask,
             };
-            attention.run(
-                gemms,
-                &shape,
-                mine,
-                at(qkv, DIM),
-                at(qkv, 2 * DIM),
-                work.mixed.ptr(),
-                stream,
-            )?;
+            if self.flash {
+                nagaya_mk_hip::attention::flash(
+                    &shape,
+                    mine,
+                    at(qkv, DIM),
+                    at(qkv, 2 * DIM),
+                    work.mixed.ptr(),
+                    stream,
+                )?;
+            } else {
+                attention.run(
+                    gemms,
+                    &shape,
+                    mine,
+                    at(qkv, DIM),
+                    at(qkv, 2 * DIM),
+                    work.mixed.ptr(),
+                    stream,
+                )?;
+            }
             gemms.run(
                 &linear(rows, DIM, DIM),
                 1.0,

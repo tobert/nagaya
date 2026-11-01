@@ -38,6 +38,7 @@ fn main() {
         encoder: env("QWENIMAGE21_ENCODER"),
         lora: Some((env("QWENIMAGE21_LORA"), 1.0)),
         plan_dir: std::env::var_os("QWENIMAGE21_PLAN_DIR").map(PathBuf::from),
+        flash: std::env::var_os("QWENIMAGE21_FLASH").is_some(),
     };
     let peak = Arc::new(AtomicU64::new(0));
     let stop = Arc::new(AtomicBool::new(false));

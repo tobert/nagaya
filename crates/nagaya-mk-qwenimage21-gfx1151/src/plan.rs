@@ -33,6 +33,10 @@ pub struct Config {
     pub lora: Option<(PathBuf, f32)>,
     /// The directory of the plan table of the GEMMs (spec 12.1), or none for a table in memory.
     pub plan_dir: Option<PathBuf>,
+    /// True when attention runs in the fused flash kernel, the default. The profile key `attention = "gemm"` runs it
+    /// as GEMMs and a softmax kernel. Both pass the gates of spec 8.3; flash took 4.2 s for a step of 1024 by 1024 and
+    /// the GEMMs 5.8 s (2026-11-01).
+    pub flash: bool,
 }
 
 impl Config {
@@ -40,10 +44,10 @@ impl Config {
     /// key that the engine does not know is an error.
     pub fn from_toml(table: &toml::Table) -> Result<Config, String> {
         for key in table.keys() {
-            if !["model", "encoder", "lora", "lora_strength", "plan_dir"].contains(&key.as_str()) {
+            if !["model", "encoder", "lora", "lora_strength", "plan_dir", "attention"].contains(&key.as_str()) {
                 return Err(format!(
                     "the qwenimage21 engine has no config `{key}`; the keys are `model`, `encoder`, `lora`, \
-                     `lora_strength` and `plan_dir`"
+                     `lora_strength`, `plan_dir` and `attention`"
                 ));
             }
         }
@@ -68,6 +72,11 @@ impl Config {
                 as f32,
         };
         let lora = path("lora")?.map(|file| (file, strength));
+        let flash = match table.get("attention").map(|value| value.as_str()) {
+            None | Some(Some("flash")) => true,
+            Some(Some("gemm")) => false,
+            Some(_) => return Err("the config `attention` is \"flash\" or \"gemm\"".to_owned()),
+        };
         if lora.is_none() && table.contains_key("lora_strength") {
             return Err("the config has `lora_strength` and no `lora`".to_owned());
         }
@@ -76,6 +85,7 @@ impl Config {
             encoder: need("encoder")?,
             lora,
             plan_dir: path("plan_dir")?,
+            flash,
         })
     }
 }
