@@ -3699,8 +3699,10 @@ rule and not an approximation.
   (`pipeline.py:759-762`).
 - The rotary positions have three axes of 16, 56 and 56 dimensions, with theta 10000 (`transformer.py:655-713`).
   Conditioning row `j` has position `j` on each axis.
-- Latent token `(y, x)` has the position `L` on the first axis, with `L` the conditioning row count. It has `y - h / 2`
-  and `x - w / 2` on the other two, with `h` and `w` the latent height and width.
+- Latent token `(y, x)` has the position `L` on the first axis, with `L` the conditioning row count. It has
+  `y - (h - h / 2)` and `x - (w - w / 2)` on the other two, with `h` and `w` the latent height and width, and integer
+  division (`transformer.py:695-696`). A size is a multiple of 32, so a latent side is even, and this is `y - h / 2`.
+  The oracle size of 256 also gives an even side.
 - Each step gives the output of the latent tokens only (`pipeline.py:796`).
 
 **The decode.** Decided by senpai 2026-11-01 (vetoable). Proposed by Claude Opus 5.5, 2026-10-31. Reason: these rules
