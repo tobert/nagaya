@@ -478,6 +478,13 @@ and milestone 23 is next.
     The gogi suite gave 83 ok, 0 FAIL and 4 skip for `qwen-image-fusal`. For mk after a swap, it gave 343 ok, 0 FAIL
     and 12 skip.
 
+    The approaches to the speed of a step, each tested on gfx1151host:
+
+    - flash attention: 5.8 s to 4.2 s at 1024 by 1024, with the same gaps of the gates. It is the default.
+    - attention of several heads in one GEMM: no gain, so the change went.
+    - the fastest deterministic GEMM pick: 4.2 s to 4.06 s, but the bits could change when a table fills again. It
+      stays out (spec 12.1).
+
     Amy decides the Proposed notes of spec 11.1 ("A text engine on demand") and of `docs/deploy.md` ("Two engines on
     gfx1151host"). The notes "Decided by senpai" are vetoable: spec 11.9c "The attention" and the previews of 11.9c. The
     nagaya needs nothing in `~/src/diffusepal` now: the weights and the reference venv have copies (`b1694e6` and

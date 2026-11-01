@@ -38,3 +38,7 @@ required-features = ["hip"]
 [[test]]
 name = "hip_flash"
 required-features = ["hip"]
+
+[[example]]
+name = "gemm_timing"
+required-features = ["hip"]

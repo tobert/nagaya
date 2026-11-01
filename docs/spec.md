@@ -3969,6 +3969,13 @@ of the ontology holds such choices, and mk has none (ontology "Plan table").
   lineage is a new identity (ontology "Plan table").
 - Thus an update of ROCm can give new bits and a new digest. Each held conditioning (6.16) then fills again once. Amy
   accepts this ("let it ride").
+- The pick stays the first candidate with equal bits, not the fastest one. Decided by senpai 2026-11-01 (vetoable),
+  under Amy's goal "choose a balance of accuracy & speed". A table that picks by time can pick another kernel when
+  it fills again under the same lineage. Then the same identity gives other bits.
+- The test of that rule, on gfx1151host on 2026-11-01: `examples/gemm_timing.rs` timed each candidate of the large GEMMs
+  of a step alone. The fastest picks took 21% less time than the first picks. In the engine, a step of 1024 by 1024
+  went from 4.2 s to 4.06 s. A step of 1440 by 1440 went from 11.0 s to 10.9 s. The first job of a new size took 20
+  to 50 s more for the timing.
 - The `build` of the identity holds the hipBLASLt version too. The oracle tolerance (8.3) holds the change of bits
   from a new lineage. A new lineage that breaks a gate is a defect to report.
 
