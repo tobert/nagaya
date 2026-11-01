@@ -96,7 +96,8 @@ in a lock: one thread owns it (3.2).
 Do them in this order. Each milestone ends with all checks green and one or more commits. Milestones 1 to 14 are
 done, and `docs/history.md` keeps their full text, and the merges where the run recorded them. Milestone 15
 is done on gfx1151host, and milestones 15s, 16, 17, 18 and 19 are done on b70host. Milestones 20 and 21 wait, because
-work on b70host is paused (Amy, 2026-10-31). Milestone 22 is next, on gfx1151host.
+work on b70host is paused (Amy, 2026-10-31). Milestone 22 is done on gfx1151host, but Amy still retires diffusepal,
+and milestone 23 is next.
 
 1. **Workspace.** The Cargo workspace, its crates, `rustfmt.toml` and the dev profile. Done.
 2. **Engine trait.** The ABI core and capabilities as traits, with a fake engine and a broken fake for the gates. Done.
@@ -467,6 +468,29 @@ work on b70host is paused (Amy, 2026-10-31). Milestone 22 is next, on gfx1151hos
        the whole oracle.
     8. **Route and deploy.** Serve the model through council v2, and add it to the profile of gfx1151host. Run the gogi
        suite. Then Amy retires diffusepal.
+
+    Done on 2026-11-01 at 16:50, on gfx1151host. `nagaya.service` runs the build of `23f7b86`. Qwen-Image is resident and
+    mk is on demand; the load route swaps them. A step of 1024 by 1024 takes 4.2 s with flash attention, and an image
+    of 40 steps takes 176 s. A swap to mk took 28.5 s, and the swap back 8.0 s. The image after the round trip had the
+    same object id as before.
+
+    The gogi suite gave 83 ok, 0 FAIL and 4 skip for `qwen-image-fusal`. For mk after a swap, it gave 343 ok, 0 FAIL
+    and 12 skip.
+
+    Amy decides the Proposed notes of spec 11.1 ("A text engine on demand") and of `docs/deploy.md` ("Two engines on
+    gfx1151host"). The notes "Decided by senpai" are vetoable: spec 11.9c "The attention" and the previews of 11.9c. Move
+    the weights out of `~/src/diffusepal/models` before the retirement, because the profile reads them there. The
+    commits:
+
+    - step 1, the spec: `74034db` to `ca7c6e1`, the merge `9a559eb`, and Amy's decisions `65246fe`;
+    - step 2, the oracle: `ae47b39`, and the bf16 baselines `7021537`;
+    - step 3, the family: `3399eae`;
+    - step 4, `nagaya-mk-hip`: `3ee48b9`, `ad70019`, `88a243e`, `d8c71b1`, `2fb024b`;
+    - steps 5 to 7, the engine: `c9c1b4a`, `b675422`, `cb10e8b`, `15be802`, `5b2baf3`, `2f08cba`, `6ba048b`;
+    - step 8, the route and the deploy: `ef055ea`, `5649914`, `9e691cf`;
+    - the speed: flash attention `d5e65c6` and `fde517e`;
+    - the fixes of the deploy: `0e26a1e`, `711f3ac`, `1598924`, `28e6eb5`;
+    - the layout and the swap: `13227bf`, mk's close `6e8e013`, and the served model on demand `ce3a52e`, `23f7b86`.
 23. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
