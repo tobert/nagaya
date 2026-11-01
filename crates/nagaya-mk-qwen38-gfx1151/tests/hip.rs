@@ -839,3 +839,12 @@ fn mk_elide_0_runs_the_stages_in_build_order_with_the_same_bits() {
     assert_parts_equal("MK_ELIDE=0", &scheduled_parts, &plain_parts);
     assert!(scheduled == plain, "MK_ELIDE=0 changed the logits");
 }
+
+/// The process serves mk on demand from `describe()` before a load, so the description must be the open's facts.
+#[test]
+fn describe_gives_the_identity_and_the_limits_of_the_open() {
+    let (identity, limits) = nagaya_mk_qwen38_gfx1151::describe().expect("describe mk");
+    let engine = open().expect("open mk");
+    assert_eq!(identity, engine.identity());
+    assert_eq!(limits, engine.limits());
+}

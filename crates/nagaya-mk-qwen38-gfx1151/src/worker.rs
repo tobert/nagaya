@@ -495,6 +495,24 @@ pub(crate) fn start(paths: MkPaths) -> Result<Arc<Worker>, MkError> {
     }))
 }
 
+/// The identity and the limits of the engine on `paths`, with no GPU and no weights in memory: the facts that `open`
+/// gives after the load. The process serves an engine on demand from them before it loads (spec 11.1).
+pub(crate) fn describe(paths: &MkPaths) -> Result<(Identity, Limits), MkError> {
+    removed_knob_problem(|knob| std::env::var_os(knob).is_some())?;
+    paths.validate()?;
+    let digest = gguf::spot_digest(&paths.shards)?;
+    let fast_qmm = fast_qmm()?;
+    let tiles = tiles()?;
+    let (_, build) = binding::linked().map_err(MkError::new)?;
+    let text = gguf::text_keys(&paths.shards[0])?;
+    let model = gguf::Model::open(&paths.shards)?;
+    let (_, arena_bytes) = arena::plan(model.tensors(), tiles)?;
+    Ok((
+        spec::identity(&paths.shards, &build, fast_qmm, tiles, &digest, &text),
+        spec::limits(arena_bytes),
+    ))
+}
+
 /// Read the shards, plan the arena and fill it (milestone 15 step 6): the shard maps, the PLE table, the arena and the
 /// weight table.
 fn load_weights(

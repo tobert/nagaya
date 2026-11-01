@@ -271,6 +271,15 @@ fn serve(
     tracing::info!("http listening on {}", server.local_addr());
     published(node.publish_machine(&inventory, &profile));
     published(node.engines_loading(&names));
+    // The engines on demand that the council serves before they load (spec 11.1). The facts come before the start,
+    // because the start takes the registry.
+    let described = match serving::describe_on_demand(&served_profile, &registry) {
+        Ok(described) => described,
+        Err(error) => {
+            tracing::error!("{error}");
+            return ExitCode::RefusedStart;
+        }
+    };
     let options = lifecycle::Options::new(lifecycle::DEFAULT_OPEN_TIMEOUT)
         .cpu_sets(cpu_sets)
         .arenas(arenas, fd_store)
@@ -300,10 +309,11 @@ fn serve(
     published(node.engines_state(&waiting, EngineState::Unloaded));
     // The council routes attach before READY (spec 10.1, 11.7). A failure here refuses the start (spec 10.4).
     let ports = ready.process.ports();
-    let council = match serving::council(
+    let council = match serving::council_with(
         &serving::FamilyRegistry::compiled_in(),
         &served_profile,
         &ready.opened,
+        &described,
         &ports,
         &config.store_dir,
         &nagaya::qwen3tts::peers(&served_profile),

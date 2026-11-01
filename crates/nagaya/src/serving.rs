@@ -8,13 +8,14 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use nagaya_abi::Identity;
+use nagaya_abi::{Identity, Limits};
 use nagaya_council::family::Family;
 
+use crate::admission::Registry;
 use crate::council::{Service, ServiceConfig};
 use crate::http::{Council, Served};
 use crate::process::{OpenedEngine, Ports};
-use crate::profile::PlacementProfile;
+use crate::profile::{PlacementProfile, Residency};
 
 /// A family library that an opener made.
 pub struct OpenedFamily {
@@ -151,6 +152,44 @@ fn open_qwen38(identity: &Identity, table: &toml::Table) -> Result<OpenedFamily,
     })
 }
 
+/// An engine on demand that its factory describes: the facts that its open will report (`Factory::describe`).
+#[derive(Clone, Debug)]
+pub struct Described {
+    /// The engine name of the profile.
+    pub name: String,
+    /// The identity that the open will report.
+    pub identity: Identity,
+    /// The limits that the open will report.
+    pub limits: Limits,
+}
+
+/// The engines on demand of `profile` that their factories describe. They are not loaded at the start, and the
+/// council serves each one whose family has a library (spec 11.1). A description that fails is an error, so the
+/// process refuses to start; a kind with no description gives none.
+pub fn describe_on_demand(profile: &PlacementProfile, registry: &Registry) -> Result<Vec<Described>, String> {
+    let mut described = Vec::new();
+    for placement in profile
+        .engines
+        .iter()
+        .filter(|placement| placement.residency == Residency::OnDemand)
+    {
+        let Some(factory) = registry.factory(&placement.kind) else {
+            continue;
+        };
+        let facts = factory
+            .describe(&placement.config)
+            .map_err(|error| format!("cannot describe engine `{}`: {}", placement.name, error.message))?;
+        if let Some((identity, limits)) = facts {
+            described.push(Described {
+                name: placement.name.clone(),
+                identity,
+                limits,
+            });
+        }
+    }
+    Ok(described)
+}
+
 /// The council of a started process: a service for each opened engine whose kind has a family library.
 ///
 /// `peers` are the other engines whose snapshots the council reads and pins, with their served models, such as the
@@ -165,8 +204,41 @@ pub fn council(
     peers: &[(String, String)],
     call_cpus: Option<Vec<u32>>,
 ) -> Result<Council, String> {
+    council_with(families, profile, opened, &[], ports, store_dir, peers, call_cpus)
+}
+
+/// Like [`council`], and also a service for each described engine on demand, which is not loaded yet (spec 11.1).
+#[allow(clippy::too_many_arguments)]
+pub fn council_with(
+    families: &FamilyRegistry,
+    profile: &PlacementProfile,
+    opened: &[OpenedEngine],
+    described: &[Described],
+    ports: &Ports,
+    store_dir: &Path,
+    peers: &[(String, String)],
+    call_cpus: Option<Vec<u32>>,
+) -> Result<Council, String> {
     let mut models = Vec::new();
-    for engine in opened {
+    // A described engine goes through the same family plan as an opened one, from the facts of its description.
+    let as_opened: Vec<(OpenedEngine, bool)> = opened
+        .iter()
+        .cloned()
+        .map(|engine| (engine, false))
+        .chain(described.iter().map(|engine| {
+            (
+                OpenedEngine {
+                    name: engine.name.clone(),
+                    thread: std::thread::current().id(),
+                    identity: engine.identity.clone(),
+                    limits: engine.limits.clone(),
+                    handoff: None,
+                },
+                true,
+            )
+        }))
+        .collect();
+    for (engine, is_described) in &as_opened {
         let placement = profile
             .engines
             .iter()
@@ -181,9 +253,28 @@ pub fn council(
             continue;
         };
         plan.config.peers = peers.iter().filter(|(peer, _)| *peer != engine.name).cloned().collect();
-        let service = Service::attach(ports.clone(), plan.family, store_dir, plan.config)
-            .map_err(|error| format!("cannot serve engine `{}`: {error}", engine.name))?;
-        tracing::info!("serving model `{}` on engine `{}`", service.model(), engine.name);
+        let service = if *is_described {
+            Service::attach_described(
+                ports.clone(),
+                plan.family,
+                store_dir,
+                plan.config,
+                engine.identity.clone(),
+                engine.limits.clone(),
+            )
+        } else {
+            Service::attach(ports.clone(), plan.family, store_dir, plan.config)
+        }
+        .map_err(|error| format!("cannot serve engine `{}`: {error}", engine.name))?;
+        if *is_described {
+            tracing::info!(
+                "serving model `{}` on engine `{}`, which loads on demand",
+                service.model(),
+                engine.name
+            );
+        } else {
+            tracing::info!("serving model `{}` on engine `{}`", service.model(), engine.name);
+        }
         models.push(Served {
             service,
             aliases: Vec::new(),

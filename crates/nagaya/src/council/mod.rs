@@ -306,6 +306,26 @@ impl Service {
         Self::attach_with_clock(ports, family, store_dir, config, system_clock())
     }
 
+    /// Like [`Service::attach`], for an engine that is not loaded: the identity and the limits come from the
+    /// engine's description (`Factory::describe`), and the service asks the engine nothing (spec 11.1).
+    pub fn attach_described(
+        ports: Ports,
+        family: Arc<dyn Family>,
+        store_dir: &Path,
+        config: ServiceConfig,
+        identity: nagaya_abi::Identity,
+        limits: Limits,
+    ) -> Result<Self, ServiceError> {
+        Self::attach_facts(
+            ports,
+            family,
+            store_dir,
+            config,
+            system_clock(),
+            Some((identity, limits)),
+        )
+    }
+
     /// Like [`Service::attach`], with a clock that the caller chooses.
     pub fn attach_with_clock(
         ports: Ports,
@@ -313,6 +333,18 @@ impl Service {
         store_dir: &Path,
         config: ServiceConfig,
         clock: Clock,
+    ) -> Result<Self, ServiceError> {
+        Self::attach_facts(ports, family, store_dir, config, clock, None)
+    }
+
+    /// Attach with the facts of a description, or with the facts that the loaded engine gives.
+    fn attach_facts(
+        ports: Ports,
+        family: Arc<dyn Family>,
+        store_dir: &Path,
+        config: ServiceConfig,
+        clock: Clock,
+        described: Option<(nagaya_abi::Identity, Limits)>,
     ) -> Result<Self, ServiceError> {
         let (group, index) = ports.locate(&config.engine).ok_or_else(|| {
             ServiceError::internal(format!(
@@ -324,25 +356,30 @@ impl Service {
             .store()
             .cloned()
             .ok_or_else(|| ServiceError::internal("the process has no store; start it with a store directory"))?;
-        let (tx, rx) = mpsc::channel();
-        let work = move |engines: &mut [Box<dyn Engine>]| {
-            let engine = &mut engines[index];
-            let usable = engine.parts().is_some() && engine.slots().is_some();
-            (engine.identity(), engine.limits(), usable)
+        let (identity, limits, usable): (nagaya_abi::Identity, Limits, bool) = match described {
+            // A description declares its capabilities; the accessors answer when the engine loads.
+            Some((identity, limits)) => (identity, limits, true),
+            None => {
+                let (tx, rx) = mpsc::channel();
+                let work = move |engines: &mut [Box<dyn Engine>]| {
+                    let engine = &mut engines[index];
+                    let usable = engine.parts().is_some() && engine.slots().is_some();
+                    (engine.identity(), engine.limits(), usable)
+                };
+                submit(
+                    &ports,
+                    (group, index),
+                    Schedule::default(),
+                    None,
+                    nagaya_abi::Kind::Read,
+                    Box::new(Once {
+                        work: Some(Box::new(work)),
+                        tx,
+                    }),
+                )?;
+                rx.recv().map_err(|_| ServiceError::Cancelled)??
+            }
         };
-        submit(
-            &ports,
-            (group, index),
-            Schedule::default(),
-            None,
-            nagaya_abi::Kind::Read,
-            Box::new(Once {
-                work: Some(Box::new(work)),
-                tx,
-            }),
-        )?;
-        let (identity, limits, usable): (nagaya_abi::Identity, Limits, bool) =
-            rx.recv().map_err(|_| ServiceError::Cancelled)??;
         if !usable
             || !limits.capabilities.contains(&Capability::Parts)
             || !limits.capabilities.contains(&Capability::Slots)

@@ -28,6 +28,12 @@ fn worker() -> Result<Arc<Worker>, MkError> {
     Ok(worker)
 }
 
+/// The identity and the limits of the engine on the shards of `MK_SHARDS`, with no GPU and no load. An open gives the
+/// same facts.
+pub fn describe() -> Result<(Identity, Limits), MkError> {
+    crate::worker::describe(&MkPaths::from_env()?)
+}
+
 /// Open the mk engine, or make a new handle on the one that is open.
 ///
 /// The first call loads the weights, and so does the first call after the last handle dropped. Every call creates a

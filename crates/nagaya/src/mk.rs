@@ -3,7 +3,7 @@
 //! This module exists in a build with the feature `hip`, which links mk's engine statically. The factory reads
 //! `MK_SHARDS` from the environment, as the unit sets it. It opens no device until `open`.
 
-use nagaya_abi::{Engine, Limits};
+use nagaya_abi::{Engine, Identity, Limits};
 use nagaya_mk_qwen38_gfx1151::{MkError, MkPaths};
 
 use crate::admission::{Factory, GroupDevice, OpenError, OpenErrorKind, PlanError};
@@ -38,7 +38,27 @@ impl Factory for MkFactory {
         })?);
         let engine = nagaya_mk_qwen38_gfx1151::open().map_err(open_error)?;
         weights_problem(&planned, &engine.limits())?;
+        // The council may serve this engine from its description (spec 11.1). Another identity would give the
+        // council's recipes the wrong root, so it is an error.
+        let (identity, _) = nagaya_mk_qwen38_gfx1151::describe().map_err(open_error)?;
+        if identity != engine.identity() {
+            return Err(OpenError {
+                kind: OpenErrorKind::Other,
+                message: "the opened mk engine has another identity than its description; the shards or the \
+                          knobs changed after the start, so restart the process"
+                    .to_owned(),
+            });
+        }
         Ok(Box::new(engine))
+    }
+
+    fn describe(&self, config: &toml::Table) -> Result<Option<(Identity, Limits)>, PlanError> {
+        let planned = nagaya_mk_qwen38_gfx1151::plan(weights_bytes(config)?);
+        let (identity, limits) = nagaya_mk_qwen38_gfx1151::describe().map_err(|error| PlanError {
+            message: error.message().to_owned(),
+        })?;
+        weights_problem(&planned, &limits).map_err(|error| PlanError { message: error.message })?;
+        Ok(Some((identity, limits)))
     }
 }
 

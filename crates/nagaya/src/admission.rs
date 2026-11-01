@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 #[cfg(feature = "fake")]
 use nagaya_abi::fake::FakeAlways;
-use nagaya_abi::{ArenaFd, ArenaPart, Capability, CheckStrength, DeviceId, Engine, Limits, Tier};
+use nagaya_abi::{ArenaFd, ArenaPart, Capability, CheckStrength, DeviceId, Engine, Identity, Limits, Tier};
 use nagaya_ledger::{Admission, Budget, EnginePlan, Ledger, LedgerError, Profile};
 
 use crate::arena::FdName;
@@ -130,6 +130,13 @@ pub trait Factory {
 
     /// Open the engine on the calling thread. The process calls this on the group thread.
     fn open(&self, config: &toml::Table, devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError>;
+
+    /// Give the identity and the limits that an open of this config would report, with no GPU and no load. The
+    /// process serves a text engine on demand from them before it loads (spec 11.1). An open that reports other
+    /// facts is an error. A kind that cannot tell them gives none, and its engine on demand is not a text model.
+    fn describe(&self, _config: &toml::Table) -> Result<Option<(Identity, Limits)>, PlanError> {
+        Ok(None)
+    }
 
     /// Give the parts of the arena that `arena_export` gives after an open. It reads no weights, as `plan` does. A
     /// kind with no arena gives no part.
