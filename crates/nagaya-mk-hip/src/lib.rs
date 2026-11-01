@@ -6,11 +6,14 @@
 
 pub mod bf16;
 pub mod plan;
+pub mod rope;
 
 #[cfg(feature = "hip")]
 pub mod gemm;
 #[cfg(feature = "hip")]
 pub mod hip;
+#[cfg(feature = "hip")]
+pub mod ops;
 
 /// The build facts of the static library (spec 12.1): its SHA-256, the compiler, the HIP version and the hipBLASLt
 /// version. `None` in a build without `hip`.

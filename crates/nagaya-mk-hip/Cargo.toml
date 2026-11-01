@@ -22,3 +22,7 @@ tempfile = "3"
 [[example]]
 name = "gemm_candidates"
 required-features = ["hip"]
+
+[[test]]
+name = "hip_ops"
+required-features = ["hip"]
