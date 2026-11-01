@@ -90,6 +90,8 @@ fn the_profile_names_the_mk_engine_and_the_store_budgets() {
     let engine = &profile.engines[0];
     assert_eq!(engine.name, "mk");
     assert_eq!(engine.kind, "mk-qwen38-gfx1151");
+    // Amy, 2026-11-01: Qwen-Image stays loaded on gfx1151host for a while, and mk swaps in through the API (spec 3.3b).
+    assert_eq!(engine.residency, Residency::OnDemand);
     assert_eq!(engine.devices, vec![0]);
     // The mk factory plans from this key (`nagaya::mk`). It refuses any other key.
     let keys: Vec<&String> = engine.config.keys().collect();
@@ -111,6 +113,7 @@ fn the_profile_names_qwen_image_with_its_files_and_a_plan_table() {
     let engine = &profile.engines[1];
     assert_eq!(engine.name, "qwen-image-fusal");
     assert_eq!(engine.kind, nagaya::qwenimage21::KIND);
+    assert_eq!(engine.residency, Residency::Resident);
     assert_eq!(engine.devices, vec![0]);
     let config = nagaya::qwenimage21::config(&engine.config).unwrap();
     assert!(config.lora.is_some(), "the variant is FUSAL");

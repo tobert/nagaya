@@ -256,6 +256,18 @@ leave no room for the old store budget.
 - Before a large build on gfx1151host, unload `qwen-image-fusal` with `POST /nagaya/v1/engines/qwen-image-fusal/unload`
   (spec 3.3b), or stop the nagaya.
 
+**The layout of gfx1151host.** Decided 2026-11-01 (Amy, by interview). Qwen-Image is the resident engine, and mk is on
+demand. Amy: "current goal for nagaya is to have loaded what it's instructed to have loaded. so if we load both on
+gfx1151host, it's intentional. if we can't do it we can't do it, and only one stays". The API manages the swaps.
+
+- The start loads `qwen-image-fusal` only. A client swaps to mk with `POST /nagaya/v1/engines/mk/load` and the body
+  `{"unload": ["qwen-image-fusal"]}`, and back in the same way.
+- mk's open needs the bytes of its shards and its floor in MemAvailable: 93.68 GB and 12.88 GB. With Qwen-Image
+  loaded, gfx1151host has less, so a load of mk beside it fails. Load mk first to have both.
+- With both loaded, MemAvailable is about 16 GiB. mk stops a pass below 12 GiB, and KFD stops mk's queues when the
+  kernel moves the pages of mk's arena. On 2026-11-01 a `cargo test` of another session stopped the nagaya three
+  times this way. So do no build on gfx1151host while both are loaded.
+
 ## The weights size
 
 The engine config in `profile.toml` has one key, `weights_bytes`: the size of mk's weight arena (spec 2.4,
@@ -296,7 +308,7 @@ These rules fill gaps in the spec. Each one is the simplest choice that works.
 - The unit makes the store directory with `ExecStartPre`. The process reads its profile from there before it opens
   the store.
 - The gossip port is 8091, next to the HTTP port 8090.
-- The pool is 112 GiB, the store's host budget is 16 GiB and its NVMe budget is 50 GiB (see "The memory budgets").
+- The pool is 112 GiB, the store's host budget is 2 GiB and its NVMe budget is 50 GiB (see "The memory budgets").
 - `interval_copies` is 0 (spec 6.13), so the scheduler makes no interval copy. A larger value turns the copies on.
   A change of it restarts the process (spec 2.3).
 - `MK_FAST_QMM` stays unset. The library pin was unset too. Milestone 15 removed it, because the binary links its

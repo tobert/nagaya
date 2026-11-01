@@ -5,12 +5,16 @@
 # The mk engine (docs/engine-abi.md "v0 mk binding choices"). The binary links it. Its shards come from the unit's
 # environment (`MK_SHARDS`), and not from this table. The context pool is fixed in the binding
 # (`spec.rs`: `CONTEXT_COUNT`, `CONTEXT_CAPACITY`), so this profile names no context count and no context size.
+# mk is on demand (Amy, 2026-11-01): Qwen-Image stays loaded on gfx1151host for a while, and mk swaps in through the load
+# route for tests and some inference: `POST /nagaya/v1/engines/mk/load` with `{"unload": ["qwen-image-fusal"]}`
+# (spec 3.3b). Both can be loaded on purpose, mk first, but a build beside both can stop mk (docs/deploy.md).
 [[engines]]
 name = "mk"
 kind = "mk-qwen38-gfx1151"
 devices = [0]
 share = 1
 pin_identity = false
+residency = "on_demand"
 
 # `weights_bytes` is the size of mk's weight arena. mk knows it only after the weights load, and the plan reads no
 # weights (spec 2.4). The value below is measured: the first start on gfx1151 (2026-10-20, about 23:26) loaded 60.99 GiB and
@@ -20,8 +24,8 @@ pin_identity = false
 weights_bytes = 65490227200
 
 # Qwen-Image 2.1 with the FUSAL LoRA (milestone 22, docs/spec.md 11.9c): the served image model `qwen-image-fusal`.
-# It is resident beside mk while gfx1151host only serves (Amy, 2026-10-31). Before a large build on gfx1151host, unload it with the
-# load routes (spec 3.3b), or stop the nagaya. The config names each file of the variant; the code names none. The
+# It is the resident engine of gfx1151host (Amy, 2026-11-01). Before a large build on gfx1151host, unload it with the load routes
+# (spec 3.3b), or stop the nagaya. The config names each file of the variant; the code names none. The
 # plan reads the headers: 29,873,193,256 bytes of bf16 weights (the text tower, the transformer and the VAE decoder)
 # and 7 GiB of scratch, measured (`examples/measure.rs`, docs/deploy.md "The memory budgets"). The plan table of its
 # GEMMs is a file in the store directory (spec 12.1).

@@ -446,6 +446,10 @@ work on b70host is paused (Amy, 2026-10-31). Milestone 22 is next, on gfx1151hos
       - Variants with the same encoder share their conditionings.
       - The LoRA folds into the weights at the load.
       - gfx1151host gets an object budget of 200 GiB at step 8, as b70host has.
+    - **Decisions of 2026-11-01, after the deploy**, by interview.
+      - A host victim of the store moves to the NVMe tier (spec 6.9).
+      - Qwen-Image is resident on gfx1151host, and mk is on demand. The API swaps them (`docs/deploy.md`, "The layout of
+        gfx1151host").
 
     Do the steps in this order. Each step ends with the checks green.
     1. **Spec.** Write the Qwen-Image rules into the docs: the served model, the family, the job and the sampler.
