@@ -5,11 +5,15 @@
 //! behind the feature `hip`.
 
 pub mod names;
+pub mod noise;
+pub mod plan;
 pub mod safetensors;
 pub mod sampler;
 
 #[cfg(feature = "hip")]
 pub mod encoder;
+#[cfg(feature = "hip")]
+pub mod engine;
 #[cfg(feature = "hip")]
 pub mod transformer;
 #[cfg(feature = "hip")]

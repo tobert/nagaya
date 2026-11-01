@@ -12,10 +12,16 @@ name = "hip_encoder"
 required-features = ["hip"]
 
 [dependencies]
+blake3 = "1.8.2"
+nagaya-abi = { version = "0.1.0", path = "../nagaya-abi" }
 nagaya-mk-hip = { version = "0.1.0", path = "../nagaya-mk-hip" }
 serde_json = "1.0.154"
+sha2 = "0.10.9"
+toml = "1.1.8"
 
 [dev-dependencies]
+nagaya-conformance = { version = "0.1.0", path = "../nagaya-conformance" }
+nagaya-mk-sdxl-bmg = { version = "0.1.0", path = "../nagaya-mk-sdxl-bmg" }
 tempfile = "3"
 
 [[test]]
@@ -24,4 +30,8 @@ required-features = ["hip"]
 
 [[test]]
 name = "hip_vae"
+required-features = ["hip"]
+
+[[test]]
+name = "hip_engine"
 required-features = ["hip"]

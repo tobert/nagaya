@@ -1684,7 +1684,10 @@ bf16, which diffusepal runs, does not reach it either.
   0.99991.
 - The first run of the step and run gates on 2026-11-01: the steps had gaps of 2.2e-5 to 1.8e-4, at most 1.5 times
   the baseline. The run had 5.1e-5, and the baseline 9.1e-5.
-- The decode and image gates get their rule from their first measurement, in the same form.
+- The decode gate measures the mean of the absolute difference of each byte, with a floor of 0.25. The first run on
+  2026-11-01 had 0.415 (worst 28), and the baseline 0.417 (worst 29).
+- The oracle holds no run of the whole job in bf16, so the image gate keeps its cap: 2 on average in each byte. The
+  first run on 2026-11-01, from the encoder through the 4 steps to the decode, had 0.721 (worst 22).
 
 **8.4 Audit.** For some engines the tripwire is not reliable, because of their determinism class. For them, the
 nagaya runs an audit after each start, as a filler job in the same process. The audit builds a sample of stored
