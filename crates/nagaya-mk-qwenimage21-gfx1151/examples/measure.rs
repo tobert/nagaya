@@ -67,7 +67,10 @@ fn main() {
         let (w, h): (u32, u32) = (w.parse().unwrap(), h.parse().unwrap());
         for round in 0..2 {
             let job = ImageJob {
-                prompt: ImagePrompt::Tokens { ids: ids.clone(), cut: 14 },
+                prompt: ImagePrompt::Tokens {
+                    ids: ids.clone(),
+                    cut: 14,
+                },
                 width: w,
                 height: h,
                 steps: 4,

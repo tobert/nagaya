@@ -21,8 +21,6 @@ pub const MAX_IMAGES: usize = 4;
 pub const MAX_PIXELS: usize = 2_097_152;
 /// The longest quantum in milliseconds (D8). Spec 11.9c gives 60000 until a measure.
 pub const MAX_QUANTUM_MS: u32 = 60_000;
-/// The scale from a latent pixel to an image pixel.
-const SCALE: usize = 16;
 
 /// The files of a variant: the profile names each one (spec 11.9c, "The engine and its weights").
 #[derive(Clone, Debug, PartialEq)]
@@ -125,19 +123,12 @@ pub fn weights_bytes(config: &Config) -> Result<u64, String> {
     Ok(bytes)
 }
 
-/// The work buffers of the largest job, for the plan: one image of 2 MP at a time over 1010 condition rows, with the
-/// keys and values of the condition in 32 blocks. Step 8 of milestone 22 measures it.
+/// The work buffers of the largest job, for the plan: 7 GiB. Measured on gfx1151host on 2026-11-01 with
+/// `examples/measure.rs`: a job at 1440 by 1440 (2,073,600 pixels, the largest size but 1%) peaked at 6.41 GiB over
+/// the loaded engine, with the picks of its GEMM shapes, and at 3.63 GiB with them in the plan table. At 1024 by 1024
+/// the peaks were 3.39 and 1.99 GiB. The engine runs the images of a job one at a time, so the count adds no buffer.
 pub fn scratch_bytes() -> u64 {
-    let tokens = MAX_PIXELS / (SCALE * SCALE);
-    let qkv = (MAX_ROWS + tokens) * 3 * 4096 * 2;
-    let work = tokens * (4 * 4096 + 2 * 12288 + 12288) * 2;
-    // The scores in f32 and the probabilities in bf16, for one head at least.
-    let scores = tokens * (MAX_ROWS + tokens) * 6;
-    let kv = 32 * MAX_ROWS * 2 * 4096 * 2;
-    // The latents of 4 images, and the im2col scratch and the largest activations of the decode.
-    let latents = MAX_IMAGES * tokens * 64 * 2;
-    let decode = (256 << 20) + 6 * MAX_PIXELS * 288 * 2;
-    (qkv + work + scores + kv + latents + decode) as u64
+    7 << 30
 }
 
 fn term(name: &str, bytes: u64) -> MandatoryTerm {

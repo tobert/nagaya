@@ -31,6 +31,7 @@ struct ShimShape {
 
 unsafe extern "C" {
     fn nmk_blaslt_create(out: *mut *mut c_void) -> c_int;
+    fn nmk_blaslt_destroy(handle: *mut c_void) -> c_int;
     fn nmk_blaslt_version(out: *mut c_int) -> c_int;
     fn nmk_gemm_candidates(
         handle: *mut c_void,
@@ -270,6 +271,17 @@ impl Blaslt {
     }
 }
 
+impl Drop for Blaslt {
+    fn drop(&mut self) {
+        // SAFETY: the handle came from hipblasLtCreate, and nothing uses it after this. `Gemms` drops its prepared
+        // GEMMs before its handle.
+        let status = unsafe { nmk_blaslt_destroy(self.0) };
+        if status != 0 && !std::thread::panicking() {
+            panic!("hipblasLtDestroy failed with status {status}");
+        }
+    }
+}
+
 /// A prepared GEMM: one shape with the algorithm of one solution index.
 pub struct Gemm {
     ptr: *mut c_void,
@@ -327,10 +339,11 @@ fn random_values(count: usize, dtype: DataType, seed: u64) -> Vec<u8> {
 
 /// The GEMMs of one engine: the hipBLASLt handle, the plan table, the prepared shapes and one workspace.
 pub struct Gemms {
-    blaslt: Blaslt,
     table: PlanTable,
     prepared: BTreeMap<GemmShape, Gemm>,
     workspace: DeviceBuffer,
+    /// The handle drops last: Rust drops the fields in this order, so each prepared GEMM goes first.
+    blaslt: Blaslt,
 }
 
 impl Gemms {

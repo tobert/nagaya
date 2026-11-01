@@ -115,6 +115,11 @@ int nmk_blaslt_create(void** out) {
     return 0;
 }
 
+int nmk_blaslt_destroy(void* handle) {
+    NMK_TRY(hipblasLtDestroy(static_cast<hipblasLtHandle_t>(handle)));
+    return 0;
+}
+
 int nmk_blaslt_version(int* out) {
     hipblasLtHandle_t handle = nullptr;
     NMK_TRY(hipblasLtCreate(&handle));

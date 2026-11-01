@@ -238,6 +238,23 @@ If a change makes the sum larger than the pool, the process refuses the profile 
 shortfall in bytes. Then raise the pool in `profile.toml`, or lower `store.host`. Keep the pool 12 GiB below
 `MemTotal`.
 
+**Two engines on gfx1151host.** **Proposed** by Claude Opus 5.5, 2026-11-01, for milestone 22 step 8 (`AGENTS.md`,
+"Pool"). Reason: Amy chose to keep Qwen3.8 and Qwen-Image loaded while gfx1151host only serves, and the measures below
+leave no room for the old store budget.
+
+- The pool stays 112 GiB, and the floor of spec 4.7 stays 12 GiB.
+- The store's host budget goes from 16 GiB to 2 GiB. The NVMe budget stays 50 GiB, so a parked context still has a
+  place. A conditioning of Qwen-Image (spec 6.16) takes at most 7.9 MiB, and the prompt of the oracle 176 KiB.
+- Qwen-Image declares 29,873,193,256 bytes of weights and 7 GiB of scratch. `examples/measure.rs` measured the
+  scratch on 2026-11-01. A job of 1440 by 1440 peaked at 6.41 GiB over the loaded engine, with the picks of the
+  GEMMs. With the picks in the plan table, it peaked at 3.63 GiB. The open loads 28.11 GiB in 9.5 s.
+- mk declares 78,012,452,864 bytes. Qwen-Image declares 37,389,386,024, and the store 2,147,483,648. The sum is
+  117,549,322,536 bytes. The pool has 120,259,084,288, so 2.71 GB stay free. A staging copy of a context of 32,768
+  tokens is about 1.93 GB, so it still fits.
+- A store budget of 4 GiB would leave 0.56 GB, too little for that copy. A pool above 113.1 GiB breaks the floor.
+- Before a large build on gfx1151host, unload `qwen-image-fusal` with `POST /nagaya/v1/engines/qwen-image-fusal/unload`
+  (spec 3.3b), or stop the nagaya.
+
 ## The weights size
 
 The engine config in `profile.toml` has one key, `weights_bytes`: the size of mk's weight arena (spec 2.4,

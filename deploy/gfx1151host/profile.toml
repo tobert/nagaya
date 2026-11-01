@@ -19,6 +19,25 @@ pin_identity = false
 [engines.config]
 weights_bytes = 65490227200
 
+# Qwen-Image 2.1 with the FUSAL LoRA (milestone 22, docs/spec.md 11.9c): the served image model `qwen-image-fusal`.
+# It is resident beside mk while gfx1151host only serves (Amy, 2026-10-31). Before a large build on gfx1151host, unload it with the
+# load routes (spec 3.3b), or stop the nagaya. The config names each file of the variant; the code names none. The
+# plan reads the headers: 29,873,193,256 bytes of bf16 weights (the text tower, the transformer and the VAE decoder)
+# and 7 GiB of scratch, measured (`examples/measure.rs`, docs/deploy.md "The memory budgets"). The plan table of its
+# GEMMs is a file in the store directory (spec 12.1).
+[[engines]]
+name = "qwen-image-fusal"
+kind = "qwenimage21"
+devices = [0]
+share = 1
+pin_identity = false
+
+[engines.config]
+model = "/home/atobey/src/diffusepal/models/Qwen-Image-2.1"
+encoder = "/home/atobey/src/diffusepal/models/Qwen-Image-2.1-Anime-Fusal/text_encoders/qwen3-vl-8b-heretic-1.3.0_bf16.safetensors"
+lora = "/home/atobey/src/diffusepal/models/Qwen-Image-2.1-Anime-Fusal/loras/fusal-qwen-image-2.1-style-hires-exact-r56.safetensors"
+plan_dir = "/home/atobey/.local/share/nagaya/store"
+
 # gfx1151host has one pool for device(0) and host (spec 4.1): the unified memory.
 # 112 GiB = 120,259,084,288 bytes. The host has 131,156,408 kB (about 125.1 GiB, `proc/meminfo`), and the safety
 # floor of spec 4.7 is 12 GiB. That leaves 113.1 GiB. The pool takes 112 GiB: a whole count of GiB, a little less.
@@ -26,9 +45,11 @@ weights_bytes = 65490227200
 tiers = ["device(0)", "host"]
 bytes = 120259084288
 
-# The store (spec 4.1a). Both sizes are mk's defaults for its parked contexts (mk `service/__main__.py`):
-# 16 GiB in host memory, and 50 GiB on NVMe. The host budget takes its bytes from the pool above.
+# The store (spec 4.1a): 2 GiB in host memory and 50 GiB on NVMe. The host budget takes its bytes from the pool above.
+# It was mk's default of 16 GiB until Qwen-Image came (milestone 22); docs/deploy.md "The memory budgets" gives the
+# sum. Objects have their own budget of 200 GiB on the same disk (spec 6.15; Amy, 2026-11-01, as on b70host).
 [store]
 nvme = 53687091200
-host = 17179869184
+host = 2147483648
 interval_copies = 0
+objects = 214748364800

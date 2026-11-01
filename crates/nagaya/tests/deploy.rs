@@ -86,7 +86,7 @@ fn the_bootstrap_config_binds_mks_address() {
 #[test]
 fn the_profile_names_the_mk_engine_and_the_store_budgets() {
     let profile = profile();
-    assert_eq!(profile.engines.len(), 1);
+    assert_eq!(profile.engines.len(), 2, "mk and Qwen-Image (milestone 22)");
     let engine = &profile.engines[0];
     assert_eq!(engine.name, "mk");
     assert_eq!(engine.kind, "mk-qwen38-gfx1151");
@@ -101,6 +101,65 @@ fn the_profile_names_the_mk_engine_and_the_store_budgets() {
         store.host.is_some(),
         "the host budget of the store is explicit on gfx1151host"
     );
+    // Objects have their own budget of 200 GiB (spec 6.15; Amy, 2026-11-01).
+    assert_eq!(store.objects, Some(200 << 30));
+}
+
+#[test]
+fn the_profile_names_qwen_image_with_its_files_and_a_plan_table() {
+    let profile = profile();
+    let engine = &profile.engines[1];
+    assert_eq!(engine.name, "qwen-image-fusal");
+    assert_eq!(engine.kind, nagaya::qwenimage21::KIND);
+    assert_eq!(engine.devices, vec![0]);
+    let config = nagaya::qwenimage21::config(&engine.config).unwrap();
+    assert!(config.lora.is_some(), "the variant is FUSAL");
+    assert!(
+        config.plan_dir.is_some(),
+        "the plan table is a file in the store directory (spec 12.1)"
+    );
+}
+
+/// The plans of both engines and the store's host budget fit the pool, with room for a staging copy of a context of
+/// 32,768 tokens (docs/deploy.md, "Two engines on gfx1151host"). The plan of Qwen-Image reads the headers of the files that
+/// the profile names, so the test skips on a machine without them.
+#[test]
+fn both_engines_and_the_store_fit_the_pool_with_room_for_a_staging_copy() {
+    let profile = profile();
+    let config = nagaya::qwenimage21::config(&profile.engines[1].config).unwrap();
+    if !config.encoder.is_file() {
+        eprintln!("skipped: the Qwen-Image files of the profile are absent");
+        return;
+    }
+    let mk = profile.engines[0].config["weights_bytes"].as_integer().unwrap() as u64;
+    let mk_terms: u64 = nagaya_mk_qwen38_gfx1151_plan(mk);
+    let qwen: u64 = nagaya_mk_qwenimage21_gfx1151::plan::plan(&config)
+        .unwrap()
+        .memory
+        .mandatory
+        .iter()
+        .map(|term| term.bytes)
+        .sum();
+    let pool = [TierSpec::from(Tier::Device(0)), TierSpec::from(Tier::Host)];
+    let budget = profile.budgets.iter().find(|budget| budget.tiers == pool).unwrap();
+    let store = profile.store.unwrap().host.unwrap();
+    let room = budget.bytes as i128 - (mk_terms + qwen + store) as i128;
+    eprintln!("mk {mk_terms}, qwen-image {qwen}, store {store}: {room} bytes stay free in the pool");
+    // A staging copy of a context of 32,768 tokens is about 1.93 GB (docs/deploy.md, "The memory budgets").
+    assert!(
+        room >= 1_930_000_000,
+        "the pool keeps {room} bytes free; a staging copy needs about 1.93 GB"
+    );
+}
+
+/// The mandatory terms of the mk engine for its weights: the weights, the pass scratch and the context pool. They are
+/// docs/deploy.md's numbers; the mk crate builds only with the feature `hip`.
+fn nagaya_mk_qwen38_gfx1151_plan(weights: u64) -> u64 {
+    assert_eq!(
+        weights, 65_490_227_200,
+        "a new weights size changes the sum of docs/deploy.md"
+    );
+    78_012_452_864
 }
 
 #[test]
