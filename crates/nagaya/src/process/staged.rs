@@ -1870,7 +1870,7 @@ pub(super) fn serve(
                     state => super::refuse(spec, &engine, state),
                 }
             }
-            Ok(GroupMessage::Ask(ask)) => asks.push_back(ask),
+            Ok(GroupMessage::Ask(ask)) => loads::take_ask(ask, asks, &links.ledger),
             Ok(GroupMessage::StageDone(done)) => jobs.stage_done(done, engines, threads),
             Ok(GroupMessage::HostedDone(done)) => jobs.hosted_done(done, engines, threads),
             Ok(GroupMessage::SwapStep(step)) => {

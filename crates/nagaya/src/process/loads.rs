@@ -257,6 +257,36 @@ fn unload_only(index: usize, members: &[Member], ledger: &Sender<LedgerMessage>)
     }
 }
 
+/// Take an ask that comes to a group. A load while a profile change runs is busy at once (spec 3.3a). Each other ask
+/// waits in order of arrival.
+///
+/// A load must not wait behind the retire of a change. That retire waits for the jobs of its engine, and a client
+/// can hold such a job until its load returns. A change cannot begin while a swap waits, so the answer stays true
+/// until this group plans the load.
+pub(super) fn take_ask(ask: Ask, asks: &mut VecDeque<Ask>, ledger: &Sender<LedgerMessage>) {
+    if matches!(ask.request, Request::Load(..)) {
+        let (reply, answer) = mpsc::channel();
+        if ledger.send(LedgerMessage::Changing(reply)).is_err() {
+            let _ = ask.reply.send(Err(LoadError::Stopped));
+            return;
+        }
+        match answer.recv() {
+            Ok(true) => {
+                let _ = ask.reply.send(Err(LoadError::Busy(
+                    "a profile change waits for the ledger, and no load runs until the ledger takes it".to_owned(),
+                )));
+                return;
+            }
+            Ok(false) => {}
+            Err(_) => {
+                let _ = ask.reply.send(Err(LoadError::Stopped));
+                return;
+            }
+        }
+    }
+    asks.push_back(ask);
+}
+
 /// Answer the asks that wait, in order of arrival, until one plans a swap (spec 3.3b). The group calls it only when
 /// it has no planned swap.
 ///

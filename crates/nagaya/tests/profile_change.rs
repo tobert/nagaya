@@ -470,6 +470,41 @@ fn a_load_while_a_change_waits_for_the_ledger_is_busy() {
     assert!(main.process.load("voice").is_ok(), "a load after the change");
 }
 
+/// A load that comes after the change gave its retire to the group is a 409 at once too (spec 3.3a). Before, the group
+/// queued the load behind the retire. The retire waited for the job of `chat`, and that job ended only after the load
+/// returned, so the load route never answered.
+#[test]
+fn a_load_behind_the_retire_of_a_change_is_busy_at_once() {
+    let mut main = Main::new();
+    let gate = hold_chat(&main);
+    let mut without_chat = profile(2000);
+    without_chat.engines.remove(0);
+    let (answer, _) = main.put(&without_chat);
+    assert!(matches!(answer, PutAnswer::Accepted(_)), "{answer:?}");
+    let ports = main.process.ports();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while ports.engine_state("chat") != Some(EngineState::Draining) {
+        assert!(
+            Instant::now() < deadline,
+            "the group did not plan the retire of chat in 5 s"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // The load runs on its own thread, so a load that waits fails the test and does not hang it.
+    let (reply, answer) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = reply.send(ports.load("voice"));
+    });
+    let load = answer.recv_timeout(Duration::from_secs(5));
+    gate.send(()).unwrap();
+    assert!(
+        matches!(load, Ok(Err(LoadError::Busy(_)))),
+        "a load behind the retire of the change: {load:?}"
+    );
+    main.applied();
+    assert_eq!(main.persisted(), without_chat);
+}
+
 /// The ledger takes the new profile only when the engines that it removes hold no context. A council request can end
 /// its context after the drop of its engine, and the ledger refused the profile then, which stopped the process.
 #[test]

@@ -493,6 +493,11 @@ impl OwnedLedger {
         Ok(admitted)
     }
 
+    /// True from the start of a profile change until the ledger takes its profile or the change ends (spec 3.3a).
+    pub fn changing(&self) -> bool {
+        self.changing
+    }
+
     /// End a profile change that was begun and not kept. Only the owner thread may call this.
     pub fn end_change(&mut self) {
         self.check_owner();
@@ -1013,6 +1018,9 @@ impl Start {
                         LedgerMessage::Loaded(reply) => {
                             let _ = reply.send(ledger.loaded.clone());
                         }
+                        LedgerMessage::Changing(reply) => {
+                            let _ = reply.send(ledger.changing());
+                        }
                         LedgerMessage::CheckProfile(profile, reply) => {
                             let _ = reply.send(ledger.check_profile(&profile, &ledger_registry, &ledger_inventory));
                         }
@@ -1516,7 +1524,7 @@ fn serve_plain(
                         state => refuse(spec, member.name(), state),
                     }
                 }
-                Ok(GroupMessage::Ask(ask)) => asks.push_back(ask),
+                Ok(GroupMessage::Ask(ask)) => loads::take_ask(ask, asks, &links.ledger),
                 Ok(GroupMessage::Park(reply)) => {
                     *cancelled += jobs.cancel_all();
                     // An ask that waits gets no reply. Its caller hears that the group stopped.
@@ -1802,6 +1810,8 @@ enum LedgerMessage {
     BeginChange(PlacementProfile, Sender<Result<Admitted, AdmitError>>),
     /// End a profile change that was not kept.
     EndChange,
+    /// Tell if a profile change runs, so that a group refuses a load at once (spec 3.3a).
+    Changing(Sender<bool>),
     /// Take a new profile when no swap runs and the gone engines are free, or give `None` (spec 3.3a).
     TryReprofile(
         PlacementProfile,
