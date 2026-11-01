@@ -368,6 +368,11 @@ pub fn wait_with_events(
             on_event(event);
             continue;
         };
+        // The log names the reason, not only systemd's status line: a crash with no line in the log has no cause to
+        // read (spec 8.5, 9.1).
+        if let Some(reason) = stop_reason(&event) {
+            tracing::error!("{reason}; the process stops (spec 8.5)");
+        }
         if let Some(notifier) = notifier {
             let _ = notifier.notify(&status(&event));
         }
@@ -421,6 +426,12 @@ pub fn stop(ready: &mut Ready, notifier: Option<&Notifier>, budget: Duration, si
         span.record("otel.status_code", "ERROR");
     }
     report
+}
+
+/// Why an event stops the process, for the log, or `None` for an event that does not stop it.
+pub fn stop_reason(event: &Event) -> Option<String> {
+    event.exit_code()?;
+    Some(status(event).trim_start_matches("STATUS=").to_owned())
 }
 
 /// The `STATUS=` text of an event that stops the process.
