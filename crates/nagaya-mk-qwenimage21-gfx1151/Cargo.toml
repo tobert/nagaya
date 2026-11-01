@@ -1,0 +1,19 @@
+[package]
+name = "nagaya-mk-qwenimage21-gfx1151"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+# Build the ops of nagaya-mk-hip with ROCm, and run the engine on gfx1151. A build without it needs no ROCm.
+hip = ["nagaya-mk-hip/hip"]
+
+[[test]]
+name = "hip_encoder"
+required-features = ["hip"]
+
+[dependencies]
+nagaya-mk-hip = { version = "0.1.0", path = "../nagaya-mk-hip" }
+serde_json = "1.0.154"
+
+[dev-dependencies]
+tempfile = "3"

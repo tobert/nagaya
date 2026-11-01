@@ -63,6 +63,7 @@ The crates live in directories under `crates/`. Use these crates:
 | `nagaya-sched` | jobs, quanta, classes, the order of ready quanta | 5 |
 | `nagaya-mk-qwen38-gfx1151` | the mk engine: mk's HIP code in `hip/`, its FFI binding, and the `Engine` trait on top | ABI "How mk maps" |
 | `nagaya-mk-hip` | the shared HIP ops of gfx1151: hipBLASLt with the plan table, the kernels of Qwen-Image | 12.1 |
+| `nagaya-mk-qwenimage21-gfx1151` | the Qwen-Image 2.1 engine on gfx1151: the encoder, the transformer, the VAE | 11.9c |
 | `nagaya-mk-bmg` | the megakernel interpreter of the B70 cards: Level Zero, the task protocol, the kernel source, one binary per engine | ABI "How mkviolet maps" |
 | `nagaya-mk-gemma4-bmg` | the mkviolet engine: Level Zero, the OpenCL C kernels, and the Gemma 4 host code; a card needs `xe` | ABI "How mkviolet maps" |
 | `nagaya-council` | council v2 logic with no I/O: the family interface, the sampler, request checks | 11 |
@@ -533,6 +534,12 @@ On gfx1151host, after a change to `nagaya-mk-hip`, also run this, with `nagaya.s
 cargo test -p nagaya-mk-hip --features hip --tests -- --test-threads=1
 ```
 
+After a change to `nagaya-mk-qwenimage21-gfx1151`, also run its `hip` tests with the model variables set:
+
+```
+cargo test -p nagaya-mk-qwenimage21-gfx1151 --features hip --tests -- --test-threads=1
+```
+
 `cargo test --lib` does not compile integration tests. Name `--tests`.
 
 #### Tests that need a model file
@@ -567,6 +574,11 @@ get ran sometimes, perhaps just a bump in our AGENTS.md"
   `signoff.md` gives the path. `tools/embeddinggemma2_golden.sh` writes the oracle into
   `target/embeddinggemma2-golden` or `EMBEDDINGGEMMA2_GOLDEN_DIR`, with no GPU job. The family tests read it too,
   and an absent oracle file skips the test, as an absent model does.
+- gfx1151host holds Qwen-Image 2.1 and FUSAL under `~/src/diffusepal/models/`. The tests of `nagaya-text-qwenimage21` read
+  the base folder from `QWENIMAGE21_MODEL_DIR`. The `hip` tests of `nagaya-mk-qwenimage21-gfx1151` read FUSAL's folder
+  from `QWENIMAGE21_FUSAL_DIR`, and the base folder too. Neither variable has a default.
+  `tools/qwenimage21_golden.sh` writes the oracle into `target/qwenimage21-golden` or `QWENIMAGE21_GOLDEN_DIR`, with
+  `nagaya.service` stopped. An absent oracle file skips a test, as an absent model does.
 - The report of a check names how many tests skipped for a missing model.
 
 On gfx1151host, run the oracle bench with `MK_SHARDS` set and both units inactive:

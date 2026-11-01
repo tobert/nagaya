@@ -1264,6 +1264,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nagaya-mk-qwenimage21-gfx1151"
+version = "0.1.0"
+dependencies = [
+ "nagaya-mk-hip",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "nagaya-mk-sdxl-bmg"
 version = "0.1.0"
 dependencies = [
