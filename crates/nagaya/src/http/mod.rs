@@ -116,6 +116,8 @@ pub struct Council {
     loads: Option<crate::process::Ports>,
     /// The calls to the main loop for the profile routes (spec 3.3). A council with none has no profile routes.
     profile: Option<std::sync::mpsc::Sender<crate::reprofile::ProfileCall>>,
+    /// The cluster from gossip (spec 11.1a). A council with none serves its own models only.
+    cluster: Option<Arc<crate::cluster::Cluster>>,
 }
 
 impl Council {
@@ -143,7 +145,14 @@ impl Council {
             pending: pending::PendingIds::default(),
             loads: None,
             profile: None,
+            cluster: None,
         })
+    }
+
+    /// Serve the cluster that gossip shows (spec 11.1a).
+    pub fn with_cluster(mut self, cluster: Arc<crate::cluster::Cluster>) -> Self {
+        self.cluster = Some(cluster);
+        self
     }
 
     /// Serve these speech services as council served models (spec 11.8a).
@@ -262,8 +271,42 @@ impl Council {
         }
     }
 
-    /// The identity of the server (gogi "Identity, limits, capabilities").
+    /// The identity of the server: this node and each peer that gossip shows (gogi "Identity, limits, capabilities",
+    /// spec 11.1a "The identity of the cluster").
+    ///
+    /// The models are those of this node, less each model whose name a peer keeps, and those of the peers, in byte
+    /// order of `model`. The limits and capabilities are those of this node, except `pins`: it is declared when any
+    /// live node declares it, with the smallest `pin_bytes` of those nodes.
     pub fn identity(&self) -> ServerIdentity {
+        let mut identity = self.local_identity();
+        if let Some(cluster) = &self.cluster {
+            let state = cluster.state();
+            identity.models.retain(|model| state.keeper(&model.model).is_none());
+            identity.models.extend(state.models().map(|model| model.entry.clone()));
+            let peer_pins = state
+                .servers()
+                .iter()
+                .filter(|server| server.capabilities.contains(&Capability::Pins))
+                .filter_map(|server| server.limits.pin_bytes);
+            if let Some(smallest) = identity.limits.pin_bytes.into_iter().chain(peer_pins).min() {
+                identity.limits.pin_bytes = Some(smallest);
+                if !identity.capabilities.contains(&Capability::Pins) {
+                    identity.capabilities.insert(0, Capability::Pins);
+                }
+            }
+            // The text routes forward when no local family has the model (spec 11.4f, 11.1a).
+            identity.extensions = if identity.models.is_empty() {
+                Vec::new()
+            } else {
+                vec![extensions::PREFIX.to_owned()]
+            };
+        }
+        identity.models.sort_by(|left, right| left.model.cmp(&right.model));
+        identity
+    }
+
+    /// The identity of this node alone. Its limits and capabilities go to gossip in `server` (spec 2.3).
+    pub fn local_identity(&self) -> ServerIdentity {
         // A speech service with a code book serves speech contexts, so it is a served model too (spec 11.8a).
         let models = self
             .models

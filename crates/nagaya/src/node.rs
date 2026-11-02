@@ -7,6 +7,7 @@ use std::time::Instant;
 use gogi_proto::identity::{Capability, ServedModel, ServerLimits};
 use serde_json::{Value, json};
 
+use crate::cluster::{Clash, Cluster, ClusterState};
 use crate::gossip::{ClusterView, Gossip, Key, PublishError};
 use crate::inventory::Inventory;
 use crate::notify::EngineState;
@@ -66,6 +67,12 @@ pub struct Node {
     logged_names: BTreeSet<String>,
     /// The peers in the last `name:conflict` value. It is empty when the node wrote no such key.
     conflict: Vec<String>,
+    /// The clashes of served model names that the node logged (spec 2.3).
+    logged_clashes: BTreeSet<Clash>,
+    /// The gossip problems of peers that the node logged.
+    logged_problems: BTreeSet<String>,
+    /// The entries of the last `model:conflict` value. It is empty when the node wrote no such key.
+    model_conflict: BTreeMap<String, String>,
 }
 
 impl Node {
@@ -78,6 +85,9 @@ impl Node {
             refused: false,
             logged_names: BTreeSet::new(),
             conflict: Vec::new(),
+            logged_clashes: BTreeSet::new(),
+            logged_problems: BTreeSet::new(),
+            model_conflict: BTreeMap::new(),
         }
     }
 
@@ -278,6 +288,49 @@ impl Node {
             "capabilities": capabilities,
         });
         self.gossip.publish(&Key::Server, &value)
+    }
+
+    /// Read the cluster from gossip into `cluster`. `local` holds the served models of this node. Call it often.
+    ///
+    /// The node logs one error for each clash of a served model name, and for each peer value that does not read. It
+    /// writes `model:conflict` while a peer keeps the name of a local model (spec 2.3, "A served model name in the
+    /// cluster").
+    pub fn observe_cluster(&mut self, cluster: &Cluster, local: &[ServedModel]) {
+        let view = self.gossip.view();
+        let state = ClusterState::observe(&cluster.state(), &view, self.gossip.node_name(), local);
+        for clash in state.clashes() {
+            if self.logged_clashes.insert(clash.clone()) {
+                tracing::error!(
+                    "error: served model `{}` has one name on node {} and node {}; node {} keeps the name until a \
+                     client renames one (spec 2.3)",
+                    clash.model,
+                    clash.keeper,
+                    clash.loser,
+                    clash.keeper
+                );
+            }
+        }
+        for problem in state.problems() {
+            if self.logged_problems.insert(problem.clone()) {
+                tracing::error!("error: {problem}; the peer's value is left out");
+            }
+        }
+        if *state.lost() != self.model_conflict {
+            if state.lost().is_empty() {
+                self.gossip.withdraw(&Key::ModelConflict);
+            } else {
+                let models: Vec<Value> = state
+                    .lost()
+                    .iter()
+                    .map(|(model, keeper)| json!({"model": model, "kept_by": keeper}))
+                    .collect();
+                if let Err(error) = self.gossip.publish(&Key::ModelConflict, &json!({"models": models})) {
+                    tracing::warn!("cannot publish to gossip: {error}");
+                }
+            }
+            self.model_conflict = state.lost().clone();
+        }
+        cluster.set(state);
     }
 
     /// Stop gossip.

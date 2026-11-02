@@ -316,6 +316,8 @@ fn serve(
     published(node.engines_state(&waiting, EngineState::Unloaded));
     // The council routes attach before READY (spec 10.1, 11.7). A failure here refuses the start (spec 10.4).
     let ports = ready.process.ports();
+    // The routes read the cluster that the main loop reads from gossip (spec 11.1a).
+    let cluster = Arc::new(nagaya::cluster::Cluster::new(node_name));
     let council = match serving::council_with(
         &serving::FamilyRegistry::compiled_in(),
         &served_profile,
@@ -340,7 +342,8 @@ fn serve(
             })
             .with_embeddings(nagaya::embeddinggemma2::embedding_services(&served_profile, &ports)?)
             .with_loads(ports.clone())
-            .with_profile(profile_calls.clone()))
+            .with_profile(profile_calls.clone())
+            .with_cluster(Arc::clone(&cluster)))
     }) {
         Ok(council) => Arc::new(council),
         Err(error) => {
@@ -353,7 +356,7 @@ fn serve(
     };
     // Peers read the served models and the server from gossip (spec 2.3, "What a node publishes for the cluster"). A
     // value past the bound refuses the start.
-    let local = council.identity();
+    let local = council.local_identity();
     if let Err(error) = node
         .engines_served(&council.served_by_engine())
         .and_then(|()| node.publish_server(&local.limits, &local.capabilities))
@@ -364,6 +367,8 @@ fn serve(
         std::mem::forget(ready.process);
         return ExitCode::RefusedStart;
     }
+    // The served models of this node. A peer that serves one of their names clashes with it (spec 2.3).
+    let local_models: Vec<_> = council.served_by_engine().into_values().flatten().collect();
     server.attach(Arc::clone(&council));
     lifecycle::notify_ready(notifier.as_ref(), &ready.opened);
     tracing::info!("ready with {} engines", ready.opened.len());
@@ -390,6 +395,7 @@ fn serve(
                 return Some(ExitCode::Crash);
             }
             node.check_name();
+            node.observe_cluster(&cluster, &local_models);
             // An internal error of a route, or of a profile change, stops the process (spec 8.5, 11.5).
             if council.failure().is_some() || process.ports().failure().is_some() {
                 return Some(ExitCode::Crash);
