@@ -11,6 +11,7 @@ mod forward;
 pub mod image;
 mod loads;
 mod objects;
+mod peers;
 pub mod pending;
 mod profile;
 mod routes;

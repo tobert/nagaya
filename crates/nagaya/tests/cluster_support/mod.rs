@@ -264,11 +264,17 @@ impl Reply {
 /// Send one request with `connection: close`, and read the whole response.
 pub fn send(addr: SocketAddr, method: &str, path: &str, body: Option<&Value>, headers: &[(&str, &str)]) -> Reply {
     let body = body.map(Value::to_string).unwrap_or_default();
+    let mut all = vec![("content-type", "application/json")];
+    all.extend_from_slice(headers);
+    send_bytes(addr, method, path, body.as_bytes(), &all)
+}
+
+/// Send one request of raw body bytes with `connection: close`, and read the whole response. A `HEAD` reads no body.
+pub fn send_bytes(addr: SocketAddr, method: &str, path: &str, body: &[u8], headers: &[(&str, &str)]) -> Reply {
     let mut stream = TcpStream::connect(addr).unwrap_or_else(|error| panic!("cannot connect to {addr}: {error}"));
     stream.set_read_timeout(Some(WAIT)).unwrap();
     let mut head = format!(
-        "{method} {path} HTTP/1.1\r\nhost: {addr}\r\nconnection: close\r\ncontent-type: application/json\r\n\
-         content-length: {}\r\n",
+        "{method} {path} HTTP/1.1\r\nhost: {addr}\r\nconnection: close\r\ncontent-length: {}\r\n",
         body.len()
     );
     for (name, value) in headers {
@@ -276,12 +282,12 @@ pub fn send(addr: SocketAddr, method: &str, path: &str, body: Option<&Value>, he
     }
     head.push_str("\r\n");
     stream.write_all(head.as_bytes()).unwrap();
-    stream.write_all(body.as_bytes()).unwrap();
-    read_reply(stream)
+    stream.write_all(body).unwrap();
+    read_reply(stream, method == "HEAD")
 }
 
 /// Read one response from a stream that the server closes after it.
-fn read_reply(stream: TcpStream) -> Reply {
+fn read_reply(stream: TcpStream, head: bool) -> Reply {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     reader.read_line(&mut line).unwrap();
@@ -306,6 +312,9 @@ fn read_reply(stream: TcpStream) -> Reply {
         .iter()
         .any(|(name, value)| name == "transfer-encoding" && value.contains("chunked"));
     let mut body = Vec::new();
+    if head {
+        return Reply { status, headers, body };
+    }
     if chunked {
         loop {
             line.clear();

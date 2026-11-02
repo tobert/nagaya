@@ -107,6 +107,17 @@ impl Caller {
 
     /// Send `call` to `peer` and give its answer as it comes. A 4xx or a 5xx is an answer. The body streams.
     pub async fn routed(&self, peer: &Peer, call: &Call) -> Result<Response<Incoming>, CallError> {
+        self.routed_with(peer, call, Full::new(call.body.clone())).await
+    }
+
+    /// Send `call` to `peer` with `body` in place of its body bytes, so a large body streams (spec 6.15, "The objects
+    /// of a forward"). Give the answer as [`Caller::routed`] does.
+    pub async fn routed_with<B>(&self, peer: &Peer, call: &Call, body: B) -> Result<Response<Incoming>, CallError>
+    where
+        B: hyper::body::Body + Send + 'static,
+        B::Data: Send,
+        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
         let refused = |reason: String| CallError::Refused {
             node: peer.node.clone(),
             reason,
@@ -127,7 +138,7 @@ impl Caller {
                 tracing::debug!("a connection to a peer ended with an error: {error}");
             }
         });
-        let request = self.request(peer, call);
+        let request = self.request(peer, call, body);
         sender.send_request(request).await.map_err(|error| CallError::Lost {
             node: peer.node.clone(),
             reason: error.to_string(),
@@ -183,8 +194,8 @@ impl Caller {
     }
 
     /// The request of `call` to `peer`, with the headers of the cluster.
-    fn request(&self, peer: &Peer, call: &Call) -> Request<Full<Bytes>> {
-        let mut request = Request::new(Full::new(call.body.clone()));
+    fn request<B>(&self, peer: &Peer, call: &Call, body: B) -> Request<B> {
+        let mut request = Request::new(body);
         *request.method_mut() = call.method.clone();
         *request.uri_mut() = call
             .path

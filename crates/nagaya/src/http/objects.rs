@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Extension, Path, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::put;
 use futures_util::StreamExt;
@@ -21,6 +21,7 @@ use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 use super::errors::{Failure, parse};
+use super::peers;
 use super::pending::{Lookup, PendingOutput};
 use super::routes::{answer, bytes, path_id};
 use super::{Council, RequestId};
@@ -268,10 +269,40 @@ async fn get_object(
     State(council): Shared,
     Extension(id): Id,
     Path(text): Path<String>,
+    method: Method,
     headers: HeaderMap,
 ) -> Response {
+    read(&council, method, &text, &headers, &id).await
+}
+
+/// A `GET` or a `HEAD` of an object or a pending id: from this node, or on a miss from the peer that holds it (spec
+/// 6.15, "Objects in the cluster"). The answer of the peer comes back as it is, and this node keeps no copy.
+pub(super) async fn read(
+    council: &Council,
+    method: Method,
+    text: &str,
+    headers: &HeaderMap,
+    id: &RequestId,
+) -> Response {
+    let local = read_here(council, text, headers, id).await;
+    let missed = peers::is_miss(local.status());
+    let call = peers::call(
+        method,
+        &format!("/council/v2/objects/{text}"),
+        headers,
+        &[header::RANGE],
+        axum::body::Bytes::new(),
+        id,
+    );
+    peers::read_on_miss(council, local, missed, true, call, headers).await
+}
+
+/// A read of an object or a pending id from this node alone.
+async fn read_here(council: &Council, text: &str, headers: &HeaderMap, id: &RequestId) -> Response {
+    let text = text.to_owned();
+    let id = id.clone();
     let result = async {
-        let store = store(&council)?;
+        let store = store(council)?;
         if text.starts_with("pending:") {
             if let Some(problem) = gogi_proto::ids::pending_id_problem(&text) {
                 return Err(invalid("id", format!("nothing was looked up: {problem}")));
