@@ -5,7 +5,8 @@ mod common;
 
 use common::{golden, rel};
 use nagaya_abi::{ImageSampler, ImageSpacing, steps_that_run};
-use nagaya_mk_sdxl_bmg::sampler::{History, Schedule, begin_index, step};
+use nagaya_mk_sdxl_bmg::sampler::{History, Schedule, begin_index, blend, image_start, step};
+use nagaya_text_sdxl::inputs::{binary, latent_mask};
 
 const SAMPLERS: [(&str, ImageSampler); 4] = [
     ("euler", ImageSampler::Euler),
@@ -182,4 +183,95 @@ fn img2img_follows_diffusers_from_the_start_latent_to_the_last_step() {
         let err = rel(&x, v("final_latent"));
         assert!(err < 1e-5, "{run}: final latent, relative error {err}");
     }
+}
+
+/// The runs of inpainting in `inpaint.safetensors`: the sampler, and the strength in percent.
+const INPAINT_RUNS: [(&str, ImageSampler, &str); 6] = [
+    ("euler", ImageSampler::Euler, "s99"),
+    ("euler_a", ImageSampler::EulerAncestral, "s99"),
+    ("dpmpp_2m_karras", ImageSampler::DpmPp2mKarras, "s99"),
+    ("dpmpp_2m_sde_karras", ImageSampler::DpmPp2mSdeKarras, "s99"),
+    ("euler", ImageSampler::Euler, "s100"),
+    ("dpmpp_2m_karras", ImageSampler::DpmPp2mKarras, "s100"),
+];
+
+/// A latent of `[1, 4, h, w]` as the engine keeps it: pixel-major rows of 4 channels.
+fn latent_rows(x: &[f32]) -> Vec<f32> {
+    let p = x.len() / 4;
+    (0..p).flat_map(|q| (0..4).map(move |c| x[c * p + q])).collect()
+}
+
+/// Inpainting with the latent blend against diffusers (spec 11.9b, "The blend"): the latent mask from the blurred
+/// mask, the start latent, and each step from the guided outputs of the reference. Then `known` and the blend of each
+/// step. The blend of the reference's own inputs must give its latent exactly, because the mask is 0 or 1.
+#[test]
+fn inpainting_follows_diffusers_with_the_blend_after_each_step() {
+    let (Some(inputs), Some(t)) = (golden("image_inputs.safetensors"), golden("inpaint.safetensors")) else {
+        return;
+    };
+    let blurred: Vec<u8> = inputs.values("mask.blurred").iter().map(|v| *v as u8).collect();
+    let mask = latent_mask(&binary(&blurred), 256, 320);
+    let want_mask: Vec<u8> = inputs.values("mask.latent").iter().map(|v| *v as u8).collect();
+    assert_eq!(mask, want_mask, "the latent mask");
+    assert!(
+        mask.contains(&0) && mask.contains(&1),
+        "the mask of the oracle keeps and repaints"
+    );
+    for (name, sampler, percent) in INPAINT_RUNS {
+        let run = format!("{name}.{percent}");
+        let v = |key: &str| latent_rows_of(&t, &format!("{run}.{key}"));
+        let steps = t.values(&format!("{run}.timesteps")).len();
+        let schedule = Schedule::new(sampler, ImageSpacing::Leading, steps);
+        let strength = t.f64s(&format!("{run}.strength"))[0];
+        let begin = begin_index(steps as u32, strength);
+        assert_eq!(
+            begin as f32,
+            t.values(&format!("{run}.begin"))[0],
+            "{run}: the begin index"
+        );
+        let n = steps - begin;
+        let (image_latent, start) = (v("image_latent"), v("noise.start"));
+        let size = image_latent.len();
+        let (latents, guided, stepped, known) = (v("latents"), v("guided"), v("stepped"), v("known"));
+        let noise = v("noise.step");
+        let mut x = image_start(&schedule, begin, &image_latent, &start, true, strength);
+        let err = rel(&x, &latents[..size]);
+        eprintln!("{run}: the start latent, relative error {err:.3e}");
+        assert!(err < 1e-6, "{run}: the start latent, relative error {err}");
+        let mut history = History::default();
+        for k in 0..n {
+            let i = begin + k;
+            let row = |all: &[f32], r: usize| all[r * size..(r + 1) * size].to_vec();
+            let draw = schedule.draws(i).then(|| row(&noise, k));
+            step(&schedule, i, &mut x, &row(&guided, k), draw.as_deref(), &mut history);
+            let err = rel(&x, &row(&stepped, k));
+            assert!(err < 1e-5, "{run} step {k}: the sampler output, relative error {err}");
+            let got = schedule.known(i, &image_latent, &start);
+            let err = rel(&got, &row(&known, k));
+            assert!(err < 1e-6, "{run} step {k}: known, relative error {err}");
+            // The blend of the reference's inputs gives the reference's latent exactly.
+            let mut exact = row(&stepped, k);
+            blend(&mut exact, &row(&known, k), &mask);
+            assert!(
+                exact == row(&latents, k + 1),
+                "{run} step {k}: the blend of the reference's inputs is not its latent"
+            );
+            blend(&mut x, &got, &mask);
+            let err = rel(&x, &row(&latents, k + 1));
+            assert!(err < 1e-5, "{run} step {k}: the latent, relative error {err}");
+        }
+        assert!(
+            known[(n - 1) * size..] == image_latent[..],
+            "{run}: known after the last step is the image latent"
+        );
+        let err = rel(&x, &v("final_latent"));
+        assert!(err < 1e-5, "{run}: the final latent, relative error {err}");
+    }
+}
+
+/// The tensor `name` of the reference with each latent of `[.., 4, h, w]` as pixel-major rows.
+fn latent_rows_of(t: &common::Tensors, name: &str) -> Vec<f32> {
+    let (shape, values) = t.get(name);
+    assert!(shape.ends_with(&[4, 40, 32]), "{name} is a latent of 4 channels");
+    values.chunks(4 * 40 * 32).flat_map(latent_rows).collect()
 }

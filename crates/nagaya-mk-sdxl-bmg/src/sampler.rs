@@ -163,6 +163,16 @@ impl Schedule {
         }
     }
 
+    /// `known` after step `i` of an inpainting job (spec 11.9b, "The blend"): the image latent with the start noise of
+    /// the next step, by `add_noise`. After the last step, it is the image latent with no noise.
+    pub fn known(&self, i: usize, image_latent: &[f32], noise: &[f32]) -> Vec<f32> {
+        if i + 1 < self.timesteps.len() {
+            self.add_noise(i + 1, image_latent, noise)
+        } else {
+            image_latent.to_vec()
+        }
+    }
+
     /// The factor of the start noise: `init_noise_sigma`.
     pub fn init_noise_sigma(&self) -> f32 {
         match self.sampler {
@@ -194,6 +204,54 @@ impl Schedule {
             self.sampler,
             ImageSampler::EulerAncestral | ImageSampler::DpmPp2mSdeKarras
         )
+    }
+}
+
+/// The start latent of a job with an image (spec 11.9b, "The schedule of a job with an image"). It is the image latent
+/// with the noise of step `begin`, by `add_noise`. An inpainting job at a strength of exactly 1.0 starts from the noise
+/// times `init_noise_sigma`, as text to image does.
+pub fn image_start(
+    schedule: &Schedule,
+    begin: usize,
+    image_latent: &[f32],
+    noise: &[f32],
+    inpaint: bool,
+    strength: f64,
+) -> Vec<f32> {
+    if inpaint && strength == 1.0 {
+        let sigma = schedule.init_noise_sigma();
+        noise.iter().map(|v| v * sigma).collect()
+    } else {
+        schedule.add_noise(begin, image_latent, noise)
+    }
+}
+
+/// The blend after a step of an inpainting job (spec 11.9b, "The blend"): each value of `x` becomes
+/// `(1 - m) * known + m * x`. `x` and `known` are pixel-major rows of 4 channels, and `mask` has the latent mask `m`,
+/// 0 or 1, for each latent pixel.
+pub fn blend(x: &mut [f32], known: &[f32], mask: &[u8]) {
+    assert_eq!(
+        x.len(),
+        known.len(),
+        "the blend takes one known value for each latent value"
+    );
+    assert_eq!(
+        x.len(),
+        4 * mask.len(),
+        "the latent mask has one value for each latent pixel"
+    );
+    for ((row, known), &m) in x
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(known.as_chunks::<4>().0)
+        .zip(mask)
+    {
+        assert!(m <= 1, "a latent mask value is 0 or 1, not {m}");
+        let m = f32::from(m);
+        for (x, k) in row.iter_mut().zip(known) {
+            *x = (1.0 - m) * k + m * *x;
+        }
     }
 }
 
