@@ -688,7 +688,7 @@ Decided: D1-D11.
 - (a) The engine schedules its own stages. The nagaya sees one quantum per pass.
 - (b) The engine declares stages and exports `stage_pass`. The nagaya schedules each stage on its device.
 
-Option (b) lets the scheduler fill an idle card, as mkviolet's low-priority path does today. A model split across
+Option (b) lets the scheduler fill an idle card, as mkviolet's low-priority path did. A model split across
 machines needs the same residual boundary later. But (b) needs the full segment shape: positions, meta, logit rows,
 a snapshot to restore, and the slot. It must also stop another job from writing the slot between a block's two
 stages.
@@ -803,7 +803,9 @@ first build of the stage path takes the simplest choice for each.
 
 Amy may stop running one model across both B70 cards and use them independently, "since they're the fastest memory
 we have at home". Today's Gemma 4 does not fit on one card. Thus per-card work means smaller engines, each with a
-group of one card: a smaller Gemma, "or probably a qwen and lfm".
+group of one card: a smaller Gemma, "or probably a qwen and lfm". Since milestones 17 to 19, each speech, image or
+embedding engine uses one card. It is in the group of Gemma 4, and it runs on the device thread of its card (spec
+3.2).
 
 **D2. Inputs.** An engine declares tokens, rows, or both. mk needs token ids even when it gets rows. Its per-layer
 embeddings (PLE) hash the token ids, and its PLE history is a fixed part (`engine.h:75`, `ple_rows`). gmk's audio rows

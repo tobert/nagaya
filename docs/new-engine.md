@@ -1,7 +1,8 @@
 # Add an engine, a family, a card or a machine
 
-This doc is the checklist for the third engine, family, card or machine. Each item has its reason. The items come
-from the two ports that exist: Qwen3.8 on gfx1151host (milestones 8 to 14) and Gemma 4 on b70host (milestone 15s). The
+This doc is the checklist for the next engine, family, card or machine. Each item has its reason. The items come
+from the first two ports: Qwen3.8 on gfx1151host (milestones 8 to 14) and Gemma 4 on b70host (milestone 15s). Four
+engines came after them, in milestones 17 to 22: Qwen3-TTS, SDXL, EmbeddingGemma 2 and Qwen-Image 2.1. The
 rules are in `docs/spec.md`, `docs/engine-abi.md` and `AGENTS.md`. This doc points at them and does not repeat them.
 
 This doc names mk, mkviolet, gogi and kaijutsu. `docs/ontology.md`, "The other projects", defines each one.
@@ -151,7 +152,7 @@ gets its devices").
   Reason: the runtime's device order can differ from the PCI order.
 - `limits()` after `open` equals the result of `plan` (engine-abi "Core").
 
-**How the two engines map.** Read engine-abi "How mk maps" and "How mkviolet maps" before you map the third. The
+**How the two engines map.** Read engine-abi "How mk maps" and "How mkviolet maps" before you map the next one. The
 two engines took different capabilities for the same rule:
 
 | Rule | mk (Qwen3.8) | Gemma 4 |
@@ -174,7 +175,8 @@ two engines took different capabilities for the same rule:
 - **Terms.** Declare every byte in `limits().memory`: the weights, the slots, the scratch, the pinned host buffers
   and the residual (spec 4.2). A pass never allocates. Measure a term that the code cannot sum: mk's context pool
   (`examples/context_pool.rs`) and pass scratch (`examples/pass_scratch.rs`). `open` refuses a pool that takes more
-  than it declares. Leave room in the budget: card 1 of b70host has about 2.3 GB left (`docs/deploy.md`).
+  than it declares. Leave room in the budget: card 1 of b70host had about 2.3 GB left beside `gemma` on 2026-10-21
+  (`docs/deploy.md`).
 - **Identity.** Fill the fields of spec 12.1: `model`, `checkpoint_digest`, `tokenizer_hash`, `template`, `family`,
   `numbers`, the plan table lineage, the bit settings with their class, and `canary_hash`. Today `numbers` holds the
   kernel's SHA-256, the compiler versions and the driver version. The plan table names the PCI ids of the card
@@ -370,10 +372,11 @@ Senpai does the cutover with Amy. Do not start, stop or enable a service yoursel
 These items are places where the docs and the code do not agree, or where a choice is still Proposed. This doc does
 not choose. Amy decides.
 
-- Spec 8.3 (`docs/spec.md:1207-1208`) says that a bench reports the Gemma 4 oracle numbers. No test or bench in
-  `crates/nagaya-mk-gemma4-bmg` reads `oracle.json`; only `crates/nagaya-text-gemma4/tests/oracle.rs` reads it.
+- Spec 8.3, "The Gemma 4 oracle" (`docs/spec.md:1608-1609`), says that a bench reports the Gemma 4 oracle numbers.
+  No test or bench in `crates/nagaya-mk-gemma4-bmg` reads `oracle.json`. Only
+  `crates/nagaya-text-gemma4/tests/oracle.rs` reads it.
 - Spec 6.14: drafts are a setting of the served model (Decided 2026-10-28). A test on the B70 cards must still show
   that drafts change no bit of Gemma 4. `f1ab9ad` decided the notes on the build in the digest, the wake call and the
   pause rule. The test stays open.
-- Three copies of the model-file helper exist (section 3). `AGENTS.md:287` names only the Qwen3.8 copy. Where the
+- Three copies of the model-file helper exist (section 3). `AGENTS.md:618` names only the Qwen3.8 copy. Where the
   helper of the third model lives is not decided.
