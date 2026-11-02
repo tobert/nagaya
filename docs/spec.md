@@ -398,6 +398,28 @@ check.
 **A profile for another host.** Decided 2026-11-02 (Amy, by interview). A profile `PUT` for another host publishes
 `profile:desired:<host>` under the node that takes the `PUT`. The target handles the key by the rules of 2.3.
 
+**The routes of a profile for another host.** **Proposed** by Claude Opus 5.5, 2026-11-02. Reason: Amy chose gossip
+for the path, so the coordinator cannot wait for the answer of the target. This note answers question 15.5.
+
+- The query `host` names the target: `PUT /nagaya/v1/profile?host=gfx1151host&version=7`. The body is the profile as JSON,
+  as for a local `PUT` (3.3).
+- A `host` equal to the name of this node is a local `PUT`. A `version` with it is a 400 `invalid_request` that names
+  `version`.
+- With another host, `version` is required, a whole number above 0. A missing or bad `version` is a 400 that names
+  `version`. A `host` that no live node has is a 404 `not_found` that names `host`.
+- The coordinator checks only that the body is a JSON object. Reason: the coordinator may lack the engine kinds of the
+  target, so the target checks the rest.
+- A `version` that is not higher than the version of each live `profile:desired:<host>` is a 409 `conflict` (11.5).
+- Otherwise the coordinator writes the key and gives a 202 `{"host", "version"}`. The result comes later. The
+  target's `profile:active` changes, or its `profile:refused` names the version (11.4a, "The cluster route").
+- The target handles a desired profile with the actions of 3.3, as for a local `PUT`. A version that comes while a
+  swap waits is refused with the reason `busy`. It counts as handled, so the client sends a higher version.
+- This replaces the stop on each change of 2.3, which `desired_profile` in `crates/nagaya/src/main.rs` does today. The
+  stop came before the changes in place of 3.3.
+- `GET /nagaya/v1/profile?host=<name>` gives the `profile:active` of that live node, from gossip. A `host` that no live
+  node has is a 404 that names `host`.
+- The other choice was to forward the `PUT` over HTTP to the target, which gives its real answer. Amy chose the key.
+
 ## 3. Process
 
 **3.1 One process per machine.** The nagaya owns every GPU on the machine (Amy: "we'd do 1 process per host that
@@ -576,7 +598,8 @@ and therefore probably smart to have good APIs for configuring and let an agent 
 Reason: a client needs a fixed shape for the change of 3.3, and for a read of the active profile.
 
 - `PUT /nagaya/v1/profile` takes the profile as JSON, in the shape of `profile.toml`. It changes only this machine.
-  Thus question 15.5 stays open for a `PUT` to another machine.
+  Thus question 15.5 stays open for a `PUT` to another machine. 2.4 has a Proposed answer of 2026-11-02 ("The routes
+  of a profile for another host").
 - A profile that does not parse, or that breaks a rule of 2.4 or 3.3a, is a 400 `invalid_request` with the param
   `profile`. A profile that does not fit is a 507 with the type `too_large`, the param `profile` and `shortfall`.
 - A profile equal to the active profile is a 200, with the action `keep` for each engine.
@@ -4346,7 +4369,9 @@ The inventories found these items. We correct each one when its code moves. We d
    On 2026-10-21, splits across 256 and 512 tokens gave the same bits in both classes of context (6.13).
 5. How does a profile `PUT` work across machines (2.3, 2.4, 11.5)? The machine that takes the `PUT` cannot
    return the target's 507, and 2.3 ignores an old version where 11.5 answers 409 (kaibo, 2026-10-20). Since
-   2026-10-28, `PUT /nagaya/v1/profile` changes only its own machine (3.3), so the question stays open.
+   2026-10-28, `PUT /nagaya/v1/profile` changes only its own machine (3.3), so the question stays open. Proposed
+   answer, 2026-11-02: the query `host` and a `version`, through `profile:desired:<host>` (2.4, "The routes of a
+   profile for another host").
 6. The template engine differs from jinja2 on integers past 2^127 and on a float key that is not finite (milestone
    11.5 text step). The chat template uses none of them. Which ones do we match?
 7. How far does mk's fast path (`MK_FAST_QMM` unset) move council decisions? At 249 tokens it moved logits by up to
