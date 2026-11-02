@@ -175,6 +175,11 @@ is the only source. Reason: two sources for one value can disagree. Decided 2026
 The node advertises `gossip_bind` to its peers (2.3). An unspecified address, `0.0.0.0` or `::`, is an address that no
 peer can reach. The process refuses it and exits 3, and the message names `gossip_bind`. Decided 2026-10-19.
 
+**An unspecified HTTP address.** **Proposed** by Claude Opus 5.5, 2026-11-02. Reason: the node publishes `http_bind` in
+`server` and in `engine:<name>` (2.3), and a peer sends each call of the cluster to it (11.1a). The process refuses an
+unspecified `http_bind`, `0.0.0.0` or `::`, as it refuses one for `gossip_bind`. It exits 3, and the message names
+`http_bind`. The other choice was to publish the address of `gossip_bind` with the port of `http_bind`.
+
 The bootstrap config has one more key, `node_name`. It is optional. Its default is the machine's host name. The name
 is the `<host>` of the gossip keys (2.3), and gossip uses it as the node id. Each machine in a cluster needs its own
 name.
@@ -343,6 +348,22 @@ hostname in the model name." A name is a `model` or an alias.
 - Replicas behind one name are a later design. Amy: "Maybe we can have some underlying thing to match on for fungible
   load balance-able models, but that will be rare in nagaya except maybe embedding and tiny model things maybe."
 - An engine name is unique in one profile only (2.4). Two nodes can each have an engine `gemma` (3.3b).
+
+**The check of a name.** **Proposed** by Claude Opus 5.5, 2026-11-02. Reason: the ledger knows no served model name
+before an engine opens, and the rule above needs the names of a new profile.
+
+- A factory gives the served model names of an entry with no open and no read of a file (`Factory::served_names`). An
+  image, speech or embedding kind gives the engine name or its fixed model. The kind `fake-toy` gives its key `model`.
+- A kind that cannot give them gives none. Today mk and Qwen-Image give none, so the check of a profile skips their
+  entries. Only the start check finds a clash of their names.
+- The check of a profile reads the names with the plans of the ledger check (2.4). A name is added when no entry of the
+  active profile gives it.
+- A refused local `PUT` is a 400 `invalid_request` with the param `profile`, because the profile breaks a rule of 2.3.
+  A refused desired profile writes `profile:refused` with that reason and no shortfall.
+- The start check compares the served models of the council with the live peers, before the node publishes them. The
+  node does not wait for its seeds, so a peer that it does not see yet makes a clash of the rules above.
+- The other choice was a 507, as for a profile that does not fit. A 507 names a shortfall in bytes, and a clash has
+  none.
 
 **2.4 Placement profile.** A placement profile names a machine's engines, their devices, their config, each tier's
 budget (4.1), each engine's share (D9), and pinned identities (12.1). A client reads or updates a machine's profile
@@ -2584,6 +2605,27 @@ same answer from each node.
   and asks no other node. A peer that does not answer in 2 s is left out, and the log names it.
 - The other choice was to keep these routes on the coordinator only. Then a pin through b70host could not hold a
   snapshot of a model of gfx1151host.
+
+**The open points of the routes with no model.** **Proposed** by Claude Opus 5.5, 2026-11-02. Reason: the rules above
+and 3.3b, 2.4 and 6.15 leave these choices open. The code of milestone 23 steps 5 and 6 needs one answer for each.
+
+- **The join of a broadcast write.** A route of pins, keeps or specs gives the first answer that is not a 2xx or a
+  404. The order is this node, then the peers in byte order of the name. A 413 is one such answer.
+- **The join of the sets.** The `held` of an id is true when any node held it. The `expires_in_s` of a `PUT` is the
+  smallest that a node gave, and `null` when no node held an id.
+- **A node with no home.** A node that serves no text model holds no spec, pin or snapshot. A read by id on it asks
+  the peers. When no peer holds the id, its own 503 stays the answer.
+- **The spec of a forward.** A post of the spec that the target refuses is the response, and nothing forwards. This is
+  the rule for the put of an object (6.15).
+- **A target that does not connect.** A `HEAD`, a put or a post before a forward that does not connect in 2 s gives the
+  503 `model_unavailable` of the forward.
+- **The forward of a load.** A peer that does not connect in 2 s gives a 503 `unavailable`, and the message names the
+  node. A load names no served model, so the 503 has no `model`.
+- **A desired profile past the bound.** A value of `profile:desired:<host>` past 8192 bytes (2.3) is a 413
+  `too_large` with the param `profile`.
+- **The order of a desired profile.** The target admits it, checks its names, persists it and acts on it, through the
+  code of a local `PUT`. It records the version before the change in place runs. It writes `profile:active` again
+  after each accepted change.
 
 **Trust.** Decided 2026-11-02 (Amy, by interview), proposed by Claude Opus 5.5, 2026-11-02. The cluster trusts the
 tailnet. Each node binds its HTTP and gossip addresses on the tailnet (2.1, 11.6). It trusts the gossip of each peer and
