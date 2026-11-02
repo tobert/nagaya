@@ -527,8 +527,10 @@ milestone 22 is done on gfx1151host. Milestone 23, the cluster, is next.
       forwards the whole request to the machine that holds the engine. A job split across machines comes later.
     - **Objects:** a `GET` of an object that this machine lacks asks each peer and gives the first hit. A forwarded
       request takes its objects to the target first.
-    - **Names:** a served model name is unique in the cluster. A second node that serves the name logs it, publishes
-      a conflict key, and does not list its copy.
+    - **Names:** a served model name is the id of a model in the whole cluster (Amy: "no 2 models can have the same
+      text name we use as an identifier"). A profile that adds a name that a peer serves is refused.
+    - **The cluster call:** one layer makes every call to peers. It routes when gossip names the holder, and else it
+      broadcasts to all and lets each peer answer 4xx or 5xx. Bloom filters or routes come later (spec 11.1a).
     - **Control:** `GET /nagaya/v1/cluster` gives the gossip view. A load or an unload of an engine on any node goes
       to the node that holds it. A profile `PUT` for another host publishes `profile:desired:<host>` (spec 2.4).
     - **Drafts:** prompt-lookup drafts wait for the next pass on gfx1151host (spec 6.14).
@@ -536,7 +538,7 @@ milestone 22 is done on gfx1151host. Milestone 23, the cluster, is next.
     Do the steps in this order:
     1. **Spec.** Write the forward, the objects, the names and the control routes into spec 2.3, 2.4, 3.3b, 6.15 and
        11. Amy decides each Proposed note.
-    2. **Join.** Seed each machine with the other, and publish the HTTP address of each engine (spec 2.3).
+    2. **Join.** Seed each machine with the other, and publish what spec 2.3 names. Build the cluster call.
     3. **Identity.** `identity.models` lists every served model in the cluster, with its status from gossip.
     4. **Forward.** A request for a model of a peer goes to that peer, and its stream comes back as it is.
     5. **Objects and names.** The `GET` on a miss, the objects of a forwarded request, and the name conflict.

@@ -303,9 +303,9 @@ b70host join one cluster, and each machine serves the models of both. Each machi
 the other in `seed_peers` (2.1). Each node publishes the HTTP address of each engine in `engine:<name>`, as the list
 above says. 11.1a gives the rules of the forward.
 
-**What a node publishes for the cluster.** **Proposed** by Claude Opus 5.5, 2026-11-02. Reason: a coordinator builds
-the identity of the cluster and forwards from gossip alone (11.1a). Thus gossip must hold each served model, the HTTP
-address of each node, and the server limits.
+**What a node publishes for the cluster.** Decided 2026-11-02 (Amy, by interview), proposed by Claude Opus 5.5,
+2026-11-02. Reason: a coordinator builds the identity of the cluster and forwards from gossip alone (11.1a). Thus gossip
+must hold each served model, the HTTP address of each node, and the server limits.
 
 - **The seeds.** A node that reaches no seed serves alone. It joins when a seed answers. A seed is only an address,
   and a node does not wait for its seeds before it serves.
@@ -325,26 +325,23 @@ address of each node, and the server limits.
 - Reason for the stop: a served model that no peer sees is a silent fallback. The other choice was to serve the model
   only on its own node with a warning. `published` in `crates/nagaya/src/main.rs` warns so for any key today.
 
-**A served model name in the cluster.** Decided 2026-11-02 (Amy, by interview). A served model name is unique in the
-cluster. A second node that serves the name logs it, publishes a conflict key, and does not list its copy.
+**A served model name in the cluster.** Decided 2026-11-02 (Amy, by interview). A served model name is the id of a
+model in the whole cluster, so two served models never share a name. Amy: "I think we should adopt a rule that no 2
+models can have the same text name we use as an identifier. Then if I want 2 qwens, I'd have them have some number or
+hostname in the model name." A name is a `model` or an alias.
 
-**Which node keeps a served model name.** **Proposed** by Claude Opus 5.5, 2026-11-02. Reason: each node must find the
-same keeper from its own view of gossip, with no other talk.
-
-- A name is a `model` or an alias. Two served models of two live nodes conflict when a name of one equals a name of
-  the other.
-- The node with the lower node name, in byte order, keeps the name. Reason: a node name does not change at a restart.
-  A rule by the start time moves the name to the other node at each restart.
-- Each node finds the keeper from the `served` entries in its view (2.3). Thus each coordinator lists and forwards to
-  the keeper only (11.1a).
-- The other node logs one error that names the model and both nodes. It writes the key `model:conflict` under its own
-  node, with the value `{"models": [{"model", "kept_by"}]}`, sorted by `model`.
-- It removes an entry when the conflict ends, and the key when no entry is left.
-- It does not list its copy in its identity. It forwards each request for the name to the keeper, as for any model of
-  a peer.
-- Its engine stays as it is. It loads and unloads by the load routes, and its `engine:<name>` key stays. Thus the
-  copy takes the name back when the keeper leaves the live set.
-- Two copies of one identity conflict too. Replicas of a served model are a later design.
+- A profile that adds a name that a live peer serves is refused, as a profile that does not fit is refused (2.4,
+  3.3). The refusal names the model and the peer. The start of a node whose profile has such a name exits 3 (10.4).
+- A clash can still happen, for example when two nodes join with profiles that were written apart. Then it is a
+  configuration error. Each node logs one error that names the model and both nodes.
+- Until a client renames one, the node with the lower node name, in byte order, serves the name. Reason: a node name
+  does not change at a restart, and each node finds the same keeper from its own view of gossip.
+- The other node writes the key `model:conflict` under its own node, with the value `{"models": [{"model",
+  "kept_by"}]}`, sorted by `model`. It removes an entry when the clash ends, and the key when no entry is left.
+- It does not list its copy, and it forwards each request for the name to the keeper (11.1a). Its engine stays as it
+  is, and its `engine:<name>` key stays.
+- Replicas behind one name are a later design. Amy: "Maybe we can have some underlying thing to match on for fungible
+  load balance-able models, but that will be rare in nagaya except maybe embedding and tiny model things maybe."
 - An engine name is unique in one profile only (2.4). Two nodes can each have an engine `gemma` (3.3b).
 
 **2.4 Placement profile.** A placement profile names a machine's engines, their devices, their config, each tier's
@@ -398,8 +395,9 @@ check.
 **A profile for another host.** Decided 2026-11-02 (Amy, by interview). A profile `PUT` for another host publishes
 `profile:desired:<host>` under the node that takes the `PUT`. The target handles the key by the rules of 2.3.
 
-**The routes of a profile for another host.** **Proposed** by Claude Opus 5.5, 2026-11-02. Reason: Amy chose gossip
-for the path, so the coordinator cannot wait for the answer of the target. This note answers question 15.5.
+**The routes of a profile for another host.** Decided 2026-11-02 (Amy, by interview), proposed by Claude Opus 5.5,
+2026-11-02. Reason: Amy chose gossip for the path, so the coordinator cannot wait for the answer of the target. This
+note answers question 15.5.
 
 - The query `host` names the target: `PUT /nagaya/v1/profile?host=gfx1151host&version=7`. The body is the profile as JSON,
   as for a local `PUT` (3.3).
@@ -789,8 +787,9 @@ on demand" of 2026-10-24.
 - **Any node.** Decided 2026-11-02 (Amy, by interview). A load or an unload of an engine on any node goes to the node
   that holds the engine.
 
-**The node of a load route.** **Proposed** by Claude Opus 5.5, 2026-11-02. Reason: an engine name is unique only in
-one profile (2.4), so two nodes can each have an engine `gemma`. A load must name one engine.
+**The node of a load route.** Decided 2026-11-02 (Amy, by interview), proposed by Claude Opus 5.5, 2026-11-02. Reason:
+an engine name is unique only in one profile (2.4), so two nodes can each have an engine `gemma`. A load must name one
+engine.
 
 - The query `host` names the node: `POST /nagaya/v1/engines/gemma/load?host=b70host`. A `host` that no live node
   has is a 404 `not_found` that names `host`.
@@ -1527,11 +1526,11 @@ comprehensive"). gogi's contract holds the text of the API: "Objects and keeps",
 peer, and it gives the first hit. A forwarded request takes its objects to the target first (11.1a). This is the
 first step of "A pull" above. The home machines, the copies and the checks of each range wait.
 
-**Objects in the cluster.** **Proposed** by Claude Opus 5.5, 2026-11-02. Reason: Amy's rule leaves open the order of
-the peers, the pending ids, and the copies.
+**Objects in the cluster.** Decided 2026-11-02 (Amy, by interview), proposed by Claude Opus 5.5, 2026-11-02. Reason:
+Amy's rule leaves open the order of the peers, the pending ids, and the copies.
 
-- **The order.** The coordinator asks the live peers one at a time, in byte order of the node name. It sends a `HEAD`
-  of the same path, with `nagaya-forwarded` (11.1a). A 404 moves to the next peer.
+- **The read.** The coordinator sends a `HEAD` of the same path to each live peer at once, as a broadcast read of the
+  cluster call (11.1a).
 - **The answer.** The first peer that does not give a 404 gets the `GET` or the `HEAD` of the client, with its
   `Range`. The status, the headers and the body of the peer come back as they are: 200, 206,
   308 or 416.
@@ -1937,8 +1936,8 @@ Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02. The route templa
 `request_id`. A status of 500 or more marks the span as an error. The span name has no `nagaya.` prefix, so it has the
 default rate of 9.3.
 
-**A forwarded request.** **Proposed** by Claude Opus 5.5, 2026-11-02. Reason: a forward (11.1a) crosses two nodes,
-and one trace must show both.
+**A forwarded request.** Decided 2026-11-02 (Amy, by interview), proposed by Claude Opus 5.5, 2026-11-02. Reason: a
+forward (11.1a) crosses two nodes, and one trace must show both.
 
 - The coordinator opens the span `nagaya.forward` under its HTTP server span. Its attributes are `nagaya.peer`, the
   name of the target node, and `http.response.status_code`.
@@ -2470,8 +2469,9 @@ otherwise we forward to whereever it is."
 - A `GET` of an object that this node lacks asks each live peer (6.15, "A read on a miss").
 - `GET /nagaya/v1/cluster` gives the gossip view (11.4a).
 
-**The identity of the cluster.** **Proposed** by Claude Opus 5.5, 2026-11-02. Reason: gogi lists every served model of
-"the server", and through any node the cluster is one server. Each node must give the same list.
+**The identity of the cluster.** Decided 2026-11-02 (Amy, by interview), proposed by Claude Opus 5.5, 2026-11-02.
+Reason: gogi lists every served model of "the server", and through any node the cluster is one server. Each node must
+give the same list.
 
 - `identity.models` holds the served models of this node and of each live peer, in byte order of `model`.
 - Each field of a peer's model comes from its `served` entry in gossip (2.3). The status comes from the state of its
@@ -2490,8 +2490,25 @@ otherwise we forward to whereever it is."
 - `extensions` holds `/nagaya/v1` when `identity.models` is not empty, because the text routes then forward
   (11.4f).
 
-**The forward.** **Proposed** by Claude Opus 5.5, 2026-11-02. Reason: Amy's rule names what forwards. It does not say
-how a coordinator finds the node, what it sends, or how a forward fails.
+**The cluster call.** Decided 2026-11-02 (Amy, by interview). Amy: "I feel like we should have a general way to forward
+to the cluster, can be simple at first, broadcast to all, let things 4xx or 5xx, and so on but later we could add bloom
+filters and or some routing". Each call from a node to its peers goes through one layer of the code, in two forms:
+
+- **Routed.** The node knows the peer from gossip: the holder of a served model (2.3) or of an engine (3.3b). The call
+  goes to that peer only ("The forward" below).
+- **Broadcast.** The node does not know which peer holds the thing, such as an object, a snapshot or a spec by id. The
+  call goes to each live peer at once.
+- A broadcast read takes the first answer that is not a 404, and the rest are dropped. A 404 comes only when each peer
+  gave a 404. Content ids name the same bytes on each node, so any hit is correct (6.2).
+- A broadcast write goes to each live peer, and the route says how it joins the answers. A 4xx or a 5xx of a peer is
+  its answer. The layer does not hide it and does not try again.
+- Each call carries `nagaya-forwarded` (below), so a peer answers from its own store and calls no other node. A peer
+  that does not connect in 2 s is left out, and the log names it.
+- Later, gossip can carry a bloom filter of the ids that each node holds, or a table of routes. Then a broadcast
+  becomes a routed call. The routes keep their rules.
+
+**The forward.** Decided 2026-11-02 (Amy, by interview), proposed by Claude Opus 5.5, 2026-11-02. Reason: Amy's rule
+names what forwards. It does not say how a coordinator finds the node, what it sends, or how a forward fails.
 
 - **The node of a model.** The coordinator finds the live node whose `served` entries name `model`, as a `model` or
   an alias (2.3). A model of this node never forwards, unless another node keeps its name (2.3).
@@ -2526,12 +2543,13 @@ how a coordinator finds the node, what it sends, or how a forward fails.
 - **A stop.** A stopping coordinator answers each new request with the 503 `unavailable`, also for a model of a peer.
   An open forward gets the wait of 2 s of 11.7, as a local request does.
 
-**The routes with no model.** **Proposed** by Claude Opus 5.5, 2026-11-02. Reason: gogi says that snapshots, pins and
-specs belong to the server, and here the server is the cluster. A client must get the same answer from each node.
+**The routes with no model.** Decided 2026-11-02 (Amy, by interview), proposed by Claude Opus 5.5, 2026-11-02. Reason:
+gogi says that snapshots, pins and specs belong to the server, and here the server is the cluster. A client must get the
+same answer from each node.
 
 - **Reads by id.** `GET /council/v2/snapshots/{id}` and `GET /council/v2/specs/{spec_id}` read the local store first.
-  On a miss, they ask each live peer in the order of 6.15 ("Objects in the cluster"). A 404 comes only when no node
-  holds the id.
+  On a miss, they make a broadcast read of the cluster call (11.1a), as objects do (6.15). A 404 comes only when no
+  node holds the id.
 - **Specs.** `POST /council/v2/specs` holds the spec on the coordinator only. `GET /council/v2/specs` lists the local
   specs only.
 - A forwarded decision takes its spec to the target first. The coordinator posts the spec that it holds, and the
@@ -2551,9 +2569,10 @@ specs belong to the server, and here the server is the cluster. A client must ge
 - The other choice was to keep these routes on the coordinator only. Then a pin through b70host could not hold a
   snapshot of a model of gfx1151host.
 
-**Trust.** **Proposed** by Claude Opus 5.5, 2026-11-02. The cluster trusts the tailnet. Each node binds its HTTP and
-gossip addresses on the tailnet (2.1, 11.6). It trusts the gossip of each peer and each request with
-`nagaya-forwarded`, and it checks no credential in v0. gogi has no authentication either (gogi "Served models").
+**Trust.** Decided 2026-11-02 (Amy, by interview), proposed by Claude Opus 5.5, 2026-11-02. The cluster trusts the
+tailnet. Each node binds its HTTP and gossip addresses on the tailnet (2.1, 11.6). It trusts the gossip of each peer and
+each request with `nagaya-forwarded`, and it checks no credential in v0. gogi has no authentication either (gogi "Served
+models").
 
 **11.2 Generation.** The nagaya runs one sampler for all engines. It applies top_k, top_p, min_p, then temperature.
 The draw is seeded, and the response reports the seed. Each engine has its own defaults. All engines share the SSE
@@ -3047,8 +3066,9 @@ Built in M18 step 3: `profile` (3.3, `74a5903`), and the load routes of 3.3b. Th
 built.
 Embeddings left this list on 2026-10-30. gogi's contract has them as `POST /council/v2/embeddings` (11.10).
 
-**The cluster route.** **Proposed** by Claude Opus 5.5, 2026-11-02. Reason: Amy decided that the route gives the
-gossip view (11.1a), and the web app finds its hosts there (`AGENTS.md` milestone 23 step 7). It needs a fixed shape.
+**The cluster route.** Decided 2026-11-02 (Amy, by interview), proposed by Claude Opus 5.5, 2026-11-02. Reason: Amy
+decided that the route gives the gossip view (11.1a), and the web app finds its hosts there (`AGENTS.md` milestone 23
+step 7). It needs a fixed shape.
 
 ```json
 GET /nagaya/v1/cluster
