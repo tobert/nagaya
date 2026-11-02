@@ -216,6 +216,7 @@ impl JobBody for ImageJobBody {
                 if let (Some(store), Some(declared)) = (&self.parts.store, &declared) {
                     self.parts.image.conditioning = cached_rows(store, declared, &self.parts.image).map(Arc::new);
                 }
+                let needs_mask = image.image_needs_mask();
                 let begun = image.image_begin(slot, &self.parts.image);
                 if let (Ok(Some(rows)), Some(store), Some(declared)) = (&begun, &self.parts.store, &declared) {
                     put_rows(
@@ -230,6 +231,12 @@ impl JobBody for ImageJobBody {
                 if let Err(error) = begun {
                     // A refusal is the client's fault: the job names a part the engine cannot take (spec 11.9a).
                     let error = match error.kind {
+                        PassErrorKind::Refused
+                            if needs_mask
+                                && (self.parts.image.init.as_ref()).is_none_or(|init| init.mask.is_none()) =>
+                        {
+                            ImageError::NoMask(error.message)
+                        }
                         PassErrorKind::Refused => {
                             let param = if self.parts.image.loras.is_empty() {
                                 "output"

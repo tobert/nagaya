@@ -92,6 +92,9 @@ pub enum ImageError {
     Unavailable { engine: String, state: EngineState },
     /// The engine refused the job, so nothing ran. `param` names the part of the request at fault (spec 11.9a).
     Refused { param: String, message: String },
+    /// The engine needs an image and a mask, and the job lacks one, so nothing ran. The route names the content of the
+    /// last `user` message (spec 11.9b, engine-abi "The declaration of a 9-channel UNet").
+    NoMask(String),
     /// The engine failed. The process logs it.
     Failed(String),
 }
@@ -107,7 +110,8 @@ impl std::fmt::Display for ImageError {
             ImageError::Busy(message)
             | ImageError::Timeout(message)
             | ImageError::Stopping(message)
-            | ImageError::Failed(message) => formatter.write_str(message),
+            | ImageError::Failed(message)
+            | ImageError::NoMask(message) => formatter.write_str(message),
             ImageError::Refused { message, .. } => formatter.write_str(message),
         }
     }

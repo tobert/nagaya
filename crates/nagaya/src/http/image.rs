@@ -60,9 +60,11 @@ fn invalid(param: impl Into<String>, message: String) -> ServiceError {
     ServiceError::Invalid(Invalid::param(param, message))
 }
 
-/// The service error of an image error. A failed engine is internal, so the process stops (spec 8.5).
-pub fn service_error(error: ImageError) -> ServiceError {
+/// The service error of an image error. A failed engine is internal, so the process stops (spec 8.5). `content` names
+/// the content of the last `user` message, the part of a job that lacks a mask (spec 11.9b).
+pub fn service_error(error: ImageError, content: &str) -> ServiceError {
     match error {
+        ImageError::NoMask(message) => invalid(content, message),
         ImageError::Busy(message) => ServiceError::Busy(message),
         ImageError::Timeout(_) => ServiceError::Timeout,
         ImageError::Stopping(_) => ServiceError::Stopping,
@@ -86,6 +88,9 @@ pub struct Checked {
     pub read: BTreeMap<String, u64>,
     /// The `mask_blur` of an inpainting job, for the A1111 chunk; none without a mask.
     pub mask_blur: Option<u32>,
+    /// The content of the last `user` message, such as `messages[0].content`. A refusal of an engine that needs a mask
+    /// names it (spec 11.9b, "The errors of a job with an image").
+    pub content: String,
 }
 
 impl Checked {
@@ -391,8 +396,12 @@ pub fn check(
         )
     })?;
 
+    let last = (request.context.messages.iter())
+        .rposition(|message| message.role == Role::User)
+        .expect("the prompt comes from a `user` message");
+    let content = format!("messages[{last}].content");
     if service.family().form() == ImageForm::Tokens {
-        return check_tokens(service, model, request, prompt, read);
+        return check_tokens(service, model, request, prompt, read, content);
     }
     let config = service.config();
     let mut negative = String::new();
@@ -569,6 +578,7 @@ pub fn check(
         schedule: crate::council::Schedule::of(request.class, request.priority),
         read,
         mask_blur,
+        content,
     })
 }
 
@@ -605,6 +615,7 @@ fn check_tokens(
     request: &GenerationRequest,
     prompt: String,
     read: BTreeMap<String, u64>,
+    content: String,
 ) -> Result<Checked, ServiceError> {
     let (mut width, mut height, mut steps, mut count) = (1024u64, 1024u64, 40u64, 1u64);
     let Some(output) = &request.output else {
@@ -704,6 +715,7 @@ fn check_tokens(
         schedule: crate::council::Schedule::of(request.class, request.priority),
         read,
         mask_blur: None,
+        content,
     })
 }
 
@@ -940,11 +952,11 @@ fn make(
 ) -> Result<GenerationDone, ServiceError> {
     let made = service
         .generate(checked.job.clone(), checked.schedule)
-        .map_err(service_error)?;
+        .map_err(|error| service_error(error, &checked.content))?;
     let mut pending: Vec<(String, Arc<super::pending::PendingOutput>)> = Vec::new();
     let result = (|| {
         for item in made.iter() {
-            match item.map_err(service_error)? {
+            match item.map_err(|error| service_error(error, &checked.content))? {
                 // A reply with no stream sends no event. The check refused `previews` with no stream.
                 Made::Previews { .. } | Made::Step { .. } if !stream => {}
                 Made::Step { step } => {

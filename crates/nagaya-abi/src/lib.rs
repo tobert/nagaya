@@ -1063,6 +1063,12 @@ pub trait Image {
 
     /// Free the state of the slot. A slot that holds no job is not a failure.
     fn image_clear(&mut self, slot: SlotId);
+
+    /// True when the engine refuses a job without `init` and `mask`, as an SDXL engine with a 9-channel UNet does
+    /// (engine-abi "The declaration of a 9-channel UNet"). The route then names the content of the last `user` message.
+    fn image_needs_mask(&self) -> bool {
+        false
+    }
 }
 
 /// The embedding capability (engine-abi "Embedding"). The engine never takes text: the family makes the ids (D2).

@@ -47,6 +47,8 @@ struct Painter {
     step: u32,
     /// False after the begin of a job with an image, until its first step runs the encode (engine-abi "Image inputs").
     encoded: bool,
+    /// True for a fake of a 9-channel UNet: it refuses a job without an image and a mask (engine-abi "Image inputs").
+    needs_mask: bool,
 }
 
 /// The steps that a job runs: `n` with an image, else the steps of the request.
@@ -68,6 +70,12 @@ impl Image for Painter {
             return Err(PassError {
                 kind: PassErrorKind::Refused,
                 message: "nothing ran: the LoRA is refused".to_owned(),
+            });
+        }
+        if self.needs_mask && job.init.as_ref().is_none_or(|init| init.mask.is_none()) {
+            return Err(PassError {
+                kind: PassErrorKind::Refused,
+                message: "nothing ran: the UNet has 9 input channels; give an image and a mask".to_owned(),
             });
         }
         self.jobs.lock().unwrap().push(job.clone());
@@ -132,6 +140,10 @@ impl Image for Painter {
         self.clears.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.job = None;
     }
+
+    fn image_needs_mask(&self) -> bool {
+        self.needs_mask
+    }
 }
 
 fn limits() -> Limits {
@@ -184,7 +196,8 @@ impl Engine for Painter {
     }
 }
 
-struct Painters(Jobs, Clears, Steps);
+/// The factory of the fake: its calls, and true for a fake of a 9-channel UNet.
+struct Painters(Jobs, Clears, Steps, bool);
 
 impl Factory for Painters {
     fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
@@ -199,6 +212,7 @@ impl Factory for Painters {
             job: None,
             step: 0,
             encoded: true,
+            needs_mask: self.3,
         }))
     }
 }
@@ -235,6 +249,15 @@ impl Fixture {
     }
 
     fn with(residency: Residency) -> Self {
+        Self::of(residency, false)
+    }
+
+    /// A fixture whose fake has a 9-channel UNet, so it refuses a job without an image and a mask.
+    fn nine_channels() -> Self {
+        Self::of(Residency::Resident, true)
+    }
+
+    fn of(residency: Residency, needs_mask: bool) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let jobs: Jobs = Arc::default();
         let clears: Clears = Arc::default();
@@ -242,7 +265,12 @@ impl Fixture {
         let mut registry = Registry::new();
         registry.register(
             "painters",
-            Box::new(Painters(Arc::clone(&jobs), Arc::clone(&clears), Arc::clone(&steps))),
+            Box::new(Painters(
+                Arc::clone(&jobs),
+                Arc::clone(&clears),
+                Arc::clone(&steps),
+                needs_mask,
+            )),
         );
         let profile = PlacementProfile {
             engines: vec![EnginePlacement {
@@ -1619,4 +1647,45 @@ fn each_error_of_a_job_with_an_image_names_its_part_or_member() {
         (StatusCode::NOT_FOUND, "messages[0].content[1]".to_owned())
     );
     assert!(fixture.take_jobs().is_empty(), "no refused request ran");
+}
+
+/// A 9-channel UNet without an image and a mask is a 400 that names the content of the last `user` message (spec 11.9b,
+/// "The errors of a job with an image"). A job with both runs, and another refusal of the engine keeps its part.
+#[test]
+fn a_9_channel_unet_without_an_image_and_a_mask_names_the_content_of_the_last_user_message() {
+    let fixture = Fixture::nine_channels();
+    let council = fixture.council();
+    let (image, _) = rgb_image();
+    let (mask, _) = gray_mask(512, 512);
+    let (image, mask) = (put_png(&council, &image), put_png(&council, &mask));
+    let mut later = with_parts("a fox", &[&image], json!({}), json!({}));
+    let last = later["context"]["messages"][0].clone();
+    later["context"]["messages"] = json!([
+        {"role": "user", "content": "an earlier prompt"},
+        {"role": "assistant", "content": "ok"},
+        last
+    ]);
+    for (body, param) in [
+        (request("a fox", json!({}), json!({})), "messages[0].content"),
+        (
+            with_parts("a fox", &[&image], json!({}), json!({})),
+            "messages[0].content",
+        ),
+        (later, "messages[2].content"),
+    ] {
+        assert_eq!(refused(&council, body), (StatusCode::BAD_REQUEST, param.to_owned()));
+    }
+    let (status, done) = generate(&council, with_parts("a fox", &[&image, &mask], json!({}), json!({})));
+    assert_eq!(status, StatusCode::OK, "{done}");
+    let id = put_object(&council, b"refuse");
+    let lora = with_parts(
+        "a fox",
+        &[&image, &mask],
+        json!({"loras": [{"id": id, "weight": 1.0}]}),
+        json!({}),
+    );
+    assert_eq!(
+        refused(&council, lora),
+        (StatusCode::BAD_REQUEST, "output.options.loras".to_owned())
+    );
 }
