@@ -3454,6 +3454,16 @@ the oracle need the names, the ranges and the errors before they can test them.
 - `count`, `seed`, `loras`, `cfg`, `sampler` and `clip_skip` work with an image as without one. Image `i` still uses
   the seed plus `i`.
 
+**The usage of a job with an image.** Proposed by Claude Opus 5.5, 2026-11-02, for milestone 20. Reason: "The
+request" says that the server does not read the objects of the other messages. gogi's council API says that `read`
+counts each distinct object that the request names (`usage.media`). The two rules differ for a context with earlier
+images, and 11.9a gives no rule for the steps of a job with an image.
+
+- `usage.media.read` counts each distinct object that the request names, once, in any message. Thus it counts the
+  image, the mask, and the objects of the other messages. Reason: a client of gogi's contract expects this count.
+- `usage.media.written.steps` is `n`, the count of steps that ran, as `progress.of` is. Without an image, it stays the
+  `steps` of the request.
+
 **The size of a job with an image.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30, for Amy's rules
 above. Reason: a resize would change the pixels that the client sent, and it would move the edge of the mask.
 
@@ -3474,6 +3484,11 @@ input before the job starts, so a bad input is a 400, not a failed job.
   no such case.
 - The nagaya ignores an alpha channel, as Pillow's `convert("RGB")` does (`image_processor.py:250`). diffusers takes
   an RGB image.
+- Proposed by Claude Opus 5.5, 2026-11-02, for milestone 20. A PNG with 1, 2 or 4 bits in a sample is a 400 that
+  names the part, as 16 bits is. A `tRNS` chunk has no effect, as in Pillow's `convert("RGB")` and `convert("L")`.
+  Reason: "8 bits in each channel" leaves these open, and the refusal is the simplest choice. Its cost: Pillow writes
+  a mask of mode `1` with 1 bit, and a palette of at most 16 colors with fewer than 8 bits. Pillow reads such a file
+  as 8-bit values, so a later rule can accept it.
 - Each channel `v` of the image becomes `2 * v / 255 - 1` in f32 (`image_processor.py:167` and `:220`).
 
 **The schedule of a job with an image.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30. Reason:

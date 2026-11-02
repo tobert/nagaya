@@ -127,6 +127,7 @@ fn a_lora_on_the_card_moves_the_encodings_and_a_unet_step_as_diffusers_does() {
             file: Arc::new(file),
         }],
         conditioning: None,
+        init: None,
     };
     // The job attaches the LoRA, then encodes with it.
     engine.image_begin(0, &job).unwrap();

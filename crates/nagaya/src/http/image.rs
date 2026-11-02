@@ -1,6 +1,10 @@
 //! Generations of a served image model (spec 11.9a): a prompt in, one PNG object for each image out, with the A1111
 //! `parameters` chunk. A stream sends a `preview` event after each step when the request asks for previews.
+//!
+//! The last `user` message can also hold an image and a mask as object parts (spec 11.9b). The route decodes and checks
+//! them before the job starts, and it pastes the kept pixels back after the decode.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::response::sse::{Event, Sse};
@@ -12,8 +16,11 @@ use gogi_proto::generation::{
 };
 use gogi_proto::identity::ServedModel;
 use gogi_proto::message::{Content, Part, Role};
-use gogi_proto::objects::{Named, check_reads, objects_of};
-use nagaya_abi::{DecodedImage, ImageJob, ImagePrompt, ImageSampler, ImageSpacing, LoraInput};
+use gogi_proto::objects::{Named, ObjectRef, check_reads, objects_of};
+use nagaya_abi::{
+    DecodedImage, ImageInit, ImageJob, ImagePrompt, ImageSampler, ImageSpacing, LoraInput, steps_that_run,
+};
+use nagaya_text_sdxl::inputs::{self, Png};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -75,6 +82,228 @@ pub struct Checked {
     /// The tokens of the prompt that the family took.
     pub tokens: u64,
     pub schedule: crate::council::Schedule,
+    /// The bytes of each distinct object that the request names, by id, for `usage.media.read` (spec 11.9b).
+    pub read: BTreeMap<String, u64>,
+    /// The `mask_blur` of an inpainting job, for the A1111 chunk; none without a mask.
+    pub mask_blur: Option<u32>,
+}
+
+impl Checked {
+    /// The steps that the job runs: `n` with an image (spec 11.9b), else the steps of the request.
+    pub fn steps_run(&self) -> u32 {
+        let job = &self.job;
+        job.init
+            .as_ref()
+            .map_or(job.steps, |init| steps_that_run(job.steps, init.strength))
+    }
+}
+
+/// The largest blur of a mask, in pixels, and the blur of a request that gives none (spec 11.9b).
+const MAX_MASK_BLUR: u64 = 64;
+const MASK_BLUR: u32 = 4;
+
+/// The strength of a request that gives none: A1111's 0.75 for img2img, and 0.99 for inpainting (spec 11.9b).
+const STRENGTH: f64 = 0.75;
+const INPAINT_STRENGTH: f64 = 0.99;
+
+/// The content id of an object part. Rule 1 of gogi's checks ran before, so a bad id is a defect of the route.
+fn content_id_of(object: &ObjectRef) -> ContentId {
+    ContentId::from_hex(object.id.trim_start_matches("blake3:")).expect("rule 1 checked the content id of each part")
+}
+
+/// Check rules 3 and 4 of gogi's council API for each object that the request names ("A server checks each object
+/// part"): the server holds it, as the media type that the part names. Give the bytes of each distinct object by id.
+fn held_objects(store: Option<&Mutex<ObjectStore>>, objects: &[Named]) -> Result<BTreeMap<String, u64>, ServiceError> {
+    let mut read = BTreeMap::new();
+    for Named { at, object, .. } in objects {
+        let id = content_id_of(object);
+        let held = store.and_then(|store| {
+            let store = store.lock().expect("the object store lock is poisoned");
+            store.mime_of(&id).map(str::to_owned).zip(store.bytes_of(&id))
+        });
+        let Some((mime, bytes)) = held else {
+            return Err(ServiceError::NotHeld {
+                message: format!(
+                    "nothing ran: {at} is {}, which the server does not hold; PUT it, then send the request again",
+                    object.id
+                ),
+                param: at.clone(),
+            });
+        };
+        if mime != object.mime {
+            return Err(invalid(
+                at,
+                format!(
+                    "nothing ran: {at} is {} of media type {}, but it was put as {mime}; name it as {mime}, or PUT it \
+                     again as {}",
+                    object.id, object.mime, object.mime
+                ),
+            ));
+        }
+        read.insert(object.id.clone(), bytes);
+    }
+    Ok(read)
+}
+
+/// The bytes of a held object.
+fn object_bytes(store: Option<&Mutex<ObjectStore>>, at: &str, object: &ObjectRef) -> Result<Vec<u8>, ServiceError> {
+    let found = match store {
+        Some(store) => store
+            .lock()
+            .expect("the object store lock is poisoned")
+            .get(&content_id_of(object), super::objects::now_ms())
+            .map_err(|e| ServiceError::internal(e.to_string()))?,
+        None => None,
+    };
+    let Some(found) = found else {
+        return Err(ServiceError::NotHeld {
+            message: format!(
+                "nothing ran: {at} is {}, which the server does not hold; PUT it, then send the request again",
+                object.id
+            ),
+            param: at.to_owned(),
+        });
+    };
+    std::fs::read(&found.path)
+        .map_err(|e| ServiceError::internal(format!("cannot read `{}`: {e}", found.path.display())))
+}
+
+/// The object parts of the last `user` message, each with the member that names it. A third part is a 400 that names
+/// it (spec 11.9b): the first is the image, and the second is the mask.
+fn input_parts(request: &GenerationRequest) -> Result<Vec<(String, ObjectRef)>, ServiceError> {
+    let messages = &request.context.messages;
+    let Some(last) = messages.iter().rposition(|m| m.role == Role::User) else {
+        return Ok(Vec::new());
+    };
+    let parts: Vec<(String, ObjectRef)> = messages[last]
+        .content
+        .as_ref()
+        .map(|content| content.parts())
+        .unwrap_or_default()
+        .into_iter()
+        .enumerate()
+        .filter_map(|(j, part)| match part {
+            Part::Object { id, mime } => Some((format!("messages[{last}].content[{j}]"), ObjectRef { id, mime })),
+            Part::Text { .. } => None,
+        })
+        .collect();
+    if let Some((at, _)) = parts.get(2) {
+        return Err(invalid(
+            at,
+            format!(
+                "nothing ran: {at} is a third object part; the last `user` message holds an image and a mask at most, \
+                 so remove it"
+            ),
+        ));
+    }
+    Ok(parts)
+}
+
+/// True when a size keeps the rules of 11.9a: multiples of 64 from 512 to 2048, with at most 1,572,864 pixels.
+fn size_ok(width: u64, height: u64) -> bool {
+    let side = |v: u64| (512..=2048).contains(&v) && v.is_multiple_of(64);
+    side(width) && side(height) && width * height <= MAX_PIXELS
+}
+
+/// What the request asks of a job with an image.
+struct Asked {
+    width: Option<u64>,
+    height: Option<u64>,
+    steps: u64,
+    strength: Option<f64>,
+    mask_blur: Option<u32>,
+}
+
+/// Decode and check the image and the mask of a request, and make the inputs of its job with their size (spec 11.9b).
+fn job_inputs(
+    store: Option<&Mutex<ObjectStore>>,
+    parts: &[(String, ObjectRef)],
+    asked: &Asked,
+) -> Result<Option<(ImageInit, u64, u64)>, ServiceError> {
+    let (image, mask) = (parts.first(), parts.get(1));
+    if asked.strength.is_some() && image.is_none() {
+        return Err(invalid(
+            "output.options.strength",
+            "nothing ran: output.options.strength needs an image; put an image part in the last `user` message, or \
+             leave out output.options.strength"
+                .to_owned(),
+        ));
+    }
+    if asked.mask_blur.is_some() && mask.is_none() {
+        return Err(invalid(
+            "output.options.mask_blur",
+            "nothing ran: output.options.mask_blur needs a mask; put a mask part after the image, or leave out \
+             output.options.mask_blur"
+                .to_owned(),
+        ));
+    }
+    let Some((at, object)) = image else {
+        return Ok(None);
+    };
+    let bytes = object_bytes(store, at, object)?;
+    let bad = |at: &str, error: inputs::InputError| invalid(at, format!("nothing ran: {at} {error}"));
+    let png = Png::read(&bytes).map_err(|e| bad(at, e))?;
+    let (width, height) = (png.width(), png.height());
+    if !size_ok(u64::from(width), u64::from(height)) {
+        return Err(invalid(
+            at,
+            format!(
+                "nothing ran: {at} is an image of {width} by {height}; send an image whose width and height are \
+                 multiples of 64 from 512 to 2048, with at most {MAX_PIXELS} pixels"
+            ),
+        ));
+    }
+    for (key, given, side) in [("width", asked.width, width), ("height", asked.height, height)] {
+        if let Some(given) = given.filter(|&given| given != u64::from(side)) {
+            return Err(invalid(
+                format!("output.options.{key}"),
+                format!(
+                    "nothing ran: output.options.{key} is {given}, and the image is {width} by {height}; give {side}, \
+                     or leave it out"
+                ),
+            ));
+        }
+    }
+    let pixels = png.rgb().map_err(|e| bad(at, e))?;
+    let blurred = match mask {
+        None => None,
+        Some((at, object)) => {
+            let bytes = object_bytes(store, at, object)?;
+            let png = Png::read(&bytes).map_err(|e| bad(at, e))?;
+            if (png.width(), png.height()) != (width, height) {
+                return Err(invalid(
+                    at,
+                    format!(
+                        "nothing ran: {at} is a mask of {} by {}, and the image is {width} by {height}; send a mask of \
+                         the size of the image",
+                        png.width(),
+                        png.height()
+                    ),
+                ));
+            }
+            let gray = png.gray().map_err(|e| bad(at, e))?;
+            Some(inputs::blur(&gray, width, height, asked.mask_blur.unwrap_or(MASK_BLUR)))
+        }
+    };
+    let strength = asked
+        .strength
+        .unwrap_or(if blurred.is_some() { INPAINT_STRENGTH } else { STRENGTH });
+    let steps = asked.steps as u32;
+    if steps_that_run(steps, strength) == 0 {
+        return Err(invalid(
+            "output.options.strength",
+            format!(
+                "nothing ran: a strength of {strength} with {steps} steps runs no step, because floor({steps} * \
+                 {strength}) is 0; give a larger output.options.strength or more steps"
+            ),
+        ));
+    }
+    let init = ImageInit {
+        pixels: Arc::new(pixels),
+        strength,
+        mask: blurred.map(Arc::new),
+    };
+    Ok(Some((init, u64::from(width), u64::from(height))))
 }
 
 /// The text of a message: its string, or its text parts joined.
@@ -137,6 +366,8 @@ pub fn check(
         named.object.check(&named.at).map_err(ServiceError::Invalid)?;
     }
     check_reads(model, &objects).map_err(ServiceError::Invalid)?;
+    let parts = input_parts(request)?;
+    let read = held_objects(store, &objects)?;
     let mut prompt = None;
     for message in &request.context.messages {
         if message.open {
@@ -161,7 +392,7 @@ pub fn check(
     })?;
 
     if service.family().form() == ImageForm::Tokens {
-        return check_tokens(service, model, request, prompt);
+        return check_tokens(service, model, request, prompt, read);
     }
     let config = service.config();
     let mut negative = String::new();
@@ -171,6 +402,7 @@ pub fn check(
     let mut spacing = ImageSpacing::Leading;
     let mut clip_skip = u64::from(config.clip_skip);
     let mut lora_refs = Vec::new();
+    let (mut given_width, mut given_height, mut strength, mut mask_blur) = (None, None, None, None);
     // A request asks for previews in the member `previews`, which needs `stream` (gogi "Steps and previews").
     let previews = request.previews == Some(true);
     for (key, value) in &output.options {
@@ -194,13 +426,25 @@ pub fn check(
                     })?;
                 if key == "width" {
                     width = size;
+                    given_width = Some(size);
                 } else {
                     height = size;
+                    given_height = Some(size);
                 }
             }
             "steps" => steps = integer(key, value, 1..=150)?,
             "count" => count = integer(key, value, 1..=u64::from(MAX_COUNT))?,
             "clip_skip" => clip_skip = integer(key, value, 2..=3)?,
+            "mask_blur" => mask_blur = Some(integer(key, value, 0..=MAX_MASK_BLUR)? as u32),
+            "strength" => {
+                let given = value.as_f64().filter(|v| *v > 0.0 && *v <= 1.0).ok_or_else(|| {
+                    invalid(
+                        &at,
+                        format!("nothing ran: {at} is {value}; give a number above 0.0 and at most 1.0"),
+                    )
+                })?;
+                strength = Some(given);
+            }
             "cfg" => {
                 cfg = value.as_f64().filter(|v| (1.0..=30.0).contains(v)).ok_or_else(|| {
                     invalid(
@@ -242,8 +486,8 @@ pub fn check(
                     at,
                     format!(
                         "nothing ran: {} takes the output options `negative`, `width`, `height`, `steps`, `cfg`, \
-                         `sampler`, `spacing`, `count` and `clip_skip`, not `{key}`; ask for previews with the request's \
-                         `previews`",
+                         `sampler`, `spacing`, `count`, `clip_skip`, `loras`, `strength` and `mask_blur`, not `{key}`; \
+                         ask for previews with the request's `previews`",
                         model.model
                     ),
                 ));
@@ -259,6 +503,22 @@ pub fn check(
                 .to_owned(),
         ));
     }
+    let asked = Asked {
+        width: given_width,
+        height: given_height,
+        steps,
+        strength,
+        mask_blur,
+    };
+    let init = job_inputs(store, &parts, &asked)?;
+    if let Some((_, image_width, image_height)) = &init {
+        (width, height) = (*image_width, *image_height);
+    }
+    let init = init.map(|(init, _, _)| init);
+    let mask_blur = init
+        .as_ref()
+        .and_then(|init| init.mask.as_ref())
+        .map(|_| mask_blur.unwrap_or(MASK_BLUR));
     if width * height > MAX_PIXELS {
         return Err(invalid(
             "output.options.width",
@@ -301,11 +561,14 @@ pub fn check(
             previews,
             loras,
             conditioning: None,
+            init,
         },
         prompt,
         negative,
         tokens,
         schedule: crate::council::Schedule::of(request.class, request.priority),
+        read,
+        mask_blur,
     })
 }
 
@@ -341,6 +604,7 @@ fn check_tokens(
     model: &ServedModel,
     request: &GenerationRequest,
     prompt: String,
+    read: BTreeMap<String, u64>,
 ) -> Result<Checked, ServiceError> {
     let (mut width, mut height, mut steps, mut count) = (1024u64, 1024u64, 40u64, 1u64);
     let Some(output) = &request.output else {
@@ -432,11 +696,14 @@ fn check_tokens(
             previews: false,
             loras: Vec::new(),
             conditioning: None,
+            init: None,
         },
         prompt,
         negative: String::new(),
         tokens,
         schedule: crate::council::Schedule::of(request.class, request.priority),
+        read,
+        mask_blur: None,
     })
 }
 
@@ -568,6 +835,13 @@ pub fn parameters(checked: &Checked, model: &str, index: u32) -> String {
     // Only a CLIP encoder reads a clip_skip (spec 11.9c gives no `Clip skip` for Qwen-Image).
     if let ImagePrompt::Chunks { clip_skip, .. } = &job.prompt {
         text.push_str(&format!(", Clip skip: {clip_skip}"));
+    }
+    // A job with an image adds its strength after `Clip skip`, then the blur of its mask (spec 11.9b).
+    if let Some(init) = &job.init {
+        text.push_str(&format!(", Denoising strength: {}", init.strength));
+    }
+    if let Some(blur) = checked.mask_blur {
+        text.push_str(&format!(", Mask blur: {blur}"));
     }
     // The LoRAs follow the settings, each as its id and its weight, in the order of the request (spec 11.9a).
     if !job.loras.is_empty() {
@@ -735,8 +1009,34 @@ fn progress(checked: &Checked, index: u32, step: u32) -> ProgressEvent {
     ProgressEvent {
         index: Some(u64::from(index)),
         step: u64::from(step),
-        of: u64::from(checked.job.steps),
+        of: u64::from(checked.steps_run()),
     }
+}
+
+/// The decode of an inpainting job with the kept pixels of the input pasted back, or none for a job with no mask
+/// (spec 11.9b, "The paste after the decode").
+fn pasted(checked: &Checked, image: &DecodedImage) -> Result<Option<DecodedImage>, ServiceError> {
+    let Some((init, mask)) = checked
+        .job
+        .init
+        .as_ref()
+        .and_then(|init| Some((init, init.mask.as_ref()?)))
+    else {
+        return Ok(None);
+    };
+    if image.channels != 3 || image.pixels.len() != init.pixels.len() {
+        return Err(ServiceError::internal(format!(
+            "the engine gave a decode of {} channels and {} bytes for an input of {} RGB bytes; the paste needs RGB of \
+             the size of the input",
+            image.channels,
+            image.pixels.len(),
+            init.pixels.len()
+        )));
+    }
+    Ok(Some(DecodedImage {
+        pixels: inputs::paste(&image.pixels, &init.pixels, mask),
+        ..image.clone()
+    }))
 }
 
 /// Seal the PNG of each image, and give the reply.
@@ -750,6 +1050,8 @@ fn done(
     let mut outputs = Vec::with_capacity(images.len());
     let mut bytes_written = 0;
     for (index, image) in images.iter().enumerate() {
+        let pasted = pasted(checked, image)?;
+        let image = pasted.as_ref().unwrap_or(image);
         let bytes = png(image, Some(&parameters(checked, model, index as u32)))?;
         let id = format!("blake3:{}", super::voice::seal(council, &bytes, PNG)?.hex());
         if let Some((pending_id, output)) = pending.get(index) {
@@ -778,12 +1080,16 @@ fn done(
             completion: 0,
             reasoning: 0,
             media: Some(MediaUsage {
-                read: MediaCount::default(),
+                read: MediaCount {
+                    objects: checked.read.len() as u64,
+                    bytes: checked.read.values().sum(),
+                    ..MediaCount::default()
+                },
                 written: MediaCount {
                     objects: images.len() as u64,
                     bytes: bytes_written,
                     pixels: Some(images.len() as u64 * u64::from(job.width) * u64::from(job.height)),
-                    steps: Some(u64::from(job.steps)),
+                    steps: Some(u64::from(checked.steps_run())),
                     ..MediaCount::default()
                 },
             }),
@@ -827,7 +1133,11 @@ pub fn served_model(service: &ImageService, status: gogi_proto::identity::ModelS
         embeddings: None,
         capabilities: vec![gogi_proto::identity::Capability::Generate],
         media: Some(gogi_proto::identity::Media {
-            inputs: Vec::new(),
+            // An SDXL model reads an image and a mask (spec 11.9b). Qwen-Image runs text to image only (spec 11.9c).
+            inputs: match service.family().form() {
+                ImageForm::Chunks => vec![PNG.to_owned()],
+                ImageForm::Tokens => Vec::new(),
+            },
             outputs: vec![PNG.to_owned()],
             // A reply holds images and no text, so the model takes no build, decision or raw read (gogi c3acffe).
             text_replies: false,

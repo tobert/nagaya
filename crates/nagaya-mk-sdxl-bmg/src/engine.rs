@@ -466,6 +466,15 @@ pub fn job_problem(job: &ImageJob) -> Option<String> {
     if job.conditioning.is_some() {
         return Some("the SDXL engine keeps no conditioning, so it takes no rows".to_owned());
     }
+    // Milestone 20 builds the VAE encode, the blend and the 9-channel UNet. Until then a job with an image must not
+    // run as text to image.
+    if job.init.is_some() {
+        return Some(
+            "the SDXL engine has no VAE encoder yet, so it runs no job with an image; send the request with no object \
+             part"
+                .to_owned(),
+        );
+    }
     if job.count == 0 || job.count as usize > MAX_IMAGES {
         Some(format!(
             "the job asks for {} images; the engine makes 1 to {MAX_IMAGES}",
