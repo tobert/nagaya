@@ -394,3 +394,29 @@ fn abandon_records_the_run_of_the_quantum_that_ran_and_empties_the_scheduler() {
         .expect("the span ended");
     assert_eq!(attribute(span, "run_ms").as_deref(), Some("17"));
 }
+
+/// A device group can hold several engines. A job that names its own engine has that name on its quantum span and
+/// on both durations, not the name of the group (spec 9.2, "The engine of a job").
+#[test]
+fn a_job_with_its_own_engine_names_it_on_its_quantum_span_and_durations() {
+    let capture = Capture::start(Vec::new());
+    let mut scheduler = observed();
+    scheduler.set_job_engine(1, "voice".to_owned());
+    let scheduler = arrive(scheduler, 0, job(1, Class::Batch, 0, 0, &[Kind::Prefill]));
+    let (scheduler, _) = admit(scheduler, 5, 1);
+    complete(scheduler, 90, 77);
+
+    let wait = capture.metric("nagaya.quantum.wait.duration");
+    let run = capture.metric("nagaya.quantum.run.duration");
+    assert_eq!(wait.len(), 1, "{wait:?}");
+    assert_eq!(run.len(), 1, "{run:?}");
+    assert_eq!(labels(&wait[0]), label("voice", "0", "prefill", "batch"));
+    assert_eq!(labels(&run[0]), label("voice", "0", "prefill", "batch"));
+    let spans: Vec<SpanData> = capture
+        .spans()
+        .into_iter()
+        .filter(|span| span.name == "nagaya.quantum")
+        .collect();
+    assert_eq!(spans.len(), 1, "{spans:?}");
+    assert_eq!(attribute(&spans[0], "engine").as_deref(), Some("voice"));
+}

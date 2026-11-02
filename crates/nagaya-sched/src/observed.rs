@@ -24,9 +24,13 @@ use crate::{Completion, EngineId, Event, JobId, JobState, Quantum, Scheduler, St
 ///
 /// Spec 9.2: a decode quantum makes metrics only. Every other kind makes the span `nagaya.quantum`. The span of a
 /// quantum is the child of the span of its lead job, when the caller gave one ([`ObservedScheduler::set_job_span`]).
+///
+/// Spec 9.2, "The engine of a job": a device group can hold several engines. A quantum names the engine of its lead
+/// job when the caller gave one ([`ObservedScheduler::set_job_engine`]), and else the name of its device group.
 pub struct ObservedScheduler {
     state: Scheduler,
     engines: BTreeMap<EngineId, String>,
+    job_engines: BTreeMap<JobId, String>,
     ready_since: BTreeMap<JobId, u64>,
     job_spans: BTreeMap<JobId, Span>,
     span: Option<Span>,
@@ -46,6 +50,7 @@ impl ObservedScheduler {
         Self {
             state,
             engines,
+            job_engines: BTreeMap::new(),
             ready_since,
             job_spans: BTreeMap::new(),
             span: None,
@@ -67,6 +72,12 @@ impl ObservedScheduler {
         self.job_spans.insert(job, span);
     }
 
+    /// Name the engine of `job` on its quanta (spec 9.2, "The engine of a job"). The scheduler drops the name when
+    /// the job ends.
+    pub fn set_job_engine(&mut self, job: JobId, engine: String) {
+        self.job_engines.insert(job, engine);
+    }
+
     /// The span of the quantum that runs. A decode quantum has none. The caller runs the quantum inside this span, so
     /// that the spans of the engine nest under it (spec 9.2).
     pub fn running_span(&self) -> Option<&Span> {
@@ -84,6 +95,7 @@ impl ObservedScheduler {
         self.state = Scheduler::default();
         self.ready_since.clear();
         self.job_spans.clear();
+        self.job_engines.clear();
         self.span = None;
     }
 
@@ -128,10 +140,18 @@ impl ObservedScheduler {
             .retain(|id, _| jobs.iter().any(|job| job.id == *id && job.state == JobState::Ready));
         self.job_spans
             .retain(|id, _| jobs.iter().any(|job| job.id == *id && !job.state.is_terminal()));
+        self.job_engines
+            .retain(|id, _| jobs.iter().any(|job| job.id == *id && !job.state.is_terminal()));
         Ok(next)
     }
 
-    fn engine_name(&self, group: EngineId) -> &str {
+    /// The engine name of `quantum`: the engine of its lead job, or else the name of its device group.
+    fn engine_name(&self, quantum: &Quantum) -> &str {
+        let lead = quantum.segments.first().expect("a quantum holds a segment");
+        if let Some(engine) = self.job_engines.get(lead) {
+            return engine;
+        }
+        let group = quantum.engine;
         self.engines.get(&group).unwrap_or_else(|| {
             panic!("device group {group} has no engine name: give one for each group in `ObservedScheduler::new`")
         })
@@ -145,7 +165,7 @@ impl ObservedScheduler {
             .expect("the lead segment of a quantum was ready");
         // Event times do not go back. A caller that sends an earlier time gets a wait of zero.
         let wait_ms = now.saturating_sub(*ready);
-        let engine = self.engine_name(quantum.engine).to_owned();
+        let engine = self.engine_name(quantum).to_owned();
         instruments().quantum_wait(&labels(&engine, quantum), wait_ms as f64);
         let parent = self.job_spans.get(lead);
         self.span = (quantum.kind != Kind::Decode).then(|| {
@@ -171,7 +191,7 @@ impl ObservedScheduler {
     }
 
     fn record_end(&mut self, quantum: &Quantum, duration_ms: u64, outcome: Completion) {
-        let engine = self.engine_name(quantum.engine);
+        let engine = self.engine_name(quantum);
         instruments().quantum_run(&labels(engine, quantum), duration_ms as f64);
         if let Some(span) = self.span.take() {
             span.record("run_ms", duration_ms);
