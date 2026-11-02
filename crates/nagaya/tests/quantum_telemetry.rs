@@ -2,6 +2,7 @@
 //! generation on the fake engine through the process, and read the spans and the points from memory.
 
 mod council_support;
+mod telemetry_support;
 
 use std::time::{Duration, Instant};
 
@@ -235,7 +236,7 @@ impl nagaya::jobs::JobBody for Spanning {
 #[test]
 fn the_body_of_a_quantum_runs_inside_the_span_of_the_quantum() {
     let capture = Capture::start(Vec::new());
-    let mut jobs = nagaya::jobs::GroupJobs::new(0, "toy");
+    let mut jobs = nagaya::jobs::GroupJobs::new(0, ["toy"]);
     jobs.add(nagaya::jobs::JobSpec {
         class: nagaya_sched::Class::Batch,
         priority: 0,
@@ -262,7 +263,7 @@ fn the_body_of_a_quantum_runs_inside_the_span_of_the_quantum() {
 #[test]
 fn a_stop_that_cancels_the_jobs_still_records_the_quantum_that_ran() {
     let capture = Capture::start(Vec::new());
-    let mut jobs = nagaya::jobs::GroupJobs::new(0, "toy");
+    let mut jobs = nagaya::jobs::GroupJobs::new(0, ["toy"]);
     jobs.add(nagaya::jobs::JobSpec {
         class: nagaya_sched::Class::Batch,
         priority: 0,
@@ -280,4 +281,31 @@ fn a_stop_that_cancels_the_jobs_still_records_the_quantum_that_ran() {
     let jobs = spans_named(&capture, "nagaya.job");
     assert_eq!(jobs.len(), 1);
     assert_eq!(attribute(&jobs[0], "outcome").as_deref(), Some("cancelled"));
+}
+
+/// A group of two engines runs a job of each. The job spans, the quantum spans and the quantum durations name the
+/// engine of each job, not `left+right` (spec 9.2, "The engine of a job").
+#[test]
+fn a_group_of_two_engines_names_the_engine_of_each_job() {
+    let capture = Capture::start(Vec::new());
+    let mut jobs = nagaya::jobs::GroupJobs::new(0, ["left", "right"]);
+    for (engine, first) in [
+        (0, nagaya_abi::Kind::Prefill),
+        (1, nagaya_abi::Kind::Prefill),
+        (1, nagaya_abi::Kind::Decode),
+    ] {
+        jobs.add(nagaya::jobs::JobSpec {
+            class: nagaya_sched::Class::Batch,
+            priority: 0,
+            deadline: None,
+            first,
+            engine,
+            body: Box::new(Spanning),
+        });
+    }
+    while !jobs.idle() {
+        jobs.run_one(&mut []);
+    }
+    telemetry_support::wait_for_jobs(&capture, 3);
+    telemetry_support::assert_own_engines(&capture, &["left", "right"], &["left", "right"]);
 }

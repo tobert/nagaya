@@ -91,8 +91,9 @@ pub struct JobSpec {
 /// The state of the jobs of one group.
 pub struct GroupJobs {
     group: u32,
-    /// The names of the engines of the group, as the attribute `engine` of spans and metrics.
-    engine: String,
+    /// The names of the engines of the group, in profile order. A job span, its quanta and their metrics name the
+    /// engine of the job (spec 9.2, "The engine of a job").
+    names: Vec<String>,
     machine: Machine,
     epoch: Instant,
     scheduler: ObservedScheduler,
@@ -111,16 +112,17 @@ pub struct GroupJobs {
 impl GroupJobs {
     /// Make the jobs of a group. The scheduler serves one device group (spec 5.5).
     ///
-    /// `engine` is the attribute `engine` of the group. A group with several engines gives their names in profile
-    /// order, joined with `+`. The set of values stays bounded by the profile.
-    pub fn new(group: u32, engine: impl Into<String>) -> Self {
-        let engine = engine.into();
+    /// `names` are the names of the engines of the group, in profile order. The set of values of the attribute
+    /// `engine` stays bounded by the profile. The joined name is the name of the group (spec 9.2).
+    pub fn new(group: u32, names: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        let names: Vec<String> = names.into_iter().map(Into::into).collect();
+        let joined = names.join("+");
         Self {
             group,
             machine: Machine::real(),
             epoch: Instant::now(),
-            scheduler: ObservedScheduler::new(Scheduler::default(), BTreeMap::from([(group, engine.clone())])),
-            engine,
+            scheduler: ObservedScheduler::new(Scheduler::default(), BTreeMap::from([(group, joined)])),
+            names,
             bodies: BTreeMap::new(),
             engines: BTreeMap::new(),
             spans: BTreeMap::new(),
@@ -192,15 +194,24 @@ impl GroupJobs {
             cancel_requested: false,
             checkpoint_interval_ms: None,
         };
+        let engine = self.names.get(spec.engine).unwrap_or_else(|| {
+            panic!(
+                "a job names engine {} of group {}, which has {} engines",
+                spec.engine,
+                self.group,
+                self.names.len()
+            )
+        });
         let span = tracing::info_span!(
             parent: &parent,
             "nagaya.job",
-            engine = self.engine.as_str(),
+            engine = engine.as_str(),
             class = spec.class.label(),
             request = spec.body.request(),
             outcome = tracing::field::Empty,
         );
         self.scheduler.set_job_span(id, span.clone());
+        self.scheduler.set_job_engine(id, engine.clone());
         self.spans.insert(id, span);
         self.event(Event::Arrive { now_ms, job });
         // The ledger admitted the context before the job came, and a pass never allocates (spec 4.3).
@@ -256,7 +267,7 @@ impl GroupJobs {
                 "{} quantum of a {} request on engine {}",
                 format!("{:?}", quantum.kind).to_lowercase(),
                 body.request(),
-                self.engine
+                self.names[self.engines[&id]]
             );
             match watch {
                 Some(watch) => watch.failed(&failure),

@@ -1,6 +1,8 @@
 //! The swap in place on a group thread (spec 3.3a): a load of an engine that is not loaded starts the swap (spec
 //! 3.3b). The group unloads the engines that must give their memory, closes them, and opens the engine.
 
+mod telemetry_support;
+
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -572,4 +574,21 @@ fn a_context_of_an_engine_that_is_not_loaded_can_be_charged() {
     load(&process, "voice");
     ports.admit_context("chat").expect("a context of the unloaded `chat`");
     ports.release_context("chat").unwrap();
+}
+
+/// In a group of two engines on one device, the telemetry of a job names the engine of the job, not the joined name
+/// `chat+voice` (spec 9.2, "The engine of a job").
+#[test]
+fn the_telemetry_of_a_job_names_the_engine_of_the_job() {
+    let capture = nagaya_telemetry::testing::Capture::start(Vec::new());
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start(directory.path(), 2000);
+    assert_eq!(load(&process, "voice"), (Vec::new(), vec!["voice".to_owned()]));
+    for engine in [CHAT, VOICE] {
+        let (job, finished) = probe(engine, &log);
+        process.submit_job(0, job).unwrap();
+        finished.recv_timeout(Duration::from_secs(5)).expect("the job ran");
+    }
+    telemetry_support::wait_for_jobs(&capture, 2);
+    telemetry_support::assert_own_engines(&capture, &["chat", "voice"], &["chat", "voice"]);
 }

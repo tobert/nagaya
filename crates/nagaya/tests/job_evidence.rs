@@ -78,7 +78,7 @@ fn failure_lines(root: &Path, first: Kind, outcome: fn() -> Ran, files: bool) ->
         runs: Arc::clone(&runs),
     };
     let lines = log_lines(|| {
-        let mut jobs = GroupJobs::new(0, "toy").machine(Machine::at(root, PID));
+        let mut jobs = GroupJobs::new(0, ["toy"]).machine(Machine::at(root, PID));
         jobs.add(spec(first, body));
         run_all(&mut jobs);
     });

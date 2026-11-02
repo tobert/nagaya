@@ -5,6 +5,7 @@
 //! when they do not fit.
 
 mod feed_support;
+mod telemetry_support;
 
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -928,4 +929,27 @@ fn a_stop_during_a_single_card_swap_beats_while_it_waits() {
         );
     }
     assert!(log_of(&log).contains(&"close:late".to_owned()), "{:?}", log_of(&log));
+}
+
+/// A pass of `chat` runs stage by stage, and a job of `voice` runs on the device thread of card 1. The telemetry of
+/// each job names the engine of the job: `voice` is not the engine with stages (spec 9.2, "The engine of a job").
+#[test]
+fn the_telemetry_of_a_job_beside_the_stages_names_the_engine_of_the_job() {
+    let capture = nagaya_telemetry::testing::Capture::start(Vec::new());
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start(directory.path());
+    load(&process, "voice");
+    let (job, finished) = chat_pass(&log);
+    process.submit_job(0, job).unwrap();
+    finished
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the chat pass ran");
+    let (mut job, finished) = voice(&log, None);
+    job.first = Kind::Read;
+    process.submit_job(0, job).unwrap();
+    finished
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the voice job ran");
+    telemetry_support::wait_for_jobs(&capture, 2);
+    telemetry_support::assert_own_engines(&capture, &["chat", "voice"], &["chat", "voice"]);
 }

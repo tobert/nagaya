@@ -1372,7 +1372,7 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
     };
     let names: Vec<String> = members.iter().map(|member| member.name().to_owned()).collect();
     let mut plain = Plain {
-        jobs: GroupJobs::new(group as u32, names.join("+")).machine(links.machine.clone()),
+        jobs: GroupJobs::new(group as u32, names).machine(links.machine.clone()),
         cancelled: 0,
     };
     // The loads and the unloads that wait for the group to plan them, in order of arrival (spec 3.3b).
