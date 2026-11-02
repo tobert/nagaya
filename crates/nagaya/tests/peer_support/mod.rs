@@ -19,7 +19,7 @@ pub use cluster_support::{Reply, send, send_bytes};
 
 #[path = "../council_support/mod.rs"]
 mod council_support;
-pub use council_support::Fixture;
+pub use council_support::{ENGINE, Fixture};
 
 /// One node: a council that serves HTTP on loopback, on its own runtime.
 pub struct Node {
@@ -59,6 +59,9 @@ impl Node {
             .collect();
         let cluster = Arc::new(Cluster::new(name));
         let mut council = Council::new(models, None).unwrap().with_cluster(Arc::clone(&cluster));
+        if let Some(fixture) = &fixture {
+            council = council.with_loads(fixture.process.ports());
+        }
         if has != Has::Model {
             let store = ObjectStore::open(&directory.path().join("objects"), 1 << 20).unwrap();
             council = council.with_objects(store);
@@ -135,6 +138,42 @@ impl Node {
     pub fn send(&self, method: &str, path: &str, body: &[u8], headers: &[(&str, &str)]) -> Reply {
         send_bytes(self.http, method, path, body, headers)
     }
+}
+
+/// `view` with the key `engine:<engine>` of a ready engine that serves no model, at the HTTP address of its server.
+pub fn with_engine(mut view: NodeView, engine: &str) -> NodeView {
+    let server: serde_json::Value = serde_json::from_str(&view.keys["server"]).unwrap();
+    view.keys.insert(
+        format!("engine:{engine}"),
+        json!({"identity": null, "models": [], "served": [], "state": "ready", "http": server["http"]}).to_string(),
+    );
+    view
+}
+
+/// A view of the peer `name` whose server is at `http`, with no other key.
+pub fn bare_peer(name: &str, http: SocketAddr) -> NodeView {
+    let mut keys = BTreeMap::new();
+    keys.insert(
+        "server".to_owned(),
+        json!({"http": http.to_string(), "limits": {"case_bytes": 1, "choice_options": 2}, "capabilities": []})
+            .to_string(),
+    );
+    NodeView {
+        name: name.to_owned(),
+        id: format!("{name}:1:{http}"),
+        generation: 1,
+        addr: http,
+        is_self: false,
+        keys,
+    }
+}
+
+/// An address with no listener, so each connection is refused.
+pub fn refused_addr() -> SocketAddr {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
 }
 
 /// Link the nodes: each sees each other node as a live peer.

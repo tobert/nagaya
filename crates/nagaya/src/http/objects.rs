@@ -422,12 +422,6 @@ fn no_store(council: &Council, id: &RequestId) -> Response {
     }
 }
 
-/// The path and the query of a request as it came, for a call to a peer.
-fn raw_path(uri: &Uri) -> String {
-    uri.path_and_query()
-        .map_or_else(|| uri.path().to_owned(), |path| path.as_str().to_owned())
-}
-
 /// Each keep route goes to each live node that declares `objects`, and the answers join as for pins (spec 11.1a, "The
 /// routes with no model"). This node takes part when it has an object store.
 async fn keep_route(
@@ -441,7 +435,14 @@ async fn keep_route(
 ) -> Response {
     let delete = method == Method::DELETE;
     let put = method == Method::PUT;
-    let call = peers::call(method, &raw_path(uri), headers, &[header::CONTENT_TYPE], body, id);
+    let call = peers::call(
+        method,
+        &peers::raw_path(uri),
+        headers,
+        &[header::CONTENT_TYPE],
+        body,
+        id,
+    );
     let answers = peers::write_all(council, local, call, gogi_proto::identity::Capability::Objects, headers).await;
     if delete {
         peers::join_delete(answers, || no_store(council, id))

@@ -140,18 +140,12 @@ fn recipe_head(recipe: &nagaya_store::RecipeId) -> SnapshotId {
     SnapshotId::parse(format!("blake3:{}", recipe.hex())).expect("a recipe id is a whole BLAKE3 hash")
 }
 
-/// The path and the query of a request as it came, for a call to a peer.
-fn raw_path(uri: &Uri) -> String {
-    uri.path_and_query()
-        .map_or_else(|| uri.path().to_owned(), |path| path.as_str().to_owned())
-}
-
 /// A read by id: from this node, or on a miss from the first peer that holds the thing (spec 11.1a, "The routes with
 /// no model"). A node that serves no text model holds no snapshot or spec, so it asks the peers too. Only the peers
 /// that declare `pins` serve a text model, so only they get the call.
 async fn read_by_id(council: &Council, local: Response, uri: &Uri, headers: &HeaderMap, id: &RequestId) -> Response {
     let missed = peers::is_miss(local.status()) || council.home().is_err();
-    let call = peers::call(Method::GET, &raw_path(uri), headers, &[], Bytes::new(), id);
+    let call = peers::call(Method::GET, &peers::raw_path(uri), headers, &[], Bytes::new(), id);
     peers::read_on_miss(council, local, missed, false, Some(Capability::Pins), call, headers).await
 }
 
@@ -215,7 +209,14 @@ async fn pins_put(
         }
         None => None,
     };
-    let call = peers::call(Method::PUT, &raw_path(&uri), &headers, &[CONTENT_TYPE], body, &id);
+    let call = peers::call(
+        Method::PUT,
+        &peers::raw_path(&uri),
+        &headers,
+        &[CONTENT_TYPE],
+        body,
+        &id,
+    );
     let answers = peers::write_all(&council, local, call, Capability::Pins, &headers).await;
     peers::join_sets(answers, "snapshots", true, || no_home(&council, &id))
 }
@@ -231,7 +232,7 @@ async fn pins_get(
         Some(home) => Some(answer(&id, council.call(move || home.service.get_pins(&owner)).await)),
         None => None,
     };
-    let call = peers::call(Method::GET, &raw_path(&uri), &headers, &[], Bytes::new(), &id);
+    let call = peers::call(Method::GET, &peers::raw_path(&uri), &headers, &[], Bytes::new(), &id);
     let answers = peers::write_all(&council, local, call, Capability::Pins, &headers).await;
     peers::join_sets(answers, "snapshots", false, || no_home(&council, &id))
 }
@@ -247,7 +248,7 @@ async fn pins_delete(
         Some(home) => Some(empty(&id, council.call(move || home.service.delete_pins(&owner)).await)),
         None => None,
     };
-    let call = peers::call(Method::DELETE, &raw_path(&uri), &headers, &[], Bytes::new(), &id);
+    let call = peers::call(Method::DELETE, &peers::raw_path(&uri), &headers, &[], Bytes::new(), &id);
     let answers = peers::write_all(&council, local, call, Capability::Pins, &headers).await;
     peers::join_delete(answers, || no_home(&council, &id))
 }
@@ -317,7 +318,7 @@ async fn spec_delete(
         Some(home) => Some(empty(&id, council.call(move || home.service.drop_spec(&spec_id)).await)),
         None => None,
     };
-    let call = peers::call(Method::DELETE, &raw_path(&uri), &headers, &[], Bytes::new(), &id);
+    let call = peers::call(Method::DELETE, &peers::raw_path(&uri), &headers, &[], Bytes::new(), &id);
     let answers = peers::write_all(&council, local, call, Capability::Pins, &headers).await;
     peers::join_delete(answers, || no_home(&council, &id))
 }

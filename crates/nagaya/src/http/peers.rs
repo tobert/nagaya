@@ -14,6 +14,19 @@ use hyper::body::Incoming;
 use super::{Council, RequestId};
 use crate::cluster::call::{Call, FORWARDED_HEADER, Peer};
 
+/// The path and the query of a request as it came, for a call to a peer.
+pub(super) fn raw_path(uri: &axum::http::Uri) -> String {
+    uri.path_and_query()
+        .map_or_else(|| uri.path().to_owned(), |path| path.as_str().to_owned())
+}
+
+/// The value of the query parameter `name`, when the query has it. A node name needs no escapes (spec 2.1).
+pub(super) fn query_value<'a>(uri: &'a axum::http::Uri, name: &str) -> Option<&'a str> {
+    uri.query()?
+        .split('&')
+        .find_map(|pair| pair.strip_prefix(name)?.strip_prefix('='))
+}
+
 /// True when a peer sent the request. Such a request is answered from this node alone (spec 11.1a).
 pub(super) fn forwarded(headers: &HeaderMap) -> bool {
     headers.contains_key(FORWARDED_HEADER)
