@@ -1758,7 +1758,8 @@ The nagaya records an invalid header as an attribute, not an error. The spans ne
 
 Decode quanta make metrics only: "one span per generated token would bury a generation's trace" (mk). The trace
 context goes to the group thread with the job. The nagaya gives it to the engine through the telemetry capability,
-and the engine adds its own spans under the quantum. Today, neither engine carries it onto GPU work.
+and the engine adds its own spans under the quantum. No engine carries it onto GPU work: none declares the
+capability `telemetry` (`Capability::Telemetry`, `crates/nagaya-abi/src/lib.rs:346`).
 
 Built: the spans `nagaya.process` (the run, with `exit_code`), `nagaya.start` and `nagaya.stop` (with `engines` and
 `outcome`), `nagaya.job` and `nagaya.quantum`. The group thread opens the last two (`GroupJobs` in
@@ -1796,8 +1797,8 @@ Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02:
 - The attribute `engine` of the span `nagaya.job`, of its quanta, and of the quantum metrics is the name of the job's
   engine. `GroupJobs` holds the engine of each job, so the name is known.
 - The joined name above stays for what belongs to the whole group, such as the heartbeat of the group thread.
-- Reason: the rule above came when each group had one engine. Today group 0 of b70host has seven engines, from
-  `gemma` to `lightning-0` (`deploy/b70host/profile.toml`). Thus each job has the same long name, and a metric
+- Reason: the rule above came when each group had one engine. Group 0 of b70host has nine engines, from `gemma`
+  to `inpaint-0` (`deploy/b70host/profile.toml`). Thus each job has the same long name, and a metric
   cannot tell the engines apart.
 
 Built 2026-11-02. `GroupJobs` and the jobs of a staged group take the names of the engines in profile order. A job
@@ -2070,8 +2071,9 @@ When `<store_dir>/profile.toml` does not exist, the process starts with an empty
 because a machine with no engine can serve as a coordinator or hold a store tier (2.1). A process with an empty
 profile sends `READY=1` when admission passes. Decided 2026-10-20 (reading).
 
-Not built: the canary and the wake of pinned state (8.1, 6.11). Today `READY=1` follows the open of every engine
-and the attach of the council routes.
+Not built: the canary and the wake of pinned state (8.1, 6.11). `READY=1` follows the open of every resident engine
+and the attach of the council routes. An engine on demand does not open at start (3.3a,
+`crates/nagaya/src/process.rs:1149-1154`).
 
 **`READY=1` follows the HTTP bind.** Decided 2026-10-23. Amy: "seems fine to change it, http can come up and return
 an http not ready if it's not ready yet".
@@ -2120,7 +2122,7 @@ At start, the nagaya does these steps for each engine:
   `<part>` is a name that the engine gives in `arena_export`.
 - mkviolet's parts are `w<ll>` for the slab of layer `ll`, and `head` for the head on card 1. Thus its arena has 31
   fds, such as `gemma/device1/w15`.
-- mkviolet stores no head today, so a restart uploads the head again. The head is about 1.5 GB: 262,144 rows of 2,816
+- mkviolet stored no head, so its restart uploaded the head again. The head is about 1.5 GB: 262,144 rows of 2,816
   BF16 values. The port gives it a slab.
 - The engine opens its stored fds through `Factory::attach` (engine-abi "The factory gets its devices"). The check is
   `spot`: the first and last 64 bytes of each tensor (`verify_stored_slab`, `gemma4.rs:287-307`).
