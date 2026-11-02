@@ -9,6 +9,10 @@ pub enum Purpose {
     Start,
     /// The noise of a step of an ancestral or SDE sampler.
     Step,
+    /// The draw of the image latent from the VAE encoder (spec 11.9b, "The image latent").
+    Encode,
+    /// The draw of the masked image latent of a 9-channel UNet (spec 11.9b, "The 9-channel UNet").
+    EncodeMasked,
 }
 
 /// SplitMix64's finalizer.
@@ -32,6 +36,8 @@ pub fn normal(seed: u64, image: u32, step: u32, purpose: Purpose, count: usize) 
     let purpose = match purpose {
         Purpose::Start => 1u64,
         Purpose::Step => 2,
+        Purpose::Encode => 3,
+        Purpose::EncodeMasked => 4,
     };
     (0..count)
         .map(|i| {

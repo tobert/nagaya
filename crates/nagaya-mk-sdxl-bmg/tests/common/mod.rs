@@ -80,6 +80,13 @@ pub fn golden_in(dir: &std::path::Path, file: &str) -> Option<Tensors> {
                 .map(|c| i64::from_le_bytes(*c) as f32)
                 .collect(),
             "U8" => data[start..end].iter().map(|b| *b as f32).collect(),
+            // The strengths and the schedule cases of tools/sdxl_inpaint_golden.sh.
+            "F64" => data[start..end]
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|c| f64::from_le_bytes(*c) as f32)
+                .collect(),
             other => panic!("tensor {name} has the dtype {other}, which the tests do not read"),
         };
         out.insert(name.clone(), (shape, values));

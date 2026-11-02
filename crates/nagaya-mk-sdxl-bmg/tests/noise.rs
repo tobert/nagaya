@@ -11,10 +11,21 @@ fn the_same_key_gives_the_same_values_and_another_key_others() {
         normal(42, 1, 0, Purpose::Start, 1000),
         normal(42, 0, 1, Purpose::Start, 1000),
         normal(42, 0, 0, Purpose::Step, 1000),
+        normal(42, 0, 0, Purpose::Encode, 1000),
+        normal(42, 0, 0, Purpose::EncodeMasked, 1000),
     ] {
         let same = a.iter().zip(&other).filter(|(x, y)| x == y).count();
         assert!(same < 5, "{same} of 1000 values are equal");
     }
+}
+
+/// The draws of the image latent and of the masked image latent differ from each other (spec 11.9b).
+#[test]
+fn the_two_encode_purposes_give_other_values() {
+    let encode = normal(42, 0, 0, Purpose::Encode, 1000);
+    let masked = normal(42, 0, 0, Purpose::EncodeMasked, 1000);
+    let same = encode.iter().zip(&masked).filter(|(x, y)| x == y).count();
+    assert!(same < 5, "{same} of 1000 values are equal");
 }
 
 #[test]

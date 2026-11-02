@@ -9,6 +9,7 @@ pub mod device;
 #[cfg(feature = "xe")]
 pub mod engine;
 pub mod host;
+pub mod job;
 pub mod lora;
 pub mod model;
 pub mod noise;

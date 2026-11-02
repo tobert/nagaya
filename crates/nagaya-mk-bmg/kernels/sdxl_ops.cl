@@ -16,7 +16,8 @@
             // w[o, i, ky, kx] * a[b, yo * s + ky - pad, xo * s + kx - pad, i], with zero outside the image.
             // n = H | W << 16 (the input), m = outputs, k = inputs, p0 = images (0: 1),
             // layer = kh | kw << 8 | s << 16 | pad << 24, b = w ([m][k][kh][kw], as PyTorch), x = bias or 0.
-            // A 1 x 1 kernel with s 1 and pad 0 is a linear layer; s 2 is the down sampler of SDXL.
+            // A 1 x 1 kernel with s 1 and pad 0 is a linear layer; s 2 is the down sampler of SDXL. FLAG_PAD_END puts
+            // the pad at the bottom and the right only, as the down sampler of the VAE encoder does: lo = 0.
             // One subgroup for each output value, its lanes over the inputs.
             __global const float* A = (__global const float*)task.a;
             __global float* C = (__global float*)task.c;
@@ -24,7 +25,8 @@
             uint B = task.p0 ? task.p0 : 1;
             uint kh = task.layer & 0xFFu, kw = (task.layer >> 8) & 0xFFu;
             uint st = (task.layer >> 16) & 0xFFu, pad = task.layer >> 24;
-            uint Ho = (H + 2 * pad - kh) / st + 1, Wo = (Wd + 2 * pad - kw) / st + 1;
+            uint lo = (flags & FLAG_PAD_END) ? 0u : pad;
+            uint Ho = (H + lo + pad - kh) / st + 1, Wo = (Wd + lo + pad - kw) / st + 1;
             ulong taps = (ulong)kh * kw;
             ulong total = (ulong)B * Ho * Wo * M;
             for (ulong item = gsg; item < total; item += n_gsg) {
@@ -33,10 +35,10 @@
                 uint xo = (uint)(pix % Wo), yo = (uint)((pix / Wo) % Ho), b = (uint)(pix / ((ulong)Wo * Ho));
                 float acc = 0.0f;
                 for (uint ky = 0; ky < kh; ky++) {
-                    int y = (int)(yo * st + ky) - (int)pad;
+                    int y = (int)(yo * st + ky) - (int)lo;
                     if (y < 0 || y >= (int)H) continue;
                     for (uint kx = 0; kx < kw; kx++) {
-                        int x = (int)(xo * st + kx) - (int)pad;
+                        int x = (int)(xo * st + kx) - (int)lo;
                         if (x < 0 || x >= (int)Wd) continue;
                         __global const float* in = A + (((ulong)b * H + y) * Wd + x) * Kin;
                         ulong w0 = (ulong)o * Kin * taps + ky * kw + kx;
@@ -192,7 +194,8 @@
             // [m][K] BF16, plane p at b + p * m * K * 2 bytes: 2 planes give an F16 weight exactly, 3 an F32 weight.
             // n = H | W << 16 (the input), m = outputs (a multiple of 16), k = inputs (a multiple of 64),
             // p0 = images (0: 1), layer = kernel | s << 8 | pad << 16 | planes << 24, x = bias (F32, or F16 with
-            // FLAG_F16) or 0. A linear layer is images of 1 by 1 with kernel 1.
+            // FLAG_F16) or 0. A linear layer is images of 1 by 1 with kernel 1. FLAG_PAD_END puts the pad at the bottom
+            // and the right only, as OP_CONV2D does.
             // A work-group stages 32 output rows by 64 of K in local memory, split into three BF16 parts as OP_MATMUL
             // does, so the products keep f32 precision: they drop only the terms below 2^-16 of the whole (2^-24 with
             // 3 planes). Each subgroup takes 16 outputs of the rows.
@@ -202,7 +205,8 @@
             uint H = task.n & 0xFFFFu, Wd = task.n >> 16, M = task.m, Cin = task.k, B = task.p0 ? task.p0 : 1;
             uint kk = task.layer & 0xFFu, st = (task.layer >> 8) & 0xFFu, pad = (task.layer >> 16) & 0xFFu;
             uint planes = task.layer >> 24;
-            uint Ho = (H + 2 * pad - kk) / st + 1, Wo = (Wd + 2 * pad - kk) / st + 1;
+            uint lo = (flags & FLAG_PAD_END) ? 0u : pad;
+            uint Ho = (H + lo + pad - kk) / st + 1, Wo = (Wd + lo + pad - kk) / st + 1;
             uint N = B * Ho * Wo, K = kk * kk * Cin;
             ulong plane = (ulong)M * K;
             uint row_tiles = M / 16, tok_tiles = (N + XMX_TOKENS - 1) / XMX_TOKENS;
@@ -223,7 +227,7 @@
                         float v = 0.0f;
                         if (row < N) {
                             uint xo = row % Wo, yo = (row / Wo) % Ho, b = row / (Wo * Ho);
-                            int y = (int)(yo * st + ky) - (int)pad, x = (int)(xo * st + kx) - (int)pad;
+                            int y = (int)(yo * st + ky) - (int)lo, x = (int)(xo * st + kx) - (int)lo;
                             if (y >= 0 && y < (int)H && x >= 0 && x < (int)Wd) {
                                 v = X[(((ulong)b * H + y) * Wd + x) * Cin + i0 + k];
                             }

@@ -62,6 +62,8 @@ pub const ADD_IN: usize = POOLED + 6 * TIME_ID_PROJ;
 
 /// The channels of each level of the VAE decoder, from the latent side.
 pub const VAE_LEVELS: [usize; 4] = [512, 512, 256, 128];
+/// The channels of each level of the VAE encoder, from the image side: `block_out_channels` of `vae/config.json`.
+pub const VAE_ENCODER_LEVELS: [usize; 4] = [128, 256, 512, 512];
 
 /// The model name of the identity.
 pub const MODEL: &str = "stable-diffusion-xl-base-1.0";

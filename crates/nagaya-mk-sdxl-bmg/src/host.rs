@@ -79,6 +79,29 @@ pub fn rgb_bytes(values: &[f32]) -> Vec<u8> {
         .collect()
 }
 
+/// The image latent from the output of the VAE encoder (spec 11.9b, "The image latent"). `moments` holds 8 values for
+/// each latent pixel: the mean of 4 channels, then their log variance (`vae.py:693`). The latent is
+/// `(mean + exp(0.5 * clamp(logvar, -30, 20)) * z) * 0.13025` (`vae.py:694-696`, `:709`; `img2img.py:751`).
+pub fn image_latent(moments: &[f32], z: &[f32]) -> Vec<f32> {
+    assert_eq!(
+        moments.len(),
+        2 * z.len(),
+        "the encoder gives 8 moments for each latent pixel, and the draw 4 values"
+    );
+    moments
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .zip(z.as_chunks::<4>().0)
+        .flat_map(|(m, z)| {
+            (0..LATENT).map(move |c| {
+                let std = (0.5 * m[LATENT + c].clamp(-30.0, 20.0)).exp();
+                VAE_SCALING_FACTOR * (m[c] + std * z[c])
+            })
+        })
+        .collect()
+}
+
 /// The linear preview of a latent (spec 11.9): RGB in [0, 1] = `PREVIEW` times the 4 channels, plus `PREVIEW_BIAS`.
 /// `tools/sdxl_preview_fit.py` fitted it by least squares on 4 images of SDXL base 1.0 at 512 by 512, against the mean
 /// of each 8 by 8 block of the decoded image. Its mean absolute error was 0.072 (2026-10-28).

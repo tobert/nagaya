@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use nagaya_abi::{
-    DecodedImage, Engine, Identity, Image, ImageChunk, ImageJob, ImagePrompt, ImageSampler, ImageSpacing, ImageStepOut,
-    Limits, PassError, PassErrorKind, PassOut, Segment, SlotId, Tap,
+    DecodedImage, Engine, Identity, Image, ImageChunk, ImageJob, ImagePrompt, ImageStepOut, Limits, PassError,
+    PassErrorKind, PassOut, Segment, SlotId, Tap, steps_that_run,
 };
 use nagaya_mk_bmg::level_zero::{B70Card, L0Cluster};
 use nagaya_mk_bmg::ring::Ring;
@@ -22,6 +22,7 @@ use crate::spec::*;
 use crate::weights::{Adapter, Weights, f32_bytes, f32_values, sources};
 use std::collections::HashMap;
 
+pub use crate::job::job_problem;
 pub use crate::spec::MODEL;
 
 /// A job in the slot.
@@ -33,6 +34,9 @@ struct Job {
     latents: Vec<Vec<f32>>,
     history: Vec<History>,
     step: usize,
+    /// The image latent of each image of a job with `init`, after the encode quantum: rows of 4 channels, already
+    /// times the scaling factor (spec 11.9b). `None` before the encode and for text to image.
+    image_latents: Option<Vec<Vec<f32>>>,
 }
 
 /// The SDXL engine.
@@ -436,6 +440,42 @@ impl SdxlEngine {
         self.read_f32(self.vae.image, 3 * h * w * VAE_SCALE * VAE_SCALE)
     }
 
+    /// The VAE encoder and `quant_conv` on one image of `h` by `w` pixels: the input values of
+    /// `nagaya_text_sdxl::inputs::unit`, pixel-major. It gives the 8 moments of each latent pixel, pixel-major: the mean of 4
+    /// channels, then their log variance (spec 11.9b).
+    pub fn encode_image(&mut self, values: &[f32], h: usize, w: usize) -> Vec<f32> {
+        assert_eq!(values.len(), 3 * h * w, "the encoder takes 3 values for each pixel");
+        self.write_f32(self.vae.image, values);
+        let run = model::vae_encoder(&self.weights, &self.vae, h, w);
+        self.run(&run);
+        self.read_f32(self.vae.moments, 2 * LATENT * (h / VAE_SCALE) * (w / VAE_SCALE))
+    }
+
+    /// The image latent of each image of the job in slot 0, after its encode quantum (spec 11.9b), or `None`.
+    pub fn image_latents(&self) -> Option<&[Vec<f32>]> {
+        self.job.as_ref()?.image_latents.as_deref()
+    }
+
+    /// The encode quantum of a job with `init` (spec 11.9b, "The VAE encode quantum"): the encoder runs once on the
+    /// image, and image `i` draws its own `z` from the seed plus `i`, with the purpose `encode`.
+    fn encode_quantum(&mut self, job: &mut Job) {
+        let init = job
+            .job
+            .init
+            .clone()
+            .expect("the encode quantum runs for a job with an image");
+        let (h, w) = (job.job.height as usize, job.job.width as usize);
+        let moments = self.encode_image(&nagaya_text_sdxl::inputs::unit(&init.pixels), h, w);
+        let n = LATENT * (h / VAE_SCALE) * (w / VAE_SCALE);
+        let latents = (0..job.size.images)
+            .map(|i| {
+                let z = noise::normal(job.job.seed.wrapping_add(i as u64), 0, 0, Purpose::Encode, n);
+                host::image_latent(&moments, &z)
+            })
+            .collect();
+        job.image_latents = Some(latents);
+    }
+
     /// Check a job against the limits of the engine. The council checks the ranges of spec 11.9a before it.
     fn check(&self, job: &ImageJob) -> Result<(), PassError> {
         job_problem(job).map_or(Ok(()), |m| Err(refused(format!("nothing ran: {m}"))))
@@ -444,71 +484,6 @@ impl SdxlEngine {
     fn fail(&mut self, error: PassError) -> PassError {
         self.last_error = Some(error.message.clone());
         error
-    }
-}
-
-/// The reason an image job is refused, or `None` when the engine can run it.
-pub fn job_problem(job: &ImageJob) -> Option<String> {
-    let pixels = job.width as usize * job.height as usize;
-    let chunk_ok =
-        |c: &ImageChunk| c.ids1.len() == CHUNK_IDS && c.ids2.len() == CHUNK_IDS && c.weights.len() == CHUNK_IDS;
-    let ImagePrompt::Chunks {
-        prompt,
-        negative,
-        clip_skip,
-    } = &job.prompt
-    else {
-        return Some("the SDXL engine reads the chunks form of a prompt, not tokens".to_owned());
-    };
-    if job.sampler == ImageSampler::FlowEuler {
-        return Some("the SDXL engine has no flow sampler; give euler, euler a or a DPM++ sampler".to_owned());
-    }
-    if job.conditioning.is_some() {
-        return Some("the SDXL engine keeps no conditioning, so it takes no rows".to_owned());
-    }
-    // Milestone 20 builds the VAE encode, the blend and the 9-channel UNet. Until then a job with an image must not
-    // run as text to image.
-    if job.init.is_some() {
-        return Some(
-            "the SDXL engine has no VAE encoder yet, so it runs no job with an image; send the request with no object \
-             part"
-                .to_owned(),
-        );
-    }
-    if job.count == 0 || job.count as usize > MAX_IMAGES {
-        Some(format!(
-            "the job asks for {} images; the engine makes 1 to {MAX_IMAGES}",
-            job.count
-        ))
-    } else if !job.width.is_multiple_of(64) || !job.height.is_multiple_of(64) || job.width == 0 || job.height == 0 {
-        Some(format!(
-            "the size {} by {} is not a multiple of 64",
-            job.width, job.height
-        ))
-    } else if pixels > MAX_IMAGE_PIXELS {
-        Some(format!(
-            "an image of {pixels} pixels is more than the {MAX_IMAGE_PIXELS} of the engine"
-        ))
-    } else if job.steps == 0 {
-        Some("the job has 0 steps".to_owned())
-    } else if !(2..=3).contains(clip_skip) {
-        Some(format!("clip_skip {clip_skip} is not 2 or 3"))
-    } else if !job.cfg.is_finite() {
-        Some("the CFG scale is not a finite number".to_owned())
-    } else if job.spacing == ImageSpacing::Trailing
-        && !matches!(job.sampler, ImageSampler::Euler | ImageSampler::EulerAncestral)
-    {
-        Some("trailing spacing needs euler or euler a; the DPM++ samplers take their sigmas".to_owned())
-    } else if prompt.is_empty()
-        || prompt.len() > MAX_CHUNKS
-        || negative.len() > MAX_CHUNKS
-        || !prompt.iter().chain(negative).all(chunk_ok)
-    {
-        Some(format!(
-            "a prompt has 1 to {MAX_CHUNKS} chunks of {CHUNK_IDS} ids and weights"
-        ))
-    } else {
-        None
     }
 }
 
@@ -570,6 +545,7 @@ impl Image for SdxlEngine {
             latents,
             history: vec![History::default(); images],
             step: 0,
+            image_latents: None,
         });
         Ok(None)
     }
@@ -580,6 +556,27 @@ impl Image for SdxlEngine {
                 "slot {slot} holds no image job; call image_begin first"
             ))));
         };
+        if let Some(init) = &job.job.init {
+            if job.image_latents.is_none() {
+                // The first step of a job with an image is the encode: step 0 of the n steps that run, with no
+                // previews (engine-abi "Image inputs").
+                let steps = steps_that_run(job.job.steps, init.strength);
+                self.encode_quantum(&mut job);
+                let out = ImageStepOut {
+                    step: 0,
+                    steps,
+                    previews: Vec::new(),
+                };
+                self.job = Some(job);
+                return Ok(out);
+            }
+            self.job = Some(job);
+            return Err(self.fail(refused(
+                "nothing ran: the engine has the image latents, but img2img and inpainting steps are not built yet \
+                 (milestone 20 steps 4 and 5); clear the slot"
+                    .to_owned(),
+            )));
+        }
         let i = job.step;
         if i >= job.schedule.timesteps.len() {
             self.job = Some(job);

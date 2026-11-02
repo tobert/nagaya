@@ -83,6 +83,8 @@ pub const FLAG_F16: u16 = 1 << 10;
 pub const FLAG_SILU: u16 = 1 << 11;
 /// `OP_SDPA`: query row `t` attends to the key rows `s <= t`, as the text encoders of CLIP do.
 pub const FLAG_CAUSAL: u16 = 1 << 12;
+/// `OP_CONV2D` and `OP_GEMM`: the pad is at the bottom and the right only, as in the down sampler of the VAE encoder.
+pub const FLAG_PAD_END: u16 = 1 << 13;
 
 pub const NO_EVENT: u32 = u32::MAX;
 pub const NUM_EXPERTS: usize = 128;

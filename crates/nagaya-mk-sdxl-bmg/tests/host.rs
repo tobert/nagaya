@@ -55,6 +55,28 @@ fn the_empty_chunk_pads_each_encoder_as_the_family_pads() {
     assert!(c.weights.iter().all(|w| *w == 1.0));
 }
 
+/// The image latent: the first 4 channels of the moments are the mean, the last 4 the log variance. The latent is
+/// `(mean + exp(0.5 * clamp(logvar, -30, 20)) * z) * 0.13025` (spec 11.9b, "The image latent").
+#[test]
+fn the_image_latent_draws_from_the_mean_and_the_clamped_log_variance() {
+    let moments = [1.0, -1.0, 0.5, 0.0, 2.0, 50.0, -100.0, 0.0];
+    let z = [0.5, 1.0, 2.0, -3.0];
+    let latent = image_latent(&moments, &z);
+    let want = [
+        (1.0 + 1f32.exp() * 0.5) * 0.13025,
+        (-1.0 + 10f32.exp() * 1.0) * 0.13025,
+        (0.5 + (-15f32).exp() * 2.0) * 0.13025,
+        (0.0 + 1.0 * -3.0) * 0.13025,
+    ];
+    assert_eq!(latent, want);
+}
+
+#[test]
+#[should_panic(expected = "8 moments for each latent pixel")]
+fn the_image_latent_refuses_moments_that_do_not_match_the_draw() {
+    image_latent(&[0.0; 8], &[0.0; 8]);
+}
+
 #[test]
 fn image_bytes_round_the_clamped_values() {
     assert_eq!(
