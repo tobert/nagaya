@@ -2551,6 +2551,10 @@ specs belong to the server, and here the server is the cluster. A client must ge
 - The other choice was to keep these routes on the coordinator only. Then a pin through b70host could not hold a
   snapshot of a model of gfx1151host.
 
+**Trust.** **Proposed** by Claude Opus 5.5, 2026-11-02. The cluster trusts the tailnet. Each node binds its HTTP and
+gossip addresses on the tailnet (2.1, 11.6). It trusts the gossip of each peer and each request with
+`nagaya-forwarded`, and it checks no credential in v0. gogi has no authentication either (gogi "Served models").
+
 **11.2 Generation.** The nagaya runs one sampler for all engines. It applies top_k, top_p, min_p, then temperature.
 The draw is seeded, and the response reports the seed. Each engine has its own defaults. All engines share the SSE
 framing.
