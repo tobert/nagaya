@@ -55,6 +55,48 @@ fn the_empty_chunk_pads_each_encoder_as_the_family_pads() {
     assert!(c.weights.iter().all(|w| *w == 1.0));
 }
 
+/// Each channel `v` becomes `2 * (v / 255) - 1` in f32, as diffusers computes it (`image_processor.py:167`, `:220`).
+#[test]
+fn input_bytes_map_to_minus_1_through_1_as_diffusers_maps_them() {
+    let values = image_values(&[0, 255, 128, 1]);
+    assert_eq!(values[..2], [-1.0, 1.0]);
+    assert_eq!(values[2], 2.0 * (128f32 / 255.0) - 1.0);
+    assert_eq!(values[3], 2.0 * (1f32 / 255.0) - 1.0);
+}
+
+/// The masked image of a 9-channel UNet has 0 at each repainted pixel: a blurred mask value of 128 or more (spec
+/// 11.9b, "The mask" and "The 9-channel UNet").
+#[test]
+fn the_masked_image_is_0_where_the_mask_repaints() {
+    let rgb = [255u8, 0, 128, 255, 0, 128, 10, 20, 30];
+    let values = masked_image_values(&rgb, &[127, 128, 0]);
+    assert_eq!(values[..3], image_values(&rgb[..3])[..]);
+    assert_eq!(values[3..6], [0.0, 0.0, 0.0]);
+    assert_eq!(values[6..], image_values(&rgb[6..])[..]);
+}
+
+/// The image latent: the first 4 channels of the moments are the mean, the last 4 the log variance. The latent is
+/// `(mean + exp(0.5 * clamp(logvar, -30, 20)) * z) * 0.13025` (spec 11.9b, "The image latent").
+#[test]
+fn the_image_latent_draws_from_the_mean_and_the_clamped_log_variance() {
+    let moments = [1.0, -1.0, 0.5, 0.0, 2.0, 50.0, -100.0, 0.0];
+    let z = [0.5, 1.0, 2.0, -3.0];
+    let latent = image_latent(&moments, &z);
+    let want = [
+        (1.0 + 1f32.exp() * 0.5) * 0.13025,
+        (-1.0 + 10f32.exp() * 1.0) * 0.13025,
+        (0.5 + (-15f32).exp() * 2.0) * 0.13025,
+        (0.0 + 1.0 * -3.0) * 0.13025,
+    ];
+    assert_eq!(latent, want);
+}
+
+#[test]
+#[should_panic(expected = "8 moments for each latent pixel")]
+fn the_image_latent_refuses_moments_that_do_not_match_the_draw() {
+    image_latent(&[0.0; 8], &[0.0; 8]);
+}
+
 #[test]
 fn image_bytes_round_the_clamped_values() {
     assert_eq!(

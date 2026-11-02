@@ -79,6 +79,52 @@ pub fn rgb_bytes(values: &[f32]) -> Vec<u8> {
         .collect()
 }
 
+/// The input values of the VAE encoder from 8-bit RGB: `2 * (v / 255) - 1` in f32, in the order of diffusers
+/// (`image_processor.py:167` and `:220`). The values stay pixel-major.
+pub fn image_values(rgb: &[u8]) -> Vec<f32> {
+    rgb.iter().map(|v| 2.0 * (*v as f32 / 255.0) - 1.0).collect()
+}
+
+/// The input values of the masked image of a 9-channel UNet: [`image_values`] with 0 at each pixel that the mask
+/// repaints, a blurred value of 128 or more (spec 11.9b; `inpaint.py:1455`).
+pub fn masked_image_values(rgb: &[u8], mask: &[u8]) -> Vec<f32> {
+    assert_eq!(
+        rgb.len(),
+        3 * mask.len(),
+        "the image has 3 bytes for each byte of the mask"
+    );
+    let mut values = image_values(rgb);
+    for (pixel, m) in mask.iter().enumerate() {
+        if *m >= 128 {
+            values[3 * pixel..3 * pixel + 3].fill(0.0);
+        }
+    }
+    values
+}
+
+/// The image latent from the output of the VAE encoder (spec 11.9b, "The image latent"). `moments` holds 8 values for
+/// each latent pixel: the mean of 4 channels, then their log variance (`vae.py:693`). The latent is
+/// `(mean + exp(0.5 * clamp(logvar, -30, 20)) * z) * 0.13025` (`vae.py:694-696`, `:709`; `img2img.py:751`).
+pub fn image_latent(moments: &[f32], z: &[f32]) -> Vec<f32> {
+    assert_eq!(
+        moments.len(),
+        2 * z.len(),
+        "the encoder gives 8 moments for each latent pixel, and the draw 4 values"
+    );
+    moments
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .zip(z.as_chunks::<4>().0)
+        .flat_map(|(m, z)| {
+            (0..LATENT).map(move |c| {
+                let std = (0.5 * m[LATENT + c].clamp(-30.0, 20.0)).exp();
+                VAE_SCALING_FACTOR * (m[c] + std * z[c])
+            })
+        })
+        .collect()
+}
+
 /// The linear preview of a latent (spec 11.9): RGB in [0, 1] = `PREVIEW` times the 4 channels, plus `PREVIEW_BIAS`.
 /// `tools/sdxl_preview_fit.py` fitted it by least squares on 4 images of SDXL base 1.0 at 512 by 512, against the mean
 /// of each 8 by 8 block of the decoded image. Its mean absolute error was 0.072 (2026-10-28).
