@@ -1799,6 +1799,10 @@ Decided by senpai 2026-10-20 night (vetoable):
   `gemma` to `lightning-0` (`deploy/b70host/profile.toml`). Thus each job has the same long name, and a metric
   cannot tell the engines apart.
 
+Built 2026-11-02. `GroupJobs` and the jobs of a staged group take the names of the engines in profile order. A job
+span names the engine of its job. `ObservedScheduler::set_job_engine` gives that name to the quanta of the job. The
+heartbeat of a group carries no attribute `engine` today. Thus no signal uses the joined name now.
+
 Decided by senpai 2026-10-20 night (vetoable). The route template is axum's, such as `/council/v2/pins/{owner}`. A
 request that matches no route has the span `<METHOD>` alone, and the `http.route` value `unmatched`. The span has the
 attributes `http.request.method`, `http.route`, `http.response.status_code` and `request_id`. A status of 500 or more
