@@ -2375,6 +2375,26 @@ otherwise we forward to whereever it is."
 - A `GET` of an object that this node lacks asks each live peer (6.15, "A read on a miss").
 - `GET /nagaya/v1/cluster` gives the gossip view (11.4a).
 
+**The identity of the cluster.** **Proposed** by Claude Opus 5.5, 2026-11-02. Reason: gogi lists every served model of
+"the server", and through any node the cluster is one server. Each node must give the same list.
+
+- `identity.models` holds the served models of this node and of each live peer, in byte order of `model`.
+- Each field of a peer's model comes from its `served` entry in gossip (2.3). The status comes from the state of its
+  engine, and `fatal` gives `unloaded` (11.1).
+- A model whose node leaves the live set stays in the list, with the status `unloaded`. The coordinator keeps the
+  last entry that it saw since its start.
+- Reason: a request for that model then gets the 503 `model_unavailable` of a model that comes back. It does not get
+  the 400 of a name that the server never serves (gogi "Served models"). The other choice was to drop the model.
+- A coordinator that starts while a peer is down does not list the models of that peer.
+- A served model that loses its name to another node (2.3) is not in the list.
+- The server `limits`, `capabilities` and `extensions` are those of the coordinator (11.1, 11.4f), with one change.
+  The coordinator declares `pins` when any live node declares it. `pin_bytes` is then the smallest value among those
+  nodes.
+- Reason: objects and specs go to the store of the node that takes the put (6.15, 11.1a). Thus their limits are its
+  own. Pins go to each node (11.1a, "The routes with no model"), so their limit must fit each node.
+- `extensions` holds `/nagaya/v1` when `identity.models` is not empty, because the text routes then forward
+  (11.4f).
+
 **11.2 Generation.** The nagaya runs one sampler for all engines. It applies top_k, top_p, min_p, then temperature.
 The draw is seeded, and the response reports the seed. Each engine has its own defaults. All engines share the SSE
 framing.
