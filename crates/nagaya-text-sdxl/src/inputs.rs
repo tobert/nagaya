@@ -240,6 +240,23 @@ pub fn unit(pixels: &[u8]) -> Vec<f32> {
     pixels.iter().map(|&v| 2.0 * (f32::from(v) / 255.0) - 1.0).collect()
 }
 
+/// The masked image of a 9-channel UNet: the values of [`unit`], with 0 at each pixel that the binary mask repaints
+/// (spec 11.9b, "The 9-channel UNet"). `pixels` is RGB, 3 bytes for each pixel, and `binary` has 1 byte for each pixel.
+pub fn masked(pixels: &[u8], binary: &[u8]) -> Vec<f32> {
+    assert_eq!(
+        pixels.len(),
+        3 * binary.len(),
+        "the binary mask has 1 byte for each RGB pixel"
+    );
+    let mut values = unit(pixels);
+    for (pixel, repaint) in binary.iter().enumerate() {
+        if *repaint == 1 {
+            values[3 * pixel..3 * pixel + 3].fill(0.0);
+        }
+    }
+    values
+}
+
 /// The binary mask of a blurred mask: 1 repaints a pixel whose value is 128 or more, and 0 keeps it (spec 11.9b).
 pub fn binary(blurred: &[u8]) -> Vec<u8> {
     blurred.iter().map(|&v| u8::from(v >= 128)).collect()

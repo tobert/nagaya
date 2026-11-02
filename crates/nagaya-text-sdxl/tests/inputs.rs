@@ -193,3 +193,18 @@ fn the_paste_mixes_the_pixels_by_the_blurred_mask() {
     // 1 of 255 rounds to the nearest: (1 * 255 + 254 * 0 + 127) / 255 is 1.
     assert_eq!(inputs::paste(&[255, 255, 255], &[0, 0, 0], &[1]), vec![1, 1, 1]);
 }
+
+/// The masked image of a 9-channel UNet is the map of `unit`, with 0 at each pixel that the binary mask repaints.
+#[test]
+fn the_masked_image_is_0_where_the_mask_repaints() {
+    let pixels = [0, 128, 255, 255, 0, 51];
+    let unit = inputs::unit(&pixels);
+    assert_eq!(
+        inputs::masked(&pixels, &[0, 1]),
+        [unit[0], unit[1], unit[2], 0.0, 0.0, 0.0]
+    );
+    assert_eq!(
+        inputs::masked(&pixels, &[1, 0]),
+        [0.0, 0.0, 0.0, unit[3], unit[4], unit[5]]
+    );
+}
