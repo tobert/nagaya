@@ -2445,6 +2445,31 @@ how a coordinator finds the node, what it sends, or how a forward fails.
 - **A stop.** A stopping coordinator answers each new request with the 503 `unavailable`, also for a model of a peer.
   An open forward gets the wait of 2 s of 11.7, as a local request does.
 
+**The routes with no model.** **Proposed** by Claude Opus 5.5, 2026-11-02. Reason: gogi says that snapshots, pins and
+specs belong to the server, and here the server is the cluster. A client must get the same answer from each node.
+
+- **Reads by id.** `GET /council/v2/snapshots/{id}` and `GET /council/v2/specs/{spec_id}` read the local store first.
+  On a miss, they ask each live peer in the order of 6.15 ("Objects in the cluster"). A 404 comes only when no node
+  holds the id.
+- **Specs.** `POST /council/v2/specs` holds the spec on the coordinator only. `GET /council/v2/specs` lists the local
+  specs only.
+- A forwarded decision takes its spec to the target first. The coordinator posts the spec that it holds, and the
+  target gives the same id. A spec that the coordinator lacks does not stop the forward: the target's 404 names it.
+- `DELETE /council/v2/specs/{spec_id}` goes to each live node. It is a 204 when any node held the spec, and a 404 when
+  no node did.
+- **Pins.** `PUT`, `GET` and `DELETE /council/v2/pins/{owner}` go to each live node that declares `pins`. Each node
+  pins the snapshots that it holds.
+- A snapshot is `held` when any node holds it. A `GET` joins the sets of the nodes, and `expires_in_s` is the
+  smallest. An owner that no node knows is a 404.
+- A 413 from a node is the response, and the sets of the other nodes stay as the `PUT` made them. Known limit: gogi
+  says that a `PUT` past the limit pins nothing. The client sends a smaller set, which replaces the set on each node.
+- **Keeps.** `/council/v2/keeps/{owner}` follows the rules of pins, over the live nodes that declare `objects`
+  (6.15).
+- **The calls to peers.** Each call to a peer carries `nagaya-forwarded` (above), so a peer answers from its own store
+  and asks no other node. A peer that does not answer in 2 s is left out, and the log names it.
+- The other choice was to keep these routes on the coordinator only. Then a pin through b70host could not hold a
+  snapshot of a model of gfx1151host.
+
 **11.2 Generation.** The nagaya runs one sampler for all engines. It applies top_k, top_p, min_p, then temperature.
 The draw is seeded, and the response reports the seed. Each engine has its own defaults. All engines share the SSE
 framing.
