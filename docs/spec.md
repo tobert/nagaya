@@ -49,8 +49,8 @@ Goals for v0:
 Not in v0:
 
 - One model split across machines. The links are gigabit today (README, "Between machines").
-- Engines that load and unload in place for a profile `PUT`. A `PUT` that changes engines still restarts the
-  process (3.3). Milestone 16 builds the swap in place on demand (3.3, Decided 2026-10-24).
+- Engines that load in place for a profile `PUT`. A `PUT` that adds or changes an engine still restarts the process
+  (3.3, "Which actions run in place"). Milestone 16 built the swap in place, and the load routes start it (3.3b).
 - Cooperative yields inside a pass (D8).
 - Tensor transfer between engines (13.3).
 
@@ -478,11 +478,12 @@ thread the mask of the thread that starts it. Decided 2026-10-22 (Amy: "accepted
 the group thread, so those threads start with the pool set. The nagaya does not pin a thread that a runtime starts.
 **Open:** measure the masks of the Level Zero threads on b70host, as on gfx1151.
 
-**3.3 Engine lifecycle and profile swaps.** The nagaya opens each engine at start, from the profile. mk cannot close
-inside a process today: "the HIP runtime's own teardown segfaults" (mk `service/__main__.py`). Thus in v0, when
-`PUT /nagaya/v1/profile` changes the profile, the nagaya persists the profile and stops as in 10.3. It keeps its
-arenas in the file-descriptor store (10.2) and exits with code 4, and systemd starts it again. Later, an engine whose
-`close()` is safe loads and unloads in place (README door 1).
+**3.3 Engine lifecycle and profile swaps.** The nagaya opens each engine at start, from the profile. The HIP runtime
+cannot end inside a process: "the HIP runtime's own teardown segfaults" (mk `service/__main__.py`). Thus in the first
+v0, when `PUT /nagaya/v1/profile` changed the profile, the nagaya persisted the profile and stopped as in 10.3. It kept
+its arenas in the file-descriptor store (10.2) and exited with code 4, and systemd started it again. Since milestone
+16, an engine whose `close()` is safe loads and unloads in place (README door 1, and the rules below). mk has a
+`close` since `6e8e013`: it frees its weights and keeps the HIP runtime (engine-abi "The close of mk").
 
 **A profile change in place.** Proposed by senpai (Claude Opus 5.5), 2026-10-25, and Decided 2026-10-27 (Amy, by
 interview). Reason: a client sets the work of the fleet with one `PUT /nagaya/v1/profile` to each machine (Amy: "the
@@ -552,8 +553,8 @@ swap and waits for the load (Amy then: "Nagaya swaps itself").
 Reason: a load takes seconds, and it can unload another engine of the group. When requests start loads, the cards can
 churn between engines. The client knows its plan, so the client loads.
 
-Reason for swaps in place: voice and image engines can use the B70 cards when Gemma 4 is idle. Milestone 16 builds it
-(`AGENTS.md`).
+Reason for swaps in place: voice and image engines can use the B70 cards when Gemma 4 is idle. Milestone 16 built it,
+on 2026-10-24 (`AGENTS.md`).
 
 **3.3a The swap in place.** Proposed by senpai (Claude Opus 5.5), 2026-10-24, and Decided 2026-10-27 (Amy, by
 interview), with the explicit loads of 3.3. Reason: these rules make each swap one choice on one thread.
