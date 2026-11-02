@@ -34,6 +34,9 @@ struct Job {
     latents: Vec<Vec<f32>>,
     history: Vec<History>,
     step: usize,
+    /// The image latent of each image of a job with `init`, after the encode quantum: rows of 4 channels, already
+    /// times the scaling factor (spec 11.9b). `None` before the encode and for text to image.
+    image_latents: Option<Vec<Vec<f32>>>,
 }
 
 /// The SDXL engine.
@@ -437,13 +440,44 @@ impl SdxlEngine {
         self.read_f32(self.vae.image, 3 * h * w * VAE_SCALE * VAE_SCALE)
     }
 
+    /// The VAE encoder and `quant_conv` on one image of `h` by `w` pixels: the input values of
+    /// [`host::image_values`], pixel-major. It gives the 8 moments of each latent pixel, pixel-major: the mean of 4
+    /// channels, then their log variance (spec 11.9b).
+    pub fn encode_image(&mut self, values: &[f32], h: usize, w: usize) -> Vec<f32> {
+        assert_eq!(values.len(), 3 * h * w, "the encoder takes 3 values for each pixel");
+        self.write_f32(self.vae.image, values);
+        let run = model::vae_encoder(&self.weights, &self.vae, h, w);
+        self.run(&run);
+        self.read_f32(self.vae.moments, 2 * LATENT * (h / VAE_SCALE) * (w / VAE_SCALE))
+    }
+
+    /// The image latent of each image of the job in slot 0, after its encode quantum (spec 11.9b), or `None`.
+    pub fn image_latents(&self) -> Option<&[Vec<f32>]> {
+        self.job.as_ref()?.image_latents.as_deref()
+    }
+
+    /// The encode quantum of a job with `init` (spec 11.9b, "The VAE encode quantum"): the encoder runs once on the
+    /// image, and image `i` draws its own `z` from the seed plus `i`, with the purpose `encode`.
+    fn encode_quantum(&mut self, job: &mut Job) {
+        let init = job
+            .job
+            .init
+            .clone()
+            .expect("the encode quantum runs for a job with an image");
+        let (h, w) = (job.job.height as usize, job.job.width as usize);
+        let moments = self.encode_image(&host::image_values(&init), h, w);
+        let n = LATENT * (h / VAE_SCALE) * (w / VAE_SCALE);
+        let latents = (0..job.size.images)
+            .map(|i| {
+                let z = noise::normal(job.job.seed.wrapping_add(i as u64), 0, 0, Purpose::Encode, n);
+                host::image_latent(&moments, &z)
+            })
+            .collect();
+        job.image_latents = Some(latents);
+    }
+
     /// Check a job against the limits of the engine. The council checks the ranges of spec 11.9a before it.
     fn check(&self, job: &ImageJob) -> Result<(), PassError> {
-        if job.init.is_some() {
-            return Err(refused(
-                "nothing ran: the engine has no VAE encoder yet, so it takes no image (milestone 20 step 3)".to_owned(),
-            ));
-        }
         job_problem(job).map_or(Ok(()), |m| Err(refused(format!("nothing ran: {m}"))))
     }
 
@@ -511,6 +545,7 @@ impl Image for SdxlEngine {
             latents,
             history: vec![History::default(); images],
             step: 0,
+            image_latents: None,
         });
         Ok(None)
     }
@@ -521,6 +556,25 @@ impl Image for SdxlEngine {
                 "slot {slot} holds no image job; call image_begin first"
             ))));
         };
+        if job.job.init.is_some() {
+            if job.image_latents.is_none() {
+                // The first step of a job with an image is the encode: step 0, with no previews (engine-abi).
+                self.encode_quantum(&mut job);
+                let out = ImageStepOut {
+                    step: 0,
+                    steps: job.schedule.timesteps.len() as u32,
+                    previews: Vec::new(),
+                };
+                self.job = Some(job);
+                return Ok(out);
+            }
+            self.job = Some(job);
+            return Err(self.fail(refused(
+                "nothing ran: the engine has the image latents, but img2img and inpainting steps are not built yet \
+                 (milestone 20 steps 4 and 5); clear the slot"
+                    .to_owned(),
+            )));
+        }
         let i = job.step;
         if i >= job.schedule.timesteps.len() {
             self.job = Some(job);

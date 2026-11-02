@@ -78,7 +78,7 @@ fn planes(weights: &Weights, name: &str, shape: &[usize]) -> Option<crate::weigh
 }
 
 /// Check that the checkpoint has each tensor of each graph, with its shape: build the graphs of both encoders with each
-/// `clip_skip`, of the UNet at the largest image, and of the VAE, and run none of them.
+/// `clip_skip`, of the UNet at the largest image, and of the VAE decoder and encoder, and run none of them.
 pub fn check(weights: &Weights) -> Result<(), String> {
     weights.probe(|| {
         let mut carve = Carve::new(0, u64::MAX / 2);
@@ -99,6 +99,7 @@ pub fn check(weights: &Weights) -> Result<(), String> {
         unet(weights, &bufs, &size);
         let vae_bufs = VaeBufs::carve(&mut carve, 128 * 128 * VAE_SCALE * VAE_SCALE);
         vae(weights, &vae_bufs, 128, 128);
+        vae_encoder(weights, &vae_bufs, 128 * VAE_SCALE, 128 * VAE_SCALE);
     })
 }
 
@@ -1159,7 +1160,7 @@ fn skip_channels(i: usize) -> usize {
     [320, 320, 320, 320, 640, 640, 640, 1280, 1280][i]
 }
 
-/// The buffers of a VAE decode of one image of at most `max_pixels` pixels.
+/// The buffers of a VAE decode or a VAE encode of one image of at most `max_pixels` pixels.
 #[derive(Clone, Copy, Debug)]
 pub struct VaeBufs {
     pub z: u64,
@@ -1171,8 +1172,10 @@ pub struct VaeBufs {
     pub k: u64,
     pub v: u64,
     pub att: u64,
-    /// The output: 3 values of each pixel, in [-1, 1] before the clamp.
+    /// The output of the decoder and the input of the encoder: 3 values of each pixel, in [-1, 1].
     pub image: u64,
+    /// The output of the encoder: 8 moments of each latent pixel, the mean of 4 channels, then their log variance.
+    pub moments: u64,
 }
 
 impl VaeBufs {
@@ -1189,6 +1192,7 @@ impl VaeBufs {
             v: carve.floats(512 * latent),
             att: carve.floats(512 * latent),
             image: carve.floats(3 * max_pixels),
+            moments: carve.floats(2 * LATENT * latent),
         }
     }
 }
@@ -1319,6 +1323,187 @@ pub fn vae(wt: &Weights, b: &VaeBufs, h: usize, w: usize) -> Run {
         (hh, ww),
         (128, 3),
         (3, 1),
+        false,
+    );
+    run
+}
+
+/// The down sampler of the VAE encoder `name`: one row and one column of zeros at the bottom and the right, then a
+/// 3 x 3 kernel with stride 2 and its bias (`downsampling.py:139-145`). An input of `h` by `w` gives `h / 2` by `w / 2`.
+fn downsample_end(run: &mut Run, wt: &Weights, name: &str, x: u64, y: u64, (h, wd): (usize, usize), c: usize) {
+    let wname = format!("{name}.weight");
+    let b = w(wt, &format!("{name}.bias"), &[c]);
+    let task = match planes(wt, &wname, &[c, c, 3, 3]) {
+        Some(p) => t::gemm(
+            x,
+            p.at,
+            b.at,
+            y,
+            1,
+            h as u32,
+            wd as u32,
+            c as u32,
+            c as u32,
+            (3, 2, 1),
+            p.planes,
+            !b.f32,
+            false,
+        ),
+        None => {
+            let weight = w(wt, &wname, &[c, c, 3, 3]);
+            t::conv2d(
+                x, weight.at, b.at, y, 1, h as u32, wd as u32, c as u32, c as u32, 3, 2, 1, weight.f32, false,
+            )
+        }
+    };
+    run.push(t::pad_end(task));
+}
+
+/// The run of the VAE encoder and `quant_conv` on one image of `h` by `w` pixels (diffusers' `Encoder.forward`,
+/// `vae.py:153-180`, then `autoencoder_kl.py:165-166`). It reads the input values from `image` and writes the 8 moments
+/// of each latent pixel to `moments`.
+pub fn vae_encoder(wt: &Weights, b: &VaeBufs, h: usize, w: usize) -> Run {
+    assert!(
+        h.is_multiple_of(VAE_SCALE) && w.is_multiple_of(VAE_SCALE),
+        "the VAE encoder takes an image of multiples of {VAE_SCALE} pixels, not {w} by {h}"
+    );
+    let mut run = Run::default();
+    let bufs = (b.t1, b.t2, 0);
+    let first = VAE_ENCODER_LEVELS[0];
+    conv(
+        &mut run,
+        wt,
+        "vae.encoder.conv_in",
+        b.image,
+        b.a,
+        1,
+        (h, w),
+        (3, first),
+        (3, 1),
+        false,
+    );
+    let (mut x, mut other) = (b.a, b.c);
+    let (mut hh, mut ww, mut ch) = (h, w, first);
+    for (down, &c) in VAE_ENCODER_LEVELS.iter().enumerate() {
+        for j in 0..2 {
+            let name = format!("vae.encoder.down_blocks.{down}.resnets.{j}");
+            resnet(&mut run, wt, &name, x, other, bufs, None, 1, (hh, ww), (ch, c), 1e-6);
+            std::mem::swap(&mut x, &mut other);
+            ch = c;
+        }
+        if down + 1 < VAE_ENCODER_LEVELS.len() {
+            let name = format!("vae.encoder.down_blocks.{down}.downsamplers.0.conv");
+            downsample_end(&mut run, wt, &name, x, other, (hh, ww), c);
+            hh /= 2;
+            ww /= 2;
+            std::mem::swap(&mut x, &mut other);
+        }
+    }
+    let px = hh * ww;
+    let m = "vae.encoder.mid_block";
+    resnet(
+        &mut run,
+        wt,
+        &format!("{m}.resnets.0"),
+        x,
+        other,
+        bufs,
+        None,
+        1,
+        (hh, ww),
+        (ch, ch),
+        1e-6,
+    );
+    let at = format!("{m}.attentions.0");
+    groupnorm(
+        &mut run,
+        wt,
+        &format!("{at}.group_norm"),
+        other,
+        b.t1,
+        1,
+        px,
+        ch,
+        1e-6,
+        false,
+    );
+    for (proj, out) in [("to_q", b.q), ("to_k", b.k), ("to_v", b.v)] {
+        linear(
+            &mut run,
+            wt,
+            &format!("{at}.{proj}"),
+            true,
+            b.t1,
+            out,
+            px,
+            ch,
+            ch,
+            false,
+        );
+    }
+    run.push(t::sdpa(
+        b.q, b.k, b.v, b.att, 1, px as u32, px as u32, 1, ch as u32, false,
+    ));
+    // The residual of the attention: to_out adds to its input.
+    linear(
+        &mut run,
+        wt,
+        &format!("{at}.to_out.0"),
+        true,
+        b.att,
+        other,
+        px,
+        ch,
+        ch,
+        true,
+    );
+    resnet(
+        &mut run,
+        wt,
+        &format!("{m}.resnets.1"),
+        other,
+        x,
+        bufs,
+        None,
+        1,
+        (hh, ww),
+        (ch, ch),
+        1e-6,
+    );
+    groupnorm(
+        &mut run,
+        wt,
+        "vae.encoder.conv_norm_out",
+        x,
+        b.t1,
+        1,
+        px,
+        ch,
+        1e-6,
+        true,
+    );
+    let moments = 2 * LATENT;
+    conv(
+        &mut run,
+        wt,
+        "vae.encoder.conv_out",
+        b.t1,
+        b.t2,
+        1,
+        (hh, ww),
+        (ch, moments),
+        (3, 1),
+        false,
+    );
+    conv1x1(
+        &mut run,
+        wt,
+        "vae.quant_conv",
+        b.t2,
+        b.moments,
+        px,
+        moments,
+        moments,
         false,
     );
     run

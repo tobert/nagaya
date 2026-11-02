@@ -10,8 +10,8 @@ use crate::model::{Carve, TextBufs, UnetBufs, VaeBufs};
 use crate::spec::*;
 use crate::weights::{Count, Weights};
 
-/// The longest quantum in milliseconds (D8): one UNet step of 4 images of 1.5 MP, or the VAE decode of them. It is not
-/// measured yet.
+/// The longest quantum in milliseconds (D8): one UNet step of 4 images of 1.5 MP, the VAE decode of them, or the VAE
+/// encode of their image and masked image. It is not measured yet.
 pub const MAX_QUANTUM_MS: u32 = 60_000;
 
 /// Bytes of host memory that one upload copy goes through.
@@ -21,7 +21,7 @@ pub const STAGING_BYTES: usize = 64 << 20;
 pub const MAX_LATENT_ROWS: usize = MAX_IMAGES * MAX_IMAGE_PIXELS / (VAE_SCALE * VAE_SCALE);
 
 /// The bytes of the activation arena: the buffers of the text encoders, then the larger of the buffers of the UNet
-/// and of the VAE, which never run at once.
+/// and of the VAE, which never run at once. The VAE encoder and decoder share the buffers of the VAE.
 pub fn arena_bytes() -> u64 {
     let mut carve = Carve::new(0, u64::MAX / 2);
     TextBufs::carve(&mut carve, 2 * MAX_CHUNKS);
