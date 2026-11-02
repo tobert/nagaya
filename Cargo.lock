@@ -1110,6 +1110,8 @@ dependencies = [
  "gogi-proto",
  "gogi-toy",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "indexmap",
  "libc",
  "nagaya",

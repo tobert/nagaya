@@ -24,6 +24,9 @@ blake3 = "1.8.7"
 chitchat = "0.13.0"
 gogi-proto.workspace = true
 http-body-util = "0.1.5"
+# The cluster call to peers (spec 11.1a). Both crates are in the tree already, through axum and tonic.
+hyper = { version = "1.11.1", features = ["client", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
 indexmap = "2.14"
 nagaya-abi = { version = "0.1.0", path = "../nagaya-abi" }
 nagaya-council = { version = "0.1.0", path = "../nagaya-council" }

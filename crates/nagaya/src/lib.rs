@@ -4,6 +4,7 @@ pub mod admission;
 pub mod affinity;
 pub mod arena;
 pub mod bootstrap;
+pub mod cluster;
 pub mod council;
 pub mod cpu_sets;
 pub mod embedding;
