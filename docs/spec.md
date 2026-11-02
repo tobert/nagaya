@@ -2624,8 +2624,8 @@ and 3.3b, 2.4 and 6.15 leave these choices open. The code of milestone 23 steps 
 - **A desired profile past the bound.** A value of `profile:desired:<host>` past 8192 bytes (2.3) is a 413
   `too_large` with the param `profile`.
 - **The order of a desired profile.** The target admits it, checks its names, persists it and acts on it, through the
-  code of a local `PUT`. It records the version before the change in place runs. It writes `profile:active` again
-  after each accepted change.
+  code of a local `PUT`. It records the version after that code answers, also for a refusal. It writes
+  `profile:active` again after each accepted change.
 
 **Trust.** Decided 2026-11-02 (Amy, by interview), proposed by Claude Opus 5.5, 2026-11-02. The cluster trusts the
 tailnet. Each node binds its HTTP and gossip addresses on the tailnet (2.1, 11.6). It trusts the gossip of each peer and
