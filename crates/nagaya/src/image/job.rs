@@ -1,13 +1,14 @@
 //! The job of one image generation on the group of its engine (spec 11.9a "The quanta").
 //!
-//! The first quantum (`embed`) begins the job in its slot. Each `step` quantum runs one step of every image, and the
-//! `step` after the last one decodes them. The body sends what each quantum made to the route.
+//! The first quantum (`embed`) begins the job in its slot. A job with an image then runs the VAE encode as one `step`
+//! quantum (spec 11.9b). Each later `step` quantum runs one step of every image, and the `step` after the last one
+//! decodes them. The body sends what each quantum made to the route.
 
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use nagaya_abi::{Engine, ImageConditioning, ImageJob, ImagePrompt, Kind, PassErrorKind, SlotId};
+use nagaya_abi::{Engine, ImageConditioning, ImageJob, ImagePrompt, Kind, PassErrorKind, SlotId, steps_that_run};
 use nagaya_sched::JobState;
 use nagaya_store::{EngineFacts, Put, Reason, Store, Tier, conditioning};
 use nagaya_telemetry::EngineState;
@@ -34,6 +35,8 @@ pub(crate) struct Parts {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
     Begin,
+    /// The VAE encode of a job with an image: the first `image_step` gives step 0 and no previews.
+    Encode,
     Steps,
     Decode,
 }
@@ -143,6 +146,14 @@ impl ImageJobBody {
         }
     }
 
+    /// The steps that the job runs: `n` with an image (spec 11.9b), else the steps of the request.
+    fn steps_run(&self) -> u32 {
+        let job = &self.parts.image;
+        job.init
+            .as_ref()
+            .map_or(job.steps, |init| steps_that_run(job.steps, init.strength))
+    }
+
     fn release(&mut self) {
         if !self.released {
             self.released = true;
@@ -234,6 +245,32 @@ impl JobBody for ImageJobBody {
                     };
                     return self.fail(engine, error);
                 }
+                self.phase = if self.parts.image.init.is_some() {
+                    Phase::Encode
+                } else {
+                    Phase::Steps
+                };
+                Ran::More(vec![Kind::Step])
+            }
+            Phase::Encode => {
+                let out = match engine.image().expect("checked above").image_step(slot) {
+                    Ok(out) => out,
+                    Err(error) => {
+                        return self.fail(engine, failed(format!("an image encode failed: {}", error.message)));
+                    }
+                };
+                let steps = self.steps_run();
+                if out.step != 0 || out.steps != steps || !out.previews.is_empty() {
+                    let message = format!(
+                        "the engine gave step {} of {} with {} previews for the encode of a job of {steps} steps; the \
+                         encode gives step 0 with no previews",
+                        out.step,
+                        out.steps,
+                        out.previews.len()
+                    );
+                    return self.fail(engine, failed(message));
+                }
+                // The encode is not a step of `progress` (spec 11.9b), so the route hears nothing of it.
                 self.phase = Phase::Steps;
                 Ran::More(vec![Kind::Step])
             }
@@ -242,7 +279,7 @@ impl JobBody for ImageJobBody {
                     Ok(out) => out,
                     Err(error) => return self.fail(engine, failed(format!("an image step failed: {}", error.message))),
                 };
-                let steps = self.parts.image.steps;
+                let steps = self.steps_run();
                 if out.steps != steps || out.step == 0 || out.step > steps {
                     let message = format!(
                         "the engine gave step {} of {}, for a job of {steps} steps",
