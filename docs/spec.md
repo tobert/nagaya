@@ -1375,6 +1375,10 @@ does (`draft`, `mk_api.rs:336-347`, keys of 4 and 3 tokens, at most 7 drafts). R
 store keeps. Thus a change of the setting must not change the identity and lose the store. A test on the cards must
 still show that drafts change no bit of a kept row (`docs/new-engine.md`).
 
+The drafts are not built yet. Amy chose on 2026-11-02 to build them at the next pass on gfx1151host: "b70host is gonna
+focus on image models and smaller models where it doesn't matter as much". That pass also decides what a seed
+promises when drafts change the text of a sampled reply (mkviolet `docs/report-2026-10-16-overnight.md`, item 2).
+
 **6.15 Objects.** Proposed by senpai (Claude Opus 5.5), 2026-10-25, and Decided 2026-10-27 (Amy, by interview). The
 budget, the limits and the order of the work are Decided 2026-10-25 (Amy, by interview); see "The budget of objects"
 below.
