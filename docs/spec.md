@@ -2455,7 +2455,7 @@ otherwise we forward to whereever it is."
 how a coordinator finds the node, what it sends, or how a forward fails.
 
 - **The node of a model.** The coordinator finds the live node whose `served` entries name `model`, as a `model` or
-  an alias (2.3). A model of this node never forwards.
+  an alias (2.3). A model of this node never forwards, unless another node keeps its name (2.3).
 - **Not ready.** The coordinator reads the status of the model from gossip first. A model that is not `ready` gets
   the 503 `model_unavailable` at once, as a local model does (3.3).
 - **The job routes.** These routes carry `model`, and they forward: `POST /council/v2/contexts`, `decisions`,
