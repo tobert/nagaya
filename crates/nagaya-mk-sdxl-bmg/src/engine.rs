@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use nagaya_abi::{
     DecodedImage, Engine, Identity, Image, ImageChunk, ImageJob, ImagePrompt, ImageStepOut, Limits, PassError,
-    PassErrorKind, PassOut, Segment, SlotId, Tap, steps_that_run,
+    PassErrorKind, PassOut, Segment, SlotId, Tap,
 };
 use nagaya_mk_bmg::level_zero::{B70Card, L0Cluster};
 use nagaya_mk_bmg::ring::Ring;
@@ -17,7 +17,7 @@ use crate::lora::{self, Target};
 use crate::model::{self, Carve, Run, TextBufs, UnetBufs, UnetSize, VaeBufs};
 use crate::noise::{self, Purpose};
 use crate::plan::{MAX_LATENT_ROWS, arena_bytes, limits};
-use crate::sampler::{self, History, Schedule};
+use crate::sampler::{self, History, Schedule, begin_index};
 use crate::spec::*;
 use crate::weights::{Adapter, Weights, f32_bytes, f32_values, sources};
 use std::collections::HashMap;
@@ -33,7 +33,14 @@ struct Job {
     /// The latent of each image, pixel-major: rows of 4 channels.
     latents: Vec<Vec<f32>>,
     history: Vec<History>,
+    /// The index of the next step of the schedule. It starts at `begin`.
     step: usize,
+    /// The index of the first step that runs: 0 for text to image, and `steps - n` for a job with an image (spec 11.9b).
+    begin: usize,
+    /// The text context of the batch, `[2 * images][ctx][2048]`, and its add features, `[2 * images][2816]`. The host
+    /// keeps them, because the VAE buffers share the arena with the UNet buffers, and the encode quantum overwrites them.
+    context: Vec<f32>,
+    add: Vec<f32>,
     /// The image latent of each image of a job with `init`, after the encode quantum: rows of 4 channels, already
     /// times the scaling factor (spec 11.9b). `None` before the encode and for text to image.
     image_latents: Option<Vec<Vec<f32>>>,
@@ -467,13 +474,27 @@ impl SdxlEngine {
         let (h, w) = (job.job.height as usize, job.job.width as usize);
         let moments = self.encode_image(&nagaya_text_sdxl::inputs::unit(&init.pixels), h, w);
         let n = LATENT * (h / VAE_SCALE) * (w / VAE_SCALE);
-        let latents = (0..job.size.images)
+        let latents: Vec<Vec<f32>> = (0..job.size.images)
             .map(|i| {
                 let z = noise::normal(job.job.seed.wrapping_add(i as u64), 0, 0, Purpose::Encode, n);
                 host::image_latent(&moments, &z)
             })
             .collect();
+        // The start latent is the image latent with the noise of the first step that runs, at a strength of 1.0 too.
+        job.latents = latents
+            .iter()
+            .enumerate()
+            .map(|(i, latent)| {
+                let start = noise::normal(job.job.seed.wrapping_add(i as u64), 0, 0, Purpose::Start, n);
+                job.schedule.add_noise(job.begin, latent, &start)
+            })
+            .collect();
         job.image_latents = Some(latents);
+    }
+
+    /// The latent of each image of the job in slot 0, or `None`. It is the latent after the last step that ran.
+    pub fn latents(&self) -> Option<&[Vec<f32>]> {
+        Some(&self.job.as_ref()?.latents)
     }
 
     /// Check a job against the limits of the engine. The council checks the ranges of spec 11.9a before it.
@@ -527,24 +548,32 @@ impl Image for SdxlEngine {
         let add: Vec<f32> = (0..2 * images)
             .flat_map(|b| host::add_features(&pooled[(b / images) * POOLED..(b / images + 1) * POOLED], &ids))
             .collect();
-        self.write_f32(self.unet.ctx, &batch_ctx);
-        self.write_f32(self.unet.add_proj, &add);
         let schedule = Schedule::new(job.sampler, job.spacing, job.steps as usize);
-        let latents = (0..images)
-            .map(|i| {
-                noise::normal(job.seed.wrapping_add(i as u64), 0, 0, Purpose::Start, h * w * LATENT)
-                    .into_iter()
-                    .map(|v| v * schedule.init_noise_sigma())
-                    .collect()
-            })
-            .collect();
+        // A job with an image gets its start latents from the encode quantum, its first step.
+        let (begin, latents) = match &job.init {
+            Some(init) => (begin_index(job.steps, init.strength), Vec::new()),
+            None => (
+                0,
+                (0..images)
+                    .map(|i| {
+                        noise::normal(job.seed.wrapping_add(i as u64), 0, 0, Purpose::Start, h * w * LATENT)
+                            .into_iter()
+                            .map(|v| v * schedule.init_noise_sigma())
+                            .collect()
+                    })
+                    .collect(),
+            ),
+        };
         self.job = Some(Job {
             job: job.clone(),
             schedule,
             size,
             latents,
             history: vec![History::default(); images],
-            step: 0,
+            step: begin,
+            begin,
+            context: batch_ctx,
+            add,
             image_latents: None,
         });
         Ok(None)
@@ -560,22 +589,23 @@ impl Image for SdxlEngine {
             if job.image_latents.is_none() {
                 // The first step of a job with an image is the encode: step 0 of the n steps that run, with no
                 // previews (engine-abi "Image inputs").
-                let steps = steps_that_run(job.job.steps, init.strength);
                 self.encode_quantum(&mut job);
                 let out = ImageStepOut {
                     step: 0,
-                    steps,
+                    steps: (job.schedule.timesteps.len() - job.begin) as u32,
                     previews: Vec::new(),
                 };
                 self.job = Some(job);
                 return Ok(out);
             }
-            self.job = Some(job);
-            return Err(self.fail(refused(
-                "nothing ran: the engine has the image latents, but img2img and inpainting steps are not built yet \
-                 (milestone 20 steps 4 and 5); clear the slot"
-                    .to_owned(),
-            )));
+            if init.mask.is_some() {
+                self.job = Some(job);
+                return Err(self.fail(refused(
+                    "nothing ran: the engine has the image latents, but inpainting steps are not built yet (milestone \
+                     20 step 5); clear the slot"
+                        .to_owned(),
+                )));
+            }
         }
         let i = job.step;
         if i >= job.schedule.timesteps.len() {
@@ -587,9 +617,7 @@ impl Image for SdxlEngine {
         let x_in: Vec<f32> = (0..2 * images)
             .flat_map(|b| job.latents[b % images].iter().map(move |v| v * scale))
             .collect();
-        let context = self.read_f32(self.unet.ctx, 2 * images * size.ctx * CONTEXT);
-        let add = self.read_f32(self.unet.add_proj, 2 * images * ADD_IN);
-        let (eps, _) = self.unet_forward(size, &x_in, job.schedule.timesteps[i], &context, &add, false);
+        let (eps, _) = self.unet_forward(size, &x_in, job.schedule.timesteps[i], &job.context, &job.add, false);
         let n = size.h * size.w * LATENT;
         let cfg = job.job.cfg;
         for img in 0..images {
@@ -598,6 +626,7 @@ impl Image for SdxlEngine {
                 &eps[(images + img) * n..(images + img + 1) * n],
             );
             let guided: Vec<f32> = neg.iter().zip(pos).map(|(u, c)| u + cfg * (c - u)).collect();
+            // The key of a step draw is the index of the step in the whole schedule, also for a job with an image.
             let draw = job
                 .schedule
                 .draws(i)
@@ -617,9 +646,10 @@ impl Image for SdxlEngine {
         } else {
             Vec::new()
         };
+        // The steps of `progress` count only the steps that run (spec 11.9b).
         let out = ImageStepOut {
-            step: job.step as u32,
-            steps: job.schedule.timesteps.len() as u32,
+            step: (job.step - job.begin) as u32,
+            steps: (job.schedule.timesteps.len() - job.begin) as u32,
             previews,
         };
         self.job = Some(job);
@@ -635,8 +665,8 @@ impl Image for SdxlEngine {
         if job.step < job.schedule.timesteps.len() {
             let message = format!(
                 "the job ran {} of its {} steps; run them first",
-                job.step,
-                job.schedule.timesteps.len()
+                job.step - job.begin,
+                job.schedule.timesteps.len() - job.begin
             );
             self.job = Some(job);
             return Err(self.fail(refused(message)));
