@@ -2395,6 +2395,42 @@ otherwise we forward to whereever it is."
 - `extensions` holds `/nagaya/v1` when `identity.models` is not empty, because the text routes then forward
   (11.4f).
 
+**The forward.** **Proposed** by Claude Opus 5.5, 2026-11-02. Reason: Amy's rule names what forwards. It does not say
+how a coordinator finds the node, what it sends, or how a forward fails.
+
+- **The node of a model.** The coordinator finds the live node whose `served` entries name `model`, as a `model` or
+  an alias (2.3). A model of this node never forwards.
+- **Not ready.** The coordinator reads the status of the model from gossip first. A model that is not `ready` gets
+  the 503 `model_unavailable` at once, as a local model does (3.3).
+- **The job routes.** These routes carry `model`, and they forward: `POST /council/v2/contexts`, `decisions`,
+  `reads`, `generations` and `embeddings`.
+- **The text routes.** `render`, `tokenize` and `detokenize` run locally when a local family has the tokenizer hash
+  and the template of the model in gossip. Otherwise they forward as a job route does. 11.4b still applies.
+- **The same bytes.** A forward sends the method, the path, the query and the body bytes as they came. It sends the
+  headers `content-type`, `accept` and `tracestate`, a new `traceparent` (9.2), and the two headers below.
+- **The response.** The coordinator sends the status, the headers and the body of the target as they come. It does
+  not parse or change them. A stream goes on event by event, and a closed client stream closes the forward.
+- **No second forward.** A forward carries the header `nagaya-forwarded`, with the name of the coordinator. A node
+  never forwards a request that carries it.
+- A node that takes such a request for a model that it does not serve gives a 503 `model_unavailable` with the status
+  `unloaded`. Reason: gossip can lag, and two nodes with old views must not send a request back and forth.
+- **One request id.** A forward carries the header `nagaya-request-id`, with the request id of the coordinator. The
+  target uses it as its own request id (11.7). Thus the client, both logs and both spans name one id.
+- **A peer that does not answer.** A connection that does not open in 2 s gets a 503 `model_unavailable` with the
+  status `unloaded`. The message names the node.
+- A target that leaves the live set ends each forward to it. Before the status, the response is the same 503. In a
+  stream, it is an `error` event with that body. Otherwise the connection closes.
+- Reason for `model_unavailable`: gogi keeps `unavailable` for a server that starts or stops (gogi "Errors"). Here the
+  coordinator runs, and one model is not reachable.
+- **No other timeout.** A forward has no read timeout. The target keeps its own deadlines, such as `timeout_ms` (5.8).
+  Reason: an image of 40 steps took 176 s on gfx1151host (`AGENTS.md` milestone 22).
+- **A duplicate node name.** A coordinator never forwards to a node name that has a live duplicate (2.3). The request
+  gets the 503 above, and the message names the conflict.
+- **The limits.** A forward runs on the control runtime, not on a call thread. It does not count toward the 64 calls
+  of 11.7, and the target counts it. The body limit of 16 MiB holds on both nodes.
+- **A stop.** A stopping coordinator answers each new request with the 503 `unavailable`, also for a model of a peer.
+  An open forward gets the wait of 2 s of 11.7, as a local request does.
+
 **11.2 Generation.** The nagaya runs one sampler for all engines. It applies top_k, top_p, min_p, then temperature.
 The draw is seeded, and the response reports the seed. Each engine has its own defaults. All engines share the SSE
 framing.
