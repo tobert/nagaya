@@ -285,7 +285,8 @@ and milestone 23 is next.
       Civitai works as it is.
     - **Previews:** a request can ask for a preview at each step. First a linear map from latent to RGB, and TAESD
       later as a second choice.
-    - **VAE:** the stock VAE of the checkpoint, in fp32. Not the fp16 fix.
+    - **VAE:** the VAE that the checkpoint ships, in f32. Amy, 2026-11-02: "seems my kinda rule is we follow the best
+      ergonomics we can find for the model+gpu" changed the first rule, "the stock VAE, not the fp16 fix".
     - **Samplers:** Euler, Euler a, DPM++ 2M Karras and DPM++ 2M SDE Karras.
     - **Batch:** a request asks for at most 4 images, and each is its own output object.
     - **Cards:** one image engine on each card, and each engine is its own served model. Amy, 2026-10-27: "if higher
