@@ -18,7 +18,7 @@ use crate::admission::{AdmitError, Admitted};
 use crate::cluster::Cluster;
 use crate::process::{LoadError, Ports, Process};
 use crate::profile::{EnginePlacement, PlacementProfile, TierSpec};
-use crate::swap::{Shortfall, Swap, SwapError};
+use crate::swap::{Candidate, Outcome, Refusal, Shortfall, Swap, SwapError};
 
 /// What a profile change does to one engine (spec 3.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -111,6 +111,36 @@ pub enum ProfileCall {
     Get(Sender<PlacementProfile>),
     /// Change the active profile.
     Put(PlacementProfile, Sender<PutAnswer>),
+    /// Publish a desired profile for another host (spec 2.4, "The routes of a profile for another host").
+    Desire(Desire),
+}
+
+/// A desired profile for another host, which the main loop publishes in `profile:desired:<host>` (spec 2.4).
+pub struct Desire {
+    /// The node name of the target.
+    pub host: String,
+    /// The version that the client picked.
+    pub version: u64,
+    /// The profile as the client sent it. The target checks it (spec 2.4).
+    pub profile: serde_json::Value,
+    /// Where the answer goes.
+    pub reply: Sender<DesireAnswer>,
+}
+
+/// The answer to a desired profile for another host (spec 2.4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DesireAnswer {
+    /// The node wrote the key. The target handles it later.
+    Published,
+    /// No live node has the name of the host.
+    UnknownHost,
+    /// A live node holds this version or a higher one for the host.
+    Conflict {
+        /// The highest version of a live `profile:desired:<host>`.
+        highest: u64,
+    },
+    /// The value is past the bound of a gossip value (spec 2.3).
+    TooLarge(String),
 }
 
 /// The answer to a `PUT` of a profile (spec 3.3, "The profile routes").
@@ -131,6 +161,8 @@ pub enum PutAnswer {
     },
     /// A change in place runs now. Nothing changed.
     Busy,
+    /// The process stops and takes no new admission. Nothing changed (spec 10.3 step 1).
+    Stopping,
 }
 
 /// The profile changes of a running process. The main loop owns it and calls [`Changer::tick`] (spec 3.3).
@@ -140,6 +172,8 @@ pub struct Changer {
     applying: Arc<AtomicBool>,
     /// The cluster from gossip. A profile that adds a name of a live peer is refused (spec 2.3).
     cluster: Option<Arc<Cluster>>,
+    /// The desired profiles for other hosts that wait for the main loop, which owns the gossip (spec 2.4).
+    desires: Vec<Desire>,
 }
 
 impl Changer {
@@ -150,6 +184,7 @@ impl Changer {
             calls,
             applying: Arc::new(AtomicBool::new(false)),
             cluster: None,
+            desires: Vec::new(),
         };
         (changer, calls_tx)
     }
@@ -205,6 +240,7 @@ impl Changer {
                 ProfileCall::Get(reply) => {
                     let _ = reply.send(swap.active().clone());
                 }
+                ProfileCall::Desire(desire) => self.desires.push(desire),
                 ProfileCall::Put(profile, reply) => {
                     let answer = self.put(swap, process, profile)?;
                     restart |= matches!(&answer, PutAnswer::Accepted(change) if change.restart);
@@ -219,6 +255,38 @@ impl Changer {
         Ok(restart)
     }
 
+    /// The desired profiles for other hosts that wait. The main loop publishes each one and answers it.
+    pub fn take_desires(&mut self) -> Vec<Desire> {
+        std::mem::take(&mut self.desires)
+    }
+
+    /// Handle a desired profile for this host with the code of a local `PUT` (spec 2.4, "The routes of a profile for
+    /// another host"). The node records the version, also for a refusal. A refusal of a running change is `busy`. A
+    /// stopping process handles nothing, so the version stays a candidate.
+    pub fn desire(&mut self, swap: &mut Swap, process: &Process, candidate: Candidate) -> Result<Outcome, SwapError> {
+        let version = candidate.version;
+        let refused = |reason: String, shortfall: Vec<Shortfall>| {
+            Outcome::Refused(Refusal {
+                version,
+                reason,
+                shortfall,
+            })
+        };
+        let outcome = match serde_json::from_value::<PlacementProfile>(candidate.profile) {
+            Err(error) => refused(format!("the profile does not parse: {error}"), Vec::new()),
+            Ok(profile) => match self.put(swap, process, profile)? {
+                PutAnswer::Unchanged(_) => Outcome::Unchanged,
+                PutAnswer::Accepted(change) => Outcome::Accepted(change),
+                PutAnswer::Invalid(reason) => refused(reason, Vec::new()),
+                PutAnswer::Refused { reason, shortfall } => refused(reason, shortfall),
+                PutAnswer::Busy => refused("busy".to_owned(), Vec::new()),
+                PutAnswer::Stopping => return Ok(Outcome::Stopping),
+            },
+        };
+        swap.record(version)?;
+        Ok(outcome)
+    }
+
     fn put(&self, swap: &mut Swap, process: &Process, profile: PlacementProfile) -> Result<PutAnswer, SwapError> {
         if !profile.engines.is_empty() && profile.store.is_none() {
             return Ok(PutAnswer::Invalid(
@@ -228,6 +296,9 @@ impl Changer {
         let active = swap.active().clone();
         if profile == active {
             return Ok(PutAnswer::Unchanged(change(&active, &profile, |_| true)));
+        }
+        if process.stopping() {
+            return Ok(PutAnswer::Stopping);
         }
         let planned = match process.check_profile(&profile) {
             Ok(planned) => planned,

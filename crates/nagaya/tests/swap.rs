@@ -6,7 +6,8 @@ use nagaya::gossip::{ClusterView, NodeView};
 use nagaya::inventory::{Device, Inventory};
 use nagaya::process::{Process, Start};
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, StoreSpec, TierSpec};
-use nagaya::swap::{Outcome, Swap, VERSION_FILE, desired_value};
+use nagaya::reprofile::Changer;
+use nagaya::swap::{Candidate, Outcome, Swap, SwapError, VERSION_FILE, desired_value};
 use nagaya_abi::Tier;
 use nagaya_ledger::{Ledger, LedgerError};
 use serde_json::json;
@@ -98,6 +99,17 @@ fn view(entries: &[(&str, &str, serde_json::Value)]) -> ClusterView {
 
 const KEY: &str = "profile:desired:gfx1151host";
 
+/// Handle a desired profile with the code of a local `PUT` (spec 2.4, "The routes of a profile for another host").
+fn desire(swap: &mut Swap, candidate: Candidate, process: &Process) -> Result<Outcome, SwapError> {
+    Changer::new().0.desire(swap, process, candidate)
+}
+
+/// True for an accepted profile whose change restarts the process, or for one that runs in place when `restart` is
+/// false.
+fn accepted(outcome: &Outcome, restart: bool) -> bool {
+    matches!(outcome, Outcome::Accepted(change) if change.restart == restart)
+}
+
 fn swap(dir: &Path, active: &PlacementProfile) -> Swap {
     Swap::open(dir, "gfx1151host", active.clone()).unwrap()
 }
@@ -118,7 +130,8 @@ fn an_older_version_never_replaces_a_newer_one() {
     ]);
     let candidate = swap.candidate(&both).expect("a version above 0 is a candidate");
     assert_eq!((candidate.version, candidate.from.as_str()), (5, "a"));
-    assert_eq!(swap.handle(candidate, &process).unwrap(), Outcome::Restart);
+    let outcome = desire(&mut swap, candidate, &process).unwrap();
+    assert!(accepted(&outcome, false), "a new budget runs in place: {outcome:?}");
     assert_eq!(swap.handled(), 5);
 
     assert_eq!(swap.candidate(&both), None, "versions 5 and 3 are not above 5");
@@ -141,7 +154,7 @@ fn the_handled_version_survives_a_restart() {
     let newer = profile(&["fake-one"], 8192);
     let offered = view(&[("a", KEY, desired_value(7, &newer))]);
     let candidate = first.candidate(&offered).unwrap();
-    first.handle(candidate, &process).unwrap();
+    desire(&mut first, candidate, &process).unwrap();
     assert_eq!(
         std::fs::read_to_string(directory.path().join(VERSION_FILE))
             .unwrap()
@@ -156,7 +169,7 @@ fn the_handled_version_survives_a_restart() {
 }
 
 #[test]
-fn a_profile_that_changes_the_engines_is_persisted_and_restarts() {
+fn a_profile_that_adds_an_engine_is_persisted_and_restarts() {
     let directory = tempfile::tempdir().unwrap();
     let active = profile(&["fake-one"], 4096);
     let process = running(directory.path(), &active);
@@ -164,7 +177,8 @@ fn a_profile_that_changes_the_engines_is_persisted_and_restarts() {
     let wanted = profile(&["fake-one", "fake-two"], 8192);
     let offered = view(&[("a", KEY, desired_value(1, &wanted))]);
     let candidate = swap.candidate(&offered).unwrap();
-    assert_eq!(swap.handle(candidate, &process).unwrap(), Outcome::Restart);
+    let outcome = desire(&mut swap, candidate, &process).unwrap();
+    assert!(accepted(&outcome, true), "a new engine restarts: {outcome:?}");
     assert_eq!(PlacementProfile::read_active(directory.path()).unwrap(), wanted);
     assert_eq!(
         std::fs::read_to_string(directory.path().join(VERSION_FILE))
@@ -179,17 +193,18 @@ fn offer(dir: &Path, active: &PlacementProfile, wanted: &PlacementProfile, proce
     let mut swap = swap(dir, active);
     let offered = view(&[("a", KEY, desired_value(1, wanted))]);
     let candidate = swap.candidate(&offered).unwrap();
-    swap.handle(candidate, process).unwrap()
+    desire(&mut swap, candidate, process).unwrap()
 }
 
 #[test]
-fn a_profile_that_changes_only_a_share_restarts() {
+fn a_profile_that_changes_only_a_share_runs_in_place() {
     let directory = tempfile::tempdir().unwrap();
     let active = profile(&["fake-one"], 4096);
     let process = running(directory.path(), &active);
     let mut wanted = active.clone();
     wanted.engines[0].share = 2;
-    assert_eq!(offer(directory.path(), &active, &wanted, &process), Outcome::Restart);
+    let outcome = offer(directory.path(), &active, &wanted, &process);
+    assert!(accepted(&outcome, false), "{outcome:?}");
     assert_eq!(PlacementProfile::read_active(directory.path()).unwrap(), wanted);
 }
 
@@ -205,7 +220,11 @@ fn a_profile_that_changes_only_a_store_budget_restarts() {
         interval_copies: 0,
         objects: None,
     });
-    assert_eq!(offer(directory.path(), &active, &wanted, &process), Outcome::Restart);
+    let outcome = offer(directory.path(), &active, &wanted, &process);
+    assert!(
+        accepted(&outcome, true),
+        "a change of [store] restarts (spec 3.3): {outcome:?}"
+    );
     assert_eq!(PlacementProfile::read_active(directory.path()).unwrap(), wanted);
 }
 
@@ -222,7 +241,7 @@ fn an_identical_profile_changes_nothing() {
     let mut swap = swap(directory.path(), &active);
     let offered = view(&[("a", KEY, desired_value(3, &active))]);
     let candidate = swap.candidate(&offered).unwrap();
-    assert_eq!(swap.handle(candidate, &process).unwrap(), Outcome::Unchanged);
+    assert_eq!(desire(&mut swap, candidate, &process).unwrap(), Outcome::Unchanged);
     assert_eq!(swap.handled(), 3, "the version is recorded");
     assert_eq!(
         std::fs::read_to_string(directory.path().join(VERSION_FILE))
@@ -252,7 +271,7 @@ fn a_profile_that_does_not_fit_is_refused_and_changes_nothing() {
     assert!(!expected.is_empty());
 
     let candidate = swap.candidate(&offered).unwrap();
-    let Outcome::Refused(refusal) = swap.handle(candidate, &process).unwrap() else {
+    let Outcome::Refused(refusal) = desire(&mut swap, candidate, &process).unwrap() else {
         panic!("the profile does not fit")
     };
     assert_eq!(refusal.version, 2);
@@ -295,7 +314,7 @@ fn a_profile_that_does_not_parse_is_refused() {
     let mut swap = swap(directory.path(), &active);
     let offered = view(&[("a", KEY, json!({"version": 4, "profile": {"engines": 3}}))]);
     let candidate = swap.candidate(&offered).unwrap();
-    let Outcome::Refused(refusal) = swap.handle(candidate, &process).unwrap() else {
+    let Outcome::Refused(refusal) = desire(&mut swap, candidate, &process).unwrap() else {
         panic!("the profile does not parse")
     };
     assert_eq!(refusal.version, 4);
@@ -314,7 +333,7 @@ fn a_profile_with_engines_and_no_store_budget_is_refused() {
     wanted.store = None;
     let offered = view(&[("a", KEY, desired_value(1, &wanted))]);
     let candidate = swap.candidate(&offered).unwrap();
-    let Outcome::Refused(refusal) = swap.handle(candidate, &process).unwrap() else {
+    let Outcome::Refused(refusal) = desire(&mut swap, candidate, &process).unwrap() else {
         panic!("the profile has no store budget")
     };
     assert!(refusal.reason.contains("store.nvme"), "{}", refusal.reason);
@@ -353,7 +372,7 @@ fn a_stopping_process_is_not_a_refusal() {
     let wanted = profile(&["fake-one", "fake-two"], 8192);
     let offered = view(&[("a", KEY, desired_value(4, &wanted))]);
     let candidate = swap.candidate(&offered).unwrap();
-    assert_eq!(swap.handle(candidate, &process).unwrap(), Outcome::Stopping);
+    assert_eq!(desire(&mut swap, candidate, &process).unwrap(), Outcome::Stopping);
     assert_eq!(swap.handled(), 0, "the node did not handle the version");
     assert!(!directory.path().join(VERSION_FILE).exists(), "no version is written");
     assert_eq!(PlacementProfile::read_active(directory.path()).unwrap(), active);
@@ -372,7 +391,10 @@ fn refuse(dir: &Path, active: &PlacementProfile, version: u64) -> Swap {
     let too_small = profile(&["fake-one", "fake-two"], 1);
     let offered = view(&[("a", KEY, desired_value(version, &too_small))]);
     let candidate = swap.candidate(&offered).unwrap();
-    assert!(matches!(swap.handle(candidate, &process).unwrap(), Outcome::Refused(_)));
+    assert!(matches!(
+        desire(&mut swap, candidate, &process).unwrap(),
+        Outcome::Refused(_)
+    ));
     swap
 }
 
@@ -432,4 +454,24 @@ fn a_peer_that_churns_malformed_values_costs_one_entry() {
     let alone = view(&[("b", KEY, json!({"version": "y"}))]);
     assert_eq!(swap.candidate(&alone), None);
     assert_eq!(swap.reported_len(), 1);
+}
+
+/// A version that comes while a change waits is refused with the reason `busy`, and it counts as handled (spec 2.4).
+#[test]
+fn a_desired_profile_during_a_change_is_refused_as_busy() {
+    let directory = tempfile::tempdir().unwrap();
+    let active = profile(&["fake-one"], 4096);
+    let process = running(directory.path(), &active);
+    let mut swap = swap(directory.path(), &active);
+    // A change of another client holds the ledger.
+    process.begin_change(&profile(&["fake-one"], 16384)).unwrap();
+    let wanted = profile(&["fake-one"], 8192);
+    let offered = view(&[("a", KEY, desired_value(6, &wanted))]);
+    let candidate = swap.candidate(&offered).unwrap();
+    let Outcome::Refused(refusal) = desire(&mut swap, candidate, &process).unwrap() else {
+        panic!("a change runs")
+    };
+    assert_eq!((refusal.version, refusal.reason.as_str()), (6, "busy"));
+    assert_eq!(swap.handled(), 6, "a refused version is a handled version");
+    assert_eq!(PlacementProfile::read_active(directory.path()).unwrap(), active);
 }

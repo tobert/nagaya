@@ -387,6 +387,7 @@ fn serve(
         let opened = &mut ready.opened;
         let council = &council;
         let mut feed = nagaya::state_feed::StateFeed::new();
+        let mut published_profile = swap.active().clone();
         // The swaps in place that the wait heard of. The tick keeps their identities, because it holds the node.
         let swaps = std::cell::RefCell::new(Vec::new());
         let mut on_event = |event| swaps.borrow_mut().push(event);
@@ -420,7 +421,25 @@ fn serve(
                     return Some(ExitCode::Crash);
                 }
             }
-            desired_profile(&mut swap, node, process)
+            // A PUT for another host writes its key here, because the main loop owns the gossip (spec 2.4).
+            for desire in changer.take_desires() {
+                let answer = node.desire(&desire.host, desire.version, &desire.profile);
+                if answer == nagaya::reprofile::DesireAnswer::Published {
+                    tracing::info!(
+                        "published desired profile version {} for node {}",
+                        desire.version,
+                        desire.host
+                    );
+                }
+                let _ = desire.reply.send(answer);
+            }
+            let code = desired_profile(&mut changer, &mut swap, node, process);
+            // Peers read the active profile from gossip, so an accepted change writes it again (spec 2.4).
+            if *swap.active() != published_profile {
+                published_profile = swap.active().clone();
+                published(node.publish_profile(&published_profile));
+            }
+            code
         };
         lifecycle::wait_with_events(
             process,
@@ -477,21 +496,30 @@ fn clash_at_start(node: &Node, node_name: &str, local: &[gogi_proto::identity::S
     })
 }
 
-/// Handle the newest desired profile for this host, when a peer offers one. Gives a code when the process must stop.
-fn desired_profile(swap: &mut Swap, node: &mut Node, process: &nagaya::process::Process) -> Option<ExitCode> {
+/// Handle the newest desired profile for this host, when a peer offers one, with the actions of a local `PUT` (spec
+/// 2.4, 3.3). Gives a code when the process must stop.
+fn desired_profile(
+    changer: &mut nagaya::reprofile::Changer,
+    swap: &mut Swap,
+    node: &mut Node,
+    process: &nagaya::process::Process,
+) -> Option<ExitCode> {
     let candidate = swap.candidate(&node.gossip().view())?;
     let version = candidate.version;
-    match swap.handle(candidate, process) {
+    match changer.desire(swap, process, candidate) {
         Err(error) => {
             tracing::error!("cannot handle desired profile version {version}: {error}");
             Some(ExitCode::Crash)
         }
-        Ok(Outcome::Restart) => {
-            tracing::info!(
-                "desired profile version {version} differs from the active profile; the process stops to restart"
-            );
+        Ok(Outcome::Accepted(change)) if change.restart => {
+            tracing::info!("desired profile version {version} needs a restart; the process stops to restart");
             node.clear_refusal();
             Some(ExitCode::PlannedRestart)
+        }
+        Ok(Outcome::Accepted(_)) => {
+            tracing::info!("desired profile version {version} is accepted; the change runs in place");
+            node.clear_refusal();
+            None
         }
         Ok(Outcome::Unchanged) => {
             tracing::info!("desired profile version {version} equals the active profile; nothing changed");

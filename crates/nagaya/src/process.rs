@@ -2170,6 +2170,11 @@ impl Process {
         reply_rx.recv().expect("the ledger thread stopped")
     }
 
+    /// True when the process takes no new admission, because it stops (spec 10.3 step 1).
+    pub fn stopping(&self) -> bool {
+        !self.accepting.load(Ordering::SeqCst)
+    }
+
     /// Send one quantum to a group thread. A stop refuses every later quantum (spec 10.3 step 1).
     ///
     /// The group runs the quantum to its end before it parks. A stop cancels a quantum that has not started.

@@ -14,6 +14,7 @@ use crate::notify::EngineState;
 use crate::park::identity_digest;
 use crate::process::{OpenedEngine, Ports};
 use crate::profile::PlacementProfile;
+use crate::reprofile::DesireAnswer;
 use crate::state_feed::StateFeed;
 use crate::swap::Refusal;
 
@@ -121,6 +122,32 @@ impl Node {
     pub fn publish_profile(&self, profile: &PlacementProfile) -> Result<(), PublishError> {
         let active = serde_json::to_value(profile).expect("a placement profile is JSON data");
         self.gossip.publish(&Key::ProfileActive, &active)
+    }
+
+    /// Write `profile:desired:<host>` for a live node, when `version` is above each live version for the host (spec
+    /// 2.4, "The routes of a profile for another host").
+    pub fn desire(&self, host: &str, version: u64, profile: &Value) -> DesireAnswer {
+        let view = self.gossip.view();
+        if !view.live.iter().any(|node| node.name == host) {
+            return DesireAnswer::UnknownHost;
+        }
+        let key = Key::ProfileDesired(host.to_owned());
+        let highest = view
+            .live
+            .iter()
+            .filter_map(|node| node.value(&key))
+            .filter_map(|value| value["version"].as_u64())
+            .max();
+        if let Some(highest) = highest.filter(|highest| version <= *highest) {
+            return DesireAnswer::Conflict { highest };
+        }
+        match self
+            .gossip
+            .publish(&key, &json!({"version": version, "profile": profile}))
+        {
+            Ok(()) => DesireAnswer::Published,
+            Err(error) => DesireAnswer::TooLarge(error.to_string()),
+        }
     }
 
     /// Write `profile:refused` (spec 2.4 note).

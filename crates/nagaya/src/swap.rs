@@ -6,11 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use nagaya_ledger::LedgerError;
-
-use crate::admission::AdmitError;
 use crate::gossip::{ClusterView, Key};
-use crate::process::Process;
 use crate::profile::{PlacementProfile, ProfileError, TierSpec};
 
 /// The file that holds the handled version, next to `profile.toml` (spec 2.4 note).
@@ -70,8 +66,9 @@ impl Refusal {
 /// What the node did with a desired profile.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
-    /// The profile differs from the active profile. The node persisted it and must stop with exit 4 (spec 3.3).
-    Restart,
+    /// The profile differs from the active profile. The node persisted it, and the change runs in place, or the node
+    /// stops with exit 4 when `restart` is true (spec 3.3).
+    Accepted(crate::reprofile::Change),
     /// The profile equals the active profile. The node changed nothing and keeps running.
     Unchanged,
     /// The node refused the profile.
@@ -202,64 +199,12 @@ impl Swap {
         best.filter(|candidate| candidate.version > self.handled)
     }
 
-    /// Admit a candidate with the ledger, persist it, and say what the node does next (spec 3.3).
-    ///
-    /// A refused version is a handled version: the node writes it to the version file, and `profile.toml` stays.
-    pub fn handle(&mut self, candidate: Candidate, process: &Process) -> Result<Outcome, SwapError> {
-        let version = candidate.version;
-        let before = self.handled;
-        // The node handles a version once, also when it refuses the version. A restart keeps that (spec 2.3).
+    /// Record a handled version: keep it, and write it to the version file (spec 2.3). A refused version is a handled
+    /// version too.
+    pub fn record(&mut self, version: u64) -> Result<(), SwapError> {
+        self.write_version(version)?;
         self.handled = version;
-        let profile: PlacementProfile = match serde_json::from_value(candidate.profile) {
-            Ok(profile) => profile,
-            Err(error) => return self.refuse(version, format!("the profile does not parse: {error}"), Vec::new()),
-        };
-        if !profile.engines.is_empty() && profile.store.is_none() {
-            return self.refuse(
-                version,
-                "the profile has engines and no `store.nvme` budget; add a [store] table".to_owned(),
-                Vec::new(),
-            );
-        }
-        if profile == self.active {
-            // The ledger already holds this profile. Another admission would not match the running engines.
-            self.write_version(version)?;
-            return Ok(Outcome::Unchanged);
-        }
-        match process.admit(profile.clone()) {
-            Ok(_) => {}
-            Err(AdmitError::Ledger(LedgerError::Refused(refusal))) => {
-                let shortfall = refusal
-                    .shortfall
-                    .into_iter()
-                    .map(|(tiers, bytes)| Shortfall {
-                        tiers: tiers.into_iter().map(TierSpec::from).collect(),
-                        bytes,
-                    })
-                    .collect();
-                return self.refuse(version, "the profile does not fit its budgets".to_owned(), shortfall);
-            }
-            Err(AdmitError::Stopping) => {
-                // The stop took no new admission. This is not a refusal: the node handled nothing (spec 10.3 step 1).
-                self.handled = before;
-                return Ok(Outcome::Stopping);
-            }
-            Err(error) => return self.refuse(version, error.to_string(), Vec::new()),
-        }
-        profile.write(&self.store_dir).map_err(SwapError::Profile)?;
-        self.write_version(version)?;
-        self.active = profile;
-        Ok(Outcome::Restart)
-    }
-
-    /// Refuse a version. The version is handled, so the node writes it. `profile.toml` stays as it is.
-    fn refuse(&self, version: u64, reason: String, shortfall: Vec<Shortfall>) -> Result<Outcome, SwapError> {
-        self.write_version(version)?;
-        Ok(Outcome::Refused(Refusal {
-            version,
-            reason,
-            shortfall,
-        }))
+        Ok(())
     }
 
     /// Write the handled version atomically: a temporary file, then a rename.

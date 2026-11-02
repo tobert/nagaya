@@ -136,8 +136,10 @@ fn a_desired_profile_that_does_not_fit_is_refused_and_an_equal_one_clears_it() {
     poster.shutdown();
 }
 
+/// A change of `[[budgets]]` runs in place (spec 3.3). The desired profile takes the code of a local `PUT`, so it no
+/// longer stops the process (spec 2.4, "The routes of a profile for another host").
 #[test]
-fn a_desired_profile_that_changes_only_a_budget_stops_the_process_with_exit_four() {
+fn a_desired_profile_that_changes_only_a_budget_runs_in_place() {
     let mut process = Proc::spawn("host-x", &[]);
     let poster = poster("poster", process.gossip_addr);
     ready(&poster);
@@ -145,9 +147,23 @@ fn a_desired_profile_that_changes_only_a_budget_stops_the_process_with_exit_four
     poster
         .publish(&Key::ProfileDesired("host-x".to_owned()), &desired_value(1, &wanted))
         .unwrap();
-    let status = process.wait_exit(WAIT);
-    assert_eq!(status.code(), Some(4), "stderr:\n{}", process.lines.drain().join("\n"));
+    // The node writes its new active profile to gossip.
+    wait_for_view(&poster, "the new budget of host-x", |view| {
+        value(view, "host-x", &Key::ProfileActive).is_some_and(|active| active["budgets"][0]["bytes"] == 8192)
+    });
+    process.lines.wait_for(
+        "desired profile version 1 is accepted; the change runs in place",
+        Duration::from_secs(5),
+    );
     assert_eq!(PlacementProfile::read_active(&process.store).unwrap(), wanted);
+    assert_eq!(
+        std::fs::read_to_string(process.store.join("profile.version"))
+            .unwrap()
+            .trim(),
+        "1"
+    );
+    assert_eq!(process.try_exit(), None, "the process runs on");
+    assert_eq!(process.terminate().code(), Some(0));
     poster.shutdown();
 }
 
@@ -166,9 +182,12 @@ fn an_older_version_from_a_second_peer_does_not_replace_a_newer_one() {
         .publish(&key, &desired_value(5, &profile(&["fake-one"], 8192)))
         .unwrap();
 
-    // The version 5 profile keeps one engine and changes a budget, so the process restarts with it.
-    let status = process.wait_exit(WAIT);
-    assert_eq!(status.code(), Some(4), "stderr:\n{}", process.lines.drain().join("\n"));
+    // The version 5 profile keeps one engine and changes a budget, so it runs in place. Version 3 would add an engine
+    // and restart the process.
+    wait_for_view(&newer, "the new budget of host-x", |view| {
+        value(view, "host-x", &Key::ProfileActive).is_some_and(|active| active["budgets"][0]["bytes"] == 8192)
+    });
+    assert_eq!(process.try_exit(), None, "version 3 did not restart the process");
     assert_eq!(
         PlacementProfile::read_active(&process.store).unwrap(),
         profile(&["fake-one"], 8192),
@@ -180,6 +199,7 @@ fn an_older_version_from_a_second_peer_does_not_replace_a_newer_one() {
             .trim(),
         "5"
     );
+    assert_eq!(process.terminate().code(), Some(0));
     newer.shutdown();
     older.shutdown();
 }
