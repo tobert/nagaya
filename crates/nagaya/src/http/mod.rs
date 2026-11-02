@@ -317,6 +317,29 @@ impl Council {
         }
     }
 
+    /// The served models of each engine of this process, by engine name (spec 2.3, "What a node publishes for the
+    /// cluster"). An engine that serves no model has no entry.
+    pub fn served_by_engine(&self) -> std::collections::BTreeMap<String, Vec<ServedModel>> {
+        let mut by_engine: std::collections::BTreeMap<String, Vec<ServedModel>> = std::collections::BTreeMap::new();
+        let mut add = |engine: &str, model: ServedModel| by_engine.entry(engine.to_owned()).or_default().push(model);
+        for served in &self.models {
+            add(&served.service.config().engine, self.served_model(served));
+        }
+        for service in self.speech.iter().filter(|service| service.serves_contexts()) {
+            let model = voice::served_model(service, self.model_status(service.engine_state()));
+            add(&service.config().engine, model);
+        }
+        for service in &self.images {
+            let model = image::served_model(service, self.model_status(service.engine_state()));
+            add(&service.config().engine, model);
+        }
+        for service in &self.embeddings {
+            let model = embeddings::served_model(service, self.model_status(service.engine_state()));
+            add(&service.config().engine, model);
+        }
+        by_engine
+    }
+
     fn served_model(&self, served: &Served) -> ServedModel {
         let service = &served.service;
         let identity = service.identity();

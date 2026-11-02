@@ -91,6 +91,11 @@ pub enum Key {
     ProfileRefused,
     /// `name:conflict`: the live peers that have this node's name (spec 2.3 note).
     NameConflict,
+    /// `server`: the HTTP address of the node, and the server limits and capabilities of its own identity (spec 2.3,
+    /// "What a node publishes for the cluster").
+    Server,
+    /// `model:conflict`: the served models whose name a peer keeps (spec 2.3, "A served model name in the cluster").
+    ModelConflict,
 }
 
 impl Key {
@@ -103,6 +108,8 @@ impl Key {
             Key::ProfileDesired(host) => format!("profile:desired:{host}"),
             Key::ProfileRefused => "profile:refused".to_owned(),
             Key::NameConflict => "name:conflict".to_owned(),
+            Key::Server => "server".to_owned(),
+            Key::ModelConflict => "model:conflict".to_owned(),
         }
     }
 
@@ -113,6 +120,8 @@ impl Key {
             "profile:active" => Some(Key::ProfileActive),
             "profile:refused" => Some(Key::ProfileRefused),
             "name:conflict" => Some(Key::NameConflict),
+            "server" => Some(Key::Server),
+            "model:conflict" => Some(Key::ModelConflict),
             _ => name
                 .strip_prefix("engine:")
                 .filter(|engine| !engine.is_empty())

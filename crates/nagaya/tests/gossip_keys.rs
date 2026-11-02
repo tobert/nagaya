@@ -133,9 +133,14 @@ fn a_pin_or_a_store_entry_has_no_gossip_key() {
         Key::ProfileRefused,
         Key::ProfileDesired("gfx1151host".to_owned()),
         Key::Engine("mk".to_owned()),
+        Key::Server,
+        Key::ModelConflict,
     ] {
         assert_eq!(Key::parse(&key.name()), Some(key.clone()), "{key:?} reads back");
     }
+    // Spec 2.3, "What a node publishes for the cluster" and "A served model name in the cluster".
+    assert_eq!(Key::Server.name(), "server");
+    assert_eq!(Key::ModelConflict.name(), "model:conflict");
     assert_eq!(Key::Engine("mk".to_owned()).name(), "engine:mk");
     assert_eq!(Key::ProfileDesired("gfx1151host".to_owned()).name(), "profile:desired:gfx1151host");
 }

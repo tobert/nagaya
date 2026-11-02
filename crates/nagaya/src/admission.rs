@@ -395,6 +395,17 @@ pub struct FakeToyFactory;
 
 #[cfg(feature = "fake")]
 impl FakeToyFactory {
+    /// The engine, with the model name of the config key `model` when the config has it.
+    fn engine_of(config: &toml::Table) -> Result<FakeAlways, String> {
+        match config.get("model") {
+            None => Ok(Self::engine()),
+            Some(toml::Value::String(model)) => Ok(Self::engine().with_model(model)),
+            Some(other) => Err(format!(
+                "the key `model` of a fake-toy engine is {other}; give a string"
+            )),
+        }
+    }
+
     fn engine() -> FakeAlways {
         // A cells row of the fake has 8 bytes, so 32768 bytes hold 4096 tokens.
         let slots = vec![nagaya_abi::SlotLimit {
@@ -417,12 +428,17 @@ fn gogi_toy_vocab() -> usize {
 
 #[cfg(feature = "fake")]
 impl Factory for FakeToyFactory {
-    fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
-        Ok(Self::engine().limits())
+    fn plan(&self, config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
+        let engine = Self::engine_of(config).map_err(|message| PlanError { message })?;
+        Ok(engine.limits())
     }
 
-    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
-        Ok(Box::new(Self::engine()))
+    fn open(&self, config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
+        let engine = Self::engine_of(config).map_err(|message| OpenError {
+            kind: OpenErrorKind::Other,
+            message,
+        })?;
+        Ok(Box::new(engine))
     }
 }
 

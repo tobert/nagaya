@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::time::Instant;
 
+use gogi_proto::identity::{Capability, ServedModel, ServerLimits};
 use serde_json::{Value, json};
 
 use crate::gossip::{ClusterView, Gossip, Key, PublishError};
@@ -15,6 +16,17 @@ use crate::profile::PlacementProfile;
 use crate::state_feed::StateFeed;
 use crate::swap::Refusal;
 
+/// A served model as gossip holds it: the gogi identity entry without `status`, because the state of the engine
+/// gives the status (spec 2.3, 11.1).
+fn gossip_entry(model: &ServedModel) -> Value {
+    let mut value = serde_json::to_value(model).expect("a served model is JSON data");
+    value
+        .as_object_mut()
+        .expect("a served model is a JSON object")
+        .remove("status");
+    value
+}
+
 /// What the node last wrote for one engine. A new state keeps the rest.
 #[derive(Clone, Debug)]
 struct EngineRecord {
@@ -22,6 +34,9 @@ struct EngineRecord {
     identity: Option<String>,
     /// The models that the engine serves.
     models: Vec<String>,
+    /// The served models of the engine, each a gogi identity entry without `status` (spec 2.3, "What a node
+    /// publishes for the cluster"). The list is empty until the council attaches.
+    served: Vec<Value>,
     state: EngineState,
 }
 
@@ -119,6 +134,7 @@ impl Node {
             let record = EngineRecord {
                 identity: None,
                 models: Vec::new(),
+                served: Vec::new(),
                 state: EngineState::Loading,
             };
             self.write_engine(name, record)?;
@@ -132,9 +148,15 @@ impl Node {
             let digest = blake3::Hash::from_bytes(identity_digest(&engine.identity))
                 .to_hex()
                 .to_string();
+            let served = self
+                .engines
+                .get(&engine.name)
+                .map(|record| record.served.clone())
+                .unwrap_or_default();
             let record = EngineRecord {
                 identity: Some(digest),
                 models: vec![engine.identity.model.clone()],
+                served,
                 state: EngineState::Ready,
             };
             self.write_engine(&engine.name, record)?;
@@ -230,6 +252,34 @@ impl Node {
         self.conflict = peers;
     }
 
+    /// Write the served models of each engine that the node wrote, in its `engine:<name>` value (spec 2.3, "What a
+    /// node publishes for the cluster"). An engine that `served` does not name serves no model, so its list is empty.
+    /// An engine of `served` that the node did not write is a defect.
+    pub fn engines_served(&mut self, served: &BTreeMap<String, Vec<ServedModel>>) -> Result<(), PublishError> {
+        if let Some(engine) = served.keys().find(|engine| !self.engines.contains_key(*engine)) {
+            panic!("engine `{engine}` serves a model and has no gossip record; write loading or ready first");
+        }
+        let names: Vec<String> = self.engines.keys().cloned().collect();
+        for name in names {
+            let entries = served.get(&name).map(Vec::as_slice).unwrap_or_default();
+            let mut record = self.engines[&name].clone();
+            record.served = entries.iter().map(gossip_entry).collect();
+            self.write_engine(&name, record)?;
+        }
+        Ok(())
+    }
+
+    /// Write `server`: the HTTP address of the node, and the server limits and capabilities of its own identity (spec
+    /// 2.3, "What a node publishes for the cluster"). A node with no engine writes it too.
+    pub fn publish_server(&self, limits: &ServerLimits, capabilities: &[Capability]) -> Result<(), PublishError> {
+        let value = json!({
+            "http": self.http.to_string(),
+            "limits": limits,
+            "capabilities": capabilities,
+        });
+        self.gossip.publish(&Key::Server, &value)
+    }
+
     /// Stop gossip.
     pub fn shutdown(self) {
         self.gossip.shutdown();
@@ -239,6 +289,7 @@ impl Node {
         let value = json!({
             "identity": record.identity,
             "models": record.models,
+            "served": record.served,
             "state": record.state.as_str(),
             "http": self.http.to_string(),
         });

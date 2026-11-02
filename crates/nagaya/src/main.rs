@@ -299,7 +299,14 @@ fn serve(
             return error.exit_code();
         }
     };
-    published(node.engines_ready(&ready.opened));
+    // A value of `engine:<name>` past the bound refuses the start, because no peer would see the engine (spec 2.3).
+    if let Err(error) = node.engines_ready(&ready.opened) {
+        tracing::error!("{error}");
+        server.stop(HTTP_STOP);
+        ready.process.abort();
+        std::mem::forget(ready.process);
+        return ExitCode::RefusedStart;
+    }
     // An on-demand engine stays unloaded until a load (spec 3.3a, 3.3b).
     let waiting: Vec<String> = names
         .iter()
@@ -344,6 +351,19 @@ fn serve(
             return ExitCode::RefusedStart;
         }
     };
+    // Peers read the served models and the server from gossip (spec 2.3, "What a node publishes for the cluster"). A
+    // value past the bound refuses the start.
+    let local = council.identity();
+    if let Err(error) = node
+        .engines_served(&council.served_by_engine())
+        .and_then(|()| node.publish_server(&local.limits, &local.capabilities))
+    {
+        tracing::error!("{error}");
+        server.stop(HTTP_STOP);
+        ready.process.abort();
+        std::mem::forget(ready.process);
+        return ExitCode::RefusedStart;
+    }
     server.attach(Arc::clone(&council));
     lifecycle::notify_ready(notifier.as_ref(), &ready.opened);
     tracing::info!("ready with {} engines", ready.opened.len());
@@ -363,8 +383,12 @@ fn serve(
                 }
                 lifecycle::apply_swap(opened, &event);
             }
-            // The feed writes each changed state of an engine, at most once each second (spec 2.3).
-            published(node.publish_states(&mut feed, &ports, &names, std::time::Instant::now()));
+            // The feed writes each changed state of an engine, at most once each second (spec 2.3). A value past the
+            // bound stops the process, because a served model that no peer sees is a silent fallback (spec 2.3, 8.5).
+            if let Err(error) = node.publish_states(&mut feed, &ports, &names, std::time::Instant::now()) {
+                tracing::error!("{error}; the process stops (spec 8.5)");
+                return Some(ExitCode::Crash);
+            }
             node.check_name();
             // An internal error of a route, or of a profile change, stops the process (spec 8.5, 11.5).
             if council.failure().is_some() || process.ports().failure().is_some() {

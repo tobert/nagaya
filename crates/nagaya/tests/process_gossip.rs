@@ -14,7 +14,7 @@ fn observer(seed: SocketAddr) -> Gossip {
     Gossip::start(config).unwrap()
 }
 
-const KEYS: &str = "engine:fake-one,inventory,profile:active";
+const KEYS: &str = "engine:fake-one,inventory,profile:active,server";
 
 #[test]
 fn two_processes_see_the_keys_of_each_other() {
@@ -25,9 +25,11 @@ fn two_processes_see_the_keys_of_each_other() {
     // The observer reads the values that each process wrote.
     let view = wait_for_view(&watcher, "both processes with a ready engine", |view| {
         ["host-one", "host-two"].iter().all(|name| {
-            view.live
-                .iter()
-                .any(|node| node.name == *name && node.keys.get("engine:fake-one").is_some_and(|v| v.contains("ready")))
+            view.live.iter().any(|node| {
+                node.name == *name
+                    && node.keys.contains_key("server")
+                    && node.keys.get("engine:fake-one").is_some_and(|v| v.contains("ready"))
+            })
         })
     });
     for (name, http) in [("host-one", one.http.as_str()), ("host-two", two.http.as_str())] {

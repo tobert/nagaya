@@ -134,6 +134,13 @@ impl Arena for Fake {
 }
 
 impl FakeAlways {
+    /// Name the model of the engine identity. The default is `fake-always`. A test of the cluster gives each node its
+    /// own served model name (spec 2.3, "A served model name in the cluster").
+    pub fn with_model(mut self, model: &str) -> Self {
+        self.0.model = model.to_owned();
+        self
+    }
+
     /// Name the family library that the engine needs. The default is `fake`, which has no library (spec 11.3).
     pub fn with_family(mut self, family: &str) -> Self {
         self.0.family = family.to_owned();
