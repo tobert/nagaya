@@ -415,6 +415,7 @@ and milestone 23 is next.
     - the host rules of 11.9b (the request, the PNG, the masks, the paste and the chunk): `bdc072f` to `52dde8e`;
     - step 3, the VAE encoder: `06704a9` to `d6006d1`, `0da11fa`, and the test fix `e1928b1`;
     - step 4, img2img: `2e07187`, `d75f1ab`, deployed at 12:29 on 2026-11-02 from `cb35641`.
+    - step 5, inpainting with a blend: `59dbaa3`, `73ace04`, `b8e7dc4`, deployed at 13:05 on 2026-11-02.
 21. **Image speed.** Make the SDXL engine faster on the B70 cards. Amy decided on 2026-10-30, by interview: a faster
     kernel can change the output bits if the oracle still passes. The tolerance goes into the spec as a Proposed
     note. The same identity, job and seed must still give the same bits on each run.
