@@ -30,12 +30,15 @@ IDENTITY = {"models": [
                     "inputs_per_request": 64}},
     {"model": "voice", "engine": "voice", "status": "ready", "capabilities": ["generate"],
      "media": {"inputs": ["audio/wav"], "outputs": ["audio/wav"], "text_replies": False}},
+    {"model": "pony-0", "engine": "pony-0", "status": "ready", "capabilities": ["generate"],
+     "media": {"inputs": ["image/png"], "outputs": ["image/png"], "text_replies": False}},
 ]}
 PROFILE = {"engines": [
     {"name": "gemma", "kind": "mk-gemma4-bmg", "devices": [0, 1]},
     {"name": "sdxl-0", "kind": "mk-sdxl-bmg", "devices": [0], "residency": "on_demand"},
     {"name": "sdxl-1", "kind": "mk-sdxl-bmg", "devices": [1], "residency": "on_demand"},
     {"name": "embeddinggemma-2", "kind": "mk-embeddinggemma2-bmg", "devices": [1], "pinned": True},
+    {"name": "pony-0", "kind": "mk-sdxl-bmg", "devices": [0], "residency": "on_demand"},
 ]}
 
 # A stub of the DOM that holds each element by id, and a fetch that answers as the nagaya does.
@@ -50,6 +53,14 @@ var document = {getElementById: (id) => els[id] || (els[id] = el(id)), querySele
 var window = {}, localStorage = {getItem: () => null, setItem() {}}, performance = {now: () => 0};
 function setTimeout(f) { f(); } function setInterval() {} function alert() {}
 function confirm(text) { confirms.push(text); return true; }
+// A stream of server-sent events, read in one piece. QuickJS has no TextDecoder, so the reader gives text.
+class TextDecoder { decode(v) { return v || ""; } }
+class AbortController { constructor() { this.signal = {}; } abort() {} }
+function sse(list) {
+  let text = list.map(([name, data]) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`).join("");
+  const read = () => { const value = text; text = ""; return Promise.resolve(value ? {value, done: false} : {done: true}); };
+  return Promise.resolve({ok: true, status: 200, body: {getReader: () => ({read})}});
+}
 function reply(status, v) {
   return Promise.resolve({ok: status < 300, status, text: () => Promise.resolve(JSON.stringify(v)),
                           json: () => Promise.resolve(v)});
@@ -83,6 +94,10 @@ function fetch(path, o) {
   }
   if (path === "/council/v2/generations" && JSON.parse(o.body).output?.options?.strength > 1) {
     return reply(400, {error: {type: "invalid_request", param: "output.options.strength", message: "nothing ran: too much"}});
+  }
+  if (/\/council\/v2\/generations$/.test(path) && JSON.parse(o.body).stream) {
+    return sse([["progress", {index: 0, step: 1, of: 1}],
+                   ["done", {outputs: [{index: 0, id: "blake3:" + "d".repeat(64), mime: "image/png"}], seed: 7}]]);
   }
   if (path === "/council/v2/generations") {
     return reply(200, {outputs: [{index: 0, id: "blake3:" + "a".repeat(64), mime: "audio/wav"}],
@@ -135,6 +150,40 @@ class Page(unittest.TestCase):
         self.assertIn('src="/at/gfx1151host/council/v2/objects/blake3:bbbb', out["here"])
         # An image from before the choice of nagayas belongs to the first nagaya, which serves the plain paths.
         self.assertIn('src="/council/v2/objects/blake3:cccc', out["there"])
+
+    # The values of the image form, as a person sets them, for both kinds of image model.
+    FORM = """
+        const set = (id, v) => { document.getElementById(id).value = v; };
+        set("img-size", "1024x1024"); set("img-steps", "30"); set("img-count", "1"); set("img-cfg", "7");
+        set("img-sampler", "dpm++ 2m karras"); set("img-spacing", "leading"); set("img-clip", "2");
+        set("img-prompt", "a cat"); set("img-negative", "blurry"); set("img-seed", "");
+        const body = () => JSON.parse(calls.filter((c) => /generations$/.test(c[1])).pop()[2]);"""
+
+    def test_an_sdxl_request_sends_the_options_of_the_form(self):
+        out = self.run_page(self.FORM + """
+            set("img-model", "pony-0"); drawImageForm();
+            await document.getElementById("img-go").onclick();
+            out.error_text = document.getElementById("img-error").textContent;
+            out.options = body().output.options;""")
+        self.assertEqual(out["error_text"], "")
+        self.assertEqual(out["options"], {"width": 1024, "height": 1024, "steps": 30, "cfg": 7,
+                                          "sampler": "dpm++ 2m karras", "count": 1, "negative": "blurry",
+                                          "clip_skip": 2})
+
+    def test_a_qwen_image_request_sends_only_the_options_that_the_model_takes(self):
+        out = self.run_page(self.FORM + """
+            document.getElementById("host").value = "gfx1151host";
+            await document.getElementById("host").onchange();
+            set("img-model", "qwen-image-fusal"); drawImageForm();
+            out.off = ["img-negative", "img-cfg", "img-sampler", "img-spacing", "img-clip", "img-lora-file"]
+              .filter((id) => !document.getElementById(id).disabled);
+            set("img-steps", "40");
+            await document.getElementById("img-go").onclick();
+            out.error_text = document.getElementById("img-error").textContent;
+            out.options = body().output.options;""")
+        self.assertEqual(out["error_text"], "")
+        self.assertEqual(out["off"], [])
+        self.assertEqual(out["options"], {"width": 1024, "height": 1024, "steps": 40, "count": 1})
 
     def test_an_error_names_its_param_when_the_message_does_not(self):
         out = self.run_page("""

@@ -103,15 +103,15 @@ audio { width: 100%; }
     <div class="card">
       <label>Model</label>
       <div class="row"><select id="img-model"></select><span id="img-model-state" class="note"></span></div>
-      <label>Prompt <span class="note">— A1111 weights work: (word:1.2), [word]</span></label>
+      <p id="img-qwen-note" class="note" hidden>Qwen-Image takes no negative prompt, CFG 1, Euler, and no clip skip,
+        spacing or LoRA. Write the trigger phrase yourself, such as <code>fusal style.</code> Previews show the steps
+        and no picture.</p>
+      <label>Prompt <span class="note" id="img-prompt-note">— A1111 weights work: (word:1.2), [word]</span></label>
       <textarea id="img-prompt" rows="4">score_9, score_8_up, score_7_up, a red fox sitting in a snowy forest, watercolor, soft light</textarea>
       <label>Negative prompt</label>
       <textarea id="img-negative" rows="2">score_4, score_5, blurry</textarea>
       <label>Size</label>
-      <select id="img-size">
-        <option>1024x1024</option><option>896x1152</option><option>1152x896</option><option>832x1216</option>
-        <option>1216x832</option><option>768x1344</option><option>1344x768</option><option>512x512</option>
-      </select>
+      <select id="img-size"><option>1024x1024</option></select>
       <div class="row3">
         <div><label>Steps</label><input id="img-steps" type="number" min="1" max="150" value="30"></div>
         <div><label>CFG</label><input id="img-cfg" type="number" min="1" max="30" step="0.5" value="7"></div>
@@ -391,7 +391,7 @@ async function refresh() {
   }
   $("chips").innerHTML = models.map((m) =>
     `<span class="chip"><b>${esc(m.model)}</b> <span class="${esc(m.status)}">${esc(m.status)}</span></span>`).join("");
-  fillSelect("img-model", "image"); fillSelect("chat-model", "text"); fillSelect("sp-model", "speech");
+  fillSelect("img-model", "image"); drawImageForm(); fillSelect("chat-model", "text"); fillSelect("sp-model", "speech");
   fillSelect("em-model", "embed"); fillEmbed();
   $("eng-rows").innerHTML = engines.map((e) => {
     const m = modelOf(e.name), st = m?.status || "absent";
@@ -506,13 +506,39 @@ $("img-clear").onclick = () => { gallery = []; saveGallery(); drawGallery(); kee
 
 // The spacing applies to the Euler samplers only; with DPM++ it is a 400 (spec 11.9a).
 const euler = () => $("img-sampler").value.startsWith("euler");
-function drawSpacing() { $("img-spacing").disabled = !euler(); }
-$("img-sampler").addEventListener("change", drawSpacing); drawSpacing();
-// SDXL-Lightning 4-step needs 4 steps, CFG 1, Euler and trailing spacing (its model card).
+/** Whether a served model is Qwen-Image. The profile kind of its engine says so (spec 11.9c). */
+function qwenImage(model) {
+  const m = models.find((x) => x.model === model), name = m && engineOf(m);
+  return /qwenimage/.test(engines.find((e) => e.name === name)?.kind || "");
+}
+// SDXL takes multiples of 64 up to 1,572,864 pixels (spec 11.9a). Qwen-Image takes multiples of 32 up to 2,097,152
+// pixels (spec 11.9c), so it adds larger sizes.
+const SIZES = ["1024x1024", "896x1152", "1152x896", "832x1216", "1216x832", "768x1344", "1344x768", "512x512"];
+const QWEN_SIZES = SIZES.concat(["1440x1440", "1664x928", "928x1664", "1280x1280"]);
+/** Turn off each field that the image model does not take, and give the sizes that it takes. */
+function drawImageForm() {
+  const qwen = qwenImage($("img-model").value);
+  for (const id of ["img-negative", "img-cfg", "img-sampler", "img-clip", "img-lora-file"]) $(id).disabled = qwen;
+  $("img-spacing").disabled = qwen || !euler();
+  $("img-qwen-note").hidden = !qwen;
+  $("img-prompt-note").hidden = qwen;
+  const sizes = qwen ? QWEN_SIZES : SIZES, keep = $("img-size").value;
+  const html = sizes.map((x) => `<option>${x}</option>`).join("");
+  if ($("img-size").dataset.html !== html) {
+    $("img-size").innerHTML = html; $("img-size").dataset.html = html;
+    $("img-size").value = sizes.includes(keep) ? keep : sizes[0];
+  }
+}
+$("img-sampler").addEventListener("change", drawImageForm); drawImageForm();
 $("img-model").addEventListener("change", () => {
-  if (!/lightning/i.test($("img-model").value)) return;
-  $("img-steps").value = 4; $("img-cfg").value = 1; $("img-sampler").value = "euler"; $("img-spacing").value = "trailing";
-  drawSpacing();
+  if (qwenImage($("img-model").value)) {
+    // The defaults of Qwen-Image: 40 steps, CFG 1 and Euler (spec 11.9c).
+    $("img-steps").value = 40; $("img-cfg").value = 1; $("img-sampler").value = "euler";
+  } else if (/lightning/i.test($("img-model").value)) {
+    // SDXL-Lightning 4-step needs 4 steps, CFG 1, Euler and trailing spacing (its model card).
+    $("img-steps").value = 4; $("img-cfg").value = 1; $("img-sampler").value = "euler"; $("img-spacing").value = "trailing";
+  }
+  drawImageForm();
 });
 
 // LoRAs are objects (spec 6.15). The page keeps its list in this browser, and a keep holds the objects in the store.
@@ -613,13 +639,15 @@ $("img-go").onclick = async () => {
   const status = (t) => { $("img-status").textContent = t; };
   $("img-error").textContent = "";
   if (!model) { $("img-error").textContent = "the nagaya serves no image model"; return; }
-  const options = {width, height, steps, cfg: +$("img-cfg").value, sampler: $("img-sampler").value, count,
-                   negative: $("img-negative").value};
-  if ($("img-clip").value) options.clip_skip = +$("img-clip").value;
-  if (euler()) options.spacing = $("img-spacing").value;
-  const on = loras.filter((l) => l.on && here(l.host));
-  if (on.length > 8) { $("img-error").textContent = "a request takes at most 8 LoRAs"; return; }
-  if (on.length) options.loras = on.map((l) => ({id: l.id, weight: l.weight}));
+  const options = {width, height, steps, count};
+  if (!qwenImage(model)) {
+    Object.assign(options, {cfg: +$("img-cfg").value, sampler: $("img-sampler").value, negative: $("img-negative").value});
+    if ($("img-clip").value) options.clip_skip = +$("img-clip").value;
+    if (euler()) options.spacing = $("img-spacing").value;
+    const on = loras.filter((l) => l.on && here(l.host));
+    if (on.length > 8) { $("img-error").textContent = "a request takes at most 8 LoRAs"; return; }
+    if (on.length) options.loras = on.map((l) => ({id: l.id, weight: l.weight}));
+  }
   const body = {model, max_tokens: 1, context: {messages: [{role: "user", content: $("img-prompt").value}]},
                 output: {mime: "image/png", options}, previews: $("img-previews").checked};
   if ($("img-seed").value !== "") body.sample = {seed: +$("img-seed").value};
