@@ -17,11 +17,9 @@ We change this spec before we change the code (Amy, 2026-10-20: "I want to keep 
 we could redo it all again if we decide to"). The mark "Decided 2026-10-20 (reading)" is on a rule that began as a
 **Proposed** reading of the text. Senpai wrote it as a rule, and Amy can veto it.
 
-The mark "Decided by senpai 2026-10-20 night (vetoable)" is on a rule that senpai chose where the spec left a choice
-open. Amy can veto it. The mark "Decided by senpai 2026-10-22 (vetoable)" is on a **Proposed** note that senpai accepted
-(Amy, 2026-10-22: "if those decisions seem ok to you let's call them ok and melt them in"). Amy reads them in her review
-of the docs. Senpai decided the notes of milestone 22 on 2026-11-01, and Amy accepted all of them on 2026-11-02.
-Their mark says both dates.
+The mark "Decided by senpai <date>" is on a rule where the spec left a choice open, and senpai chose. It is also on a
+**Proposed** note that senpai accepted (Amy, 2026-10-22: "if those decisions seem ok to you let's call them ok and melt
+them in"). These rules were vetoable until Amy accepted all of them on 2026-11-02. Thus each mark now names both dates.
 
 ## 1. Scope
 
@@ -92,8 +90,8 @@ root path is `/` on a machine, and a fixed tree in a test (`crates/nagaya/tests/
 
 - Host memory: `MemTotal` in `proc/meminfo`.
 - CPUs: the list in `sys/devices/system/cpu/online`. Each CPU number is below 1024, the CPUs that one `cpu_set_t` mask
-  holds (3.2a). A list with a larger number is a probe error that names the file. Decided by senpai 2026-10-20 night
-  (vetoable).
+  holds (3.2a). A list with a larger number is a probe error that names the file. Decided by senpai 2026-10-20 night,
+  accepted by Amy 2026-11-02.
 - AMD GPUs: the nodes of `sys/class/kfd/kfd/topology/nodes`. A node with `gpu_id` 0 is a CPU node. The device name
   comes from `gfx_target_version`, so 110501 gives `gfx1151`. The PCI address comes from `location_id` and `domain`.
 - Intel GPUs: each `sys/class/drm/card<N>` whose `device/uevent` says `DRIVER=xe`.
@@ -129,7 +127,7 @@ coordinator machine joins with no GPU (2.1). Any other missing or malformed file
 
 A probe error at start refuses the start and exits 3 (10.4). Reason: the machine is wrong, not a config, so a
 restart cannot help. A build without the fake engine runs `FileProbe::new("/")` through the `Probe` trait when it
-starts. Decided by senpai 2026-10-20 night (vetoable).
+starts. Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 
 **What the file probe cannot see.** A probe that opens no GPU runtime has these limits.
 
@@ -151,19 +149,20 @@ starts. Decided by senpai 2026-10-20 night (vetoable).
 - The NVMe namespace that holds `store_dir`. The probe lists all namespaces.
 - Intel cards with the `i915` driver, and any other driver. They are not devices of the nagaya.
 
-Decided by senpai 2026-10-20 night (vetoable): the rules of "What the file probe reads" and "What the file probe
-cannot see". Reason: the probe must give a true size or stop. A heuristic that guesses wrong without a sign would
-corrupt the ledger (8.5).
+Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02: the rules of "What the file probe reads" and "What the
+file probe cannot see". Reason: the probe must give a true size or stop. A heuristic that guesses wrong without a sign
+would corrupt the ledger (8.5).
 
-Decided by senpai 2026-10-20 night (vetoable): the tree for sm121host is made by hand, not captured. The coder could not
-read that machine. The README in the fixture directory marks each guessed value. Capture the real tree when we port.
+Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02: the tree for sm121host is made by hand, not captured. The
+coder could not read that machine. The README in the fixture directory marks each guessed value. Capture the real tree
+when we port.
 
 The tree for b70host is a capture of 2026-10-21. A Xe card reports the largest prefetchable range among its six
 standard BARs. The ranges after them hold the ROM and the SR-IOV functions, and they are not memory of the card.
 
-Decided by senpai 2026-10-20 night (vetoable): a build with the feature `fake` keeps a made-up inventory. It has one
-device and 1 GiB of host memory. Reason: the host tests need no real machine. A build with none of the features
-`fake`, `hip` and `xe` has no engine, so it refuses the start (exit 3, `engine_registry` in `main.rs`).
+Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02: a build with the feature `fake` keeps a made-up
+inventory. It has one device and 1 GiB of host memory. Reason: the host tests need no real machine. A build with none of
+the features `fake`, `hip` and `xe` has no engine, so it refuses the start (exit 3, `engine_registry` in `main.rs`).
 
 **The bootstrap config.** The bootstrap config is one TOML file, `nagaya.toml`. Its keys are `http_bind`,
 `gossip_bind`, `store_dir`, `seed_peers`, `park_budget_secs` and `ignore_devices`. The first three keys are required.
@@ -390,7 +389,7 @@ thread priorities:
 - **No pause on a discrete card.** A machine whose cards have their own memory, such as b70host, has no pause
   rule. A pass there reads GDDR6, not host memory. The host traffic of a
   pass is the residual and the uploads, about 11 MB for a block of mkviolet. A measurement under load can add a rule.
-  Decided by senpai 2026-10-22 (vetoable).
+  Decided by senpai 2026-10-22, accepted by Amy 2026-11-02.
 
 **3.2a Control runtime first.** The control runtime (`tokio`) arrived with gossip, in milestone 10 step f. The HTTP
 server joined the runtime in milestone 12 step 6. The group threads, the ledger thread and the watchdog thread stay
@@ -412,7 +411,7 @@ config names no core sets, so the split is one fixed rule.
   applies the split.
 - The online CPU list must be sorted and strictly increasing. Another list is an error.
 
-Decided by senpai 2026-10-20 night (vetoable): the rules of the two sets above.
+Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02: the rules of the two sets above.
 
 **Where each thread pins (milestone 14).** Each thread pins itself to its set when it starts. A thread that cannot pin
 is an error: a worker thread panics, and the process exits 1 (8.5). A thread of the control runtime aborts the
@@ -426,26 +425,26 @@ isolation.
 - The store thread (`nagaya-store`) pins to the pool set at `SCHED_BATCH`. It hashes and converts bytes, which is pool
   work.
 - A start with no CPU sets pins no thread. Only a test starts that way. The binary always makes the sets (below).
-- An engine's own threads keep the mask of the group thread that starts them. Linux gives a new thread the mask of
-  the thread that starts it. mk starts its worker thread (`mk-engine`) in `open`, on the group thread, so the worker
-  runs on the pool set. Decided by senpai 2026-10-20 night (vetoable). Reason: the process crate makes the sets, and
-  the group thread is pinned before it opens an engine. Thus the factory needs no CPU argument.
+- An engine's own threads keep the mask of the group thread that starts them. Linux gives a new thread the mask of the
+  thread that starts it. mk starts its worker thread (`mk-engine`) in `open`, on the group thread, so the worker runs on
+  the pool set. Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02. Reason: the process crate makes the
+  sets, and the group thread is pinned before it opens an engine. Thus the factory needs no CPU argument.
 
 The binary reads the online CPUs through the file probe (2.1) and makes the sets before it starts gossip. A probe
 error or a split error is a refusal to start: exit 3 (10.4).
 
-Decided by senpai 2026-10-20 night (vetoable): the group threads run on the pool set. A group thread drives the GPU,
-and it does host work between passes: it builds segments, copies bytes and reads taps. The host work is the same kind
-of work as the pool does, and it needs whole cores. A group thread on the housekeeping set would compete with gossip
-and the HTTP coordinator. A stalled gossip round is worse than a slow pass.
+Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02: the group threads run on the pool set. A group thread
+drives the GPU, and it does host work between passes: it builds segments, copies bytes and reads taps. The host work is
+the same kind of work as the pool does, and it needs whole cores. A group thread on the housekeeping set would compete
+with gossip and the HTTP coordinator. A stalled gossip round is worse than a slow pass.
 
 The pool has one thread for each pool CPU, and a group thread uses one more. This oversubscription is small. A
 measurement on gfx1151host can change it.
 
-Decided by senpai 2026-10-20 night (vetoable): the sets use logical CPUs, and the split does not know SMT siblings.
-A housekeeping CPU can share a physical core with a pool CPU. Reason: on gfx1151host, CPU 0 pairs with 16 and CPU 1 with
-17 (`thread_siblings_list`), so the two housekeeping CPUs sit on two physical cores. A rule for other machines would
-only guess before a measurement. The bootstrap config can name the sets later.
+Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02: the sets use logical CPUs, and the split does not know
+SMT siblings. A housekeeping CPU can share a physical core with a pool CPU. Reason: on gfx1151host, CPU 0 pairs with 16 and
+CPU 1 with 17 (`thread_siblings_list`), so the two housekeeping CPUs sit on two physical cores. A rule for other
+machines would only guess before a measurement. The bootstrap config can name the sets later.
 
 **Open:** on gfx1151 on 2026-10-20, two of the four `mk-engine` threads had the mask 0-31. The worker and one other
 thread had the pool set, 2-31. The HIP runtime starts the two other threads and sets their masks itself. The nagaya
@@ -760,7 +759,7 @@ Bytes without a charge are a defect. (ds4-recipe: vision weights without a charg
 
 **Staging.** The ledger makes a staging charge for each copy of engine state in host memory. Two copies get the
 charge. One is the copy that a read or a decision keeps, so that its later questions start from it. The other is the
-buffer that holds a snapshot until the store takes it. Decided by senpai 2026-10-20 night (vetoable).
+buffer that holds a snapshot until the store takes it. Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 
 - The size is the stored bytes of one slot. A fixed part counts whole. A cells part and a ring part count their rows
   up to the highest row of the slot. A 32,768-token mk context is about 1.93 GB.
@@ -782,7 +781,7 @@ refusal charges nothing and changes nothing.
 
 `pass` never allocates. Its scratch for each kind is a mandatory term, which the ledger charges at `open`.
 
-Admission of a profile keeps the charges that live now. Decided by senpai 2026-10-20 night (vetoable).
+Admission of a profile keeps the charges that live now. Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 
 - A live context and a live staging copy stay charged when the ledger admits a profile. A later release finds its
   charge.
@@ -1239,7 +1238,7 @@ the scheduler makes an interval copy (ontology) of each context that passed a mu
 built the store's part. Milestone 12 step 7 built the scheduler's part on the job path.
 Decided 2026-10-20 (`docs/deepinfer.md` 3), and reworked the same day after kaibo's review.
 
-mk declares a grain of 256 tokens. Decided by senpai 2026-10-20 night (vetoable). Two GPU tests in
+mk declares a grain of 256 tokens. Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02. Two GPU tests in
 `crates/nagaya-mk-qwen38-gfx1151/tests/hip.rs` measured it on gfx1151:
 
 - `an_interval_copy_restores_and_replays_to_the_bits_of_the_live_context`: a copy at 512 tokens left the live
@@ -1296,8 +1295,8 @@ mk declares a grain of 256 tokens. Decided by senpai 2026-10-20 night (vetoable)
 
 Reason: these are the smallest rules that keep the text above true.
 
-**The job path.** Decided by senpai 2026-10-20 night (vetoable). The council jobs of milestone 12 step 5 make and
-use the copies (`crates/nagaya/src/council/build.rs`):
+**The job path.** Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02. The council jobs of milestone 12 step
+5 make and use the copies (`crates/nagaya/src/council/build.rs`):
 
 - **A context is a slot.** The tracker of an engine keys each context by the slot of its job. A job tracks its slot
   from its start to its end. A rewind moves the rows back, so the job tracks the slot again from the new rows. The
@@ -1413,13 +1412,14 @@ comprehensive"). gogi's contract holds the text of the API: "Objects and keeps",
 - A profile without the key declares no capability `objects`, and the routes of objects are a 404.
 - `object_bytes` is 8 GiB (8,589,934,592 bytes), or half the budget when that is less. `keep_bytes` is half the
   budget. Thus a put always fits after the store evicts cached objects, and full keeps never stop a generation.
-- The store evicts the cached object that was used least recently first. Decided by senpai 2026-10-25 (vetoable).
+- The store evicts the cached object that was used least recently first. Decided by senpai 2026-10-25, accepted by Amy
+  2026-11-02.
 - At most four puts stream at once, so staged bytes stay below four times `object_bytes`. A fifth is a 429 `busy`.
-  Decided by senpai 2026-10-25 (vetoable).
+  Decided by senpai 2026-10-25, accepted by Amy 2026-11-02.
 - The first read of an object after a start hashes its file. A file that does not hash to its id drops the object,
   as an eviction does (7.3: same size is not same bytes). An index that does not read moves aside, and the store
   starts empty. Objects are a cache of what clients sent, so a start never stops for them. Decided by senpai
-  2026-10-25 (vetoable).
+  2026-10-25, accepted by Amy 2026-11-02.
 - Replication waits (Amy: "later"). The first step is the store on one machine, its routes and the conformance
   checks. Home machines and pulls come when a second machine speaks this contract.
 
@@ -1525,8 +1525,8 @@ for any reason.
 The beat hides a hung open from the watchdog. The wait for the opens is the backstop (10.1). It ends a hung open
 after 300 s, and the process exits 1 (10.4). The 300 s equals `TimeoutStartSec` in the unit.
 
-Decided by senpai 2026-10-20 night (vetoable): the wait for the opens is 300 s. Reason: mk waits up to 60 s for free
-memory, then loads for about 35 s. The old wait of 60 s ended a slow open that was not hung.
+Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02: the wait for the opens is 300 s. Reason: mk waits up to
+60 s for free memory, then loads for about 35 s. The old wait of 60 s ended a slow open that was not hung.
 
 ## 8. Correctness at runtime
 
@@ -1732,7 +1732,7 @@ Built: the log, and the OTLP gRPC export of spans and metrics. Not built: the JS
 export of logs. The nagaya warns at the start when `NAGAYA_OTEL_FILE_DIR` or `KAIJUTSU_OTEL_FILE_DIR` is set, so that
 a missing export is never silent. The code is in `crates/nagaya-telemetry`.
 
-Decided by senpai 2026-10-20 night (vetoable):
+Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02:
 
 - A log line is the message, then the fields as `key=value`. A warning or an error ends with `level=warn` or
   `level=error`. A line has no time, no level prefix and no span name. The journal adds the time. The tests of the
@@ -1782,7 +1782,7 @@ thread records.
 job from an HTTP request starts a trace of its own today. A test shows the parent when the caller's span is current
 (`crates/nagaya/tests/quantum_telemetry.rs`).
 
-Decided by senpai 2026-10-20 night (vetoable):
+Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02:
 
 - The attribute `engine` of a group is the names of its engines in profile order, joined with `+`. A group with one
   engine has the name of the engine.
@@ -1803,10 +1803,11 @@ Built 2026-11-02. `GroupJobs` and the jobs of a staged group take the names of t
 span names the engine of its job. `ObservedScheduler::set_job_engine` gives that name to the quanta of the job. The
 heartbeat of a group carries no attribute `engine` today. Thus no signal uses the joined name now.
 
-Decided by senpai 2026-10-20 night (vetoable). The route template is axum's, such as `/council/v2/pins/{owner}`. A
-request that matches no route has the span `<METHOD>` alone, and the `http.route` value `unmatched`. The span has the
-attributes `http.request.method`, `http.route`, `http.response.status_code` and `request_id`. A status of 500 or more
-marks the span as an error. The span name has no `nagaya.` prefix, so it has the default rate of 9.3.
+Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02. The route template is axum's, such as
+`/council/v2/pins/{owner}`. A request that matches no route has the span `<METHOD>` alone, and the `http.route` value
+`unmatched`. The span has the attributes `http.request.method`, `http.route`, `http.response.status_code` and
+`request_id`. A status of 500 or more marks the span as an error. The span name has no `nagaya.` prefix, so it has the
+default rate of 9.3.
 
 **9.3 Sampling.** The nagaya uses kaijutsu's rule. It always keeps errors and spans whose parent is sampled. It
 keeps 100% of the spans in some dot-qualified prefixes and 10% of the others. `nagaya.` and `council.` are 100%
@@ -1833,7 +1834,7 @@ never attributes.
 | `nagaya.engine.state` | 1 | engine, state (loading, ready, draining, unloaded, fatal) |
 | `http.server.request.duration` | s | http.route, status |
 
-Decided by senpai 2026-10-20 night (vetoable). These rules fix the labels of the metrics that exist:
+Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02. These rules fix the labels of the metrics that exist:
 
 - The attribute `device_group` holds the id of the device group. The attribute `tier` holds `host`, `nvme` or
   `device<id>`. The `<id>` is the machine device id (2.4, "One name for each device").
@@ -1907,7 +1908,7 @@ generation on the fake engine through the process. It reads the spans and both d
 
 `http.server.request.duration` runs from the start of a request to its response head. Its `status` is the HTTP status
 as a number. A stream ends later than its response head, so the point does not cover the reply. Decided by senpai
-2026-10-20 night (vetoable).
+2026-10-20 night, accepted by Amy 2026-11-02.
 
 **9.6 Evidence on failure.** Before and after a quantum that fails, the nagaya reads the machine's counters. It logs
 the change with the failure. mk reads these counters: KFD evicted ms, MemAvailable, GTT, and from `/proc/vmstat`
@@ -1919,10 +1920,10 @@ this on the group thread. The tests are `crates/nagaya/tests/job_evidence.rs` an
 `crates/nagaya/tests/process_evidence.rs`.
 A read costs four files, so the group thread skips `watch` for decode quanta.
 
-Decided by senpai 2026-10-20 night (vetoable). A decode quantum that fails still logs the failure. The line says
-`evidence unavailable (not read before a decode quantum)` (`evidence::failed_unwatched`). The failure text names the
-kind of the quantum, the kind of request and the engine. `Start::machine` gives the process a machine with a fixed tree
-of files for a test.
+Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02. A decode quantum that fails still logs the failure. The
+line says `evidence unavailable (not read before a decode quantum)` (`evidence::failed_unwatched`). The failure text
+names the kind of the quantum, the kind of request and the engine. `Start::machine` gives the process a machine with a
+fixed tree of files for a test.
 
 Evidence never hides its failure. A counter that cannot be read, or that went back, is named in the line as
 `evidence unavailable`. The failure is logged all the same. The sources are `/proc/meminfo`, `/proc/vmstat`,
@@ -1953,8 +1954,8 @@ Not built. The HTTP server exists (11.7), and it has no status route. `ObservedS
 the job path uses it now (9.2), so it can feed the bus.
 
 **9.7a The events.** The route is `GET /nagaya/v1/status` (11.4a). The feed is `text/event-stream`. Each event has an
-`event:` line and a `data:` line of one JSON object. The rules of this section are each "Decided by senpai 2026-10-22
-(vetoable)". Not built yet. Claude Sonnet 5.5 proposed them on 2026-10-21.
+`event:` line and a `data:` line of one JSON object. The rules of this section are each "Decided by senpai 2026-10-22,
+accepted by Amy 2026-11-02". Not built yet. Claude Sonnet 5.5 proposed them on 2026-10-21.
 
 | Event | When | `data` |
 |---|---|---|
@@ -2020,8 +2021,9 @@ In a real event, the `data` is one line.
   toward the 64 calls of 11.7, because it holds no call thread.
 - **A stop.** A stop ends each feed after the `draining` state (10.3). A client reconnects and gets a new snapshot.
 
-**9.7b Where the events come from.** Decided by senpai 2026-10-22 (vetoable). Not built yet. The group thread
-produces the events, and a bus delivers them. The code of the obs-wire merge (`532eb28`) already holds each value.
+**9.7b Where the events come from.** Decided by senpai 2026-10-22, accepted by Amy 2026-11-02. Not built yet. The group
+thread produces the events, and a bus delivers them. The code of the obs-wire merge (`532eb28`) already holds each
+value.
 
 - A new type `StatusBus` in `crates/nagaya/src/status.rs` holds the subscribers and the last state of each group. The
   process makes one bus and gives it to the council and to each group.
@@ -2090,7 +2092,7 @@ sends one datagram. The datagram holds `EXTEND_TIMEOUT_USEC=` and a `STATUS=` li
 engine. The extension is 30 s, the watchdog timeout (7.4). systemd sets the start deadline to 30 s after each
 datagram, so a slow open does not time the start out. A process that stops sending the datagram times out within 30 s.
 
-Decided by senpai 2026-10-20 night (vetoable).
+Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 
 When the wait for the opens ends (7.4), the process sends `STATUS=` with the name of each engine that did not open.
 Then it exits 1.
@@ -2176,7 +2178,7 @@ interrupts a stop, the process exits 1, unless every state was parked. Decided 2
 A park that runs past the park budget makes the process exit 1. A SIGTERM during a planned restart stops the
 process with exit 0. Decided 2026-10-20 (reading).
 
-**Which states the park keeps.** Decided by senpai 2026-10-20 night (vetoable).
+**Which states the park keeps.** Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 
 - The park stores each state that holds tokens. It skips a state with no token, because that state has nothing to
   keep.
@@ -2189,7 +2191,7 @@ Reason: step 3 parks pinned and wanted contexts. The process does not track pins
 it parks each state with tokens. An empty state of mk is 118,038,528 bytes of fixed parts ("v0 mk binding choices").
 A park of mk's 16 empty states would write about 1.9 GB and use most of the 10 s budget.
 
-**A park of bytes that the store holds.** Decided by senpai 2026-10-20 night (vetoable).
+**A park of bytes that the store holds.** Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 
 - The index has one entry for each content id, so a content id has one recipe. The store refuses a put that gives a
   held content id another recipe. That refusal is not the tripwire, which is two content ids under one recipe (6.7).
@@ -2234,7 +2236,7 @@ systemd restarts it within its start limit. A message on stderr names the engine
 The library pin was a refusal to start too. It is gone, because the binary links mk's engine. Amy decided this on
 2026-10-22 (AGENTS.md milestone 15).
 
-**One exit path.** Decided by senpai 2026-10-20 night (vetoable).
+**One exit path.** Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 
 - The binary ends through one function, `nagaya::exit::leave`, for every code.
 - First the process drops the telemetry, so the OTLP batches flush (9.1). Then `leave` flushes stdout, stderr and the
@@ -2256,10 +2258,10 @@ to the same gogi before the nagaya served them (Amy, 2026-10-18).
 gogi is normative today. This spec says how the nagaya serves the API, and it never restates the API. When this
 spec and gogi differ about the API, gogi is the rule, and this spec is corrected.
 
-**Text only.** Decided by senpai 2026-10-25 (vetoable). Each served model of the nagaya reads and writes text only,
-until a family renders an object. Its identity declares no `media`, and the server declares no `objects` yet. The
-routes refuse an object part, `case_media` and `output` with a 400 that names the member (gogi "Contexts",
-"Outputs"). A content of text parts is the context of their string.
+**Text only.** Decided by senpai 2026-10-25, accepted by Amy 2026-11-02. Each served model of the nagaya reads and
+writes text only, until a family renders an object. Its identity declares no `media`, and the server declares no
+`objects` yet. The routes refuse an object part, `case_media` and `output` with a 400 that names the member (gogi
+"Contexts", "Outputs"). A content of text parts is the context of their string.
 
 **The text stays in gogi.** Decided 2026-10-25 (Amy: "council api docs should stay with gogi except where we have
 implementation details"). This rule replaces a Proposed note of 2026-10-22, which moved the text here. gogi keeps
@@ -2535,56 +2537,57 @@ Decided 2026-10-20 (Amy chose the name `nagaya-council`).
 reply does not change the id.
 
 **The Qwen3.8 rendering.** The spec and gogi leave these choices open for Qwen3.8. Sonnet 5.5 proposed them on
-2026-10-20. Each rule has the mark "Decided by senpai 2026-10-20 night (vetoable)", and Amy can veto it.
+2026-10-20. Each rule has the mark "Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02", and Amy can veto
+it.
 
 - Every render uses the reasoning effort `medium`, as mk's council does. The template then writes no effort line.
-  Decided by senpai 2026-10-20 night (vetoable).
+  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 - Thinking follows the context: the render uses `thinks()` of the context. A context renders the same with thinking on
   and off, except for the generation prompt. A past assistant message keeps its reasoning in both. A test compares the
   two renders.
-  Decided by senpai 2026-10-20 night (vetoable).
+  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 - A read closes the thinking. The case turn ends with the template's prompt for thinking off:
   `<think>\n\n</think>\n\n`.
-  Decided by senpai 2026-10-20 night (vetoable).
+  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 - A plain read keeps mkviolet's layout: spec turn, case turn, `Answer to question`, then ` N (stem):`. The letter
   token has a leading space, as in mkviolet. A raw read uses the letters that the client sends.
-  Decided by senpai 2026-10-20 night (vetoable).
+  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 - A plain read tokenizes the template text and the client text in one pass, as mk renders a chat. mkviolet tokenizes
   the pieces one by one, and the two ways can differ at a join. The library checks that the tokens of the context
   begin the tokens of the read. It also checks that each step begins with the tokens before it. A failed check is an
   internal error (`council/read.rs`).
-  Decided by senpai 2026-10-20 night (vetoable).
+  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 - A queue read writes the call in Qwen3.8's form, with the parameter `answers` as one JSON object. It reads a bare
   letter after the opening quote of the value.
-  Decided by senpai 2026-10-20 night (vetoable).
+  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 - A queue read asks the questions in the order of the properties of `answers` in the queue tool's schema. Qwen3.8's
   template writes the keys in the order it gets them. mkviolet sorts by question id, because Gemma 4's template sorts.
   A test pins the order.
-  Decided by senpai 2026-10-20 night (vetoable).
+  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 - The workspace turns on the `serde_json` features `preserve_order` and `float_roundtrip` for all its crates, because
   Cargo joins the features of one build. The queue read needs `preserve_order` to read the order of the schema.
   Without it, the map sorts its keys, and the questions come in the wrong order. `float_roundtrip` keeps a float of a
   schema or a call equal to the float that was sent. A build of one crate alone may lack both.
-  Decided by senpai 2026-10-20 night (vetoable).
+  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 - The template has no form for a failed result. The library writes `Error: ` before the content of a tool message with
   `is_error`.
-  Decided by senpai 2026-10-20 night (vetoable).
+  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 - A system message after a message of another role renders as a system turn, in its place. gogi allows it
   (`docs/council-api.md`: "A system message may come later"), and `gogi-conformance` sends one. The template refuses
   such a message, so the library gives it a user message with stand-in text. Then the library swaps that user turn
   for a system turn with the trimmed content. The template merges the system messages at the start into one turn.
-  Decided by senpai 2026-10-20 night (vetoable).
+  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 - A marked message is a boundary when the tokens of the rendering up to it begin the whole rendering. A tool message
   inside a run of tool messages is not a boundary, because the template puts one user turn around the run. A later
   system message ends the run.
-  Decided by senpai 2026-10-20 night (vetoable).
+  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 - The template keeps the reasoning of every assistant message. No marked message loses its boundary for that reason.
-  Decided by senpai 2026-10-20 night (vetoable).
+  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 - `rendered_hash` is the content id of the text that the read was conditioned on (gogi's words). mkviolet hashes the
   head's snapshot id. A plain read hashes the text through `Answer to question`, which all its questions share. A
   queue read hashes its whole text at the end: the call through the last letter that the read chose, and its closing
   quote.
-  Decided by senpai 2026-10-20 night (vetoable).
+  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 - The reply parser follows these rules.
   - It takes the stop token as a pushed token (`<|im_end|>` or `<|endoftext|>`). It adds no text for that token.
   - A token has the phase of the last text that it released. The step of the token holds only the text of that phase.
@@ -2592,7 +2595,7 @@ reply does not change the id.
   - The end of the thinking is not part of the reasoning.
   - A call that parses but holds an integer of more than 64 bits becomes a malformed call. Its text stays as written.
 
-  Decided by senpai 2026-10-20 night (vetoable).
+  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 
 **11.3b The toy family.** The fake engine has no real tokenizer. For tests, it serves the toy family of gogi's
 `gogi-toy` crate. Its tokens are the 256 byte values and 14 template markers, and its template is the template of
@@ -2606,26 +2609,27 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
 - **The store and the group thread.** `lookup` and `restore` take the engine, and the engine lives on its group
   thread (3.2). Thus a build runs them on the group thread. The store sits behind a mutex that the group threads and
   the park thread share. The ledger stays on its own thread, and a build asks it by message.
-  Decided by senpai 2026-10-22 (vetoable).
+  Decided by senpai 2026-10-22, accepted by Amy 2026-11-02.
 - **The quanta of a build.** The first quantum has the kind `copy`. It chooses a slot, looks up the prefixes and
-  restores the longest one. It then adds the other quanta to the job. Decided by senpai 2026-10-22 (vetoable).
+  restores the longest one. It then adds the other quanta to the job. Decided by senpai 2026-10-22, accepted by Amy
+  2026-11-02.
 - **The kinds of the later quanta.** A feed of at most `max_pass_inputs` tokens is `prefill`. An engine with a feed
   rule feeds one block in each quantum (6.14). A seal and a put at a boundary is `copy`. A feed never crosses a
-  boundary. Decided by senpai 2026-10-22 (vetoable).
+  boundary. Decided by senpai 2026-10-22, accepted by Amy 2026-11-02.
 - **The seal.** A build calls `seal` at each boundary that it passes, before it reads the parts. A snapshot is a
   context sealed at a boundary (ontology). An engine without `seal` skips the call.
-  Decided by senpai 2026-10-22 (vetoable).
-- **The slot.** A build takes the lowest free slot where the prompt fits (`fits` on each cells part). A build that
-  fits no slot is `too_large`. A build with no free slot is `busy`. Decided by senpai 2026-10-22 (vetoable).
+  Decided by senpai 2026-10-22, accepted by Amy 2026-11-02.
+- **The slot.** A build takes the lowest free slot where the prompt fits (`fits` on each cells part). A build that fits
+  no slot is `too_large`. A build with no free slot is `busy`. Decided by senpai 2026-10-22, accepted by Amy 2026-11-02.
 - **What a build lists.** The response lists the boundaries that the store holds when the build ends. A boundary
   that eviction removed, below the start of the build, is not made again. A dry run feeds nothing and lists no
-  snapshot. Decided by senpai 2026-10-22 (vetoable).
+  snapshot. Decided by senpai 2026-10-22, accepted by Amy 2026-11-02.
 - The head of a dry run. A dry run reports the held head when the store holds it. Otherwise the head is `recipe:` and
   the hex of the head's recipe (the note below makes the scheme `blake3:`). It names the state that a build would make.
   No store entry has the id, so a snapshot read or a pin of it finds nothing.
 
   Reason: gogi types `head` as required, and gogi is the contract. This settles a note of Claude Sonnet 5.5.
-  Decided by senpai 2026-10-20 night (vetoable).
+  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 
   **Decided 2026-10-27 (Amy, by interview)**, proposed by claude-opus-5-5 on 2026-10-25: a dry run head that the store
   does not hold is `blake3:` and the recipe's hex. The form `recipe:` goes. Reason: gogi now allows only `blake3:` and
@@ -2635,11 +2639,12 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
   No store entry has the id, so a read or a pin of it is still a 404 or `held: false`. The id no longer shows that it
   is a recipe: a client tells that from `dry_run: true`. It replaces the `recipe:` form of the rule above and of
   the continuation dry run (Amy, 2026-10-21). Section 16 has the same line.
-- **The pin owner.** gogi names an owner with text, and the store names it with a `u64`. The service keeps the
-  text and gives the store the first 8 bytes of the BLAKE3 hash of the text. A restart keeps the text in `pins.json`
-  in the store directory. Entries that builds put have the owner 1. Decided by senpai 2026-10-22 (vetoable).
+- **The pin owner.** gogi names an owner with text, and the store names it with a `u64`. The service keeps the text and
+  gives the store the first 8 bytes of the BLAKE3 hash of the text. A restart keeps the text in `pins.json` in the store
+  directory. Entries that builds put have the owner 1. Decided by senpai 2026-10-22, accepted by Amy 2026-11-02.
 
-**Reads and generations on the job path.** The rules below are each "Decided by senpai 2026-10-20 night (vetoable)".
+**Reads and generations on the job path.** The rules below are each "Decided by senpai 2026-10-20 night, accepted by Amy
+2026-11-02".
 
 - A raw read, a decision read and a generation are each one job for each context. The job builds the context, as a
   build does, and its work goes on in the same slot. When the store holds the head, the job restores it.
@@ -2796,8 +2801,8 @@ other routes in this list are not built.
 Embeddings left this list on 2026-10-30. gogi's contract has them as `POST /council/v2/embeddings` (11.10).
 
 **11.4b The text routes.** `render`, `tokenize` and `detokenize` use the family library (11.3). They share the rules
-below. The rules of 11.4b to 11.4f are each "Decided by senpai 2026-10-22 (vetoable)". Claude Sonnet 5.5 proposed
-them on 2026-10-21, and the code of that day follows them.
+below. The rules of 11.4b to 11.4f are each "Decided by senpai 2026-10-22, accepted by Amy 2026-11-02". Claude Sonnet
+5.5 proposed them on 2026-10-21, and the code of that day follows them.
 
 Their sources were mk's `/mk/v1` routes and mkviolet's `mk_api.rs`. Bench tools use them to see what a council
 request feeds. The semantic search of kaijutsu uses them to count and to cut text by tokens.
@@ -2974,7 +2979,7 @@ Tests that can fail (all built, in `crates/nagaya/tests/extensions.rs` and `exte
 - A noncharacter, an id past the vocabulary, and a split character each give a 400 with the `param`.
 
 **11.4e Model and health.** The first set has no `model` route and no `health` route. Both existed in mk, and
-`GET /council/v2/identity` covers most of what they gave. Decided by senpai 2026-10-22 (vetoable).
+`GET /council/v2/identity` covers most of what they gave. Decided by senpai 2026-10-22, accepted by Amy 2026-11-02.
 
 - **`model`.** mk's object had `id`, `weight_hash`, `max_context`, `build.engine_sha256` and `device`. The council
   identity has `model`, `weight_hash`, `engine`, `limits.context_tokens` and `device` for each served model. The
@@ -3018,7 +3023,7 @@ does not ask for it.
 An unexpected failure is a 500 `internal`, and the process stops (8.5).
 
 The routes of 11.4b to 11.4d, and the status feed of 9.7a, need no new code in this table. They use the codes that
-the table and gogi's table already hold. Decided by senpai 2026-10-22 (vetoable).
+the table and gogi's table already hold. Decided by senpai 2026-10-22, accepted by Amy 2026-11-02.
 
 | Code | `error.type` | When, on these routes |
 |---|---|---|
@@ -3033,8 +3038,9 @@ the table and gogi's table already hold. Decided by senpai 2026-10-22 (vetoable)
 has a tailnet address in its code.)
 
 **11.7 The HTTP routes.** The process serves the council routes with `axum` on the control runtime
-(`crates/nagaya/src/http`). It starts the server before the engines open, and it logs `http listening on
-<address>` (10.1, Decided 2026-10-23). The other rules here are each "Decided by senpai 2026-10-20 night (vetoable)".
+(`crates/nagaya/src/http`). It starts the server before the engines open, and it logs `http listening on <address>`
+(10.1, Decided 2026-10-23). The other rules here are each "Decided by senpai 2026-10-20 night, accepted by Amy
+2026-11-02".
 
 - The engine registry of 11.3 replaces the first two rules below. The code builds it
   (`crates/nagaya/src/serving.rs`, `FamilyRegistry`).
@@ -3949,9 +3955,9 @@ The nagaya keeps each engine's expected identity in the store's index. At start,
 `identity()` with the expected one. A mismatch makes the old entries of that engine unusable. It is a refusal to
 start only when the profile pins the identity.
 
-**The canary decides for a new build.** Decided by senpai 2026-10-22 (vetoable). This replaces the note "A GPU
-binary in the identity" of 2026-10-21. That note put the compiler and the driver in the identity digest. Then each
-driver update makes every held entry unusable, also when the bits do not change. Amy, 2026-10-22: "if I have a long
+**The canary decides for a new build.** Decided by senpai 2026-10-22, accepted by Amy 2026-11-02. This replaces the note
+"A GPU binary in the identity" of 2026-10-21. That note put the compiler and the driver in the identity digest. Then
+each driver update makes every held entry unusable, also when the bits do not change. Amy, 2026-10-22: "if I have a long
 running context and upgrade I don't want to have to refill it just because I built a new binary that is not very
 different most of the time."
 
@@ -4131,9 +4137,9 @@ The inventories found these items. We correct each one when its code moves. We d
 
 ## 16. Decided by senpai
 
-Senpai chose each rule below where the spec left a choice open. Each rule has the mark "Decided by senpai 2026-10-20
-night (vetoable)" or "Decided by senpai 2026-10-22 (vetoable)" in its section. Amy can veto any of them. Each line
-gives the section and the rule in a few words. The lists before the last one are from 2026-10-20 night.
+Senpai chose each rule below where the spec left a choice open. Each rule has the mark "Decided by senpai" in its
+section, and Amy accepted all of them on 2026-11-02. Each line gives the section and the rule in a few words. The lists
+before the last one are from 2026-10-20 night.
 
 **In this spec**
 

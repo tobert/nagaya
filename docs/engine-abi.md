@@ -395,8 +395,8 @@ the ABI.
   - Slots 0 to 11 hold 4,096 tokens each. Slots 12 to 15 hold 32,768 tokens each.
   - The process opens one handle. The conformance suite opens a handle for each gate.
   - This binding does not bind `mk_ctx_fork`.
-- **mk declares `slots` and `coverage`.** Decided by senpai 2026-10-20 night (vetoable). The park on stop (spec 10.3)
-  and the council build (spec 11.3c) need both.
+- **mk declares `slots` and `coverage`.** Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02. The park on
+  stop (spec 10.3) and the council build (spec 11.3c) need both.
   - `slot_high(slot)` is the context's token count (`mk_ctx_n`). A slot with no context gives 0.
   - `slot_clear(slot)` frees the context and makes a new one of the same capacity, under the same slot. mk has no
     call that empties a context. The free comes first, because the context term holds one context for each slot.
@@ -412,7 +412,7 @@ the ABI.
   that cannot allocate ends the process, and the binding never sees a null context. The free comes first, so the
   allocator holds the bytes. mk needs a reset call that keeps the buffers, so that a clear does not allocate.
   - The factory of the process crate gives `plan(config)` (next rule), and this binding fixes the pool.
-- **The factory plans from `weights_bytes`.** Decided by senpai 2026-10-20 night (vetoable).
+- **The factory plans from `weights_bytes`.** Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
   - The size of the weight arena comes from `arena::plan`, which reads the tensor records of the shards at open. The
     arena is a repacked copy of the tensors, and `plan` reads no shard, so it cannot compute the size.
   - The config of the engine has one key, `weights_bytes`. The factory refuses any other key.
@@ -422,9 +422,9 @@ the ABI.
   - The factory reads `MK_SHARDS` from the environment. The engine is in the binary, so no variable names a library.
   - `plan` refuses a missing `MK_SHARDS`, or a shard that is not a file. The message names the variable.
   - The kind in the profile is `mk-qwen38-gfx1151`. A build with the feature `hip` registers it.
-- **The pool is 12 contexts of 4,096 tokens and 4 of 32,768.** Decided by senpai 2026-10-20 night (vetoable). The
-  pool had 16 contexts of 256 tokens (Amy, 2026-10-20: "grow the pool"). A kaijutsu context needs thousands of
-  tokens, so 256 cannot serve council v2.
+- **The pool is 12 contexts of 4,096 tokens and 4 of 32,768.** Decided by senpai 2026-10-20 night, accepted by Amy
+  2026-11-02. The pool had 16 contexts of 256 tokens (Amy, 2026-10-20: "grow the pool"). A kaijutsu context needs
+  thousands of tokens, so 256 cannot serve council v2.
   - The count stays 16, which equals `max_segments`. A pass can hold one segment for each context.
   - mk takes any capacity that is a multiple of 256, up to 32,768 (`context.rs` `ctx_new`).
   - Two sizes keep the long contexts few and the short ones many.
@@ -433,9 +433,9 @@ the ABI.
 - **A long prompt takes several passes.** A pass holds at most 256 tokens (`kMaxPassTokens`), so `max_pass_inputs`
   stays 256. The caller feeds a prompt in passes of at most 256 tokens. Each pass starts at the context's token
   count. mk gives the same bits for any split (spec 6.13).
-- **mk declares a checkpoint grain of 256 tokens.** Decided by senpai 2026-10-20 night (vetoable). The GPU tests
-  of spec 6.13 measured a copy round trip and pass splits across 256 tokens. mk also declares `segments_exact`,
-  which a grain needs. The grain is `CHECKPOINT_GRAIN` in `spec.rs`.
+- **mk declares a checkpoint grain of 256 tokens.** Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02. The
+  GPU tests of spec 6.13 measured a copy round trip and pass splits across 256 tokens. mk also declares
+  `segments_exact`, which a grain needs. The grain is `CHECKPOINT_GRAIN` in `spec.rs`.
   - A profile with `interval_copies = 0` makes no copies. The gfx1151host profile has 0.
 - **`max_quantum_ms` is 10000.** mk splits a pass at 256 tokens (`kMaxPassTokens`). A prefill chunk of that size takes
   about 2 s. mk's watchdog stops the program at a 10 s deadline (`worker.rs` `watchdog_deadline`), so the declared
@@ -660,8 +660,8 @@ of the ABI, so Amy decides.
 **The wake call.** Decided 2026-10-22 (Amy: "add the call"). A stage thread keeps its card awake between the quanta
 of a job.
 
-**The shape of the wake call**, and when the stage thread makes it. Decided by senpai 2026-10-22 (vetoable). Amy
-reads it in her review of the docs. Not built yet.
+**The shape of the wake call**, and when the stage thread makes it. Decided by senpai 2026-10-22, accepted by Amy
+2026-11-02. Amy reads it in her review of the docs. Not built yet.
 
 ```rust
 trait StageHandle {

@@ -299,7 +299,7 @@ On gfx1151host, the unit does not keep arenas through a restart yet (spec 10.2).
 Later, the unit sets `FileDescriptorStoreMax=512` and `FileDescriptorStorePreserve=restart`, and the process
 stores its fds. The unit file has a comment at that place.
 
-## Decided by senpai 2026-10-20 night (vetoable)
+## Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02
 
 These rules fill gaps in the spec. Each one is the simplest choice that works.
 
