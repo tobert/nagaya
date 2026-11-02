@@ -5,8 +5,9 @@ It tells how to move the service on port 8090 from mk to the nagaya, and how to 
 `docs/spec.md` 2.1, 2.4, 3.3 and 10.1-10.4. The section "b70host" at the end does the same for mkviolet on
 b70host. `docs/ontology.md` defines mk and mkviolet.
 
-The cutover ran at 00:24 on 2026-10-21. `nagaya.service` serves council v2 on port 8090 with mk on gfx1151, and
-`megakernel.service` is stopped and disabled. Use "Cut over from mk" again only after a rollback.
+The cutover ran at 00:24 on 2026-10-21. `nagaya.service` serves council v2 on port 8090 on gfx1151, and
+`megakernel.service` is stopped and disabled. Since 2026-11-01, `qwen-image-fusal` is resident and mk is on demand
+("The layout of gfx1151host"). Use "Cut over from mk" again only after a rollback.
 
 Run each command as `atobey` on gfx1151host. The unit is a user unit, so every `systemctl` command has `--user`. A command
 without `--user` talks to the system manager and says "inactive" for a user unit.
@@ -40,8 +41,8 @@ the message, and the unit restarts after 30 s.
 The gaps of 2026-10-20 night are closed. Check these items before each start, because a start fails when one is
 wrong.
 
-- Build the `nagaya` binary with `--features hip` (see "Build"). The feature registers the kind
-  `mk-qwen38-gfx1151`. A build without it exits 3 with the message "this build has no engine".
+- Build the `nagaya` binary with `--features hip` (see "Build"). The feature registers the kinds
+  `mk-qwen38-gfx1151` and `qwenimage21`. A build without it exits 3 with the message "this build has no engine".
 - Build the binary from a commit at or after `9a79c3a`. Before that merge, mk did not declare `slots` and
   `coverage`. The old binary logs "cannot serve engine `mk`" and exits 3 (spec 11.7).
 - The binary holds mk's engine. The build compiles it from `crates/nagaya-mk-qwen38-gfx1151/hip/` and needs ROCm at
@@ -149,8 +150,9 @@ Do these steps in this order. Stop at the first step that fails, and do the roll
    ```
 
    The last line counts the checks. On 2026-10-21 it was `215 ok, 0 FAIL, 5 skip`. Each `FAIL` line names a check. Add
-   `--model <name>` to check one served model. The flag `--allow-restart <cmd>` also checks a restart, but pinned
-   snapshots do not survive one yet (spec 6.11), so leave it out.
+   `--model <name>` to check one served model. The flag `--allow-restart <cmd>` also checks a restart: since
+   `47f2191`, a pinned snapshot stays through a clean restart (spec 6.11). b70host ran the check on 2026-10-23, and
+   on gfx1151host each restart loads the weights again ("Arenas through a restart").
 
 7. Look for GPU errors in the kernel log.
 
@@ -162,7 +164,7 @@ Do these steps in this order. Stop at the first step that fails, and do the roll
 
 ## Roll back to mk
 
-Use this when a gate fails, or when Amy asks for mk. mk is an archive after milestone 15 (`docs/ontology.md`). The
+Use this when a gate fails, or when Amy asks for mk. mk is an archive since milestone 15 (`docs/ontology.md`). The
 rollback needs its unit file and its built library, which the archive keeps.
 
 ```
@@ -193,8 +195,9 @@ Nothing in the store directory needs a change for the rollback. The nagaya leave
   `systemctl --user stop nagaya.service`. It starts the unit again when it ends.
 - mk's unit and the nagaya's unit use the same address. Never start both. A second process on the GPU can stop the
   SMU (spec 3.1).
-- A new profile from a client makes the process exit with code 4 and restart (spec 3.3, 10.4). systemd counts that
-  start. The unit allows 3 starts in 600 s, so a fourth profile swap in 600 s fails and the unit stays down.
+- A new profile that loads or reloads an engine makes the process exit with code 4 and restart (spec 3.3, "Which
+  actions run in place", 10.4). systemd counts that start. The unit allows 3 starts in 600 s, so a fourth profile
+  swap in 600 s fails and the unit stays down.
 - Exit code 3 is a refusal to start: a bad config, a profile that does not fit, a pinned identity that differs.
   The unit does not restart. Read the log, fix the cause, and run `systemctl --user reset-failed nagaya.service`.
   Then start it.
@@ -221,8 +224,8 @@ On 2026-10-21, a throwaway kaijutsu kernel drove a generation and gate council d
 
 The profile has one pool for `device(0)` and `host` (spec 4.1): 112 GiB, or 120,259,084,288 bytes. The host has
 about 125.1 GiB. The host safety floor is 12 GiB (spec 4.7). That leaves 113.1 GiB, and the pool is a whole count
-below it. The store takes 16 GiB of host memory from the pool, and 50 GiB of NVMe. These are mk's defaults for its
-parked contexts.
+below it. The store takes 2 GiB of host memory from the pool, and 50 GiB of NVMe ("Two engines on gfx1151host"). Until
+milestone 22, the host budget was 16 GiB, mk's default for its parked contexts.
 
 The mk engine declares its terms in `limits().memory`. The terms are these:
 
@@ -230,9 +233,9 @@ The mk engine declares its terms in `limits().memory`. The terms are these:
 - the context pool of 12 contexts of 4,096 tokens and 4 of 32,768: 12,198,215,680 bytes;
 - the pass scratch: 324,009,984 bytes.
 
-The sum is 78,012,452,864 bytes. With the store's 17,179,869,184 bytes of host memory, it is 95,192,322,048 bytes.
-The pool has 120,259,084,288 bytes, so about 25.1 GB stay free. A new context and a staging copy (spec 4.2) take
-their bytes from that room. A copy of a 32,768-token context is about 1.93 GB.
+The sum is 78,012,452,864 bytes. With mk alone and the old store budget of 17,179,869,184 bytes, it was
+95,192,322,048 bytes. The pool has 120,259,084,288 bytes, so about 25.1 GB stayed free. A new context and a staging
+copy (spec 4.2) take their bytes from that room. A copy of a 32,768-token context is about 1.93 GB.
 
 If a change makes the sum larger than the pool, the process refuses the profile and exits 3. The log gives the
 shortfall in bytes. Then raise the pool in `profile.toml`, or lower `store.host`. Keep the pool 12 GiB below
@@ -322,7 +325,8 @@ These rules fill gaps in the spec. Each one is the simplest choice that works.
 ## b70host
 
 The nagaya replaces mkviolet on b70host (Amy, 2026-10-21: "our goal is to replace it"). It serves Gemma 4 on the
-two B70 cards behind council v2 on `198.51.100.10:8091`, mkviolet's address. Run each command as `atobey` on b70host.
+two B70 cards behind council v2 on `198.51.100.10:8091`, mkviolet's address. It also serves speech, image and embedding
+engines on one card each (milestones 17 to 20). Run each command as `atobey` on b70host.
 Every `systemctl` command has `--user`.
 
 ### The files
@@ -346,6 +350,11 @@ checkpoint, so run it with `GEMMA4_MODEL_DIR` set.
 - The profile puts the speech engine `voice` of kind `qwen3tts-bmg` on device 0, on demand (spec 3.3a, 11.8). It serves
   the council model `Qwen3-TTS-12Hz-1.7B-VoiceDesign` (spec 11.8a). Until M18 step 3 it also served
   `POST /v1/audio/speech`.
+- The profile puts six image engines of kind `mk-sdxl-bmg` on one card each, on demand (spec 11.9). `sdxl-0`,
+  `pony-0` and `lightning-0` are on device 0. `sdxl-1`, `autismmix-1` and `inpaint-0` are on device 1. `inpaint-0`
+  has the 9-channel UNet (spec 11.9b).
+- The profile puts `embeddinggemma-2` of kind `mk-embeddinggemma2-bmg` on device 1. It is resident and pinned (spec
+  11.10).
 - The unit sets `QWEN3TTS_MODEL_DIR` to the Qwen3-TTS checkpoint in the Hugging Face cache.
 - The unit sets `GEMMA4_MODEL_DIR` to `~/src/mkviolet/checkpoints/gemma-4-26B-A4B`. The engine and the family read
   the checkpoint there.
@@ -356,13 +365,14 @@ checkpoint, so run it with `GEMMA4_MODEL_DIR` set.
 - The OTLP line of the unit is a comment. No collector listened on b70host on 2026-10-21. Remove the `#` when one
   runs on port 4317.
 
-The plan gives 29,964,945,932 bytes of terms on device 0 and 31,889,794,060 bytes on device 1. Each card has 32 GiB
-(34,359,738,368 bytes), so card 1 has about 2.3 GB left. A larger slot does not fit. The host budget is 96 GiB, and
-the store takes 16 GiB of it and 50 GiB of NVMe.
+On 2026-10-21, `gemma` planned 29,964,945,932 bytes of terms on device 0 and 31,889,794,060 bytes on device 1.
+Each card has 32 GiB (34,359,738,368 bytes), so card 1 had about 2.3 GB left. A larger slot does not fit. The host
+budget is 96 GiB, and the store takes 16 GiB of it and 50 GiB of NVMe.
 
 The speech engine plans 5,645,096,644 bytes on card 0, and card 0 has 4,394,792,436 bytes beside `gemma`. Thus it
-does not load beside `gemma` (engine-abi "How a group loads both"). A speech request unloads `gemma` and loads the
-speech engine. Sixty seconds after the last speech job, the speech engine unloads and `gemma` loads cold again.
+does not load beside `gemma` (engine-abi "How a group loads both"). A client loads it with the load route and names
+`gemma` in `unload`, and later it loads `gemma` again (spec 3.3b). No request starts a load, and no engine swaps back
+by itself (spec 3.3, "Explicit loads", and 3.3a, "Explicit layout").
 
 ### Change the profile
 
@@ -385,8 +395,9 @@ The process reads the copy in the store directory, so a new file in `deploy/b70h
 
 ### Build and install
 
-Build the release binary with the feature `xe`. The feature registers the kind `mk-gemma4-bmg`, and `build.rs`
-compiles the kernels with `ocloc`. A build without it has no engine and exits 3.
+Build the release binary with the feature `xe`. The feature registers the kinds `mk-gemma4-bmg`, `qwen3tts-bmg`,
+`mk-sdxl-bmg` and `mk-embeddinggemma2-bmg`, and `build.rs` compiles the kernels with `ocloc`. A build without it has
+no engine and exits 3.
 
 ```
 cd ~/src/nagaya
@@ -436,7 +447,8 @@ Do these steps in this order. Stop at the first step that fails, and do the roll
    journalctl --user -u nagaya.service -b --no-pager | tail -40
    ```
 
-   The log has the lines "inventory: device 2 `gfx1036` at 0000:80:00.0 ignored" and "ready with 1 engines".
+   The log has the lines "inventory: device 2 `gfx1036` at 0000:80:00.0 ignored" and "ready with 1 engines". With
+   the profile of 2026-11-02, the second line is "ready with 2 engines": `gemma` and `embeddinggemma-2`.
 
 4. Ask for the identity, and run gogi's conformance suite.
 
@@ -468,7 +480,7 @@ Do these steps in this order. Stop at the first step that fails, and do the roll
 
 ### Roll back to mkviolet
 
-Use this when a gate fails, or when Amy asks for mkviolet. mkviolet becomes an archive after milestone 15s
+Use this when a gate fails, or when Amy asks for mkviolet. mkviolet is an archive since milestone 15s
 (`docs/ontology.md`), and the rollback needs its unit file and its source. Its unit runs its release binary, so
 build it first.
 
