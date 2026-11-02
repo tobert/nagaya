@@ -298,6 +298,14 @@ For each duplicate, the node logs one error that names both ids as `name:generat
 ids of the live duplicates, in sorted order. The node removes the key when no duplicate is live. It takes no other
 action. Decided 2026-10-19 (Amy: log it and publish a key), and written as a rule 2026-10-20.
 
+**The cluster of gfx1151host and b70host.** Decided 2026-11-02 (Amy, by interview, `AGENTS.md` milestone 23). gfx1151host and
+b70host join one cluster, and each machine serves the models of both. Each machine lists the gossip address of
+the other in `seed_peers` (2.1). Each node publishes the HTTP address of each engine in `engine:<name>`, as the list
+above says. 11.1a gives the rules of the forward.
+
+**A served model name in the cluster.** Decided 2026-11-02 (Amy, by interview). A served model name is unique in the
+cluster. A second node that serves the name logs it, publishes a conflict key, and does not list its copy.
+
 **2.4 Placement profile.** A placement profile names a machine's engines, their devices, their config, each tier's
 budget (4.1), each engine's share (D9), and pinned identities (12.1). A client reads or updates a machine's profile
 through `GET` and `PUT /nagaya/v1/profile` on any machine in the cluster. The target machine persists its accepted
@@ -345,6 +353,9 @@ The process writes an accepted profile to `<store_dir>/profile.toml`, atomically
 The file has the same shape as the input, so a read gives an equal profile. An unknown kind or key refuses the
 profile before any engine opens. Reason: TOML is the engine config format, so one format is easier to read and to
 check.
+
+**A profile for another host.** Decided 2026-11-02 (Amy, by interview). A profile `PUT` for another host publishes
+`profile:desired:<host>` under the node that takes the `PUT`. The target handles the key by the rules of 2.3.
 
 ## 3. Process
 
@@ -711,6 +722,8 @@ on demand" of 2026-10-24.
   503 `unavailable`.
 - The status feed and the identity show each state: `loading`, `ready` and `unloaded` (9.4, 11.1). The status feed
   is not built yet (9.7), so only the identity and gossip show them today.
+- **Any node.** Decided 2026-11-02 (Amy, by interview). A load or an unload of an engine on any node goes to the node
+  that holds the engine.
 
 **Open:** Do the GPU queues of an idle engine slow the other engines on its device? mk has a note that its idle
 queues slow another process, but we did not find the source. A measurement answers the question.
@@ -1429,6 +1442,10 @@ comprehensive"). gogi's contract holds the text of the API: "Objects and keeps",
   2026-10-25, accepted by Amy 2026-11-02.
 - Replication waits (Amy: "later"). The first step is the store on one machine, its routes and the conformance
   checks. Home machines and pulls come when a second machine speaks this contract.
+
+**A read on a miss.** Decided 2026-11-02 (Amy, by interview). A `GET` of an object that this node lacks asks each live
+peer, and it gives the first hit. A forwarded request takes its objects to the target first (11.1a). This is the
+first step of "A pull" above. The home machines, the copies and the checks of each range wait.
 
 Snapshots stay entries (6.4) for now. They can become objects of their own media type later, with their own order of
 eviction.
@@ -2284,6 +2301,10 @@ the coordinator has the family libraries (11.3) and the engine's `identity()` fr
 and compute the recipe locally. It then schedules the job locally or forwards the work to the machine that holds the
 engine.
 
+The forward of 11.1a replaces the local render and recipe of the last paragraph for each job route. A coordinator
+forwards the whole request, and the node of the engine renders it. The local render stays the later design of a job
+split across nodes (Amy, 2026-11-02: "A job split across machines comes later").
+
 Routing to the machine that holds the deepest chain is deferred. Amy, 2026-10-20: "it's more likely folks like me
 and my friend Gavin have a heterogeneous fleet, and will typically want sticky sessions with each model/gpu rig,
 and it's okay those can't move around easily" (`docs/deepinfer.md` 7).
@@ -2319,6 +2340,18 @@ start. Then mk was no served model, and gogi found no ready model.
 - An open that reports another identity than the description is an open error. The council's recipes would have
   the wrong root (6.2).
 - A kind that cannot describe its engine is not a text model while its engine is on demand, as before.
+
+**11.1a The cluster.** Amy decided these rules on 2026-11-02, by interview (`AGENTS.md` milestone 23). Amy: "ideally
+we do the work with what's available on the cluster - so if the tokenizer is on this machine great we tokenize here.
+otherwise we forward to whereever it is."
+
+- The routes `tokenize`, `detokenize` and `render` (11.4b) run on the node that takes them when it holds the family of
+  the model. Otherwise they forward.
+- A job route forwards the whole request to the node that holds the engine. The response or the stream comes back as
+  it is.
+- A job split across nodes comes later.
+- A `GET` of an object that this node lacks asks each live peer (6.15, "A read on a miss").
+- `GET /nagaya/v1/cluster` gives the gossip view (11.4a).
 
 **11.2 Generation.** The nagaya runs one sampler for all engines. It applies top_k, top_p, min_p, then temperature.
 The draw is seeded, and the response reports the seed. Each engine has its own defaults. All engines share the SSE
