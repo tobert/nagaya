@@ -1049,6 +1049,16 @@ image_clear(slot)                       frees the state of the slot
     without `init` and `mask`. A 4-channel UNet blends the latent after each step.
   - `image_decode` gives the decode with no paste. The nagaya pastes the kept pixels back before the PNG encode.
 
+**The declaration of a 9-channel UNet.** **Proposed** by Claude Opus 5.5, 2026-11-02, for milestone 20 step 6. Reason:
+spec 11.9b says that a 9-channel UNet without an image and a mask is a 400 that names `messages[i].content`. A refusal
+of `image_begin` does not say which part the engine refused, so the route named `output`.
+
+- The image capability gets the call `image_needs_mask() -> bool`. It is true when the engine refuses a job without
+  `init` and `mask`. An SDXL engine with a 9-channel UNet gives true. The default is false.
+- When `image_begin` refuses a job without a mask, and `image_needs_mask` is true, the route names the content of the
+  last `user` message. Other refusals keep their parts.
+- The engine still checks the job itself, and the call adds no quantum. Thus `PassError` keeps its form.
+
 **Qwen-Image 2.1.** Decided by senpai 2026-11-01, and accepted by Amy 2026-11-02. Proposed by Claude Opus 5.5,
 2026-10-31, for spec 11.9c and 6.16. Reason: the job above has the shape of SDXL. Qwen-Image has one encoder with no
 chunks, a flow sampler, a cached conditioning and an RGBA decode. Each change adds a form or a member, and no call.
