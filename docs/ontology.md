@@ -15,13 +15,13 @@ The docs name four other projects. Each one is defined here and nowhere else. A 
 in a doc names the source of a copy or of a measurement. It is not a place that a reader must go.
 
 **mk.** Our first megakernel: Qwen3.8 on one AMD gfx1151, with HIP kernels, a C++ host and a Python service. It
-served `/mk/v1` on gfx1151host until the cutover of 2026-10-21. Milestone 15 copies its engine into
-`nagaya-mk-qwen38-gfx1151`, from mk `555a2a3` (`AGENTS.md`). After that, mk's repository is an archive, and no rule
-of these docs needs it.
+served `/mk/v1` on gfx1151host until the cutover of 2026-10-21. Milestone 15 copied its engine into
+`nagaya-mk-qwen38-gfx1151`, from mk `555a2a3` (`AGENTS.md`). mk's repository is an archive now, and no rule of these
+docs needs it.
 
 **mkviolet.** Our second megakernel: Gemma 4 on two Intel Arc Pro B70 cards, with OpenCL C kernels and a Rust
 host. It served council v2 on b70host until 2026-10-21. Milestone 15s copied its engine into
-`nagaya-mk-gemma4-bmg` and its text code into `nagaya-text-gemma4`. Its repository becomes an archive in the same
+`nagaya-mk-gemma4-bmg` and its text code into `nagaya-text-gemma4`. Its repository is an archive in the same
 way. Both archives keep their megakernels (Amy, 2026-10-22: "their megakernels live on").
 
 **gogi.** The council v2 contract: the text `docs/council-api.md`, the types in `gogi-proto`, the suite
@@ -82,7 +82,8 @@ append-only: the engine times a new shape once and keeps its pick. A new library
 **lineage**, which is a new identity (`docs/engine-abi.md` D3). mk has no library GEMMs and needs no plan table.
 
 **Arena.** The memory that holds an engine's weights and can outlive the process: a set of named file descriptors.
-An arena records how strong its check is. mk has one arena, with a full check (`mk_arena_check`). mkviolet had 30
+An arena records how strong its check is: mk has one arena, with a full check (`mk_arena_check`). The nagaya's mk
+engine has no check of a stored arena yet (`docs/engine-abi.md`, "How mk maps"). mkviolet had 30
 DMA-BUF slabs, one for each layer, with a spot check of the first and last 64 bytes of each tensor
 (`gemma4.rs:284-287`). The nagaya's Gemma 4 engine has 31: the head has a slab too (`docs/spec.md` 10.2). An
 inference engine opens its arena read-only, and a training engine writes it.
@@ -205,7 +206,7 @@ quantum. The scheduler chooses only among ready jobs. A filler job declares a **
 its checkpoints.
 
 **Class.** How urgently a job's quanta run: `interactive`, `batch`, or `filler`. Filler runs only when no other work
-is ready on its device. mkviolet has two classes today: a council decision goes before a generation's next stage
+is ready on its device. mkviolet had two classes: a council decision goes before a generation's next stage
 (`CardLock`, `GpuLock`). The term is "class", not "tier", because tier names a place.
 
 ## Holding
