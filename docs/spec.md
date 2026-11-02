@@ -1856,6 +1856,20 @@ Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02. The route templa
 `request_id`. A status of 500 or more marks the span as an error. The span name has no `nagaya.` prefix, so it has the
 default rate of 9.3.
 
+**A forwarded request.** **Proposed** by Claude Opus 5.5, 2026-11-02. Reason: a forward (11.1a) crosses two nodes,
+and one trace must show both.
+
+- The coordinator opens the span `nagaya.forward` under its HTTP server span. Its attributes are `nagaya.peer`, the
+  name of the target node, and `http.response.status_code`.
+- It also has `outcome`: `done`, `refused` (no connection), `lost` (the target left the live set) or `cancelled` (the
+  client closed the stream). `refused` and `lost` mark the span as an error.
+- The forward sends the `traceparent` of `nagaya.forward`. Thus the HTTP server span of the target is its child, and
+  the spans of the job nest under that.
+- A forward that ends `refused` or `lost` logs one warning. It names the node, the route and the request id. A forward
+  that ends `done` or `cancelled` logs nothing, because the log has no line for each request.
+- The forward adds no metric now. `http.server.request.duration` on each node counts the request (9.4).
+- The text routes that run locally (11.1a) make no `nagaya.forward` span.
+
 **9.3 Sampling.** The nagaya uses kaijutsu's rule. It always keeps errors and spans whose parent is sampled. It
 keeps 100% of the spans in some dot-qualified prefixes and 10% of the others. `nagaya.` and `council.` are 100%
 prefixes, so `nagaya.job` and `nagaya.quantum` are always kept. Decode quanta make no spans, so the volume stays low.
