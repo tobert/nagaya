@@ -284,8 +284,11 @@ Qwen3-TTS designs a voice from a text prompt.</textarea>
       <tbody id="eng-rows"></tbody>
     </table>
     <div id="eng-error" class="err"></div>
-    <p class="note">A load that does not fit names the engines in its way. Unload them first. No engine loads or
-      unloads by itself, and a pinned engine stays loaded.</p>
+    <div id="eng-note" class="note"></div>
+    <p class="note">A load that does not fit names the engines in its way, and the page offers to unload them. No
+      engine loads or unloads by itself, and a pinned engine stays loaded. A pin changes the profile: the engine
+      becomes resident, so the next start loads it too.</p>
+    <details><summary class="note">The profile of this nagaya</summary><pre id="eng-profile" class="note"></pre></details>
   </div>
 </section>
 
@@ -421,6 +424,8 @@ async function refresh() {
     if (asked !== host) return;
     models = id.models; engines = profile.engines || [];
     $("eng-error").textContent = "";
+    const text = JSON.stringify(profile, null, 2);
+    if ($("eng-profile").textContent !== text) $("eng-profile").textContent = text;
   } catch (e) {
     $("chips").innerHTML = `<span class="chip failed">the nagaya does not answer</span>`;
     $("eng-error").textContent = e.message;
@@ -438,7 +443,10 @@ async function refresh() {
       <td>${esc(m?.model || "")}</td><td class="${esc(st)}">${esc(st)}</td>
       <td><button class="plain" data-load="${esc(e.name)}" ${loaded ? "disabled" : ""}>Load</button>
           <button class="plain" data-unload="${esc(e.name)}" ${!loaded || e.pinned ? "disabled" : ""}
-            ${e.pinned ? `title="pinned: change the profile to unload it"` : ""}>Unload</button></td></tr>`;
+            ${e.pinned ? `title="pinned: unpin it to unload it"` : ""}>Unload</button>
+          ${e.pinned ? `<button class="plain" data-unpin="${esc(e.name)}">Unpin</button>`
+            : `<button class="plain" data-pin="${esc(e.name)}" ${st === "ready" ? "" : `disabled title="load it first"`}>Pin</button>`}
+          </td></tr>`;
   }).join("");
 }
 
@@ -460,20 +468,42 @@ for (const id of ["img-model", "chat-model", "sp-model", "em-model"]) {
 }
 
 document.addEventListener("click", async (ev) => {
-  const load = ev.target.dataset?.load, unload = ev.target.dataset?.unload;
-  if (!load && !unload) return;
-  const name = load || unload;
+  const {load, unload, pin, unpin} = ev.target.dataset || {};
+  if (!load && !unload && !pin && !unpin) return;
+  const name = load || unload || pin || unpin;
   ev.target.disabled = true;
   try {
-    const r = load ? await loadEngine(name)
-                   : await call("POST", `/nagaya/v1/engines/${encodeURIComponent(name)}/unload`);
-    if (r?.unload?.length) $("eng-error").textContent = `loading ${name} unloads ${r.unload.join(", ")}`;
+    if (pin || unpin) {
+      const question = pin ? `Pin ${name}? The profile changes: ${name} becomes resident and pinned, so no load or unload ` +
+        "removes it, and the next start loads it." : `Unpin ${name}? It stays loaded, and an unload can then remove it.`;
+      if (confirm(question)) {
+        const r = await pinEngine(name, !!pin);
+        $("eng-note").textContent = `the profile changed${r?.restart ? ", and the nagaya restarts" : ""}`;
+      }
+    } else {
+      const r = load ? await loadEngine(name)
+                     : await call("POST", `/nagaya/v1/engines/${encodeURIComponent(name)}/unload`);
+      $("eng-note").textContent = r?.unload?.length ? `loading ${name} unloads ${r.unload.join(", ")}` : "";
+    }
   } catch (e) {
     $("eng-error").textContent = e.message; alert(e.message);
   }
   ev.target.disabled = false;
   refresh();
 });
+
+/**
+ * Pin or unpin an engine with a profile change (spec 3.3). The page reads the active profile and puts it back with one
+ * change. A pin makes the engine resident too, because the nagaya refuses a pin on an on-demand engine (spec 3.3a).
+ */
+async function pinEngine(name, on) {
+  const profile = await call("GET", "/nagaya/v1/profile");
+  const entry = profile.engines.find((e) => e.name === name);
+  if (!entry) throw new Error(`the profile has no engine ${name}; refresh the page`);
+  entry.pinned = on;
+  if (on) delete entry.residency;
+  return await call("PUT", "/nagaya/v1/profile", profile);
+}
 
 /** The engine names in one clause of a 409 message, such as "the loaded engines in the way are `a`, `b`". */
 function namesAfter(message, clause) {

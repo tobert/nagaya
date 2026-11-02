@@ -76,6 +76,9 @@ function fetch(path, o) {
   if (path === "/at/gfx1151host/nagaya/v1/profile") return reply(200, {engines: [{name: "qwen-image-fusal",
     kind: "qwenimage21", devices: [0]}]});
   if (path === "/council/v2/identity") return reply(200, IDENTITY);
+  if (path === "/nagaya/v1/profile" && o.method === "PUT") {
+    return reply(202, {actions: JSON.parse(o.body).engines.map((e) => ({engine: e.name, action: "keep"})), restart: false});
+  }
   if (path === "/nagaya/v1/profile") return reply(200, PROFILE);
   const load = path.match(/^\/nagaya\/v1\/engines\/([^/]+)\/load$/);
   if (load) {
@@ -240,6 +243,29 @@ class Page(unittest.TestCase):
         self.assertTrue(out["box"])
         self.assertEqual(out["sent"], 0)
         self.assertIn("takes no start image", out["error_text"])
+
+    def test_a_pin_puts_the_profile_with_the_engine_resident_and_pinned_and_changes_no_other_engine(self):
+        out = self.run_page("""
+            out.reply = await pinEngine("pony-0", true);
+            out.bodies = calls.filter((c) => c[0] === "PUT" && c[1] === "/nagaya/v1/profile").map((c) => JSON.parse(c[2]));""")
+        self.assertEqual(len(out["bodies"]), 1)
+        want = json.loads(json.dumps(PROFILE))
+        want["engines"][4] = {"name": "pony-0", "kind": "mk-sdxl-bmg", "devices": [0], "pinned": True}
+        self.assertEqual(out["bodies"][0], want)
+
+    def test_an_unpin_puts_the_profile_with_the_pin_off(self):
+        out = self.run_page("""
+            await pinEngine("embeddinggemma-2", false);
+            out.body = JSON.parse(calls.filter((c) => c[0] === "PUT" && c[1] === "/nagaya/v1/profile")[0][2]);""")
+        self.assertEqual(out["body"]["engines"][3]["pinned"], False)
+        self.assertEqual(out["body"]["engines"][:3], PROFILE["engines"][:3])
+
+    def test_the_engine_table_offers_a_pin_only_for_a_loaded_engine(self):
+        out = self.run_page('out.rows = document.getElementById("eng-rows").innerHTML;')
+        rows = out["rows"].split("</tr>")
+        self.assertRegex(rows[1], r'data-pin="sdxl-0"[^>]*disabled')
+        self.assertRegex(rows[4], r'data-pin="pony-0"\s*>Pin<')
+        self.assertRegex(rows[3], r'data-unpin="embeddinggemma-2"\s*>Unpin<')
 
     def test_an_error_names_its_param_when_the_message_does_not(self):
         out = self.run_page("""
