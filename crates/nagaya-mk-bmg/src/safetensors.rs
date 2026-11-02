@@ -16,6 +16,8 @@ pub enum Dtype {
     BF16,
     I8,
     U8,
+    /// The `position_ids` of a CLIP encoder in a checkpoint of diffusers. No op reads it.
+    I64,
 }
 
 impl Dtype {
@@ -26,6 +28,7 @@ impl Dtype {
             "BF16" => Some(Dtype::BF16),
             "I8" => Some(Dtype::I8),
             "U8" => Some(Dtype::U8),
+            "I64" => Some(Dtype::I64),
             _ => None,
         }
     }
@@ -35,6 +38,7 @@ impl Dtype {
             Dtype::F32 => 4,
             Dtype::F16 | Dtype::BF16 => 2,
             Dtype::I8 | Dtype::U8 => 1,
+            Dtype::I64 => 8,
         }
     }
 }
@@ -263,6 +267,17 @@ mod tests {
         assert_eq!(v.bf16_tensor("w", &[2, 3]).unwrap().len(), 12);
         assert!(v.bf16_tensor("w", &[3, 2]).is_err());
         assert!(v.bf16_tensor("missing", &[2, 3]).is_err());
+    }
+
+    /// A checkpoint of diffusers can hold the I64 `position_ids` of a CLIP encoder. The reader takes it, 8 bytes a value.
+    #[test]
+    fn parses_an_i64_tensor() {
+        let w = [0u8; 77 * 8];
+        let buf = SafeTensorsView::build_synthetic_safetensors(&[("ids", "I64", &[1, 77], &w)]);
+        let v = SafeTensorsView::parse(&buf).unwrap();
+        assert_eq!(v.tensors["ids"].dtype, Dtype::I64);
+        let short = SafeTensorsView::build_synthetic_safetensors(&[("ids", "I64", &[1, 77], &w[..76 * 8])]);
+        assert!(SafeTensorsView::parse(&short).is_err());
     }
 
     #[test]
