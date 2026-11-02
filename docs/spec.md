@@ -303,6 +303,28 @@ b70host join one cluster, and each machine serves the models of both. Each machi
 the other in `seed_peers` (2.1). Each node publishes the HTTP address of each engine in `engine:<name>`, as the list
 above says. 11.1a gives the rules of the forward.
 
+**What a node publishes for the cluster.** **Proposed** by Claude Opus 5.5, 2026-11-02. Reason: a coordinator builds
+the identity of the cluster and forwards from gossip alone (11.1a). Thus gossip must hold each served model, the HTTP
+address of each node, and the server limits.
+
+- **The seeds.** A node that reaches no seed serves alone. It joins when a seed answers. A seed is only an address,
+  and a node does not wait for its seeds before it serves.
+- **`served`.** The value of `engine:<name>` gets the member `served`. It lists the served models of the engine, each
+  in the shape of a gogi identity entry, without `status`. The state of the engine gives the status (11.1).
+- An engine that is not a served model (11.7) has an empty `served` list. An engine on demand that its factory
+  describes (11.1, "A text engine on demand") lists its model from the description.
+- **`server`.** A new key `server` holds `{"http", "limits", "capabilities"}`. They are the HTTP address of the node,
+  and the server limits and capabilities of its own identity. A node with no engine writes it too, so peers can reach
+  its store.
+- **The sizes.** On 2026-11-02 the identity of b70host had nine served models in 4,524 bytes. The largest entry was
+  738 bytes (`embeddinggemma-2`). Each engine has its own key, so a key holds one entry, far below 8192 bytes.
+- The largest value of a node is `profile:active`. The profile of b70host, with nine engines, is 1,791 bytes as
+  compact JSON (`deploy/b70host/profile.toml`, without its comments).
+- **A value that does not fit.** At the start, a value of `engine:<name>` or `server` past 8192 bytes refuses the
+  start (exit 3). The message names the key and its size. After the start, it stops the process (8.5).
+- Reason for the stop: a served model that no peer sees is a silent fallback. The other choice was to serve the model
+  only on its own node with a warning. `published` in `crates/nagaya/src/main.rs` warns so for any key today.
+
 **A served model name in the cluster.** Decided 2026-11-02 (Amy, by interview). A served model name is unique in the
 cluster. A second node that serves the name logs it, publishes a conflict key, and does not list its copy.
 
