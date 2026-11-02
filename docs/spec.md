@@ -1469,6 +1469,29 @@ comprehensive"). gogi's contract holds the text of the API: "Objects and keeps",
 peer, and it gives the first hit. A forwarded request takes its objects to the target first (11.1a). This is the
 first step of "A pull" above. The home machines, the copies and the checks of each range wait.
 
+**Objects in the cluster.** **Proposed** by Claude Opus 5.5, 2026-11-02. Reason: Amy's rule leaves open the order of
+the peers, the pending ids, and the copies.
+
+- **The order.** The coordinator asks the live peers one at a time, in byte order of the node name. It sends a `HEAD`
+  of the same path, with `nagaya-forwarded` (11.1a). A 404 moves to the next peer.
+- **The answer.** The first peer that does not give a 404 gets the `GET` or the `HEAD` of the client, with its
+  `Range`. The status, the headers and the body of the peer come back as they are: 200, 206,
+  308 or 416.
+- **No copy.** The coordinator keeps no copy of the bytes. Reason: the pull and the home machines above replace this
+  rule later, with a check of each range.
+- **Pending ids.** A pending id follows the same rule, so a client can read the output of a forwarded generation
+  through the coordinator. After the seal, the 308 of the target names the content id. Its `Location` is a path with
+  no host (`crates/nagaya/src/http/objects.rs:283`), so the client comes back to the coordinator. A `GET` of that id
+  follows the rule again.
+- **A put.** `PUT /council/v2/objects/{id}` holds the object on the coordinator only.
+- **The objects of a forward.** Before a forward, the coordinator collects the ids that the body names. They are the
+  object parts of each message and of each embedding input, and each entry of `case_media` (gogi "Contexts").
+- For each id, the coordinator sends a `HEAD` to the target. On a 404, it reads the object, locally or by the rule
+  above, and puts it to the target. The puts end before the forward starts.
+- An object that no node holds does not stop the forward. The target's 404 names the part. A put that the target
+  refuses, such as a 413 `too_large`, is the response, and nothing forwards.
+- A peer that does not answer in 2 s counts as a 404, and the log names it.
+
 Snapshots stay entries (6.4) for now. They can become objects of their own media type later, with their own order of
 eviction.
 
