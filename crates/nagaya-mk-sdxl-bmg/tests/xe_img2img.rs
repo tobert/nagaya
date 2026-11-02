@@ -361,15 +361,4 @@ fn img2img_follows_diffusers_and_the_capability_runs_the_same_math() {
         );
         eprintln!("{key}: the capability gives the bits of the replay");
     }
-
-    // Inpainting steps are milestone 20 step 5: a job with a mask encodes, then its first step refuses.
-    let blurred: Vec<u8> = inputs.values("mask.blurred").iter().map(|v| *v as u8).collect();
-    let mut masked = job(&prompt, &negative, &rgb, ImageSampler::Euler, 0.99);
-    masked.init.as_mut().unwrap().mask = Some(Arc::new(blurred));
-    engine.image_begin(0, &masked).unwrap();
-    let out = engine.image_step(0).unwrap();
-    assert_eq!((out.step, out.steps), (0, 3), "the encode of an inpainting job");
-    let error = engine.image_step(0).unwrap_err();
-    assert!(error.message.contains("inpainting"), "{}", error.message);
-    engine.image_clear(0);
 }

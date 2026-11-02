@@ -17,7 +17,7 @@ use crate::lora::{self, Target};
 use crate::model::{self, Carve, Run, TextBufs, UnetBufs, UnetSize, VaeBufs};
 use crate::noise::{self, Purpose};
 use crate::plan::{MAX_LATENT_ROWS, arena_bytes, limits};
-use crate::sampler::{self, History, Schedule, begin_index};
+use crate::sampler::{self, History, Schedule, begin_index, image_start};
 use crate::spec::*;
 use crate::weights::{Adapter, Weights, f32_bytes, f32_values, sources};
 use std::collections::HashMap;
@@ -44,6 +44,12 @@ struct Job {
     /// The image latent of each image of a job with `init`, after the encode quantum: rows of 4 channels, already
     /// times the scaling factor (spec 11.9b). `None` before the encode and for text to image.
     image_latents: Option<Vec<Vec<f32>>>,
+    /// The latent mask of an inpainting job: 1 repaints a latent pixel, and 0 keeps it (spec 11.9b, "The mask").
+    /// `None` for a job with no mask.
+    mask: Option<Vec<u8>>,
+    /// The start noise of each image of an inpainting job, after the encode quantum. Each `known` of the blend reuses
+    /// it (spec 11.9b, "The blend"). Empty for a job with no mask.
+    start_noise: Vec<Vec<f32>>,
 }
 
 /// The SDXL engine.
@@ -480,16 +486,19 @@ impl SdxlEngine {
                 host::image_latent(&moments, &z)
             })
             .collect();
-        // The start latent is the image latent with the noise of the first step that runs, at a strength of 1.0 too.
+        let starts: Vec<Vec<f32>> = (0..job.size.images)
+            .map(|i| noise::normal(job.job.seed.wrapping_add(i as u64), 0, 0, Purpose::Start, n))
+            .collect();
+        let inpaint = job.mask.is_some();
         job.latents = latents
             .iter()
-            .enumerate()
-            .map(|(i, latent)| {
-                let start = noise::normal(job.job.seed.wrapping_add(i as u64), 0, 0, Purpose::Start, n);
-                job.schedule.add_noise(job.begin, latent, &start)
-            })
+            .zip(&starts)
+            .map(|(latent, start)| image_start(&job.schedule, job.begin, latent, start, inpaint, init.strength))
             .collect();
         job.image_latents = Some(latents);
+        if inpaint {
+            job.start_noise = starts;
+        }
     }
 
     /// The latent of each image of the job in slot 0, or `None`. It is the latent after the last step that ran.
@@ -549,6 +558,9 @@ impl Image for SdxlEngine {
             .flat_map(|b| host::add_features(&pooled[(b / images) * POOLED..(b / images + 1) * POOLED], &ids))
             .collect();
         let schedule = Schedule::new(job.sampler, job.spacing, job.steps as usize);
+        let mask = job.init.as_ref().and_then(|init| init.mask.as_ref()).map(|blurred| {
+            nagaya_text_sdxl::inputs::latent_mask(&nagaya_text_sdxl::inputs::binary(blurred), job.width, job.height)
+        });
         // A job with an image gets its start latents from the encode quantum, its first step.
         let (begin, latents) = match &job.init {
             Some(init) => (begin_index(job.steps, init.strength), Vec::new()),
@@ -575,6 +587,8 @@ impl Image for SdxlEngine {
             context: batch_ctx,
             add,
             image_latents: None,
+            mask,
+            start_noise: Vec::new(),
         });
         Ok(None)
     }
@@ -585,27 +599,17 @@ impl Image for SdxlEngine {
                 "slot {slot} holds no image job; call image_begin first"
             ))));
         };
-        if let Some(init) = &job.job.init {
-            if job.image_latents.is_none() {
-                // The first step of a job with an image is the encode: step 0 of the n steps that run, with no
-                // previews (engine-abi "Image inputs").
-                self.encode_quantum(&mut job);
-                let out = ImageStepOut {
-                    step: 0,
-                    steps: (job.schedule.timesteps.len() - job.begin) as u32,
-                    previews: Vec::new(),
-                };
-                self.job = Some(job);
-                return Ok(out);
-            }
-            if init.mask.is_some() {
-                self.job = Some(job);
-                return Err(self.fail(refused(
-                    "nothing ran: the engine has the image latents, but inpainting steps are not built yet (milestone \
-                     20 step 5); clear the slot"
-                        .to_owned(),
-                )));
-            }
+        if job.job.init.is_some() && job.image_latents.is_none() {
+            // The first step of a job with an image is the encode: step 0 of the n steps that run, with no previews
+            // (engine-abi "Image inputs").
+            self.encode_quantum(&mut job);
+            let out = ImageStepOut {
+                step: 0,
+                steps: (job.schedule.timesteps.len() - job.begin) as u32,
+                previews: Vec::new(),
+            };
+            self.job = Some(job);
+            return Ok(out);
         }
         let i = job.step;
         if i >= job.schedule.timesteps.len() {
@@ -639,6 +643,12 @@ impl Image for SdxlEngine {
                 draw.as_deref(),
                 &mut job.history[img],
             );
+            // An inpainting job blends the kept latent pixels back after each step, before the preview.
+            if let Some(mask) = &job.mask {
+                let image_latents = job.image_latents.as_ref().expect("the encode quantum ran first");
+                let known = job.schedule.known(i, &image_latents[img], &job.start_noise[img]);
+                sampler::blend(&mut job.latents[img], &known, mask);
+            }
         }
         job.step += 1;
         let previews = if job.job.previews {
