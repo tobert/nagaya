@@ -7,6 +7,8 @@ edition = "2024"
 # The same crate and features as nagaya-text-qwen3tts. The reference `CLIPTokenizer` of transformers 5 is a
 # `tokenizers` tokenizer.
 tokenizers = { version = "0.23.1", default-features = false, features = ["onig"] }
+# The PNG decoder of the inputs of an image job (spec 11.9b). The process already writes its PNGs with this crate.
+png = "0.18"
 
 [dev-dependencies]
 serde_json = { version = "1.0.154", features = ["float_roundtrip", "preserve_order"] }

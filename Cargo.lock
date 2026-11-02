@@ -1385,6 +1385,7 @@ dependencies = [
 name = "nagaya-text-sdxl"
 version = "0.1.0"
 dependencies = [
+ "png",
  "serde_json",
  "tokenizers",
 ]
