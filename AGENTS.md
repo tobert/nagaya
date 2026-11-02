@@ -95,9 +95,8 @@ in a lock: one thread owns it (3.2).
 
 Do them in this order. Each milestone ends with all checks green and one or more commits. Milestones 1 to 14 are
 done, and `docs/history.md` keeps their full text, and the merges where the run recorded them. Milestone 15
-is done on gfx1151host, and milestones 15s, 16, 17, 18 and 19 are done on b70host. Milestones 20 and 21 wait, because
-work on b70host is paused (Amy, 2026-10-31). Milestone 22 is done on gfx1151host, but Amy still retires diffusepal,
-and milestone 23 is next.
+is done on gfx1151host, and milestones 15s, 16, 17, 18, 19 and 20 are done on b70host. Milestone 21 waits. Milestone
+22 is done on gfx1151host, but Amy still retires diffusepal, and milestone 23 is next.
 
 1. **Workspace.** The Cargo workspace, its crates, `rustfmt.toml` and the dev profile. Done.
 2. **Engine trait.** The ABI core and capabilities as traits, with a fake engine and a broken fake for the gates. Done.
@@ -416,6 +415,16 @@ and milestone 23 is next.
     - step 3, the VAE encoder: `06704a9` to `d6006d1`, `0da11fa`, and the test fix `e1928b1`;
     - step 4, img2img: `2e07187`, `d75f1ab`, deployed at 12:29 on 2026-11-02 from `cb35641`.
     - step 5, inpainting with a blend: `59dbaa3`, `73ace04`, `b8e7dc4`, deployed at 13:05 on 2026-11-02.
+    - step 6, the 9-channel UNet: `d0b43d5` (Proposed) to `d1d3916`;
+    - step 7, `inpaint-0` in the profile: `096d2fa`.
+
+    Done on 2026-11-02 at 13:47, on b70host. `nagaya.service` runs the build of `096d2fa`, with `inpaint-0` on
+    demand on card 1. On the cards, img2img and both kinds of inpainting match diffusers for each sampler. Live, a
+    load of `inpaint-0` took 10 s, and an inpainting job of 1024 by 1024 with 30 steps took 58.8 s. A request without
+    a mask got the 400 that names `messages[0].content`. The gogi suite gave 290 ok, 0 FAIL and 16 skip, in the card
+    gate `xe_process`.
+
+    Amy decides the Proposed note of engine-abi "The declaration of a 9-channel UNet".
 21. **Image speed.** Make the SDXL engine faster on the B70 cards. Amy decided on 2026-10-30, by interview: a faster
     kernel can change the output bits if the oracle still passes. The tolerance goes into the spec as a Proposed
     note. The same identity, job and seed must still give the same bits on each run.
