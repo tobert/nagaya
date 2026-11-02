@@ -18,3 +18,4 @@ serde_json = "1.0.154"
 
 [dev-dependencies]
 nagaya-conformance = { version = "0.1.0", path = "../nagaya-conformance" }
+tempfile = "3"

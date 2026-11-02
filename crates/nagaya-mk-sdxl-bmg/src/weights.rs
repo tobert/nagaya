@@ -151,6 +151,25 @@ pub fn sources(config: &Config) -> Result<Vec<(&'static str, PathBuf)>, String> 
     }
 }
 
+/// The positions of a CLIP encoder, which some exports of transformers keep in the file (spec 11.9b, the inpainting
+/// checkpoint). No op reads them.
+const POSITION_IDS: &str = "text_model.embeddings.position_ids";
+
+/// Check that the tensor `name` holds the positions 0 to 76 in I64, as the engine gives them. Other values would make
+/// another encoder, so they are an error.
+fn position_ids(name: &str, dtype: Dtype, shape: &[usize], bytes: &[u8]) -> Result<(), String> {
+    let want: Vec<u8> = (0..crate::spec::CHUNK_IDS as i64)
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    if dtype != Dtype::I64 || shape != [1, crate::spec::CHUNK_IDS] || bytes != want.as_slice() {
+        return Err(format!(
+            "tensor {name} is {dtype:?} of shape {shape:?} and does not hold the positions 0 to 76; the engine gives \
+             each position its index, so use a checkpoint with those positions or none"
+        ));
+    }
+    Ok(())
+}
+
 /// The tensors of mapped files, from `sources`. `single` maps the names of the single file (`single.rs`).
 pub fn items<'a>(maps: &'a [(&'static str, MappedSafeTensors)], single: bool) -> Result<Vec<Item<'a>>, String> {
     let mut items = Vec::new();
@@ -161,6 +180,11 @@ pub fn items<'a>(maps: &'a [(&'static str, MappedSafeTensors)], single: bool) ->
         for name in names {
             let meta = &view.tensors[name];
             let bytes = view.tensor_bytes(name).expect("a tensor of the header");
+            if !single && name == POSITION_IDS {
+                // The engine gives each position its index, so these ids carry nothing when they are 0 to 76.
+                position_ids(&format!("{prefix}{name}"), meta.dtype, &meta.shape, bytes)?;
+                continue;
+            }
             if !single {
                 items.push(Item {
                     name: format!("{prefix}{name}"),
@@ -360,6 +384,11 @@ impl Weights {
             probing: Cell::new(false),
             missing: RefCell::new(Vec::new()),
         })
+    }
+
+    /// The shape of the tensor `name`, or `None` when the checkpoint has no such tensor.
+    pub fn shape(&self, name: &str) -> Option<&[usize]> {
+        self.tensors.get(name).map(|(_, shape)| shape.as_slice())
     }
 
     /// Set the LoRA deltas of the job. An empty map is no LoRA.
