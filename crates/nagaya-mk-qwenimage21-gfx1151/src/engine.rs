@@ -231,11 +231,9 @@ impl QwenImageEngine {
         if !job.loras.is_empty() || job.previews {
             return Err("the qwenimage21 engine takes no LoRA of a request and no previews".to_owned());
         }
-        // Text to image only (spec 11.9c): an engine that lacks an input refuses a job that names it (engine-abi).
-        if job.init.is_some() || job.mask.is_some() || job.strength != 1.0 {
-            return Err(
-                "the qwenimage21 engine makes text to image only; it takes no image, mask or strength".to_owned(),
-            );
+        // The VAE encoder of Qwen-Image comes with its img2img (spec 11.9c), so a job with an image is refused.
+        if job.init.is_some() {
+            return Err("the qwenimage21 engine runs text to image only, so it takes no image".to_owned());
         }
         let (w, h) = (job.width as usize, job.height as usize);
         if w % 32 != 0 || h % 32 != 0 || !(512..=2048).contains(&w) || !(512..=2048).contains(&h) || w * h > MAX_PIXELS

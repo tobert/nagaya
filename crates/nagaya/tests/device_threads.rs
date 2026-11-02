@@ -4,6 +4,7 @@
 //! card runs on the thread of that card, so the other card serves meanwhile (spec 3.3a, "Single-card swaps").
 
 mod feed_support;
+mod telemetry_support;
 
 use std::collections::BTreeMap;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -801,4 +802,72 @@ fn a_stop_during_a_swap_parks_the_engine_that_opens() {
     let mut parked = report.parked.parked_engines.clone();
     parked.sort();
     assert_eq!(parked, ["left", "right"], "{report:?}");
+}
+
+/// A job of `engine` whose first quantum is a read, so that it has a quantum span.
+fn read_probe(engine: usize, log: &Log) -> (JobSpec, Receiver<()>) {
+    let (mut spec, _, done) = probe(engine, log, None);
+    spec.first = Kind::Read;
+    (spec, done)
+}
+
+/// Engines on the device threads of two cards, each loaded by a single-card swap. The telemetry of each job names the
+/// engine of the job, not the joined name `chat+left+right` (spec 9.2, "The engine of a job").
+#[test]
+fn the_telemetry_of_a_job_on_a_device_thread_names_the_engine_of_the_job() {
+    let capture = nagaya_telemetry::testing::Capture::start(Vec::new());
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log, _) = start([Residency::OnDemand; 3], 1 << 20, directory.path());
+    load(&process, "left");
+    load(&process, "right");
+    for engine in [LEFT, RIGHT] {
+        let (job, done) = read_probe(engine, &log);
+        process.submit_job(0, job).unwrap();
+        done.recv_timeout(Duration::from_secs(5)).expect("the job ran");
+    }
+    // A decode quantum makes metrics only (spec 9.2).
+    let (job, _, done) = probe(LEFT, &log, None);
+    process.submit_job(0, job).unwrap();
+    done.recv_timeout(Duration::from_secs(5)).expect("the decode job ran");
+    telemetry_support::wait_for_jobs(&capture, 3);
+    telemetry_support::assert_own_engines(&capture, &["left", "right"], &["left", "right"]);
+}
+
+/// A job of an engine of two cards with no stages runs on the group thread. Its telemetry names `wide`, and a job of
+/// `left` on its device thread names `left` (spec 9.2, "The engine of a job").
+#[test]
+fn the_telemetry_of_a_job_on_the_group_thread_names_the_engine_of_the_job() {
+    let capture = nagaya_telemetry::testing::Capture::start(Vec::new());
+    let directory = tempfile::tempdir().unwrap();
+    let (mut process, log) = start_failing(
+        [Residency::Resident, Residency::OnDemand, Residency::OnDemand],
+        1 << 20,
+        directory.path(),
+        None,
+        true,
+    );
+    process.wait_opens(Duration::from_secs(5)).unwrap();
+    load(&process, "left");
+    let (done, finished) = mpsc::channel();
+    let spec = JobSpec {
+        class: Class::Interactive,
+        priority: 0,
+        deadline: None,
+        first: Kind::Prefill,
+        engine: CHAT,
+        body: Box::new(Text {
+            log: Arc::clone(&log),
+            first: true,
+            done,
+        }),
+    };
+    process.submit_job(0, spec).unwrap();
+    finished
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the text job of wide ran");
+    let (job, done) = read_probe(LEFT, &log);
+    process.submit_job(0, job).unwrap();
+    done.recv_timeout(Duration::from_secs(5)).expect("the left job ran");
+    telemetry_support::wait_for_jobs(&capture, 2);
+    telemetry_support::assert_own_engines(&capture, &["wide", "left"], &["wide", "left"]);
 }

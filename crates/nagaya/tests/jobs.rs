@@ -117,7 +117,7 @@ fn lines(log: &Log) -> Vec<String> {
 #[test]
 fn a_job_runs_its_first_quantum_and_then_the_quanta_that_it_added() {
     let log = log();
-    let mut jobs = GroupJobs::new(0, "toy");
+    let mut jobs = GroupJobs::new(0, ["toy"]);
     jobs.add(spec(
         Class::Interactive,
         0,
@@ -131,7 +131,7 @@ fn a_job_runs_its_first_quantum_and_then_the_quanta_that_it_added() {
 #[test]
 fn an_interactive_job_runs_before_a_batch_job_that_arrived_first() {
     let log = log();
-    let mut jobs = GroupJobs::new(0, "toy");
+    let mut jobs = GroupJobs::new(0, ["toy"]);
     jobs.add(spec(Class::Batch, 0, Kind::Copy, script("b", &log, &[Kind::Prefill])));
     jobs.add(spec(
         Class::Interactive,
@@ -146,7 +146,7 @@ fn an_interactive_job_runs_before_a_batch_job_that_arrived_first() {
 #[test]
 fn an_interactive_job_that_arrives_between_quanta_runs_before_the_next_batch_quantum() {
     let log = log();
-    let mut jobs = GroupJobs::new(0, "toy");
+    let mut jobs = GroupJobs::new(0, ["toy"]);
     jobs.add(spec(
         Class::Batch,
         0,
@@ -162,7 +162,7 @@ fn an_interactive_job_that_arrives_between_quanta_runs_before_the_next_batch_qua
 #[test]
 fn in_the_batch_class_a_higher_priority_goes_first_and_equal_priorities_go_in_arrival_order() {
     let log = log();
-    let mut jobs = GroupJobs::new(0, "toy");
+    let mut jobs = GroupJobs::new(0, ["toy"]);
     jobs.add(spec(
         Class::Batch,
         0,
@@ -199,7 +199,7 @@ fn in_the_batch_class_a_higher_priority_goes_first_and_equal_priorities_go_in_ar
 #[test]
 fn interactive_jobs_of_equal_priority_take_turns_by_owed_time() {
     let log = log();
-    let mut jobs = GroupJobs::new(0, "toy");
+    let mut jobs = GroupJobs::new(0, ["toy"]);
     let more = [Kind::Prefill, Kind::Prefill];
     for name in ["a", "b"] {
         let mut body = script(name, &log, &more);
@@ -216,7 +216,7 @@ fn interactive_jobs_of_equal_priority_take_turns_by_owed_time() {
 #[test]
 fn a_failed_quantum_ends_its_job_and_the_other_jobs_go_on() {
     let log = log();
-    let mut jobs = GroupJobs::new(0, "toy");
+    let mut jobs = GroupJobs::new(0, ["toy"]);
     let mut failing = script("bad", &log, &[Kind::Prefill, Kind::Prefill]);
     failing.fail_at = Some(1);
     jobs.add(spec(Class::Batch, 1, Kind::Copy, failing));
@@ -236,7 +236,7 @@ fn a_job_that_ends_drops_its_body() {
     let dropped = Arc::new(AtomicUsize::new(0));
     let mut body = script("a", &log, &[Kind::Prefill]);
     body.dropped = Some(Arc::clone(&dropped));
-    let mut jobs = GroupJobs::new(0, "toy");
+    let mut jobs = GroupJobs::new(0, ["toy"]);
     jobs.add(spec(Class::Batch, 0, Kind::Copy, body));
     run_all(&mut jobs);
     assert_eq!(dropped.load(Ordering::SeqCst), 1);
@@ -247,7 +247,7 @@ fn a_job_that_ends_drops_its_body() {
 fn a_cancel_drops_every_body_and_counts_them() {
     let log = log();
     let dropped = Arc::new(AtomicUsize::new(0));
-    let mut jobs = GroupJobs::new(0, "toy");
+    let mut jobs = GroupJobs::new(0, ["toy"]);
     for name in ["a", "b"] {
         let mut body = script(name, &log, &[Kind::Prefill]);
         body.dropped = Some(Arc::clone(&dropped));
@@ -263,7 +263,7 @@ fn a_cancel_drops_every_body_and_counts_them() {
 
 #[test]
 fn a_group_with_no_job_is_idle_and_runs_nothing() {
-    let mut jobs = GroupJobs::new(0, "toy");
+    let mut jobs = GroupJobs::new(0, ["toy"]);
     assert!(jobs.idle());
     assert!(!jobs.run_one(&mut []));
 }
@@ -276,7 +276,7 @@ fn a_body_hears_how_its_job_ended() {
     let mut failing = script("bad", &log, &[Kind::Prefill]);
     failing.fail_at = Some(0);
     let failed = failing.heard();
-    let mut jobs = GroupJobs::new(0, "toy");
+    let mut jobs = GroupJobs::new(0, ["toy"]);
     jobs.add(spec(Class::Batch, 1, Kind::Copy, body));
     jobs.add(spec(Class::Batch, 0, Kind::Copy, failing));
     run_all(&mut jobs);
@@ -290,7 +290,7 @@ fn a_job_past_its_deadline_runs_no_more_quanta_and_its_body_hears_expired() {
     let mut body = script("late", &log, &[Kind::Prefill, Kind::Prefill]);
     body.sleep = Duration::from_millis(30);
     let heard = body.heard();
-    let mut jobs = GroupJobs::new(0, "toy");
+    let mut jobs = GroupJobs::new(0, ["toy"]);
     jobs.add(JobSpec {
         deadline: Some(Instant::now() + Duration::from_millis(10)),
         ..spec(Class::Interactive, 0, Kind::Copy, body)
@@ -307,7 +307,7 @@ fn a_body_that_cancels_its_job_runs_no_more_quanta_and_hears_cancelled() {
     let mut body = script("gone", &log, &[Kind::Decode, Kind::Decode, Kind::Decode]);
     body.cancel_at = Some(1);
     let heard = body.heard();
-    let mut jobs = GroupJobs::new(0, "toy");
+    let mut jobs = GroupJobs::new(0, ["toy"]);
     jobs.add(spec(Class::Interactive, 0, Kind::Prefill, body));
     jobs.add(spec(Class::Batch, 0, Kind::Copy, script("next", &log, &[])));
     run_all(&mut jobs);

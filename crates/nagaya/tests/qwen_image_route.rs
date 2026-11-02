@@ -425,3 +425,40 @@ fn a_stream_that_asks_for_previews_gets_its_steps_and_no_preview() {
     let jobs = fixture.jobs.lock().unwrap();
     assert!(!jobs.last().unwrap().previews, "the job asks the engine for no preview");
 }
+
+/// Qwen-Image runs text to image only (spec 11.9c): identity lists no inputs, and an image part is a 400 that names
+/// the part, also with `strength`.
+#[test]
+fn qwen_image_reads_no_image() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let identity: Value = runtime.block_on(async {
+        let request = Request::builder()
+            .uri("/council/v2/identity")
+            .body(Body::empty())
+            .unwrap();
+        let response = router(Arc::clone(&council)).oneshot(request).await.unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    });
+    let model = identity["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["model"] == MODEL)
+        .unwrap()
+        .clone();
+    assert_eq!(model["media"]["inputs"], json!([]), "{model}");
+    let id = format!("blake3:{}", "ab".repeat(32));
+    let mut body = request("a fox", json!({"strength": 0.5}));
+    body["context"]["messages"][0]["content"] = json!([{"type": "text", "text": "a fox"},
+                                                       {"type": "object", "id": id, "mime": "image/png"}]);
+    let (status, error) = generate(&council, body);
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    assert_eq!(error["error"]["param"], json!("messages[0].content[1]"), "{error}");
+    assert!(fixture.take_jobs().is_empty());
+}

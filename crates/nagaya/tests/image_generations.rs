@@ -19,7 +19,7 @@ use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{
     Capability, DecodedImage, Engine, Identity, Image, ImageChunk, ImageJob, ImagePrompt, ImageSampler, ImageSpacing,
     ImageStepOut, Lifetime, Limits, MandatoryTerm, PassError, PassErrorKind, PassOut, Segment, SlotId, SlotLimit, Tap,
-    Tier,
+    Tier, steps_that_run,
 };
 use nagaya_store::objects::ObjectStore;
 use serde_json::{Value, json};
@@ -45,6 +45,15 @@ struct Painter {
     steps: Steps,
     job: Option<ImageJob>,
     step: u32,
+    /// False after the begin of a job with an image, until its first step runs the encode (engine-abi "Image inputs").
+    encoded: bool,
+}
+
+/// The steps that a job runs: `n` with an image, else the steps of the request.
+fn steps_of(job: &ImageJob) -> u32 {
+    job.init
+        .as_ref()
+        .map_or(job.steps, |init| steps_that_run(job.steps, init.strength))
 }
 
 impl Image for Painter {
@@ -64,6 +73,7 @@ impl Image for Painter {
         self.jobs.lock().unwrap().push(job.clone());
         self.job = Some(job.clone());
         self.step = 0;
+        self.encoded = job.init.is_none();
         Ok(None)
     }
 
@@ -71,6 +81,15 @@ impl Image for Painter {
         let job = self.job.as_ref().expect("a step after a begin");
         if job.seed == SLOW_SEED {
             std::thread::sleep(Duration::from_millis(10));
+        }
+        if !self.encoded {
+            // The first step of a job with an image is the encode: step 0, with no previews.
+            self.encoded = true;
+            return Ok(ImageStepOut {
+                step: 0,
+                steps: steps_of(job),
+                previews: Vec::new(),
+            });
         }
         self.step += 1;
         self.steps.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -91,14 +110,14 @@ impl Image for Painter {
         };
         Ok(ImageStepOut {
             step: self.step,
-            steps: job.steps,
+            steps: steps_of(job),
             previews,
         })
     }
 
     fn image_decode(&mut self, _slot: SlotId) -> Result<Vec<DecodedImage>, PassError> {
         let job = self.job.as_ref().expect("a decode after a begin");
-        assert_eq!(self.step, job.steps, "the decode comes after the last step");
+        assert_eq!(self.step, steps_of(job), "the decode comes after the last step");
         Ok((0..job.count)
             .map(|i| DecodedImage {
                 width: job.width,
@@ -179,6 +198,7 @@ impl Factory for Painters {
             steps: Arc::clone(&self.2),
             job: None,
             step: 0,
+            encoded: true,
         }))
     }
 }
@@ -404,6 +424,8 @@ fn identity_lists_the_image_model_as_a_writer_of_png() {
         .expect("the image model")
         .clone();
     assert_eq!(model["media"]["outputs"], json!(["image/png"]), "{model}");
+    // An SDXL model reads an image and a mask (spec 11.9b).
+    assert_eq!(model["media"]["inputs"], json!(["image/png"]), "{model}");
     assert_eq!(model["media"]["text_replies"], json!(false), "{model}");
     assert_eq!(model["capabilities"], json!(["generate"]), "{model}");
     assert_eq!(model["limits"]["context_tokens"], json!(225), "{model}");
@@ -419,6 +441,11 @@ fn identity_lists_the_image_model_as_a_writer_of_png() {
 
 /// Put `bytes` in the object store of the council, as a client does: `PUT /council/v2/objects/{id}`.
 fn put_object(council: &Arc<Council>, bytes: &[u8]) -> String {
+    put_object_as(council, bytes, "application/octet-stream")
+}
+
+/// Put `bytes` in the object store of the council with the media type `mime`.
+fn put_object_as(council: &Arc<Council>, bytes: &[u8], mime: &str) -> String {
     let id = format!("blake3:{}", blake3::hash(bytes).to_hex());
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -428,7 +455,7 @@ fn put_object(council: &Arc<Council>, bytes: &[u8]) -> String {
         let request = Request::builder()
             .method("PUT")
             .uri(format!("/council/v2/objects/{id}"))
-            .header("content-type", "application/octet-stream")
+            .header("content-type", mime)
             .body(Body::from(bytes.to_vec()))
             .unwrap();
         let status = router(Arc::clone(council)).oneshot(request).await.unwrap().status();
@@ -960,8 +987,6 @@ fn a_job_with_no_previews_ends_soon_after_its_route_goes_away() {
         loras: Vec::new(),
         conditioning: None,
         init: None,
-        strength: 1.0,
-        mask: None,
     };
     let made = service.generate(job, nagaya::council::Schedule::default()).unwrap();
     made.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
@@ -1231,4 +1256,367 @@ fn an_image_of_four_channels_is_an_rgba_png() {
         nagaya::http::image::png(&wrong, None).is_err(),
         "5 channels have no PNG form"
     );
+}
+
+/// A PNG of 8-bit samples of this color type, with sample `i` from `sample(i)`.
+fn png_of(
+    width: u32,
+    height: u32,
+    color: png::ColorType,
+    depth: png::BitDepth,
+    sample: impl Fn(usize) -> u8,
+) -> Vec<u8> {
+    let channels = match color {
+        png::ColorType::Grayscale => 1,
+        png::ColorType::Rgb => 3,
+        other => panic!("the tests write no PNG of {other:?}"),
+    };
+    let bytes_per_sample = if depth == png::BitDepth::Sixteen { 2 } else { 1 };
+    let mut bytes = Vec::new();
+    let mut encoder = png::Encoder::new(&mut bytes, width, height);
+    encoder.set_color(color);
+    encoder.set_depth(depth);
+    let mut writer = encoder.write_header().unwrap();
+    let samples: Vec<u8> = (0..(width * height) as usize * channels * bytes_per_sample)
+        .map(sample)
+        .collect();
+    writer.write_image_data(&samples).unwrap();
+    writer.finish().unwrap();
+    bytes
+}
+
+/// An RGB image of 512 by 512 pixels, and its pixels.
+fn rgb_image() -> (Vec<u8>, Vec<u8>) {
+    let pixel = |i: usize| (i * 7 % 251) as u8;
+    let bytes = png_of(512, 512, png::ColorType::Rgb, png::BitDepth::Eight, pixel);
+    (bytes, (0..512 * 512 * 3).map(pixel).collect())
+}
+
+/// A gray mask of 512 by 512 pixels with a white square, and its pixels.
+fn gray_mask(width: u32, height: u32) -> (Vec<u8>, Vec<u8>) {
+    let pixel = move |i: usize| {
+        let (x, y) = (i % width as usize, i / width as usize);
+        if (100..300).contains(&x) && (150..350).contains(&y) {
+            255
+        } else {
+            0
+        }
+    };
+    let bytes = png_of(width, height, png::ColorType::Grayscale, png::BitDepth::Eight, pixel);
+    (bytes, (0..(width * height) as usize).map(pixel).collect())
+}
+
+/// Put `bytes` in the object store of the council with the media type `image/png`.
+fn put_png(council: &Arc<Council>, bytes: &[u8]) -> String {
+    put_object_as(council, bytes, "image/png")
+}
+
+/// A generation whose last `user` message holds the text `prompt` and these object parts of `image/png`.
+fn with_parts(prompt: &str, parts: &[&str], options: Value, sample: Value) -> Value {
+    let mut content = vec![json!({"type": "text", "text": prompt})];
+    content.extend(
+        parts
+            .iter()
+            .map(|id| json!({"type": "object", "id": id, "mime": "image/png"})),
+    );
+    json!({"model": MODEL, "context": {"messages": [{"role": "user", "content": content}]}, "max_tokens": 1,
+           "sample": sample, "output": {"mime": "image/png", "options": options}})
+}
+
+/// The RGB pixels of a PNG of 8-bit RGB.
+fn rgb_of(bytes: &[u8]) -> Vec<u8> {
+    let mut reader = png::Decoder::new(std::io::Cursor::new(bytes)).read_info().unwrap();
+    let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+    let frame = reader.next_frame(&mut pixels).unwrap();
+    assert_eq!(frame.color_type, png::ColorType::Rgb);
+    pixels.truncate(frame.buffer_size());
+    pixels
+}
+
+/// An image with no mask is img2img: the job gets its pixels and the default strength 0.75, its size, and no mask.
+/// The reply has no paste, counts the object read, and the steps that ran (spec 11.9b).
+#[test]
+fn an_image_part_makes_an_img2img_job_of_its_size() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let (bytes, pixels) = rgb_image();
+    let id = put_png(&council, &bytes);
+    let (status, done) = generate(&council, with_parts("a fox", &[&id], json!({}), json!({"seed": 5})));
+    assert_eq!(status, StatusCode::OK, "{done}");
+    let job = fixture.take_jobs().remove(0);
+    assert_eq!((job.width, job.height, job.steps), (512, 512, 30));
+    let init = job.init.as_ref().expect("a job with an image");
+    assert_eq!(*init.pixels, pixels);
+    assert_eq!((init.strength, init.mask.is_none()), (0.75, true));
+    assert_eq!(
+        chunks(&job).0[0].ids1,
+        "a fox".chars().map(u32::from).collect::<Vec<_>>()
+    );
+    let usage = &done["usage"]["media"];
+    assert_eq!(usage["read"], json!({"objects": 1, "bytes": bytes.len()}), "{done}");
+    assert_eq!(
+        usage["written"]["steps"],
+        json!(22),
+        "floor(30 * 0.75) steps ran: {done}"
+    );
+    let png = object(&council, done["outputs"][0]["id"].as_str().unwrap());
+    assert_eq!(rgb_of(&png), vec![5; 512 * 512 * 3], "img2img has no paste");
+    assert_eq!(
+        read_png(&png).3.unwrap(),
+        "a fox\nSteps: 30, Sampler: DPM++ 2M Karras, CFG scale: 7, Seed: 5, Size: 512x512, Model: painter, \
+         Clip skip: 3, Denoising strength: 0.75"
+    );
+}
+
+/// An image and a mask make an inpainting job: the job gets the mask blurred by `mask_blur`, 4 by default, and the
+/// strength 0.99. The route pastes the kept pixels back with the blurred mask, and the chunk names the blur.
+#[test]
+fn an_image_and_a_mask_make_an_inpainting_job_and_the_route_pastes_the_kept_pixels() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let (image, pixels) = rgb_image();
+    let (mask, gray) = gray_mask(512, 512);
+    let (image, mask) = (put_png(&council, &image), put_png(&council, &mask));
+    for (options, blur) in [
+        (json!({}), 4),
+        (json!({"mask_blur": 0}), 0),
+        (json!({"mask_blur": 9, "strength": 0.5}), 9),
+    ] {
+        let (status, done) = generate(
+            &council,
+            with_parts("a fox", &[&image, &mask], options.clone(), json!({"seed": 9})),
+        );
+        assert_eq!(status, StatusCode::OK, "{done}");
+        let job = fixture.take_jobs().remove(0);
+        let init = job.init.as_ref().expect("a job with an image");
+        let blurred = nagaya_text_sdxl::inputs::blur(&gray, 512, 512, blur);
+        assert_eq!(init.mask.as_deref(), Some(&blurred), "{options}");
+        let strength = options["strength"].as_f64().unwrap_or(0.99);
+        assert_eq!(init.strength, strength);
+        let n = (30.0 * strength) as u64;
+        assert_eq!(done["usage"]["media"]["written"]["steps"], json!(n), "{done}");
+        assert_eq!(done["usage"]["media"]["read"]["objects"], json!(2), "{done}");
+        let png = object(&council, done["outputs"][0]["id"].as_str().unwrap());
+        let decoded = vec![9; 512 * 512 * 3];
+        assert_eq!(
+            rgb_of(&png),
+            nagaya_text_sdxl::inputs::paste(&decoded, &pixels, &blurred),
+            "{options}"
+        );
+        let text = read_png(&png).3.unwrap();
+        assert!(
+            text.ends_with(&format!(
+                "Clip skip: 3, Denoising strength: {strength}, Mask blur: {blur}"
+            )),
+            "{text}"
+        );
+    }
+}
+
+/// A stream of a job with an image counts `n` steps in `progress.of`, and the encode quantum sends no progress.
+#[test]
+fn a_stream_of_a_job_with_an_image_counts_the_steps_that_run() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let id = put_png(&council, &rgb_image().0);
+    let mut body = with_parts(
+        "a fox",
+        &[&id],
+        json!({"steps": 5, "strength": 0.5}),
+        json!({"seed": 1}),
+    );
+    body["stream"] = json!(true);
+    body["previews"] = json!(true);
+    let (status, _, _, bytes) = send(&council, "POST", "/council/v2/generations", Some(body));
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&bytes));
+    let events = events(&bytes);
+    checked_steps(&events, true);
+    let progress: Vec<&Value> = events
+        .iter()
+        .filter(|(name, _)| name == "progress")
+        .map(|(_, v)| v)
+        .collect();
+    assert_eq!(
+        progress,
+        [
+            &json!({"index": 0, "step": 1, "of": 2}),
+            &json!({"index": 0, "step": 2, "of": 2})
+        ]
+    );
+}
+
+/// The usage counts each distinct object that the request names, also in an earlier message (spec 11.9b, Proposed).
+/// The image of the job is the object of the last `user` message.
+#[test]
+fn the_usage_counts_each_object_that_the_request_names() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let (first, _) = rgb_image();
+    let second = png_of(512, 512, png::ColorType::Rgb, png::BitDepth::Eight, |i| (i % 3) as u8);
+    let (a, b) = (put_png(&council, &first), put_png(&council, &second));
+    let body = json!({"model": MODEL, "max_tokens": 1, "output": {"mime": "image/png"},
+        "context": {"messages": [
+            {"role": "user", "content": [{"type": "text", "text": "a cat"}, {"type": "object", "id": a, "mime": "image/png"}]},
+            {"role": "assistant", "content": [{"type": "object", "id": a, "mime": "image/png"}]},
+            {"role": "user", "content": [{"type": "text", "text": "a dog"}, {"type": "object", "id": b, "mime": "image/png"}]}]}});
+    let (status, done) = generate(&council, body);
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(
+        done["usage"]["media"]["read"],
+        json!({"objects": 2, "bytes": first.len() + second.len()}),
+        "{done}"
+    );
+    let job = fixture.take_jobs().remove(0);
+    assert_eq!(job.init.unwrap().pixels[..6], [0, 1, 2, 0, 1, 2]);
+}
+
+/// Each error of a job with an image is a 400 or a 404 that names its part or member, and no job runs (spec 11.9b).
+#[test]
+fn each_error_of_a_job_with_an_image_names_its_part_or_member() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let image = put_png(&council, &rgb_image().0);
+    let mask = put_png(&council, &gray_mask(512, 512).0);
+    let tall_mask = put_png(&council, &gray_mask(512, 576).0);
+    let odd = put_png(
+        &council,
+        &png_of(576, 520, png::ColorType::Rgb, png::BitDepth::Eight, |_| 1),
+    );
+    let large = put_png(
+        &council,
+        &png_of(2048, 1024, png::ColorType::Rgb, png::BitDepth::Eight, |_| 1),
+    );
+    let deep = put_png(
+        &council,
+        &png_of(512, 512, png::ColorType::Rgb, png::BitDepth::Sixteen, |_| 1),
+    );
+    let text = put_png(&council, b"not a png at all");
+    let octets = put_object(&council, &rgb_image().0[..1000]);
+    let unheld = format!("blake3:{}", blake3::hash(b"never put").to_hex());
+    let bad = StatusCode::BAD_REQUEST;
+    let cases: Vec<(Value, StatusCode, &str, &str)> = vec![
+        (
+            with_parts("a", &[&image, &mask, &image], json!({}), json!({})),
+            bad,
+            "messages[0].content[3]",
+            "third",
+        ),
+        (
+            with_parts("a", &[&image], json!({"mask_blur": 4}), json!({})),
+            bad,
+            "output.options.mask_blur",
+            "mask",
+        ),
+        (
+            with_parts("a", &[&image], json!({"strength": 0}), json!({})),
+            bad,
+            "output.options.strength",
+            "above 0",
+        ),
+        (
+            with_parts("a", &[&image], json!({"strength": 1.5}), json!({})),
+            bad,
+            "output.options.strength",
+            "1.0",
+        ),
+        (
+            with_parts("a", &[&image], json!({"strength": "x"}), json!({})),
+            bad,
+            "output.options.strength",
+            "\"x\"",
+        ),
+        (
+            with_parts("a", &[&image, &mask], json!({"mask_blur": 65}), json!({})),
+            bad,
+            "output.options.mask_blur",
+            "64",
+        ),
+        (
+            with_parts("a", &[&image, &mask], json!({"mask_blur": 2.5}), json!({})),
+            bad,
+            "output.options.mask_blur",
+            "64",
+        ),
+        (
+            with_parts("a", &[&image], json!({"width": 1024}), json!({})),
+            bad,
+            "output.options.width",
+            "512 by 512",
+        ),
+        (
+            with_parts("a", &[&image], json!({"height": 576}), json!({})),
+            bad,
+            "output.options.height",
+            "512 by 512",
+        ),
+        (
+            with_parts("a", &[&image, &tall_mask], json!({}), json!({})),
+            bad,
+            "messages[0].content[2]",
+            "512 by 576",
+        ),
+        (
+            with_parts("a", &[&odd], json!({}), json!({})),
+            bad,
+            "messages[0].content[1]",
+            "576 by 520",
+        ),
+        (
+            with_parts("a", &[&large], json!({}), json!({})),
+            bad,
+            "messages[0].content[1]",
+            "1572864",
+        ),
+        (
+            with_parts("a", &[&deep], json!({}), json!({})),
+            bad,
+            "messages[0].content[1]",
+            "16 bits",
+        ),
+        (
+            with_parts("a", &[&text], json!({}), json!({})),
+            bad,
+            "messages[0].content[1]",
+            "not a PNG",
+        ),
+        (
+            with_parts("a", &[&image], json!({"steps": 1}), json!({})),
+            bad,
+            "output.options.strength",
+            "no step",
+        ),
+        (
+            with_parts("a", &[&octets], json!({}), json!({})),
+            bad,
+            "messages[0].content[1]",
+            "application/octet-stream",
+        ),
+        (
+            with_parts("a", &[&unheld], json!({}), json!({})),
+            StatusCode::NOT_FOUND,
+            "messages[0].content[1]",
+            &unheld,
+        ),
+    ];
+    for (body, status, param, says) in cases {
+        let (got, v) = generate(&council, body.clone());
+        let message = v["error"]["message"].as_str().unwrap_or("");
+        assert_eq!(
+            (got, v["error"]["param"].as_str().unwrap_or("")),
+            (status, param),
+            "{body}: {v}"
+        );
+        assert!(message.contains(says), "{param}: {message}");
+    }
+    // An object of an earlier message that the server does not hold is a 404 that names it.
+    let body = json!({"model": MODEL, "max_tokens": 1, "output": {"mime": "image/png"},
+        "context": {"messages": [
+            {"role": "user", "content": [{"type": "text", "text": "a cat"}, {"type": "object", "id": unheld, "mime": "image/png"}]},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "a dog"}]}});
+    assert_eq!(
+        refused(&council, body),
+        (StatusCode::NOT_FOUND, "messages[0].content[1]".to_owned())
+    );
+    assert!(fixture.take_jobs().is_empty(), "no refused request ran");
 }

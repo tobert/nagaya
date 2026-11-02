@@ -1,7 +1,7 @@
 //! The checks of an image job that the engine runs before any quantum (engine-abi "Image", "Image inputs"). The
 //! council checks the ranges of spec 11.9a and 11.9b first, so a refusal here is a defect of the caller.
 
-use nagaya_abi::{ImageChunk, ImageJob, ImagePrompt, ImageSampler, ImageSpacing};
+use nagaya_abi::{ImageChunk, ImageJob, ImagePrompt, ImageSampler, ImageSpacing, steps_that_run};
 
 use crate::spec::*;
 
@@ -65,36 +65,31 @@ pub fn job_problem(job: &ImageJob) -> Option<String> {
 }
 
 /// The reason the image inputs of a job are refused (engine-abi "Image inputs"), or `None`. `pixels` is the pixel
-/// count of one image of the job.
+/// count of one image of the job. The route checks these first (spec 11.9b), so a refusal is a defect of the caller.
 fn inputs_problem(job: &ImageJob, pixels: usize) -> Option<String> {
-    let Some(init) = &job.init else {
-        if job.mask.is_some() {
-            return Some("the job has a mask and no image; a mask needs the image of the job".to_owned());
-        }
-        if job.strength != 1.0 {
-            return Some(format!(
-                "the job has the strength {} and no image; a job with no image has the strength 1.0",
-                job.strength
-            ));
-        }
-        return None;
-    };
-    if init.len() != 3 * pixels {
+    let init = job.init.as_ref()?;
+    if init.pixels.len() != 3 * pixels {
         return Some(format!(
             "the image has {} bytes; an RGB image of {} by {} has {}",
-            init.len(),
+            init.pixels.len(),
             job.width,
             job.height,
             3 * pixels
         ));
     }
-    if !(job.strength > 0.0 && job.strength <= 1.0) {
+    if !(init.strength > 0.0 && init.strength <= 1.0) {
         return Some(format!(
             "the strength {} is not above 0.0 and at most 1.0",
-            job.strength
+            init.strength
         ));
     }
-    match &job.mask {
+    if steps_that_run(job.steps, init.strength) == 0 {
+        return Some(format!(
+            "the strength {} runs no step of {} steps",
+            init.strength, job.steps
+        ));
+    }
+    match &init.mask {
         Some(mask) if mask.len() != pixels => Some(format!(
             "the mask has {} bytes; a gray mask of {} by {} has {pixels}",
             mask.len(),

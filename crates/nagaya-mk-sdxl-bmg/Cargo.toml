@@ -11,9 +11,10 @@ xe = ["nagaya-mk-bmg/xe"]
 nagaya-abi = { version = "0.1.0", path = "../nagaya-abi" }
 # The interpreter of the B70 megakernels, which this engine shares with the Gemma 4 and speech engines.
 nagaya-mk-bmg = { version = "0.1.0", path = "../nagaya-mk-bmg" }
+# The rules of the inputs of an image job (spec 11.9b): the map of the pixels and the binary mask.
+nagaya-text-sdxl = { version = "0.1.0", path = "../nagaya-text-sdxl" }
 blake3 = "1.8.2"
 serde_json = "1.0.154"
 
 [dev-dependencies]
 nagaya-conformance = { version = "0.1.0", path = "../nagaya-conformance" }
-nagaya-text-sdxl = { version = "0.1.0", path = "../nagaya-text-sdxl" }

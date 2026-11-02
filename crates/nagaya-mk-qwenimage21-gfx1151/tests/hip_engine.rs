@@ -89,8 +89,6 @@ fn job(inputs: &Inputs, count: u32, conditioning: Option<Arc<Vec<u8>>>) -> Image
         loras: Vec::new(),
         conditioning,
         init: None,
-        strength: 1.0,
-        mask: None,
     }
 }
 

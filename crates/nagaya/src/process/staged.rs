@@ -659,6 +659,8 @@ impl Coverage for StagedEngine {
 
 /// A block that began: its kind, its class, its request, its segments, and its residual between two stages.
 struct Block {
+    /// The engine of the job, as its place in the group.
+    engine: usize,
     kind: Kind,
     class: Class,
     request: &'static str,
@@ -668,6 +670,8 @@ struct Block {
 
 /// A stage quantum that runs on a stage thread, with its telemetry and failure watch.
 struct RunningStage {
+    /// The engine of the job, as its place in the group. The quantum names it (spec 9.2, "The engine of a job").
+    engine: usize,
     kind: Kind,
     class: Class,
     request: &'static str,
@@ -690,7 +694,9 @@ enum Place {
 /// The jobs of a group with stages, on its scheduler.
 struct StagedJobs {
     group: u32,
-    engine: String,
+    /// The names of the engines of the group, in profile order. A job span, its quanta and their metrics name the
+    /// engine of the job (spec 9.2, "The engine of a job").
+    names: Vec<String>,
     machine: Machine,
     epoch: Instant,
     scheduler: Option<StageScheduler>,
@@ -726,7 +732,7 @@ struct StagedJobs {
 impl StagedJobs {
     /// The jobs of a group. `limits` are the limits of its engine with stages; with none, the devices are those of
     /// the device threads, and no job has a block.
-    fn new(group: u32, engine: String, limits: Option<&Limits>, devices: &[Device], machine: Machine) -> Self {
+    fn new(group: u32, names: Vec<String>, limits: Option<&Limits>, devices: &[Device], machine: Machine) -> Self {
         let buffers = 2;
         let (rows, row_bytes, stages, max_quantum_ms) = match limits {
             Some(limits) => (
@@ -739,7 +745,7 @@ impl StagedJobs {
         };
         Self {
             group,
-            engine,
+            names,
             machine,
             epoch: Instant::now(),
             scheduler: Some(StageScheduler::new(Facts {
@@ -833,7 +839,7 @@ impl StagedJobs {
         let span = tracing::info_span!(
             parent: &parent,
             "nagaya.job",
-            engine = self.engine.as_str(),
+            engine = self.names[spec.engine].as_str(),
             class = spec.class.label(),
             request,
             outcome = tracing::field::Empty,
@@ -857,7 +863,12 @@ impl StagedJobs {
                     let now_ms = self.now_ms();
                     let ready = self.stage_ready_since.remove(&(job, block, stage)).unwrap_or(now_ms);
                     let wait_ms = now_ms.saturating_sub(ready);
-                    let span = self.start_quantum(&quantum, wait_ms);
+                    let engine = self
+                        .blocks
+                        .get(&(job, block))
+                        .expect("a later stage has its block")
+                        .engine;
+                    let span = self.start_quantum(&quantum, engine, wait_ms);
                     let watch = (quantum.kind != Kind::Decode).then(|| self.machine.watch());
                     let place = self.place_of(stage);
                     let entry = self.blocks.get_mut(&(job, block)).expect("a later stage has its block");
@@ -865,6 +876,7 @@ impl StagedJobs {
                     self.running_stages.insert(
                         (job, block, stage),
                         RunningStage {
+                            engine,
                             kind: entry.kind,
                             class: entry.class,
                             request: entry.request,
@@ -905,12 +917,14 @@ impl StagedJobs {
         };
         let now_ms = self.now_ms();
         let ready = self.ready_since.get(&job).copied().unwrap_or(now_ms);
-        let span = self.start_quantum(quantum, now_ms.saturating_sub(ready));
+        let engine = self.engine_of_job(job);
+        let span = self.start_quantum(quantum, engine, now_ms.saturating_sub(ready));
         let watch = (quantum.kind != Kind::Decode).then(|| self.machine.watch());
         let request = self.requests.get(&job).copied().unwrap_or("job");
         self.running_on.insert(
             job,
             RunningStage {
+                engine,
                 kind: quantum.kind,
                 class: quantum.class,
                 request,
@@ -957,9 +971,9 @@ impl StagedJobs {
         };
         if let Some(running) = running {
             if outcome == Completion::Failed {
-                self.log_failure(kind, running.request, running.watch);
+                self.log_failure(running.engine, kind, running.request, running.watch);
             }
-            self.end_quantum(kind, running.class, ms, outcome, running.span);
+            self.end_quantum(running.engine, kind, running.class, ms, outcome, running.span);
         }
         let now_ms = self.now_ms();
         self.ready_since.insert(job, now_ms);
@@ -977,7 +991,8 @@ impl StagedJobs {
         let now_ms = self.now_ms();
         let ready = self.ready_since.get(&quantum.job).copied().unwrap_or(now_ms);
         let wait_ms = now_ms.saturating_sub(ready);
-        let span = self.start_quantum(quantum, wait_ms);
+        let engine = self.engine_of_job(quantum.job);
+        let span = self.start_quantum(quantum, engine, wait_ms);
         let watch = (quantum.kind != Kind::Decode).then(|| self.machine.watch());
         let request = self.requests.get(&quantum.job).copied().unwrap_or("job");
         let started = Instant::now();
@@ -990,10 +1005,10 @@ impl StagedJobs {
         };
         let duration_ms = started.elapsed().as_millis() as u64;
         if matches!(ran, Ran::Failed) {
-            self.log_failure(quantum.kind, request, watch);
+            self.log_failure(engine, quantum.kind, request, watch);
         }
         let outcome = self.apply(quantum.job, ran);
-        self.end_quantum(quantum.kind, quantum.class, duration_ms, outcome, span);
+        self.end_quantum(engine, quantum.kind, quantum.class, duration_ms, outcome, span);
         let done_ms = self.now_ms();
         self.ready_since.insert(quantum.job, done_ms);
         let device = quantum.devices[0];
@@ -1017,6 +1032,7 @@ impl StagedJobs {
         let ready = self.ready_since.get(&job).copied().unwrap_or(now_ms);
         let wait_ms = now_ms.saturating_sub(ready);
         let request = self.requests.get(&job).copied().unwrap_or("job");
+        let engine = self.engine_of_job(job);
         let begun = match self.bodies.get_mut(&job) {
             Some(body) => body.begin_pass(quantum.kind, engines),
             None => Err(Ran::Cancelled),
@@ -1024,13 +1040,13 @@ impl StagedJobs {
         let segments = match begun {
             Ok(segments) => Arc::new(segments),
             Err(ran) => {
-                let span = self.start_quantum(quantum, wait_ms);
+                let span = self.start_quantum(quantum, engine, wait_ms);
                 let watch = (quantum.kind != Kind::Decode).then(|| self.machine.watch());
                 if matches!(ran, Ran::Failed) {
-                    self.log_failure(quantum.kind, request, watch);
+                    self.log_failure(engine, quantum.kind, request, watch);
                 }
                 let outcome = self.apply(job, ran);
-                self.end_quantum(quantum.kind, quantum.class, 0, outcome, span);
+                self.end_quantum(engine, quantum.kind, quantum.class, 0, outcome, span);
                 self.event(StageEvent::Complete {
                     now_ms: self.now_ms(),
                     device: quantum.devices[0],
@@ -1040,13 +1056,14 @@ impl StagedJobs {
                 return;
             }
         };
-        let span = self.start_quantum(quantum, wait_ms);
+        let span = self.start_quantum(quantum, engine, wait_ms);
         let watch = (quantum.kind != Kind::Decode).then(|| self.machine.watch());
         // The scheduler starts a block only when a buffer is free, so the pool is never empty here.
         let residual = self.free.pop().expect("a block that starts has a free residual buffer");
         self.blocks.insert(
             (job, block),
             Block {
+                engine,
                 kind: quantum.kind,
                 class: quantum.class,
                 request,
@@ -1057,6 +1074,7 @@ impl StagedJobs {
         self.running_stages.insert(
             (job, block, 0),
             RunningStage {
+                engine,
                 kind: quantum.kind,
                 class: quantum.class,
                 request,
@@ -1145,9 +1163,9 @@ impl StagedJobs {
         };
         if let Some(running) = running {
             if outcome == Completion::Failed {
-                self.log_failure(running.kind, running.request, running.watch);
+                self.log_failure(running.engine, running.kind, running.request, running.watch);
             }
-            self.end_quantum(running.kind, running.class, ms, outcome, running.span);
+            self.end_quantum(running.engine, running.kind, running.class, ms, outcome, running.span);
         }
         let device = self.scheduler().engine().devices[stage];
         self.event(StageEvent::Complete {
@@ -1160,9 +1178,19 @@ impl StagedJobs {
         self.pump(engines, threads);
     }
 
-    fn start_quantum(&self, quantum: &StageQuantum, wait_ms: u64) -> Option<Span> {
+    /// The engine of a job that has not ended, as its place in the group.
+    fn engine_of_job(&self, job: JobId) -> usize {
+        *self
+            .engine_of
+            .get(&job)
+            .unwrap_or_else(|| panic!("job {job} started a quantum, but the group holds no engine for it"))
+    }
+
+    /// Record the wait of a quantum of a job of the engine at `engine`, and open its span (spec 9.2).
+    fn start_quantum(&self, quantum: &StageQuantum, engine: usize, wait_ms: u64) -> Option<Span> {
+        let engine = self.names[engine].as_str();
         let labels = QuantumLabels {
-            engine: &self.engine,
+            engine,
             device_group: self.group,
             kind: kind_label(quantum.kind),
             class: quantum.class.label(),
@@ -1173,7 +1201,7 @@ impl StagedJobs {
             let make = || {
                 tracing::info_span!(
                     "nagaya.quantum",
-                    engine = self.engine.as_str(),
+                    engine,
                     device_group = self.group,
                     kind = kind_label(quantum.kind),
                     class = quantum.class.label(),
@@ -1191,9 +1219,17 @@ impl StagedJobs {
         })
     }
 
-    fn end_quantum(&self, kind: Kind, class: Class, duration_ms: u64, outcome: Completion, span: Option<Span>) {
+    fn end_quantum(
+        &self,
+        engine: usize,
+        kind: Kind,
+        class: Class,
+        duration_ms: u64,
+        outcome: Completion,
+        span: Option<Span>,
+    ) {
         let labels = QuantumLabels {
-            engine: &self.engine,
+            engine: &self.names[engine],
             device_group: self.group,
             kind: kind_label(kind),
             class: class.label(),
@@ -1213,12 +1249,12 @@ impl StagedJobs {
         }
     }
 
-    fn log_failure(&self, kind: Kind, request: &'static str, watch: Option<Watch>) {
+    fn log_failure(&self, engine: usize, kind: Kind, request: &'static str, watch: Option<Watch>) {
         let failure = format!(
             "{} quantum of a {} request on engine {}",
             kind_label(kind),
             request,
-            self.engine
+            self.names[engine]
         );
         match watch {
             Some(watch) => watch.failed(&failure),
@@ -1741,7 +1777,7 @@ pub(super) fn serve(
     let order: Vec<DeviceId> = (0..machine.len() as DeviceId).collect();
     // The scheduler's device of each stage is the place of its device thread. With no engine with stages, the
     // devices are the places in order.
-    let (name, limits, places) = match index {
+    let (limits, places) = match index {
         Some(index) => {
             let limits = members[index].job.limits.clone();
             let own: Vec<DeviceId> = members[index].job.devices.iter().map(|device| device.id).collect();
@@ -1757,9 +1793,9 @@ pub(super) fn serve(
                 names[index]
             );
             let places = places_of_stages(&limits.stages, &own, &machine);
-            (members[index].name().to_owned(), Some(limits), places)
+            (Some(limits), places)
         }
-        None => (names.join("+"), None, (0..machine.len()).collect()),
+        None => (None, (0..machine.len()).collect()),
     };
     let devices: Vec<DeviceId> = places.iter().map(|place| *place as DeviceId).collect();
     if let (Some(index), Some(limits)) = (index, &limits)
@@ -1769,7 +1805,8 @@ pub(super) fn serve(
         assert_eq!(
             handles.len(),
             devices.len(),
-            "the open of engine `{name}` gave a handle for each stage"
+            "the open of engine `{}` gave a handle for each stage",
+            names[index]
         );
         threads.attach(index, handles, &places);
         let inner = std::mem::replace(&mut engines[index], Unloaded::of(&members[index]));
@@ -1821,7 +1858,7 @@ pub(super) fn serve(
     }
     let mut jobs = StagedJobs::new(
         group as u32,
-        name.clone(),
+        names.clone(),
         limits.as_ref(),
         &devices,
         links.machine.clone(),
@@ -2046,7 +2083,7 @@ mod tests {
 
     /// The jobs of a group of one device, with the thread of that device as a channel that the test holds.
     fn jobs_on_one_device() -> (StagedJobs, StageThreads, Receiver<StageWork>) {
-        let jobs = StagedJobs::new(0, "left".to_owned(), None, &[0], Machine::at("/nonexistent", 1));
+        let jobs = StagedJobs::new(0, vec!["left".to_owned()], None, &[0], Machine::at("/nonexistent", 1));
         let (sender, work) = mpsc::channel();
         let threads = StageThreads {
             senders: vec![sender],

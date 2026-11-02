@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use nagaya_abi::{ImageJob, ImagePrompt, ImageSampler, ImageSpacing};
+use nagaya_abi::{ImageInit, ImageJob, ImagePrompt, ImageSampler, ImageSpacing};
 use nagaya_mk_sdxl_bmg::host::empty_chunk;
 use nagaya_mk_sdxl_bmg::job::job_problem;
 
@@ -27,8 +27,18 @@ fn job() -> ImageJob {
         loras: Vec::new(),
         conditioning: None,
         init: None,
-        strength: 1.0,
-        mask: None,
+    }
+}
+
+/// A job with an image of `bytes` bytes, the strength `strength` and a mask of `mask` bytes, if any.
+fn with_image(bytes: usize, strength: f64, mask: Option<usize>) -> ImageJob {
+    ImageJob {
+        init: Some(ImageInit {
+            pixels: Arc::new(vec![0; bytes]),
+            strength,
+            mask: mask.map(|n| Arc::new(vec![255; n])),
+        }),
+        ..job()
     }
 }
 
@@ -36,67 +46,35 @@ fn problem(job: &ImageJob) -> String {
     job_problem(job).expect("the engine refuses the job")
 }
 
+const PIXELS: usize = 512 * 768;
+
 #[test]
-fn a_text_to_image_job_and_an_image_job_of_the_right_sizes_run() {
+fn a_text_to_image_job_and_an_image_job_of_the_right_sizes_pass_the_checks() {
     assert_eq!(job_problem(&job()), None);
-    let img2img = ImageJob {
-        init: Some(Arc::new(vec![0; 512 * 768 * 3])),
-        strength: 0.75,
-        ..job()
-    };
-    assert_eq!(job_problem(&img2img), None);
-    let inpaint = ImageJob {
-        mask: Some(Arc::new(vec![255; 512 * 768])),
-        strength: 1.0,
-        ..img2img
-    };
-    assert_eq!(job_problem(&inpaint), None);
+    assert_eq!(job_problem(&with_image(3 * PIXELS, 0.75, None)), None);
+    assert_eq!(job_problem(&with_image(3 * PIXELS, 1.0, Some(PIXELS))), None);
 }
 
-/// The image is 3 bytes for each pixel of the job, and the mask 1 byte (engine-abi "Image inputs"). The route checks
-/// the sizes first (spec 11.9b), so a mismatch here is a defect of the caller.
+/// The image is 3 bytes for each pixel of the job, and the mask 1 byte (engine-abi "Image inputs").
 #[test]
 fn an_image_or_a_mask_of_another_size_than_the_job_is_refused() {
-    let short = ImageJob {
-        init: Some(Arc::new(vec![0; 512 * 768 * 3 - 1])),
-        strength: 0.5,
-        ..job()
-    };
+    let short = with_image(3 * PIXELS - 1, 0.5, None);
     assert!(problem(&short).contains("1179647 bytes"), "{}", problem(&short));
-    let mask = ImageJob {
-        init: Some(Arc::new(vec![0; 512 * 768 * 3])),
-        mask: Some(Arc::new(vec![0; 512 * 512])),
-        strength: 0.5,
-        ..job()
-    };
+    let mask = with_image(3 * PIXELS, 0.5, Some(512 * 512));
     assert!(problem(&mask).contains("mask"), "{}", problem(&mask));
 }
 
-/// `strength` runs `floor(steps * strength)` steps of an image job (spec 11.9b). With no image it has no effect, so
-/// it must be 1.0.
+/// `strength` runs `floor(steps * strength)` steps (spec 11.9b). A strength out of range, or one that runs no step,
+/// is refused.
 #[test]
-fn a_strength_out_of_range_or_without_an_image_is_refused() {
-    let image = Some(Arc::new(vec![0u8; 512 * 768 * 3]));
-    for strength in [0.0, -0.5, 1.5, f32::NAN] {
-        let bad = ImageJob {
-            init: image.clone(),
-            strength,
-            ..job()
-        };
+fn a_strength_out_of_range_or_one_that_runs_no_step_is_refused() {
+    for strength in [0.0, -0.5, 1.5, f64::NAN, 0.04] {
+        let bad = with_image(3 * PIXELS, strength, None);
         assert!(problem(&bad).contains("strength"), "{strength}: {}", problem(&bad));
     }
-    let alone = ImageJob {
-        strength: 0.75,
-        ..job()
-    };
-    assert!(problem(&alone).contains("strength"), "{}", problem(&alone));
-}
-
-#[test]
-fn a_mask_without_an_image_is_refused() {
-    let alone = ImageJob {
-        mask: Some(Arc::new(vec![0; 512 * 768])),
-        ..job()
-    };
-    assert!(problem(&alone).contains("mask"), "{}", problem(&alone));
+    assert_eq!(
+        job_problem(&with_image(3 * PIXELS, 0.05, None)),
+        None,
+        "20 * 0.05 runs 1 step"
+    );
 }

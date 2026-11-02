@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use nagaya_abi::{
     DecodedImage, Engine, Identity, Image, ImageChunk, ImageJob, ImagePrompt, ImageStepOut, Limits, PassError,
-    PassErrorKind, PassOut, Segment, SlotId, Tap,
+    PassErrorKind, PassOut, Segment, SlotId, Tap, steps_that_run,
 };
 use nagaya_mk_bmg::level_zero::{B70Card, L0Cluster};
 use nagaya_mk_bmg::ring::Ring;
@@ -441,7 +441,7 @@ impl SdxlEngine {
     }
 
     /// The VAE encoder and `quant_conv` on one image of `h` by `w` pixels: the input values of
-    /// [`host::image_values`], pixel-major. It gives the 8 moments of each latent pixel, pixel-major: the mean of 4
+    /// `nagaya_text_sdxl::inputs::unit`, pixel-major. It gives the 8 moments of each latent pixel, pixel-major: the mean of 4
     /// channels, then their log variance (spec 11.9b).
     pub fn encode_image(&mut self, values: &[f32], h: usize, w: usize) -> Vec<f32> {
         assert_eq!(values.len(), 3 * h * w, "the encoder takes 3 values for each pixel");
@@ -465,7 +465,7 @@ impl SdxlEngine {
             .clone()
             .expect("the encode quantum runs for a job with an image");
         let (h, w) = (job.job.height as usize, job.job.width as usize);
-        let moments = self.encode_image(&host::image_values(&init), h, w);
+        let moments = self.encode_image(&nagaya_text_sdxl::inputs::unit(&init.pixels), h, w);
         let n = LATENT * (h / VAE_SCALE) * (w / VAE_SCALE);
         let latents = (0..job.size.images)
             .map(|i| {
@@ -556,13 +556,15 @@ impl Image for SdxlEngine {
                 "slot {slot} holds no image job; call image_begin first"
             ))));
         };
-        if job.job.init.is_some() {
+        if let Some(init) = &job.job.init {
             if job.image_latents.is_none() {
-                // The first step of a job with an image is the encode: step 0, with no previews (engine-abi).
+                // The first step of a job with an image is the encode: step 0 of the n steps that run, with no
+                // previews (engine-abi "Image inputs").
+                let steps = steps_that_run(job.job.steps, init.strength);
                 self.encode_quantum(&mut job);
                 let out = ImageStepOut {
                     step: 0,
-                    steps: job.schedule.timesteps.len() as u32,
+                    steps,
                     previews: Vec::new(),
                 };
                 self.job = Some(job);

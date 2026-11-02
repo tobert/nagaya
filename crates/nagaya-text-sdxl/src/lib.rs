@@ -5,6 +5,7 @@
 
 mod chunks;
 mod error;
+pub mod inputs;
 mod prompt;
 mod tokenizer;
 

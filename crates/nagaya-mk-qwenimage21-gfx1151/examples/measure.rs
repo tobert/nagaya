@@ -84,8 +84,6 @@ fn main() {
                 loras: Vec::new(),
                 conditioning: None,
                 init: None,
-                strength: 1.0,
-                mask: None,
             };
             peak.store(used(), Ordering::Relaxed);
             let image = engine.image().unwrap();
