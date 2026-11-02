@@ -328,6 +328,25 @@ address of each node, and the server limits.
 **A served model name in the cluster.** Decided 2026-11-02 (Amy, by interview). A served model name is unique in the
 cluster. A second node that serves the name logs it, publishes a conflict key, and does not list its copy.
 
+**Which node keeps a served model name.** **Proposed** by Claude Opus 5.5, 2026-11-02. Reason: each node must find the
+same keeper from its own view of gossip, with no other talk.
+
+- A name is a `model` or an alias. Two served models of two live nodes conflict when a name of one equals a name of
+  the other.
+- The node with the lower node name, in byte order, keeps the name. Reason: a node name does not change at a restart.
+  A rule by the start time moves the name to the other node at each restart.
+- Each node finds the keeper from the `served` entries in its view (2.3). Thus each coordinator lists and forwards to
+  the keeper only (11.1a).
+- The other node logs one error that names the model and both nodes. It writes the key `model:conflict` under its own
+  node, with the value `{"models": [{"model", "kept_by"}]}`, sorted by `model`.
+- It removes an entry when the conflict ends, and the key when no entry is left.
+- It does not list its copy in its identity. It forwards each request for the name to the keeper, as for any model of
+  a peer.
+- Its engine stays as it is. It loads and unloads by the load routes, and its `engine:<name>` key stays. Thus the
+  copy takes the name back when the keeper leaves the live set.
+- Two copies of one identity conflict too. Replicas of a served model are a later design.
+- An engine name is unique in one profile only (2.4). Two nodes can each have an engine `gemma` (3.3b).
+
 **2.4 Placement profile.** A placement profile names a machine's engines, their devices, their config, each tier's
 budget (4.1), each engine's share (D9), and pinned identities (12.1). A client reads or updates a machine's profile
 through `GET` and `PUT /nagaya/v1/profile` on any machine in the cluster. The target machine persists its accepted
