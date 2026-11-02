@@ -4098,7 +4098,8 @@ The inventories found these items. We correct each one when its code moves. We d
 ## 15. Open questions
 
 1. Do an idle engine's GPU queues slow the other engines on its device (3.3)? A measurement answers this.
-2. What makes `close()` safe for mk, so that engines can load and unload at runtime (3.3)?
+2. Answered by engine-abi "The close of mk", Decided 2026-11-01: what makes `close()` safe for mk (3.3)? The close
+   frees the weights and keeps the HIP runtime.
 3. How long does the conversion to canonical safetensors take on mk and mkviolet (10.3, D10)?
 4. Answered 2026-10-20: on mk, one pass of many tokens gives the same bits as one pass for each token (6.13).
    On 2026-10-21, splits across 256 and 512 tokens gave the same bits in both classes of context (6.13).
@@ -4212,8 +4213,10 @@ before the last one are from 2026-10-20 night.
 - 11.3c: a reply that reaches the context size ends with `context_full`, also when it reached `max_tokens`. gogi
   `a07d85e` changed this order on 2026-10-21.
 - 11.3c: the decision limits are mkviolet's until the profile names others.
-- 11.7: the process serves an engine only when its kind has a family library with the same tokenizer hash.
-- 11.7: the served model is the engine's `model`, with 4096 tokens of context, or mk's maximum.
+- 11.7: the process serves an engine only when its kind has a family library with the same tokenizer hash. The
+  engine registry of 11.3 (Decided 2026-10-22) replaces this rule: the family of the identity selects the library.
+- 11.7: the served model is the engine's `model`, with 4096 tokens of context, or mk's maximum. The engine registry
+  of 11.3 replaces the context size: it is the largest slot of the engine.
 - 11.7: a process serves at most one model.
 - 11.7: the specs, pins and snapshots routes use the one service, or give 503.
 - 11.7: each service call runs on its own thread, at most 64 at once, and the 65th gets 429.
@@ -4245,7 +4248,8 @@ before the last one are from 2026-10-20 night.
 - `TimeoutStopSec` is 60 s.
 - The unit makes the store directory with `ExecStartPre`.
 - The gossip port is 8091, next to the HTTP port 8090.
-- The pool is 112 GiB, the store's host budget is 16 GiB, and its NVMe budget is 50 GiB.
+- The pool is 112 GiB, the store's host budget is 2 GiB, and its NVMe budget is 50 GiB. The host budget was 16 GiB
+  until "Two engines on gfx1151host" (Decided 2026-11-02).
 - `interval_copies` is 0, so the scheduler makes no interval copy.
 - `MK_FAST_QMM` stays unset. Milestone 15 removed the library pin.
 - The profile is copied into the store directory once, and it is not a link.
