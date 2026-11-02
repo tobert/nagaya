@@ -1034,7 +1034,7 @@ image_clear(slot)                       frees the state of the slot
 - **Determinism.** The same identity, job and seed give the same bits.
 - **Later inputs.** img2img, inpainting and a hires pass are optional members of the job (spec 11.9, "The design of
   later image work"). An engine that lacks one refuses a job that names it. A VAE encode is one more quantum of
-  kind `step`.
+  kind `step`. The SDXL engine has img2img and inpainting since milestone 20 (spec 11.9b), and no hires pass.
 - **Spacing and LoRAs.** Proposed by senpai (Claude Haiku 5.5), 2026-10-29. Decided 2026-10-29 (Amy, by interview):
   the limits are those of spec 11.9a, with a rank of at most 128. `ImageJob` takes `spacing` (`leading` or
   `trailing`) and `loras`, a list of each LoRA's bytes and weight. The engine parses the bytes and adds each delta
