@@ -407,6 +407,14 @@ and milestone 23 is next.
     5. **Inpainting with a blend.** The mask, the blend at each step, and the paste of the pixels after the decode.
     6. **The 9-channel UNet.** Its loader and its extra inputs. Run its oracle on the card.
     7. **Route and deploy.** Serve both through council v2, and add the inpainting weights to the profile.
+
+    The commits so far:
+
+    - step 1, the spec: `06f2317`, `60dcd35`, and Amy's decisions `1017422` and `97bb138`;
+    - step 2, the oracle: `a77e9a4`. `tools/sdxl_inpaint_golden.sh` writes it into `target/sdxl-golden`;
+    - the host rules of 11.9b (the request, the PNG, the masks, the paste and the chunk): `bdc072f` to `52dde8e`;
+    - step 3, the VAE encoder: `06704a9` to `d6006d1`, `0da11fa`, and the test fix `e1928b1`;
+    - step 4, img2img: `2e07187`, `d75f1ab`, deployed at 12:29 on 2026-11-02 from `cb35641`.
 21. **Image speed.** Make the SDXL engine faster on the B70 cards. Amy decided on 2026-10-30, by interview: a faster
     kernel can change the output bits if the oracle still passes. The tolerance goes into the spec as a Proposed
     note. The same identity, job and seed must still give the same bits on each run.
