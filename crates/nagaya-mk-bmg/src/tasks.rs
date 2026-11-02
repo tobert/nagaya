@@ -665,6 +665,18 @@ pub fn gemm(
     }
 }
 
+/// The convolution `task` with its pad at the bottom and the right only. diffusers' down sampler of the VAE encoder
+/// pads one row and one column at the end, then runs a 3 x 3 kernel with stride 2 (`downsampling.py:139-145`).
+pub fn pad_end(mut task: MkTaskDescriptor) -> MkTaskDescriptor {
+    assert!(
+        task.opcode == OP_CONV2D || task.opcode == OP_GEMM,
+        "FLAG_PAD_END marks OP_CONV2D or OP_GEMM, not op {}",
+        task.opcode
+    );
+    task.flags |= FLAG_PAD_END;
+    task
+}
+
 /// The ushorts of the planes of [`attn_prep`] for `images` images of `nk` key rows of `heads * d` values.
 pub fn attn_planes_len(images: usize, nk: usize, heads: usize, d: usize) -> usize {
     images * heads * 6 * nk.div_ceil(16) * 16 * d

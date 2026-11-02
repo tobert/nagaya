@@ -142,7 +142,8 @@ fn rel(got: &[f32], want: &[f32]) -> f32 {
     got.iter().zip(want).fold(0.0f32, |m, (g, w)| m.max((g - w).abs())) / scale
 }
 
-/// The shape of a convolution: images, input height and width, inputs, outputs, kernel, stride, padding.
+/// The shape of a convolution: images, input height and width, inputs, outputs, kernel, stride, padding. With `end`,
+/// the padding is at the bottom and the right only (`FLAG_PAD_END`).
 #[derive(Clone, Copy, Debug)]
 struct Conv {
     b: usize,
@@ -153,13 +154,19 @@ struct Conv {
     kernel: usize,
     stride: usize,
     pad: usize,
+    end: bool,
 }
 
 impl Conv {
+    /// The padding at the top and the left.
+    fn start(&self) -> usize {
+        if self.end { 0 } else { self.pad }
+    }
+
     fn out(&self) -> (usize, usize) {
         (
-            (self.h + 2 * self.pad - self.kernel) / self.stride + 1,
-            (self.w + 2 * self.pad - self.kernel) / self.stride + 1,
+            (self.h + self.start() + self.pad - self.kernel) / self.stride + 1,
+            (self.w + self.start() + self.pad - self.kernel) / self.stride + 1,
         )
     }
 
@@ -186,8 +193,8 @@ fn conv_cpu(s: Conv, x: &[f32], w: &[f32], bias: Option<&[f32]>) -> Vec<f32> {
                     let mut acc = bias.map_or(0.0, |bias| bias[o]);
                     for ky in 0..s.kernel {
                         for kx in 0..s.kernel {
-                            let yy = (yo * s.stride + ky) as isize - s.pad as isize;
-                            let xx = (xo * s.stride + kx) as isize - s.pad as isize;
+                            let yy = (yo * s.stride + ky) as isize - s.start() as isize;
+                            let xx = (xo * s.stride + kx) as isize - s.start() as isize;
                             if yy < 0 || xx < 0 || yy >= s.h as isize || xx >= s.w as isize {
                                 continue;
                             }
@@ -220,6 +227,7 @@ fn conv2d_with_f16_weights_pads_strides_and_takes_a_bias() {
             kernel: 3,
             stride: 1,
             pad: 1,
+            end: false,
         },
         Conv {
             b: 2,
@@ -230,6 +238,7 @@ fn conv2d_with_f16_weights_pads_strides_and_takes_a_bias() {
             kernel: 3,
             stride: 2,
             pad: 1,
+            end: false,
         },
     ] {
         let x = rng.vec(s.b * s.h * s.w * s.cin);
@@ -272,6 +281,7 @@ fn a_1x1_conv2d_with_f32_weights_is_a_linear_layer_and_can_accumulate() {
         kernel: 1,
         stride: 1,
         pad: 0,
+        end: false,
     };
     let x = rng.vec(9 * 40);
     let w = rng.vec(32 * 40);
@@ -296,6 +306,122 @@ fn a_1x1_conv2d_with_f32_weights_is_a_linear_layer_and_can_accumulate() {
         .collect();
     let err = rel(&got, &want);
     assert!(err < 1e-5, "relative error {err}");
+}
+
+/// The down sampler of the VAE encoder as diffusers runs it (`downsampling.py:139-145`): one row of zeros at the bottom
+/// and one column of zeros at the right (`F.pad(x, (0, 1, 0, 1))`), then the convolution with no padding. This CPU form
+/// pads the input itself, so it does not share the arithmetic of `Conv::start`.
+fn pad_end_cpu(s: Conv, x: &[f32], w: &[f32], bias: &[f32]) -> Vec<f32> {
+    assert!(s.end && s.pad == 1);
+    let (h, wd) = (s.h + 1, s.w + 1);
+    let mut padded = vec![0.0f32; s.b * h * wd * s.cin];
+    for b in 0..s.b {
+        for y in 0..s.h {
+            for xx in 0..s.w {
+                let from = ((b * s.h + y) * s.w + xx) * s.cin;
+                let to = ((b * h + y) * wd + xx) * s.cin;
+                padded[to..to + s.cin].copy_from_slice(&x[from..from + s.cin]);
+            }
+        }
+    }
+    let plain = Conv {
+        h,
+        w: wd,
+        pad: 0,
+        end: false,
+        ..s
+    };
+    conv_cpu(plain, &padded, w, Some(bias))
+}
+
+/// The down samplers of the VAE encoder of milestone 20 step 3. An image of `h` by `w` gives `h / 2` by `w / 2`.
+fn pad_end_shapes() -> [Conv; 2] {
+    let s = Conv {
+        b: 2,
+        h: 8,
+        w: 6,
+        cin: 64,
+        cout: 32,
+        kernel: 3,
+        stride: 2,
+        pad: 1,
+        end: true,
+    };
+    // An odd size keeps the last row and column of the input out of each output, as PyTorch does.
+    [s, Conv { h: 9, w: 5, ..s }]
+}
+
+/// `OP_CONV2D` with `FLAG_PAD_END` pads the bottom and the right only, as the down sampler of the VAE encoder does.
+#[test]
+fn conv2d_with_the_pad_at_the_end_gives_the_down_sampler_of_the_vae_encoder() {
+    let mut card = Card::open();
+    let mut rng = Rng(53);
+    for s in pad_end_shapes() {
+        let x = rng.vec(s.b * s.h * s.w * s.cin);
+        let w = rng.vec(s.cout * s.cin * 9);
+        let bias = rng.vec(s.cout);
+        let (ho, wo) = s.out();
+        assert_eq!((ho, wo), (s.h / 2, s.w / 2));
+        let out = s.b * ho * wo * s.cout;
+        let (xb, wb, bb, yb) = (
+            Buf::of(card.card(), &x),
+            Buf::of(card.card(), &w),
+            Buf::of(card.card(), &bias),
+            Buf::zeros(card.card(), out * 4),
+        );
+        card.run(&[nagaya_mk_bmg::tasks::pad_end(MkTaskDescriptor {
+            flags: FLAG_F32,
+            a: xb.at(),
+            b: wb.at(),
+            c: yb.at(),
+            x: bb.at(),
+            ..s.task()
+        })]);
+        let got: Vec<f32> = yb.read(card.card(), out);
+        let err = rel(&got, &pad_end_cpu(s, &x, &w, &bias));
+        assert!(err < 1e-5, "{s:?}: relative error {err}");
+    }
+}
+
+/// `OP_GEMM` with `FLAG_PAD_END` pads the bottom and the right only. The engine runs the down samplers of the VAE
+/// encoder this way, with 3 planes for their F32 weights.
+#[test]
+fn gemm_with_the_pad_at_the_end_gives_the_down_sampler_of_the_vae_encoder() {
+    use nagaya_mk_bmg::tasks::{gemm, gemm_planes, pad_end};
+    let mut card = Card::open();
+    let mut rng = Rng(59);
+    for s in pad_end_shapes() {
+        let x = rng.vec(s.b * s.h * s.w * s.cin);
+        let w = rng.vec(s.cout * s.cin * 9);
+        let bias = rng.vec(s.cout);
+        let (ho, wo) = s.out();
+        let out = s.b * ho * wo * s.cout;
+        let wp = gemm_planes(&w, s.cout, s.cin, 3, 3);
+        let (xb, wb, bb, yb) = (
+            Buf::of(card.card(), &x),
+            Buf::of(card.card(), &wp),
+            Buf::of(card.card(), &bias),
+            Buf::zeros(card.card(), out * 4),
+        );
+        card.run(&[pad_end(gemm(
+            xb.at(),
+            wb.at(),
+            bb.at(),
+            yb.at(),
+            s.b as u32,
+            s.h as u32,
+            s.w as u32,
+            s.cin as u32,
+            s.cout as u32,
+            (3, 2, 1),
+            3,
+            false,
+            false,
+        ))]);
+        let got: Vec<f32> = yb.read(card.card(), out);
+        let err = rel(&got, &pad_end_cpu(s, &x, &w, &bias));
+        assert!(err < 1e-5, "{s:?}: relative error {err}");
+    }
 }
 
 /// The plain group norm, pixel-major.
@@ -605,6 +731,7 @@ fn gemm_on_the_matrix_units_gives_the_convolution_in_f32_precision() {
                 kernel: 3,
                 stride: 1,
                 pad: 1,
+                end: false,
             },
             true,
             false,
@@ -619,6 +746,7 @@ fn gemm_on_the_matrix_units_gives_the_convolution_in_f32_precision() {
                 kernel: 3,
                 stride: 2,
                 pad: 1,
+                end: false,
             },
             false,
             true,
@@ -633,6 +761,7 @@ fn gemm_on_the_matrix_units_gives_the_convolution_in_f32_precision() {
                 kernel: 1,
                 stride: 1,
                 pad: 0,
+                end: false,
             },
             true,
             false,
@@ -921,6 +1050,7 @@ fn the_conv_in_of_the_unet_gives_the_oracle() {
         kernel: 3,
         stride: 1,
         pad: 1,
+        end: false,
     };
     let (xb, wb, bb, yb) = (
         Buf::of(card.card(), &x),
