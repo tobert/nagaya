@@ -238,9 +238,9 @@ If a change makes the sum larger than the pool, the process refuses the profile 
 shortfall in bytes. Then raise the pool in `profile.toml`, or lower `store.host`. Keep the pool 12 GiB below
 `MemTotal`.
 
-**Two engines on gfx1151host.** **Proposed** by Claude Opus 5.5, 2026-11-01, for milestone 22 step 8 (`AGENTS.md`,
-"Pool"). Reason: Amy chose to keep Qwen3.8 and Qwen-Image loaded while gfx1151host only serves, and the measures below
-leave no room for the old store budget.
+**Two engines on gfx1151host.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-11-01, for milestone 22 step 8
+(`AGENTS.md`, "Pool"). Reason: Amy chose to keep Qwen3.8 and Qwen-Image loaded while gfx1151host only serves, and the measures
+below leave no room for the old store budget.
 
 - The pool stays 112 GiB, and the floor of spec 4.7 stays 12 GiB.
 - The store's host budget goes from 16 GiB to 2 GiB. The NVMe budget stays 50 GiB, so a parked context still has a

@@ -1038,8 +1038,8 @@ image_clear(slot)                       frees the state of the slot
   `trailing`) and `loras`, a list of each LoRA's bytes and weight. The engine parses the bytes and adds each delta
   to its module's output (spec 11.9a). The engine refuses `trailing` with a DPM++ sampler. Reason: the spacing of the
   schedule is the engine's, and the spec gives the rule.
-- **Image inputs.** **Proposed** by Claude Opus 5.5, 2026-10-30, for spec 11.9b. Reason: the nagaya decodes and
-  checks each PNG on the route, so the engine takes pixels, as it takes tokens and not text (D2).
+- **Image inputs.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30, for spec 11.9b. Reason: the
+  nagaya decodes and checks each PNG on the route, so the engine takes pixels, as it takes tokens and not text (D2).
   - `ImageJob` takes `init`: the RGB bytes of the image, 3 for each pixel, and `strength`. It also takes `mask`: the
     blurred gray mask, 1 byte for each pixel. The engine makes the binary mask from it.
   - `image_begin` cuts the schedule to its last `n` steps (spec 11.9b). The first `image_step` of a job with `init`
@@ -1049,9 +1049,9 @@ image_clear(slot)                       frees the state of the slot
     without `init` and `mask`. A 4-channel UNet blends the latent after each step.
   - `image_decode` gives the decode with no paste. The nagaya pastes the kept pixels back before the PNG encode.
 
-**Qwen-Image 2.1.** Decided by senpai 2026-11-01 (vetoable). Proposed by Claude Opus 5.5, 2026-10-31, for spec 11.9c and
-6.16. Reason: the job above has the shape of SDXL. Qwen-Image has one encoder with no chunks, a flow sampler, a cached
-conditioning and an RGBA decode. Each change adds a form or a member, and no call.
+**Qwen-Image 2.1.** Decided by senpai 2026-11-01, and accepted by Amy 2026-11-02. Proposed by Claude Opus 5.5,
+2026-10-31, for spec 11.9c and 6.16. Reason: the job above has the shape of SDXL. Qwen-Image has one encoder with no
+chunks, a flow sampler, a cached conditioning and an RGBA decode. Each change adds a form or a member, and no call.
 
 - `ImageJob.prompt` takes one of two forms. `chunks` is the form of SDXL above. `tokens` is the form of Qwen-Image:
   the ids of the whole template, and the cut (spec 11.9c). An engine refuses the form that it does not read.
@@ -1079,9 +1079,9 @@ conditioning and an RGBA decode. Each change adds a form or a member, and no cal
 
 ## Embedding
 
-**The embedding capability.** Proposed by Claude Opus 5.5 (a senpai fork), 2026-10-30, for spec 11.10. Reason: an
-embedding reads tokens and gives one vector. It has no slot state, no logits and no sampler. A segment of a pass has
-no place for the pooled vector, as it had none for an image ("Image").
+**The embedding capability.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5 (a senpai fork), 2026-10-30, for
+spec 11.10. Reason: an embedding reads tokens and gives one vector. It has no slot state, no logits and no sampler. A
+segment of a pass has no place for the pooled vector, as it had none for an image ("Image").
 
 An embedding engine declares the `embedding` capability. Its `pass` refuses. It has one call:
 
@@ -1185,9 +1185,10 @@ of a small engine on the waiting card costs the large engine nothing.
 - An engine with one device loads beside a loaded engine with stages when the ledger admits both. It opens on the
   stage thread of its device, and its quanta run there. No engine unloads.
 - When it does not fit, the load is a 409. The client names the engine with stages in `unload` (spec 3.3a).
-- A load of an engine with stages unloads only the engines that the load names. Each other engine stays loaded on
-  its device thread, and the engine with stages gives its handles to those threads (spec 3.2, "The device threads
-  live as long as the group"). Proposed by Claude Opus 5.5, 2026-10-30. This replaces the moves of 2026-10-30.
+- A load of an engine with stages unloads only the engines that the load names. Each other engine stays loaded on its
+  device thread, and the engine with stages gives its handles to those threads (spec 3.2, "The device threads live as
+  long as the group"). Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30. This replaces the moves of
+  2026-10-30.
 - An unload of an engine on a stage thread runs there. The engine with stages stays loaded.
 - A quantum of the engine with one device holds only its device. The scheduler ranks it with the stage quanta of
   that device by class and priority (spec 5.3, 5.4).

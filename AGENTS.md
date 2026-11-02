@@ -217,7 +217,7 @@ and milestone 23 is next.
     took 8.0 s, with the same reply. `nagaya.service` runs the build of `ff197d2`, and `gogi-conformance` gave 266 ok,
     0 FAIL and 11 skip.
 
-    Amy decides the Proposed notes of spec 3.3a. The commits:
+    No Proposed note of this milestone is open (2026-11-02). The commits:
 
     - step 2, close: `a82e59f`;
     - step 3, the ledger check: `589bfbc`;
@@ -260,7 +260,7 @@ and milestone 23 is next.
     1.2 s. The swap back took 7.2 s. `nagaya.service` runs the build of `3fd481d`, and `gogi-conformance` gave 266
     ok, 0 FAIL and 11 skip. The speech engine plans 5.6 GB on card 0, and gemma leaves 4.4 GB, so they swap.
 
-    Amy decides the Proposed notes of spec 11.8 and of engine-abi "Speech" and "How a group loads both". The commits:
+    No Proposed note of this milestone is open (2026-11-02). The commits:
 
     - steps 1 to 3, the spec, the oracle and the family: `cc7ffa7`, `529cf4f`, `5d78334`, `94760ba`, `5600fda`;
     - steps 4 and 5, the shared interpreter and the ops: `44a5545`, `b4c53a8`, `9610748`, `dadbde0`;
@@ -379,7 +379,7 @@ and milestone 23 is next.
     with `embeddinggemma-2` pinned on card 1 beside Gemma 4. The gogi suite gave 70 ok, 0 FAIL and 0 skip for
     `embeddinggemma-2`, and 367 ok, 0 FAIL and 15 skip for gemma.
 
-    Amy decides the Proposed notes of spec 3.3a, 3.3b, 11.9a and 11.10. The commits:
+    Amy accepted the Proposed notes of spec 3.3a, 3.3b, 11.9a and 11.10 on 2026-11-02. The commits:
 
     - step 1, gogi `9f60194`, `a3a0006` and `6db7e98`, and the pin `432cf8b`;
     - steps 2 to 4, the spec, the oracle and the family: `f3d78cb`, `ce6d967`, `62ef500`;
@@ -441,7 +441,8 @@ and milestone 23 is next.
     - **Reference:** `~/.venvs/nagaya-qwenimage21-ref` has diffusers 0.41.0.dev0 with `QwenImage21Pipeline`. It is a
       copy of diffusepal's venv, without diffusepal. Run it with `-I`, on the CPU only, with `nagaya.service`
       stopped. Its weights need 31 GiB of RAM.
-    - **Decisions of 2026-11-01**, by interview. Senpai decided the other notes of step 1 (vetoable).
+    - **Decisions of 2026-11-01**, by interview. Senpai decided the other notes of step 1, and Amy
+      accepted them on 2026-11-02.
       - A step never splits into smaller quanta.
       - The client writes the trigger phrase, and the PNG stays RGBA.
       - True CFG and the negative prompt are a design for later.
@@ -485,8 +486,8 @@ and milestone 23 is next.
     - the fastest deterministic GEMM pick: 4.2 s to 4.06 s, but the bits could change when a table fills again. It
       stays out (spec 12.1).
 
-    Amy decides the Proposed notes of spec 11.1 ("A text engine on demand") and of `docs/deploy.md` ("Two engines on
-    gfx1151host"). The notes "Decided by senpai" are vetoable: spec 11.9c "The attention" and the previews of 11.9c. The
+    Amy accepted the Proposed notes of spec 11.1 ("A text engine on demand") and of `docs/deploy.md` ("Two engines
+    on gfx1151host") on 2026-11-02. She also accepted each note that senpai decided in this milestone. The
     nagaya needs nothing in `~/src/diffusepal` now: the weights and the reference venv have copies (`b1694e6` and
     after). The commits:
 

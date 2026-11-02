@@ -18,10 +18,10 @@ we could redo it all again if we decide to"). The mark "Decided 2026-10-20 (read
 **Proposed** reading of the text. Senpai wrote it as a rule, and Amy can veto it.
 
 The mark "Decided by senpai 2026-10-20 night (vetoable)" is on a rule that senpai chose where the spec left a choice
-open. Amy can veto it. The mark "Decided by senpai 2026-10-22 (vetoable)" is on a **Proposed** note that senpai
-accepted (Amy, 2026-10-22: "if those decisions seem ok to you let's call them ok and melt them in"). Amy reads them
-in her review of the docs. The mark "Decided by senpai 2026-11-01 (vetoable)" has the same meaning for the notes of
-milestone 22. Amy chose it on 2026-11-01, by interview.
+open. Amy can veto it. The mark "Decided by senpai 2026-10-22 (vetoable)" is on a **Proposed** note that senpai accepted
+(Amy, 2026-10-22: "if those decisions seem ok to you let's call them ok and melt them in"). Amy reads them in her review
+of the docs. Senpai decided the notes of milestone 22 on 2026-11-01, and Amy accepted all of them on 2026-11-02.
+Their mark says both dates.
 
 ## 1. Scope
 
@@ -378,11 +378,11 @@ thread priorities:
   thread of its device (D1, and the next rule). The group thread runs the scheduler and sends each stage quantum to
   the thread of its device. Each call that touches a device comes from the stage thread of that device. Decided
   2026-10-21 (Amy: "move stage_pass up"). The thread layout is in engine-abi D1.
-- **The device threads live as long as the group.** Proposed by Claude Opus 5.5, 2026-10-30. A group of more than one
-  device starts its device threads once, and they end when the group stops. At its open, the engine with stages gives
-  each stage handle to the thread of its device. Its unload takes the handles back. Thus the stage thread of a device
-  is its device thread. Reason: an engine with one device then stays on its thread through each swap of
-  the engine with stages (3.3a, "Explicit layout").
+- **The device threads live as long as the group.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30. A
+  group of more than one device starts its device threads once, and they end when the group stops. At its open, the
+  engine with stages gives each stage handle to the thread of its device. Its unload takes the handles back. Thus the
+  stage thread of a device is its device thread. Reason: an engine with one device then stays on its thread through each
+  swap of the engine with stages (3.3a, "Explicit layout").
 - **A bounded CPU worker pool.** Rendering, tokenization, hashing, safetensors conversion, and CPU device passes
   (13.2) run on a bounded pool pinned to the remaining cores at `SCHED_BATCH`. Long CPU work yields between chunks
   to obey `max_quantum_ms`. On unified-memory machines (`gfx1151host` and `sm121host`), the scheduler pauses background CPU
@@ -498,10 +498,10 @@ policy. The nagaya keeps no such name.
   - `keep`: the entry is the same, or only its `share` changes. A new share takes effect through admission (4.4).
   - `residency`: only `residency` or `pinned` changes. A resident engine that is not loaded loads when it fits beside
     the loaded engines (3.3a, "Explicit layout"). An engine that becomes on demand stays loaded until an unload.
-  - **One try.** Proposed by senpai (Claude Opus 5.5), 2026-10-30. The change tries the load of a resident engine
-    once. When it does not fit, the engine stays unloaded and the log names the shortfall. A client loads it later
-    with the load route (3.3b). Reason: a retry by itself is a swap that no client
-    asked for. Amy, 2026-10-30: "I'd like to avoid churning on model swaps."
+  - **One try.** Decided 2026-11-02 (Amy), proposed by senpai (Claude Opus 5.5), 2026-10-30. The change tries the load
+    of a resident engine once. When it does not fit, the engine stays unloaded and the log names the shortfall. A client
+    loads it later with the load route (3.3b). Reason: a retry by itself is a swap that no client asked for. Amy,
+    2026-10-30: "I'd like to avoid churning on model swaps."
   - `load`: the entry is new. It loads if it is resident.
   - `unload`: the entry is gone.
   - `reload`: `kind`, `devices`, `config` or `family` changes. The engine unloads, then it loads with the new entry.
@@ -573,38 +573,38 @@ interview), with the explicit loads of 3.3. Reason: these rules make each swap o
 - **The engines that unload.** A swap unloads only the engines that its load names (3.3b). The group asks the ledger
   whether the engine fits beside the engines that stay.
   When it does not fit, the load is a 409, and nothing changes. Engines of other groups never unload for a swap.
-- The ledger takes a load when the group plans it, before any engine unloads. Until the swap ends, a later context
-  or staging charge must fit the ledger now and the ledger after the swap. The engines that unload keep their bytes
-  until their drop, and the ledger charges the swap after the drop. A profile change waits for the drop of each
-  engine that it retires. **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: a late charge stopped the process
+- The ledger takes a load when the group plans it, before any engine unloads. Until the swap ends, a later context or
+  staging charge must fit the ledger now and the ledger after the swap. The engines that unload keep their bytes until
+  their drop, and the ledger charges the swap after the drop. A profile change waits for the drop of each engine that it
+  retires. Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30. Reason: a late charge stopped the process
   after a 202, and bytes freed too early let the staying engines over-commit.
 - Swaps of two groups can wait at one time, and they can end in either order. A swap is charged after its own
   unloads, beside any set of other swaps that ended first, each whole with its load and unload. Each such state
-  must fit. A swap that only unloads is never refused. **Proposed** by Claude Opus 5.5,
+  must fit. A swap that only unloads is never refused. Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5,
   2026-10-30. Reason: a check of the end state let the first swap find no room, and a load counted without its
   unload refused an unload.
 - A profile `PUT` while any swap waits or runs is a 409 busy, and nothing changes. The client sends it again later.
   Decided 2026-10-30 (Amy: "409 while busy with swaps is good, write it in and do"). Reason: a profile checked
   beside a waiting swap could fail after that swap.
-- After the nagaya accepts a change, a load is a 409 of the same kind until the ledger takes the new profile. The
-  ledger takes it when no swap waits, and the engines that the change removes dropped and hold no context.
-  **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: a load in that time could break the new profile, and a late
+- After the nagaya accepts a change, a load is a 409 of the same kind until the ledger takes the new profile. The ledger
+  takes it when no swap waits, and the engines that the change removes dropped and hold no context. Decided 2026-11-02
+  (Amy), proposed by Claude Opus 5.5, 2026-10-30. Reason: a load in that time could break the new profile, and a late
   context stopped the process.
-- Until the ledger takes the new profile, each context and staging charge must also fit it. A charge for an engine
-  that the change removes is refused as not ready, a 503 `model_unavailable`. The log names the wait of the change
-  at its start and every 10 s. **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: a charge that fit only the old
-  profile stopped the process, and steady traffic to a removed engine held the change off.
-- Known limit: a swap that only unloads is charged with no check. Fewer engines fit, but with elastic terms the
-  spare of the staying engines can shrink under live contexts. No engine declares elastic terms today. **Proposed**
-  by Claude Opus 5.5, 2026-10-30.
+- Until the ledger takes the new profile, each context and staging charge must also fit it. A charge for an engine that
+  the change removes is refused as not ready, a 503 `model_unavailable`. The log names the wait of the change at its
+  start and every 10 s. Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30. Reason: a charge that fit
+  only the old profile stopped the process, and steady traffic to a removed engine held the change off.
+- Known limit: a swap that only unloads is charged with no check. Fewer engines fit, but with elastic terms the spare of
+  the staying engines can shrink under live contexts. No engine declares elastic terms today. Decided 2026-11-02 (Amy),
+  proposed by Claude Opus 5.5, 2026-10-30.
 - **The wait before an unload.** An engine that must unload takes no new job. Its jobs that the group holds run to
   their end. Jobs of engines that stay loaded go on. A swap of an engine with stages is the one exception: new jobs
   of the staying engines wait for it (see "No moves" below).
-- **Single-card swaps.** Proposed by senpai (Claude Haiku 5.5), 2026-10-29, for Amy's choice of 2026-10-29 (by
-  interview: "split the group by card"). A swap of an engine on one device runs on that device's thread, not on the
-  group thread. The ledger still decides each swap, on its one thread. The group thread keeps the swaps of an engine
-  that spans devices, such as Gemma 4 on both cards, and that stall is accepted. Reason: a 244 ms image swap then no
-  longer waits on the other card. The cost: two threads run swaps, so the ledger check orders them.
+- **Single-card swaps.** Decided 2026-11-02 (Amy), proposed by senpai (Claude Haiku 5.5), 2026-10-29, for Amy's choice
+  of 2026-10-29 (by interview: "split the group by card"). A swap of an engine on one device runs on that device's
+  thread, not on the group thread. The ledger still decides each swap, on its one thread. The group thread keeps the
+  swaps of an engine that spans devices, such as Gemma 4 on both cards, and that stall is accepted. Reason: a 244 ms
+  image swap then no longer waits on the other card. The cost: two threads run swaps, so the ledger check orders them.
   - Amy accepted the Gemma stall on 2026-10-29.
 
 **A job for an engine that is not ready.** Proposed by senpai (Claude Opus 5.5), 2026-10-28, and Decided 2026-10-28
@@ -656,16 +656,16 @@ exactly right. the kaijutsu management agents will use the api and tools to mana
   unloads any engine. A swap that still does not fit is a 409, and nothing changes.
 - A pinned engine never unloads for a load or by the unload route. A load that needs its memory is a 409 that names
   the pin.
-- **No moves.** Proposed by Claude Opus 5.5, 2026-10-30. This replaces the rule "Moves" of 2026-10-30. A swap of an
-  engine with stages unloads only the engines that its load names, as every swap does. Each other engine of the group
-  stays loaded on its device thread (3.2, "The device threads live as long as the group"). A load of an engine with
-  stages that does not fit is a 409, as for any load.
+- **No moves.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30. This replaces the rule "Moves" of
+  2026-10-30. A swap of an engine with stages unloads only the engines that its load names, as every swap does. Each
+  other engine of the group stays loaded on its device thread (3.2, "The device threads live as long as the group"). A
+  load of an engine with stages that does not fit is a 409, as for any load.
 - The group thread opens and closes the engine with stages. It waits until the group holds no job, and the jobs of
   the other engines wait during the open. Reason: the scheduler of the group runs on that thread.
-- While such a swap waits, a new job of an engine that stays waits too. It runs after the swap, and it never fails
-  for the swap. Thus the jobs in flight end, and a steady stream of jobs cannot hold off the swap. **Proposed** by
-  Claude Opus 5.5, 2026-10-30. Reason: a review found that steady embeddings kept the group busy, so a load of Gemma
-  4 never ran.
+- While such a swap waits, a new job of an engine that stays waits too. It runs after the swap, and it never fails for
+  the swap. Thus the jobs in flight end, and a steady stream of jobs cannot hold off the swap. Decided 2026-11-02 (Amy),
+  proposed by Claude Opus 5.5, 2026-10-30. Reason: a review found that steady embeddings kept the group busy, so a load
+  of Gemma 4 never ran.
 - Reason: on 2026-10-30 on b70host, a load of an image engine that named Gemma 4 moved the pinned EmbeddingGemma 2.
   It was not ready for 8 s. The swap back to Gemma 4 unloaded it, and nothing loaded it again until a restart.
 - A resident engine can share a device group with a resident engine with stages. At start, it loads beside that
@@ -685,17 +685,17 @@ on demand" of 2026-10-24.
 - A request for it is a 503 `model_unavailable` (3.3).
 - Its `weight_hash` and `tokenizer_hash` come from its first open since the start, and they are empty before (11.8a).
 
-**3.3b The load routes.** Proposed by senpai (Claude Opus 5.5), 2026-10-27. Amy decided that the routes exist (3.3), and
-the shape was Decided 2026-10-28 (Amy, by interview).
+**3.3b The load routes.** Proposed by senpai (Claude Opus 5.5), 2026-10-27, and its other notes are Decided 2026-11-02
+(Amy). Amy decided that the routes exist (3.3), and the shape was Decided 2026-10-28 (Amy, by interview).
 
 - `POST /nagaya/v1/engines/{name}/load` loads the engine of the profile with that name, by a swap (3.3a). The reply is a
   202 when the swap starts, and it names the engines that unload. A loaded or loading engine gives a 200.
 - The body of a load is empty, or `{"unload": [names]}` (3.3a, "Explicit layout"). Decided 2026-10-30 (Amy, by
   interview). A name of another device group, the engine itself, or a malformed body is a 400 `invalid_request` with
   the param `unload`. An unknown name is a 404 that names it.
-- A name that comes twice in `unload` is a 400 with the param `unload` too. The checks of the list run before the 200
-  of a loaded engine. **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: a repeat crashed the ledger thread, and a
-  loaded engine hid a bad list behind a 200.
+- A name that comes twice in `unload` is a 400 with the param `unload` too. The checks of the list run before the 200 of
+  a loaded engine. Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30. Reason: a repeat crashed the
+  ledger thread, and a loaded engine hid a bad list behind a 200.
 - A load that does not fit is a 409 that names the shortfall, the engines in the way and the pins (3.3a).
 - `POST /nagaya/v1/engines/{name}/unload` unloads a loaded engine that is not pinned, resident or on demand. No other
   engine loads. An engine that is not loaded gives a 200. Decided 2026-10-30 (Amy, by interview).
@@ -1442,9 +1442,9 @@ gfx1151host cannot run this test. mk declares `segments_exact: true` (`crates/na
 so the test cannot fail there for this reason.
 
 **6.16 Conditionings.** Amy decided on 2026-10-31 that the store keeps the encoder output of each prompt (`AGENTS.md`
-milestone 22). The rules below are Decided by senpai 2026-11-01 (vetoable). Amy decided on 2026-11-01, by
-interview, that variants with the same encoder share their conditionings. Reason: a conditioning is sealed state with
-a recipe. Thus the rules of 6.2 to 6.11 give its key, its lookup, its eviction and its tripwire.
+milestone 22). The rules below are Decided by senpai 2026-11-01, and accepted by Amy 2026-11-02. Amy decided on
+2026-11-01, by interview, that variants with the same encoder share their conditionings. Reason: a conditioning is
+sealed state with a recipe. Thus the rules of 6.2 to 6.11 give its key, its lookup, its eviction and its tripwire.
 
 - A **conditioning** is the output of an image engine's text encoder for one prompt. It has one row for each id after
   the cut (11.9c). Qwen-Image 2.1 gives rows of 4096 bf16 values, 8 KiB each.
@@ -1625,10 +1625,11 @@ prompt, the codes that the reference sampled for it, and the reference outputs:
 The engine runs with the codes of the fixture in place of its samples, and each output must be within its tolerance.
 Python writes the fixture once, on the CPU; no Python runs at test time (`AGENTS.md` "Checks").
 
-**The embedding oracle.** Proposed by Claude Opus 5.5 (a senpai fork), 2026-10-30, for milestone 19.
-`tools/embeddinggemma2_golden.sh` runs sentence-transformers 6.1.0 on the CPU, in f32 from the bf16 weights, with
-eager attention. Its venv is `~/.venvs/embed-ref`, and its header names each version. It writes `cases.json` and
-`golden.safetensors` into `target/embeddinggemma2-golden` or `EMBEDDINGGEMMA2_GOLDEN_DIR`. Neither file is committed.
+**The embedding oracle.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5 (a senpai fork), 2026-10-30, for
+milestone 19. `tools/embeddinggemma2_golden.sh` runs sentence-transformers 6.1.0 on the CPU, in f32 from the bf16
+weights, with eager attention. Its venv is `~/.venvs/embed-ref`, and its header names each version. It writes
+`cases.json` and `golden.safetensors` into `target/embeddinggemma2-golden` or `EMBEDDINGGEMMA2_GOLDEN_DIR`. Neither file
+is committed.
 
 - The files hold 8 texts and 8 tasks. For each pair, they hold the ids, the vector, and its cuts to 512, 256 and 128.
   They also hold a bf16 vector for `query` and `document`, and the hidden states of one input.
@@ -1639,8 +1640,9 @@ eager attention. Its venv is `~/.venvs/embed-ref`, and its header names each ver
 - Reason for 1e-4: the bf16 run differs by up to 3.7e-3, with a cosine of 0.99957. A gate at that level lets a wrong
   layer pass. An engine with f32 math from the bf16 weights stays far below 1e-4.
 
-**The Qwen-Image oracle.** Decided by senpai 2026-11-01 (vetoable). Proposed by Claude Opus 5.5, 2026-10-31, for
-milestone 22. Reason: this follows the oracles of SDXL and EmbeddingGemma 2, with one gate for each stage of the engine.
+**The Qwen-Image oracle.** Decided by senpai 2026-11-01, and accepted by Amy 2026-11-02. Proposed by Claude Opus 5.5,
+2026-10-31, for milestone 22. Reason: this follows the oracles of SDXL and EmbeddingGemma 2, with one gate for each
+stage of the engine.
 
 - `tools/qwenimage21_golden.sh` runs diffusers 0.41.0.dev0 in `~/.venvs/nagaya-qwenimage21-ref`, on the CPU only. It
   computes in f32 from the bf16 weights, and loads one model at a time. Its peak is about 33 GiB of RAM.
@@ -1677,8 +1679,8 @@ each gap, as for every oracle. Then a Decided note sets each gate at about 4 tim
 - `parts.safetensors` holds the encoder layers, the transformer modules of step 0 and the VAE stages. They are
   references for kernel bring-up, not gates.
 
-**The bf16 baseline of each gate.** Decided by senpai 2026-11-01 (vetoable). Amy's goal of 2026-11-01 asked for it:
-"choose a balance of accuracy & speed. Working is most important."
+**The bf16 baseline of each gate.** Decided by senpai 2026-11-01, and accepted by Amy 2026-11-02. Amy's goal of
+2026-11-01 asked for it: "choose a balance of accuracy & speed. Working is most important."
 
 Reason: the first run on gfx1151host showed that no bf16 encoder reaches the cap of the conditioning gate. diffusers in
 bf16, which diffusepal runs, does not reach it either.
@@ -1788,7 +1790,7 @@ Decided by senpai 2026-10-20 night (vetoable):
   `generation` or `job`. A body names its value with `JobBody::request`. The value `job` is for a body that gives none.
 - The job span ends when the job reaches a terminal state, or when a stop cancels it. Its `outcome` is the job state.
 
-**The engine of a job.** Proposed by senpai (Claude Opus 5.5), 2026-10-30. Amy decides.
+**The engine of a job.** Decided 2026-11-02 (Amy), proposed by senpai (Claude Opus 5.5), 2026-10-30.
 
 - The attribute `engine` of the span `nagaya.job`, of its quanta, and of the quantum metrics is the name of the job's
   engine. `GroupJobs` holds the engine of each job, so the name is known.
@@ -2290,9 +2292,9 @@ Pooling and the decision numbers come from `gogi_proto::math`, which all engines
 `identity.engine` covers two things: the engine identity, and the nagaya code that turns logits into decisions.
 (mk: `libmkengine:<sha>+numbers:<sha>`.)
 
-**A text engine on demand.** **Proposed** by Claude Opus 5.5, 2026-11-01. Reason: Amy made mk on demand on gfx1151host
-(`docs/deploy.md`, "The layout of gfx1151host"), and the council served only the engines that opened at the start. Then
-mk was no served model, and gogi found no ready model.
+**A text engine on demand.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-11-01. Reason: Amy made mk on
+demand on gfx1151host (`docs/deploy.md`, "The layout of gfx1151host"), and the council served only the engines that opened at the
+start. Then mk was no served model, and gogi found no ready model.
 
 - A factory can describe an engine: the identity and the limits that its open will report, with no GPU and no load
   (`Factory::describe`). mk describes itself from its shards, its build and its knobs.
@@ -3203,7 +3205,7 @@ by interview).
 - The random value of a code depends on the seed, the frame within its line, and the codebook (11.2). Thus the same
   context and seed give the same codes, held or fed.
 
-**A slow reader of speech.** Proposed by senpai (Claude Opus 5.5), 2026-10-30. Amy decides.
+**A slow reader of speech.** Decided 2026-11-02 (Amy), proposed by senpai (Claude Opus 5.5), 2026-10-30.
 
 - A slow reader of a speech stream, or of its pending id, never holds the group thread. No change to the code.
 - The job gives each chunk of audio to the call thread through a queue of 64 chunks (`crates/nagaya/src/speech/mod.rs`,
@@ -3317,19 +3319,19 @@ interview). Reason: the rules of 11.9 need names, ranges and errors before the f
   no seed gets a random seed, and the A1111 chunk records it. Any other member of `sample` is a 400 that names it.
 - `max_tokens` bounds no image. The reply has no text, `finish` is `end_turn`, and `completion` is 0.
 - `done.outputs` holds one PNG for each image, in index order. `usage.media.written` counts them and their bytes.
-- A full queue of a stream ends that stream, and the job runs on. Each image is sealed into the store by the job, so
-  its pending id still gives the PNG. The encode of a PNG runs on a helper thread, not on the group thread. Proposed
-  by senpai (Claude Haiku 5.5), 2026-10-29, for Amy's choices of 2026-10-29 (by interview: "drop the stream, seal in
-  the job", and the helper thread). Reason: a slow client then never stalls another engine.
+- A full queue of a stream ends that stream, and the job runs on. Each image is sealed into the store by the job, so its
+  pending id still gives the PNG. The encode of a PNG runs on a helper thread, not on the group thread. Decided
+  2026-11-02 (Amy), proposed by senpai (Claude Haiku 5.5), 2026-10-29, for Amy's choices of 2026-10-29 (by interview:
+  "drop the stream, seal in the job", and the helper thread). Reason: a slow client then never stalls another engine.
   - Speech has its own rule (11.8a). A slow speech reader never holds the group thread.
   - The queue of a stream holds 8 events. The helper thread is the worker of the route, which encodes each PNG. The
     worker never waits on a client, and the job waits only on the worker. A client that goes away still cancels the
     job (11.7). A full queue alone lets the job run on.
   - The queue keeps its last two places for the `output` events and the `done` event. A full queue drops each later
-    `progress` and `preview` event, and the stream stays open. Thus each client gets the pending ids and the sealed
-    ids, and the worker never waits. **Proposed** by Claude Opus 5.5, 2026-10-30, in place of the end of the stream
-    with a `busy` event. Reason: the kaibo review found that a cut could drop the `output` event, so the client could
-    not find its images. Amy's choice "drop the stream" becomes "drop the step events".
+    `progress` and `preview` event, and the stream stays open. Thus each client gets the pending ids and the sealed ids,
+    and the worker never waits. Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30, in place of the end
+    of the stream with a `busy` event. Reason: the kaibo review found that a cut could drop the `output` event, so the
+    client could not find its images. Amy's choice "drop the stream" becomes "drop the step events".
 - A stream sends an `output` event for each image when its decode starts. `GET` of a pending id gives the PNG when it
   is sealed, because a PNG has no useful part before its end.
 - A stream sends the events `progress` and `preview` of gogi's council API ("Steps and previews"). Decided 2026-10-29
@@ -3421,8 +3423,8 @@ oracle, unless it says otherwise. `img2img.py` is its `pipeline_stable_diffusion
 its `pipeline_stable_diffusion_xl_inpaint.py`. `image_processor.py`, `vae.py` and the schedulers are files of the same
 package. The venv `~/.venvs/sdxl-ref` holds it.
 
-**The request.** **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: the family, the route and the oracle need the
-names, the ranges and the errors before they can test them.
+**The request.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30. Reason: the family, the route and
+the oracle need the names, the ranges and the errors before they can test them.
 
 - The object parts of the last `user` message are the inputs. The first is the image, and the second is the mask.
   Each has the `mime` `image/png`. A third object part is a 400 that names it, such as `messages[0].content[3]`.
@@ -3448,8 +3450,8 @@ names, the ranges and the errors before they can test them.
 - `count`, `seed`, `loras`, `cfg`, `sampler` and `clip_skip` work with an image as without one. Image `i` still uses
   the seed plus `i`.
 
-**The size of a job with an image.** **Proposed** by Claude Opus 5.5, 2026-10-30, for Amy's rules above. Reason: a
-resize would change the pixels that the client sent, and it would move the edge of the mask.
+**The size of a job with an image.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30, for Amy's rules
+above. Reason: a resize would change the pixels that the client sent, and it would move the edge of the mask.
 
 - The image sets the width and the height. A request with no `width` and no `height` takes the size of the image.
 - The image must keep the size rules of 11.9a: multiples of 64 from 512 to 2048, with at most 1,572,864 pixels. An
@@ -3460,8 +3462,8 @@ resize would change the pixels that the client sent, and it would move the edge 
 - The nagaya never resizes an input. diffusers resizes the image and the mask to the job size
   (`inpaint.py:1440-1447`), so the oracle gives inputs of the job size.
 
-**The input PNG.** **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: the route decodes each input before the job
-starts, so a bad input is a 400, not a failed job.
+**The input PNG.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30. Reason: the route decodes each
+input before the job starts, so a bad input is a 400, not a failed job.
 
 - An input is a PNG with 8 bits in each channel: gray, gray with alpha, RGB, RGBA, or a palette. Other bytes, or 16
   bits in a channel, are a 400 that names the part. Reason: Pillow reads 16 bits in another mode, and the oracle has
@@ -3470,8 +3472,8 @@ starts, so a bad input is a 400, not a failed job.
   an RGB image.
 - Each channel `v` of the image becomes `2 * v / 255 - 1` in f32 (`image_processor.py:167` and `:220`).
 
-**The schedule of a job with an image.** **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: diffusers and A1111
-both run the last part of the schedule, and the oracle compares each step.
+**The schedule of a job with an image.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30. Reason:
+diffusers and A1111 both run the last part of the schedule, and the oracle compares each step.
 
 - The sampler makes its schedule of `steps` timesteps as before. It runs only the last `n` of them, with
   `n = floor(steps * strength)` in f64 (`img2img.py:652-659`, `inpaint.py:913`).
@@ -3488,16 +3490,17 @@ both run the last part of the schedule, and the oracle compares each step.
   `scheduling_euler_ancestral_discrete.py:524`). That of the DPM++ samplers is `alpha_t * x + sigma_t * noise`
   (`scheduling_dpmsolver_multistep.py:1349`).
 
-**Steps and the A1111 chunk of a job with an image.** **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: gogi says
-that `step` rises by 1 up to `of` (council API, "Steps and previews"), and A1111 tools read the chunk by its keys.
+**Steps and the A1111 chunk of a job with an image.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30.
+Reason: gogi says that `step` rises by 1 up to `of` (council API, "Steps and previews"), and A1111 tools read the chunk
+by its keys.
 
 - `progress.of` is `n`, the count of steps that run. This changes "`of` is the step count of the request" of 11.9a
   for a job with an image.
 - `Steps` in the A1111 chunk stays the `steps` of the request, as A1111 writes it.
 - The chunk adds `Denoising strength: <strength>` after `Clip skip`. With a mask, it then adds `Mask blur: <n>`.
 
-**The image latent.** **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: diffusers draws the latent from the
-distribution of the encoder, and A1111 does too. The mean alone would give other bits than the oracle.
+**The image latent.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30. Reason: diffusers draws the
+latent from the distribution of the encoder, and A1111 does too. The mean alone would give other bits than the oracle.
 
 - The VAE encoder gives a mean and a log variance for each latent value. The engine draws the latent
   `mean + exp(0.5 * clamp(logvar, -30, 20)) * z` (`vae.py:694-696` and `:703`).
@@ -3507,8 +3510,8 @@ distribution of the encoder, and A1111 does too. The mean alone would give other
   `z` from the seed plus `i`. Reason: the image of a seed must not depend on `count` (engine-abi "Image").
 - The encoder runs once for a request, because each image has the same input. Only the draws differ.
 
-**The mask.** **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: these rules give the bits of diffusers'
-`StableDiffusionXLInpaintPipeline` and the soft edge of A1111.
+**The mask.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30. Reason: these rules give the bits of
+diffusers' `StableDiffusionXLInpaintPipeline` and the soft edge of A1111.
 
 - The mask becomes gray, as Pillow's `convert("L")` makes it (`image_processor.py:267`). For RGB, the gray value is
   `(19595 R + 38470 G + 7471 B + 32768) >> 16`. The nagaya ignores an alpha channel of the mask.
@@ -3521,8 +3524,8 @@ distribution of the encoder, and A1111 does too. The mean alone would give other
 - The latent mask takes the binary mask at pixel `(8x, 8y)` for latent `(x, y)`. torch's `interpolate` in its mode
   `nearest` does this (`inpaint.py:862-864`).
 
-**The blend.** **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: this is the latent blend of diffusers for a UNet
-with 4 input channels, so it works with any checkpoint.
+**The blend.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30. Reason: this is the latent blend of
+diffusers for a UNet with 4 input channels, so it works with any checkpoint.
 
 - After each step, the latent becomes `(1 - m) * known + m * latent`, with `m` the latent mask
   (`inpaint.py:1648-1661`).
@@ -3531,8 +3534,9 @@ with 4 input channels, so it works with any checkpoint.
 - The noise of `known` is the start noise of that image, not a new draw (`inpaint.py:811` and `:1657`).
 - A preview shows the latent after the blend.
 
-**The paste after the decode.** **Proposed** by Claude Opus 5.5, 2026-10-30, as senpai proposed on 2026-10-30.
-Reason: the VAE changes the kept pixels a little on its way through. A1111 pastes the kept pixels back by default.
+**The paste after the decode.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30, as senpai proposed on
+2026-10-30. Reason: the VAE changes the kept pixels a little on its way through. A1111 pastes the kept pixels back by
+default.
 
 - After the decode, the nagaya pastes the image back where the mask keeps it. It uses the blurred mask `a`, from 0 to
   255, so the edge is soft.
@@ -3543,8 +3547,8 @@ Reason: the VAE changes the kept pixels a little on its way through. A1111 paste
   way (`image_processor.py:817`). Thus the oracle compares the decode before the paste. A host test checks the paste.
 - img2img has no paste. A preview has no paste.
 
-**The VAE encode quantum.** **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: engine-abi "Image" makes the encode
-one more quantum of kind `step`. "The design of later image work" adds members and no call.
+**The VAE encode quantum.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30. Reason: engine-abi
+"Image" makes the encode one more quantum of kind `step`. "The design of later image work" adds members and no call.
 
 - A job with an image runs its quanta in this order. First is the `embed` of the prompts, then one `step` for the VAE
   encode. Then come the `n` steps and one `step` for the decode.
@@ -3553,8 +3557,8 @@ one more quantum of kind `step`. "The design of later image work" adds members a
 - The encode is not a step of `progress`, as the decode is not.
 - The engine declares the most pixels of a slot as before. That bound covers the encode quantum too.
 
-**The 9-channel UNet.** **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: this is the input of diffusers'
-inpainting UNet, and the profile then needs no new key.
+**The 9-channel UNet.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30. Reason: this is the input of
+diffusers' inpainting UNet, and the profile then needs no new key.
 
 - The weights are diffusers' `stable-diffusion-xl-1.0-inpainting-0.1`, snapshot `115134f`. Its
   `unet/diffusion_pytorch_model.fp16.safetensors` has `conv_in.weight` of shape `[320, 9, 3, 3]` in F16. Its
@@ -3578,8 +3582,8 @@ the same way.
 - LoRAs work on it, as on any served image model. A LoRA module whose shape does not match is a 400 that names the key
   (11.9a).
 
-**The errors of a job with an image.** **Proposed** by Claude Opus 5.5, 2026-10-30. Each one is a 400 that names the
-part or the member, and its message says what the client can change.
+**The errors of a job with an image.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30. Each one is a
+400 that names the part or the member, and its message says what the client can change.
 
 - A third object part in the last `user` message names that part.
 - Bytes that are not a PNG, or a PNG with 16 bits in a channel, name the part.
@@ -3613,8 +3617,9 @@ and `transformer.py` is its `models/transformers/transformer_qwenimage21.py`. `v
 `models/autoencoders/autoencoder_kl_qwenimage21.py`, and `scheduler.py` is its
 `schedulers/scheduling_flow_match_euler_discrete.py`.
 
-**The engine and its weights.** Decided by senpai 2026-11-01 (vetoable). Proposed by Claude Opus 5.5, 2026-10-31.
-Reason: a variant is other weights (Amy, above). Thus the profile names each file, and the code names none.
+**The engine and its weights.** Decided by senpai 2026-11-01, and accepted by Amy 2026-11-02. Proposed by Claude Opus
+5.5, 2026-10-31. Reason: a variant is other weights (Amy, above). Thus the profile names each file, and the code names
+none.
 
 - The engine kind is `mk-qwenimage21-gfx1151`, in a build with `hip`. Its crate is `nagaya-mk-qwenimage21-gfx1151`.
 - The key `model_dir` of `[engines.config]` names the base folder of diffusers. With no key, the engine reads
@@ -3628,9 +3633,9 @@ Reason: a variant is other weights (Amy, above). Thus the profile names each fil
 - The checkpoint digest covers the transformer, the VAE decoder, the encoder file, and each LoRA file with its
   strength. Thus each variant has its own identity.
 
-**The load.** Decided by senpai 2026-11-01 (vetoable). Proposed by Claude Opus 5.5, 2026-10-31. Reason: text to image
-reads only some of the files. A strict load catches a wrong file before a job runs, as diffusepal's `models.py:44-50`
-does.
+**The load.** Decided by senpai 2026-11-01, and accepted by Amy 2026-11-02. Proposed by Claude Opus 5.5, 2026-10-31.
+Reason: text to image reads only some of the files. A strict load catches a wrong file before a job runs, as
+diffusepal's `models.py:44-50` does.
 
 - The engine loads the text tower of the encoder: `embed_tokens` and the 36 layers. It does not load the vision tower
   (`visual`), `lm_head`, or the final norm. Thus the encoder holds about 14.10 GiB of the 16.33 GiB file.
@@ -3665,9 +3670,9 @@ memory than the base.
   bf16 rounding of each weight. The oracle tolerance holds this (8.3).
 - The LoRAs of a request (11.9a) stay a design for this engine, and the engine refuses them now.
 
-**The family of Qwen-Image 2.1.** Decided by senpai 2026-11-01 (vetoable); Amy decided the trigger phrase on 2026-11-01,
-by interview. Proposed by Claude Opus 5.5, 2026-10-31. The crate `nagaya-text-qwenimage21` holds it (11.3). Reason:
-these rules give the ids of the processor that FUSAL trained with.
+**The family of Qwen-Image 2.1.** Decided by senpai 2026-11-01, and accepted by Amy 2026-11-02; Amy decided the trigger
+phrase on 2026-11-01, by interview. Proposed by Claude Opus 5.5, 2026-10-31. The crate `nagaya-text-qwenimage21` holds
+it (11.3). Reason: these rules give the ids of the processor that FUSAL trained with.
 
 - The tokenizer is the base folder's `processor/tokenizer.json`, not a file of the Heretic repository (FUSAL README).
   Its `tokenizer_hash` is `sha256:` and the hex digits of the SHA-256 of that file.
@@ -3690,9 +3695,9 @@ these rules give the ids of the processor that FUSAL trained with.
   do. Reason: the family never changes a prompt, and the A1111 chunk then gives the request's prompt.
 - The identity's `template` is the template text above. Thus a new template is a new recipe (12.1).
 
-**The served Qwen-Image model.** Decided by senpai 2026-11-01 (vetoable); Amy decided RGBA and the later CFG on
-2026-11-01, by interview. Proposed by Claude Opus 5.5, 2026-10-31. Reason: these rules follow the served image model of
-11.9a, and they refuse each member that this engine cannot run.
+**The served Qwen-Image model.** Decided by senpai 2026-11-01, and accepted by Amy 2026-11-02; Amy decided RGBA and the
+later CFG on 2026-11-01, by interview. Proposed by Claude Opus 5.5, 2026-10-31. Reason: these rules follow the served
+image model of 11.9a, and they refuse each member that this engine cannot run.
 
 - Identity lists it as 11.9a lists a served image model, with no inputs. Its `context_tokens` is 1024.
 - `output.options` takes these members. A member out of range is a 400 that names it, as in 11.9a.
@@ -3708,8 +3713,8 @@ these rules give the ids of the processor that FUSAL trained with.
 
 - `clip_skip`, `spacing`, `loras`, `strength` and `mask_blur` are a 400 that names the member. An object part in a
   message is a 400 that names it, because the model lists no inputs.
-- `previews: true` gives the `progress` events and no `preview`. The latent has 64 channels, and no map to RGB is
-  fitted yet. Decided by senpai 2026-11-01 (vetoable). Reason: gogi's contract lets a served model send no
+- `previews: true` gives the `progress` events and no `preview`. The latent has 64 channels, and no map to RGB is fitted
+  yet. Decided by senpai 2026-11-01, and accepted by Amy 2026-11-02. Reason: gogi's contract lets a served model send no
   preview, and that is not an error ("Steps and previews"). The first rule here was a 400, and gogi's suite failed it.
 - The sizes are multiples of 32. The VAE scales by 16, and the transformer reads the latent in groups of 2 by 2
   (`pipeline.py:396`, `:752-754`). 2,097,152 pixels is 8192 latent tokens, the `max_image_seq_len` of the scheduler.
@@ -3722,9 +3727,9 @@ these rules give the ids of the processor that FUSAL trained with.
   writes RGBA PNGs too.
 - The A1111 chunk gives `Steps`, `Sampler: Euler`, `CFG scale: 1`, `Seed`, `Size` and `Model`, with no `Clip skip`.
 
-**The schedule.** Decided by senpai 2026-11-01 (vetoable). Proposed by Claude Opus 5.5, 2026-10-31. Reason: these rules
-give the sigmas of `pipeline.py:733-746` and `scheduler.py`, bit for bit. The engine computes them on the host, as for
-SDXL (11.9).
+**The schedule.** Decided by senpai 2026-11-01, and accepted by Amy 2026-11-02. Proposed by Claude Opus 5.5, 2026-10-31.
+Reason: these rules give the sigmas of `pipeline.py:733-746` and `scheduler.py`, bit for bit. The engine computes them
+on the host, as for SDXL (11.9).
 
 - `n` is the step count. The sigmas start as `linspace(1, 1/n, n)` in f64, then round to f32 (`pipeline.py:735`).
 - `seq` is the latent token count, `(height / 16) * (width / 16)`. With `m = (0.9 - 0.5) / (8192 - 256)` and
@@ -3738,9 +3743,9 @@ SDXL (11.9).
 - A step makes `x + (sigma_k+1 - sigma_k) v` in f32 from the bf16 latent `x` and the bf16 output `v`. It rounds the
   result to bf16 (`scheduler.py:493-526`).
 
-**The steps.** Decided by senpai 2026-11-01 (vetoable). Proposed by Claude Opus 5.5, 2026-10-31. Reason: these rules
-give the math of `transformer.py` for text to image. The cache of the condition keys and values is exact, so it is a
-rule and not an approximation.
+**The steps.** Decided by senpai 2026-11-01, and accepted by Amy 2026-11-02. Proposed by Claude Opus 5.5, 2026-10-31.
+Reason: these rules give the math of `transformer.py` for text to image. The cache of the condition keys and values is
+exact, so it is a rule and not an approximation.
 
 - The start latent of image `i` comes from the random stream of the SDXL engine (`noise.rs`), with the purpose of the
   start latent. It fills the shape `[64, height / 16, width / 16]` in order, and each value rounds to bf16.
@@ -3758,9 +3763,9 @@ rule and not an approximation.
   The oracle size of 256 also gives an even side.
 - Each step gives the output of the latent tokens only (`pipeline.py:796`).
 
-**The attention.** Decided by senpai 2026-11-01 (vetoable), under Amy's goal: "choose a balance of accuracy &
-speed". The engine runs attention in a fused flash kernel (`nagaya-mk-hip`, `hip/flash.hip`). The scores stay in
-registers, with a running max and sum for each row, and the probabilities round to bf16 before the values.
+**The attention.** Decided by senpai 2026-11-01, and accepted by Amy 2026-11-02, under Amy's goal: "choose a balance of
+accuracy & speed". The engine runs attention in a fused flash kernel (`nagaya-mk-hip`, `hip/flash.hip`). The scores stay
+in registers, with a running max and sum for each row, and the probabilities round to bf16 before the values.
 
 - The other path runs the scores as a GEMM in f32, a softmax kernel, and a GEMM with the values. The profile key
   `attention = "gemm"` selects it. Both paths pass every gate of 8.3.
@@ -3771,8 +3776,8 @@ registers, with a running max and sum for each row, and the probabilities round 
 - The flash kernel takes heads of 128 values. The single head of the VAE's attention, of 1152 values, keeps the GEMM
   path.
 
-**The decode.** Decided by senpai 2026-11-01 (vetoable). Proposed by Claude Opus 5.5, 2026-10-31. Reason: these rules
-give the bits of the pipeline's decode and of diffusers' `postprocess`, which round in bf16.
+**The decode.** Decided by senpai 2026-11-01, and accepted by Amy 2026-11-02. Proposed by Claude Opus 5.5, 2026-10-31.
+Reason: these rules give the bits of the pipeline's decode and of diffusers' `postprocess`, which round in bf16.
 
 - The latent becomes `x * std + mean` in bf16, with the 64 values of `latents_std` and `latents_mean` of the VAE
   config (`pipeline.py:842-852`).
@@ -3809,8 +3814,8 @@ is "Embeddings" in gogi `docs/council-api.md`, at gogi `6db7e98`.
 Built on 2026-10-30: the route, in `432cf8b`. Milestone 19 step 6 built the served embedding model, its job and the
 cut on the host.
 
-**The served embedding model.** Proposed by Claude Opus 5.5 (a senpai fork), 2026-10-30. Reason: these rules follow
-the served image model (11.9a) and gogi's rules for a model that only embeds.
+**The served embedding model.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5 (a senpai fork), 2026-10-30.
+Reason: these rules follow the served image model (11.9a) and gogi's rules for a model that only embeds.
 
 - The name of the served model is the name of its engine in the profile, such as `embeddinggemma-2`. Reason: the
   rule of the served image model.
@@ -3835,9 +3840,10 @@ the served image model (11.9a) and gogi's rules for a model that only embeds.
 - The engine kind is `mk-embeddinggemma2-bmg`, in a build with `xe`. Its config and `[engines.family]` take the key
   `model_dir`, and read `EMBEDDINGGEMMA2_MODEL_DIR` with no key, as `mk-sdxl-bmg` does.
 
-**The tasks.** Proposed by Claude Opus 5.5 (a senpai fork), 2026-10-30. Reason: gogi asks a model for search to name
-its tasks `query` and `document`. The other six are the other prompts of the model, and the oracle checks all eight.
-The model's `config_sentence_transformers.json` holds the prompts. Its other names give one of these prompts too.
+**The tasks.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5 (a senpai fork), 2026-10-30. Reason: gogi asks a
+model for search to name its tasks `query` and `document`. The other six are the other prompts of the model, and the
+oracle checks all eight. The model's `config_sentence_transformers.json` holds the prompts. Its other names give one of
+these prompts too.
 
 | Task | Name in the model's prompts | Prompt |
 |---|---|---|
@@ -3850,9 +3856,9 @@ The model's `config_sentence_transformers.json` holds the prompts. Its other nam
 | `question_answering` | `QuestionAnswering` | `task: question answering \| query: ` |
 | `fact_checking` | `FactChecking` | `task: fact checking \| query: ` |
 
-**The family of EmbeddingGemma 2.** Proposed by Claude Opus 5.5 (a senpai fork), 2026-10-30. The crate
-`nagaya-text-embeddinggemma2` holds it (11.3). Reason: these rules give the ids of sentence-transformers 6.1.0, which
-the oracle recorded.
+**The family of EmbeddingGemma 2.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5 (a senpai fork), 2026-10-30.
+The crate `nagaya-text-embeddinggemma2` holds it (11.3). Reason: these rules give the ids of sentence-transformers
+6.1.0, which the oracle recorded.
 
 - The tokenizer is the checkpoint's `tokenizer.json`. Its `tokenizer_hash` is `sha256:` and the hex digits of the
   SHA-256 of the file, as for Gemma 4 (12.3).
@@ -3864,8 +3870,8 @@ the oracle recorded.
   sentence-transformers reads such text as the special token, so its ids differ for this text only.
 - The token count of an input is the count of its ids. A dry run gives it.
 
-**The job of an embedding request.** Proposed by Claude Opus 5.5 (a senpai fork), 2026-10-30. Reason: the image job
-(11.9a) gives the shape, and an embedding holds no state.
+**The job of an embedding request.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5 (a senpai fork), 2026-10-30.
+Reason: the image job (11.9a) gives the shape, and an embedding holds no state.
 
 1. The request thread decodes the body and checks it with gogi's rules: the model, the task, the dimensions and the
    inputs.
@@ -3883,9 +3889,9 @@ the oracle recorded.
 
 - The nagaya normalizes each vector, also at the full length. Reason: one rule in one place, on the host, with a
   test that needs no card.
-- A cut vector of zeros has no direction, so it cannot be normalized. The request then fails with a 500 `internal`
-  that names the input, and no vector goes out. **Proposed** by Claude Opus 5.5, 2026-10-30. Reason: the division
-  gave NaN, and a 200 with NaN values hides a defect of the engine.
+- A cut vector of zeros has no direction, so it cannot be normalized. The request then fails with a 500 `internal` that
+  names the input, and no vector goes out. Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30. Reason:
+  the division gave NaN, and a 200 with NaN values hides a defect of the engine.
 - A job charges no context and stores nothing. The plan of the engine holds its weights and the work of one input of
   `context_tokens`.
 
@@ -3896,8 +3902,8 @@ EmbeddingGemma always loaded somewhere. Maybe we even need a pin."
   it. A swap of Gemma 4 moves it for the time of the swap, so its requests can get a 503 for a few seconds.
 - Memory: card 1 has 2,469,944,308 bytes beside gemma, and card 0 has 4,394,792,436 (the profile of b70host,
   budgets). The text tower of EmbeddingGemma 2 is 542,005,296 bytes in bf16 (the header of `model.safetensors`).
-- **Proposed** placement: card 1. Reason: card 0 has four on-demand engines (`voice`, `sdxl-0`, `pony-0` and
-  `lightning-0`), and card 1 has two.
+- The placement is card 1. Decided 2026-11-02 (Amy). Reason: card 0 has four on-demand engines (`voice`, `sdxl-0`,
+  `pony-0` and `lightning-0`), and card 1 has two.
 
 ## 12. Identity
 
@@ -3945,10 +3951,10 @@ different most of the time."
 Reason: the bits decide if a build changed the numbers, not the facts of the build. A canary covers only the paths
 that it runs, so its inputs must run each path that the limits allow.
 
-**The plan table of a HIP engine.** Amy decided on 2026-10-31 that hipBLASLt does the large bf16 matrix multiplies
-of Qwen-Image (11.9c). Amy: "hipBLASLt for GEMMs but we let it ride with changes over time, ok with some change in
-behavior if upstream changes". The rules below are Decided by senpai 2026-11-01 (vetoable). Reason: the plan table
-of the ontology holds such choices, and mk has none (ontology "Plan table").
+**The plan table of a HIP engine.** Amy decided on 2026-10-31 that hipBLASLt does the large bf16 matrix multiplies of
+Qwen-Image (11.9c). Amy: "hipBLASLt for GEMMs but we let it ride with changes over time, ok with some change in behavior
+if upstream changes". The rules below are Decided by senpai 2026-11-01, and accepted by Amy 2026-11-02. Reason: the plan
+table of the ontology holds such choices, and mk has none (ontology "Plan table").
 
 - The engine declares the determinism `pinned` (D3). Each GEMM runs the hipBLASLt algorithm that the plan table names
   for its shape.
@@ -3969,9 +3975,9 @@ of the ontology holds such choices, and mk has none (ontology "Plan table").
   lineage is a new identity (ontology "Plan table").
 - Thus an update of ROCm can give new bits and a new digest. Each held conditioning (6.16) then fills again once. Amy
   accepts this ("let it ride").
-- The pick stays the first candidate with equal bits, not the fastest one. Decided by senpai 2026-11-01 (vetoable),
-  under Amy's goal "choose a balance of accuracy & speed". A table that picks by time can pick another kernel when
-  it fills again under the same lineage. Then the same identity gives other bits.
+- The pick stays the first candidate with equal bits, not the fastest one. Decided by senpai 2026-11-01, and accepted by
+  Amy 2026-11-02, under Amy's goal "choose a balance of accuracy & speed". A table that picks by time can pick another
+  kernel when it fills again under the same lineage. Then the same identity gives other bits.
 - The test of that rule, on gfx1151host on 2026-11-01: `examples/gemm_timing.rs` timed each candidate of the large GEMMs
   of a step alone. The fastest picks took 21% less time than the first picks. In the engine, a step of 1024 by 1024
   went from 4.2 s to 4.06 s. A step of 1440 by 1440 went from 11.0 s to 10.9 s. The first job of a new size took 20
