@@ -78,9 +78,17 @@ fn the_bootstrap_config_binds_mks_address() {
     assert_eq!(config.http_bind, "198.51.100.20:8090".parse::<SocketAddr>().unwrap());
     assert_eq!(config.gossip_bind.ip(), config.http_bind.ip());
     assert_ne!(config.gossip_bind.port(), config.http_bind.port());
-    assert_eq!(config.seed_peers, Vec::new(), "gfx1151host is one machine; it has no seeds");
     assert!(config.store_dir.is_absolute(), "the loader does not expand `~`");
     assert!(config.store_dir.ends_with(".local/share/nagaya/store"));
+}
+
+#[test]
+fn gfx1151host_and_b70host_seed_each_other_for_one_cluster() {
+    // Milestone 23: each machine seeds the gossip address of the other, so they join one cluster (spec 2.1, 2.3).
+    let gfx1151host = bootstrap();
+    let b70host = b70host_bootstrap();
+    assert_eq!(gfx1151host.seed_peers, vec![b70host.gossip_bind]);
+    assert_eq!(b70host.seed_peers, vec![gfx1151host.gossip_bind]);
 }
 
 #[test]
@@ -262,7 +270,6 @@ fn the_b70host_config_binds_mkviolets_address_and_ignores_the_igpu() {
     assert_eq!(config.http_bind, "198.51.100.10:8091".parse::<SocketAddr>().unwrap());
     assert_eq!(config.gossip_bind.ip(), config.http_bind.ip());
     assert_ne!(config.gossip_bind.port(), config.http_bind.port());
-    assert_eq!(config.seed_peers, Vec::new());
     assert!(config.store_dir.is_absolute(), "the loader does not expand `~`");
     assert!(config.store_dir.ends_with(".local/share/nagaya/store"));
     // The Radeon 610M drives the display (spec 2.1, "Ignored devices").

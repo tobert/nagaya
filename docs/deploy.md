@@ -24,8 +24,8 @@ without `--user` talks to the system manager and says "inactive" for a user unit
 The test `crates/nagaya/tests/deploy.rs` reads all three with the real loaders. A change to a schema breaks it.
 
 The bootstrap config binds HTTP to `198.51.100.20:8090`, the address of mk's service (Amy, 2026-10-18). It binds
-gossip to UDP port 8091 on the same address. It has no seed peers, because gfx1151host is one machine. The store directory
-is `/home/atobey/.local/share/nagaya/store`.
+gossip to UDP port 8091 on the same address. Its seed peer is b70host's gossip address, `198.51.100.10:8092`, so the
+two machines form one cluster (milestone 23). The store directory is `/home/atobey/.local/share/nagaya/store`.
 
 The unit sets `OTEL_EXPORTER_OTLP_ENDPOINT` to `http://127.0.0.1:4317`, the host collector. The nagaya exports OTLP
 over gRPC (spec 9.1). Without a collector, the log still works.
@@ -341,7 +341,8 @@ Every `systemctl` command has `--user`.
 The test `crates/nagaya/tests/deploy.rs` reads all three with the real loaders. Its admission test plans from the
 checkpoint, so run it with `GEMMA4_MODEL_DIR` set.
 
-- The config binds HTTP to `198.51.100.10:8091` and gossip to UDP port 8092 on the same address. It has no seed peers.
+- The config binds HTTP to `198.51.100.10:8091` and gossip to UDP port 8092 on the same address. Its
+  seed peer is gfx1151host's gossip address, `198.51.100.20:8091` (milestone 23).
 - The config ignores the Radeon 610M at `0000:80:00.0`. The iGPU drives the display, and it gets no work (spec 2.1).
 - The store directory is `/home/atobey/.local/share/nagaya/store`, on the NVMe disk.
 - The profile puts the engine `gemma` of kind `mk-gemma4-bmg` on devices 0 and 1, the cards at `0000:03:00.0`
