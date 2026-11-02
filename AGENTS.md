@@ -424,7 +424,7 @@ is done on gfx1151host, and milestones 15s, 16, 17, 18, 19 and 20 are done on b7
     a mask got the 400 that names `messages[0].content`. The gogi suite gave 290 ok, 0 FAIL and 16 skip, in the card
     gate `xe_process`.
 
-    Amy decides the Proposed note of engine-abi "The declaration of a 9-channel UNet".
+    Amy accepted the note of engine-abi "The declaration of a 9-channel UNet" on 2026-11-02.
 21. **Image speed.** Make the SDXL engine faster on the B70 cards. Amy decided on 2026-10-30, by interview: a faster
     kernel can change the output bits if the oracle still passes. The tolerance goes into the spec as a Proposed
     note. The same identity, job and seed must still give the same bits on each run.

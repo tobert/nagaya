@@ -1049,9 +1049,10 @@ image_clear(slot)                       frees the state of the slot
     without `init` and `mask`. A 4-channel UNet blends the latent after each step.
   - `image_decode` gives the decode with no paste. The nagaya pastes the kept pixels back before the PNG encode.
 
-**The declaration of a 9-channel UNet.** **Proposed** by Claude Opus 5.5, 2026-11-02, for milestone 20 step 6. Reason:
-spec 11.9b says that a 9-channel UNet without an image and a mask is a 400 that names `messages[i].content`. A refusal
-of `image_begin` does not say which part the engine refused, so the route named `output`.
+**The declaration of a 9-channel UNet.** Decided 2026-11-02 (Amy: "propsal is good, approved"), proposed by Claude Opus
+5.5, 2026-11-02, for milestone 20 step 6. Reason: spec 11.9b says that a 9-channel UNet without an image and a mask is a
+400 that names `messages[i].content`. A refusal of `image_begin` does not say which part the engine refused, so the
+route named `output`.
 
 - The image capability gets the call `image_needs_mask() -> bool`. It is true when the engine refuses a job without
   `init` and `mask`. An SDXL engine with a 9-channel UNet gives true. The default is false.
