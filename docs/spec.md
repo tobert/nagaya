@@ -3020,6 +3020,33 @@ Built in M18 step 3: `profile` (3.3, `74a5903`), and the load routes of 3.3b. Th
 built.
 Embeddings left this list on 2026-10-30. gogi's contract has them as `POST /council/v2/embeddings` (11.10).
 
+**The cluster route.** **Proposed** by Claude Opus 5.5, 2026-11-02. Reason: Amy decided that the route gives the
+gossip view (11.1a), and the web app finds its hosts there (`AGENTS.md` milestone 23 step 7). It needs a fixed shape.
+
+```json
+GET /nagaya/v1/cluster
+-> {"node": "b70host",
+    "nodes": [{"name": "b70host", "id": "b70host:1793577600000:198.51.100.10:8092", "self": true,
+               "gossip": "198.51.100.10:8092", "http": "198.51.100.10:8091",
+               "engines": [{"name": "gemma", "state": "ready", "models": ["gemma-4-26b-a4b"]}],
+               "conflicts": {"name": null, "models": []}, "refused": null}],
+    "dead": ["sm121host"]}
+```
+
+- `node` is the name of the node that answers. `nodes` holds the live nodes, this node too, in byte order of the name.
+  `dead` holds the names that the failure detector marked dead (2.3).
+- `id` is the chitchat id, `name:generation:address` (2.3). `gossip` is the gossip address. `http` comes from the key
+  `server` (2.3).
+- `engines` comes from the keys `engine:<name>`, in byte order of the name. `models` lists the `model` of each
+  `served` entry.
+- `conflicts.name` is the value of `name:conflict`, and `conflicts.models` holds the entries of `model:conflict`.
+  `refused` is the value of `profile:refused` (2.3).
+- A key that the node does not write gives `null`, or an empty list for a list.
+- The route takes no body and no query, and it never forwards. A view from one node can lag the view of another by a
+  few gossip rounds.
+- The other choice was to give each key of each node as raw JSON text. It is the whole view, but each client must
+  then parse the keys itself.
+
 **11.4b The text routes.** `render`, `tokenize` and `detokenize` use the family library (11.3). They share the rules
 below. The rules of 11.4b to 11.4f are each "Decided by senpai 2026-10-22, accepted by Amy 2026-11-02". Claude Sonnet
 5.5 proposed them on 2026-10-21, and the code of that day follows them.
