@@ -2543,6 +2543,22 @@ names what forwards. It does not say how a coordinator finds the node, what it s
 - **A stop.** A stopping coordinator answers each new request with the 503 `unavailable`, also for a model of a peer.
   An open forward gets the wait of 2 s of 11.7, as a local request does.
 
+**The open points of the forward.** **Proposed** by Claude Opus 5.5, 2026-11-02. Reason: the rules above leave these
+choices open, and the code of milestone 23 step 4 needs one answer for each. Amy decides.
+
+- **No trace.** A coordinator with no trace layer has no span context to send. Then the `traceparent` of the client
+  goes on as it came, so the target can still join the trace of the client.
+- **A broken connection.** A connection to the target can break while the target is still live in gossip. The forward
+  ends as `lost`, as when the target leaves: a stream gets the `error` event, and another body closes.
+- **Framing headers.** The response keeps each header of the target, except `transfer-encoding`, `connection` and
+  `keep-alive`. They describe one connection, and the coordinator frames its own.
+- **The request id.** A target takes `nagaya-request-id` only from a request that also carries `nagaya-forwarded`, and
+  only a valid id (gogi "Request ids and tracing"). Other requests get a new id.
+- **A bad value of a peer.** A peer value in gossip that does not read is logged once as an error. Its models are left
+  out of the identity, and the node runs on. Reason: the value of one peer must not stop another node (2.3, "Trust").
+- **The local family.** A local family has a model of a peer when a local served model has the same `tokenizer_hash`
+  and `template` in its identity entry. The response of a text route then names the `model` of the request.
+
 **The routes with no model.** Decided 2026-11-02 (Amy, by interview), proposed by Claude Opus 5.5, 2026-11-02. Reason:
 gogi says that snapshots, pins and specs belong to the server, and here the server is the cluster. A client must get the
 same answer from each node.
