@@ -3272,8 +3272,8 @@ Decided 2026-10-28 (Amy, by interview):
   default and previews are off.
 - `clip_skip` is an option now. The family config of the served model gives its default.
 - An image job holds no state in the store. Each request starts with empty latents.
-- img2img, inpainting and a hires pass are not built now, and the design leaves room for each. LoRAs are built
-  (11.9a). Amy: "We don't
+- A hires pass is not built, and the design leaves room for it. LoRAs are built (11.9a). img2img and inpainting are
+  built (11.9b, milestone 20, done on 2026-11-02). Amy: "We don't
   necessarily need to build img2img or inpainting right now, but we need to design for them. same for lora and
   highres/upscale."
 
@@ -3415,7 +3415,7 @@ The crate `nagaya-text-sdxl` holds it (11.3).
   weights, and keeps its mean, as A1111 does.
 
 **The design of later image work.** Proposed by senpai (Claude Opus 5.5), 2026-10-28, and Decided 2026-10-28 (Amy, by
-interview). Nothing here is built now.
+interview). Milestone 20 built img2img and inpainting from it (11.9b), and LoRAs are built. The hires pass is not.
 
 - **img2img.** The last `user` message also holds an `image/png` object part. The engine encodes it with the VAE
   into the start latent, and `output.options.strength` sets how many steps run. This needs a VAE encode quantum.
@@ -3427,7 +3427,7 @@ interview). Nothing here is built now.
 - The engine calls (engine-abi "Image") take these inputs as optional members. Thus each one adds members and no call.
 
 **11.9b Image inputs.** Amy decided these rules on 2026-10-30, by interview (`AGENTS.md` milestone 20). Milestone 20
-builds img2img and inpainting from "The design of later image work" (11.9a).
+built img2img and inpainting from "The design of later image work" (11.9a). It was done on 2026-11-02.
 
 - The image and the mask are object parts of the request.
 - The blend of the latent works with any checkpoint. An inpainting UNet with 9 input channels, such as diffusers'
@@ -3685,8 +3685,9 @@ diffusepal's `models.py:44-50` does.
 - The plan counts the weights from the file headers, with no load: the transformer is 13.25 GiB and the text tower
   14.10 GiB. The VAE decoder adds less than 1 GiB in bf16. The scratch of a slot is a mandatory term (engine-abi
   "Core").
-- Step 7 of milestone 22 measures the scratch of the largest slot. The pool of gfx1151host waits for the deploy step
-  (`AGENTS.md` milestone 22).
+- The scratch of the largest slot is 7 GiB. `examples/measure.rs` measured it on gfx1151host on 2026-11-01
+  (`crates/nagaya-mk-qwenimage21-gfx1151/src/plan.rs:136-140`). `docs/deploy.md`, "Two engines on gfx1151host", gives the
+  pool.
 
 **The LoRA fold.** Decided 2026-11-01 (Amy, by interview: fold at the load). Proposed by Claude Opus 5.5, 2026-10-31.
 Reason: a LoRA of the profile is part of the weights of the variant. A fold costs nothing at each step and needs no more
@@ -3828,8 +3829,8 @@ Reason: these follow the quanta of 11.9, with the conditioning cache of 6.16.
 - Each `image_step` is one quantum of kind `step`. The decode is one quantum of kind `step`. The images of a request
   share each quantum (5.2).
 - A step of 1024 by 1024 runs 4096 latent tokens through 7.1 billion parameters. diffusepal took 4.5 s for it on
-  gfx1151host (diffusepal `README.md`, "Speed"). `max_quantum_ms` is 60000 until step 6 of milestone 22 measures it, as for
-  SDXL.
+  gfx1151host (diffusepal `README.md`, "Speed"). `max_quantum_ms` is 60000 until a measurement sets it, as for SDXL.
+  Milestone 22 did not measure it (`crates/nagaya-mk-qwenimage21-gfx1151/src/plan.rs:22-23`).
 - Thus a step of Qwen-Image can hold gfx1151host's device for seconds. A Qwen3.8 job then waits up to one quantum (D8).
 - A step never splits into quanta of some blocks each. Amy decided this on 2026-11-01, by interview. A chat job on
   gfx1151host can wait up to one step while an image renders.
