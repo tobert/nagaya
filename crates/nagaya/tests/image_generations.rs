@@ -959,6 +959,9 @@ fn a_job_with_no_previews_ends_soon_after_its_route_goes_away() {
         previews: false,
         loras: Vec::new(),
         conditioning: None,
+        init: None,
+        strength: 1.0,
+        mask: None,
     };
     let made = service.generate(job, nagaya::council::Schedule::default()).unwrap();
     made.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();

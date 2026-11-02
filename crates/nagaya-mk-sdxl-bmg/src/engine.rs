@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use nagaya_abi::{
-    DecodedImage, Engine, Identity, Image, ImageChunk, ImageJob, ImagePrompt, ImageSampler, ImageSpacing, ImageStepOut,
-    Limits, PassError, PassErrorKind, PassOut, Segment, SlotId, Tap,
+    DecodedImage, Engine, Identity, Image, ImageChunk, ImageJob, ImagePrompt, ImageStepOut, Limits, PassError,
+    PassErrorKind, PassOut, Segment, SlotId, Tap,
 };
 use nagaya_mk_bmg::level_zero::{B70Card, L0Cluster};
 use nagaya_mk_bmg::ring::Ring;
@@ -22,6 +22,7 @@ use crate::spec::*;
 use crate::weights::{Adapter, Weights, f32_bytes, f32_values, sources};
 use std::collections::HashMap;
 
+pub use crate::job::job_problem;
 pub use crate::spec::MODEL;
 
 /// A job in the slot.
@@ -438,68 +439,17 @@ impl SdxlEngine {
 
     /// Check a job against the limits of the engine. The council checks the ranges of spec 11.9a before it.
     fn check(&self, job: &ImageJob) -> Result<(), PassError> {
+        if job.init.is_some() {
+            return Err(refused(
+                "nothing ran: the engine has no VAE encoder yet, so it takes no image (milestone 20 step 3)".to_owned(),
+            ));
+        }
         job_problem(job).map_or(Ok(()), |m| Err(refused(format!("nothing ran: {m}"))))
     }
 
     fn fail(&mut self, error: PassError) -> PassError {
         self.last_error = Some(error.message.clone());
         error
-    }
-}
-
-/// The reason an image job is refused, or `None` when the engine can run it.
-pub fn job_problem(job: &ImageJob) -> Option<String> {
-    let pixels = job.width as usize * job.height as usize;
-    let chunk_ok =
-        |c: &ImageChunk| c.ids1.len() == CHUNK_IDS && c.ids2.len() == CHUNK_IDS && c.weights.len() == CHUNK_IDS;
-    let ImagePrompt::Chunks {
-        prompt,
-        negative,
-        clip_skip,
-    } = &job.prompt
-    else {
-        return Some("the SDXL engine reads the chunks form of a prompt, not tokens".to_owned());
-    };
-    if job.sampler == ImageSampler::FlowEuler {
-        return Some("the SDXL engine has no flow sampler; give euler, euler a or a DPM++ sampler".to_owned());
-    }
-    if job.conditioning.is_some() {
-        return Some("the SDXL engine keeps no conditioning, so it takes no rows".to_owned());
-    }
-    if job.count == 0 || job.count as usize > MAX_IMAGES {
-        Some(format!(
-            "the job asks for {} images; the engine makes 1 to {MAX_IMAGES}",
-            job.count
-        ))
-    } else if !job.width.is_multiple_of(64) || !job.height.is_multiple_of(64) || job.width == 0 || job.height == 0 {
-        Some(format!(
-            "the size {} by {} is not a multiple of 64",
-            job.width, job.height
-        ))
-    } else if pixels > MAX_IMAGE_PIXELS {
-        Some(format!(
-            "an image of {pixels} pixels is more than the {MAX_IMAGE_PIXELS} of the engine"
-        ))
-    } else if job.steps == 0 {
-        Some("the job has 0 steps".to_owned())
-    } else if !(2..=3).contains(clip_skip) {
-        Some(format!("clip_skip {clip_skip} is not 2 or 3"))
-    } else if !job.cfg.is_finite() {
-        Some("the CFG scale is not a finite number".to_owned())
-    } else if job.spacing == ImageSpacing::Trailing
-        && !matches!(job.sampler, ImageSampler::Euler | ImageSampler::EulerAncestral)
-    {
-        Some("trailing spacing needs euler or euler a; the DPM++ samplers take their sigmas".to_owned())
-    } else if prompt.is_empty()
-        || prompt.len() > MAX_CHUNKS
-        || negative.len() > MAX_CHUNKS
-        || !prompt.iter().chain(negative).all(chunk_ok)
-    {
-        Some(format!(
-            "a prompt has 1 to {MAX_CHUNKS} chunks of {CHUNK_IDS} ids and weights"
-        ))
-    } else {
-        None
     }
 }
 

@@ -228,6 +228,9 @@ fn the_engine_follows_the_oracle_block_by_block_and_makes_an_image() {
         previews: true,
         loras: Vec::new(),
         conditioning: None,
+        init: None,
+        strength: 1.0,
+        mask: None,
     };
     let mut made = Vec::new();
     for _ in 0..2 {

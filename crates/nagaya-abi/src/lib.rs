@@ -952,6 +952,15 @@ pub struct ImageJob {
     /// The rows of a conditioning hit in the store (spec 6.16), or none. With rows, the engine skips its encoder. An
     /// engine with no `image_conditioning` refuses rows.
     pub conditioning: Option<std::sync::Arc<Vec<u8>>>,
+    /// The input image of img2img and inpainting (engine-abi "Image inputs"): the RGB bytes, 3 for each pixel, row
+    /// after row, at the size of the job. None for text to image. An engine with no VAE encoder refuses it.
+    pub init: Option<std::sync::Arc<Vec<u8>>>,
+    /// The share of the schedule that runs with `init`: above 0.0 and at most 1.0 (spec 11.9b). It is 1.0 with no
+    /// `init`.
+    pub strength: f32,
+    /// The blurred gray mask of inpainting, 1 byte for each pixel, with `init` only. The engine makes the binary mask
+    /// from it. None for img2img and text to image.
+    pub mask: Option<std::sync::Arc<Vec<u8>>>,
 }
 
 /// What an engine with cached conditionings declares (spec 6.16, engine-abi "Image").
