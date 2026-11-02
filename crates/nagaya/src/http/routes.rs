@@ -5,7 +5,8 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::{Extension, Path, State};
-use axum::http::StatusCode;
+use axum::http::header::CONTENT_TYPE;
+use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use gogi_proto::SnapshotId;
@@ -14,13 +15,14 @@ use gogi_proto::decision::{DecisionRequest, Signals};
 use gogi_proto::embeddings::EmbeddingsRequest;
 use gogi_proto::error::ErrorType;
 use gogi_proto::generation::GenerationRequest;
-use gogi_proto::identity::ServedModel;
+use gogi_proto::identity::{Capability, ServedModel};
 use gogi_proto::pins::PinsPut;
 use gogi_proto::reads::ReadsRequest;
 use serde::Serialize;
 use serde_json::json;
 
 use super::errors::{Failure, parse};
+use super::peers;
 use super::{Council, MAX_BODY_BYTES, RequestId};
 use crate::council::Schedule;
 use crate::council::error::ServiceError;
@@ -137,7 +139,46 @@ fn recipe_head(recipe: &nagaya_store::RecipeId) -> SnapshotId {
     SnapshotId::parse(format!("blake3:{}", recipe.hex())).expect("a recipe id is a whole BLAKE3 hash")
 }
 
-async fn snapshot(State(council): Shared, Extension(id): Id, Path(snapshot): Path<String>) -> Response {
+/// The path and the query of a request as it came, for a call to a peer.
+fn raw_path(uri: &Uri) -> String {
+    uri.path_and_query()
+        .map_or_else(|| uri.path().to_owned(), |path| path.as_str().to_owned())
+}
+
+/// A read by id: from this node, or on a miss from the first peer that holds the thing (spec 11.1a, "The routes with
+/// no model"). A node that serves no text model holds no snapshot or spec, so it asks the peers too. Only the peers
+/// that declare `pins` serve a text model, so only they get the call.
+async fn read_by_id(council: &Council, local: Response, uri: &Uri, headers: &HeaderMap, id: &RequestId) -> Response {
+    let missed = peers::is_miss(local.status()) || council.home().is_err();
+    let call = peers::call(Method::GET, &raw_path(uri), headers, &[], Bytes::new(), id);
+    peers::read_on_miss(council, local, missed, false, Some(Capability::Pins), call, headers).await
+}
+
+/// The answer of this node to a write of pins or specs, when it serves a text model and so takes part.
+fn home_answer(council: &Council) -> Option<Arc<super::Served>> {
+    council.home().ok()
+}
+
+/// The response of a write that no node took: the failure of a node that serves no text model.
+fn no_home(council: &Council, id: &RequestId) -> Response {
+    match council.home() {
+        Ok(_) => unreachable!("a node with a home answers a write itself"),
+        Err(failure) => failure.respond(id),
+    }
+}
+
+async fn snapshot(
+    State(council): Shared,
+    Extension(id): Id,
+    Path(snapshot): Path<String>,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Response {
+    let local = snapshot_here(&council, snapshot, &id).await;
+    read_by_id(&council, local, &uri, &headers, &id).await
+}
+
+async fn snapshot_here(council: &Council, snapshot: String, id: &RequestId) -> Response {
     let result = async {
         let home = council.home()?;
         let snapshot = path_id(&snapshot)
@@ -145,35 +186,69 @@ async fn snapshot(State(council): Shared, Extension(id): Id, Path(snapshot): Pat
         council.call(move || home.service.snapshot(&snapshot)).await
     }
     .await;
-    answer(&id, result)
+    answer(id, result)
 }
 
-async fn pins_put(State(council): Shared, Extension(id): Id, Path(owner): Path<String>, body: Body) -> Response {
-    let result = async {
-        let home = council.home()?;
-        let put: PinsPut = parse(&bytes(body).await?, "pins")?;
-        council.call(move || home.service.put_pins(&owner, &put)).await
-    }
-    .await;
-    answer(&id, result)
+/// A `PUT` of pins goes to each live node that declares `pins`, and each node pins the snapshots that it holds (spec
+/// 11.1a, "The routes with no model").
+async fn pins_put(
+    State(council): Shared,
+    Extension(id): Id,
+    Path(owner): Path<String>,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let body = match bytes(body).await {
+        Ok(body) => body,
+        Err(failure) => return failure.respond(&id),
+    };
+    let local = match home_answer(&council) {
+        Some(home) => {
+            let result = async {
+                let put: PinsPut = parse(&body, "pins")?;
+                council.call(move || home.service.put_pins(&owner, &put)).await
+            }
+            .await;
+            Some(answer(&id, result))
+        }
+        None => None,
+    };
+    let call = peers::call(Method::PUT, &raw_path(&uri), &headers, &[CONTENT_TYPE], body, &id);
+    let answers = peers::write_all(&council, local, call, Capability::Pins, &headers).await;
+    peers::join_sets(answers, "snapshots", true, || no_home(&council, &id))
 }
 
-async fn pins_get(State(council): Shared, Extension(id): Id, Path(owner): Path<String>) -> Response {
-    let result = async {
-        let home = council.home()?;
-        council.call(move || home.service.get_pins(&owner)).await
-    }
-    .await;
-    answer(&id, result)
+async fn pins_get(
+    State(council): Shared,
+    Extension(id): Id,
+    Path(owner): Path<String>,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Response {
+    let local = match home_answer(&council) {
+        Some(home) => Some(answer(&id, council.call(move || home.service.get_pins(&owner)).await)),
+        None => None,
+    };
+    let call = peers::call(Method::GET, &raw_path(&uri), &headers, &[], Bytes::new(), &id);
+    let answers = peers::write_all(&council, local, call, Capability::Pins, &headers).await;
+    peers::join_sets(answers, "snapshots", false, || no_home(&council, &id))
 }
 
-async fn pins_delete(State(council): Shared, Extension(id): Id, Path(owner): Path<String>) -> Response {
-    let result = async {
-        let home = council.home()?;
-        council.call(move || home.service.delete_pins(&owner)).await
-    }
-    .await;
-    empty(&id, result)
+async fn pins_delete(
+    State(council): Shared,
+    Extension(id): Id,
+    Path(owner): Path<String>,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Response {
+    let local = match home_answer(&council) {
+        Some(home) => Some(empty(&id, council.call(move || home.service.delete_pins(&owner)).await)),
+        None => None,
+    };
+    let call = peers::call(Method::DELETE, &raw_path(&uri), &headers, &[], Bytes::new(), &id);
+    let answers = peers::write_all(&council, local, call, Capability::Pins, &headers).await;
+    peers::join_delete(answers, || no_home(&council, &id))
 }
 
 async fn specs_post(State(council): Shared, Extension(id): Id, body: Body) -> Response {
@@ -208,24 +283,42 @@ pub(super) fn path_id(id: &str) -> Result<(), Failure> {
     }
 }
 
-async fn spec_get(State(council): Shared, Extension(id): Id, Path(spec_id): Path<String>) -> Response {
+async fn spec_get(
+    State(council): Shared,
+    Extension(id): Id,
+    Path(spec_id): Path<String>,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(failure) = path_id(&spec_id) {
+        return failure.respond(&id);
+    }
     let result = async {
-        path_id(&spec_id)?;
         let home = council.home()?;
         council.call(move || home.service.spec(&spec_id)).await
     }
     .await;
-    answer(&id, result)
+    read_by_id(&council, answer(&id, result), &uri, &headers, &id).await
 }
 
-async fn spec_delete(State(council): Shared, Extension(id): Id, Path(spec_id): Path<String>) -> Response {
-    let result = async {
-        path_id(&spec_id)?;
-        let home = council.home()?;
-        council.call(move || home.service.drop_spec(&spec_id)).await
+/// A `DELETE` of a spec goes to each live node that declares `pins`: a 204 when any node held the spec (spec 11.1a).
+async fn spec_delete(
+    State(council): Shared,
+    Extension(id): Id,
+    Path(spec_id): Path<String>,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(failure) = path_id(&spec_id) {
+        return failure.respond(&id);
     }
-    .await;
-    empty(&id, result)
+    let local = match home_answer(&council) {
+        Some(home) => Some(empty(&id, council.call(move || home.service.drop_spec(&spec_id)).await)),
+        None => None,
+    };
+    let call = peers::call(Method::DELETE, &raw_path(&uri), &headers, &[], Bytes::new(), &id);
+    let answers = peers::write_all(&council, local, call, Capability::Pins, &headers).await;
+    peers::join_delete(answers, || no_home(&council, &id))
 }
 
 async fn decisions(State(council): Shared, Extension(id): Id, body: Body) -> Response {

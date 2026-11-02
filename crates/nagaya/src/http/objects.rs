@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Extension, Path, State};
-use axum::http::{HeaderMap, Method, StatusCode, header};
+use axum::http::{HeaderMap, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::put;
 use futures_util::StreamExt;
@@ -294,7 +294,7 @@ pub(super) async fn read(
         axum::body::Bytes::new(),
         id,
     );
-    peers::read_on_miss(council, local, missed, true, call, headers).await
+    peers::read_on_miss(council, local, missed, true, None, call, headers).await
 }
 
 /// A read of an object or a pending id from this node alone.
@@ -414,11 +414,112 @@ fn owner_of(owner: &str) -> Result<(), Failure> {
     }
 }
 
-async fn put_keep(State(council): Shared, Extension(id): Id, Path(owner): Path<String>, body: Body) -> Response {
+/// The response of a keep route that no node took: the 404 of a node with no object store.
+fn no_store(council: &Council, id: &RequestId) -> Response {
+    match store(council) {
+        Ok(_) => unreachable!("a node with an object store answers a keep route itself"),
+        Err(failure) => failure.respond(id),
+    }
+}
+
+/// The path and the query of a request as it came, for a call to a peer.
+fn raw_path(uri: &Uri) -> String {
+    uri.path_and_query()
+        .map_or_else(|| uri.path().to_owned(), |path| path.as_str().to_owned())
+}
+
+/// Each keep route goes to each live node that declares `objects`, and the answers join as for pins (spec 11.1a, "The
+/// routes with no model"). This node takes part when it has an object store.
+async fn keep_route(
+    council: &Council,
+    local: Option<Response>,
+    method: Method,
+    uri: &Uri,
+    headers: &HeaderMap,
+    body: axum::body::Bytes,
+    id: &RequestId,
+) -> Response {
+    let delete = method == Method::DELETE;
+    let put = method == Method::PUT;
+    let call = peers::call(method, &raw_path(uri), headers, &[header::CONTENT_TYPE], body, id);
+    let answers = peers::write_all(council, local, call, gogi_proto::identity::Capability::Objects, headers).await;
+    if delete {
+        peers::join_delete(answers, || no_store(council, id))
+    } else {
+        peers::join_sets(answers, "objects", put, || no_store(council, id))
+    }
+}
+
+async fn put_keep(
+    State(council): Shared,
+    Extension(id): Id,
+    Path(owner): Path<String>,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let body = match bytes(body).await {
+        Ok(body) => body,
+        Err(failure) => return failure.respond(&id),
+    };
+    let local = match council.objects() {
+        Some(_) => Some(put_keep_here(&council, &id, owner, &body).await),
+        None => None,
+    };
+    keep_route(&council, local, Method::PUT, &uri, &headers, body, &id).await
+}
+
+async fn get_keep(
+    State(council): Shared,
+    Extension(id): Id,
+    Path(owner): Path<String>,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Response {
+    let local = match council.objects() {
+        Some(_) => Some(get_keep_here(&council, &id, owner).await),
+        None => None,
+    };
+    keep_route(
+        &council,
+        local,
+        Method::GET,
+        &uri,
+        &headers,
+        axum::body::Bytes::new(),
+        &id,
+    )
+    .await
+}
+
+async fn delete_keep(
+    State(council): Shared,
+    Extension(id): Id,
+    Path(owner): Path<String>,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Response {
+    let local = match council.objects() {
+        Some(_) => Some(delete_keep_here(&council, &id, owner).await),
+        None => None,
+    };
+    keep_route(
+        &council,
+        local,
+        Method::DELETE,
+        &uri,
+        &headers,
+        axum::body::Bytes::new(),
+        &id,
+    )
+    .await
+}
+
+async fn put_keep_here(council: &Council, id: &RequestId, owner: String, body: &[u8]) -> Response {
     let result = async {
-        let store = store(&council)?;
+        let store = store(council)?;
         owner_of(&owner)?;
-        let put: KeepsPut = parse(&bytes(body).await?, "keeps")?;
+        let put: KeepsPut = parse(body, "keeps")?;
         put.validate().map_err(|e| Failure::from(ServiceError::Invalid(e)))?;
         let ids: Vec<ContentId> = put.objects.iter().map(|text| content(text)).collect::<Result<_, _>>()?;
         let ttl_ms = put.ttl_s.saturating_mul(1000);
@@ -439,12 +540,12 @@ async fn put_keep(State(council): Shared, Extension(id): Id, Path(owner): Path<S
         Ok(json!({"owner": owner, "objects": objects, "expires_in_s": expires}))
     }
     .await;
-    answer(&id, result)
+    answer(id, result)
 }
 
-async fn get_keep(State(council): Shared, Extension(id): Id, Path(owner): Path<String>) -> Response {
+async fn get_keep_here(council: &Council, id: &RequestId, owner: String) -> Response {
     let result = async {
-        let store = store(&council)?;
+        let store = store(council)?;
         owner_of(&owner)?;
         let keeper = owner.clone();
         let (ids, left_ms) = council
@@ -460,12 +561,12 @@ async fn get_keep(State(council): Shared, Extension(id): Id, Path(owner): Path<S
         Ok(json!({"owner": owner, "objects": objects, "expires_in_s": left_ms.div_ceil(1000)}))
     }
     .await;
-    answer(&id, result)
+    answer(id, result)
 }
 
-async fn delete_keep(State(council): Shared, Extension(id): Id, Path(owner): Path<String>) -> Response {
+async fn delete_keep_here(council: &Council, id: &RequestId, owner: String) -> Response {
     let result = async {
-        let store = store(&council)?;
+        let store = store(council)?;
         owner_of(&owner)?;
         let keeper = owner.clone();
         let dropped = council
@@ -483,6 +584,6 @@ async fn delete_keep(State(council): Shared, Extension(id): Id, Path(owner): Pat
     .await;
     match result {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(failure) => failure.respond(&id),
+        Err(failure) => failure.respond(id),
     }
 }

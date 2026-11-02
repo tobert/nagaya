@@ -85,6 +85,7 @@ pub(super) async fn read_on_miss(
     local: Response,
     missed: bool,
     probe: bool,
+    capability: Option<Capability>,
     call: Call,
     headers: &HeaderMap,
 ) -> Response {
@@ -94,7 +95,7 @@ pub(super) async fn read_on_miss(
     let Some(cluster) = council.cluster() else {
         return local;
     };
-    let peers = peers(council, None);
+    let peers = peers(council, capability);
     if peers.is_empty() {
         return local;
     }
@@ -127,4 +128,130 @@ pub(super) async fn read_on_miss(
 /// True for a status that a read by id counts as a miss.
 pub(super) fn is_miss(status: StatusCode) -> bool {
     status == StatusCode::NOT_FOUND
+}
+
+/// The answer of one node to a write that goes to each node.
+pub(super) struct Answer {
+    status: StatusCode,
+    headers: HeaderMap,
+    body: Bytes,
+}
+
+impl Answer {
+    /// The answer as a response, as the node gave it.
+    fn respond(self) -> Response {
+        let mut response = Response::new(Body::from(self.body));
+        *response.status_mut() = self.status;
+        *response.headers_mut() = self.headers;
+        response
+    }
+
+    fn json(&self) -> serde_json::Value {
+        serde_json::from_slice(&self.body).unwrap_or(serde_json::Value::Null)
+    }
+}
+
+/// The answers of a write: `local`, the answer of this node when it takes part, and the answer of each live peer that
+/// declares `capability` (spec 11.1a, "The routes with no model"). A request that a peer sent goes to no peer.
+pub(super) async fn write_all(
+    council: &Council,
+    local: Option<Response>,
+    call: Call,
+    capability: Capability,
+    headers: &HeaderMap,
+) -> Vec<Answer> {
+    let mut answers = Vec::new();
+    if let Some(local) = local {
+        let (head, body) = local.into_parts();
+        let body = axum::body::to_bytes(body, super::MAX_BODY_BYTES)
+            .await
+            .expect("the answer of a local route is a whole body");
+        answers.push(Answer {
+            status: head.status,
+            headers: head.headers,
+            body,
+        });
+    }
+    if forwarded(headers) {
+        return answers;
+    }
+    let Some(cluster) = council.cluster() else {
+        return answers;
+    };
+    let peers = peers(council, Some(capability));
+    for (_, response) in cluster.caller().broadcast_write(&peers, &call).await {
+        let (head, body) = response.into_parts();
+        let mut headers = head.headers;
+        for name in [header::TRANSFER_ENCODING, header::CONNECTION] {
+            headers.remove(name);
+        }
+        answers.push(Answer {
+            status: head.status,
+            headers,
+            body,
+        });
+    }
+    answers
+}
+
+/// The first answer that is not a 2xx or a 404: the refusal of a node is the response (spec 11.1a, Proposed).
+fn refusal(answers: &mut Vec<Answer>) -> Option<Answer> {
+    let at = answers
+        .iter()
+        .position(|answer| !answer.status.is_success() && answer.status != StatusCode::NOT_FOUND)?;
+    Some(answers.swap_remove(at))
+}
+
+/// The join of a `DELETE` on each node: a 204 when any node held the thing, and else the first 404 (spec 11.1a).
+/// `none` is the response when no node answered.
+pub(super) fn join_delete(mut answers: Vec<Answer>, none: impl FnOnce() -> Response) -> Response {
+    if let Some(refused) = refusal(&mut answers) {
+        return refused.respond();
+    }
+    if let Some(at) = answers.iter().position(|answer| answer.status.is_success()) {
+        return answers.swap_remove(at).respond();
+    }
+    answers.into_iter().next().map_or_else(none, Answer::respond)
+}
+
+/// The join of the sets of pins or keeps of an owner, under the member `key` (spec 11.1a, "The routes with no model").
+///
+/// A `PUT` gives each id of the request once, held when any node held it. A `GET` gives the union of the held ids.
+/// `expires_in_s` is the smallest that a node gave, and a `PUT` with no held id gives `null`. An owner that no node
+/// knows is the first 404. `none` is the response when no node answered.
+pub(super) fn join_sets(mut answers: Vec<Answer>, key: &str, put: bool, none: impl FnOnce() -> Response) -> Response {
+    if let Some(refused) = refusal(&mut answers) {
+        return refused.respond();
+    }
+    let sets: Vec<serde_json::Value> = answers
+        .iter()
+        .filter(|answer| answer.status.is_success())
+        .map(Answer::json)
+        .collect();
+    let Some(first) = sets.first() else {
+        return answers.into_iter().next().map_or_else(none, Answer::respond);
+    };
+    let mut joined = first.clone();
+    let expires = sets.iter().filter_map(|set| set["expires_in_s"].as_u64()).min();
+    joined["expires_in_s"] = expires.map_or(serde_json::Value::Null, serde_json::Value::from);
+    if put {
+        let held = |at: usize| sets.iter().any(|set| set[key][at]["held"] == true);
+        if let Some(entries) = joined[key].as_array_mut() {
+            for (at, entry) in entries.iter_mut().enumerate() {
+                entry["held"] = serde_json::Value::Bool(held(at));
+            }
+        }
+    } else {
+        let mut ids: Vec<serde_json::Value> = Vec::new();
+        for id in sets
+            .iter()
+            .flat_map(|set| set[key].as_array().cloned().unwrap_or_default())
+        {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        joined[key] = serde_json::Value::Array(ids);
+    }
+    super::routes::json(StatusCode::OK, &joined)
 }
