@@ -186,6 +186,12 @@ class Nagayas(unittest.TestCase):
             with self.assertRaises(Exception):
                 nagaya_web.nagaya(bad)
 
+    def test_the_machine_of_the_proxy_comes_first_in_the_default_list(self):
+        names = lambda host: [n for n, _ in nagaya_web.local_first(nagaya_web.DEFAULT_NAGAYAS, host)]
+        self.assertEqual(names("gfx1151host"), ["gfx1151host", "b70host"])
+        self.assertEqual(names("b70host"), ["b70host", "gfx1151host"])
+        self.assertEqual(names("sm121host"), ["b70host", "gfx1151host"], "another machine keeps the order of the list")
+
 
 if __name__ == "__main__":
     unittest.main()

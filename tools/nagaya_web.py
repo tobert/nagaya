@@ -22,11 +22,18 @@ import http.server
 import json
 import pathlib
 import re
+import socket
 import sys
 import urllib.parse
 
-# The nagayas of the lab, in the order of the page. The first one also serves the plain paths.
+# The nagayas of the lab, in the order of the page. The first one also serves the plain paths, so `local_first` puts
+# the machine of the proxy first.
 DEFAULT_NAGAYAS = [("b70host", "http://198.51.100.10:8091"), ("gfx1151host", "http://198.51.100.20:8090")]
+
+
+def local_first(nagayas, host):
+    """The list with the nagaya named `host` first, and the others in their order."""
+    return [n for n in nagayas if n[0] == host] + [n for n in nagayas if n[0] != host]
 PAGE = pathlib.Path(__file__).with_name("nagaya_web.html")
 PREFIXES = ("/council/", "/nagaya/")
 # The headers that the server passes on, in each direction. The others belong to one connection.
@@ -157,7 +164,10 @@ def main():
     args = parser.parse_args()
     if args.url and args.nagaya:
         parser.error("give --url or --nagaya, not both")
-    nagayas = [("nagaya", args.url.rstrip("/"))] if args.url else args.nagaya or DEFAULT_NAGAYAS
+    if args.url:
+        nagayas = [("nagaya", args.url.rstrip("/"))]
+    else:
+        nagayas = args.nagaya or local_first(DEFAULT_NAGAYAS, socket.gethostname())
     server = http.server.ThreadingHTTPServer((args.host, args.port), handler(nagayas))
     names = ", ".join(f"{n} at {u}" for n, u in nagayas)
     print(f"nagaya web app on http://{args.host}:{args.port}, in front of {names}", file=sys.stderr)
