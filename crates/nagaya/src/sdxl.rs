@@ -187,6 +187,11 @@ mod factory {
     }
 
     impl Factory for SdxlFactory {
+        /// The served model is the engine name (spec 2.3, "The check of a name").
+        fn served_names(&self, engine: &str, _config: &toml::Table) -> Option<Vec<String>> {
+            Some(vec![engine.to_owned()])
+        }
+
         fn plan(&self, table: &toml::Table, devices: &[GroupDevice]) -> Result<Limits, PlanError> {
             super::plan(table, devices)
         }

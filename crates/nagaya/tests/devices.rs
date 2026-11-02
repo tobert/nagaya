@@ -38,6 +38,7 @@ fn planned(name: &str, devices: &[DeviceId]) -> AdmittedEngine {
         name: name.to_owned(),
         limits: limits(devices),
         arena_parts: Vec::new(),
+        served: None,
     }
 }
 

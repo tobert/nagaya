@@ -14,7 +14,8 @@ use nagaya_abi::Capability;
 use nagaya_ledger::LedgerError;
 use serde::Serialize;
 
-use crate::admission::AdmitError;
+use crate::admission::{AdmitError, Admitted};
+use crate::cluster::Cluster;
 use crate::process::{LoadError, Ports, Process};
 use crate::profile::{EnginePlacement, PlacementProfile, TierSpec};
 use crate::swap::{Shortfall, Swap, SwapError};
@@ -137,6 +138,8 @@ pub struct Changer {
     calls: Receiver<ProfileCall>,
     /// True while a change in place runs on its own thread.
     applying: Arc<AtomicBool>,
+    /// The cluster from gossip. A profile that adds a name of a live peer is refused (spec 2.3).
+    cluster: Option<Arc<Cluster>>,
 }
 
 impl Changer {
@@ -146,8 +149,46 @@ impl Changer {
         let changer = Self {
             calls,
             applying: Arc::new(AtomicBool::new(false)),
+            cluster: None,
         };
         (changer, calls_tx)
+    }
+
+    /// Refuse a profile that adds a served model name of a live peer of `cluster` (spec 2.3).
+    pub fn with_cluster(mut self, cluster: Arc<Cluster>) -> Self {
+        self.cluster = Some(cluster);
+        self
+    }
+
+    /// The refusal of a profile whose plans add a served model name that a live peer serves, or `None` (spec 2.3,
+    /// "The check of a name"). A name is added when no engine of the active profile gives it.
+    fn clash(&self, process: &Process, active: &PlacementProfile, planned: &Admitted) -> Option<String> {
+        let state = self.cluster.as_ref()?.state();
+        let names = |admitted: &Admitted| -> Vec<String> {
+            admitted
+                .engines
+                .iter()
+                .flat_map(|engine| engine.served.clone().unwrap_or_default())
+                .collect()
+        };
+        let new = names(planned);
+        if new.iter().all(|name| state.served_by_peer(name).is_none()) {
+            return None;
+        }
+        let old = names(
+            &process
+                .check_profile(active)
+                .unwrap_or_else(|error| panic!("the active profile does not pass its own check: {error}")),
+        );
+        new.iter().filter(|name| !old.contains(name)).find_map(|name| {
+            state.served_by_peer(name).map(|peer| {
+                format!(
+                    "the profile adds the served model name `{name}`, which node {} serves (spec 2.3); give the model \
+                     another name, for example with the host name in it",
+                    peer.node
+                )
+            })
+        })
     }
 
     /// True while a change in place runs.
@@ -188,8 +229,8 @@ impl Changer {
         if profile == active {
             return Ok(PutAnswer::Unchanged(change(&active, &profile, |_| true)));
         }
-        match process.check_profile(&profile) {
-            Ok(_) => {}
+        let planned = match process.check_profile(&profile) {
+            Ok(planned) => planned,
             Err(AdmitError::Ledger(LedgerError::Refused(refusal))) => {
                 let shortfall = refusal
                     .shortfall
@@ -205,6 +246,9 @@ impl Changer {
                 });
             }
             Err(error) => return Ok(PutAnswer::Invalid(error.to_string())),
+        };
+        if let Some(clash) = self.clash(process, &active, &planned) {
+            return Ok(PutAnswer::Invalid(clash));
         }
         if self.applying() {
             return Ok(PutAnswer::Busy);

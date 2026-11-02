@@ -155,6 +155,11 @@ mod factory {
     }
 
     impl Factory for Gemma4Factory {
+        /// The served model is the fixed model of the kind (spec 2.3, "The check of a name").
+        fn served_names(&self, _engine: &str, _config: &toml::Table) -> Option<Vec<String>> {
+            Some(vec![nagaya_mk_gemma4_bmg::spec::MODEL.to_owned()])
+        }
+
         fn plan(&self, table: &toml::Table, devices: &[GroupDevice]) -> Result<Limits, PlanError> {
             super::plan(table, devices)
         }

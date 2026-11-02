@@ -138,6 +138,13 @@ pub trait Factory {
         Ok(None)
     }
 
+    /// Give the served model names of the engine `engine` with this config, with no open and no read of a file. The
+    /// check of a profile refuses a name that a live peer serves (spec 2.3, "The check of a name"). A kind that cannot
+    /// tell the names before the open gives none.
+    fn served_names(&self, _engine: &str, _config: &toml::Table) -> Option<Vec<String>> {
+        None
+    }
+
     /// Give the parts of the arena that `arena_export` gives after an open. It reads no weights, as `plan` does. A
     /// kind with no arena gives no part.
     fn arena_parts(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Vec<ArenaPart>, PlanError> {
@@ -358,6 +365,9 @@ pub struct AdmittedEngine {
     pub limits: Limits,
     /// The parts of the arena of the engine, from `arena_parts` (spec 10.2).
     pub arena_parts: Vec<ArenaPart>,
+    /// The served model names of the engine from `served_names`, or `None` when its kind cannot tell them before the
+    /// open (spec 2.3, "The check of a name").
+    pub served: Option<Vec<String>>,
 }
 
 /// The result of admitting a profile.
@@ -438,7 +448,15 @@ impl Factory for FakeToyFactory {
             kind: OpenErrorKind::Other,
             message,
         })?;
+        // The key `open_ms` makes the open wait, so a test of the start can let gossip reach the node first.
+        if let Some(ms) = config.get("open_ms").and_then(toml::Value::as_integer) {
+            std::thread::sleep(std::time::Duration::from_millis(ms.max(0) as u64));
+        }
         Ok(Box::new(engine))
+    }
+
+    fn served_names(&self, _engine: &str, config: &toml::Table) -> Option<Vec<String>> {
+        Self::engine_of(config).ok().map(|engine| vec![engine.identity().model])
     }
 }
 
@@ -724,6 +742,7 @@ pub fn plan_all(
             name: engine.name.clone(),
             limits: limits.clone(),
             arena_parts,
+            served: factory.served_names(&engine.name, &engine.config),
         });
         engines.push(EnginePlan {
             name: engine.name.clone(),

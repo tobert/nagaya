@@ -177,6 +177,14 @@ impl ClusterState {
         self.models.values().find(|model| model.entry.is_named(name))
     }
 
+    /// The served model of a live peer that `name` names, as a `model` or an alias (spec 2.3). A model whose node left
+    /// the live set is not served.
+    pub fn served_by_peer(&self, name: &str) -> Option<&PeerModel> {
+        self.models
+            .values()
+            .find(|model| model.live && model.entry.is_named(name))
+    }
+
     /// The keeper of a local served model whose name a peer keeps, by its `model`.
     pub fn keeper(&self, model: &str) -> Option<&str> {
         self.lost.get(model).map(String::as_str)

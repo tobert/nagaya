@@ -254,8 +254,11 @@ fn serve(
     };
     let names: Vec<String> = profile.engines.iter().map(|engine| engine.name.clone()).collect();
     let served_profile = profile.clone();
+    // The routes read the cluster that the main loop reads from gossip (spec 11.1a).
+    let cluster = Arc::new(nagaya::cluster::Cluster::new(node_name));
     // The profile routes call the main loop, which owns the active profile (spec 3.3).
-    let (mut changer, profile_calls) = nagaya::reprofile::Changer::new();
+    let (changer, profile_calls) = nagaya::reprofile::Changer::new();
+    let mut changer = changer.with_cluster(Arc::clone(&cluster));
     let call_cpus = Some(cpu_sets.pool.clone());
     // Spec 10.1: the HTTP server listens before the engines open, and it answers 503 until the routes attach.
     let server = match http::Server::bind(&node.gossip().runtime(), config.http_bind) {
@@ -316,8 +319,6 @@ fn serve(
     published(node.engines_state(&waiting, EngineState::Unloaded));
     // The council routes attach before READY (spec 10.1, 11.7). A failure here refuses the start (spec 10.4).
     let ports = ready.process.ports();
-    // The routes read the cluster that the main loop reads from gossip (spec 11.1a).
-    let cluster = Arc::new(nagaya::cluster::Cluster::new(node_name));
     let council = match serving::council_with(
         &serving::FamilyRegistry::compiled_in(),
         &served_profile,
@@ -354,6 +355,16 @@ fn serve(
             return ExitCode::RefusedStart;
         }
     };
+    // The served models of this node. A peer that serves one of their names clashes with it (spec 2.3).
+    let local_models: Vec<_> = council.served_by_engine().into_values().flatten().collect();
+    // A name that a live peer serves refuses the start, before peers see it (spec 2.3, 10.4).
+    if let Some(refusal) = clash_at_start(node, node_name, &local_models) {
+        tracing::error!("{refusal}");
+        server.stop(HTTP_STOP);
+        ready.process.abort();
+        std::mem::forget(ready.process);
+        return ExitCode::RefusedStart;
+    }
     // Peers read the served models and the server from gossip (spec 2.3, "What a node publishes for the cluster"). A
     // value past the bound refuses the start.
     let local = council.local_identity();
@@ -367,8 +378,6 @@ fn serve(
         std::mem::forget(ready.process);
         return ExitCode::RefusedStart;
     }
-    // The served models of this node. A peer that serves one of their names clashes with it (spec 2.3).
-    let local_models: Vec<_> = council.served_by_engine().into_values().flatten().collect();
     server.attach(Arc::clone(&council));
     lifecycle::notify_ready(notifier.as_ref(), &ready.opened);
     tracing::info!("ready with {} engines", ready.opened.len());
@@ -448,6 +457,24 @@ fn serve(
     // Spec 10.3: exit after the park budget. Do not join a group that is still parking.
     std::mem::forget(ready.process);
     code
+}
+
+/// The refusal of a start whose served models have a name that a live peer serves, or `None` (spec 2.3, "The check of
+/// a name"). The node does not wait for its seeds, so it checks the peers that gossip shows now.
+fn clash_at_start(node: &Node, node_name: &str, local: &[gogi_proto::identity::ServedModel]) -> Option<String> {
+    let peers = nagaya::cluster::ClusterState::observe(&Default::default(), &node.gossip().view(), node_name, &[]);
+    local.iter().find_map(|model| {
+        std::iter::once(&model.model)
+            .chain(&model.aliases)
+            .find_map(|name| peers.served_by_peer(name).map(|peer| (name, peer)))
+            .map(|(name, peer)| {
+                format!(
+                    "cannot start: the served model name `{name}` of model `{}` is served by node {} (spec 2.3); give \
+                     the model another name in the profile, for example with the host name in it",
+                    model.model, peer.node
+                )
+            })
+    })
 }
 
 /// Handle the newest desired profile for this host, when a peer offers one. Gives a code when the process must stop.
