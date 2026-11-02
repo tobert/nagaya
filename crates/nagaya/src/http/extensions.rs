@@ -78,7 +78,7 @@ struct Rendered {
 async fn render(State(council): Shared, Extension(id): Id, body: Body) -> Response {
     let result = async {
         let request: RenderRequest = parse(&bytes(body).await?, "render")?;
-        let served = council.route(&request.model)?;
+        let (served, model) = council.route_text(&request.model)?;
         council
             .call(move || {
                 // A family renders text only, so an object part is refused before it (gogi "Contexts").
@@ -93,7 +93,7 @@ async fn render(State(council): Shared, Extension(id): Id, body: Body) -> Respon
                     ServiceError::internal(format!("the tokens of a rendering do not make text: {error}"))
                 })?;
                 Ok(Rendered {
-                    model: served.service.model().to_owned(),
+                    model,
                     template: family.template_id().to_owned(),
                     text,
                     n_tokens: rendering.tokens.len(),
@@ -146,7 +146,7 @@ struct Tokenized {
 async fn tokenize(State(council): Shared, Extension(id): Id, body: Body) -> Response {
     let result = async {
         let request: TokenizeRequest = parse(&bytes(body).await?, "tokenize")?;
-        let served = council.route(&request.model)?;
+        let (served, model) = council.route_text(&request.model)?;
         council
             .call(move || {
                 let family = served.service.family();
@@ -160,7 +160,7 @@ async fn tokenize(State(council): Shared, Extension(id): Id, body: Body) -> Resp
                     false => None,
                 };
                 Ok(Tokenized {
-                    model: served.service.model().to_owned(),
+                    model,
                     n_tokens: tokens.len(),
                     tokens,
                     pieces,
@@ -210,15 +210,12 @@ fn token_ids(value: &Value) -> Result<Vec<u32>, Failure> {
 async fn detokenize(State(council): Shared, Extension(id): Id, body: Body) -> Response {
     let result = async {
         let request: DetokenizeRequest = parse(&bytes(body).await?, "detokenize")?;
-        let served = council.route(&request.model)?;
+        let (served, model) = council.route_text(&request.model)?;
         let tokens = token_ids(&request.tokens)?;
         council
             .call(move || {
                 let text = served.service.family().detokenize(&tokens).map_err(at("tokens"))?;
-                Ok(Detokenized {
-                    model: served.service.model().to_owned(),
-                    text,
-                })
+                Ok(Detokenized { model, text })
             })
             .await
     }

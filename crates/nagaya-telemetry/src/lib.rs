@@ -31,7 +31,7 @@ mod setup;
 pub mod testing;
 
 #[cfg(feature = "export")]
-pub use context::{INVALID_ATTRIBUTE, ParentStatus, adopt_parent};
+pub use context::{INVALID_ATTRIBUTE, ParentStatus, adopt_parent, traceparent_of};
 #[cfg(feature = "export")]
 pub use format::StderrFormat;
 #[cfg(feature = "export")]

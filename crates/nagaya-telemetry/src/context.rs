@@ -43,3 +43,15 @@ pub fn adopt_parent(span: &tracing::Span, traceparent: Option<&str>, tracestate:
     let _ = span.set_parent(context);
     ParentStatus::Adopted
 }
+
+/// The `traceparent` header that names `span` as the parent, for a call to another node (spec 9.2, "A forwarded
+/// request"). A span with no valid trace context gives `None`, for example when no trace layer records it.
+pub fn traceparent_of(span: &tracing::Span) -> Option<String> {
+    let context = span.context();
+    if !context.span().span_context().is_valid() {
+        return None;
+    }
+    let mut carrier: HashMap<String, String> = HashMap::new();
+    TraceContextPropagator::new().inject_context(&context, &mut carrier);
+    carrier.remove("traceparent")
+}

@@ -7,6 +7,7 @@
 pub mod embeddings;
 mod errors;
 mod extensions;
+mod forward;
 pub mod image;
 mod loads;
 mod objects;
@@ -190,6 +191,74 @@ impl Council {
     pub fn with_profile(mut self, calls: std::sync::mpsc::Sender<crate::reprofile::ProfileCall>) -> Self {
         self.profile = Some(calls);
         self
+    }
+
+    /// The cluster, when the council has one.
+    pub(crate) fn cluster(&self) -> Option<&Arc<crate::cluster::Cluster>> {
+        self.cluster.as_ref()
+    }
+
+    /// Where a request for the served model `name` runs (spec 11.1a, "The forward"). A model of this node runs here,
+    /// unless a peer keeps its name (spec 2.3). A text route for a model of a peer runs here when a local family has
+    /// the tokenizer hash and the template of the model.
+    pub(crate) fn place(&self, name: &str, text: bool) -> forward::Place {
+        let Some(cluster) = &self.cluster else {
+            return forward::Place::Local;
+        };
+        let state = cluster.state();
+        let local = self
+            .served_by_engine()
+            .into_values()
+            .flatten()
+            .find(|model| model.is_named(name));
+        if let Some(model) = &local
+            && state.keeper(&model.model).is_none()
+        {
+            return forward::Place::Local;
+        }
+        match state.holder(name) {
+            Some(peer) if text && self.local_family(&peer.entry).is_some() => forward::Place::Local,
+            Some(peer) => forward::Place::Peer(Box::new(peer.clone())),
+            None if local.is_some() => forward::Place::Local,
+            None => forward::Place::Unknown,
+        }
+    }
+
+    /// The local text model whose family has the tokenizer hash and the template of `entry` (spec 11.1a).
+    fn local_family(&self, entry: &ServedModel) -> Option<Arc<Served>> {
+        self.models
+            .iter()
+            .find(|served| {
+                let local = self.served_model(served);
+                local.tokenizer_hash == entry.tokenizer_hash && local.template == entry.template
+            })
+            .cloned()
+    }
+
+    /// The served model of a text route, and the `model` that its response names (spec 11.4b, 11.1a). A model of a
+    /// peer with a local family runs on that family, and a model of a peer that is not `ready` is a 503.
+    pub(crate) fn route_text(&self, name: &str) -> Result<(Arc<Served>, String), Failure> {
+        let local = match self.route(name) {
+            Ok(served) => {
+                let model = served.service.model().to_owned();
+                return Ok((served, model));
+            }
+            Err(failure) => failure,
+        };
+        let Some(cluster) = &self.cluster else {
+            return Err(local);
+        };
+        let state = cluster.state();
+        let Some(peer) = state.holder(name) else {
+            return Err(local);
+        };
+        let Some(served) = self.local_family(&peer.entry) else {
+            return Err(local);
+        };
+        if peer.entry.status != ModelStatus::Ready {
+            return Err(Failure::unavailable(&peer.entry));
+        }
+        Ok((served, peer.entry.model.clone()))
     }
 
     /// The calls of the profile routes, when the council has them.
@@ -572,6 +641,10 @@ fn guarded<T>(work: impl FnOnce() -> Result<T, ServiceError>) -> Result<T, Servi
 /// The router of the council routes.
 pub fn router(council: Arc<Council>) -> Router {
     routes::routes()
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&council),
+            forward::forward,
+        ))
         .layer(axum::middleware::from_fn(observe))
         .with_state(council)
 }
@@ -579,6 +652,10 @@ pub fn router(council: Arc<Council>) -> Router {
 /// The router of a server: the council routes, and a layer that cuts every open request when `cut` turns true.
 fn served_router(council: Arc<Council>, cut: tokio::sync::watch::Receiver<bool>) -> Router {
     routes::routes()
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&council),
+            forward::forward,
+        ))
         .layer(axum::middleware::from_fn_with_state(cut, cut_open_requests))
         .layer(axum::middleware::from_fn(observe))
         .with_state(council)
@@ -623,7 +700,8 @@ async fn cut_open_requests(
 /// The route template is a bounded set, so it is the `http.route` of the metric.
 async fn observe(mut request: Request, next: Next) -> Response {
     let started = Instant::now();
-    let id = request_id();
+    // A forward names the request id of its coordinator, so both nodes name one request (spec 11.1a).
+    let id = forwarded_id(request.headers()).unwrap_or_else(request_id);
     let method = request.method().clone();
     let route = request
         .extensions()
@@ -660,6 +738,18 @@ async fn observe(mut request: Request, next: Next) -> Response {
         HeaderValue::from_str(&id.0).expect("a request id is printable ASCII"),
     );
     response
+}
+
+/// The request id that a forward carries, when the request has `nagaya-forwarded` and a valid `nagaya-request-id`.
+/// A valid id is printable ASCII without spaces, 1 to 128 bytes (gogi "Request ids and tracing").
+fn forwarded_id(headers: &axum::http::HeaderMap) -> Option<RequestId> {
+    use crate::cluster::call::{FORWARDED_HEADER, REQUEST_ID_HEADER};
+    if !headers.contains_key(FORWARDED_HEADER) {
+        return None;
+    }
+    let text = headers.get(REQUEST_ID_HEADER)?.to_str().ok()?;
+    let valid = (1..=128).contains(&text.len()) && text.bytes().all(|byte| byte.is_ascii_graphic());
+    valid.then(|| RequestId(text.to_owned()))
 }
 
 /// The text of a header. A header that is not text is an invalid trace context, which the span records (spec 9.2).
