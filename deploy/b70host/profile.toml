@@ -116,6 +116,22 @@ share = 1
 pin_identity = false
 pinned = true
 
+# The SDXL inpainting UNet with 9 input channels on card 1 (milestone 20, docs/spec.md 11.9b), the served image model
+# `inpaint-0`. Its weights are diffusers' `stable-diffusion-xl-1.0-inpainting-0.1`, snapshot 115134f, with the VAE
+# that the folder ships (11.9, Amy 2026-11-02). It plans 14,243,419,392 bytes of weights and 6,711,607,684 of
+# activations on its card, and 67,241,984 of host memory. Thus it does not load beside gemma, and it is on demand.
+# The family reads the tokenizer from `SDXL_MODEL_DIR` in the unit, so the entry has no family table.
+[[engines]]
+name = "inpaint-0"
+kind = "mk-sdxl-bmg"
+devices = [1]
+share = 1
+pin_identity = false
+residency = "on_demand"
+
+[engines.config]
+model_dir = "/home/atobey/.cache/huggingface/hub/models--diffusers--stable-diffusion-xl-1.0-inpainting-0.1/snapshots/115134f363124c53c7d878647567d04daf26e41e"
+
 # One budget for each card's device memory, and one for host memory (spec 4.1). Each B70 has 32 GiB of GDDR6
 # (BAR 2 of `resource`, spec 2.1). The budget of a card is all of it: the device has no safety floor. The plan of
 # this profile gives 29,964,945,932 bytes of mandatory terms on device 0 and 31,889,794,060 on device 1, and

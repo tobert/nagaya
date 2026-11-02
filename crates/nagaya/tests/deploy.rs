@@ -274,8 +274,8 @@ fn the_b70host_profile_names_the_gemma4_engine_on_both_cards() {
     let profile = b70host_profile();
     assert_eq!(
         profile.engines.len(),
-        8,
-        "gemma, the speech engine and five image engines on demand, and the pinned embedding engine"
+        9,
+        "gemma, the speech engine, five image engines on demand, the pinned embedding engine, and inpaint-0"
     );
     let engine = &profile.engines[0];
     assert_eq!(engine.residency, Residency::Resident);
@@ -481,7 +481,7 @@ fn the_b70host_profile_names_an_image_engine_on_demand_on_each_card() {
     let profile = b70host_profile();
     assert_eq!(
         profile.engines.len(),
-        8,
+        9,
         "the image engines follow gemma and the speech engine"
     );
     for (engine, (name, device)) in profile.engines[2..4].iter().zip([("sdxl-0", 0), ("sdxl-1", 1)]) {
@@ -504,7 +504,7 @@ fn the_b70host_profile_names_pony_on_card_zero_and_autismmix_on_card_one() {
     // Amy, 2026-10-28: Pony V6 and AutismMix from Civitai, beside SDXL base, one engine on each card. The profile
     // names the files; this test checks only their form.
     let profile = b70host_profile();
-    assert_eq!(profile.engines.len(), 8);
+    assert_eq!(profile.engines.len(), 9);
     // Amy, 2026-10-29: SDXL-Lightning 4-step, a single file on card 0, shares that card with pony-0 (spec 11.9a).
     let singles = [("pony-0", 0), ("autismmix-1", 1), ("lightning-0", 0)];
     for (engine, (name, device)) in profile.engines[4..7].iter().zip(singles) {
@@ -573,6 +573,32 @@ fn the_b70host_profile_names_the_pinned_embedding_engine_on_card_one() {
     );
 }
 
+/// The 9-channel inpainting UNet on card 1, on demand (milestone 20 step 7, spec 11.9b "The 9-channel UNet"). Its key
+/// `model_dir` names the inpainting folder, and its family reads the tokenizer from `SDXL_MODEL_DIR` in the unit.
+#[test]
+fn the_b70host_profile_names_the_inpainting_engine_on_demand_on_card_one() {
+    let profile = b70host_profile();
+    let engine = &profile.engines[8];
+    assert_eq!(
+        (engine.name.as_str(), engine.kind.as_str()),
+        ("inpaint-0", nagaya::sdxl::KIND)
+    );
+    assert_eq!(engine.devices, vec![1]);
+    assert_eq!(engine.residency, Residency::OnDemand);
+    assert!(!engine.pinned);
+    assert!(
+        engine.family.is_empty(),
+        "the tokenizer comes from SDXL_MODEL_DIR, and clip_skip is the default"
+    );
+    let config = nagaya::sdxl::config(&engine.config).unwrap();
+    assert_eq!(config.checkpoint, None, "the inpainting UNet is a diffusers folder");
+    assert!(
+        config.model_dir.is_absolute() && config.model_dir.ends_with("115134f363124c53c7d878647567d04daf26e41e"),
+        "inpaint-0 names snapshot 115134f of the inpainting folder: {}",
+        config.model_dir.display()
+    );
+}
+
 #[test]
 fn the_b70host_profile_admits_on_the_probed_b70host() {
     // The start path up to the open: the probe, the ignored iGPU, the plan and the ledger.
@@ -598,8 +624,8 @@ fn the_b70host_profile_admits_on_the_probed_b70host() {
     registry.register(nagaya::sdxl::KIND, Box::new(ImagePlanOnly));
     registry.register(nagaya::embeddinggemma2::KIND, Box::new(EmbeddingPlanOnly));
     let admitted = admit(&b70host_profile(), &registry, &inventory, &mut Ledger::new()).expect("b70host admits");
-    assert_eq!(admitted.engines.len(), 8);
-    for engine in &admitted.engines[2..7] {
+    assert_eq!(admitted.engines.len(), 9);
+    for engine in admitted.engines[2..7].iter().chain(&admitted.engines[8..]) {
         assert!(engine.limits.capabilities.contains(&nagaya_abi::Capability::Image));
     }
     assert!(
