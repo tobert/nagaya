@@ -279,12 +279,16 @@ async function call(method, path, body) {
   const text = await r.text();
   let v = null;
   try { v = text ? JSON.parse(text) : null; } catch (e) { v = {error: {message: text}}; }
-  if (!r.ok) {
-    const error = new Error(v?.error?.message || `${method} ${path} returned ${r.status}`);
-    error.status = r.status;
-    throw error;
-  }
+  if (!r.ok) throw failure(v, `${method} ${path} returned ${r.status}`, r.status);
   return v;
+}
+
+/** The Error of a gogi error body. The message names `param` when the nagaya's message does not. */
+function failure(v, otherwise, status) {
+  const param = v?.error?.param, text = v?.error?.message || otherwise;
+  const error = new Error(param && !text.includes(param) ? `${param}: ${text}` : text);
+  error.status = status; error.param = param;
+  return error;
 }
 
 /** Read a server-sent event stream; call `on(name, data)` for each event. */
@@ -314,12 +318,12 @@ async function stream(body, signal, on) {
     headers: {"content-type": "application/json"}, body: JSON.stringify({...body, stream: true})});
   if (!r.ok) {
     const v = await r.json().catch(() => ({}));
-    throw new Error(v?.error?.message || `the generation returned ${r.status}`);
+    throw failure(v, `the generation returned ${r.status}`, r.status);
   }
   let done = null;
   await events(r, (name, data) => {
     if (name === "done") done = data;
-    else if (name === "error") throw new Error(data?.error?.message || "the generation failed");
+    else if (name === "error") throw failure(data, "the generation failed");
     else on(name, data);
   });
   if (!done) throw new Error("the stream ended with no done event");
@@ -401,9 +405,17 @@ document.addEventListener("click", async (ev) => {
   refresh();
 });
 
+/** The engine names in one clause of a 409 message, such as "the loaded engines in the way are `a`, `b`". */
+function namesAfter(message, clause) {
+  const at = message.indexOf(clause);
+  if (at < 0) return [];
+  const rest = message.slice(at + clause.length).split(";")[0];
+  return [...rest.matchAll(/`([^`]+)`/g)].map((m) => m[1]).filter((n) => n !== "unload");
+}
+
 /**
- * Load an engine. A load that does not fit is a 409 that names the engines in its way (spec 3.3a). Then ask to
- * unload the loaded engines on its cards that are not pinned, and send the load again with them in `unload`.
+ * Load an engine. A load that does not fit is a 409 that names the loaded engines in its way and the pins (spec 3.3a).
+ * Then ask to unload the engines that the nagaya names, and send the load again with them in `unload`.
  */
 async function loadEngine(name) {
   const path = `/nagaya/v1/engines/${encodeURIComponent(name)}/load`;
@@ -411,13 +423,12 @@ async function loadEngine(name) {
     return await call("POST", path);
   } catch (e) {
     if (e.status !== 409 || !/does not fit/.test(e.message)) throw e;
-    const target = engines.find((x) => x.name === name);
-    const way = engines.filter((x) => x.name !== name && !x.pinned && target &&
-      x.devices.some((d) => target.devices.includes(d)) && ["ready", "loading"].includes(modelOf(x.name)?.status));
+    const way = namesAfter(e.message, "the loaded engines in the way are");
     if (!way.length) throw e;
-    const names = way.map((x) => x.name);
-    if (!confirm(`${e.message}\n\nUnload ${names.join(", ")} and load ${name}?`)) throw e;
-    return await call("POST", path, {unload: names});
+    const pins = namesAfter(e.message, "the pinned engines");
+    const stays = pins.length ? `\n${pins.join(", ")} ${pins.length > 1 ? "stay" : "stays"} loaded: pinned.` : "";
+    if (!confirm(`${e.message}\n\nUnload ${way.join(", ")} and load ${name}?${stays}`)) throw e;
+    return await call("POST", path, {unload: way});
   }
 }
 
@@ -541,7 +552,7 @@ $("img-lora-file").onchange = async (ev) => {
                                             headers: {"content-type": "application/octet-stream"}});
       if (!r.ok) {
         const v = await r.json().catch(() => ({}));
-        throw new Error(v?.error?.message || `the put returned ${r.status}`);
+        throw failure(v, `the put returned ${r.status}`, r.status);
       }
     } else if (!head.ok) {
       throw new Error(`HEAD of the object returned ${head.status}`);

@@ -60,7 +60,11 @@ function fetch(path, o) {
   if (path === "/nagaya/v1/profile") return reply(200, PROFILE);
   const load = path.match(/^\/nagaya\/v1\/engines\/([^/]+)\/load$/);
   if (load) {
-    if (!o.body) return reply(409, {error: {message: `nothing changed: engine \`${load[1]}\` does not fit: short`}});
+    // The message of a load that does not fit, as the nagaya writes it (process/loads.rs). It names the engines in the
+    // way, and the page does not guess them.
+    if (!o.body) return reply(409, {error: {type: "invalid_request", param: "name", message: "nothing changed: engine `" +
+      load[1] + "` does not fit: device(1) lacks 1024 bytes; the loaded engines in the way are `gemma`, `voice`, and " +
+      "a load can name them in `unload`; the pinned engines `embeddinggemma-2` stay loaded"}});
     return reply(202, {engine: load[1], unload: JSON.parse(o.body).unload, load: [load[1]]});
   }
   if (path === "/council/v2/embeddings") {
@@ -68,6 +72,9 @@ function fetch(path, o) {
     const b = JSON.parse(o.body);
     const v = b.inputs.map((t, i) => b.task === "query" ? [1, 0] : [Math.cos(i), Math.sin(i)]);
     return reply(200, {embeddings: v.map((vector, index) => ({index, tokens: 3, vector}))});
+  }
+  if (path === "/council/v2/generations" && JSON.parse(o.body).output?.options?.strength > 1) {
+    return reply(400, {error: {type: "invalid_request", param: "output.options.strength", message: "nothing ran: too much"}});
   }
   if (path === "/council/v2/generations") {
     return reply(200, {outputs: [{index: 0, id: "blake3:" + "a".repeat(64), mime: "audio/wav"}],
@@ -93,14 +100,22 @@ class Page(unittest.TestCase):
         self.assertNotIn("error", out)
         return out
 
-    def test_a_load_that_does_not_fit_unloads_the_loaded_engines_on_its_cards_but_no_pinned_engine(self):
+    def test_a_load_that_does_not_fit_unloads_the_engines_that_the_nagaya_names_in_its_way(self):
         out = self.run_page("""
             out.reply = await loadEngine("sdxl-1");
             out.bodies = calls.filter((c) => c[1].endsWith("/load")).map((c) => c[2]);
-            out.confirms = confirms.length;""")
-        self.assertEqual(out["bodies"], [None, '{"unload":["gemma"]}'])
-        self.assertEqual(out["confirms"], 1)
-        self.assertEqual(out["reply"]["unload"], ["gemma"])
+            out.confirms = confirms;""")
+        self.assertEqual(out["bodies"], [None, '{"unload":["gemma","voice"]}'])
+        self.assertEqual(len(out["confirms"]), 1)
+        self.assertIn("embeddinggemma-2 stays loaded", out["confirms"][0])
+        self.assertEqual(out["reply"]["unload"], ["gemma", "voice"])
+
+    def test_an_error_names_its_param_when_the_message_does_not(self):
+        out = self.run_page("""
+            try { await call("POST", "/council/v2/generations", {output: {options: {strength: 2}}}); }
+            catch (e) { out.message = e.message; out.param = e.param; }""")
+        self.assertEqual(out["message"], "output.options.strength: nothing ran: too much")
+        self.assertEqual(out["param"], "output.options.strength")
 
     def test_the_documents_rank_by_their_cosine_to_the_query(self):
         out = self.run_page("""
