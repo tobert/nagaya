@@ -267,6 +267,20 @@ class Page(unittest.TestCase):
         self.assertRegex(rows[4], r'data-pin="pony-0"\s*>Pin<')
         self.assertRegex(rows[3], r'data-unpin="embeddinggemma-2"\s*>Unpin<')
 
+    def test_a_line_of_speech_sends_the_sampler_that_is_set_and_no_member_that_is_empty(self):
+        out = self.run_page("""
+            const set = (id, v) => { document.getElementById(id).value = v; };
+            const speak = async () => {
+              set("sp-input", "hello"); await document.getElementById("sp-go").onclick();
+              return JSON.parse(calls.filter((c) => /generations$/.test(c[1])).pop()[2]).sample;
+            };
+            set("sp-model", "voice"); set("sp-seed", "5"); set("sp-temp", "0.7"); set("sp-topk", "20");
+            out.set = await speak();
+            set("sp-seed", ""); set("sp-temp", ""); set("sp-topk", "");
+            out.empty = await speak() ?? null;""")
+        self.assertEqual(out["set"], {"seed": 5, "temperature": 0.7, "top_k": 20})
+        self.assertIsNone(out["empty"])
+
     def test_an_error_names_its_param_when_the_message_does_not(self):
         out = self.run_page("""
             try { await call("POST", "/council/v2/generations", {output: {options: {strength: 2}}}); }

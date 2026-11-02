@@ -229,6 +229,12 @@ audio { width: 100%; }
           </select></div>
         <div><label>Seed <span class="note">— empty: random</span></label><input id="sp-seed" type="number" min="0"></div>
       </div>
+      <div class="row">
+        <div><label>Temperature <span class="note">— empty: 0.9</span></label>
+          <input id="sp-temp" type="number" min="0" step="0.05" placeholder="0.9"></div>
+        <div><label>Top k <span class="note">— empty: 50</span></label>
+          <input id="sp-topk" type="number" min="1" placeholder="50"></div>
+      </div>
       <label class="inline" style="margin-top:12px"><input id="sp-keep" type="checkbox" checked> Keep the lines before in the context</label>
       <p class="note">With the lines kept, each line continues from the audio before it, so the voice drifts less.</p>
       <div class="actions"><button class="plain" id="sp-clear">New voice</button></div>
@@ -956,7 +962,12 @@ $("sp-go").onclick = async () => {
   messages.push({role: "user", content: text});
   const body = {model, max_tokens: 1, context: {messages},
                 output: {mime: "audio/wav", options: {language: $("sp-lang").value}}};
-  if ($("sp-seed").value !== "") body.sample = {seed: +$("sp-seed").value};
+  // An empty field leaves the member out, so the nagaya uses the sampler of the checkpoint (spec 11.8).
+  const sample = {};
+  if ($("sp-seed").value !== "") sample.seed = +$("sp-seed").value;
+  if ($("sp-temp").value !== "") sample.temperature = +$("sp-temp").value;
+  if ($("sp-topk").value !== "") sample.top_k = +$("sp-topk").value;
+  if (Object.keys(sample).length) body.sample = sample;
   $("sp-go").disabled = true;
   try {
     await ready(model, (t) => { $("sp-error").textContent = t; });
