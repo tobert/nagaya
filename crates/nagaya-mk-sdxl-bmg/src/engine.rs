@@ -47,9 +47,15 @@ struct Job {
     /// The latent mask of an inpainting job: 1 repaints a latent pixel, and 0 keeps it (spec 11.9b, "The mask").
     /// `None` for a job with no mask.
     mask: Option<Vec<u8>>,
-    /// The start noise of each image of an inpainting job, after the encode quantum. Each `known` of the blend reuses
-    /// it (spec 11.9b, "The blend"). Empty for a job with no mask.
+    /// The start noise of each image of an inpainting job with a 4-channel UNet, after the encode quantum. Each `known`
+    /// of the blend reuses it (spec 11.9b, "The blend"). Empty for any other job.
     start_noise: Vec<Vec<f32>>,
+    /// The masked image latent of each image of a job of a 9-channel UNet, after the encode quantum: rows of 4
+    /// channels, times the scaling factor (spec 11.9b, "The 9-channel UNet"). `None` for a 4-channel UNet.
+    masked_latents: Option<Vec<Vec<f32>>>,
+    /// True after the encode quantum of a job with `init`. A 9-channel UNet at a strength of 1.0 encodes no image, so
+    /// `image_latents` cannot tell.
+    encoded: bool,
 }
 
 /// The SDXL engine.
@@ -483,13 +489,34 @@ impl SdxlEngine {
         self.read_f32(self.vae.moments, 2 * LATENT * (h / VAE_SCALE) * (w / VAE_SCALE))
     }
 
-    /// The image latent of each image of the job in slot 0, after its encode quantum (spec 11.9b), or `None`.
+    /// The image latent of each image of the job in slot 0, after its encode quantum (spec 11.9b), or `None`. A
+    /// 9-channel UNet at a strength of 1.0 encodes no image, so it gives `None`.
     pub fn image_latents(&self) -> Option<&[Vec<f32>]> {
         self.job.as_ref()?.image_latents.as_deref()
     }
 
-    /// The encode quantum of a job with `init` (spec 11.9b, "The VAE encode quantum"): the encoder runs once on the
-    /// image, and image `i` draws its own `z` from the seed plus `i`, with the purpose `encode`.
+    /// The masked image latent of each image of the job in slot 0, after its encode quantum, or `None`. Only a
+    /// 9-channel UNet has them (spec 11.9b, "The 9-channel UNet").
+    pub fn masked_latents(&self) -> Option<&[Vec<f32>]> {
+        self.job.as_ref()?.masked_latents.as_deref()
+    }
+
+    /// The latents of `images` images from the encoder moments of one input: image `i` draws its own `z` from the seed
+    /// plus `i`, with `purpose` (spec 11.9b, "The image latent").
+    fn draw_latents(moments: &[f32], seed: u64, images: usize, purpose: Purpose) -> Vec<Vec<f32>> {
+        (0..images)
+            .map(|i| {
+                host::image_latent(
+                    moments,
+                    &noise::normal(seed.wrapping_add(i as u64), 0, 0, purpose, moments.len() / 2),
+                )
+            })
+            .collect()
+    }
+
+    /// The encode quantum of a job with `init` (spec 11.9b, "The VAE encode quantum"). The encoder runs once on the
+    /// image, and each image draws its own latent. A 9-channel UNet also encodes the masked image, with the purpose
+    /// `encode masked`. At a strength of 1.0 it encodes no image, because its start is the noise alone (inpaint.py:805).
     fn encode_quantum(&mut self, job: &mut Job) {
         let init = job
             .job
@@ -497,27 +524,41 @@ impl SdxlEngine {
             .clone()
             .expect("the encode quantum runs for a job with an image");
         let (h, w) = (job.job.height as usize, job.job.width as usize);
-        let moments = self.encode_image(&nagaya_text_sdxl::inputs::unit(&init.pixels), h, w);
+        let (seed, images) = (job.job.seed, job.size.images);
         let n = LATENT * (h / VAE_SCALE) * (w / VAE_SCALE);
-        let latents: Vec<Vec<f32>> = (0..job.size.images)
-            .map(|i| {
-                let z = noise::normal(job.job.seed.wrapping_add(i as u64), 0, 0, Purpose::Encode, n);
-                host::image_latent(&moments, &z)
-            })
+        let starts: Vec<Vec<f32>> = (0..images)
+            .map(|i| noise::normal(seed.wrapping_add(i as u64), 0, 0, Purpose::Start, n))
             .collect();
-        let starts: Vec<Vec<f32>> = (0..job.size.images)
-            .map(|i| noise::normal(job.job.seed.wrapping_add(i as u64), 0, 0, Purpose::Start, n))
-            .collect();
+        let nine = self.unet.in_channels == INPAINT_CHANNELS;
         let inpaint = job.mask.is_some();
-        job.latents = latents
-            .iter()
-            .zip(&starts)
-            .map(|(latent, start)| image_start(&job.schedule, job.begin, latent, start, inpaint, init.strength))
-            .collect();
-        job.image_latents = Some(latents);
-        if inpaint {
+        if nine && init.strength == 1.0 {
+            let sigma = job.schedule.init_noise_sigma();
+            job.latents = starts
+                .iter()
+                .map(|start| start.iter().map(|v| v * sigma).collect())
+                .collect();
+        } else {
+            let moments = self.encode_image(&nagaya_text_sdxl::inputs::unit(&init.pixels), h, w);
+            let latents = Self::draw_latents(&moments, seed, images, Purpose::Encode);
+            job.latents = latents
+                .iter()
+                .zip(&starts)
+                .map(|(latent, start)| image_start(&job.schedule, job.begin, latent, start, inpaint, init.strength))
+                .collect();
+            job.image_latents = Some(latents);
+        }
+        if nine {
+            let blurred = init
+                .mask
+                .as_ref()
+                .expect("job_problem refused a 9-channel job without a mask");
+            let values = nagaya_text_sdxl::inputs::masked(&init.pixels, &nagaya_text_sdxl::inputs::binary(blurred));
+            let moments = self.encode_image(&values, h, w);
+            job.masked_latents = Some(Self::draw_latents(&moments, seed, images, Purpose::EncodeMasked));
+        } else if inpaint {
             job.start_noise = starts;
         }
+        job.encoded = true;
     }
 
     /// The latent of each image of the job in slot 0, or `None`. It is the latent after the last step that ran.
@@ -527,7 +568,7 @@ impl SdxlEngine {
 
     /// Check a job against the limits of the engine. The council checks the ranges of spec 11.9a before it.
     fn check(&self, job: &ImageJob) -> Result<(), PassError> {
-        job_problem(job).map_or(Ok(()), |m| Err(refused(format!("nothing ran: {m}"))))
+        job_problem(job, self.unet.in_channels).map_or(Ok(()), |m| Err(refused(format!("nothing ran: {m}"))))
     }
 
     fn fail(&mut self, error: PassError) -> PassError {
@@ -608,6 +649,8 @@ impl Image for SdxlEngine {
             image_latents: None,
             mask,
             start_noise: Vec::new(),
+            masked_latents: None,
+            encoded: false,
         });
         Ok(None)
     }
@@ -618,7 +661,7 @@ impl Image for SdxlEngine {
                 "slot {slot} holds no image job; call image_begin first"
             ))));
         };
-        if job.job.init.is_some() && job.image_latents.is_none() {
+        if job.job.init.is_some() && !job.encoded {
             // The first step of a job with an image is the encode: step 0 of the n steps that run, with no previews
             // (engine-abi "Image inputs").
             self.encode_quantum(&mut job);
@@ -637,8 +680,16 @@ impl Image for SdxlEngine {
         }
         let (images, size) = (job.size.images, job.size);
         let scale = job.schedule.input_scale(i);
+        // A 9-channel UNet also takes the latent mask and the masked latent of the image, in both halves of CFG.
         let x_in: Vec<f32> = (0..2 * images)
-            .flat_map(|b| job.latents[b % images].iter().map(move |v| v * scale))
+            .flat_map(|b| {
+                let scaled: Vec<f32> = job.latents[b % images].iter().map(|v| v * scale).collect();
+                match (&job.masked_latents, &job.mask) {
+                    (Some(masked), Some(mask)) => host::inpaint_input(&scaled, mask, &masked[b % images]),
+                    (None, _) => scaled,
+                    (Some(_), None) => unreachable!("job_problem refused a 9-channel job without a mask"),
+                }
+            })
             .collect();
         let (eps, _) = self.unet_forward(size, &x_in, job.schedule.timesteps[i], &job.context, &job.add, false);
         let n = size.h * size.w * LATENT;
@@ -662,8 +713,9 @@ impl Image for SdxlEngine {
                 draw.as_deref(),
                 &mut job.history[img],
             );
-            // An inpainting job blends the kept latent pixels back after each step, before the preview.
-            if let Some(mask) = &job.mask {
+            // An inpainting job of a 4-channel UNet blends the kept latent pixels back after each step, before the
+            // preview. A 9-channel UNet does no blend (inpaint.py:1648).
+            if let (Some(mask), None) = (&job.mask, &job.masked_latents) {
                 let image_latents = job.image_latents.as_ref().expect("the encode quantum ran first");
                 let known = job.schedule.known(i, &image_latents[img], &job.start_noise[img]);
                 sampler::blend(&mut job.latents[img], &known, mask);
@@ -720,6 +772,11 @@ impl Image for SdxlEngine {
     fn image_clear(&mut self, _slot: SlotId) {
         self.job = None;
         self.release_loras();
+    }
+
+    /// A 9-channel UNet refuses a job without an image and a mask (engine-abi "Image inputs").
+    fn image_needs_mask(&self) -> bool {
+        self.unet.in_channels == INPAINT_CHANNELS
     }
 }
 

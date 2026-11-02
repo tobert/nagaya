@@ -6,6 +6,7 @@ use std::sync::Arc;
 use nagaya_abi::{ImageInit, ImageJob, ImagePrompt, ImageSampler, ImageSpacing};
 use nagaya_mk_sdxl_bmg::host::empty_chunk;
 use nagaya_mk_sdxl_bmg::job::job_problem;
+use nagaya_mk_sdxl_bmg::spec::{INPAINT_CHANNELS, LATENT};
 
 /// A text to image job of 512 by 768 that the engine runs.
 fn job() -> ImageJob {
@@ -43,16 +44,21 @@ fn with_image(bytes: usize, strength: f64, mask: Option<usize>) -> ImageJob {
 }
 
 fn problem(job: &ImageJob) -> String {
-    job_problem(job).expect("the engine refuses the job")
+    job_problem4(job).expect("the engine refuses the job")
 }
 
 const PIXELS: usize = 512 * 768;
 
+/// The reason an engine with a 4-channel UNet refuses a job.
+fn job_problem4(job: &ImageJob) -> Option<String> {
+    job_problem(job, LATENT)
+}
+
 #[test]
 fn a_text_to_image_job_and_an_image_job_of_the_right_sizes_pass_the_checks() {
-    assert_eq!(job_problem(&job()), None);
-    assert_eq!(job_problem(&with_image(3 * PIXELS, 0.75, None)), None);
-    assert_eq!(job_problem(&with_image(3 * PIXELS, 1.0, Some(PIXELS))), None);
+    assert_eq!(job_problem4(&job()), None);
+    assert_eq!(job_problem4(&with_image(3 * PIXELS, 0.75, None)), None);
+    assert_eq!(job_problem4(&with_image(3 * PIXELS, 1.0, Some(PIXELS))), None);
 }
 
 /// The image is 3 bytes for each pixel of the job, and the mask 1 byte (engine-abi "Image inputs").
@@ -73,8 +79,27 @@ fn a_strength_out_of_range_or_one_that_runs_no_step_is_refused() {
         assert!(problem(&bad).contains("strength"), "{strength}: {}", problem(&bad));
     }
     assert_eq!(
-        job_problem(&with_image(3 * PIXELS, 0.05, None)),
+        job_problem4(&with_image(3 * PIXELS, 0.05, None)),
         None,
         "20 * 0.05 runs 1 step"
+    );
+}
+
+/// A 9-channel UNet needs an image and a mask (spec 11.9b, engine-abi "Image inputs"). It refuses text to image and
+/// img2img, and runs inpainting. A 4-channel UNet runs all three.
+#[test]
+fn a_9_channel_unet_refuses_a_job_without_an_image_and_a_mask() {
+    for job in [job(), with_image(3 * PIXELS, 0.75, None)] {
+        let problem = job_problem(&job, INPAINT_CHANNELS).expect("a 9-channel UNet refuses the job");
+        assert!(problem.contains("an image and a mask"), "{problem}");
+        assert_eq!(job_problem(&job, LATENT), None);
+    }
+    assert_eq!(
+        job_problem(&with_image(3 * PIXELS, 1.0, Some(PIXELS)), INPAINT_CHANNELS),
+        None
+    );
+    assert_eq!(
+        job_problem(&with_image(3 * PIXELS, 0.99, Some(PIXELS)), INPAINT_CHANNELS),
+        None
     );
 }

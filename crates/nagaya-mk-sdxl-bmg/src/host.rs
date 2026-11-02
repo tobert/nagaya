@@ -102,6 +102,29 @@ pub fn image_latent(moments: &[f32], z: &[f32]) -> Vec<f32> {
         .collect()
 }
 
+/// The input of a 9-channel UNet for one image (spec 11.9b, "The 9-channel UNet"): for each latent pixel, the 4
+/// values of the scaled latent, its latent mask, then the 4 values of the masked image latent (inpaint.py:1612-1615).
+/// Each input is pixel-major.
+pub fn inpaint_input(scaled: &[f32], mask: &[u8], masked: &[f32]) -> Vec<f32> {
+    assert_eq!(
+        scaled.len(),
+        LATENT * mask.len(),
+        "the latent has 4 values for each mask value"
+    );
+    assert_eq!(
+        masked.len(),
+        scaled.len(),
+        "the masked latent has the size of the latent"
+    );
+    let mut out = Vec::with_capacity(INPAINT_CHANNELS * mask.len());
+    for (p, m) in mask.iter().enumerate() {
+        out.extend_from_slice(&scaled[LATENT * p..LATENT * (p + 1)]);
+        out.push(f32::from(*m));
+        out.extend_from_slice(&masked[LATENT * p..LATENT * (p + 1)]);
+    }
+    out
+}
+
 /// The linear preview of a latent (spec 11.9): RGB in [0, 1] = `PREVIEW` times the 4 channels, plus `PREVIEW_BIAS`.
 /// `tools/sdxl_preview_fit.py` fitted it by least squares on 4 images of SDXL base 1.0 at 512 by 512, against the mean
 /// of each 8 by 8 block of the decoded image. Its mean absolute error was 0.072 (2026-10-28).

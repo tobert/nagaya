@@ -84,3 +84,17 @@ fn image_bytes_round_the_clamped_values() {
         vec![0, 255, 128, 0, 255, 128]
     );
 }
+
+/// The input of a 9-channel UNet holds, for each latent pixel, the scaled latent, the mask, then the masked latent.
+#[test]
+fn the_9_channel_input_is_the_latent_the_mask_and_the_masked_latent_of_each_pixel() {
+    let scaled = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    let masked = [-1.0, -2.0, -3.0, -4.0, -5.0, -6.0, -7.0, -8.0];
+    let got = inpaint_input(&scaled, &[1, 0], &masked);
+    assert_eq!(
+        got,
+        [
+            1.0, 2.0, 3.0, 4.0, 1.0, -1.0, -2.0, -3.0, -4.0, 5.0, 6.0, 7.0, 8.0, 0.0, -5.0, -6.0, -7.0, -8.0
+        ]
+    );
+}

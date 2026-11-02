@@ -5,8 +5,9 @@ use nagaya_abi::{ImageChunk, ImageJob, ImagePrompt, ImageSampler, ImageSpacing, 
 
 use crate::spec::*;
 
-/// The reason an image job is refused, or `None` when the engine can run it.
-pub fn job_problem(job: &ImageJob) -> Option<String> {
+/// The reason an image job is refused by an engine whose UNet has `in_channels` input channels, or `None` when the
+/// engine can run it.
+pub fn job_problem(job: &ImageJob, in_channels: usize) -> Option<String> {
     let pixels = job.width as usize * job.height as usize;
     let chunk_ok =
         |c: &ImageChunk| c.ids1.len() == CHUNK_IDS && c.ids2.len() == CHUNK_IDS && c.weights.len() == CHUNK_IDS;
@@ -26,6 +27,13 @@ pub fn job_problem(job: &ImageJob) -> Option<String> {
     }
     if let Some(problem) = inputs_problem(job, pixels) {
         return Some(problem);
+    }
+    if in_channels == INPAINT_CHANNELS && job.init.as_ref().is_none_or(|init| init.mask.is_none()) {
+        return Some(
+            "the UNet of this checkpoint has 9 input channels for inpainting, so it needs an image and a mask; put \
+             both in the last `user` message"
+                .to_owned(),
+        );
     }
     if job.count == 0 || job.count as usize > MAX_IMAGES {
         Some(format!(

@@ -18,6 +18,11 @@ impl Tensors {
             .unwrap_or_else(|| panic!("the oracle has no tensor {name}"))
     }
 
+    /// True when the file holds the tensor `name`.
+    pub fn has(&self, name: &str) -> bool {
+        self.0.contains_key(name)
+    }
+
     pub fn values(&self, name: &str) -> &[f32] {
         &self.get(name).1
     }

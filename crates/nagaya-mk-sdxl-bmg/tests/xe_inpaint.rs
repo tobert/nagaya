@@ -385,6 +385,8 @@ fn inpainting_follows_diffusers_and_the_capability_runs_the_same_math() {
     let started = Instant::now();
     let mut engine = SdxlEngine::open(Config::folder(dir), &card_address()).unwrap();
     eprintln!("open: {:.1} s", started.elapsed().as_secs_f32());
+    // SDXL base has a UNet of 4 input channels, so it takes a job without a mask (spec 11.9b).
+    assert_eq!((engine.in_channels(), engine.image_needs_mask()), (LATENT, false));
     let (h, w) = (HEIGHT / VAE_SCALE, WIDTH / VAE_SCALE);
     let moments = engine.encode_image(&unit(&rgb), HEIGHT, WIDTH);
 
@@ -409,6 +411,11 @@ fn inpainting_follows_diffusers_and_the_capability_runs_the_same_math() {
             (out.step, out.steps, out.previews.len()),
             (0, n, 0),
             "{key}: the encode"
+        );
+        // A 4-channel UNet blends, so the encode quantum does not encode the masked image (spec 11.9b).
+        assert!(
+            engine.masked_latents().is_none(),
+            "{key}: a 4-channel UNet has no masked latent"
         );
         let mut previews: Vec<DecodedImage> = Vec::new();
         for k in 1..=n {

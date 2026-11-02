@@ -1,6 +1,7 @@
 //! The paste after the decode against the oracle (`tools/sdxl_inpaint_golden.sh`, spec 11.9b, "The paste after the
 //! decode"). The route pastes with `nagaya_text_sdxl::inputs::paste`. This test gives it the decode of each inpainting
-//! run of the reference and the input image, and it compares the bytes with the reference's paste.
+//! run of the reference, with the blend and with the 9-channel UNet, and the input image. It compares the bytes with
+//! the reference's paste.
 
 mod common;
 
@@ -23,7 +24,11 @@ fn bytes(values: &[f32]) -> Vec<u8> {
 
 #[test]
 fn the_paste_gives_the_bytes_of_the_reference() {
-    let (Some(inputs), Some(t)) = (golden("image_inputs.safetensors"), golden("inpaint.safetensors")) else {
+    let (Some(inputs), Some(four), Some(nine)) = (
+        golden("image_inputs.safetensors"),
+        golden("inpaint.safetensors"),
+        golden("inpaint9.safetensors"),
+    ) else {
         return;
     };
     let old = bytes(inputs.values("init.rgb"));
@@ -32,7 +37,8 @@ fn the_paste_gives_the_bytes_of_the_reference() {
         blurred.iter().any(|a| *a != 0 && *a != 255),
         "the blurred mask of the oracle has a soft edge"
     );
-    for run in RUNS {
+    // The paste applies to a 9-channel UNet as to the blend (spec 11.9b), and inpaint9 has the runs of inpaint.
+    for (t, run) in RUNS.iter().flat_map(|run| [(&four, *run), (&nine, *run)]) {
         let new = bytes(t.values(&format!("{run}.rgb")));
         let want = bytes(t.values(&format!("{run}.paste")));
         assert!(
