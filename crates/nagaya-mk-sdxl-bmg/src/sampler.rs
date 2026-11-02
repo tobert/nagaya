@@ -6,12 +6,18 @@
 //! The schedule is computed in f64 and kept in f32, as numpy and torch keep it. Each step runs in f32 in the order of
 //! diffusers' operations, so a latent follows the reference within rounding.
 
-use nagaya_abi::{ImageSampler, ImageSpacing};
+use nagaya_abi::{ImageSampler, ImageSpacing, steps_that_run};
 
 const TRAIN_STEPS: usize = 1000;
 const BETA_START: f64 = 0.00085;
 const BETA_END: f64 = 0.012;
 const STEPS_OFFSET: f64 = 1.0;
+
+/// The index of the first step that runs in a job with an image (spec 11.9b): the schedule has `steps` steps, and the
+/// job runs its last `steps_that_run` of them. diffusers' `set_begin_index` starts the scheduler there.
+pub fn begin_index(steps: u32, strength: f64) -> usize {
+    (steps - steps_that_run(steps, strength)) as usize
+}
 
 /// The schedule of a job: the timestep that the UNet takes at each step, and the sigmas.
 #[derive(Clone, Debug, PartialEq)]
@@ -132,6 +138,28 @@ impl Schedule {
                 }
             }
             ImageSampler::FlowEuler => unreachable!("an assert above refuses FlowEuler"),
+        }
+    }
+
+    /// diffusers' `add_noise` at step `i` (spec 11.9b): `x + sigma * noise` for Euler and Euler a, and
+    /// `alpha_t * x + sigma_t * noise` for DPM++. Each value is computed in f32 in torch's order.
+    pub fn add_noise(&self, i: usize, x: &[f32], noise: &[f32]) -> Vec<f32> {
+        assert_eq!(
+            x.len(),
+            noise.len(),
+            "add_noise takes one noise value for each latent value"
+        );
+        let sigma = self.sigmas[i];
+        match self.sampler {
+            ImageSampler::Euler | ImageSampler::EulerAncestral => {
+                x.iter().zip(noise).map(|(x, n)| x + n * sigma).collect()
+            }
+            ImageSampler::DpmPp2mKarras | ImageSampler::DpmPp2mSdeKarras => {
+                let alpha_t = 1.0 / (sigma * sigma + 1.0).sqrt();
+                let sigma_t = sigma * alpha_t;
+                x.iter().zip(noise).map(|(x, n)| alpha_t * x + sigma_t * n).collect()
+            }
+            ImageSampler::FlowEuler => unreachable!("a schedule refuses FlowEuler"),
         }
     }
 

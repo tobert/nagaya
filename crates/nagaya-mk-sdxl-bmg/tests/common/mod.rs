@@ -7,8 +7,9 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// The tensors of one safetensors file, as f32 values with their shapes. Other dtypes are refused.
-pub struct Tensors(BTreeMap<String, (Vec<usize>, Vec<f32>)>);
+/// The tensors of one safetensors file, as f32 values with their shapes. Other dtypes are refused. An F64 tensor also
+/// keeps its exact values, because a strength in f32 can give another step count (spec 11.9b).
+pub struct Tensors(BTreeMap<String, (Vec<usize>, Vec<f32>)>, BTreeMap<String, Vec<f64>>);
 
 impl Tensors {
     pub fn get(&self, name: &str) -> &(Vec<usize>, Vec<f32>) {
@@ -19,6 +20,13 @@ impl Tensors {
 
     pub fn values(&self, name: &str) -> &[f32] {
         &self.get(name).1
+    }
+
+    /// The exact values of an F64 tensor.
+    pub fn f64s(&self, name: &str) -> &[f64] {
+        self.1
+            .get(name)
+            .unwrap_or_else(|| panic!("the oracle has no F64 tensor {name}"))
     }
 }
 
@@ -52,6 +60,7 @@ pub fn golden_in(dir: &std::path::Path, file: &str) -> Option<Tensors> {
     let header: serde_json::Value = serde_json::from_slice(&bytes[8..8 + len]).unwrap();
     let data = &bytes[8 + len..];
     let mut out = BTreeMap::new();
+    let mut wide = BTreeMap::new();
     for (name, entry) in header.as_object().unwrap() {
         if name == "__metadata__" {
             continue;
@@ -89,9 +98,18 @@ pub fn golden_in(dir: &std::path::Path, file: &str) -> Option<Tensors> {
                 .collect(),
             other => panic!("tensor {name} has the dtype {other}, which the tests do not read"),
         };
+        if entry["dtype"] == "F64" {
+            let exact = data[start..end]
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|c| f64::from_le_bytes(*c))
+                .collect();
+            wide.insert(name.clone(), exact);
+        }
         out.insert(name.clone(), (shape, values));
     }
-    Some(Tensors(out))
+    Some(Tensors(out, wide))
 }
 
 /// The largest absolute difference, relative to the largest absolute value of `want`.

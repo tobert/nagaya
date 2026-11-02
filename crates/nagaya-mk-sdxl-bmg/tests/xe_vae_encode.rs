@@ -179,8 +179,9 @@ fn the_encoder_follows_diffusers_and_the_first_step_of_an_image_job_encodes() {
         );
     }
     assert_ne!(latents[0], latents[1], "each image has its own draw");
-    // The denoise steps of a job with an image are milestone 20 steps 4 and 5, so the next step refuses.
-    assert!(engine.image_step(0).is_err());
+    // The next step is step 1 of the 2 steps that run (xe_img2img.rs checks the steps against diffusers).
+    let out = engine.image_step(0).unwrap();
+    assert_eq!((out.step, out.steps, out.previews.len()), (1, 2, 2));
     engine.image_clear(0);
     assert!(engine.image_latents().is_none());
 }
