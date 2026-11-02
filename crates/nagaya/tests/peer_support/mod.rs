@@ -101,6 +101,24 @@ impl Node {
         }
     }
 
+    /// The view of this node as a peer sees it, with an engine `toy` that serves its toy model under the name `model`.
+    /// The node does not serve that name, so a forward to it gets its 503 of a model that it does not serve.
+    pub fn as_peer_serving(&self, model: &str) -> NodeView {
+        let mut view = self.as_peer();
+        let local = self.council.local_identity().models[0].clone();
+        let mut entry = serde_json::to_value(local).unwrap();
+        let object = entry.as_object_mut().unwrap();
+        object.remove("status");
+        object.insert("model".to_owned(), json!(model));
+        view.keys.insert(
+            "engine:toy".to_owned(),
+            json!({"identity": null, "models": [], "served": [entry], "state": "ready",
+                   "http": self.http.to_string()})
+            .to_string(),
+        );
+        view
+    }
+
     /// Set the cluster of this node to itself and `peers`.
     pub fn see(&self, peers: Vec<NodeView>) {
         let mut own = self.as_peer();

@@ -113,7 +113,7 @@ pub(super) async fn forward(State(council): State<Arc<Council>>, request: Reques
                 )
                 .respond(&id);
             }
-            forward_to(cluster, *peer, parts, bytes, id).await
+            forward_to(&council, cluster, *peer, parts, bytes, id).await
         }
     }
 }
@@ -211,6 +211,7 @@ fn lost(cluster: &Cluster, node_id: String) -> Lost {
 
 /// Send the request to the peer, and give its answer as it comes.
 async fn forward_to(
+    council: &Council,
     cluster: Arc<Cluster>,
     peer: PeerModel,
     parts: axum::http::request::Parts,
@@ -269,12 +270,22 @@ async fn forward_to(
         http: peer.http,
     };
     let mut gone = lost(&cluster, peer.node_id.clone());
-    let answer = tokio::select! {
-        answer = cluster.caller().routed(&target, &call).instrument(span.clone()) => answer,
-        () = &mut gone => Err(CallError::Lost {
-            node: peer.node.clone(),
-            reason: "the node left the live set".to_owned(),
-        }),
+    let carried = carry(council, &cluster, &target, &call).instrument(span.clone()).await;
+    let answer = match carried {
+        Err(Stop::Answer(response)) => {
+            // The target refused what the forward takes first, and its answer is the response (spec 6.15).
+            span.record("http.response.status_code", response.status().as_u16());
+            record.end(Outcome::Done);
+            return super::peers::pass_on(*response);
+        }
+        Err(Stop::Call(error)) => Err(error),
+        Ok(()) => tokio::select! {
+            answer = cluster.caller().routed(&target, &call).instrument(span.clone()) => answer,
+            () = &mut gone => Err(CallError::Lost {
+                node: peer.node.clone(),
+                reason: "the node left the live set".to_owned(),
+            }),
+        },
     };
     let response = match answer {
         Ok(response) => response,
@@ -387,5 +398,149 @@ impl Relay {
                 }
             }
         })
+    }
+}
+
+/// Why a forward stopped before its request went.
+enum Stop {
+    /// The target refused a put or a post, and its answer is the response.
+    Answer(Box<axum::http::Response<hyper::body::Incoming>>),
+    /// The target did not answer.
+    Call(CallError),
+}
+
+/// Take to the target what the body of `call` names, before the forward (spec 6.15, "The objects of a forward", and
+/// 11.1a, "The routes with no model"). The spec of a decision goes first, then each object that the target lacks. A
+/// spec or an object that no node holds does not stop the forward: the target's 404 names it.
+async fn carry(council: &Council, cluster: &Cluster, target: &Peer, call: &Call) -> Result<(), Stop> {
+    let caller = cluster.caller();
+    let json = |method: Method, path: String, body: Bytes| {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        Call {
+            method,
+            path,
+            headers,
+            body,
+            request_id: call.request_id.clone(),
+        }
+    };
+    if call.path.split('?').next() == Some("/council/v2/decisions")
+        && let Some(spec) = spec_of(council, &call.body)
+    {
+        let post = json(Method::POST, "/council/v2/specs".to_owned(), spec);
+        let answer = caller.routed(target, &post).await.map_err(Stop::Call)?;
+        if !answer.status().is_success() {
+            return Err(Stop::Answer(Box::new(answer)));
+        }
+    }
+    for object in object_ids(&call.body) {
+        let path = format!("/council/v2/objects/{object}");
+        let head = json(Method::HEAD, path.clone(), Bytes::new());
+        let answer = caller.routed(target, &head).await.map_err(Stop::Call)?;
+        if answer.status() != StatusCode::NOT_FOUND {
+            continue;
+        }
+        let read = super::objects::read(
+            council,
+            Method::GET,
+            &object,
+            &HeaderMap::new(),
+            &RequestId(call.request_id.clone()),
+        )
+        .await;
+        if read.status() != StatusCode::OK {
+            tracing::info!(
+                "no node holds object {object}, so the forward to node {} goes without it",
+                target.node
+            );
+            continue;
+        }
+        let (head, body) = read.into_parts();
+        let mut headers = HeaderMap::new();
+        for name in [header::CONTENT_TYPE, header::CONTENT_LENGTH] {
+            if let Some(value) = head.headers.get(&name) {
+                headers.insert(name, value.clone());
+            }
+        }
+        let put = Call {
+            method: Method::PUT,
+            path,
+            headers,
+            body: Bytes::new(),
+            request_id: call.request_id.clone(),
+        };
+        let answer = caller.routed_with(target, &put, body).await.map_err(Stop::Call)?;
+        if !answer.status().is_success() {
+            return Err(Stop::Answer(Box::new(answer)));
+        }
+    }
+    Ok(())
+}
+
+/// The spec that a decision names, as JSON bytes, when this node holds it.
+fn spec_of(council: &Council, body: &[u8]) -> Option<Bytes> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let spec_id = value.get("spec_id")?.as_str()?;
+    let held = council.home().ok()?.service.spec(spec_id).ok()?;
+    Some(Bytes::from(serde_json::to_vec(&held.spec).expect("a spec is JSON")))
+}
+
+/// The ids of the objects that a body names, each once, in order: the object parts of each message and of each
+/// embedding input, and each entry of `case_media` (spec 6.15). An id that is not whole is left out, so the target
+/// gives its 400.
+fn object_ids(body: &[u8]) -> Vec<String> {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return Vec::new();
+    };
+    let mut parts: Vec<&serde_json::Value> = Vec::new();
+    let mut contexts: Vec<&serde_json::Value> = vec![&value["context"]];
+    contexts.extend(value["contexts"].as_array().into_iter().flatten());
+    for context in contexts {
+        for message in context["messages"].as_array().into_iter().flatten() {
+            parts.extend(message["content"].as_array().into_iter().flatten());
+        }
+    }
+    for input in value["inputs"].as_array().into_iter().flatten() {
+        parts.extend(input.as_array().into_iter().flatten());
+    }
+    let mut ids: Vec<String> = Vec::new();
+    let named = parts
+        .into_iter()
+        .filter(|part| part["type"] == "object")
+        .chain(value["case_media"].as_array().into_iter().flatten())
+        .filter_map(|part| part["id"].as_str());
+    for id in named {
+        if gogi_proto::content_id_problem(id).is_none() && !ids.iter().any(|known| known == id) {
+            ids.push(id.to_owned());
+        }
+    }
+    ids
+}
+
+#[cfg(test)]
+mod tests {
+    use super::object_ids;
+    use serde_json::json;
+
+    fn id(n: char) -> String {
+        format!("blake3:{}", n.to_string().repeat(64))
+    }
+
+    #[test]
+    fn the_ids_of_messages_contexts_inputs_and_case_media_are_collected_once() {
+        let part = |n| json!({"type": "object", "id": id(n), "mime": "image/png"});
+        let body = json!({
+            "context": {"messages": [{"role": "user", "content": [{"type": "text", "text": "x"}, part('a')]}]},
+            "contexts": [{"messages": [{"role": "user", "content": [part('b'), part('a')]},
+                                       {"role": "user", "content": "plain text"}]}],
+            "inputs": ["text", [part('c')]],
+            "case_media": [{"id": id('d'), "mime": "audio/wav"}, {"id": "blake3:short", "mime": "audio/wav"}],
+        });
+        assert_eq!(
+            object_ids(body.to_string().as_bytes()),
+            [id('a'), id('b'), id('c'), id('d')]
+        );
+        assert!(object_ids(b"not json").is_empty());
     }
 }
