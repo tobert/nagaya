@@ -61,7 +61,7 @@ fn moments(mean: &[f32], logvar: &[f32]) -> Vec<f32> {
 fn check(what: &str, got: &[f32], want: &[f32], bound: f32) {
     let err = rel(got, want);
     eprintln!("{what}: relative error {err:.3e}");
-    assert!(err < bound, "{what}: relative error {err} is past {bound}");
+    assert!(err <= bound, "{what}: relative error {err} is past {bound}");
 }
 
 #[test]
