@@ -95,8 +95,8 @@ in a lock: one thread owns it (3.2).
 
 Do them in this order. Each milestone ends with all checks green and one or more commits. Milestones 1 to 14 are
 done, and `docs/history.md` keeps their full text, and the merges where the run recorded them. Milestone 15
-is done on gfx1151host, and milestones 15s, 16, 17, 18, 19 and 20 are done on b70host. Milestone 21 waits. Milestone
-22 is done on gfx1151host, but Amy still retires diffusepal, and milestone 23 is next.
+is done on gfx1151host, and milestones 15s, 16, 17, 18, 19 and 20 are done on b70host. Milestone 21 waits, and
+milestone 22 is done on gfx1151host. Milestone 23, the cluster, is next.
 
 1. **Workspace.** The Cargo workspace, its crates, `rustfmt.toml` and the dev profile. Done.
 2. **Engine trait.** The ABI core and capabilities as traits, with a fake engine and a broken fake for the gates. Done.
@@ -519,7 +519,31 @@ is done on gfx1151host, and milestones 15s, 16, 17, 18, 19 and 20 are done on b7
     - the speed: flash attention `d5e65c6` and `fde517e`;
     - the fixes of the deploy: `0e26a1e`, `711f3ac`, `1598924`, `28e6eb5`;
     - the layout and the swap: `13227bf`, mk's close `6e8e013`, and the served model on demand `ce3a52e`, `23f7b86`.
-23. Stop and ask Amy for the next milestone.
+23. **Cluster.** gfx1151host and b70host join one cluster, and each machine serves the models of both. Amy, 2026-11-02:
+    "Let's get the work rolling to get the cluster up though." She decided these rules on 2026-11-02, by interview:
+    - **Work where the files are:** "ideally we do the work with what's available on the cluster - so if the
+      tokenizer is on this machine great we tokenize here. otherwise we forward to whereever it is." The routes
+      `tokenize`, `detokenize` and `render` run on the machine that takes them when it holds the family. A job route
+      forwards the whole request to the machine that holds the engine. A job split across machines comes later.
+    - **Objects:** a `GET` of an object that this machine lacks asks each peer and gives the first hit. A forwarded
+      request takes its objects to the target first.
+    - **Names:** a served model name is unique in the cluster. A second node that serves the name logs it, publishes
+      a conflict key, and does not list its copy.
+    - **Control:** `GET /nagaya/v1/cluster` gives the gossip view. A load or an unload of an engine on any node goes
+      to the node that holds it. A profile `PUT` for another host publishes `profile:desired:<host>` (spec 2.4).
+    - **Drafts:** prompt-lookup drafts wait for the next pass on gfx1151host (spec 6.14).
+
+    Do the steps in this order:
+    1. **Spec.** Write the forward, the objects, the names and the control routes into spec 2.3, 2.4, 3.3b, 6.15 and
+       11. Amy decides each Proposed note.
+    2. **Join.** Seed each machine with the other, and publish the HTTP address of each engine (spec 2.3).
+    3. **Identity.** `identity.models` lists every served model in the cluster, with its status from gossip.
+    4. **Forward.** A request for a model of a peer goes to that peer, and its stream comes back as it is.
+    5. **Objects and names.** The `GET` on a miss, the objects of a forwarded request, and the name conflict.
+    6. **Control.** The cluster route, the load and unload of a peer's engine, and the profile of another host.
+    7. **Deploy.** Deploy both machines. Run the gogi suite through each machine for the models of both. The web app
+       finds its hosts from the cluster route.
+24. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
 
