@@ -2260,8 +2260,9 @@ gogi is normative today. This spec says how the nagaya serves the API, and it ne
 spec and gogi differ about the API, gogi is the rule, and this spec is corrected.
 
 **Text only.** Decided by senpai 2026-10-25, accepted by Amy 2026-11-02. Each served model of the nagaya reads and
-writes text only, until a family renders an object. Its identity declares no `media`, and the server declares no
-`objects` yet. The routes refuse an object part, `case_media` and `output` with a 400 that names the member (gogi
+writes text only, until a family renders an object. Its identity declares no `media`. Since M18 step 1 (`6469b63`),
+the server declares `objects` when its profile names an `objects` budget (6.15, `crates/nagaya/src/http/mod.rs:306`).
+The routes refuse an object part, `case_media` and `output` with a 400 that names the member (gogi
 "Contexts", "Outputs"). A content of text parts is the context of their string.
 
 **The text stays in gogi.** Decided 2026-10-25 (Amy: "council api docs should stay with gogi except where we have
@@ -2291,9 +2292,9 @@ responses, a snapshot `id` is its BLAKE3 content id (`blake3:<hex>`), and the st
 - A request carries no tolerance. Its served model sets the tolerance (6.6).
 
 **Capabilities.** Milestone 12 declares `reads`, `generate`, `dry_run` and `leave_one_out` for each served model. It
-declares `pins` and `classes` for the server. Decided 2026-10-20 (Amy chose the core set). `describe`, `think`,
-`ride` and `tiers` come in a later milestone. A request that needs one of them is a 400 that names it (gogi
-"Errors").
+declares `pins` and `classes` for the server. Decided 2026-10-20 (Amy chose the core set). Since `72b4952`, each text
+model also declares `continuation` (11.3c). `describe`, `think`, `ride` and `tiers` come in a later milestone. A
+request that needs one of them is a 400 that names it (gogi "Errors").
 
 Pooling and the decision numbers come from `gogi_proto::math`, which all engines share. The council
 `identity.engine` covers two things: the engine identity, and the nagaya code that turns logits into decisions.
@@ -2509,8 +2510,9 @@ The nagaya does not copy that.
   an unknown kind, now keyed by the family.
 - The key `gguf` of `[engines.family]` names the GGUF file of the `qwen38` family. With no key, the library reads the
   first shard of `MK_SHARDS`, as before. The `toy` family needs no file and no tokenizer hash.
-- The registry of engine factories holds each kind that the build has. The feature `hip` gives `mk-qwen38-gfx1151`,
-  `xe` gives `mk-gemma4-bmg`, and `fake` gives the fake kinds. A build with no kind refuses the start (exit 3).
+- The registry of engine factories holds each kind that the build has. The feature `hip` gives `mk-qwen38-gfx1151`
+  and `qwenimage21`. `xe` gives `mk-gemma4-bmg`, `qwen3tts-bmg`, `mk-sdxl-bmg` and `mk-embeddinggemma2-bmg`. `fake`
+  gives the fake kinds (`crates/nagaya/src/admission.rs:196-219`). A build with no kind refuses the start (exit 3).
 - The key `model_dir` of `[engines.family]` names the checkpoint directory of the `gemma4` family. With no key, the
   library reads `GEMMA4_MODEL_DIR`. The engine config reads the checkpoint in the same way (engine-abi "The first
   Gemma 4 binding").
@@ -2797,8 +2799,9 @@ identity (gogi `docs/council-api.md`, "Terms").
 - `render`, `tokenize` and `detokenize`: served by the family library for bench tools and semantic search;
 - `status` (9.7) and `traces` (13.1).
 
-Built on 2026-10-21: `render`, `tokenize` and `detokenize` (11.4b to 11.4d), and the prefix in `identity` (11.4f). The
-other routes in this list are not built.
+Built on 2026-10-21: `render`, `tokenize` and `detokenize` (11.4b to 11.4d), and the prefix in `identity` (11.4f).
+Built in M18 step 3: `profile` (3.3, `74a5903`), and the load routes of 3.3b. The other routes in this list are not
+built.
 Embeddings left this list on 2026-10-30. gogi's contract has them as `POST /council/v2/embeddings` (11.10).
 
 **11.4b The text routes.** `render`, `tokenize` and `detokenize` use the family library (11.3). They share the rules
@@ -3074,8 +3077,8 @@ has a tailnet address in its code.)
   the places `case`, `spec` and `suffix:<i>` (gogi rule 2). The response of `render` does report it (11.4c).
 - A stop first sets every served model to `draining`, so a new request is a 503 `model_unavailable`. Then the
   engines stop (10.3), and the server waits at most 2 s for its open requests.
-- The routes `render`, `tokenize` and `detokenize` under `/nagaya/v1` are built (11.4b to 11.4d). The other routes of
-  11.4a and the status feed (9.7) are not built.
+- The routes `render`, `tokenize` and `detokenize` under `/nagaya/v1` are built (11.4b to 11.4d). So are `profile`
+  and the load routes (3.3, 3.3b). `cluster`, `cas`, `traces` and the status feed (9.7) are not built.
 - Continuations are built (11.3c). `gogi-conformance` against the process with the fake engine gave 271 to 274 ok,
   0 FAIL and 8 skip on 2026-10-21, at gogi `dc94cb3`. The number of checks depends on the reply to a random nonce.
 
