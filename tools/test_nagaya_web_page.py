@@ -185,6 +185,62 @@ class Page(unittest.TestCase):
         self.assertEqual(out["off"], [])
         self.assertEqual(out["options"], {"width": 1024, "height": 1024, "steps": 40, "count": 1})
 
+    # A start image and a mask as the page holds them. The test gives their object ids, because QuickJS has no canvas.
+    INPUTS = """
+        init = {width: 832, height: 1216};
+        inputObjects = async () => ({image: "blake3:" + "e".repeat(64), mask: mask});"""
+
+    def test_an_inpainting_request_puts_the_image_and_the_mask_first_and_lets_the_image_set_the_size(self):
+        out = self.run_page(self.FORM + "let mask = 'blake3:' + 'f'.repeat(64);" + self.INPUTS + """
+            set("img-model", "pony-0"); drawImageForm();
+            out.box = document.getElementById("img-init-box").hidden;
+            set("img-strength", "0.6"); set("img-mask-blur", "8");
+            await document.getElementById("img-go").onclick();
+            out.error_text = document.getElementById("img-error").textContent;
+            out.body = body();""")
+        self.assertEqual(out["error_text"], "")
+        self.assertFalse(out["box"])
+        self.assertEqual(out["body"]["context"]["messages"][-1]["content"], [
+            {"type": "object", "id": "blake3:" + "e" * 64, "mime": "image/png"},
+            {"type": "object", "id": "blake3:" + "f" * 64, "mime": "image/png"},
+            {"type": "text", "text": "a cat"}])
+        options = out["body"]["output"]["options"]
+        self.assertNotIn("width", options)
+        self.assertNotIn("height", options)
+        self.assertEqual((options["strength"], options["mask_blur"]), (0.6, 8))
+
+    def test_an_img2img_request_with_no_mask_sends_no_mask_and_no_blur_and_the_default_strength(self):
+        out = self.run_page(self.FORM + "let mask = null;" + self.INPUTS + """
+            set("img-model", "pony-0"); drawImageForm();
+            set("img-strength", ""); set("img-mask-blur", "8");
+            await document.getElementById("img-go").onclick();
+            out.body = body();""")
+        self.assertEqual([p["type"] for p in out["body"]["context"]["messages"][-1]["content"]], ["object", "text"])
+        self.assertNotIn("mask_blur", out["body"]["output"]["options"])
+        self.assertNotIn("strength", out["body"]["output"]["options"])
+
+    def test_the_refusal_of_an_image_job_shows_as_the_nagaya_wrote_it(self):
+        out = self.run_page(self.FORM + "let mask = null;" + self.INPUTS + """
+            set("img-model", "pony-0"); drawImageForm();
+            set("img-strength", "2");
+            await document.getElementById("img-go").onclick();
+            out.error_text = document.getElementById("img-error").textContent;""")
+        self.assertEqual(out["error_text"], "output.options.strength: nothing ran: too much")
+
+    def test_a_model_with_no_image_input_hides_the_start_image_and_refuses_to_send_one(self):
+        out = self.run_page(self.FORM + "let mask = null;" + self.INPUTS + """
+            document.getElementById("host").value = "gfx1151host";
+            await document.getElementById("host").onchange();
+            set("img-model", "qwen-image-fusal"); drawImageForm();
+            out.box = document.getElementById("img-init-box").hidden;
+            const before = calls.length;
+            await document.getElementById("img-go").onclick();
+            out.sent = calls.slice(before).filter((c) => /generations$/.test(c[1])).length;
+            out.error_text = document.getElementById("img-error").textContent;""")
+        self.assertTrue(out["box"])
+        self.assertEqual(out["sent"], 0)
+        self.assertIn("takes no start image", out["error_text"])
+
     def test_an_error_names_its_param_when_the_message_does_not(self):
         out = self.run_page("""
             try { await call("POST", "/council/v2/generations", {output: {options: {strength: 2}}}); }

@@ -79,6 +79,12 @@ audio { width: 100%; }
 .score { display: grid; grid-template-columns: 56px 120px 1fr; gap: 10px; align-items: center; padding: 6px 0;
          border-bottom: 1px solid var(--line); }
 .score .bar > div { transition: none; }
+.init { position: relative; margin-top: 8px; line-height: 0; }
+.init canvas { display: block; width: 100%; height: auto; border-radius: 6px; }
+/* The mask is opaque black and white. The blend "screen" shows the image through black, and white over it. */
+#img-mask-canvas { position: absolute; inset: 0; mix-blend-mode: screen; opacity: .6; cursor: crosshair;
+                   touch-action: none; }
+.tile .use { float: right; color: var(--muted); }
 .matrix td { text-align: center; font-size: 12px; padding: 4px; border: 0; }
 .matrix th { font-size: 11px; padding: 4px; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
@@ -110,7 +116,34 @@ audio { width: 100%; }
       <textarea id="img-prompt" rows="4">score_9, score_8_up, score_7_up, a red fox sitting in a snowy forest, watercolor, soft light</textarea>
       <label>Negative prompt</label>
       <textarea id="img-negative" rows="2">score_4, score_5, blurry</textarea>
-      <label>Size</label>
+      <div id="img-init-box">
+        <label>Start image <span class="note">— img2img; draw a mask to inpaint: white repaints, black keeps</span></label>
+        <div class="actions" style="margin-top:0">
+          <label class="plain" style="margin:0;cursor:pointer;color:var(--ink)">Choose an image…
+            <input id="img-init-file" type="file" accept="image/*" hidden></label>
+          <button class="plain" id="img-init-clear" hidden>Remove</button>
+          <span id="img-init-status" class="note"></span>
+        </div>
+        <div id="img-init" hidden>
+          <div class="init"><canvas id="img-init-canvas"></canvas><canvas id="img-mask-canvas"></canvas></div>
+          <div class="row3">
+            <div><label>Strength</label>
+              <input id="img-strength" type="number" min="0.01" max="1" step="0.01" placeholder="0.75; 0.99 with a mask"></div>
+            <div><label>Mask blur, px</label><input id="img-mask-blur" type="number" min="0" max="64" placeholder="4"></div>
+            <div><label>Brush, px</label><input id="img-brush" type="number" min="1" max="512" value="48"></div>
+          </div>
+          <div class="actions">
+            <label class="inline" style="margin:0"><input type="checkbox" id="img-erase"> Erase</label>
+            <button class="plain" id="img-mask-clear">Clear the mask</button>
+            <label class="plain" style="margin:0;cursor:pointer;color:var(--ink)">Choose a mask…
+              <input id="img-mask-file" type="file" accept="image/*" hidden></label>
+          </div>
+          <p class="note">The image sets the size: each side a multiple of 64 from 512 to 2048. The nagaya refuses
+            another size and does not resize. Milestone 20 builds the denoise steps now, so the nagaya can refuse the
+            job; the page shows its message.</p>
+        </div>
+      </div>
+      <label>Size <span class="note" id="img-size-note"></span></label>
       <select id="img-size"><option>1024x1024</option></select>
       <div class="row3">
         <div><label>Steps</label><input id="img-steps" type="number" min="1" max="150" value="30"></div>
@@ -262,6 +295,10 @@ Qwen3-TTS designs a voice from a text prompt.</textarea>
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;"}[c]));
 let models = [], engines = [];
+// The start image of img2img and inpainting: {blob, width, height}, or null (spec 11.9b).
+let init = null;
+const takesImages = (model) =>
+  !!models.find((x) => x.model === model)?.media?.inputs?.some((t) => t === "image/png" || t === "image/*");
 
 // ---- tabs
 for (const b of document.querySelectorAll("nav button")) {
@@ -497,7 +534,8 @@ function tile(item) {
   const url = objectUrl(item.id, item.host ?? "");
   return `<div class="tile" style="--ratio:${w}/${h}"><a href="${url}" target="_blank">
     <img src="${url}" loading="lazy" onerror="this.closest('.tile').style.opacity=.35"></a>
-    <div class="meta"><div class="p" title="${esc(item.prompt)}">${esc(item.prompt)}</div>
+    <div class="meta"><a href="#" class="use" data-init="${url}" title="use as the start image">start</a>
+    <div class="p" title="${esc(item.prompt)}">${esc(item.prompt)}</div>
     ${item.host && !here(item.host) ? `${esc(item.host)} · ` : ""}${esc(item.model)} · seed ${esc(item.seed)} · ${esc(item.size)} · ${esc(item.steps)} steps</div></div>`;
 }
 function drawGallery() { $("img-gallery").innerHTML = gallery.map(tile).join("") || `<p class="note">None yet.</p>`; }
@@ -521,6 +559,9 @@ function drawImageForm() {
   for (const id of ["img-negative", "img-cfg", "img-sampler", "img-clip", "img-lora-file"]) $(id).disabled = qwen;
   $("img-spacing").disabled = qwen || !euler();
   $("img-qwen-note").hidden = !qwen;
+  $("img-init-box").hidden = !takesImages($("img-model").value);
+  $("img-size").disabled = !!init;
+  $("img-size-note").textContent = init ? "— the start image sets it" : "";
   $("img-prompt-note").hidden = qwen;
   const sizes = qwen ? QWEN_SIZES : SIZES, keep = $("img-size").value;
   const html = sizes.map((x) => `<option>${x}</option>`).join("");
@@ -602,24 +643,29 @@ async function blake3Id(file, status) {
   return `blake3:${hasher.digest("hex")}`;
 }
 
+/** Put a blob as an object of the nagaya on show, and give its id. A held object is not sent again (spec 6.15). */
+async function putObject(blob, mime, status) {
+  const id = await blake3Id(blob, status);
+  const head = await fetch(objectUrl(id), {method: "HEAD"});
+  if (head.status === 404) {
+    status(`sending ${(blob.size / 1e6).toFixed(1)} MB…`);
+    const r = await fetch(objectUrl(id), {method: "PUT", body: blob, headers: {"content-type": mime}});
+    if (!r.ok) {
+      const v = await r.json().catch(() => ({}));
+      throw failure(v, `the put returned ${r.status}`, r.status);
+    }
+  } else if (!head.ok) {
+    throw new Error(`HEAD of the object returned ${head.status}`);
+  }
+  return id;
+}
+
 $("img-lora-file").onchange = async (ev) => {
   const file = ev.target.files[0], status = (t) => { $("img-lora-status").textContent = t; };
   ev.target.value = "";
   if (!file) return;
   try {
-    const id = await blake3Id(file, status);
-    const head = await fetch(objectUrl(id), {method: "HEAD"});
-    if (head.status === 404) {
-      status(`sending ${(file.size / 1e6).toFixed(0)} MB…`);
-      const r = await fetch(objectUrl(id), {method: "PUT", body: file,
-                                            headers: {"content-type": "application/octet-stream"}});
-      if (!r.ok) {
-        const v = await r.json().catch(() => ({}));
-        throw failure(v, `the put returned ${r.status}`, r.status);
-      }
-    } else if (!head.ok) {
-      throw new Error(`HEAD of the object returned ${head.status}`);
-    }
+    const id = await putObject(file, "application/octet-stream", status);
     if (!loras.some((l) => l.id === id && here(l.host))) {
       loras.push({name: file.name.replace(/\.safetensors$/, ""), id, weight: 1, on: true, host});
     }
@@ -631,14 +677,117 @@ $("img-lora-file").onchange = async (ev) => {
 };
 keepAll();
 
+// ---- image inputs (spec 11.9b)
+// The start image and the mask are PNG objects in the last user message, the image first. The mask canvas has the size
+// of the image, and it is opaque: white repaints, and black keeps.
+const maskCanvas = $("img-mask-canvas");
+const canvasBlob = (canvas) => new Promise((ok, fail) =>
+  canvas.toBlob((b) => b ? ok(b) : fail(new Error("the browser did not make a PNG")), "image/png"));
+function clearMask() {
+  const g = maskCanvas.getContext("2d");
+  g.fillStyle = "#000"; g.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
+}
+/** Whether the mask repaints no pixel. Then the job is img2img, and the page sends no mask. */
+function maskEmpty() {
+  const d = maskCanvas.getContext("2d").getImageData(0, 0, maskCanvas.width, maskCanvas.height).data;
+  for (let i = 0; i < d.length; i += 4) if (d[i] || d[i + 1] || d[i + 2]) return false;
+  return true;
+}
+/** Show a start image. A PNG goes as it is. Another format becomes a PNG of the same size: the page never resizes. */
+async function loadInit(blob, name) {
+  const bitmap = await createImageBitmap(blob);
+  const {width, height} = bitmap;
+  const c = $("img-init-canvas");
+  c.width = width; c.height = height; c.getContext("2d").drawImage(bitmap, 0, 0);
+  maskCanvas.width = width; maskCanvas.height = height; clearMask();
+  init = {blob: blob.type === "image/png" ? blob : await canvasBlob(c), width, height};
+  $("img-init").hidden = false; $("img-init-clear").hidden = false;
+  $("img-init-status").textContent = `${name}, ${width} × ${height}`;
+  drawImageForm();
+}
+$("img-init-file").onchange = async (ev) => {
+  const file = ev.target.files[0];
+  ev.target.value = "";
+  if (!file) return;
+  try {
+    await loadInit(file, file.name);
+  } catch (e) {
+    $("img-init-status").textContent = `the image did not open: ${e.message}`;
+  }
+};
+$("img-init-clear").onclick = () => {
+  init = null; $("img-init").hidden = true; $("img-init-clear").hidden = true; $("img-init-status").textContent = "";
+  drawImageForm();
+};
+$("img-mask-clear").onclick = clearMask;
+$("img-mask-file").onchange = async (ev) => {
+  const file = ev.target.files[0];
+  ev.target.value = "";
+  if (!file || !init) return;
+  try {
+    const bitmap = await createImageBitmap(file);
+    // The nagaya refuses a mask of another size (spec 11.9b), and the page does not resize it.
+    if (bitmap.width !== init.width || bitmap.height !== init.height) {
+      throw new Error(`the mask is ${bitmap.width} × ${bitmap.height}, and the image is ${init.width} × ${
+        init.height}; choose a mask of the size of the image`);
+    }
+    clearMask(); maskCanvas.getContext("2d").drawImage(bitmap, 0, 0);
+    $("img-init-status").textContent = `mask ${file.name}`;
+  } catch (e) {
+    $("img-init-status").textContent = e.message;
+  }
+};
+// The brush paints in pixels of the image, so it has the same size on a small and a large screen.
+let brushAt = null;
+function brush(ev) {
+  const r = maskCanvas.getBoundingClientRect();
+  const x = (ev.clientX - r.left) * maskCanvas.width / r.width, y = (ev.clientY - r.top) * maskCanvas.height / r.height;
+  const g = maskCanvas.getContext("2d"), size = +$("img-brush").value || 48;
+  g.strokeStyle = g.fillStyle = $("img-erase").checked ? "#000" : "#fff";
+  g.lineWidth = size; g.lineCap = "round"; g.lineJoin = "round";
+  g.beginPath();
+  if (brushAt) { g.moveTo(brushAt[0], brushAt[1]); g.lineTo(x, y); g.stroke(); }
+  else { g.arc(x, y, size / 2, 0, 2 * Math.PI); g.fill(); }
+  brushAt = [x, y];
+}
+maskCanvas.addEventListener("pointerdown", (ev) => { maskCanvas.setPointerCapture(ev.pointerId); brushAt = null; brush(ev); });
+maskCanvas.addEventListener("pointermove", (ev) => { if (brushAt) brush(ev); });
+for (const name of ["pointerup", "pointercancel"]) maskCanvas.addEventListener(name, () => { brushAt = null; });
+/** Put the start image, and the mask when it repaints a pixel. Give their ids; the mask is null for img2img. */
+async function inputObjects(status) {
+  const image = await putObject(init.blob, "image/png", status);
+  const mask = maskEmpty() ? null : await putObject(await canvasBlob(maskCanvas), "image/png", status);
+  return {image, mask};
+}
+for (const id of ["img-gallery", "img-current"]) {
+  $(id).addEventListener("click", async (ev) => {
+    const url = ev.target.dataset?.init;
+    if (!url) return;
+    ev.preventDefault();
+    try {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(`the image returned ${r.status}`);
+      await loadInit(await r.blob(), "an image of the gallery");
+    } catch (e) {
+      $("img-init-status").textContent = e.message;
+    }
+  });
+}
+
 let imgAbort = null;
 $("img-stop").onclick = () => imgAbort?.abort();
 $("img-go").onclick = async () => {
-  const model = $("img-model").value, [width, height] = $("img-size").value.split("x").map(Number);
+  const model = $("img-model").value;
+  // The image sets the size of a job with an image (spec 11.9b).
+  const [width, height] = init ? [init.width, init.height] : $("img-size").value.split("x").map(Number);
   const count = +$("img-count").value, steps = +$("img-steps").value;
   const status = (t) => { $("img-status").textContent = t; };
   $("img-error").textContent = "";
   if (!model) { $("img-error").textContent = "the nagaya serves no image model"; return; }
+  if (init && !takesImages(model)) {
+    $("img-error").textContent = `${model} takes no start image; remove the start image, or choose a model that takes one`;
+    return;
+  }
   const options = {width, height, steps, count};
   if (!qwenImage(model)) {
     Object.assign(options, {cfg: +$("img-cfg").value, sampler: $("img-sampler").value, negative: $("img-negative").value});
@@ -647,6 +796,10 @@ $("img-go").onclick = async () => {
     const on = loras.filter((l) => l.on && here(l.host));
     if (on.length > 8) { $("img-error").textContent = "a request takes at most 8 LoRAs"; return; }
     if (on.length) options.loras = on.map((l) => ({id: l.id, weight: l.weight}));
+  }
+  if (init) {
+    delete options.width; delete options.height;
+    if ($("img-strength").value !== "") options.strength = +$("img-strength").value;
   }
   const body = {model, max_tokens: 1, context: {messages: [{role: "user", content: $("img-prompt").value}]},
                 output: {mime: "image/png", options}, previews: $("img-previews").checked};
@@ -659,6 +812,15 @@ $("img-go").onclick = async () => {
   const started = performance.now();
   try {
     await ready(model, status);
+    if (init) {
+      const inputs = await inputObjects(status), content = [{type: "object", id: inputs.image, mime: "image/png"}];
+      if (inputs.mask) {
+        content.push({type: "object", id: inputs.mask, mime: "image/png"});
+        if ($("img-mask-blur").value !== "") options.mask_blur = +$("img-mask-blur").value;
+      }
+      content.push({type: "text", text: $("img-prompt").value});
+      body.context.messages[0].content = content;
+    }
     status("generating…");
     const done = await stream(body, imgAbort.signal, (name, d) => {
       if (name === "progress") {
