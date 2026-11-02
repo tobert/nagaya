@@ -766,6 +766,22 @@ on demand" of 2026-10-24.
 - **Any node.** Decided 2026-11-02 (Amy, by interview). A load or an unload of an engine on any node goes to the node
   that holds the engine.
 
+**The node of a load route.** **Proposed** by Claude Opus 5.5, 2026-11-02. Reason: an engine name is unique only in
+one profile (2.4), so two nodes can each have an engine `gemma`. A load must name one engine.
+
+- The query `host` names the node: `POST /nagaya/v1/engines/gemma/load?host=b70host`. A `host` that no live node
+  has is a 404 `not_found` that names `host`.
+- Without `host`, the route takes the engine of the local profile. Without one there, it takes the one live peer that
+  publishes `engine:<name>`.
+- Two or more such peers is a 400 `invalid_request` that names `host`, and the message lists the nodes. No such peer
+  is the 404 of an unknown name.
+- The coordinator forwards the request to that node by the rules of 11.1a, with its body. The response comes back as
+  it is.
+- The names in an `unload` list are engines of the target node.
+- A `host` equal to the name of this node is a local load, with no forward.
+- The other choice was a unique engine name in the cluster, as for a served model (2.3). It needs a new conflict
+  rule, and two machines can then not both name an engine `gemma`.
+
 **Open:** Do the GPU queues of an idle engine slow the other engines on its device? mk has a note that its idle
 queues slow another process, but we did not find the source. A measurement answers the question.
 
