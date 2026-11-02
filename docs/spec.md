@@ -510,7 +510,8 @@ policy. The nagaya keeps no such name.
 - **A restart only when it must.** When an action unloads an engine without `close`, the nagaya persists the profile
   and restarts as above (exit 4). A change of the `[store]` table also restarts.
 - **The response** is 202 after admission, with each engine and its action. The swaps run after the response, and
-  the status feed shows each state (9.4).
+  the status feed shows each state (9.4). The status feed is not built yet (9.7), so the identity (11.1) and
+  gossip show the states today.
 
 **Which actions run in place.** Decided 2026-10-28 (Amy). `keep`, `residency` and `unload` run in place. `load` and
 `reload` restart the process (exit 4). Reason: the engines of a device group are fixed at start, so a new entry has no
@@ -708,7 +709,8 @@ on demand" of 2026-10-24.
   of the swap. The body of a 200 is `{"engine", "status"}`, with the state of the engine.
 - A 409 has the type `invalid_request` and the param `name`, because gogi has no type for a conflict. A stop gives a
   503 `unavailable`.
-- The status feed and the identity show each state: `loading`, `ready` and `unloaded` (9.4, 11.1).
+- The status feed and the identity show each state: `loading`, `ready` and `unloaded` (9.4, 11.1). The status feed
+  is not built yet (9.7), so only the identity and gossip show them today.
 
 **Open:** Do the GPU queues of an idle engine slow the other engines on its device? mk has a note that its idle
 queues slow another process, but we did not find the source. A measurement answers the question.
