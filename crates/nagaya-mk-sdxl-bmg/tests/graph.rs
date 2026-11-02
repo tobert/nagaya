@@ -44,7 +44,7 @@ fn every_graph_names_tensors_of_the_checkpoint_and_fits_its_rings() {
         }
     }
     let max_rows = MAX_IMAGES * MAX_IMAGE_PIXELS / 64;
-    let bufs = UnetBufs::carve(&mut carve, MAX_IMAGES, max_rows, MAX_CHUNKS * CHUNK_IDS);
+    let bufs = UnetBufs::carve(&mut carve, MAX_IMAGES, max_rows, MAX_CHUNKS * CHUNK_IDS, LATENT);
     // The largest image of the spec is 1.5 MP: 1536 by 1024, or 192 by 128 latent rows.
     let size = UnetSize {
         images: MAX_IMAGES,
@@ -143,7 +143,7 @@ fn a_lora_on_every_module_reaches_its_graph_and_fits_the_rings() {
     let mut carve = Carve::new(0, u64::MAX / 2);
     let text = TextBufs::carve(&mut carve, 2 * MAX_CHUNKS);
     let max_rows = MAX_IMAGES * MAX_IMAGE_PIXELS / 64;
-    let bufs = UnetBufs::carve(&mut carve, MAX_IMAGES, max_rows, MAX_CHUNKS * CHUNK_IDS);
+    let bufs = UnetBufs::carve(&mut carve, MAX_IMAGES, max_rows, MAX_CHUNKS * CHUNK_IDS, LATENT);
     let size = UnetSize {
         images: MAX_IMAGES,
         h: 192,
@@ -208,4 +208,39 @@ fn a_lora_on_every_module_reaches_its_graph_and_fits_the_rings() {
         "each up matrix is a weight of a task"
     );
     eprintln!("tasks of each run with a LoRA on every module: {with:?}");
+}
+
+/// The inpainting checkpoint of spec 11.9b, `diffusers/stable-diffusion-xl-1.0-inpainting-0.1`, from
+/// `SDXL_INPAINT_MODEL_DIR`. Its UNet has 9 input channels, each graph names tensors of the checkpoint, and the plan
+/// counts the bytes that the open uploads. The test prints the plan for the profile.
+#[test]
+fn the_inpainting_checkpoint_has_9_input_channels_and_plans_its_bytes() {
+    use nagaya_mk_sdxl_bmg::model::{check, unet_in_channels};
+    use nagaya_mk_sdxl_bmg::plan::{arena_bytes, plan};
+    let dir = std::env::var_os("SDXL_INPAINT_MODEL_DIR").map(PathBuf::from);
+    let Some(dir) = dir.filter(|d| d.join("unet").is_dir()) else {
+        let require = std::env::var("NAGAYA_REQUIRE_MODELS").is_ok_and(|v| v == "1");
+        assert!(
+            !require,
+            "NAGAYA_REQUIRE_MODELS is set: set SDXL_INPAINT_MODEL_DIR to the SDXL inpainting 0.1 checkpoint"
+        );
+        eprintln!("skipped: SDXL_INPAINT_MODEL_DIR does not name the SDXL inpainting checkpoint");
+        return;
+    };
+    let config = nagaya_mk_sdxl_bmg::Config::folder(dir);
+    let mut count = Count::default();
+    let weights = Weights::load(&config, &mut count).unwrap();
+    assert_eq!(unet_in_channels(&weights), Ok(INPAINT_CHANNELS));
+    check(&weights).unwrap();
+    let limits = plan(&config).unwrap();
+    let term = |name: &str| limits.memory.mandatory.iter().find(|t| t.name == name).unwrap().bytes;
+    assert_eq!(term("weights"), count.bytes);
+    assert!(term("activations") > arena_bytes(INPAINT_CHANNELS));
+    eprintln!(
+        "the plan of the inpainting checkpoint: weights {} bytes, activations {} bytes (arena {}), pinned {} bytes",
+        term("weights"),
+        term("activations"),
+        arena_bytes(INPAINT_CHANNELS),
+        term("pinned")
+    );
 }

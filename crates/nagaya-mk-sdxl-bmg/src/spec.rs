@@ -4,6 +4,9 @@ use std::path::PathBuf;
 
 /// The channels of the latent.
 pub const LATENT: usize = 4;
+/// The input channels of an inpainting UNet: the scaled latent, the latent mask, and the masked image latent (spec
+/// 11.9b, "The 9-channel UNet"). A UNet for text to image has `LATENT`.
+pub const INPAINT_CHANNELS: usize = 9;
 /// The factor from pixels to latent rows and columns.
 pub const VAE_SCALE: usize = 8;
 /// The factor of a latent before the VAE decode: the latent is divided by it.

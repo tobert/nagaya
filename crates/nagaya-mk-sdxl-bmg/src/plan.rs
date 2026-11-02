@@ -20,14 +20,21 @@ pub const STAGING_BYTES: usize = 64 << 20;
 /// The most latent rows of all images of a job: 4 images of 1.5 MP.
 pub const MAX_LATENT_ROWS: usize = MAX_IMAGES * MAX_IMAGE_PIXELS / (VAE_SCALE * VAE_SCALE);
 
-/// The bytes of the activation arena: the buffers of the text encoders, then the larger of the buffers of the UNet
-/// and of the VAE, which never run at once. The VAE encoder and decoder share the buffers of the VAE.
-pub fn arena_bytes() -> u64 {
+/// The bytes of the activation arena for a UNet of `in_channels` input channels: the buffers of the text encoders,
+/// then the larger of the buffers of the UNet and of the VAE, which never run at once. The VAE encoder and decoder
+/// share the buffers of the VAE.
+pub fn arena_bytes(in_channels: usize) -> u64 {
     let mut carve = Carve::new(0, u64::MAX / 2);
     TextBufs::carve(&mut carve, 2 * MAX_CHUNKS);
     let after_text = carve.used(0);
     let mut unet = carve;
-    UnetBufs::carve(&mut unet, MAX_IMAGES, MAX_LATENT_ROWS, MAX_CHUNKS * CHUNK_IDS);
+    UnetBufs::carve(
+        &mut unet,
+        MAX_IMAGES,
+        MAX_LATENT_ROWS,
+        MAX_CHUNKS * CHUNK_IDS,
+        in_channels,
+    );
     let mut vae = carve;
     VaeBufs::carve(&mut vae, MAX_IMAGE_PIXELS);
     after_text + (unet.used(0) - after_text).max(vae.used(0) - after_text)
@@ -52,8 +59,8 @@ fn term(name: &str, tier: Tier, bytes: u64) -> MandatoryTerm {
     }
 }
 
-/// The limits for a config, with the device bytes of the weights.
-pub fn limits(weights: u64) -> Limits {
+/// The limits for a config, with the device bytes of the weights and the input channels of the UNet.
+pub fn limits(weights: u64, in_channels: usize) -> Limits {
     let ring = ((MAX_TASKS_PER_CARD + 1) * 4 + 128 + MAX_TASKS_PER_CARD * 64 + 256) as u64;
     Limits {
         // A drop frees the weights, the arena and the card's context.
@@ -75,7 +82,7 @@ pub fn limits(weights: u64) -> Limits {
         memory: MemoryLimits {
             mandatory: vec![
                 term("weights", Tier::Device(0), weights),
-                term("activations", Tier::Device(0), arena_bytes() + ring),
+                term("activations", Tier::Device(0), arena_bytes(in_channels) + ring),
                 term(
                     "pinned",
                     Tier::Host,
@@ -98,7 +105,10 @@ pub fn limits(weights: u64) -> Limits {
     }
 }
 
-/// The limits of a config.
+/// The limits of a config. The input channels of the UNet come from its weights, 4 or 9 (spec 11.9b).
 pub fn plan(config: &Config) -> Result<Limits, String> {
-    Ok(limits(weights_bytes(config)?))
+    let mut count = Count::default();
+    let weights = Weights::load(config, &mut count)?;
+    crate::model::check(&weights)?;
+    Ok(limits(count.bytes, crate::model::unet_in_channels(&weights)?))
 }

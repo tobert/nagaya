@@ -264,15 +264,22 @@ impl SdxlEngine {
         phases.mark(&format!("weights: {}", device.times()));
         // The plan checked the graphs at the admission; this checks them again for a file that changed since.
         model::check(&weights)?;
+        let in_channels = model::unet_in_channels(&weights)?;
         phases.mark("graph check");
         let weights_bytes = device.bytes as u64;
-        let arena = arena_bytes();
+        let arena = arena_bytes(in_channels);
         let at = device.zeros(card, arena as usize);
         phases.mark("arena");
         let mut carve = Carve::new(at, arena);
         let text = TextBufs::carve(&mut carve, 2 * MAX_CHUNKS);
         let (mut unet_carve, mut vae_carve) = (carve, carve);
-        let unet = UnetBufs::carve(&mut unet_carve, MAX_IMAGES, MAX_LATENT_ROWS, MAX_CHUNKS * CHUNK_IDS);
+        let unet = UnetBufs::carve(
+            &mut unet_carve,
+            MAX_IMAGES,
+            MAX_LATENT_ROWS,
+            MAX_CHUNKS * CHUNK_IDS,
+            in_channels,
+        );
         let vae = VaeBufs::carve(&mut vae_carve, MAX_IMAGE_PIXELS);
         let ring = Ring::new(card, 1);
         phases.mark("ring");
@@ -301,7 +308,7 @@ impl SdxlEngine {
             canary_hash: String::new(),
         };
         Ok(Self {
-            limits: limits(weights_bytes),
+            limits: limits(weights_bytes, in_channels),
             identity,
             last_error: None,
             cluster,
@@ -384,7 +391,13 @@ impl SdxlEngine {
         (context, pooled)
     }
 
-    /// One forward pass of the UNet on the batch of `size`: the inputs `x_in` (pixel-major latents of the batch), the
+    /// The input channels of the UNet: 4, or 9 for inpainting (spec 11.9b).
+    pub fn in_channels(&self) -> usize {
+        self.unet.in_channels
+    }
+
+    /// One forward pass of the UNet on the batch of `size`: the inputs `x_in` (pixel-major rows of the batch, with
+    /// `in_channels` values each), the
     /// timestep, the context of the batch `[batch][ctx][2048]` and the add features `[batch][2816]`. It gives the noise
     /// prediction of the batch, and with `probe` the hidden state after each run of `model::UNET_RUNS`.
     pub fn unet_forward(
@@ -397,6 +410,12 @@ impl SdxlEngine {
         probe: bool,
     ) -> (Vec<f32>, Vec<Vec<f32>>) {
         let batch = size.batch();
+        assert_eq!(
+            x_in.len(),
+            size.rows(0) * self.unet.in_channels,
+            "the UNet input has {} values for each latent row",
+            self.unet.in_channels
+        );
         let t_proj: Vec<f32> = (0..batch)
             .flat_map(|_| host::timestep_features(timestep, TIME_PROJ))
             .collect();

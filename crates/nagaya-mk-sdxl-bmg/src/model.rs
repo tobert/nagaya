@@ -77,9 +77,27 @@ fn planes(weights: &Weights, name: &str, shape: &[usize]) -> Option<crate::weigh
     weights.planes(name, shape).unwrap_or_else(|e| panic!("{e}"))
 }
 
+/// The input channels of the UNet, from the shape of `unet.conv_in.weight`: 4 for text to image, or 9 for inpainting
+/// (spec 11.9b, "The 9-channel UNet"). The engine does not trust the config of the checkpoint for this.
+pub fn unet_in_channels(weights: &Weights) -> Result<usize, String> {
+    let name = "unet.conv_in.weight";
+    match weights.shape(name) {
+        Some(&[out, c, 3, 3]) if out == LEVELS[0] && (c == LATENT || c == INPAINT_CHANNELS) => Ok(c),
+        Some(shape) => Err(format!(
+            "tensor {name} has the shape {shape:?}; the engine reads [320, {LATENT}, 3, 3] for text to image or [320, \
+             {INPAINT_CHANNELS}, 3, 3] for inpainting; use such an SDXL checkpoint"
+        )),
+        None => Err(format!(
+            "the checkpoint has no tensor {name}; use an SDXL checkpoint in the layout of diffusers or of Stability"
+        )),
+    }
+}
+
 /// Check that the checkpoint has each tensor of each graph, with its shape: build the graphs of both encoders with each
-/// `clip_skip`, of the UNet at the largest image, and of the VAE decoder and encoder, and run none of them.
+/// `clip_skip`, of the UNet at the largest image, and of the VAE decoder and encoder, and run none of them. The UNet
+/// must have 4 or 9 input channels.
 pub fn check(weights: &Weights) -> Result<(), String> {
+    let in_channels = unet_in_channels(weights)?;
     weights.probe(|| {
         let mut carve = Carve::new(0, u64::MAX / 2);
         let text = TextBufs::carve(&mut carve, 2 * MAX_CHUNKS);
@@ -89,7 +107,7 @@ pub fn check(weights: &Weights) -> Result<(), String> {
             }
         }
         let rows = MAX_IMAGES * MAX_IMAGE_PIXELS / (VAE_SCALE * VAE_SCALE);
-        let bufs = UnetBufs::carve(&mut carve, MAX_IMAGES, rows, MAX_CHUNKS * CHUNK_IDS);
+        let bufs = UnetBufs::carve(&mut carve, MAX_IMAGES, rows, MAX_CHUNKS * CHUNK_IDS, in_channels);
         let size = UnetSize {
             images: 1,
             h: 128,
@@ -570,7 +588,10 @@ impl UnetSize {
 /// The buffers of a UNet step.
 #[derive(Clone, Copy, Debug)]
 pub struct UnetBufs {
-    /// The inputs: the latents of the batch, the timestep features, the add features, and the context.
+    /// The input channels of the UNet: 4, or 9 for inpainting (spec 11.9b).
+    pub in_channels: usize,
+    /// The inputs: the latents of the batch, the timestep features, the add features, and the context. The latents have
+    /// `in_channels` values for each row.
     pub x_in: u64,
     pub t_proj: u64,
     pub add_proj: u64,
@@ -602,8 +623,9 @@ pub struct UnetBufs {
 }
 
 impl UnetBufs {
-    /// Carve the buffers for at most `max` latent rows of all images of one prompt, and `ctx` context rows.
-    pub fn carve(carve: &mut Carve, images: usize, max_rows: usize, ctx: usize) -> Self {
+    /// Carve the buffers for at most `max` latent rows of all images of one prompt, `ctx` context rows, and a UNet of
+    /// `in_channels` input channels.
+    pub fn carve(carve: &mut Carve, images: usize, max_rows: usize, ctx: usize, in_channels: usize) -> Self {
         let r0 = 2 * max_rows;
         let b2 = 2 * images;
         let skip_floats = [
@@ -618,7 +640,8 @@ impl UnetBufs {
             1280 * r0 / 16,
         ];
         Self {
-            x_in: carve.floats(LATENT * r0),
+            in_channels,
+            x_in: carve.floats(in_channels * r0),
             t_proj: carve.floats(b2 * TIME_PROJ),
             add_proj: carve.floats(b2 * ADD_IN),
             ctx: carve.floats(b2 * ctx * CONTEXT),
@@ -953,7 +976,7 @@ pub fn unet(wt: &Weights, b: &UnetBufs, size: &UnetSize) -> Vec<(Run, u64)> {
         b.skips[0],
         batch,
         size.dims(0),
-        (LATENT, LEVELS[0]),
+        (b.in_channels, LEVELS[0]),
         (3, 1),
         false,
     );
