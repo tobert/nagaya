@@ -345,6 +345,24 @@ fn an_unspecified_gossip_address_exits_three() {
     }
 }
 
+#[test]
+fn an_unspecified_http_address_exits_three() {
+    for address in ["0.0.0.0:0", "[::]:0"] {
+        let fixture = Fixture::new("fake");
+        let text = std::fs::read_to_string(&fixture.config)
+            .unwrap()
+            .replace("http_bind = \"127.0.0.1:0\"", &format!("http_bind = \"{address}\""));
+        std::fs::write(&fixture.config, text).unwrap();
+        let output = output(fixture.spawn(None));
+        assert_eq!(output.status.code(), Some(3), "{address}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("http_bind"),
+            "the message must name the key for {address}: {stderr}"
+        );
+    }
+}
+
 fn add_ignore_devices(fixture: &Fixture, list: &str) {
     let mut text = std::fs::read_to_string(&fixture.config).unwrap();
     text.push_str(&format!("ignore_devices = {list}\n"));

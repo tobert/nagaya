@@ -96,6 +96,16 @@ impl Bootstrap {
                 ),
             });
         }
+        if config.http_bind.ip().is_unspecified() {
+            // The node publishes this address in `server` and `engine:<name>` (spec 2.3), so a wildcard address can
+            // reach no peer (spec 2.1, Proposed).
+            return Err(BootstrapError::Parse {
+                message: format!(
+                    "http_bind `{}` is an unspecified address that no peer can reach; use the address of this machine",
+                    config.http_bind
+                ),
+            });
+        }
         if let Some(name) = &config.node_name {
             check_node_name(name)?;
         }

@@ -129,6 +129,19 @@ fn an_unspecified_gossip_address_is_refused() {
     }
 }
 
+/// The node publishes `http_bind` for its peers (spec 2.3), so a wildcard address is refused (spec 2.1, Proposed).
+#[test]
+fn an_unspecified_http_address_is_refused() {
+    for address in ["0.0.0.0:8090", "[::]:8090", "0.0.0.0:0"] {
+        let text = REQUIRED_ONLY.replace("127.0.0.1:8090", address);
+        let error = Bootstrap::parse(&text).unwrap_err();
+        assert!(
+            error.to_string().contains("http_bind"),
+            "the message must name the key for {address}: {error}"
+        );
+    }
+}
+
 #[test]
 fn a_specified_gossip_address_is_read() {
     for address in ["127.0.0.1:8091", "[::1]:8091", "198.51.100.20:8091"] {
