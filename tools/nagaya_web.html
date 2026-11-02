@@ -93,6 +93,7 @@ audio { width: 100%; }
     <button data-tab="embed">Embeddings</button>
     <button data-tab="engines">Engines</button>
   </nav>
+  <select id="host" hidden title="the nagaya that this page shows"></select>
   <div id="chips"></div>
 </header>
 <main>
@@ -272,9 +273,37 @@ for (const b of document.querySelectorAll("nav button")) {
 }
 try { const t = localStorage.getItem("nagaya-tab"); if (t) document.querySelector(`nav button[data-tab=${t}]`)?.click(); } catch (e) {}
 
-// ---- the nagaya
+// ---- the nagayas
+// The app passes /at/<name>/ to the nagaya with that name (nagaya_web.py). With no list, the page uses the plain paths,
+// which go to the first nagaya. `host` is the name of the nagaya that the page shows, or "" for the plain paths.
+let host = "", firstHost = "";
+const base = (h = host) => h ? `/at/${encodeURIComponent(h)}` : "";
+const hostsReady = (async () => {
+  try {
+    const r = await fetch("/app/nagayas");
+    const list = r.ok ? (await r.json()).nagayas || [] : [];
+    if (!list.length) return;
+    firstHost = list[0].name;
+    let saved = null; try { saved = localStorage.getItem("nagaya-host"); } catch (e) {}
+    host = list.some((n) => n.name === saved) ? saved : firstHost;
+    $("host").innerHTML = list.map((n) =>
+      `<option value="${esc(n.name)}" title="${esc(n.url)}">${esc(n.name)}</option>`).join("");
+    $("host").value = host;
+    $("host").hidden = list.length < 2;
+  } catch (e) {
+    // An app from before the list of nagayas has no /app/nagayas. The plain paths still work.
+  }
+})();
+$("host").onchange = async () => {
+  host = $("host").value;
+  try { localStorage.setItem("nagaya-host", host); } catch (e) {}
+  models = []; engines = [];
+  await refresh();
+  drawGallery(); drawLoras(); keepAll();
+};
+
 async function call(method, path, body) {
-  const r = await fetch(path, {method, headers: body ? {"content-type": "application/json"} : {},
+  const r = await fetch(base() + path, {method, headers: body ? {"content-type": "application/json"} : {},
                                body: body ? JSON.stringify(body) : undefined});
   const text = await r.text();
   let v = null;
@@ -314,7 +343,7 @@ async function events(response, on) {
 
 /** POST a streamed generation. Throws the error body of a refused one. */
 async function stream(body, signal, on) {
-  const r = await fetch("/council/v2/generations", {method: "POST", signal,
+  const r = await fetch(base() + "/council/v2/generations", {method: "POST", signal,
     headers: {"content-type": "application/json"}, body: JSON.stringify({...body, stream: true})});
   if (!r.ok) {
     const v = await r.json().catch(() => ({}));
@@ -346,9 +375,13 @@ function engineOf(m) {
 const modelOf = (engine) => models.find((m) => engineOf(m) === engine);
 
 async function refresh() {
+  await hostsReady;
+  const asked = host;
   try {
     const [id, profile] = await Promise.all([call("GET", "/council/v2/identity"),
                                              call("GET", "/nagaya/v1/profile").catch(() => ({engines: []}))]);
+    // A refresh that started before the choice of another nagaya ends with no effect.
+    if (asked !== host) return;
     models = id.models; engines = profile.engines || [];
     $("eng-error").textContent = "";
   } catch (e) {
@@ -452,16 +485,20 @@ async function ready(model, status) {
 }
 
 // ---- images
-const objectUrl = (id) => `/council/v2/objects/${id}`;
+/** The path of an object on the nagaya `h`. An image or a LoRA keeps the name of its nagaya. */
+const objectUrl = (id, h = host) => `${base(h)}/council/v2/objects/${id}`;
+/** Whether a thing with the nagaya name `h` is on the nagaya that the page shows. No name is the first nagaya. */
+const here = (h) => (h || firstHost) === (host || firstHost);
 let gallery = [];
 try { gallery = JSON.parse(localStorage.getItem("nagaya-gallery") || "[]"); } catch (e) {}
 function saveGallery() { try { localStorage.setItem("nagaya-gallery", JSON.stringify(gallery.slice(0, 120))); } catch (e) {} }
 function tile(item) {
   const [w, h] = item.size.split("x").map(Number);
-  return `<div class="tile" style="--ratio:${w}/${h}"><a href="${objectUrl(item.id)}" target="_blank">
-    <img src="${objectUrl(item.id)}" loading="lazy" onerror="this.closest('.tile').style.opacity=.35"></a>
+  const url = objectUrl(item.id, item.host ?? "");
+  return `<div class="tile" style="--ratio:${w}/${h}"><a href="${url}" target="_blank">
+    <img src="${url}" loading="lazy" onerror="this.closest('.tile').style.opacity=.35"></a>
     <div class="meta"><div class="p" title="${esc(item.prompt)}">${esc(item.prompt)}</div>
-    ${esc(item.model)} · seed ${esc(item.seed)} · ${esc(item.size)} · ${esc(item.steps)} steps</div></div>`;
+    ${item.host && !here(item.host) ? `${esc(item.host)} · ` : ""}${esc(item.model)} · seed ${esc(item.seed)} · ${esc(item.size)} · ${esc(item.steps)} steps</div></div>`;
 }
 function drawGallery() { $("img-gallery").innerHTML = gallery.map(tile).join("") || `<p class="note">None yet.</p>`; }
 drawGallery();
@@ -483,7 +520,7 @@ let loras = [];
 try { loras = JSON.parse(localStorage.getItem("nagaya-loras") || "[]"); } catch (e) {}
 function saveLoras() { try { localStorage.setItem("nagaya-loras", JSON.stringify(loras)); } catch (e) {} }
 function drawLoras() {
-  $("img-loras").innerHTML = loras.map((l, i) => `<div class="lora">
+  $("img-loras").innerHTML = loras.map((l, i) => !here(l.host) ? "" : `<div class="lora">
     <label class="inline name" title="${esc(l.id)}"><input type="checkbox" data-lora-on="${i}" ${l.on ? "checked" : ""}>
       ${esc(l.name)}</label>
     <input type="number" min="-2" max="2" step="0.05" value="${esc(l.weight)}" data-lora-weight="${i}">
@@ -505,7 +542,7 @@ $("img-loras").addEventListener("click", (ev) => {
 
 /** Put a keep on the LoRAs and the gallery, so the store does not evict them. A keep lasts 30 days (spec 6.15). */
 async function keepAll() {
-  const objects = [...new Set(loras.map((l) => l.id).concat(gallery.map((g) => g.id)))]
+  const objects = [...new Set(loras.concat(gallery).filter((x) => here(x.host)).map((x) => x.id))]
     .filter((id) => /^blake3:[0-9a-f]{64}$/.test(id));
   try {
     await call("PUT", "/council/v2/keeps/nagaya-web", {objects, ttl_s: 30 * 86400});
@@ -557,7 +594,9 @@ $("img-lora-file").onchange = async (ev) => {
     } else if (!head.ok) {
       throw new Error(`HEAD of the object returned ${head.status}`);
     }
-    if (!loras.some((l) => l.id === id)) loras.push({name: file.name.replace(/\.safetensors$/, ""), id, weight: 1, on: true});
+    if (!loras.some((l) => l.id === id && here(l.host))) {
+      loras.push({name: file.name.replace(/\.safetensors$/, ""), id, weight: 1, on: true, host});
+    }
     saveLoras(); drawLoras(); await keepAll();
     status(`${file.name} is held`);
   } catch (e) {
@@ -578,7 +617,7 @@ $("img-go").onclick = async () => {
                    negative: $("img-negative").value};
   if ($("img-clip").value) options.clip_skip = +$("img-clip").value;
   if (euler()) options.spacing = $("img-spacing").value;
-  const on = loras.filter((l) => l.on);
+  const on = loras.filter((l) => l.on && here(l.host));
   if (on.length > 8) { $("img-error").textContent = "a request takes at most 8 LoRAs"; return; }
   if (on.length) options.loras = on.map((l) => ({id: l.id, weight: l.weight}));
   const body = {model, max_tokens: 1, context: {messages: [{role: "user", content: $("img-prompt").value}]},
@@ -605,7 +644,7 @@ $("img-go").onclick = async () => {
       }
     });
     const seconds = ((performance.now() - started) / 1000).toFixed(1);
-    const made = done.outputs.map((o) => ({id: o.id, model, prompt: $("img-prompt").value, seed: done.seed + o.index,
+    const made = done.outputs.map((o) => ({id: o.id, host, model, prompt: $("img-prompt").value, seed: done.seed + o.index,
                                            size: `${width}x${height}`, steps}));
     $("img-current").innerHTML = made.map(tile).join("");
     gallery = made.concat(gallery); saveGallery(); drawGallery(); keepAll();
@@ -674,10 +713,10 @@ $("chat-go").onclick = async () => {
 let lines = [];
 function drawLines() {
   $("sp-lines").innerHTML = lines.map((l) =>
-    `<div class="line"><div><div>${esc(l.text)}</div><audio controls src="${objectUrl(l.id)}"
+    `<div class="line"><div><div>${esc(l.text)}</div><audio controls src="${objectUrl(l.id, l.host)}"
        onerror="this.nextElementSibling.textContent = 'the browser cannot play this audio'"></audio>
        <div class="note">${l.ms == null ? "" : `${(l.ms / 1000).toFixed(1)} s`}</div></div>
-     <a class="note" href="${objectUrl(l.id)}" download="line.wav">wav</a></div>`).join("") ||
+     <a class="note" href="${objectUrl(l.id, l.host)}" download="line.wav">wav</a></div>`).join("") ||
     `<p class="note">No lines yet.</p>`;
 }
 drawLines();
@@ -689,7 +728,7 @@ $("sp-go").onclick = async () => {
   $("sp-error").textContent = "";
   const messages = [{role: "system", content: $("sp-voice").value, snap: true}];
   if ($("sp-keep").checked) {
-    for (const l of lines) {
+    for (const l of lines.filter((x) => here(x.host))) {
       messages.push({role: "user", content: l.text, snap: true});
       messages.push({role: "assistant", content: [{type: "object", id: l.id, mime: "audio/wav"}], snap: true});
     }
@@ -703,7 +742,7 @@ $("sp-go").onclick = async () => {
     await ready(model, (t) => { $("sp-error").textContent = t; });
     $("sp-error").textContent = "speaking…";
     const done = await call("POST", "/council/v2/generations", body);
-    lines.push({text, id: done.outputs[0].id, ms: done.usage?.media?.written?.audio_ms}); $("sp-input").value = ""; drawLines();
+    lines.push({text, host, id: done.outputs[0].id, ms: done.usage?.media?.written?.audio_ms}); $("sp-input").value = ""; drawLines();
     $("sp-lines").querySelector(".line:last-child audio")?.play().catch(() => {});
     $("sp-error").textContent = "";
   } catch (e) {

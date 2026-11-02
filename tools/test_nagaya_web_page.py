@@ -55,7 +55,15 @@ function reply(status, v) {
                           json: () => Promise.resolve(v)});
 }
 function fetch(path, o) {
+  // The first nagaya answers its paths under /at/b70host/ as the plain paths, and the calls record them plain.
+  path = path.replace(/^\/at\/b70host\//, "/");
   o = o || {}; calls.push([o.method || "GET", path, o.body || null]);
+  if (path === "/app/nagayas") return reply(200, {nagayas: [{name: "b70host", url: "http://a"}, {name: "gfx1151host", url: "http://b"}]});
+  if (path === "/at/gfx1151host/council/v2/identity") return reply(200, {models: [{model: "qwen-image-fusal",
+    engine: "qwen-image-fusal", status: "ready", capabilities: ["generate"],
+    media: {inputs: [], outputs: ["image/png"], text_replies: false}}]});
+  if (path === "/at/gfx1151host/nagaya/v1/profile") return reply(200, {engines: [{name: "qwen-image-fusal",
+    kind: "qwenimage21", devices: [0]}]});
   if (path === "/council/v2/identity") return reply(200, IDENTITY);
   if (path === "/nagaya/v1/profile") return reply(200, PROFILE);
   const load = path.match(/^\/nagaya\/v1\/engines\/([^/]+)\/load$/);
@@ -109,6 +117,24 @@ class Page(unittest.TestCase):
         self.assertEqual(len(out["confirms"]), 1)
         self.assertIn("embeddinggemma-2 stays loaded", out["confirms"][0])
         self.assertEqual(out["reply"]["unload"], ["gemma", "voice"])
+
+    def test_the_choice_of_a_nagaya_sends_each_request_to_it_and_each_image_keeps_its_nagaya(self):
+        out = self.run_page("""
+            out.hosts = document.getElementById("host").innerHTML;
+            document.getElementById("host").value = "gfx1151host";
+            await document.getElementById("host").onchange();
+            out.models = document.getElementById("img-model").innerHTML;
+            out.paths = calls.map((c) => c[1]).filter((p) => p.endsWith("/identity"));
+            out.here = tile({id: "blake3:" + "b".repeat(64), host: "gfx1151host", model: "m", prompt: "p", seed: 1,
+                             size: "64x64", steps: 1});
+            out.there = tile({id: "blake3:" + "c".repeat(64), model: "m", prompt: "p", seed: 1, size: "64x64",
+                              steps: 1});""")
+        self.assertIn('<option value="gfx1151host" title="http://b">gfx1151host</option>', out["hosts"])
+        self.assertEqual(out["models"], '<option value="qwen-image-fusal">qwen-image-fusal</option>')
+        self.assertEqual(out["paths"][-1], "/at/gfx1151host/council/v2/identity")
+        self.assertIn('src="/at/gfx1151host/council/v2/objects/blake3:bbbb', out["here"])
+        # An image from before the choice of nagayas belongs to the first nagaya, which serves the plain paths.
+        self.assertIn('src="/council/v2/objects/blake3:cccc', out["there"])
 
     def test_an_error_names_its_param_when_the_message_does_not(self):
         out = self.run_page("""

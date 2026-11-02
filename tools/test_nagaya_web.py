@@ -15,13 +15,14 @@ class FakeNagaya(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.0"
     second = threading.Event()
     seen = []
+    identity = b'{"models": []}'
 
     def log_message(self, *args):
         pass
 
     def do_GET(self):
         if self.path == "/council/v2/identity":
-            self.reply(200, b'{"models": []}', "application/json")
+            self.reply(200, self.identity, "application/json")
         elif self.path.startswith("/council/v2/objects/pending:"):
             self.send_response(308)
             self.send_header("location", "/council/v2/objects/blake3:ab")
@@ -50,6 +51,12 @@ class FakeNagaya(http.server.BaseHTTPRequestHandler):
         self.send_header("content-length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+
+class OtherNagaya(FakeNagaya):
+    """A second nagaya, which serves another model."""
+
+    identity = b'{"models": [{"model": "qwen-image-fusal"}]}'
 
 
 def serve(server):
@@ -125,6 +132,59 @@ class Proxy(unittest.TestCase):
         finally:
             dead.shutdown()
             dead.server_close()
+
+
+class Nagayas(unittest.TestCase):
+    """One app in front of two nagayas: the first under the plain paths, each one under /at/<name>/."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.first = serve(http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeNagaya))
+        cls.other = serve(http.server.ThreadingHTTPServer(("127.0.0.1", 0), OtherNagaya))
+        cls.nagayas = [("b70host", f"http://127.0.0.1:{cls.first.server_address[1]}"),
+                       ("gfx1151host", f"http://127.0.0.1:{cls.other.server_address[1]}")]
+        cls.app = serve(http.server.ThreadingHTTPServer(("127.0.0.1", 0), nagaya_web.handler(cls.nagayas)))
+
+    @classmethod
+    def tearDownClass(cls):
+        for server in (cls.app, cls.first, cls.other):
+            server.shutdown()
+            server.server_close()
+
+    def get(self, path):
+        c = http.client.HTTPConnection("127.0.0.1", self.app.server_address[1], timeout=10)
+        c.request("GET", path)
+        r = c.getresponse()
+        return r, r.read()
+
+    def test_the_app_lists_its_nagayas_in_order(self):
+        r, body = self.get("/app/nagayas")
+        self.assertEqual(r.status, 200)
+        self.assertEqual(json.loads(body), {"nagayas": [{"name": n, "url": u} for n, u in self.nagayas]})
+
+    def test_a_path_under_at_a_name_goes_to_that_nagaya_and_a_plain_path_to_the_first(self):
+        self.assertEqual(json.loads(self.get("/at/gfx1151host/council/v2/identity")[1]), {"models": [{"model": "qwen-image-fusal"}]})
+        self.assertEqual(json.loads(self.get("/at/b70host/council/v2/identity")[1]), {"models": []})
+        self.assertEqual(json.loads(self.get("/council/v2/identity")[1]), {"models": []})
+
+    def test_a_redirect_under_at_a_name_keeps_the_name(self):
+        r, _ = self.get("/at/gfx1151host/council/v2/objects/pending:" + "0" * 64)
+        self.assertEqual((r.status, r.getheader("location")), (308, "/at/gfx1151host/council/v2/objects/blake3:ab"))
+
+    def test_an_unknown_name_is_a_404_and_does_not_pass(self):
+        before = len(FakeNagaya.seen)
+        r, body = self.get("/at/elsewhere/council/v2/identity")
+        self.assertEqual(r.status, 404)
+        self.assertIn(b"b70host, gfx1151host", body)
+        r, _ = self.get("/at/gfx1151host/elsewhere")
+        self.assertEqual(r.status, 404)
+        self.assertEqual(len(FakeNagaya.seen), before)
+
+    def test_the_names_parse_from_the_command_line(self):
+        self.assertEqual(nagaya_web.nagaya("gfx1151host=http://h:8090/"), ("gfx1151host", "http://h:8090"))
+        for bad in ("gfx1151host", "=http://h:1", "a/b=http://h:1"):
+            with self.assertRaises(Exception):
+                nagaya_web.nagaya(bad)
 
 
 if __name__ == "__main__":
