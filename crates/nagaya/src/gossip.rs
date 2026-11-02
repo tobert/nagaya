@@ -197,7 +197,7 @@ impl NodeView {
 }
 
 /// The cluster as one node sees it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ClusterView {
     /// The nodes that the failure detector holds live, with this node.
     pub live: Vec<NodeView>,

@@ -72,6 +72,8 @@ pub struct ClusterState {
     live: BTreeSet<String>,
     /// What could not be read from the gossip of a peer, one line each.
     problems: Vec<String>,
+    /// The gossip view that this state comes from. The cluster route gives it (spec 11.4a).
+    view: ClusterView,
 }
 
 /// A served model before the names are resolved.
@@ -92,6 +94,7 @@ impl ClusterState {
         let peers: Vec<&NodeView> = view.live.iter().filter(|node| !node.is_self).collect();
         let mut state = ClusterState {
             live: peers.iter().map(|node| node.id.clone()).collect(),
+            view: view.clone(),
             ..ClusterState::default()
         };
         let mut candidates: Vec<Candidate> = local
@@ -208,6 +211,11 @@ impl ClusterState {
     /// The chitchat ids of the live peers.
     pub fn live(&self) -> &BTreeSet<String> {
         &self.live
+    }
+
+    /// The gossip view that this state comes from.
+    pub fn view(&self) -> &ClusterView {
+        &self.view
     }
 
     /// What could not be read from the gossip of a peer.

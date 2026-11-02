@@ -4,6 +4,7 @@
 //! `model`, and runs the blocking call of the [`Service`] on a call thread. The control runtime never runs a service
 //! call (spec 3.2). Every response carries a `request-id` header, and every error body carries the same id (11.5).
 
+mod cluster;
 pub mod embeddings;
 mod errors;
 mod extensions;
