@@ -15,7 +15,7 @@ question has the mark **Open**, and section 15 lists all of them.
 
 We change this spec before we change the code (Amy, 2026-10-20: "I want to keep updating the spec before the code so
 we could redo it all again if we decide to"). The mark "Decided 2026-10-20 (reading)" is on a rule that began as a
-**Proposed** reading of the text. Senpai wrote it as a rule, and Amy can veto it.
+**Proposed** reading of the text. Senpai wrote it as a rule, and Amy accepted all of these rules on 2026-11-04.
 
 The mark "Decided by senpai <date>" is on a rule where the spec left a choice open, and senpai chose. It is also on a
 **Proposed** note that senpai accepted (Amy, 2026-10-22: "if those decisions seem ok to you let's call them ok and melt
