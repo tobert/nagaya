@@ -193,5 +193,60 @@ class Nagayas(unittest.TestCase):
         self.assertEqual(names("sm121host"), ["b70host", "gfx1151host"], "another machine keeps the order of the list")
 
 
+
+class ClusterSeed(http.server.BaseHTTPRequestHandler):
+    """A nagaya that answers only the cluster route, with the view in `view`."""
+
+    protocol_version = "HTTP/1.0"
+    view = {}
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        body = json.dumps(self.view).encode()
+        status = 200 if self.path == "/nagaya/v1/cluster" else 404
+        self.send_response(status)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class Discovery(unittest.TestCase):
+    """The app finds its nagayas from the cluster route of a seed (AGENTS.md milestone 23 step 7)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.seed = serve(http.server.ThreadingHTTPServer(("127.0.0.1", 0), ClusterSeed))
+        cls.seed_url = f"http://127.0.0.1:{cls.seed.server_address[1]}"
+        # A closed port: bind one, take its number, and close it.
+        closed = http.server.HTTPServer(("127.0.0.1", 0), ClusterSeed)
+        cls.dead_url = f"http://127.0.0.1:{closed.server_address[1]}"
+        closed.server_close()
+        ClusterSeed.view = {"node": "b70host", "dead": ["sm121host"], "nodes": [
+            {"name": "b70host", "self": True, "http": "198.51.100.10:8091"},
+            {"name": "yuki", "self": False, "http": None},
+            {"name": "gfx1151host", "self": False, "http": "198.51.100.20:8090"}]}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.seed.shutdown()
+        cls.seed.server_close()
+
+    def test_the_nodes_come_from_the_first_seed_that_answers(self):
+        found = nagaya_web.discover([self.dead_url, self.seed_url], "sm121host")
+        self.assertEqual(found, [("b70host", "http://198.51.100.10:8091"), ("gfx1151host", "http://198.51.100.20:8090")])
+
+    def test_the_machine_of_the_proxy_comes_first(self):
+        found = nagaya_web.discover([self.seed_url], "gfx1151host")
+        self.assertEqual([n for n, _ in found], ["gfx1151host", "b70host"])
+
+    def test_no_seed_that_answers_is_an_error_that_names_the_seeds(self):
+        with self.assertRaises(SystemExit) as caught:
+            nagaya_web.discover([self.dead_url], "gfx1151host")
+        self.assertIn(self.dead_url, str(caught.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

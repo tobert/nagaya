@@ -8,7 +8,7 @@ then have one origin, and the browser needs no CORS. `GET /app/nagayas` lists th
 
 Examples:
 
-    tools/nagaya_web.py                      # http://127.0.0.1:8096, in front of b70host and gfx1151host
+    tools/nagaya_web.py                      # http://127.0.0.1:8096, in front of each node of the cluster
     tools/nagaya_web.py --port 9000 --nagaya local=http://127.0.0.1:8091
     tools/nagaya_web.py --url http://127.0.0.1:8091    # one nagaya, with the name `nagaya`
 
@@ -26,14 +26,45 @@ import socket
 import sys
 import urllib.parse
 
-# The nagayas of the lab, in the order of the page. The first one also serves the plain paths, so `local_first` puts
-# the machine of the proxy first.
+# The seeds of the lab. The app asks the first seed that answers for the cluster route, and the nodes there become the
+# nagayas of the page. The first nagaya also serves the plain paths, so `local_first` puts the machine of the proxy
+# first.
 DEFAULT_NAGAYAS = [("b70host", "http://198.51.100.10:8091"), ("gfx1151host", "http://198.51.100.20:8090")]
 
 
 def local_first(nagayas, host):
     """The list with the nagaya named `host` first, and the others in their order."""
     return [n for n in nagayas if n[0] == host] + [n for n in nagayas if n[0] != host]
+
+
+def discover(seeds, host):
+    """The (name, URL) of each live node in the cluster view of the first seed that answers, with `host` first."""
+    failures = []
+    for seed in seeds:
+        target = urllib.parse.urlsplit(seed)
+        connection = http.client.HTTPConnection(target.hostname, target.port or 80, timeout=5)
+        try:
+            connection.request("GET", "/nagaya/v1/cluster")
+            response = connection.getresponse()
+            body = response.read()
+            if response.status != 200:
+                failures.append(f"{seed} gave {response.status}")
+                continue
+            view = json.loads(body)
+        except (OSError, ValueError) as error:
+            failures.append(f"{seed} gave {error}")
+            continue
+        finally:
+            connection.close()
+        nagayas = []
+        for node in view["nodes"]:
+            # A node without the key `server` has no HTTP address (spec 11.4a), so the app cannot pass to it.
+            if node["http"] is None:
+                print(f"node {node['name']!r} publishes no HTTP address, so the app leaves it out", file=sys.stderr)
+                continue
+            nagayas.append((node["name"], "http://" + node["http"]))
+        return local_first(nagayas, host)
+    sys.exit("no seed gave the cluster route: " + "; ".join(failures) + ". Start a nagaya, or give --nagaya.")
 PAGE = pathlib.Path(__file__).with_name("nagaya_web.html")
 PREFIXES = ("/council/", "/nagaya/")
 # The headers that the server passes on, in each direction. The others belong to one connection.
@@ -157,7 +188,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--nagaya", type=nagaya, action="append", metavar="NAME=URL",
                         help="a nagaya to pass requests to; give it once for each nagaya. The first one serves the "
-                             "plain paths. Default: " + ", ".join(f"{n}={u}" for n, u in DEFAULT_NAGAYAS))
+                             "plain paths. Default: the nodes of the cluster route of the first seed that answers, "
+                             "from " + ", ".join(u for _, u in DEFAULT_NAGAYAS))
     parser.add_argument("--url", help="the base URL of one nagaya, with the name `nagaya`, in place of --nagaya")
     parser.add_argument("--host", default="127.0.0.1", help="the address to bind (default 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8096, help="the port to bind (default 8096)")
@@ -167,7 +199,8 @@ def main():
     if args.url:
         nagayas = [("nagaya", args.url.rstrip("/"))]
     else:
-        nagayas = args.nagaya or local_first(DEFAULT_NAGAYAS, socket.gethostname())
+        nagayas = args.nagaya or discover([u for _, u in local_first(DEFAULT_NAGAYAS, socket.gethostname())],
+                                          socket.gethostname())
     server = http.server.ThreadingHTTPServer((args.host, args.port), handler(nagayas))
     names = ", ".join(f"{n} at {u}" for n, u in nagayas)
     print(f"nagaya web app on http://{args.host}:{args.port}, in front of {names}", file=sys.stderr)
