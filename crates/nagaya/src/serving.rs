@@ -50,7 +50,7 @@ impl FamilyRegistry {
     }
 
     /// Make a registry with every family library that this build has: `toy` with the feature `fake`, `qwen38`
-    /// with the feature `hip`, and `gemma4` with the feature `xe`.
+    /// with the feature `hip`, and `gemma4` and `lfm3` with the feature `xe`.
     pub fn compiled_in() -> Self {
         #[allow(unused_mut)]
         let mut registry = Self::new();
@@ -65,6 +65,8 @@ impl FamilyRegistry {
         registry.register("qwen38", open_qwen38);
         #[cfg(feature = "xe")]
         registry.register(nagaya_mk_gemma4_bmg::spec::FAMILY, crate::gemma4::open_family);
+        #[cfg(feature = "xe")]
+        registry.register(nagaya_mk_lfm3_bmg::spec::FAMILY, crate::lfm3::open_family);
         registry
     }
 

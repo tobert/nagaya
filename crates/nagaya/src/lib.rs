@@ -17,6 +17,7 @@ pub mod http;
 pub mod image;
 pub mod inventory;
 pub mod jobs;
+pub mod lfm3;
 pub mod lifecycle;
 #[cfg(feature = "hip")]
 pub mod mk;
