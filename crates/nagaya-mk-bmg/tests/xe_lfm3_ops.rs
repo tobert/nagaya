@@ -280,8 +280,12 @@ fn qk_rope_rotates_half_the_head_on_full_layers_and_all_of_it_on_sliding_layers(
         );
         let cpu = norm_rope(&x, &w, ROPE_HEADS, ROPE_D, ROPE_P0, theta, pairs, ROPE_EPS, 1.0);
         let err = rel(&got, &cpu);
+        // At the last position one ulp of an f32 angle is 2^-12 rad (4,095 is in [2^11, 2^12)). One ulp in `pow`,
+        // the multiply or `sin` turns a value by that much. Thus the bound is two of those ulps, not a bound of f32 noise.
+        let angle_ulp = f32::EPSILON * ((ROPE_P0 + ROPE_TOKENS as u32 - 1) as f32).log2().floor().exp2();
+        println!("the {name} layers: relative error {err} against the CPU form; one angle ulp {angle_ulp}");
         assert!(
-            err < 1e-5,
+            err < 2.0 * angle_ulp,
             "the {name} layers: relative error {err} against the CPU form"
         );
         // The pairs past the rotated ones keep the normed values: the rotation leaves them as they are.
@@ -299,7 +303,8 @@ fn qk_rope_rotates_half_the_head_on_full_layers_and_all_of_it_on_sliding_layers(
         xb.write(card.card(), &x);
         card.run(&[rope(xb.at(), wb.at(), n as u32, ROPE_P0, 128f32.powf(-0.5))]);
         let block = xb.read(card.card(), n * ROPE_D);
-        let want: Vec<f32> = cpu.iter().map(|v| v * 128f32.powf(-0.5)).collect();
+        // The card's own rotation without the scale: thus the check sees the scale alone, not the angle ulps.
+        let want: Vec<f32> = got.iter().map(|v| v * 128f32.powf(-0.5)).collect();
         let err = rel(&block, &want);
         assert!(err < 1e-5, "the {name} layers with the scale: relative error {err}");
         for tok in 0..ROPE_TOKENS {
