@@ -554,6 +554,9 @@ milestone 22 is done on gfx1151host. Milestone 23, the cluster, is next, and mil
       engine and speech. Gemma 4 goes on demand, and it loads only through the load routes (spec 3.3b).
     - **Text model:** `LFM3-1.7B` is other weights on the same engine kind, as its own served model. Its backbone has
       the same tensor names and shapes as Omni's language model, but other bits.
+    - **Licenses:** the nagaya does not check a model license. The user accepts it at the download (Amy, 2026-11-06:
+      "anyone using it has to accept the model license on their own when they download it for use imo. so we just
+      build, let users make their own decisions").
     - **Speech:** Qwen3-TTS VoiceDesign stays the speech engine. Omni's speech is a second choice, with its own
       voices.
 
@@ -574,8 +577,8 @@ milestone 22 is done on gfx1151host. Milestone 23, the cluster, is next, and mil
     The model name in the crate names is `lfm3`. The engine is `nagaya-mk-lfm3-bmg`, and the family is
     `nagaya-text-lfm3`. Do the steps in this order:
     1. **Spec.** Write the LFM3 rules into the docs. They are the served models, the family, the state parts and
-       the image and audio inputs. They also include the interleaved reply and the sampler of the audio codes. Read
-       the LFM Open License v1.0 first, and write what it allows. Amy decides each Proposed note.
+       the image and audio inputs. They also include the interleaved reply and the sampler of the audio codes. Amy
+       decides each Proposed note.
     2. **Oracle fixture.** Write the fixed inputs and outputs from transformers once, on the CPU (8.3). Keep a gate for
        each stage: the vision rows, the audio rows, the backbone logits, the depth codes and the decoded audio.
        Pin the revision of each model. Read Liquid's remote code before it runs.
