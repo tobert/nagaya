@@ -4357,6 +4357,10 @@ above leave these choices open, and each one is the simplest choice that the ref
   - The content is all the text outside the thinking and the calls. The reference keeps only the last run of content
     text.
   - An integer that does not fit in 64 bits makes the call malformed, as in the Qwen3.8 library.
+  - `<think>` opens the reasoning only before any content or call. After them it is text of the content. The
+    reference opens the reasoning at any place in the content.
+  - The parser reads the markers as tokens. The reference reads the decoded text, so it also finds a marker that the
+    model spells in pieces.
 - **Media.** `Family::render` refuses a context with a media part, with a 400 that names the part. The render with
   media (`Lfm3Family::render_media`) takes the count of positions of each part. The media preprocessing of a later
   step gives the counts. The family writes the placeholder token that many times between `<|vision_start|>` and
