@@ -4323,7 +4323,10 @@ of both models (11.3).
 - An image part renders as `<|vision_start|><|image|><|vision_end|>`, and an audio part as
   `<|vision_start|><|audio|><|vision_end|>`, as the template writes them. The family then puts one placeholder
   position for each row of the encoder in place of `<|image|>` or `<|audio|>`.
-- An audio part of an `assistant` message renders as `<|audio_out|>`, one position for each frame of the output.
+- An audio part of an `assistant` message renders as `<|audio_out|>`, one position for each frame of the output and
+  one for the end frame. The reference appends the end frame to a clip in a prompt (`processing_lfm3_omni.py:408`).
+- An image takes `grid_t × grid_h × grid_w / 4` positions, from 64 to 2,048 (`processing_lfm3_omni.py:755`). A clip
+  takes `ceil(frames / 8)` positions, 12.5 each second (`modeling_lfm3_omni.py:408`).
 
 **The choices of the LFM3 family.** Proposed by Claude Opus 5.5, 2026-11-06 (milestone 24 step 4). Reason: the notes
 above leave these choices open, and each one is the simplest choice that the reference can check.
@@ -4376,7 +4379,8 @@ of the engine identity and the bytes of the object. The object's content id name
 
 - A media part enters the recipe as tag 9 (6.2): its media type, its content id, and its count of positions.
 - The placeholder tokens stay in the tokens of the recipe, so a boundary after a media part is a boundary as any.
-- The codes of an `assistant` audio part enter the recipe as the speech positions do (11.8a): 12 codes for each frame.
+- The codes of an `assistant` audio part enter the recipe as the speech positions do (11.8a). Each frame gives 12
+  codes, and the end frame is one more frame.
 
 **The generation modes.** Proposed by Claude Opus 5.5, 2026-11-06. Reason: gogi's `output` already names a reply
 with an object (gogi "Outputs"), so no new member is needed.
@@ -4396,7 +4400,10 @@ with an object (gogi "Outputs"), so no new member is needed.
 **The sampler of the audio codes.** Proposed by Claude Opus 5.5, 2026-11-06. Reason: the checkpoint's generation
 config is the sampler that Liquid tested (`generation_config.json`, model card "Sampling parameters").
 
-- The text tokens use the sampler of 11.2. The defaults are the checkpoint's: greedy.
+- The text tokens use the sampler of 11.2. The defaults are each checkpoint's `generation_config.json`. Omni's text is
+  greedy. `lfm3` samples with temperature 0.1 and top_k 50.
+- The checkpoint of `lfm3` also names a repetition penalty of 1.1. The sampler of 11.2 has no repetition penalty, so
+  v0 leaves it out.
 - The audio codes use temperature 0.4, no top-k, and a repetition penalty of 1.2 over the last 64 frames of each
   codebook. A request cannot change them in v0.
 - The depth decoder reveals the 12 codebooks of a frame in three passes of 4. The order of the codebooks is random

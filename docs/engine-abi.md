@@ -1232,8 +1232,9 @@ codec_clear(slot)                            frees the window of the codec at th
 
 `frame` feeds the frame into the slot as its next position, so the next `pass` or `frame` reads it. `end` means a
 codebook gave the end code (spec 11.11). The end frame is fed too, as the reference feeds it. The codec keeps its
-window for each slot, and it holds no state in a snapshot. The config gives `decoder_window` 30, and the oracle step
-reads the codec code to say what the window holds.
+window for each slot, and it holds no state in a snapshot. The window is the sliding attention of the codec decoder:
+30 positions at 75 Hz, or 5 frames (`configuration_liquid_codec.py:57`). A decode frame by frame gave the decode of
+the whole clip within 1.2e-5 in the oracle step.
 
 **The text model.** `LFM3-1.7B` declares no media and no `speech_frames`. Its engine is the same code with other
 weights, and the open checks that the config has no vision tower, audio encoder or depth decoder.

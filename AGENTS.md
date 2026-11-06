@@ -572,7 +572,8 @@ milestone 22 is done on gfx1151host. Milestone 23, the cluster, is next, and mil
     - The depth decoder has 3 layers. It fills 12 codebooks of 2,017 codes for each frame, 4 at a time
       (`maskgit_schedule`). The reply puts 6 text tokens, then 12 audio tokens, in turn.
     - LiquidCodec decodes 1,920 samples at 24 kHz from each frame. Speech input does not use the codec encoder.
-    - The two tokenizers and chat templates differ. Both embedding tables have 128,000 rows.
+    - The two `tokenizer.json` files hold the same tokens, but Omni's lacks the last newline, so the hashes differ.
+      The chat templates differ: only Omni's has audio parts. Both embedding tables have 128,000 rows.
 
     The model name in the crate names is `lfm3`. The engine is `nagaya-mk-lfm3-bmg`, and the family is
     `nagaya-text-lfm3`. Do the steps in this order:
