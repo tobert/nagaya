@@ -1239,6 +1239,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nagaya-mk-lfm3-bmg"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "nagaya-abi",
+ "nagaya-conformance",
+ "nagaya-mk-bmg",
+ "nagaya-text-lfm3",
+ "serde_json",
+]
+
+[[package]]
 name = "nagaya-mk-qwen38-gfx1151"
 version = "0.1.0"
 dependencies = [

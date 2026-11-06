@@ -1,0 +1,20 @@
+[package]
+name = "nagaya-mk-lfm3-bmg"
+version = "0.1.0"
+edition = "2024"
+
+# The feature `xe` loads the engine on a B70 card. With no feature, the crate plans with no card.
+[features]
+xe = ["nagaya-mk-bmg/xe"]
+
+[dependencies]
+nagaya-abi = { version = "0.1.0", path = "../nagaya-abi" }
+# The interpreter of the B70 megakernels, which this engine shares with the other B70 engines.
+nagaya-mk-bmg = { version = "0.1.0", path = "../nagaya-mk-bmg" }
+# The identity holds the template of the family library and its tokenizer hash (spec 11.3, 12.1).
+nagaya-text-lfm3 = { version = "0.1.0", path = "../nagaya-text-lfm3" }
+blake3 = "1.8.7"
+serde_json = { version = "1.0.154", features = ["float_roundtrip", "preserve_order"] }
+
+[dev-dependencies]
+nagaya-conformance = { version = "0.1.0", path = "../nagaya-conformance" }
