@@ -12,6 +12,8 @@ mod error;
 pub mod media;
 pub mod tokenizer;
 
-pub use council::{Files, Kind, Lfm3Family, MediaKind, MediaPart, MediaRendering, MediaSpan, Mode};
+pub use council::{
+    Files, Kind, Lfm3Family, MediaInput, MediaKind, MediaPart, MediaRendering, MediaSpan, Mode, Objects, Prepared,
+};
 pub use error::Error;
 pub use tokenizer::Tokenizer;

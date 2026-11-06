@@ -17,7 +17,9 @@
 //! the template's form: `<tool_call>\n<function={queue}>\n<parameter=answers>\n{"{id}": "` and the bare letter.
 //!
 //! One library serves both models. The folder says which model it is (`config.json`, `architectures`). Omni does not
-//! reason, and only Omni reads media (spec 11.11).
+//! reason, and only Omni reads media (spec 11.11). The family reads the bytes of a media part through the object
+//! reader that the process gives (`Lfm3Family::with_objects`). The header of each part gives its count of positions,
+//! and `Lfm3Family::prepare` also gives the rows that the engine reads.
 
 mod media;
 mod messages;
@@ -41,6 +43,29 @@ use crate::chat::{Chat, Rendered};
 use crate::tokenizer::{Tokenizer, check_text};
 
 pub use media::{MediaRendering, MediaSpan};
+
+/// The objects of this machine, as the family reads them for the media parts of a context (spec 6.15, 11.11).
+pub trait Objects: Send + Sync {
+    /// The bytes of the object with the content id `id`, or none when this machine does not hold it.
+    fn bytes(&self, id: &str) -> Option<Vec<u8>>;
+}
+
+/// What the family hands the engine for one media span: its place in the tokens and its rows (engine-abi "LFM3").
+#[derive(Clone, Debug, PartialEq)]
+pub struct MediaInput {
+    /// The kind, the first position and the count of positions of the part.
+    pub span: MediaSpan,
+    /// The prepared rows of the part, in f32.
+    pub rows: crate::media::MediaRows,
+}
+
+/// A rendering with its media parts at their full size, and the rows of each part.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Prepared {
+    pub rendering: Rendering,
+    /// The inputs of the media parts, in the order of the rendering.
+    pub inputs: Vec<MediaInput>,
+}
 pub use messages::{MediaKind, MediaPart};
 
 /// The name of the family in the identity and in the template id.
@@ -130,6 +155,8 @@ pub struct Lfm3Family {
     /// The placeholder token of each media kind.
     placeholders: [(MediaKind, u32); 3],
     template_id: String,
+    /// The reader of the objects of this machine. A family without one refuses each media part.
+    objects: Option<Arc<dyn Objects>>,
 }
 
 impl std::fmt::Debug for Lfm3Family {
@@ -247,10 +274,18 @@ impl Lfm3Family {
             marks,
             placeholders,
             template_id: String::new(),
+            objects: None,
         };
         let council = council_hash(&test_set::renders(&family));
         family.template_id = template_id(&council, FAMILY, &hash16(files.template.as_bytes()));
         Ok(family)
+    }
+
+    /// The family with a reader of the objects of this machine. The process gives it, so that a render can read
+    /// the media parts of a context.
+    pub fn with_objects(mut self, objects: Arc<dyn Objects>) -> Lfm3Family {
+        self.objects = Some(objects);
+        self
     }
 
     /// Which of the two models this folder holds.
@@ -492,9 +527,91 @@ impl Lfm3Family {
         media::expand(self, rendering, &parts, counts)
     }
 
+    /// Render a context with its media, and prepare the rows of each media part for the engine.
+    /// The header of each part gives its count of positions, and the whole part must give the same count.
+    pub fn prepare(&self, context: &Context, generation_prompt: bool) -> Result<Prepared, FamilyError> {
+        let parts = self.media_parts(context)?;
+        let mut rows = Vec::with_capacity(parts.len());
+        for part in &parts {
+            let bytes = self.part_bytes(part)?;
+            let header = crate::media::positions(&bytes, &part.mime).map_err(|e| media_error(part, e))?;
+            let prepared = crate::media::prepare(&bytes, &part.mime).map_err(|e| media_error(part, e))?;
+            if prepared.positions() != header {
+                return Err(FamilyError::internal(format!(
+                    "media part {} of message {} has {} positions from its header and {} from its rows",
+                    part.part,
+                    part.message,
+                    header,
+                    prepared.positions()
+                )));
+            }
+            rows.push(prepared);
+        }
+        let counts: Vec<usize> = rows.iter().map(crate::media::MediaRows::positions).collect();
+        let rendering = self.render_placeholders(context, generation_prompt)?;
+        let MediaRendering { rendering, spans } = media::expand(self, rendering, &parts, &counts)?;
+        let inputs = spans
+            .into_iter()
+            .zip(rows)
+            .map(|(span, rows)| {
+                let matches = matches!(
+                    (span.kind, &rows),
+                    (MediaKind::Image, crate::media::MediaRows::Image(_))
+                        | (MediaKind::Audio, crate::media::MediaRows::Audio(_))
+                );
+                assert!(matches, "a span of {:?} got rows of another kind", span.kind);
+                MediaInput { span, rows }
+            })
+            .collect();
+        Ok(Prepared { rendering, inputs })
+    }
+
+    /// The bytes of a media part from the object reader. A part that the family cannot read yet, an absent reader
+    /// and an absent object are client errors that name the part.
+    fn part_bytes(&self, part: &MediaPart) -> Result<Vec<u8>, FamilyError> {
+        let param = part_param(part);
+        if part.kind == MediaKind::AudioOut {
+            return Err(FamilyError::client_param(
+                param,
+                "this build cannot read an assistant audio part yet. Its positions come from the codes of a speech \
+                 output, which a later step keeps. Remove the part.",
+            ));
+        }
+        let Some(objects) = &self.objects else {
+            return Err(FamilyError::client_param(
+                param,
+                "this server gives the LFM3 family no objects, so it cannot read a media part. Send text only.",
+            ));
+        };
+        objects.bytes(&part.id).ok_or_else(|| {
+            FamilyError::client_param(
+                param,
+                format!(
+                    "the object {} is not on this server. Upload it, then send the request again.",
+                    part.id
+                ),
+            )
+        })
+    }
+
     /// The media kind of a placeholder token, or none.
     pub(crate) fn placeholder_kind(&self, token: u32) -> Option<MediaKind> {
         self.placeholders.iter().find(|(_, t)| *t == token).map(|(k, _)| *k)
+    }
+}
+
+/// The request member of a media part, for an error.
+fn part_param(part: &MediaPart) -> String {
+    format!("messages[{}].content[{}]", part.message, part.part)
+}
+
+/// The error of a media part whose bytes the preprocessing refused. A media type that the family does not read is a
+/// defect: `media_parts` refuses it first.
+fn media_error(part: &MediaPart, e: crate::media::MediaError) -> FamilyError {
+    let param = part_param(part);
+    match e {
+        crate::media::MediaError::Mime(_) => FamilyError::internal(format!("{param} {e}")),
+        other => FamilyError::client_param(param.clone(), format!("{param} {other}.")),
     }
 }
 
@@ -529,14 +646,20 @@ fn letter_tokens(tokenizer: &Tokenizer) -> Result<(Vec<u32>, Vec<u32>), Error> {
 
 impl Family for Lfm3Family {
     fn render(&self, context: &Context, generation_prompt: bool) -> Result<Rendering, FamilyError> {
-        if let Some(part) = self.media_parts(context)?.first() {
-            // spec 11.11, "The choices of the LFM3 family": the counts come from the media preprocessing.
-            return Err(FamilyError::client_param(
-                format!("messages[{}].content[{}]", part.message, part.part),
-                "this build cannot read media yet: a media part needs the media preprocessing. Send text only.",
-            ));
+        // spec 11.11, "The choices of the LFM3 family": the header of each part gives its count of positions.
+        let parts = self.media_parts(context)?;
+        if parts.is_empty() {
+            return self.render_placeholders(context, generation_prompt);
         }
-        self.render_placeholders(context, generation_prompt)
+        let counts = parts
+            .iter()
+            .map(|part| {
+                let bytes = self.part_bytes(part)?;
+                crate::media::positions(&bytes, &part.mime).map_err(|e| media_error(part, e))
+            })
+            .collect::<Result<Vec<usize>, FamilyError>>()?;
+        let rendering = self.render_placeholders(context, generation_prompt)?;
+        Ok(media::expand(self, rendering, &parts, &counts)?.rendering)
     }
 
     fn decision_read(&self, input: &DecisionInput<'_>) -> Result<Box<dyn ReadPlan>, FamilyError> {
