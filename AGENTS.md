@@ -96,7 +96,7 @@ in a lock: one thread owns it (3.2).
 Do them in this order. Each milestone ends with all checks green and one or more commits. Milestones 1 to 14 are
 done, and `docs/history.md` keeps their full text, and the merges where the run recorded them. Milestone 15
 is done on gfx1151host, and milestones 15s, 16, 17, 18, 19 and 20 are done on b70host. Milestone 21 waits, and
-milestone 22 is done on gfx1151host. Milestone 23, the cluster, is next.
+milestone 22 is done on gfx1151host. Milestone 23, the cluster, is next, and milestone 24, LFM3 Omni, follows it.
 
 1. **Workspace.** The Cargo workspace, its crates, `rustfmt.toml` and the dev profile. Done.
 2. **Engine trait.** The ABI core and capabilities as traits, with a fake engine and a broken fake for the gates. Done.
@@ -545,7 +545,60 @@ milestone 22 is done on gfx1151host. Milestone 23, the cluster, is next.
     6. **Control.** The cluster route, the load and unload of a peer's engine, and the profile of another host.
     7. **Deploy.** Deploy both machines. Run the gogi suite through each machine for the models of both. The web app
        finds its hosts from the cluster route.
-24. Stop and ask Amy for the next milestone.
+24. **LFM3 Omni.** Serve LiquidAI's `LFM3-Omni-2B` and `LFM3-1.7B` from one engine kind on a B70 card. Omni reads
+    text, images and audio, and it writes text and speech. Amy decided these rules on 2026-11-06, by interview:
+    - **Order:** after the cluster (milestone 23). Thus every machine of the cluster reaches the new models.
+    - **Scope:** text, image and audio in; text and speech out. Video comes after the deploy, as its own step. It
+      uses the vision tower on frames.
+    - **Placement:** both models are resident on card 0 of b70host. Card 1 holds the image engines, the embedding
+      engine and speech. Gemma 4 goes on demand, and it loads only through the load routes (spec 3.3b).
+    - **Text model:** `LFM3-1.7B` is other weights on the same engine kind, as its own served model. Its backbone has
+      the same tensor names and shapes as Omni's language model, but other bits.
+    - **Speech:** Qwen3-TTS VoiceDesign stays the speech engine. Omni's speech is a second choice, with its own
+      voices.
+
+    The facts from the checkpoints, read on 2026-11-06 from the safetensors headers and `config.json`:
+
+    - Omni is 2,166,928,384 bf16 parameters in `model.safetensors` (4.33 GB). LiquidCodec is
+      `audio_tokenizer/model.safetensors` (0.15 GB). `LFM3-1.7B` is 1,728,801,536 parameters (3.46 GB).
+    - The backbone has 24 layers of width 2,048. There are 13 gated short convolutions, 5 sliding attention layers
+      with a window of 256, and 6 full attention layers. The norms are sandwich norms, and full attention rotates
+      half of each head.
+    - The vision tower has 14 layers of width 1,024, with patches of 16 and axial rotary positions. The audio encoder
+      has 17 layers of width 768, on 128 mel bins at 16 kHz.
+    - The depth decoder has 3 layers. It fills 12 codebooks of 2,017 codes for each frame, 4 at a time (`maskgit_schedule`). The
+      reply puts 6 text tokens, then 12 audio tokens, in turn.
+    - LiquidCodec decodes 1,920 samples at 24 kHz from each frame. Speech input does not use the codec encoder.
+    - The two tokenizers and chat templates differ. Both embedding tables have 128,000 rows.
+
+    The model name in the crate names is `lfm3`. The engine is `nagaya-mk-lfm3-bmg`, and the family is
+    `nagaya-text-lfm3`. Do the steps in this order:
+    1. **Spec.** Write the LFM3 rules into the docs. They are the served models, the family, the state parts and
+       the image and audio inputs. They also include the interleaved reply and the sampler of the audio codes. Read
+       the LFM Open License v1.0 first, and write what it allows. Amy decides each Proposed note.
+    2. **Oracle fixture.** Write the fixed inputs and outputs from transformers once, on the CPU (8.3). Keep a gate for
+       each stage: the vision rows, the audio rows, the backbone logits, the depth codes and the decoded audio.
+       Pin the revision of each model. Read Liquid's remote code before it runs.
+    3. **Refusal probe.** Run a sample of Amy's photos through the reference on the CPU. Count the refusals, the
+       vague captions and the full captions. Write only the counts. The photos and the captions stay on b70host.
+    4. **Family.** Write `nagaya-text-lfm3`: both tokenizers, both templates, the XML tool calls, and the reply
+       parser. Also write the image patches and the mel features on the CPU.
+    5. **Ops.** Add the gated short convolution, the sliding attention and the partial rotation to the shared
+       interpreter. Give each op a test.
+    6. **Backbone.** Write `nagaya-mk-lfm3-bmg` with the text path, and serve `LFM3-1.7B` first. Run the conformance
+       gates and the logit gate on the card.
+    7. **Vision and audio in.** The vision tower, the audio encoder and their projectors, with their gates.
+    8. **Speech out.** The depth decoder, the sampler of the audio codes, and the LiquidCodec decoder on the card.
+       Run the gates of the codes and the audio.
+    9. **Route and deploy.** Serve both models through council v2 with media inputs and audio outputs. Put them on
+       card 0 in the profile of b70host, and put Gemma 4 on demand. Run the gogi suite through each machine.
+    10. **Video.** Frames from a video through the vision tower, with a gate.
+
+    Each stop and start of `nagaya.service` goes into `signoff.md`. The tests read Omni's folder from
+    `LFM3_OMNI_MODEL_DIR` and the text model's folder from `LFM3_MODEL_DIR`. Neither has a default.
+    `tools/lfm3_golden.sh` writes the oracle into `target/lfm3-golden` or `LFM3_GOLDEN_DIR`, with no GPU job.
+    Control vectors (`docs/cv.md`) are not in this milestone.
+25. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
 
