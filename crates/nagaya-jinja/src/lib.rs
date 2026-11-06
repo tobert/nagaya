@@ -3,6 +3,7 @@
 //! Each family library runs its chat template here. The interpreter gives the results of Python's jinja2 as Hugging
 //! Face transformers sets it up, with the `str` methods and the Unicode tables of Python 3.14.
 
+mod blocks;
 pub mod chars;
 mod error;
 pub mod json;
