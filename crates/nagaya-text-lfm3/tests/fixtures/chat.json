@@ -1,0 +1,6527 @@
+{
+ "header": {
+  "tool": "tools/lfm3_family_fixture.py",
+  "models": {
+   "omni": {
+    "revision": "21d75123f86c1f7ffb4bef1ea202710c4e7ebe67",
+    "files": {
+     "tokenizer.json": "41927bd314d17d7d7fadb44e10cd0919f7b71528d7741596d8cbd15c6945ec44",
+     "chat_template.jinja": "ea74cc1d14319ed436dc0f37632893004d436913113e7605267f2b01694d65e4",
+     "generation_config.json": "5f069cac2df137d9ac81bdd7aee88d48052a3897f9761cc9ba2f357f93405b85",
+     "config.json": "17e3792551ef56b37e85bbd1e6e968f70dc5b4b14c96f1339d0be85e0ba46875"
+    }
+   },
+   "text": {
+    "revision": "0dc4268b561499c648c7ba7c9466bf3d8d01517a",
+    "files": {
+     "tokenizer.json": "7e226e34bface23ccf6e495d157bf77186c1c30a7659880e1a8994db528c3701",
+     "chat_template.jinja": "f45005c50cd2a97329722bf3a2dee9f16c04cdf825a589b280fb7e99e6827818",
+     "generation_config.json": "0095ba7158e938b1e2d3082d412f00d8be85e42cbbd7608b63866f7a081cf270",
+     "config.json": "8c6ae8b8f6d88c87cfb98cf4b5e34e943d0ee07e24215c4121b3159a46e1399d"
+    }
+   }
+  },
+  "jinja2": "3.1.6",
+  "tokenizers": "0.23.3",
+  "transformers": "5.20.2"
+ },
+ "cases": {
+  "omni": [
+   {
+    "name": "user only",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "tools": null,
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     5922,
+     207,
+     6427,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "user only, thinking",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "tools": null,
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": true
+    },
+    "text": "<|startoftext|><|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n<think>",
+    "ids": [
+     124894,
+     124899,
+     5922,
+     207,
+     6427,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901
+    ]
+   },
+   {
+    "name": "no generation prompt",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "tools": null,
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": false,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>user\nhi<|im_end|>\n",
+    "ids": [
+     124894,
+     124899,
+     5922,
+     207,
+     6427,
+     124900,
+     207
+    ]
+   },
+   {
+    "name": "system and user",
+    "messages": [
+     {
+      "role": "system",
+      "content": "  Be brief.  "
+     },
+     {
+      "role": "user",
+      "content": " hi \n"
+     }
+    ],
+    "tools": null,
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>system\n  Be brief.  <|im_end|>\n<|im_start|>user\n hi \n<|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     229,
+     1345,
+     8771,
+     22,
+     266,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     14511,
+     469,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "sample, thinking off",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are a careful coding agent."
+     },
+     {
+      "role": "user",
+      "content": "List the files, then say done."
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "I should list them.",
+      "tool_calls": [
+       {
+        "type": "function",
+        "function": {
+         "name": "shell",
+         "arguments": {
+          "command": "ls -la",
+          "timeout": 5
+         }
+        },
+        "id": "c0"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "c0",
+      "content": "a.txt\nb.txt"
+     },
+     {
+      "role": "assistant",
+      "content": "Two files: a.txt and b.txt.",
+      "reasoning_content": "Both are listed."
+     },
+     {
+      "role": "user",
+      "content": "Thanks."
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "shell",
+       "description": "Run a shell command.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "command": {
+          "type": "string",
+          "description": "the command"
+         },
+         "timeout": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "command"
+        ]
+       }
+      }
+     }
+    ],
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>system\nYou are a careful coding agent.\n\n<tools>\n{\"name\": \"shell\", \"description\": \"Run a shell command.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"description\": \"the command\"}, \"timeout\": {\"type\": \"integer\"}}, \"required\": [\"command\"]}}\n</tools><|im_end|>\n<|im_start|>user\nList the files, then say done.<|im_end|>\n<|im_start|>assistant\n<think>I should list them.</think><tool_call>\n<function=shell>\n<parameter=command>\nls -la\n</parameter>\n<parameter=timeout>\n5\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\na.txt\nb.txt\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>Both are listed.</think>Two files: a.txt and b.txt.<|im_end|>\n<|im_start|>user\nThanks.<|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     3582,
+     437,
+     267,
+     14991,
+     25445,
+     10879,
+     63908,
+     125017,
+     207,
+     38184,
+     2554,
+     6380,
+     496,
+     95447,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     18950,
+     267,
+     11102,
+     5558,
+     50007,
+     496,
+     29701,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     1377,
+     496,
+     38805,
+     6380,
+     36579,
+     16019,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     3987,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     1319,
+     5558,
+     65916,
+     496,
+     97267,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     58502,
+     87961,
+     496,
+     34503,
+     6380,
+     34564,
+     16019,
+     13328,
+     10703,
+     125018,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     3120,
+     278,
+     8148,
+     20,
+     1256,
+     2491,
+     3506,
+     22,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     49,
+     1252,
+     1815,
+     876,
+     22,
+     124902,
+     125019,
+     207,
+     125021,
+     95447,
+     703,
+     125023,
+     16019,
+     703,
+     3941,
+     640,
+     1997,
+     207,
+     125024,
+     207,
+     125023,
+     97267,
+     703,
+     29,
+     207,
+     125024,
+     207,
+     125022,
+     207,
+     125020,
+     124900,
+     207,
+     124899,
+     46765,
+     207,
+     125025,
+     207,
+     73,
+     31544,
+     207,
+     74,
+     31544,
+     207,
+     125026,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     22447,
+     437,
+     9169,
+     22,
+     124902,
+     15279,
+     8148,
+     34,
+     267,
+     31544,
+     309,
+     293,
+     31544,
+     22,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     29163,
+     22,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "sample, thinking on",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are a careful coding agent."
+     },
+     {
+      "role": "user",
+      "content": "List the files, then say done."
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "I should list them.",
+      "tool_calls": [
+       {
+        "type": "function",
+        "function": {
+         "name": "shell",
+         "arguments": {
+          "command": "ls -la",
+          "timeout": 5
+         }
+        },
+        "id": "c0"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "c0",
+      "content": "a.txt\nb.txt"
+     },
+     {
+      "role": "assistant",
+      "content": "Two files: a.txt and b.txt.",
+      "reasoning_content": "Both are listed."
+     },
+     {
+      "role": "user",
+      "content": "Thanks."
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "shell",
+       "description": "Run a shell command.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "command": {
+          "type": "string",
+          "description": "the command"
+         },
+         "timeout": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "command"
+        ]
+       }
+      }
+     }
+    ],
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": true
+    },
+    "text": "<|startoftext|><|im_start|>system\nYou are a careful coding agent.\n\n<tools>\n{\"name\": \"shell\", \"description\": \"Run a shell command.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"description\": \"the command\"}, \"timeout\": {\"type\": \"integer\"}}, \"required\": [\"command\"]}}\n</tools><|im_end|>\n<|im_start|>user\nList the files, then say done.<|im_end|>\n<|im_start|>assistant\n<think>I should list them.</think><tool_call>\n<function=shell>\n<parameter=command>\nls -la\n</parameter>\n<parameter=timeout>\n5\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\na.txt\nb.txt\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>Both are listed.</think>Two files: a.txt and b.txt.<|im_end|>\n<|im_start|>user\nThanks.<|im_end|>\n<|im_start|>assistant\n<think>",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     3582,
+     437,
+     267,
+     14991,
+     25445,
+     10879,
+     63908,
+     125017,
+     207,
+     38184,
+     2554,
+     6380,
+     496,
+     95447,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     18950,
+     267,
+     11102,
+     5558,
+     50007,
+     496,
+     29701,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     1377,
+     496,
+     38805,
+     6380,
+     36579,
+     16019,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     3987,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     1319,
+     5558,
+     65916,
+     496,
+     97267,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     58502,
+     87961,
+     496,
+     34503,
+     6380,
+     34564,
+     16019,
+     13328,
+     10703,
+     125018,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     3120,
+     278,
+     8148,
+     20,
+     1256,
+     2491,
+     3506,
+     22,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     49,
+     1252,
+     1815,
+     876,
+     22,
+     124902,
+     125019,
+     207,
+     125021,
+     95447,
+     703,
+     125023,
+     16019,
+     703,
+     3941,
+     640,
+     1997,
+     207,
+     125024,
+     207,
+     125023,
+     97267,
+     703,
+     29,
+     207,
+     125024,
+     207,
+     125022,
+     207,
+     125020,
+     124900,
+     207,
+     124899,
+     46765,
+     207,
+     125025,
+     207,
+     73,
+     31544,
+     207,
+     74,
+     31544,
+     207,
+     125026,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     22447,
+     437,
+     9169,
+     22,
+     124902,
+     15279,
+     8148,
+     34,
+     267,
+     31544,
+     309,
+     293,
+     31544,
+     22,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     29163,
+     22,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901
+    ]
+   },
+   {
+    "name": "sample, no preserve",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are a careful coding agent."
+     },
+     {
+      "role": "user",
+      "content": "List the files, then say done."
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "I should list them.",
+      "tool_calls": [
+       {
+        "type": "function",
+        "function": {
+         "name": "shell",
+         "arguments": {
+          "command": "ls -la",
+          "timeout": 5
+         }
+        },
+        "id": "c0"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "c0",
+      "content": "a.txt\nb.txt"
+     },
+     {
+      "role": "assistant",
+      "content": "Two files: a.txt and b.txt.",
+      "reasoning_content": "Both are listed."
+     },
+     {
+      "role": "user",
+      "content": "Thanks."
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "shell",
+       "description": "Run a shell command.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "command": {
+          "type": "string",
+          "description": "the command"
+         },
+         "timeout": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "command"
+        ]
+       }
+      }
+     }
+    ],
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": false,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>system\nYou are a careful coding agent.\n\n<tools>\n{\"name\": \"shell\", \"description\": \"Run a shell command.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"description\": \"the command\"}, \"timeout\": {\"type\": \"integer\"}}, \"required\": [\"command\"]}}\n</tools><|im_end|>\n<|im_start|>user\nList the files, then say done.<|im_end|>\n<|im_start|>assistant\n<think></think><tool_call>\n<function=shell>\n<parameter=command>\nls -la\n</parameter>\n<parameter=timeout>\n5\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\na.txt\nb.txt\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think></think>Two files: a.txt and b.txt.<|im_end|>\n<|im_start|>user\nThanks.<|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     3582,
+     437,
+     267,
+     14991,
+     25445,
+     10879,
+     63908,
+     125017,
+     207,
+     38184,
+     2554,
+     6380,
+     496,
+     95447,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     18950,
+     267,
+     11102,
+     5558,
+     50007,
+     496,
+     29701,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     1377,
+     496,
+     38805,
+     6380,
+     36579,
+     16019,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     3987,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     1319,
+     5558,
+     65916,
+     496,
+     97267,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     58502,
+     87961,
+     496,
+     34503,
+     6380,
+     34564,
+     16019,
+     13328,
+     10703,
+     125018,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     3120,
+     278,
+     8148,
+     20,
+     1256,
+     2491,
+     3506,
+     22,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902,
+     125019,
+     207,
+     125021,
+     95447,
+     703,
+     125023,
+     16019,
+     703,
+     3941,
+     640,
+     1997,
+     207,
+     125024,
+     207,
+     125023,
+     97267,
+     703,
+     29,
+     207,
+     125024,
+     207,
+     125022,
+     207,
+     125020,
+     124900,
+     207,
+     124899,
+     46765,
+     207,
+     125025,
+     207,
+     73,
+     31544,
+     207,
+     74,
+     31544,
+     207,
+     125026,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902,
+     15279,
+     8148,
+     34,
+     267,
+     31544,
+     309,
+     293,
+     31544,
+     22,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     29163,
+     22,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "sample, no prompt",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are a careful coding agent."
+     },
+     {
+      "role": "user",
+      "content": "List the files, then say done."
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "I should list them.",
+      "tool_calls": [
+       {
+        "type": "function",
+        "function": {
+         "name": "shell",
+         "arguments": {
+          "command": "ls -la",
+          "timeout": 5
+         }
+        },
+        "id": "c0"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "c0",
+      "content": "a.txt\nb.txt"
+     },
+     {
+      "role": "assistant",
+      "content": "Two files: a.txt and b.txt.",
+      "reasoning_content": "Both are listed."
+     },
+     {
+      "role": "user",
+      "content": "Thanks."
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "shell",
+       "description": "Run a shell command.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "command": {
+          "type": "string",
+          "description": "the command"
+         },
+         "timeout": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "command"
+        ]
+       }
+      }
+     }
+    ],
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": false,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>system\nYou are a careful coding agent.\n\n<tools>\n{\"name\": \"shell\", \"description\": \"Run a shell command.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"description\": \"the command\"}, \"timeout\": {\"type\": \"integer\"}}, \"required\": [\"command\"]}}\n</tools><|im_end|>\n<|im_start|>user\nList the files, then say done.<|im_end|>\n<|im_start|>assistant\n<think>I should list them.</think><tool_call>\n<function=shell>\n<parameter=command>\nls -la\n</parameter>\n<parameter=timeout>\n5\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\na.txt\nb.txt\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>Both are listed.</think>Two files: a.txt and b.txt.<|im_end|>\n<|im_start|>user\nThanks.<|im_end|>\n",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     3582,
+     437,
+     267,
+     14991,
+     25445,
+     10879,
+     63908,
+     125017,
+     207,
+     38184,
+     2554,
+     6380,
+     496,
+     95447,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     18950,
+     267,
+     11102,
+     5558,
+     50007,
+     496,
+     29701,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     1377,
+     496,
+     38805,
+     6380,
+     36579,
+     16019,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     3987,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     1319,
+     5558,
+     65916,
+     496,
+     97267,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     58502,
+     87961,
+     496,
+     34503,
+     6380,
+     34564,
+     16019,
+     13328,
+     10703,
+     125018,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     3120,
+     278,
+     8148,
+     20,
+     1256,
+     2491,
+     3506,
+     22,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     49,
+     1252,
+     1815,
+     876,
+     22,
+     124902,
+     125019,
+     207,
+     125021,
+     95447,
+     703,
+     125023,
+     16019,
+     703,
+     3941,
+     640,
+     1997,
+     207,
+     125024,
+     207,
+     125023,
+     97267,
+     703,
+     29,
+     207,
+     125024,
+     207,
+     125022,
+     207,
+     125020,
+     124900,
+     207,
+     124899,
+     46765,
+     207,
+     125025,
+     207,
+     73,
+     31544,
+     207,
+     74,
+     31544,
+     207,
+     125026,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     22447,
+     437,
+     9169,
+     22,
+     124902,
+     15279,
+     8148,
+     34,
+     267,
+     31544,
+     309,
+     293,
+     31544,
+     22,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     29163,
+     22,
+     124900,
+     207
+    ]
+   },
+   {
+    "name": "after a tool result",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are a careful coding agent."
+     },
+     {
+      "role": "user",
+      "content": "List the files, then say done."
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "I should list them.",
+      "tool_calls": [
+       {
+        "type": "function",
+        "function": {
+         "name": "shell",
+         "arguments": {
+          "command": "ls -la",
+          "timeout": 5
+         }
+        },
+        "id": "c0"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "c0",
+      "content": "a.txt\nb.txt"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "shell",
+       "description": "Run a shell command.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "command": {
+          "type": "string",
+          "description": "the command"
+         },
+         "timeout": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "command"
+        ]
+       }
+      }
+     }
+    ],
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": true
+    },
+    "text": "<|startoftext|><|im_start|>system\nYou are a careful coding agent.\n\n<tools>\n{\"name\": \"shell\", \"description\": \"Run a shell command.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"description\": \"the command\"}, \"timeout\": {\"type\": \"integer\"}}, \"required\": [\"command\"]}}\n</tools><|im_end|>\n<|im_start|>user\nList the files, then say done.<|im_end|>\n<|im_start|>assistant\n<think>I should list them.</think><tool_call>\n<function=shell>\n<parameter=command>\nls -la\n</parameter>\n<parameter=timeout>\n5\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\na.txt\nb.txt\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     3582,
+     437,
+     267,
+     14991,
+     25445,
+     10879,
+     63908,
+     125017,
+     207,
+     38184,
+     2554,
+     6380,
+     496,
+     95447,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     18950,
+     267,
+     11102,
+     5558,
+     50007,
+     496,
+     29701,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     1377,
+     496,
+     38805,
+     6380,
+     36579,
+     16019,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     3987,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     1319,
+     5558,
+     65916,
+     496,
+     97267,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     58502,
+     87961,
+     496,
+     34503,
+     6380,
+     34564,
+     16019,
+     13328,
+     10703,
+     125018,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     3120,
+     278,
+     8148,
+     20,
+     1256,
+     2491,
+     3506,
+     22,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     49,
+     1252,
+     1815,
+     876,
+     22,
+     124902,
+     125019,
+     207,
+     125021,
+     95447,
+     703,
+     125023,
+     16019,
+     703,
+     3941,
+     640,
+     1997,
+     207,
+     125024,
+     207,
+     125023,
+     97267,
+     703,
+     29,
+     207,
+     125024,
+     207,
+     125022,
+     207,
+     125020,
+     124900,
+     207,
+     124899,
+     46765,
+     207,
+     125025,
+     207,
+     73,
+     31544,
+     207,
+     74,
+     31544,
+     207,
+     125026,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901
+    ]
+   },
+   {
+    "name": "tools and no system",
+    "messages": [
+     {
+      "role": "user",
+      "content": "go"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "shell",
+       "description": "Run a shell command.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "command": {
+          "type": "string",
+          "description": "the command"
+         },
+         "timeout": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "command"
+        ]
+       }
+      }
+     },
+     {
+      "type": "function",
+      "function": {
+       "name": "typed",
+       "description": "Take one value of each type.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "s": {
+          "type": "string"
+         },
+         "i": {
+          "type": "integer"
+         },
+         "x": {
+          "type": "number"
+         },
+         "b": {
+          "type": "boolean"
+         },
+         "n": {
+          "type": "null"
+         },
+         "o": {
+          "type": "object"
+         },
+         "a": {
+          "type": "array"
+         },
+         "either": {
+          "type": [
+           "string",
+           "integer"
+          ]
+         },
+         "any": {
+          "anyOf": [
+           {
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ]
+         },
+         "opt": {
+          "type": "number",
+          "nullable": true
+         },
+         "free": {}
+        }
+       }
+      }
+     }
+    ],
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>system\n<tools>\n{\"name\": \"shell\", \"description\": \"Run a shell command.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"description\": \"the command\"}, \"timeout\": {\"type\": \"integer\"}}, \"required\": [\"command\"]}}\n{\"name\": \"typed\", \"description\": \"Take one value of each type.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"s\": {\"type\": \"string\"}, \"i\": {\"type\": \"integer\"}, \"x\": {\"type\": \"number\"}, \"b\": {\"type\": \"boolean\"}, \"n\": {\"type\": \"null\"}, \"o\": {\"type\": \"object\"}, \"a\": {\"type\": \"array\"}, \"either\": {\"type\": [\"string\", \"integer\"]}, \"any\": {\"anyOf\": [{\"type\": \"integer\"}, {\"type\": \"null\"}]}, \"opt\": {\"type\": \"number\", \"nullable\": true}, \"free\": {}}}}\n</tools><|im_end|>\n<|im_start|>user\ngo<|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     125017,
+     207,
+     38184,
+     2554,
+     6380,
+     496,
+     95447,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     18950,
+     267,
+     11102,
+     5558,
+     50007,
+     496,
+     29701,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     1377,
+     496,
+     38805,
+     6380,
+     36579,
+     16019,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     3987,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     1319,
+     5558,
+     65916,
+     496,
+     97267,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     58502,
+     87961,
+     496,
+     34503,
+     6380,
+     34564,
+     16019,
+     13328,
+     10703,
+     38184,
+     2554,
+     6380,
+     496,
+     17251,
+     290,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     23283,
+     734,
+     2035,
+     302,
+     1394,
+     1931,
+     50007,
+     496,
+     29701,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     1377,
+     496,
+     38805,
+     6380,
+     36579,
+     91,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     3987,
+     65916,
+     496,
+     81,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     58502,
+     65916,
+     496,
+     96,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     19047,
+     65916,
+     496,
+     74,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     27626,
+     65916,
+     496,
+     86,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     17797,
+     65916,
+     496,
+     87,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     65916,
+     496,
+     73,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     5087,
+     65916,
+     496,
+     54907,
+     6380,
+     36579,
+     5882,
+     6380,
+     34564,
+     3987,
+     1377,
+     496,
+     58502,
+     88545,
+     496,
+     1255,
+     6380,
+     36579,
+     1255,
+     6477,
+     6380,
+     66155,
+     5882,
+     6380,
+     496,
+     58502,
+     65916,
+     36579,
+     5882,
+     6380,
+     496,
+     17797,
+     66212,
+     2704,
+     496,
+     2688,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     19047,
+     1377,
+     496,
+     17797,
+     607,
+     6380,
+     2846,
+     2704,
+     496,
+     25682,
+     6380,
+     695,
+     2107,
+     10703,
+     125018,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     1585,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "call arguments of each type",
+    "messages": [
+     {
+      "role": "user",
+      "content": "go"
+     },
+     {
+      "role": "assistant",
+      "tool_calls": [
+       {
+        "type": "function",
+        "function": {
+         "name": "typed",
+         "arguments": {
+          "s": "a b",
+          "i": -2,
+          "x": 0.5,
+          "b": true,
+          "n": null,
+          "o": {
+           "k": [
+            1,
+            "v"
+           ]
+          },
+          "a": [
+           1,
+           2.5,
+           "x"
+          ],
+          "u": "naïve “q”",
+          "big": 12345678901234567890,
+          "f": 1e+20,
+          "g": 1.5e-07
+         }
+        },
+        "id": "c1"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "c1",
+      "content": "ok"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "typed",
+       "description": "Take one value of each type.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "s": {
+          "type": "string"
+         },
+         "i": {
+          "type": "integer"
+         },
+         "x": {
+          "type": "number"
+         },
+         "b": {
+          "type": "boolean"
+         },
+         "n": {
+          "type": "null"
+         },
+         "o": {
+          "type": "object"
+         },
+         "a": {
+          "type": "array"
+         },
+         "either": {
+          "type": [
+           "string",
+           "integer"
+          ]
+         },
+         "any": {
+          "anyOf": [
+           {
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ]
+         },
+         "opt": {
+          "type": "number",
+          "nullable": true
+         },
+         "free": {}
+        }
+       }
+      }
+     }
+    ],
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>system\n<tools>\n{\"name\": \"typed\", \"description\": \"Take one value of each type.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"s\": {\"type\": \"string\"}, \"i\": {\"type\": \"integer\"}, \"x\": {\"type\": \"number\"}, \"b\": {\"type\": \"boolean\"}, \"n\": {\"type\": \"null\"}, \"o\": {\"type\": \"object\"}, \"a\": {\"type\": \"array\"}, \"either\": {\"type\": [\"string\", \"integer\"]}, \"any\": {\"anyOf\": [{\"type\": \"integer\"}, {\"type\": \"null\"}]}, \"opt\": {\"type\": \"number\", \"nullable\": true}, \"free\": {}}}}\n</tools><|im_end|>\n<|im_start|>user\ngo<|im_end|>\n<|im_start|>assistant\n<think></think><tool_call>\n<function=typed>\n<parameter=s>\na b\n</parameter>\n<parameter=i>\n-2\n</parameter>\n<parameter=x>\n0.5\n</parameter>\n<parameter=b>\ntrue\n</parameter>\n<parameter=n>\nnull\n</parameter>\n<parameter=o>\n{\"k\": [1, \"v\"]}\n</parameter>\n<parameter=a>\n[1, 2.5, \"x\"]\n</parameter>\n<parameter=u>\nnaïve “q”\n</parameter>\n<parameter=big>\n12345678901234567890\n</parameter>\n<parameter=f>\n1e+20\n</parameter>\n<parameter=g>\n1.5e-07\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\nok\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     125017,
+     207,
+     38184,
+     2554,
+     6380,
+     496,
+     17251,
+     290,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     23283,
+     734,
+     2035,
+     302,
+     1394,
+     1931,
+     50007,
+     496,
+     29701,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     1377,
+     496,
+     38805,
+     6380,
+     36579,
+     91,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     3987,
+     65916,
+     496,
+     81,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     58502,
+     65916,
+     496,
+     96,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     19047,
+     65916,
+     496,
+     74,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     27626,
+     65916,
+     496,
+     86,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     17797,
+     65916,
+     496,
+     87,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     65916,
+     496,
+     73,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     5087,
+     65916,
+     496,
+     54907,
+     6380,
+     36579,
+     5882,
+     6380,
+     34564,
+     3987,
+     1377,
+     496,
+     58502,
+     88545,
+     496,
+     1255,
+     6380,
+     36579,
+     1255,
+     6477,
+     6380,
+     66155,
+     5882,
+     6380,
+     496,
+     58502,
+     65916,
+     36579,
+     5882,
+     6380,
+     496,
+     17797,
+     66212,
+     2704,
+     496,
+     2688,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     19047,
+     1377,
+     496,
+     17797,
+     607,
+     6380,
+     2846,
+     2704,
+     496,
+     25682,
+     6380,
+     695,
+     2107,
+     10703,
+     125018,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     1585,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902,
+     125019,
+     207,
+     125021,
+     17251,
+     290,
+     703,
+     125023,
+     91,
+     703,
+     73,
+     293,
+     207,
+     125024,
+     207,
+     125023,
+     81,
+     703,
+     21,
+     26,
+     207,
+     125024,
+     207,
+     125023,
+     96,
+     703,
+     24,
+     22,
+     29,
+     207,
+     125024,
+     207,
+     125023,
+     74,
+     703,
+     10066,
+     207,
+     125024,
+     207,
+     125023,
+     86,
+     703,
+     17797,
+     207,
+     125024,
+     207,
+     125023,
+     87,
+     703,
+     38184,
+     83,
+     6380,
+     1106,
+     25,
+     20,
+     496,
+     94,
+     13328,
+     604,
+     125024,
+     207,
+     125023,
+     73,
+     703,
+     67,
+     25,
+     20,
+     229,
+     26,
+     22,
+     29,
+     20,
+     496,
+     96,
+     50150,
+     125024,
+     207,
+     125023,
+     93,
+     703,
+     1651,
+     6337,
+     623,
+     870,
+     89,
+     9105,
+     125024,
+     207,
+     125023,
+     6982,
+     703,
+     9792,
+     25677,
+     23944,
+     19911,
+     24331,
+     24803,
+     1974,
+     207,
+     125024,
+     207,
+     125023,
+     78,
+     703,
+     25,
+     77,
+     19,
+     397,
+     207,
+     125024,
+     207,
+     125023,
+     79,
+     703,
+     25,
+     22,
+     29,
+     77,
+     21,
+     4471,
+     207,
+     125024,
+     207,
+     125022,
+     207,
+     125020,
+     124900,
+     207,
+     124899,
+     46765,
+     207,
+     125025,
+     207,
+     562,
+     207,
+     125026,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "two calls and two results",
+    "messages": [
+     {
+      "role": "user",
+      "content": "go"
+     },
+     {
+      "role": "assistant",
+      "reasoning_content": "two at once",
+      "tool_calls": [
+       {
+        "type": "function",
+        "function": {
+         "name": "shell",
+         "arguments": {
+          "command": "ls"
+         }
+        },
+        "id": "a"
+       },
+       {
+        "type": "function",
+        "function": {
+         "name": "shell",
+         "arguments": {
+          "command": "pwd"
+         }
+        },
+        "id": "b"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "a",
+      "content": "x"
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "b",
+      "content": "/w"
+     },
+     {
+      "role": "assistant",
+      "content": "Done.",
+      "reasoning_content": ""
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "shell",
+       "description": "Run a shell command.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "command": {
+          "type": "string",
+          "description": "the command"
+         },
+         "timeout": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "command"
+        ]
+       }
+      }
+     }
+    ],
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": true
+    },
+    "text": "<|startoftext|><|im_start|>system\n<tools>\n{\"name\": \"shell\", \"description\": \"Run a shell command.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"description\": \"the command\"}, \"timeout\": {\"type\": \"integer\"}}, \"required\": [\"command\"]}}\n</tools><|im_end|>\n<|im_start|>user\ngo<|im_end|>\n<|im_start|>assistant\n<think>two at once</think><tool_call>\n<function=shell>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>\n\n<tool_call>\n<function=shell>\n<parameter=command>\npwd\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\nx\n</tool_response><|im_end|>\n<|im_start|>tool\n<tool_response>\n/w\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think></think>Done.<|im_end|>\n<|im_start|>assistant\n<think>",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     125017,
+     207,
+     38184,
+     2554,
+     6380,
+     496,
+     95447,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     18950,
+     267,
+     11102,
+     5558,
+     50007,
+     496,
+     29701,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     1377,
+     496,
+     38805,
+     6380,
+     36579,
+     16019,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     3987,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     1319,
+     5558,
+     65916,
+     496,
+     97267,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     58502,
+     87961,
+     496,
+     34503,
+     6380,
+     34564,
+     16019,
+     13328,
+     10703,
+     125018,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     1585,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     25583,
+     462,
+     3580,
+     124902,
+     125019,
+     207,
+     125021,
+     95447,
+     703,
+     125023,
+     16019,
+     703,
+     3941,
+     207,
+     125024,
+     207,
+     125022,
+     207,
+     125020,
+     8,
+     125019,
+     207,
+     125021,
+     95447,
+     703,
+     125023,
+     16019,
+     703,
+     97042,
+     207,
+     125024,
+     207,
+     125022,
+     207,
+     125020,
+     124900,
+     207,
+     124899,
+     46765,
+     207,
+     125025,
+     207,
+     96,
+     207,
+     125026,
+     124900,
+     207,
+     124899,
+     46765,
+     207,
+     125025,
+     207,
+     14943,
+     207,
+     125026,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902,
+     95642,
+     22,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901
+    ]
+   },
+   {
+    "name": "a run of results of one call",
+    "messages": [
+     {
+      "role": "user",
+      "content": "go"
+     },
+     {
+      "role": "assistant",
+      "tool_calls": [
+       {
+        "type": "function",
+        "function": {
+         "name": "shell",
+         "arguments": {
+          "command": "ls"
+         }
+        },
+        "id": "a"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "a",
+      "content": "part one"
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "a",
+      "content": "part two"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "shell",
+       "description": "Run a shell command.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "command": {
+          "type": "string",
+          "description": "the command"
+         },
+         "timeout": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "command"
+        ]
+       }
+      }
+     }
+    ],
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>system\n<tools>\n{\"name\": \"shell\", \"description\": \"Run a shell command.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"description\": \"the command\"}, \"timeout\": {\"type\": \"integer\"}}, \"required\": [\"command\"]}}\n</tools><|im_end|>\n<|im_start|>user\ngo<|im_end|>\n<|im_start|>assistant\n<think></think><tool_call>\n<function=shell>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\npart one\npart two\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     125017,
+     207,
+     38184,
+     2554,
+     6380,
+     496,
+     95447,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     18950,
+     267,
+     11102,
+     5558,
+     50007,
+     496,
+     29701,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     1377,
+     496,
+     38805,
+     6380,
+     36579,
+     16019,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     3987,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     1319,
+     5558,
+     65916,
+     496,
+     97267,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     58502,
+     87961,
+     496,
+     34503,
+     6380,
+     34564,
+     16019,
+     13328,
+     10703,
+     125018,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     1585,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902,
+     125019,
+     207,
+     125021,
+     95447,
+     703,
+     125023,
+     16019,
+     703,
+     3941,
+     207,
+     125024,
+     207,
+     125022,
+     207,
+     125020,
+     124900,
+     207,
+     124899,
+     46765,
+     207,
+     125025,
+     207,
+     2152,
+     734,
+     207,
+     2152,
+     1046,
+     207,
+     125026,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "a failed result",
+    "messages": [
+     {
+      "role": "user",
+      "content": "go"
+     },
+     {
+      "role": "assistant",
+      "tool_calls": [
+       {
+        "type": "function",
+        "function": {
+         "name": "shell",
+         "arguments": {
+          "command": "ls"
+         }
+        },
+        "id": "a"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "a",
+      "content": "Error: no such file"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "shell",
+       "description": "Run a shell command.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "command": {
+          "type": "string",
+          "description": "the command"
+         },
+         "timeout": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "command"
+        ]
+       }
+      }
+     }
+    ],
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>system\n<tools>\n{\"name\": \"shell\", \"description\": \"Run a shell command.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"description\": \"the command\"}, \"timeout\": {\"type\": \"integer\"}}, \"required\": [\"command\"]}}\n</tools><|im_end|>\n<|im_start|>user\ngo<|im_end|>\n<|im_start|>assistant\n<think></think><tool_call>\n<function=shell>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\nError: no such file\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     125017,
+     207,
+     38184,
+     2554,
+     6380,
+     496,
+     95447,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     18950,
+     267,
+     11102,
+     5558,
+     50007,
+     496,
+     29701,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     1377,
+     496,
+     38805,
+     6380,
+     36579,
+     16019,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     3987,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     1319,
+     5558,
+     65916,
+     496,
+     97267,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     58502,
+     87961,
+     496,
+     34503,
+     6380,
+     34564,
+     16019,
+     13328,
+     10703,
+     125018,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     1585,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902,
+     125019,
+     207,
+     125021,
+     95447,
+     703,
+     125023,
+     16019,
+     703,
+     3941,
+     207,
+     125024,
+     207,
+     125022,
+     207,
+     125020,
+     124900,
+     207,
+     124899,
+     46765,
+     207,
+     125025,
+     207,
+     5934,
+     34,
+     794,
+     1058,
+     3848,
+     207,
+     125026,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "an empty result",
+    "messages": [
+     {
+      "role": "user",
+      "content": "go"
+     },
+     {
+      "role": "assistant",
+      "tool_calls": [
+       {
+        "type": "function",
+        "function": {
+         "name": "shell",
+         "arguments": {
+          "command": "ls"
+         }
+        },
+        "id": "a"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "a",
+      "content": ""
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "shell",
+       "description": "Run a shell command.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "command": {
+          "type": "string",
+          "description": "the command"
+         },
+         "timeout": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "command"
+        ]
+       }
+      }
+     }
+    ],
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>system\n<tools>\n{\"name\": \"shell\", \"description\": \"Run a shell command.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"description\": \"the command\"}, \"timeout\": {\"type\": \"integer\"}}, \"required\": [\"command\"]}}\n</tools><|im_end|>\n<|im_start|>user\ngo<|im_end|>\n<|im_start|>assistant\n<think></think><tool_call>\n<function=shell>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\n\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     125017,
+     207,
+     38184,
+     2554,
+     6380,
+     496,
+     95447,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     18950,
+     267,
+     11102,
+     5558,
+     50007,
+     496,
+     29701,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     1377,
+     496,
+     38805,
+     6380,
+     36579,
+     16019,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     3987,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     1319,
+     5558,
+     65916,
+     496,
+     97267,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     58502,
+     87961,
+     496,
+     34503,
+     6380,
+     34564,
+     16019,
+     13328,
+     10703,
+     125018,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     1585,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902,
+     125019,
+     207,
+     125021,
+     95447,
+     703,
+     125023,
+     16019,
+     703,
+     3941,
+     207,
+     125024,
+     207,
+     125022,
+     207,
+     125020,
+     124900,
+     207,
+     124899,
+     46765,
+     207,
+     125025,
+     8,
+     125026,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "a later system message",
+    "messages": [
+     {
+      "role": "system",
+      "content": "S"
+     },
+     {
+      "role": "user",
+      "content": "u"
+     },
+     {
+      "role": "assistant",
+      "content": "a",
+      "reasoning_content": "r"
+     },
+     {
+      "role": "system",
+      "content": "Call done when the task is finished."
+     }
+    ],
+    "tools": null,
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": true
+    },
+    "text": "<|startoftext|><|im_start|>system\nS<|im_end|>\n<|im_start|>user\nu<|im_end|>\n<|im_start|>assistant\n<think>r</think>a<|im_end|>\n<|im_start|>system\nCall done when the task is finished.<|im_end|>\n<|im_start|>assistant\n<think>",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     59,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     93,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     90,
+     124902,
+     73,
+     124900,
+     207,
+     124899,
+     23630,
+     207,
+     9624,
+     3506,
+     902,
+     278,
+     4388,
+     355,
+     9913,
+     22,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901
+    ]
+   },
+   {
+    "name": "thinking in the content",
+    "messages": [
+     {
+      "role": "user",
+      "content": "q"
+     },
+     {
+      "role": "assistant",
+      "content": "<think>hidden</think>  shown  "
+     },
+     {
+      "role": "user",
+      "content": "next"
+     }
+    ],
+    "tools": null,
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": false,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>user\nq<|im_end|>\n<|im_start|>assistant\n<think></think>shown<|im_end|>\n<|im_start|>user\nnext<|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     5922,
+     207,
+     89,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902,
+     1853,
+     771,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     13679,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "no reasoning member",
+    "messages": [
+     {
+      "role": "user",
+      "content": "q"
+     },
+     {
+      "role": "assistant",
+      "content": "a"
+     },
+     {
+      "role": "user",
+      "content": "next"
+     }
+    ],
+    "tools": null,
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>user\nq<|im_end|>\n<|im_start|>assistant\n<think></think>a<|im_end|>\n<|im_start|>user\nnext<|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     5922,
+     207,
+     89,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902,
+     73,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     13679,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "user parts",
+    "messages": [
+     {
+      "role": "user",
+      "content": [
+       {
+        "type": "text",
+        "text": "one "
+       },
+       {
+        "type": "text",
+        "text": "two"
+       }
+      ]
+     }
+    ],
+    "tools": null,
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>user\none two<|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     5922,
+     207,
+     673,
+     1046,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "media parts",
+    "messages": [
+     {
+      "role": "system",
+      "content": "Respond with text."
+     },
+     {
+      "role": "user",
+      "content": [
+       {
+        "type": "image"
+       },
+       {
+        "type": "text",
+        "text": "and"
+       },
+       {
+        "type": "audio"
+       },
+       {
+        "type": "text",
+        "text": "what is this?"
+       }
+      ]
+     }
+    ],
+    "tools": null,
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>system\nRespond with text.<|im_end|>\n<|im_start|>user\n<|vision_start|><|image|><|vision_end|>and<|vision_start|><|audio|><|vision_end|>what is this?<|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     89056,
+     415,
+     2803,
+     22,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     125009,
+     125030,
+     125010,
+     404,
+     125009,
+     125031,
+     125010,
+     9323,
+     355,
+     532,
+     39,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "speech in an assistant turn",
+    "messages": [
+     {
+      "role": "system",
+      "content": "Respond with interleaved text and audio."
+     },
+     {
+      "role": "user",
+      "content": "hi"
+     },
+     {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "Hello"
+       },
+       {
+        "type": "audio_out"
+       }
+      ]
+     },
+     {
+      "role": "user",
+      "content": "more"
+     }
+    ],
+    "tools": null,
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>system\nRespond with interleaved text and audio.<|im_end|>\n<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n<think></think>Hello<|audio_out|><|im_end|>\n<|im_start|>user\nmore<|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     89056,
+     415,
+     117727,
+     2803,
+     309,
+     13551,
+     22,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     6427,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902,
+     35808,
+     125032,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     5902,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "unicode",
+    "messages": [
+     {
+      "role": "user",
+      "content": "日本語 🦀 naïve"
+     }
+    ],
+    "tools": null,
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>user\n日本語 🦀 naïve<|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     5922,
+     207,
+     62005,
+     23304,
+     108,
+     231,
+     1615,
+     6337,
+     623,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "arguments as a string",
+    "messages": [
+     {
+      "role": "user",
+      "content": "go"
+     },
+     {
+      "role": "assistant",
+      "tool_calls": [
+       {
+        "type": "function",
+        "function": {
+         "name": "shell",
+         "arguments": "{\"command\": \"ls\"}"
+        }
+       }
+      ]
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "shell",
+       "description": "Run a shell command.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "command": {
+          "type": "string",
+          "description": "the command"
+         },
+         "timeout": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "command"
+        ]
+       }
+      }
+     }
+    ],
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "error": "TemplateError: Tool call arguments must be a mapping, got a JSON-encoded string: parse arguments with json.loads() before applying the chat template"
+   },
+   {
+    "name": "no messages",
+    "messages": [],
+    "tools": null,
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   }
+  ],
+  "text": [
+   {
+    "name": "user only",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "tools": null,
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     5922,
+     207,
+     6427,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "user only, thinking",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "tools": null,
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": true
+    },
+    "text": "<|startoftext|><|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n<think>",
+    "ids": [
+     124894,
+     124899,
+     5922,
+     207,
+     6427,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901
+    ]
+   },
+   {
+    "name": "no generation prompt",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "tools": null,
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": false,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>user\nhi<|im_end|>\n",
+    "ids": [
+     124894,
+     124899,
+     5922,
+     207,
+     6427,
+     124900,
+     207
+    ]
+   },
+   {
+    "name": "system and user",
+    "messages": [
+     {
+      "role": "system",
+      "content": "  Be brief.  "
+     },
+     {
+      "role": "user",
+      "content": " hi \n"
+     }
+    ],
+    "tools": null,
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>system\n  Be brief.  <|im_end|>\n<|im_start|>user\n hi \n<|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     229,
+     1345,
+     8771,
+     22,
+     266,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     14511,
+     469,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "sample, thinking off",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are a careful coding agent."
+     },
+     {
+      "role": "user",
+      "content": "List the files, then say done."
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "I should list them.",
+      "tool_calls": [
+       {
+        "type": "function",
+        "function": {
+         "name": "shell",
+         "arguments": {
+          "command": "ls -la",
+          "timeout": 5
+         }
+        },
+        "id": "c0"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "c0",
+      "content": "a.txt\nb.txt"
+     },
+     {
+      "role": "assistant",
+      "content": "Two files: a.txt and b.txt.",
+      "reasoning_content": "Both are listed."
+     },
+     {
+      "role": "user",
+      "content": "Thanks."
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "shell",
+       "description": "Run a shell command.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "command": {
+          "type": "string",
+          "description": "the command"
+         },
+         "timeout": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "command"
+        ]
+       }
+      }
+     }
+    ],
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>system\nYou are a careful coding agent.\n\n<tools>\n{\"name\": \"shell\", \"description\": \"Run a shell command.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"description\": \"the command\"}, \"timeout\": {\"type\": \"integer\"}}, \"required\": [\"command\"]}}\n</tools><|im_end|>\n<|im_start|>user\nList the files, then say done.<|im_end|>\n<|im_start|>assistant\n<think>I should list them.</think><tool_call>\n<function=shell>\n<parameter=command>\nls -la\n</parameter>\n<parameter=timeout>\n5\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\na.txt\nb.txt\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>Both are listed.</think>Two files: a.txt and b.txt.<|im_end|>\n<|im_start|>user\nThanks.<|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     3582,
+     437,
+     267,
+     14991,
+     25445,
+     10879,
+     63908,
+     125017,
+     207,
+     38184,
+     2554,
+     6380,
+     496,
+     95447,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     18950,
+     267,
+     11102,
+     5558,
+     50007,
+     496,
+     29701,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     1377,
+     496,
+     38805,
+     6380,
+     36579,
+     16019,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     3987,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     1319,
+     5558,
+     65916,
+     496,
+     97267,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     58502,
+     87961,
+     496,
+     34503,
+     6380,
+     34564,
+     16019,
+     13328,
+     10703,
+     125018,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     3120,
+     278,
+     8148,
+     20,
+     1256,
+     2491,
+     3506,
+     22,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     49,
+     1252,
+     1815,
+     876,
+     22,
+     124902,
+     125019,
+     207,
+     125021,
+     95447,
+     703,
+     125023,
+     16019,
+     703,
+     3941,
+     640,
+     1997,
+     207,
+     125024,
+     207,
+     125023,
+     97267,
+     703,
+     29,
+     207,
+     125024,
+     207,
+     125022,
+     207,
+     125020,
+     124900,
+     207,
+     124899,
+     46765,
+     207,
+     125025,
+     207,
+     73,
+     31544,
+     207,
+     74,
+     31544,
+     207,
+     125026,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     22447,
+     437,
+     9169,
+     22,
+     124902,
+     15279,
+     8148,
+     34,
+     267,
+     31544,
+     309,
+     293,
+     31544,
+     22,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     29163,
+     22,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "sample, thinking on",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are a careful coding agent."
+     },
+     {
+      "role": "user",
+      "content": "List the files, then say done."
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "I should list them.",
+      "tool_calls": [
+       {
+        "type": "function",
+        "function": {
+         "name": "shell",
+         "arguments": {
+          "command": "ls -la",
+          "timeout": 5
+         }
+        },
+        "id": "c0"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "c0",
+      "content": "a.txt\nb.txt"
+     },
+     {
+      "role": "assistant",
+      "content": "Two files: a.txt and b.txt.",
+      "reasoning_content": "Both are listed."
+     },
+     {
+      "role": "user",
+      "content": "Thanks."
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "shell",
+       "description": "Run a shell command.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "command": {
+          "type": "string",
+          "description": "the command"
+         },
+         "timeout": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "command"
+        ]
+       }
+      }
+     }
+    ],
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": true
+    },
+    "text": "<|startoftext|><|im_start|>system\nYou are a careful coding agent.\n\n<tools>\n{\"name\": \"shell\", \"description\": \"Run a shell command.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"description\": \"the command\"}, \"timeout\": {\"type\": \"integer\"}}, \"required\": [\"command\"]}}\n</tools><|im_end|>\n<|im_start|>user\nList the files, then say done.<|im_end|>\n<|im_start|>assistant\n<think>I should list them.</think><tool_call>\n<function=shell>\n<parameter=command>\nls -la\n</parameter>\n<parameter=timeout>\n5\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\na.txt\nb.txt\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>Both are listed.</think>Two files: a.txt and b.txt.<|im_end|>\n<|im_start|>user\nThanks.<|im_end|>\n<|im_start|>assistant\n<think>",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     3582,
+     437,
+     267,
+     14991,
+     25445,
+     10879,
+     63908,
+     125017,
+     207,
+     38184,
+     2554,
+     6380,
+     496,
+     95447,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     18950,
+     267,
+     11102,
+     5558,
+     50007,
+     496,
+     29701,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     1377,
+     496,
+     38805,
+     6380,
+     36579,
+     16019,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     3987,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     1319,
+     5558,
+     65916,
+     496,
+     97267,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     58502,
+     87961,
+     496,
+     34503,
+     6380,
+     34564,
+     16019,
+     13328,
+     10703,
+     125018,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     3120,
+     278,
+     8148,
+     20,
+     1256,
+     2491,
+     3506,
+     22,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     49,
+     1252,
+     1815,
+     876,
+     22,
+     124902,
+     125019,
+     207,
+     125021,
+     95447,
+     703,
+     125023,
+     16019,
+     703,
+     3941,
+     640,
+     1997,
+     207,
+     125024,
+     207,
+     125023,
+     97267,
+     703,
+     29,
+     207,
+     125024,
+     207,
+     125022,
+     207,
+     125020,
+     124900,
+     207,
+     124899,
+     46765,
+     207,
+     125025,
+     207,
+     73,
+     31544,
+     207,
+     74,
+     31544,
+     207,
+     125026,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     22447,
+     437,
+     9169,
+     22,
+     124902,
+     15279,
+     8148,
+     34,
+     267,
+     31544,
+     309,
+     293,
+     31544,
+     22,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     29163,
+     22,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901
+    ]
+   },
+   {
+    "name": "sample, no preserve",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are a careful coding agent."
+     },
+     {
+      "role": "user",
+      "content": "List the files, then say done."
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "I should list them.",
+      "tool_calls": [
+       {
+        "type": "function",
+        "function": {
+         "name": "shell",
+         "arguments": {
+          "command": "ls -la",
+          "timeout": 5
+         }
+        },
+        "id": "c0"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "c0",
+      "content": "a.txt\nb.txt"
+     },
+     {
+      "role": "assistant",
+      "content": "Two files: a.txt and b.txt.",
+      "reasoning_content": "Both are listed."
+     },
+     {
+      "role": "user",
+      "content": "Thanks."
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "shell",
+       "description": "Run a shell command.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "command": {
+          "type": "string",
+          "description": "the command"
+         },
+         "timeout": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "command"
+        ]
+       }
+      }
+     }
+    ],
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": false,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>system\nYou are a careful coding agent.\n\n<tools>\n{\"name\": \"shell\", \"description\": \"Run a shell command.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"description\": \"the command\"}, \"timeout\": {\"type\": \"integer\"}}, \"required\": [\"command\"]}}\n</tools><|im_end|>\n<|im_start|>user\nList the files, then say done.<|im_end|>\n<|im_start|>assistant\n<think></think><tool_call>\n<function=shell>\n<parameter=command>\nls -la\n</parameter>\n<parameter=timeout>\n5\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\na.txt\nb.txt\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think></think>Two files: a.txt and b.txt.<|im_end|>\n<|im_start|>user\nThanks.<|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     3582,
+     437,
+     267,
+     14991,
+     25445,
+     10879,
+     63908,
+     125017,
+     207,
+     38184,
+     2554,
+     6380,
+     496,
+     95447,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     18950,
+     267,
+     11102,
+     5558,
+     50007,
+     496,
+     29701,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     1377,
+     496,
+     38805,
+     6380,
+     36579,
+     16019,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     3987,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     1319,
+     5558,
+     65916,
+     496,
+     97267,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     58502,
+     87961,
+     496,
+     34503,
+     6380,
+     34564,
+     16019,
+     13328,
+     10703,
+     125018,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     3120,
+     278,
+     8148,
+     20,
+     1256,
+     2491,
+     3506,
+     22,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902,
+     125019,
+     207,
+     125021,
+     95447,
+     703,
+     125023,
+     16019,
+     703,
+     3941,
+     640,
+     1997,
+     207,
+     125024,
+     207,
+     125023,
+     97267,
+     703,
+     29,
+     207,
+     125024,
+     207,
+     125022,
+     207,
+     125020,
+     124900,
+     207,
+     124899,
+     46765,
+     207,
+     125025,
+     207,
+     73,
+     31544,
+     207,
+     74,
+     31544,
+     207,
+     125026,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902,
+     15279,
+     8148,
+     34,
+     267,
+     31544,
+     309,
+     293,
+     31544,
+     22,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     29163,
+     22,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "sample, no prompt",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are a careful coding agent."
+     },
+     {
+      "role": "user",
+      "content": "List the files, then say done."
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "I should list them.",
+      "tool_calls": [
+       {
+        "type": "function",
+        "function": {
+         "name": "shell",
+         "arguments": {
+          "command": "ls -la",
+          "timeout": 5
+         }
+        },
+        "id": "c0"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "c0",
+      "content": "a.txt\nb.txt"
+     },
+     {
+      "role": "assistant",
+      "content": "Two files: a.txt and b.txt.",
+      "reasoning_content": "Both are listed."
+     },
+     {
+      "role": "user",
+      "content": "Thanks."
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "shell",
+       "description": "Run a shell command.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "command": {
+          "type": "string",
+          "description": "the command"
+         },
+         "timeout": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "command"
+        ]
+       }
+      }
+     }
+    ],
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": false,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>system\nYou are a careful coding agent.\n\n<tools>\n{\"name\": \"shell\", \"description\": \"Run a shell command.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"description\": \"the command\"}, \"timeout\": {\"type\": \"integer\"}}, \"required\": [\"command\"]}}\n</tools><|im_end|>\n<|im_start|>user\nList the files, then say done.<|im_end|>\n<|im_start|>assistant\n<think>I should list them.</think><tool_call>\n<function=shell>\n<parameter=command>\nls -la\n</parameter>\n<parameter=timeout>\n5\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\na.txt\nb.txt\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>Both are listed.</think>Two files: a.txt and b.txt.<|im_end|>\n<|im_start|>user\nThanks.<|im_end|>\n",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     3582,
+     437,
+     267,
+     14991,
+     25445,
+     10879,
+     63908,
+     125017,
+     207,
+     38184,
+     2554,
+     6380,
+     496,
+     95447,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     18950,
+     267,
+     11102,
+     5558,
+     50007,
+     496,
+     29701,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     1377,
+     496,
+     38805,
+     6380,
+     36579,
+     16019,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     3987,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     1319,
+     5558,
+     65916,
+     496,
+     97267,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     58502,
+     87961,
+     496,
+     34503,
+     6380,
+     34564,
+     16019,
+     13328,
+     10703,
+     125018,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     3120,
+     278,
+     8148,
+     20,
+     1256,
+     2491,
+     3506,
+     22,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     49,
+     1252,
+     1815,
+     876,
+     22,
+     124902,
+     125019,
+     207,
+     125021,
+     95447,
+     703,
+     125023,
+     16019,
+     703,
+     3941,
+     640,
+     1997,
+     207,
+     125024,
+     207,
+     125023,
+     97267,
+     703,
+     29,
+     207,
+     125024,
+     207,
+     125022,
+     207,
+     125020,
+     124900,
+     207,
+     124899,
+     46765,
+     207,
+     125025,
+     207,
+     73,
+     31544,
+     207,
+     74,
+     31544,
+     207,
+     125026,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     22447,
+     437,
+     9169,
+     22,
+     124902,
+     15279,
+     8148,
+     34,
+     267,
+     31544,
+     309,
+     293,
+     31544,
+     22,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     29163,
+     22,
+     124900,
+     207
+    ]
+   },
+   {
+    "name": "after a tool result",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are a careful coding agent."
+     },
+     {
+      "role": "user",
+      "content": "List the files, then say done."
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "I should list them.",
+      "tool_calls": [
+       {
+        "type": "function",
+        "function": {
+         "name": "shell",
+         "arguments": {
+          "command": "ls -la",
+          "timeout": 5
+         }
+        },
+        "id": "c0"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "c0",
+      "content": "a.txt\nb.txt"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "shell",
+       "description": "Run a shell command.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "command": {
+          "type": "string",
+          "description": "the command"
+         },
+         "timeout": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "command"
+        ]
+       }
+      }
+     }
+    ],
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": true
+    },
+    "text": "<|startoftext|><|im_start|>system\nYou are a careful coding agent.\n\n<tools>\n{\"name\": \"shell\", \"description\": \"Run a shell command.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"description\": \"the command\"}, \"timeout\": {\"type\": \"integer\"}}, \"required\": [\"command\"]}}\n</tools><|im_end|>\n<|im_start|>user\nList the files, then say done.<|im_end|>\n<|im_start|>assistant\n<think>I should list them.</think><tool_call>\n<function=shell>\n<parameter=command>\nls -la\n</parameter>\n<parameter=timeout>\n5\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\na.txt\nb.txt\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     3582,
+     437,
+     267,
+     14991,
+     25445,
+     10879,
+     63908,
+     125017,
+     207,
+     38184,
+     2554,
+     6380,
+     496,
+     95447,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     18950,
+     267,
+     11102,
+     5558,
+     50007,
+     496,
+     29701,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     1377,
+     496,
+     38805,
+     6380,
+     36579,
+     16019,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     3987,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     1319,
+     5558,
+     65916,
+     496,
+     97267,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     58502,
+     87961,
+     496,
+     34503,
+     6380,
+     34564,
+     16019,
+     13328,
+     10703,
+     125018,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     3120,
+     278,
+     8148,
+     20,
+     1256,
+     2491,
+     3506,
+     22,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     49,
+     1252,
+     1815,
+     876,
+     22,
+     124902,
+     125019,
+     207,
+     125021,
+     95447,
+     703,
+     125023,
+     16019,
+     703,
+     3941,
+     640,
+     1997,
+     207,
+     125024,
+     207,
+     125023,
+     97267,
+     703,
+     29,
+     207,
+     125024,
+     207,
+     125022,
+     207,
+     125020,
+     124900,
+     207,
+     124899,
+     46765,
+     207,
+     125025,
+     207,
+     73,
+     31544,
+     207,
+     74,
+     31544,
+     207,
+     125026,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901
+    ]
+   },
+   {
+    "name": "tools and no system",
+    "messages": [
+     {
+      "role": "user",
+      "content": "go"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "shell",
+       "description": "Run a shell command.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "command": {
+          "type": "string",
+          "description": "the command"
+         },
+         "timeout": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "command"
+        ]
+       }
+      }
+     },
+     {
+      "type": "function",
+      "function": {
+       "name": "typed",
+       "description": "Take one value of each type.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "s": {
+          "type": "string"
+         },
+         "i": {
+          "type": "integer"
+         },
+         "x": {
+          "type": "number"
+         },
+         "b": {
+          "type": "boolean"
+         },
+         "n": {
+          "type": "null"
+         },
+         "o": {
+          "type": "object"
+         },
+         "a": {
+          "type": "array"
+         },
+         "either": {
+          "type": [
+           "string",
+           "integer"
+          ]
+         },
+         "any": {
+          "anyOf": [
+           {
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ]
+         },
+         "opt": {
+          "type": "number",
+          "nullable": true
+         },
+         "free": {}
+        }
+       }
+      }
+     }
+    ],
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>system\n<tools>\n{\"name\": \"shell\", \"description\": \"Run a shell command.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"description\": \"the command\"}, \"timeout\": {\"type\": \"integer\"}}, \"required\": [\"command\"]}}\n{\"name\": \"typed\", \"description\": \"Take one value of each type.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"s\": {\"type\": \"string\"}, \"i\": {\"type\": \"integer\"}, \"x\": {\"type\": \"number\"}, \"b\": {\"type\": \"boolean\"}, \"n\": {\"type\": \"null\"}, \"o\": {\"type\": \"object\"}, \"a\": {\"type\": \"array\"}, \"either\": {\"type\": [\"string\", \"integer\"]}, \"any\": {\"anyOf\": [{\"type\": \"integer\"}, {\"type\": \"null\"}]}, \"opt\": {\"type\": \"number\", \"nullable\": true}, \"free\": {}}}}\n</tools><|im_end|>\n<|im_start|>user\ngo<|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     125017,
+     207,
+     38184,
+     2554,
+     6380,
+     496,
+     95447,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     18950,
+     267,
+     11102,
+     5558,
+     50007,
+     496,
+     29701,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     1377,
+     496,
+     38805,
+     6380,
+     36579,
+     16019,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     3987,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     1319,
+     5558,
+     65916,
+     496,
+     97267,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     58502,
+     87961,
+     496,
+     34503,
+     6380,
+     34564,
+     16019,
+     13328,
+     10703,
+     38184,
+     2554,
+     6380,
+     496,
+     17251,
+     290,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     23283,
+     734,
+     2035,
+     302,
+     1394,
+     1931,
+     50007,
+     496,
+     29701,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     1377,
+     496,
+     38805,
+     6380,
+     36579,
+     91,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     3987,
+     65916,
+     496,
+     81,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     58502,
+     65916,
+     496,
+     96,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     19047,
+     65916,
+     496,
+     74,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     27626,
+     65916,
+     496,
+     86,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     17797,
+     65916,
+     496,
+     87,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     65916,
+     496,
+     73,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     5087,
+     65916,
+     496,
+     54907,
+     6380,
+     36579,
+     5882,
+     6380,
+     34564,
+     3987,
+     1377,
+     496,
+     58502,
+     88545,
+     496,
+     1255,
+     6380,
+     36579,
+     1255,
+     6477,
+     6380,
+     66155,
+     5882,
+     6380,
+     496,
+     58502,
+     65916,
+     36579,
+     5882,
+     6380,
+     496,
+     17797,
+     66212,
+     2704,
+     496,
+     2688,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     19047,
+     1377,
+     496,
+     17797,
+     607,
+     6380,
+     2846,
+     2704,
+     496,
+     25682,
+     6380,
+     695,
+     2107,
+     10703,
+     125018,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     1585,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "call arguments of each type",
+    "messages": [
+     {
+      "role": "user",
+      "content": "go"
+     },
+     {
+      "role": "assistant",
+      "tool_calls": [
+       {
+        "type": "function",
+        "function": {
+         "name": "typed",
+         "arguments": {
+          "s": "a b",
+          "i": -2,
+          "x": 0.5,
+          "b": true,
+          "n": null,
+          "o": {
+           "k": [
+            1,
+            "v"
+           ]
+          },
+          "a": [
+           1,
+           2.5,
+           "x"
+          ],
+          "u": "naïve “q”",
+          "big": 12345678901234567890,
+          "f": 1e+20,
+          "g": 1.5e-07
+         }
+        },
+        "id": "c1"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "c1",
+      "content": "ok"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "typed",
+       "description": "Take one value of each type.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "s": {
+          "type": "string"
+         },
+         "i": {
+          "type": "integer"
+         },
+         "x": {
+          "type": "number"
+         },
+         "b": {
+          "type": "boolean"
+         },
+         "n": {
+          "type": "null"
+         },
+         "o": {
+          "type": "object"
+         },
+         "a": {
+          "type": "array"
+         },
+         "either": {
+          "type": [
+           "string",
+           "integer"
+          ]
+         },
+         "any": {
+          "anyOf": [
+           {
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ]
+         },
+         "opt": {
+          "type": "number",
+          "nullable": true
+         },
+         "free": {}
+        }
+       }
+      }
+     }
+    ],
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>system\n<tools>\n{\"name\": \"typed\", \"description\": \"Take one value of each type.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"s\": {\"type\": \"string\"}, \"i\": {\"type\": \"integer\"}, \"x\": {\"type\": \"number\"}, \"b\": {\"type\": \"boolean\"}, \"n\": {\"type\": \"null\"}, \"o\": {\"type\": \"object\"}, \"a\": {\"type\": \"array\"}, \"either\": {\"type\": [\"string\", \"integer\"]}, \"any\": {\"anyOf\": [{\"type\": \"integer\"}, {\"type\": \"null\"}]}, \"opt\": {\"type\": \"number\", \"nullable\": true}, \"free\": {}}}}\n</tools><|im_end|>\n<|im_start|>user\ngo<|im_end|>\n<|im_start|>assistant\n<think></think><tool_call>\n<function=typed>\n<parameter=s>\na b\n</parameter>\n<parameter=i>\n-2\n</parameter>\n<parameter=x>\n0.5\n</parameter>\n<parameter=b>\ntrue\n</parameter>\n<parameter=n>\nnull\n</parameter>\n<parameter=o>\n{\"k\": [1, \"v\"]}\n</parameter>\n<parameter=a>\n[1, 2.5, \"x\"]\n</parameter>\n<parameter=u>\nnaïve “q”\n</parameter>\n<parameter=big>\n12345678901234567890\n</parameter>\n<parameter=f>\n1e+20\n</parameter>\n<parameter=g>\n1.5e-07\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\nok\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     125017,
+     207,
+     38184,
+     2554,
+     6380,
+     496,
+     17251,
+     290,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     23283,
+     734,
+     2035,
+     302,
+     1394,
+     1931,
+     50007,
+     496,
+     29701,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     1377,
+     496,
+     38805,
+     6380,
+     36579,
+     91,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     3987,
+     65916,
+     496,
+     81,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     58502,
+     65916,
+     496,
+     96,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     19047,
+     65916,
+     496,
+     74,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     27626,
+     65916,
+     496,
+     86,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     17797,
+     65916,
+     496,
+     87,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     65916,
+     496,
+     73,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     5087,
+     65916,
+     496,
+     54907,
+     6380,
+     36579,
+     5882,
+     6380,
+     34564,
+     3987,
+     1377,
+     496,
+     58502,
+     88545,
+     496,
+     1255,
+     6380,
+     36579,
+     1255,
+     6477,
+     6380,
+     66155,
+     5882,
+     6380,
+     496,
+     58502,
+     65916,
+     36579,
+     5882,
+     6380,
+     496,
+     17797,
+     66212,
+     2704,
+     496,
+     2688,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     19047,
+     1377,
+     496,
+     17797,
+     607,
+     6380,
+     2846,
+     2704,
+     496,
+     25682,
+     6380,
+     695,
+     2107,
+     10703,
+     125018,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     1585,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902,
+     125019,
+     207,
+     125021,
+     17251,
+     290,
+     703,
+     125023,
+     91,
+     703,
+     73,
+     293,
+     207,
+     125024,
+     207,
+     125023,
+     81,
+     703,
+     21,
+     26,
+     207,
+     125024,
+     207,
+     125023,
+     96,
+     703,
+     24,
+     22,
+     29,
+     207,
+     125024,
+     207,
+     125023,
+     74,
+     703,
+     10066,
+     207,
+     125024,
+     207,
+     125023,
+     86,
+     703,
+     17797,
+     207,
+     125024,
+     207,
+     125023,
+     87,
+     703,
+     38184,
+     83,
+     6380,
+     1106,
+     25,
+     20,
+     496,
+     94,
+     13328,
+     604,
+     125024,
+     207,
+     125023,
+     73,
+     703,
+     67,
+     25,
+     20,
+     229,
+     26,
+     22,
+     29,
+     20,
+     496,
+     96,
+     50150,
+     125024,
+     207,
+     125023,
+     93,
+     703,
+     1651,
+     6337,
+     623,
+     870,
+     89,
+     9105,
+     125024,
+     207,
+     125023,
+     6982,
+     703,
+     9792,
+     25677,
+     23944,
+     19911,
+     24331,
+     24803,
+     1974,
+     207,
+     125024,
+     207,
+     125023,
+     78,
+     703,
+     25,
+     77,
+     19,
+     397,
+     207,
+     125024,
+     207,
+     125023,
+     79,
+     703,
+     25,
+     22,
+     29,
+     77,
+     21,
+     4471,
+     207,
+     125024,
+     207,
+     125022,
+     207,
+     125020,
+     124900,
+     207,
+     124899,
+     46765,
+     207,
+     125025,
+     207,
+     562,
+     207,
+     125026,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "two calls and two results",
+    "messages": [
+     {
+      "role": "user",
+      "content": "go"
+     },
+     {
+      "role": "assistant",
+      "reasoning_content": "two at once",
+      "tool_calls": [
+       {
+        "type": "function",
+        "function": {
+         "name": "shell",
+         "arguments": {
+          "command": "ls"
+         }
+        },
+        "id": "a"
+       },
+       {
+        "type": "function",
+        "function": {
+         "name": "shell",
+         "arguments": {
+          "command": "pwd"
+         }
+        },
+        "id": "b"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "a",
+      "content": "x"
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "b",
+      "content": "/w"
+     },
+     {
+      "role": "assistant",
+      "content": "Done.",
+      "reasoning_content": ""
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "shell",
+       "description": "Run a shell command.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "command": {
+          "type": "string",
+          "description": "the command"
+         },
+         "timeout": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "command"
+        ]
+       }
+      }
+     }
+    ],
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": true
+    },
+    "text": "<|startoftext|><|im_start|>system\n<tools>\n{\"name\": \"shell\", \"description\": \"Run a shell command.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"description\": \"the command\"}, \"timeout\": {\"type\": \"integer\"}}, \"required\": [\"command\"]}}\n</tools><|im_end|>\n<|im_start|>user\ngo<|im_end|>\n<|im_start|>assistant\n<think>two at once</think><tool_call>\n<function=shell>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>\n\n<tool_call>\n<function=shell>\n<parameter=command>\npwd\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\nx\n</tool_response><|im_end|>\n<|im_start|>tool\n<tool_response>\n/w\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think></think>Done.<|im_end|>\n<|im_start|>assistant\n<think>",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     125017,
+     207,
+     38184,
+     2554,
+     6380,
+     496,
+     95447,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     18950,
+     267,
+     11102,
+     5558,
+     50007,
+     496,
+     29701,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     1377,
+     496,
+     38805,
+     6380,
+     36579,
+     16019,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     3987,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     1319,
+     5558,
+     65916,
+     496,
+     97267,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     58502,
+     87961,
+     496,
+     34503,
+     6380,
+     34564,
+     16019,
+     13328,
+     10703,
+     125018,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     1585,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     25583,
+     462,
+     3580,
+     124902,
+     125019,
+     207,
+     125021,
+     95447,
+     703,
+     125023,
+     16019,
+     703,
+     3941,
+     207,
+     125024,
+     207,
+     125022,
+     207,
+     125020,
+     8,
+     125019,
+     207,
+     125021,
+     95447,
+     703,
+     125023,
+     16019,
+     703,
+     97042,
+     207,
+     125024,
+     207,
+     125022,
+     207,
+     125020,
+     124900,
+     207,
+     124899,
+     46765,
+     207,
+     125025,
+     207,
+     96,
+     207,
+     125026,
+     124900,
+     207,
+     124899,
+     46765,
+     207,
+     125025,
+     207,
+     14943,
+     207,
+     125026,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902,
+     95642,
+     22,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901
+    ]
+   },
+   {
+    "name": "a run of results of one call",
+    "messages": [
+     {
+      "role": "user",
+      "content": "go"
+     },
+     {
+      "role": "assistant",
+      "tool_calls": [
+       {
+        "type": "function",
+        "function": {
+         "name": "shell",
+         "arguments": {
+          "command": "ls"
+         }
+        },
+        "id": "a"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "a",
+      "content": "part one"
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "a",
+      "content": "part two"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "shell",
+       "description": "Run a shell command.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "command": {
+          "type": "string",
+          "description": "the command"
+         },
+         "timeout": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "command"
+        ]
+       }
+      }
+     }
+    ],
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>system\n<tools>\n{\"name\": \"shell\", \"description\": \"Run a shell command.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"description\": \"the command\"}, \"timeout\": {\"type\": \"integer\"}}, \"required\": [\"command\"]}}\n</tools><|im_end|>\n<|im_start|>user\ngo<|im_end|>\n<|im_start|>assistant\n<think></think><tool_call>\n<function=shell>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\npart one\npart two\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     125017,
+     207,
+     38184,
+     2554,
+     6380,
+     496,
+     95447,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     18950,
+     267,
+     11102,
+     5558,
+     50007,
+     496,
+     29701,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     1377,
+     496,
+     38805,
+     6380,
+     36579,
+     16019,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     3987,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     1319,
+     5558,
+     65916,
+     496,
+     97267,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     58502,
+     87961,
+     496,
+     34503,
+     6380,
+     34564,
+     16019,
+     13328,
+     10703,
+     125018,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     1585,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902,
+     125019,
+     207,
+     125021,
+     95447,
+     703,
+     125023,
+     16019,
+     703,
+     3941,
+     207,
+     125024,
+     207,
+     125022,
+     207,
+     125020,
+     124900,
+     207,
+     124899,
+     46765,
+     207,
+     125025,
+     207,
+     2152,
+     734,
+     207,
+     2152,
+     1046,
+     207,
+     125026,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "a failed result",
+    "messages": [
+     {
+      "role": "user",
+      "content": "go"
+     },
+     {
+      "role": "assistant",
+      "tool_calls": [
+       {
+        "type": "function",
+        "function": {
+         "name": "shell",
+         "arguments": {
+          "command": "ls"
+         }
+        },
+        "id": "a"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "a",
+      "content": "Error: no such file"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "shell",
+       "description": "Run a shell command.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "command": {
+          "type": "string",
+          "description": "the command"
+         },
+         "timeout": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "command"
+        ]
+       }
+      }
+     }
+    ],
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>system\n<tools>\n{\"name\": \"shell\", \"description\": \"Run a shell command.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"description\": \"the command\"}, \"timeout\": {\"type\": \"integer\"}}, \"required\": [\"command\"]}}\n</tools><|im_end|>\n<|im_start|>user\ngo<|im_end|>\n<|im_start|>assistant\n<think></think><tool_call>\n<function=shell>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\nError: no such file\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     125017,
+     207,
+     38184,
+     2554,
+     6380,
+     496,
+     95447,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     18950,
+     267,
+     11102,
+     5558,
+     50007,
+     496,
+     29701,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     1377,
+     496,
+     38805,
+     6380,
+     36579,
+     16019,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     3987,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     1319,
+     5558,
+     65916,
+     496,
+     97267,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     58502,
+     87961,
+     496,
+     34503,
+     6380,
+     34564,
+     16019,
+     13328,
+     10703,
+     125018,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     1585,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902,
+     125019,
+     207,
+     125021,
+     95447,
+     703,
+     125023,
+     16019,
+     703,
+     3941,
+     207,
+     125024,
+     207,
+     125022,
+     207,
+     125020,
+     124900,
+     207,
+     124899,
+     46765,
+     207,
+     125025,
+     207,
+     5934,
+     34,
+     794,
+     1058,
+     3848,
+     207,
+     125026,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "an empty result",
+    "messages": [
+     {
+      "role": "user",
+      "content": "go"
+     },
+     {
+      "role": "assistant",
+      "tool_calls": [
+       {
+        "type": "function",
+        "function": {
+         "name": "shell",
+         "arguments": {
+          "command": "ls"
+         }
+        },
+        "id": "a"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "a",
+      "content": ""
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "shell",
+       "description": "Run a shell command.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "command": {
+          "type": "string",
+          "description": "the command"
+         },
+         "timeout": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "command"
+        ]
+       }
+      }
+     }
+    ],
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>system\n<tools>\n{\"name\": \"shell\", \"description\": \"Run a shell command.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"description\": \"the command\"}, \"timeout\": {\"type\": \"integer\"}}, \"required\": [\"command\"]}}\n</tools><|im_end|>\n<|im_start|>user\ngo<|im_end|>\n<|im_start|>assistant\n<think></think><tool_call>\n<function=shell>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\n\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     125017,
+     207,
+     38184,
+     2554,
+     6380,
+     496,
+     95447,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     18950,
+     267,
+     11102,
+     5558,
+     50007,
+     496,
+     29701,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     7022,
+     1377,
+     496,
+     38805,
+     6380,
+     36579,
+     16019,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     3987,
+     1377,
+     496,
+     19021,
+     6380,
+     496,
+     1319,
+     5558,
+     65916,
+     496,
+     97267,
+     6380,
+     36579,
+     5882,
+     6380,
+     496,
+     58502,
+     87961,
+     496,
+     34503,
+     6380,
+     34564,
+     16019,
+     13328,
+     10703,
+     125018,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     1585,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902,
+     125019,
+     207,
+     125021,
+     95447,
+     703,
+     125023,
+     16019,
+     703,
+     3941,
+     207,
+     125024,
+     207,
+     125022,
+     207,
+     125020,
+     124900,
+     207,
+     124899,
+     46765,
+     207,
+     125025,
+     8,
+     125026,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "a later system message",
+    "messages": [
+     {
+      "role": "system",
+      "content": "S"
+     },
+     {
+      "role": "user",
+      "content": "u"
+     },
+     {
+      "role": "assistant",
+      "content": "a",
+      "reasoning_content": "r"
+     },
+     {
+      "role": "system",
+      "content": "Call done when the task is finished."
+     }
+    ],
+    "tools": null,
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": true
+    },
+    "text": "<|startoftext|><|im_start|>system\nS<|im_end|>\n<|im_start|>user\nu<|im_end|>\n<|im_start|>assistant\n<think>r</think>a<|im_end|>\n<|im_start|>system\nCall done when the task is finished.<|im_end|>\n<|im_start|>assistant\n<think>",
+    "ids": [
+     124894,
+     124899,
+     23630,
+     207,
+     59,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     93,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     90,
+     124902,
+     73,
+     124900,
+     207,
+     124899,
+     23630,
+     207,
+     9624,
+     3506,
+     902,
+     278,
+     4388,
+     355,
+     9913,
+     22,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901
+    ]
+   },
+   {
+    "name": "thinking in the content",
+    "messages": [
+     {
+      "role": "user",
+      "content": "q"
+     },
+     {
+      "role": "assistant",
+      "content": "<think>hidden</think>  shown  "
+     },
+     {
+      "role": "user",
+      "content": "next"
+     }
+    ],
+    "tools": null,
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": false,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>user\nq<|im_end|>\n<|im_start|>assistant\n<think></think>shown<|im_end|>\n<|im_start|>user\nnext<|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     5922,
+     207,
+     89,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902,
+     1853,
+     771,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     13679,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "no reasoning member",
+    "messages": [
+     {
+      "role": "user",
+      "content": "q"
+     },
+     {
+      "role": "assistant",
+      "content": "a"
+     },
+     {
+      "role": "user",
+      "content": "next"
+     }
+    ],
+    "tools": null,
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>user\nq<|im_end|>\n<|im_start|>assistant\n<think></think>a<|im_end|>\n<|im_start|>user\nnext<|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     5922,
+     207,
+     89,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902,
+     73,
+     124900,
+     207,
+     124899,
+     5922,
+     207,
+     13679,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "user parts",
+    "messages": [
+     {
+      "role": "user",
+      "content": [
+       {
+        "type": "text",
+        "text": "one "
+       },
+       {
+        "type": "text",
+        "text": "two"
+       }
+      ]
+     }
+    ],
+    "tools": null,
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>user\none two<|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     5922,
+     207,
+     673,
+     1046,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "image on the text model",
+    "messages": [
+     {
+      "role": "user",
+      "content": [
+       {
+        "type": "image"
+       },
+       {
+        "type": "text",
+        "text": "see"
+       }
+      ]
+     }
+    ],
+    "tools": null,
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>user\n<|vision_start|><|image|><|vision_end|>see<|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     5922,
+     207,
+     125009,
+     125030,
+     125010,
+     5012,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "unicode",
+    "messages": [
+     {
+      "role": "user",
+      "content": "日本語 🦀 naïve"
+     }
+    ],
+    "tools": null,
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>user\n日本語 🦀 naïve<|im_end|>\n<|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     5922,
+     207,
+     62005,
+     23304,
+     108,
+     231,
+     1615,
+     6337,
+     623,
+     124900,
+     207,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   },
+   {
+    "name": "arguments as a string",
+    "messages": [
+     {
+      "role": "user",
+      "content": "go"
+     },
+     {
+      "role": "assistant",
+      "tool_calls": [
+       {
+        "type": "function",
+        "function": {
+         "name": "shell",
+         "arguments": "{\"command\": \"ls\"}"
+        }
+       }
+      ]
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "shell",
+       "description": "Run a shell command.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "command": {
+          "type": "string",
+          "description": "the command"
+         },
+         "timeout": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "command"
+        ]
+       }
+      }
+     }
+    ],
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "error": "TemplateError: Tool call arguments must be a mapping, got a JSON-encoded string: parse arguments with json.loads() before applying the chat template"
+   },
+   {
+    "name": "no messages",
+    "messages": [],
+    "tools": null,
+    "variables": {
+     "bos_token": "<|startoftext|>",
+     "preserve_thinking": true,
+     "add_generation_prompt": true,
+     "enable_thinking": false
+    },
+    "text": "<|startoftext|><|im_start|>assistant\n<think></think>",
+    "ids": [
+     124894,
+     124899,
+     63514,
+     207,
+     124901,
+     124902
+    ]
+   }
+  ]
+ }
+}

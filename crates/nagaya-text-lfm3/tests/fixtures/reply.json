@@ -1,0 +1,1324 @@
+{
+ "header": {
+  "tool": "tools/lfm3_family_fixture.py",
+  "models": {
+   "text": {
+    "revision": "0dc4268b561499c648c7ba7c9466bf3d8d01517a",
+    "files": {
+     "tokenizer.json": "7e226e34bface23ccf6e495d157bf77186c1c30a7659880e1a8994db528c3701",
+     "chat_template.jinja": "f45005c50cd2a97329722bf3a2dee9f16c04cdf825a589b280fb7e99e6827818",
+     "generation_config.json": "0095ba7158e938b1e2d3082d412f00d8be85e42cbbd7608b63866f7a081cf270",
+     "config.json": "8c6ae8b8f6d88c87cfb98cf4b5e34e943d0ee07e24215c4121b3159a46e1399d",
+     "tokenizer_config.json": "bf028f813efc6137bc07ed045cafe71820df9a5e26a38e39954706ed1e30a457"
+    }
+   }
+  },
+  "jinja2": "3.1.6",
+  "tokenizers": "0.23.3",
+  "transformers": "5.20.2",
+  "response_template": "LFM3-1.7B tokenizer_config.json response_template"
+ },
+ "cases": [
+  {
+   "name": "plain",
+   "thinking": false,
+   "tools": null,
+   "text": "Hello, world.",
+   "ending": "stop",
+   "ids": [
+    35808,
+    20,
+    1530,
+    22,
+    124900
+   ],
+   "difference": null,
+   "parsed": {
+    "content": "Hello, world.",
+    "reasoning": "",
+    "tool_calls": []
+   }
+  },
+  {
+   "name": "plain padded",
+   "thinking": false,
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "shell",
+      "description": "Run a shell command.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string",
+         "description": "the command"
+        },
+        "timeout": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     }
+    }
+   ],
+   "text": "\n\n  hi there \n",
+   "ending": "stop",
+   "ids": [
+    8,
+    229,
+    14511,
+    912,
+    469,
+    124900
+   ],
+   "difference": null,
+   "parsed": {
+    "content": "hi there",
+    "reasoning": "",
+    "tool_calls": []
+   }
+  },
+  {
+   "name": "empty",
+   "thinking": false,
+   "tools": null,
+   "text": "",
+   "ending": "stop",
+   "ids": [
+    124900
+   ],
+   "difference": null,
+   "parsed": {
+    "content": "",
+    "reasoning": "",
+    "tool_calls": []
+   }
+  },
+  {
+   "name": "thinking",
+   "thinking": true,
+   "tools": null,
+   "text": "Let me think.\nOK.</think>\n\nThe answer is 4.",
+   "ending": "stop",
+   "ids": [
+    7731,
+    622,
+    2038,
+    318,
+    11206,
+    22,
+    124902,
+    8,
+    597,
+    5141,
+    355,
+    229,
+    28,
+    22,
+    124900
+   ],
+   "difference": null,
+   "parsed": {
+    "content": "The answer is 4.",
+    "reasoning": "Let me think.\nOK.",
+    "tool_calls": []
+   }
+  },
+  {
+   "name": "thinking, empty",
+   "thinking": true,
+   "tools": null,
+   "text": "</think>Just this.",
+   "ending": "stop",
+   "ids": [
+    124902,
+    14101,
+    532,
+    22,
+    124900
+   ],
+   "difference": null,
+   "parsed": {
+    "content": "Just this.",
+    "reasoning": "",
+    "tool_calls": []
+   }
+  },
+  {
+   "name": "thinking cut",
+   "thinking": true,
+   "tools": null,
+   "text": "still thinking about",
+   "ending": "length",
+   "ids": [
+    45400,
+    6416,
+    836
+   ],
+   "difference": null,
+   "parsed": {
+    "content": "",
+    "reasoning": "still thinking about",
+    "tool_calls": []
+   }
+  },
+  {
+   "name": "one call",
+   "thinking": false,
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "shell",
+      "description": "Run a shell command.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string",
+         "description": "the command"
+        },
+        "timeout": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     }
+    }
+   ],
+   "text": "<tool_call>\n<function=shell>\n<parameter=command>\nls -la\n</parameter>\n<parameter=timeout>\n5\n</parameter>\n</function>\n</tool_call>",
+   "ending": "stop",
+   "ids": [
+    125019,
+    207,
+    125021,
+    95447,
+    703,
+    125023,
+    16019,
+    703,
+    3941,
+    640,
+    1997,
+    207,
+    125024,
+    207,
+    125023,
+    97267,
+    703,
+    29,
+    207,
+    125024,
+    207,
+    125022,
+    207,
+    125020,
+    124900
+   ],
+   "difference": null,
+   "parsed": {
+    "content": "",
+    "reasoning": "",
+    "tool_calls": [
+     {
+      "name": "shell",
+      "arguments": {
+       "command": "ls -la",
+       "timeout": 5
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "text then a call",
+   "thinking": false,
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "shell",
+      "description": "Run a shell command.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string",
+         "description": "the command"
+        },
+        "timeout": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     }
+    }
+   ],
+   "text": "I will look.\n<tool_call>\n<function=shell>\n<parameter=command>\npwd\n</parameter>\n</function>\n</tool_call>",
+   "ending": "stop",
+   "ids": [
+    49,
+    687,
+    1643,
+    318,
+    125019,
+    207,
+    125021,
+    95447,
+    703,
+    125023,
+    16019,
+    703,
+    97042,
+    207,
+    125024,
+    207,
+    125022,
+    207,
+    125020,
+    124900
+   ],
+   "difference": null,
+   "parsed": {
+    "content": "I will look.",
+    "reasoning": "",
+    "tool_calls": [
+     {
+      "name": "shell",
+      "arguments": {
+       "command": "pwd"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "thinking and a call",
+   "thinking": true,
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "shell",
+      "description": "Run a shell command.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string",
+         "description": "the command"
+        },
+        "timeout": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     }
+    }
+   ],
+   "text": "I need the list.</think><tool_call>\n<function=shell>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>",
+   "ending": "stop",
+   "ids": [
+    49,
+    1094,
+    278,
+    1815,
+    22,
+    124902,
+    125019,
+    207,
+    125021,
+    95447,
+    703,
+    125023,
+    16019,
+    703,
+    3941,
+    207,
+    125024,
+    207,
+    125022,
+    207,
+    125020,
+    124900
+   ],
+   "difference": null,
+   "parsed": {
+    "content": "",
+    "reasoning": "I need the list.",
+    "tool_calls": [
+     {
+      "name": "shell",
+      "arguments": {
+       "command": "ls"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "two calls",
+   "thinking": false,
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "shell",
+      "description": "Run a shell command.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string",
+         "description": "the command"
+        },
+        "timeout": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     }
+    }
+   ],
+   "text": "<tool_call>\n<function=shell>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>\n\n<tool_call>\n<function=shell>\n<parameter=command>\npwd\n</parameter>\n</function>\n</tool_call>",
+   "ending": "stop",
+   "ids": [
+    125019,
+    207,
+    125021,
+    95447,
+    703,
+    125023,
+    16019,
+    703,
+    3941,
+    207,
+    125024,
+    207,
+    125022,
+    207,
+    125020,
+    8,
+    125019,
+    207,
+    125021,
+    95447,
+    703,
+    125023,
+    16019,
+    703,
+    97042,
+    207,
+    125024,
+    207,
+    125022,
+    207,
+    125020,
+    124900
+   ],
+   "difference": null,
+   "parsed": {
+    "content": "",
+    "reasoning": "",
+    "tool_calls": [
+     {
+      "name": "shell",
+      "arguments": {
+       "command": "ls"
+      }
+     },
+     {
+      "name": "shell",
+      "arguments": {
+       "command": "pwd"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "typed values",
+   "thinking": false,
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "typed",
+      "description": "Take one value of each type.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "s": {
+         "type": "string"
+        },
+        "i": {
+         "type": "integer"
+        },
+        "x": {
+         "type": "number"
+        },
+        "b": {
+         "type": "boolean"
+        },
+        "n": {
+         "type": "null"
+        },
+        "o": {
+         "type": "object"
+        },
+        "a": {
+         "type": "array"
+        },
+        "either": {
+         "type": [
+          "string",
+          "integer"
+         ]
+        },
+        "any": {
+         "anyOf": [
+          {
+           "type": "integer"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "opt": {
+         "type": "number",
+         "nullable": true
+        },
+        "free": {}
+       }
+      }
+     }
+    }
+   ],
+   "text": "<tool_call>\n<function=typed>\n<parameter=s>\n12\n</parameter>\n<parameter=i>\n3.0\n</parameter>\n<parameter=x>\n1e3\n</parameter>\n<parameter=b>\nTrue\n</parameter>\n<parameter=n>\nNone\n</parameter>\n<parameter=o>\n{\"k\": [1, \"v\"]}\n</parameter>\n<parameter=a>\n[1, 2.5]\n</parameter>\n<parameter=either>\n7\n</parameter>\n<parameter=any>\nnull\n</parameter>\n<parameter=opt>\n2.5\n</parameter>\n<parameter=free>\nraw text\n</parameter>\n</function>\n</tool_call>",
+   "ending": "stop",
+   "ids": [
+    125019,
+    207,
+    125021,
+    17251,
+    290,
+    703,
+    125023,
+    91,
+    703,
+    873,
+    207,
+    125024,
+    207,
+    125023,
+    81,
+    703,
+    27,
+    22,
+    24,
+    207,
+    125024,
+    207,
+    125023,
+    96,
+    703,
+    25,
+    77,
+    27,
+    207,
+    125024,
+    207,
+    125023,
+    74,
+    703,
+    11940,
+    207,
+    125024,
+    207,
+    125023,
+    86,
+    703,
+    17052,
+    207,
+    125024,
+    207,
+    125023,
+    87,
+    703,
+    38184,
+    83,
+    6380,
+    1106,
+    25,
+    20,
+    496,
+    94,
+    13328,
+    604,
+    125024,
+    207,
+    125023,
+    73,
+    703,
+    67,
+    25,
+    20,
+    229,
+    26,
+    22,
+    29,
+    2347,
+    125024,
+    207,
+    125023,
+    54907,
+    703,
+    31,
+    207,
+    125024,
+    207,
+    125023,
+    1255,
+    703,
+    17797,
+    207,
+    125024,
+    207,
+    125023,
+    2688,
+    703,
+    26,
+    22,
+    29,
+    207,
+    125024,
+    207,
+    125023,
+    25682,
+    703,
+    2322,
+    2803,
+    207,
+    125024,
+    207,
+    125022,
+    207,
+    125020,
+    124900
+   ],
+   "difference": null,
+   "parsed": {
+    "content": "",
+    "reasoning": "",
+    "tool_calls": [
+     {
+      "name": "typed",
+      "arguments": {
+       "s": "12",
+       "i": 3,
+       "x": 1000,
+       "b": true,
+       "n": null,
+       "o": {
+        "k": [
+         1,
+         "v"
+        ]
+       },
+       "a": [
+        1,
+        2.5
+       ],
+       "either": 7,
+       "any": null,
+       "opt": 2.5,
+       "free": "raw text"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "values that do not cast",
+   "thinking": false,
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "typed",
+      "description": "Take one value of each type.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "s": {
+         "type": "string"
+        },
+        "i": {
+         "type": "integer"
+        },
+        "x": {
+         "type": "number"
+        },
+        "b": {
+         "type": "boolean"
+        },
+        "n": {
+         "type": "null"
+        },
+        "o": {
+         "type": "object"
+        },
+        "a": {
+         "type": "array"
+        },
+        "either": {
+         "type": [
+          "string",
+          "integer"
+         ]
+        },
+        "any": {
+         "anyOf": [
+          {
+           "type": "integer"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "opt": {
+         "type": "number",
+         "nullable": true
+        },
+        "free": {}
+       }
+      }
+     }
+    }
+   ],
+   "text": "<tool_call>\n<function=typed>\n<parameter=i>\nseven\n</parameter>\n<parameter=x>\nnan\n</parameter>\n<parameter=b>\nyes\n</parameter>\n<parameter=o>\n[1]\n</parameter>\n<parameter=a>\n{}\n</parameter>\n</function>\n</tool_call>",
+   "ending": "stop",
+   "ids": [
+    125019,
+    207,
+    125021,
+    17251,
+    290,
+    703,
+    125023,
+    81,
+    703,
+    411,
+    1330,
+    207,
+    125024,
+    207,
+    125023,
+    96,
+    703,
+    23491,
+    207,
+    125024,
+    207,
+    125023,
+    74,
+    703,
+    11683,
+    207,
+    125024,
+    207,
+    125023,
+    87,
+    703,
+    67,
+    25,
+    2347,
+    125024,
+    207,
+    125023,
+    73,
+    703,
+    46228,
+    125024,
+    207,
+    125022,
+    207,
+    125020,
+    124900
+   ],
+   "difference": null,
+   "parsed": {
+    "content": "",
+    "reasoning": "",
+    "tool_calls": [
+     {
+      "name": "typed",
+      "arguments": {
+       "i": "seven",
+       "x": "nan",
+       "b": "yes",
+       "o": "[1]",
+       "a": "{}"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "a value with new lines",
+   "thinking": false,
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "shell",
+      "description": "Run a shell command.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string",
+         "description": "the command"
+        },
+        "timeout": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     }
+    }
+   ],
+   "text": "<tool_call>\n<function=shell>\n<parameter=command>\necho a\n\necho b\n\n</parameter>\n</function>\n</tool_call>",
+   "ending": "stop",
+   "ids": [
+    125019,
+    207,
+    125021,
+    95447,
+    703,
+    125023,
+    16019,
+    703,
+    33272,
+    267,
+    8,
+    33272,
+    293,
+    8,
+    125024,
+    207,
+    125022,
+    207,
+    125020,
+    124900
+   ],
+   "difference": null,
+   "parsed": {
+    "content": "",
+    "reasoning": "",
+    "tool_calls": [
+     {
+      "name": "shell",
+      "arguments": {
+       "command": "echo a\n\necho b\n"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "a value that holds a tag",
+   "thinking": false,
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "shell",
+      "description": "Run a shell command.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string",
+         "description": "the command"
+        },
+        "timeout": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     }
+    }
+   ],
+   "text": "<tool_call>\n<function=shell>\n<parameter=command>\na </parameter> b\n</parameter>\n</function>\n</tool_call>",
+   "ending": "stop",
+   "ids": [
+    125019,
+    207,
+    125021,
+    95447,
+    703,
+    125023,
+    16019,
+    703,
+    73,
+    229,
+    125024,
+    293,
+    207,
+    125024,
+    207,
+    125022,
+    207,
+    125020,
+    124900
+   ],
+   "difference": null,
+   "parsed": {
+    "content": "",
+    "reasoning": "",
+    "tool_calls": [
+     {
+      "name": "shell",
+      "arguments": {
+       "command": "a </parameter> b"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "an unknown parameter",
+   "thinking": false,
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "shell",
+      "description": "Run a shell command.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string",
+         "description": "the command"
+        },
+        "timeout": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     }
+    }
+   ],
+   "text": "<tool_call>\n<function=shell>\n<parameter=command>\nls\n</parameter>\n<parameter=depth>\n2\n</parameter>\n</function>\n</tool_call>",
+   "ending": "stop",
+   "ids": [
+    125019,
+    207,
+    125021,
+    95447,
+    703,
+    125023,
+    16019,
+    703,
+    3941,
+    207,
+    125024,
+    207,
+    125023,
+    67266,
+    703,
+    26,
+    207,
+    125024,
+    207,
+    125022,
+    207,
+    125020,
+    124900
+   ],
+   "difference": null,
+   "parsed": {
+    "content": "",
+    "reasoning": "",
+    "tool_calls": [
+     {
+      "name": "shell",
+      "arguments": {
+       "command": "ls",
+       "depth": "2"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "an unknown function",
+   "thinking": false,
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "shell",
+      "description": "Run a shell command.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string",
+         "description": "the command"
+        },
+        "timeout": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     }
+    }
+   ],
+   "text": "<tool_call>\n<function=nope>\n<parameter=x>\n1\n</parameter>\n</function>\n</tool_call>",
+   "ending": "stop",
+   "ids": [
+    125019,
+    207,
+    125021,
+    86,
+    2294,
+    703,
+    125023,
+    96,
+    703,
+    25,
+    207,
+    125024,
+    207,
+    125022,
+    207,
+    125020,
+    124900
+   ],
+   "difference": null,
+   "parsed": {
+    "content": "",
+    "reasoning": "",
+    "tool_calls": [
+     {
+      "name": "nope",
+      "arguments": {
+       "x": "1"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "no tools",
+   "thinking": false,
+   "tools": null,
+   "text": "<tool_call>\n<function=shell>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>",
+   "ending": "stop",
+   "ids": [
+    125019,
+    207,
+    125021,
+    95447,
+    703,
+    125023,
+    16019,
+    703,
+    3941,
+    207,
+    125024,
+    207,
+    125022,
+    207,
+    125020,
+    124900
+   ],
+   "difference": null,
+   "parsed": {
+    "content": "",
+    "reasoning": "",
+    "tool_calls": [
+     {
+      "name": "shell",
+      "arguments": {
+       "command": "ls"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "a call with no parameters",
+   "thinking": false,
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "shell",
+      "description": "Run a shell command.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string",
+         "description": "the command"
+        },
+        "timeout": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     }
+    }
+   ],
+   "text": "<tool_call>\n<function=shell>\n</function>\n</tool_call>",
+   "ending": "stop",
+   "ids": [
+    125019,
+    207,
+    125021,
+    95447,
+    703,
+    125022,
+    207,
+    125020,
+    124900
+   ],
+   "difference": null,
+   "parsed": {
+    "content": "",
+    "reasoning": "",
+    "tool_calls": [
+     {
+      "name": "shell",
+      "arguments": {}
+     }
+    ]
+   }
+  },
+  {
+   "name": "unicode",
+   "thinking": false,
+   "tools": null,
+   "text": "日本語 🦀 naïve café",
+   "ending": "stop",
+   "ids": [
+    62005,
+    23304,
+    108,
+    231,
+    1615,
+    6337,
+    623,
+    34998,
+    124900
+   ],
+   "difference": null,
+   "parsed": {
+    "content": "日本語 🦀 naïve café",
+    "reasoning": "",
+    "tool_calls": []
+   }
+  },
+  {
+   "name": "a call that does not close",
+   "thinking": false,
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "shell",
+      "description": "Run a shell command.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string",
+         "description": "the command"
+        },
+        "timeout": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     }
+    }
+   ],
+   "text": "<tool_call>\n<function=shell>\n<parameter=command>\nls",
+   "ending": "length",
+   "ids": [
+    125019,
+    207,
+    125021,
+    95447,
+    703,
+    125023,
+    16019,
+    703,
+    3941
+   ],
+   "difference": "unclosed",
+   "parsed": {
+    "content": "",
+    "reasoning": "",
+    "tool_calls": [
+     {
+      "name": "shell",
+      "arguments": {}
+     }
+    ]
+   }
+  },
+  {
+   "name": "a call with no function",
+   "thinking": false,
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "shell",
+      "description": "Run a shell command.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string",
+         "description": "the command"
+        },
+        "timeout": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     }
+    }
+   ],
+   "text": "<tool_call>\nhello\n</tool_call>",
+   "ending": "stop",
+   "ids": [
+    125019,
+    207,
+    52071,
+    207,
+    125020,
+    124900
+   ],
+   "difference": "no function",
+   "parsed": {
+    "content": "<tool_call>\nhello\n</tool_call>",
+    "reasoning": "",
+    "tool_calls": []
+   }
+  },
+  {
+   "name": "text after a call",
+   "thinking": false,
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "shell",
+      "description": "Run a shell command.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string",
+         "description": "the command"
+        },
+        "timeout": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     }
+    }
+   ],
+   "text": "First.\n<tool_call>\n<function=shell>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>\nThen this.",
+   "ending": "stop",
+   "ids": [
+    9077,
+    318,
+    125019,
+    207,
+    125021,
+    95447,
+    703,
+    125023,
+    16019,
+    703,
+    3941,
+    207,
+    125024,
+    207,
+    125022,
+    207,
+    125020,
+    207,
+    11969,
+    532,
+    22,
+    124900
+   ],
+   "difference": "content runs",
+   "parsed": {
+    "content": "Then this.",
+    "reasoning": "",
+    "tool_calls": [
+     {
+      "name": "shell",
+      "arguments": {
+       "command": "ls"
+      }
+     }
+    ]
+   }
+  }
+ ]
+}
