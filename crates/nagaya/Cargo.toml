@@ -14,9 +14,15 @@ hip = [
     "dep:nagaya-text-qwen38",
     "nagaya-mk-qwenimage21-gfx1151/hip",
 ]
-# The B70 engines: Gemma 4 on two cards, and Qwen3-TTS, SDXL and EmbeddingGemma 2 on one each. The config parse and
+# The B70 engines: Gemma 4 on two cards, and Qwen3-TTS, SDXL, EmbeddingGemma 2 and LFM3 on one each. The config parse and
 # the family libraries build with no feature.
-xe = ["nagaya-mk-gemma4-bmg/xe", "nagaya-mk-qwen3tts-bmg/xe", "nagaya-mk-sdxl-bmg/xe", "nagaya-mk-embeddinggemma2-bmg/xe"]
+xe = [
+    "nagaya-mk-gemma4-bmg/xe",
+    "nagaya-mk-qwen3tts-bmg/xe",
+    "nagaya-mk-sdxl-bmg/xe",
+    "nagaya-mk-embeddinggemma2-bmg/xe",
+    "nagaya-mk-lfm3-bmg/xe",
+]
 
 [dependencies]
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio", "matched-path"] }
@@ -41,6 +47,8 @@ nagaya-mk-qwenimage21-gfx1151 = { version = "0.1.0", path = "../nagaya-mk-qwenim
 nagaya-text-qwenimage21 = { version = "0.1.0", path = "../nagaya-text-qwenimage21" }
 nagaya-mk-embeddinggemma2-bmg = { version = "0.1.0", path = "../nagaya-mk-embeddinggemma2-bmg" }
 nagaya-text-embeddinggemma2 = { version = "0.1.0", path = "../nagaya-text-embeddinggemma2" }
+nagaya-mk-lfm3-bmg = { version = "0.1.0", path = "../nagaya-mk-lfm3-bmg" }
+nagaya-text-lfm3 = { version = "0.1.0", path = "../nagaya-text-lfm3" }
 nagaya-mk-qwen38-gfx1151 = { version = "0.1.0", path = "../nagaya-mk-qwen38-gfx1151", optional = true }
 nagaya-text-qwen38 = { version = "0.1.0", path = "../nagaya-text-qwen38", optional = true }
 nagaya-text-toy = { version = "0.1.0", path = "../nagaya-text-toy", optional = true }
