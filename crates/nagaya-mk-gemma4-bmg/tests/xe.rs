@@ -348,6 +348,39 @@ fn a_long_slot_parks_and_restores_through_the_store() {
     assert_eq!(got.outputs, want.outputs, "the restored slot gives other logits");
 }
 
+/// One recipe gives one content id (spec 6.7). Thus the same feed gives the same bits in a slot of 4,096 positions and
+/// in a slot of 65,536, the two slots of the b70host profile. A block of 64 after 256 keys is the case where
+/// `attn_pv_segments` (`nagaya-mk-bmg/kernels/megakernel.cl:486`) can give each slot its own count of segments.
+#[test]
+fn the_same_feed_gives_the_same_bits_in_each_slot_size() {
+    if common::absent(&[]) {
+        return;
+    }
+    let mut engine = engine(vec![4096, 65_536]);
+    let prefix: Vec<u32> = (0..256u32).map(|i| (500 + i * 7919) % 200_000).collect();
+    let block: Vec<u32> = (0..64u32).map(|i| (900 + i * 104_729) % 200_000).collect();
+    let mut rows: [Vec<Vec<u8>>; 2] = Default::default();
+    for (slot, rows) in rows.iter_mut().enumerate() {
+        let slot = slot as u32;
+        let mut segments = vec![plain(slot, 0, &prefix, true), plain(slot, 256, &block, true)];
+        // A block gives at most 16 logit rows: the last 16 of the 64.
+        segments[1].outputs.logit_rows = (304..320).collect();
+        segments.push(plain(slot, 320, &[4242], true));
+        for segment in &segments {
+            let out = engine.pass(std::slice::from_ref(segment), &[]).expect("a pass");
+            rows.extend(out.outputs.into_iter().map(|output| output.bytes));
+        }
+    }
+    let differ: Vec<usize> = (0..rows[0].len()).filter(|&i| rows[0][i] != rows[1][i]).collect();
+    assert!(
+        differ.is_empty(),
+        "the slots of 4,096 and 65,536 positions give other bits in {} of {} logit rows (first {:?})",
+        differ.len(),
+        rows[0].len(),
+        differ.first()
+    );
+}
+
 /// A write that mkviolet asserts on comes back refused, and a refused pass or write changes nothing.
 ///
 /// Falsified by a cells write that takes a ring's rows at a later position in a short slot.
