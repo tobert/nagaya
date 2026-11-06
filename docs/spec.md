@@ -4361,10 +4361,11 @@ above leave these choices open, and each one is the simplest choice that the ref
     reference opens the reasoning at any place in the content.
   - The parser reads the markers as tokens. The reference reads the decoded text, so it also finds a marker that the
     model spells in pieces.
-- **Media.** `Family::render` refuses a context with a media part, with a 400 that names the part. The render with
-  media (`Lfm3Family::render_media`) takes the count of positions of each part. The media preprocessing of a later
-  step gives the counts. The family writes the placeholder token that many times between `<|vision_start|>` and
-  `<|vision_end|>`, as Liquid's processor does. `lfm3` refuses each media part.
+- **Media.** `Family::render` reads each media part through the object reader of the process. The header of the
+  part gives its count of positions. `Lfm3Family::prepare` also gives the rows of each part for the engine. The
+  family writes the placeholder token that many times between `<|vision_start|>` and `<|vision_end|>`, as Liquid's
+  processor does. `lfm3` refuses each media part. This replaced the first rule on 2026-11-06, in which
+  `Family::render` refused each media part until the media preprocessing was built.
 - **The marker of a mode.** `<|audio_start|>` or `<|mixed_start|>` follows the whole generation prompt, after
   `<think></think>`. transformers appends it there (`generate` in `modeling_lfm3_omni.py`).
 
