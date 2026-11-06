@@ -1221,6 +1221,16 @@ bins of a clip, in f32, from the family. `meta` names each media span: its first
 and its kind. The encoder of the span runs inside the pass, and its rows replace the placeholders. Reason: the
 recipe names the object, not the rows of the encoder (spec 11.11), so the encoder output need not leave the card.
 
+**The rows of a span.** Proposed by Claude Opus 5.5, 2026-11-06 (milestone 24 step 4). Reason: the rows above have
+no layout yet, and this is the layout of the reference with the fewest changes.
+
+- An image gives one row of 1,536 values for each patch of 16 by 16 pixels. A row is the 3 channels, then the 2
+  copies in time, then the pixels. The rows go in the order of the merge blocks (`image_processing_lfm3_vl.py:186`).
+- The `meta` of an image also names its grid: `grid_t`, `grid_h` and `grid_w`. The span has `grid_t * grid_h *
+  grid_w / 4` positions.
+- A clip gives one row of 128 mel values for each frame. This is the transpose of the reference, which holds the
+  bins first. The `meta` of a clip names its count of frames, and the span has `ceil(frames / 8)` positions.
+
 **Speech.** Omni declares the capability `speech_frames`. Its `pass` gives logits as a text engine does. The host
 samples each text token, so the text sampler stays in one place (spec 11.2). These calls make the audio:
 

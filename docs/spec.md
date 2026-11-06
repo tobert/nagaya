@@ -4378,6 +4378,24 @@ can check, with no resampler and no image decoder of another library to match.
 - The resize, the mel bins and the rows that each media part takes have a family test against the reference.
 - The encoder of each media part runs on the card, in the quantum of the feed that reads it.
 
+**The choices of the media preprocessing.** Proposed by Claude Opus 5.5, 2026-11-06 (milestone 24 step 4). Reason:
+the note above leaves these choices open, and each one is the simplest choice that the reference can check.
+
+- **Objects.** The process gives the family a reader of the objects of this machine. The family reads the bytes of
+  each media part through it. A family with no reader refuses a media part with a 400 that names the part.
+- **Depth.** A PNG with 16 bits in a sample is a 400 that names the part. Pillow reads it, but its convert of a gray
+  of 16 bits clips each value. The SDXL family refuses it too (11.9b). A PNG of 1, 2 or 4 bits expands to 8 bits.
+- **JPEG.** The decoder is the crate `zune-jpeg`, not libjpeg-turbo of Pillow. On the fixture, 305 of 9,216 bytes
+  differ, each by 2 or less. Thus a JPEG has no gate of bits, and a PNG has one.
+- **Orientation.** The family does not turn an image by its EXIF orientation. The reference processor does not
+  turn it either.
+- **Resize.** The resize is torch's integer arithmetic with weights in 16 bits. It gives the bits of the reference
+  for each size of the fixture, from 37 by 53 to 3,000 by 4,000 pixels.
+- **Mel rows.** The family computes the spectrum and the mel sums in f64, and it rounds once to f32. The reference
+  computes in f32, so its bins of low power hold the noise of that rounding. The test bounds the gap at each level.
+- **Assistant audio.** An `assistant` audio part stays a 400 that names the part. Its count of positions comes
+  from the codes that the service holds, and that service is a later step.
+
 **The recipe of a media part.** Proposed by Claude Opus 5.5, 2026-11-06. Reason: the rows of a part are a function
 of the engine identity and the bytes of the object. The object's content id names the bytes.
 
