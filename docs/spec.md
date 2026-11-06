@@ -1125,6 +1125,7 @@ The tag numbers are in this table. Decided 2026-10-20 (reading).
 | 6 | the tokens |
 | 7 | the boundary position |
 | 8 | "not sealed", with no bytes: only on an interval copy (6.13). It follows tag 5, which holds the sealed recipe at the same position |
+| 9 | a media part (11.11): its media type, its content id and its count of positions. Proposed, 2026-11-06 |
 
 **The park recipe.** The park knows the bytes of a state in a slot. It does not know the inputs that made the state.
 Thus the park recipe names the bytes. 10.3 gives the one exception. The park recipe is a root recipe with four items:
@@ -4286,6 +4287,104 @@ EmbeddingGemma always loaded somewhere. Maybe we even need a pin."
   budgets). The text tower of EmbeddingGemma 2 is 542,005,296 bytes in bf16 (the header of `model.safetensors`).
 - The placement is card 1. Decided 2026-11-02 (Amy). Reason: card 0 has four on-demand engines (`voice`, `sdxl-0`,
   `pony-0` and `lightning-0`), and card 1 has two.
+
+**11.11 LFM3.** Amy decided these rules on 2026-11-06, by interview (`AGENTS.md` milestone 24).
+
+- Two served models run on one engine kind, `mk-lfm3-bmg`: `LFM3-Omni-2B` and `LFM3-1.7B`. Each is other weights.
+- Omni reads text, images and audio. It writes text, speech, or text and speech in turn. Video comes later.
+- Both models are resident on card 0 of b70host. Gemma 4 is on demand, and only the load routes load it (3.3b).
+- Qwen3-TTS VoiceDesign stays the speech engine (11.8). Omni's speech is a second choice, with its own voices.
+- The nagaya does not check a model license. Amy: "anyone using it has to accept the model license on their own when
+  they download it for use imo. so we just build, let users make their own decisions".
+
+The checkpoints are LiquidAI `LFM3-Omni-2B` at `21d75123f86c1f7ffb4bef1ea202710c4e7ebe67` and `LFM3-1.7B` at
+`0dc4268b561499c648c7ba7c9466bf3d8d01517a`. `AGENTS.md` milestone 24 gives the shapes from their `config.json`.
+
+**The served LFM3 models.** Proposed by Claude Opus 5.5, 2026-11-06. Reason: these rules follow the served text model
+(11.1) and the speech model (11.8a), and they add no member to gogi.
+
+- The served names are `lfm3-omni` and `lfm3`. The engine names in the profile are the same.
+- `lfm3` lists no `media`. Its replies are text, and it serves builds, decisions, raw reads and generations.
+- `lfm3-omni` lists `media.inputs` of `image/png`, `image/jpeg` and `audio/wav`, and `media.outputs` of `audio/wav`.
+  Its replies hold text, so it serves builds, decisions and raw reads too.
+- Each served model gets its own `tokenizer_hash` and `template`, because the two checkpoints ship different files.
+- Each slot holds 32,768 positions, the context of Omni's model card. `lfm3` also uses 32,768 in v0. Reason: one
+  slot shape for the engine kind. Its 256K positions (its model card) are a later setting of the profile.
+
+**The LFM3 family.** Proposed by Claude Opus 5.5, 2026-11-06. The crate `nagaya-text-lfm3` holds the family library
+of both models (11.3).
+
+- The tokenizer is `tokenizer.json` of the model folder, and the template is `chat_template.jinja` of the same
+  folder. The library reads both from the folder that the profile names, so one library serves both models.
+- Tool calls are the template's XML form: `<tool_call>`, `<function=NAME>`, `<parameter=NAME>`. The reply parser
+  reads the same form.
+- Thinking follows the context (11.3a). `lfm3` renders with `enable_thinking` from the context. Omni is a model with
+  no reasoning, so a context of `lfm3-omni` with `thinking: true` is a 400 that names `thinking`.
+- An image part renders as `<|vision_start|><|image|><|vision_end|>`, and an audio part as
+  `<|vision_start|><|audio|><|vision_end|>`, as the template writes them. The family then puts one placeholder
+  position for each row of the encoder in place of `<|image|>` or `<|audio|>`.
+- An audio part of an `assistant` message renders as `<|audio_out|>`, one position for each frame of the output.
+
+**The media of a request.** Proposed by Claude Opus 5.5, 2026-11-06. Reason: the simplest choice that the oracle
+can check, with no resampler and no image decoder of another library to match.
+
+- The family decodes a PNG or a JPEG to RGB in 8 bits, and it resizes the image as the reference processor does.
+  The processor config gives the bounds: from 65,536 to 2,097,152 pixels, patches of 16, and a merge of 2 by 2.
+- A WAV of `audio/wav` is PCM in 16 bits, mono, at 16 kHz. Any other WAV is a 400 that names the part. The family
+  computes the 128 mel bins of the reference's feature extractor.
+- The resize, the mel bins and the rows that each media part takes have a family test against the reference.
+- The encoder of each media part runs on the card, in the quantum of the feed that reads it.
+
+**The recipe of a media part.** Proposed by Claude Opus 5.5, 2026-11-06. Reason: the rows of a part are a function
+of the engine identity and the bytes of the object. The object's content id names the bytes.
+
+- A media part enters the recipe as tag 9 (6.2): its media type, its content id, and its count of positions.
+- The placeholder tokens stay in the tokens of the recipe, so a boundary after a media part is a boundary as any.
+- The codes of an `assistant` audio part enter the recipe as the speech positions do (11.8a): 12 codes for each frame.
+
+**The generation modes.** Proposed by Claude Opus 5.5, 2026-11-06. Reason: gogi's `output` already names a reply
+with an object (gogi "Outputs"), so no new member is needed.
+
+- A generation with no `output` is text. The sampler never picks `<|audio_start|>` or `<|mixed_start|>`.
+- A generation with an `output` of `audio/wav` speaks. `output.options.mode` is `interleaved` by default, or
+  `speech`. The family adds the opening marker: `<|mixed_start|>` or `<|audio_start|>`.
+- The client writes the voice and the language in the `system` message, in the words of the model card. An example
+  is "Perform TTS in American English using a female voice." The nagaya does not write a system prompt.
+- In `interleaved` mode the reply has text in blocks of 6 tokens, then 12 frames of audio, in turn (`config.json`,
+  `interleaved_n_text` and `interleaved_n_audio`). After `<|text_end|>` the rest of the reply is audio.
+- The reply holds its text and one `audio/wav` output with all its frames, as 11.8a writes a line. The WAV is PCM, mono,
+  16 bits, at 24 kHz, and each frame is 1,920 samples.
+- An `assistant` audio part must name an output of this served model, as in 11.8a. The service keeps the codes of
+  each output, and audio whose codes it does not hold is a 404 that names the part.
+
+**The sampler of the audio codes.** Proposed by Claude Opus 5.5, 2026-11-06. Reason: the checkpoint's generation
+config is the sampler that Liquid tested (`generation_config.json`, model card "Sampling parameters").
+
+- The text tokens use the sampler of 11.2. The defaults are the checkpoint's: greedy.
+- The audio codes use temperature 0.4, no top-k, and a repetition penalty of 1.2 over the last 64 frames of each
+  codebook. A request cannot change them in v0.
+- The depth decoder reveals the 12 codebooks of a frame in three passes of 4. The order of the codebooks is random
+  in the reference, so the nagaya takes it from the seed and the frame (11.2).
+- A frame in which any codebook gives the end code, 2,016, ends the audio. It is not part of the WAV.
+
+**The held state of LFM3.** Proposed by Claude Opus 5.5, 2026-11-06. Reason: these parts follow the layer types of
+the backbone. A ring keeps the window of a sliding layer, as Gemma 4 does (engine-abi "mkviolet's parts").
+
+- The 6 full attention layers keep their keys and values for each position, as cells.
+- The 5 sliding attention layers keep the last 256 positions, as rings.
+- The 13 convolution layers keep a state of the last 6 inputs of each channel. It is a fixed part of the slot, not a
+  row part, so a snapshot holds it whole at each boundary.
+- The encoders of the media and the depth decoder hold no state between quanta.
+
+**The LFM3 oracle.** Proposed by Claude Opus 5.5, 2026-11-06. Reason: each stage has its own gate (`AGENTS.md`
+milestone 24, step 2), so a defect shows in the stage that has it.
+
+- `tools/lfm3_golden.sh` writes the oracle from transformers on the CPU, in f32, with the pinned revisions.
+- The gates are the vision rows, the audio rows and the logits of the backbone. Two more are the depth logits with
+  forced codes, and the decoded audio of fixed codes.
+- The codes of a reply are random, so the gate of the depth decoder forces the codes and compares the logits. The
+  oracle of Qwen3-TTS forced its codes in the same way (`AGENTS.md` milestone 17).
+- The tolerance of each gate is measured first, as for each family (8.3).
 
 ## 12. Identity
 

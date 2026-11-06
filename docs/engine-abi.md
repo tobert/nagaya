@@ -1210,6 +1210,34 @@ Reason: an engine opens on one thread and stays on it, because some engines need
 to the stage thread for its quantum, and the engine never moves. The first rule of this list keeps the large engine
 loaded when the small one fits.
 
+## LFM3
+
+Proposed by Claude Opus 5.5, 2026-11-06, for milestone 24. The engine kind `mk-lfm3-bmg` serves `LFM3-1.7B` and
+`LFM3-Omni-2B` on one B70 card (spec 11.11). Amy decides.
+
+**Inputs.** The engine declares `inputs = tokens+rows` (D2). The tokens are the ids of the family, with one
+placeholder for each position of a media part. The rows are the prepared media: the patches of an image or the mel
+bins of a clip, in f32, from the family. `meta` names each media span: its first position, its count of positions,
+and its kind. The encoder of the span runs inside the pass, and its rows replace the placeholders. Reason: the
+recipe names the object, not the rows of the encoder (spec 11.11), so the encoder output need not leave the card.
+
+**Speech.** Omni declares the capability `speech_frames`. Its `pass` gives logits as a text engine does. The host
+samples each text token, so the text sampler stays in one place (spec 11.2). These calls make the audio:
+
+```
+frame(slot, seed, frame) -> codes | end      runs the depth decoder on the last row, samples 12 codes, feeds the frame
+codec(slot, codes) -> samples                decodes one frame to 1,920 samples at 24 kHz; keeps the window per slot
+codec_clear(slot)                            frees the window of the codec at the end of an output
+```
+
+`frame` feeds the frame into the slot as its next position, so the next `pass` or `frame` reads it. `end` means a
+codebook gave the end code (spec 11.11). The end frame is fed too, as the reference feeds it. The codec keeps its
+window for each slot, and it holds no state in a snapshot. The config gives `decoder_window` 30, and the oracle step
+reads the codec code to say what the window holds.
+
+**The text model.** `LFM3-1.7B` declares no media and no `speech_frames`. Its engine is the same code with other
+weights, and the open checks that the config has no vision tower, audio encoder or depth decoder.
+
 ## Not covered yet
 
 - Streams. They need a period, a deadline and a late policy, in `limits()` or per job. A pass blocks, so the
