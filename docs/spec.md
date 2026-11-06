@@ -4325,6 +4325,42 @@ of both models (11.3).
   position for each row of the encoder in place of `<|image|>` or `<|audio|>`.
 - An audio part of an `assistant` message renders as `<|audio_out|>`, one position for each frame of the output.
 
+**The choices of the LFM3 family.** Proposed by Claude Opus 5.5, 2026-11-06 (milestone 24 step 4). Reason: the notes
+above leave these choices open, and each one is the simplest choice that the reference can check.
+
+- **Interpreter.** The interpreter holds the block `{% generation %}` of transformers and the method `items` of a
+  dict, with the results of jinja2. Both LFM3 templates use them. The other methods of a dict stay refused.
+- **Kept thinking.** The family renders with `preserve_thinking` on. Thus an assistant message keeps its reasoning
+  after a later user message, and a held prefix stays a prefix. The Gemma 4 library does the same.
+- **The thinking of Omni.** An absent `thinking` is off for `lfm3-omni`, because the model does not reason. Only a
+  sent `thinking: true` is the 400. The reply parser of Omni starts in the content. For `lfm3`, an absent `thinking`
+  is on, as in gogi.
+- **Escapes.** Each of the 140 added tokens of `tokenizer.json` is a marker. This includes the tokens that the file
+  does not mark special, such as `<think>` and `<tool_call>`. Client text that spells a marker is content.
+- **Reads.** A read closes the thinking with `<think></think>`, the prompt of the template for thinking off. A read
+  with no context starts with `<|startoftext|>`. A queue read writes the call in the XML form of the template, as the
+  Qwen3.8 library does.
+- **Stop tokens.** The stop tokens are `eos_token_id` of `generation_config.json`. They are `<|im_end|>` for `lfm3`,
+  and `<|im_end|>` and `<|text_end|>` for Omni.
+- **Vocabulary.** `vocab_size` is the token count of `tokenizer.json`, 125,033. The embedding table has 128,000 rows.
+  The engine gives logit rows of 125,033 values. Reason: the sampler then never picks a padding row, which has no
+  text.
+- **The reply parser.** Its reference is `parse_response` of transformers 5.20.2, with the `response_template` of
+  `LFM3-1.7B` and the tools of the request. Omni's files have no `response_template`, and its template writes the
+  same form. The parser takes the types of each parameter from the tool schema, as the reference does.
+- **Differences of the parser.** Each one has a test.
+  - A call that does not close is malformed. The reference reads it.
+  - A call with no `<function=NAME>` is malformed. The reference keeps its text as content.
+  - The content is all the text outside the thinking and the calls. The reference keeps only the last run of content
+    text.
+  - An integer that does not fit in 64 bits makes the call malformed, as in the Qwen3.8 library.
+- **Media.** `Family::render` refuses a context with a media part, with a 400 that names the part. The render with
+  media (`Lfm3Family::render_media`) takes the count of positions of each part. The media preprocessing of a later
+  step gives the counts. The family writes the placeholder token that many times between `<|vision_start|>` and
+  `<|vision_end|>`, as Liquid's processor does. `lfm3` refuses each media part.
+- **The marker of a mode.** `<|audio_start|>` or `<|mixed_start|>` follows the whole generation prompt, after
+  `<think></think>`. transformers appends it there (`generate` in `modeling_lfm3_omni.py`).
+
 **The media of a request.** Proposed by Claude Opus 5.5, 2026-11-06. Reason: the simplest choice that the oracle
 can check, with no resampler and no image decoder of another library to match.
 
