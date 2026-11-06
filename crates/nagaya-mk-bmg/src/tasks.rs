@@ -795,3 +795,93 @@ pub fn scale(x: u64, y: u64, n: u32, k: u32, s: f32) -> MkTaskDescriptor {
         ..task(OP_SCALE)
     }
 }
+
+// The ops of the LFM3 binary (`kernels/lfm3_ops.cl`).
+
+/// The gated short convolution of LFM3 over `n` positions of `d` channels. `bcx` holds the in_proj rows `[n][3d]` in
+/// the chunks B, C and x. `w` holds the weights `[d][taps]` (BF16, or F32). `state` holds the last `taps - 1` inputs
+/// B * x `[taps - 1][d]`, and the op writes the new ones into it. `y` gets `[n][d]`.
+#[allow(clippy::too_many_arguments)]
+pub fn short_conv(
+    bcx: u64,
+    w: u64,
+    state: u64,
+    y: u64,
+    n: u32,
+    d: u32,
+    taps: u32,
+    f32_weights: bool,
+) -> MkTaskDescriptor {
+    assert!(n >= 1, "OP_SHORT_CONV takes at least one position");
+    assert!(
+        d >= 16 && d.is_multiple_of(16),
+        "OP_SHORT_CONV takes channels in 16s, and it got {d}"
+    );
+    // The kernel keeps the window in an array of 8 values (SHORT_CONV_MAX_TAPS).
+    assert!(
+        (2..=8).contains(&taps),
+        "OP_SHORT_CONV takes 2 to 8 taps, and it got {taps}"
+    );
+    // The op reads the rows and the state of each channel while it writes the output and the state.
+    let span = |at: u64, floats: u32| at..at + 4 * floats as u64;
+    let (rows, held, out) = (span(bcx, n * 3 * d), span(state, (taps - 1) * d), span(y, n * d));
+    for (a, b, what) in [
+        (&out, &rows, "the output overlaps the in_proj rows"),
+        (&out, &held, "the output overlaps the state"),
+        (&held, &rows, "the state overlaps the in_proj rows"),
+    ] {
+        assert!(a.end <= b.start || b.end <= a.start, "OP_SHORT_CONV: {what}");
+    }
+    MkTaskDescriptor {
+        flags: if f32_weights { FLAG_F32 } else { 0 },
+        a: bcx,
+        b: w,
+        c: y,
+        x: state,
+        n,
+        k: d,
+        layer: taps,
+        ..task(OP_SHORT_CONV)
+    }
+}
+
+/// The rotation `task` of [`qk_rope`] with only the first `pairs` pairs (i, i + d / 2) turned, as the full attention
+/// layers of LFM3 do. Their frequencies follow the whole head, and the other pairs keep their values
+/// (modeling_lfm3.py:105-111). Only the LFM3 binary reads the pairs.
+pub fn partial_rotation(mut task: MkTaskDescriptor, pairs: u32) -> MkTaskDescriptor {
+    assert!(
+        task.opcode == OP_RMSNORM && task.flags & FLAG_ROPE != 0,
+        "partial_rotation marks an OP_RMSNORM with FLAG_ROPE, not op {} with the flags {:#x}",
+        task.opcode,
+        task.flags
+    );
+    // The kernel reads 0 as the count that the flags give.
+    let half = task.k / 2;
+    assert!(
+        (1..=half).contains(&pairs),
+        "a head of {} values has 1 to {half} pairs, and partial_rotation got {pairs}",
+        task.k
+    );
+    task.layer = pairs;
+    task
+}
+
+/// The sigmoid gate of each head: `y[t, h, j] = a[t, h, j] * sigmoid(gates[t * stride + h])` for `n` positions of
+/// `heads` heads of `d` values. `a` may be `y`.
+pub fn head_gate(a: u64, gates: u64, y: u64, n: u32, heads: u32, d: u32, stride: u32) -> MkTaskDescriptor {
+    // The kernel reads a stride of 0 as `heads`.
+    assert!(
+        stride >= heads,
+        "OP_HEAD_GATE reads rows of at least {heads} gates, and it got a stride of {stride}"
+    );
+    MkTaskDescriptor {
+        a,
+        b: gates,
+        c: y,
+        n,
+        m: heads,
+        k: d,
+        p0: stride,
+        ..task(OP_HEAD_GATE)
+    }
+}

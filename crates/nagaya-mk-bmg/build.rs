@@ -11,6 +11,7 @@ fn main() {
     println!("cargo:rerun-if-changed=kernels/qwen3tts_ops.cl");
     println!("cargo:rerun-if-changed=kernels/sdxl_ops.cl");
     println!("cargo:rerun-if-changed=kernels/embeddinggemma2_ops.cl");
+    println!("cargo:rerun-if-changed=kernels/lfm3_ops.cl");
     if std::env::var_os("CARGO_FEATURE_XE").is_none() {
         return;
     }
@@ -104,6 +105,29 @@ fn main() {
         "ocloc did not compile {} with MK_EMBEDDINGGEMMA2 for bmg-g31: {status}",
         source.display()
     );
+    // The LFM3 engine's binary: the speech ops and its own (MK_LFM3), with the rotated pairs of a partial rotation.
+    let options = format!("-cl-std=CL3.0 -D MK_QWEN3TTS -D MK_LFM3 -I {}", kernels.display());
+    let status = Command::new("ocloc")
+        .arg("compile")
+        .arg("-file")
+        .arg(&source)
+        .args([
+            "-device",
+            "bmg-g31",
+            "-options",
+            &options,
+            "-output",
+            "megakernel_lfm3",
+            "-out_dir",
+        ])
+        .arg(&out)
+        .status()
+        .unwrap_or_else(|e| panic!("cannot run ocloc: {e}. Install ocloc, or build without the feature xe."));
+    assert!(
+        status.success(),
+        "ocloc did not compile {} with MK_LFM3 for bmg-g31: {status}",
+        source.display()
+    );
     // The compiler is in the plan table lineage of the identity (spec 12.1).
     let version = Command::new("ocloc")
         .arg("--version")
@@ -131,6 +155,7 @@ fn main() {
         "megakernel_qwen3tts_bmg.bin",
         "megakernel_sdxl_bmg.bin",
         "megakernel_embeddinggemma2_bmg.bin",
+        "megakernel_lfm3_bmg.bin",
     ] {
         let binary = out.join(name);
         assert!(
