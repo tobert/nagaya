@@ -566,8 +566,8 @@ milestone 22 is done on gfx1151host. Milestone 23, the cluster, is next, and mil
       half of each head.
     - The vision tower has 14 layers of width 1,024, with patches of 16 and axial rotary positions. The audio encoder
       has 17 layers of width 768, on 128 mel bins at 16 kHz.
-    - The depth decoder has 3 layers. It fills 12 codebooks of 2,017 codes for each frame, 4 at a time (`maskgit_schedule`). The
-      reply puts 6 text tokens, then 12 audio tokens, in turn.
+    - The depth decoder has 3 layers. It fills 12 codebooks of 2,017 codes for each frame, 4 at a time
+      (`maskgit_schedule`). The reply puts 6 text tokens, then 12 audio tokens, in turn.
     - LiquidCodec decodes 1,920 samples at 24 kHz from each frame. Speech input does not use the codec encoder.
     - The two tokenizers and chat templates differ. Both embedding tables have 128,000 rows.
 
