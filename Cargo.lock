@@ -1357,6 +1357,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nagaya-text-lfm3"
+version = "0.1.0"
+dependencies = [
+ "gogi-proto",
+ "nagaya-council",
+ "nagaya-jinja",
+ "serde_json",
+ "sha2",
+ "tokenizers",
+]
+
+[[package]]
 name = "nagaya-text-qwen38"
 version = "0.1.0"
 dependencies = [
