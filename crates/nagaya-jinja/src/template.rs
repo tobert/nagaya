@@ -48,7 +48,7 @@ impl Template {
         add_tests_of_jinja2(&mut env);
         env.add_function("raise_exception", raise_exception);
         env.set_unknown_method_callback(crate::methods::string_method);
-        env.add_template_owned(NAME, source.to_string())
+        env.add_template_owned(NAME, crate::blocks::rewrite(source))
             .map_err(template_error)?;
         Ok(Template { env })
     }

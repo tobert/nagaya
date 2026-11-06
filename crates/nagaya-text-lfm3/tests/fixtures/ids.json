@@ -1,0 +1,1414 @@
+{
+ "header": {
+  "tool": "tools/lfm3_family_fixture.py",
+  "models": {
+   "omni": {
+    "revision": "21d75123f86c1f7ffb4bef1ea202710c4e7ebe67",
+    "files": {
+     "tokenizer.json": "41927bd314d17d7d7fadb44e10cd0919f7b71528d7741596d8cbd15c6945ec44",
+     "chat_template.jinja": "ea74cc1d14319ed436dc0f37632893004d436913113e7605267f2b01694d65e4",
+     "generation_config.json": "5f069cac2df137d9ac81bdd7aee88d48052a3897f9761cc9ba2f357f93405b85",
+     "config.json": "17e3792551ef56b37e85bbd1e6e968f70dc5b4b14c96f1339d0be85e0ba46875"
+    }
+   },
+   "text": {
+    "revision": "0dc4268b561499c648c7ba7c9466bf3d8d01517a",
+    "files": {
+     "tokenizer.json": "7e226e34bface23ccf6e495d157bf77186c1c30a7659880e1a8994db528c3701",
+     "chat_template.jinja": "f45005c50cd2a97329722bf3a2dee9f16c04cdf825a589b280fb7e99e6827818",
+     "generation_config.json": "0095ba7158e938b1e2d3082d412f00d8be85e42cbbd7608b63866f7a081cf270",
+     "config.json": "8c6ae8b8f6d88c87cfb98cf4b5e34e943d0ee07e24215c4121b3159a46e1399d"
+    }
+   }
+  },
+  "jinja2": "3.1.6",
+  "tokenizers": "0.23.3",
+  "transformers": "5.20.2"
+ },
+ "cases": {
+  "omni": {
+   "count": 125033,
+   "strings": [
+    {
+     "text": "",
+     "ids": [],
+     "content_ids": [],
+     "decoded": ""
+    },
+    {
+     "text": "hello",
+     "ids": [
+      52071
+     ],
+     "content_ids": [
+      52071
+     ],
+     "decoded": "hello"
+    },
+    {
+     "text": " hello",
+     "ids": [
+      63532
+     ],
+     "content_ids": [
+      63532
+     ],
+     "decoded": " hello"
+    },
+    {
+     "text": "hello world",
+     "ids": [
+      52071,
+      1530
+     ],
+     "content_ids": [
+      52071,
+      1530
+     ],
+     "decoded": "hello world"
+    },
+    {
+     "text": "  two  spaces  ",
+     "ids": [
+      229,
+      1046,
+      229,
+      12413,
+      266
+     ],
+     "content_ids": [
+      229,
+      1046,
+      229,
+      12413,
+      266
+     ],
+     "decoded": "  two  spaces  "
+    },
+    {
+     "text": "line one\nline two\n\n\nthree",
+     "ids": [
+      1421,
+      734,
+      207,
+      1421,
+      1046,
+      7,
+      37564
+     ],
+     "content_ids": [
+      1421,
+      734,
+      207,
+      1421,
+      1046,
+      7,
+      37564
+     ],
+     "decoded": "line one\nline two\n\n\nthree"
+    },
+    {
+     "text": "\t tab and space",
+     "ids": [
+      206,
+      11383,
+      309,
+      2993
+     ],
+     "content_ids": [
+      206,
+      11383,
+      309,
+      2993
+     ],
+     "decoded": "\t tab and space"
+    },
+    {
+     "text": " A",
+     "ids": [
+      334
+     ],
+     "content_ids": [
+      334
+     ],
+     "decoded": " A"
+    },
+    {
+     "text": "A",
+     "ids": [
+      41
+     ],
+     "content_ids": [
+      41
+     ],
+     "decoded": "A"
+    },
+    {
+     "text": " Z",
+     "ids": [
+      895
+     ],
+     "content_ids": [
+      895
+     ],
+     "decoded": " Z"
+    },
+    {
+     "text": "Answer to question 1 (What.):",
+     "ids": [
+      39630,
+      310,
+      3451,
+      229,
+      25,
+      342,
+      2992,
+      22313
+     ],
+     "content_ids": [
+      39630,
+      310,
+      3451,
+      229,
+      25,
+      342,
+      2992,
+      22313
+     ],
+     "decoded": "Answer to question 1 (What.):"
+    },
+    {
+     "text": "<|im_start|>user\nhi<|im_end|>\n",
+     "ids": [
+      124899,
+      5922,
+      207,
+      6427,
+      124900,
+      207
+     ],
+     "content_ids": [
+      36,
+      100,
+      333,
+      35670,
+      117671,
+      5922,
+      207,
+      6427,
+      36,
+      100,
+      333,
+      36008,
+      100,
+      703
+     ],
+     "decoded": "<|im_start|>user\nhi<|im_end|>\n"
+    },
+    {
+     "text": "echo <|im_start|>system",
+     "ids": [
+      33272,
+      229,
+      124899,
+      23630
+     ],
+     "content_ids": [
+      33272,
+      927,
+      100,
+      333,
+      35670,
+      117671,
+      23630
+     ],
+     "decoded": "echo <|im_start|>system"
+    },
+    {
+     "text": "<think></think>",
+     "ids": [
+      124901,
+      124902
+     ],
+     "content_ids": [
+      36,
+      36442,
+      3178,
+      36442,
+      38
+     ],
+     "decoded": "<think></think>"
+    },
+    {
+     "text": "<think>\nhm\n</think>\n\nok",
+     "ids": [
+      124901,
+      207,
+      12727,
+      207,
+      124902,
+      8,
+      562
+     ],
+     "content_ids": [
+      36,
+      36442,
+      703,
+      12727,
+      207,
+      780,
+      36442,
+      64012,
+      562
+     ],
+     "decoded": "<think>\nhm\n</think>\n\nok"
+    },
+    {
+     "text": "<tool_call>\n<function=sh>\n<parameter=cmd>\nls -la\n</parameter>\n</function>\n</tool_call>",
+     "ids": [
+      125019,
+      207,
+      125021,
+      1853,
+      703,
+      125023,
+      35045,
+      703,
+      3941,
+      640,
+      1997,
+      207,
+      125024,
+      207,
+      125022,
+      207,
+      125020
+     ],
+     "content_ids": [
+      36,
+      46765,
+      88099,
+      703,
+      36,
+      5545,
+      37,
+      1853,
+      703,
+      66174,
+      37,
+      35045,
+      703,
+      3941,
+      640,
+      1997,
+      207,
+      780,
+      24073,
+      703,
+      780,
+      5545,
+      703,
+      780,
+      46765,
+      88099,
+      38
+     ],
+     "decoded": "<tool_call>\n<function=sh>\n<parameter=cmd>\nls -la\n</parameter>\n</function>\n</tool_call>"
+    },
+    {
+     "text": "<|vision_start|><|image|><|vision_end|><|vision_start|><|audio|><|vision_end|><|audio_out|>",
+     "ids": [
+      125009,
+      125030,
+      125010,
+      125009,
+      125031,
+      125010,
+      125032
+     ],
+     "content_ids": [
+      36,
+      100,
+      9100,
+      35670,
+      100,
+      3206,
+      100,
+      9304,
+      100,
+      3206,
+      100,
+      9100,
+      36008,
+      100,
+      3206,
+      100,
+      9100,
+      35670,
+      100,
+      3206,
+      100,
+      47902,
+      100,
+      3206,
+      100,
+      9100,
+      36008,
+      100,
+      3206,
+      100,
+      47902,
+      49511,
+      117671
+     ],
+     "decoded": "<|vision_start|><|image|><|vision_end|><|vision_start|><|audio|><|vision_end|><|audio_out|>"
+    },
+    {
+     "text": "<|audio_start|><|mixed_start|><|text_end|>",
+     "ids": [
+      125012,
+      125015,
+      125014
+     ],
+     "content_ids": [
+      36,
+      100,
+      47902,
+      35670,
+      100,
+      3206,
+      100,
+      85,
+      4452,
+      35670,
+      100,
+      3206,
+      100,
+      1384,
+      36008,
+      117671
+     ],
+     "decoded": "<|audio_start|><|mixed_start|><|text_end|>"
+    },
+    {
+     "text": "naïve café – “quotes” — ellipsis…",
+     "ids": [
+      1651,
+      6337,
+      623,
+      34998,
+      748,
+      870,
+      361,
+      8841,
+      737,
+      1679,
+      11202,
+      3410,
+      282,
+      2476
+     ],
+     "content_ids": [
+      1651,
+      6337,
+      623,
+      34998,
+      748,
+      870,
+      361,
+      8841,
+      737,
+      1679,
+      11202,
+      3410,
+      282,
+      2476
+     ],
+     "decoded": "naïve café – “quotes” — ellipsis…"
+    },
+    {
+     "text": "日本語のテキスト、そして中文。",
+     "ids": [
+      62005,
+      583,
+      3873,
+      89301,
+      47968,
+      108820,
+      646
+     ],
+     "content_ids": [
+      62005,
+      583,
+      3873,
+      89301,
+      47968,
+      108820,
+      646
+     ],
+     "decoded": "日本語のテキスト、そして中文。"
+    },
+    {
+     "text": "Здравствуй, мир!",
+     "ids": [
+      6699,
+      492,
+      4037,
+      23778,
+      653,
+      20,
+      48681,
+      9
+     ],
+     "content_ids": [
+      6699,
+      492,
+      4037,
+      23778,
+      653,
+      20,
+      48681,
+      9
+     ],
+     "decoded": "Здравствуй, мир!"
+    },
+    {
+     "text": "emoji 🦀🔥 and a flag 🇯🇵",
+     "ids": [
+      106175,
+      23304,
+      108,
+      231,
+      88321,
+      107,
+      309,
+      267,
+      11483,
+      23304,
+      238,
+      116,
+      115684,
+      122
+     ],
+     "content_ids": [
+      106175,
+      23304,
+      108,
+      231,
+      88321,
+      107,
+      309,
+      267,
+      11483,
+      23304,
+      238,
+      116,
+      115684,
+      122
+     ],
+     "decoded": "emoji 🦀🔥 and a flag 🇯🇵"
+    },
+    {
+     "text": "\u0000\u0001\u001f control bytes",
+     "ids": [
+      197,
+      198,
+      228,
+      2168,
+      21915
+     ],
+     "content_ids": [
+      197,
+      198,
+      228,
+      2168,
+      21915
+     ],
+     "decoded": "\u0000\u0001\u001f control bytes"
+    },
+    {
+     "text": "fn main() {\n    println!(\"{}\", 1 + 2);\n}\n",
+     "ids": [
+      20459,
+      1619,
+      1296,
+      827,
+      360,
+      4468,
+      13156,
+      95490,
+      23872,
+      1377,
+      229,
+      25,
+      1510,
+      229,
+      26,
+      652,
+      604
+     ],
+     "content_ids": [
+      20459,
+      1619,
+      1296,
+      827,
+      360,
+      4468,
+      13156,
+      95490,
+      23872,
+      1377,
+      229,
+      25,
+      1510,
+      229,
+      26,
+      652,
+      604
+     ],
+     "decoded": "fn main() {\n    println!(\"{}\", 1 + 2);\n}\n"
+    },
+    {
+     "text": "{\"key\": [1, 2.5, true, null]}",
+     "ids": [
+      38184,
+      4016,
+      6380,
+      1106,
+      25,
+      20,
+      229,
+      26,
+      22,
+      29,
+      20,
+      2846,
+      20,
+      3495,
+      47703
+     ],
+     "content_ids": [
+      38184,
+      4016,
+      6380,
+      1106,
+      25,
+      20,
+      229,
+      26,
+      22,
+      29,
+      20,
+      2846,
+      20,
+      3495,
+      47703
+     ],
+     "decoded": "{\"key\": [1, 2.5, true, null]}"
+    },
+    {
+     "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "ids": [
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      44237
+     ],
+     "content_ids": [
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      44237
+     ],
+     "decoded": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+     "text": "1234567 numbers 3.14159",
+     "ids": [
+      9792,
+      25677,
+      31,
+      5242,
+      229,
+      27,
+      22,
+      13387,
+      5098
+     ],
+     "content_ids": [
+      9792,
+      25677,
+      31,
+      5242,
+      229,
+      27,
+      22,
+      13387,
+      5098
+     ],
+     "decoded": "1234567 numbers 3.14159"
+    }
+   ]
+  },
+  "text": {
+   "count": 125033,
+   "strings": [
+    {
+     "text": "",
+     "ids": [],
+     "content_ids": [],
+     "decoded": ""
+    },
+    {
+     "text": "hello",
+     "ids": [
+      52071
+     ],
+     "content_ids": [
+      52071
+     ],
+     "decoded": "hello"
+    },
+    {
+     "text": " hello",
+     "ids": [
+      63532
+     ],
+     "content_ids": [
+      63532
+     ],
+     "decoded": " hello"
+    },
+    {
+     "text": "hello world",
+     "ids": [
+      52071,
+      1530
+     ],
+     "content_ids": [
+      52071,
+      1530
+     ],
+     "decoded": "hello world"
+    },
+    {
+     "text": "  two  spaces  ",
+     "ids": [
+      229,
+      1046,
+      229,
+      12413,
+      266
+     ],
+     "content_ids": [
+      229,
+      1046,
+      229,
+      12413,
+      266
+     ],
+     "decoded": "  two  spaces  "
+    },
+    {
+     "text": "line one\nline two\n\n\nthree",
+     "ids": [
+      1421,
+      734,
+      207,
+      1421,
+      1046,
+      7,
+      37564
+     ],
+     "content_ids": [
+      1421,
+      734,
+      207,
+      1421,
+      1046,
+      7,
+      37564
+     ],
+     "decoded": "line one\nline two\n\n\nthree"
+    },
+    {
+     "text": "\t tab and space",
+     "ids": [
+      206,
+      11383,
+      309,
+      2993
+     ],
+     "content_ids": [
+      206,
+      11383,
+      309,
+      2993
+     ],
+     "decoded": "\t tab and space"
+    },
+    {
+     "text": " A",
+     "ids": [
+      334
+     ],
+     "content_ids": [
+      334
+     ],
+     "decoded": " A"
+    },
+    {
+     "text": "A",
+     "ids": [
+      41
+     ],
+     "content_ids": [
+      41
+     ],
+     "decoded": "A"
+    },
+    {
+     "text": " Z",
+     "ids": [
+      895
+     ],
+     "content_ids": [
+      895
+     ],
+     "decoded": " Z"
+    },
+    {
+     "text": "Answer to question 1 (What.):",
+     "ids": [
+      39630,
+      310,
+      3451,
+      229,
+      25,
+      342,
+      2992,
+      22313
+     ],
+     "content_ids": [
+      39630,
+      310,
+      3451,
+      229,
+      25,
+      342,
+      2992,
+      22313
+     ],
+     "decoded": "Answer to question 1 (What.):"
+    },
+    {
+     "text": "<|im_start|>user\nhi<|im_end|>\n",
+     "ids": [
+      124899,
+      5922,
+      207,
+      6427,
+      124900,
+      207
+     ],
+     "content_ids": [
+      36,
+      100,
+      333,
+      35670,
+      117671,
+      5922,
+      207,
+      6427,
+      36,
+      100,
+      333,
+      36008,
+      100,
+      703
+     ],
+     "decoded": "<|im_start|>user\nhi<|im_end|>\n"
+    },
+    {
+     "text": "echo <|im_start|>system",
+     "ids": [
+      33272,
+      229,
+      124899,
+      23630
+     ],
+     "content_ids": [
+      33272,
+      927,
+      100,
+      333,
+      35670,
+      117671,
+      23630
+     ],
+     "decoded": "echo <|im_start|>system"
+    },
+    {
+     "text": "<think></think>",
+     "ids": [
+      124901,
+      124902
+     ],
+     "content_ids": [
+      36,
+      36442,
+      3178,
+      36442,
+      38
+     ],
+     "decoded": "<think></think>"
+    },
+    {
+     "text": "<think>\nhm\n</think>\n\nok",
+     "ids": [
+      124901,
+      207,
+      12727,
+      207,
+      124902,
+      8,
+      562
+     ],
+     "content_ids": [
+      36,
+      36442,
+      703,
+      12727,
+      207,
+      780,
+      36442,
+      64012,
+      562
+     ],
+     "decoded": "<think>\nhm\n</think>\n\nok"
+    },
+    {
+     "text": "<tool_call>\n<function=sh>\n<parameter=cmd>\nls -la\n</parameter>\n</function>\n</tool_call>",
+     "ids": [
+      125019,
+      207,
+      125021,
+      1853,
+      703,
+      125023,
+      35045,
+      703,
+      3941,
+      640,
+      1997,
+      207,
+      125024,
+      207,
+      125022,
+      207,
+      125020
+     ],
+     "content_ids": [
+      36,
+      46765,
+      88099,
+      703,
+      36,
+      5545,
+      37,
+      1853,
+      703,
+      66174,
+      37,
+      35045,
+      703,
+      3941,
+      640,
+      1997,
+      207,
+      780,
+      24073,
+      703,
+      780,
+      5545,
+      703,
+      780,
+      46765,
+      88099,
+      38
+     ],
+     "decoded": "<tool_call>\n<function=sh>\n<parameter=cmd>\nls -la\n</parameter>\n</function>\n</tool_call>"
+    },
+    {
+     "text": "<|vision_start|><|image|><|vision_end|><|vision_start|><|audio|><|vision_end|><|audio_out|>",
+     "ids": [
+      125009,
+      125030,
+      125010,
+      125009,
+      125031,
+      125010,
+      125032
+     ],
+     "content_ids": [
+      36,
+      100,
+      9100,
+      35670,
+      100,
+      3206,
+      100,
+      9304,
+      100,
+      3206,
+      100,
+      9100,
+      36008,
+      100,
+      3206,
+      100,
+      9100,
+      35670,
+      100,
+      3206,
+      100,
+      47902,
+      100,
+      3206,
+      100,
+      9100,
+      36008,
+      100,
+      3206,
+      100,
+      47902,
+      49511,
+      117671
+     ],
+     "decoded": "<|vision_start|><|image|><|vision_end|><|vision_start|><|audio|><|vision_end|><|audio_out|>"
+    },
+    {
+     "text": "<|audio_start|><|mixed_start|><|text_end|>",
+     "ids": [
+      125012,
+      125015,
+      125014
+     ],
+     "content_ids": [
+      36,
+      100,
+      47902,
+      35670,
+      100,
+      3206,
+      100,
+      85,
+      4452,
+      35670,
+      100,
+      3206,
+      100,
+      1384,
+      36008,
+      117671
+     ],
+     "decoded": "<|audio_start|><|mixed_start|><|text_end|>"
+    },
+    {
+     "text": "naïve café – “quotes” — ellipsis…",
+     "ids": [
+      1651,
+      6337,
+      623,
+      34998,
+      748,
+      870,
+      361,
+      8841,
+      737,
+      1679,
+      11202,
+      3410,
+      282,
+      2476
+     ],
+     "content_ids": [
+      1651,
+      6337,
+      623,
+      34998,
+      748,
+      870,
+      361,
+      8841,
+      737,
+      1679,
+      11202,
+      3410,
+      282,
+      2476
+     ],
+     "decoded": "naïve café – “quotes” — ellipsis…"
+    },
+    {
+     "text": "日本語のテキスト、そして中文。",
+     "ids": [
+      62005,
+      583,
+      3873,
+      89301,
+      47968,
+      108820,
+      646
+     ],
+     "content_ids": [
+      62005,
+      583,
+      3873,
+      89301,
+      47968,
+      108820,
+      646
+     ],
+     "decoded": "日本語のテキスト、そして中文。"
+    },
+    {
+     "text": "Здравствуй, мир!",
+     "ids": [
+      6699,
+      492,
+      4037,
+      23778,
+      653,
+      20,
+      48681,
+      9
+     ],
+     "content_ids": [
+      6699,
+      492,
+      4037,
+      23778,
+      653,
+      20,
+      48681,
+      9
+     ],
+     "decoded": "Здравствуй, мир!"
+    },
+    {
+     "text": "emoji 🦀🔥 and a flag 🇯🇵",
+     "ids": [
+      106175,
+      23304,
+      108,
+      231,
+      88321,
+      107,
+      309,
+      267,
+      11483,
+      23304,
+      238,
+      116,
+      115684,
+      122
+     ],
+     "content_ids": [
+      106175,
+      23304,
+      108,
+      231,
+      88321,
+      107,
+      309,
+      267,
+      11483,
+      23304,
+      238,
+      116,
+      115684,
+      122
+     ],
+     "decoded": "emoji 🦀🔥 and a flag 🇯🇵"
+    },
+    {
+     "text": "\u0000\u0001\u001f control bytes",
+     "ids": [
+      197,
+      198,
+      228,
+      2168,
+      21915
+     ],
+     "content_ids": [
+      197,
+      198,
+      228,
+      2168,
+      21915
+     ],
+     "decoded": "\u0000\u0001\u001f control bytes"
+    },
+    {
+     "text": "fn main() {\n    println!(\"{}\", 1 + 2);\n}\n",
+     "ids": [
+      20459,
+      1619,
+      1296,
+      827,
+      360,
+      4468,
+      13156,
+      95490,
+      23872,
+      1377,
+      229,
+      25,
+      1510,
+      229,
+      26,
+      652,
+      604
+     ],
+     "content_ids": [
+      20459,
+      1619,
+      1296,
+      827,
+      360,
+      4468,
+      13156,
+      95490,
+      23872,
+      1377,
+      229,
+      25,
+      1510,
+      229,
+      26,
+      652,
+      604
+     ],
+     "decoded": "fn main() {\n    println!(\"{}\", 1 + 2);\n}\n"
+    },
+    {
+     "text": "{\"key\": [1, 2.5, true, null]}",
+     "ids": [
+      38184,
+      4016,
+      6380,
+      1106,
+      25,
+      20,
+      229,
+      26,
+      22,
+      29,
+      20,
+      2846,
+      20,
+      3495,
+      47703
+     ],
+     "content_ids": [
+      38184,
+      4016,
+      6380,
+      1106,
+      25,
+      20,
+      229,
+      26,
+      22,
+      29,
+      20,
+      2846,
+      20,
+      3495,
+      47703
+     ],
+     "decoded": "{\"key\": [1, 2.5, true, null]}"
+    },
+    {
+     "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "ids": [
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      44237
+     ],
+     "content_ids": [
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      105743,
+      44237
+     ],
+     "decoded": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+     "text": "1234567 numbers 3.14159",
+     "ids": [
+      9792,
+      25677,
+      31,
+      5242,
+      229,
+      27,
+      22,
+      13387,
+      5098
+     ],
+     "content_ids": [
+      9792,
+      25677,
+      31,
+      5242,
+      229,
+      27,
+      22,
+      13387,
+      5098
+     ],
+     "decoded": "1234567 numbers 3.14159"
+    }
+   ]
+  }
+ }
+}

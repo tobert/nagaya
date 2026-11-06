@@ -77,6 +77,7 @@ The crates live in directories under `crates/`. Use these crates:
 | `nagaya-mk-embeddinggemma2-bmg` | the EmbeddingGemma 2 engine on one B70 card: weights, the passes, the `embed` call | ABI "Embedding" |
 | `nagaya-text-embeddinggemma2` | the EmbeddingGemma 2 family library: tokenizer, task prompts, the template id | 11.10 |
 | `nagaya-text-qwenimage21` | the Qwen-Image 2.1 family library: tokenizer, the template, the cut of the system ids | 11.9c |
+| `nagaya-text-lfm3` | the LFM3 family library of both models: tokenizer, templates, escapes, XML tool calls, media positions | 11.3, 11.11 |
 | `nagaya-text-toy` | the toy family library on gogi's `gogi-toy`, for tests with the fake engine | 11.3b |
 | `nagaya-conformance` | the conformance suite (8.3), generic over the `Engine` trait | 8.3 |
 | `nagaya-telemetry` | the instruments, the stderr log, the OTLP export and the sampler | 9 |
