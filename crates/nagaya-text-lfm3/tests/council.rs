@@ -367,13 +367,15 @@ fn media_parts_take_the_positions_that_the_caller_gives() {
 }
 
 #[test]
-fn render_without_counts_and_the_text_model_refuse_media() {
+fn render_without_objects_and_the_text_model_refuse_media() {
     if absent_any() {
         return;
     }
     let c = media_context();
     for model in ["omni", "text"] {
-        let e = family(model).render(&c, true).expect_err("media needs its counts");
+        let e = family(model)
+            .render(&c, true)
+            .expect_err("media needs an object reader");
         match e {
             nagaya_council::family::FamilyError::Client(i) => {
                 assert_eq!(i.param.as_deref(), Some("messages[1].content[0]"), "{model}")

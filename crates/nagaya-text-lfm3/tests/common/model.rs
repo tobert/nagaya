@@ -134,6 +134,20 @@ pub fn golden(file: &str) -> Option<serde_json::Value> {
     Some(serde_json::from_str(&text).unwrap_or_else(|e| panic!("{} is not JSON: {e}", path.display())))
 }
 
+/// The path of the oracle file `file`, or `None` when it is absent and the test must return. It prints one line to
+/// stderr.
+pub fn golden_path(file: &str) -> Option<PathBuf> {
+    if absent_in(GOLDEN_VARIABLE, Some(golden_dir()), file) {
+        return None;
+    }
+    Some(golden_dir().join(file))
+}
+
+/// The path of a fixture file of this crate.
+pub fn fixture_path(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)
+}
+
 /// A fixture of this crate.
 pub fn fixture(name: &str) -> serde_json::Value {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);

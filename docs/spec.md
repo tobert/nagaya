@@ -4361,10 +4361,11 @@ above leave these choices open, and each one is the simplest choice that the ref
     reference opens the reasoning at any place in the content.
   - The parser reads the markers as tokens. The reference reads the decoded text, so it also finds a marker that the
     model spells in pieces.
-- **Media.** `Family::render` refuses a context with a media part, with a 400 that names the part. The render with
-  media (`Lfm3Family::render_media`) takes the count of positions of each part. The media preprocessing of a later
-  step gives the counts. The family writes the placeholder token that many times between `<|vision_start|>` and
-  `<|vision_end|>`, as Liquid's processor does. `lfm3` refuses each media part.
+- **Media.** `Family::render` reads each media part through the object reader of the process. The header of the
+  part gives its count of positions. `Lfm3Family::prepare` also gives the rows of each part for the engine. The
+  family writes the placeholder token that many times between `<|vision_start|>` and `<|vision_end|>`, as Liquid's
+  processor does. `lfm3` refuses each media part. This replaced the first rule on 2026-11-06, in which
+  `Family::render` refused each media part until the media preprocessing was built.
 - **The marker of a mode.** `<|audio_start|>` or `<|mixed_start|>` follows the whole generation prompt, after
   `<think></think>`. transformers appends it there (`generate` in `modeling_lfm3_omni.py`).
 
@@ -4377,6 +4378,24 @@ can check, with no resampler and no image decoder of another library to match.
   computes the 128 mel bins of the reference's feature extractor.
 - The resize, the mel bins and the rows that each media part takes have a family test against the reference.
 - The encoder of each media part runs on the card, in the quantum of the feed that reads it.
+
+**The choices of the media preprocessing.** Proposed by Claude Opus 5.5, 2026-11-06 (milestone 24 step 4). Reason:
+the note above leaves these choices open, and each one is the simplest choice that the reference can check.
+
+- **Objects.** The process gives the family a reader of the objects of this machine. The family reads the bytes of
+  each media part through it. A family with no reader refuses a media part with a 400 that names the part.
+- **Depth.** A PNG with 16 bits in a sample is a 400 that names the part. Pillow reads it, but its convert of a gray
+  of 16 bits clips each value. The SDXL family refuses it too (11.9b). A PNG of 1, 2 or 4 bits expands to 8 bits.
+- **JPEG.** The decoder is the crate `zune-jpeg`, not libjpeg-turbo of Pillow. On the fixture, 305 of 9,216 bytes
+  differ, each by 2 or less. Thus a JPEG has no gate of bits, and a PNG has one.
+- **Orientation.** The family does not turn an image by its EXIF orientation. The reference processor does not
+  turn it either.
+- **Resize.** The resize is torch's integer arithmetic with weights in 16 bits. It gives the bits of the reference
+  for each size of the fixture, from 37 by 53 to 3,000 by 4,000 pixels.
+- **Mel rows.** The family computes the spectrum and the mel sums in f64, and it rounds once to f32. The reference
+  computes in f32, so its bins of low power hold the noise of that rounding. The test bounds the gap at each level.
+- **Assistant audio.** An `assistant` audio part stays a 400 that names the part. Its count of positions comes
+  from the codes that the service holds, and that service is a later step.
 
 **The recipe of a media part.** Proposed by Claude Opus 5.5, 2026-11-06. Reason: the rows of a part are a function
 of the engine identity and the bytes of the object. The object's content id names the bytes.

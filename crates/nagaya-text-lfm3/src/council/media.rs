@@ -3,7 +3,7 @@
 //! The template writes one placeholder token for each media part, between `<|vision_start|>` and `<|vision_end|>`
 //! for an image or a clip that the model reads. Liquid's processor puts the placeholder there as many times as the
 //! encoder gives rows, or as the clip has frames (`processing_lfm3_omni.py`). This module does the same with the
-//! counts that the caller gives. The counts come from the media preprocessing.
+//! counts that the caller gives. The counts come from the media preprocessing (`crate::media`).
 
 use nagaya_council::family::{Boundary, FamilyError, Rendering};
 
