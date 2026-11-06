@@ -91,6 +91,13 @@
 #define OP_GELU_MUL         81
 #define OP_SCALE            82
 #endif
+#ifdef MK_LFM3
+// The ops of the LFM3 binary (kernels/lfm3_ops.cl)
+#define OP_SHORT_CONV       90
+#define OP_HEAD_GATE        91
+#define SHORT_CONV_CHUNK    64  // positions per work item of OP_SHORT_CONV; at least SHORT_CONV_MAX_TAPS - 1
+#define SHORT_CONV_MAX_TAPS 8
+#endif
 #define NUM_EXPERTS         128
 #define TOP_K               8
 #define XMX_TOKENS          32  // tokens per XMX work item: four dpas tiles of 8 rows
@@ -638,7 +645,13 @@ __kernel void mk_persistent_interpreter(
 #else
                 float theta = global_rope ? 1000000.0f : 10000.0f;
 #endif
+#ifdef MK_LFM3
+                // The LFM3 binary: layer = the rotated pairs of a partial rotation (0: as the flags say). The other
+                // pairs keep their values, the zero-tail layout of LFM3 (modeling_lfm3.py:105-111).
+                uint n_rot = task.layer ? task.layer : (global_rope ? K / 8 : half_d);
+#else
                 uint n_rot = global_rope ? K / 8 : half_d;
+#endif
                 for (uint r = gsg; r < task.n; r += n_gsg) {
                     __global const float* x = A + (ulong)r * K;
                     __global float*       y = C + (ulong)r * K;
@@ -1403,6 +1416,9 @@ __kernel void mk_persistent_interpreter(
 #endif
 #ifdef MK_EMBEDDINGGEMMA2
 #include "embeddinggemma2_ops.cl"
+#endif
+#ifdef MK_LFM3
+#include "lfm3_ops.cl"
 #endif
         else if (op == OP_MEAN_POOL_L2) {
             // c[0..k) = L2-normalized mean of the first k columns of n rows with stride m.

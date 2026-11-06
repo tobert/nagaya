@@ -63,6 +63,11 @@ pub const OP_BIATTN: u16 = 80;
 pub const OP_GELU_MUL: u16 = 81;
 pub const OP_SCALE: u16 = 82;
 
+// The ops of the LFM3 binary (`kernels/lfm3_ops.cl`, `MK_LFM3`). It also holds the ops of the speech binary, and its
+// `OP_RMSNORM` with `FLAG_ROPE` reads the rotated pairs from `layer`.
+pub const OP_SHORT_CONV: u16 = 90;
+pub const OP_HEAD_GATE: u16 = 91;
+
 pub const FLAG_ACCUMULATE: u16 = 1 << 0;
 pub const FLAG_SOFTCAP_30: u16 = 1 << 2;
 pub const FLAG_ROPE_GLOBAL: u16 = 1 << 3;

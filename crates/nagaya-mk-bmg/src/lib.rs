@@ -42,6 +42,11 @@ pub const SDXL_KERNEL: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/megaker
 pub const EMBEDDINGGEMMA2_KERNEL: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_embeddinggemma2_bmg.bin"));
 
+/// The kernel binary of the LFM3 engine for `bmg-g31`: `kernels/megakernel.cl` with `MK_QWEN3TTS` and `MK_LFM3`, which
+/// add the ops of `kernels/qwen3tts_ops.cl` and `kernels/lfm3_ops.cl`. Its `OP_RMSNORM` takes a partial rotation.
+#[cfg(feature = "xe")]
+pub const LFM3_KERNEL: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_lfm3_bmg.bin"));
+
 /// The name of the entry point of each kernel binary.
 pub const KERNEL_ENTRY: &str = "mk_persistent_interpreter";
 
