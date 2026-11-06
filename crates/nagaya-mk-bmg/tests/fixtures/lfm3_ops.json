@@ -1,0 +1,192 @@
+{
+ "arrays": {
+  "attention.full": {
+   "dtype": "f32",
+   "len": 24576,
+   "offset": 87936,
+   "shape": [
+    3,
+    16,
+    128
+   ]
+  },
+  "attention.sliding": {
+   "dtype": "f32",
+   "len": 73728,
+   "offset": 14208,
+   "shape": [
+    9,
+    16,
+    128
+   ]
+  },
+  "head_gate": {
+   "dtype": "f32",
+   "len": 1536,
+   "offset": 112512,
+   "shape": [
+    3,
+    4,
+    32
+   ]
+  },
+  "rope.full": {
+   "dtype": "f32",
+   "len": 3072,
+   "offset": 8064,
+   "shape": [
+    3,
+    2,
+    128
+   ]
+  },
+  "rope.sliding": {
+   "dtype": "f32",
+   "len": 3072,
+   "offset": 11136,
+   "shape": [
+    3,
+    2,
+    128
+   ]
+  },
+  "short_conv.1.state": {
+   "dtype": "f32",
+   "len": 1152,
+   "offset": 6912,
+   "shape": [
+    6,
+    48
+   ]
+  },
+  "short_conv.1.y": {
+   "dtype": "f32",
+   "len": 192,
+   "offset": 6720,
+   "shape": [
+    1,
+    48
+   ]
+  },
+  "short_conv.20.state": {
+   "dtype": "f32",
+   "len": 1152,
+   "offset": 3840,
+   "shape": [
+    6,
+    48
+   ]
+  },
+  "short_conv.20.y": {
+   "dtype": "f32",
+   "len": 3840,
+   "offset": 0,
+   "shape": [
+    20,
+    48
+   ]
+  },
+  "short_conv.3.state": {
+   "dtype": "f32",
+   "len": 1152,
+   "offset": 5568,
+   "shape": [
+    6,
+    48
+   ]
+  },
+  "short_conv.3.y": {
+   "dtype": "f32",
+   "len": 576,
+   "offset": 4992,
+   "shape": [
+    3,
+    48
+   ]
+  }
+ },
+ "header": {
+  "author": "written by Claude Opus 5.5 for this tool, 2026-11-06",
+  "generator": "tools/lfm3_op_fixture.py",
+  "model": "LiquidAI/LFM3-Omni-2B",
+  "numpy": "2.5.4",
+  "python": "3.13.16",
+  "reference": "modeling_lfm3.py of the revision, copied into plain torch",
+  "revision": "21d75123f86c1f7ffb4bef1ea202710c4e7ebe67",
+  "torch": "2.14.1+cpu"
+ },
+ "meta": {
+  "attention.full.rows": [
+   0,
+   150,
+   299
+  ],
+  "attention.sliding.rows": [
+   0,
+   1,
+   2,
+   254,
+   255,
+   256,
+   257,
+   298,
+   299
+  ],
+  "cases": {
+   "attention": {
+    "d": 128,
+    "h": 16,
+    "kv": 4,
+    "seed": 300,
+    "t": 300
+   },
+   "head_gate": {
+    "d": 32,
+    "h": 4,
+    "offset": 3,
+    "seed": 400,
+    "stride": 20,
+    "t": 3
+   },
+   "rope": {
+    "cases": [
+     [
+      "full",
+      1000000.0,
+      0.5,
+      200
+     ],
+     [
+      "sliding",
+      10000.0,
+      1.0,
+      210
+     ]
+    ],
+    "d": 128,
+    "eps": 1e-05,
+    "heads": 2,
+    "p0": 4093,
+    "tokens": 3
+   },
+   "short_conv": {
+    "cases": [
+     [
+      20,
+      100
+     ],
+     [
+      3,
+      110
+     ],
+     [
+      1,
+      120
+     ]
+    ],
+    "d": 48,
+    "taps": 7
+   }
+  }
+ }
+}
