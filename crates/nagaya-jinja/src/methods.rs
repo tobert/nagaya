@@ -58,6 +58,33 @@ fn dict_get(map: &Value, args: &[Value]) -> Result<Value, Error> {
     Ok(if item.is_undefined() { default } else { item })
 }
 
+/// `dict.items()` of Python: the pairs of the dict, in its order. Python takes no argument here.
+fn dict_items(map: &Value, args: &[Value]) -> Result<Value, Error> {
+    match args {
+        [] => {}
+        [one] if one.is_kwargs() => {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                "dict.items() takes no keyword arguments",
+            ));
+        }
+        _ => {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                format!("dict.items() takes no arguments ({} given)", args.len()),
+            ));
+        }
+    }
+    let pairs: Vec<Value> = map
+        .try_iter()?
+        .map(|key| {
+            let item = map.get_item(&key).unwrap_or(Value::UNDEFINED);
+            Value::from(vec![key, item])
+        })
+        .collect();
+    Ok(Value::from(pairs))
+}
+
 /// The name of a kind of value, as Python names the type.
 pub(crate) fn type_name(v: &Value) -> &'static str {
     match v.kind() {
@@ -172,12 +199,15 @@ pub fn string_method(_state: &State, value: &Value, method: &str, args: &[Value]
     if value.kind() == ValueKind::Map && method == "get" {
         return dict_get(value, args);
     }
+    if value.kind() == ValueKind::Map && method == "items" {
+        return dict_items(value, args);
+    }
     let Some(text) = value.as_str() else {
         return Err(Error::new(
             ErrorKind::InvalidOperation,
             format!(
                 "the method {method:?} is not implemented for a value of type {}. This library implements \
-                 the method get of a dict, and these methods of strings only: {}. Change the template.",
+                 the methods get and items of a dict, and these methods of strings only: {}. Change the template.",
                 type_name(value),
                 METHODS.join(", ")
             ),
