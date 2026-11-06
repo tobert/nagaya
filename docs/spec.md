@@ -4418,7 +4418,10 @@ config is the sampler that Liquid tested (`generation_config.json`, model card "
 the backbone. A ring keeps the window of a sliding layer, as Gemma 4 does (engine-abi "mkviolet's parts").
 
 - The 6 full attention layers keep their keys and values for each position, as cells.
-- The 5 sliding attention layers keep the last 256 positions, as rings.
+- The 5 sliding attention layers keep their keys and values in rings. **Amended** by Claude Opus 5.5, 2026-11-06
+  (milestone 24 step 6), and Proposed. A ring holds the last 2,048 positions, and a snapshot holds the positions that
+  its ring holds. A restore needs the last 256. Reason: the feed gate of 8.3 reads each row part from position 0
+  (engine-abi "The first LFM3 binding").
 - The 13 convolution layers keep a state of the last 6 inputs of each channel. It is a fixed part of the slot, not a
   row part, so a snapshot holds it whole at each boundary.
 - The encoders of the media and the depth decoder hold no state between quanta.

@@ -1239,6 +1239,42 @@ the whole clip within 1.2e-5 in the oracle step.
 **The text model.** `LFM3-1.7B` declares no media and no `speech_frames`. Its engine is the same code with other
 weights, and the open checks that the config has no vision tower, audio encoder or depth decoder.
 
+### The first LFM3 binding
+
+Proposed by Claude Opus 5.5, 2026-11-06, for milestone 24 step 6. The text path of the backbone
+(`crates/nagaya-mk-lfm3-bmg`) needs these choices. The docs above leave each one open, and each is the simplest
+choice that the gates can check. Amy decides.
+
+- **The config.** The kind is `mk-lfm3-bmg`. Its config has three keys. `model_dir` names the model folder, and it
+  has no default, because one kind serves two models. `slots` is the count of slots. `max_block` is the feed block:
+  512 when the key is absent, and 1 to 512.
+- **One slot shape.** Every slot holds 32,768 positions (spec 11.11). Reason: the attention ops choose the split of
+  the keys of a block by the size of its slot (`attn_pv_segments`, `megakernel.cl`). Two sizes would give two
+  results for one recipe, and the recipe names no size.
+- **The parts.** A conv layer has `conv.<ll>`, a fixed F32 part of 6 rows of 2,048 values, oldest first. An attention
+  layer has `k.<ll>` and `v.<ll>`, F32 rows of 4 heads of 128. They are cells on the full layers and rings on the
+  sliding layers. `ll` is the layer in two digits.
+- **The rings.** A ring has 2,048 rows and a spill of 1,024 rows (`KV_RING_SPILL`). Its coverage is the positions
+  that it holds: the last 2,048, and after a restore none before the restored rows. A restore of a ring part must
+  hold the last 256 positions.
+- **No way back.** A pass starts at the token count of its slot. `set_n` with no write keeps the count or sets it to
+  0. A write empties the slot until `set_n`, as for Gemma 4. Reason: the conv state holds only the last 6 inputs, so
+  the slot cannot go back. A job that continues a span (D11 rule 7) restores its last boundary first.
+- **Position 0.** A pass from position 0 starts from conv states of zeros, as the reference does.
+- **Logits.** A logit row has the width of the family's vocabulary, 125,033 values (spec 11.11). A token id at or
+  past that width is refused. The head runs once for each logit row, so the bits of a row do not depend on the count
+  of rows.
+- **Inputs.** The engine takes tokens only in step 6. The rows of the media come with step 7 (D2).
+- **The checkpoint digest.** It is `blake3:` and a BLAKE3 hash with the key `nagaya lfm3 checkpoint v1`. It covers the
+  canonical `config.json` and each tensor of `model.safetensors`, as for Gemma 4. Omni's other towers are in it, so a
+  later step that runs them keeps the digest.
+- **The identity.** `model` is the served name: `lfm3` or `lfm3-omni`. `numbers` hold the BLAKE3 of the kernel
+  binary, the compiler and driver versions, `max_block` and the ring rows. `feed.block` is a bit setting of the class
+  `reference-defining` (D11 rule 3).
+- **The memory terms.** `weights`, `kv` and `work` are on `device(0)`, and `pinned` is host memory. `open` refuses a
+  device size that is not the sum of the terms. `max_quantum_ms` is 2,000, a budget that a card test measures.
+- **Not in step 6.** The engine has no arena, no seal and no stages. A restart uploads the weights again.
+
 ## Not covered yet
 
 - Streams. They need a period, a deadline and a late policy, in `limits()` or per job. A pass blocks, so the
