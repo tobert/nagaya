@@ -586,6 +586,8 @@ milestone 22 is done on gfx1151host. Milestone 23, the cluster, is next, and mil
        Pin the revision of each model. Read Liquid's remote code before it runs.
     3. **Refusal probe.** Run a sample of Amy's photos through the reference on the CPU. Count the refusals, the
        vague captions and the full captions. Write only the counts. The photos and the captions stay on b70host.
+       Amy runs it later (2026-11-06: "no photos on this machine yet, I'll test that later. you can generate some
+       test images with kaibo as needed"). Thus the other steps do not wait for it.
     4. **Family.** Write `nagaya-text-lfm3`: both tokenizers, both templates, the XML tool calls, and the reply
        parser. Also write the image patches and the mel features on the CPU.
     5. **Ops.** Add the gated short convolution, the sliding attention and the partial rotation to the shared
