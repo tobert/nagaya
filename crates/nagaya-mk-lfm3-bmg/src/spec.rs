@@ -34,8 +34,10 @@ pub const DEFAULT_MAX_BLOCK: usize = 512;
 /// The largest feed block. The spill of a ring holds one block (`RING_SPILL`).
 pub const MAX_BLOCK: usize = 512;
 
-/// The most positions in one slot: the context of Omni's model card (spec 11.11, "The served LFM3 models").
-pub const MAX_SLOT_TOKENS: usize = 32_768;
+/// The positions of each slot: the context of Omni's model card (spec 11.11, "The served LFM3 models"). Every slot has
+/// this one size, because the attention ops split the keys of a block by the size of its slot (`attn_pv_segments`,
+/// megakernel.cl), and the recipe does not name a size.
+pub const SLOT_TOKENS: usize = 32_768;
 
 /// The longest quantum in milliseconds (D8). It is a budget, not a measurement: the card test
 /// `the_longest_quantum_fits_its_bound` measures the last block of a full slot.
@@ -54,7 +56,9 @@ pub const RING_ROWS: usize = 2048;
 /// The rows past a ring that a block may write before `OP_COPY` moves them to the start: the kernel's `KV_RING_SPILL`.
 pub const RING_SPILL: usize = 1024;
 
-const _: () = assert!(RING_ROWS.is_multiple_of(32) && RING_SPILL >= MAX_BLOCK && MAX_BLOCK <= MAX_SLOT_TOKENS);
+const _: () = assert!(
+    RING_ROWS.is_multiple_of(32) && RING_SPILL >= MAX_BLOCK && MAX_BLOCK <= SLOT_TOKENS && SLOT_TOKENS > RING_ROWS
+);
 
 /// The two LFM3 models. The served name is the model name of the identity (spec 11.11).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,6 +153,16 @@ impl Backbone {
                 ));
             }
         };
+        if model == Model::Text
+            && let Some(key) = ["vision_config", "audio_encoder_config", "depth_config"]
+                .into_iter()
+                .find(|key| !root[*key].is_null())
+        {
+            return Err(format!(
+                "config.json of Lfm3ForCausalLM has {key}; the text model has no vision tower, audio encoder or depth \
+                 decoder (engine-abi \"LFM3\")"
+            ));
+        }
         let c = match model {
             Model::Text => &root,
             Model::Omni => &root["text_config"],
@@ -419,8 +433,8 @@ pub fn slot_bytes(b: &Backbone, seq: usize) -> u64 {
 pub struct Config {
     /// The model folder: `config.json`, `model.safetensors`, `tokenizer.json` and `chat_template.jinja`.
     pub model_dir: PathBuf,
-    /// The positions of each slot, in slot order.
-    pub slots: Vec<usize>,
+    /// The count of slots. Each slot holds `SLOT_TOKENS` positions.
+    pub slots: usize,
     /// The tokens of one block, and the feed block (engine-abi D11).
     pub max_block: usize,
 }
@@ -434,21 +448,15 @@ impl Config {
                 self.max_block
             ));
         }
-        if self.slots.is_empty() {
-            return Err("the config names no slot; give `slots`, the positions of each slot".to_owned());
-        }
-        if let Some(seq) = self.slots.iter().find(|seq| **seq == 0 || **seq > MAX_SLOT_TOKENS) {
-            return Err(format!(
-                "a slot of {seq} positions is outside 1 to {MAX_SLOT_TOKENS}; the slot of an LFM3 model holds at \
-                 most {MAX_SLOT_TOKENS} positions (spec 11.11)"
-            ));
+        if self.slots == 0 {
+            return Err("the config names no slot; give `slots`, the count of slots".to_owned());
         }
         Ok(())
     }
 
-    /// The largest slot, in positions.
-    pub fn max_seq(&self) -> usize {
-        self.slots.iter().copied().max().unwrap_or(0)
+    /// The positions of each slot, in slot order.
+    pub fn seqs(&self) -> Vec<usize> {
+        vec![SLOT_TOKENS; self.slots]
     }
 }
 
@@ -491,8 +499,8 @@ pub fn pinned_bytes() -> u64 {
 
 /// The limits for a config, with the device bytes of the weights.
 pub fn limits(b: &Backbone, config: &Config, weights: u64) -> Limits {
-    let kv: u64 = config.slots.iter().map(|seq| slot_bytes(b, *seq)).sum();
-    let work = bufs_bytes(b, config.max_block, config.max_seq()) as u64 + ring_device_bytes(config.max_seq());
+    let kv = config.slots as u64 * slot_bytes(b, SLOT_TOKENS);
+    let work = bufs_bytes(b, config.max_block, SLOT_TOKENS) as u64 + ring_device_bytes(SLOT_TOKENS);
     Limits {
         // A drop frees the weights, the slots, the buffers and the card's context.
         capabilities: vec![
@@ -508,7 +516,7 @@ pub fn limits(b: &Backbone, config: &Config, weights: u64) -> Limits {
         max_segments: MAX_SEGMENTS,
         max_pass_inputs: config.max_block as u32,
         max_logit_rows: MAX_LOGIT_ROWS as u32,
-        slots: slot_limits(b, &config.slots),
+        slots: slot_limits(b, &config.seqs()),
         max_quantum_ms: MAX_QUANTUM_MS,
         memory: MemoryLimits {
             mandatory: vec![
@@ -578,6 +586,9 @@ pub struct Held {
     pub n: Vec<u64>,
     /// The parts that got a write since the last `set_n`, with the positions of a row part.
     writes: Vec<BTreeMap<PartId, Option<Range<u64>>>>,
+    /// The first position that the rings of each slot hold since its last restore: 0, or the start of the restored
+    /// rows.
+    ring_from: Vec<u64>,
     /// The bytes of a row of a row part, and of a whole conv part.
     row_bytes: u64,
     conv_bytes: u64,
@@ -592,6 +603,7 @@ impl Held {
             seqs: seqs.to_vec(),
             n: vec![0; seqs.len()],
             writes: vec![BTreeMap::new(); seqs.len()],
+            ring_from: vec![0; seqs.len()],
             row_bytes: (b.kv_row() * 4) as u64,
             conv_bytes: (b.conv_state() * 4) as u64,
             window: b.window as u64,
@@ -620,10 +632,15 @@ impl Held {
     }
 
     /// The first position that a row part of layer `l` holds in `slot`. A cells part, or a sliding layer of a slot
-    /// with no ring, holds every position from 0. A ring holds the last `window` positions, as spec 11.11 says.
+    /// with no ring, holds every position from 0. A ring holds the last `RING_ROWS` positions, and after a restore no
+    /// position before the restored rows.
     pub fn base(&self, slot: usize, l: usize) -> u64 {
-        if ringed(self.seqs[slot], self.kinds[l]) {
-            self.n[slot].saturating_sub(self.window)
+        let seq = self.seqs[slot];
+        if ringed(seq, self.kinds[l]) {
+            self.n[slot]
+                .saturating_sub(ring_of(seq) as u64)
+                .max(self.ring_from[slot])
+                .min(self.n[slot])
         } else {
             0
         }
@@ -850,8 +867,22 @@ impl Held {
         Ok(slot)
     }
 
-    /// Take a count that `check_set_n` passed.
+    /// Take a count that `check_set_n` passed. After writes, the rings hold the positions from the latest start of the
+    /// rows of a ring part.
     pub fn set_n(&mut self, slot: usize, n: u64) {
+        let seq = self.seqs[slot];
+        let from = self.writes[slot]
+            .iter()
+            .filter_map(|(id, rows)| match (self.list[*id], rows) {
+                (Part::K(l) | Part::V(l), Some(rows)) if ringed(seq, self.kinds[l]) => Some(rows.start),
+                _ => None,
+            })
+            .max();
+        if n == 0 {
+            self.ring_from[slot] = 0;
+        } else if let Some(from) = from {
+            self.ring_from[slot] = from;
+        }
         self.n[slot] = n;
         self.writes[slot].clear();
     }
@@ -859,6 +890,7 @@ impl Held {
     /// Empty a slot.
     pub fn clear(&mut self, slot: usize) {
         self.n[slot] = 0;
+        self.ring_from[slot] = 0;
         self.writes[slot].clear();
     }
 

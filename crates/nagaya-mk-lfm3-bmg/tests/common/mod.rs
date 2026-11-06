@@ -196,3 +196,92 @@ pub fn max_abs(got: &[f32], want: &[f32]) -> f64 {
         .zip(want)
         .fold(0.0f64, |m, (g, w)| m.max((*g as f64 - *w as f64).abs()))
 }
+
+/// The engine of `which` on card 0, the card of both LFM3 models on b70host (spec 11.11), with `slots` slots and a
+/// feed block of `max_block`.
+#[cfg(feature = "xe")]
+pub fn open(which: Which, slots: usize, max_block: usize) -> nagaya_mk_lfm3_bmg::Lfm3Engine {
+    let config = nagaya_mk_lfm3_bmg::Config {
+        model_dir: model_dir(which),
+        slots,
+        max_block,
+    };
+    nagaya_mk_lfm3_bmg::Lfm3Engine::open(config, &cards()[0]).unwrap_or_else(|e| panic!("open {which:?}: {e}"))
+}
+
+/// A segment of `tokens` from position `from` of `slot`, with the logits of the positions `logits`.
+pub fn segment(slot: u32, from: u64, tokens: &[u32], logits: &[u64]) -> nagaya_abi::Segment {
+    nagaya_abi::Segment {
+        state: nagaya_abi::State::Slot(slot),
+        inputs: nagaya_abi::SegmentInputs::Tokens(tokens.to_vec()),
+        positions: (from..from + tokens.len() as u64).collect(),
+        meta: Vec::new(),
+        outputs: nagaya_abi::OutputsWanted {
+            logit_rows: logits.to_vec(),
+        },
+    }
+}
+
+/// Feed `ids` into `slot` from position `from` in passes of the lengths of `split`, and give the logits of the last
+/// position.
+pub fn feed_split(engine: &mut dyn nagaya_abi::Engine, slot: u32, from: u64, ids: &[u32], split: &[usize]) -> Vec<f32> {
+    assert_eq!(split.iter().sum::<usize>(), ids.len(), "the split covers the ids");
+    let mut at = 0usize;
+    let mut last = Vec::new();
+    for (i, n) in split.iter().enumerate() {
+        let pos = from + at as u64;
+        let logits: Vec<u64> = if i + 1 == split.len() {
+            vec![pos + *n as u64 - 1]
+        } else {
+            Vec::new()
+        };
+        let out = engine
+            .pass(&[segment(slot, pos, &ids[at..at + n], &logits)], &[])
+            .unwrap_or_else(|e| panic!("a pass at {pos} of {n} tokens: {}", e.message));
+        if let Some(row) = out.outputs.first() {
+            last = row
+                .bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|b| f32::from_le_bytes(*b))
+                .collect();
+        }
+        at += n;
+    }
+    last
+}
+
+/// The split of `n` tokens by the feed rule: passes of `block` from the start, and the rest last (engine-abi D11).
+pub fn blocks(n: usize, block: usize) -> Vec<usize> {
+    let mut split = vec![block; n / block];
+    if !n.is_multiple_of(block) {
+        split.push(n % block);
+    }
+    split
+}
+
+/// The index of the first value whose bits differ, or `None`.
+pub fn first_other_bits(a: &[f32], b: &[f32]) -> Option<usize> {
+    assert_eq!(a.len(), b.len(), "the lengths differ");
+    a.iter().zip(b).position(|(x, y)| x.to_bits() != y.to_bits())
+}
+
+/// The log of the sum of the exponents of `row`, in f64.
+pub fn logsumexp(row: &[f32]) -> f64 {
+    let most = row.iter().fold(f64::NEG_INFINITY, |m, v| m.max(*v as f64));
+    most + row.iter().map(|v| (*v as f64 - most).exp()).sum::<f64>().ln()
+}
+
+/// `n` token ids from a fixed sequence, below the vocabulary of the family. They are the same on each run.
+pub fn ids(n: usize, seed: u64) -> Vec<u32> {
+    let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    (0..n)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x % 120_000) as u32 + 1000
+        })
+        .collect()
+}

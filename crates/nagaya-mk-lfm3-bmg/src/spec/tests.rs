@@ -86,6 +86,7 @@ fn a_value_that_the_kernels_cannot_run_is_refused_with_its_key() {
             "architectures",
             Box::new(|c| c["architectures"][0] = "LlamaForCausalLM".into()),
         ),
+        ("depth_config", Box::new(|c| c["depth_config"] = serde_json::json!({}))),
     ];
     for (key, edit) in cases {
         let error = Backbone::parse(&edited(TEXT_CONFIG, edit)).unwrap_err();
@@ -133,7 +134,7 @@ fn a_slot_counts_its_planes_and_its_conv_states() {
     assert_eq!(plane_rows(4096, LayerKind::Sliding), 3072);
 }
 
-fn config(slots: Vec<usize>) -> Config {
+fn config(slots: usize) -> Config {
     Config {
         model_dir: PathBuf::from("/lfm3"),
         slots,
@@ -144,7 +145,7 @@ fn config(slots: Vec<usize>) -> Config {
 #[test]
 fn the_limits_keep_the_feed_rule_and_the_terms() {
     let b = backbone();
-    let c = config(vec![2048, 32_768, 32_768]);
+    let c = config(3);
     let l = limits(&b, &c, 3_456_000_000);
     l.check().unwrap();
     assert_eq!(l.feed, Some(FeedRule { block: 512 }));
@@ -156,22 +157,15 @@ fn the_limits_keep_the_feed_rule_and_the_terms() {
     assert!(l.stages.is_empty());
     assert_eq!(
         l.slots,
-        vec![
-            SlotLimit {
-                bytes: slot_bytes(&b, 2048),
-                count: 1,
-                tokens: 2048
-            },
-            SlotLimit {
-                bytes: 868_859_904,
-                count: 2,
-                tokens: 32_768
-            },
-        ]
+        vec![SlotLimit {
+            bytes: 868_859_904,
+            count: 3,
+            tokens: 32_768
+        }]
     );
     let term = |name: &str| l.memory.mandatory.iter().find(|t| t.name == name).unwrap().clone();
     assert_eq!(term("weights").bytes, 3_456_000_000);
-    assert_eq!(term("kv").bytes, slot_bytes(&b, 2048) + 2 * 868_859_904);
+    assert_eq!(term("kv").bytes, 3 * 868_859_904);
     assert_eq!(term("kv").tier, Tier::Device(0));
     assert_eq!(term("pinned").tier, Tier::Host);
     // The scores of a block of 512 over 32,768 keys are most of the work: 16 × 512 × 32,784 floats.
@@ -180,11 +174,10 @@ fn the_limits_keep_the_feed_rule_and_the_terms() {
 
 #[test]
 fn a_config_outside_the_sizes_is_refused() {
-    assert!(config(vec![32_768]).check().is_ok());
-    assert!(config(vec![32_769]).check().unwrap_err().contains("32768"));
-    assert!(config(vec![0]).check().is_err());
-    assert!(config(vec![]).check().unwrap_err().contains("slots"));
-    let mut c = config(vec![1024]);
+    assert!(config(1).check().is_ok());
+    assert_eq!(config(2).seqs(), vec![32_768, 32_768]);
+    assert!(config(0).check().unwrap_err().contains("slots"));
+    let mut c = config(1);
     c.max_block = 513;
     assert!(c.check().unwrap_err().contains("max_block"));
     c.max_block = 0;
@@ -258,17 +251,17 @@ const CELLS: PartId = 2;
 const RING: PartId = 5;
 
 #[test]
-fn a_ring_holds_the_window_of_a_long_slot_and_a_short_slot_holds_every_position() {
+fn a_ring_holds_its_last_rows_and_a_short_slot_holds_every_position() {
     let b = backbone();
     assert_eq!(part_list(&b)[RING], Part::K(4));
     let mut held = Held::new(&b, &[2048, 4096]);
     held.n = vec![1000, 3000];
     assert_eq!(held.base(0, 4), 0);
-    assert_eq!(held.base(1, 4), 3000 - 256);
+    assert_eq!(held.base(1, 4), 3000 - 2048);
     assert_eq!(held.base(1, 2), 0);
     let row = vec![0u8; 512 * 4];
-    let span = held.coverage(State::Slot(1), RING, &row.repeat(256));
-    assert_eq!((span.start, span.end), (2744, 3000));
+    let span = held.coverage(State::Slot(1), RING, &row.repeat(2048));
+    assert_eq!((span.start, span.end), (952, 3000));
     assert_eq!(held.coverage(State::Slot(1), CONV, &[0; 64]).end, 0);
     let fit = |slot, part, start, end| held.fits(slot, &CoverageSpan { part, start, end });
     assert!(fit(1, RING, 2744, 3000).is_ok());
@@ -340,6 +333,13 @@ fn a_restore_writes_every_part_and_set_n_takes_the_count_only_then() {
     held.set_n(0, 300);
     assert_eq!(held.n[0], 300);
     assert!(held.check_set_n(state, 299).is_err(), "set_n took the writes");
+    // The rings hold no position before the restored rows, and a later pass moves the base on.
+    assert_eq!((held.base(0, 4), held.base(0, 2)), (44, 0));
+    held.n[0] = 3000;
+    assert_eq!(held.base(0, 4), 952);
+    held.clear(0);
+    held.n[0] = 100;
+    assert_eq!(held.base(0, 4), 0, "a clear forgets the restored start");
 }
 
 #[test]
@@ -350,14 +350,11 @@ fn a_read_stays_inside_the_rows_that_a_part_holds() {
     let state = State::Slot(0);
     let row = 512 * 4;
     assert!(held.check_read(state, RING, 2744, 256, 256 * row).is_ok());
-    assert!(
-        held.check_read(state, RING, 2743, 257, 257 * row)
-            .unwrap_err()
-            .contains("2744")
-    );
+    assert!(held.check_read(state, RING, 952, 2048, 2048 * row).is_ok());
+    assert!(held.check_read(state, RING, 951, 1, row).unwrap_err().contains("952"));
     assert!(held.check_read(state, CELLS, 0, 3001, 3001 * row).is_err());
     assert!(held.check_read(state, CELLS, 0, 2, row).is_err());
-    assert_eq!(held.check_part_read(state, RING, 256 * row).unwrap().2, 2744);
+    assert_eq!(held.check_part_read(state, RING, 256 * row).unwrap().2, 952);
     assert!(held.check_part_read(state, CONV, 49_152).is_ok());
     assert!(held.check_part_read(state, CONV, row).is_err());
     assert!(held.check_part_read(State::Slot(1), CONV, 49_152).is_err());

@@ -5,10 +5,16 @@
 //! binary. `spec` reads `config.json` and holds the limits and the rules of the slots, which need no card. `weights`
 //! checks the tensors of the backbone and uploads them, and `model` builds the ring of a pass.
 //!
-//! With no feature, the crate plans with no card.
+//! With no feature, the crate plans with no card. The feature `xe` loads the engine on a card.
 
+#[cfg(feature = "xe")]
+pub mod device;
+#[cfg(feature = "xe")]
+pub mod engine;
 pub mod model;
 pub mod spec;
 pub mod weights;
 
+#[cfg(feature = "xe")]
+pub use engine::Lfm3Engine;
 pub use spec::{Backbone, Config, plan};

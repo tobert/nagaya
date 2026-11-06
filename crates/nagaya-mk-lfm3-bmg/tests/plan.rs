@@ -24,7 +24,7 @@ fn both_checkpoints_hold_every_tensor_of_the_backbone_and_plan_alike() {
         assert_eq!(spec::weights_bytes(&b, &dir).unwrap(), WEIGHTS_BYTES, "{which:?}");
         let config = Config {
             model_dir: dir,
-            slots: vec![2048, 32_768],
+            slots: 2,
             max_block: 512,
         };
         let limits = spec::plan(&config).unwrap();
