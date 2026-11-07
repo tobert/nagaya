@@ -7,13 +7,15 @@
 //! `cargo test --release -p nagaya --features xe --test xe_process -- --test-threads=1 --nocapture`.
 #![cfg(feature = "xe")]
 
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use gogi_conformance::{Opts, Status, run};
+use gogi_conformance::{Opts, Restart, Status, run};
 use nagaya::admission::Registry;
 use nagaya::cpu_sets::for_machine_with_devices_ignoring;
 use nagaya::http::{Council, Server, router};
@@ -98,48 +100,119 @@ fn free_port() -> u16 {
         .port()
 }
 
+/// The process on the cards, its council and its HTTP server.
+struct Running {
+    ready: lifecycle::Ready,
+    council: Arc<Council>,
+    server: Server,
+}
+
+/// What a restart keeps: the checkpoint, the store directory and the HTTP port. A restart stops the server, the
+/// council and the process, and starts all three again on the same store and port, as systemd does (spec 10.2, 10.3).
+struct Host {
+    dir: PathBuf,
+    store: tempfile::TempDir,
+    port: u16,
+    runtime: tokio::runtime::Runtime,
+    running: Option<Running>,
+}
+
+impl Host {
+    fn new(dir: PathBuf) -> Self {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut host = Host {
+            dir,
+            store: tempfile::tempdir().unwrap(),
+            port: free_port(),
+            runtime,
+            running: None,
+        };
+        host.open();
+        host
+    }
+
+    /// Probe the machine, open the engine on the cards by their PCI addresses, and serve it on the port.
+    fn open(&mut self) {
+        let probe = FileProbe::new("/");
+        let mut inventory = Probe::probe(&probe).expect("the inventory of this machine");
+        let ignore = vec![IGNORE.to_owned()];
+        inventory.ignore(&ignore).expect("the machine has the iGPU");
+        for id in [0, 1] {
+            let device = inventory.device(id).expect("devices 0 and 1");
+            println!("device {id}: {} at {}", device.name, device.pci_address);
+            assert!(!device.ignored, "device {id} is a B70 card, not the ignored iGPU");
+        }
+        let profile = profile(&self.dir);
+        let sets = for_machine_with_devices_ignoring(&probe, &ignore).expect("the CPU sets of this machine");
+        let start = Instant::now();
+        let ready = lifecycle::start_with(
+            profile.clone(),
+            Registry::compiled_in(),
+            inventory,
+            self.store.path(),
+            None,
+            Options::new(Duration::from_secs(600)).cpu_sets(sets),
+        )
+        .expect("the process opens the engine");
+        println!("opened in {} ms", start.elapsed().as_millis());
+        let council = Arc::new(
+            council(
+                &FamilyRegistry::compiled_in(),
+                &profile,
+                &ready.opened,
+                &ready.process.ports(),
+                self.store.path(),
+                &[],
+                None,
+            )
+            .expect("the process serves the engine"),
+        );
+        let server = Server::start(
+            self.runtime.handle(),
+            format!("127.0.0.1:{}", self.port).parse().unwrap(),
+            Arc::clone(&council),
+        )
+        .expect("the HTTP server binds its loopback port");
+        self.running = Some(Running { ready, council, server });
+    }
+
+    /// Stop the server, drain the council and stop the process. The stop parks each held state (spec 10.3).
+    fn close(&mut self) {
+        let Running {
+            mut ready,
+            council,
+            server,
+        } = self.running.take().expect("the process runs");
+        server.stop(Duration::from_secs(2));
+        council.drain();
+        let stopped = lifecycle::stop(&mut ready, None, Duration::from_secs(30), &SignalFlag::new());
+        println!("stop: {}", stopped.log_line());
+        drop(council);
+        drop(ready);
+    }
+
+    fn council(&self) -> Arc<Council> {
+        Arc::clone(&self.running.as_ref().expect("the process runs").council)
+    }
+
+    fn url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+}
+
 /// The process opens the engine on the cards by their PCI addresses, serves a decision and a generation, and passes
-/// gogi's conformance suite.
+/// gogi's conformance suite. The suite restarts the process once, to check that specs, pins and keeps survive.
 #[test]
 fn the_process_serves_gemma4_on_both_cards() {
     let Some(dir) = checkpoint() else {
         return;
     };
-    let probe = FileProbe::new("/");
-    let mut inventory = Probe::probe(&probe).expect("the inventory of this machine");
-    let ignore = vec![IGNORE.to_owned()];
-    inventory.ignore(&ignore).expect("the machine has the iGPU");
-    for id in [0, 1] {
-        let device = inventory.device(id).expect("devices 0 and 1");
-        println!("device {id}: {} at {}", device.name, device.pci_address);
-        assert!(!device.ignored, "device {id} is a B70 card, not the ignored iGPU");
-    }
-    let store = tempfile::tempdir().unwrap();
-    let profile = profile(&dir);
-    let sets = for_machine_with_devices_ignoring(&probe, &ignore).expect("the CPU sets of this machine");
-    let start = Instant::now();
-    let mut ready = lifecycle::start_with(
-        profile.clone(),
-        Registry::compiled_in(),
-        inventory,
-        store.path(),
-        None,
-        Options::new(Duration::from_secs(600)).cpu_sets(sets),
-    )
-    .expect("the process opens the engine");
-    println!("opened in {} ms", start.elapsed().as_millis());
-    let council = Arc::new(
-        council(
-            &FamilyRegistry::compiled_in(),
-            &profile,
-            &ready.opened,
-            &ready.process.ports(),
-            store.path(),
-            &[],
-            None,
-        )
-        .expect("the process serves the engine"),
-    );
+    let host = Rc::new(RefCell::new(Host::new(dir)));
+    let council = host.borrow().council();
 
     let (status, identity) = send(&council, "GET", "/council/v2/identity", None);
     assert_eq!(status, StatusCode::OK, "{identity}");
@@ -171,22 +244,22 @@ fn the_process_serves_gemma4_on_both_cards() {
     println!("generation in {elapsed} ms: {generation}");
     let usage = &generation["usage"];
     println!("usage {usage}");
+    drop(council);
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(4)
-        .enable_all()
-        .build()
-        .unwrap();
-    let server = Server::start(
-        runtime.handle(),
-        format!("127.0.0.1:{}", free_port()).parse().unwrap(),
-        Arc::clone(&council),
-    )
-    .expect("the HTTP server binds a loopback port");
+    let url = host.borrow().url();
+    let held = Rc::clone(&host);
+    let restart = Restart::Hook(Box::new(move || {
+        let mut host = held.borrow_mut();
+        host.close();
+        let start = Instant::now();
+        host.open();
+        println!("restart: open again in {} ms", start.elapsed().as_millis());
+        Ok(())
+    }));
     let report = run(
         Opts {
-            url: format!("http://{}", server.local_addr()),
-            restart: None,
+            url,
+            restart: Some(restart),
             model: None,
         },
         false,
@@ -201,11 +274,7 @@ fn the_process_serves_gemma4_on_both_cards() {
     for check in report.checks.iter().filter(|check| check.status != Status::Ok) {
         println!("{:?} {}: {}", check.status, check.name, check.detail);
     }
-    server.stop(Duration::from_secs(2));
-    council.drain();
-    let signals = SignalFlag::new();
-    let stopped = lifecycle::stop(&mut ready, None, Duration::from_secs(30), &signals);
-    println!("stop: {}", stopped.log_line());
+    host.borrow_mut().close();
     // Spec 6.14 (decided 2026-10-21): a generation on an engine with a feed rule holds no head. Since gogi a07d85e,
     // gogi's check of the head skips a null head, so no check may fail.
     let failed: Vec<&str> = report
@@ -219,5 +288,18 @@ fn the_process_serves_gemma4_on_both_cards() {
         Vec::<&str>::new(),
         "gogi-conformance failed; the lines above name each check"
     );
+    for name in [
+        "a held spec survives a restart",
+        "a pinned snapshot survives a restart",
+        "a decision replays bit for bit across a restart",
+    ] {
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|check| check.name == name && check.status == Status::Ok),
+            "{name} did not pass"
+        );
+    }
     assert!(generation["head"].is_null(), "{generation}");
 }
