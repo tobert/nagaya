@@ -4444,6 +4444,36 @@ with an object (gogi "Outputs"), so no new member is needed.
 - An `assistant` audio part must name an output of this served model, as in 11.8a. The service keeps the codes of
   each output, and audio whose codes it does not hold is a 404 that names the part.
 
+**The speech loop of a generation.** Proposed by Claude Opus 5.5, 2026-11-06 (milestone 24 step 9). Reason: the
+notes above leave these choices open. Each one is the simplest choice that follows gogi and the reference loop
+(`modeling_lfm3_omni.py`, `_generate`).
+
+- **Limits.** `max_tokens` bounds the text tokens of the reply, as gogi "Outputs" writes. `usage.completion` counts
+  the text tokens only. The reference counts a frame as one step of `max_new_tokens`.
+- **The frame limit.** A frame takes one position of the slot. A full slot ends the reply with `context_full`. Thus
+  the slot bounds the frames, as for Qwen3-TTS (11.8a).
+- **After the end frame.** The reply goes on in text until a stop token, as the reference does. In `interleaved` mode
+  after `<|text_end|>`, the end frame ends the reply.
+- **A stop before the audio ends.** A stop token, `max_tokens` or a full slot ends the reply and its audio. The WAV
+  holds the frames so far, and the codec gives its last samples.
+- **One output.** The text sampler never picks `<|audio_start|>` or `<|mixed_start|>`, in a speech reply too. Thus a
+  reply holds one output. The reference lets a marker open a second clip.
+- **Draws.** A text token draws at its position in the context, and each frame takes a position (11.2). A frame draws
+  with the seed of the request and its index in the output, from 0.
+- **Logit rows.** Each frame asks the engine for its logit row, because a text token can follow any frame.
+- **Options.** `output.options` takes `mode` only. Another member, or a mode other than `interleaved` and `speech`,
+  is a 400 that names it.
+- **Continuations.** A generation with an `output` and an open message is a 400 that names `continue`. Reason: an
+  open message holds text only (gogi "Continuations").
+- **No head.** A reply with audio holds no head. Reason: the family refuses an `assistant` audio part until a later
+  step reads its codes ("Assistant audio" above).
+- **Codes.** The service keeps the codes of each output in host memory, under its content id. A restart drops them,
+  and 11.8a gives the 404 for codes that the service does not hold.
+- **PCM.** A sample is clamped to [-1, 1], then rounded to `round(v × 32767)` with ties to even. The codec op of
+  Qwen3-TTS uses the same rule (`qwen3tts_ops.cl`, `OP_PCM`).
+- **The stream.** The `output` event comes after the checks of the request, before the first token. A failure after
+  it is an `error` event, as for a speech model (11.8a).
+
 **The sampler of the audio codes.** Proposed by Claude Opus 5.5, 2026-11-06. Reason: the checkpoint's generation
 config is the sampler that Liquid tested (`generation_config.json`, model card "Sampling parameters").
 
