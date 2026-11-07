@@ -16,6 +16,7 @@ mod peers;
 pub mod pending;
 mod profile;
 mod routes;
+pub mod speech_out;
 mod stream;
 pub mod voice;
 
@@ -293,6 +294,14 @@ impl Council {
         }
     }
 
+    /// The served text model of this process with the name `model`, not an alias.
+    pub fn text_model(&self, model: &str) -> Option<Arc<Served>> {
+        self.models
+            .iter()
+            .find(|served| served.service.model() == model)
+            .cloned()
+    }
+
     /// The speech service of a served speech model.
     pub fn speech_service(&self, model: &str) -> Option<Arc<crate::speech::SpeechService>> {
         self.speech.iter().find(|service| service.model() == model).cloned()
@@ -469,7 +478,12 @@ impl Council {
             engine: identity.engine,
             device: served.device.clone(),
             text_stop: None,
-            media: None,
+            // A model that speaks writes `audio/wav` beside its text (spec 11.11).
+            media: config.speech.as_ref().map(|_| gogi_proto::identity::Media {
+                inputs: Vec::new(),
+                outputs: vec![speech_out::WAV.to_owned()],
+                text_replies: true,
+            }),
             limits: ModelLimits {
                 context_tokens: config.context_tokens as u64,
                 decision_context_tokens: config.decision_context_tokens as u64,

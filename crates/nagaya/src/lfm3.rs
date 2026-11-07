@@ -12,6 +12,7 @@ use nagaya_abi::{Identity, Limits};
 use nagaya_mk_lfm3_bmg::spec::{self, Config};
 
 use crate::admission::{GroupDevice, PlanError};
+use crate::council::speech_out::SpeechOut;
 use crate::serving::OpenedFamily;
 
 /// The engine kind in a placement profile.
@@ -121,10 +122,68 @@ pub fn open_family(identity: &Identity, table: &toml::Table) -> Result<OpenedFam
         ));
     }
     let hash = family.tokenizer_hash().to_owned();
+    let speech = match model {
+        spec::Model::Omni => Some(speech_out(&family, &dir)?),
+        spec::Model::Text => None,
+    };
     Ok(OpenedFamily {
         family: Arc::new(family),
         tokenizer_hash: Some(hash),
+        speech,
     })
+}
+
+/// The speech path of Omni (spec 11.11): the markers from the family, and the blocks of an interleaved reply from
+/// `config.json`. The ids of `config.json` must be the tokens of the family, or the folder is refused.
+fn speech_out(family: &nagaya_text_lfm3::Lfm3Family, dir: &std::path::Path) -> Result<SpeechOut, String> {
+    let path = dir.join("config.json");
+    let text = std::fs::read_to_string(&path).map_err(|error| format!("cannot read `{}`: {error}", path.display()))?;
+    let config: serde_json::Value =
+        serde_json::from_str(&text).map_err(|error| format!("`{}` is not JSON: {error}", path.display()))?;
+    let number = |key: &str| {
+        config[key].as_u64().ok_or_else(|| {
+            format!(
+                "`{}` has no number `{key}`, which the speech of Omni needs",
+                path.display()
+            )
+        })
+    };
+    let token = |text: &str, key: &str| -> Result<u32, String> {
+        use nagaya_council::family::Family;
+        let ids = family
+            .tokenize_special(text)
+            .map_err(|error| format!("the tokenizer of `{}` cannot read {text}: {error}", dir.display()))?;
+        let want = number(key)?;
+        match ids.as_slice() {
+            [id] if u64::from(*id) == want => Ok(*id),
+            _ => Err(format!(
+                "`{}` names {key} {want}, and the tokenizer gives {ids:?} for {text}; name the folder of one checkpoint",
+                path.display()
+            )),
+        }
+    };
+    let [audio_start, mixed_start] = family.text_suppressed();
+    let speech = SpeechOut {
+        audio_start: token("<|audio_start|>", "audio_start_token_id")?,
+        mixed_start: token("<|mixed_start|>", "mixed_start_token_id")?,
+        text_end: token("<|text_end|>", "text_end_token_id")?,
+        audio_out: token("<|audio_out|>", "audio_out_token_id")?,
+        n_text: number("interleaved_n_text")? as usize,
+        n_audio: number("interleaved_n_audio")? as usize,
+    };
+    if [speech.audio_start, speech.mixed_start] != [audio_start, mixed_start] {
+        return Err(format!(
+            "the family of `{}` has other markers than its config; this is a defect of the family",
+            dir.display()
+        ));
+    }
+    if speech.n_text == 0 || speech.n_audio == 0 {
+        return Err(format!(
+            "`{}` names a block of 0 tokens or 0 frames; an interleaved reply needs at least 1 of each",
+            path.display()
+        ));
+    }
+    Ok(speech)
 }
 
 #[cfg(feature = "xe")]

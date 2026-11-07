@@ -12,6 +12,7 @@ pub mod pins;
 pub mod reads;
 pub mod slots;
 pub mod specs;
+pub mod speech_out;
 pub mod staging;
 
 use std::path::Path;
@@ -113,6 +114,9 @@ pub struct ServiceConfig {
     /// the server (gogi "Served models"), such as those of a speech engine (spec 11.8a). Each is the name of the
     /// engine in the profile and its served model.
     pub peers: Vec<(String, String)>,
+    /// The speech path of a served model that also speaks (spec 11.11), from its family library. `None` writes text
+    /// only.
+    pub speech: Option<speech_out::SpeechOut>,
 }
 
 /// The sample settings that a generation takes when its request does not name them. Each engine has its own
@@ -156,6 +160,7 @@ impl ServiceConfig {
             pin_bytes: 1 << 30,
             spec_rules: SpecRules::default(),
             peers: Vec::new(),
+            speech: None,
         }
     }
 }
@@ -305,6 +310,8 @@ pub struct Service {
     /// (`shared.store`), never the store before `pins`. A method that needs both locks `pins` first. Two methods that
     /// lock in two orders can wait for each other for ever.
     pins: Arc<Mutex<PinBook>>,
+    /// The codes of each audio output that this service wrote, by content id (spec 11.11, "Codes").
+    output_codes: Mutex<std::collections::BTreeMap<ContentId, Vec<u32>>>,
 }
 
 impl Service {
@@ -464,6 +471,7 @@ impl Service {
             specs: files.specs,
             pins: files.pins,
             config,
+            output_codes: Mutex::new(std::collections::BTreeMap::new()),
         };
         service.settle_pins()?;
         Ok(service)

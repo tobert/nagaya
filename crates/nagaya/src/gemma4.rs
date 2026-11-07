@@ -128,6 +128,7 @@ pub fn open_family(identity: &Identity, table: &toml::Table) -> Result<OpenedFam
     Ok(OpenedFamily {
         family: Arc::new(family),
         tokenizer_hash: Some(hash),
+        speech: None,
     })
 }
 

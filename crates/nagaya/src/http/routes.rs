@@ -420,6 +420,9 @@ async fn generations(State(council): Shared, Extension(id): Id, body: Body) -> R
         }
         Err(failure) => return failure.respond(&id),
     };
+    if super::speech_out::wants_audio(&served, &request) {
+        return super::speech_out::generation(council, served, request, id).await;
+    }
     if request.stream.unwrap_or(false) {
         return super::stream::generation(council, served, request, id).await;
     }

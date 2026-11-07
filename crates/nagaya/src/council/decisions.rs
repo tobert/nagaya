@@ -146,6 +146,7 @@ impl Then for DecisionThen {
                 self.advance(Some(&letters))
             }
             Got::Held(_) => Err(ServiceError::internal("a decision read holds no snapshot of its own")),
+            Got::Frame(_) | Got::Samples(_) => Err(ServiceError::internal("a decision read makes no audio")),
         }
     }
 }

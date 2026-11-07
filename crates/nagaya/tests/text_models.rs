@@ -182,6 +182,7 @@ fn families() -> FamilyRegistry {
         Ok(OpenedFamily {
             family: Arc::new(ToyFamily::new()),
             tokenizer_hash: None,
+            speech: None,
         })
     });
     families

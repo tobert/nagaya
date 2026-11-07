@@ -16,7 +16,7 @@ use nagaya_council::build::{BoundaryRecipe, recipes_with_cuts};
 use nagaya_council::family::{
     Boundary, Family, FamilyError, ParsedReply, Rendering, ReplyCall, ReplyParser, ReplyStart,
 };
-use nagaya_council::sampler::{Settings, pick};
+use nagaya_council::sampler::{Settings, pick_except};
 use nagaya_store::{ContentId, Reason, RecipeId, recipe_boundary};
 
 use super::build::{ContextBody, Got, Then, Want};
@@ -29,7 +29,7 @@ pub const HEAD_FEED: usize = 8;
 
 /// The stats of one part of a reply, from the untempered probability and the entropy of each token.
 #[derive(Clone, Copy, Debug, Default)]
-struct PartStats {
+pub(super) struct PartStats {
     tokens: u64,
     logprob_sum: f64,
     logprob_min: f64,
@@ -38,7 +38,7 @@ struct PartStats {
 }
 
 impl PartStats {
-    fn push(&mut self, p: f64, h: f64) {
+    pub(super) fn push(&mut self, p: f64, h: f64) {
         let logprob = p.ln();
         if self.tokens == 0 {
             self.logprob_min = logprob;
@@ -52,7 +52,7 @@ impl PartStats {
     }
 
     /// The stats in gogi's shape. A part with no token has none.
-    fn finish(&self) -> Option<TokenStats> {
+    pub(super) fn finish(&self) -> Option<TokenStats> {
         (self.tokens > 0).then(|| TokenStats {
             tokens: self.tokens,
             mean_logprob: self.logprob_sum / self.tokens as f64,
@@ -128,6 +128,8 @@ pub(crate) struct GenerateThen {
     keeps_head: bool,
     /// The phase of the next token after the last sampled token.
     next_phase: Option<Phase>,
+    /// The tokens that the reply never picks: the markers of the speech modes of a family that speaks (spec 11.11).
+    dropped: Vec<u32>,
 }
 
 impl GenerateThen {
@@ -152,7 +154,7 @@ impl GenerateThen {
     /// Sample the next token from a logit row, and give it to the parser and to the stream.
     fn sample(&mut self, row: &[f32]) -> Result<Want, ServiceError> {
         let position = self.prompt.len() + self.sampled.len();
-        let chosen = pick(row, &self.settings, position as u64)
+        let chosen = pick_except(row, &self.settings, position as u64, &self.dropped)
             .map_err(|error| ServiceError::internal(format!("the sample at position {position} failed: {error}")))?;
         let parser = self
             .parser
@@ -386,7 +388,7 @@ impl GenerateThen {
 /// gogi: "A part's pieces join to its text in done". A token event has one phase, so the tail joins the last step
 /// only in the phase of that step. Each marker of a family is one token, so a family never releases text of
 /// another phase after the last token. Such text is a defect of the family library (spec 8.5).
-fn tail_text(parsed: &ParsedReply, phase: Phase) -> Result<String, ServiceError> {
+pub(super) fn tail_text(parsed: &ParsedReply, phase: Phase) -> Result<String, ServiceError> {
     let mut text = String::new();
     for step in &parsed.tail {
         if step.piece.is_empty() {
@@ -426,7 +428,7 @@ fn reply_done(parsed: &ParsedReply, ids: &[String]) -> GenerationDone {
 }
 
 /// The calls of a reply in gogi's shape, with their ids.
-fn tool_calls(parsed: &ParsedReply, ids: &[String]) -> Vec<ReplyToolCall> {
+pub(super) fn tool_calls(parsed: &ParsedReply, ids: &[String]) -> Vec<ReplyToolCall> {
     parsed
         .calls
         .iter()
@@ -485,7 +487,7 @@ impl Then for GenerateThen {
 
 /// A seed for a request that sends none. It comes from the hasher keys of the standard library, which the
 /// operating system seeds.
-fn fresh_seed() -> u64 {
+pub(super) fn fresh_seed() -> u64 {
     let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
     hasher.write_u64(0);
     hasher.finish()
@@ -594,6 +596,12 @@ impl Service {
             head: None,
             keeps_head: self.shared.limits.feed.is_none(),
             next_phase: None,
+            dropped: self
+                .config
+                .speech
+                .as_ref()
+                .map(|speech| speech.markers().to_vec())
+                .unwrap_or_default(),
         };
         let shared = Arc::clone(&self.shared);
         let job = |tx| {
