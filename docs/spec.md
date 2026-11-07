@@ -3440,8 +3440,9 @@ snapshots belong to the server, not to a served model. Thus one set of files ser
   several. Their served model names differ (2.3).
 - The server opens the specs and the pin book once, in the store directory. Each text service gets a shared handle
   to them, so two services never write one file.
-- The home is the first text service in the order of the profile. The routes of specs, pins and snapshots use it. A
-  decision of any text model reads the specs through the same handle.
+- The home is the first text service that the process attaches. The opened engines attach first, then the engines
+  on demand. The routes of specs, pins and snapshots use the home. A decision of any text model reads the specs
+  through the same handle.
 - The home reads and pins the snapshots of each text engine and each speech engine of the process. A snapshot names
   the served model of the engine that made it.
 - A pin names no served model. It keeps a snapshot of model A while a request names model B, and while A is
