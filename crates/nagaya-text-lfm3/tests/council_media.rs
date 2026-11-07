@@ -240,3 +240,71 @@ fn a_family_without_objects_and_the_text_model_refuse_media() {
         assert!(message.contains("lfm3 reads text only"), "{message}");
     }
 }
+
+/// Omni reads PNG, JPEG and WAV, and `lfm3` reads text only (spec 11.11, "The served LFM3 models").
+#[test]
+fn omni_lists_its_media_inputs_and_the_text_model_lists_none() {
+    if absent_any() {
+        return;
+    }
+    assert_eq!(omni().media_inputs(), ["image/png", "image/jpeg", "audio/wav"]);
+    assert!(family("text").media_inputs().is_empty());
+}
+
+/// The little-endian words of a record of `meta`, as `nagaya-mk-lfm3-bmg::media` reads them: the kind, the count,
+/// the first position as two words, and four words of the shape.
+fn words(record: &[u8]) -> Vec<u32> {
+    record
+        .chunks(4)
+        .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+        .collect()
+}
+
+/// The family gives the engine the record and the rows of each span of a rendering (engine-abi "The LFM3 vision
+/// binding"). The rows are the prepared rows in f32, little-endian.
+#[test]
+fn the_media_rows_of_a_rendering_are_the_record_and_the_rows_of_each_span() {
+    if absent_omni() {
+        return;
+    }
+    let c = user(json!([{"type": "object", "id": PHOTO, "mime": "image/jpeg"},
+                        {"type": "text", "text": "and"},
+                        {"type": "object", "id": CLIP, "mime": "audio/wav"}]));
+    let rendering = omni().render(&c, true).unwrap();
+    let prepared = omni().prepare(&c, true).unwrap();
+    let inputs = omni().media_rows(&rendering).unwrap();
+    assert_eq!(inputs.len(), 2);
+    let spans: Vec<_> = inputs.iter().map(|input| input.span.clone()).collect();
+    assert_eq!(spans, rendering.media);
+    assert_eq!((spans[0].mime.as_str(), spans[0].id.as_str()), ("image/jpeg", PHOTO));
+    assert_eq!((spans[1].mime.as_str(), spans[1].id.as_str()), ("audio/wav", CLIP));
+    let first = prepared.inputs[0].span.first;
+    assert_eq!((spans[0].first, spans[0].count), (first, 70));
+    assert_eq!(
+        words(&inputs[0].meta),
+        [1, 70, first as u32, 0, 1, 14, 20, 0],
+        "an image: kind 1, its count, its first position, its grid"
+    );
+    let first = prepared.inputs[1].span.first;
+    assert_eq!(
+        words(&inputs[1].meta),
+        [2, 19, first as u32, 0, 149, 0, 0, 0],
+        "a clip: kind 2, its count, its first position, its frames"
+    );
+    for (input, want) in inputs.iter().zip(&prepared.inputs) {
+        let rows: Vec<u8> = want.rows.values().iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert_eq!(&input.rows[..], &rows[..]);
+    }
+    // A rendering with no media has no inputs.
+    let text = context(json!({"messages": [{"role": "user", "content": "hello"}]}));
+    assert!(
+        omni()
+            .media_rows(&omni().render(&text, true).unwrap())
+            .unwrap()
+            .is_empty()
+    );
+    // A span whose count does not match its object is a defect of the caller.
+    let mut wrong = rendering.clone();
+    wrong.media[0].count = 71;
+    assert!(matches!(omni().media_rows(&wrong), Err(FamilyError::Internal(_))));
+}

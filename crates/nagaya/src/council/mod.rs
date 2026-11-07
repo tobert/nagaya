@@ -645,6 +645,7 @@ impl Service {
                 end: 0,
                 boundaries: Vec::new(),
                 control_text: Vec::new(),
+                media: Vec::new(),
             },
             false => self.family.render(&before, false)?,
         };

@@ -41,6 +41,7 @@ pub fn open_plan(open: &Rendering, before: &Rendering) -> Result<Rendering, Fami
             end: before.end,
             boundaries: before.boundaries.clone(),
             control_text: Vec::new(),
+            media: spans_before(&before.media, before.end),
         });
     }
     Ok(Rendering {
@@ -48,5 +49,15 @@ pub fn open_plan(open: &Rendering, before: &Rendering) -> Result<Rendering, Fami
         end: start,
         boundaries: marked.to_vec(),
         control_text: Vec::new(),
+        media: spans_before(&open.media, start),
     })
+}
+
+/// The media spans that end at or before the position `end`: the spans of a plan that ends there.
+fn spans_before(media: &[crate::family::MediaSpan], end: usize) -> Vec<crate::family::MediaSpan> {
+    media
+        .iter()
+        .filter(|span| span.first + span.count <= end)
+        .cloned()
+        .collect()
 }

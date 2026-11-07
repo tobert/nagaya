@@ -111,6 +111,41 @@ pub struct Rendering {
     pub boundaries: Vec<Boundary>,
     /// The control text in the context's messages.
     pub control_text: Vec<ControlHit>,
+    /// The media spans of the tokens, in the order of their positions. A text family gives none (spec 11.11).
+    pub media: Vec<MediaSpan>,
+}
+
+/// The positions of one media part in a rendering, and the object that the part names (spec 11.11, "Media through
+/// the council"). Each position holds the placeholder token of the part.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MediaSpan {
+    /// The first position.
+    pub first: usize,
+    /// The count of positions.
+    pub count: usize,
+    /// The media type of the part.
+    pub mime: String,
+    /// The content id of the object: `blake3:` and 64 hex digits.
+    pub id: String,
+}
+
+impl MediaSpan {
+    /// The positions of the span.
+    pub fn positions(&self) -> std::ops::Range<usize> {
+        self.first..self.first + self.count
+    }
+}
+
+/// What the engine reads for one media span: the record of the span in `meta`, and the rows of the span whole
+/// (engine-abi "The LFM3 vision binding"). A pass that holds a position of the span gets both.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MediaInput {
+    /// The span.
+    pub span: MediaSpan,
+    /// The record of the span in the `meta` of a segment, in the layout of the engine.
+    pub meta: Vec<u8>,
+    /// The rows of the span, in the layout of the engine.
+    pub rows: std::sync::Arc<[u8]>,
 }
 
 /// One asked question of a decision.
@@ -167,9 +202,9 @@ pub struct ReadDone {
 }
 
 /// The text of a message's content: a string, or its text parts joined in order, as gogi reads a string as one text
-/// part. A family renders text only, because each served model of the nagaya declares no media inputs, and the route
-/// refuses an object part before a family sees it (gogi `objects::check_reads`). An object part here is a defect, so
-/// the call panics instead of rendering it as no text.
+/// part. Only a family with no media inputs calls it: the service refuses an object part for that family before the
+/// family sees it (gogi `objects::check_reads`). An object part here is a defect, so the call panics instead of
+/// rendering it as no text.
 pub fn content_text(m: &gogi_proto::Message) -> Option<std::borrow::Cow<'_, str>> {
     match &m.content {
         None => None,
@@ -368,4 +403,22 @@ pub trait Family: Send + Sync {
 
     /// The number of tokens in the vocabulary. A logit row has this many elements.
     fn vocab_size(&self) -> usize;
+
+    /// The media types that the family reads in a context, each `type/subtype` (gogi "Contexts"). The identity lists
+    /// them as `media.inputs`. A text family reads none, so the service refuses each object part for it.
+    fn media_inputs(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// The input of the engine for each media span of `rendering`, in its order (spec 11.11). A family with no media
+    /// gives none. A rendering with a span that this family did not make is [`FamilyError::Internal`].
+    fn media_rows(&self, rendering: &Rendering) -> Result<Vec<MediaInput>, FamilyError> {
+        match rendering.media.first() {
+            None => Ok(Vec::new()),
+            Some(span) => Err(FamilyError::internal(format!(
+                "a rendering of a family with no media holds the media span of {} at position {}",
+                span.id, span.first
+            ))),
+        }
+    }
 }

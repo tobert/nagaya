@@ -418,6 +418,7 @@ impl Family for Qwen38Family {
             end,
             boundaries,
             control_text,
+            media: Vec::new(),
         })
     }
 

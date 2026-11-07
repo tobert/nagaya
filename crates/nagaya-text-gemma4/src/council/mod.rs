@@ -340,6 +340,7 @@ impl Family for Gemma4Family {
             end,
             boundaries,
             control_text,
+            media: Vec::new(),
         })
     }
 

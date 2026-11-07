@@ -558,6 +558,7 @@ impl Service {
                 end: rendering.end,
                 boundaries: rendering.boundaries.clone(),
                 control_text: Vec::new(),
+                media: rendering.media.clone(),
             },
         };
         // A plan with no boundary builds nothing, and the generation feeds the whole prompt.
