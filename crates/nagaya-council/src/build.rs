@@ -3,6 +3,7 @@
 use nagaya_abi::Kind;
 use nagaya_store::{RecipeId, recipe_boundary, recipe_root};
 
+use crate::control::{self, ControlEntry};
 use crate::family::{Boundary, FamilyError, Rendering};
 
 /// A boundary and the recipe of the snapshot there.
@@ -17,7 +18,13 @@ pub struct BoundaryRecipe {
 /// The root recipe of a served model: the identity digest and the geometry key, with no approximation and no lab
 /// state (spec 6.2).
 pub fn root_recipe(identity_digest: &[u8; 32], geometry_key: &[u8]) -> RecipeId {
-    recipe_root(identity_digest, geometry_key, &[], &[])
+    root_recipe_with_control(identity_digest, geometry_key, &[])
+}
+
+/// The root recipe of a context with a control list: the list is the lab state (spec 11.12). An empty list gives the
+/// root of a plain context. The job path of a context calls it when the context names a list (milestone 25 step 7).
+pub fn root_recipe_with_control(identity_digest: &[u8; 32], geometry_key: &[u8], list: &[ControlEntry]) -> RecipeId {
+    recipe_root(identity_digest, geometry_key, &[], &control::recipe_bytes(list))
 }
 
 /// The recipe at each boundary of a rendering, in order.

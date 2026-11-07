@@ -137,6 +137,11 @@ impl ContentId {
     pub fn hex(&self) -> String {
         self.0.iter().map(|byte| format!("{byte:02x}")).collect()
     }
+
+    /// The 32 bytes of the content id.
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
 }
 
 impl Serialize for ContentId {
