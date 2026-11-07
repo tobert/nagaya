@@ -113,7 +113,7 @@ pub fn golden_json(name: &str) -> serde_json::Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{} is not JSON: {e}", path.display()))
 }
 
-/// One tensor of an oracle file, as `f64` values with its shape. The oracle holds F32 and I64.
+/// One tensor of an oracle file, as `f64` values with its shape. The oracle holds F32, I64 and U8.
 pub struct Tensor {
     pub shape: Vec<usize>,
     pub values: Vec<f64>,
@@ -162,7 +162,8 @@ pub fn golden_tensors(name: &str) -> HashMap<String, Tensor> {
                 .iter()
                 .map(|b| i64::from_le_bytes(*b) as f64)
                 .collect(),
-            other => panic!("tensor {name} has dtype {other}; the oracle holds F32 and I64"),
+            "U8" => raw.iter().map(|b| *b as f64).collect(),
+            other => panic!("tensor {name} has dtype {other}; the oracle holds F32, I64 and U8"),
         };
         out.insert(name.clone(), Tensor { shape, values });
     }
