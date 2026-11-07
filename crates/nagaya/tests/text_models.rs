@@ -101,8 +101,27 @@ impl Factory for Toy {
         Ok(Box::new(Closing(fake(&model_of(config)))))
     }
 
-    fn describe(&self, config: &toml::Table) -> Result<Option<(Identity, Limits)>, PlanError> {
+    fn describe(
+        &self,
+        config: &toml::Table,
+        _devices: &[GroupDevice],
+    ) -> Result<Option<(Identity, Limits)>, PlanError> {
         Ok(Some((fake(&model_of(config)).identity(), limits())))
+    }
+}
+
+/// The inventory of the tests: one device.
+fn inventory() -> Inventory {
+    Inventory {
+        devices: vec![Device {
+            id: 0,
+            name: "device-0".to_owned(),
+            pci_address: "0000:00:00.0".to_owned(),
+            memory_bytes: 1 << 31,
+            unified: false,
+            ignored: false,
+        }],
+        host_bytes: 1 << 31,
     }
 }
 
@@ -155,18 +174,7 @@ fn profile() -> PlacementProfile {
 }
 
 fn start(directory: &std::path::Path) -> (Process, Vec<OpenedEngine>) {
-    let inventory = Inventory {
-        devices: vec![Device {
-            id: 0,
-            name: "device-0".to_owned(),
-            pci_address: "0000:00:00.0".to_owned(),
-            memory_bytes: 1 << 31,
-            unified: false,
-            ignored: false,
-        }],
-        host_bytes: 1 << 31,
-    };
-    let mut process = Start::new(profile(), registry(), inventory)
+    let mut process = Start::new(profile(), registry(), inventory())
         .store(directory)
         .heartbeat(Duration::from_millis(10))
         .timeout(Duration::from_secs(5))
@@ -190,7 +198,7 @@ fn families() -> FamilyRegistry {
 /// The council of the process, as `main` makes it: the opened engines and the described engine on demand.
 fn council(directory: &std::path::Path, process: &Process, opened: &[OpenedEngine]) -> Result<Arc<Council>, String> {
     let profile = profile();
-    let described: Vec<Described> = describe_on_demand(&profile, &registry()).unwrap();
+    let described: Vec<Described> = describe_on_demand(&profile, &registry(), &inventory()).unwrap();
     let council = council_with(
         &families(),
         &profile,

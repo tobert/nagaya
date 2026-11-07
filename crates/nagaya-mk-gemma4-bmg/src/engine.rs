@@ -145,22 +145,17 @@ impl Loaded {
             // A cold load owns the fds that the export of each new slab gave.
             None => [slab_fds(&w0), slab_fds(&w1)],
         };
-        let mut devices = Vec::new();
-        for &card in &cards {
+        for (&card, address) in cards.iter().zip(pci) {
             let card = &cluster.cards[card];
-            devices.push((
-                card.vendor_id,
-                card.device_id,
-                pci_revision(&card.pci_address).map_err(other)?,
-            ));
+            let ids = pci_ids(address).map_err(other)?;
+            if (card.vendor_id, card.device_id) != (ids.0, ids.1) {
+                return Err(other(format!(
+                    "the card at {address} is {:04x}:{:04x} in Level Zero and {:04x}:{:04x} in sysfs",
+                    card.vendor_id, card.device_id, ids.0, ids.1
+                )));
+            }
         }
-        let lineage = Lineage {
-            kernel_sha256: nagaya_text_gemma4::tokenizer::sha256_of(MEGAKERNEL_BIN),
-            ocloc: nagaya_mk_bmg::OCLOC_VERSION.to_owned(),
-            igc: nagaya_mk_bmg::IGC_REVISION.to_owned(),
-            driver: cluster.driver_version(),
-            devices,
-        };
+        let lineage = lineage(pci, cluster.driver_version()).map_err(other)?;
         Ok(Arc::new(Self {
             cluster,
             ckpt,
@@ -213,23 +208,66 @@ impl Loaded {
 
     /// The identity of an engine on these weights with a feed block of `max_block` tokens (spec 12.1).
     pub fn identity(&self, max_block: usize) -> Identity {
-        Identity {
-            model: spec::MODEL.to_owned(),
-            checkpoint_digest: self.checkpoint_digest.clone(),
-            family: spec::FAMILY.to_owned(),
-            tokenizer_hash: self.tokenizer_hash.clone(),
-            template: nagaya_text_gemma4::CHAT_TEMPLATE.to_owned(),
-            numbers: self.lineage.numbers(max_block),
-            plan_table: self.lineage.plan_table(),
-            // D11 rule 3: the block is a bit setting that defines the reference bits.
-            bit_settings: vec![BitSetting {
-                name: "feed.block".to_owned(),
-                value: max_block.to_string(),
-                class: BitClass::ReferenceDefining,
-            }],
-            canary_hash: String::new(),
-        }
+        identity_of(&self.checkpoint_digest, &self.tokenizer_hash, &self.lineage, max_block)
     }
+}
+
+/// The identity of an engine of this checkpoint and this lineage with a feed block of `max_block` tokens (spec 12.1).
+fn identity_of(checkpoint_digest: &str, tokenizer_hash: &str, lineage: &Lineage, max_block: usize) -> Identity {
+    Identity {
+        model: spec::MODEL.to_owned(),
+        checkpoint_digest: checkpoint_digest.to_owned(),
+        family: spec::FAMILY.to_owned(),
+        tokenizer_hash: tokenizer_hash.to_owned(),
+        template: nagaya_text_gemma4::CHAT_TEMPLATE.to_owned(),
+        numbers: lineage.numbers(max_block),
+        plan_table: lineage.plan_table(),
+        // D11 rule 3: the block is a bit setting that defines the reference bits.
+        bit_settings: vec![BitSetting {
+            name: "feed.block".to_owned(),
+            value: max_block.to_string(),
+            class: BitClass::ReferenceDefining,
+        }],
+        canary_hash: String::new(),
+    }
+}
+
+/// The lineage of a build on the cards at `pci`, in stage order, with this Level Zero driver (spec 12.1).
+fn lineage(pci: &[String], driver: u32) -> Result<Lineage, String> {
+    Ok(Lineage {
+        kernel_sha256: nagaya_text_gemma4::tokenizer::sha256_of(MEGAKERNEL_BIN),
+        ocloc: nagaya_mk_bmg::OCLOC_VERSION.to_owned(),
+        igc: nagaya_mk_bmg::IGC_REVISION.to_owned(),
+        driver,
+        devices: pci.iter().map(|address| pci_ids(address)).collect::<Result<_, _>>()?,
+    })
+}
+
+/// The identity and the limits that an open of `config` on the cards at `pci` gives, with no load (spec 11.1). It
+/// reads the checkpoint, sysfs and the Level Zero driver version. It opens no card.
+pub fn describe(config: &Config, pci: &[String]) -> Result<(Identity, Limits), String> {
+    if pci.len() != 2 {
+        return Err(format!(
+            "the Gemma 4 engine runs on two cards, but its group has {}",
+            pci.len()
+        ));
+    }
+    let limits = spec::plan(config)?;
+    let ckpt = Checkpoint::open_dir(&config.model_dir)?;
+    let tokenizer = config.model_dir.join("tokenizer.json");
+    let bytes = std::fs::read(&tokenizer).map_err(|e| {
+        format!(
+            "cannot read {}: {e}; the checkpoint holds its tokenizer",
+            tokenizer.display()
+        )
+    })?;
+    let tokenizer_hash = nagaya_text_gemma4::tokenizer::sha256_of(&bytes);
+    let checkpoint_digest = checkpoint_digest(&config.model_dir, &ckpt)?;
+    let lineage = lineage(pci, crate::level_zero::first_driver_version())?;
+    Ok((
+        identity_of(&checkpoint_digest, &tokenizer_hash, &lineage, config.max_block),
+        limits,
+    ))
 }
 
 /// Why `Loaded::attach` did not load.
@@ -287,12 +325,15 @@ fn check_stored(card: &B70Card, ckpt: &Checkpoint, stage: usize, stored: &[(Stri
     Ok(())
 }
 
-/// The PCI revision of the device at `address`, from sysfs.
-fn pci_revision(address: &str) -> Result<u32, String> {
-    let path = format!("/sys/bus/pci/devices/{address}/revision");
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {path}: {e}"))?;
-    let text = text.trim();
-    u32::from_str_radix(text.trim_start_matches("0x"), 16).map_err(|e| format!("{path} holds `{text}`: {e}"))
+/// The PCI vendor id, device id and revision of the device at `address`, from sysfs.
+fn pci_ids(address: &str) -> Result<(u32, u32, u32), String> {
+    let read = |name: &str| -> Result<u32, String> {
+        let path = format!("/sys/bus/pci/devices/{address}/{name}");
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {path}: {e}"))?;
+        let text = text.trim();
+        u32::from_str_radix(text.trim_start_matches("0x"), 16).map_err(|e| format!("{path} holds `{text}`: {e}"))
+    };
+    Ok((read("vendor")?, read("device")?, read("revision")?))
 }
 
 /// The logical digest of the checkpoint (spec 12.2): BLAKE3 over the canonical config and each tensor's payload.

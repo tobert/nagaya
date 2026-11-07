@@ -131,10 +131,14 @@ pub trait Factory {
     /// Open the engine on the calling thread. The process calls this on the group thread.
     fn open(&self, config: &toml::Table, devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError>;
 
-    /// Give the identity and the limits that an open of this config would report, with no GPU and no load. The
+    /// Give the identity and the limits that an open of this config on `devices` would report, with no load. The
     /// process serves a text engine on demand from them before it loads (spec 11.1). An open that reports other
     /// facts is an error. A kind that cannot tell them gives none, and its engine on demand is not a text model.
-    fn describe(&self, _config: &toml::Table) -> Result<Option<(Identity, Limits)>, PlanError> {
+    fn describe(
+        &self,
+        _config: &toml::Table,
+        _devices: &[GroupDevice],
+    ) -> Result<Option<(Identity, Limits)>, PlanError> {
         Ok(None)
     }
 
@@ -212,7 +216,7 @@ impl Registry {
             Box::new(crate::qwenimage21::QwenImage21Factory),
         );
         #[cfg(feature = "xe")]
-        registry.register(crate::gemma4::KIND, Box::new(crate::gemma4::Gemma4Factory));
+        registry.register(crate::gemma4::KIND, Box::new(crate::gemma4::Gemma4Factory::default()));
         #[cfg(feature = "xe")]
         registry.register(crate::qwen3tts::KIND, Box::new(crate::qwen3tts::Qwen3TtsFactory));
         #[cfg(feature = "xe")]

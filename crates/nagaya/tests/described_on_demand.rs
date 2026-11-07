@@ -77,6 +77,9 @@ impl Engine for Closing {
 }
 
 /// A factory that describes its engine when `describes` is true.
+/// The PCI addresses that the descriptions got, in order.
+static DESCRIBED_ON: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 struct Toy {
     describes: bool,
 }
@@ -90,7 +93,16 @@ impl Factory for Toy {
         Ok(Box::new(Closing(fake())))
     }
 
-    fn describe(&self, _config: &toml::Table) -> Result<Option<(Identity, Limits)>, PlanError> {
+    /// The description keeps the PCI address of each device that it got, so a test sees them.
+    fn describe(
+        &self,
+        _config: &toml::Table,
+        devices: &[GroupDevice],
+    ) -> Result<Option<(Identity, Limits)>, PlanError> {
+        DESCRIBED_ON
+            .lock()
+            .unwrap()
+            .extend(devices.iter().map(|device| device.pci_address.clone()));
         Ok(self.describes.then(|| (fake().identity(), limits())))
     }
 }
@@ -145,14 +157,24 @@ fn only_an_engine_on_demand_that_its_factory_describes_is_described() {
         engine("chat", "described", Residency::OnDemand),
         engine("other", "plain", Residency::OnDemand),
     ]);
-    let described = describe_on_demand(&profile, &registry()).unwrap();
+    let described = describe_on_demand(&profile, &registry(), &inventory()).unwrap();
     let names: Vec<&str> = described.iter().map(|engine| engine.name.as_str()).collect();
     assert_eq!(names, vec!["chat"]);
     assert_eq!(described[0].identity, fake().identity());
+    // The factory gets the devices of the group from the inventory, as an open does.
+    assert!(
+        DESCRIBED_ON
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|address| address == "0000:00:00.0")
+    );
+    assert!(!DESCRIBED_ON.lock().unwrap().is_empty());
 }
 
-fn start(directory: &std::path::Path, profile: PlacementProfile) -> Process {
-    let inventory = Inventory {
+/// The inventory of the tests: one device.
+fn inventory() -> Inventory {
+    Inventory {
         devices: vec![Device {
             id: 0,
             name: "device-0".to_owned(),
@@ -162,8 +184,11 @@ fn start(directory: &std::path::Path, profile: PlacementProfile) -> Process {
             ignored: false,
         }],
         host_bytes: 1 << 31,
-    };
-    let mut process = Start::new(profile, registry(), inventory)
+    }
+}
+
+fn start(directory: &std::path::Path, profile: PlacementProfile) -> Process {
+    let mut process = Start::new(profile, registry(), inventory())
         .store(directory)
         .heartbeat(Duration::from_millis(10))
         .timeout(Duration::from_secs(5))
@@ -206,7 +231,7 @@ fn swapped(process: &Process) -> Vec<String> {
 fn a_described_engine_is_a_served_model_that_answers_after_a_load() {
     let directory = tempfile::tempdir().unwrap();
     let profile = profile(vec![engine("chat", "described", Residency::OnDemand)]);
-    let described: Vec<Described> = describe_on_demand(&profile, &registry()).unwrap();
+    let described: Vec<Described> = describe_on_demand(&profile, &registry(), &inventory()).unwrap();
     let process = start(directory.path(), profile.clone());
     let mut families = FamilyRegistry::new();
     families.register("toy", |_, _| {

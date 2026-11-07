@@ -769,15 +769,25 @@ pub struct L0Cluster {
     pub cards: Vec<B70Card>,
 }
 
+/// The version of the first Level Zero driver (`zeDriverGetProperties`), as [`L0Cluster::driver_version`] gives it. It
+/// opens no card: it makes no context, queue or module. The description of an engine on demand reads it (spec 11.1).
+pub fn first_driver_version() -> u32 {
+    version_of(driver())
+}
+
+fn version_of(driver: ze_driver_handle_t) -> u32 {
+    unsafe {
+        let mut props: ze_driver_properties_t = std::mem::zeroed();
+        props.stype = ZE_STRUCTURE_TYPE_DRIVER_PROPERTIES;
+        check_ze(zeDriverGetProperties(driver, &mut props), "zeDriverGetProperties");
+        props.driverVersion
+    }
+}
+
 impl L0Cluster {
     /// The version of the Level Zero driver (`zeDriverGetProperties`), for the plan table lineage (spec 12.1).
     pub fn driver_version(&self) -> u32 {
-        unsafe {
-            let mut props: ze_driver_properties_t = std::mem::zeroed();
-            props.stype = ZE_STRUCTURE_TYPE_DRIVER_PROPERTIES;
-            check_ze(zeDriverGetProperties(self.driver, &mut props), "zeDriverGetProperties");
-            props.driverVersion
-        }
+        version_of(self.driver)
     }
 
     /// The index in `cards` of the card at each PCI address, in the order of `addresses`.

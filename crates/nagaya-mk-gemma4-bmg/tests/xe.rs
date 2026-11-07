@@ -440,6 +440,24 @@ fn a_card_address_that_no_card_has_is_refused() {
     assert!(error.contains("0000:80:00.0"), "{error}");
 }
 
+/// The description of an engine on demand gives the identity and the limits that its open gives, with no load (spec
+/// 11.1). The council serves Gemma 4 on demand from it, so another identity would give its recipes the wrong root.
+#[test]
+fn the_description_is_the_identity_and_the_limits_of_the_open() {
+    if common::absent(&[]) {
+        return;
+    }
+    for slots in [vec![2048], vec![4096, 65_536]] {
+        let started = std::time::Instant::now();
+        let (identity, limits) =
+            nagaya_mk_gemma4_bmg::engine::describe(&config(slots.clone()), &cards()).expect("the description");
+        println!("described {slots:?} in {} ms", started.elapsed().as_millis());
+        let engine = engine(slots.clone());
+        assert_eq!(identity, engine.identity(), "{slots:?}");
+        assert_eq!(limits, engine.limits(), "{slots:?}");
+    }
+}
+
 /// The identity names the family, the template and the tokenizer of the checkpoint, and the kernel binary.
 #[test]
 fn the_identity_names_the_family_and_the_binary() {

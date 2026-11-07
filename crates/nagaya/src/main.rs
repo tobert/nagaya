@@ -276,7 +276,7 @@ fn serve(
     published(node.engines_loading(&names));
     // The engines on demand that the council serves before they load (spec 11.1). The facts come before the start,
     // because the start takes the registry.
-    let described = match serving::describe_on_demand(&served_profile, &registry) {
+    let described = match serving::describe_on_demand(&served_profile, &registry, &inventory) {
         Ok(described) => described,
         Err(error) => {
             tracing::error!("{error}");

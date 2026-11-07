@@ -52,7 +52,12 @@ impl Factory for MkFactory {
         Ok(Box::new(engine))
     }
 
-    fn describe(&self, config: &toml::Table) -> Result<Option<(Identity, Limits)>, PlanError> {
+    /// mk runs on the one HIP device of its thread, so the description reads no device.
+    fn describe(
+        &self,
+        config: &toml::Table,
+        _devices: &[GroupDevice],
+    ) -> Result<Option<(Identity, Limits)>, PlanError> {
         let planned = nagaya_mk_qwen38_gfx1151::plan(weights_bytes(config)?);
         let (identity, limits) = nagaya_mk_qwen38_gfx1151::describe().map_err(|error| PlanError {
             message: error.message().to_owned(),

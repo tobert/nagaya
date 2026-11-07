@@ -2486,6 +2486,18 @@ start. Then mk was no served model, and gogi found no ready model.
   the wrong root (6.2).
 - A kind that cannot describe its engine is not a text model while its engine is on demand, as before.
 
+**The description of Gemma 4.** Proposed by Claude Opus 5.5, 2026-11-07. Reason: the profile of `5c1cf18` put
+Gemma 4 on demand, and `mk-gemma4-bmg` had no description. Thus b70host served no `gemma-4-26b-a4b`. Amy chose
+to build the description. Its identity names the Level Zero driver, which no file holds.
+
+- `Factory::describe` gets the devices of the group, as `plan` does. mk does not read them.
+- `mk-gemma4-bmg` describes itself from the checkpoint, sysfs and the version of the Level Zero driver. It asks the
+  driver for its version, and it opens no card: no context, no queue and no module.
+- The load reads the vendor, the device and the revision of each card from sysfs too. It refuses a card whose Level
+  Zero ids are not the sysfs ids.
+- The factory keeps each identity that it described. An open of the same checkpoint, cards and block that reports
+  another identity is an open error. The check needs no second hash of the checkpoint.
+
 **11.1a The cluster.** Amy decided these rules on 2026-11-02, by interview (`AGENTS.md` milestone 23). Amy: "ideally
 we do the work with what's available on the cluster - so if the tokenizer is on this machine great we tokenize here.
 otherwise we forward to whereever it is."

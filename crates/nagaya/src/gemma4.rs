@@ -138,14 +138,39 @@ pub use factory::Gemma4Factory;
 mod factory {
     use std::os::fd::OwnedFd;
 
-    use nagaya_abi::{ArenaFd, ArenaPart, CheckStrength, Engine, Limits};
+    use std::sync::Mutex;
+
+    use nagaya_abi::{ArenaFd, ArenaPart, CheckStrength, Engine, Identity, Limits};
     use nagaya_mk_gemma4_bmg::engine::{LoadError, Loaded};
 
     use super::{KIND, check_devices, config};
     use crate::admission::{AttachError, Attached, Factory, GroupDevice, OpenError, OpenErrorKind, PlanError};
 
-    /// The factory of the Gemma 4 engine.
-    pub struct Gemma4Factory;
+    /// The factory of the Gemma 4 engine. It keeps each identity that it described, by the checkpoint, the cards and
+    /// the block, so an open can check it without a second hash of the checkpoint.
+    #[derive(Default)]
+    pub struct Gemma4Factory {
+        described: Mutex<Vec<(Described, Identity)>>,
+    }
+
+    /// What a description depends on: the checkpoint, the PCI address of each card and the feed block.
+    type Described = (std::path::PathBuf, Vec<String>, usize);
+
+    impl Gemma4Factory {
+        /// Refuse an opened engine whose identity is not the one that this factory described for it (spec 11.1). The
+        /// council serves an engine on demand from its description, so another identity would give its recipes the
+        /// wrong root. An engine with no description has nothing to check.
+        fn check_described(&self, key: &Described, opened: &Identity) -> Result<(), String> {
+            let described = self.described.lock().expect("the lock of the descriptions");
+            match described.iter().find(|(seen, _)| seen == key) {
+                Some((_, identity)) if identity != opened => Err(format!(
+                    "the opened `{KIND}` engine has another identity than its description; the checkpoint, the \
+                     driver or the cards changed after the start, so restart the process"
+                )),
+                _ => Ok(()),
+            }
+        }
+    }
 
     fn open_error(message: String) -> OpenError {
         OpenError {
@@ -164,6 +189,27 @@ mod factory {
             super::plan(table, devices)
         }
 
+        /// The identity and the limits of an open on the cards of the group, from the checkpoint, sysfs and the Level
+        /// Zero driver, with no load (spec 11.1).
+        fn describe(
+            &self,
+            table: &toml::Table,
+            devices: &[GroupDevice],
+        ) -> Result<Option<(Identity, Limits)>, PlanError> {
+            check_devices(devices)?;
+            let config = config(table)?;
+            let addresses: Vec<String> = devices.iter().map(|device| device.pci_address.clone()).collect();
+            let (identity, limits) =
+                nagaya_mk_gemma4_bmg::engine::describe(&config, &addresses).map_err(|message| PlanError {
+                    message: format!("`{KIND}` cannot describe: {message}"),
+                })?;
+            let key = (config.model_dir.clone(), addresses, config.max_block);
+            let mut described = self.described.lock().expect("the lock of the descriptions");
+            described.retain(|(seen, _)| *seen != key);
+            described.push((key, identity.clone()));
+            Ok(Some((identity, limits)))
+        }
+
         /// Load the weights on the cards at the PCI addresses of the group, and open one engine on them.
         fn open(&self, table: &toml::Table, devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
             check_devices(devices).map_err(|error| open_error(error.message))?;
@@ -173,6 +219,11 @@ mod factory {
                 .map_err(|message| open_error(format!("`{KIND}` cannot load: {message}")))?;
             let engine = nagaya_mk_gemma4_bmg::engine::open(&loaded, &config)
                 .map_err(|message| open_error(format!("`{KIND}` cannot open: {message}")))?;
+            self.check_described(
+                &(config.model_dir.clone(), addresses, config.max_block),
+                &engine.identity(),
+            )
+            .map_err(open_error)?;
             Ok(Box::new(engine))
         }
 
@@ -204,10 +255,50 @@ mod factory {
             })?;
             let engine = nagaya_mk_gemma4_bmg::engine::open(&loaded, &config)
                 .map_err(|message| fail(format!("`{KIND}` cannot open: {message}")))?;
+            self.check_described(
+                &(config.model_dir.clone(), addresses, config.max_block),
+                &engine.identity(),
+            )
+            .map_err(fail)?;
             Ok(Attached {
                 engine: Box::new(engine),
                 check: CheckStrength::Spot,
             })
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use nagaya_abi::Engine;
+        use nagaya_abi::fake::FakeAlways;
+
+        use super::{Described, Gemma4Factory};
+
+        fn key(card: &str) -> Described {
+            (
+                "/checkpoint".into(),
+                vec![card.to_owned(), "0000:08:00.0".to_owned()],
+                512,
+            )
+        }
+
+        /// An open with the described identity passes, an open with another one is refused, and an engine with no
+        /// description has nothing to check (spec 11.1).
+        #[test]
+        fn an_open_must_report_the_identity_that_the_factory_described() {
+            let factory = Gemma4Factory::default();
+            let described = FakeAlways::new().identity();
+            let mut other = described.clone();
+            other.checkpoint_digest = "blake3:other".to_owned();
+            factory
+                .described
+                .lock()
+                .unwrap()
+                .push((key("0000:03:00.0"), described.clone()));
+            assert_eq!(factory.check_described(&key("0000:03:00.0"), &described), Ok(()));
+            let refused = factory.check_described(&key("0000:03:00.0"), &other).unwrap_err();
+            assert!(refused.contains("another identity than its description"), "{refused}");
+            assert_eq!(factory.check_described(&key("0000:04:00.0"), &other), Ok(()));
         }
     }
 }

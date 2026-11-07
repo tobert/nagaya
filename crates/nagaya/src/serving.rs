@@ -168,7 +168,11 @@ pub struct Described {
 /// The engines on demand of `profile` that their factories describe. They are not loaded at the start, and the
 /// council serves each one whose family has a library (spec 11.1). A description that fails is an error, so the
 /// process refuses to start; a kind with no description gives none.
-pub fn describe_on_demand(profile: &PlacementProfile, registry: &Registry) -> Result<Vec<Described>, String> {
+pub fn describe_on_demand(
+    profile: &PlacementProfile,
+    registry: &Registry,
+    inventory: &crate::inventory::Inventory,
+) -> Result<Vec<Described>, String> {
     let mut described = Vec::new();
     for placement in profile
         .engines
@@ -178,8 +182,10 @@ pub fn describe_on_demand(profile: &PlacementProfile, registry: &Registry) -> Re
         let Some(factory) = registry.factory(&placement.kind) else {
             continue;
         };
+        let devices = crate::admission::group_devices(placement, inventory)
+            .map_err(|error| format!("cannot describe engine `{}`: {error}", placement.name))?;
         let facts = factory
-            .describe(&placement.config)
+            .describe(&placement.config, &devices)
             .map_err(|error| format!("cannot describe engine `{}`: {}", placement.name, error.message))?;
         if let Some((identity, limits)) = facts {
             described.push(Described {
