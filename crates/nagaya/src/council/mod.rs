@@ -5,6 +5,7 @@
 //! calls on a blocking thread.
 
 pub mod build;
+pub mod control;
 pub mod decisions;
 pub mod error;
 pub mod generations;
@@ -13,10 +14,11 @@ pub mod reads;
 pub mod slots;
 pub mod specs;
 pub mod staging;
+pub mod vectors;
 
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use gogi_proto::Invalid;
@@ -26,14 +28,17 @@ use gogi_proto::decision::DecisionIdentity;
 use gogi_proto::pins::{PinHeld, PinOwner, PinsPut, PinsPutResult, SnapshotDetail, validate_owner};
 use gogi_proto::spec::{HeldSpec, SpecRules};
 use nagaya_abi::{Capability, Engine, Limits};
-use nagaya_council::build::{BoundaryRecipe, boundary_recipes, recipes_with_cuts, root_recipe};
+use nagaya_council::build::{
+    BoundaryRecipe, boundary_recipes, recipes_with_cuts, root_recipe, root_recipe_with_control,
+};
 use nagaya_council::family::{Boundary, Family, Rendering};
 use nagaya_sched::{Class, IntervalCopies, IntervalPolicy};
 use nagaya_store::{ContentId, EntryState, RecipeId, Store, Tier, recipe_boundary};
 use serde::Serialize;
 use serde_json::Value;
 
-use self::build::{BuildBody, ContextBody, Cut, Finished, LookupBody, Outcome, Shared, Then};
+use self::build::{BuildBody, ContextBody, Cut, Finished, JobControl, LookupBody, Outcome, Shared, Then};
+use self::control::{ControlTable, Fit};
 use self::error::ServiceError;
 use self::pins::{OwnerPins, PinBook, owner_key};
 use self::slots::SlotPool;
@@ -305,6 +310,17 @@ pub struct Service {
     /// (`shared.store`), never the store before `pins`. A method that needs both locks `pins` first. Two methods that
     /// lock in two orders can wait for each other for ever.
     pins: Arc<Mutex<PinBook>>,
+    /// The objects of the process, where a context finds its control vectors (spec 6.15, 11.12). The council sets it
+    /// once, when the process has an object store.
+    objects: OnceLock<Arc<Mutex<nagaya_store::objects::ObjectStore>>>,
+}
+
+/// The root recipe of a context and its control list, after the checks (spec 11.12).
+pub(crate) struct Steer {
+    /// The root of the plain model, or the root with the list as the lab state.
+    pub root: RecipeId,
+    /// The list, with the claim of its vectors. `None` for a plain context.
+    pub control: Option<JobControl>,
 }
 
 impl Service {
@@ -436,7 +452,20 @@ impl Service {
             })?
             .map(|policy| Mutex::new(IntervalCopies::new(policy)));
         let root = root_recipe(&digest, b"");
+        // The worker binds the vectors of a job before its first pass, in a copy quantum. A pass of an engine with
+        // stages can be in flight then (engine-abi D1), so such an engine with `control` is not built.
+        if limits.control.is_some() && limits.capabilities.contains(&Capability::Stages) {
+            return Err(ServiceError::internal(format!(
+                "the engine `{}` declares control and stages; the control table of an engine with stages is not \
+                 built",
+                config.engine
+            )));
+        }
+        let control = limits
+            .control
+            .map(|limit| Arc::new(Mutex::new(ControlTable::new(limit))));
         let shared = Arc::new(Shared {
+            control,
             root,
             intervals,
             ports: ports.clone(),
@@ -464,6 +493,7 @@ impl Service {
             specs: files.specs,
             pins: files.pins,
             config,
+            objects: OnceLock::new(),
         };
         service.settle_pins()?;
         Ok(service)
@@ -492,6 +522,71 @@ impl Service {
     /// The served model: the `model` of the council identity.
     pub fn model(&self) -> &str {
         &self.config.model
+    }
+
+    /// Find the control vectors of contexts in these objects (spec 6.15). A second call keeps the first store.
+    pub fn serve_objects(&self, objects: Arc<Mutex<nagaya_store::objects::ObjectStore>>) {
+        let _ = self.objects.set(objects);
+    }
+
+    /// True when the served model takes control lists and makes control vectors: its engine declares `control` and
+    /// the tap `residual`, and the process has an object store for the vectors (spec 11.12).
+    pub fn controls(&self) -> bool {
+        let limits = &self.shared.limits;
+        limits.control.is_some()
+            && limits.taps.iter().any(|tap| tap.name == build::RESIDUAL_TAP)
+            && self.objects.get().is_some()
+    }
+
+    /// Check the control list of a context, and give its root recipe and the job's list (spec 11.12, gogi "Control
+    /// vectors"). `at` names the context in a request with several, such as `contexts[1].`, or is empty. A plain context
+    /// gets the plain root.
+    pub(crate) fn steer(&self, context: &Context, at: &str) -> Result<Steer, ServiceError> {
+        if context.control.is_empty() {
+            return Ok(Steer {
+                root: self.root,
+                control: None,
+            });
+        }
+        let (Some(limit), Some(table), true) = (self.shared.limits.control, &self.shared.control, self.controls())
+        else {
+            return Err(Invalid::param(
+                format!("{at}control"),
+                format!(
+                    "nothing ran: {} does not declare control_vectors; send no control",
+                    self.config.model
+                ),
+            )
+            .into());
+        };
+        let objects = self.objects.get();
+        let mut lookup = |id: &ContentId| -> Result<Option<(String, Vec<u8>)>, ServiceError> {
+            let Some(objects) = objects else {
+                return Ok(None);
+            };
+            let mut objects = objects.lock().expect("the object store lock is poisoned");
+            let found = objects
+                .get(id, objects_now())
+                .map_err(|error| ServiceError::internal(format!("cannot read the object {}: {error}", id.hex())))?;
+            let Some(found) = found else {
+                return Ok(None);
+            };
+            let bytes = std::fs::read(&found.path)
+                .map_err(|error| ServiceError::internal(format!("cannot read `{}`: {error}", found.path.display())))?;
+            Ok(Some((found.mime, bytes)))
+        };
+        let fit = Fit {
+            weight_hash: &self.identity.checkpoint_digest,
+            limit,
+        };
+        let checked = control::check(&context.control, at, &fit, &mut lookup)?;
+        let root = root_recipe_with_control(&self.shared.identity, b"", &checked.entries);
+        let vectors: Vec<ContentId> = checked.vectors.iter().map(|(id, _)| *id).collect();
+        let claim = ControlTable::claim(table, &vectors);
+        Ok(Steer {
+            root,
+            control: Some(JobControl { checked, claim }),
+        })
     }
 
     /// The family library of the served model. The text routes under `/nagaya/v1` use it (spec 11.4b).
@@ -559,8 +654,10 @@ impl Service {
         if rendering.end > self.config.context_tokens {
             return Err(ServiceError::past_context(rendering.end, self.config.context_tokens));
         }
+        let steer = self.steer(context, "")?;
+        let root = steer.root;
         let rendering_end = rendering.end;
-        let head_recipe = boundary_recipes(self.root, &rendering)?
+        let head_recipe = boundary_recipes(root, &rendering)?
             .last()
             .expect("a rendering has a boundary")
             .recipe;
@@ -570,11 +667,11 @@ impl Service {
             true => self.open_plan(context, &rendering)?,
             false => rendering,
         };
-        let recipes = plan_recipes(self.root, &rendering)?;
+        let recipes = plan_recipes(root, &rendering)?;
         let tokens: Arc<[u32]> = rendering.tokens[..rendering.end].into();
         let (cuts, extension) = match open {
-            true => self.starts(context, &open_rendering.tokens, &rendering)?,
-            false => (self.cuts(context, &rendering)?, None),
+            true => self.starts(root, context, &open_rendering.tokens, &rendering)?,
+            false => (self.cuts(root, context, &rendering)?, None),
         };
         let outcome = if dry_run {
             let (tx, rx) = mpsc::channel();
@@ -585,6 +682,7 @@ impl Service {
                 tokens.len()
             };
             let body = LookupBody::new(Arc::clone(&self.shared), recipes.clone(), Arc::clone(&tokens), room, tx)
+                .root(root)
                 .cuts(cuts)
                 .extension(extension);
             submit(
@@ -598,7 +696,12 @@ impl Service {
             wait(&rx)?
         } else {
             let shared = Arc::clone(&self.shared);
-            let job = |tx| BuildBody::new(shared, tokens, recipes.clone(), tx).cuts(cuts);
+            let control = steer.control;
+            let job = |tx| {
+                BuildBody::new(shared, tokens, recipes.clone(), tx)
+                    .cuts(cuts)
+                    .control(root, control)
+            };
             self.run_context(job, schedule, None)?.outcome
         };
         let prompt = rendering_end as u64;
@@ -651,9 +754,12 @@ impl Service {
         Ok(nagaya_council::continuation::open_plan(rendering, &before)?)
     }
 
-    /// The cuts of a context that has no open message (see [`Service::starts`]).
-    fn cuts(&self, context: &Context, rendering: &Rendering) -> Result<Vec<Cut>, ServiceError> {
-        Ok(self.starts(context, &rendering.tokens[..rendering.end], rendering)?.0)
+    /// The cuts of a context that has no open message (see [`Service::starts`]). `root` is the root recipe of the
+    /// context.
+    fn cuts(&self, root: RecipeId, context: &Context, rendering: &Rendering) -> Result<Vec<Cut>, ServiceError> {
+        Ok(self
+            .starts(root, context, &rendering.tokens[..rendering.end], rendering)?
+            .0)
     }
 
     /// The held snapshots where a job may start, other than the plain boundaries of its plan (spec 11.3c).
@@ -669,6 +775,7 @@ impl Service {
     /// an open context, the longest held entry after the plan, at most one token before the end, is the extension.
     fn starts(
         &self,
+        root: RecipeId,
         context: &Context,
         tokens: &[u32],
         plan: &Rendering,
@@ -688,7 +795,7 @@ impl Service {
             path: Vec<BoundaryRecipe>,
         }
         let mut stack = vec![Node {
-            recipe: self.root,
+            recipe: root,
             at: 0,
             path: Vec::new(),
         }];
@@ -752,7 +859,7 @@ impl Service {
                 return Ok(Vec::new());
             }
             let inserted: Vec<Boundary> = seals.iter().map(|seal| seal.boundary).collect();
-            Ok(recipes_with_cuts(self.root, plan, &inserted)?)
+            Ok(recipes_with_cuts(root, plan, &inserted)?)
         };
         let mut cuts: Vec<Cut> = Vec::new();
         let mut extension: Option<build::Extension> = None;
@@ -1139,6 +1246,13 @@ pub(crate) fn plan_recipes(
         true => Ok(Vec::new()),
         false => Ok(boundary_recipes(root, plan)?),
     }
+}
+
+/// The time of a use of an object, in milliseconds since the epoch (spec 6.15).
+fn objects_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis() as u64)
 }
 
 /// The snapshot id of a content id (spec 11.1): `blake3:` and the 64 hex digits.

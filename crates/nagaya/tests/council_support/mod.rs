@@ -16,9 +16,27 @@ use nagaya::process::{OpenedEngine, Process, Start};
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, StoreSpec, TierSpec};
 use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{
-    Capability, Coverage, Engine, Identity, Kind, Lifetime, Limits, MandatoryTerm, Parts, PassError, PassOut, Seal,
-    Segment, SlotLimit, Slots, Tap, Tier,
+    Capability, Control, ControlItem, Coverage, Engine, Identity, Kind, Lifetime, Limits, MandatoryTerm, Parts,
+    PassError, PassOut, Seal, Segment, SlotLimit, Slots, Tap, Tier,
 };
+
+/// What the engines of a factory saw of control vectors: the items of each pass, and each write into the table.
+#[derive(Clone, Debug, Default)]
+pub struct ControlLog(Arc<Mutex<Logged>>);
+
+/// The items of each pass, the taps of each pass, and each write as its entry and its first value.
+#[derive(Clone, Debug, Default)]
+pub struct Logged {
+    pub passes: Vec<(Vec<ControlItem>, Vec<String>)>,
+    pub writes: Vec<(u32, f32)>,
+}
+
+impl ControlLog {
+    /// What the log holds now.
+    pub fn take(&self) -> Logged {
+        std::mem::take(&mut *self.0.lock().unwrap())
+    }
+}
 
 /// The name of the engine in the profile.
 pub const ENGINE: &str = "toy";
@@ -67,6 +85,18 @@ pub struct WithContextTerm {
     grain: Option<u64>,
     seal: bool,
     close: bool,
+    log: ControlLog,
+}
+
+impl Control for WithContextTerm {
+    fn control_write(&mut self, index: u32, bytes: &[u8]) -> Result<(), String> {
+        let first = f32::from_le_bytes(bytes[..4].try_into().unwrap());
+        self.log.0.lock().unwrap().writes.push((index, first));
+        self.inner
+            .control()
+            .expect("the fake has a table")
+            .control_write(index, bytes)
+    }
 }
 
 impl Engine for WithContextTerm {
@@ -94,6 +124,10 @@ impl Engine for WithContextTerm {
 
     fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
         std::thread::sleep(self.delay);
+        if let Some(segment) = segments.first() {
+            let taps = taps.iter().map(|tap| tap.name.clone()).collect();
+            self.log.0.lock().unwrap().passes.push((segment.control.clone(), taps));
+        }
         let mut out = self.inner.pass(segments, taps)?;
         assert!(segments.len() <= 1, "the council jobs run one segment in a pass");
         if let Some(segment) = segments.first() {
@@ -125,6 +159,14 @@ impl Engine for WithContextTerm {
     fn slots(&mut self) -> Option<&mut dyn Slots> {
         self.inner.slots()
     }
+
+    fn control(&mut self) -> Option<&mut dyn Control> {
+        if self.inner.control().is_some() {
+            Some(self)
+        } else {
+            None
+        }
+    }
 }
 
 /// The factory of [`WithContextTerm`] engines.
@@ -146,6 +188,11 @@ pub struct TermFactory {
     pub seal: bool,
     /// True for an engine that declares `close`, so that it can be on demand (spec 3.3a).
     pub close: bool,
+    /// The entries of the control table of the engine, or `None` for an engine with no table (engine-abi "Control
+    /// vectors").
+    pub control: Option<u32>,
+    /// What the engines saw of control vectors.
+    pub log: ControlLog,
 }
 
 impl TermFactory {
@@ -162,6 +209,8 @@ impl TermFactory {
             speaking: false,
             seal: true,
             close: false,
+            control: None,
+            log: ControlLog::default(),
         }
     }
 
@@ -173,6 +222,9 @@ impl TermFactory {
         if self.speaking {
             inner = inner.with_logit_bias(nagaya_text_toy::speaking_bias());
         }
+        if let Some(tables) = self.control {
+            inner = inner.with_control(tables);
+        }
         WithContextTerm {
             inner,
             bytes: self.bytes,
@@ -182,6 +234,7 @@ impl TermFactory {
             grain: self.grain,
             seal: self.seal,
             close: self.close,
+            log: self.log.clone(),
         }
     }
 }
@@ -264,9 +317,12 @@ pub fn start(
     host_store: Option<u64>,
 ) -> (Process, Vec<OpenedEngine>) {
     let copies = factory.interval_copies;
+    // The control table is a device term of the engine, so the device budget grows by it.
+    let table = factory.engine().limits().control.map_or(0, |limit| limit.table_bytes());
     let mut registry = Registry::new();
     registry.register("term", Box::new(factory));
-    let profile = profile_with_copies(host_budget, 1 << 24, host_store, copies);
+    let mut profile = profile_with_copies(host_budget, 1 << 24, host_store, copies);
+    profile.budgets[0].bytes += table;
     let mut process = Start::new(profile, registry, inventory())
         .store(directory)
         .heartbeat(Duration::from_millis(10))

@@ -146,6 +146,7 @@ impl Then for DecisionThen {
                 self.advance(Some(&letters))
             }
             Got::Held(_) => Err(ServiceError::internal("a decision read holds no snapshot of its own")),
+            Got::Tapped(_) => Err(ServiceError::internal("a decision read names no tap")),
         }
     }
 }
@@ -217,7 +218,17 @@ impl Service {
         let mut numbers = Vec::with_capacity(contexts.len());
         let mut usage = Usage::default();
         let mut control = None;
-        for (index, context) in contexts.into_iter().enumerate() {
+        // Each control list is checked before the first read runs (spec 11.12).
+        let steers = contexts
+            .iter()
+            .enumerate()
+            .map(|(index, context)| {
+                context
+                    .map(|c| self.steer(c, &format!("contexts[{index}].")))
+                    .transpose()
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for ((index, context), steer) in contexts.into_iter().enumerate().zip(steers) {
             if Instant::now() >= deadline {
                 return Err(ServiceError::Timeout);
             }
@@ -243,17 +254,25 @@ impl Service {
                 control = Some(signals(plan.control_text()));
             }
             let room = end + plan.prefix().len();
+            let (root, job_control) = match steer {
+                Some(steer) => (steer.root, steer.control),
+                None => (self.root, None),
+            };
             let (tokens, recipes, cuts): (Arc<[u32]>, _, _) = match (&rendering, context) {
                 (Some(r), Some(c)) => (
                     r.tokens[..r.end].into(),
-                    boundary_recipes(self.root, r)?,
-                    self.cuts(c, r)?,
+                    boundary_recipes(root, r)?,
+                    self.cuts(root, c, r)?,
                 ),
                 _ => (Arc::from(Vec::new()), Vec::new(), Vec::new()),
             };
             let then = DecisionThen::new(plan, asked.len());
             let shared = Arc::clone(&self.shared);
-            let job = |tx| ContextBody::with(shared, tokens, recipes, room, then, tx).cuts(cuts);
+            let job = |tx| {
+                ContextBody::with(shared, tokens, recipes, room, then, tx)
+                    .cuts(cuts)
+                    .control(root, job_control)
+            };
             let finished = self.run_context(job, schedule, Some(deadline))?;
             let then = finished.then;
             let kept = finished.outcome.kept;

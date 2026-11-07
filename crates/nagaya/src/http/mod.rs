@@ -43,6 +43,11 @@ pub use routes::keep_gogi_places;
 /// The most service calls that run at once. A request past this is a 429 `busy`.
 pub const MAX_CALLS: usize = 64;
 
+/// The most contexts on each side of a control-vector request (gogi `limits.control_vector_contexts`, spec 11.12,
+/// Proposed). The job keeps the residual row of each context in host memory outside the ledger: for `LFM3-1.7B`, 24
+/// layers of 2,048 `f32` values, 192 KiB. Two sides of 64 hold 24 MiB.
+pub const CONTROL_VECTOR_CONTEXTS: u64 = 64;
+
 /// The largest request body, in bytes. A larger body is a 413 `too_large`.
 pub const MAX_BODY_BYTES: usize = 16 << 20;
 
@@ -180,7 +185,12 @@ impl Council {
     /// Serve objects and keeps from this store (spec 6.15, gogi "Objects and keeps").
     pub fn with_objects(mut self, store: nagaya_store::objects::ObjectStore) -> Self {
         self.object_limits = Some((store.object_bytes(), store.keep_bytes()));
-        self.objects = Some(Arc::new(Mutex::new(store)));
+        let store = Arc::new(Mutex::new(store));
+        // A text service finds the control vectors of its contexts in the objects (spec 11.12).
+        for served in &self.models {
+            served.service.serve_objects(Arc::clone(&store));
+        }
+        self.objects = Some(store);
         self
     }
 
@@ -471,7 +481,7 @@ impl Council {
             text_stop: None,
             media: None,
             limits: ModelLimits {
-                control_vector_contexts: None,
+                control_vector_contexts: service.controls().then_some(CONTROL_VECTOR_CONTEXTS),
                 context_tokens: config.context_tokens as u64,
                 decision_context_tokens: config.decision_context_tokens as u64,
                 snapshot_bytes: service.snapshot_bytes(),
@@ -491,6 +501,7 @@ impl Council {
             ]
             .into_iter()
             .chain(service.family().thinks().then_some(Capability::Thinking))
+            .chain(service.controls().then_some(Capability::ControlVectors))
             .collect(),
         }
     }

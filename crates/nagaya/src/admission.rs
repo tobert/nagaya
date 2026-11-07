@@ -411,13 +411,23 @@ pub struct FakeToyFactory;
 
 #[cfg(feature = "fake")]
 impl FakeToyFactory {
-    /// The engine, with the model name of the config key `model` when the config has it.
+    /// The engine, with the model name of the config key `model` and a control table of the entries of the key
+    /// `control`, when the config has them (engine-abi "Control vectors").
     fn engine_of(config: &toml::Table) -> Result<FakeAlways, String> {
-        match config.get("model") {
-            None => Ok(Self::engine()),
-            Some(toml::Value::String(model)) => Ok(Self::engine().with_model(model)),
+        let engine = match config.get("model") {
+            None => Self::engine(),
+            Some(toml::Value::String(model)) => Self::engine().with_model(model),
+            Some(other) => {
+                return Err(format!(
+                    "the key `model` of a fake-toy engine is {other}; give a string"
+                ));
+            }
+        };
+        match config.get("control") {
+            None => Ok(engine),
+            Some(toml::Value::Integer(tables)) if (1..=64).contains(tables) => Ok(engine.with_control(*tables as u32)),
             Some(other) => Err(format!(
-                "the key `model` of a fake-toy engine is {other}; give a string"
+                "the key `control` of a fake-toy engine is {other}; give the entries of its table, 1 to 64"
             )),
         }
     }

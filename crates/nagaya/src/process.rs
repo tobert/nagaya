@@ -2024,6 +2024,12 @@ impl Ports {
         self.states.identity(engine)
     }
 
+    /// The count of the opens of an engine since the start. The group thread counts an open before the engine runs a
+    /// job, so a job on the engine reads the count of its own open.
+    pub fn engine_opens(&self, engine: &str) -> u64 {
+        self.states.opens(engine)
+    }
+
     /// Load an engine, as [`Process::load`] does.
     pub fn load(&self, engine: &str) -> Result<LoadReply, LoadError> {
         self.load_with(engine, &[])

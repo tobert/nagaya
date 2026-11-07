@@ -560,20 +560,22 @@ impl Service {
                 control_text: Vec::new(),
             },
         };
+        let steer = self.steer(context, "")?;
+        let root = steer.root;
         // A plan with no boundary builds nothing, and the generation feeds the whole prompt.
-        let recipes = super::plan_recipes(self.root, &built)?;
+        let recipes = super::plan_recipes(root, &built)?;
         let end = built.end;
         let room = (prompt + max_tokens + HEAD_FEED).min(context_tokens);
         let tokens: Arc<[u32]> = built.tokens[..end].into();
         let (cuts, extension) = match context.open() {
-            Some(_) => self.starts(context, &rendering.tokens, &built)?,
-            None => (self.cuts(context, &built)?, None),
+            Some(_) => self.starts(root, context, &rendering.tokens, &built)?,
+            None => (self.cuts(root, context, &built)?, None),
         };
         let then = GenerateThen {
             family: Arc::clone(&self.family),
             context: context.clone(),
             open: context.open().cloned(),
-            root: self.root,
+            root,
             recipes: recipes.clone(),
             rendering: built,
             prompt: rendering.tokens.clone(),
@@ -596,10 +598,12 @@ impl Service {
             next_phase: None,
         };
         let shared = Arc::clone(&self.shared);
+        let control = steer.control;
         let job = |tx| {
             ContextBody::with(shared, tokens, recipes.clone(), room, then, tx)
                 .cuts(cuts)
                 .extension(extension)
+                .control(root, control)
         };
         let finished = self.run_context(job, Schedule::of(request.class, request.priority), None)?;
         let ids = finished
