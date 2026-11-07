@@ -5,7 +5,8 @@ use nagaya_abi::{
     SlotLimit, State, WriteResult,
 };
 use nagaya_store::{
-    ContentId, Snapshot, Tensor, content_id, recipe_boundary, recipe_not_sealed, recipe_root, snapshot_from_engine,
+    ContentId, RecipeMedia, Snapshot, Tensor, content_id, recipe_boundary, recipe_boundary_media, recipe_not_sealed,
+    recipe_root, snapshot_from_engine,
 };
 use serde_json::Value;
 
@@ -159,6 +160,87 @@ fn the_not_sealed_item_changes_the_recipe() {
     assert_ne!(copy, recipe_not_sealed(&recipe_boundary(&root, &[1, 2, 3], 4)));
     // The copy of the root differs from the root.
     assert_ne!(recipe_not_sealed(&root), root);
+}
+
+/// The hash of an item list, written apart from the crate: each item is a `u16` tag, a `u64` length and its bytes.
+fn items_hash(items: &[(u16, Vec<u8>)]) -> String {
+    let mut hasher = blake3::Hasher::new_derive_key("nagaya recipe v1");
+    for (tag, bytes) in items {
+        hasher.update(&tag.to_le_bytes());
+        hasher.update(&(bytes.len() as u64).to_le_bytes());
+        hasher.update(bytes);
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+fn unhex(text: &str) -> Vec<u8> {
+    (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
+        .collect()
+}
+
+/// A media part enters the recipe of its range as tag 9, after tag 7 (spec 6.2, 11.11 "Media through the council").
+#[test]
+fn a_media_part_enters_the_recipe_as_tag_9() {
+    let root = recipe_root(&[1u8; 32], b"", &[], &[]);
+    let tokens = [5u32, 9, 9, 9, 6];
+    let image = ContentId::from_hex(&"07".repeat(32)).unwrap();
+    let media = [RecipeMedia {
+        mime: "image/png",
+        id: &image,
+        positions: 3,
+    }];
+    let recipe = recipe_boundary_media(&root, &tokens, 5, &media);
+    let token_bytes: Vec<u8> = tokens.iter().flat_map(|t| t.to_le_bytes()).collect();
+    let mut item = (9u64).to_le_bytes().to_vec();
+    item.extend(b"image/png");
+    item.extend([7u8; 32]);
+    item.extend(3u64.to_le_bytes());
+    let expected = items_hash(&[
+        (5, unhex(&root.hex())),
+        (6, token_bytes),
+        (7, 5u64.to_le_bytes().to_vec()),
+        (9, item),
+    ]);
+    assert_eq!(recipe.hex(), expected);
+    // With no media part, the recipe is the recipe of the tokens alone, so a text model keeps its recipes.
+    assert_eq!(
+        recipe_boundary_media(&root, &tokens, 5, &[]),
+        recipe_boundary(&root, &tokens, 5)
+    );
+    assert_ne!(recipe, recipe_boundary(&root, &tokens, 5));
+    // Another object, another media type, or another count gives another recipe.
+    let other = ContentId::from_hex(&"08".repeat(32)).unwrap();
+    for changed in [
+        RecipeMedia { id: &other, ..media[0] },
+        RecipeMedia {
+            mime: "image/jpeg",
+            ..media[0]
+        },
+        RecipeMedia {
+            positions: 4,
+            ..media[0]
+        },
+    ] {
+        assert_ne!(
+            recipe_boundary_media(&root, &tokens, 5, &[changed]),
+            recipe,
+            "{changed:?}"
+        );
+    }
+    // Two parts in the other order give another recipe.
+    let two = [media[0], RecipeMedia { id: &other, ..media[0] }];
+    let swapped = [two[1], two[0]];
+    assert_ne!(
+        recipe_boundary_media(&root, &tokens, 5, &two),
+        recipe_boundary_media(&root, &tokens, 5, &two[..1]),
+        "each part is an item"
+    );
+    assert_ne!(
+        recipe_boundary_media(&root, &tokens, 5, &two),
+        recipe_boundary_media(&root, &tokens, 5, &swapped)
+    );
 }
 
 fn parse_header(bytes: &[u8]) -> (usize, serde_json::Value) {
