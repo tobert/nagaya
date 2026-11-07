@@ -5,7 +5,11 @@
 //! prints the gap between the card and this form.
 #![allow(dead_code)]
 
+use std::path::Path;
+
 use nagaya_mk_bmg::protocol::*;
+use nagaya_mk_bmg::safetensors::MappedSafeTensors;
+use nagaya_mk_lfm3_bmg::audio::{self, AudioBufs, AudioWeights, Clip, Encoder, MAX_CLIP_POSITIONS, Stage};
 use nagaya_mk_lfm3_bmg::weights::{Upload, rounded};
 
 /// The first address of the host memory, so that address 0 is never a buffer.
@@ -406,6 +410,59 @@ impl CpuCard {
             self.put(t.c, &y);
         }
     }
+}
+
+/// The audio encoder of Omni in host memory, with its buffers for the longest clip.
+pub struct CpuEncoder {
+    pub cpu: CpuCard,
+    pub e: Encoder,
+    pub w: AudioWeights,
+    pub bufs: AudioBufs,
+}
+
+/// The names of the stages that [`CpuEncoder::stages`] gives, as the oracle names them.
+pub const STAGES: [&str; 3] = ["downsample", "encoder", "rows"];
+
+impl CpuEncoder {
+    /// Load the encoder of the Omni folder `dir`.
+    pub fn load(dir: &Path) -> Self {
+        let e = Encoder::read(dir).unwrap().expect("Omni has an audio encoder");
+        let map = MappedSafeTensors::open(&dir.join("model.safetensors")).unwrap();
+        let mut cpu = CpuCard::new();
+        let w = audio::load(&mut cpu, &e, &map.view().unwrap()).unwrap();
+        let bufs = AudioBufs::new(&mut |bytes| cpu.alloc(bytes), &e, MAX_CLIP_POSITIONS);
+        Self { cpu, e, w, bufs }
+    }
+
+    /// Run the tasks of the clip `mel` (`[frames][mel]`) in three parts, and give the rows after each stage.
+    pub fn stages(&mut self, mel: &[f32]) -> [Vec<f32>; 3] {
+        let frames = mel.len() / self.e.mel;
+        let p = audio::positions(frames);
+        let out = self.cpu.alloc(p * self.e.out * 4);
+        self.cpu.put(self.bufs.mel, mel);
+        let clip = Clip {
+            mel: self.bufs.mel,
+            frames,
+            out,
+        };
+        let all = audio::encode(&self.e, &self.w, &self.bufs, clip, Stage::Rows);
+        let down = audio::encode(&self.e, &self.w, &self.bufs, clip, Stage::Downsample).len();
+        let enc = audio::encode(&self.e, &self.w, &self.bufs, clip, Stage::Encoder).len();
+        self.cpu.run(&all[..down]);
+        let a = self.cpu.f32s(self.bufs.x, p * self.e.hidden);
+        self.cpu.run(&all[down..enc]);
+        let b = self.cpu.f32s(self.bufs.h, p * self.e.hidden);
+        self.cpu.run(&all[enc..]);
+        let c = self.cpu.f32s(out, p * self.e.out);
+        [a, b, c]
+    }
+}
+
+/// The mel rows `[frames][bins]` of an oracle tensor that holds the bins first.
+pub fn mel_rows(golden: &super::Tensor) -> Vec<f32> {
+    let (bins, frames) = (golden.shape[0], golden.shape[1]);
+    let v = golden.f32();
+    (0..frames * bins).map(|i| v[(i % bins) * frames + i / bins]).collect()
 }
 
 /// The floats of a score row of a block of `n` tokens at cache rows `p0..` (`attn_row_floats`, megakernel.cl).

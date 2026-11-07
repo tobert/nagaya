@@ -13,83 +13,27 @@
 mod common;
 
 use common::Which;
-use common::cpu::CpuCard;
-use nagaya_mk_bmg::safetensors::MappedSafeTensors;
-use nagaya_mk_lfm3_bmg::audio::{self, AudioBufs, Clip, Encoder, MAX_CLIP_POSITIONS, Stage};
-use nagaya_mk_lfm3_bmg::weights::Upload;
+use common::cpu::{CpuEncoder, STAGES, mel_rows};
 
 /// The bound of a defect of the CPU form: a relative error of a stage past this is a wrong op.
 const DEFECT_BOUND: f64 = 1e-3;
 
-/// The oracle clip, the encoder and its weights in host memory.
-struct Setup {
-    cpu: CpuCard,
-    e: Encoder,
-    w: audio::AudioWeights,
-    bufs: AudioBufs,
-    golden: std::collections::HashMap<String, common::Tensor>,
-}
-
-fn setup() -> Option<Setup> {
+fn setup() -> Option<(CpuEncoder, std::collections::HashMap<String, common::Tensor>)> {
     if common::absent(Which::Omni) || common::golden_absent("audio_in.safetensors") {
         return None;
     }
-    let dir = common::model_dir(Which::Omni);
-    let e = Encoder::read(&dir).unwrap().expect("Omni has an audio encoder");
-    let map = MappedSafeTensors::open(&dir.join("model.safetensors")).unwrap();
-    let mut cpu = CpuCard::new();
-    let w = audio::load(&mut cpu, &e, &map.view().unwrap()).unwrap();
-    let bufs = AudioBufs::new(&mut |bytes| cpu.alloc(bytes), &e, MAX_CLIP_POSITIONS);
-    let golden = common::golden_tensors("audio_in.safetensors");
-    Some(Setup {
-        cpu,
-        e,
-        w,
-        bufs,
-        golden,
-    })
+    let encoder = CpuEncoder::load(&common::model_dir(Which::Omni));
+    Some((encoder, common::golden_tensors("audio_in.safetensors")))
 }
-
-/// The mel rows `[frames][bins]` of the oracle, which holds the bins first.
-fn mel_rows(golden: &common::Tensor) -> (Vec<f32>, usize) {
-    let (bins, frames) = (golden.shape[0], golden.shape[1]);
-    let v = golden.f32();
-    let rows = (0..frames * bins).map(|i| v[(i % bins) * frames + i / bins]).collect();
-    (rows, frames)
-}
-
-/// Run the tasks of `mel` in three parts, and give the rows after each stage.
-fn stages(s: &mut Setup, mel: &[f32], frames: usize) -> [Vec<f32>; 3] {
-    let p = audio::positions(frames);
-    let out = s.cpu.alloc(p * s.e.out * 4);
-    s.cpu.put(s.bufs.mel, mel);
-    let clip = Clip {
-        mel: s.bufs.mel,
-        frames,
-        out,
-    };
-    let all = audio::encode(&s.e, &s.w, &s.bufs, clip, Stage::Rows);
-    let down = audio::encode(&s.e, &s.w, &s.bufs, clip, Stage::Downsample).len();
-    let enc = audio::encode(&s.e, &s.w, &s.bufs, clip, Stage::Encoder).len();
-    s.cpu.run(&all[..down]);
-    let a = s.cpu.f32s(s.bufs.x, p * s.e.hidden);
-    s.cpu.run(&all[down..enc]);
-    let b = s.cpu.f32s(s.bufs.h, p * s.e.hidden);
-    s.cpu.run(&all[enc..]);
-    let c = s.cpu.f32s(out, p * s.e.out);
-    [a, b, c]
-}
-
-const NAMES: [&str; 3] = ["downsample", "encoder", "rows"];
 
 #[test]
 fn each_stage_of_the_cpu_form_follows_transformers() {
-    let Some(mut s) = setup() else { return };
-    let (mel, frames) = mel_rows(&s.golden["mel"]);
-    assert_eq!(frames, 149);
-    let got = stages(&mut s, &mel, frames);
-    for (name, got) in NAMES.iter().zip(&got) {
-        let want = s.golden[*name].f32();
+    let Some((mut encoder, golden)) = setup() else { return };
+    let mel = mel_rows(&golden["mel"]);
+    assert_eq!(mel.len(), 149 * 128);
+    let got = encoder.stages(&mel);
+    for (name, got) in STAGES.iter().zip(&got) {
+        let want = golden[*name].f32();
         let gap = common::rel(got, &want);
         println!(
             "CPU form, {name}: relative error {gap:.3e}, largest difference {:.3e}",
@@ -100,22 +44,21 @@ fn each_stage_of_the_cpu_form_follows_transformers() {
 }
 
 /// The family computes the mel rows from the WAV in f64 (spec 11.11, "Mel rows"), so its quiet bins differ from the
-/// reference. This test prints how far that moves the rows of the projector.
+/// reference. This test prints how far that moves each stage.
 #[test]
 fn the_mel_rows_of_the_family_give_the_rows_of_transformers() {
-    let Some(mut s) = setup() else { return };
-    let samples = s.golden["samples"].f32();
-    let rows = nagaya_text_lfm3::media::audio::mel(&samples);
-    let (reference, frames) = mel_rows(&s.golden["mel"]);
-    assert_eq!(rows.frames, frames);
+    let Some((mut encoder, golden)) = setup() else { return };
+    let rows = nagaya_text_lfm3::media::audio::mel(&golden["samples"].f32());
+    let reference = mel_rows(&golden["mel"]);
+    assert_eq!(rows.values.len(), reference.len());
     println!(
         "family mel: relative error {:.3e}, largest difference {:.3e}",
         common::rel(&rows.values, &reference),
         common::max_abs(&rows.values, &reference)
     );
-    let got = stages(&mut s, &rows.values, rows.frames);
-    for (name, got) in NAMES.iter().zip(&got) {
-        let want = s.golden[*name].f32();
+    let got = encoder.stages(&rows.values);
+    for (name, got) in STAGES.iter().zip(&got) {
+        let want = golden[*name].f32();
         let gap = common::rel(got, &want);
         println!("family mel, {name}: relative error {gap:.3e}");
         assert!(
