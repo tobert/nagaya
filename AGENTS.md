@@ -97,7 +97,10 @@ in a lock: one thread owns it (3.2).
 Do them in this order. Each milestone ends with all checks green and one or more commits. Milestones 1 to 14 are
 done, and `docs/history.md` keeps their full text, and the merges where the run recorded them. Milestone 15
 is done on gfx1151host, and milestones 15s, 16, 17, 18, 19 and 20 are done on b70host. Milestone 21 waits, and
-milestone 22 is done on gfx1151host. Milestone 23, the cluster, is next, and milestone 24, LFM3 Omni, follows it.
+milestone 22 is done on gfx1151host.
+
+Milestone 24, LFM3 Omni, is deployed on b70host, and its video step waits. Milestone 25, control vectors, is next
+(Amy, 2026-11-07). Milestone 23, the cluster, follows it.
 
 1. **Workspace.** The Cargo workspace, its crates, `rustfmt.toml` and the dev profile. Done.
 2. **Engine trait.** The ABI core and capabilities as traits, with a fake engine and a broken fake for the gates. Done.
@@ -605,7 +608,46 @@ milestone 22 is done on gfx1151host. Milestone 23, the cluster, is next, and mil
     `LFM3_OMNI_MODEL_DIR` and the text model's folder from `LFM3_MODEL_DIR`. Neither has a default.
     `tools/lfm3_golden.sh` writes the oracle into `target/lfm3-golden` or `LFM3_GOLDEN_DIR`, with no GPU job.
     Control vectors (`docs/cv.md`) are not in this milestone.
-25. Stop and ask Amy for the next milestone.
+25. **Control vectors.** A council v2 context can change the residual of an LFM3 model while it runs. Amy, 2026-11-07:
+    "I'm getting some refusals on LFM3 for storytelling". Someone ships Omni weights with the refusal removed. Amy:
+    "I'd like to try this runtime technique and figure out how to work it into the protocol as an option". She
+    decided these rules on 2026-11-07, by interview. They replace the Proposed notes of `docs/cv.md` where the two
+    do not agree.
+    - **Protocol:** a context names its control vectors, beside `thinking`. Each item names a vector object
+      (`blake3:` id), an operation and a strength. A served model declares a capability for it. The list goes into
+      the root recipe (spec 6.12), so contexts with the same list share their prefixes.
+    - **Operations:** `add`, `ablate` and `clamp` (`docs/cv.md`, "What it does"), in one op.
+    - **Extraction:** the nagaya makes a vector on the card. A residual tap (spec 13.1) reads the residual after
+      each layer, and a job takes the difference of the means of two prompt sets.
+    - **Route:** the route that makes a vector is council v2. gogi writes its contract first, with suite checks.
+    - **Prompt sets:** public sets of refused requests and answered requests (Arditi et al., 2024), and the
+      storytelling prompts that LFM3 refused for Amy. Her prompts stay on b70host, and only counts
+      go into git.
+    - **Models:** `LFM3-1.7B` first. Omni gets its own vector after the gates of the text model are green.
+    - **Strength:** Amy sets each strength by hand through the context. A search for strengths, as Heretic does,
+      comes later.
+    - **Repositories:** senpai may edit gogi on a branch, merge it to gogi main, push it and move the pin.
+
+    Do the steps in this order:
+    1. **gogi.** The control list of a context, the capability, the route that makes a vector, `gogi-fake` and the
+       suite checks. Merge, push, then move the pin.
+    2. **Spec.** The context field, the route, the recipe item (6.2, 6.12), the residual tap (13.1) and the engine
+       hook "the residual after layer `l`" in engine-abi. Write Amy's decisions into `docs/cv.md`. Amy decides each
+       Proposed note.
+    3. **Oracle fixture.** Write the fixed inputs and outputs from transformers once, on the CPU (8.3). Keep the
+       mean residuals of two small prompt sets, and the logits with each operation at a fixed strength.
+    4. **Op.** Add the op of the three operations to the shared interpreter, with a test for each operation.
+    5. **Tap and job.** The residual tap on the LFM3 engine, and the job that takes the means on the card. Run the
+       gate of the means.
+    6. **Engine.** The control list on the pass of the LFM3 engine, and in the root recipe. Run the gates: a strength
+       of 0 gives the bits of the plain model, and each operation matches the oracle.
+    7. **Route.** Serve the route and the context field through council v2. Run the gogi suite.
+    8. **Trial.** Make a refusal vector of `LFM3-1.7B` from the prompt sets. Amy tries strengths for storytelling.
+       Write only the counts of refusals into `signoff.md`.
+    9. **Omni.** Make Omni's vector, with image prompts if its refusals need them. Run its gates, then deploy.
+
+    Each stop and start of `nagaya.service` goes into `signoff.md`.
+26. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
 
