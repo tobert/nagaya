@@ -254,3 +254,69 @@ fn subsample_refuses_an_output_over_its_input() {
 fn subsample_refuses_an_empty_plane() {
     tasks::subsample(0x10_0000, 0x20_0000, 0x30_0000, 0x40_0000, 0, 128, 1, 256, false);
 }
+
+/// A call of `tasks::group_attn` with head size `d`, `n` rows in groups of `group`, and score scale `scale`.
+fn group_attn(d: u32, n: u32, group: u32, scale: f32) -> MkTaskDescriptor {
+    tasks::group_attn(0, 0, 0, 0, n, 32, 8, d, group, scale)
+}
+
+/// The depth decoder of LFM3 attends over groups of 12 rows with heads of 32 values.
+#[test]
+fn group_attn_takes_whole_groups_of_rows() {
+    let task = group_attn(32, 48, 12, 0.5);
+    assert_eq!((task.n, task.k, task.p0, task.m), (48, 12, 32, 32 | 8 << 16));
+    assert_eq!(task.layer, 0.5f32.to_bits());
+}
+
+/// A part of a group would attend across the end of the rows.
+#[test]
+#[should_panic(expected = "OP_LFM3_GROUP_ATTN takes whole groups")]
+fn group_attn_refuses_a_part_of_a_group() {
+    group_attn(32, 20, 12, 1.0);
+}
+
+/// The kernel reads a group of 0 as every row.
+#[test]
+#[should_panic(expected = "OP_LFM3_GROUP_ATTN takes whole groups")]
+fn group_attn_refuses_a_group_of_zero() {
+    group_attn(32, 12, 0, 1.0);
+}
+
+#[test]
+#[should_panic(expected = "OP_LFM3_GROUP_ATTN takes a head of 16 to 512 values in 16s")]
+fn group_attn_refuses_a_head_that_is_not_a_multiple_of_16() {
+    group_attn(40, 12, 12, 1.0);
+}
+
+#[test]
+#[should_panic(expected = "OP_LFM3_GROUP_ATTN reads a scale of 0.0 as 1.0")]
+fn group_attn_refuses_a_scale_of_zero() {
+    group_attn(32, 12, 12, 0.0);
+}
+
+/// The polar form reads the magnitudes and the angles of a row, so the row must hold both.
+#[test]
+#[should_panic(expected = "OP_LFM3_POLAR reads 641 magnitudes and 641 angles")]
+fn polar_refuses_a_row_shorter_than_its_bins() {
+    tasks::polar(0, 0, 6, 641, 1280);
+}
+
+/// The inverse FFT of 1,280 samples takes 641 bins of each row, and its table holds a cosine and a sine for each
+/// sample.
+#[test]
+fn irfft_takes_half_the_samples_and_one_bin() {
+    let task = tasks::irfft(1, 2, 3, 4, 6, 1280);
+    assert_eq!(
+        (task.a, task.b, task.x, task.c, task.n, task.k, task.p0),
+        (1, 2, 3, 4, 6, 1280, 641)
+    );
+    assert!(std::panic::catch_unwind(|| tasks::irfft(0, 0, 0, 0, 1, 1281)).is_err());
+    let table = tasks::irfft_table(8);
+    assert_eq!(table.len(), 16);
+    assert_eq!((table[0], table[1]), (1.0, 0.0));
+    assert_eq!(
+        table[4], 6.123_234e-17_f64 as f32,
+        "j = 2 is a quarter turn: the cosine is the f64 rounding"
+    );
+    assert_eq!(table[5], 1.0);
+}

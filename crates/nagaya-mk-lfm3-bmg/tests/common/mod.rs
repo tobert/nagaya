@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
+pub mod speech;
+
 pub const TEXT_VARIABLE: &str = "LFM3_MODEL_DIR";
 pub const OMNI_VARIABLE: &str = "LFM3_OMNI_MODEL_DIR";
 pub const GOLDEN_VARIABLE: &str = "LFM3_GOLDEN_DIR";
@@ -115,7 +117,7 @@ pub fn golden_json(name: &str) -> serde_json::Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{} is not JSON: {e}", path.display()))
 }
 
-/// One tensor of an oracle file, as `f64` values with its shape. The oracle holds F32 and I64.
+/// One tensor of an oracle file, as `f64` values with its shape. The oracle holds F32, I64 and U8.
 pub struct Tensor {
     pub shape: Vec<usize>,
     pub values: Vec<f64>,
@@ -171,7 +173,8 @@ pub fn golden_tensors(name: &str) -> HashMap<String, Tensor> {
                 .iter()
                 .map(|b| i16::from_le_bytes(*b) as f64)
                 .collect(),
-            other => panic!("tensor {name} has dtype {other}; the oracle holds F32, I64 and I16"),
+            "U8" => raw.iter().map(|b| *b as f64).collect(),
+            other => panic!("tensor {name} has dtype {other}; the oracle holds F32, I64, I16 and U8"),
         };
         out.insert(name.clone(), Tensor { shape, values });
     }

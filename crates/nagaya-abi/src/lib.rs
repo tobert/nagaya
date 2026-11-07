@@ -354,6 +354,8 @@ pub enum Capability {
     Image,
     /// Embeddings: `embed` (engine-abi "Embedding").
     Embedding,
+    /// Speech from the last row of a text pass: `frame`, `codec` and `codec_clear` (engine-abi "LFM3").
+    SpeechFrames,
 }
 
 /// The limits that an engine declares.
@@ -872,6 +874,48 @@ pub trait Speech {
     fn speech_clear(&mut self, slot: SlotId);
 }
 
+/// The draw of one frame of audio codes (engine-abi "The speech calls of LFM3"). The engine keeps no history, so the
+/// same seed, frame and history give the same codes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameDraw<'a> {
+    /// The seed of the output.
+    pub seed: u64,
+    /// The frame of the output, from 0. The order of the codebooks and each draw depend on it.
+    pub frame: u64,
+    /// The codes of the frames of the output so far, `codebooks` codes for each frame. The end frame is not in it.
+    pub history: &'a [u32],
+}
+
+/// What one `frame` call made.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FrameOut {
+    /// The codes of the frame, one for each codebook. An end frame holds the end code in each codebook.
+    pub codes: Vec<u32>,
+    /// True when a codebook gave the end code. The engine fed the end frame too.
+    pub end: bool,
+    /// The logit row of the fed frame, when the call asked for it.
+    pub logits: Option<Vec<f32>>,
+}
+
+/// The speech capability of an engine whose pass gives text logits and whose frames come from its last row
+/// (engine-abi "LFM3", "The speech calls of LFM3"). The codec keeps its window for each slot, and it holds no state in a
+/// snapshot.
+pub trait SpeechFrames {
+    /// The codes of one frame.
+    fn codebooks(&self) -> u32;
+
+    /// Run the depth decoder on the last row of the slot, sample the codes of one frame, and feed the frame into the
+    /// slot as its next position. With `logits`, give the logit row of that position too.
+    fn frame(&mut self, slot: SlotId, draw: &FrameDraw<'_>, logits: bool) -> Result<FrameOut, PassError>;
+
+    /// Decode one frame of codes in the codec of the slot, and give the f32 samples that are whole: 1,440 after a
+    /// clear, then 1,920 for LFM3.
+    fn codec(&mut self, slot: SlotId, codes: &[u32]) -> Result<Vec<f32>, PassError>;
+
+    /// Give the last samples of the stream of the slot, and free its window. A slot with no stream gives none.
+    fn codec_clear(&mut self, slot: SlotId) -> Vec<f32>;
+}
+
 /// The ids of one chunk of a prompt for an image engine (spec 11.9a): the start id, 75 tokens and the end id, padded.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ImageChunk {
@@ -1130,6 +1174,12 @@ pub trait Engine {
 
     /// The speech capability, when the engine has it (engine-abi "Speech").
     fn speech(&mut self) -> Option<&mut dyn Speech> {
+        None
+    }
+
+    /// The capability `speech_frames`, when the engine has it (engine-abi "LFM3"). Its name is not `speech_frames`,
+    /// because `Speech` has a call of that name.
+    fn frames(&mut self) -> Option<&mut dyn SpeechFrames> {
         None
     }
 

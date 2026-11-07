@@ -8,10 +8,14 @@
 //! With no feature, the crate plans with no card. The feature `xe` loads the engine on a card.
 
 pub mod audio;
+pub mod codec;
+pub mod codes;
+pub mod depth;
 #[cfg(feature = "xe")]
 pub mod device;
 #[cfg(feature = "xe")]
 pub mod engine;
+pub mod frames;
 pub mod model;
 pub mod spec;
 pub mod weights;

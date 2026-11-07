@@ -1,4 +1,9 @@
 //! The LFM3 engine on its card: the `Engine` trait, the parts, the slots and the coverage over the ring of `model`.
+//! The speech path of Omni is in `speech`.
+
+mod speech;
+
+pub use speech::DepthProbe;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -6,7 +11,7 @@ use std::time::Instant;
 
 use nagaya_abi::{
     BitClass, BitSetting, Coverage, CoverageSpan, Dtype, Engine, Identity, Limits, Output, PartError, PartId, Parts,
-    PassError, PassErrorKind, PassOut, PassStatus, Segment, SlotId, Slots, State, Tap, WriteResult,
+    PassError, PassErrorKind, PassOut, PassStatus, Segment, SlotId, Slots, SpeechFrames, State, Tap, WriteResult,
 };
 use nagaya_mk_bmg::level_zero::{B70Card, L0Cluster};
 use nagaya_mk_bmg::protocol::MkTaskDescriptor;
@@ -39,6 +44,8 @@ pub struct Lfm3Engine {
     held: Held,
     /// The weights and the buffers of the audio encoder of Omni (engine-abi "The audio encoder of LFM3").
     audio: Option<(AudioWeights, AudioBufs)>,
+    /// The depth decoder and the codec of Omni. The text model has none.
+    speech: Option<speech::Speech>,
 }
 
 // The engine holds USM pointers of its card, and one thread at a time calls it.
@@ -239,7 +246,7 @@ impl Lfm3Engine {
             (None, None) => None,
             _ => unreachable!("the audio weights load when the backbone has an audio encoder"),
         };
-        let limits = spec::limits(&b, &config, weights_bytes);
+        let mut limits = spec::limits(&b, &config, weights_bytes);
         limits.check()?;
         let kv = config.slots as u64 * spec::slot_bytes(&b, SLOT_TOKENS);
         let planned =
@@ -249,6 +256,15 @@ impl Lfm3Engine {
                 "the engine took {} device bytes, and its limits declare {planned}",
                 device.bytes
             ));
+        }
+        // Omni adds the term `speech` after the terms of the backbone (engine-abi "The speech calls of LFM3").
+        let speech = match b.model {
+            Model::Omni => Some(speech::Speech::open(&dir, card, &mut device, config.slots)?),
+            Model::Text => None,
+        };
+        if let Some(speech) = &speech {
+            crate::frames::declare(&mut limits, speech.bytes);
+            limits.check()?;
         }
         let ring = Ring::new(card, scratch_floats(max_seq));
 
@@ -300,6 +316,7 @@ impl Lfm3Engine {
             slots,
             held,
             audio,
+            speech,
         })
     }
 
@@ -334,7 +351,7 @@ impl Lfm3Engine {
         }
         let bytes: Vec<u8> = tokens.iter().flat_map(|v| v.to_le_bytes()).collect();
         self.device.write(self.card(), self.bufs.ids, &bytes);
-        let tasks = model::pass(
+        let mut tasks = model::pass(
             &self.b,
             &self.weights,
             &self.bufs,
@@ -346,7 +363,21 @@ impl Lfm3Engine {
                 logit_rows,
             },
         );
+        // Omni keeps the final norm of the last position for `frame` (engine-abi "The speech calls of LFM3").
+        if let Some(speech) = &self.speech
+            && logit_rows.is_some()
+            && layers == self.b.layers.len()
+        {
+            tasks.push(speech.keep_hidden(slot, self.bufs.h, tokens.len() - 1));
+        }
         self.run(&tasks);
+    }
+
+    /// Clear the hidden row of the last position of `slot`: the slot changed in another way than a pass or a feed.
+    fn forget_hidden(&mut self, slot: usize) {
+        if let Some(speech) = &mut self.speech {
+            speech.forget(slot);
+        }
     }
 
     fn read_f32(&self, at: u64, n: usize) -> Vec<f32> {
@@ -375,6 +406,7 @@ impl Lfm3Engine {
         let out = self.read_f32(at, ids.len() * self.b.hidden);
         self.held.clear(slot);
         self.zero_conv(slot);
+        self.forget_hidden(slot);
         Ok(out)
     }
 
@@ -482,6 +514,9 @@ impl Engine for Lfm3Engine {
             })
             .collect();
         self.held.ran(&block);
+        if let Some(speech) = &mut self.speech {
+            speech.kept(block.slot, self.held.n[block.slot]);
+        }
         Ok(PassOut {
             status: PassStatus::Ok,
             ms: start.elapsed().as_millis() as u64,
@@ -503,6 +538,10 @@ impl Engine for Lfm3Engine {
 
     fn coverage(&mut self) -> Option<&mut dyn Coverage> {
         Some(self)
+    }
+
+    fn frames(&mut self) -> Option<&mut dyn SpeechFrames> {
+        if self.speech.is_some() { Some(self) } else { None }
     }
 }
 
@@ -532,6 +571,7 @@ impl Parts for Lfm3Engine {
         self.device
             .write(self.card(), self.slots[slot].layers[which.layer()], bytes);
         self.held.wrote(slot, part, None);
+        self.forget_hidden(slot);
         WriteResult::Ok
     }
 
@@ -560,6 +600,7 @@ impl Parts for Lfm3Engine {
             at += rows * row;
         }
         self.held.wrote(slot, part, Some(from..from + n));
+        self.forget_hidden(slot);
         WriteResult::Ok
     }
 
@@ -570,6 +611,7 @@ impl Parts for Lfm3Engine {
                     self.zero_conv(slot);
                 }
                 self.held.set_n(slot, n);
+                self.forget_hidden(slot);
                 WriteResult::Ok
             }
             Err(message) => self.refuse(message),
@@ -588,6 +630,11 @@ impl Slots for Lfm3Engine {
         }
         self.held.clear(slot as usize);
         self.zero_conv(slot as usize);
+        self.forget_hidden(slot as usize);
+        // A clear also ends the stream of the codec of the slot, and its last samples go.
+        if let Some(speech) = &mut self.speech {
+            speech.clear_codec(slot as usize);
+        }
         WriteResult::Ok
     }
 }

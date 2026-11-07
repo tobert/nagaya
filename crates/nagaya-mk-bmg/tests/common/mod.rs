@@ -2,3 +2,4 @@
 
 pub mod lfm3;
 pub mod lfm3_audio;
+pub mod lfm3_speech;

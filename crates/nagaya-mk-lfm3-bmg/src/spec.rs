@@ -572,7 +572,13 @@ pub fn plan(config: &Config) -> Result<Limits, String> {
     config.check()?;
     let b = Backbone::read(&config.model_dir)?;
     let weights = weights_bytes(&b, &config.model_dir)?;
-    Ok(limits(&b, config, weights))
+    let mut limits = limits(&b, config, weights);
+    // Omni adds the term `speech` (engine-abi "The speech calls of LFM3").
+    if b.model == Model::Omni {
+        let bytes = crate::frames::plan_bytes(&config.model_dir, config.slots)?;
+        crate::frames::declare(&mut limits, bytes);
+    }
+    Ok(limits)
 }
 
 /// One block that a pass runs, after its checks.

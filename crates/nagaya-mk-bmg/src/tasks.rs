@@ -943,3 +943,98 @@ pub fn head_gate(a: u64, gates: u64, y: u64, n: u32, heads: u32, d: u32, stride:
         ..task(OP_HEAD_GATE)
     }
 }
+
+/// Attention in both directions inside groups of `group` rows (`OP_LFM3_GROUP_ATTN`): `heads` query heads share
+/// `kv_heads` key and value heads of `d` values, and each score is times `scale`. The depth decoder of LFM3 attends
+/// over the 12 codebooks of each frame.
+#[allow(clippy::too_many_arguments)]
+pub fn group_attn(
+    q: u64,
+    k: u64,
+    v: u64,
+    y: u64,
+    n: u32,
+    heads: u32,
+    kv_heads: u32,
+    d: u32,
+    group: u32,
+    scale: f32,
+) -> MkTaskDescriptor {
+    // Each of 16 lanes keeps at most 32 values of a head, and a head shorter than its 16s leaves values unwritten.
+    assert!(
+        (16..=512).contains(&d) && d.is_multiple_of(16),
+        "OP_LFM3_GROUP_ATTN takes a head of 16 to 512 values in 16s, and it got {d}"
+    );
+    assert!(
+        kv_heads > 0 && heads.is_multiple_of(kv_heads) && heads < 1 << 16 && kv_heads < 1 << 16,
+        "OP_LFM3_GROUP_ATTN takes query heads in groups of each key head, and it got {heads} and {kv_heads}"
+    );
+    // The kernel reads a group of 0 as every row, and the bits 0 as no scale.
+    assert!(
+        group >= 1 && n.is_multiple_of(group),
+        "OP_LFM3_GROUP_ATTN takes whole groups, and it got {n} rows in groups of {group}"
+    );
+    assert!(
+        scale != 0.0,
+        "OP_LFM3_GROUP_ATTN reads a scale of 0.0 as 1.0, so it takes no scale of 0.0"
+    );
+    MkTaskDescriptor {
+        a: q,
+        b: k,
+        x: v,
+        c: y,
+        n,
+        m: heads | kv_heads << 16,
+        k: group,
+        p0: d,
+        layer: scale.to_bits(),
+        ..task(OP_LFM3_GROUP_ATTN)
+    }
+}
+
+/// The complex bins of `n` rows of `stride` values (`OP_LFM3_POLAR`): `bins` log magnitudes, then `bins` angles, into
+/// `[n][2 * bins]` of real parts, then imaginary parts.
+pub fn polar(a: u64, c: u64, n: u32, bins: u32, stride: u32) -> MkTaskDescriptor {
+    assert!(
+        bins >= 1 && stride >= 2 * bins,
+        "OP_LFM3_POLAR reads {bins} magnitudes and {bins} angles, and a row of {stride} values does not hold them"
+    );
+    MkTaskDescriptor {
+        a,
+        c,
+        n,
+        k: bins,
+        m: stride,
+        ..task(OP_LFM3_POLAR)
+    }
+}
+
+/// The inverse real FFT of `n_fft` samples of each of `n` rows of bins, times the F32 window (`OP_LFM3_IRFFT`). The
+/// rows hold `n_fft / 2 + 1` real parts, then as many imaginary parts. `table` is [`irfft_table`] of `n_fft`.
+pub fn irfft(bins: u64, window: u64, table: u64, c: u64, n: u32, n_fft: u32) -> MkTaskDescriptor {
+    assert!(
+        n_fft >= 4 && n_fft.is_multiple_of(2),
+        "OP_LFM3_IRFFT takes an even FFT size of at least 4, and it got {n_fft}"
+    );
+    MkTaskDescriptor {
+        a: bins,
+        b: window,
+        x: table,
+        c,
+        n,
+        k: n_fft,
+        p0: n_fft / 2 + 1,
+        ..task(OP_LFM3_IRFFT)
+    }
+}
+
+/// The table of `OP_LFM3_IRFFT`: the cosine and the sine of `2 pi j / n_fft` for each `j < n_fft`, in f64 and then
+/// rounded to f32.
+pub fn irfft_table(n_fft: usize) -> Vec<f32> {
+    (0..n_fft)
+        .flat_map(|j| {
+            let a = 2.0 * std::f64::consts::PI * j as f64 / n_fft as f64;
+            [a.cos() as f32, a.sin() as f32]
+        })
+        .collect()
+}
