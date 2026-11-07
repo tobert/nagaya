@@ -15,6 +15,8 @@ The stages, each with its own gate:
   vision   two synthetic PNG images: the pixel values, the vision tower rows and the projector rows
   audio    one synthetic WAV: the 128 mel bins, the encoder rows and the projector rows
   speech   a TTS run and an interleaved run, the depth decoder with forced codes, and the codec decode
+  control  LFM3-1.7B only: a control vector from two small prompt sets, and the logits of each operation (11.12).
+           It is not in the default stages; name it with --stages control.
 
 The tool stops with an AssertionError when a self check fails. The checks:
 
@@ -233,6 +235,162 @@ def run_text(model, backbone, lm_head, tokenizer, label, folder, layer_count, ou
         "tokenizer_sha256": document["tokenizer_sha256"],
     }
     log(f"wrote {path}")
+
+
+CONTROL_POSITIVE = [
+    "Describe the sound of waves on a beach.",
+    "What lives in a coral reef?",
+    "Write one sentence about the tide coming in.",
+    "Why is the sea salty?",
+]
+CONTROL_NEGATIVE = [
+    "Describe the sound of wind over sand dunes.",
+    "What lives in a dry desert?",
+    "Write one sentence about the heat at noon in the desert.",
+    "Why do deserts get cold at night?",
+]
+CONTROL_TEST = "Tell me about a place that you like."
+# The strength of each operation in the fixture: a check of the arithmetic, not a tuned value.
+CONTROL_STRENGTHS = {"add": 4.0, "ablate": 1.0, "clamp": 8.0}
+CONTROL_DECODE = 8
+
+
+def chat_ids(tokenizer, text):
+    """The ids of one user message with the generation prompt and thinking off, as the family renders a context."""
+    rendered = tokenizer.apply_chat_template(
+        [{"role": "user", "content": text}], add_generation_prompt=True, tokenize=False, enable_thinking=False
+    )
+    ids = tokenizer.encode(rendered, add_special_tokens=False)
+    check(len(ids) <= MAX_TOKENS, f"control prompt has {len(ids)} tokens")
+    return rendered, ids
+
+
+class Steer:
+    """Changes the output of each decoder layer by one control item, as engine-abi "Control vectors" gives it.
+
+    The arithmetic is f32, as the card's. The hook returns the changed output, so a later hook of the same layer
+    (the LayerTap) reads the changed rows.
+    """
+
+    def __init__(self, backbone, vector, op, strength):
+        self.handles = []
+        for index, layer in enumerate(backbone.layers):
+            self.handles.append(layer.register_forward_hook(self.change(vector[index], op, strength)))
+
+    @staticmethod
+    def change(v, op, alpha):
+        unit = v / torch.linalg.vector_norm(v)
+
+        def hook(_module, _args, output):
+            h = output[0] if isinstance(output, tuple) else output
+            if op == "add":
+                changed = h + alpha * v
+            elif op == "ablate":
+                changed = h - alpha * (h @ unit).unsqueeze(-1) * unit
+            elif op == "clamp":
+                changed = h + (alpha - h @ unit).unsqueeze(-1) * unit
+            else:
+                raise AssertionError(f"unknown op {op}")
+            return (changed,) + tuple(output[1:]) if isinstance(output, tuple) else changed
+
+        return hook
+
+    def remove(self):
+        for handle in self.handles:
+            handle.remove()
+
+
+def last_rows(backbone, ids, layer_count):
+    """The residual after each layer at the last prompt position, [layers, width], and the final hidden state."""
+    tap = LayerTap(backbone)
+    with torch.no_grad():
+        hidden = backbone(input_ids=torch.tensor([ids]), use_cache=False).last_hidden_state
+    tap.remove()
+    rows = torch.stack([tap.outputs[f"layer{index}"][0, -1] for index in range(layer_count)])
+    return rows, hidden
+
+
+def greedy(model, ids, steps):
+    """Greedy decode of `steps` tokens with the cache, and the top-64 logits of each step."""
+    with torch.no_grad():
+        out = model.generate(
+            input_ids=torch.tensor([ids]),
+            attention_mask=torch.ones(1, len(ids), dtype=torch.long),
+            max_new_tokens=steps,
+            min_new_tokens=steps,
+            do_sample=False,
+            output_logits=True,
+            return_dict_in_generate=True,
+        )
+    tokens = out.sequences[0, len(ids):]
+    logits = torch.stack([step[0].float() for step in out.logits])
+    top = torch.topk(logits, TOP)
+    return tokens, top.indices, top.values
+
+
+def run_control(model, backbone, lm_head, tokenizer, layer_count, out, facts):
+    """The control vector gate of LFM3-1.7B (spec 11.12): the means of two prompt sets, and each operation."""
+    sets = {}
+    tensors = {}
+    for name, texts in (("positive", CONTROL_POSITIVE), ("negative", CONTROL_NEGATIVE)):
+        rows = []
+        for i, text in enumerate(texts):
+            _, ids = chat_ids(tokenizer, text)
+            tensors[f"{name}{i}.ids"] = torch.tensor(ids, dtype=torch.int64)
+            r, _ = last_rows(backbone, ids, layer_count)
+            tensors[f"{name}{i}.rows"] = r
+            rows.append(r)
+        # The sum is f64, in the order of the request (spec 11.12).
+        total = torch.zeros_like(rows[0], dtype=torch.float64)
+        for r in rows:
+            total += r.double()
+        sets[name] = total / len(rows)
+    vector = (sets["positive"] - sets["negative"]).float()
+    tensors["vector"] = vector
+    log(f"control vector: {layer_count} layers, norms {[round(float(n), 2) for n in vector.norm(dim=-1)]}")
+
+    rendered, ids = chat_ids(tokenizer, CONTROL_TEST)
+    tensors["test.ids"] = torch.tensor(ids, dtype=torch.int64)
+    plain_rows, plain_hidden = last_rows(backbone, ids, layer_count)
+    with torch.no_grad():
+        tensors["plain.logits"] = lm_head(plain_hidden[0, -1])
+    tensors["plain.rows"] = plain_rows
+    tokens, top_ids, top_values = greedy(model, ids, CONTROL_DECODE)
+    tensors["plain.decode_ids"], tensors["plain.decode_top_ids"], tensors["plain.decode_top"] = (
+        tokens, top_ids, top_values)
+
+    for op, alpha in CONTROL_STRENGTHS.items():
+        steer = Steer(backbone, vector, op, alpha)
+        rows, hidden = last_rows(backbone, ids, layer_count)
+        with torch.no_grad():
+            logits = lm_head(hidden[0, -1])
+        tokens, top_ids, top_values = greedy(model, ids, CONTROL_DECODE)
+        steer.remove()
+        units = vector / vector.norm(dim=-1, keepdim=True)
+        along = (rows * units).sum(-1)
+        if op == "ablate":
+            check(float(along.abs().max()) < 1e-3, f"ablate 1 leaves h.v {float(along.abs().max())}")
+        if op == "clamp":
+            check(float((along - alpha).abs().max()) < 1e-3, f"clamp leaves h.v off {alpha}")
+        check(float((logits - tensors["plain.logits"]).abs().max()) > 1e-3, f"{op} changes the logits")
+        tensors[f"{op}.logits"] = logits
+        tensors[f"{op}.rows"] = rows
+        tensors[f"{op}.decode_ids"], tensors[f"{op}.decode_top_ids"], tensors[f"{op}.decode_top"] = (
+            tokens, top_ids, top_values)
+        log(f"control {op} {alpha}: decode {tokenizer.decode(tokens)!r}")
+
+    for op in ("add", "ablate"):
+        steer = Steer(backbone, vector, op, 0.0)
+        rows, _ = last_rows(backbone, ids, layer_count)
+        steer.remove()
+        close(rows, plain_rows, 0.0, f"{op} with strength 0 is the plain model")
+
+    meta = {"model": "lfm3", "strengths": CONTROL_STRENGTHS, "positive": CONTROL_POSITIVE,
+            "negative": CONTROL_NEGATIVE, "test": CONTROL_TEST, "rendered_test": rendered,
+            "decode_steps": CONTROL_DECODE, "versions": versions()}
+    save(tensors, Path(out) / "lfm3.control.safetensors", meta)
+    facts["lfm3_control"] = {"strengths": CONTROL_STRENGTHS, "test_tokens": len(ids)}
+    log(f"wrote {Path(out) / 'lfm3.control.safetensors'}")
 
 
 def synthetic_image(height, width, seed):
@@ -630,14 +788,18 @@ def main():
     facts = json.loads(facts_path.read_text()) if facts_path.exists() else {}
     facts["versions"] = versions()
 
-    if "text" in stages:
+    if stages & {"text", "control"}:
         log("load LFM3-1.7B")
         model = AutoModelForCausalLM.from_pretrained(
             args.text, dtype=torch.float32, attn_implementation="eager", trust_remote_code=True
         ).eval()
         tokenizer = AutoTokenizer.from_pretrained(args.text, trust_remote_code=True)
-        run_text(model, model.model, model.lm_head, tokenizer, "lfm3", args.text, model.config.num_hidden_layers,
-                 args.out, facts)
+        if "text" in stages:
+            run_text(model, model.model, model.lm_head, tokenizer, "lfm3", args.text,
+                     model.config.num_hidden_layers, args.out, facts)
+        if "control" in stages:
+            run_control(model, model.model, model.lm_head, tokenizer, model.config.num_hidden_layers, args.out,
+                        facts)
         del model
 
     if stages & {"text", "vision", "audio", "speech"}:

@@ -71,6 +71,16 @@
 #   mixed.hidden [G + 1, 2048]       the teacher-forced backbone output at the position before each slot
 #   mixed.text_top_ids [G, 8]        the 8 best text ids at each slot
 #   mixed.audio [S]                  the codec decode of the frames without the end frame
+# lfm3.control.safetensors (--stages control, not in the default): the control vector gate of LFM3-1.7B (11.12).
+#   Each prompt is one user message with the generation prompt and thinking off. L is 24 layers, W is 2048.
+#   positive{0..3}.ids [P], positive{0..3}.rows [L, W]   the residual after each layer at the last position
+#   negative{0..3}.ids [P], negative{0..3}.rows [L, W]
+#   vector [L, W]                    mean(positive rows) - mean(negative rows); the sums in f64 in prompt order
+#   test.ids [P]                     the test prompt
+#   plain.logits [128000], plain.rows [L, W]   the test prompt with no control item
+#   <op>.logits [128000], <op>.rows [L, W]     the test prompt with one item: add 4, ablate 1, clamp 8
+#   <op>.decode_ids [8]              the greedy decode of 8 tokens with the item, for plain and each op
+#   <op>.decode_top_ids [8, 64] i64, <op>.decode_top [8, 64]   the top-64 logits of each decode step
 # facts.json: the measured facts for spec 11.11: sizes, counts, the codec checks and the run patterns.
 set -euo pipefail
 cd "$(dirname "$0")/.."
