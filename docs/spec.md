@@ -2486,9 +2486,10 @@ start. Then mk was no served model, and gogi found no ready model.
   the wrong root (6.2).
 - A kind that cannot describe its engine is not a text model while its engine is on demand, as before.
 
-**The description of Gemma 4.** Proposed by Claude Opus 5.5, 2026-11-07. Reason: the profile of `5c1cf18` put
-Gemma 4 on demand, and `mk-gemma4-bmg` had no description. Thus b70host served no `gemma-4-26b-a4b`. Amy chose
-to build the description. Its identity names the Level Zero driver, which no file holds.
+**The description of Gemma 4.** Decided 2026-11-07 (Amy), proposed by Claude Opus 5.5 the same day. Reason: the
+profile of `5c1cf18` put Gemma 4 on demand, and `mk-gemma4-bmg` had no description. Thus b70host served no
+`gemma-4-26b-a4b`. Its identity names the Level Zero driver, which no file holds. Amy: "ideally description is cheap
+but if it can do some poking in model on cpu real quick that's fine too for fidelity."
 
 - `Factory::describe` gets the devices of the group, as `plan` does. mk does not read them.
 - `mk-gemma4-bmg` describes itself from the checkpoint, sysfs and the version of the Level Zero driver. It asks the
