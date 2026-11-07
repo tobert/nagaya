@@ -28,6 +28,16 @@ fn free_port() -> u16 {
         .port()
 }
 
+/// A profile with two fake-toy engines, each its own text served model (spec 11.7, "Several text models in one
+/// process", Proposed).
+const TWO_MODELS: &str = "[[engines]]\nname = \"toy-a\"\nkind = \"fake-toy\"\ndevices = [0]\nshare = 1\n\
+     config = { model = \"toy-a\" }\n\
+     [[engines]]\nname = \"toy-b\"\nkind = \"fake-toy\"\ndevices = [0]\nshare = 1\n\
+     config = { model = \"toy-b\" }\n\
+     [[budgets]]\ntiers = [\"device(0)\"]\nbytes = 8192\n\
+     [[budgets]]\ntiers = [\"host\"]\nbytes = 33554432\n\
+     [store]\nnvme = 67108864\nhost = 16777216\nobjects = 25165824\n";
+
 /// A nagaya process with the fake-toy engine, and its directory.
 struct Nagaya {
     directory: tempfile::TempDir,
@@ -38,10 +48,14 @@ struct Nagaya {
 
 impl Nagaya {
     fn start() -> Self {
+        Self::start_with(PROFILE)
+    }
+
+    fn start_with(profile: &str) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let store = directory.path().join("store");
         std::fs::create_dir_all(&store).unwrap();
-        std::fs::write(store.join("profile.toml"), PROFILE).unwrap();
+        std::fs::write(store.join("profile.toml"), profile).unwrap();
         let mut nagaya = Self {
             directory,
             port: free_port(),
@@ -263,4 +277,61 @@ fn an_http_bind_that_fails_refuses_the_start() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(3), "{stderr}");
     assert!(stderr.contains("cannot bind the HTTP address"), "{stderr}");
+}
+
+/// The suite against each of two text served models of one process. Both share the specs, the pins and the snapshots
+/// of the server, and each restart check stops the whole process.
+#[test]
+fn gogi_conformance_passes_on_each_of_two_text_models_of_one_process() {
+    let nagaya = Rc::new(RefCell::new(Nagaya::start_with(TWO_MODELS)));
+    let url = nagaya.borrow().url();
+    for model in ["toy-a", "toy-b"] {
+        let held = Rc::clone(&nagaya);
+        let restart = Restart::Hook(Box::new(move || {
+            let mut nagaya = held.borrow_mut();
+            match nagaya.terminate() {
+                Some(0) => {}
+                code => return Err(format!("the stop before the restart exited with {code:?}, not 0")),
+            }
+            nagaya.spawn();
+            Ok(())
+        }));
+        let report = run(
+            Opts {
+                url: url.clone(),
+                restart: Some(restart),
+                model: Some(model.to_owned()),
+            },
+            false,
+        );
+        let failed = failures(&report);
+        let stderr = nagaya.borrow_mut().lines.as_mut().unwrap().drain().join("\n");
+        assert!(
+            failed.is_empty(),
+            "{model}: {} failed:\n{failed:#?}\nstderr:\n{stderr}",
+            failed.len()
+        );
+        assert!(report.checks.len() > 150, "{model}: {}", report.summary());
+        eprintln!("{model}: {}", report.summary());
+        let ok = |name: &str| {
+            report
+                .checks
+                .iter()
+                .any(|check| check.name == name && check.status == Status::Ok)
+        };
+        let other = if model == "toy-a" { "toy-b" } else { "toy-a" };
+        for name in [
+            format!("{other} builds the same context into a snapshot of its own"),
+            "a held spec survives a restart".to_owned(),
+            "a pinned snapshot survives a restart".to_owned(),
+            "generation holds its head".to_owned(),
+        ] {
+            assert!(ok(&name), "{model}: {name}");
+        }
+    }
+    assert_eq!(
+        nagaya.borrow_mut().terminate(),
+        Some(0),
+        "a SIGTERM stops the process cleanly"
+    );
 }
