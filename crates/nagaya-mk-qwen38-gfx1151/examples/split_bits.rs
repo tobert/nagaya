@@ -55,6 +55,7 @@ fn run(label: &str, tokens: &[u32], sizes: &[usize]) -> Run {
         let last = index + 1 == sizes.len();
         let chunk = &tokens[start..start + size];
         let segment = Segment {
+            control: Vec::new(),
             state,
             inputs: SegmentInputs::Tokens(chunk.to_vec()),
             positions: (start as u64..(start + size) as u64).collect(),

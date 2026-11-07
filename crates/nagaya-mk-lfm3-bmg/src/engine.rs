@@ -577,6 +577,7 @@ impl Lfm3Engine {
     /// with `norm`: `[n][hidden]`. The probe of the oracle (8.3) uses it. It empties the slot.
     pub fn hidden(&mut self, slot: usize, ids: &[u32], layers: usize, norm: bool) -> Result<Vec<f32>, String> {
         let segment = Segment {
+            control: Vec::new(),
             state: State::Slot(slot as u32),
             inputs: nagaya_abi::SegmentInputs::Tokens(ids.to_vec()),
             positions: (0..ids.len() as u64).collect(),

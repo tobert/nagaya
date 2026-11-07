@@ -208,6 +208,7 @@ impl Lfm3Engine {
         }
         let pos = self.held.n[index];
         let segment = Segment {
+            control: Vec::new(),
             state: State::Slot(slot),
             inputs: SegmentInputs::Tokens(vec![AUDIO_OUT_TOKEN]),
             positions: vec![pos],

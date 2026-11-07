@@ -144,6 +144,7 @@ mod tests {
             engine
                 .pass(
                     &[Segment {
+                        control: Vec::new(),
                         state: State::Slot(0),
                         inputs: SegmentInputs::Tokens((from as u32..to as u32).collect()),
                         positions: (from..to).collect(),

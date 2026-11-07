@@ -356,6 +356,8 @@ pub enum Capability {
     Embedding,
     /// Speech from the last row of a text pass: `frame`, `codec` and `codec_clear` (engine-abi "LFM3").
     SpeechFrames,
+    /// Control vectors: `control_write` and `segment.control` (engine-abi "Control vectors").
+    Control,
 }
 
 /// The limits that an engine declares.
@@ -400,6 +402,53 @@ pub struct Limits {
     pub residual_row_bytes: u64,
     /// The feed rule, when the bits of the engine depend on the token count of a pass (engine-abi D11).
     pub feed: Option<FeedRule>,
+    /// The table of control vectors, when the engine declares `control` (engine-abi "Control vectors").
+    pub control: Option<ControlLimit>,
+}
+
+/// The table of control vectors on the device (engine-abi "Control vectors").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ControlLimit {
+    /// The vectors that fit on the device at once: the entries of the table.
+    pub tables: u32,
+    /// The layers of one vector.
+    pub layers: u32,
+    /// The width of the residual: the `f32` values of one layer of a vector.
+    pub width: u32,
+}
+
+/// The name of the mandatory device term that holds the table of control vectors (engine-abi "Control vectors").
+pub const CONTROL_TERM: &str = "control";
+
+impl ControlLimit {
+    /// The bytes of one entry: `layers` times `width` `f32` values.
+    pub fn entry_bytes(&self) -> u64 {
+        u64::from(self.layers) * u64::from(self.width) * 4
+    }
+
+    /// The bytes of the table: every entry.
+    pub fn table_bytes(&self) -> u64 {
+        u64::from(self.tables) * self.entry_bytes()
+    }
+
+    /// Check the control list of a segment against the table. The message says which item breaks a rule.
+    pub fn check(&self, items: &[ControlItem]) -> Result<(), String> {
+        for (i, item) in items.iter().enumerate() {
+            if item.index >= self.tables {
+                return Err(format!(
+                    "control item {i} names table entry {}; the table has {} entries",
+                    item.index, self.tables
+                ));
+            }
+            if !item.strength.is_finite() {
+                return Err(format!(
+                    "control item {i} has the strength {}; a strength is a finite number",
+                    item.strength
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The feed rule of an engine (engine-abi D11, spec 6.14).
@@ -426,6 +475,7 @@ impl Limits {
 
     /// Check the rules of the stages and the feed rule (engine-abi D1, D11). The message says which rule breaks.
     pub fn check(&self) -> Result<(), String> {
+        self.check_control()?;
         if let Some(feed) = self.feed {
             if feed.block == 0 || feed.block > u64::from(self.max_pass_inputs) {
                 return Err(format!(
@@ -485,6 +535,43 @@ impl Limits {
     }
 }
 
+impl Limits {
+    /// Check the rule of the control table: the capability `control`, the limit and the term `control` come together.
+    fn check_control(&self) -> Result<(), String> {
+        let declared = self.capabilities.contains(&Capability::Control);
+        let Some(control) = self.control else {
+            if declared {
+                return Err("an engine that declares `control` gives limits().control".to_owned());
+            }
+            return Ok(());
+        };
+        if !declared {
+            return Err("an engine with limits().control declares the capability `control`".to_owned());
+        }
+        if control.tables == 0 || control.layers == 0 || control.width == 0 {
+            return Err(format!(
+                "the control table is {} entries of {} layers of {} values; each count is above 0",
+                control.tables, control.layers, control.width
+            ));
+        }
+        let expected = control.table_bytes();
+        let term = self
+            .memory
+            .mandatory
+            .iter()
+            .find(|term| term.name == CONTROL_TERM)
+            .ok_or_else(|| format!("an engine with control vectors declares the mandatory term `{CONTROL_TERM}`"))?;
+        if !matches!(term.tier, Tier::Device(_)) || term.lifetime != Lifetime::Engine || term.bytes != expected {
+            return Err(format!(
+                "the term `{CONTROL_TERM}` is {} bytes in {:?} for {:?}; it must be {expected} device bytes for the \
+                 engine",
+                term.bytes, term.tier, term.lifetime
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// The result of a pass.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PassStatus {
@@ -510,6 +597,48 @@ pub struct Segment {
     pub meta: Vec<u8>,
     /// The outputs that the caller wants.
     pub outputs: OutputsWanted,
+    /// The control items, in order (engine-abi "Control vectors"). An engine without `control` refuses a segment
+    /// with items.
+    pub control: Vec<ControlItem>,
+}
+
+/// The operation of a control item (engine-abi "Control vectors"). Let `v` be the vector of a layer, `u` its unit
+/// vector and `a` the strength.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ControlOp {
+    /// `h + a * v`.
+    Add,
+    /// `h - a * (h . u) * u`.
+    Ablate,
+    /// `h + (a - h . u) * u`.
+    Clamp,
+}
+
+/// One control item of a segment: an entry of the table, its operation and its strength.
+#[derive(Clone, Copy, Debug)]
+pub struct ControlItem {
+    /// The entry of the table that holds the vector.
+    pub index: u32,
+    /// The operation.
+    pub op: ControlOp,
+    /// The strength.
+    pub strength: f32,
+}
+
+/// Two items are equal when their bits are equal, so a segment stays `Eq`.
+impl PartialEq for ControlItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.index == other.index && self.op == other.op && self.strength.to_bits() == other.strength.to_bits()
+    }
+}
+
+impl Eq for ControlItem {}
+
+impl ControlItem {
+    /// True when the item changes no bit: an `add` or an `ablate` with strength 0 (engine-abi "Control vectors").
+    pub fn changes_nothing(&self) -> bool {
+        self.strength == 0.0 && self.op != ControlOp::Clamp
+    }
 }
 
 /// The inputs of one segment.
@@ -1115,6 +1244,13 @@ pub trait Image {
     }
 }
 
+/// The control capability (engine-abi "Control vectors").
+pub trait Control {
+    /// Write one vector into table entry `index`: `layers` times `width` `f32` values, little-endian, in layer order.
+    /// It never allocates. A wrong index or size is an error, and nothing changes.
+    fn control_write(&mut self, index: u32, bytes: &[u8]) -> Result<(), String>;
+}
+
 /// The embedding capability (engine-abi "Embedding"). The engine never takes text: the family makes the ids (D2).
 pub trait Embedding {
     /// The most ids of one call. It keeps a call within `max_quantum_ms`.
@@ -1190,6 +1326,11 @@ pub trait Engine {
 
     /// The embedding capability, when the engine has it (engine-abi "Embedding").
     fn embedding(&mut self) -> Option<&mut dyn Embedding> {
+        None
+    }
+
+    /// The control capability, when the engine has it (engine-abi "Control vectors").
+    fn control(&mut self) -> Option<&mut dyn Control> {
         None
     }
 }

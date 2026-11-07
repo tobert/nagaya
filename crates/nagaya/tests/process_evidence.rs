@@ -97,6 +97,7 @@ impl JobBody for BadPass {
 
     fn run(&mut self, _kind: Kind, engines: &mut [Box<dyn Engine>]) -> Ran {
         let segment = Segment {
+            control: Vec::new(),
             state: State::Slot(0),
             inputs: SegmentInputs::Tokens(vec![1]),
             positions: vec![0],

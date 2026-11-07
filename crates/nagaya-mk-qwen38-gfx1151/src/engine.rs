@@ -588,6 +588,7 @@ mod tests {
     /// A segment that asks for `tokens` at `start`.
     fn token_segment(tokens: &[u32], start: u64) -> Segment {
         Segment {
+            control: Vec::new(),
             state: State::Slot(0),
             inputs: SegmentInputs::Tokens(tokens.to_vec()),
             positions: (start..start + tokens.len() as u64).collect(),

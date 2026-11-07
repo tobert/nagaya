@@ -1102,6 +1102,7 @@ fn split_pass<E: Engine>(make: &mut dyn FnMut() -> E, limits: &Limits) -> Result
 
 fn token_segment(state: State, start: u64, tokens: &[u32]) -> Segment {
     Segment {
+        control: Vec::new(),
         state,
         inputs: SegmentInputs::Tokens(tokens.to_vec()),
         positions: (start..start + tokens.len() as u64).collect(),

@@ -208,6 +208,7 @@ fn a_config_outside_the_sizes_is_refused() {
 
 fn segment(slot: u32, from: u64, tokens: &[u32], logits: &[u64]) -> Segment {
     Segment {
+        control: Vec::new(),
         state: State::Slot(slot),
         inputs: SegmentInputs::Tokens(tokens.to_vec()),
         positions: (from..from + tokens.len() as u64).collect(),
@@ -393,6 +394,7 @@ fn omni_held(seqs: &[usize]) -> Held {
 fn media_segment(from: u64, tokens: &[u32], spans: &[crate::media::Span]) -> Segment {
     let bytes = spans.iter().map(|s| s.bytes()).sum();
     Segment {
+        control: Vec::new(),
         inputs: SegmentInputs::TokensAndRows {
             tokens: tokens.to_vec(),
             rows: vec![0; bytes],

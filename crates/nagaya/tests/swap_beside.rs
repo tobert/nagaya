@@ -317,6 +317,7 @@ impl JobBody for Pass {
     fn begin_pass(&mut self, _kind: Kind, _engines: &mut [Box<dyn Engine>]) -> Result<Vec<Segment>, Ran> {
         self.log.lock().unwrap().push("begin:chat".to_owned());
         Ok(vec![Segment {
+            control: Vec::new(),
             state: State::Slot(0),
             inputs: SegmentInputs::Tokens(vec![1, 2, 3]),
             positions: vec![0, 1, 2],

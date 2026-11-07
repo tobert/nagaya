@@ -46,6 +46,7 @@ fn gtt_used() -> u64 {
 /// The logits of the last of three tokens on slot 0, as bytes.
 fn logits(engine: &mut dyn Engine) -> Vec<u8> {
     let segment = Segment {
+        control: Vec::new(),
         state: State::Slot(0),
         inputs: SegmentInputs::Tokens(vec![11, 12, 13]),
         positions: vec![0, 1, 2],

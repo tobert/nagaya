@@ -78,6 +78,7 @@ fn a_drop_frees_the_device_memory_of_each_load() {
         let held = process_vram();
         let tokens: Vec<u32> = (0..16u32).map(|i| 1000 + i * 7919).collect();
         let segment = Segment {
+            control: Vec::new(),
             state: State::Slot(0),
             inputs: SegmentInputs::Tokens(tokens),
             positions: (0..16).collect(),

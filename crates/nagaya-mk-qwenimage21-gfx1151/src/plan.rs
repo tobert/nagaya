@@ -185,6 +185,7 @@ pub fn limits(weights: u64) -> Limits {
         taps: Vec::new(),
         checkpoint_grain: None,
         residual_row_bytes: 0,
+        control: None,
         feed: None,
     }
 }

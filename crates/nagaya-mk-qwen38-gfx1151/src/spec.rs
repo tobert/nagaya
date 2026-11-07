@@ -468,6 +468,7 @@ pub fn limits(arena_bytes: u64) -> Limits {
         checkpoint_grain: Some(CHECKPOINT_GRAIN),
         feed: None,
         residual_row_bytes: 0,
+        control: None,
     }
 }
 

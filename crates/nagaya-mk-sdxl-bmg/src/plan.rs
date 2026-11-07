@@ -101,6 +101,7 @@ pub fn limits(weights: u64, in_channels: usize) -> Limits {
         taps: Vec::new(),
         checkpoint_grain: None,
         residual_row_bytes: 0,
+        control: None,
         feed: None,
     }
 }

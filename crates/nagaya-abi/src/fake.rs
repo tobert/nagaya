@@ -376,6 +376,7 @@ impl Fake {
             checkpoint_grain: None,
             feed: None,
             residual_row_bytes: 0,
+            control: None,
         };
         let slots = (0..limits.slots.iter().map(|slot| slot.count).sum())
             .map(|_| SlotData::new(&parts))
@@ -423,6 +424,13 @@ impl Fake {
                     segments.len(),
                     self.limits.max_segments
                 ),
+            });
+        }
+        // The fake has no control table, so a control item would change no bit that it gives.
+        if segments.iter().any(|segment| !segment.control.is_empty()) {
+            return Err(PassError {
+                kind: PassErrorKind::Refused,
+                message: "a segment names control items; the fake does not declare `control`".to_owned(),
             });
         }
         let rows: usize = segments

@@ -563,6 +563,7 @@ pub fn limits(b: &Backbone, config: &Config, weights: u64, vision: Option<Vision
         taps: Vec::new(),
         checkpoint_grain: None,
         residual_row_bytes: 0,
+        control: None,
         feed: Some(FeedRule {
             block: config.max_block as u64,
         }),

@@ -70,6 +70,7 @@ fn inventory() -> Inventory {
 fn fake_with_a_token() -> FakeAlways {
     let mut fake = FakeAlways::new();
     let segment = Segment {
+        control: Vec::new(),
         state: State::Slot(0),
         inputs: SegmentInputs::Tokens(vec![7]),
         positions: vec![0],

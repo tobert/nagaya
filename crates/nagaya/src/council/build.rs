@@ -991,6 +991,7 @@ impl<T: Then> ContextBody<T> {
         }
         let to = pending.from + pending.tokens.len();
         let segment = Segment {
+            control: Vec::new(),
             state: self.state(),
             inputs: SegmentInputs::Tokens(pending.tokens.clone()),
             positions: (pending.from as u64..to as u64).collect(),

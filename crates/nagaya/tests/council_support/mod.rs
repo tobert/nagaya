@@ -420,6 +420,7 @@ impl Direct {
             .engine
             .pass(
                 &[Segment {
+                    control: Vec::new(),
                     state: State::Slot(0),
                     inputs: SegmentInputs::Tokens(tokens.to_vec()),
                     positions: (from..to).collect(),

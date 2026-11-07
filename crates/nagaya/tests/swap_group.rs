@@ -427,6 +427,7 @@ impl JobBody for Fill {
 
     fn run(&mut self, _kind: Kind, engines: &mut [Box<dyn Engine>]) -> Ran {
         let segment = Segment {
+            control: Vec::new(),
             state: State::Slot(0),
             inputs: SegmentInputs::Tokens(vec![1, 2, 3, 4]),
             positions: (0..4).collect(),

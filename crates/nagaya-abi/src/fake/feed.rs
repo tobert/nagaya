@@ -177,6 +177,7 @@ impl FakeFeed {
             taps: Vec::new(),
             checkpoint_grain: None,
             residual_row_bytes: if stage_count == 1 { 0 } else { WIDTH as u64 },
+            control: None,
             feed: Some(FeedRule { block }),
         };
         if let Err(message) = limits.check() {
