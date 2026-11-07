@@ -106,6 +106,7 @@ fn inventory(ids: &[DeviceId]) -> Inventory {
 
 fn segment(state: State, tokens: &[u32]) -> Segment {
     Segment {
+        control: Vec::new(),
         state,
         inputs: SegmentInputs::Tokens(tokens.to_vec()),
         positions: (0..tokens.len() as u64).collect(),

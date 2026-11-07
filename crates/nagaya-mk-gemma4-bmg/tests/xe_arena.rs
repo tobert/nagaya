@@ -49,6 +49,7 @@ fn config() -> Config {
 fn plain(from: u64, tokens: &[u32]) -> Segment {
     let to = from + tokens.len() as u64;
     Segment {
+        control: Vec::new(),
         state: State::Slot(0),
         inputs: SegmentInputs::Tokens(tokens.to_vec()),
         positions: (from..to).collect(),

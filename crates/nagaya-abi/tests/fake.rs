@@ -262,6 +262,7 @@ fn fake_identity_names_the_model() {
 
 fn token_segment(tokens: &[u32]) -> Segment {
     Segment {
+        control: Vec::new(),
         state: State::Slot(0),
         inputs: SegmentInputs::Tokens(tokens.to_vec()),
         positions: (0..tokens.len() as u64).collect(),
@@ -468,6 +469,7 @@ fn a_pass_with_more_logit_rows_than_max_logit_rows_is_refused_and_changes_nothin
 
 fn token_segment_at(state: u32, start: u64, tokens: &[u32]) -> Segment {
     Segment {
+        control: Vec::new(),
         state: State::Slot(state),
         inputs: SegmentInputs::Tokens(tokens.to_vec()),
         positions: (start..start + tokens.len() as u64).collect(),

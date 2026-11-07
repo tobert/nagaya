@@ -640,6 +640,7 @@ fn a_chain_cycle_is_an_error() {
 
 fn segment(tokens: &[u32]) -> Segment {
     Segment {
+        control: Vec::new(),
         state: State::Slot(0),
         inputs: SegmentInputs::Tokens(tokens.to_vec()),
         positions: (0..tokens.len() as u64).collect(),

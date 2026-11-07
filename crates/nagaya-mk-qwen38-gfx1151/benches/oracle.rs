@@ -37,6 +37,7 @@ fn run(engine: &mut impl Engine, slot: u32, prompt: &oracle::Prompt) -> (Vec<f32
         let end = (done + MAX_PASS_TOKENS).min(length);
         let last = end == length;
         let segment = Segment {
+            control: Vec::new(),
             state: State::Slot(slot),
             inputs: SegmentInputs::Tokens(prompt.ids[done..end].to_vec()),
             positions: (done as u64..end as u64).collect(),

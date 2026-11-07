@@ -806,6 +806,7 @@ fn the_fake_engine_gives_logit_rows_as_wide_as_the_vocabulary_of_the_family() {
     let mut engine = FakeAlways::new().with_vocab(f.vocab_size());
     let last = rendering.tokens.len() as u64 - 1;
     let segment = Segment {
+        control: Vec::new(),
         state: Slot::Slot(0),
         inputs: SegmentInputs::Tokens(rendering.tokens.clone()),
         positions: (0..=last).collect(),

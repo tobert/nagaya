@@ -440,6 +440,7 @@ fn direct_ids(value: &Value) -> Vec<String> {
             engine
                 .pass(
                     &[Segment {
+                        control: Vec::new(),
                         state,
                         inputs: SegmentInputs::Tokens(rendering.tokens[from..to].to_vec()),
                         positions: (from as u64..to as u64).collect(),

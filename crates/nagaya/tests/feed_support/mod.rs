@@ -425,6 +425,7 @@ impl Direct {
             .engine
             .pass(
                 &[nagaya_abi::Segment {
+                    control: Vec::new(),
                     state: State::Slot(0),
                     inputs: SegmentInputs::Tokens(tokens.to_vec()),
                     positions: (self.rows..to).collect(),

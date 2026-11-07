@@ -208,6 +208,7 @@ impl Lfm3Engine {
         }
         let pos = self.held.n[index];
         let segment = Segment {
+            control: Vec::new(),
             state: State::Slot(slot),
             inputs: SegmentInputs::Tokens(vec![AUDIO_OUT_TOKEN]),
             positions: vec![pos],
@@ -236,6 +237,9 @@ impl Lfm3Engine {
                 logit_rows: Some(rows),
                 // A frame has no media span.
                 after_embed: &[],
+                // The text model alone declares `control`, and a frame is a pass of Omni.
+                control: &[],
+                tap: false,
             },
         );
         assert_eq!(

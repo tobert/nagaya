@@ -150,6 +150,7 @@ fn gate_limits(mandatory_bytes: u64) -> Limits {
         checkpoint_grain: None,
         feed: None,
         residual_row_bytes: 0,
+        control: None,
     }
 }
 

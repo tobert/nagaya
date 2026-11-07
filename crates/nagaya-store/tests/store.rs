@@ -11,6 +11,7 @@ use serde_json::Value;
 
 fn segment(slot: u32, tokens: &[u32]) -> Segment {
     Segment {
+        control: Vec::new(),
         state: State::Slot(slot),
         inputs: SegmentInputs::Tokens(tokens.to_vec()),
         positions: (0..tokens.len() as u64).collect(),
@@ -389,6 +390,7 @@ impl Engine for TestEngine {
             checkpoint_grain: None,
             feed: None,
             residual_row_bytes: 0,
+            control: None,
         }
     }
 
@@ -504,6 +506,7 @@ fn feed_at(engine: &mut FakeAlways, slot: u32, from: u64, tokens: &[u32]) -> Vec
     let out = engine
         .pass(
             &[Segment {
+                control: Vec::new(),
                 state: State::Slot(slot),
                 inputs: SegmentInputs::Tokens(tokens.to_vec()),
                 positions: (from..=last).collect(),

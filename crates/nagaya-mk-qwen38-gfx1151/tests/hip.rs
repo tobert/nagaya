@@ -368,6 +368,7 @@ fn a_seal_rounds_the_state_and_refuses_a_non_finite_one() {
 
 fn segment(state: State, tokens: &[u32], start: u64) -> Segment {
     Segment {
+        control: Vec::new(),
         state,
         inputs: SegmentInputs::Tokens(tokens.to_vec()),
         positions: (start..start + tokens.len() as u64).collect(),

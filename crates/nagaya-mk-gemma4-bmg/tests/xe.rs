@@ -62,6 +62,7 @@ fn engine(slots: Vec<usize>) -> Gemma4 {
 fn plain(slot: u32, from: u64, tokens: &[u32], logits: bool) -> Segment {
     let to = from + tokens.len() as u64;
     Segment {
+        control: Vec::new(),
         state: State::Slot(slot),
         inputs: SegmentInputs::Tokens(tokens.to_vec()),
         positions: (from..to).collect(),
@@ -87,6 +88,7 @@ fn branch_segment(slot: u32, pos0: u64, shared: &[u32], branches: &[Vec<u32>]) -
         rows.push(pos0 + tokens.len() as u64 - 1);
     }
     Segment {
+        control: Vec::new(),
         state: State::Slot(slot),
         positions: meta.iter().map(|m| u64::from(m[0])).collect(),
         meta: meta.iter().flatten().flat_map(|v| v.to_le_bytes()).collect(),

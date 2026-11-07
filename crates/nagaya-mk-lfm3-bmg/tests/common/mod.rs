@@ -232,6 +232,7 @@ pub fn open(which: Which, slots: usize, max_block: usize) -> nagaya_mk_lfm3_bmg:
 /// A segment of `tokens` from position `from` of `slot`, with the logits of the positions `logits`.
 pub fn segment(slot: u32, from: u64, tokens: &[u32], logits: &[u64]) -> nagaya_abi::Segment {
     nagaya_abi::Segment {
+        control: Vec::new(),
         state: nagaya_abi::State::Slot(slot),
         inputs: nagaya_abi::SegmentInputs::Tokens(tokens.to_vec()),
         positions: (from..from + tokens.len() as u64).collect(),

@@ -26,6 +26,7 @@ fn feed(engine: &mut dyn Engine, slot: u32, count: usize) {
     while done < ids.len() {
         let end = (done + 256).min(ids.len());
         let segment = Segment {
+            control: Vec::new(),
             state: State::Slot(slot),
             inputs: SegmentInputs::Tokens(ids[done..end].to_vec()),
             positions: (done as u64..end as u64).collect(),

@@ -58,6 +58,7 @@ fn block(slot: u32, from: u64, ids: &[u32], span: &Span, pixels: &[u8], last: bo
     let reads = span.first < end && from < span.first + span.count as u64;
     let logit_rows = if last { vec![end - 1] } else { Vec::new() };
     Segment {
+        control: Vec::new(),
         state: State::Slot(slot),
         inputs: if reads {
             SegmentInputs::TokensAndRows {

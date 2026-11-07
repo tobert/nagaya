@@ -246,6 +246,7 @@ pub fn limits(config: &Config, weights: [u64; 2]) -> Limits {
         taps: Vec::new(),
         checkpoint_grain: None,
         residual_row_bytes: RESIDUAL_ROW_BYTES,
+        control: None,
         feed: Some(FeedRule { block: block as u64 }),
     };
     let residual = limits.residual_bytes();
@@ -540,6 +541,7 @@ mod tests {
 
     fn segment(slot: u32, from: u64, tokens: &[u32], logits: &[u64]) -> Segment {
         Segment {
+            control: Vec::new(),
             state: State::Slot(slot),
             inputs: SegmentInputs::Tokens(tokens.to_vec()),
             positions: (from..from + tokens.len() as u64).collect(),

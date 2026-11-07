@@ -57,6 +57,7 @@ impl FakeEmbedder {
             taps: Vec::new(),
             checkpoint_grain: None,
             residual_row_bytes: 0,
+            control: None,
             feed: None,
         };
         Self {

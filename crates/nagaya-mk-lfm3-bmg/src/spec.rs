@@ -10,8 +10,9 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use nagaya_abi::{
-    Capability, ChainLimits, CoverageSpan, Determinism, Dtype, FeedRule, Inputs, Kind, Lifetime, Limits, MandatoryTerm,
-    MemoryLimits, PartId, PartKind, PartLimits, Segment, SegmentInputs, SlotLimit, State, Tier,
+    CONTROL_TERM, Capability, ChainLimits, ControlLimit, CoverageSpan, Determinism, Dtype, FeedRule, Inputs, Kind,
+    Lifetime, Limits, MandatoryTerm, MemoryLimits, PartId, PartKind, PartLimits, Segment, SegmentInputs, SlotLimit,
+    State, TapLimit, Tier,
 };
 use nagaya_mk_bmg::protocol::{MAX_TASKS_PER_CARD, NUM_SCOREBOARD_EVENTS};
 use nagaya_mk_bmg::safetensors::MappedSafeTensors;
@@ -50,6 +51,13 @@ pub const MAX_SEGMENTS: u32 = 1;
 
 /// The most logit rows of one pass.
 pub const MAX_LOGIT_ROWS: usize = 16;
+
+/// The vectors of the control table (engine-abi "Control vectors"). A vector of 24 layers of 2,048 values is 196,608
+/// bytes, so the table is 1.5 MiB.
+pub const CONTROL_TABLES: u32 = 8;
+
+/// The tap that gives the residual after each layer at each logit row (spec 13.1).
+pub const RESIDUAL_TAP: &str = "residual";
 
 /// A sliding layer of a slot longer than this keeps its keys and values in a ring of this many rows. The row of a key
 /// is its position modulo the ring. The ring holds a block and the window before it, in rows of 32.
@@ -527,14 +535,20 @@ pub fn limits(b: &Backbone, config: &Config, weights: u64, vision: Option<Vision
     if let Some(v) = vision {
         mandatory.insert(1, term("vision", Tier::Device(0), v.weights));
     }
+    // A drop frees the weights, the slots, the buffers and the card's context.
+    let mut capabilities = vec![
+        Capability::Parts,
+        Capability::Slots,
+        Capability::Coverage,
+        Capability::Close,
+    ];
+    let control = control_limit(b);
+    if let Some(control) = control {
+        capabilities.push(Capability::Control);
+        mandatory.push(term(CONTROL_TERM, Tier::Device(0), control.table_bytes()));
+    }
     Limits {
-        // A drop frees the weights, the slots, the buffers and the card's context.
-        capabilities: vec![
-            Capability::Parts,
-            Capability::Slots,
-            Capability::Coverage,
-            Capability::Close,
-        ],
+        capabilities,
         parts: parts(b),
         inputs: if vision.is_some() {
             Inputs::TokensAndRows
@@ -560,13 +574,27 @@ pub fn limits(b: &Backbone, config: &Config, weights: u64, vision: Option<Vision
         segments_exact: false,
         determinism: Determinism::Always,
         bit_dependence: Vec::new(),
-        taps: Vec::new(),
+        taps: vec![TapLimit {
+            name: RESIDUAL_TAP.to_owned(),
+            conditions: Vec::new(),
+        }],
         checkpoint_grain: None,
         residual_row_bytes: 0,
+        control,
         feed: Some(FeedRule {
             block: config.max_block as u64,
         }),
     }
+}
+
+/// The control table of a backbone: `LFM3-1.7B` has one, and Omni has none yet. A frame of Omni's speech is a pass that
+/// takes no control list, so a table on Omni would leave its frames without the items (spec 11.12).
+pub fn control_limit(b: &Backbone) -> Option<ControlLimit> {
+    (b.model == Model::Text).then_some(ControlLimit {
+        tables: CONTROL_TABLES,
+        layers: b.layers.len() as u32,
+        width: b.hidden as u32,
+    })
 }
 
 /// The device bytes of the buffers of the audio encoder for the longest clip, or 0 for a model with no encoder.

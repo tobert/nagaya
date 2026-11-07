@@ -1,0 +1,72 @@
+//! Control vectors with no I/O (spec 11.12): the recipe bytes of a control list, and the vector of the means of two
+//! prompt sets.
+
+use nagaya_abi::ControlOp;
+use nagaya_store::ContentId;
+
+/// One item of the control list of a context: the vector object, the operation and the strength that the client sent.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ControlEntry {
+    /// The content id of the vector object.
+    pub vector: ContentId,
+    pub op: ControlOp,
+    pub strength: f64,
+}
+
+/// The byte of an operation in the recipe: 1 for `add`, 2 for `ablate` and 3 for `clamp` (spec 11.12).
+pub fn op_byte(op: ControlOp) -> u8 {
+    match op {
+        ControlOp::Add => 1,
+        ControlOp::Ablate => 2,
+        ControlOp::Clamp => 3,
+    }
+}
+
+/// The lab state of a control list in the root recipe (spec 11.12, tag 4), little-endian: a `u64` count, then for each
+/// item the 32 bytes of the vector's content id, the operation byte and the `f64` strength. An empty list has no bytes,
+/// so the root of a plain context does not change.
+pub fn recipe_bytes(list: &[ControlEntry]) -> Vec<u8> {
+    if list.is_empty() {
+        return Vec::new();
+    }
+    let mut bytes = Vec::with_capacity(8 + list.len() * (32 + 1 + 8));
+    bytes.extend_from_slice(&(list.len() as u64).to_le_bytes());
+    for item in list {
+        bytes.extend_from_slice(item.vector.as_bytes());
+        bytes.push(op_byte(item.op));
+        bytes.extend_from_slice(&item.strength.to_le_bytes());
+    }
+    bytes
+}
+
+/// The control vector of two prompt sets (spec 11.12): the mean of the `positive` rows less the mean of the `negative`
+/// rows, as `f32`. Each row is the residual after each layer at the last prompt position, `[layers][width]`. The sums
+/// are `f64` in the order of the rows, so the same rows give the same bits on each run (engine-abi D3).
+pub fn vector_of_means(positive: &[&[f32]], negative: &[&[f32]]) -> Result<Vec<f32>, String> {
+    let width = positive.first().map(|row| row.len()).unwrap_or(0);
+    let mean = |set: &[&[f32]], name: &str| -> Result<Vec<f64>, String> {
+        if set.is_empty() {
+            return Err(format!("the {name} set has no row; each set needs one prompt or more"));
+        }
+        let mut total = vec![0f64; width];
+        for (i, row) in set.iter().enumerate() {
+            if row.len() != width {
+                return Err(format!(
+                    "{name} row {i} has {} values, and the first positive row has {width}",
+                    row.len()
+                ));
+            }
+            if let Some(at) = row.iter().position(|v| !v.is_finite()) {
+                return Err(format!("value {at} of {name} row {i} is not finite"));
+            }
+            for (t, v) in total.iter_mut().zip(row.iter()) {
+                *t += f64::from(*v);
+            }
+        }
+        let count = set.len() as f64;
+        Ok(total.into_iter().map(|t| t / count).collect())
+    };
+    let positive = mean(positive, "positive")?;
+    let negative = mean(negative, "negative")?;
+    Ok(positive.iter().zip(&negative).map(|(p, n)| (p - n) as f32).collect())
+}

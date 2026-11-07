@@ -17,4 +17,6 @@ blake3 = "1.8.7"
 serde_json = { version = "1.0.154", features = ["float_roundtrip", "preserve_order"] }
 
 [dev-dependencies]
+# The job of a control vector takes its means with the function of the council (spec 11.12).
+nagaya-council = { version = "0.1.0", path = "../nagaya-council" }
 nagaya-conformance = { version = "0.1.0", path = "../nagaya-conformance" }
