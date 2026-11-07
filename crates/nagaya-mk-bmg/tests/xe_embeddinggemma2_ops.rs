@@ -13,19 +13,21 @@ use nagaya_mk_bmg::ring::Ring;
 use nagaya_mk_bmg::tasks;
 use nagaya_mk_bmg::{EMBEDDINGGEMMA2_KERNEL, KERNEL_ENTRY};
 
-/// The SHA-256 of each binary before the embedding ops, and the ocloc that makes them.
+/// The SHA-256 of each binary, and the ocloc that makes them. The split attention of 2026-11-06 changed each one
+/// (engine-abi "The bits do not depend on the slot size"). The speech and image binaries hold the `-I` path of the
+/// kernels, so their hashes are of the checkout `~/src/nagaya`: a worktree gives other bytes.
 const BINARIES: [(&str, &str); 3] = [
     (
         "gemma4",
-        "a93ed27853c9835c512af1495ef1ada21cf74b0b8a2a7cbd3b7764d6304c5f2d",
+        "bc2398b423ce95b3d837dd436ed79c751946218090c67ddbb5f4da318f0bc155",
     ),
     (
         "qwen3tts",
-        "5cb370df1cd05e12ae06cca59a9d3ef3c4a0197c01a275b8a6e94e6a18d52e9c",
+        "725bf441aefd1fe60672f0c56828a8bb6ef0967d2ce8b43be4d06c67075d4b9f",
     ),
     (
         "sdxl",
-        "39a58b2701bc742118339704ad77f64468a88176959a82d4e0491facccbfcf7d",
+        "4d095df2d6d1d899f7dcf4ed2940fe3445eaad701d48eb24ee4e79afdc3073f1",
     ),
 ];
 const BINARIES_OCLOC: &str = "26.35.39758";

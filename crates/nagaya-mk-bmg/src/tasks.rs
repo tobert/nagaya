@@ -131,6 +131,22 @@ pub fn score_floats(heads: u32, n: u32, p0: u32) -> usize {
     heads as usize * n as usize * row as usize
 }
 
+/// The key segments of `OP_ATTN_PV` for `n` tokens of `heads` heads of `d` values over `key_rows` keys, as
+/// `attn_pv_segments` in `kernels/megakernel.cl` counts them. The count reads no slot size, so each slot size gives
+/// the same bits for the same feed (spec 6.7).
+pub fn attn_pv_segments(heads: u32, n: u32, d: u32, key_rows: u32) -> u32 {
+    let items = heads * n.div_ceil(16) * (d / 32);
+    let segs = 4096u32.div_ceil(items);
+    segs.min((key_rows.div_ceil(16) / 2).max(1)).max(1)
+}
+
+/// The floats of scratch that `OP_ATTN_PV` writes for a block of up to `max_block` tokens: each segment holds the
+/// partial sums of the block. The count of segments is at most `4096 / items + 1`, and the items are at least
+/// `n * heads * d / 512`. Thus the partial sums take at most `2^21 + n * heads * d` floats.
+pub fn attn_pv_scratch_floats(max_block: usize, heads: usize, d: usize) -> usize {
+    (1 << 21) + max_block * heads * d
+}
+
 /// Attention of a block of `n` tokens at cache rows `p0..` (scores into `s`, softmax, the sum against V into `out`).
 #[allow(clippy::too_many_arguments)]
 pub fn attend_block(

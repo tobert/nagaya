@@ -15,16 +15,18 @@
 use nagaya_mk_bmg::protocol::{FLAG_ACCUMULATE, MAX_TASKS_PER_CARD, MkTaskDescriptor};
 use nagaya_mk_bmg::tasks;
 
-use crate::spec::{Backbone, LayerKind, MAX_LOGIT_ROWS, plane_rows, ring_of};
+use crate::spec::{Backbone, HEAD_DIM, LayerKind, MAX_BLOCK, MAX_LOGIT_ROWS, plane_rows, ring_of};
 use crate::weights::{Weights, rounded};
 
 /// The heads whose chunks the one-token attention keeps in the scratch of the ring (`attn_pv_segments`).
 const SCRATCH_HEADS: usize = 16;
 
-/// The floats of the scratch of the ring for slots of up to `max_seq` positions: the chunks of 32 keys of one-token
-/// attention, each a max, a sum and an output of up to 512 values (`ATTN_CHUNK`, megakernel.cl).
+/// The floats of the scratch of the ring for slots of up to `max_seq` positions. One-token attention keeps the chunks
+/// of 32 keys, each a max, a sum and an output of up to 512 values (`ATTN_CHUNK`, megakernel.cl). The split attention
+/// of a block keeps its partial sums (`tasks::attn_pv_scratch_floats`).
 pub fn scratch_floats(max_seq: usize) -> usize {
-    SCRATCH_HEADS * (max_seq / 32 + 1) * (512 + 2)
+    let one_token = SCRATCH_HEADS * (max_seq / 32 + 1) * (512 + 2);
+    one_token.max(tasks::attn_pv_scratch_floats(MAX_BLOCK, SCRATCH_HEADS, HEAD_DIM))
 }
 
 /// The activation buffers of a block of at most `max_block` tokens. Each row is one token.

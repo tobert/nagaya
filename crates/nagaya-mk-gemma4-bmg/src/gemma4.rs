@@ -572,7 +572,7 @@ pub fn work_device_bytes(max_block: usize, max_seq: usize, with_head: bool) -> u
         + b * TOP_K * MOE_I // moe_inter
         + 2 * b * TOP_K * d // moe_x and moe_out
         + b * NUM_EXPERTS // router_logits
-        + attn_scratch_floats(max_seq)
+        + attn_scratch_floats(max_seq, max_block)
         + HEADS * b * attn_row_floats(max_seq)
         + if with_head { MAX_LOGIT_ROWS * d } else { 0 };
     (floats * 4 + MOE_PLAN_BYTES + NUM_SCOREBOARD_EVENTS * 4) as u64
@@ -778,7 +778,7 @@ impl CardShard {
             meta_on: std::sync::atomic::AtomicBool::new(false),
             ring: card.alloc_host_usm::<MkTaskDescriptor>(MAX_TASKS_PER_CARD),
             scoreboard: card.alloc_device_usm::<u32>(NUM_SCOREBOARD_EVENTS),
-            scratch: dev(attn_scratch_floats(slot_seqs.iter().copied().max().unwrap_or(0))),
+            scratch: dev(attn_scratch_floats(slot_seqs.iter().copied().max().unwrap_or(0), b)),
             scores: dev(HEADS * b * attn_row_floats(slot_seqs.iter().copied().max().unwrap_or(0))),
             stage: card.alloc_host_usm::<f32>(STAGE_FLOATS),
             stats: card.alloc_host_usm::<XeCoreStats>(32),
@@ -1485,10 +1485,12 @@ fn attn_row_floats(seq: usize) -> usize {
     (seq + 15) / 16 * 16 + 16
 }
 
-/// Floats of scratch one-token attention needs over `max_seq` positions: every head's partials
-/// for 32-key chunks (the kernel's ATTN_CHUNK), each a max, a sum, and a 512-wide output.
-fn attn_scratch_floats(max_seq: usize) -> usize {
-    HEADS * (max_seq / 32 + 1) * (512 + 2)
+/// Floats of scratch that attention needs. One-token attention keeps every head's partials for 32-key chunks over
+/// `max_seq` positions (the kernel's ATTN_CHUNK), each a max, a sum, and a 512-wide output. The split attention of a
+/// block of up to `max_block` tokens keeps its partial sums (`tasks::attn_pv_scratch_floats`).
+fn attn_scratch_floats(max_seq: usize, max_block: usize) -> usize {
+    let one_token = HEADS * (max_seq / 32 + 1) * (512 + 2);
+    one_token.max(nagaya_mk_bmg::tasks::attn_pv_scratch_floats(max_block, HEADS, 512))
 }
 
 /// Host copy of every layer's K and V rows up to position `len`: all of them, or for a

@@ -177,3 +177,31 @@ fn head_gate_puts_its_fields_where_the_kernel_reads_them() {
 fn head_gate_refuses_rows_shorter_than_the_heads() {
     tasks::head_gate(1, 2, 3, 5, 16, 128, 8);
 }
+
+/// The split attention gives each slot size the same bits (spec 6.7): its count of key segments reads no slot size.
+/// The scratch bound holds for each block of up to 512 tokens and each head shape of the engines.
+///
+/// Falsified by a bound of 2^20 + N*H*D floats, and by a count that drops the cap of two key tiles a segment.
+#[test]
+fn the_key_segments_need_no_slot_size_and_fit_the_scratch_bound() {
+    for (heads, d) in [(16u32, 512u32), (16, 256), (16, 128), (32, 64)] {
+        let bound = tasks::attn_pv_scratch_floats(512, heads as usize, d as usize);
+        for n in 1..=512u32 {
+            for p0 in [0u32, 1, 31, 256, 4096, 65_000] {
+                let segs = tasks::attn_pv_segments(heads, n, d, p0 + n);
+                assert!(segs >= 1);
+                assert!(
+                    segs <= ((p0 + n).div_ceil(16) / 2).max(1),
+                    "{heads} heads of {d}, {n} tokens after {p0}: {segs} segments for too few key tiles"
+                );
+                let need = segs as usize * (n * heads * d) as usize;
+                assert!(
+                    need <= bound,
+                    "{heads} heads of {d}, {n} tokens after {p0}: {segs} segments need {need} floats, past {bound}"
+                );
+            }
+        }
+    }
+    // The case of the defect of 2026-11-06: 64 tokens after 256 keys, 16 heads of 256 values.
+    assert_eq!(tasks::attn_pv_segments(16, 64, 256, 320), 8);
+}

@@ -20,11 +20,12 @@ use nagaya_mk_gemma4_bmg::spec::{self, Config};
 use nagaya_store::{EngineFacts, Put, Reason, Restored, Store, Tier, recipe_root, snapshot_from_engine};
 use sha2::{Digest, Sha256};
 
-/// The hashes of the logits that the copy of mkviolet gave, before the trait (`1d9e1b6`), for the plan of
-/// `copy_plan`. A test that records them is in the commit message of the trait.
-const COPY_PREFILL: &str = "67ca6064b30a2f0d0b72837c25c0a3e5c06db79357c871dcec4d09168cf9d41c";
-const COPY_DECODE: &str = "4d2e2ad23cbdd0b4a5e7ad4b0006a54ee9f0f9adf42a6056a9ec02c422198c96";
-const COPY_BRANCHES: &str = "7e98f8de1acf31d62034bc983b86c5fd8f1049fda9c1cab5bdffca559bda3af4";
+/// The hashes of the logits for the plan of `copy_plan`. The copy of mkviolet gave the first hashes, before the trait
+/// (`1d9e1b6`). The split attention of 2026-11-06 changed them, because its count of key segments reads no slot size
+/// now (engine-abi "The bits do not depend on the slot size"). The golden tests against transformers passed after it.
+const COPY_PREFILL: &str = "7e59fa12bec4367c40e949607ce847beffc697173bf3219953301573a0f22fb8";
+const COPY_DECODE: &str = "a57cd4bcb32ccfafb02488aaa697dffeaf6250314ee53acf37eae7440364cee3";
+const COPY_BRANCHES: &str = "aa890327c6262a0aa41604c8e9f03119b3f05beb0f36bd5cdb70a573f78bb4d3";
 
 /// The PCI addresses of the `xe` cards, in PCI order: the order of the machine device ids (spec 2.1).
 fn cards() -> Vec<String> {
@@ -124,6 +125,12 @@ fn copy_plan() -> Vec<(usize, Segment)> {
 }
 
 fn check_copy_hashes(groups: &[Vec<Vec<u8>>; 3], path: &str) {
+    println!(
+        "{path}: prefill {}, decode {}, branches {}",
+        hash(&groups[0]),
+        hash(&groups[1]),
+        hash(&groups[2])
+    );
     assert_eq!(
         hash(&groups[0]),
         COPY_PREFILL,

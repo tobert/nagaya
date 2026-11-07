@@ -842,6 +842,15 @@ rows, not on different bits.
 Thus each stored snapshot records its coverage (positions held, per part), and fit is a separate check (`coverage`
 capability). This corrects review finding 3, which put geometry in the id.
 
+**The bits do not depend on the slot size.** Decided 2026-11-06 by Amy. The split attention of a block
+(`attn_pv_segments`, `megakernel.cl`) chose its count of key segments by the size of the slot. Thus the slots of 4,096
+and 65,536 positions gave other bits for one feed. The card test `the_same_feed_gives_the_same_bits_in_each_slot_size`
+showed it in 18 of 18 logit rows.
+
+Now the count reads no slot size. The host gives the partial sums enough scratch:
+2^21 plus the block's floats (`tasks::attn_pv_scratch_floats`). The new kernel gives a new identity, so each held
+context fills again once. An engine whose bits change with a slot size declares `geometry_key` instead.
+
 Two content ids under one recipe that cover the same positions have two possible causes. The engine did not
 reproduce its bits, or the recipe misses an input. The nagaya refuses to serve that recipe. It quarantines the
 conflicting entries and reports them. It never picks one. A person clears the refusal after the cause is known.
@@ -1258,9 +1267,9 @@ choice that the gates can check. Amy decides.
 - **The config.** The kind is `mk-lfm3-bmg`. Its config has three keys. `model_dir` names the model folder, and it
   has no default, because one kind serves two models. `slots` is the count of slots. `max_block` is the feed block:
   512 when the key is absent, and 1 to 512.
-- **One slot shape.** Every slot holds 32,768 positions (spec 11.11). Reason: the attention ops choose the split of
-  the keys of a block by the size of its slot (`attn_pv_segments`, `megakernel.cl`). Two sizes would give two
-  results for one recipe, and the recipe names no size.
+- **One slot shape.** Every slot holds 32,768 positions (spec 11.11). Reason: one size is the simplest plan. The
+  split attention reads no slot size now ("The bits do not depend on the slot size"). Thus a second size needs no
+  change to the recipe.
 - **The parts.** A conv layer has `conv.<ll>`, a fixed F32 part of 6 rows of 2,048 values, oldest first. An attention
   layer has `k.<ll>` and `v.<ll>`, F32 rows of 4 heads of 128. They are cells on the full layers and rings on the
   sliding layers. `ll` is the layer in two digits.

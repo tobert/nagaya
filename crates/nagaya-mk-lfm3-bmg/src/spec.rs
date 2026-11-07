@@ -35,8 +35,7 @@ pub const DEFAULT_MAX_BLOCK: usize = 512;
 pub const MAX_BLOCK: usize = 512;
 
 /// The positions of each slot: the context of Omni's model card (spec 11.11, "The served LFM3 models"). Every slot has
-/// this one size, because the attention ops split the keys of a block by the size of its slot (`attn_pv_segments`,
-/// megakernel.cl), and the recipe does not name a size.
+/// this one size, the simplest plan. The attention ops read no slot size, so a second size would give the same bits.
 pub const SLOT_TOKENS: usize = 32_768;
 
 /// The longest quantum in milliseconds (D8). It is a budget, not a measurement: the card test
@@ -134,7 +133,7 @@ const SLIDING_THETA: f64 = 1e4;
 
 /// The head size and the head count that the attention ops of the binary take. The one-token attention keeps the
 /// chunks of 16 heads in its scratch (`attn_pv_segments`, megakernel.cl).
-const HEAD_DIM: usize = 128;
+pub(crate) const HEAD_DIM: usize = 128;
 const HEADS: usize = 16;
 
 impl Backbone {

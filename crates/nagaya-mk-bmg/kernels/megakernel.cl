@@ -480,15 +480,14 @@ inline float wg_max(float v, __local float* slm, uint lane, uint sg_id, uint num
 }
 
 // Key segments OP_ATTN_PV splits each tile's keys into, so a small block still has enough
-// work items: about 4096 items in all, at least 2 key tiles per segment, and partial outputs
-// that fit the one-token attention scratch (16 heads x (max_seq / ATTN_CHUNK + 1) x 514
-// floats). With 1 segment OP_ATTN_PV writes its output directly.
-inline uint attn_pv_segments(uint H, uint N, uint D, uint key_rows, ulong max_seq) {
+// work items: about 4096 items in all, and at least 2 key tiles per segment. The count reads
+// no slot size, so each slot size gives the same bits (spec 6.7). The host gives the partial
+// sums 2^21 + N x H x D floats of scratch (`tasks::attn_pv_scratch_floats`). With 1 segment
+// OP_ATTN_PV writes its output directly.
+inline uint attn_pv_segments(uint H, uint N, uint D, uint key_rows) {
     uint items = H * ((N + ATTN_TILE - 1) / ATTN_TILE) * (D / 32);
     uint segs = (4096 + items - 1) / items;
-    segs = min(segs, max(1u, (key_rows + 15) / 16 / 2));
-    ulong room = 16ul * (max_seq / ATTN_CHUNK + 1) * 514;
-    return (uint)max(1ul, min((ulong)segs, room / ((ulong)N * H * D)));
+    return max(1u, min(segs, (key_rows + 15) / 16 / 2));
 }
 
 // Copies the plan's active experts and offsets into local memory for the work-group.
@@ -1072,7 +1071,7 @@ __kernel void mk_persistent_interpreter(
             __global const float* Vc = Kc + kv_plane_rows(max_seq, ring) * KV * D;
             uint row_f = attn_row_floats(p0, N), key_rows = p0 + N, k_height = kv_surface_rows(key_rows, ring);
             uint t_tiles = (N + ATTN_TILE - 1) / ATTN_TILE, d_pairs = D / 32;
-            uint segs = attn_pv_segments(H, N, D, key_rows, max_seq);
+            uint segs = attn_pv_segments(H, N, D, key_rows);
             for (uint item = gsg; item < H * t_tiles * d_pairs * segs; item += n_gsg) {
                 uint seg = item % segs, rest = item / segs;
                 uint dp = rest % d_pairs, tt = (rest / d_pairs) % t_tiles, h = rest / (d_pairs * t_tiles);
@@ -1122,7 +1121,7 @@ __kernel void mk_persistent_interpreter(
             // fields as OP_ATTN_PV's. Nothing to do with one segment.
             __global float* O = (__global float*)task.c;
             uint D = task.k, H = task.m & 0xFFFFu, N = task.n;
-            uint segs = attn_pv_segments(H, N, D, task.p0 + N, task.x >> 32);
+            uint segs = attn_pv_segments(H, N, D, task.p0 + N);
             if (segs > 1) {
                 ulong total = (ulong)N * H * D;
                 for (ulong i = (ulong)gsg * 16 + lane; i < total; i += (ulong)n_gsg * 16) {
