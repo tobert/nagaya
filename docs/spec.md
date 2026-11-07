@@ -4550,6 +4550,22 @@ a job of the served model. Its class is `batch` unless the request names another
 Reason: a fixed order of the sums gives the same vector on each run (engine-abi D3). A prompt pass with no
 snapshot leaves no state in the store.
 
+**The served model of a control vector.** Proposed by Claude Opus 5.5, 2026-11-07, for milestone 25 step 7. The
+choices below are open in the rules above and in gogi.
+
+- A served model declares `control_vectors` when its engine declares `control` and the tap `residual`, and the process
+  has an object store (6.15). The route needs the tap, and a vector is an object. Without either, the capability
+  would promise a route that cannot run.
+- `limits.control_vector_contexts` is 64. The job keeps the residual row of each context in host memory, outside the
+  ledger. A row of `LFM3-1.7B` is 24 layers of 2,048 `f32` values, 192 KiB. Two sides of 64 rows hold 24 MiB.
+- The job also makes no interval copy (6.13), so it leaves no entry in the store.
+- A `strength` that is not finite as `f32` is a 400 that names it, such as `control[0].strength`. The engine takes
+  the strength as `f32`, and the recipe keeps the `f64` that the client sent.
+- A list that names more vectors than the table of the engine holds is a 400 that names `control`. The check runs
+  before the job.
+
+Reason: each choice is the smallest one that keeps every promise of the capability true.
+
 ## 12. Identity
 
 **12.1 Fields.** An engine identity has the fields of `identity()` in the ABI:
