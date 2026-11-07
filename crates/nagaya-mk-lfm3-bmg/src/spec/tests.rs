@@ -146,7 +146,7 @@ fn config(slots: usize) -> Config {
 fn the_limits_keep_the_feed_rule_and_the_terms() {
     let b = backbone();
     let c = config(3);
-    let l = limits(&b, &c, 3_456_000_000);
+    let l = limits(&b, &c, 3_456_000_000, None);
     l.check().unwrap();
     assert_eq!(l.feed, Some(FeedRule { block: 512 }));
     assert!(!l.segments_exact && l.checkpoint_grain.is_none());
@@ -358,4 +358,109 @@ fn a_read_stays_inside_the_rows_that_a_part_holds() {
     assert!(held.check_part_read(state, CONV, 49_152).is_ok());
     assert!(held.check_part_read(state, CONV, row).is_err());
     assert!(held.check_part_read(State::Slot(1), CONV, 49_152).is_err());
+}
+
+/// The held state of Omni, with the placeholders of its config.
+fn omni_held(seqs: &[usize]) -> Held {
+    let mut held = Held::new(&Backbone::parse(OMNI_CONFIG).unwrap(), seqs);
+    held.media = crate::vision::media_rules(OMNI_CONFIG).unwrap();
+    held
+}
+
+/// A segment of `tokens` and the rows of `spans`, with their meta.
+fn media_segment(from: u64, tokens: &[u32], spans: &[crate::media::Span]) -> Segment {
+    let bytes = spans.iter().map(|s| s.bytes()).sum();
+    Segment {
+        inputs: SegmentInputs::TokensAndRows {
+            tokens: tokens.to_vec(),
+            rows: vec![0; bytes],
+        },
+        meta: crate::media::encode(spans),
+        ..segment(0, from, tokens, &[from + tokens.len() as u64 - 1])
+    }
+}
+
+#[test]
+fn omni_takes_the_rows_of_an_image_and_names_them_in_its_block() {
+    use crate::media::{Span, SpanKind};
+    let rules = crate::vision::media_rules(OMNI_CONFIG).unwrap();
+    assert_eq!((rules.image_token, rules.audio_token), (Some(125_030), Some(125_031)));
+    assert!(!rules.audio_encoder);
+    let held = omni_held(&[4096]);
+    let image = Span {
+        kind: SpanKind::Image { grid: [1, 14, 22] },
+        first: 5,
+        count: 77,
+    };
+    let mut tokens = vec![1u32; 90];
+    tokens[5..82].fill(125_030);
+    let block = held
+        .check_pass(&[media_segment(0, &tokens, &[image])], 512, VOCAB)
+        .unwrap();
+    assert_eq!(block.spans.len(), 1);
+    assert_eq!((block.spans[0].take.clone(), block.spans[0].block_row), (0..77, 5));
+    // A placeholder with no rows, the rows with no meta, and the meta with no rows are refused.
+    let plain = held.check_pass(&[segment(0, 0, &tokens, &[])], 512, VOCAB).unwrap_err();
+    assert!(
+        plain.contains("position 5 holds the media placeholder 125030"),
+        "{plain}"
+    );
+    let mut no_meta = media_segment(0, &tokens, &[image]);
+    no_meta.meta.clear();
+    let e = held.check_pass(&[no_meta], 512, VOCAB).unwrap_err();
+    assert!(e.contains("rows and no meta"), "{e}");
+    let mut no_rows = segment(0, 0, &tokens, &[]);
+    no_rows.meta = crate::media::encode(&[image]);
+    let e = held.check_pass(&[no_rows], 512, VOCAB).unwrap_err();
+    assert!(e.contains("meta and no rows"), "{e}");
+    let rows_only = Segment {
+        inputs: SegmentInputs::Rows(vec![0; 64]),
+        ..segment(0, 0, &tokens, &[])
+    };
+    let e = held.check_pass(&[rows_only], 512, VOCAB).unwrap_err();
+    assert!(e.contains("rows and no tokens"), "{e}");
+    // A clip is refused until the audio encoder exists.
+    let clip = Span {
+        kind: SpanKind::Audio { frames: 16 },
+        first: 0,
+        count: 2,
+    };
+    let e = held
+        .check_pass(&[media_segment(0, &[125_031, 125_031, 1], &[clip])], 512, VOCAB)
+        .unwrap_err();
+    assert!(e.contains("no audio encoder yet"), "{e}");
+}
+
+#[test]
+fn the_text_model_refuses_an_image_and_omni_plans_its_tower() {
+    use crate::media::{Span, SpanKind};
+    let image = Span {
+        kind: SpanKind::Image { grid: [1, 2, 2] },
+        first: 0,
+        count: 1,
+    };
+    let held = Held::new(&backbone(), &[4096]);
+    let e = held
+        .check_pass(&[media_segment(0, &[125_030, 1], &[image])], 512, VOCAB)
+        .unwrap_err();
+    assert!(e.contains("no vision tower"), "{e}");
+    let (b, c) = (backbone(), config(1));
+    let text = limits(&b, &c, 1000, None);
+    assert_eq!(text.inputs, Inputs::Tokens);
+    assert!(text.memory.mandatory.iter().all(|t| t.name != "vision"));
+    let omni = limits(
+        &b,
+        &c,
+        1000,
+        Some(VisionBytes {
+            weights: 64_000,
+            work: 7_000,
+        }),
+    );
+    omni.check().unwrap();
+    assert_eq!(omni.inputs, Inputs::TokensAndRows);
+    let term = |l: &Limits, name: &str| l.memory.mandatory.iter().find(|t| t.name == name).unwrap().clone();
+    assert_eq!(term(&omni, "vision").bytes, 64_000);
+    assert_eq!(term(&omni, "vision").tier, Tier::Device(0));
+    assert_eq!(term(&omni, "work").bytes, term(&text, "work").bytes + 7_000);
 }

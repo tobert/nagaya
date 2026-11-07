@@ -16,9 +16,20 @@ use nagaya_mk_bmg::{IGC_REVISION, KERNEL_ENTRY, LFM3_KERNEL, OCLOC_VERSION};
 use nagaya_text_lfm3::{Kind as FamilyKind, Lfm3Family};
 
 use crate::device::{Device, OnCard};
+use crate::media::{MAX_IMAGE_PATCHES, PATCH_ROW, SpanKind};
 use crate::model::{self, Bufs, Run, SlotMemory, bufs_bytes, scratch_floats};
-use crate::spec::{self, Backbone, Block, Config, FAMILY, Held, LayerKind, Model, Part, RING_ROWS, SLOT_TOKENS};
+use crate::spec::{
+    self, Backbone, Block, Config, FAMILY, Held, LayerKind, Model, Part, RING_ROWS, SLOT_TOKENS, VisionBytes,
+};
+use crate::vision::{self, Until, Vision, VisionBufs, VisionWeights};
 use crate::weights::{self, Count, Weights, f32_values};
+
+/// The vision tower of Omni on the card: its numbers, its weights and its buffers.
+struct Tower {
+    v: Vision,
+    w: VisionWeights,
+    bufs: VisionBufs,
+}
 
 /// The LFM3 engine on one card.
 pub struct Lfm3Engine {
@@ -34,6 +45,8 @@ pub struct Lfm3Engine {
     device: Device,
     weights: Weights,
     bufs: Bufs,
+    /// The vision tower of Omni. `LFM3-1.7B` has none.
+    tower: Option<Tower>,
     slots: Vec<SlotMemory>,
     held: Held,
 }
@@ -185,6 +198,18 @@ impl Lfm3Engine {
         weights::check(&b, &view)?;
         let mut count = Count::default();
         weights::load(&mut count, &b, &view)?;
+        // Omni's vision tower: its numbers, its tensors and its bytes, before the card opens.
+        let vision = match b.model {
+            Model::Text => None,
+            Model::Omni => {
+                let v = Vision::parse(&config_text, b.hidden)
+                    .map_err(|e| format!("{}: {e}", dir.join("config.json").display()))?;
+                let mut tower_count = Count::default();
+                vision::load(&mut tower_count, &v, &view)?;
+                let rules = vision::media_rules(&config_text)?;
+                Some((v, tower_count.bytes, rules))
+            }
+        };
         let checkpoint_digest = checkpoint_digest(&config_text, &view)?;
 
         // Only the engine's card gets a context, so the open does not stall the work of another card.
@@ -207,17 +232,52 @@ impl Lfm3Engine {
             ));
         }
         let weights_bytes = device.bytes as u64;
+        let tower_weights = match &vision {
+            Some((v, planned, _)) => {
+                let w = vision::load(
+                    &mut OnCard {
+                        device: &mut device,
+                        card,
+                    },
+                    v,
+                    &view,
+                )?;
+                let took = device.bytes - weights_bytes as usize;
+                if took != *planned {
+                    return Err(format!(
+                        "the vision tower takes {took} device bytes, and the plan counted {planned}"
+                    ));
+                }
+                Some(w)
+            }
+            None => None,
+        };
         let max_seq = SLOT_TOKENS;
         let bufs = Bufs::new(&mut |bytes| device.zeros(card, bytes), &b, config.max_block, max_seq);
+        let tower = match (&vision, tower_weights) {
+            (Some((v, _, _)), Some(w)) => Some(Tower {
+                bufs: VisionBufs::new(&mut |bytes| device.zeros(card, bytes), v, config.max_block),
+                v: v.clone(),
+                w,
+            }),
+            _ => None,
+        };
         let slots: Vec<SlotMemory> = config
             .seqs()
             .iter()
             .map(|seq| SlotMemory::new(&mut |bytes| device.zeros(card, bytes), &b, *seq))
             .collect();
-        let limits = spec::limits(&b, &config, weights_bytes);
+        let vision_bytes = vision.as_ref().map(|(v, w, _)| VisionBytes {
+            weights: *w as u64,
+            work: vision::bufs_bytes(v, config.max_block) as u64,
+        });
+        let limits = spec::limits(&b, &config, weights_bytes, vision_bytes);
         limits.check()?;
         let kv = config.slots as u64 * spec::slot_bytes(&b, SLOT_TOKENS);
-        let planned = weights_bytes + kv + bufs_bytes(&b, config.max_block, max_seq) as u64;
+        let planned = weights_bytes
+            + kv
+            + bufs_bytes(&b, config.max_block, max_seq) as u64
+            + vision_bytes.map_or(0, |v| v.weights + v.work);
         if device.bytes as u64 != planned {
             return Err(format!(
                 "the engine took {} device bytes, and its limits declare {planned}",
@@ -258,7 +318,10 @@ impl Lfm3Engine {
             }],
             canary_hash: String::new(),
         };
-        let held = Held::new(&b, &config.seqs());
+        let mut held = Held::new(&b, &config.seqs());
+        if let Some((_, _, rules)) = vision {
+            held.media = rules;
+        }
         Ok(Self {
             b,
             config,
@@ -271,6 +334,7 @@ impl Lfm3Engine {
             device,
             weights,
             bufs,
+            tower,
             slots,
             held,
         })
@@ -301,7 +365,15 @@ impl Lfm3Engine {
 
     /// Run a block from position `pos0` of `slot`, up to the end of `layers` layers, with the logit rows when given.
     /// The caller checked the block. A block from position 0 starts from zero conv states.
-    fn forward(&mut self, slot: usize, pos0: usize, tokens: &[u32], layers: usize, logit_rows: Option<&[usize]>) {
+    fn forward(
+        &mut self,
+        slot: usize,
+        pos0: usize,
+        tokens: &[u32],
+        layers: usize,
+        logit_rows: Option<&[usize]>,
+        after_embed: &[MkTaskDescriptor],
+    ) {
         if pos0 == 0 {
             self.zero_conv(slot);
         }
@@ -317,9 +389,91 @@ impl Lfm3Engine {
                 n: tokens.len(),
                 layers,
                 logit_rows,
+                after_embed,
             },
         );
         self.run(&tasks);
+    }
+
+    /// Run the encoder of each media span of `block` on the card, from the rows of `segment`. Each one leaves the rows
+    /// of the positions of the block in the media buffer, and the copies that this returns put them over the
+    /// embedding rows of their placeholders. The caller checked the block.
+    fn encode(&mut self, segment: &Segment, block: &Block) -> Vec<MkTaskDescriptor> {
+        if block.spans.is_empty() {
+            return Vec::new();
+        }
+        let nagaya_abi::SegmentInputs::TokensAndRows { rows, .. } = &segment.inputs else {
+            unreachable!("check_pass gives spans only for a segment of tokens and rows");
+        };
+        let mut places = Vec::with_capacity(block.spans.len());
+        for used in &block.spans {
+            let bytes = &rows[used.rows_at..used.rows_at + used.span.bytes()];
+            let tasks = match used.span.kind {
+                SpanKind::Image { grid } => {
+                    let tower = self
+                        .tower
+                        .as_ref()
+                        .expect("check_pass refuses an image when the model has no vision tower");
+                    self.device.write(self.card(), tower.bufs.pixels, bytes);
+                    vision::tower(
+                        &tower.v,
+                        &tower.w,
+                        &tower.bufs,
+                        grid[1],
+                        grid[2],
+                        Until::Rows {
+                            take: (used.take.start, used.take.end),
+                            block_row: used.block_row,
+                        },
+                    )
+                }
+                // Lane G of milestone 24 step 7 adds the audio encoder here, and sets `MediaRules::audio_encoder`.
+                SpanKind::Audio { .. } => {
+                    unreachable!("check_pass refuses a clip until the engine has its audio encoder")
+                }
+            };
+            self.run(&tasks);
+            let tower = self.tower.as_ref().expect("an image span ran the tower");
+            places.push(vision::place(
+                &tower.v,
+                &tower.bufs,
+                self.bufs.x,
+                used.block_row..used.block_row + used.take.len(),
+            ));
+        }
+        places
+    }
+
+    /// The stages of the vision tower for one image of `grid_h` by `grid_w` patches: the patch embedding after its
+    /// norm `[patches][hidden]`, the tower `[patches][hidden]`, and the rows of the projector `[patches / 4][out]`.
+    /// `pixels` holds the patch rows in merge-block order. The probe of the oracle (8.3) uses it.
+    pub fn vision_stages(&mut self, pixels: &[f32], grid_h: usize, grid_w: usize) -> Result<[Vec<f32>; 3], String> {
+        let Some(tower) = self.tower.as_ref() else {
+            return Err("this model has no vision tower".to_owned());
+        };
+        let n = grid_h * grid_w;
+        if grid_h < 2 || grid_w < 2 || !grid_h.is_multiple_of(2) || !grid_w.is_multiple_of(2) || n > MAX_IMAGE_PATCHES {
+            return Err(format!(
+                "an image of {grid_h} by {grid_w} patches does not fit the tower: each side is even, and it has at \
+                 most {MAX_IMAGE_PATCHES} patches"
+            ));
+        }
+        if pixels.len() != n * PATCH_ROW {
+            return Err(format!("{} values are not {n} patch rows of {PATCH_ROW}", pixels.len()));
+        }
+        let (v, w, bufs) = (tower.v.clone(), tower.w.clone(), tower.bufs);
+        self.device.write(self.card(), bufs.pixels, &weights::f32_bytes(pixels));
+        let mut out = Vec::with_capacity(3);
+        for (until, at, len) in [
+            (Until::Patches, bufs.x, n * v.hidden),
+            (Until::Tower, bufs.x, n * v.hidden),
+            (Until::Projector, bufs.y, n / 4 * v.out),
+        ] {
+            let tasks = vision::tower(&v, &w, &bufs, grid_h, grid_w, until);
+            self.run(&tasks);
+            out.push(self.read_f32(at, len));
+        }
+        Ok(out.try_into().expect("three stages"))
     }
 
     fn read_f32(&self, at: u64, n: usize) -> Vec<f32> {
@@ -343,7 +497,7 @@ impl Lfm3Engine {
         }
         self.held.clear(slot);
         self.held.check_pass(&[segment], self.config.max_block, self.vocab)?;
-        self.forward(slot, 0, ids, layers, norm.then_some(&[][..]));
+        self.forward(slot, 0, ids, layers, norm.then_some(&[][..]), &[]);
         let at = if norm { self.bufs.h } else { self.bufs.x };
         let out = self.read_f32(at, ids.len() * self.b.hidden);
         self.held.clear(slot);
@@ -401,7 +555,15 @@ impl Engine for Lfm3Engine {
         };
         let start = Instant::now();
         let layers = self.b.layers.len();
-        self.forward(block.slot, block.pos0, &block.tokens, layers, Some(&block.logit_rows));
+        let places = self.encode(&segments[0], &block);
+        self.forward(
+            block.slot,
+            block.pos0,
+            &block.tokens,
+            layers,
+            Some(&block.logit_rows),
+            &places,
+        );
         let row = self.b.vocab_rows * 4;
         let outputs = (0..block.logit_rows.len())
             .map(|i| Output {

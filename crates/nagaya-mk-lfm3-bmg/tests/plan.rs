@@ -154,3 +154,122 @@ fn the_real_headers_open_as_a_mapped_file() {
         weights::check(&b, &map.view().unwrap()).unwrap();
     }
 }
+
+/// The bytes of the tower and of the projector of Omni in its header: each BF16 tensor, with the weights and the bias
+/// of the projector's LayerNorm in F32, so twice their BF16 bytes. Each one takes whole steps of 64 bytes.
+fn tower_bytes_of_the_header(view: &SafeTensorsView<'_>) -> u64 {
+    view.tensors
+        .iter()
+        .filter(|(n, _)| n.starts_with("model.vision_tower.") || n.starts_with("model.multi_modal_projector."))
+        .map(|(n, t)| {
+            let bytes = t.shape.iter().product::<usize>() as u64 * 2;
+            let bytes = if n.contains("layer_norm") { 2 * bytes } else { bytes };
+            weights::rounded(bytes as usize) as u64
+        })
+        .sum()
+}
+
+#[test]
+fn omni_plans_its_tower_and_the_text_model_has_none() {
+    for which in Which::BOTH {
+        if common::absent(which) {
+            continue;
+        }
+        let dir = common::model_dir(which);
+        let config = Config {
+            model_dir: dir.clone(),
+            slots: 1,
+            max_block: 512,
+        };
+        let limits = spec::plan(&config).unwrap();
+        let vision = limits.memory.mandatory.iter().find(|t| t.name == "vision");
+        let b = Backbone::read(&dir).unwrap();
+        match which {
+            Which::Text => {
+                assert!(spec::read_vision(&b, &dir).unwrap().is_none());
+                assert!(vision.is_none(), "LFM3-1.7B has no vision tower");
+                assert_eq!(limits.inputs, nagaya_abi::Inputs::Tokens);
+            }
+            Which::Omni => {
+                let map = MappedSafeTensors::open(&dir.join(spec::WEIGHTS_FILE)).unwrap();
+                let want = tower_bytes_of_the_header(&map.view().unwrap());
+                // 14 layers and the projector: 189 M parameters in BF16.
+                assert!(want > 370_000_000 && want < 390_000_000, "{want}");
+                assert_eq!(vision.unwrap().bytes, want);
+                assert_eq!(limits.inputs, nagaya_abi::Inputs::TokensAndRows);
+                let v = spec::read_vision(&b, &dir).unwrap().unwrap();
+                let bytes = spec::vision_bytes(&v, &dir, 512).unwrap();
+                println!(
+                    "Omni: the tower takes {} weight bytes and {} buffer bytes",
+                    bytes.weights, bytes.work
+                );
+            }
+        }
+    }
+}
+
+/// The names and the shapes of the tensors of a checkpoint.
+type TensorList = Vec<(String, Vec<usize>)>;
+
+/// A small tower of one conv layer and one attention layer, with widths of 16s.
+fn small_vision() -> nagaya_mk_lfm3_bmg::vision::Vision {
+    let mut config: serde_json::Value = serde_json::from_str(include_str!("fixtures/lfm3-omni.config.json")).unwrap();
+    let v = &mut config["vision_config"];
+    v["hidden_size"] = 64.into();
+    v["num_attention_heads"] = 4.into();
+    v["num_key_value_heads"] = 2.into();
+    v["intermediate_size"] = 32.into();
+    v["num_hidden_layers"] = 2.into();
+    v["layer_types"] = serde_json::json!(["conv", "full_attention"]);
+    config["projector_hidden_size"] = 32.into();
+    nagaya_mk_lfm3_bmg::vision::Vision::parse(&config.to_string(), 32).unwrap()
+}
+
+#[test]
+fn a_tower_with_a_lost_or_other_tensor_is_refused_before_any_upload() {
+    use nagaya_mk_lfm3_bmg::vision;
+    let v = small_vision();
+    let build = |edit: &dyn Fn(&mut TensorList)| -> Vec<u8> {
+        let mut list = vision::tensors(&v);
+        edit(&mut list);
+        let most = list.iter().map(|(_, s)| s.iter().product::<usize>() * 2).max().unwrap();
+        let zeros = vec![0u8; most];
+        let entries: Vec<(&str, &str, &[usize], &[u8])> = list
+            .iter()
+            .map(|(n, s)| {
+                (
+                    n.as_str(),
+                    "BF16",
+                    s.as_slice(),
+                    &zeros[..s.iter().product::<usize>() * 2],
+                )
+            })
+            .collect();
+        SafeTensorsView::build_synthetic_safetensors(&entries)
+    };
+    let whole = build(&|_| {});
+    let mut count = Count::default();
+    vision::load(&mut count, &v, &SafeTensorsView::parse(&whole).unwrap()).unwrap();
+    assert_eq!(
+        count.bytes as u64,
+        tower_bytes_of_the_header(&SafeTensorsView::parse(&whole).unwrap())
+    );
+
+    let lost = build(&|l| l.retain(|(n, _)| !n.ends_with("layers.1.self_attn.k_layernorm.weight")));
+    let e = vision::check(&v, &SafeTensorsView::parse(&lost).unwrap()).unwrap_err();
+    assert!(
+        e.contains("no tensor model.vision_tower.layers.1.self_attn.k_layernorm.weight"),
+        "{e}"
+    );
+    let shape = build(&|l| {
+        let conv = l.iter_mut().find(|(n, _)| n.ends_with("spatial_conv.weight")).unwrap();
+        conv.1 = vec![64, 1, 5, 5];
+    });
+    let e = vision::check(&v, &SafeTensorsView::parse(&shape).unwrap()).unwrap_err();
+    assert!(e.contains("spatial_conv.weight") && e.contains("[64, 1, 3, 3]"), "{e}");
+    let other = build(&|l| l.push(("model.vision_tower.post_layernorm.weight".to_owned(), vec![64])));
+    let mut count = Count::default();
+    let e = vision::load(&mut count, &v, &SafeTensorsView::parse(&other).unwrap()).unwrap_err();
+    assert!(e.contains("model.vision_tower.post_layernorm.weight"), "{e}");
+    assert_eq!(count.bytes, 0, "a refused tower uploads nothing");
+}
