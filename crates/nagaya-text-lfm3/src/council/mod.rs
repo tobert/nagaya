@@ -347,16 +347,12 @@ impl Lfm3Family {
         [self.marks.audio_start, self.marks.mixed_start]
     }
 
-    /// Whether a context renders with thinking. Omni does not reason: an absent `thinking` is off, and a sent
-    /// `thinking: true` is a client error that names `thinking` (spec 11.11).
+    /// Whether a context renders with thinking. Omni does not reason, so it renders each context with thinking off,
+    /// and a context with thinking on has the head of thinking off (spec 11.11, gogi "thinking").
     pub(crate) fn thinking(&self, context: &Context) -> Result<bool, FamilyError> {
-        match (self.kind, context.thinking) {
-            (Kind::Text, _) => Ok(context.thinks()),
-            (Kind::Omni, Some(true)) => Err(FamilyError::client_param(
-                "thinking",
-                "lfm3-omni does not reason. Send thinking: false, or leave it out.",
-            )),
-            (Kind::Omni, _) => Ok(false),
+        match self.kind {
+            Kind::Text => Ok(context.thinks()),
+            Kind::Omni => Ok(false),
         }
     }
 

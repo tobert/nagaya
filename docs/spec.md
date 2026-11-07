@@ -4335,9 +4335,10 @@ above leave these choices open, and each one is the simplest choice that the ref
   dict, with the results of jinja2. Both LFM3 templates use them. The other methods of a dict stay refused.
 - **Kept thinking.** The family renders with `preserve_thinking` on. Thus an assistant message keeps its reasoning
   after a later user message, and a held prefix stays a prefix. The Gemma 4 library does the same.
-- **The thinking of Omni.** An absent `thinking` is off for `lfm3-omni`, because the model does not reason. Only a
-  sent `thinking: true` is the 400. The reply parser of Omni starts in the content. For `lfm3`, an absent `thinking`
-  is on, as in gogi.
+- **The thinking of Omni.** `lfm3-omni` renders each context with thinking off, because the model does not reason.
+  A context with `thinking: true` thus has the same head as with thinking off, as gogi allows ("thinking"). The reply
+  parser of Omni starts in the content. For `lfm3`, an absent `thinking` is on, as in gogi. Changed by Claude Opus
+  5.5 on 2026-11-06: the first rule gave a 400 for `thinking: true`, and gogi's suite sends it in 18 checks.
 - **Escapes.** Each of the 140 added tokens of `tokenizer.json` is a marker. This includes the tokens that the file
   does not mark special, such as `<think>` and `<tool_call>`. Client text that spells a marker is content.
 - **Reads.** A read closes the thinking with `<think></think>`, the prompt of the template for thinking off. A read

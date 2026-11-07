@@ -84,17 +84,21 @@ fn the_boundaries_are_prefixes_of_the_rendering() {
     }
 }
 
+/// Omni does not reason, so it renders a context with thinking on as with thinking off: one head for both (gogi
+/// "thinking"). gogi's suite sends `thinking: true` to each served model.
 #[test]
-fn omni_refuses_thinking_and_takes_an_absent_thinking_as_off() {
+fn omni_renders_thinking_on_as_off_and_takes_an_absent_thinking_as_off() {
     if absent_any() {
         return;
     }
-    let e = family("omni")
-        .render(&sample(true), true)
-        .expect_err("Omni does not reason");
-    match e {
-        nagaya_council::family::FamilyError::Client(i) => assert_eq!(i.param.as_deref(), Some("thinking")),
-        other => panic!("{other:?}"),
+    for prompt in [false, true] {
+        let on = family("omni")
+            .render(&sample(true), prompt)
+            .expect("Omni takes thinking: true");
+        let off = family("omni")
+            .render(&sample(false), prompt)
+            .expect("Omni takes thinking: false");
+        assert_eq!(on.tokens, off.tokens, "prompt {prompt}");
     }
     let plain = context(json!({"messages": [{"role": "user", "content": "Name three colors."}]}));
     let think = |model: &str| -> String {
