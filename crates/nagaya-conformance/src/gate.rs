@@ -172,6 +172,12 @@ fn fill<E: Engine + ?Sized>(
 
 /// Fill a state through the engine's own pass.
 ///
+/// True when the engine takes a segment of tokens alone. An engine of tokens and rows takes one, as a text block with no
+/// rows (engine-abi "The LFM3 vision binding", Inputs). Only an engine of rows alone does not.
+fn takes_tokens(limits: &Limits) -> bool {
+    limits.inputs != Inputs::Rows
+}
+
 /// The engine refused the synthetic bytes. Zero every fixed part, then run a one-token pass. The pass writes the row
 /// parts from position 0, and it gives every fixed part a value that the engine accepts, such as a token id in the
 /// PLE history. The one-token input makes each cells part hold one row, as the synthetic path writes.
@@ -181,7 +187,7 @@ fn fill_from_a_pass<E: Engine + ?Sized>(
     limits: &Limits,
     gate: &'static str,
 ) -> Result<Vec<(PartId, Vec<u8>)>, Failure> {
-    if limits.inputs != Inputs::Tokens {
+    if !takes_tokens(limits) {
         return Err(Failure::new(
             gate,
             "the engine refused the synthetic bytes and it takes no tokens, so the gate cannot fill it",
@@ -697,7 +703,7 @@ pub fn quantum_identity<E: Engine>(make: &mut dyn FnMut() -> E) -> Outcome {
 pub fn quantum_isolation<E: Engine>(make: &mut dyn FnMut() -> E) -> Outcome {
     let mut engine = make();
     let limits = engine.limits();
-    if limits.inputs != Inputs::Tokens {
+    if !takes_tokens(&limits) {
         return Outcome::NotApplicable("the gate makes token segments; this engine takes rows".to_owned());
     }
     if engine.parts().is_none() {
@@ -739,7 +745,7 @@ fn quantum_isolation_inner<E: Engine + ?Sized>(engine: &mut E, limits: &Limits, 
 pub fn quantum_same_boundaries<E: Engine>(make: &mut dyn FnMut() -> E) -> Outcome {
     let mut first = make();
     let limits = first.limits();
-    if limits.inputs != Inputs::Tokens {
+    if !takes_tokens(&limits) {
         return Outcome::NotApplicable("the gate makes token segments; this engine takes rows".to_owned());
     }
     if first.parts().is_none() {
@@ -980,7 +986,7 @@ pub fn segments_exact_bits<E: Engine>(make: &mut dyn FnMut() -> E) -> Outcome {
     if !limits.segments_exact {
         return Outcome::NotApplicable("the engine does not declare segments_exact".to_owned());
     }
-    if limits.inputs != Inputs::Tokens {
+    if !takes_tokens(&limits) {
         return Outcome::NotApplicable("the gate makes token segments; this engine takes rows".to_owned());
     }
     if reference.parts().is_none() {
