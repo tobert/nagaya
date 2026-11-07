@@ -47,6 +47,7 @@ pub fn routes() -> Router<Arc<Council>> {
         .route("/council/v2/reads", post(reads))
         .route("/council/v2/generations", post(generations))
         .route("/council/v2/embeddings", post(embeddings))
+        .route("/council/v2/control-vectors", post(control_vectors))
         .merge(super::extensions::routes())
         .merge(super::objects::routes())
         .merge(super::loads::routes())
@@ -383,6 +384,34 @@ async fn embeddings(State(council): Shared, Extension(id): Id, body: Body) -> Re
     .await;
     match request {
         Ok((service, model, request)) => super::embeddings::serve(council, service, model, request, id).await,
+        Err(failure) => failure.respond(&id),
+    }
+}
+
+/// A control vector (gogi "Control vectors", spec 11.12). No served model declares `control_vectors` until the
+/// job of milestone 25 step 7, so gogi's check refuses each one with a 400 that names `model`. gogi's checks run
+/// before the 503 of a model that is not ready.
+async fn control_vectors(State(council): Shared, Extension(id): Id, body: Body) -> Response {
+    let request = async {
+        let request: gogi_proto::control::ControlVectorRequest = parse(&bytes(body).await?, "control-vectors")?;
+        request.validate().map_err(ServiceError::Invalid)?;
+        let identity = council.identity();
+        let served = identity.route(&request.model).map_err(ServiceError::Invalid)?;
+        request.check(served).map_err(ServiceError::Invalid)?;
+        if served.status != gogi_proto::identity::ModelStatus::Ready {
+            return Err(Failure::unavailable(served));
+        }
+        Err::<std::convert::Infallible, _>(Failure::from(ServiceError::Invalid(gogi_proto::Invalid::param(
+            "model",
+            format!(
+                "nothing ran: model {} declares control_vectors, but it has no control vector job here",
+                served.model
+            ),
+        ))))
+    }
+    .await;
+    match request {
+        Ok(never) => match never {},
         Err(failure) => failure.respond(&id),
     }
 }

@@ -40,6 +40,7 @@ pub fn served_model(service: &EmbeddingService, status: ModelStatus) -> ServedMo
         device: None,
         text_stop: None,
         limits: ModelLimits {
+            control_vector_contexts: None,
             context_tokens: config.context_tokens,
             decision_context_tokens: 0,
             snapshot_bytes: 0,

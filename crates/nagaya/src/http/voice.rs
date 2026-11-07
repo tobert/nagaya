@@ -474,6 +474,7 @@ pub fn served_model(service: &SpeechService, status: gogi_proto::identity::Model
         device: None,
         text_stop: None,
         limits: gogi_proto::identity::ModelLimits {
+            control_vector_contexts: None,
             context_tokens: config.context_positions,
             decision_context_tokens: 0,
             snapshot_bytes: config.snapshot_bytes,

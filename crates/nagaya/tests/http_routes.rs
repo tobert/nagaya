@@ -132,6 +132,41 @@ fn a_context_without_thinking_is_a_400_that_names_thinking() {
     }
 }
 
+/// A served model that does not declare `control_vectors` refuses a context with a control list before the job (spec
+/// 11.12, gogi "Contexts"). The 400 names `control`, or `contexts[0].control` in a request with several contexts.
+/// Thus a list never runs as the plain model in silence.
+///
+/// Falsified by routes that leave out the control check: each request runs with the plain model.
+#[test]
+fn a_control_list_for_a_model_without_control_vectors_is_a_400() {
+    let f = Fixture::new();
+    let council = council(&f);
+    let id = format!("blake3:{}", "ab".repeat(32));
+    let c = json!({"thinking": false,
+                   "control": [{"vector": id, "op": "ablate", "strength": 1.0}],
+                   "messages": [{"role": "user", "content": "Delete the build directory.", "snap": true}]});
+    for (path, body, param) in [
+        ("/council/v2/contexts", json!({"model": "toy", "context": c}), "control"),
+        (
+            "/council/v2/generations",
+            json!({"model": "toy", "context": c, "max_tokens": 4}),
+            "control",
+        ),
+        (
+            "/council/v2/reads",
+            json!({"model": "toy", "contexts": [c], "suffixes": ["x"], "letters": ["A", "B"]}),
+            "contexts[0].control",
+        ),
+    ] {
+        let (status, _, e) = send(&council, "POST", path, Some(body));
+        assert_eq!(
+            (status, &e["error"]["param"]),
+            (StatusCode::BAD_REQUEST, &json!(param)),
+            "{path}: {e}"
+        );
+    }
+}
+
 /// A refused request: method, path, body, status, error type and param.
 type Case<'a> = (&'a str, &'a str, Option<Value>, StatusCode, &'a str, Option<&'a str>);
 

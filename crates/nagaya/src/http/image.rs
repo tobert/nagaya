@@ -1135,6 +1135,7 @@ pub fn served_model(service: &ImageService, status: gogi_proto::identity::ModelS
         device: None,
         text_stop: None,
         limits: gogi_proto::identity::ModelLimits {
+            control_vector_contexts: None,
             context_tokens: config.context_tokens,
             decision_context_tokens: 0,
             snapshot_bytes: 0,

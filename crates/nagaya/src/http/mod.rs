@@ -471,6 +471,7 @@ impl Council {
             text_stop: None,
             media: None,
             limits: ModelLimits {
+                control_vector_contexts: None,
                 context_tokens: config.context_tokens as u64,
                 decision_context_tokens: config.decision_context_tokens as u64,
                 snapshot_bytes: service.snapshot_bytes(),
@@ -494,17 +495,23 @@ impl Council {
         }
     }
 
-    /// Refuse `thinking: true` in a context of a served model that does not declare `thinking` (gogi "Contexts"). The
-    /// 400 names `thinking`, or `contexts[i].thinking` in a request with several contexts.
+    /// Refuse what a context asks of a served model that does not declare it (gogi "Contexts"): `thinking: true`
+    /// without `thinking`, and a control list without `control_vectors` (spec 11.12). The 400 names `thinking` or
+    /// `control`, or `contexts[i].thinking` or `contexts[i].control` in a request with several contexts.
     fn check_thinking(model: &ServedModel, contexts: &[&gogi_proto::Context], several: bool) -> Result<(), Failure> {
         for (i, context) in contexts.iter().enumerate() {
-            context.check_thinking(model).map_err(|e| {
-                let invalid = match several {
-                    true => gogi_proto::Invalid::param(format!("contexts[{i}].thinking"), e.message),
-                    false => e,
-                };
-                Failure::from(crate::council::error::ServiceError::Invalid(invalid))
-            })?;
+            for (member, check) in [
+                ("thinking", context.check_thinking(model)),
+                ("control", context.check_control(model)),
+            ] {
+                check.map_err(|e| {
+                    let invalid = match several {
+                        true => gogi_proto::Invalid::param(format!("contexts[{i}].{member}"), e.message),
+                        false => e,
+                    };
+                    Failure::from(crate::council::error::ServiceError::Invalid(invalid))
+                })?;
+            }
         }
         Ok(())
     }
