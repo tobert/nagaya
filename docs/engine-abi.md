@@ -1298,7 +1298,8 @@ codec_clear(slot) -> samples                          the last 480 samples; it f
 
 - **The capability.** `speech_frames` is its own capability, the trait `SpeechFrames` of `nagaya-abi`. Omni declares
   it beside the parts, the slots and the coverage, and its `pass` stays a text pass. Reason: the capability `speech`
-  of Qwen3-TTS refuses each pass.
+  of Qwen3-TTS refuses each pass. The accessor of the trait is `Engine::frames`, because `Speech` has a call named
+  `speech_frames`.
 - **The hidden row.** `frame` reads the final norm of the last position of the slot. Each pass of Omni keeps that
   row. After a restore, a write or a clear, the slot holds no such row, and `frame` refuses until a pass runs.
 - **The history.** The caller gives the codes of the frames of the output so far. The engine reads the last 64 of
