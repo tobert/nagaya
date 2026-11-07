@@ -22,6 +22,8 @@ IDENTITY = {"models": [
     {"model": "gemma-4-26b-a4b", "engine": "nagaya:84828966646e6ce1", "status": "ready",
      "capabilities": ["generate", "thinking"]},
     {"model": "lfm3-omni", "engine": "lfm3-omni", "status": "ready", "capabilities": ["generate"]},
+    {"model": "lfm3", "engine": "lfm3", "status": "ready", "capabilities": ["generate", "thinking", "control_vectors"],
+     "limits": {"control_vector_contexts": 64}},
     {"model": "sdxl-0", "engine": "sdxl-0", "status": "unloaded", "capabilities": ["generate"],
      "media": {"inputs": [], "outputs": ["image/png"], "text_replies": False}},
     {"model": "sdxl-1", "engine": "sdxl-1", "status": "unloaded", "capabilities": ["generate"],
@@ -54,6 +56,7 @@ var document = {getElementById: (id) => els[id] || (els[id] = el(id)), querySele
   querySelector: () => null, addEventListener() {}, createElement: () => el("script"), head: {appendChild() {}}};
 var window = {}, localStorage = {getItem: () => null, setItem() {}}, performance = {now: () => 0};
 function setTimeout(f) { f(); } function setInterval() {} function alert() {}
+function set(id, v) { document.getElementById(id).value = v; }
 function confirm(text) { confirms.push(text); return true; }
 // A stream of server-sent events, read in one piece. QuickJS has no TextDecoder, so the reader gives text.
 class TextDecoder { decode(v) { return v || ""; } }
@@ -90,6 +93,11 @@ function fetch(path, o) {
       load[1] + "` does not fit: device(1) lacks 1024 bytes; the loaded engines in the way are `gemma`, `voice`, and " +
       "a load can name them in `unload`; the pinned engines `embeddinggemma-2` stay loaded"}});
     return reply(202, {engine: load[1], unload: JSON.parse(o.body).unload, load: [load[1]]});
+  }
+  if (path === "/council/v2/control-vectors") {
+    const b = JSON.parse(o.body);
+    return reply(200, {model: b.model, vector: "blake3:" + "c".repeat(64), layers: 24, width: 2048,
+                       contexts: {positive: b.positive.length, negative: b.negative.length}, usage: {prompt: 40}});
   }
   if (path === "/council/v2/embeddings") {
     // The query is [1, 0], and document i is at the angle i, so the cosine falls with i up to pi.
@@ -338,6 +346,65 @@ class Page(unittest.TestCase):
         self.assertRegex(rows[1], r'data-unload="sdxl-0"\s+disabled')
         self.assertRegex(rows[3], r'data-load="embeddinggemma-2" disabled')
         self.assertRegex(rows[3], r'data-unload="embeddinggemma-2"\s+disabled')
+
+    VECTOR = "blake3:" + "c" * 64
+
+    def test_a_vector_request_sends_one_plain_context_for_each_line_and_keeps_the_vector(self):
+        out = self.run_page("""
+            set("cv-model", "lfm3"); set("cv-toward", "the sea\\n\\n  waves  "); set("cv-away", "the desert");
+            set("cv-name", "sea");
+            await document.getElementById("cv-make").onclick();
+            const made = calls.filter((c) => c[1] === "/council/v2/control-vectors");
+            out.body = JSON.parse(made[0][2]);
+            out.keep = JSON.parse(calls.filter((c) => c[1] === "/council/v2/keeps/nagaya-web").pop()[2]).objects;
+            out.saved = vectors.map((v) => [v.name, v.id, v.model]);""")
+        plain = lambda text: {"thinking": False, "messages": [{"role": "user", "content": text}]}
+        self.assertEqual(out["body"], {"model": "lfm3", "positive": [plain("the sea"), plain("waves")],
+                                       "negative": [plain("the desert")]})
+        self.assertIn(self.VECTOR, out["keep"])
+        self.assertEqual(out["saved"], [["sea", self.VECTOR, "lfm3"]])
+
+    def test_a_chat_turn_sends_the_control_item_only_with_a_vector_of_its_model(self):
+        out = self.run_page(f"""
+            vectors = [{{name: "sea", id: "{self.VECTOR}", model: "lfm3", host}}];
+            const body = () => JSON.parse(calls.filter((c) => c[1] === "/council/v2/generations").pop()[2]);
+            set("chat-model", "lfm3");
+            set("chat-vector", "{self.VECTOR}"); set("chat-op", "ablate"); set("chat-strength", "0.5");
+            set("chat-input", "hi"); await document.getElementById("chat-go").onclick();
+            out.steered = body().context.control;
+            set("chat-vector", ""); set("chat-input", "hi"); await document.getElementById("chat-go").onclick();
+            out.plain = body().context.control === undefined;
+            set("chat-model", "lfm3-omni"); set("chat-vector", "{self.VECTOR}");
+            set("chat-input", "hi"); await document.getElementById("chat-go").onclick();
+            out.other = body().context.control === undefined;""")
+        self.assertEqual(out["steered"], [{"vector": self.VECTOR, "op": "ablate", "strength": 0.5}])
+        self.assertTrue(out["plain"])
+        self.assertTrue(out["other"])
+
+    def test_a_try_runs_the_prompt_plain_and_then_with_the_item(self):
+        out = self.run_page(f"""
+            vectors = [{{name: "sea", id: "{self.VECTOR}", model: "lfm3", host}}];
+            set("cv-model", "lfm3"); set("cv-vector", "{self.VECTOR}"); set("cv-op", "add"); set("cv-strength", "4");
+            set("cv-prompt", "Tell me about a place.");
+            await document.getElementById("cv-try").onclick();
+            out.bodies = calls.filter((c) => c[1] === "/council/v2/generations").map((c) => JSON.parse(c[2]).context);""")
+        self.assertEqual(len(out["bodies"]), 2)
+        self.assertNotIn("control", out["bodies"][0])
+        self.assertEqual(out["bodies"][1]["control"], [{"vector": self.VECTOR, "op": "add", "strength": 4}])
+        self.assertEqual(out["bodies"][0]["messages"], out["bodies"][1]["messages"])
+
+    def test_a_vector_request_refuses_an_empty_side_and_a_side_past_the_limit(self):
+        out = self.run_page("""
+            set("cv-model", "lfm3"); set("cv-toward", ""); set("cv-away", "x");
+            await document.getElementById("cv-make").onclick();
+            out.empty = document.getElementById("cv-error").textContent;
+            set("cv-toward", Array.from({length: 65}, (_, i) => `p${i}`).join("\\n"));
+            await document.getElementById("cv-make").onclick();
+            out.many = document.getElementById("cv-error").textContent;
+            out.sent = calls.filter((c) => c[1] === "/council/v2/control-vectors").length;""")
+        self.assertIn("toward", out["empty"])
+        self.assertIn("64", out["many"])
+        self.assertEqual(out["sent"], 0)
 
 
 if __name__ == "__main__":

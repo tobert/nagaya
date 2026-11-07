@@ -95,6 +95,7 @@ audio { width: 100%; }
   <nav>
     <button data-tab="images" class="on">Images</button>
     <button data-tab="chat">Chat</button>
+    <button data-tab="steer">Steering</button>
     <button data-tab="speech">Speech</button>
     <button data-tab="embed">Embeddings</button>
     <button data-tab="engines">Engines</button>
@@ -192,6 +193,12 @@ audio { width: 100%; }
       <label>System message</label>
       <textarea id="chat-system" rows="4" placeholder="optional"></textarea>
       <label class="inline" style="margin-top:12px"><input id="chat-thinking" type="checkbox"> Thinking</label>
+      <label>Steering <span class="note">— a vector of this model, from the Steering tab</span></label>
+      <div class="row">
+        <select id="chat-vector"></select>
+        <select id="chat-op"><option>ablate</option><option>add</option><option>clamp</option></select>
+        <input id="chat-strength" type="number" step="0.1" value="1" title="strength">
+      </div>
       <div class="row">
         <div><label>Max tokens</label><input id="chat-max" type="number" min="1" value="2048"></div>
         <div><label>Temperature</label><input id="chat-temp" type="number" min="0" step="0.1" value="1.0"></div>
@@ -209,6 +216,54 @@ audio { width: 100%; }
           <button class="plain" id="chat-stop" hidden>Stop</button>
         </div>
       </div>
+    </div>
+  </div>
+</section>
+
+<section id="steer">
+  <div class="cols">
+    <div class="card">
+      <label>Model</label>
+      <div class="row"><select id="cv-model"></select><span id="cv-model-state" class="note"></span></div>
+      <label>Toward <span class="note">— one prompt on each line: what the vector adds</span></label>
+      <textarea id="cv-toward" rows="6"></textarea>
+      <input id="cv-toward-file" type="file" accept=".txt,text/plain" title="load the prompts from a text file">
+      <label>Away <span class="note">— one prompt on each line: what the vector takes away</span></label>
+      <textarea id="cv-away" rows="6"></textarea>
+      <input id="cv-away-file" type="file" accept=".txt,text/plain" title="load the prompts from a text file">
+      <label>Name</label>
+      <input id="cv-name" placeholder="a name for the vector">
+      <div class="actions"><button class="go" id="cv-make">Make vector</button><span id="cv-status" class="note"></span></div>
+      <div id="cv-error" class="err"></div>
+      <p class="note">Each prompt is one user message with thinking off. The vector of each layer is the mean residual
+        of Toward less the mean of Away (spec 11.12). For refusals, Toward holds requests that the model refuses, and
+        Away holds requests that it answers. Then ablate the vector. A file loads into its box, and the page shows
+        only the count of its lines.</p>
+      <h2>Saved vectors</h2>
+      <div id="cv-list"></div>
+    </div>
+    <div class="card">
+      <label>Vector</label>
+      <select id="cv-vector"></select>
+      <div class="row">
+        <div><label>Operation</label><select id="cv-op"><option>ablate</option><option>add</option><option>clamp</option></select></div>
+        <div><label>Strength</label><input id="cv-strength" type="number" step="0.1" value="1"></div>
+      </div>
+      <label>Prompt</label>
+      <textarea id="cv-prompt" rows="3">Tell me about a place that you like.</textarea>
+      <div class="row">
+        <div><label>Max tokens</label><input id="cv-max" type="number" min="1" value="256"></div>
+        <div><label>Temperature</label><input id="cv-temp" type="number" min="0" step="0.1" value="0"></div>
+      </div>
+      <div class="actions"><button class="go" id="cv-try">Try plain and steered</button>
+        <span id="cv-try-status" class="note"></span></div>
+      <div id="cv-try-error" class="err"></div>
+      <div class="cols">
+        <div><h2>Plain</h2><div id="cv-plain" class="msg assistant"></div></div>
+        <div><h2>Steered</h2><div id="cv-steered" class="msg assistant"></div></div>
+      </div>
+      <p class="note">Temperature 0 is greedy, so the two replies differ only by the vector. add and ablate at
+        strength 0 give the plain reply; clamp at 0 removes the concept.</p>
     </div>
   </div>
 </section>
@@ -442,7 +497,7 @@ async function refresh() {
   $("chips").innerHTML = models.map((m) =>
     `<span class="chip"><b>${esc(m.model)}</b> <span class="${esc(m.status)}">${esc(m.status)}</span></span>`).join("");
   fillSelect("img-model", "image"); drawImageForm(); fillSelect("chat-model", "text"); fillSelect("sp-model", "speech");
-  fillSelect("em-model", "embed"); fillEmbed();
+  fillSelect("em-model", "embed"); fillEmbed(); fillSelect("cv-model", "steer"); fillVectors();
   $("eng-rows").innerHTML = engines.map((e) => {
     const m = modelOf(e.name), st = m?.status || "absent";
     const loaded = st === "ready" || st === "loading";
@@ -459,7 +514,8 @@ async function refresh() {
 }
 
 function fillSelect(id, kind) {
-  const sel = $(id), keep = sel.value, list = models.filter((m) => kindOf(m) === kind);
+  const sel = $(id), keep = sel.value;
+  const list = models.filter((m) => kind === "steer" ? steers(m.model) : kindOf(m) === kind);
   const html = list.map((m) => `<option value="${esc(m.model)}">${esc(m.model)}</option>`).join("");
   if (sel.dataset.html !== html) {
     sel.innerHTML = html; sel.dataset.html = html;
@@ -471,7 +527,7 @@ function fillSelect(id, kind) {
   state.innerHTML = m ? `<span class="${esc(m.status)}">${esc(m.status)}</span>` +
     (m.status === "ready" ? "" : ` <button class="plain" data-load="${esc(engineOf(m) || "")}">Load</button>`) : "none served";
 }
-for (const id of ["img-model", "chat-model", "sp-model", "em-model"]) {
+for (const id of ["img-model", "chat-model", "sp-model", "em-model", "cv-model"]) {
   $(id).onchange = () => { try { localStorage.setItem(`nagaya-${id}`, $(id).value); } catch (e) {} refresh(); };
 }
 
@@ -645,9 +701,9 @@ $("img-loras").addEventListener("click", (ev) => {
   loras.splice(+drop, 1); saveLoras(); drawLoras(); keepAll();
 });
 
-/** Put a keep on the LoRAs and the gallery, so the store does not evict them. A keep lasts 30 days (spec 6.15). */
+/** Put a keep on the LoRAs, the gallery and the control vectors, so the store does not evict them. A keep lasts 30 days (spec 6.15). */
 async function keepAll() {
-  const objects = [...new Set(loras.concat(gallery).filter((x) => here(x.host)).map((x) => x.id))]
+  const objects = [...new Set(loras.concat(gallery, vectors).filter((x) => here(x.host)).map((x) => x.id))]
     .filter((id) => /^blake3:[0-9a-f]{64}$/.test(id));
   try {
     await call("PUT", "/council/v2/keeps/nagaya-web", {objects, ttl_s: 30 * 86400});
@@ -911,6 +967,8 @@ $("chat-go").onclick = async () => {
   }
   const body = {model, max_tokens: +$("chat-max").value, sample: {temperature: +$("chat-temp").value},
                 context: {thinking: $("chat-thinking").checked && thinks(model), messages}};
+  const control = controlOf(model, $("chat-vector").value, $("chat-op").value, $("chat-strength").value);
+  if (control) body.context.control = control;
   const live = {role: "assistant", content: "", reasoning: "", open: true};
   $("chat-go").disabled = true; $("chat-stop").hidden = false;
   chatAbort = new AbortController();
@@ -935,6 +993,104 @@ $("chat-go").onclick = async () => {
   }
   drawChat();
   $("chat-go").disabled = false; $("chat-stop").hidden = true;
+};
+
+// ---- steering
+let vectors = [];
+try { vectors = JSON.parse(localStorage.getItem("nagaya-vectors") || "[]"); } catch (e) {}
+function saveVectors() { try { localStorage.setItem("nagaya-vectors", JSON.stringify(vectors)); } catch (e) {} }
+/** Whether a served model takes a control list in its contexts (gogi "Contexts", spec 11.12). */
+const steers = (name) => models.some((m) => m.model === name && m.capabilities?.includes("control_vectors"));
+/** The control list of a context: one item when a saved vector of the model is chosen, and else none. */
+function controlOf(model, id, op, strength) {
+  const v = vectors.find((x) => x.id === id && x.model === model && here(x.host));
+  return steers(model) && v ? [{vector: v.id, op, strength: +strength}] : undefined;
+}
+const prompts = (text) => text.split("\n").map((t) => t.trim()).filter(Boolean);
+const plainContext = (text) => ({thinking: false, messages: [{role: "user", content: text}]});
+function fillVectors() {
+  for (const [id, model] of [["cv-vector", $("cv-model").value], ["chat-vector", $("chat-model").value]]) {
+    const list = vectors.filter((v) => v.model === model && here(v.host));
+    const html = `<option value="">${id === "chat-vector" ? "none" : "choose a vector"}</option>` +
+      list.map((v) => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("");
+    const sel = $(id), keep = sel.value;
+    if (sel.dataset.html !== html) { sel.innerHTML = html; sel.dataset.html = html; sel.value = keep; }
+  }
+  $("cv-list").innerHTML = vectors.filter((v) => here(v.host)).map((v, i) =>
+    `<div class="lora"><span class="name" title="${esc(v.id)}">${esc(v.name)} <span class="note">${esc(v.model)}, ${
+      v.toward} toward, ${v.away} away</span></span><span></span>
+     <button class="plain" data-drop-vector="${i}">Forget</button></div>`).join("") || `<p class="note">None yet.</p>`;
+}
+document.addEventListener("click", (ev) => {
+  const drop = ev.target.dataset?.dropVector;
+  if (drop === undefined) return;
+  vectors.splice(+drop, 1); saveVectors(); fillVectors(); keepAll();
+});
+for (const side of ["toward", "away"]) {
+  $(`cv-${side}-file`).onchange = async (ev) => {
+    const file = ev.target.files?.[0];
+    if (!file) return;
+    $(`cv-${side}`).value = await file.text();
+    $("cv-status").textContent = `${file.name}: ${prompts($(`cv-${side}`).value).length} prompts in ${side}`;
+  };
+}
+$("cv-make").onclick = async () => {
+  const model = $("cv-model").value, positive = prompts($("cv-toward").value), negative = prompts($("cv-away").value);
+  const most = models.find((m) => m.model === model)?.limits?.control_vector_contexts;
+  const status = (t) => { $("cv-status").textContent = t; };
+  $("cv-error").textContent = "";
+  if (!model) { $("cv-error").textContent = "the nagaya serves no model with control_vectors"; return; }
+  for (const [side, list] of [["toward", positive], ["away", negative]]) {
+    if (!list.length) { $("cv-error").textContent = `write one prompt or more in ${side}`; return; }
+    if (most && list.length > most) {
+      $("cv-error").textContent = `${side} has ${list.length} prompts, and ${model} takes at most ${most} on each side`;
+      return;
+    }
+  }
+  $("cv-make").disabled = true;
+  try {
+    await ready(model, status);
+    status("making the vector…");
+    const started = performance.now();
+    const r = await call("POST", "/council/v2/control-vectors",
+                         {model, positive: positive.map(plainContext), negative: negative.map(plainContext)});
+    const name = $("cv-name").value.trim() || `vector ${vectors.length + 1}`;
+    vectors = [{name, id: r.vector, model, host, toward: positive.length, away: negative.length}]
+      .concat(vectors.filter((v) => v.id !== r.vector));
+    saveVectors(); fillVectors(); await keepAll();
+    status(`${name}: ${r.layers} layers of ${r.width}, from ${positive.length + negative.length} prompts, ${
+      ((performance.now() - started) / 1000).toFixed(1)} s`);
+  } catch (e) {
+    $("cv-error").textContent = e.message; status("");
+  }
+  $("cv-make").disabled = false;
+};
+$("cv-try").onclick = async () => {
+  const model = $("cv-model").value, text = $("cv-prompt").value.trim();
+  const control = controlOf(model, $("cv-vector").value, $("cv-op").value, $("cv-strength").value);
+  const status = (t) => { $("cv-try-status").textContent = t; };
+  $("cv-try-error").textContent = "";
+  if (!text) { $("cv-try-error").textContent = "write a prompt"; return; }
+  if (!control) { $("cv-try-error").textContent = "choose a saved vector of this model"; return; }
+  $("cv-try").disabled = true;
+  try {
+    await ready(model, status);
+    for (const [id, list] of [["cv-plain", undefined], ["cv-steered", control]]) {
+      const context = plainContext(text);
+      if (list) context.control = list;
+      $(id).textContent = "";
+      status(id === "cv-plain" ? "plain…" : "steered…");
+      const done = await stream({model, max_tokens: +$("cv-max").value, sample: {temperature: +$("cv-temp").value},
+                                 context}, undefined, (name, d) => {
+        if (name === "token" && d.phase === "content") $(id).textContent += d.piece;
+      });
+      if (typeof done.content === "string") $(id).textContent = done.content;
+    }
+    status("");
+  } catch (e) {
+    $("cv-try-error").textContent = e.message; status("");
+  }
+  $("cv-try").disabled = false;
 };
 
 // ---- speech
