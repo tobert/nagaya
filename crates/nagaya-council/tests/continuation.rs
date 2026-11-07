@@ -7,7 +7,7 @@ use nagaya_council::family::{Boundary, FamilyError, Rendering, ReplyStart};
 use serde_json::json;
 
 fn context(thinking: Option<bool>, last: serde_json::Value) -> Context {
-    let mut value = json!({"messages": [{"role": "user", "content": "u"}, last]});
+    let mut value = json!({"thinking": true, "messages": [{"role": "user", "content": "u"}, last]});
     if let Some(thinking) = thinking {
         value["thinking"] = json!(thinking);
     }

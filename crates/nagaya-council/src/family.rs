@@ -297,10 +297,10 @@ impl ReplyStart {
     pub fn of(context: &Context) -> Self {
         match context.open() {
             Some(open) => ReplyStart {
-                thinking: context.thinks() && open.content.is_none(),
+                thinking: context.thinking && open.content.is_none(),
                 open: true,
             },
-            None => ReplyStart::prompt(context.thinks()),
+            None => ReplyStart::prompt(context.thinking),
         }
     }
 }
@@ -368,4 +368,8 @@ pub trait Family: Send + Sync {
 
     /// The number of tokens in the vocabulary. A logit row has this many elements.
     fn vocab_size(&self) -> usize;
+
+    /// True when the model thinks before its reply. Then its served model declares `thinking`, and its contexts take
+    /// `thinking: true` (gogi "Contexts"). A family with no reasoning gives false.
+    fn thinks(&self) -> bool;
 }

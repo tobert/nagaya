@@ -149,7 +149,7 @@ fn send(council: &Arc<Council>, method: &str, path: &str, body: Option<Value>) -
 
 fn generate(council: &Arc<Council>) -> (String, u128) {
     let body = json!({"model": MODEL, "max_tokens": 32, "sample": {"temperature": 0},
-        "context": {"messages": [{"role": "user", "content": "Name three colors of the rainbow."}]}});
+        "context": {"thinking": true, "messages": [{"role": "user", "content": "Name three colors of the rainbow."}]}});
     let start = Instant::now();
     let (status, generation) = send(council, "POST", "/council/v2/generations", Some(body));
     assert_eq!(status, StatusCode::OK, "{generation}");

@@ -226,7 +226,7 @@ fn send(council: &Arc<Council>, method: &str, path: &str, body: Option<Value>) -
 /// A context with the name of `model` in it. The fake engines of two models make the same state from the same tokens,
 /// and the store keeps one recipe for each content id. Thus each model builds its own text.
 fn context(model: &str) -> Value {
-    json!({"messages": [{"role": "user", "content": format!("Delete the build directory, {model}."), "snap": true}]})
+    json!({"thinking": true, "messages": [{"role": "user", "content": format!("Delete the build directory, {model}."), "snap": true}]})
 }
 
 fn generation(model: &str) -> Value {

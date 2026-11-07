@@ -231,7 +231,7 @@ fn a_described_engine_is_a_served_model_that_answers_after_a_load() {
     );
     let generation = json!({
         "model": fake().identity().model,
-        "context": {"messages": [{"role": "user", "content": "hi"}]},
+        "context": {"thinking": true, "messages": [{"role": "user", "content": "hi"}]},
         "max_tokens": 1,
     });
     let (status, body) = send(&council, "/council/v2/generations", generation.clone());

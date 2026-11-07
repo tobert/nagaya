@@ -173,8 +173,9 @@ fn an_omni_reply_never_starts_in_the_reasoning() {
     if absent_any() {
         return;
     }
-    // gogi takes an absent `thinking` as true, and Omni does not reason (spec 11.11).
-    let context: Context = serde_json::from_value(json!({"messages": [{"role": "user", "content": "hi"}]})).unwrap();
+    // The route refuses `thinking: true` for Omni, and the parser of Omni also starts in the content (spec 11.11).
+    let context: Context =
+        serde_json::from_value(json!({"thinking": true, "messages": [{"role": "user", "content": "hi"}]})).unwrap();
     let start = ReplyStart::of(&context);
     assert!(start.thinking);
     for (model, phase) in [("omni", Phase::Content), ("text", Phase::Reasoning)] {

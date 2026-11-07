@@ -29,7 +29,8 @@ const USER: &str = "<|im_start|>user\nWrite the config.<|im_end|>\n";
 
 /// A context of one marked user message and `last`.
 fn context(thinking: Option<bool>, last: Value) -> Context {
-    let mut value = json!({"messages": [{"role": "user", "content": "Write the config.", "snap": true}, last]});
+    let mut value =
+        json!({"thinking": true, "messages": [{"role": "user", "content": "Write the config.", "snap": true}, last]});
     if let Some(thinking) = thinking {
         value["thinking"] = json!(thinking);
     }

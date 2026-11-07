@@ -84,29 +84,35 @@ fn the_boundaries_are_prefixes_of_the_rendering() {
     }
 }
 
-/// Omni does not reason, so it renders a context with thinking on as with thinking off: one head for both (gogi
-/// "thinking"). gogi's suite sends `thinking: true` to each served model.
+/// Omni does not reason: its family does not think, and a context with `thinking: true` is a 400 that names
+/// `thinking` (spec 11.11, gogi "Contexts"). `lfm3` thinks.
 #[test]
-fn omni_renders_thinking_on_as_off_and_takes_an_absent_thinking_as_off() {
+fn omni_refuses_thinking_true_and_lfm3_thinks() {
     if absent_any() {
         return;
     }
+    assert!(!family("omni").thinks());
+    assert!(family("text").thinks());
     for prompt in [false, true] {
-        let on = family("omni")
+        let e = family("omni")
             .render(&sample(true), prompt)
-            .expect("Omni takes thinking: true");
-        let off = family("omni")
+            .expect_err("Omni refuses thinking: true");
+        assert!(
+            matches!(&e, nagaya_council::family::FamilyError::Client(i) if i.param.as_deref() == Some("thinking")),
+            "prompt {prompt}: {e}"
+        );
+        family("omni")
             .render(&sample(false), prompt)
             .expect("Omni takes thinking: false");
-        assert_eq!(on.tokens, off.tokens, "prompt {prompt}");
     }
-    let plain = context(json!({"messages": [{"role": "user", "content": "Name three colors."}]}));
-    let think = |model: &str| -> String {
+    let think = |model: &str, thinking: bool| -> String {
+        let plain =
+            context(json!({"thinking": thinking, "messages": [{"role": "user", "content": "Name three colors."}]}));
         let r = family(model).render(&plain, true).unwrap();
         family(model).detokenize(&r.tokens).unwrap()
     };
-    assert!(think("omni").ends_with("<|im_start|>assistant\n<think></think>"));
-    assert!(think("text").ends_with("<|im_start|>assistant\n<think>"));
+    assert!(think("omni", false).ends_with("<|im_start|>assistant\n<think></think>"));
+    assert!(think("text", true).ends_with("<|im_start|>assistant\n<think>"));
 }
 
 #[test]
@@ -114,8 +120,11 @@ fn the_chat_prompts_of_the_oracle_render_from_a_context() {
     if absent_any() {
         return;
     }
-    let plain = context(json!({"messages": [{"role": "user", "content": "Name three colors."}]}));
     for (model, file) in [("omni", "lfm3-omni.oracle.json"), ("text", "lfm3.oracle.json")] {
+        // The oracle renders Omni with thinking off and `lfm3` with thinking on, the template's own default.
+        let plain = context(
+            json!({"thinking": model == "text", "messages": [{"role": "user", "content": "Name three colors."}]}),
+        );
         let Some(oracle) = golden(file) else {
             return;
         };
@@ -312,7 +321,7 @@ fn a_raw_read_needs_one_token_for_each_letter() {
 
 /// An Omni context with an image and a clip in the user message, and speech in an assistant message.
 fn media_context() -> Context {
-    context(json!({"messages": [
+    context(json!({"thinking": false, "messages": [
         {"role": "system", "content": "Respond with text."},
         {"role": "user", "content": [{"type": "object", "id": CRAB, "mime": "image/png"},
                                      {"type": "text", "text": "and"},
@@ -387,7 +396,7 @@ fn render_without_objects_and_the_text_model_refuse_media() {
             other => panic!("{other:?}"),
         }
     }
-    let gif = context(json!({"messages": [{"role": "user", "content": [
+    let gif = context(json!({"thinking": false, "messages": [{"role": "user", "content": [
         {"type": "object", "id": CRAB, "mime": "image/gif"}]}]}));
     let e = family("omni").media_parts(&gif).expect_err("a gif is not read");
     assert!(e.to_string().contains("image/gif"), "{e}");
@@ -417,7 +426,7 @@ fn the_media_prompts_of_the_oracle_have_the_positions_of_the_reference() {
         };
         let token = fam.tokenizer().token_id(kind.placeholder()).unwrap();
         let count = want.iter().filter(|&&t| t == token).count();
-        let c = context(json!({"messages": [{"role": "user", "content": [
+        let c = context(json!({"thinking": false, "messages": [{"role": "user", "content": [
             {"type": "object", "id": CRAB, "mime": mime}, {"type": "text", "text": question}]}]}));
         let got = fam.render_media(&c, true, &[count]).unwrap();
         assert_eq!(got.rendering.tokens, want, "{name}");

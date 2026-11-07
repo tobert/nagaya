@@ -101,7 +101,7 @@ fn wait_for(process: &Process, engine: &str, state: EngineState) {
 }
 
 fn build() -> Value {
-    json!({"model": "toy", "context": {"messages": [{"role": "user", "content": "hello"}]}})
+    json!({"model": "toy", "context": {"thinking": true, "messages": [{"role": "user", "content": "hello"}]}})
 }
 
 #[test]

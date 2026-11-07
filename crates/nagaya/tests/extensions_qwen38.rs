@@ -361,7 +361,7 @@ fn a_noncharacter_and_an_id_past_the_vocabulary_are_400_errors_with_their_param(
         bad("detokenize", json!({"model": MODEL, "tokens": [1, vocab]})).as_deref(),
         Some("tokens")
     );
-    let context = json!({"messages": [{"role": "user", "content": nonchar}]});
+    let context = json!({"thinking": true, "messages": [{"role": "user", "content": nonchar}]});
     assert_eq!(
         bad("render", json!({"model": MODEL, "context": context})).as_deref(),
         Some("context")

@@ -2463,6 +2463,13 @@ declares `pins` and `classes` for the server. Decided 2026-10-20 (Amy chose the 
 model also declares `continuation` (11.3c). `describe`, `think`, `ride` and `tiers` come in a later milestone. A
 request that needs one of them is a 400 that names it (gogi "Errors").
 
+**Thinking is required.** Each context names `thinking`, `true` or `false`, and the nagaya has no default (gogi
+"Contexts"). A text model declares `thinking` when its family thinks (`Family::thinks`). Then its contexts take
+`thinking: true`. A context with `thinking: true` for another served model is a 400 that names `thinking`, or
+`contexts[i].thinking` in a decision or a raw read. The route checks it before the job, also for an image or a
+speech model. Decided 2026-11-07 (Amy: "If we can avoid even having a default even better, make it a
+required param.").
+
 Pooling and the decision numbers come from `gogi_proto::math`, which all engines share. The council
 `identity.engine` covers two things: the engine identity, and the nagaya code that turns logits into decisions.
 (mk: `libmkengine:<sha>+numbers:<sha>`.)
@@ -2866,7 +2873,7 @@ it.
 
 - Every render uses the reasoning effort `medium`, as mk's council does. The template then writes no effort line.
   Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
-- Thinking follows the context: the render uses `thinks()` of the context. A context renders the same with thinking on
+- Thinking follows the context: the render uses `thinking` of the context. A context renders the same with thinking on
   and off, except for the generation prompt. A past assistant message keeps its reasoning in both. A test compares the
   two renders.
   Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
@@ -4358,10 +4365,10 @@ above leave these choices open, and each one is the simplest choice that the ref
   dict, with the results of jinja2. Both LFM3 templates use them. The other methods of a dict stay refused.
 - **Kept thinking.** The family renders with `preserve_thinking` on. Thus an assistant message keeps its reasoning
   after a later user message, and a held prefix stays a prefix. The Gemma 4 library does the same.
-- **The thinking of Omni.** `lfm3-omni` renders each context with thinking off, because the model does not reason.
-  A context with `thinking: true` thus has the same head as with thinking off, as gogi allows ("thinking"). The reply
-  parser of Omni starts in the content. For `lfm3`, an absent `thinking` is on, as in gogi. Changed by Claude Opus
-  5.5 on 2026-11-06: the first rule gave a 400 for `thinking: true`, and gogi's suite sends it in 18 checks.
+- **The thinking of Omni.** `lfm3-omni` does not reason, so its family does not think, and its served model does not
+  declare `thinking`. A context with `thinking: true` is a 400 that names `thinking`, as the first rule said. The
+  reply parser of Omni starts in the content. `lfm3` declares `thinking`. Changed on 2026-11-07: gogi now requires
+  `thinking`, and its suite sends `thinking: true` only to a model that declares it (Amy, 2026-11-07).
 - **Escapes.** Each of the 140 added tokens of `tokenizer.json` is a marker. This includes the tokens that the file
   does not mark special, such as `<think>` and `<tool_call>`. Client text that spells a marker is content.
 - **Reads.** A read closes the thinking with `<think></think>`, the prompt of the template for thinking off. A read

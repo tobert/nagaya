@@ -481,14 +481,44 @@ impl Council {
             // Each family library renders an open message and checks its seams, so each served model continues a
             // reply (gogi "Continuations"). Riding decisions are not built, so no model declares `ride`.
             embeddings: None,
-            capabilities: vec![
+            capabilities: [
                 Capability::Reads,
                 Capability::Generate,
                 Capability::Continuation,
                 Capability::DryRun,
                 Capability::LeaveOneOut,
-            ],
+            ]
+            .into_iter()
+            .chain(service.family().thinks().then_some(Capability::Thinking))
+            .collect(),
         }
+    }
+
+    /// Refuse `thinking: true` in a context of a served model that does not declare `thinking` (gogi "Contexts"). The
+    /// 400 names `thinking`, or `contexts[i].thinking` in a request with several contexts.
+    fn check_thinking(model: &ServedModel, contexts: &[&gogi_proto::Context], several: bool) -> Result<(), Failure> {
+        for (i, context) in contexts.iter().enumerate() {
+            context.check_thinking(model).map_err(|e| {
+                let invalid = match several {
+                    true => gogi_proto::Invalid::param(format!("contexts[{i}].thinking"), e.message),
+                    false => e,
+                };
+                Failure::from(crate::council::error::ServiceError::Invalid(invalid))
+            })?;
+        }
+        Ok(())
+    }
+
+    /// The route of a request that reads contexts: the served model, after the check of `thinking`.
+    fn route_contexts(
+        &self,
+        name: &str,
+        contexts: &[&gogi_proto::Context],
+        several: bool,
+    ) -> Result<Arc<Served>, Failure> {
+        let served = self.route(name)?;
+        Self::check_thinking(&self.served_model(&served), contexts, several)?;
+        Ok(served)
     }
 
     /// The served model that a request names, by its `model` or an alias. A name that no served model has is a 400

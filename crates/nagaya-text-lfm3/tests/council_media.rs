@@ -84,10 +84,12 @@ fn context(v: Value) -> Context {
 }
 
 fn user(parts: Value) -> Context {
-    context(json!({"messages": [{"role": "system", "content": "Respond with text."},
+    context(
+        json!({"thinking": false, "messages": [{"role": "system", "content": "Respond with text."},
                                 {"role": "user", "content": parts, "snap": true},
                                 {"role": "assistant", "content": "Yes."},
-                                {"role": "user", "content": "more"}]}))
+                                {"role": "user", "content": "more"}]}),
+    )
 }
 
 fn param(e: FamilyError) -> (Option<String>, String) {
@@ -128,7 +130,7 @@ fn render_puts_the_positions_of_each_object() {
     assert_eq!(rows.frames, 149);
     assert_eq!(rows.values.len(), 149 * audio::BINS);
     // A context with no media prepares with no inputs, and its rendering is the render.
-    let text = context(json!({"messages": [{"role": "user", "content": "hello"}]}));
+    let text = context(json!({"thinking": false, "messages": [{"role": "user", "content": "hello"}]}));
     let plain = omni().prepare(&text, true).unwrap();
     assert!(plain.inputs.is_empty());
     assert_eq!(plain.rendering, omni().render(&text, true).unwrap());
@@ -155,7 +157,7 @@ fn the_media_prompts_of_the_oracle_render_from_their_objects() {
             "audio_chirp" => (CHIRP, "audio/wav", "What do you hear?"),
             other => panic!("the oracle has the media prompt {other}"),
         };
-        let c = context(json!({"messages": [{"role": "user", "content": [
+        let c = context(json!({"thinking": false, "messages": [{"role": "user", "content": [
             {"type": "object", "id": id, "mime": mime}, {"type": "text", "text": question}]}]}));
         let got = omni().render(&c, true).unwrap();
         assert_eq!(got.tokens, ids(&prompt["ids"]), "{name}");
@@ -213,7 +215,7 @@ fn a_part_that_the_family_cannot_read_is_a_client_error_that_names_it() {
         }
     }
     // An assistant audio part needs the codes of the speech output, which a later step keeps.
-    let spoken = context(json!({"messages": [
+    let spoken = context(json!({"thinking": false, "messages": [
         {"role": "user", "content": "Say hi."},
         {"role": "assistant", "content": [{"type": "object", "id": CLIP, "mime": "audio/wav"}]},
         {"role": "user", "content": "again"}]}));

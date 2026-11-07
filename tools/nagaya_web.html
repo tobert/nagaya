@@ -405,6 +405,8 @@ async function stream(body, signal, on) {
   return done;
 }
 
+/** Whether a served model thinks: only then does a context to it take `thinking: true` (gogi "Contexts"). */
+const thinks = (name) => models.some((m) => m.model === name && m.capabilities?.includes("thinking"));
 const kindOf = (m) => {
   if (m.capabilities?.includes("embed")) return "embed";
   const out = m.media?.outputs || [];
@@ -837,7 +839,7 @@ $("img-go").onclick = async () => {
     delete options.width; delete options.height;
     if ($("img-strength").value !== "") options.strength = +$("img-strength").value;
   }
-  const body = {model, max_tokens: 1, context: {messages: [{role: "user", content: $("img-prompt").value}]},
+  const body = {model, max_tokens: 1, context: {thinking: false, messages: [{role: "user", content: $("img-prompt").value}]},
                 output: {mime: "image/png", options}, previews: $("img-previews").checked};
   if ($("img-seed").value !== "") body.sample = {seed: +$("img-seed").value};
   $("img-go").disabled = true; $("img-stop").hidden = false;
@@ -908,7 +910,7 @@ $("chat-go").onclick = async () => {
     messages.push(wire);
   }
   const body = {model, max_tokens: +$("chat-max").value, sample: {temperature: +$("chat-temp").value},
-                context: {thinking: $("chat-thinking").checked, messages}};
+                context: {thinking: $("chat-thinking").checked && thinks(model), messages}};
   const live = {role: "assistant", content: "", reasoning: "", open: true};
   $("chat-go").disabled = true; $("chat-stop").hidden = false;
   chatAbort = new AbortController();
@@ -960,7 +962,7 @@ $("sp-go").onclick = async () => {
     }
   }
   messages.push({role: "user", content: text});
-  const body = {model, max_tokens: 1, context: {messages},
+  const body = {model, max_tokens: 1, context: {thinking: false, messages},
                 output: {mime: "audio/wav", options: {language: $("sp-lang").value}}};
   // An empty field leaves the member out, so the nagaya uses the sampler of the checkpoint (spec 11.8).
   const sample = {};

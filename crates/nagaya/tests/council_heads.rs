@@ -73,6 +73,10 @@ impl Family for Counting {
     fn vocab_size(&self) -> usize {
         self.inner.vocab_size()
     }
+
+    fn thinks(&self) -> bool {
+        self.inner.thinks()
+    }
 }
 
 /// A fixture with `family` on a scripted fake engine over its vocabulary, with slots of 32768 tokens.
@@ -318,7 +322,8 @@ fn a_message_that_renders_no_token_gives_no_cut_at_token_zero() {
         return;
     }
     let (f, _) = fixture(qwen());
-    let value = json!({"messages": [{"role": "system", "content": ""}, {"role": "user", "content": "Hi."}]});
+    let value =
+        json!({"thinking": true, "messages": [{"role": "system", "content": ""}, {"role": "user", "content": "Hi."}]});
     f.service.build(&context(&value), false, Default::default()).unwrap();
     let mut next = value.clone();
     next["messages"]
@@ -340,8 +345,7 @@ fn a_marked_message_that_renders_no_token_is_no_boundary() {
         return;
     }
     let (f, _) = fixture(qwen());
-    let value =
-        json!({"messages": [{"role": "system", "content": "", "snap": true}, {"role": "user", "content": "Hi."}]});
+    let value = json!({"thinking": true, "messages": [{"role": "system", "content": "", "snap": true}, {"role": "user", "content": "Hi."}]});
     let built = f.service.build(&context(&value), false, Default::default()).unwrap();
     assert!(built.snapshots.iter().all(|s| s.tokens > 0), "{:?}", built.snapshots);
 }

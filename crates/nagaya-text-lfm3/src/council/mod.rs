@@ -347,11 +347,15 @@ impl Lfm3Family {
         [self.marks.audio_start, self.marks.mixed_start]
     }
 
-    /// Whether a context renders with thinking. Omni does not reason, so it renders each context with thinking off,
-    /// and a context with thinking on has the head of thinking off (spec 11.11, gogi "thinking").
+    /// Whether a context renders with thinking. Omni does not reason: its served model does not declare `thinking`,
+    /// and a context with `thinking: true` is a 400 that names `thinking` (spec 11.11, gogi "Contexts").
     pub(crate) fn thinking(&self, context: &Context) -> Result<bool, FamilyError> {
         match self.kind {
-            Kind::Text => Ok(context.thinks()),
+            Kind::Text => Ok(context.thinking),
+            Kind::Omni if context.thinking => Err(FamilyError::client_param(
+                "thinking",
+                "nothing ran: lfm3-omni does not think; send thinking: false",
+            )),
             Kind::Omni => Ok(false),
         }
     }
@@ -700,5 +704,10 @@ impl Family for Lfm3Family {
 
     fn vocab_size(&self) -> usize {
         self.tokenizer().len()
+    }
+
+    /// `lfm3` thinks before its reply. Omni does not reason.
+    fn thinks(&self) -> bool {
+        self.kind == Kind::Text
     }
 }

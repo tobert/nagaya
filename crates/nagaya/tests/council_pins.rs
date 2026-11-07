@@ -11,7 +11,7 @@ use nagaya::council::{Schedule, ServiceConfig};
 use serde_json::{Value, json};
 
 fn context(text: &str) -> Context {
-    let value: Value = json!({"messages": [{"role": "user", "content": text, "snap": true}]});
+    let value: Value = json!({"thinking": true, "messages": [{"role": "user", "content": text, "snap": true}]});
     serde_json::from_value(value).unwrap()
 }
 

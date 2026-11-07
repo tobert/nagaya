@@ -95,7 +95,7 @@ fn the_end_of_a_context_is_a_boundary_when_no_message_is_marked() {
     if absent() {
         return;
     }
-    let c = context(json!({"messages": [{"role": "user", "content": "hi"}]}));
+    let c = context(json!({"thinking": true, "messages": [{"role": "user", "content": "hi"}]}));
     let r = family().render(&c, false).unwrap();
     assert_eq!(
         r.boundaries,
@@ -151,7 +151,7 @@ fn a_noncharacter_in_a_context_is_a_client_error() {
     if absent() {
         return;
     }
-    let c = context(json!({"messages": [{"role": "user", "content": "a\u{fdd1}"}]}));
+    let c = context(json!({"thinking": true, "messages": [{"role": "user", "content": "a\u{fdd1}"}]}));
     assert!(client(family().render(&c, false).unwrap_err()).contains("U+FDD1 at offset 1"));
 }
 
@@ -345,7 +345,7 @@ fn a_plain_read_after_a_context_goes_on_from_it() {
         return;
     }
     let spec = spec();
-    let c = context(json!({"messages": [{"role": "user", "content": "hi"}]}));
+    let c = context(json!({"thinking": true, "messages": [{"role": "user", "content": "hi"}]}));
     let rendering = family().render(&c, false).unwrap();
     let asks = [asked(1, &[0, 1])];
     let input = DecisionInput {

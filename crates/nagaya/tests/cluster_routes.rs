@@ -22,8 +22,10 @@ fn send(node: &Node, method: &str, path: &str, body: Option<&Value>) -> peer_sup
 
 /// A held snapshot on `node`, built from `text`.
 fn built(node: &Node, text: &str) -> SnapshotId {
-    let context: Context =
-        serde_json::from_value(json!({"messages": [{"role": "user", "content": text, "snap": true}]})).unwrap();
+    let context: Context = serde_json::from_value(
+        json!({"thinking": true, "messages": [{"role": "user", "content": text, "snap": true}]}),
+    )
+    .unwrap();
     let service = &node.fixture.as_ref().unwrap().service;
     service
         .build(&context, false, Schedule::default())

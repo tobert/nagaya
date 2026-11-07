@@ -427,7 +427,9 @@ fn a_build_that_names_the_embedding_model_is_a_400_that_names_model() {
         &council,
         "POST",
         "/council/v2/contexts",
-        Some(json!({"model": MODEL, "context": {"messages": [{"role": "user", "content": "hello"}]}})),
+        Some(
+            json!({"model": MODEL, "context": {"thinking": false, "messages": [{"role": "user", "content": "hello"}]}}),
+        ),
     );
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"]["param"], json!("model"), "{body}");

@@ -134,8 +134,8 @@ impl Family for ToyFamily {
         context.check()?;
         // An open message renders without its end (gogi-toy). Each open field must tokenize on its own. A toy token
         // is a byte, so the check never refuses, but it is the check that every family makes.
-        toy::check_open(&context.tools, context.thinks(), &context.messages)?;
-        let r = toy::render(&context.tools, context.thinks(), &context.messages, generation_prompt);
+        toy::check_open(&context.tools, context.thinking, &context.messages)?;
+        let r = toy::render(&context.tools, context.thinking, &context.messages, generation_prompt);
         let mut tokens = r.tokens;
         self.tweak(Site::Context, &mut tokens);
         let control_text = context
@@ -229,6 +229,11 @@ impl Family for ToyFamily {
 
     fn vocab_size(&self) -> usize {
         toy::VOCAB
+    }
+
+    /// The model thinks before its reply, so its served model declares `thinking`.
+    fn thinks(&self) -> bool {
+        true
     }
 }
 

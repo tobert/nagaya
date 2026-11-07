@@ -90,7 +90,7 @@ def request_body(args):
     body = {
         "model": args.model,
         "max_tokens": 1,
-        "context": {"messages": [{"role": "user", "content": args.prompt}]},
+        "context": {"thinking": False, "messages": [{"role": "user", "content": args.prompt}]},
         "output": {"mime": "image/png", "options": options},
     }
     if args.seed is not None:

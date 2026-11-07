@@ -488,6 +488,10 @@ impl Family for Holding {
     fn vocab_size(&self) -> usize {
         self.toy.vocab_size()
     }
+
+    fn thinks(&self) -> bool {
+        self.toy.thinks()
+    }
 }
 
 /// A fixture with the holding family, and the script of its engine.

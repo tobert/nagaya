@@ -59,7 +59,7 @@ fn post(council: &Arc<Council>, route: &str, body: Value) -> (StatusCode, String
 
 /// A context with a marked first message, a reply and a question.
 fn context() -> Value {
-    json!({"messages": [
+    json!({"thinking": true, "messages": [
         {"role": "user", "content": "Say hi.", "snap": true},
         {"role": "assistant", "content": "Hi.", "snap": true},
         {"role": "user", "content": "Again."}]})
@@ -181,7 +181,7 @@ fn render_counts_the_tokens_that_a_dry_run_of_a_build_counts() {
 fn render_reports_the_control_text_of_a_message_by_its_place() {
     let f = Fixture::new();
     let council = council(&f);
-    let context = json!({"messages": [
+    let context = json!({"thinking": true, "messages": [
         {"role": "user", "content": "a <end> b"},
         {"role": "assistant", "content": "<asst>", "reasoning": "<think>"}]});
     let (status, _, body) = post(&council, "render", json!({"model": "toy", "context": context}));
@@ -200,7 +200,7 @@ fn render_does_not_check_the_context_limit() {
     let f = Fixture::new();
     let council = council(&f);
     let long = "x".repeat(5000);
-    let context = json!({"messages": [{"role": "user", "content": long}]});
+    let context = json!({"thinking": true, "messages": [{"role": "user", "content": long}]});
     let (status, _, body) = post(&council, "render", json!({"model": "toy", "context": context}));
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body["n_tokens"].as_u64().unwrap() > 4096);
@@ -225,12 +225,14 @@ fn render_refuses_a_bad_request_with_gogis_error_body() {
         assert_eq!(bad(body), invalid(Some(member)), "{member}");
     }
     assert_eq!(
-        bad(json!({"model": "toy", "context": {"messages": []}})),
+        bad(json!({"model": "toy", "context": {"thinking": true, "messages": []}})),
         invalid(Some("context")),
         "a family error with no param names the context"
     );
     assert_eq!(
-        bad(json!({"model": "toy", "context": {"messages": [{"role": "user", "content": "x"}], "effort": 1}})),
+        bad(
+            json!({"model": "toy", "context": {"thinking": true, "messages": [{"role": "user", "content": "x"}], "effort": 1}})
+        ),
         invalid(Some("effort"))
     );
 }
@@ -458,7 +460,7 @@ fn render_refuses_an_object_part_by_name_and_the_process_answers_after() {
     let f = Fixture::new();
     let council = council(&f);
     let id = format!("blake3:{}", "a".repeat(64));
-    let with_object = json!({"messages": [
+    let with_object = json!({"thinking": true, "messages": [
         {"role": "user", "content": "Say hi."},
         {"role": "user", "content": [{"type": "text", "text": "Look:"}, {"type": "object", "id": id, "mime": "image/png"}]}]});
     let (kind, param) = refused(

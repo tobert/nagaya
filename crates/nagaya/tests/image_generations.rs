@@ -390,7 +390,7 @@ fn json(bytes: &[u8]) -> Value {
 
 /// A generation of `prompt` with these output options and this `sample`.
 fn request(prompt: &str, options: Value, sample: Value) -> Value {
-    json!({"model": MODEL, "context": {"messages": [{"role": "user", "content": prompt}]}, "max_tokens": 1,
+    json!({"model": MODEL, "context": {"thinking": false, "messages": [{"role": "user", "content": prompt}]}, "max_tokens": 1,
            "sample": sample, "output": {"mime": "image/png", "options": options}})
 }
 
@@ -701,7 +701,7 @@ fn a_prompt_outside_latin_1_writes_its_chunk_as_utf_8() {
 fn a_request_with_no_options_gets_the_defaults_and_a_chosen_seed() {
     let fixture = Fixture::new();
     let council = fixture.council();
-    let body = json!({"model": MODEL, "context": {"messages": [{"role": "user", "content": "a fox"}]},
+    let body = json!({"model": MODEL, "context": {"thinking": false, "messages": [{"role": "user", "content": "a fox"}]},
                       "max_tokens": 1, "output": {"mime": "image/png"}});
     let (status, done) = generate(&council, body);
     assert_eq!(status, StatusCode::OK, "{done}");
@@ -785,9 +785,21 @@ fn a_generation_names_each_member_out_of_range() {
         (StatusCode::BAD_REQUEST, "messages"),
         "a prompt too long"
     );
-    let none =
-        json!({"model": MODEL, "max_tokens": 1, "context": {"messages": [{"role": "user", "content": "a fox"}]}});
+    let none = json!({"model": MODEL, "max_tokens": 1, "context": {"thinking": false, "messages": [{"role": "user", "content": "a fox"}]}});
     assert_eq!(refused(&council, none), (StatusCode::BAD_REQUEST, "output".to_owned()));
+    // An image model does not think, so it does not declare `thinking` (gogi "Contexts").
+    let mut thinking = request("a fox", json!({}), json!({}));
+    thinking["context"]["thinking"] = json!(true);
+    assert_eq!(
+        refused(&council, thinking),
+        (StatusCode::BAD_REQUEST, "thinking".to_owned())
+    );
+    let mut absent = request("a fox", json!({}), json!({}));
+    absent["context"].as_object_mut().unwrap().remove("thinking");
+    assert_eq!(
+        refused(&council, absent),
+        (StatusCode::BAD_REQUEST, "thinking".to_owned())
+    );
     assert!(fixture.take_jobs().is_empty(), "no refused request ran");
 }
 
@@ -799,7 +811,7 @@ fn the_last_user_message_is_the_prompt() {
     let council = fixture.council();
     let body = json!({"model": MODEL, "max_tokens": 1, "output": {"mime": "image/png", "options": {"steps": 1}},
                       "sample": {"temperature": 0, "seed": 3},
-                      "context": {"messages": [{"role": "system", "content": "be nice"},
+                      "context": {"thinking": false, "messages": [{"role": "system", "content": "be nice"},
                                                {"role": "user", "content": "a cat"},
                                                {"role": "assistant", "content": "ok"},
                                                {"role": "user", "content": "a dog"}]}});
@@ -921,7 +933,8 @@ fn an_unloaded_image_model_is_a_503_and_a_build_that_names_it_is_a_400() {
     assert_eq!(body["error"]["status"], json!("unloaded"), "{body}");
     assert!(fixture.take_jobs().is_empty(), "nothing ran");
     // Any route that names the model gives the same 503 first.
-    let build = json!({"model": MODEL, "context": {"messages": [{"role": "user", "content": "hello"}]}});
+    let build =
+        json!({"model": MODEL, "context": {"thinking": false, "messages": [{"role": "user", "content": "hello"}]}});
     let (code, _, _, bytes) = send(&council, "POST", "/council/v2/contexts", Some(build));
     let body = json(&bytes);
     assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE, "{body}");
@@ -951,7 +964,8 @@ fn an_unloaded_image_model_is_a_503_and_a_build_that_names_it_is_a_400() {
     assert_eq!(model["weight_hash"], json!(digest), "{model}");
     let (code, body) = generate(&council, request("a fox", json!({"steps": 1}), json!({})));
     assert_eq!(code, StatusCode::OK, "{body}");
-    let build = json!({"model": MODEL, "context": {"messages": [{"role": "user", "content": "hello"}]}});
+    let build =
+        json!({"model": MODEL, "context": {"thinking": false, "messages": [{"role": "user", "content": "hello"}]}});
     let (code, _, _, bytes) = send(&council, "POST", "/council/v2/contexts", Some(build));
     let body = json(&bytes);
     assert_eq!(code, StatusCode::BAD_REQUEST, "{body}");
@@ -1347,7 +1361,7 @@ fn with_parts(prompt: &str, parts: &[&str], options: Value, sample: Value) -> Va
             .iter()
             .map(|id| json!({"type": "object", "id": id, "mime": "image/png"})),
     );
-    json!({"model": MODEL, "context": {"messages": [{"role": "user", "content": content}]}, "max_tokens": 1,
+    json!({"model": MODEL, "context": {"thinking": false, "messages": [{"role": "user", "content": content}]}, "max_tokens": 1,
            "sample": sample, "output": {"mime": "image/png", "options": options}})
 }
 
@@ -1483,7 +1497,7 @@ fn the_usage_counts_each_object_that_the_request_names() {
     let second = png_of(512, 512, png::ColorType::Rgb, png::BitDepth::Eight, |i| (i % 3) as u8);
     let (a, b) = (put_png(&council, &first), put_png(&council, &second));
     let body = json!({"model": MODEL, "max_tokens": 1, "output": {"mime": "image/png"},
-        "context": {"messages": [
+        "context": {"thinking": false, "messages": [
             {"role": "user", "content": [{"type": "text", "text": "a cat"}, {"type": "object", "id": a, "mime": "image/png"}]},
             {"role": "assistant", "content": [{"type": "object", "id": a, "mime": "image/png"}]},
             {"role": "user", "content": [{"type": "text", "text": "a dog"}, {"type": "object", "id": b, "mime": "image/png"}]}]}});
@@ -1638,7 +1652,7 @@ fn each_error_of_a_job_with_an_image_names_its_part_or_member() {
     }
     // An object of an earlier message that the server does not hold is a 404 that names it.
     let body = json!({"model": MODEL, "max_tokens": 1, "output": {"mime": "image/png"},
-        "context": {"messages": [
+        "context": {"thinking": false, "messages": [
             {"role": "user", "content": [{"type": "text", "text": "a cat"}, {"type": "object", "id": unheld, "mime": "image/png"}]},
             {"role": "assistant", "content": "ok"},
             {"role": "user", "content": "a dog"}]}});

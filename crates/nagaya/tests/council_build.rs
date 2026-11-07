@@ -293,7 +293,11 @@ fn a_context_with_no_message_is_a_client_error() {
     let f = fixture();
     let error = f
         .service
-        .build(&context(&json!({"messages": []})), false, Schedule::default())
+        .build(
+            &context(&json!({"thinking": true, "messages": []})),
+            false,
+            Schedule::default(),
+        )
         .unwrap_err();
     assert!(matches!(error, ServiceError::Invalid(_)), "{error:?}");
 }

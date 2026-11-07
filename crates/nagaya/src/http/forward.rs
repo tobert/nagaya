@@ -531,8 +531,8 @@ mod tests {
     fn the_ids_of_messages_contexts_inputs_and_case_media_are_collected_once() {
         let part = |n| json!({"type": "object", "id": id(n), "mime": "image/png"});
         let body = json!({
-            "context": {"messages": [{"role": "user", "content": [{"type": "text", "text": "x"}, part('a')]}]},
-            "contexts": [{"messages": [{"role": "user", "content": [part('b'), part('a')]},
+            "context": {"thinking": false, "messages": [{"role": "user", "content": [{"type": "text", "text": "x"}, part('a')]}]},
+            "contexts": [{"thinking": false, "messages": [{"role": "user", "content": [part('b'), part('a')]},
                                        {"role": "user", "content": "plain text"}]}],
             "inputs": ["text", [part('c')]],
             "case_media": [{"id": id('d'), "mime": "audio/wav"}, {"id": "blake3:short", "mime": "audio/wav"}],

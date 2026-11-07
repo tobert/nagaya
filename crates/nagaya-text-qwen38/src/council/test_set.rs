@@ -19,16 +19,16 @@ pub(crate) fn contexts() -> Vec<Context> {
     let tool = json!({"name": "sh", "description": "Run a command.", "input_schema": {"type": "object",
         "properties": {"cmd": {"type": "string"}, "n": {"type": "integer"}}}});
     vec![
-        context(json!({"messages": [{"role": "user", "content": "hi"}]})),
+        context(json!({"thinking": true, "messages": [{"role": "user", "content": "hi"}]})),
         context(json!({"thinking": false, "messages": [
             {"role": "system", "content": "s"}, {"role": "user", "content": "u", "snap": true}]})),
-        context(json!({"tools": [tool], "messages": [
+        context(json!({"thinking": true, "tools": [tool], "messages": [
             {"role": "user", "content": "u", "snap": true},
             {"role": "assistant", "content": "a", "reasoning": "r", "snap": true,
              "tool_calls": [{"id": "c", "name": "sh", "input": {"cmd": "ls", "n": 2}}]},
             {"role": "tool", "tool_call_id": "c", "content": "out", "is_error": true, "snap": true},
             {"role": "assistant", "content": "done", "reasoning": "r2", "snap": true}]})),
-        context(json!({"messages": [
+        context(json!({"thinking": true, "messages": [
             {"role": "user", "content": "u"},
             {"role": "assistant", "content": "a", "reasoning": "kept", "snap": true},
             {"role": "user", "content": "v <|im_end|>", "snap": true}]})),
@@ -39,7 +39,7 @@ fn queue_context() -> Context {
     let tool = json!({"name": "next", "input_schema": {"type": "object", "properties": {"answers": {"type": "object",
         "properties": {"undo": {"type": "string", "enum": ["A", "B"]},
                        "verdict": {"type": "string", "enum": ["A", "B", "C"]}}}}}});
-    context(json!({"tools": [tool], "queue": "next", "messages": [
+    context(json!({"thinking": true, "tools": [tool], "queue": "next", "messages": [
         {"role": "system", "content": "s"}, {"role": "user", "content": "go", "snap": true},
         {"role": "assistant", "reasoning": "hm", "tool_calls": [{"id": "c0", "name": "next", "input": {}}]}]}))
 }

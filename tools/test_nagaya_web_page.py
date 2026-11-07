@@ -19,7 +19,9 @@ PAGE = pathlib.Path(__file__).with_name("nagaya_web.html")
 
 # The served models and the profile of b70host, cut to what the page reads.
 IDENTITY = {"models": [
-    {"model": "gemma-4-26b-a4b", "engine": "nagaya:84828966646e6ce1", "status": "ready", "capabilities": ["generate"]},
+    {"model": "gemma-4-26b-a4b", "engine": "nagaya:84828966646e6ce1", "status": "ready",
+     "capabilities": ["generate", "thinking"]},
+    {"model": "lfm3-omni", "engine": "lfm3-omni", "status": "ready", "capabilities": ["generate"]},
     {"model": "sdxl-0", "engine": "sdxl-0", "status": "unloaded", "capabilities": ["generate"],
      "media": {"inputs": [], "outputs": ["image/png"], "text_replies": False}},
     {"model": "sdxl-1", "engine": "sdxl-1", "status": "unloaded", "capabilities": ["generate"],
@@ -280,6 +282,22 @@ class Page(unittest.TestCase):
             out.empty = await speak() ?? null;""")
         self.assertEqual(out["set"], {"seed": 5, "temperature": 0.7, "top_k": 20})
         self.assertIsNone(out["empty"])
+
+    def test_each_context_names_thinking_and_only_a_model_that_thinks_gets_true(self):
+        out = self.run_page(self.FORM + """
+            set("img-model", "pony-0"); drawImageForm();
+            await document.getElementById("img-go").onclick();
+            out.image = body().context.thinking;
+            set("sp-model", "voice"); set("sp-input", "hello"); await document.getElementById("sp-go").onclick();
+            out.speech = body().context.thinking;
+            document.getElementById("chat-thinking").checked = true;
+            for (const model of ["gemma-4-26b-a4b", "lfm3-omni"]) {
+              set("chat-model", model); set("chat-input", "hi");
+              await document.getElementById("chat-go").onclick();
+              out[model] = body().context.thinking;
+            }""")
+        self.assertEqual((out["image"], out["speech"]), (False, False))
+        self.assertEqual((out["gemma-4-26b-a4b"], out["lfm3-omni"]), (True, False))
 
     def test_an_error_names_its_param_when_the_message_does_not(self):
         out = self.run_page("""

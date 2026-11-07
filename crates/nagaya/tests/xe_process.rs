@@ -85,7 +85,7 @@ fn spec() -> Value {
 }
 
 fn context(content: &str) -> Value {
-    json!({"messages": [
+    json!({"thinking": true, "messages": [
         {"role": "system", "content": "You judge shell commands."},
         {"role": "user", "content": content, "snap": true}]})
 }

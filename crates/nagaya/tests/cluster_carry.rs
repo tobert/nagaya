@@ -27,7 +27,7 @@ fn generation(ids: &[&str]) -> Value {
     for id in ids {
         content.push(json!({"type": "object", "id": id, "mime": "image/png"}));
     }
-    json!({"model": "toy-b", "context": {"messages": [{"role": "user", "content": content}]}, "max_tokens": 4})
+    json!({"model": "toy-b", "context": {"thinking": true, "messages": [{"role": "user", "content": content}]}, "max_tokens": 4})
 }
 
 fn post(node: &Node, path: &str, body: &Value) -> peer_support::Reply {
@@ -127,7 +127,7 @@ fn a_forwarded_decision_takes_its_spec_to_the_target_first() {
     let on_b = format!("/council/v2/specs/{spec_id}");
     assert_eq!(b.send("GET", &on_b, &[], &[("nagaya-forwarded", "test")]).status, 404);
     let decision = json!({"model": "toy-b", "case": "ls", "spec_id": spec_id,
-                          "contexts": [{"messages": [{"role": "user", "content": "hi"}]}]});
+                          "contexts": [{"thinking": true, "messages": [{"role": "user", "content": "hi"}]}]});
     let reply = post(&a, "/council/v2/decisions", &decision);
     assert_forwarded(&reply);
     let read = b.send("GET", &on_b, &[], &[("nagaya-forwarded", "test")]);
@@ -140,6 +140,6 @@ fn a_spec_that_the_coordinator_lacks_does_not_stop_the_forward() {
     let (a, _b, _c) = nodes(Has::Both);
     let missing = format!("blake3:{}", "0".repeat(64));
     let decision = json!({"model": "toy-b", "case": "ls", "spec_id": missing,
-                          "contexts": [{"messages": [{"role": "user", "content": "hi"}]}]});
+                          "contexts": [{"thinking": true, "messages": [{"role": "user", "content": "hi"}]}]});
     assert_forwarded(&post(&a, "/council/v2/decisions", &decision));
 }

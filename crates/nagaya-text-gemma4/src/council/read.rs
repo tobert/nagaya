@@ -308,7 +308,7 @@ pub(crate) fn decision_read(
 /// tokens of the rendering that the caller holds.
 fn context_again(family: &Gemma4Family, c: &Context, rendering: &Rendering) -> Result<String, FamilyError> {
     let messages: Vec<Json> = c.messages.iter().map(message_json).collect();
-    let again = family.run(&messages, &tools_json(&c.tools), c.thinks(), false)?;
+    let again = family.run(&messages, &tools_json(&c.tools), c.thinking, false)?;
     if again.tokens[..] != rendering.tokens[..rendering.end] {
         return Err(FamilyError::internal(
             "the rendering of the context is not the rendering that the family gives. The rendering is not the context's.",
@@ -445,7 +445,7 @@ fn queue_plan(
         ("tool_call_id".to_string(), Json::Str(call_id)),
         ("content".to_string(), Json::Str(input.case.to_string())),
     ]));
-    let thinking = c.thinks();
+    let thinking = c.thinking;
     let case = family.run(&messages, &tools_json(&c.tools), thinking, true)?;
     let context = &rendering.tokens[..rendering.end];
     if !case.tokens.starts_with(context) {

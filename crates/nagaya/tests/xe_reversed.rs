@@ -139,7 +139,7 @@ fn run(dir: &Path, devices: &str) -> (String, BTreeMap<String, u64>) {
         .expect("the process serves Gemma 4"),
     );
     let body = json!({"model": MODEL, "max_tokens": 32, "sample": {"temperature": 0},
-        "context": {"messages": [{"role": "user", "content": "Name three colors of the rainbow."}]}});
+        "context": {"thinking": true, "messages": [{"role": "user", "content": "Name three colors of the rainbow."}]}});
     let (status, generation) = send(&council, "POST", "/council/v2/generations", Some(body));
     assert_eq!(status, StatusCode::OK, "{generation}");
     let reply = format!(

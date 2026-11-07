@@ -175,7 +175,7 @@ fn serve(name: &str, dir: &Path) {
 
     for model in &names {
         let started = Instant::now();
-        let body = json!({"model": model, "context": {"messages": [{"role": "user", "content": "Name three colors."}]},
+        let body = json!({"model": model, "context": {"thinking": false, "messages": [{"role": "user", "content": "Name three colors."}]},
             "max_tokens": 48, "sample": {"temperature": 0}});
         let (status, generation) = send(&council, "POST", "/council/v2/generations", Some(body));
         assert_eq!(status, StatusCode::OK, "{model}: {generation}");

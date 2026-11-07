@@ -68,7 +68,7 @@ fn send_with(
 }
 
 fn context() -> Value {
-    json!({"messages": [{"role": "user", "content": "Delete the build directory.", "snap": true}]})
+    json!({"thinking": true, "messages": [{"role": "user", "content": "Delete the build directory.", "snap": true}]})
 }
 
 #[test]
@@ -91,12 +91,45 @@ fn identity_lists_the_served_model_with_its_limits_capabilities_and_status() {
         Capability::DryRun,
         Capability::LeaveOneOut,
         Capability::Continuation,
+        Capability::Thinking,
     ] {
         assert!(model.has(capability), "{capability:?}");
     }
     assert!(!model.has(Capability::Ride), "riding decisions are not built");
     assert!(identity.has(Capability::Pins) && identity.has(Capability::Classes));
     assert!(identity.limits.pin_bytes.is_some());
+}
+
+/// A context names `thinking`: a context without it, or with another value than a boolean, is a 400 that names
+/// `thinking` (gogi "Contexts"). Each route that reads a context refuses it.
+#[test]
+fn a_context_without_thinking_is_a_400_that_names_thinking() {
+    let f = Fixture::new();
+    let council = council(&f);
+    let messages = json!([{"role": "user", "content": "Delete the build directory.", "snap": true}]);
+    for c in [
+        json!({"messages": messages}),
+        json!({"thinking": "yes", "messages": messages}),
+    ] {
+        for (path, body) in [
+            ("/council/v2/contexts", json!({"model": "toy", "context": c})),
+            (
+                "/council/v2/generations",
+                json!({"model": "toy", "context": c, "max_tokens": 4}),
+            ),
+            (
+                "/council/v2/reads",
+                json!({"model": "toy", "contexts": [c], "suffixes": ["x"], "letters": ["A", "B"]}),
+            ),
+        ] {
+            let (status, _, e) = send(&council, "POST", path, Some(body));
+            assert_eq!(
+                (status, &e["error"]["param"]),
+                (StatusCode::BAD_REQUEST, &json!("thinking")),
+                "{path}: {e}"
+            );
+        }
+    }
 }
 
 /// A refused request: method, path, body, status, error type and param.
@@ -728,7 +761,7 @@ fn a_server_answers_unavailable_until_the_council_attaches() {
 fn text_parts_build_the_context_of_their_string() {
     let f = Fixture::new();
     let council = council(&f);
-    let parts = json!({"messages": [{"role": "user", "content": [
+    let parts = json!({"thinking": true, "messages": [{"role": "user", "content": [
         {"type": "text", "text": "Delete the "}, {"type": "text", "text": "build directory."}], "snap": true}]});
     let (status, _, by_parts) = send(
         &council,
@@ -753,7 +786,7 @@ fn every_route_that_reads_a_context_refuses_media_by_name() {
     let f = Fixture::new();
     let council = council(&f);
     let id = format!("blake3:{}", "a".repeat(64));
-    let with_object = json!({"messages": [{"role": "user", "content": [
+    let with_object = json!({"thinking": true, "messages": [{"role": "user", "content": [
         {"type": "text", "text": "Hear this:"}, {"type": "object", "id": id, "mime": "audio/wav"}], "snap": true}]});
     let spec = json!({"name": "media", "instructions": "Judge it.", "input_label": "Case", "questions": [
         {"id": "verdict", "type": "choice", "instructions": "What happens.",

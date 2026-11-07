@@ -14,13 +14,13 @@ use nagaya_ledger::LedgerError;
 use serde_json::{Value, json};
 
 fn context(text: &str) -> Context {
-    let value: Value = json!({"messages": [{"role": "user", "content": text, "snap": true}]});
+    let value: Value = json!({"thinking": true, "messages": [{"role": "user", "content": text, "snap": true}]});
     serde_json::from_value(value).unwrap()
 }
 
 /// A read with two suffixes: the job marks the state after the context, and rewinds to it for the second suffix.
 fn two_suffix_read(text: &str) -> ReadsRequest {
-    let body = json!({"model": "toy", "contexts": [{"messages": [{"role": "user", "content": text, "snap": true}]}],
+    let body = json!({"model": "toy", "contexts": [{"thinking": true, "messages": [{"role": "user", "content": text, "snap": true}]}],
         "suffixes": ["\nAnswer: ", "\nVerdict: "], "letters": ["A", "B", "C"]});
     serde_json::from_value(body).unwrap()
 }

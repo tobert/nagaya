@@ -339,7 +339,7 @@ fn read_reply(stream: TcpStream, head: bool) -> Reply {
 pub fn generation(model: &str, stream: bool) -> Value {
     serde_json::json!({
         "model": model,
-        "context": {"messages": [{"role": "user", "content": "hello there"}]},
+        "context": {"thinking": true, "messages": [{"role": "user", "content": "hello there"}]},
         "max_tokens": 8,
         "sample": {"seed": 7},
         "stream": stream,

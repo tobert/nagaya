@@ -16,7 +16,7 @@ use tower::ServiceExt;
 const PEER_ID: &str = "host-b:1:127.0.0.1:9";
 
 fn generation(model: &str) -> String {
-    json!({"model": model, "context": {"messages": [{"role": "user", "content": "hi"}]}, "max_tokens": 4}).to_string()
+    json!({"model": model, "context": {"thinking": true, "messages": [{"role": "user", "content": "hi"}]}, "max_tokens": 4}).to_string()
 }
 
 #[test]
@@ -365,7 +365,8 @@ fn a_text_route_runs_here_when_a_local_family_has_the_model() {
         &council,
         "POST",
         "/nagaya/v1/render",
-        &json!({"model": "toy-b", "context": {"messages": [{"role": "user", "content": "hi"}]}}).to_string(),
+        &json!({"model": "toy-b", "context": {"thinking": true, "messages": [{"role": "user", "content": "hi"}]}})
+            .to_string(),
         &[],
     );
     assert_eq!(rendered.status, 200);

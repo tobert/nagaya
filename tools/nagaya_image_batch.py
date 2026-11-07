@@ -120,7 +120,7 @@ class Render:
         body = {
             "model": self.model,
             "max_tokens": 1,
-            "context": {"messages": [{"role": "user", "content": self.prompt}]},
+            "context": {"thinking": False, "messages": [{"role": "user", "content": self.prompt}]},
             "output": {"mime": "image/png", "options": options},
             "sample": {"seed": self.seed},
         }

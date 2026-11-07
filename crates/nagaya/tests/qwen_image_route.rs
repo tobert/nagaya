@@ -319,7 +319,7 @@ fn generate_text(council: &Arc<Council>, body: Value) -> (StatusCode, String) {
 
 fn request(prompt: &str, options: Value) -> Value {
     json!({"model": MODEL,
-           "context": {"messages": [{"role": "user", "content": prompt}]},
+           "context": {"thinking": false, "messages": [{"role": "user", "content": prompt}]},
            "max_tokens": 1,
            "output": {"mime": "image/png", "options": options}})
 }

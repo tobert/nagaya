@@ -310,7 +310,7 @@ fn the_process_serves_embeddings_beside_gemma4() {
 
     // Gemma 4 runs beside the pinned embedding engine.
     let started = Instant::now();
-    let body = json!({"model": GEMMA, "context": {"messages": [{"role": "user", "content": "Say hello."}]},
+    let body = json!({"model": GEMMA, "context": {"thinking": true, "messages": [{"role": "user", "content": "Say hello."}]},
         "max_tokens": 16, "sample": {"temperature": 0}});
     let (status, generation) = send(&council, "POST", "/council/v2/generations", Some(body));
     assert_eq!(status, StatusCode::OK, "{generation}");
@@ -443,7 +443,7 @@ fn a_swap_of_gemma4_out_and_back_keeps_the_pinned_embedder() {
     assert_eq!(vector_during, before, "the same bits during the swap");
     assert_eq!(ready_now(), Some(EngineState::Ready));
     assert_eq!(embed(&council, query), before, "the same bits beside gemma again");
-    let body = json!({"model": GEMMA, "context": {"messages": [{"role": "user", "content": "Say hello."}]},
+    let body = json!({"model": GEMMA, "context": {"thinking": true, "messages": [{"role": "user", "content": "Say hello."}]},
         "max_tokens": 16, "sample": {"temperature": 0}});
     let (status, generation) = send(&council, "POST", "/council/v2/generations", Some(body));
     assert_eq!(status, StatusCode::OK, "{generation}");

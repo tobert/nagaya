@@ -276,7 +276,7 @@ impl Family for Gemma4Family {
         context.check()?;
         let tools = messages::tools_json(&context.tools);
         let msgs: Vec<Json> = context.messages.iter().map(messages::message_json).collect();
-        let thinking = context.thinks();
+        let thinking = context.thinking;
         let open = context.open();
         let base = match open {
             Some(open) => {
@@ -385,5 +385,10 @@ impl Family for Gemma4Family {
 
     fn vocab_size(&self) -> usize {
         self.tokenizer().len()
+    }
+
+    /// The model thinks before its reply, so its served model declares `thinking`.
+    fn thinks(&self) -> bool {
+        true
     }
 }

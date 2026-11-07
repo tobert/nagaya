@@ -114,7 +114,7 @@ async fn identity(State(council): Shared) -> Response {
 async fn contexts(State(council): Shared, Extension(id): Id, body: Body) -> Response {
     let result = async {
         let request: ContextBuild = parse(&bytes(body).await?, "context")?;
-        let served = council.route(&request.model)?;
+        let served = council.route_contexts(&request.model, &[&request.context], false)?;
         let dry_run = request.dry_run.unwrap_or(false);
         let schedule = Schedule::of(request.class, request.priority);
         let model = served.service.model().to_owned();
@@ -326,7 +326,8 @@ async fn spec_delete(
 async fn decisions(State(council): Shared, Extension(id): Id, body: Body) -> Response {
     let result = async {
         let request: DecisionRequest = parse(&bytes(body).await?, "decision")?;
-        let served = council.route(&request.model)?;
+        let contexts: Vec<_> = request.contexts.iter().collect();
+        let served = council.route_contexts(&request.model, &contexts, true)?;
         let mut response = council.call(move || served.service.decide(&request)).await?;
         if let Some(signals) = response.signals.as_mut() {
             keep_gogi_places(signals);
@@ -340,7 +341,8 @@ async fn decisions(State(council): Shared, Extension(id): Id, body: Body) -> Res
 async fn reads(State(council): Shared, Extension(id): Id, body: Body) -> Response {
     let result = async {
         let request: ReadsRequest = parse(&bytes(body).await?, "reads")?;
-        let served = council.route(&request.model)?;
+        let contexts: Vec<_> = request.contexts.iter().collect();
+        let served = council.route_contexts(&request.model, &contexts, true)?;
         let mut response = council.call(move || served.service.read(&request)).await?;
         if let Some(signals) = response.signals.as_mut() {
             keep_gogi_places(signals);
@@ -398,15 +400,17 @@ async fn generations(State(council): Shared, Extension(id): Id, body: Body) -> R
             if model.status != gogi_proto::identity::ModelStatus::Ready {
                 return Err(Failure::unavailable(&model));
             }
+            Council::check_thinking(&model, &[&request.context], false)?;
             return Ok(Err(Media::Speech(service, model, request)));
         }
         if let Some((service, model)) = super::image::route(&council, &request.model) {
             if model.status != gogi_proto::identity::ModelStatus::Ready {
                 return Err(Failure::unavailable(&model));
             }
+            Council::check_thinking(&model, &[&request.context], false)?;
             return Ok(Err(Media::Image(service, model, request)));
         }
-        let served = council.route(&request.model)?;
+        let served = council.route_contexts(&request.model, &[&request.context], false)?;
         Ok::<_, Failure>(Ok((request, served)))
     }
     .await;

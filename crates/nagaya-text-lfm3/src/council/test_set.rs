@@ -19,7 +19,7 @@ pub(crate) fn contexts() -> Vec<Context> {
     let tool = json!({"name": "sh", "description": "Run a command.", "input_schema": {"type": "object",
         "properties": {"cmd": {"type": "string"}, "n": {"type": "integer"}}}});
     vec![
-        context(json!({"messages": [{"role": "user", "content": "hi"}]})),
+        context(json!({"thinking": false, "messages": [{"role": "user", "content": "hi"}]})),
         context(json!({"thinking": false, "messages": [{"role": "user", "content": "hi <think></think>"}]})),
         context(json!({"thinking": false, "messages": [
             {"role": "system", "content": "s"}, {"role": "user", "content": "u", "snap": true}]})),

@@ -17,14 +17,14 @@ fn family() -> Box<dyn Family> {
 fn contexts() -> Vec<Value> {
     let tool = json!({"name": "sh", "input_schema": {"type": "object"}});
     vec![
-        json!({"messages": [{"role": "user", "content": "hi"}]}),
+        json!({"thinking": true, "messages": [{"role": "user", "content": "hi"}]}),
         json!({"thinking": false, "messages": [{"role": "system", "content": "s"}, {"role": "user", "content": "u", "snap": true}]}),
-        json!({"tools": [tool], "messages": [
+        json!({"thinking": true, "tools": [tool], "messages": [
             {"role": "user", "content": "u", "snap": true},
             {"role": "assistant", "content": "a", "reasoning": "r", "snap": true, "tool_calls": [{"id": "c", "name": "sh", "input": {"k": 1}}]},
             {"role": "tool", "tool_call_id": "c", "content": "out", "is_error": true, "snap": true},
             {"role": "assistant", "content": "done", "reasoning": "r2", "snap": true}]}),
-        json!({"messages": [
+        json!({"thinking": true, "messages": [
             {"role": "user", "content": "u"},
             {"role": "assistant", "content": "a", "reasoning": "dropped", "snap": true},
             {"role": "user", "content": "v", "snap": true}]}),
@@ -38,7 +38,7 @@ fn a_context_renders_to_the_tokens_and_boundaries_of_gogi_toy() {
         let c = context(v);
         for prompt in [false, true] {
             let got = f.render(&c, prompt).unwrap();
-            let want = toy::render(&c.tools, c.thinks(), &c.messages, prompt);
+            let want = toy::render(&c.tools, c.thinking, &c.messages, prompt);
             assert_eq!(got.tokens, want.tokens, "context {i}, prompt {prompt}");
             assert_eq!(got.end, want.end, "context {i}, prompt {prompt}");
             let cuts: Vec<Boundary> = want
@@ -134,7 +134,7 @@ fn a_boundary_goes_when_a_later_user_message_changes_the_rendering() {
 fn text_that_spells_a_marker_in_a_message_is_a_control_hit_and_stays_content() {
     let f = family();
     let c = context(
-        json!({"messages": [{"role": "user", "content": "a <end> b"}, {"role": "assistant", "content": "<asst>", "reasoning": "<think>"}]}),
+        json!({"thinking": true, "messages": [{"role": "user", "content": "a <end> b"}, {"role": "assistant", "content": "<asst>", "reasoning": "<think>"}]}),
     );
     let r = f.render(&c, false).unwrap();
     let hit = |place: &str, token: &str| ControlHit {
@@ -198,7 +198,9 @@ fn pieces_of_a_token_outside_the_vocabulary_is_a_client_error_that_names_tokens(
 
 #[test]
 fn a_context_with_no_message_is_a_client_error() {
-    let err = family().render(&context(json!({"messages": []})), false).unwrap_err();
+    let err = family()
+        .render(&context(json!({"thinking": true, "messages": []})), false)
+        .unwrap_err();
     assert!(err.is_client(), "{err:?}");
 }
 
@@ -208,7 +210,7 @@ fn queue_tool(undo: &[&str]) -> Value {
 }
 
 fn queue_context(undo: &[&str]) -> Value {
-    json!({"tools": [queue_tool(undo)], "queue": "next", "messages": [
+    json!({"thinking": true, "tools": [queue_tool(undo)], "queue": "next", "messages": [
         {"role": "system", "content": "s"}, {"role": "user", "content": "go", "snap": true},
         {"role": "assistant", "reasoning": "hm", "tool_calls": [{"id": "c0", "name": "next", "input": {}}]}]})
 }

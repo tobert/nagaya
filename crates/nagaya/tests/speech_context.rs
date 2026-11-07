@@ -624,7 +624,7 @@ fn json(bytes: &[u8]) -> Value {
 fn messages(lines: &[Value]) -> Value {
     let mut all = vec![json!({"role": "system", "content": VOICE, "snap": true})];
     all.extend(lines.iter().cloned());
-    json!({"model": MODEL, "context": {"messages": all}, "max_tokens": 1, "sample": {"seed": 5},
+    json!({"model": MODEL, "context": {"thinking": false, "messages": all}, "max_tokens": 1, "sample": {"seed": 5},
            "output": {"mime": "audio/wav"}})
 }
 
@@ -1042,7 +1042,8 @@ fn an_unloaded_speech_model_is_unloaded_and_its_generation_is_a_503() {
     assert!(fixture.take_log().is_empty(), "nothing ran");
     // Any route that names the model gives the same 503 first (gogi "models": a build naming a model that is not
     // ready).
-    let build = json!({"model": MODEL, "context": {"messages": [{"role": "user", "content": "hello"}]}});
+    let build =
+        json!({"model": MODEL, "context": {"thinking": false, "messages": [{"role": "user", "content": "hello"}]}});
     let (code, _, _, bytes) = send(&council, "POST", "/council/v2/contexts", Some(build));
     let body = json(&bytes);
     assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE, "{body}");
