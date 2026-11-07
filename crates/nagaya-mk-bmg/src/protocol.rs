@@ -68,6 +68,9 @@ pub const OP_SCALE: u16 = 82;
 pub const OP_SHORT_CONV: u16 = 90;
 pub const OP_HEAD_GATE: u16 = 91;
 
+// The ops of the audio encoder of LFM3-Omni-2B in the LFM3 binary (`kernels/lfm3_audio_ops.cl`): opcodes 110 to 119.
+pub const OP_SUBSAMPLE: u16 = 110;
+
 pub const FLAG_ACCUMULATE: u16 = 1 << 0;
 pub const FLAG_SOFTCAP_30: u16 = 1 << 2;
 pub const FLAG_ROPE_GLOBAL: u16 = 1 << 3;

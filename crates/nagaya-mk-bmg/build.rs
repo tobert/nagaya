@@ -12,6 +12,7 @@ fn main() {
     println!("cargo:rerun-if-changed=kernels/sdxl_ops.cl");
     println!("cargo:rerun-if-changed=kernels/embeddinggemma2_ops.cl");
     println!("cargo:rerun-if-changed=kernels/lfm3_ops.cl");
+    println!("cargo:rerun-if-changed=kernels/lfm3_audio_ops.cl");
     if std::env::var_os("CARGO_FEATURE_XE").is_none() {
         return;
     }

@@ -205,3 +205,52 @@ fn the_key_segments_need_no_slot_size_and_fit_the_scratch_bound() {
     // The case of the defect of 2026-11-06: 64 tokens after 256 keys, 16 heads of 256 values.
     assert_eq!(tasks::attn_pv_segments(16, 64, 256, 320), 8);
 }
+
+/// A call of `tasks::subsample` over 9 time rows of 128 mel rows, with `cin` channels in and 256 out.
+fn subsample(cin: u32, silu: bool) -> MkTaskDescriptor {
+    tasks::subsample(0x10_0000, 0x20_0000, 0x30_0000, 0x40_0000, 9, 128, cin, 256, silu)
+}
+
+/// `OP_SUBSAMPLE` reads the plane from `a`, the taps from `b`, the bias from `x`, and silu from `layer`.
+#[test]
+fn subsample_puts_its_fields_where_the_kernel_reads_them() {
+    let task = subsample(1, true);
+    assert_eq!(task.opcode, nagaya_mk_bmg::protocol::OP_SUBSAMPLE);
+    assert_eq!(
+        (
+            task.a, task.b, task.x, task.c, task.n, task.k, task.p0, task.m, task.layer
+        ),
+        (0x10_0000, 0x20_0000, 0x30_0000, 0x40_0000, 9, 128, 1, 256, 1)
+    );
+    let depthwise = subsample(256, false);
+    assert_eq!((depthwise.p0, depthwise.layer), (256, 0));
+}
+
+/// The output plane is half of each side, rounded up: `ceil(n / 2)` by `ceil(k / 2)` by `m`.
+#[test]
+fn subsample_gives_half_of_each_side_rounded_up() {
+    assert_eq!(tasks::subsample_out(149, 128), (75, 64));
+    assert_eq!(tasks::subsample_out(75, 64), (38, 32));
+    assert_eq!(tasks::subsample_out(38, 32), (19, 16));
+    assert_eq!(tasks::subsample_out(1, 1), (1, 1));
+}
+
+/// A channel in reads channel 0, and a depthwise convolution reads its own channel. Other counts have no meaning.
+#[test]
+#[should_panic(expected = "OP_SUBSAMPLE reads 1 channel or 256 channels, and it got 16")]
+fn subsample_refuses_another_count_of_channels_in() {
+    subsample(16, false);
+}
+
+/// The kernel reads the input while it writes the output, so they must not overlap.
+#[test]
+#[should_panic(expected = "OP_SUBSAMPLE: the output overlaps the input")]
+fn subsample_refuses_an_output_over_its_input() {
+    tasks::subsample(0x10_0000, 0x20_0000, 0x30_0000, 0x10_0100, 9, 128, 1, 256, false);
+}
+
+#[test]
+#[should_panic(expected = "OP_SUBSAMPLE takes at least one time row and one mel row")]
+fn subsample_refuses_an_empty_plane() {
+    tasks::subsample(0x10_0000, 0x20_0000, 0x30_0000, 0x40_0000, 0, 128, 1, 256, false);
+}

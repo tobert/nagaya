@@ -16,6 +16,7 @@ use nagaya_abi::{
 use nagaya_mk_bmg::protocol::{MAX_TASKS_PER_CARD, NUM_SCOREBOARD_EVENTS};
 use nagaya_mk_bmg::safetensors::MappedSafeTensors;
 
+use crate::audio::{self, Encoder, MAX_CLIP_POSITIONS};
 use crate::model::{bufs_bytes, scratch_floats};
 use crate::weights::{Count, STAGING_BYTES, load};
 
@@ -125,6 +126,8 @@ pub struct Backbone {
     pub eps: f32,
     pub full_rope: Rope,
     pub sliding_rope: Rope,
+    /// The audio encoder of Omni, which the engine loads beside the backbone. The text model has none.
+    pub audio: Option<Encoder>,
 }
 
 /// The theta that the LFM3 binary uses for the full layers (`FLAG_ROPE_FULL`) and for the sliding layers.
@@ -299,6 +302,7 @@ impl Backbone {
             eps: eps as f32,
             full_rope: rope("full_attention", FULL_THETA)?,
             sliding_rope: rope("sliding_attention", SLIDING_THETA)?,
+            audio: Encoder::parse(text)?,
         })
     }
 
@@ -499,7 +503,9 @@ pub fn pinned_bytes() -> u64 {
 /// The limits for a config, with the device bytes of the weights.
 pub fn limits(b: &Backbone, config: &Config, weights: u64) -> Limits {
     let kv = config.slots as u64 * slot_bytes(b, SLOT_TOKENS);
-    let work = bufs_bytes(b, config.max_block, SLOT_TOKENS) as u64 + ring_device_bytes(SLOT_TOKENS);
+    let work = bufs_bytes(b, config.max_block, SLOT_TOKENS) as u64
+        + ring_device_bytes(SLOT_TOKENS)
+        + audio_bufs_bytes(b) as u64;
     Limits {
         // A drop frees the weights, the slots, the buffers and the card's context.
         capabilities: vec![
@@ -543,11 +549,21 @@ pub fn limits(b: &Backbone, config: &Config, weights: u64) -> Limits {
     }
 }
 
-/// The device bytes of the backbone in the folder `dir`, from `config.json` and the tensor headers.
+/// The device bytes of the buffers of the audio encoder for the longest clip, or 0 for a model with no encoder.
+pub fn audio_bufs_bytes(b: &Backbone) -> usize {
+    b.audio.as_ref().map_or(0, |e| audio::bufs_bytes(e, MAX_CLIP_POSITIONS))
+}
+
+/// The device bytes of the weights that the engine loads from the folder `dir`: the backbone, and the audio encoder
+/// of Omni. They come from `config.json` and the tensor headers.
 pub fn weights_bytes(b: &Backbone, dir: &Path) -> Result<u64, String> {
     let map = MappedSafeTensors::open(&dir.join(WEIGHTS_FILE))?;
+    let view = map.view()?;
     let mut count = Count::default();
-    load(&mut count, b, &map.view()?)?;
+    load(&mut count, b, &view)?;
+    if let Some(e) = &b.audio {
+        audio::load(&mut count, e, &view)?;
+    }
     Ok(count.bytes as u64)
 }
 

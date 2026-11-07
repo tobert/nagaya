@@ -882,6 +882,48 @@ pub fn partial_rotation(mut task: MkTaskDescriptor, pairs: u32) -> MkTaskDescrip
     task
 }
 
+// The ops of the audio encoder of LFM3-Omni-2B (`kernels/lfm3_audio_ops.cl`).
+
+/// The time rows and the mel rows of the output of [`subsample`] for an input of `n` by `k`: half of each, rounded up.
+pub fn subsample_out(n: u32, k: u32) -> (u32, u32) {
+    (n.div_ceil(2), k.div_ceil(2))
+}
+
+/// One 3 x 3 convolution with a stride of 2 and a pad of 1 of the audio downsampler, channel-last. `x` holds
+/// `[n][k][cin]`: `n` time rows of `k` mel rows. `w` holds the BF16 taps `[m][3][3]` (mel, then time), and `bias` the
+/// BF16 bias `[m]`. With `cin` 1, each of the `m` channels reads channel 0; with `cin` equal to `m`, the convolution
+/// is depthwise. `y` gets `[ceil(n / 2)][ceil(k / 2)][m]`, with silu when `silu` is true.
+#[allow(clippy::too_many_arguments)]
+pub fn subsample(x: u64, w: u64, bias: u64, y: u64, n: u32, k: u32, cin: u32, m: u32, silu: bool) -> MkTaskDescriptor {
+    assert!(
+        n >= 1 && k >= 1,
+        "OP_SUBSAMPLE takes at least one time row and one mel row, and it got {n} by {k}"
+    );
+    assert!(
+        m >= 1 && (cin == 1 || cin == m),
+        "OP_SUBSAMPLE reads 1 channel or {m} channels, and it got {cin}"
+    );
+    let (to, ho) = subsample_out(n, k);
+    let input = x..x + 4 * (n as u64 * k as u64 * cin as u64);
+    let output = y..y + 4 * (to as u64 * ho as u64 * m as u64);
+    assert!(
+        output.end <= input.start || input.end <= output.start,
+        "OP_SUBSAMPLE: the output overlaps the input"
+    );
+    MkTaskDescriptor {
+        a: x,
+        b: w,
+        c: y,
+        x: bias,
+        n,
+        k,
+        m,
+        p0: cin,
+        layer: silu as u32,
+        ..task(OP_SUBSAMPLE)
+    }
+}
+
 /// The sigmoid gate of each head: `y[t, h, j] = a[t, h, j] * sigmoid(gates[t * stride + h])` for `n` positions of
 /// `heads` heads of `d` values. `a` may be `y`.
 pub fn head_gate(a: u64, gates: u64, y: u64, n: u32, heads: u32, d: u32, stride: u32) -> MkTaskDescriptor {

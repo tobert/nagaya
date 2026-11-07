@@ -48,14 +48,36 @@ fn omni_reads_its_text_config_and_has_the_same_backbone() {
     assert_eq!(omni.model, Model::Omni);
     assert_eq!(omni.model.prefix(), "model.language_model.");
     assert_eq!(omni.model.name(), "lfm3-omni");
+    assert!(omni.audio.is_some() && backbone().audio.is_none());
     assert_eq!(
         Backbone {
             model: Model::Text,
+            audio: None,
             ..omni
         },
         backbone()
     );
     assert_eq!(backbone().model.name(), "lfm3");
+}
+
+/// The engine of Omni holds the buffers of the audio encoder for the longest clip, in the term `work`.
+#[test]
+fn the_work_of_omni_holds_the_buffers_of_the_audio_encoder() {
+    let omni = Backbone::parse(OMNI_CONFIG).unwrap();
+    let c = config(1);
+    let work = |b: &Backbone| {
+        let l = limits(b, &c, 1);
+        l.memory.mandatory.iter().find(|t| t.name == "work").unwrap().bytes
+    };
+    let e = omni.audio.clone().unwrap();
+    let without = Backbone {
+        audio: None,
+        ..omni.clone()
+    };
+    assert_eq!(
+        work(&omni) - work(&without),
+        crate::audio::bufs_bytes(&e, crate::audio::MAX_CLIP_POSITIONS) as u64
+    );
 }
 
 #[test]

@@ -11,6 +11,10 @@ use nagaya_mk_lfm3_bmg::weights::{self, Count};
 /// steps of 64 bytes, which every tensor of the backbone fills.
 const WEIGHTS_BYTES: u64 = 1_728_801_536 * 2;
 
+/// The device bytes of the audio encoder and its projector of Omni: 115,278,144 BF16 parameters (the checkpoint
+/// header, read on 2026-11-06), and 2 bytes more for each of the 2 × 768 values of the LayerNorm, which is F32.
+const AUDIO_BYTES: u64 = 115_278_144 * 2 + 2 * 768 * 2;
+
 #[test]
 fn both_checkpoints_hold_every_tensor_of_the_backbone_and_plan_alike() {
     let mut backbones = Vec::new();
@@ -21,7 +25,12 @@ fn both_checkpoints_hold_every_tensor_of_the_backbone_and_plan_alike() {
         let dir = common::model_dir(which);
         let b = Backbone::read(&dir).unwrap();
         assert_eq!(b.model, if which == Which::Text { Model::Text } else { Model::Omni });
-        assert_eq!(spec::weights_bytes(&b, &dir).unwrap(), WEIGHTS_BYTES, "{which:?}");
+        // Omni also loads its audio encoder (engine-abi "The audio encoder of LFM3").
+        let want = match which {
+            Which::Text => WEIGHTS_BYTES,
+            Which::Omni => WEIGHTS_BYTES + AUDIO_BYTES,
+        };
+        assert_eq!(spec::weights_bytes(&b, &dir).unwrap(), want, "{which:?}");
         let config = Config {
             model_dir: dir,
             slots: 2,
@@ -30,13 +39,14 @@ fn both_checkpoints_hold_every_tensor_of_the_backbone_and_plan_alike() {
         let limits = spec::plan(&config).unwrap();
         limits.check().unwrap();
         let weights = limits.memory.mandatory.iter().find(|t| t.name == "weights").unwrap();
-        assert_eq!(weights.bytes, WEIGHTS_BYTES);
+        assert_eq!(weights.bytes, want);
         backbones.push(b);
     }
     if let [text, omni] = &backbones[..] {
         assert_eq!(
             &Backbone {
                 model: Model::Text,
+                audio: None,
                 ..omni.clone()
             },
             text

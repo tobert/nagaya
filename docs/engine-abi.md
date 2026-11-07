@@ -1294,6 +1294,23 @@ choice that the gates can check. Amy decides.
   device size that is not the sum of the terms. `max_quantum_ms` is 2,000, a budget that a card test measures.
 - **Not in step 6.** The engine has no arena, no seal and no stages. A restart uploads the weights again.
 
+### The audio encoder of LFM3
+
+Proposed by Claude Opus 5.5, 2026-11-06, for milestone 24 step 7. The rules above leave these choices open, and each
+is the simplest choice that the audio gate can check. Amy decides.
+
+- **The entry.** The module `audio` of `nagaya-mk-lfm3-bmg` gives the tasks of one clip. The tasks read the mel rows
+  of the clip on the card. They write `ceil(frames / 8)` rows of 2,048 values to an address that the caller names.
+  The tasks go into the ring of the pass that reads the span, before the layers.
+- **The longest clip.** A clip has at most 4,096 frames, which is 512 positions or about 41 s. A longer clip is a
+  400 that names the part. Reason: a span of 512 positions fits the largest feed block (`max_block`).
+- **The memory.** The engine of Omni loads the weights of the encoder and the projector at the open. It holds one
+  set of buffers for the longest clip. The terms `weights` and `work` hold their bytes.
+- **One clip at a time.** The encoder holds no state between clips, as in the reference. Each conv layer starts
+  from a state of zeros, and the attention reads only the keys of its clip, at positions from 0.
+- **The plane.** The tasks keep the plane of the downsampler with the channels last. The open puts the columns of
+  `lin_out` in that order once. Thus each 1 x 1 convolution is a plain matmul.
+
 ## Not covered yet
 
 - Streams. They need a period, a deadline and a late policy, in `limits()` or per job. A pass blocks, so the

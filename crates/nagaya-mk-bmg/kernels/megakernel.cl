@@ -1418,6 +1418,7 @@ __kernel void mk_persistent_interpreter(
 #endif
 #ifdef MK_LFM3
 #include "lfm3_ops.cl"
+#include "lfm3_audio_ops.cl"
 #endif
         else if (op == OP_MEAN_POOL_L2) {
             // c[0..k) = L2-normalized mean of the first k columns of n rows with stride m.

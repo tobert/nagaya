@@ -6,6 +6,8 @@
 //! `NAGAYA_REQUIRE_MODELS=1` makes an absent file fail the test. Only absence skips.
 #![allow(dead_code)]
 
+pub mod cpu;
+
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -162,7 +164,14 @@ pub fn golden_tensors(name: &str) -> HashMap<String, Tensor> {
                 .iter()
                 .map(|b| i64::from_le_bytes(*b) as f64)
                 .collect(),
-            other => panic!("tensor {name} has dtype {other}; the oracle holds F32 and I64"),
+            // The PCM samples of the audio oracle.
+            "I16" => raw
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|b| i16::from_le_bytes(*b) as f64)
+                .collect(),
+            other => panic!("tensor {name} has dtype {other}; the oracle holds F32, I64 and I16"),
         };
         out.insert(name.clone(), Tensor { shape, values });
     }

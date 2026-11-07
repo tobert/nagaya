@@ -15,6 +15,7 @@ use nagaya_mk_bmg::safetensors::{MappedSafeTensors, SafeTensorsView};
 use nagaya_mk_bmg::{IGC_REVISION, KERNEL_ENTRY, LFM3_KERNEL, OCLOC_VERSION};
 use nagaya_text_lfm3::{Kind as FamilyKind, Lfm3Family};
 
+use crate::audio::{self, AudioBufs, AudioWeights, Clip, MAX_CLIP_POSITIONS, Stage};
 use crate::device::{Device, OnCard};
 use crate::model::{self, Bufs, Run, SlotMemory, bufs_bytes, scratch_floats};
 use crate::spec::{self, Backbone, Block, Config, FAMILY, Held, LayerKind, Model, Part, RING_ROWS, SLOT_TOKENS};
@@ -36,6 +37,8 @@ pub struct Lfm3Engine {
     bufs: Bufs,
     slots: Vec<SlotMemory>,
     held: Held,
+    /// The weights and the buffers of the audio encoder of Omni (engine-abi "The audio encoder of LFM3").
+    audio: Option<(AudioWeights, AudioBufs)>,
 }
 
 // The engine holds USM pointers of its card, and one thread at a time calls it.
@@ -185,6 +188,9 @@ impl Lfm3Engine {
         weights::check(&b, &view)?;
         let mut count = Count::default();
         weights::load(&mut count, &b, &view)?;
+        if let Some(e) = &b.audio {
+            audio::load(&mut count, e, &view)?;
+        }
         let checkpoint_digest = checkpoint_digest(&config_text, &view)?;
 
         // Only the engine's card gets a context, so the open does not stall the work of another card.
@@ -200,6 +206,17 @@ impl Lfm3Engine {
             &b,
             &view,
         )?;
+        let audio_weights = match &b.audio {
+            Some(e) => Some(audio::load(
+                &mut OnCard {
+                    device: &mut device,
+                    card,
+                },
+                e,
+                &view,
+            )?),
+            None => None,
+        };
         if device.bytes != count.bytes {
             return Err(format!(
                 "the weights take {} device bytes, and the plan counted {}",
@@ -214,10 +231,19 @@ impl Lfm3Engine {
             .iter()
             .map(|seq| SlotMemory::new(&mut |bytes| device.zeros(card, bytes), &b, *seq))
             .collect();
+        let audio = match (&b.audio, audio_weights) {
+            (Some(e), Some(w)) => Some((
+                w,
+                AudioBufs::new(&mut |bytes| device.zeros(card, bytes), e, MAX_CLIP_POSITIONS),
+            )),
+            (None, None) => None,
+            _ => unreachable!("the audio weights load when the backbone has an audio encoder"),
+        };
         let limits = spec::limits(&b, &config, weights_bytes);
         limits.check()?;
         let kv = config.slots as u64 * spec::slot_bytes(&b, SLOT_TOKENS);
-        let planned = weights_bytes + kv + bufs_bytes(&b, config.max_block, max_seq) as u64;
+        let planned =
+            weights_bytes + kv + bufs_bytes(&b, config.max_block, max_seq) as u64 + spec::audio_bufs_bytes(&b) as u64;
         if device.bytes as u64 != planned {
             return Err(format!(
                 "the engine took {} device bytes, and its limits declare {planned}",
@@ -273,6 +299,7 @@ impl Lfm3Engine {
             bufs,
             slots,
             held,
+            audio,
         })
     }
 
@@ -349,6 +376,48 @@ impl Lfm3Engine {
         self.held.clear(slot);
         self.zero_conv(slot);
         Ok(out)
+    }
+
+    /// The rows of the audio encoder of one clip after `upto`, from its mel rows `[frames][mel]`: `[positions][hidden]`
+    /// of the encoder, or `[positions][out]` after the projector. The probe of the audio oracle uses it. It writes the
+    /// rows of the projector to the residual buffer of the pass, as a span does, and it keeps the slots.
+    pub fn audio_rows(&mut self, mel: &[f32], upto: Stage) -> Result<Vec<f32>, String> {
+        let Some((w, bufs)) = &self.audio else {
+            return Err(format!("{} has no audio encoder", self.b.model.name()));
+        };
+        let Some(e) = &self.b.audio else {
+            unreachable!("the engine holds audio buffers only for a backbone with an audio encoder")
+        };
+        if mel.is_empty() || !mel.len().is_multiple_of(e.mel) {
+            return Err(format!(
+                "a clip has rows of {} mel values, and the probe got {} values",
+                e.mel,
+                mel.len()
+            ));
+        }
+        let frames = mel.len() / e.mel;
+        let positions = audio::positions(frames);
+        if positions > bufs.positions || positions > self.config.max_block {
+            return Err(format!(
+                "a clip of {frames} frames takes {positions} positions, and the probe takes at most {}",
+                bufs.positions.min(self.config.max_block)
+            ));
+        }
+        let clip = Clip {
+            mel: bufs.mel,
+            frames,
+            out: self.bufs.x,
+        };
+        let tasks = audio::encode(e, w, bufs, clip, upto);
+        let (at, width) = match upto {
+            Stage::Downsample => (bufs.x, e.hidden),
+            Stage::Encoder => (bufs.h, e.hidden),
+            Stage::Rows => (clip.out, e.out),
+        };
+        let bytes: Vec<u8> = mel.iter().flat_map(|v| v.to_le_bytes()).collect();
+        self.device.write(self.card(), bufs.mel, &bytes);
+        self.run(&tasks);
+        Ok(self.read_f32(at, positions * width))
     }
 
     fn fail(&mut self, error: PassError) -> PassError {
