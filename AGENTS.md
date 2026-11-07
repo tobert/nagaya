@@ -622,7 +622,7 @@ Milestone 24, LFM3 Omni, is deployed on b70host, and its video step waits. Miles
     - **Route:** the route that makes a vector is council v2. gogi writes its contract first, with suite checks.
     - **Prompt sets:** public sets of refused requests and answered requests (Arditi et al., 2024), and the
       storytelling prompts that LFM3 refused for Amy. Her prompts stay on b70host, and only counts
-      go into git.
+      go into git. The public sets come first (Amy: "so we can work without seeing that data").
     - **Models:** `LFM3-1.7B` first. Omni gets its own vector after the gates of the text model are green.
     - **Strength:** Amy sets each strength by hand through the context. A search for strengths, as Heretic does,
       comes later.

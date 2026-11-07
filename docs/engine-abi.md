@@ -188,6 +188,7 @@ io           io_submit(IO requests [(file, offset, len, dest)], class) -> ticket
 telemetry    op_times(), dispatches(), ...; pass(…, trace_context) so engine spans nest under the quantum span
 train        train_pass(segments) -> status, ms, loss     a forward, a backward and an optimizer step
 close        close()                     frees the engine in the process
+control      control_write(index, bytes) / segment.control   control vectors in a table on the device (below)
 ```
 
 An engine without `close` stays open until the process exits. The nagaya changes such an engine only through a
@@ -1381,6 +1382,35 @@ notes above leave each one open, and each is the simplest choice that the gates 
   buffers of the tower are in `work`, sized for the largest image of 8,192 patches. `lfm3` has neither.
 - **The output.** The rows of the encoder stay on the card. The pass copies them over the embedding rows of the
   placeholders, before the first layer of the backbone.
+
+## Control vectors
+
+Proposed by Claude Opus 5.5, 2026-11-07, for milestone 25 (spec 11.12). Amy decided the operations, the context
+field and the extraction on the card. This section holds the engine's part of those rules.
+
+```
+limits().control: {tables, layers, width}?   tables vectors fit on the device at once
+control_write(index, bytes) -> ok | why      writes one vector into table entry index; never allocates
+segment.control: [{index, op: add | ablate | clamp, strength: f32}]   in order, for every layer the vector holds
+taps: residual                               the residual after each layer at each logit row (spec 13.1)
+```
+
+- **The table.** `open` allocates the table as a mandatory term with lifetime `engine`. Thus `pass` and
+  `control_write` never allocate. The worker keeps the content id of the vector in each entry, and it writes an
+  entry again when a job needs another vector.
+- **The bytes.** `control_write` takes `layers` times `width` `f32` values, little-endian, in layer order. A layer
+  that the vector does not hold is all zeros, and the op skips it. Other sizes get "why", and nothing changes.
+- **The op.** After layer `l`, before layer `l + 1` reads it, each item changes each residual row `h`. Let `v` be
+  the vector of layer `l`, and `α` the strength. `add` gives `h + α·v`. `ablate` gives `h − α·(h·v̂)·v̂`, and
+  `clamp` gives `h + (α − h·v̂)·v̂`.
+- **Bits.** The dot product and the norm of `v` sum in `f32` in a fixed order (D3). An `add` or an `ablate` with
+  `α` 0 must give the bits of no item, so the op skips such an item. A `clamp` always changes `h`: with `α` 0, it
+  removes the concept, as an `ablate` with `α` 1 does.
+- **Segments.** The segments of one pass can name other lists. The worker never puts two lists on one state: the
+  list is part of the root recipe of the state (spec 6.2).
+
+Reason: a table that `open` sizes keeps the rule that `pass` never allocates. A vector of 24 layers at 2,048 values
+is 196,608 bytes. Thus a table of 8 entries is 1.5 MiB on a card of 32 GiB.
 
 ## Not covered yet
 

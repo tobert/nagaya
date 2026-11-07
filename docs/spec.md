@@ -1348,7 +1348,8 @@ Amy, 2026-10-23: "ah, let's save add the saves then".
   exit 1, as for a group (10.3). Reason: the budget bounds the whole stop, and a new budget needs a config field.
 
 **6.12 Steering and lab inputs.** Some state changes bits but is not an input, for example mk's attention cell mask
-or a steering vector. Such state goes into the recipe. Thus a steered or masked result never has a plain recipe.
+or a control vector (11.12). Such state goes into the recipe. Thus a steered or masked result never has a plain
+recipe. The bytes of a control list are in 11.12.
 
 **6.13 Interval copies.** An engine can declare a checkpoint grain in `limits()`, in tokens. Then, between quanta,
 the scheduler makes an interval copy (ontology) of each context that passed a multiple of the grain. Milestone 11.5
@@ -4509,6 +4510,45 @@ measured each gate. These bounds keep the margin of Gemma 4's logit gate, 1e-3 o
 - A wrong rotation, window or gate gave a relative error of 0.09 or more, and a wrong audio op 1.3e-2 or more.
 - The constants are `STAGE_TOL` and `LOGIT_TOL` in `crates/nagaya-mk-lfm3-bmg/tests/common/mod.rs`.
 
+**11.12 Control vectors.** Amy decided these rules on 2026-11-07, by interview (`AGENTS.md` milestone 25). A control
+vector changes the residual of a model while it runs (`docs/cv.md`). gogi's contract is "Control vectors", and a
+context names its list in `control` (gogi "Contexts"). The first models are `lfm3`, then `lfm3-omni`.
+
+- **The capability.** A served model declares `control_vectors` when its engine declares `control` (engine-abi
+  "Control vectors"). A non-empty `control` for another served model is a 400 that names `control`. The route
+  checks it before the job, as it checks `thinking`.
+- **The vector object.** A control vector is an object of the store (6.15), with the media type
+  `application/x-safetensors`. Its header names the served model and the weight hash. A vector of other weights,
+  or of another width, is a 400 that names `control[i].vector`.
+- **The order.** The items apply in their order in the list. An item changes the residual after each layer that
+  the vector holds, before the next layer reads it. The prompt pass and each decode step get the same items.
+- **Strengths.** The client sets each strength. The nagaya searches for no strength (Amy: "Hand strength first").
+
+**The recipe of a control list.** Proposed by Claude Opus 5.5, 2026-11-07. A non-empty list goes into the root
+recipe as the lab state, tag 4 (6.2). Its bytes are these, little-endian:
+
+- a `u64` count of items;
+- for each item, the 32 bytes of the vector's content id, one byte for the operation, and the `f64` strength.
+
+The operation byte is 1 for `add`, 2 for `ablate` and 3 for `clamp`. An empty list adds no tag 4, so the recipe of a
+plain context does not change. A list of `add` and `ablate` items with strength 0 gives the bits of the plain
+model, but it still has its own recipe. Reason: one rule with no special case, and the cost is one fill of the
+cache for each such list.
+
+**The route that makes a vector.** Proposed by Claude Opus 5.5, 2026-11-07. `POST /council/v2/control-vectors` is
+a job of the served model. Its class is `batch` unless the request names another class.
+
+- The family renders each context of `positive` and of `negative`, with the generation prompt.
+- Each context is a prompt pass with the residual tap (13.1), and no snapshot. The tap reads the row of the last
+  prompt token.
+- The job sums the rows of each set in `f64`, in the order of the request. Each layer's tensor is the mean of
+  `positive` less the mean of `negative`, as `f32`.
+- The job writes canonical safetensors (D10), with one tensor for each layer, `layers.<l>`. The store holds the
+  bytes as an object. No keep holds it, so the client keeps it.
+
+Reason: a fixed order of the sums gives the same vector on each run (engine-abi D3). A prompt pass with no
+snapshot leaves no state in the store.
+
 ## 12. Identity
 
 **12.1 Fields.** An engine identity has the fields of `identity()` in the ABI:
@@ -4627,8 +4667,13 @@ close a door.
   copy.
 - **Residuals.** A J-Lens reads the residual at layer l (13.2). The residual after layer 14 already crosses host
   memory between the stages (D1).
-- **Steering.** A steering vector is an input that changes bits. Thus it goes into the recipe (6.12), and a steered
-  state never has a plain recipe.
+- **Steering.** A control vector (11.12) is an input that changes bits. Thus it goes into the recipe (6.12), and a
+  steered state never has a plain recipe.
+
+**The residual tap.** Proposed by Claude Opus 5.5, 2026-11-07, for milestone 25. An engine declares the tap
+`residual` in `limits().taps`. A segment that names it gets the output `residual`. It holds, for each logit row of
+the segment, the residual after each layer, as `f32`. The rows are in layer order, and each row has the width of
+the residual. The residual is the stream that each layer adds to, before the norm of the next layer.
 
 **13.2 Lenses.** A lens (mkviolet J-Lens) is a state object of its own. It belongs to one model, has a content id,
 and runs on a CPU device (2.1). Two models cannot share a lens. Models are compared in the lens's concept

@@ -8,6 +8,27 @@ Amy, 2026-11-06: "I'm mostly interested in the technique's viability. could we w
 control vector support, which I'll come back to later. I want to think about it alongside the delayed j-lens feature
 and other model debugging/tweaking capabilities we want to have options for."
 
+## Decisions of 2026-11-07
+
+Amy decided these rules by interview, for milestone 25 (`AGENTS.md`). Amy: "I'd like to try this runtime technique
+and figure out how to work it into the protocol as an option". Spec 11.12 and engine-abi "Control vectors" hold the
+rules.
+
+- A council v2 context names its control vectors, beside `thinking`. This replaces the note on choice 1 below.
+- One op gives `add`, `ablate` and `clamp`.
+- The nagaya makes a vector on the card, with a residual tap and a job. The route is council v2, in gogi.
+- The first prompt sets are public. Amy, 2026-11-07: "we'll use some public data at first so we can work without
+  seeing that data".
+- `LFM3-1.7B` comes first, and Omni follows. Amy sets each strength by hand.
+
+The open questions below get these answers, each Proposed by Claude Opus 5.5 on 2026-11-07:
+
+1. The op runs on the residual, before the norm of the next layer.
+2. The op runs on the prompt pass and on each decode step.
+3. The op does not touch the output of the embedding. It runs only after a layer.
+4. A turn with another list is another context, with another root recipe.
+5. The search for strengths waits. Amy sets them by hand.
+
 ## The term
 
 A **control vector** is a set of vectors, one for each layer that it touches, with an operation and a strength for
@@ -130,7 +151,8 @@ declaration serve both tools. Amy decides.
 
 These tests show that the tool works. Each one can fail.
 
-- With `α = 0`, the output bits equal the bits with no control vector. Break it: add a fixed offset in the op.
+- With `α = 0`, an `add` or an `ablate` gives the bits of no control vector. Break it: add a fixed offset in the op.
+  A `clamp` with `α = 0` removes the concept, so it is not in this test.
 - An `ablate` with `α = 1` gives a residual row with a dot product of zero against `v̂`, to F32 rounding. Break it:
   skip the normalization of `v`.
 - A served model with a control vector never takes a snapshot of the plain served model. Break it: leave the lab
