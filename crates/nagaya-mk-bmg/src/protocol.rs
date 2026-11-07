@@ -67,6 +67,10 @@ pub const OP_SCALE: u16 = 82;
 // `OP_RMSNORM` with `FLAG_ROPE` reads the rotated pairs from `layer`.
 pub const OP_SHORT_CONV: u16 = 90;
 pub const OP_HEAD_GATE: u16 = 91;
+// The ops of the LFM3 vision tower (`kernels/lfm3_vision_ops.cl`, `MK_LFM3`): opcodes 100 to 109. The LFM3 binary also
+// holds the ops of the embedding binary for `OP_BIATTN`.
+pub const OP_VISION_ROPE: u16 = 100;
+pub const OP_VISION_CONV: u16 = 101;
 
 pub const FLAG_ACCUMULATE: u16 = 1 << 0;
 pub const FLAG_SOFTCAP_30: u16 = 1 << 2;

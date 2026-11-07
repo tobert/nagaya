@@ -85,8 +85,9 @@
 #define OP_ATTN_PREP        69
 #define OP_ATTN_XMX         70
 #endif
-#ifdef MK_EMBEDDINGGEMMA2
-// The ops of the embedding engine (embeddinggemma2_ops.cl); must match src/protocol.rs.
+#if defined(MK_EMBEDDINGGEMMA2) || defined(MK_LFM3)
+// The ops of the embedding engine (embeddinggemma2_ops.cl); must match src/protocol.rs. The LFM3 binary holds them for
+// the attention of its vision tower, and its OP_GEGLU stays SwiGLU.
 #define OP_BIATTN           80
 #define OP_GELU_MUL         81
 #define OP_SCALE            82
@@ -97,6 +98,9 @@
 #define OP_HEAD_GATE        91
 #define SHORT_CONV_CHUNK    64  // positions per work item of OP_SHORT_CONV; at least SHORT_CONV_MAX_TAPS - 1
 #define SHORT_CONV_MAX_TAPS 8
+// The ops of the LFM3 vision tower (kernels/lfm3_vision_ops.cl)
+#define OP_VISION_ROPE      100
+#define OP_VISION_CONV      101
 #endif
 #define NUM_EXPERTS         128
 #define TOP_K               8
@@ -1414,11 +1418,12 @@ __kernel void mk_persistent_interpreter(
 #ifdef MK_SDXL
 #include "sdxl_ops.cl"
 #endif
-#ifdef MK_EMBEDDINGGEMMA2
+#if defined(MK_EMBEDDINGGEMMA2) || defined(MK_LFM3)
 #include "embeddinggemma2_ops.cl"
 #endif
 #ifdef MK_LFM3
 #include "lfm3_ops.cl"
+#include "lfm3_vision_ops.cl"
 #endif
         else if (op == OP_MEAN_POOL_L2) {
             // c[0..k) = L2-normalized mean of the first k columns of n rows with stride m.

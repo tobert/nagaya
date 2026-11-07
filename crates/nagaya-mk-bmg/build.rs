@@ -12,6 +12,7 @@ fn main() {
     println!("cargo:rerun-if-changed=kernels/sdxl_ops.cl");
     println!("cargo:rerun-if-changed=kernels/embeddinggemma2_ops.cl");
     println!("cargo:rerun-if-changed=kernels/lfm3_ops.cl");
+    println!("cargo:rerun-if-changed=kernels/lfm3_vision_ops.cl");
     if std::env::var_os("CARGO_FEATURE_XE").is_none() {
         return;
     }
@@ -105,7 +106,8 @@ fn main() {
         "ocloc did not compile {} with MK_EMBEDDINGGEMMA2 for bmg-g31: {status}",
         source.display()
     );
-    // The LFM3 engine's binary: the speech ops and its own (MK_LFM3), with the rotated pairs of a partial rotation.
+    // The LFM3 engine's binary: the speech ops and its own (MK_LFM3), with the rotated pairs of a partial rotation. It
+    // also holds the ops of embeddinggemma2_ops.cl for its vision tower, with SwiGLU as its OP_GEGLU.
     let options = format!("-cl-std=CL3.0 -D MK_QWEN3TTS -D MK_LFM3 -I {}", kernels.display());
     let status = Command::new("ocloc")
         .arg("compile")
