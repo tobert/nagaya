@@ -4530,8 +4530,9 @@ recipe as the lab state, tag 4 (6.2). Its bytes are these, little-endian:
 - a `u64` count of items;
 - for each item, the 32 bytes of the vector's content id, one byte for the operation, and the `f64` strength.
 
-The operation byte is 1 for `add`, 2 for `ablate` and 3 for `clamp`. An empty list adds no tag 4, so the recipe of a
-plain context does not change. A list of `add` and `ablate` items with strength 0 gives the bits of the plain
+The operation byte is 1 for `add`, 2 for `ablate` and 3 for `clamp`. An empty list gives tag 4 with no bytes, as
+each plain context has now (`recipe_root`, `crates/nagaya-store/src/lib.rs:478`). Thus the recipe of a plain context
+does not change. A list of `add` and `ablate` items with strength 0 gives the bits of the plain
 model, but it still has its own recipe. Reason: one rule with no special case, and the cost is one fill of the
 cache for each such list.
 
