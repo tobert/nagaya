@@ -645,6 +645,8 @@ Milestone 24, LFM3 Omni, is deployed on b70host, and its video step waits. Miles
     8. **Trial.** Make a refusal vector of `LFM3-1.7B` from the prompt sets. Amy tries strengths for storytelling.
        Write only the counts of refusals into `signoff.md`.
     9. **Omni.** Make Omni's vector, with image prompts if its refusals need them. Run its gates, then deploy.
+       The vector acts on Omni's text passes only (Amy, 2026-11-07: "we would only need to do this for omni's
+       text"). Its speech frames take no list.
 
     Each stop and start of `nagaya.service` goes into `signoff.md`.
 26. Stop and ask Amy for the next milestone.
