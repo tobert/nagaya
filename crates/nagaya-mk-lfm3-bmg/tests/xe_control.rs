@@ -227,10 +227,9 @@ fn each_operation_follows_transformers_in_its_rows_its_logits_and_8_decode_steps
             "{name}: layer {l} relative error {rows_gap}"
         );
         assert!(gap < common::LOGIT_TOL, "{name}: a logit differs by {gap}");
-        // The decode of 8 tokens: the prompt pass gives the first row, and each decode step gets the same items. The
-        // oracle's decode applies the repetition penalty 1.1 of `generation_config.json`, so its ids are not the
-        // argmax of its raw logits. Thus each step feeds the oracle's id, and the argmax of each row must be the
-        // first of the oracle's raw top 64.
+        // The greedy decode of 8 tokens: the prompt pass gives the first row, and each decode step gets the same
+        // items. The oracle's ids are the argmax of its logits (`greedy` in tools/lfm3_reference.py, with no
+        // repetition penalty), so the argmax of each row of the card must be the oracle's id.
         let want: Vec<usize> = golden[&format!("{name}.decode_ids")]
             .ids()
             .iter()
@@ -252,8 +251,12 @@ fn each_operation_follows_transformers_in_its_rows_its_logits_and_8_decode_steps
                 want[step]
             );
             assert_eq!(
-                best, raw,
-                "{name} step {step}: the argmax differs; the oracle's margin of its top two is {margin:.3e}"
+                want[step], raw,
+                "{name} step {step}: the oracle's id is not the argmax of its own logits"
+            );
+            assert_eq!(
+                best, want[step],
+                "{name} step {step}: the greedy id differs; the oracle's margin of its top two is {margin:.3e}"
             );
             assert!(
                 step_gap < common::LOGIT_TOL,

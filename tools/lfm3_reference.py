@@ -311,19 +311,23 @@ def last_rows(backbone, ids, layer_count):
 
 
 def greedy(model, ids, steps):
-    """Greedy decode of `steps` tokens with the cache, and the top-64 logits of each step."""
+    """Greedy decode of `steps` tokens with the cache, and the top-64 logits of each step.
+
+    The loop calls the model, not `generate`: `generate` applies `repetition_penalty` 1.1 and the other processors of
+    generation_config.json, so its tokens were not the argmax of the logits (found by the card gate, 2026-11-07).
+    """
+    steps_logits, tokens = [], []
     with torch.no_grad():
-        out = model.generate(
-            input_ids=torch.tensor([ids]),
-            attention_mask=torch.ones(1, len(ids), dtype=torch.long),
-            max_new_tokens=steps,
-            min_new_tokens=steps,
-            do_sample=False,
-            output_logits=True,
-            return_dict_in_generate=True,
-        )
-    tokens = out.sequences[0, len(ids):]
-    logits = torch.stack([step[0].float() for step in out.logits])
+        out = model(input_ids=torch.tensor([ids]), use_cache=True)
+        for _ in range(steps):
+            logits = out.logits[0, -1].float()
+            token = int(torch.argmax(logits))
+            steps_logits.append(logits)
+            tokens.append(token)
+            out = model(input_ids=torch.tensor([[token]]), past_key_values=out.past_key_values, use_cache=True)
+    logits = torch.stack(steps_logits)
+    tokens = torch.tensor(tokens, dtype=torch.int64)
+    check(bool((torch.argmax(logits, -1) == tokens).all()), "each greedy token is the argmax of its step")
     top = torch.topk(logits, TOP)
     return tokens, top.indices, top.values
 
