@@ -563,6 +563,9 @@ pub struct AudioBufs {
     pub state: u64,
     /// Zeros of the size of `state`, which each conv layer copies into it first. Nothing writes them.
     pub zeros: u64,
+    /// The rows of a clip for the backbone, `[positions][out]`. A pass encodes a clip into it, and then copies the
+    /// rows of its block into the media rows of the tower.
+    pub rows: u64,
 }
 
 impl AudioBufs {
@@ -587,6 +590,7 @@ impl AudioBufs {
             g: z(f(e.intermediate.max(e.out))),
             state: z((e.taps - 1) * e.hidden * 4),
             zeros: z((e.taps - 1) * e.hidden * 4),
+            rows: z(f(e.out)),
         }
     }
 }

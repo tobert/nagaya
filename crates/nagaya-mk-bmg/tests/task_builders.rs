@@ -320,3 +320,67 @@ fn irfft_takes_half_the_samples_and_one_bin() {
     );
     assert_eq!(table[5], 1.0);
 }
+
+/// `OP_VISION_ROPE` rotates in place, with the grid in `p0` and eps and theta in `x`.
+#[test]
+fn vision_rope_puts_its_fields_where_the_kernel_reads_them() {
+    use nagaya_mk_bmg::protocol::OP_VISION_ROPE;
+    let task = tasks::vision_rope(0x10_0000, 0x20_0000, 308 * 16, 16, 64, 14, 22, 1e-5, 1e6);
+    assert_eq!(task.opcode, OP_VISION_ROPE);
+    assert_eq!((task.a, task.b, task.c), (0x10_0000, 0x20_0000, 0x10_0000));
+    assert_eq!((task.n, task.m, task.k, task.p0), (308 * 16, 16, 64, 22 | 14 << 16));
+    assert_eq!(f32::from_bits(task.x as u32), 1e-5);
+    assert_eq!(f32::from_bits((task.x >> 32) as u32), 1e6);
+}
+
+/// The merge takes 2 by 2 patches, so each side of the grid is even, and the rows are whole frames.
+#[test]
+fn vision_rope_refuses_an_odd_grid_and_part_of_a_frame() {
+    let odd = panic_message(|| tasks::vision_rope(0, 0, 15 * 22 * 16, 16, 64, 15, 22, 1e-5, 1e6));
+    assert!(odd.contains("OP_VISION_ROPE takes a grid with even sides"), "{odd}");
+    let part = panic_message(|| tasks::vision_rope(0, 0, 300 * 16, 16, 64, 14, 22, 1e-5, 1e6));
+    assert!(part.contains("whole frames of 308 patches of 16 heads"), "{part}");
+    let head = panic_message(|| tasks::vision_rope(0, 0, 308 * 16, 16, 62, 14, 22, 1e-5, 1e6));
+    assert!(head.contains("a multiple of 4 values"), "{head}");
+}
+
+/// `OP_VISION_CONV` reads the in_proj rows from `a`, the taps from `b`, and the grid from `p0`.
+#[test]
+fn vision_conv_puts_its_fields_where_the_kernel_reads_them() {
+    use nagaya_mk_bmg::protocol::OP_VISION_CONV;
+    let task = tasks::vision_conv(0x10_0000, 0x20_0000, 0x4000_0000, 468, 1024, 18, 26);
+    assert_eq!(task.opcode, OP_VISION_CONV);
+    assert_eq!((task.a, task.b, task.c), (0x10_0000, 0x20_0000, 0x4000_0000));
+    assert_eq!((task.n, task.k, task.p0), (468, 1024, 26 | 18 << 16));
+}
+
+/// A lane takes one channel of 16, a lane reads its neighbours, and the rows are whole frames.
+#[test]
+fn vision_conv_refuses_what_its_kernel_cannot_take() {
+    let channels = panic_message(|| tasks::vision_conv(0, 0x100_0000, 0x200_0000, 16, 40, 4, 4));
+    assert!(channels.contains("OP_VISION_CONV takes channels in 16s"), "{channels}");
+    let frames = panic_message(|| tasks::vision_conv(0, 0x100_0000, 0x200_0000, 20, 64, 4, 4));
+    assert!(frames.contains("whole frames of 16 patches"), "{frames}");
+    let grid = panic_message(|| tasks::vision_conv(0, 0x100_0000, 0x200_0000, 12, 64, 4, 3));
+    assert!(grid.contains("a grid with even sides"), "{grid}");
+    // 16 rows of 3 * 64 floats from 0; the output starts inside them.
+    let over = panic_message(|| tasks::vision_conv(0, 0x100_0000, 0x100, 16, 64, 4, 4));
+    assert!(over.contains("the output overlaps the in_proj rows"), "{over}");
+}
+
+/// The opcodes of the vision ops in `protocol.rs` are the ones that `kernels/megakernel.cl` defines, in the range 100
+/// to 109 of the vision tower (milestone 24 step 7).
+#[test]
+fn the_vision_opcodes_of_the_host_are_the_opcodes_of_the_kernel() {
+    use nagaya_mk_bmg::protocol::{OP_VISION_CONV, OP_VISION_ROPE};
+    let source = include_str!("../kernels/megakernel.cl");
+    for (name, code) in [("OP_VISION_ROPE", OP_VISION_ROPE), ("OP_VISION_CONV", OP_VISION_CONV)] {
+        let line = source
+            .lines()
+            .find(|l| l.split_whitespace().take(2).eq(["#define", name]))
+            .unwrap_or_else(|| panic!("megakernel.cl does not define {name}"));
+        let value: u16 = line.split_whitespace().nth(2).unwrap().parse().unwrap();
+        assert_eq!(value, code, "{name}");
+        assert!((100..110).contains(&code), "{name} is {code}");
+    }
+}

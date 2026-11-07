@@ -67,6 +67,69 @@ fn a_ring_that_loses_its_base_fails_park_and_restore() {
     }
 }
 
+/// `FakeAlways` that declares other inputs. It still takes a segment of tokens.
+struct Declares {
+    inner: FakeAlways,
+    inputs: Inputs,
+}
+
+impl Engine for Declares {
+    fn identity(&self) -> Identity {
+        self.inner.identity()
+    }
+
+    fn limits(&self) -> Limits {
+        Limits {
+            inputs: self.inputs,
+            ..self.inner.limits()
+        }
+    }
+
+    fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
+        self.inner.pass(segments, taps)
+    }
+
+    fn last_error(&self) -> Option<String> {
+        self.inner.last_error()
+    }
+
+    fn parts(&mut self) -> Option<&mut dyn Parts> {
+        self.inner.parts()
+    }
+
+    fn coverage(&mut self) -> Option<&mut dyn Coverage> {
+        self.inner.coverage()
+    }
+
+    fn seal(&mut self) -> Option<&mut dyn nagaya_abi::Seal> {
+        self.inner.seal()
+    }
+
+    fn slots(&mut self) -> Option<&mut dyn Slots> {
+        self.inner.slots()
+    }
+}
+
+/// An engine that declares tokens and rows takes a segment of tokens alone, so the gates that make token segments run
+/// on it (engine-abi "The LFM3 vision binding", Inputs). Only an engine of rows alone skips them.
+#[test]
+fn the_token_gates_run_on_an_engine_of_tokens_and_rows() {
+    let mut both = || Declares {
+        inner: FakeAlways::new(),
+        inputs: Inputs::TokensAndRows,
+    };
+    assert_pass(quantum_isolation(&mut both), "quantum_isolation");
+    assert_pass(quantum_same_boundaries(&mut both), "quantum_same_boundaries");
+    assert_pass(segments_exact_bits(&mut both), "segments_exact_bits");
+    let mut rows = || Declares {
+        inner: FakeAlways::new(),
+        inputs: Inputs::Rows,
+    };
+    assert!(matches!(quantum_isolation(&mut rows), Outcome::NotApplicable(_)));
+    assert!(matches!(quantum_same_boundaries(&mut rows), Outcome::NotApplicable(_)));
+    assert!(matches!(segments_exact_bits(&mut rows), Outcome::NotApplicable(_)));
+}
+
 #[test]
 fn a_one_slot_engine_gets_not_applicable() {
     let mut one_slot = || {

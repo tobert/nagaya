@@ -285,6 +285,19 @@ pub fn logsumexp(row: &[f32]) -> f64 {
     most + row.iter().map(|v| (*v as f64 - most).exp()).sum::<f64>().ln()
 }
 
+/// `n` values in [-1, 1) from a fixed sequence, the same on each run: the range of the patch rows of an image.
+pub fn values(n: usize, seed: u64) -> Vec<f32> {
+    let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    (0..n)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 40) as f32 / 8_388_608.0 - 1.0
+        })
+        .collect()
+}
+
 /// `n` token ids from a fixed sequence, below the vocabulary of the family. They are the same on each run.
 pub fn ids(n: usize, seed: u64) -> Vec<u32> {
     let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;

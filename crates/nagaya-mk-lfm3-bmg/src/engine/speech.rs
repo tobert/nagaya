@@ -234,6 +234,8 @@ impl Lfm3Engine {
                 n: 1,
                 layers: self.b.layers.len(),
                 logit_rows: Some(rows),
+                // A frame has no media span.
+                after_embed: &[],
             },
         );
         assert_eq!(

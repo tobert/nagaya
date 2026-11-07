@@ -1038,3 +1038,88 @@ pub fn irfft_table(n_fft: usize) -> Vec<f32> {
         })
         .collect()
 }
+
+// The ops of the LFM3 vision tower (`kernels/lfm3_vision_ops.cl`).
+
+/// Check a grid of patches of the vision tower: each side even and below 65,536, so the merge takes 2 by 2 patches and
+/// the kernel reads each side from 16 bits. Returns the patches of one frame.
+fn vision_frame(op: &str, grid_h: u32, grid_w: u32) -> u32 {
+    assert!(
+        grid_h >= 2 && grid_w >= 2 && grid_h.is_multiple_of(2) && grid_w.is_multiple_of(2),
+        "{op} takes a grid with even sides, and it got {grid_h} by {grid_w}"
+    );
+    assert!(
+        grid_h < 1 << 16 && grid_w < 1 << 16,
+        "{op} takes a grid of at most 65535 by 65535"
+    );
+    grid_h * grid_w
+}
+
+/// The norm and the axial rotation of the head rows of the vision attention, in place: `rows` rows of `d` values,
+/// `heads` rows for each patch, with the BF16 norm weights `w`. The patches are whole frames of `grid_h` by `grid_w`
+/// in merge-block order. The first quarter of the pairs turns by the down coordinate, the rest by the across
+/// coordinate, with the frequencies `theta^(-2j / (d / 2))`.
+#[allow(clippy::too_many_arguments)]
+pub fn vision_rope(
+    x: u64,
+    w: u64,
+    rows: u32,
+    heads: u32,
+    d: u32,
+    grid_h: u32,
+    grid_w: u32,
+    eps: f32,
+    theta: f32,
+) -> MkTaskDescriptor {
+    let frame = vision_frame("OP_VISION_ROPE", grid_h, grid_w);
+    assert!(
+        d >= 4 && d.is_multiple_of(4),
+        "OP_VISION_ROPE takes a head of a multiple of 4 values, and it got {d}"
+    );
+    assert!(
+        heads >= 1 && rows >= 1 && rows.is_multiple_of(heads * frame),
+        "OP_VISION_ROPE takes whole frames of {frame} patches of {heads} heads, and it got {rows} rows"
+    );
+    MkTaskDescriptor {
+        a: x,
+        b: w,
+        c: x,
+        n: rows,
+        m: heads,
+        k: d,
+        p0: grid_w | grid_h << 16,
+        x: eps.to_bits() as u64 | (theta.to_bits() as u64) << 32,
+        ..task(OP_VISION_ROPE)
+    }
+}
+
+/// The gated depthwise 3 by 3 convolution of a vision conv layer over `n` patch rows of `d` channels: `bcx` holds the
+/// rows of in_proj `[n][3d]` in the chunks B, C and x, `w` holds the BF16 taps `[d][9]`, and `y` gets
+/// `C * conv(B * x)` `[n][d]`. The rows are whole frames of `grid_h` by `grid_w` in merge-block order.
+pub fn vision_conv(bcx: u64, w: u64, y: u64, n: u32, d: u32, grid_h: u32, grid_w: u32) -> MkTaskDescriptor {
+    let frame = vision_frame("OP_VISION_CONV", grid_h, grid_w);
+    assert!(
+        d >= 16 && d.is_multiple_of(16),
+        "OP_VISION_CONV takes channels in 16s, and it got {d}"
+    );
+    assert!(
+        n >= 1 && n.is_multiple_of(frame),
+        "OP_VISION_CONV takes whole frames of {frame} patches, and it got {n} rows"
+    );
+    // A lane reads the rows of the neighbours while other lanes write the output.
+    let rows = bcx..bcx + 4 * n as u64 * 3 * d as u64;
+    let out = y..y + 4 * n as u64 * d as u64;
+    assert!(
+        out.end <= rows.start || rows.end <= out.start,
+        "OP_VISION_CONV: the output overlaps the in_proj rows"
+    );
+    MkTaskDescriptor {
+        a: bcx,
+        b: w,
+        c: y,
+        n,
+        k: d,
+        p0: grid_w | grid_h << 16,
+        ..task(OP_VISION_CONV)
+    }
+}

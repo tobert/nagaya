@@ -408,8 +408,11 @@ fn the_buffers_hold_the_longest_clip() {
     assert_eq!(b.x - b.plane_b, (1024 * 32 * 256 * 4) as u64);
     assert_eq!(b.plane_a - b.mel, (4096 * 128 * 4) as u64);
     let total = bufs_bytes(&e, MAX_CLIP_POSITIONS);
+    assert_eq!(b.rows - b.zeros, rounded((e.taps - 1) * e.hidden * 4) as u64);
+    // The rows of the clip for the backbone come last: 512 positions of 2,048 values.
     assert_eq!(
         total as u64,
-        b.zeros + rounded((e.taps - 1) * e.hidden * 4) as u64 - b.mel
+        b.rows + rounded(MAX_CLIP_POSITIONS * e.out * 4) as u64 - b.mel
     );
+    assert_eq!(e.out, 2048);
 }

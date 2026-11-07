@@ -3,7 +3,7 @@
 //! The ring follows `Lfm3Model.forward` of `modeling_lfm3.py` (LFM3-Omni-2B at `21d75123`) for one block of `n` tokens
 //! at the positions `pos0..pos0 + n` of one slot:
 //!
-//! - the embedding rows, with no scale;
+//! - the embedding rows, with no scale, and the rows of the media encoders over the rows of their placeholders;
 //! - for each layer: `operator_norm`, the conv or the attention, `post_operator_norm` added to the residual, then
 //!   `ffn_norm`, the SwiGLU MLP and `post_ffn_norm` added to the residual (modeling_lfm3.py:472-498);
 //! - `embedding_norm`, and the head, which is the embedding table, for each logit row.
@@ -162,6 +162,8 @@ pub struct Run<'a> {
     pub layers: usize,
     /// The block rows whose logits the ring gives, after the final norm. With `None`, the ring stops after the layers.
     pub logit_rows: Option<&'a [usize]>,
+    /// The tasks that run after the embedding rows: the copies of the media rows over the rows of their placeholders.
+    pub after_embed: &'a [MkTaskDescriptor],
 }
 
 fn accumulate(mut task: MkTaskDescriptor) -> MkTaskDescriptor {
@@ -178,6 +180,7 @@ pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskD
         n,
         layers,
         logit_rows,
+        after_embed,
     } = run;
     assert!(
         layers <= b.layers.len() && (layers == b.layers.len() || logit_rows.is_none()),
@@ -192,6 +195,7 @@ pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskD
     let (n32, h32, i32_) = (n as u32, b.hidden as u32, b.intermediate as u32);
     let (heads, kv, d) = (b.heads as u32, b.kv_heads as u32, b.head_dim as u32);
     let mut t = vec![tasks::embed(bufs.ids, w.embed, bufs.x, n32, h32, 0, false, false)];
+    t.extend_from_slice(after_embed);
     for (l, lw) in w.layers.iter().enumerate().take(layers) {
         let kind = b.layers[l];
         t.push(tasks::rmsnorm(bufs.x, lw.operator_norm, bufs.h, n32, h32, b.eps, false));
@@ -385,6 +389,7 @@ mod tests {
                 n: 8,
                 layers: b.layers.len(),
                 logit_rows: Some(&rows),
+                after_embed: &[],
             },
         );
         assert_eq!(t[0].opcode, OP_EMBED);
@@ -398,6 +403,33 @@ mod tests {
             assert_eq!(task.a, bufs.h + (rows[i] * 2048 * 4) as u64);
             assert_eq!(task.c, bufs.logits + (i * 128_000 * 4) as u64);
         }
+    }
+
+    #[test]
+    fn the_media_rows_replace_the_embedding_rows_before_the_first_layer() {
+        let b = backbone();
+        let (w, bufs, slot) = (weights(&b), bufs(&b), memory(&b, 1024));
+        let place = tasks::copy(0xAA00, bufs.x + 5 * 2048 * 4, 77 * 2048);
+        let t = pass(
+            &b,
+            &w,
+            &bufs,
+            Run {
+                slot: &slot,
+                pos0: 0,
+                n: 90,
+                layers: b.layers.len(),
+                logit_rows: Some(&[89]),
+                after_embed: &[place],
+            },
+        );
+        assert_eq!((t[0].opcode, t[1].opcode), (OP_EMBED, OP_COPY));
+        assert_eq!((t[1].a, t[1].c, t[1].n), (place.a, place.c, place.n));
+        assert_eq!(
+            t[2].opcode,
+            nagaya_mk_bmg::protocol::OP_RMSNORM,
+            "layer 0 starts after the copy"
+        );
     }
 
     #[test]
@@ -415,6 +447,7 @@ mod tests {
                 n: 1,
                 layers: b.layers.len(),
                 logit_rows: Some(&[0]),
+                after_embed: &[],
             },
         );
         assert_eq!((count(&one, OP_ATTN), count(&one, OP_ATTN_SCORES)), (11, 0));
@@ -430,6 +463,7 @@ mod tests {
                 n: 100,
                 layers: b.layers.len(),
                 logit_rows: None,
+                after_embed: &[],
             },
         );
         let copies: Vec<&MkTaskDescriptor> = wrap.iter().filter(|task| task.opcode == OP_COPY).collect();

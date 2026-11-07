@@ -3,7 +3,8 @@
 //!
 //! The backbone runs as one ring of tasks for each pass on the shared interpreter (`nagaya-mk-bmg`), with the LFM3
 //! binary. `spec` reads `config.json` and holds the limits and the rules of the slots, which need no card. `weights`
-//! checks the tensors of the backbone and uploads them, and `model` builds the ring of a pass.
+//! checks the tensors of the backbone and uploads them, and `model` builds the ring of a pass. For Omni, `vision`
+//! holds the vision tower and its ring, and `media` holds the rules of the media spans of a pass.
 //!
 //! With no feature, the crate plans with no card. The feature `xe` loads the engine on a card.
 
@@ -16,8 +17,10 @@ pub mod device;
 #[cfg(feature = "xe")]
 pub mod engine;
 pub mod frames;
+pub mod media;
 pub mod model;
 pub mod spec;
+pub mod vision;
 pub mod weights;
 
 #[cfg(feature = "xe")]

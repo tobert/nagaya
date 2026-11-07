@@ -1283,7 +1283,8 @@ choice that the gates can check. Amy decides.
 - **Logits.** A logit row has the width of the family's vocabulary, 125,033 values (spec 11.11). A token id at or
   past that width is refused. The head runs once for each logit row, so the bits of a row do not depend on the count
   of rows.
-- **Inputs.** The engine takes tokens only in step 6. The rows of the media come with step 7 (D2).
+- **Inputs.** The engine takes tokens only in step 6. The rows of the media come with step 7 (D2), in "The LFM3
+  vision binding".
 - **The checkpoint digest.** It is `blake3:` and a BLAKE3 hash with the key `nagaya lfm3 checkpoint v1`. It covers the
   canonical `config.json` and each tensor of `model.safetensors`, as for Gemma 4. Omni's other towers are in it, so a
   later step that runs them keeps the digest.
@@ -1350,6 +1351,36 @@ codec_clear(slot) -> samples                          the last 480 samples; it f
   them, 6 for each position of the slot.
 - **The memory.** Omni adds the term `speech` on `device(0)`. It holds the depth decoder, the codebook table, the
   codec, their buffers, and the codec state of each slot. `LFM3-1.7B` has no such term.
+
+### The LFM3 vision binding
+
+Proposed by Claude Opus 5.5, 2026-11-06, for milestone 24 step 7. The vision tower of Omni needs these choices. The
+notes above leave each one open, and each is the simplest choice that the gates can check. Amy decides.
+
+- **The meta of a span.** `meta` holds one record of 32 bytes for each media span, in the order of the positions.
+  A record is little-endian. It holds the kind (1 for an image, 2 for a clip), the count of positions, the first
+  position as `u64`, and four words. For an image they are `grid_t`, `grid_h`, `grid_w` and 0. For a clip they
+  are the count of mel frames and three zeros. Reason: the notes above name these values, and a fixed record needs
+  no parser.
+- **The rows of a segment.** They are the rows of each span whole, in the order of the records.
+- **A span longer than a block.** An image takes up to 2,048 positions, and a feed block holds at most 512. Each
+  pass that holds positions of a span gets the rows of the whole span. It runs the encoder and keeps the rows of
+  its own positions. Reason: the encoders hold no state between quanta (spec 11.11), and the attention of the tower
+  reads every patch. The cost is one run of the tower for each block of the span.
+- **Placeholders.** Each position of a span in the block holds the placeholder of its kind. Each placeholder in the
+  block is in a span. A pass that breaks either rule is refused, so a placeholder never enters the backbone as its
+  embedding row.
+- **A clip.** Until the audio encoder exists, a span of a clip is refused with a message that names the record.
+- **Inputs.** Omni declares `tokens+rows`, and `lfm3` declares `tokens`. A segment of tokens alone, with no `meta`,
+  is a text block for both. Thus the gates of 8.3 that make token segments run on an engine that declares
+  `tokens+rows`. Only an engine that declares `rows` skips them.
+- **The ops.** The tower runs on the LFM3 binary. The binary also holds the ops of the embedding binary, for
+  `OP_BIATTN`, and its `OP_GEGLU` stays SwiGLU. The new ops are `OP_VISION_ROPE` (100) and `OP_VISION_CONV` (101).
+  The LayerNorm of the projector reads F32 weights, so the open uploads its BF16 weights as F32. Each value is exact.
+- **The memory terms.** The weights of the tower and of the projector are the term `vision` on `device(0)`. The
+  buffers of the tower are in `work`, sized for the largest image of 8,192 patches. `lfm3` has neither.
+- **The output.** The rows of the encoder stay on the card. The pass copies them over the embedding rows of the
+  placeholders, before the first layer of the backbone.
 
 ## Not covered yet
 

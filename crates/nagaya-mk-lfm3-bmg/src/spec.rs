@@ -17,7 +17,9 @@ use nagaya_mk_bmg::protocol::{MAX_TASKS_PER_CARD, NUM_SCOREBOARD_EVENTS};
 use nagaya_mk_bmg::safetensors::MappedSafeTensors;
 
 use crate::audio::{self, Encoder, MAX_CLIP_POSITIONS};
+use crate::media::{self, MediaRules, SpanUse};
 use crate::model::{bufs_bytes, scratch_floats};
+use crate::vision::{self, Vision};
 use crate::weights::{Count, STAGING_BYTES, load};
 
 /// The engine kind in a placement profile (`AGENTS.md` "Layout": kind, model, target).
@@ -500,12 +502,31 @@ pub fn pinned_bytes() -> u64 {
     (MAX_TASKS_PER_CARD * 64 + 32 * 64 + STAGING_BYTES) as u64
 }
 
-/// The limits for a config, with the device bytes of the weights.
-pub fn limits(b: &Backbone, config: &Config, weights: u64) -> Limits {
+/// The device bytes of the vision tower of Omni: its weights and the buffers of its largest image.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VisionBytes {
+    pub weights: u64,
+    pub work: u64,
+}
+
+/// The limits for a config, with the device bytes of the weights of the backbone, and of the vision tower for Omni.
+/// Omni declares tokens and rows: a segment of tokens alone is a text block, and the rows are its media (engine-abi
+/// "The LFM3 vision binding").
+pub fn limits(b: &Backbone, config: &Config, weights: u64, vision: Option<VisionBytes>) -> Limits {
     let kv = config.slots as u64 * slot_bytes(b, SLOT_TOKENS);
     let work = bufs_bytes(b, config.max_block, SLOT_TOKENS) as u64
         + ring_device_bytes(SLOT_TOKENS)
-        + audio_bufs_bytes(b) as u64;
+        + audio_bufs_bytes(b) as u64
+        + vision.map_or(0, |v| v.work);
+    let mut mandatory = vec![
+        term("weights", Tier::Device(0), weights),
+        term("kv", Tier::Device(0), kv),
+        term("work", Tier::Device(0), work),
+        term("pinned", Tier::Host, pinned_bytes()),
+    ];
+    if let Some(v) = vision {
+        mandatory.insert(1, term("vision", Tier::Device(0), v.weights));
+    }
     Limits {
         // A drop frees the weights, the slots, the buffers and the card's context.
         capabilities: vec![
@@ -515,7 +536,11 @@ pub fn limits(b: &Backbone, config: &Config, weights: u64) -> Limits {
             Capability::Close,
         ],
         parts: parts(b),
-        inputs: Inputs::Tokens,
+        inputs: if vision.is_some() {
+            Inputs::TokensAndRows
+        } else {
+            Inputs::Tokens
+        },
         devices: vec![0],
         stages: Vec::new(),
         max_segments: MAX_SEGMENTS,
@@ -524,12 +549,7 @@ pub fn limits(b: &Backbone, config: &Config, weights: u64) -> Limits {
         slots: slot_limits(b, &config.seqs()),
         max_quantum_ms: MAX_QUANTUM_MS,
         memory: MemoryLimits {
-            mandatory: vec![
-                term("weights", Tier::Device(0), weights),
-                term("kv", Tier::Device(0), kv),
-                term("work", Tier::Device(0), work),
-                term("pinned", Tier::Host, pinned_bytes()),
-            ],
+            mandatory,
             elastic: Vec::new(),
         },
         chain: ChainLimits {
@@ -567,12 +587,40 @@ pub fn weights_bytes(b: &Backbone, dir: &Path) -> Result<u64, String> {
     Ok(count.bytes as u64)
 }
 
+/// The vision tower of the model in the folder `dir`, from `config.json`: `None` for `LFM3-1.7B`.
+pub fn read_vision(b: &Backbone, dir: &Path) -> Result<Option<Vision>, String> {
+    if b.model == Model::Text {
+        return Ok(None);
+    }
+    let path = dir.join("config.json");
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    Vision::parse(&text, b.hidden)
+        .map(Some)
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The device bytes of the vision tower in the folder `dir`, from the tensor headers, with its buffers for blocks of
+/// `max_block`.
+pub fn vision_bytes(v: &Vision, dir: &Path, max_block: usize) -> Result<VisionBytes, String> {
+    let map = MappedSafeTensors::open(&dir.join(WEIGHTS_FILE))?;
+    let mut count = Count::default();
+    vision::load(&mut count, v, &map.view()?)?;
+    Ok(VisionBytes {
+        weights: count.bytes as u64,
+        work: vision::bufs_bytes(v, max_block) as u64,
+    })
+}
+
 /// The limits of a config, from `config.json` and the tensor headers. It reads no weight bytes (spec 2.4).
 pub fn plan(config: &Config) -> Result<Limits, String> {
     config.check()?;
     let b = Backbone::read(&config.model_dir)?;
     let weights = weights_bytes(&b, &config.model_dir)?;
-    let mut limits = limits(&b, config, weights);
+    let vision = match read_vision(&b, &config.model_dir)? {
+        Some(v) => Some(vision_bytes(&v, &config.model_dir, config.max_block)?),
+        None => None,
+    };
+    let mut limits = limits(&b, config, weights, vision);
     // Omni adds the term `speech` (engine-abi "The speech calls of LFM3").
     if b.model == Model::Omni {
         let bytes = crate::frames::plan_bytes(&config.model_dir, config.slots)?;
@@ -590,6 +638,8 @@ pub struct Block {
     pub tokens: Vec<u32>,
     /// The rows of the block whose logits the pass gives, in request order.
     pub logit_rows: Vec<usize>,
+    /// The media spans that the block reads, in the order of their rows.
+    pub spans: Vec<SpanUse>,
 }
 
 /// The token count and the writes of each slot, and the rules of the part calls. The engine applies the device side.
@@ -614,6 +664,8 @@ pub struct Held {
     row_bytes: u64,
     conv_bytes: u64,
     window: u64,
+    /// The placeholders of the media of the model, and the encoders of the engine. `LFM3-1.7B` has none.
+    pub media: MediaRules,
 }
 
 impl Held {
@@ -628,6 +680,7 @@ impl Held {
             row_bytes: (b.kv_row() * 4) as u64,
             conv_bytes: (b.conv_state() * 4) as u64,
             window: b.window as u64,
+            media: MediaRules::default(),
         }
     }
 
@@ -669,7 +722,8 @@ impl Held {
 
     /// Check a pass before it changes anything, and give its block. The message says which rule breaks.
     ///
-    /// - A pass has one segment of tokens below `vocab`, with 1 to `max_block` of them and no `meta`.
+    /// - A pass has one segment of tokens below `vocab`, with 1 to `max_block` of them. A segment of tokens alone has
+    ///   no `meta`. A segment of tokens and rows has the `meta` of its media spans (`media::check_spans`).
     /// - The positions run on from the token count of the slot. A slot does not go back.
     /// - `logit_rows` names at most `MAX_LOGIT_ROWS` positions of the block.
     pub fn check_pass(&self, segments: &[Segment], max_block: usize, vocab: usize) -> Result<Block, String> {
@@ -682,11 +736,29 @@ impl Held {
         let slot = self
             .slot(segment.state)
             .ok_or_else(|| format!("the engine has {} slots, not {:?}", self.n.len(), segment.state))?;
-        let SegmentInputs::Tokens(tokens) = &segment.inputs else {
-            return Err("the engine takes tokens only in this step (D2)".to_owned());
+        let (tokens, rows) = match &segment.inputs {
+            SegmentInputs::Tokens(tokens) => (tokens, None),
+            SegmentInputs::TokensAndRows { tokens, rows } => (tokens, Some(rows)),
+            SegmentInputs::Rows(_) => {
+                return Err(
+                    "the segment has rows and no tokens; the engine takes tokens, with the rows of their \
+                            media (D2)"
+                        .to_owned(),
+                );
+            }
         };
-        if !segment.meta.is_empty() {
-            return Err("the engine takes no meta; a pass is a plain block".to_owned());
+        match (rows, segment.meta.is_empty()) {
+            (None, false) => {
+                return Err(
+                    "the segment has meta and no rows; the meta names media spans, and their rows come with the \
+                     tokens"
+                        .to_owned(),
+                );
+            }
+            (Some(_), true) => {
+                return Err("the segment has rows and no meta; the meta names the media span of each row".to_owned());
+            }
+            _ => {}
         }
         let n = tokens.len();
         if n == 0 || n > max_block {
@@ -733,11 +805,14 @@ impl Held {
             }
             logit_rows.push(*row as usize - pos0);
         }
+        let spans = media::decode(&segment.meta)?;
+        let spans = media::check_spans(&self.media, &spans, tokens, pos0 as u64, rows.map_or(0, |r| r.len()))?;
         Ok(Block {
             slot,
             pos0,
             tokens: tokens.clone(),
             logit_rows,
+            spans,
         })
     }
 
