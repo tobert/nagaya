@@ -50,6 +50,8 @@ pub enum SamplerError {
     TemperatureOverflow,
     /// The uniform value is not in [0, 1).
     BadUniform(f64),
+    /// Each token of the row is one that the reply never picks. A family with such a vocabulary has a defect.
+    AllDropped,
 }
 
 impl fmt::Display for SamplerError {
@@ -67,6 +69,7 @@ impl fmt::Display for SamplerError {
                 )
             }
             Self::BadUniform(u) => write!(f, "the uniform value {u} is not in [0, 1)"),
+            Self::AllDropped => write!(f, "each token of the row is a token that the reply never picks"),
         }
     }
 }
@@ -153,22 +156,29 @@ fn by_logit_then_id(l: &[f64]) -> impl Fn(&u32, &u32) -> Ordering + '_ {
     }
 }
 
-fn candidates(l: &[f64], s: &Settings) -> Result<Survivors, SamplerError> {
+/// The survivors of the filters. `dropped` are tokens that the reply never picks: they leave the row before each
+/// filter, as a logit of minus infinity does in the reference.
+fn candidates(l: &[f64], s: &Settings, dropped: &[u32]) -> Result<Survivors, SamplerError> {
+    let kept = |i: &u32| !dropped.contains(i);
     if s.temperature == 0.0 {
         // Greedy: the first maximum, which is the lowest id. No filter and no draw.
-        let mut best = 0;
+        let mut best: Option<usize> = None;
         for (i, &x) in l.iter().enumerate() {
-            if x > l[best] {
-                best = i;
+            if kept(&(i as u32)) && best.is_none_or(|b| x > l[b]) {
+                best = Some(i);
             }
         }
+        let best = best.ok_or(SamplerError::AllDropped)?;
         return Ok(Survivors {
             ids: vec![best as u32],
             probs: vec![1.0],
         });
     }
     let cmp = by_logit_then_id(l);
-    let mut ids: Vec<u32> = (0..l.len() as u32).collect();
+    let mut ids: Vec<u32> = (0..l.len() as u32).filter(kept).collect();
+    if ids.is_empty() {
+        return Err(SamplerError::AllDropped);
+    }
     if s.top_k > 0 && (s.top_k as usize) < ids.len() {
         let k = s.top_k as usize;
         ids.select_nth_unstable_by(k - 1, &cmp);
@@ -210,7 +220,7 @@ fn candidates(l: &[f64], s: &Settings) -> Result<Survivors, SamplerError> {
 /// The survivors of top_k, top_p and min_p, with the probabilities of the draw. Greedy gives the argmax alone.
 pub fn survivors(logits: &[f32], s: &Settings) -> Result<Survivors, SamplerError> {
     s.validate()?;
-    candidates(&widen(logits)?, s)
+    candidates(&widen(logits)?, s, &[])
 }
 
 /// The probability of the token and the entropy (nats) of the untempered softmax over the whole vocabulary.
@@ -227,12 +237,18 @@ fn raw_stats(l: &[f64], token: u32) -> (f64, f64) {
 ///
 /// The pick is the inverse CDF over the survivors, in float64. With mk's own uniform value it gives mk's token.
 pub fn pick_with(logits: &[f32], s: &Settings, u: f64) -> Result<Pick, SamplerError> {
+    pick_with_except(logits, s, u, &[])
+}
+
+/// Pick a token with a given uniform value, and never one of `dropped`. The probability and the entropy stay those of
+/// the whole row.
+pub fn pick_with_except(logits: &[f32], s: &Settings, u: f64, dropped: &[u32]) -> Result<Pick, SamplerError> {
     s.validate()?;
     if !(0.0..1.0).contains(&u) {
         return Err(SamplerError::BadUniform(u));
     }
     let l = widen(logits)?;
-    let surv = candidates(&l, s)?;
+    let surv = candidates(&l, s, dropped)?;
     let token = if s.temperature == 0.0 {
         surv.ids[0]
     } else {
@@ -255,5 +271,10 @@ pub fn pick_with(logits: &[f32], s: &Settings, u: f64) -> Result<Pick, SamplerEr
 /// Pick the token at a position of the context. The uniform value comes from the draw function with the purpose
 /// `Sample`. Use `pick_with` for another purpose.
 pub fn pick(logits: &[f32], s: &Settings, position: u64) -> Result<Pick, SamplerError> {
-    pick_with(logits, s, draw_uniform(s.seed, position, Purpose::Sample))
+    pick_except(logits, s, position, &[])
+}
+
+/// Pick the token at a position of the context, and never one of `dropped` (spec 11.11, "The generation modes").
+pub fn pick_except(logits: &[f32], s: &Settings, position: u64, dropped: &[u32]) -> Result<Pick, SamplerError> {
+    pick_with_except(logits, s, draw_uniform(s.seed, position, Purpose::Sample), dropped)
 }
