@@ -4429,6 +4429,27 @@ of the engine identity and the bytes of the object. The object's content id name
 - The codes of an `assistant` audio part enter the recipe as the speech positions do (11.8a). Each frame gives 12
   codes, and the end frame is one more frame.
 
+**Media through the council.** Proposed by Claude Opus 5.5, 2026-11-06 (milestone 24 step 9). Reason: the notes
+above leave these choices open, and each one is the simplest choice that a fake engine can check.
+
+- **The checks.** A text service checks each object part by the rules 1 to 4 of gogi "Contexts", in that order. Rule
+  2 reads the media types of the family. Rules 3 and 4 read the object store of the process.
+- **The rendering.** A rendering lists its media spans. A span has its first position, its count of positions, and
+  the media type and the content id of its part. The rendering of a text family lists none.
+- **The rows.** The family gives the rows and the `meta` record of each span. The service gets them before the job
+  starts, for each span of the context. Reason: a decode on the group thread would hold the engine. The cost is a
+  decode of each part, also of a part in a held prefix.
+- **The passes.** A pass of a build whose positions hold a part of a span gets `TokensAndRows`. Its `meta` holds the
+  record of each such span, and its rows are the rows of each span whole (engine-abi "The LFM3 vision binding"). A
+  pass with no span gets `Tokens`, as before.
+- **The item.** The item of tag 9 starts with the media type, as a `u64` length and its bytes. The 32 bytes of the
+  content id follow, then the count of positions as a `u64`.
+- **Its place.** The recipe of the tokens from position a to position b holds one item for each span whose first
+  position is in that range. The items follow tag 7, in the order of the positions. A recipe with no span is the
+  same as before, so a text model keeps its recipes.
+- **Inside a span.** A boundary never falls inside a span, because a part is inside a message. An interval copy
+  (6.13) inside a span names the span, so two images of one size never give one recipe.
+
 **The generation modes.** Proposed by Claude Opus 5.5, 2026-11-06. Reason: gogi's `output` already names a reply
 with an object (gogi "Outputs"), so no new member is needed.
 
