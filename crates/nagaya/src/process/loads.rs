@@ -22,6 +22,9 @@ pub struct EngineStates(
     Arc<Mutex<BTreeMap<String, EngineState>>>,
     /// The identity of each engine at its last open since the start. A served model shows its hashes from it.
     Arc<Mutex<BTreeMap<String, nagaya_abi::Identity>>>,
+    /// The count of the opens of each engine since the start. A worker that keeps a table on the device of an engine
+    /// knows from it that a new open cleared the table (engine-abi "Control vectors").
+    Arc<Mutex<BTreeMap<String, u64>>>,
 );
 
 impl EngineStates {
@@ -34,8 +37,24 @@ impl EngineStates {
             .cloned()
     }
 
-    /// Keep the identity of an engine that opened.
+    /// The count of the opens of the engine since the start: 0 before its first open.
+    pub fn opens(&self, engine: &str) -> u64 {
+        self.2
+            .lock()
+            .expect("the engine opens lock is poisoned")
+            .get(engine)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Keep the identity of an engine that opened, and count the open.
     pub(super) fn opened(&self, engine: &str, identity: &nagaya_abi::Identity) {
+        *self
+            .2
+            .lock()
+            .expect("the engine opens lock is poisoned")
+            .entry(engine.to_owned())
+            .or_default() += 1;
         self.1
             .lock()
             .expect("the engine identities lock is poisoned")

@@ -14,11 +14,21 @@ use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::fs::FileExt;
 
 use crate::{
-    Arena, ArenaFd, ArenaPart, Capability, ChainLimits, CheckStrength, Coverage, CoverageSpan, Determinism, Dtype,
-    ElasticTerm, Engine, Identity, Inputs, Kind, Lifetime, Limits, MandatoryTerm, MemoryLimits, Output, PartError,
-    PartKind, PartLimits, Parts, PassError, PassErrorKind, PassOut, PassStatus, Seal, SealError, Segment,
-    SegmentInputs, SlotId, SlotLimit, Slots, Stage, State, Tap, Tier, WriteResult,
+    Arena, ArenaFd, ArenaPart, CONTROL_TERM, Capability, ChainLimits, CheckStrength, Control, ControlItem,
+    ControlLimit, ControlOp, Coverage, CoverageSpan, Determinism, Dtype, ElasticTerm, Engine, Identity, Inputs, Kind,
+    Lifetime, Limits, MandatoryTerm, MemoryLimits, Output, PartError, PartKind, PartLimits, Parts, PassError,
+    PassErrorKind, PassOut, PassStatus, Seal, SealError, Segment, SegmentInputs, SlotId, SlotLimit, Slots, Stage,
+    State, Tap, TapLimit, Tier, WriteResult,
 };
+
+/// The layers of a vector in the control table of the fake (engine-abi "Control vectors").
+pub const FAKE_CONTROL_LAYERS: u32 = 2;
+
+/// The width of the residual of the fake: the values of one layer of a vector.
+pub const FAKE_CONTROL_WIDTH: u32 = 4;
+
+/// The tap that gives the residual after each layer at each logit row (spec 13.1).
+pub const RESIDUAL_TAP: &str = "residual";
 
 /// The name of the one part of the fake arena, on device 0 (spec 10.2).
 pub const FAKE_ARENA_PART: &str = "w";
@@ -172,6 +182,35 @@ impl FakeAlways {
         self.0.logit_bias = Some(bias);
         self
     }
+
+    /// Give the engine a control table of `tables` entries of [`FAKE_CONTROL_LAYERS`] layers of
+    /// [`FAKE_CONTROL_WIDTH`] values, and the tap `residual` (engine-abi "Control vectors", spec 13.1).
+    ///
+    /// An item changes the state after each token by a function of the vector, the operation and the strength. An add
+    /// or an ablate of strength 0 changes no bit. The tap gives values that are a function of the state at the row.
+    pub fn with_control(mut self, tables: u32) -> Self {
+        let limit = ControlLimit {
+            tables,
+            layers: FAKE_CONTROL_LAYERS,
+            width: FAKE_CONTROL_WIDTH,
+        };
+        let limits = &mut self.0.limits;
+        limits.capabilities.push(Capability::Control);
+        limits.control = Some(limit);
+        limits.memory.mandatory.push(MandatoryTerm {
+            name: CONTROL_TERM.to_owned(),
+            tier: Tier::Device(0),
+            bytes: limit.table_bytes(),
+            lifetime: Lifetime::Engine,
+            kinds: vec![Kind::Prefill, Kind::Decode],
+        });
+        limits.taps.push(TapLimit {
+            name: RESIDUAL_TAP.to_owned(),
+            conditions: Vec::new(),
+        });
+        self.0.table = vec![vec![0.0; limit.entry_bytes() as usize / 4]; tables as usize];
+        self
+    }
 }
 
 impl FakeBroken {
@@ -277,6 +316,8 @@ pub(crate) struct Fake {
     limits: Limits,
     slots: Vec<SlotData>,
     last_error: Option<String>,
+    /// The entries of the control table, each `layers` times `width` values. It is empty with no table.
+    table: Vec<Vec<f32>>,
 }
 
 /// The data of one slot.
@@ -393,6 +434,7 @@ impl Fake {
             limits,
             slots,
             last_error: None,
+            table: Vec::new(),
         }
     }
 
@@ -414,7 +456,17 @@ impl Fake {
         }
     }
 
-    fn pass(&mut self, segments: &[Segment], _taps: &[Tap]) -> Result<PassOut, PassError> {
+    fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
+        if let Some(tap) = taps
+            .iter()
+            .find(|tap| self.limits.taps.iter().all(|known| known.name != tap.name))
+        {
+            return Err(PassError {
+                kind: PassErrorKind::Refused,
+                message: format!("nothing ran: the fake has no tap `{}`", tap.name),
+            });
+        }
+        let tapped = !taps.is_empty();
         // A pass that the fake refuses runs no segment and changes no state (engine-abi, "A pass that did not run").
         if segments.len() > self.limits.max_segments as usize {
             return Err(PassError {
@@ -426,12 +478,18 @@ impl Fake {
                 ),
             });
         }
-        // The fake has no control table, so a control item would change no bit that it gives.
-        if segments.iter().any(|segment| !segment.control.is_empty()) {
-            return Err(PassError {
+        // A fake with no control table refuses a control item, which would change no bit that it gives.
+        for segment in segments.iter().filter(|segment| !segment.control.is_empty()) {
+            let Some(limit) = self.limits.control else {
+                return Err(PassError {
+                    kind: PassErrorKind::Refused,
+                    message: "a segment names control items; the fake does not declare `control`".to_owned(),
+                });
+            };
+            limit.check(&segment.control).map_err(|message| PassError {
                 kind: PassErrorKind::Refused,
-                message: "a segment names control items; the fake does not declare `control`".to_owned(),
-            });
+                message: format!("nothing ran: {message}"),
+            })?;
         }
         let rows: usize = segments
             .iter()
@@ -519,28 +577,45 @@ impl Fake {
                 });
             }
             let mut state_bytes = self.state_bytes(segment.state);
+            let steer = self.steer(&segment.control);
             let mut logit_outputs = Vec::new();
-            if let Some(vocab) = self.vocab {
+            let mut residual = Vec::new();
+            {
                 // Fold one token at a time, so that a row sees the state at its own position.
                 let mut folded = state_bytes;
                 let mut rows: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
+                let mut tapped_rows: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
                 for (index, token) in tokens.iter().enumerate() {
                     let position = segment.positions.get(index).copied().unwrap_or(index as u64);
-                    fold_token(&mut folded, *token, position);
-                    if segment.outputs.logit_rows.contains(&position) {
+                    fold_steered(&mut folded, *token, position, steer.as_ref());
+                    if !segment.outputs.logit_rows.contains(&position) {
+                        continue;
+                    }
+                    if let Some(vocab) = self.vocab {
                         rows.insert(position, logit_row(&folded, vocab, self.logit_bias.as_deref()));
+                    }
+                    if tapped {
+                        tapped_rows.insert(position, residual_row(&folded));
                     }
                 }
                 // The output order is the request order.
                 for row in &segment.outputs.logit_rows {
-                    logit_outputs.push(Output {
-                        name: "logits".to_owned(),
-                        dtype: Dtype::F32,
-                        bytes: rows[row].clone(),
-                    });
+                    if let Some(bytes) = rows.get(row) {
+                        logit_outputs.push(Output {
+                            name: "logits".to_owned(),
+                            dtype: Dtype::F32,
+                            bytes: bytes.clone(),
+                        });
+                    }
+                    if let Some(bytes) = tapped_rows.get(row) {
+                        residual.extend_from_slice(bytes);
+                    }
                 }
             }
-            fold_tokens(&mut state_bytes, tokens, &segment.positions);
+            for (index, token) in tokens.iter().enumerate() {
+                let position = segment.positions.get(index).copied().unwrap_or(index as u64);
+                fold_steered(&mut state_bytes, *token, position, steer.as_ref());
+            }
             match self.count_defect {
                 CountDefect::None => {}
                 CountDefect::Segments => {
@@ -566,12 +641,51 @@ impl Fake {
                 bytes: state_bytes.to_vec(),
             });
             outputs.extend(logit_outputs);
+            if tapped {
+                outputs.push(Output {
+                    name: RESIDUAL_TAP.to_owned(),
+                    dtype: Dtype::F32,
+                    bytes: residual,
+                });
+            }
         }
         Ok(PassOut {
             status: PassStatus::Ok,
             ms: 0,
             outputs,
         })
+    }
+
+    /// The change of the state after each token for a control list: a mix of the vector, the operation and the
+    /// strength of each item that changes bits, in order. A list of adds and ablates of strength 0 gives `None`, so it
+    /// changes no bit (engine-abi "Control vectors").
+    fn steer(&self, items: &[ControlItem]) -> Option<[u8; 16]> {
+        let mut changed = false;
+        let mut hash = 0x7374_6565_7200_u64;
+        for item in items.iter().filter(|item| !item.changes_nothing()) {
+            changed = true;
+            let op = match item.op {
+                ControlOp::Add => 1,
+                ControlOp::Ablate => 2,
+                ControlOp::Clamp => 3,
+            };
+            hash = mix(hash ^ op);
+            hash = mix(hash ^ u64::from(item.strength.to_bits()));
+            for value in &self.table[item.index as usize] {
+                hash = mix(hash ^ u64::from(value.to_bits()));
+            }
+        }
+        if !changed {
+            return None;
+        }
+        let mut bytes = [0u8; 16];
+        bytes[..8].copy_from_slice(&hash.to_le_bytes());
+        bytes[8..].copy_from_slice(&mix(hash).to_le_bytes());
+        // A change of 0 would leave a byte as it is. Thus each byte gets a bit.
+        for byte in &mut bytes {
+            *byte |= 1;
+        }
+        Some(bytes)
     }
 
     /// The bytes of the fixed state part, or zeros for an unknown slot.
@@ -729,19 +843,34 @@ impl Fake {
     }
 }
 
-/// Fold the tokens into the state, one after another. The result does not depend on how a pass splits the tokens.
-fn fold_tokens(state: &mut [u8; 16], tokens: &[u32], positions: &[u64]) {
-    for (index, token) in tokens.iter().enumerate() {
-        let position = positions.get(index).copied().unwrap_or(index as u64);
-        fold_token(state, *token, position);
-    }
-}
-
+/// Fold one token into the state. The result does not depend on how a pass splits the tokens.
 fn fold_token(state: &mut [u8; 16], token: u32, position: u64) {
     for (offset, byte) in token.to_le_bytes().iter().enumerate() {
         let slot = (position as usize + offset) % 16;
         state[slot] = state[slot].wrapping_mul(31).wrapping_add(*byte);
     }
+}
+
+/// Fold one token, then change the state by the mix of the control items, when a segment has one.
+fn fold_steered(state: &mut [u8; 16], token: u32, position: u64, steer: Option<&[u8; 16]>) {
+    fold_token(state, token, position);
+    if let Some(steer) = steer {
+        for (byte, change) in state.iter_mut().zip(steer) {
+            *byte ^= *change;
+        }
+    }
+}
+
+/// The residual tap of one row: [`FAKE_CONTROL_LAYERS`] layers of [`FAKE_CONTROL_WIDTH`] little-endian F32 values, a
+/// function of the state bytes. Each value is a small integer over 32, so it is exact.
+fn residual_row(state: &[u8; 16]) -> Vec<u8> {
+    let count = (FAKE_CONTROL_LAYERS * FAKE_CONTROL_WIDTH) as usize;
+    (0..count)
+        .flat_map(|index| {
+            let byte = state[(index * 5 + 3) % 16];
+            ((f32::from(byte) - 127.5) / 32.0 + (index / FAKE_CONTROL_WIDTH as usize) as f32).to_le_bytes()
+        })
+        .collect()
 }
 
 /// One logit row: `vocab` little-endian F32 values between -6 and 6, a function of the state bytes only. A bias adds
@@ -828,8 +957,56 @@ macro_rules! engine_impl {
                     None
                 }
             }
+
+            fn control(&mut self) -> Option<&mut dyn Control> {
+                if self.0.limits.control.is_some() {
+                    Some(&mut self.0)
+                } else {
+                    None
+                }
+            }
         }
     };
+}
+
+impl Control for Fake {
+    /// Write one vector into its entry. A wrong index, a wrong size or a value that is not finite is refused, and
+    /// nothing changes.
+    fn control_write(&mut self, index: u32, bytes: &[u8]) -> Result<(), String> {
+        let limit = self.limits.control.ok_or("the fake has no control table")?;
+        let refused = if index >= limit.tables {
+            Some(format!(
+                "the control table has {} entries, not entry {index}",
+                limit.tables
+            ))
+        } else if bytes.len() as u64 != limit.entry_bytes() {
+            Some(format!(
+                "a vector is {} layers of {} f32 values, {} bytes, not {} bytes",
+                limit.layers,
+                limit.width,
+                limit.entry_bytes(),
+                bytes.len()
+            ))
+        } else {
+            bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .position(|b| !f32::from_le_bytes(*b).is_finite())
+                .map(|at| format!("value {at} of the vector is not finite; the op needs finite values"))
+        };
+        if let Some(message) = refused {
+            self.last_error = Some(message.clone());
+            return Err(message);
+        }
+        self.table[index as usize] = bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
+            .collect();
+        Ok(())
+    }
 }
 
 engine_impl!(FakeAlways);

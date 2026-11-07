@@ -1412,6 +1412,21 @@ taps: residual                               the residual after each layer at ea
 Reason: a table that `open` sizes keeps the rule that `pass` never allocates. A vector of 24 layers at 2,048 values
 is 196,608 bytes. Thus a table of 8 entries is 1.5 MiB on a card of 32 GiB.
 
+**The worker of the table.** Proposed by Claude Opus 5.5, 2026-11-07, for milestone 25 step 7. The rule above says
+that the worker keeps the content id of each entry. These rules are open there.
+
+- A job claims its vectors when it goes into the queue. The claim ends when the job ends.
+- The worker binds the vectors of a job in its first quantum, a copy quantum, before its first pass. A held vector
+  keeps its entry. A vector that no entry holds goes into an empty entry. Else it goes into the entry of least recent
+  use whose vector no claim needs.
+- When no entry is free of claims, the job is a 429 `busy`. It changes no entry.
+- The worker counts the opens of the engine. A new open has a new table, so the worker forgets each entry.
+- An engine with stages and `control` is not built. A pass of another job can be in flight during a copy quantum
+  (D1).
+
+Reason: a claim keeps an entry that a queued job needs, and the least recent use keeps the vectors that clients use
+most.
+
 ## Not covered yet
 
 - Streams. They need a period, a deadline and a late policy, in `limits()` or per job. A pass blocks, so the

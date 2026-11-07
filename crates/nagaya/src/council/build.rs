@@ -8,7 +8,8 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
 use nagaya_abi::{
-    Engine, Kind, Limits, OutputsWanted, PassError, PassOut, PassStatus, Segment, SegmentInputs, State, WriteResult,
+    ControlItem, Engine, Kind, Limits, OutputsWanted, PassError, PassOut, PassStatus, Segment, SegmentInputs, State,
+    Tap, WriteResult,
 };
 use nagaya_council::build::{BoundaryRecipe, Step, plan_chunks, plan_steps};
 use nagaya_council::family::Boundary;
@@ -21,6 +22,7 @@ use nagaya_store::{
 use nagaya_telemetry::EngineState;
 
 use super::Clock;
+use super::control::{BindError, Checked, Claim, ControlTable};
 use super::error::ServiceError;
 use super::slots::{self, NoSlot, SlotLease, SlotPool};
 use super::staging::{self, Staging};
@@ -59,6 +61,20 @@ pub struct Shared {
     /// The interval copies of the contexts of the engine, by slot. `None` when the engine declares no grain or the
     /// profile caps the copies at 0 (spec 6.13).
     pub intervals: Option<Mutex<IntervalCopies<ContentId>>>,
+    /// The worker of the control table, when the engine declares `control` (engine-abi "Control vectors").
+    pub control: Option<Arc<Mutex<ControlTable>>>,
+}
+
+/// The tap that gives the residual after each layer at each logit row (spec 13.1).
+pub const RESIDUAL_TAP: &str = "residual";
+
+/// The control list of a job: its checked items and vectors, and the claim that keeps its vectors in the table while
+/// the job is queued or runs (engine-abi "Control vectors").
+pub struct JobControl {
+    /// The checked list.
+    pub checked: Checked,
+    /// The claim of the vectors of the list. The drop of the job ends it.
+    pub claim: Claim,
 }
 
 /// What a lookup or a build found and made.
@@ -221,6 +237,7 @@ fn copy_recipe_at(
 /// content id, and the last seal before it with its position (spec 6.13). A build and a dry run use it.
 fn best_copy(
     shared: &Shared,
+    root: RecipeId,
     recipes: &[BoundaryRecipe],
     tokens: &[u32],
     above: usize,
@@ -241,7 +258,7 @@ fn best_copy(
             if position <= above {
                 return None;
             }
-            let (recipe, base, at) = copy_recipe_at(shared.root, recipes, tokens, position)?;
+            let (recipe, base, at) = copy_recipe_at(root, recipes, tokens, position)?;
             (recipe == entry.recipe).then_some((position, entry.content_id, base, at))
         })
         .max_by_key(|(position, ..)| *position)
@@ -255,6 +272,8 @@ fn highest(held: &[Option<ContentId>]) -> Option<usize> {
 /// The job of a dry run: look up the prefixes and report. It restores and feeds nothing.
 pub struct LookupBody {
     shared: Arc<Shared>,
+    /// The root recipe of the context: the plain root, or the root of its control list (spec 11.12).
+    root: RecipeId,
     recipes: Vec<BoundaryRecipe>,
     cuts: Vec<Cut>,
     extension: Option<Extension>,
@@ -275,8 +294,10 @@ impl LookupBody {
         room: usize,
         tx: Sender<Result<Outcome, ServiceError>>,
     ) -> Self {
+        let root = shared.root;
         Self {
             shared,
+            root,
             recipes,
             cuts: Vec::new(),
             extension: None,
@@ -284,6 +305,12 @@ impl LookupBody {
             room,
             tx: Some(tx),
         }
+    }
+
+    /// Look up the context under this root recipe: the root of its control list (spec 11.12).
+    pub fn root(mut self, root: RecipeId) -> Self {
+        self.root = root;
+        self
     }
 
     /// Let the lookup start from a held cut (see [`ContextBody::cuts`]).
@@ -323,7 +350,7 @@ impl LookupBody {
         let start = highest(&held);
         let above = start.map_or(0, |index| recipes[index].boundary.tokens);
         // A build restores an interval copy above the highest held boundary, so a dry run reports it (spec 6.13).
-        if let Some((position, id, ..)) = best_copy(&self.shared, &recipes, &self.tokens, above) {
+        if let Some((position, id, ..)) = best_copy(&self.shared, self.root, &recipes, &self.tokens, above) {
             return Ok(Outcome {
                 from: Some(id),
                 kept: position,
@@ -391,6 +418,14 @@ pub enum Want {
         /// The kind of the quanta (spec 5.2).
         kind: Kind,
     },
+    /// Feed tokens after the rows of the slot, and give the residual tap of the last token (spec 13.1). The feed takes
+    /// one quantum of `kind` for each pass, and only its last pass names the tap.
+    Tap {
+        /// The tokens.
+        tokens: Vec<u32>,
+        /// The kind of the quanta (spec 5.2).
+        kind: Kind,
+    },
     /// Keep a copy of the state of the slot in memory.
     Mark,
     /// Put the copy that `Mark` kept back into the slot.
@@ -420,6 +455,8 @@ pub enum Got {
     Resumed(Vec<BoundaryRecipe>),
     /// The feed is complete. The row is there when the feed asked for it.
     Fed(Option<Vec<f32>>),
+    /// The feed of a [`Want::Tap`] is complete: the bytes of the output `residual` of its last token.
+    Tapped(Vec<u8>),
     /// The mark or the rewind is complete.
     Copied,
     /// The store holds the snapshot, or holds its bytes under another recipe (`None`).
@@ -464,6 +501,8 @@ struct Feeding {
     tokens: Vec<u32>,
     kind: Kind,
     base: usize,
+    /// True when the last pass names the residual tap.
+    tap: bool,
 }
 
 /// What the body does in one of its later quanta.
@@ -506,6 +545,16 @@ struct Marked {
 /// The job of a context: a build, then the work of a [`Then`].
 pub struct ContextBody<T: Then> {
     shared: Arc<Shared>,
+    /// The root recipe of the context: the plain root, or the root of its control list (spec 11.12).
+    root: RecipeId,
+    /// The control list of the job, when the context names one.
+    control: Option<JobControl>,
+    /// The items of each segment of the job, after the worker bound the vectors of the list to entries of the table.
+    items: Vec<ControlItem>,
+    /// False when the job makes no interval copy, as the job of a control vector (spec 11.12).
+    copies: bool,
+    /// The output `residual` of the last pass of a tapped feed.
+    residual: Option<Vec<u8>>,
     tokens: Arc<[u32]>,
     recipes: Vec<BoundaryRecipe>,
     /// The cuts where the job may start, from the highest down.
@@ -582,8 +631,14 @@ impl<T: Then> ContextBody<T> {
             tokens.len(),
             "the last boundary of a context is its end"
         );
+        let root = shared.root;
         Self {
             shared,
+            root,
+            control: None,
+            items: Vec::new(),
+            copies: true,
+            residual: None,
             tokens,
             recipes,
             cuts: Vec::new(),
@@ -623,6 +678,49 @@ impl<T: Then> ContextBody<T> {
     pub fn extension(mut self, extension: Option<Extension>) -> Self {
         self.extension = extension;
         self
+    }
+
+    /// Run the job under the root recipe of its control list, with the items of the list on each pass (spec 11.12).
+    /// The recipes of the job must chain from `root`.
+    pub fn control(mut self, root: RecipeId, control: Option<JobControl>) -> Self {
+        self.root = root;
+        self.control = control;
+        self
+    }
+
+    /// Make no interval copy (spec 6.13): the job leaves no state in the store, as the job of a control vector.
+    pub fn no_copies(mut self) -> Self {
+        self.copies = false;
+        self
+    }
+
+    /// Bind the vectors of the control list to entries of the table, before the first pass (engine-abi "Control
+    /// vectors"). The worker writes each vector that no entry holds.
+    fn bind(&mut self, engine: &mut dyn Engine) -> Result<(), ServiceError> {
+        let Some(control) = &self.control else {
+            return Ok(());
+        };
+        let table =
+            self.shared.control.as_ref().ok_or_else(|| {
+                ServiceError::internal("a job names control items, and its engine has no control table")
+            })?;
+        let opens = self.shared.ports.engine_opens(&self.shared.engine_name);
+        let mut write = |index: u32, bytes: &[u8]| match engine.control() {
+            Some(control) => control.control_write(index, bytes),
+            None => Err("the engine lost its control capability".to_owned()),
+        };
+        let indices = table
+            .lock()
+            .expect("the control table lock is poisoned")
+            .bind(opens, &control.checked.vectors, &mut write)
+            .map_err(|error| match error {
+                BindError::Busy(message) => ServiceError::Busy(format!("nothing ran: {message}")),
+                BindError::Write(message) => ServiceError::internal(format!(
+                    "the engine refused the write of a checked control vector: {message}"
+                )),
+            })?;
+        self.items = super::control::items(&control.checked.items, &control.checked.vectors, &indices);
+        Ok(())
     }
 
     /// What the build gives the work when it is complete.
@@ -764,7 +862,8 @@ impl<T: Then> ContextBody<T> {
                 engine.last_error().unwrap_or_default()
             )));
         }
-        self.sealed = Some((self.shared.root, 0));
+        self.bind(engine)?;
+        self.sealed = Some((self.root, 0));
         // The longest held snapshot wins: a seal inside the open text of a continuation is after every boundary.
         if self.restore_seam(engine)? {
             self.track(engine)?;
@@ -865,7 +964,12 @@ impl<T: Then> ContextBody<T> {
                 self.units.push_back(Unit::Snapshot(recipe, reason));
                 Kind::Copy
             }
-            Want::Feed { tokens, logits, kind } => {
+            Want::Feed { .. } | Want::Tap { .. } => {
+                let (tokens, logits, kind, tap) = match want {
+                    Want::Feed { tokens, logits, kind } => (tokens, logits, kind, false),
+                    Want::Tap { tokens, kind } => (tokens, true, kind, true),
+                    _ => unreachable!("the arm holds a feed"),
+                };
                 if tokens.is_empty() {
                     return Err(ServiceError::internal("a job asked to feed no token"));
                 }
@@ -886,7 +990,12 @@ impl<T: Then> ContextBody<T> {
                         row: logits && range.end == tokens.len(),
                     });
                 }
-                self.feeding = Some(Feeding { tokens, kind, base });
+                self.feeding = Some(Feeding {
+                    tokens,
+                    kind,
+                    base,
+                    tap,
+                });
                 kind
             }
         };
@@ -911,8 +1020,15 @@ impl<T: Then> ContextBody<T> {
             "the scheduler gave a quantum of another kind than the unit"
         );
         if matches!(unit, Unit::Build(Step::Feed { .. }) | Unit::Feed { .. }) {
+            let tapped = matches!(unit, Unit::Feed { row: true, .. }) && self.feeding.as_ref().is_some_and(|f| f.tap);
             let segment = self.begin(unit)?;
-            let result = engine.pass(&[segment], &[]);
+            let taps = match tapped {
+                true => vec![Tap {
+                    name: RESIDUAL_TAP.to_owned(),
+                }],
+                false => Vec::new(),
+            };
+            let result = engine.pass(&[segment], &taps);
             let last_error = engine.last_error();
             return self.passed(result, last_error, engine);
         }
@@ -991,7 +1107,7 @@ impl<T: Then> ContextBody<T> {
         }
         let to = pending.from + pending.tokens.len();
         let segment = Segment {
-            control: Vec::new(),
+            control: self.items.clone(),
             state: self.state(),
             inputs: SegmentInputs::Tokens(pending.tokens.clone()),
             positions: (pending.from as u64..to as u64).collect(),
@@ -1042,10 +1158,30 @@ impl<T: Then> ContextBody<T> {
             let row = logit_row(&output.bytes, self.shared.vocab)
                 .map_err(|error| ServiceError::internal(format!("the pass over tokens {from} to {to}: {error}")))?;
             self.row = Some(row);
+            if self.feeding.as_ref().is_some_and(|feeding| feeding.tap) {
+                let mut taps = out.outputs.iter().filter(|output| output.name == RESIDUAL_TAP);
+                let (Some(output), None) = (taps.next(), taps.next()) else {
+                    return Err(ServiceError::internal(format!(
+                        "a pass over tokens {from} to {to} named the tap `{RESIDUAL_TAP}` and did not give one output \
+                         of it"
+                    )));
+                };
+                self.residual = Some(output.bytes.clone());
+            }
         }
         let got = if !pending.build && self.units.is_empty() && self.in_flight.is_empty() {
-            self.feeding = None;
-            Some(Got::Fed(self.row.take()))
+            let tapped = self.feeding.take().is_some_and(|feeding| feeding.tap);
+            match tapped {
+                true => {
+                    self.row = None;
+                    let residual = self
+                        .residual
+                        .take()
+                        .ok_or_else(|| ServiceError::internal("a tapped feed ended with no output of the tap"))?;
+                    Some(Got::Tapped(residual))
+                }
+                false => Some(Got::Fed(self.row.take())),
+            }
         } else {
             None
         };
@@ -1077,7 +1213,7 @@ impl<T: Then> ContextBody<T> {
 
     /// Start to track the slot for interval copies at its row count (spec 6.13).
     fn track(&mut self, engine: &mut dyn Engine) -> Result<(), ServiceError> {
-        let Some(intervals) = &self.shared.intervals else {
+        let Some(intervals) = self.shared.intervals.as_ref().filter(|_| self.copies) else {
             return Ok(());
         };
         let rows = self.rows(engine)?;
@@ -1100,7 +1236,7 @@ impl<T: Then> ContextBody<T> {
     /// Track the slot again after a rewind moved its rows back. The context keeps its copy.
     fn retrack(&mut self, engine: &mut dyn Engine) -> Result<(), ServiceError> {
         let shared = Arc::clone(&self.shared);
-        let Some(intervals) = &shared.intervals else {
+        let Some(intervals) = shared.intervals.as_ref().filter(|_| self.copies) else {
             return Ok(());
         };
         let copy = intervals
@@ -1122,7 +1258,7 @@ impl<T: Then> ContextBody<T> {
 
     /// Tell the tracker the rows after a pass. True when an interval copy is due (spec 6.13).
     fn copy_due(&mut self, engine: &mut dyn Engine) -> Result<bool, ServiceError> {
-        let Some(intervals) = &self.shared.intervals else {
+        let Some(intervals) = self.shared.intervals.as_ref().filter(|_| self.copies) else {
             return Ok(false);
         };
         let rows = self.rows(engine)?;
@@ -1211,7 +1347,8 @@ impl<T: Then> ContextBody<T> {
     /// Restore the longest interval copy of the context above the token `above`, when the store holds one. A restore
     /// writes the copy's parts, and the build replays the tokens after it (spec 6.13). It gives true on a restore.
     fn restore_copy(&mut self, engine: &mut dyn Engine, above: usize) -> Result<bool, ServiceError> {
-        let Some((position, id, base, at)) = best_copy(&self.shared, &self.recipes, &self.tokens, above) else {
+        let Some((position, id, base, at)) = best_copy(&self.shared, self.root, &self.recipes, &self.tokens, above)
+        else {
             return Ok(false);
         };
         let slot = self.slot();

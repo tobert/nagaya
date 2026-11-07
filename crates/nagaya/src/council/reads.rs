@@ -118,13 +118,21 @@ impl Service {
         let schedule = Schedule::of(request.class, request.priority);
         let mut reads = Vec::new();
         let mut usage = Usage::default();
-        for (index, context) in request.contexts.iter().enumerate() {
+        // Each control list is checked before the first read runs (spec 11.12).
+        let steers = request
+            .contexts
+            .iter()
+            .enumerate()
+            .map(|(index, context)| self.steer(context, &format!("contexts[{index}].")))
+            .collect::<Result<Vec<_>, _>>()?;
+        for ((index, context), steer) in request.contexts.iter().enumerate().zip(steers) {
             let rendering = self.family.render(context, false)?;
             let end = rendering.end;
             if end + longest > self.config.context_tokens {
                 return Err(ServiceError::past_context(end + longest, self.config.context_tokens));
             }
-            let recipes = boundary_recipes(self.root, &rendering)?;
+            let root = steer.root;
+            let recipes = boundary_recipes(root, &rendering)?;
             let tokens: Arc<[u32]> = rendering.tokens[..end].into();
             let then = RawThen {
                 suffixes: Arc::clone(&suffixes),
@@ -133,8 +141,13 @@ impl Service {
                 reads: Vec::new(),
             };
             let shared = Arc::clone(&self.shared);
-            let cuts = self.cuts(context, &rendering)?;
-            let job = |tx| ContextBody::with(shared, tokens, recipes, end + longest, then, tx).cuts(cuts);
+            let cuts = self.cuts(root, context, &rendering)?;
+            let control = steer.control;
+            let job = |tx| {
+                ContextBody::with(shared, tokens, recipes, end + longest, then, tx)
+                    .cuts(cuts)
+                    .control(root, control)
+            };
             let finished = self.run_context(job, schedule, None)?;
             let head = finished
                 .outcome

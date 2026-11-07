@@ -14,10 +14,37 @@ use std::time::{Duration, Instant};
 use gogi_conformance::{Opts, Report, Restart, Status, run};
 use support::Lines;
 
+/// The engine has a control table of 4 entries, so the suite runs its control checks (spec 11.12). The table is a
+/// device term of 4 entries of 32 bytes.
 const PROFILE: &str = "[[engines]]\nname = \"toy\"\nkind = \"fake-toy\"\ndevices = [0]\nshare = 1\n\
-     [[budgets]]\ntiers = [\"device(0)\"]\nbytes = 4096\n\
+     config = { control = 4 }\n\
+     [[budgets]]\ntiers = [\"device(0)\"]\nbytes = 4224\n\
      [[budgets]]\ntiers = [\"host\"]\nbytes = 33554432\n\
      [store]\nnvme = 67108864\nhost = 16777216\nobjects = 25165824\n";
+
+/// The checks of gogi's suite for a served model with `control_vectors` (gogi `checks/control.rs`). Each must run and
+/// pass, not skip.
+const CONTROL_CHECKS: [&str; 19] = [
+    "a control vector response names its served model and counts each side",
+    "a control vector response carries the served model's identity",
+    "a control vector request writes no tokens",
+    "the control vector names its served model and weights",
+    "raw reads with an unknown op are a 400 naming contexts[1].control[0].op",
+    "a build with a strength that is not a number in control is a 400 naming control[0].strength",
+    "a control vector request with a context with a control of its own is a 400 naming negative[1].control",
+    "the same contexts give the same vector",
+    "the control vector reads back with its media type",
+    "the control vector's bytes hash to its id",
+    "the control vector has the layers and width the response names",
+    "add and ablate at strength 0 give the numbers of no control",
+    "a list that changes nothing still has model state of its own",
+    "a list that changes the model never reuses the plain model state",
+    "a control vector the server does not hold is a 404 naming control[0].vector",
+    "a control vector for other weights is a 400 naming control[0].vector",
+    "a control vector of another width is a 400 naming control[0].vector",
+    "a side past control_vector_contexts is a 400 naming it",
+    "a dry run of a control vector request makes no vector",
+];
 
 /// A free TCP port on loopback. The port stays the same through a restart.
 fn free_port() -> u16 {
@@ -29,12 +56,12 @@ fn free_port() -> u16 {
 }
 
 /// A profile with two fake-toy engines, each its own text served model (spec 11.7, "Several text models in one
-/// process", Proposed).
+/// process", Proposed). `toy-a` has a control table and `toy-b` has none, so the suite checks both paths.
 const TWO_MODELS: &str = "[[engines]]\nname = \"toy-a\"\nkind = \"fake-toy\"\ndevices = [0]\nshare = 1\n\
-     config = { model = \"toy-a\" }\n\
+     config = { model = \"toy-a\", control = 4 }\n\
      [[engines]]\nname = \"toy-b\"\nkind = \"fake-toy\"\ndevices = [0]\nshare = 1\n\
      config = { model = \"toy-b\" }\n\
-     [[budgets]]\ntiers = [\"device(0)\"]\nbytes = 8192\n\
+     [[budgets]]\ntiers = [\"device(0)\"]\nbytes = 8320\n\
      [[budgets]]\ntiers = [\"host\"]\nbytes = 33554432\n\
      [store]\nnvme = 67108864\nhost = 16777216\nobjects = 25165824\n";
 
@@ -227,6 +254,10 @@ fn gogi_conformance_passes_against_the_process_with_the_fake_engine() {
     ] {
         assert!(ok(name), "{name}");
     }
+    // The control checks ran: the engine has a control table, and the process has an object store (spec 11.12).
+    for name in CONTROL_CHECKS {
+        assert!(ok(name), "{name}");
+    }
     // The checks of a cut reply need a whole reply of two tokens or more. The suite's context holds a random nonce,
     // and about one run in twenty, the fake engine's greedy reply is one token. Then the suite skips them.
     let short = report.checks.iter().any(|check| {
@@ -331,6 +362,18 @@ fn gogi_conformance_passes_on_each_of_two_text_models_of_one_process() {
             "generation holds its head".to_owned(),
         ] {
             assert!(ok(&name), "{model}: {name}");
+        }
+        // toy-a runs the control checks, and toy-b, with no table, runs the refusals of a model without the capability.
+        let control: &[&str] = match model {
+            "toy-a" => &CONTROL_CHECKS,
+            _ => &[
+                "a build with control to a model without control_vectors is a 400 naming control",
+                "a generation with control to a model without control_vectors is a 400 naming control",
+                "a control vector from a model without control_vectors is a 400 naming model",
+            ],
+        };
+        for name in control {
+            assert!(ok(name), "{model}: {name}");
         }
     }
     assert_eq!(
