@@ -3405,6 +3405,7 @@ has a tailnet address in its code.)
   `device` yet. Its `context_tokens` is 4096, or mk's `MAX_CONTEXT` for mk.
 - A process serves at most one model in milestone 12. The specs and the pins of a service are files in the store
   directory, and two services would write one file. A profile with two served engines refuses the start (exit 3).
+  The Proposed note "Several text models in one process" below replaces this rule when Amy accepts it.
 - Specs, pins and snapshots belong to the server. Their routes use the one service. With no served model, they are
   a 503 `unavailable`.
 - A service call blocks, so each call runs on a call thread of its own, on the pool CPUs (3.2a). At most 64 calls
@@ -3430,6 +3431,28 @@ has a tailnet address in its code.)
   and the load routes (3.3, 3.3b). `cluster`, `cas`, `traces` and the status feed (9.7) are not built.
 - Continuations are built (11.3c). `gogi-conformance` against the process with the fake engine gave 271 to 274 ok,
   0 FAIL and 8 skip on 2026-10-21, at gogi `dc94cb3`. The number of checks depends on the reply to a random nonce.
+
+**Several text models in one process.** **Proposed** by Claude Opus 5.5, 2026-11-06. Reason: milestone 24 step 9
+serves `lfm3`, `lfm3-omni` and Gemma 4 from one process on b70host. gogi "Served models" says that specs, pins and
+snapshots belong to the server, not to a served model. Thus one set of files serves all the text models.
+
+- A process serves each text engine whose kind has a family library, opened or described. A profile can have
+  several. Their served model names differ (2.3).
+- The server opens the specs and the pin book once, in the store directory. Each text service gets a shared handle
+  to them, so two services never write one file.
+- The home is the first text service that the process attaches. The opened engines attach first, then the engines
+  on demand. The routes of specs, pins and snapshots use the home. A decision of any text model reads the specs
+  through the same handle.
+- The home reads and pins the snapshots of each text engine and each speech engine of the process. A snapshot names
+  the served model of the engine that made it.
+- A pin names no served model. It keeps a snapshot of model A while a request names model B, and while A is
+  `unloaded` (gogi "Served models").
+- The limits of the server come from the config of the home: `pin_bytes`, `case_bytes`, `choice_options` and
+  `questions_per_spec`. The limits of each served model stay its own.
+- A request names its served model by `model`. The 503 of a model that is not `ready` names that model and its
+  status. The load routes name engines (3.3b), so they do not change.
+- The other choice was one book of specs and pins for each served model. gogi forbids it: a pin or a spec does not
+  name a served model.
 
 **11.8 Speech.** Amy decided these rules on 2026-10-24, by interview (`AGENTS.md` milestone 17).
 

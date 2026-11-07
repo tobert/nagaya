@@ -282,8 +282,10 @@ fn a_draining_council_refuses_a_request_for_its_model_with_a_503() {
     assert_eq!(identity["models"][0]["status"], "draining");
 }
 
+/// A council serves several text models, each with its own name (spec 11.7, "Several text models in one process",
+/// Proposed). Two served models with one name refuse the council, because a request could not name one of them.
 #[test]
-fn a_council_serves_at_most_one_model() {
+fn a_council_refuses_two_served_models_with_one_name() {
     let f = Fixture::new();
     let served = |service: Service| Served {
         service,
@@ -291,7 +293,10 @@ fn a_council_serves_at_most_one_model() {
         device: None,
     };
     let two = vec![served(f.attach_again()), served(f.attach_again())];
-    assert!(Council::new(two, None).is_err());
+    let error = Council::new(two, None)
+        .err()
+        .expect("two served models named toy refuse the council");
+    assert!(error.contains("serve the model `toy`"), "{error}");
 }
 
 #[test]

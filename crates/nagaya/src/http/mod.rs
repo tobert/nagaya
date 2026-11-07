@@ -124,14 +124,15 @@ pub struct Council {
 }
 
 impl Council {
-    /// Make the council of a process. The process serves at most one model in milestone 12, because the specs and
-    /// the pins of a service live in the store directory, and two services there would write one file.
+    /// Make the council of a process. It can serve several text models. Their services share one handle to the specs
+    /// and the pin book, so two services never write one file (spec 11.7, "Several text models in one process").
     pub fn new(models: Vec<Served>, call_cpus: Option<Vec<u32>>) -> Result<Self, String> {
-        if models.len() > 1 {
-            let names: Vec<&str> = models.iter().map(|served| served.service.model()).collect();
+        let mut names: Vec<&str> = models.iter().map(|served| served.service.model()).collect();
+        names.sort_unstable();
+        if let Some(pair) = names.windows(2).find(|pair| pair[0] == pair[1]) {
             return Err(format!(
-                "the profile has {} engines with a family library ({names:?}); the process serves at most one",
-                models.len()
+                "two engines of the profile serve the model `{}`; give each served model its own name",
+                pair[0]
             ));
         }
         Ok(Self {
@@ -529,8 +530,9 @@ impl Council {
         Ok(Arc::clone(served))
     }
 
-    /// The service that holds the specs, the pins and the snapshots of the server. They belong to the server, not to
-    /// a served model (gogi "Served models").
+    /// The home: the first text service, which serves the routes of the specs, the pins and the snapshots. They belong
+    /// to the server, not to a served model (gogi "Served models"). Each text service shares the same files, and the
+    /// home reads the snapshots of each text engine (spec 11.7, "Several text models in one process").
     fn home(&self) -> Result<Arc<Served>, Failure> {
         self.models.first().cloned().ok_or_else(|| {
             Failure::from(ServiceError::Stopping)

@@ -12,7 +12,7 @@ use nagaya_abi::{Identity, Limits};
 use nagaya_council::family::Family;
 
 use crate::admission::Registry;
-use crate::council::{Service, ServiceConfig};
+use crate::council::{ServerFiles, Service, ServiceConfig};
 use crate::http::{Council, Served};
 use crate::process::{OpenedEngine, Ports};
 use crate::profile::{PlacementProfile, Residency};
@@ -240,13 +240,14 @@ pub fn council_with(
             )
         }))
         .collect();
+    let mut plans = Vec::new();
     for (engine, is_described) in &as_opened {
         let placement = profile
             .engines
             .iter()
             .find(|placement| placement.name == engine.name)
             .ok_or_else(|| format!("the opened engine `{}` is not in the profile", engine.name))?;
-        let Some(mut plan) = families.plan(engine, &placement.family)? else {
+        let Some(plan) = families.plan(engine, &placement.family)? else {
             tracing::info!(
                 "engine `{}` has the family `{}`, which has no library, so it is not a served model",
                 engine.name,
@@ -254,21 +255,31 @@ pub fn council_with(
             );
             continue;
         };
-        plan.config.peers = peers.iter().filter(|(peer, _)| *peer != engine.name).cloned().collect();
-        let service = if *is_described {
-            Service::attach_described(
-                ports.clone(),
-                plan.family,
-                store_dir,
-                plan.config,
-                engine.identity.clone(),
-                engine.limits.clone(),
-            )
-        } else {
-            Service::attach(ports.clone(), plan.family, store_dir, plan.config)
-        }
-        .map_err(|error| format!("cannot serve engine `{}`: {error}", engine.name))?;
-        if *is_described {
+        plans.push((engine, *is_described, plan));
+    }
+    // The home reads and pins the snapshots of each text engine and each speech engine (spec 11.7, Proposed).
+    let texts: Vec<(String, String)> = plans
+        .iter()
+        .map(|(engine, _, plan)| (engine.name.clone(), plan.config.model.clone()))
+        .collect();
+    // The specs and the pin book of the server open once, with the spec rules of the home.
+    let files = plans
+        .first()
+        .map(|(_, _, plan)| ServerFiles::open(store_dir, plan.config.spec_rules))
+        .transpose()
+        .map_err(|error| format!("cannot open the specs and the pins of the server: {error}"))?;
+    for (engine, is_described, mut plan) in plans {
+        plan.config.peers = texts
+            .iter()
+            .chain(peers)
+            .filter(|(peer, _)| *peer != engine.name)
+            .cloned()
+            .collect();
+        let files = files.clone().expect("a plan opened the files of the server");
+        let described = is_described.then(|| (engine.identity.clone(), engine.limits.clone()));
+        let service = Service::attach_to(ports.clone(), plan.family, files, plan.config, described)
+            .map_err(|error| format!("cannot serve engine `{}`: {error}", engine.name))?;
+        if is_described {
             tracing::info!(
                 "serving model `{}` on engine `{}`, which loads on demand",
                 service.model(),

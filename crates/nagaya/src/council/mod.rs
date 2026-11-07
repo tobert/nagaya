@@ -269,6 +269,25 @@ impl Drop for Charge<'_> {
     }
 }
 
+/// The specs and the pin book of the server: the files in the store directory (spec 11.7, "Several text models in one
+/// process", Proposed). The server opens them once, and each text service holds a clone, so two services never write
+/// one file. A clone is a handle to the same specs and the same book.
+#[derive(Clone)]
+pub struct ServerFiles {
+    specs: Arc<Mutex<Specs>>,
+    pins: Arc<Mutex<PinBook>>,
+}
+
+impl ServerFiles {
+    /// Open the specs and the pin book in `store_dir`. `rules` are what a held spec may hold.
+    pub fn open(store_dir: &Path, rules: SpecRules) -> Result<Self, ServiceError> {
+        Ok(Self {
+            specs: Arc::new(Mutex::new(Specs::open(store_dir, rules)?)),
+            pins: Arc::new(Mutex::new(PinBook::open(store_dir)?)),
+        })
+    }
+}
+
 /// The council service of one served model.
 pub struct Service {
     ports: Ports,
@@ -280,10 +299,12 @@ pub struct Service {
     shared: Arc<Shared>,
     root: nagaya_store::RecipeId,
     identity: nagaya_abi::Identity,
-    specs: Mutex<Specs>,
-    /// The pin book. Lock order: take `pins` before the store (`shared.store`), never the store before `pins`. A
-    /// method that needs both locks `pins` first. Two methods that lock in two orders can wait for each other for ever.
-    pins: Mutex<PinBook>,
+    /// The specs of the server, which each text service shares.
+    specs: Arc<Mutex<Specs>>,
+    /// The pin book of the server, which each text service shares. Lock order: take `pins` before the store
+    /// (`shared.store`), never the store before `pins`. A method that needs both locks `pins` first. Two methods that
+    /// lock in two orders can wait for each other for ever.
+    pins: Arc<Mutex<PinBook>>,
 }
 
 impl Service {
@@ -296,7 +317,7 @@ impl Service {
     ///
     /// The engine must have the parts and slots capabilities, and its limits must name slots and pass inputs. The
     /// call reads the identity and the limits of the engine on its group thread. It opens the specs and the pins in
-    /// `store_dir`.
+    /// `store_dir`. A process with several text services gives each the same files with [`Service::attach_to`].
     pub fn attach(
         ports: Ports,
         family: Arc<dyn Family>,
@@ -316,14 +337,20 @@ impl Service {
         identity: nagaya_abi::Identity,
         limits: Limits,
     ) -> Result<Self, ServiceError> {
-        Self::attach_facts(
-            ports,
-            family,
-            store_dir,
-            config,
-            system_clock(),
-            Some((identity, limits)),
-        )
+        let files = ServerFiles::open(store_dir, config.spec_rules)?;
+        Self::attach_to(ports, family, files, config, Some((identity, limits)))
+    }
+
+    /// Attach a service that shares the specs and the pin book of the server (spec 11.7). `described` holds the
+    /// identity and the limits of an engine that is not loaded, as [`Service::attach_described`] takes them.
+    pub fn attach_to(
+        ports: Ports,
+        family: Arc<dyn Family>,
+        files: ServerFiles,
+        config: ServiceConfig,
+        described: Option<(nagaya_abi::Identity, Limits)>,
+    ) -> Result<Self, ServiceError> {
+        Self::attach_facts(ports, family, files, config, system_clock(), described)
     }
 
     /// Like [`Service::attach`], with a clock that the caller chooses.
@@ -334,14 +361,15 @@ impl Service {
         config: ServiceConfig,
         clock: Clock,
     ) -> Result<Self, ServiceError> {
-        Self::attach_facts(ports, family, store_dir, config, clock, None)
+        let files = ServerFiles::open(store_dir, config.spec_rules)?;
+        Self::attach_facts(ports, family, files, config, clock, None)
     }
 
     /// Attach with the facts of a description, or with the facts that the loaded engine gives.
     fn attach_facts(
         ports: Ports,
         family: Arc<dyn Family>,
-        store_dir: &Path,
+        files: ServerFiles,
         config: ServiceConfig,
         clock: Clock,
         described: Option<(nagaya_abi::Identity, Limits)>,
@@ -425,8 +453,6 @@ impl Service {
             pool,
             clock,
         });
-        let specs = Specs::open(store_dir, config.spec_rules)?;
-        let book = PinBook::open(store_dir)?;
         let service = Self {
             ports,
             family,
@@ -435,8 +461,8 @@ impl Service {
             shared,
             root,
             identity,
-            specs: Mutex::new(specs),
-            pins: Mutex::new(book),
+            specs: files.specs,
+            pins: files.pins,
             config,
         };
         service.settle_pins()?;
