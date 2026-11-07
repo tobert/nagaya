@@ -523,3 +523,83 @@ fn head_gate_matches_the_reference_in_place() {
     let err = rel(&got, &head_gate(&a, &g, GATE_H, GATE_D, GATE_STRIDE, GATE_OFFSET));
     assert!(err < 1e-6, "relative error {err} against the CPU form");
 }
+
+/// Runs one control item on the rows `h` with the vector `v` on the card, in one task for each part of `split` (the
+/// counts of rows). Returns the rows after the op.
+fn control_on_card(card: &mut Card, h: &[f32], v: &[f32], op: ControlOp, s: f32, split: &[usize]) -> Vec<f32> {
+    let (hb, vb) = (card.buf(h), card.buf(v));
+    let mut at = 0;
+    let parts: Vec<MkTaskDescriptor> = split
+        .iter()
+        .map(|n| {
+            let task = tasks::control(
+                hb.at() + (at * CONTROL_K * 4) as u64,
+                vb.at(),
+                *n as u32,
+                CONTROL_K as u32,
+                op,
+                s,
+            );
+            at += n;
+            task
+        })
+        .collect();
+    assert_eq!(at * CONTROL_K, h.len());
+    card.run(&parts);
+    let got = hb.read(card.card(), h.len());
+    hb.free(card.card());
+    vb.free(card.card());
+    got
+}
+
+/// `OP_CONTROL` matches the CPU form for each operation, on rows of the width of the LFM3 residual.
+///
+/// Falsified by a kernel whose clamp uses `s + along` in place of `s - along`.
+#[test]
+fn control_matches_the_cpu_form_for_each_operation() {
+    let mut card = Card::open();
+    let (h, v) = control_inputs();
+    for (op, s) in CONTROL_CASES {
+        let got = control_on_card(&mut card, &h, &v, op, s, &[CONTROL_ROWS]);
+        let err = rel(&got, &control(&h, &v, CONTROL_K, op, s));
+        assert!(err < 1e-6, "{op:?} {s}: relative error {err} against the CPU form");
+    }
+}
+
+/// A row gets the same bits from `OP_CONTROL` alone as in a block of rows, so a decode step equals the same position
+/// in a prefill. The block has more rows than the interpreter has work-groups, so a work-group takes several rows.
+///
+/// Falsified by a kernel whose dot product runs on from one row of a work-group to the next. A block of 5 rows did
+/// not catch it, because each of the 32 work-groups took at most one row.
+#[test]
+fn control_gives_a_row_the_same_bits_in_any_split() {
+    let mut card = Card::open();
+    let (h, v) = control_rows(CONTROL_BLOCK);
+    for (op, s) in CONTROL_CASES {
+        let whole = control_on_card(&mut card, &h, &v, op, s, &[CONTROL_BLOCK]);
+        let single = control_on_card(&mut card, &h, &v, op, s, &[1; CONTROL_BLOCK]);
+        let split = control_on_card(&mut card, &h, &v, op, s, &[33, 37]);
+        assert_eq!(first_other_bits(&single, &whole), None, "{op:?} {s}: one row at a time");
+        assert_eq!(
+            first_other_bits(&split, &whole),
+            None,
+            "{op:?} {s}: a split of 33 and 37"
+        );
+        let err = rel(&whole, &control(&h, &v, CONTROL_K, op, s));
+        assert!(err < 1e-6, "{op:?} {s}: relative error {err} against the CPU form");
+    }
+}
+
+/// A layer that the vector does not hold is all zeros, and `OP_CONTROL` leaves its rows as they are, to the bit.
+///
+/// Falsified by a kernel without the check of a vector of zeros: its clamp divides by a norm of 0.
+#[test]
+fn control_keeps_the_rows_for_a_vector_of_zeros() {
+    let mut card = Card::open();
+    let (h, _) = control_inputs();
+    let zeros = vec![0.0f32; CONTROL_K];
+    for (op, s) in CONTROL_CASES {
+        let got = control_on_card(&mut card, &h, &zeros, op, s, &[CONTROL_ROWS]);
+        assert_eq!(first_other_bits(&got, &h), None, "{op:?} {s}");
+    }
+}

@@ -273,3 +273,61 @@ pub fn head_gate(a: &[f32], g: &[f32], heads: usize, d: usize, stride: usize, of
         })
         .collect()
 }
+
+// The control cases: rows of the residual width of LFM3, and the strength of each operation.
+pub const CONTROL_K: usize = 2048;
+pub const CONTROL_ROWS: usize = 5;
+pub const CONTROL_SEED: u64 = 500;
+pub const CONTROL_CASES: [(nagaya_mk_bmg::protocol::ControlOp, f32); 4] = [
+    (nagaya_mk_bmg::protocol::ControlOp::Add, 4.0),
+    (nagaya_mk_bmg::protocol::ControlOp::Ablate, 1.0),
+    (nagaya_mk_bmg::protocol::ControlOp::Ablate, 0.5),
+    (nagaya_mk_bmg::protocol::ControlOp::Clamp, 8.0),
+];
+
+/// The rows of the block case: more than twice `MEGAKERNEL_GROUPS` (32), so each work-group takes several rows.
+pub const CONTROL_BLOCK: usize = 70;
+
+/// The inputs of the control cases: the rows `[n][k]`, of the size of a residual, and the vector `[k]`.
+pub fn control_inputs() -> (Vec<f32>, Vec<f32>) {
+    control_rows(CONTROL_ROWS)
+}
+
+/// `n` rows of the residual width and the vector of the control cases.
+pub fn control_rows(n: usize) -> (Vec<f32>, Vec<f32>) {
+    (
+        values(CONTROL_SEED, n * CONTROL_K, 30.0),
+        values(CONTROL_SEED + 1, CONTROL_K, 0.1),
+    )
+}
+
+/// One control item on rows of `k` values, in f64 (engine-abi "Control vectors"). A vector of zeros keeps each row.
+pub fn control(h: &[f32], v: &[f32], k: usize, op: nagaya_mk_bmg::protocol::ControlOp, s: f32) -> Vec<f32> {
+    use nagaya_mk_bmg::protocol::ControlOp;
+    let vv: f64 = v.iter().map(|x| *x as f64 * *x as f64).sum();
+    h.chunks(k)
+        .flat_map(|row| {
+            if vv == 0.0 {
+                return row.to_vec();
+            }
+            let along = row.iter().zip(v).map(|(a, b)| *a as f64 * *b as f64).sum::<f64>() / vv.sqrt();
+            let coef = match op {
+                ControlOp::Add => s as f64,
+                ControlOp::Ablate => -(s as f64) * along / vv.sqrt(),
+                ControlOp::Clamp => (s as f64 - along) / vv.sqrt(),
+            };
+            row.iter()
+                .zip(v)
+                .map(|(a, b)| (*a as f64 + coef * *b as f64) as f32)
+                .collect()
+        })
+        .collect()
+}
+
+/// The part of each row along `v`: `h . v / |v|`, in f64.
+pub fn along(h: &[f32], v: &[f32], k: usize) -> Vec<f64> {
+    let norm = v.iter().map(|x| *x as f64 * *x as f64).sum::<f64>().sqrt();
+    h.chunks(k)
+        .map(|row| row.iter().zip(v).map(|(a, b)| *a as f64 * *b as f64).sum::<f64>() / norm)
+        .collect()
+}

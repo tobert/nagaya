@@ -67,6 +67,19 @@ pub const OP_SCALE: u16 = 82;
 // `OP_RMSNORM` with `FLAG_ROPE` reads the rotated pairs from `layer`.
 pub const OP_SHORT_CONV: u16 = 90;
 pub const OP_HEAD_GATE: u16 = 91;
+pub const OP_CONTROL: u16 = 92;
+
+/// The operation of one control item (engine-abi "Control vectors"). The value is the `p0` of `OP_CONTROL`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum ControlOp {
+    /// `h + a * v`: push the residual toward the vector.
+    Add = 1,
+    /// `h - a * (h . u) * u`, with `u` the unit vector: remove the part along the vector, or weaken it below 1.
+    Ablate = 2,
+    /// `h + (a - h . u) * u`: set the part along the vector to `a`.
+    Clamp = 3,
+}
 // The ops of the LFM3 vision tower (`kernels/lfm3_vision_ops.cl`, `MK_LFM3`): opcodes 100 to 109. The LFM3 binary also
 // holds the ops of the embedding binary for `OP_BIATTN`.
 pub const OP_VISION_ROPE: u16 = 100;

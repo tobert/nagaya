@@ -96,6 +96,7 @@
 // The ops of the LFM3 binary (kernels/lfm3_ops.cl)
 #define OP_SHORT_CONV       90
 #define OP_HEAD_GATE        91
+#define OP_CONTROL          92
 // The speech ops of the LFM3 binary (kernels/lfm3_speech_ops.cl)
 #define OP_LFM3_GROUP_ATTN  120
 #define OP_LFM3_POLAR       121

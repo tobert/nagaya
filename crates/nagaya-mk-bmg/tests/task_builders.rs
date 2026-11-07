@@ -384,3 +384,34 @@ fn the_vision_opcodes_of_the_host_are_the_opcodes_of_the_kernel() {
         assert!((100..110).contains(&code), "{name} is {code}");
     }
 }
+
+/// `OP_CONTROL` changes `n` rows of `k` values in place: `a` is the residual, `b` the vector of the layer, `p0` the
+/// operation (1 add, 2 ablate, 3 clamp), and `m` the bits of the strength (engine-abi "Control vectors").
+///
+/// Falsified by a builder that puts the strength in `k`.
+#[test]
+fn control_puts_its_fields_where_the_kernel_reads_them() {
+    use nagaya_mk_bmg::protocol::{ControlOp, OP_CONTROL};
+    for (op, code) in [(ControlOp::Add, 1), (ControlOp::Ablate, 2), (ControlOp::Clamp, 3)] {
+        let task = tasks::control(10, 20, 7, 2048, op, -1.5);
+        assert_eq!(task.opcode, OP_CONTROL);
+        assert_eq!((task.a, task.b, task.n, task.k, task.p0), (10, 20, 7, 2048, code));
+        assert_eq!(f32::from_bits(task.m), -1.5);
+    }
+    assert_eq!(tasks::control(10, 20, 7, 2048, ControlOp::Clamp, 0.0).m, 0);
+}
+
+/// An add or an ablate with strength 0 changes nothing, so the engine skips it, and the builder refuses it. Thus the
+/// plain bits never depend on the sign of a zero.
+#[test]
+#[should_panic(expected = "an add or an ablate with strength 0 changes nothing")]
+fn control_refuses_an_item_that_changes_nothing() {
+    tasks::control(10, 20, 7, 2048, nagaya_mk_bmg::protocol::ControlOp::Ablate, 0.0);
+}
+
+/// A strength that is not finite has no meaning for the residual.
+#[test]
+#[should_panic(expected = "a control strength is finite")]
+fn control_refuses_a_strength_that_is_not_finite() {
+    tasks::control(10, 20, 7, 2048, nagaya_mk_bmg::protocol::ControlOp::Add, f32::NAN);
+}

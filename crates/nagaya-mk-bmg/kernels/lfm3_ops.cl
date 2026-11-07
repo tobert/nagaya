@@ -55,6 +55,30 @@
                 }
             }
         }
+        else if (op == OP_CONTROL) {
+            // One control item on the residual (engine-abi "Control vectors"), in place: a = n rows h of k values;
+            // b = the vector v [k] of the layer; p0 = 1 add (h + s * v), 2 ablate (h - s * (h.u) * u), or 3 clamp
+            // (h + (s - h.u) * u), with u = v / |v|; m = the bits of s. A work-group takes a row, and wg_sum adds the
+            // dot products, so the bits of a row do not depend on the count of rows. A vector of zeros skips the row.
+            __global float* H = (__global float*)task.a;
+            __global const float* V = (__global const float*)task.b;
+            uint K = task.k, how = task.p0;
+            float s = as_float(task.m);
+            for (uint r = wg_id; r < task.n; r += num_wgs) {
+                __global float* h = H + (ulong)r * K;
+                float hv = 0.0f, vv = 0.0f;
+                for (uint i = lid; i < K; i += lsize) {
+                    hv = fma(h[i], V[i], hv);
+                    vv = fma(V[i], V[i], vv);
+                }
+                hv = wg_sum(hv, slm_reduce, lane, sg_id, num_sgs);
+                vv = wg_sum(vv, slm_reduce, lane, sg_id, num_sgs);
+                if (vv == 0.0f) continue;
+                float norm = sqrt(vv), along = hv / norm;
+                float coef = how == 1 ? s : how == 2 ? -s * along / norm : (s - along) / norm;
+                for (uint i = lid; i < K; i += lsize) h[i] = fma(coef, V[i], h[i]);
+            }
+        }
         else if (op == OP_HEAD_GATE) {
             // The sigmoid gate of each head (modeling_lfm3.py:270-271): c[t, h * D + j] = a[t, h * D + j] *
             // sigmoid(b[t * p0 + h]). n = positions, m = heads, k = D, p0 = the stride of the rows of gates (0: heads).

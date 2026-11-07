@@ -924,6 +924,28 @@ pub fn subsample(x: u64, w: u64, bias: u64, y: u64, n: u32, k: u32, cin: u32, m:
     }
 }
 
+/// One control item on `n` rows of `k` values of the residual at `h`, in place (`OP_CONTROL`, engine-abi "Control
+/// vectors"). `v` is the vector of the layer, `k` F32 values. A vector of zeros leaves each row as it is.
+pub fn control(h: u64, v: u64, n: u32, k: u32, op: ControlOp, strength: f32) -> MkTaskDescriptor {
+    assert!(
+        strength.is_finite(),
+        "a control strength is finite, and it got {strength}"
+    );
+    assert!(
+        strength != 0.0 || op == ControlOp::Clamp,
+        "an add or an ablate with strength 0 changes nothing; the engine skips the item"
+    );
+    MkTaskDescriptor {
+        a: h,
+        b: v,
+        n,
+        k,
+        p0: op as u32,
+        m: strength.to_bits(),
+        ..task(OP_CONTROL)
+    }
+}
+
 /// The sigmoid gate of each head: `y[t, h, j] = a[t, h, j] * sigmoid(gates[t * stride + h])` for `n` positions of
 /// `heads` heads of `d` values. `a` may be `y`.
 pub fn head_gate(a: u64, gates: u64, y: u64, n: u32, heads: u32, d: u32, stride: u32) -> MkTaskDescriptor {
