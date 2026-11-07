@@ -4453,7 +4453,8 @@ notes above leave these choices open. Each one is the simplest choice that follo
 - **The frame limit.** A frame takes one position of the slot. A full slot ends the reply with `context_full`. Thus
   the slot bounds the frames, as for Qwen3-TTS (11.8a).
 - **After the end frame.** The reply goes on in text until a stop token, as the reference does. In `interleaved` mode
-  after `<|text_end|>`, the end frame ends the reply.
+  after `<|text_end|>`, the end frame ends the reply. The reference samples one more token there, `<|im_end|>` in the
+  oracle. The nagaya does not, because its reply parser ended at `<|text_end|>`.
 - **A stop before the audio ends.** A stop token, `max_tokens` or a full slot ends the reply and its audio. The WAV
   holds the frames so far, and the codec gives its last samples.
 - **One output.** The text sampler never picks `<|audio_start|>` or `<|mixed_start|>`, in a speech reply too. Thus a
