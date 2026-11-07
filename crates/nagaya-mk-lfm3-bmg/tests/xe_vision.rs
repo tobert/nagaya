@@ -3,8 +3,8 @@
 //! an image (`lfm3-omni.media.json`). The CPU forms of `vision_cpu.rs` gave gaps of 3.8e-7 to 5.7e-6 for the same
 //! stages.
 //!
-//! The tolerance of each gate is not measured yet, so the tests print each gap. They assert only what holds for any
-//! tolerance: the top token of each prompt is the oracle's, and no gap passes `DEFECT_BOUND`, as `xe_oracle.rs` does.
+//! Each gap prints. A stage asserts `common::STAGE_TOL` and a logit `common::LOGIT_TOL`, the tolerances that the card
+//! run of 2026-11-06 measured (spec 11.11, "The tolerances of the LFM3 gates").
 //!
 //! Stop `nagaya.service` first: the nagaya must be the only client of the cards (spec 3.1). Run alone:
 //! `cargo test -p nagaya-mk-lfm3-bmg --features xe --test xe_vision -- --test-threads=1 --nocapture`.
@@ -18,9 +18,6 @@ use common::Which;
 use nagaya_abi::{Engine, OutputsWanted, PassErrorKind, Segment, SegmentInputs, State};
 use nagaya_mk_lfm3_bmg::media::{self, PATCH_ROW, Span, SpanKind};
 use nagaya_mk_lfm3_bmg::weights::f32_bytes;
-
-/// The bound of a defect: a relative error of a stage, or a gap of a logit, past this is a wrong op.
-const DEFECT_BOUND: f64 = 0.05;
 
 /// The placeholder of an image (`image_token_id` of Omni).
 const IMAGE: u32 = 125_030;
@@ -125,7 +122,7 @@ fn each_stage_of_the_tower_follows_transformers_on_the_card() {
                 "{name} ({gh} by {gw} patches) {stage}: relative error {gap:.3e}, largest difference {:.3e}",
                 common::max_abs(got, &want)
             );
-            assert!(gap < DEFECT_BOUND, "{name} {stage}: relative error {gap}");
+            assert!(gap < common::STAGE_TOL, "{name} {stage}: relative error {gap}");
         }
         println!("{name}: the three stages took {ms} ms");
         // The same pixels give the same bits (D3).
@@ -211,7 +208,7 @@ fn a_pass_that_reads_an_image_gives_the_logits_of_transformers() {
                 top[0]
             );
             assert_eq!(best, top[0], "{name}: the top token differs");
-            assert!(gap < 10.0 * DEFECT_BOUND, "{name}: a top-64 logit differs by {gap}");
+            assert!(gap < common::LOGIT_TOL, "{name}: a top-64 logit differs by {gap}");
             if block_len == 512 {
                 whole.push(logits);
             } else {
@@ -357,10 +354,7 @@ fn a_pass_that_reads_a_clip_gives_the_logits_of_transformers() {
             top[0]
         );
         assert_eq!(best, top[0], "audio_chirp: the top token differs");
-        assert!(
-            gap < 10.0 * DEFECT_BOUND,
-            "audio_chirp: a top-64 logit differs by {gap}"
-        );
+        assert!(gap < common::LOGIT_TOL, "audio_chirp: a top-64 logit differs by {gap}");
         if block_len == 512 {
             whole = logits;
         } else {

@@ -2,9 +2,8 @@
 //! downsampler, after the layers and after the projector, against transformers in f32 on the CPU, and against the CPU
 //! form of the tasks (`common/cpu.rs`) for clips that the oracle does not hold.
 //!
-//! The tolerance of the gate is not measured yet, so the tests print each gap. They assert only `DEFECT_BOUND`, which
-//! any tolerance holds. On the host, the CPU form gave 4.9e-7, 1.3e-7 and 1.9e-6 against the oracle, and a wrong op
-//! gave 1.3e-2 or more (`audio_cpu_form.rs`).
+//! Each gap prints. A stage asserts `common::STAGE_TOL` and a logit `common::LOGIT_TOL`, the tolerances that the card
+//! run of 2026-11-06 measured (spec 11.11, "The tolerances of the LFM3 gates").
 //!
 //! Stop `nagaya.service` first: the nagaya must be the only client of the cards (spec 3.1). Run alone:
 //! `cargo test -p nagaya-mk-lfm3-bmg --features xe --test xe_audio -- --test-threads=1 --nocapture`.
@@ -15,9 +14,6 @@ mod common;
 use common::Which;
 use common::cpu::{CpuEncoder, STAGES, mel_rows};
 use nagaya_mk_lfm3_bmg::audio::{MAX_CLIP_FRAMES, Stage};
-
-/// The bound of a defect: a relative error of a stage past this is a wrong op.
-const DEFECT_BOUND: f64 = 0.05;
 
 /// The feed block of the gates, the default of the engine (engine-abi D11).
 const BLOCK: usize = 512;
@@ -54,7 +50,7 @@ fn the_audio_stages_on_the_card_follow_transformers() {
             "card, {name}: relative error {gap:.3e}, largest difference {:.3e}",
             common::max_abs(&got, &want)
         );
-        assert!(gap < DEFECT_BOUND, "{name}: relative error {gap}");
+        assert!(gap < common::STAGE_TOL, "{name}: relative error {gap}");
     }
 }
 
@@ -78,7 +74,7 @@ fn other_clips_on_the_card_follow_the_cpu_form() {
                 "{frames} frames, {name}: relative error {gap:.3e} against the CPU form, largest difference {:.3e}",
                 common::max_abs(&got, want)
             );
-            assert!(gap < DEFECT_BOUND, "{frames} frames, {name}: relative error {gap}");
+            assert!(gap < common::STAGE_TOL, "{frames} frames, {name}: relative error {gap}");
         }
     }
 }

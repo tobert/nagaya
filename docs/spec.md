@@ -4479,6 +4479,16 @@ milestone 24, step 2), so a defect shows in the stage that has it.
   oracle of Qwen3-TTS forced its codes in the same way (`AGENTS.md` milestone 17).
 - The tolerance of each gate is measured first, as for each family (8.3).
 
+**The tolerances of the LFM3 gates.** Proposed by Claude Opus 5.5, 2026-11-06. Reason: the card run of 2026-11-06
+measured each gate. These bounds keep the margin of Gemma 4's logit gate, 1e-3 over a measured 3.4e-5.
+
+- A stage asserts a relative error below 1e-4. The worst stage was 6.8e-6, the projector of the vision tower. The
+  layers of the backbone gave 7.3e-7, the audio rows 2.0e-6, the depth logits 7.0e-7 and the codec 5.7e-6.
+- A logit asserts a gap below 1e-3. The worst gap against transformers was 3.6e-5, and between two splits of one
+  feed 6.4e-5.
+- A wrong rotation, window or gate gave a relative error of 0.09 or more, and a wrong audio op 1.3e-2 or more.
+- The constants are `STAGE_TOL` and `LOGIT_TOL` in `crates/nagaya-mk-lfm3-bmg/tests/common/mod.rs`.
+
 ## 12. Identity
 
 **12.1 Fields.** An engine identity has the fields of `identity()` in the ABI:

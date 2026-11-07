@@ -2,9 +2,8 @@
 //! oracle"): the residual after each layer of one short prompt, and the top-64 logits and the logsumexp of five
 //! prompts, for both models.
 //!
-//! The tolerance of each gate is not measured yet, so the tests print each gap. They assert two things that hold for
-//! any tolerance: the top token of each prompt is the oracle's, and no gap passes `DEFECT_BOUND`. A wrong rotation,
-//! window or gate in the op fixtures of lane C gave relative errors of 0.09 to 1.7 (`ed55acc`).
+//! Each gap prints. A stage asserts `common::STAGE_TOL` and a logit `common::LOGIT_TOL`, the tolerances that the card
+//! run of 2026-11-06 measured (spec 11.11, "The tolerances of the LFM3 gates").
 //!
 //! Stop `nagaya.service` first: the nagaya must be the only client of the cards (spec 3.1). Run alone:
 //! `cargo test -p nagaya-mk-lfm3-bmg --features xe --test xe_oracle -- --test-threads=1 --nocapture`.
@@ -14,9 +13,6 @@ mod common;
 
 use common::Which;
 use nagaya_abi::Engine;
-
-/// The bound of a defect: a relative error of a hidden state, or a gap of a logit, past this is a wrong op.
-const DEFECT_BOUND: f64 = 0.05;
 
 /// The feed block of the gates, the default of the engine (engine-abi D11).
 const BLOCK: usize = 512;
@@ -52,19 +48,19 @@ fn the_residual_after_each_layer_follows_transformers() {
                 common::max_abs(&got, &want)
             );
             worst = worst.max(gap);
-            assert!(gap < DEFECT_BOUND, "{which:?} layer {l}: relative error {gap}");
+            assert!(gap < common::STAGE_TOL, "{which:?} layer {l}: relative error {gap}");
         }
         let norm = engine.hidden(0, &ids, layers, true).unwrap();
         let gap = common::rel(&norm, &golden["final_norm"].f32());
         println!("{which:?} final norm: relative error {gap:.3e}; worst layer {worst:.3e}");
-        assert!(gap < DEFECT_BOUND, "{which:?} final norm: relative error {gap}");
+        assert!(gap < common::STAGE_TOL, "{which:?} final norm: relative error {gap}");
         // The head of the plain prompt against the whole row of the oracle, on the first 125,033 ids.
         let logits = common::feed_split(&mut engine, 0, 0, &ids, &[ids.len()]);
         let want = golden["logits_last"].f32();
         let vocab = engine.vocab();
         let gap = common::max_abs(&logits, &want[..vocab]);
         println!("{which:?} last logits: largest difference {gap:.3e} over {vocab} ids");
-        assert!(gap < 10.0 * DEFECT_BOUND, "{which:?}: the logits differ by {gap}");
+        assert!(gap < common::LOGIT_TOL, "{which:?}: the logits differ by {gap}");
     }
 }
 
@@ -126,7 +122,7 @@ fn the_logits_of_five_prompts_follow_transformers() {
             );
             assert_eq!(best, top[0], "{which:?} {name}: the top token differs");
             assert!(
-                gap < 10.0 * DEFECT_BOUND,
+                gap < common::LOGIT_TOL,
                 "{which:?} {name}: a top-64 logit differs by {gap}"
             );
         }

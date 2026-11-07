@@ -2,9 +2,8 @@
 //! engine-abi "The speech calls of LFM3"): the depth decoder with forced codes, the frames of the tts reply fed with
 //! their codes, the codec on fixed codes, and the sampler of `frame`.
 //!
-//! The tolerance of each gate is not measured yet, so the tests print each gap. They assert only what holds for any
-//! tolerance: no gap passes `DEFECT_BOUND`, the greedy text token after the end frame is the oracle's, and the same
-//! seed gives the same codes. The CPU forms of `speech_cpu_forms.rs` gave gaps of 1e-7 to 1e-5 on 2026-11-06.
+//! Each gap prints. A stage asserts `common::STAGE_TOL` and a logit `common::LOGIT_TOL`, the tolerances that the card
+//! run of 2026-11-06 measured (spec 11.11, "The tolerances of the LFM3 gates").
 //!
 //! Stop `nagaya.service` first: the nagaya must be the only client of the cards (spec 3.1). Run alone:
 //! `cargo test -p nagaya-mk-lfm3-bmg --features xe --test xe_speech -- --test-threads=1 --nocapture`.
@@ -15,9 +14,6 @@ mod common;
 use common::Which;
 use common::speech::{CODEBOOKS, CODES, END_CODE, FRAME_SAMPLES};
 use nagaya_abi::{Engine, FrameDraw};
-
-/// The bound of a defect: a relative error past this is a wrong op or a wrong ring.
-const DEFECT_BOUND: f64 = 0.05;
 
 /// The feed block of the gates, the default of the engine (engine-abi D11).
 const BLOCK: usize = 512;
@@ -55,14 +51,17 @@ fn the_depth_decoder_with_forced_codes_follows_the_oracle() {
                 let gi = common::rel(&input, &golden["depth.in0"].f32()[span.clone()]);
                 let gt = common::rel(&trunk, &golden["depth.trunk0"].f32()[span]);
                 println!("depth frame {f}: input relative error {gi:.3e}, trunk {gt:.3e}");
-                assert!(gi < DEFECT_BOUND && gt < DEFECT_BOUND, "frame {f}: {gi}, {gt}");
+                assert!(
+                    gi < common::STAGE_TOL && gt < common::STAGE_TOL,
+                    "frame {f}: {gi}, {gt}"
+                );
             }
             let want = &want[f * CODEBOOKS * CODES..(f + 1) * CODEBOOKS * CODES];
             worst = worst.max(common::rel(&logits, want));
             largest = largest.max(common::max_abs(&logits, want));
         }
         println!("depth mask {i}: logits relative error {worst:.3e}, largest difference {largest:.3e}");
-        assert!(worst < DEFECT_BOUND, "mask {i}: relative error {worst}");
+        assert!(worst < common::STAGE_TOL, "mask {i}: relative error {worst}");
     }
 }
 
@@ -81,7 +80,7 @@ fn the_frames_of_the_tts_reply_fed_with_their_codes_follow_the_oracle() {
     let got = engine.hidden_row(0).unwrap();
     let gap = common::rel(&got, row(0));
     println!("tts hidden after the prompt: relative error {gap:.3e}");
-    assert!(gap < DEFECT_BOUND, "after the prompt: {gap}");
+    assert!(gap < common::STAGE_TOL, "after the prompt: {gap}");
     let mut worst = 0.0f64;
     let mut last = None;
     for k in 0..frames {
@@ -94,7 +93,7 @@ fn the_frames_of_the_tts_reply_fed_with_their_codes_follow_the_oracle() {
         if k < 3 || end {
             println!("tts hidden after frame {k}: relative error {gap:.3e}");
         }
-        assert!(gap < DEFECT_BOUND, "after frame {k}: {gap}");
+        assert!(gap < common::STAGE_TOL, "after frame {k}: {gap}");
     }
     println!("tts hidden after each of {frames} frames: worst relative error {worst:.3e}");
     // After the end frame the reply is text again, and Omni's text is greedy.
@@ -115,7 +114,7 @@ fn the_frames_of_the_tts_reply_fed_with_their_codes_follow_the_oracle() {
     let want = golden["tts.end_logits"].f32();
     let gap = common::max_abs(&out, &want[..engine.vocab()]);
     println!("tts logits of the last position: largest difference {gap:.3e}");
-    assert!(gap < 10.0 * DEFECT_BOUND, "the last logits differ by {gap}");
+    assert!(gap < common::LOGIT_TOL, "the last logits differ by {gap}");
 }
 
 #[test]
@@ -155,7 +154,7 @@ fn the_codec_on_the_card_follows_the_oracle_frame_by_frame() {
         assert_eq!(sizes, want_sizes, "{label}: the samples of each call");
         let (rel, abs) = (common::rel(&audio, &want), common::max_abs(&audio, &want));
         println!("{label}: {frames} frames, relative error {rel:.3e}, largest difference {abs:.3e}");
-        assert!(rel < DEFECT_BOUND, "{label}: relative error {rel}");
+        assert!(rel < common::STAGE_TOL, "{label}: relative error {rel}");
     }
     let full = golden["codec.audio_full"].f32();
     let codes = golden["codec.codes"].ids();

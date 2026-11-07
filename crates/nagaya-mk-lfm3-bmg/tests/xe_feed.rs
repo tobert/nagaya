@@ -18,9 +18,6 @@ use nagaya_mk_lfm3_bmg::spec::{MAX_QUANTUM_MS, SLOT_TOKENS};
 
 const BLOCK: usize = 512;
 
-/// A gap of a logit past this between two splits of one feed is a defect, not a choice of a reduction.
-const DEFECT_BOUND: f64 = 0.05;
-
 #[test]
 fn the_same_split_gives_the_same_bits_and_other_splits_stay_close() {
     if common::absent(Which::Text) {
@@ -58,7 +55,7 @@ fn the_same_split_gives_the_same_bits_and_other_splits_stay_close() {
                 "differ"
             }
         );
-        assert!(gap < DEFECT_BOUND, "split {split:?}: a logit differs by {gap}");
+        assert!(gap < common::LOGIT_TOL, "split {split:?}: a logit differs by {gap}");
     }
 }
 
