@@ -237,6 +237,9 @@ impl Lfm3Engine {
                 logit_rows: Some(rows),
                 // A frame has no media span.
                 after_embed: &[],
+                // The text model alone declares `control`, and a frame is a pass of Omni.
+                control: &[],
+                tap: false,
             },
         );
         assert_eq!(

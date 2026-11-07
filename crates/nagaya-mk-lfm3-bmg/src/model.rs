@@ -12,7 +12,7 @@
 //! gates each head with `sigmoid(gate_proj(h))` (modeling_lfm3.py:245-272). A conv layer reads and writes the conv
 //! state of the slot (`OP_SHORT_CONV`).
 
-use nagaya_mk_bmg::protocol::{FLAG_ACCUMULATE, MAX_TASKS_PER_CARD, MkTaskDescriptor};
+use nagaya_mk_bmg::protocol::{ControlOp, FLAG_ACCUMULATE, MAX_TASKS_PER_CARD, MkTaskDescriptor};
 use nagaya_mk_bmg::tasks;
 
 use crate::spec::{Backbone, HEAD_DIM, LayerKind, MAX_BLOCK, MAX_LOGIT_ROWS, plane_rows, ring_of};
@@ -54,6 +54,8 @@ pub struct Bufs {
     pub scores: u64,
     /// The logits of each logit row: `[MAX_LOGIT_ROWS][vocab_rows]`.
     pub logits: u64,
+    /// The residual tap (spec 13.1): the residual after each layer at each logit row, `[MAX_LOGIT_ROWS][layers][hidden]`.
+    pub taps: u64,
 }
 
 impl Bufs {
@@ -76,6 +78,7 @@ impl Bufs {
                 (max_seq - max_block.min(max_seq)) as u32,
             ) * 4),
             logits: z(MAX_LOGIT_ROWS * b.vocab_rows * 4),
+            taps: z(MAX_LOGIT_ROWS * b.layers.len() * b.hidden * 4),
         }
     }
 }
@@ -152,6 +155,15 @@ impl SlotMemory {
     }
 }
 
+/// One control item of a run (engine-abi "Control vectors"): the address of layer 0 of its vector in the table, the
+/// op and the strength. Layer `l` of the vector follows at `l * hidden` values.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Control {
+    pub vector: u64,
+    pub op: ControlOp,
+    pub strength: f32,
+}
+
 /// What one ring runs: a block of `n` tokens at `pos0` of one slot, and how far it goes.
 #[derive(Clone, Copy, Debug)]
 pub struct Run<'a> {
@@ -164,6 +176,10 @@ pub struct Run<'a> {
     pub logit_rows: Option<&'a [usize]>,
     /// The tasks that run after the embedding rows: the copies of the media rows over the rows of their placeholders.
     pub after_embed: &'a [MkTaskDescriptor],
+    /// The control items, in order. Each one changes every row of the block after each layer.
+    pub control: &'a [Control],
+    /// True when the ring copies the residual after each layer at each logit row into `bufs.taps` (spec 13.1).
+    pub tap: bool,
 }
 
 fn accumulate(mut task: MkTaskDescriptor) -> MkTaskDescriptor {
@@ -181,6 +197,8 @@ pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskD
         layers,
         logit_rows,
         after_embed,
+        control,
+        tap,
     } = run;
     assert!(
         layers <= b.layers.len() && (layers == b.layers.len() || logit_rows.is_none()),
@@ -191,6 +209,10 @@ pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskD
         "positions {pos0} to {} do not fit a slot of {}; the engine checks the pass first",
         pos0 + n,
         slot.seq
+    );
+    assert!(
+        !tap || logit_rows.is_some(),
+        "the residual tap reads the logit rows, so a run with the tap gives logits"
     );
     let (n32, h32, i32_) = (n as u32, b.hidden as u32, b.intermediate as u32);
     let (heads, kv, d) = (b.heads as u32, b.kv_heads as u32, b.head_dim as u32);
@@ -304,6 +326,32 @@ pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskD
             b.eps,
             false,
         )));
+        // The control items change the residual before the next layer reads it. An add or an ablate of strength 0
+        // changes no bit, so it gets no task (engine-abi "Control vectors").
+        let layer_vector = (l * b.hidden * 4) as u64;
+        for item in control {
+            if item.strength == 0.0 && item.op != ControlOp::Clamp {
+                continue;
+            }
+            t.push(tasks::control(
+                bufs.x,
+                item.vector + layer_vector,
+                n32,
+                h32,
+                item.op,
+                item.strength,
+            ));
+        }
+        if tap {
+            let rows = logit_rows.expect("the tap has logit rows");
+            for (i, row) in rows.iter().enumerate() {
+                t.push(tasks::copy(
+                    bufs.x + (row * b.hidden * 4) as u64,
+                    bufs.taps + ((i * b.layers.len() + l) * b.hidden * 4) as u64,
+                    h32,
+                ));
+            }
+        }
     }
     if let Some(rows) = logit_rows {
         assert!(
@@ -333,7 +381,7 @@ pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskD
 mod tests {
     use super::*;
     use crate::spec::tests::backbone;
-    use nagaya_mk_bmg::protocol::{OP_ATTN, OP_ATTN_SCORES, OP_COPY, OP_EMBED, OP_MATMUL, OP_SHORT_CONV};
+    use nagaya_mk_bmg::protocol::{OP_ATTN, OP_ATTN_SCORES, OP_CONTROL, OP_COPY, OP_EMBED, OP_MATMUL, OP_SHORT_CONV};
 
     fn weights(b: &Backbone) -> Weights {
         Weights {
@@ -390,6 +438,8 @@ mod tests {
                 layers: b.layers.len(),
                 logit_rows: Some(&rows),
                 after_embed: &[],
+                control: &[],
+                tap: false,
             },
         );
         assert_eq!(t[0].opcode, OP_EMBED);
@@ -403,6 +453,182 @@ mod tests {
             assert_eq!(task.a, bufs.h + (rows[i] * 2048 * 4) as u64);
             assert_eq!(task.c, bufs.logits + (i * 128_000 * 4) as u64);
         }
+    }
+
+    /// Weights with a distinct address for the norm of each layer, so a test finds the accumulate of each layer.
+    fn weights_with_norms(b: &Backbone) -> Weights {
+        let mut w = weights(b);
+        for (l, lw) in w.layers.iter_mut().enumerate() {
+            lw.post_operator_norm = 0x10_0000 + l as u64 * 0x100;
+            lw.post_ffn_norm = 0x20_0000 + l as u64 * 0x100;
+        }
+        w
+    }
+
+    #[test]
+    fn the_control_items_run_in_order_after_each_layer_and_skip_an_add_or_an_ablate_of_strength_0() {
+        let b = backbone();
+        let (w, bufs, slot) = (weights_with_norms(&b), bufs(&b), memory(&b, 1024));
+        let control = [
+            Control {
+                vector: 0xC000_0000,
+                op: ControlOp::Add,
+                strength: 4.0,
+            },
+            Control {
+                vector: 0xD000_0000,
+                op: ControlOp::Ablate,
+                strength: 0.0,
+            },
+            Control {
+                vector: 0xD000_0000,
+                op: ControlOp::Add,
+                strength: -0.0,
+            },
+            Control {
+                vector: 0xE000_0000,
+                op: ControlOp::Clamp,
+                strength: 0.0,
+            },
+        ];
+        let run = |control: &[Control]| {
+            pass(
+                &b,
+                &w,
+                &bufs,
+                Run {
+                    slot: &slot,
+                    pos0: 0,
+                    n: 8,
+                    layers: b.layers.len(),
+                    logit_rows: Some(&[7]),
+                    after_embed: &[],
+                    control,
+                    tap: false,
+                },
+            )
+        };
+        let plain = run(&[]);
+        assert_eq!(count(&plain, OP_CONTROL), 0);
+        let t = run(&control);
+        assert_eq!(
+            count(&t, OP_CONTROL),
+            2 * b.layers.len(),
+            "the add 4 and the clamp 0 of each layer"
+        );
+        // The x of a post_ffn accumulate is the residual; find each one by its norm.
+        let ends: Vec<usize> = t
+            .iter()
+            .enumerate()
+            .filter(|(_, task)| {
+                w.layers.iter().any(|lw| lw.post_ffn_norm == task.b) && task.flags & FLAG_ACCUMULATE != 0
+            })
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(ends.len(), b.layers.len());
+        for (l, end) in ends.iter().enumerate() {
+            let row = (l * 2048 * 4) as u64;
+            let (add, clamp) = (&t[end + 1], &t[end + 2]);
+            assert_eq!(
+                (add.opcode, add.a, add.b, add.n, add.k),
+                (OP_CONTROL, bufs.x, 0xC000_0000 + row, 8, 2048)
+            );
+            assert_eq!((add.p0, f32::from_bits(add.m)), (ControlOp::Add as u32, 4.0));
+            assert_eq!(
+                (clamp.opcode, clamp.b, clamp.p0),
+                (OP_CONTROL, 0xE000_0000 + row, ControlOp::Clamp as u32)
+            );
+            assert_ne!(t[end + 3].opcode, OP_CONTROL, "layer {l} has two control tasks");
+        }
+        // With the items gone, the tasks are those of the plain pass.
+        let left: Vec<MkTaskDescriptor> = t.iter().copied().filter(|task| task.opcode != OP_CONTROL).collect();
+        assert_eq!(left.len(), plain.len());
+        assert!(
+            left.iter()
+                .zip(&plain)
+                .all(|(a, p)| format!("{a:?}") == format!("{p:?}"))
+        );
+    }
+
+    #[test]
+    fn the_tap_copies_the_residual_after_the_items_of_each_layer_at_each_logit_row() {
+        let b = backbone();
+        let (w, bufs, slot) = (weights_with_norms(&b), bufs(&b), memory(&b, 1024));
+        let rows = [2usize, 7];
+        let control = [Control {
+            vector: 0xC000_0000,
+            op: ControlOp::Clamp,
+            strength: 8.0,
+        }];
+        let t = pass(
+            &b,
+            &w,
+            &bufs,
+            Run {
+                slot: &slot,
+                pos0: 0,
+                n: 8,
+                layers: b.layers.len(),
+                logit_rows: Some(&rows),
+                after_embed: &[],
+                control: &control,
+                tap: true,
+            },
+        );
+        let items: Vec<usize> = t
+            .iter()
+            .enumerate()
+            .filter(|(_, task)| task.opcode == OP_CONTROL)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(items.len(), b.layers.len());
+        for (l, at) in items.iter().enumerate() {
+            for (i, row) in rows.iter().enumerate() {
+                let copy = &t[at + 1 + i];
+                assert_eq!(copy.opcode, OP_COPY, "layer {l} row {i}");
+                assert_eq!(copy.a, bufs.x + (row * 2048 * 4) as u64);
+                assert_eq!(copy.c, bufs.taps + ((i * 24 + l) * 2048 * 4) as u64);
+                assert_eq!(copy.n, 2048);
+            }
+        }
+        assert_eq!(count(&t, OP_COPY), 24 * rows.len());
+        // With no tap, the run has no copy.
+        let untapped = pass(
+            &b,
+            &w,
+            &bufs,
+            Run {
+                slot: &slot,
+                pos0: 0,
+                n: 8,
+                layers: b.layers.len(),
+                logit_rows: Some(&rows),
+                after_embed: &[],
+                control: &control,
+                tap: false,
+            },
+        );
+        assert_eq!(count(&untapped, OP_COPY), 0);
+    }
+
+    #[test]
+    fn the_tap_buffer_holds_every_layer_of_each_logit_row() {
+        let b = backbone();
+        let with = bufs_bytes(&b, 512, 4096);
+        let bufs = bufs(&b);
+        assert!(bufs.taps > bufs.logits);
+        let mut sizes = Vec::new();
+        Bufs::new(
+            &mut |bytes| {
+                sizes.push(bytes);
+                0
+            },
+            &b,
+            512,
+            4096,
+        );
+        assert_eq!(*sizes.last().unwrap(), 16 * 24 * 2048 * 4);
+        assert_eq!(with, sizes.iter().map(|s| rounded(*s)).sum::<usize>());
     }
 
     #[test]
@@ -421,6 +647,8 @@ mod tests {
                 layers: b.layers.len(),
                 logit_rows: Some(&[89]),
                 after_embed: &[place],
+                control: &[],
+                tap: false,
             },
         );
         assert_eq!((t[0].opcode, t[1].opcode), (OP_EMBED, OP_COPY));
@@ -448,6 +676,8 @@ mod tests {
                 layers: b.layers.len(),
                 logit_rows: Some(&[0]),
                 after_embed: &[],
+                control: &[],
+                tap: false,
             },
         );
         assert_eq!((count(&one, OP_ATTN), count(&one, OP_ATTN_SCORES)), (11, 0));
@@ -464,6 +694,8 @@ mod tests {
                 layers: b.layers.len(),
                 logit_rows: None,
                 after_embed: &[],
+                control: &[],
+                tap: false,
             },
         );
         let copies: Vec<&MkTaskDescriptor> = wrap.iter().filter(|task| task.opcode == OP_COPY).collect();

@@ -1247,6 +1247,7 @@ dependencies = [
  "blake3",
  "nagaya-abi",
  "nagaya-conformance",
+ "nagaya-council",
  "nagaya-mk-bmg",
  "nagaya-text-lfm3",
  "serde_json",

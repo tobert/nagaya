@@ -10,8 +10,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use nagaya_abi::{
-    BitClass, BitSetting, Coverage, CoverageSpan, Dtype, Engine, Identity, Limits, Output, PartError, PartId, Parts,
-    PassError, PassErrorKind, PassOut, PassStatus, Segment, SlotId, Slots, SpeechFrames, State, Tap, WriteResult,
+    BitClass, BitSetting, Control, ControlLimit, ControlOp, Coverage, CoverageSpan, Dtype, Engine, Identity, Limits,
+    Output, PartError, PartId, Parts, PassError, PassErrorKind, PassOut, PassStatus, Segment, SlotId, Slots,
+    SpeechFrames, State, Tap, WriteResult,
 };
 use nagaya_mk_bmg::level_zero::{B70Card, L0Cluster};
 use nagaya_mk_bmg::protocol::MkTaskDescriptor;
@@ -25,6 +26,7 @@ use crate::audio::{self, AudioBufs, AudioWeights, Clip, MAX_CLIP_POSITIONS, Stag
 use crate::device::{Device, OnCard};
 use crate::media::{MAX_IMAGE_PATCHES, PATCH_ROW, SpanKind};
 use crate::model::{self, Bufs, Run, SlotMemory, bufs_bytes, scratch_floats};
+use crate::spec::RESIDUAL_TAP;
 use crate::spec::{
     self, Backbone, Block, Config, FAMILY, Held, LayerKind, Model, Part, RING_ROWS, SLOT_TOKENS, VisionBytes,
 };
@@ -60,6 +62,8 @@ pub struct Lfm3Engine {
     audio: Option<(AudioWeights, AudioBufs)>,
     /// The depth decoder and the codec of Omni. The text model has none.
     speech: Option<speech::Speech>,
+    /// The control table on the card and its limit (engine-abi "Control vectors"). Omni has none yet.
+    control: Option<(u64, ControlLimit)>,
 }
 
 // The engine holds USM pointers of its card, and one thread at a time calls it.
@@ -293,6 +297,10 @@ impl Lfm3Engine {
             .iter()
             .map(|seq| SlotMemory::new(&mut |bytes| device.zeros(card, bytes), &b, *seq))
             .collect();
+        let control = spec::control_limit(&b).map(|limit| {
+            let bytes = limit.table_bytes() as usize;
+            (device.zeros(card, bytes), limit)
+        });
         let audio = match (&b.audio, audio_weights) {
             (Some(e), Some(w)) => Some((
                 w,
@@ -312,7 +320,8 @@ impl Lfm3Engine {
             + kv
             + bufs_bytes(&b, config.max_block, max_seq) as u64
             + spec::audio_bufs_bytes(&b) as u64
-            + vision_bytes.map_or(0, |v| v.weights + v.work);
+            + vision_bytes.map_or(0, |v| v.weights + v.work)
+            + control.map_or(0, |(_, limit)| limit.table_bytes());
         if device.bytes as u64 != planned {
             return Err(format!(
                 "the engine took {} device bytes, and its limits declare {planned}",
@@ -383,6 +392,7 @@ impl Lfm3Engine {
             held,
             audio,
             speech,
+            control,
         })
     }
 
@@ -411,6 +421,7 @@ impl Lfm3Engine {
 
     /// Run a block from position `pos0` of `slot`, up to the end of `layers` layers, with the logit rows when given.
     /// The caller checked the block. A block from position 0 starts from zero conv states.
+    #[allow(clippy::too_many_arguments)]
     fn forward(
         &mut self,
         slot: usize,
@@ -419,6 +430,8 @@ impl Lfm3Engine {
         layers: usize,
         logit_rows: Option<&[usize]>,
         after_embed: &[MkTaskDescriptor],
+        control: &[model::Control],
+        tap: bool,
     ) {
         if pos0 == 0 {
             self.zero_conv(slot);
@@ -436,6 +449,8 @@ impl Lfm3Engine {
                 layers,
                 logit_rows,
                 after_embed,
+                control,
+                tap,
             },
         );
         // Omni keeps the final norm of the last position for `frame` (engine-abi "The speech calls of LFM3").
@@ -591,7 +606,7 @@ impl Lfm3Engine {
         }
         self.held.clear(slot);
         self.held.check_pass(&[segment], self.config.max_block, self.vocab)?;
-        self.forward(slot, 0, ids, layers, norm.then_some(&[][..]), &[]);
+        self.forward(slot, 0, ids, layers, norm.then_some(&[][..]), &[], &[], false);
         let at = if norm { self.bufs.h } else { self.bufs.x };
         let out = self.read_f32(at, ids.len() * self.b.hidden);
         self.held.clear(slot);
@@ -669,6 +684,52 @@ impl Lfm3Engine {
         }
     }
 
+    /// The control items of the one segment of a pass, as tasks of the ring, and whether the pass taps the residual.
+    /// A list for an engine with no table, an item outside the table, or an unknown tap is refused.
+    fn check_control_and_taps(
+        &self,
+        segments: &[Segment],
+        taps: &[Tap],
+    ) -> Result<(Vec<model::Control>, bool), PassError> {
+        let mut tap = false;
+        for t in taps {
+            if t.name != RESIDUAL_TAP {
+                return Err(refused(format!(
+                    "nothing ran: the engine has no tap `{}`; its tap is `{RESIDUAL_TAP}`",
+                    t.name
+                )));
+            }
+            tap = true;
+        }
+        let items = segments.first().map_or(&[][..], |segment| &segment.control[..]);
+        if items.is_empty() {
+            return Ok((Vec::new(), tap));
+        }
+        let Some((table, limit)) = self.control else {
+            return Err(refused(format!(
+                "nothing ran: {} does not declare `control`, and the segment names {} control items",
+                self.b.model.name(),
+                items.len()
+            )));
+        };
+        limit
+            .check(items)
+            .map_err(|message| refused(format!("nothing ran: {message}")))?;
+        let control = items
+            .iter()
+            .map(|item| model::Control {
+                vector: table + item.index as u64 * limit.entry_bytes(),
+                op: match item.op {
+                    ControlOp::Add => nagaya_mk_bmg::protocol::ControlOp::Add,
+                    ControlOp::Ablate => nagaya_mk_bmg::protocol::ControlOp::Ablate,
+                    ControlOp::Clamp => nagaya_mk_bmg::protocol::ControlOp::Clamp,
+                },
+                strength: item.strength,
+            })
+            .collect();
+        Ok((control, tap))
+    }
+
     fn check_block(&self, segments: &[Segment]) -> Result<Block, PassError> {
         self.held
             .check_pass(segments, self.config.max_block, self.vocab)
@@ -685,9 +746,13 @@ impl Engine for Lfm3Engine {
         self.limits.clone()
     }
 
-    fn pass(&mut self, segments: &[Segment], _taps: &[Tap]) -> Result<PassOut, PassError> {
+    fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
         let block = match self.check_block(segments) {
             Ok(block) => block,
+            Err(error) => return Err(self.fail(error)),
+        };
+        let (control, tap) = match self.check_control_and_taps(segments, taps) {
+            Ok(found) => found,
             Err(error) => return Err(self.fail(error)),
         };
         let start = Instant::now();
@@ -700,9 +765,11 @@ impl Engine for Lfm3Engine {
             layers,
             Some(&block.logit_rows),
             &places,
+            &control,
+            tap,
         );
         let row = self.b.vocab_rows * 4;
-        let outputs = (0..block.logit_rows.len())
+        let mut outputs: Vec<Output> = (0..block.logit_rows.len())
             .map(|i| Output {
                 name: "logits".to_owned(),
                 dtype: Dtype::F32,
@@ -711,6 +778,15 @@ impl Engine for Lfm3Engine {
                     .read(self.card(), self.bufs.logits + (i * row) as u64, self.vocab * 4),
             })
             .collect();
+        // The residual tap (spec 13.1): for each logit row, the residual after each layer, in layer order.
+        if tap {
+            let bytes = block.logit_rows.len() * self.b.layers.len() * self.b.hidden * 4;
+            outputs.push(Output {
+                name: RESIDUAL_TAP.to_owned(),
+                dtype: Dtype::F32,
+                bytes: self.device.read(self.card(), self.bufs.taps, bytes),
+            });
+        }
         self.held.ran(&block);
         if let Some(speech) = &mut self.speech {
             speech.kept(block.slot, self.held.n[block.slot]);
@@ -740,6 +816,46 @@ impl Engine for Lfm3Engine {
 
     fn frames(&mut self) -> Option<&mut dyn SpeechFrames> {
         if self.speech.is_some() { Some(self) } else { None }
+    }
+
+    fn control(&mut self) -> Option<&mut dyn Control> {
+        if self.control.is_some() { Some(self) } else { None }
+    }
+}
+
+impl Control for Lfm3Engine {
+    /// Write one vector into its entry of the table. A wrong index, a wrong size or a value that is not finite is
+    /// refused, and nothing changes.
+    fn control_write(&mut self, index: u32, bytes: &[u8]) -> Result<(), String> {
+        let (table, limit) = self.control.expect("the engine gives `control` only with a table");
+        let refused = if index >= limit.tables {
+            Some(format!(
+                "the control table has {} entries, not entry {index}",
+                limit.tables
+            ))
+        } else if bytes.len() as u64 != limit.entry_bytes() {
+            Some(format!(
+                "a vector is {} layers of {} f32 values, {} bytes, not {} bytes",
+                limit.layers,
+                limit.width,
+                limit.entry_bytes(),
+                bytes.len()
+            ))
+        } else {
+            bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .position(|b| !f32::from_le_bytes(*b).is_finite())
+                .map(|at| format!("value {at} of the vector is not finite; the op needs finite values"))
+        };
+        if let Some(message) = refused {
+            self.last_error = Some(message.clone());
+            return Err(message);
+        }
+        self.device
+            .write(self.card(), table + u64::from(index) * limit.entry_bytes(), bytes);
+        Ok(())
     }
 }
 
