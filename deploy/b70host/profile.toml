@@ -12,6 +12,9 @@ kind = "mk-gemma4-bmg"
 devices = [0, 1]
 share = 1
 pin_identity = false
+# Amy, 2026-11-06 (milestone 24): Gemma 4 goes on demand, and it loads only through the load routes (spec 3.3b). Its
+# load names the engines that it must unload.
+residency = "on_demand"
 
 # The slots that mkviolet serves (mkviolet `src/main.rs`: `MAX_SEQ`, `GEN_SEQ`): one of 4,096 positions and one of
 # 65,536. The block is mkviolet's `MAX_BLOCK`, 512 tokens, and the engine's default.
@@ -19,15 +22,16 @@ pin_identity = false
 slots = [4096, 65536]
 max_block = 512
 
-# The Qwen3-TTS VoiceDesign engine on card 0 (milestone 17, docs/spec.md 11.8). It is on demand: a load route or a
+# The Qwen3-TTS VoiceDesign engine on card 1 (milestone 17, docs/spec.md 11.8). Amy, 2026-11-06 (milestone 24): card 1
+# holds the image engines, the embedding engine and speech, so the engine moved from card 0. It is on demand: a load route or a
 # profile `PUT` loads it, and only an unload removes it (spec 3.3a, "Explicit layout"). Its plan gives 5,645,096,644
-# bytes on its card: 4,321,971,520 of weights, 1,223,336,064 for two slots, and 99,789,060 of work. Card 0 has
-# 4,394,792,436 bytes beside gemma, so its load names gemma in `unload`, and a client loads gemma again after it. The
+# bytes on its card: 4,321,971,520 of weights, 1,223,336,064 for two slots, and 99,789,060 of work. Card 1 has about
+# 2.3 GB beside gemma, so a load names gemma in `unload`, and a client loads gemma again after it. The
 # checkpoint comes from the unit's environment (`QWEN3TTS_MODEL_DIR`).
 [[engines]]
 name = "voice"
 kind = "qwen3tts-bmg"
-devices = [0]
+devices = [1]
 share = 1
 pin_identity = false
 residency = "on_demand"
@@ -131,6 +135,38 @@ residency = "on_demand"
 
 [engines.config]
 model_dir = "/home/atobey/.cache/huggingface/hub/models--diffusers--stable-diffusion-xl-1.0-inpainting-0.1/snapshots/115134f363124c53c7d878647567d04daf26e41e"
+
+# LFM3-Omni-2B and LFM3-1.7B, resident on card 0 (milestone 24, docs/spec.md 11.11; Amy, 2026-11-06). Each engine
+# name is its served name. One kind serves both, so each config names its snapshot folder. Each slot holds 32,768
+# positions. A load of an image engine on card 0 names these two in `unload`. The nagaya does not check a model
+# license: the user accepts it at the download (Amy, 2026-11-06).
+[[engines]]
+name = "lfm3-omni"
+kind = "mk-lfm3-bmg"
+devices = [0]
+share = 1
+pin_identity = false
+
+[engines.config]
+model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-Omni-2B/snapshots/21d75123f86c1f7ffb4bef1ea202710c4e7ebe67"
+slots = 2
+
+[engines.family]
+model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-Omni-2B/snapshots/21d75123f86c1f7ffb4bef1ea202710c4e7ebe67"
+
+[[engines]]
+name = "lfm3"
+kind = "mk-lfm3-bmg"
+devices = [0]
+share = 1
+pin_identity = false
+
+[engines.config]
+model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-1.7B/snapshots/0dc4268b561499c648c7ba7c9466bf3d8d01517a"
+slots = 2
+
+[engines.family]
+model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-1.7B/snapshots/0dc4268b561499c648c7ba7c9466bf3d8d01517a"
 
 # One budget for each card's device memory, and one for host memory (spec 4.1). Each B70 has 32 GiB of GDDR6
 # (BAR 2 of `resource`, spec 2.1). The budget of a card is all of it: the device has no safety floor. The plan of

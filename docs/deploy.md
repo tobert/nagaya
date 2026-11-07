@@ -346,9 +346,11 @@ checkpoint, so run it with `GEMMA4_MODEL_DIR` set.
 - The config ignores the Radeon 610M at `0000:80:00.0`. The iGPU drives the display, and it gets no work (spec 2.1).
 - The store directory is `/home/atobey/.local/share/nagaya/store`, on the NVMe disk.
 - The profile puts the engine `gemma` of kind `mk-gemma4-bmg` on devices 0 and 1, the cards at `0000:03:00.0`
-  and `0000:08:00.0`.
+  and `0000:08:00.0`. It is on demand since milestone 24, and it loads only through the load routes (spec 3.3b).
+- The profile puts `lfm3-omni` and `lfm3` of kind `mk-lfm3-bmg` on device 0. Both are resident (spec 11.11). They
+  plan 14,255,941,640 bytes of card 0 together, with two slots each.
 - The slots are mkviolet's: one of 4,096 positions and one of 65,536. A block holds 512 tokens.
-- The profile puts the speech engine `voice` of kind `qwen3tts-bmg` on device 0, on demand (spec 3.3a, 11.8). It serves
+- The profile puts the speech engine `voice` of kind `qwen3tts-bmg` on device 1, on demand (spec 3.3a, 11.8). It serves
   the council model `Qwen3-TTS-12Hz-1.7B-VoiceDesign` (spec 11.8a). Until M18 step 3 it also served
   `POST /v1/audio/speech`.
 - The profile puts six image engines of kind `mk-sdxl-bmg` on one card each, on demand (spec 11.9). `sdxl-0`,
@@ -370,10 +372,11 @@ On 2026-10-21, `gemma` planned 29,964,945,932 bytes of terms on device 0 and 31,
 Each card has 32 GiB (34,359,738,368 bytes), so card 1 had about 2.3 GB left. A larger slot does not fit. The host
 budget is 96 GiB, and the store takes 16 GiB of it and 50 GiB of NVMe.
 
-The speech engine plans 5,645,096,644 bytes on card 0, and card 0 has 4,394,792,436 bytes beside `gemma`. Thus it
-does not load beside `gemma` (engine-abi "How a group loads both"). A client loads it with the load route and names
-`gemma` in `unload`, and later it loads `gemma` again (spec 3.3b). No request starts a load, and no engine swaps back
-by itself (spec 3.3, "Explicit loads", and 3.3a, "Explicit layout").
+The speech engine plans 5,645,096,644 bytes on card 1, and card 1 has about 2.3 GB beside `gemma`. Thus it does not
+load beside `gemma` (engine-abi "How a group loads both"). A client loads it with the load route and names `gemma` in
+`unload`, and later it loads `gemma` again (spec 3.3b). Gemma 4 does not load beside the LFM3 models either, so its
+load names `lfm3-omni` and `lfm3` in `unload`. A load of an image engine on card 0 names them too. No request starts
+a load, and no engine swaps back by itself (spec 3.3, "Explicit loads", and 3.3a, "Explicit layout").
 
 ### Change the profile
 

@@ -281,11 +281,13 @@ fn the_b70host_profile_names_the_gemma4_engine_on_both_cards() {
     let profile = b70host_profile();
     assert_eq!(
         profile.engines.len(),
-        9,
-        "gemma, the speech engine, five image engines on demand, the pinned embedding engine, and inpaint-0"
+        11,
+        "gemma, the speech engine, five image engines on demand, the pinned embedding engine, inpaint-0 and the two \
+         LFM3 models"
     );
     let engine = &profile.engines[0];
-    assert_eq!(engine.residency, Residency::Resident);
+    // Amy, 2026-11-06 (milestone 24): Gemma 4 goes on demand, and it loads only through the load routes.
+    assert_eq!(engine.residency, Residency::OnDemand);
     assert_eq!(engine.kind, nagaya::gemma4::KIND);
     assert_eq!(engine.devices, vec![0, 1], "stage 0 on device 0, stage 1 on device 1");
     // mkviolet serves one slot of 4096 positions and one of 65,536, with blocks of 512 (mkviolet `src/main.rs`).
@@ -343,6 +345,19 @@ struct PlanOnly;
 impl Factory for PlanOnly {
     fn plan(&self, config: &toml::Table, devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         nagaya::gemma4::plan(config, devices)
+    }
+
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
+        panic!("a deploy test opens no engine")
+    }
+}
+
+/// The plan of an LFM3 model, from its folder and no card.
+struct Lfm3PlanOnly;
+
+impl Factory for Lfm3PlanOnly {
+    fn plan(&self, config: &toml::Table, devices: &[GroupDevice]) -> Result<Limits, PlanError> {
+        nagaya::lfm3::plan(config, devices)
     }
 
     fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
@@ -439,15 +454,16 @@ fn checkpoint() -> Option<PathBuf> {
 }
 
 #[test]
-fn the_b70host_profile_names_the_speech_engine_on_demand_on_card_zero() {
-    // Amy, 2026-10-24: the speech engine swaps in on demand, and the profile chooses its card (milestone 17).
+fn the_b70host_profile_names_the_speech_engine_on_demand_on_card_one() {
+    // Amy, 2026-10-24: the speech engine swaps in on demand, and the profile chooses its card (milestone 17). Amy,
+    // 2026-11-06 (milestone 24): card 1 holds the image engines, the embedding engine and speech.
     let profile = b70host_profile();
     let engine = &profile.engines[1];
     assert_eq!(
         (engine.name.as_str(), engine.kind.as_str()),
         ("voice", nagaya::qwen3tts::KIND)
     );
-    assert_eq!(engine.devices, vec![0]);
+    assert_eq!(engine.devices, vec![1]);
     assert_eq!(engine.residency, Residency::OnDemand);
     assert!(
         !engine.pinned,
@@ -488,7 +504,7 @@ fn the_b70host_profile_names_an_image_engine_on_demand_on_each_card() {
     let profile = b70host_profile();
     assert_eq!(
         profile.engines.len(),
-        9,
+        11,
         "the image engines follow gemma and the speech engine"
     );
     for (engine, (name, device)) in profile.engines[2..4].iter().zip([("sdxl-0", 0), ("sdxl-1", 1)]) {
@@ -511,7 +527,7 @@ fn the_b70host_profile_names_pony_on_card_zero_and_autismmix_on_card_one() {
     // Amy, 2026-10-28: Pony V6 and AutismMix from Civitai, beside SDXL base, one engine on each card. The profile
     // names the files; this test checks only their form.
     let profile = b70host_profile();
-    assert_eq!(profile.engines.len(), 9);
+    assert_eq!(profile.engines.len(), 11);
     // Amy, 2026-10-29: SDXL-Lightning 4-step, a single file on card 0, shares that card with pony-0 (spec 11.9a).
     let singles = [("pony-0", 0), ("autismmix-1", 1), ("lightning-0", 0)];
     for (engine, (name, device)) in profile.engines[4..7].iter().zip(singles) {
@@ -606,6 +622,41 @@ fn the_b70host_profile_names_the_inpainting_engine_on_demand_on_card_one() {
     );
 }
 
+/// Amy, 2026-11-06 (milestone 24): both LFM3 models are resident on card 0 of b70host. Each engine name is its
+/// served name (spec 11.11), and each config and family table names its snapshot folder.
+#[test]
+fn the_b70host_profile_names_both_lfm3_models_resident_on_card_zero() {
+    let profile = b70host_profile();
+    assert_eq!(profile.engines.len(), 11, "the two LFM3 models come last");
+    for (engine, (name, repo, snapshot)) in profile.engines[9..].iter().zip([
+        (
+            "lfm3-omni",
+            "models--LiquidAI--LFM3-Omni-2B",
+            "21d75123f86c1f7ffb4bef1ea202710c4e7ebe67",
+        ),
+        (
+            "lfm3",
+            "models--LiquidAI--LFM3-1.7B",
+            "0dc4268b561499c648c7ba7c9466bf3d8d01517a",
+        ),
+    ]) {
+        assert_eq!((engine.name.as_str(), engine.kind.as_str()), (name, nagaya::lfm3::KIND));
+        assert_eq!(engine.devices, vec![0], "{name}");
+        assert_eq!(engine.residency, Residency::Resident, "{name}");
+        assert!(!engine.pinned, "{name}: a load of an image engine on card 0 unloads it");
+        for table in [&engine.config, &engine.family] {
+            let dir = std::path::PathBuf::from(table["model_dir"].as_str().unwrap());
+            assert!(dir.is_absolute(), "{name}: the loader does not expand `~`");
+            assert!(
+                dir.ends_with(format!("{repo}/snapshots/{snapshot}")),
+                "{name}: {}",
+                dir.display()
+            );
+        }
+        assert_eq!(engine.config["slots"].as_integer(), Some(2), "{name}");
+    }
+}
+
 #[test]
 fn the_b70host_profile_admits_on_the_probed_b70host() {
     // The start path up to the open: the probe, the ignored iGPU, the plan and the ledger.
@@ -630,9 +681,19 @@ fn the_b70host_profile_admits_on_the_probed_b70host() {
     registry.register(nagaya::qwen3tts::KIND, Box::new(SpeechPlanOnly));
     registry.register(nagaya::sdxl::KIND, Box::new(ImagePlanOnly));
     registry.register(nagaya::embeddinggemma2::KIND, Box::new(EmbeddingPlanOnly));
+    registry.register(nagaya::lfm3::KIND, Box::new(Lfm3PlanOnly));
     let admitted = admit(&b70host_profile(), &registry, &inventory, &mut Ledger::new()).expect("b70host admits");
-    assert_eq!(admitted.engines.len(), 9);
-    for engine in admitted.engines[2..7].iter().chain(&admitted.engines[8..]) {
+    assert_eq!(admitted.engines.len(), 11);
+    // Both LFM3 models are resident on card 0 at the start (milestone 24): their terms fit the card together.
+    let on_card_0: u64 = admitted.engines[9..]
+        .iter()
+        .flat_map(|engine| engine.limits.memory.mandatory.iter())
+        .filter(|term| term.tier == Tier::Device(0))
+        .map(|term| term.bytes)
+        .sum();
+    println!("the two LFM3 models take {on_card_0} bytes of card 0");
+    assert!(on_card_0 < 32 << 30, "{on_card_0}");
+    for engine in admitted.engines[2..7].iter().chain(&admitted.engines[8..9]) {
         assert!(engine.limits.capabilities.contains(&nagaya_abi::Capability::Image));
     }
     assert!(
