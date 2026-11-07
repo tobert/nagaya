@@ -81,10 +81,10 @@ async fn render(State(council): Shared, Extension(id): Id, body: Body) -> Respon
         let (served, model) = council.route_text(&request.model)?;
         council
             .call(move || {
-                // A family renders text only, so an object part is refused before it (gogi "Contexts").
+                // The object parts follow the rules of gogi "Contexts" before the family renders them.
                 served
                     .service
-                    .reads_text_only(&gogi_proto::objects::objects_of(&request.context.messages))?;
+                    .check_objects(&gogi_proto::objects::objects_of(&request.context.messages))?;
                 let family = served.service.family();
                 let prompt = request.generation_prompt.unwrap_or(false);
                 let rendering = family.render(&request.context, prompt).map_err(at("context"))?;

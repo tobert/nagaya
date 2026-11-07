@@ -178,9 +178,17 @@ impl Council {
     }
 
     /// Serve objects and keeps from this store (spec 6.15, gogi "Objects and keeps").
-    pub fn with_objects(mut self, store: nagaya_store::objects::ObjectStore) -> Self {
-        self.object_limits = Some((store.object_bytes(), store.keep_bytes()));
-        self.objects = Some(Arc::new(Mutex::new(store)));
+    pub fn with_objects(self, store: nagaya_store::objects::ObjectStore) -> Self {
+        self.with_object_store(Arc::new(Mutex::new(store)))
+    }
+
+    /// Serve objects and keeps from a store that the text services also read (spec 6.15, 11.11).
+    pub fn with_object_store(mut self, store: Arc<Mutex<nagaya_store::objects::ObjectStore>>) -> Self {
+        {
+            let held = store.lock().expect("the object store lock is poisoned");
+            self.object_limits = Some((held.object_bytes(), held.keep_bytes()));
+        }
+        self.objects = Some(store);
         self
     }
 
@@ -469,7 +477,14 @@ impl Council {
             engine: identity.engine,
             device: served.device.clone(),
             text_stop: None,
-            media: None,
+            // A family that reads media lists its types (spec 11.11). Its replies hold text.
+            media: Some(service.family().media_inputs())
+                .filter(|inputs| !inputs.is_empty())
+                .map(|inputs| gogi_proto::identity::Media {
+                    inputs,
+                    outputs: Vec::new(),
+                    text_replies: true,
+                }),
             limits: ModelLimits {
                 context_tokens: config.context_tokens as u64,
                 decision_context_tokens: config.decision_context_tokens as u64,

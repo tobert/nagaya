@@ -57,6 +57,17 @@ impl Script {
     }
 }
 
+/// The segments that an engine saw, in order. A test reads the inputs and the `meta` that the jobs sent.
+#[derive(Clone, Debug, Default)]
+pub struct Seen(Arc<Mutex<Vec<Segment>>>);
+
+impl Seen {
+    /// The segments so far. The log is empty after the call.
+    pub fn take(&self) -> Vec<Segment> {
+        std::mem::take(&mut *self.0.lock().unwrap())
+    }
+}
+
 /// A fake engine that declares a mandatory term for each context.
 pub struct WithContextTerm {
     inner: FakeAlways,
@@ -67,6 +78,7 @@ pub struct WithContextTerm {
     grain: Option<u64>,
     seal: bool,
     close: bool,
+    seen: Option<Seen>,
 }
 
 impl Engine for WithContextTerm {
@@ -94,6 +106,25 @@ impl Engine for WithContextTerm {
 
     fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
         std::thread::sleep(self.delay);
+        if let Some(seen) = &self.seen {
+            seen.0.lock().unwrap().extend(segments.iter().cloned());
+        }
+        // The fake reads tokens. A segment with rows feeds each token mixed with a hash of its rows and meta, so two
+        // images of one size give two states, as on a card.
+        let tokens: Vec<Segment> = segments
+            .iter()
+            .cloned()
+            .map(|mut segment| {
+                if let nagaya_abi::SegmentInputs::TokensAndRows { tokens, rows } = segment.inputs {
+                    let hash = blake3::Hasher::new().update(&rows).update(&segment.meta).finalize();
+                    let mix = u32::from_le_bytes(hash.as_bytes()[..4].try_into().unwrap());
+                    segment.inputs = nagaya_abi::SegmentInputs::Tokens(tokens.iter().map(|t| t ^ mix).collect());
+                    segment.meta = Vec::new();
+                }
+                segment
+            })
+            .collect();
+        let segments = tokens.as_slice();
         let mut out = self.inner.pass(segments, taps)?;
         assert!(segments.len() <= 1, "the council jobs run one segment in a pass");
         if let Some(segment) = segments.first() {
@@ -146,6 +177,8 @@ pub struct TermFactory {
     pub seal: bool,
     /// True for an engine that declares `close`, so that it can be on demand (spec 3.3a).
     pub close: bool,
+    /// The log of the segments of each pass, or none.
+    pub seen: Option<Seen>,
 }
 
 impl TermFactory {
@@ -162,6 +195,7 @@ impl TermFactory {
             speaking: false,
             seal: true,
             close: false,
+            seen: None,
         }
     }
 
@@ -182,6 +216,7 @@ impl TermFactory {
             grain: self.grain,
             seal: self.seal,
             close: self.close,
+            seen: self.seen.clone(),
         }
     }
 }

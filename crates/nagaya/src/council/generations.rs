@@ -12,12 +12,12 @@ use gogi_proto::generation::{
 };
 use gogi_proto::message::Message;
 use nagaya_abi::Kind;
-use nagaya_council::build::{BoundaryRecipe, recipes_with_cuts};
+use nagaya_council::build::{BoundaryRecipe, range_recipe, recipes_with_cuts};
 use nagaya_council::family::{
     Boundary, Family, FamilyError, ParsedReply, Rendering, ReplyCall, ReplyParser, ReplyStart,
 };
 use nagaya_council::sampler::{Settings, pick};
-use nagaya_store::{ContentId, Reason, RecipeId, recipe_boundary};
+use nagaya_store::{ContentId, Reason, RecipeId};
 
 use super::build::{ContextBody, Got, Then, Want};
 use super::error::ServiceError;
@@ -327,7 +327,9 @@ impl GenerateThen {
         if !in_slot || seam - fed > HEAD_FEED || at >= seam {
             return self.done();
         }
-        let recipe = recipe_boundary(&base, &tokens[at..seam], seam as u64);
+        // The family made the spans of this rendering, so a bad span is a defect of the family (spec 8.5).
+        let recipe = range_recipe(&base, tokens, &rendering.media, at, seam)
+            .unwrap_or_else(|error| panic!("the rendering of a reply has a bad media span: {error}"));
         self.stage = Stage::Head {
             recipe,
             boundary: Boundary { message, tokens: seam },
@@ -504,7 +506,7 @@ impl Service {
         events: Option<SyncSender<TokenEvent>>,
     ) -> Result<GenerationDone, ServiceError> {
         request.validate()?;
-        self.reads_text_only(&gogi_proto::objects::objects_of(&request.context.messages))?;
+        let read = self.check_objects(&gogi_proto::objects::objects_of(&request.context.messages))?;
         if let Some(output) = &request.output {
             return Err(Invalid::param(
                 "output.mime",
@@ -570,6 +572,8 @@ impl Service {
             Some(_) => self.starts(context, &rendering.tokens, &built)?,
             None => (self.cuts(context, &built)?, None),
         };
+        // The rows of each span of the prompt. A prompt with no build plan feeds its spans in the work.
+        let media = self.media_rows(&rendering)?;
         let then = GenerateThen {
             family: Arc::clone(&self.family),
             context: context.clone(),
@@ -599,6 +603,7 @@ impl Service {
         let shared = Arc::clone(&self.shared);
         let job = |tx| {
             ContextBody::with(shared, tokens, recipes.clone(), room, then, tx)
+                .media(media)
                 .cuts(cuts)
                 .extension(extension)
         };
@@ -628,7 +633,7 @@ impl Service {
                 fed: prompt as u64 - kept,
                 completion: reply.tokens.len() as u64,
                 reasoning: reply.reasoning,
-                media: None,
+                media: read,
             },
             head,
             snapshots,

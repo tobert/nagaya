@@ -26,10 +26,10 @@ use gogi_proto::decision::DecisionIdentity;
 use gogi_proto::pins::{PinHeld, PinOwner, PinsPut, PinsPutResult, SnapshotDetail, validate_owner};
 use gogi_proto::spec::{HeldSpec, SpecRules};
 use nagaya_abi::{Capability, Engine, Limits};
-use nagaya_council::build::{BoundaryRecipe, boundary_recipes, recipes_with_cuts, root_recipe};
-use nagaya_council::family::{Boundary, Family, Rendering};
+use nagaya_council::build::{BoundaryRecipe, boundary_recipes, range_recipe, recipes_with_cuts, root_recipe};
+use nagaya_council::family::{Boundary, Family, MediaInput, Rendering};
 use nagaya_sched::{Class, IntervalCopies, IntervalPolicy};
-use nagaya_store::{ContentId, EntryState, RecipeId, Store, Tier, recipe_boundary};
+use nagaya_store::{ContentId, EntryState, RecipeId, Store, Tier};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -305,7 +305,13 @@ pub struct Service {
     /// (`shared.store`), never the store before `pins`. A method that needs both locks `pins` first. Two methods that
     /// lock in two orders can wait for each other for ever.
     pins: Arc<Mutex<PinBook>>,
+    /// The objects of the process, which the object parts of a request name (spec 6.15). With none, each object part
+    /// that passes rules 1 and 2 is a 404.
+    objects: Option<Arc<Mutex<nagaya_store::objects::ObjectStore>>>,
 }
+
+/// The objects that a request reads, for `usage.media.read` (gogi "Generations"): each distinct object once.
+pub(crate) type MediaRead = Option<gogi_proto::context::MediaUsage>;
 
 impl Service {
     /// The first failure that the service saw outside a call, or `None`: a release of a ledger charge that failed.
@@ -463,6 +469,7 @@ impl Service {
             identity,
             specs: files.specs,
             pins: files.pins,
+            objects: None,
             config,
         };
         service.settle_pins()?;
@@ -487,6 +494,13 @@ impl Service {
             engine: format!("nagaya:{digest}"),
             spec_id: None,
         }
+    }
+
+    /// Read the object parts of requests from this store (spec 6.15). The council gives each text service the store of
+    /// the process.
+    pub fn with_objects(mut self, objects: Arc<Mutex<nagaya_store::objects::ObjectStore>>) -> Self {
+        self.objects = Some(objects);
+        self
     }
 
     /// The served model: the `model` of the council identity.
@@ -546,7 +560,7 @@ impl Service {
     /// continuation: the context before the open message. Its `head` names the recipe of the open rendering, which
     /// the store never holds.
     pub fn build(&self, context: &Context, dry_run: bool, schedule: Schedule) -> Result<Built, ServiceError> {
-        self.reads_text_only(&gogi_proto::objects::objects_of(&context.messages))?;
+        let read = self.check_objects(&gogi_proto::objects::objects_of(&context.messages))?;
         if context.open().is_some() && !dry_run {
             return Err(Invalid::param(
                 "continue",
@@ -585,6 +599,7 @@ impl Service {
                 tokens.len()
             };
             let body = LookupBody::new(Arc::clone(&self.shared), recipes.clone(), Arc::clone(&tokens), room, tx)
+                .media(rendering.media.clone())
                 .cuts(cuts)
                 .extension(extension);
             submit(
@@ -597,8 +612,13 @@ impl Service {
             )?;
             wait(&rx)?
         } else {
+            let media = self.media_rows(&rendering)?;
             let shared = Arc::clone(&self.shared);
-            let job = |tx| BuildBody::new(shared, tokens, recipes.clone(), tx).cuts(cuts);
+            let job = |tx| {
+                BuildBody::new(shared, tokens, recipes.clone(), tx)
+                    .media(media)
+                    .cuts(cuts)
+            };
             self.run_context(job, schedule, None)?.outcome
         };
         let prompt = rendering_end as u64;
@@ -608,7 +628,7 @@ impl Service {
             fed: prompt - outcome.kept as u64,
             completion: 0,
             reasoning: 0,
-            media: None,
+            media: read,
         };
         let snapshots = if dry_run {
             Vec::new()
@@ -698,7 +718,7 @@ impl Service {
         let store = self.store();
         while let Some(node) = stack.pop() {
             if let Some(next) = plan.boundaries.iter().find(|boundary| boundary.tokens > node.at) {
-                let recipe = recipe_boundary(&node.recipe, &tokens[node.at..next.tokens], next.tokens as u64);
+                let recipe = range_recipe(&node.recipe, tokens, &plan.media, node.at, next.tokens)?;
                 if seen.insert(recipe) {
                     stack.push(Node {
                         recipe,
@@ -718,7 +738,7 @@ impl Service {
                 if !usable || at <= node.at || at > limit {
                     continue;
                 }
-                if recipe_boundary(&node.recipe, &tokens[node.at..at], at as u64) != entry.recipe {
+                if range_recipe(&node.recipe, tokens, &plan.media, node.at, at)? != entry.recipe {
                     continue;
                 }
                 let mut path = node.path.clone();
@@ -911,20 +931,78 @@ impl Service {
             .sum()
     }
 
-    /// Refuses the first object a request names, with a `400` that names its member (gogi "Contexts"). Each served model
-    /// of the nagaya reads text only: no family renders an object yet, so its identity declares no `media`.
-    pub(crate) fn reads_text_only(&self, objects: &[gogi_proto::objects::Named]) -> Result<(), ServiceError> {
-        match objects.first() {
-            None => Ok(()),
-            Some(named) => Err(Invalid::param(
-                named.at.clone(),
-                format!(
-                    "nothing ran: {} is {} of media type {}, and {} reads text only",
-                    named.at, named.object.id, named.object.mime, self.config.model
-                ),
-            )
-            .into()),
+    /// Check each object that a request names by the rules 1 to 4 of gogi "Contexts", in that order. The first rule that
+    /// fails gives the error, which names the part. Rule 2 reads the media types of the family, so a text family
+    /// refuses each object part with a `400`. Rule 4 is a `404`. The result counts each distinct object once, for
+    /// `usage.media.read`, and it is `None` when the request names no object.
+    pub(crate) fn check_objects(&self, objects: &[gogi_proto::objects::Named]) -> Result<MediaRead, ServiceError> {
+        let inputs = self.family.media_inputs();
+        let mut read: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+        for named in objects {
+            let (at, object) = (&named.at, &named.object);
+            object.check(at)?;
+            if !inputs
+                .iter()
+                .any(|pattern| gogi_proto::identity::mime_matches(pattern, &object.mime))
+            {
+                let reads = match inputs.is_empty() {
+                    true => "text only".to_owned(),
+                    false => format!("text and {}", inputs.join(", ")),
+                };
+                return Err(Invalid::param(
+                    at.clone(),
+                    format!(
+                        "nothing ran: {at} is {} of media type {}, and {} reads {reads}",
+                        object.id, object.mime, self.config.model
+                    ),
+                )
+                .into());
+            }
+            let id = ContentId::from_hex(object.id.trim_start_matches("blake3:"))
+                .map_err(|_| ServiceError::internal("rule 1 checked the content id of each part"))?;
+            let held = self.objects.as_ref().and_then(|store| {
+                let store = store.lock().expect("the object store lock is poisoned");
+                store.mime_of(&id).map(str::to_owned).zip(store.bytes_of(&id))
+            });
+            let Some((mime, bytes)) = held else {
+                return Err(ServiceError::NotHeld {
+                    message: format!(
+                        "nothing ran: {at} is {}, which the server does not hold; PUT it, then send the request again",
+                        object.id
+                    ),
+                    param: at.clone(),
+                });
+            };
+            if mime != object.mime {
+                return Err(Invalid::param(
+                    at.clone(),
+                    format!(
+                        "nothing ran: {at} is {} of media type {}, but it was put as {mime}; name it as {mime}, or PUT \
+                         it again as {}",
+                        object.id, object.mime, object.mime
+                    ),
+                )
+                .into());
+            }
+            read.insert(object.id.clone(), bytes);
         }
+        Ok((!read.is_empty()).then(|| gogi_proto::context::MediaUsage {
+            read: gogi_proto::context::MediaCount {
+                objects: read.len() as u64,
+                bytes: read.values().sum(),
+                ..Default::default()
+            },
+            written: Default::default(),
+        }))
+    }
+
+    /// The input of the engine for each media span of a rendering (spec 11.11). The family prepares the rows before
+    /// the job, so no decode runs on the group thread.
+    pub(crate) fn media_rows(&self, rendering: &Rendering) -> Result<Arc<[MediaInput]>, ServiceError> {
+        if rendering.media.is_empty() {
+            return Ok(Arc::from(Vec::new()));
+        }
+        Ok(self.family.media_rows(rendering)?.into())
     }
 
     /// The objects of each context of a request with several, named `contexts[k].messages[i].content[j]`.
