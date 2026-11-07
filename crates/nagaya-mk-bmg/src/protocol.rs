@@ -67,6 +67,10 @@ pub const OP_SCALE: u16 = 82;
 // `OP_RMSNORM` with `FLAG_ROPE` reads the rotated pairs from `layer`.
 pub const OP_SHORT_CONV: u16 = 90;
 pub const OP_HEAD_GATE: u16 = 91;
+// The speech ops of the LFM3 binary (`kernels/lfm3_speech_ops.cl`): opcodes 120 to 139.
+pub const OP_LFM3_GROUP_ATTN: u16 = 120;
+pub const OP_LFM3_POLAR: u16 = 121;
+pub const OP_LFM3_IRFFT: u16 = 122;
 
 pub const FLAG_ACCUMULATE: u16 = 1 << 0;
 pub const FLAG_SOFTCAP_30: u16 = 1 << 2;

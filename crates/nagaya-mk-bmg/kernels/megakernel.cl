@@ -95,6 +95,10 @@
 // The ops of the LFM3 binary (kernels/lfm3_ops.cl)
 #define OP_SHORT_CONV       90
 #define OP_HEAD_GATE        91
+// The speech ops of the LFM3 binary (kernels/lfm3_speech_ops.cl)
+#define OP_LFM3_GROUP_ATTN  120
+#define OP_LFM3_POLAR       121
+#define OP_LFM3_IRFFT       122
 #define SHORT_CONV_CHUNK    64  // positions per work item of OP_SHORT_CONV; at least SHORT_CONV_MAX_TAPS - 1
 #define SHORT_CONV_MAX_TAPS 8
 #endif
@@ -1419,6 +1423,7 @@ __kernel void mk_persistent_interpreter(
 #endif
 #ifdef MK_LFM3
 #include "lfm3_ops.cl"
+#include "lfm3_speech_ops.cl"
 #endif
         else if (op == OP_MEAN_POOL_L2) {
             // c[0..k) = L2-normalized mean of the first k columns of n rows with stride m.
