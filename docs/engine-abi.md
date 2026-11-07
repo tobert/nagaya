@@ -1285,6 +1285,45 @@ choice that the gates can check. Amy decides.
   device size that is not the sum of the terms. `max_quantum_ms` is 2,000, a budget that a card test measures.
 - **Not in step 6.** The engine has no arena, no seal and no stages. A restart uploads the weights again.
 
+### The speech calls of LFM3
+
+Proposed by Claude Opus 5.5, 2026-11-06, for milestone 24 step 8. The calls of "Speech" above leave these choices
+open. Each one is the simplest choice that the oracle can check. Amy decides.
+
+```
+frame(slot, draw, logits) -> {codes, end, logits?}   draw = {seed, frame, history}
+codec(slot, codes) -> samples                         f32 samples at 24 kHz
+codec_clear(slot) -> samples                          the last 480 samples; it frees the window
+```
+
+- **The capability.** `speech_frames` is its own capability, the trait `SpeechFrames` of `nagaya-abi`. Omni declares
+  it beside the parts, the slots and the coverage, and its `pass` stays a text pass. Reason: the capability `speech`
+  of Qwen3-TTS refuses each pass.
+- **The hidden row.** `frame` reads the final norm of the last position of the slot. Each pass of Omni keeps that
+  row. After a restore, a write or a clear, the slot holds no such row, and `frame` refuses until a pass runs.
+- **The history.** The caller gives the codes of the frames of the output so far. The engine reads the last 64 of
+  them, and it keeps no history (spec 11.2, "The draw keeps no state"). The end frame is not in the history, as in
+  the reference (`modeling_lfm3_omni.py:1734-1739`).
+- **The logits.** With `logits`, `frame` also gives the logit row of the frame that it fed. Reason: in `interleaved`
+  mode a text token can follow a frame, and the host samples it (spec 11.11).
+- **The draw.** The uniform value is the BLAKE3 hash of `nagaya audio draw v1`, the seed, the frame and an index.
+  The seed and the frame are 8 bytes each, little-endian. The index is 1 byte. The value then follows spec 11.2.
+- **The order.** The order of the codebooks is a Fisher-Yates shuffle of 0 to 11. The swap at `i`, from 11 down to
+  1, takes `j = floor(u × (i + 1))` with the index `i`. The three passes reveal the order in groups of 4.
+- **The pick.** Codebook `g` draws with the index `12 + g`. The engine applies the penalty to the f32 logits and
+  divides by the temperature. It then picks as spec 11.2 does, in f64.
+- **The audio.** `codec` gives f32 samples, and the host turns them into PCM. The first call after a clear gives
+  1,440 samples, and each later call gives 1,920. `codec_clear` gives the last 480. Thus `n` frames give `1,920 × n`
+  samples, as the stream of the reference does (`modeling_liquid_codec.py:341-356`).
+- **The overlap-add.** The card runs the decoder, the polar form and the inverse FFT with the window. The host adds
+  the frames and divides by the envelope. Reason: that is 2,880 additions for each frame, and the tail of 960
+  samples then stays in host memory.
+- **The ring of the codec.** Each attention layer of the codec keeps its keys and values in a ring of 128 rows for
+  each slot. The positions of the codec run from 0 after a clear, 6 for each frame. A slot holds at most 196,608 of
+  them, 6 for each position of the slot.
+- **The memory.** Omni adds the term `speech` on `device(0)`. It holds the depth decoder, the codebook table, the
+  codec, their buffers, and the codec state of each slot. `LFM3-1.7B` has no such term.
+
 ## Not covered yet
 
 - Streams. They need a period, a deadline and a late policy, in `limits()` or per job. A pass blocks, so the
