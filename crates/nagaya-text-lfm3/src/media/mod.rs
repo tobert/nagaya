@@ -5,6 +5,8 @@
 //! each stage with the reference (`tools/lfm3_media_fixture.py`, `tools/lfm3_reference.py`).
 
 pub mod audio;
+#[cfg(feature = "video")]
+pub mod decode;
 pub mod image;
 pub mod video;
 

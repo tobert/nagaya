@@ -13,6 +13,13 @@ sha2 = "0.10.9"
 # The same crate and features as nagaya-text-gemma4. The reference tokenizer is a `tokenizers` tokenizer.
 tokenizers = { version = "0.23.1", default-features = false, features = ["onig"] }
 zune-jpeg = "0.5.15"
+# The decoder of a video part (spec 11.11, "The video of a request"): ffmpeg's libraries, behind the feature `video`.
+ffmpeg-next = { version = "9.0.0", default-features = false, features = ["format", "codec", "software-scaling", "software-resampling"], optional = true }
+libc = { version = "0.2.191", optional = true }
+
+[features]
+# A build with this feature reads video parts. It needs ffmpeg's libraries and libclang at build time.
+video = ["dep:ffmpeg-next", "dep:libc"]
 
 [dev-dependencies]
 safetensors = "0.8.0"

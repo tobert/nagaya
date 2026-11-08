@@ -13,6 +13,8 @@ pub const MAX_FRAMES: usize = 384;
 /// The pixel budget of all the frames of a video together: `size.shortest_edge` and `size.longest_edge`.
 pub const MIN_PIXELS: usize = 4_096;
 pub const MAX_PIXELS: usize = 25_165_824;
+/// The rate of the sound that the audio encoder reads.
+pub const SOUND_RATE: u32 = 16_000;
 /// The seconds of sound in one row of the audio encoder: the hop of 160 samples, the stride of 8, at 16 kHz.
 pub const SECONDS_PER_ROW: f64 = 160.0 * 8.0 / 16_000.0;
 

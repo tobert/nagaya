@@ -4491,8 +4491,8 @@ above leaves these choices open. Each follows the checkpoint's own processors (`
   encoder rows are split at the time of the first frame of each pair, as the reference splits them. Each part follows
   the video tokens of its pair. This needs a new span kind in the engine: a run of the rows of one clip.
 - **The decode gate.** The frames come from ffmpeg in the family, and from torchcodec in the reference. Both use
-  ffmpeg's decoder, but the color conversion can differ. So the gate of the decoded frames is a bound on the bytes
-  that differ, as for a JPEG. Every stage after the decode has a gate of bits or of the tolerances of 11.11.
+  ffmpeg's decoder, its color conversion and its resampler. On 2026-11-08 with ffmpeg 9.0.2, both gave the same bits
+  of the frames and of the sound. So the decode gate is a gate of bits with the same ffmpeg build.
 - **Types.** `media.inputs` lists `video/mp4` and `video/webm` in a build with the feature. A video with no video
   stream is a 400 that names the part. A video with no sound track gives frames only.
 

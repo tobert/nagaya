@@ -148,3 +148,56 @@ fn each_pair_writes_its_mean_time_and_the_sound_splits_at_the_first_frame_of_eac
     // The bounds never go down, and never pass the rows of the clip.
     assert_eq!(video::sound_bounds(&[0, 0, 50, 50], 1.0, 10), [0, 10, 10]);
 }
+
+/// The decode with ffmpeg's libraries against the frames and the sound that torchcodec gave the reference. With the
+/// same ffmpeg build, both give the same bits: on 2026-11-08 with ffmpeg 9.0.2, no byte and no sample differed.
+#[cfg(feature = "video")]
+#[test]
+fn the_decode_gives_the_bits_of_the_frames_and_the_sound_of_the_reference() {
+    use nagaya_text_lfm3::media::decode;
+    let Some(o) = oracle() else { return };
+    for name in NAMES {
+        let bytes = std::fs::read(golden_path(&format!("video_{name}.mp4")).unwrap()).unwrap();
+        let d = decode::decode(&bytes).unwrap();
+        let m = o.video(name);
+        assert_eq!(d.total as u64, m["stream_frames"].as_u64().unwrap(), "{name}");
+        assert_eq!(d.fps, m["fps"].as_f64().unwrap(), "{name}");
+        let want: Vec<usize> = o
+            .i64s(&format!("{name}.indices"))
+            .into_iter()
+            .map(|i| i as usize)
+            .collect();
+        assert_eq!(d.indices, want, "{name}");
+        let frames = o.frames(&format!("{name}.decoded_rgb"));
+        let (mut differ, mut most, mut all) = (0usize, 0u8, 0usize);
+        for (got, want) in d.frames.iter().zip(&frames) {
+            assert_eq!((got.height, got.width), (want.height, want.width), "{name}");
+            for (a, b) in got.bytes.iter().zip(&want.bytes) {
+                all += 1;
+                if a != b {
+                    differ += 1;
+                    most = most.max(a.abs_diff(*b));
+                }
+            }
+        }
+        println!("{name}: {differ} of {all} bytes differ, the most by {most}");
+        assert_eq!(d.frames.len(), frames.len(), "{name}");
+        assert_eq!(differ, 0, "{name}: the frames differ, the most by {most}");
+        match (d.sound.as_ref(), m["sound"].as_bool().unwrap()) {
+            (Some(samples), true) => {
+                let want = o.f32s(&format!("{name}.samples"));
+                assert_eq!(samples.len(), want.len(), "{name}");
+                assert!(
+                    samples.iter().zip(&want).all(|(a, b)| a.to_bits() == b.to_bits()),
+                    "{name}: the samples"
+                );
+            }
+            (None, false) => {}
+            (got, sound) => panic!(
+                "{name}: the sound is {:?} samples, and the video has sound {sound}",
+                got.map(Vec::len)
+            ),
+        }
+    }
+    println!("{}", decode::versions());
+}
