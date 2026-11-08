@@ -118,7 +118,37 @@ fn held_vector(
     fit: &Fit,
     lookup: &mut Lookup,
 ) -> Result<Arc<[u8]>, ServiceError> {
-    let quoted = item.vector.as_str();
+    let width = fit.limit.width as usize;
+    let vector = held(
+        param,
+        item.vector.as_str(),
+        id,
+        fit.weight_hash,
+        fit.limit.layers,
+        width,
+        lookup,
+    )?;
+    let mut values = vec![0f32; fit.limit.layers as usize * width];
+    for (layer, row) in &vector.layers {
+        let start = *layer as usize * width;
+        values[start..start + width].copy_from_slice(row);
+    }
+    Ok(values.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>().into())
+}
+
+/// A held control vector after the checks of its object, in the order of gogi "Control vectors": a held object, its
+/// media type, its bytes, and the fit with a model of `weight_hash`, `layers` layers and the residual width `width`.
+/// `param` names the member, and `quoted` is the id as the client sent it. An object that the store does not hold is a
+/// 404; each other fault is a 400.
+pub fn held(
+    param: &str,
+    quoted: &str,
+    id: &ContentId,
+    weight_hash: &str,
+    layers: u32,
+    width: usize,
+    lookup: &mut Lookup,
+) -> Result<ControlVector, ServiceError> {
     let Some((mime, bytes)) = lookup(id)? else {
         return Err(ServiceError::NotHeld {
             param: param.to_owned(),
@@ -141,15 +171,9 @@ fn held_vector(
         )
     })?;
     vector
-        .check_fits(fit.weight_hash, fit.limit.layers, fit.limit.width as usize)
+        .check_fits(weight_hash, layers, width)
         .map_err(|why| Invalid::param(param, format!("nothing ran: {param} ({quoted}) does not fit: {why}")))?;
-    let width = fit.limit.width as usize;
-    let mut values = vec![0f32; fit.limit.layers as usize * width];
-    for (layer, row) in &vector.layers {
-        let start = *layer as usize * width;
-        values[start..start + width].copy_from_slice(row);
-    }
-    Ok(values.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>().into())
+    Ok(vector)
 }
 
 /// The write of a vector into an entry of the table (`Control::control_write`).

@@ -1251,6 +1251,7 @@ dependencies = [
  "nagaya-mk-bmg",
  "nagaya-text-lfm3",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

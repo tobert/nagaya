@@ -67,6 +67,67 @@ POST /nagaya/v1/lab/project
 
 The first use is the loops. Project the refusal vector through `unembed`, and look at the rank of `<|im_end|>`.
 
+### The rules of `project`
+
+**Proposed** (Claude Opus 5.5, 2026-11-07, milestone 26 step 1). The route follows these rules. Reason: lab.md
+gives the shape and leaves these choices open. Each rule is the simplest choice that answers the loop question.
+
+```json
+POST /nagaya/v1/lab/project
+{"model": "lfm3", "vector": "blake3:…", "through": "unembed"}
+-> {"model": "lfm3", "through": "unembed",
+    "layers": [{"layer": 23,
+                "up": [{"id": 44523, "token": " seafood", "score": 1.245}, …],
+                "down": […],
+                "end": [{"id": 124900, "token": "<|im_end|>", "score": -0.285, "rank": 122593}]}, …]}
+```
+
+- **Members.** `model`, `vector` and `through` are required. `layers` and `top_k` are optional. Another member is a
+  400 that names it.
+- **Models.** The route serves a model whose engine kind is `mk-lfm3-bmg`: `lfm3` and `lfm3-omni`. Another served
+  model is a 400 that names `model`. A model of a peer is a 400 too: the route does not forward.
+- **No engine.** The route reads the checkpoint of the model folder of the profile, not the engine. Thus it runs
+  while the engine is `unloaded` or `loading`, and it never gives a 503.
+- **`through`.** Only `unembed` now. Another value is a 400 that names `through`. `jlens` comes in step 5.
+- **An object.** A `blake3:` id names a control vector object. The route checks it as a context checks its control
+  list. It checks a held object, the media type, the bytes and the fit with the served model. An object that the
+  store does not hold is a 404 that names `vector`. Each other fault is a 400 that names `vector`.
+- **Its layers.** With no `layers`, the response has each layer of the vector that is not all zeros, in layer order.
+  `layers` names layers of the vector, in the order of the response. A layer that the vector does not hold, a repeat
+  or an empty list is a 400 that names `layers`.
+- **A list.** `vector` can also be a list of `width` numbers, each finite as a 32-bit float. Another length is a 400
+  that names `vector`. Then `layers` is absent or names one layer below the layer count. The response gives that layer,
+  or `null` with no `layers`. The layer does not change the scores of `unembed`.
+- **`top_k`.** The default is 20, and the limit is 256. A value of 0 or past 256 is a 400 that names `top_k`.
+- **Entries.** `up` has the largest scores first, and `down` has the smallest first. A tie goes to the smaller id.
+  `token` is the text of the id alone, from the family library. An id past the vocabulary of the family gets `null`.
+- **The end tokens.** `end` gives each id of `eos_token_id` in `generation_config.json` of the model folder, with its
+  score and its rank. The rank counts from 0 at the top, in the order of `up`.
+- **The bits.** Each product of a BF16 weight and an `f32` value is exact in `f64`. The sums run in `f64`, in a fixed
+  order. Thus the same request gives the same bytes on each run.
+
+**The cost of `project`.** Proposed (Claude Opus 5.5, 2026-11-07). The route maps `model.safetensors` for each request,
+and it holds no copy of the table. The page cache holds the file, and the kernel can take those pages back. Reason:
+a copy of the table of LFM3-1.7B is 500 MiB of host memory outside the ledger (spec 4). The work runs on a call
+thread and on at most 8 threads of the CPUs of that thread. The scores are 500 KiB for each layer, for the time of
+the request.
+
+**The gate of `project`.** The oracle stage `project` of `tools/lfm3_reference.py` puts layers 0, 12 and 23 of the
+control vector of the stage `control` through the modules of transformers. Its self check shows that the final norm of
+LFM3 multiplies by its weight, not by 1 plus its weight.
+
+The gap of each score is under the error bound of an `f32` sum
+of 2,048 products. That bound is 2,048 times half of the `f32` epsilon, times the sum of the sizes of the products. The
+worst gap was 0.001 of that bound (2026-11-07). The ids of the top 64 and the bottom 64 match. The test allows a swap
+only within the bounds of the two scores.
+
+**The facts of the first run** (2026-11-07, `crates/nagaya-mk-lfm3-bmg/tests/lab.rs`, a build with `--release` on
+b70host):
+
+- At layer 23 of the sea vector, " seawater" (id 62590) has the rank 5, with the score 1.116. The top is " seafood".
+- At that layer, `<|im_end|>` (id 124900) has the rank 122,593 of 128,000, with the score -0.285.
+- The product of 1 layer took 9.7 ms, and the product of 24 layers took 137 ms, with the file in the page cache.
+
 ## `trace`: a generation with its numbers
 
 `trace` is a generation (gogi "Generations") that also writes a trace object. The request is a generation request with

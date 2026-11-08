@@ -17,6 +17,8 @@ The stages, each with its own gate:
   speech   a TTS run and an interleaved run, the depth decoder with forced codes, and the codec decode
   control  LFM3-1.7B only: a control vector from two small prompt sets, and the logits of each operation (11.12).
            It is not in the default stages; name it with --stages control.
+  project  LFM3-1.7B only: the vector of the control stage through the final norm's weight and the head (lab.md).
+           It reads the file of the control stage. It is not in the default stages; name it with --stages project.
 
 The tool stops with an AssertionError when a self check fails. The checks:
 
@@ -395,6 +397,56 @@ def run_control(model, backbone, lm_head, tokenizer, layer_count, out, facts):
     save(tensors, Path(out) / "lfm3.control.safetensors", meta)
     facts["lfm3_control"] = {"strengths": CONTROL_STRENGTHS, "test_tokens": len(ids)}
     log(f"wrote {Path(out) / 'lfm3.control.safetensors'}")
+
+
+# The layers of the project gate: the first, one in the middle and the last.
+PROJECT_LAYERS = [0, 12, 23]
+# Ids whose rank the stage logs: " seawater" and <|im_end|>.
+PROJECT_WATCH = {"seawater": 62590, "im_end": 124900}
+
+
+def rank(scores, token):
+    """The 0-based rank of `token` in `scores`, from the top: the count of scores above its score."""
+    return int((scores > scores[token]).sum())
+
+
+def run_project(backbone, lm_head, tokenizer, out, facts):
+    """The project gate of LFM3-1.7B (docs/lab.md, "`project`"): each layer of the control vector of the control
+    stage, through the weight of the final norm and the tied head, with no division by its root mean square.
+
+    The stage uses the model's own modules. It checks that the final norm multiplies by its weight (not by 1 plus its
+    weight), and that the head is the embedding table.
+    """
+    source = Path(out) / "lfm3.control.safetensors"
+    check(source.exists(), f"{source} exists; run --stages control first")
+    from safetensors.torch import load_file
+
+    vector = load_file(str(source))["vector"].float()
+    norm = backbone.embedding_norm
+    weight = norm.weight.detach().float()
+    check(bool(torch.equal(lm_head.weight, backbone.embed_tokens.weight)), "the head is the embedding table")
+    tensors = {"vector": vector, "layers": torch.tensor(PROJECT_LAYERS, dtype=torch.int64)}
+    ranks = {}
+    for layer in PROJECT_LAYERS:
+        v = vector[layer]
+        with torch.no_grad():
+            normed = norm(v.unsqueeze(0))[0]
+            u = weight * v
+            inverse_rms = torch.rsqrt(v.pow(2).mean() + norm.variance_epsilon)
+            close(normed, u * inverse_rms, 1e-5, f"layer {layer}: the final norm is its weight times the row")
+            scores = lm_head(u)
+        check(tuple(scores.shape) == (128000,), f"layer {layer}: a score for each row of the head")
+        tensors[f"layer{layer}.scores"] = scores
+        tensors[f"layer{layer}.up_ids"] = torch.topk(scores, TOP).indices
+        tensors[f"layer{layer}.down_ids"] = torch.topk(-scores, TOP).indices
+        ranks[str(layer)] = {name: rank(scores, token) for name, token in PROJECT_WATCH.items()}
+        up = tensors[f"layer{layer}.up_ids"][:8].tolist()
+        log(f"project layer {layer}: ranks {ranks[str(layer)]}, top {[tokenizer.decode([i]) for i in up]!r}")
+    meta = {"model": "lfm3", "source": "lfm3.control.safetensors vector", "layers": PROJECT_LAYERS,
+            "watch": PROJECT_WATCH, "ranks": ranks, "versions": versions()}
+    save(tensors, Path(out) / "lfm3.project.safetensors", meta)
+    facts["lfm3_project"] = {"layers": PROJECT_LAYERS, "ranks": ranks}
+    log(f"wrote {Path(out) / 'lfm3.project.safetensors'}")
 
 
 def synthetic_image(height, width, seed):
@@ -792,7 +844,7 @@ def main():
     facts = json.loads(facts_path.read_text()) if facts_path.exists() else {}
     facts["versions"] = versions()
 
-    if stages & {"text", "control"}:
+    if stages & {"text", "control", "project"}:
         log("load LFM3-1.7B")
         model = AutoModelForCausalLM.from_pretrained(
             args.text, dtype=torch.float32, attn_implementation="eager", trust_remote_code=True
@@ -804,6 +856,8 @@ def main():
         if "control" in stages:
             run_control(model, model.model, model.lm_head, tokenizer, model.config.num_hidden_layers, args.out,
                         facts)
+        if "project" in stages:
+            run_project(model.model, model.lm_head, tokenizer, args.out, facts)
         del model
 
     if stages & {"text", "vision", "audio", "speech"}:

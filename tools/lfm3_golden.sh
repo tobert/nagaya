@@ -81,6 +81,13 @@
 #   <op>.logits [128000], <op>.rows [L, W]     the test prompt with one item: add 4, ablate 1, clamp 8
 #   <op>.decode_ids [8]              the greedy decode of 8 tokens with the item, for plain and each op
 #   <op>.decode_top_ids [8, 64] i64, <op>.decode_top [8, 64]   the top-64 logits of each decode step
+# lfm3.project.safetensors (--stages project, not in the default): the project gate of LFM3-1.7B (docs/lab.md). It
+#   reads lfm3.control.safetensors, so run the control stage first. For each layer l in 0, 12 and 23, u is the weight
+#   of the final norm times vector[l], with no division by its root mean square, and the scores are the head of u.
+#   vector [L, W]                    the vector of lfm3.control.safetensors
+#   layers [3] i64                   the layers of the gate
+#   layer<l>.scores [128000]         the score of each row of the head
+#   layer<l>.up_ids [64] i64, layer<l>.down_ids [64] i64   the ids of the 64 largest and the 64 smallest scores
 # facts.json: the measured facts for spec 11.11: sizes, counts, the codec checks and the run patterns.
 set -euo pipefail
 cd "$(dirname "$0")/.."
