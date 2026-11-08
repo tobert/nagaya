@@ -1,8 +1,8 @@
 # Lab tools
 
 This doc studies tools that look inside a model while it runs, and inside its weights. It asks what the nagaya can
-give, and where each tool lives. It is a design note, not a milestone. Each choice here is a proposal until Amy
-decides it.
+give, and where each tool lives. It is a design note, not a milestone. Amy accepted each Proposed note here on
+2026-11-08 (spec, header).
 
 Amy, 2026-11-07, after the first refusal vector worked: "got a couple places where it got stuck in a loop. without
 digging in quite yet, how might we analyze that? could we build something into the nagaya for looking at weights to
@@ -286,8 +286,10 @@ what is needed.
 
 ## Open questions
 
-1. Does `trace` stream its numbers with the tokens, or only write the object at the end?
-2. Does the J-Lens fit run on gfx1151host's GPU with the reference, or on the CPU of b70host?
-3. Does the logit lens of a residual row use the final norm with its division? gmk's lens does, with the final norm.
-   Proposed: yes ("The logit lens of a row").
-4. Who keeps a trace object: the client with a keep, or the nagaya for a fixed time?
+1. Answered 2026-11-08: `trace` writes the object at the end, and the stream carries the tokens only. The note of
+   milestone 26 step 2 says so, and Amy accepted it.
+2. Answered 2026-11-08 (Amy, by interview): the J-Lens fit of LFM3-1.7B runs on the CPU of b70host, at `nice` 19
+   and with no GPU job. The cards stay free for the served models. Measure the time on a small corpus first.
+3. Answered 2026-11-08: yes ("The logit lens of a row"), accepted by Amy.
+4. Answered 2026-11-08 (Amy, by interview): the client keeps a trace object with a keep. The route sets no keep, and
+   the store evicts an object with no keep by its usual rule (6.15). The web app keeps each trace under its owner.

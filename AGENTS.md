@@ -99,8 +99,20 @@ done, and `docs/history.md` keeps their full text, and the merges where the run 
 is done on gfx1151host, and milestones 15s, 16, 17, 18, 19 and 20 are done on b70host. Milestone 21 waits, and
 milestone 22 is done on gfx1151host.
 
-Milestone 24, LFM3 Omni, is deployed on b70host, and its video step waits. Milestone 25, control vectors, is deployed
-(steps 8 and 9 wait), and milestone 26, the lab tools, is next (Amy, 2026-11-07). Milestone 23, the cluster, follows.
+Milestone 23, the cluster, is done on both machines. Milestones 24, LFM3 Omni, 25, control vectors, and 26, the lab
+tools, are deployed on b70host, and each has open steps. Senpai chose this order on 2026-11-08 (Amy: "you may decide
+order"):
+
+1. Milestone 26 step 5, the J-Lens. Its fit runs on the CPU while the other steps run.
+2. Milestone 25 step 9, Omni's control vector.
+3. Milestone 24 step 10, video, and step 11, the Omni tab of the web app.
+4. Milestone 25 step 8 and milestone 26 step 4, with Amy. Milestone 24 step 3 waits for her photos.
+
+Amy decided on 2026-11-08: commit a small step each time the checks pass after a change. When a milestone is almost
+done, run review rounds with kaibo (`docs/reviews.md`), and fix what they find.
+
+senpai may stop and start the web app on b70host at will (`python3 tools/nagaya_web.py --host 198.51.100.10`, port
+8096). Write each restart in `signoff.md`.
 
 1. **Workspace.** The Cargo workspace, its crates, `rustfmt.toml` and the dev profile. Done.
 2. **Engine trait.** The ABI core and capabilities as traits, with a fake engine and a broken fake for the gates. Done.
@@ -549,6 +561,13 @@ Milestone 24, LFM3 Omni, is deployed on b70host, and its video step waits. Miles
     6. **Control.** The cluster route, the load and unload of a peer's engine, and the profile of another host.
     7. **Deploy.** Deploy both machines. Run the gogi suite through each machine for the models of both. The web app
        finds its hosts from the cluster route.
+
+    Done on 2026-11-04. Steps 1 to 6 are `d5efc8c` to `41fb290`, and step 7 is `0e8a69c`. Both nodes list the same 11
+    served models, and the gogi suite passed through each machine. One check of `qwen-image-fusal` through gfx1151host
+    aborted gfx1151host's nagaya (`HSA_STATUS_ERROR_MEMORY_APERTURE_VIOLATION`, `signoff.md` 2026-11-04). It did not happen
+    again. Amy, 2026-11-08: ignore it for now.
+
+    Amy accepted the four Proposed notes of this milestone on 2026-11-08.
 24. **LFM3 Omni.** Serve LiquidAI's `LFM3-Omni-2B` and `LFM3-1.7B` from one engine kind on a B70 card. Omni reads
     text, images and audio, and it writes text and speech. Amy decided these rules on 2026-11-06, by interview:
     - **Order:** after the cluster (milestone 23). Thus every machine of the cluster reaches the new models.
@@ -602,7 +621,21 @@ Milestone 24, LFM3 Omni, is deployed on b70host, and its video step waits. Miles
        Run the gates of the codes and the audio.
     9. **Route and deploy.** Serve both models through council v2 with media inputs and audio outputs. Put them on
        card 0 in the profile of b70host, and put Gemma 4 on demand. Run the gogi suite through each machine.
-    10. **Video.** Frames from a video through the vision tower, with a gate.
+    10. **Video.** Frames from a video through the vision tower, with a gate. Amy decided these rules on 2026-11-08,
+        by interview:
+        - **Input:** a video object, for example `video/mp4` or `video/webm`. The family decodes it on the CPU.
+        - **Decoder:** ffmpeg's libraries (libavformat, libavcodec, libswscale and libswresample), behind a cargo
+          feature. Their versions go into the engine identity (12.1), because a new decoder can change the rows. With
+          no feature, a video part is a 400 that names the part. Amy installs `ffmpeg` on b70host.
+        - **Frames:** the rate and the bounds of the checkpoint's video processor: 2 frames each second, from 4 to
+          384 frames, and at most 768 video tokens.
+        - **Sound:** the sound track of a video is an audio part beside its frames.
+        - **Resample:** the resampler of the decoder also serves `audio/wav` at any rate and channel count. A WAV of
+          16 kHz mono in 16 bits skips it, so its bits do not change.
+        - **Live input:** PipeWire and capture from a microphone or a camera are a later design, not this step.
+    11. **Omni tab.** A tab of the web app for `lfm3-omni`: it attaches images, audio and video, and it shows the text
+        reply and plays its speech. Today the page puts Omni in its speech tab, because Omni writes audio. Amy,
+        2026-11-08: "maybe we need to add an omni tab to the web app".
 
     Each stop and start of `nagaya.service` goes into `signoff.md`. The tests read Omni's folder from
     `LFM3_OMNI_MODEL_DIR` and the text model's folder from `LFM3_MODEL_DIR`. Neither has a default.
@@ -664,7 +697,9 @@ Milestone 24, LFM3 Omni, is deployed on b70host, and its video step waits. Miles
        the bits of the same generation with no trace.
     3. **Web app.** A Lab tab that projects a saved vector, and draws a trace of a plain and a steered reply.
     4. **Deploy.** Deploy on b70host, and trace Amy's loops with her.
-    5. **J-Lens.** Fit the lens of LFM3-1.7B with the reference, and read through it in `project` and `trace`.
+    5. **J-Lens.** Fit the lens of LFM3-1.7B with the reference, and read through it in `project` and `trace`. The fit
+       runs on the CPU of b70host at `nice` 19, with no GPU job (Amy, 2026-11-08). A client keeps a trace object
+       with a keep (`docs/lab.md`, "Open questions").
 
     Each stop and start of `nagaya.service` goes into `signoff.md`.
 27. Stop and ask Amy for the next milestone.

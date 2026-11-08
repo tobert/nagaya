@@ -21,6 +21,10 @@ The mark "Decided by senpai <date>" is on a rule where the spec left a choice op
 **Proposed** note that senpai accepted (Amy, 2026-10-22: "if those decisions seem ok to you let's call them ok and melt
 them in"). These rules were vetoable until Amy accepted all of them on 2026-11-02. Thus each mark now names both dates.
 
+Amy accepted each **Proposed** note that was open on 2026-11-08, in this spec, `docs/engine-abi.md`, `docs/cv.md` and
+`docs/lab.md` (Amy, by interview: "Accept all"). The code of milestones 23 to 26 follows them, and they are deployed.
+Each such note is now a rule, and its mark stays as it was. A later **Proposed** note is open until Amy decides it.
+
 ## 1. Scope
 
 The nagaya is an exokernel for megakernels. This repository holds its spec (this doc and `docs/engine-abi.md`), its
@@ -617,8 +621,8 @@ and therefore probably smart to have good APIs for configuring and let an agent 
 Reason: a client needs a fixed shape for the change of 3.3, and for a read of the active profile.
 
 - `PUT /nagaya/v1/profile` takes the profile as JSON, in the shape of `profile.toml`. It changes only this machine.
-  Thus question 15.5 stays open for a `PUT` to another machine. 2.4 has a Proposed answer of 2026-11-02 ("The routes
-  of a profile for another host").
+  2.4 answers question 15.5 for a `PUT` to another machine ("The routes of a profile for another host"), accepted
+  2026-11-08.
 - A profile that does not parse, or that breaks a rule of 2.4 or 3.3a, is a 400 `invalid_request` with the param
   `profile`. A profile that does not fit is a 507 with the type `too_large`, the param `profile` and `shortfall`.
 - A profile equal to the active profile is a 200, with the action `keep` for each engine.
@@ -3426,7 +3430,7 @@ has a tailnet address in its code.)
   `device` yet. Its `context_tokens` is 4096, or mk's `MAX_CONTEXT` for mk.
 - A process serves at most one model in milestone 12. The specs and the pins of a service are files in the store
   directory, and two services would write one file. A profile with two served engines refuses the start (exit 3).
-  The Proposed note "Several text models in one process" below replaces this rule when Amy accepts it.
+  The note "Several text models in one process" below replaces this rule. Amy accepted it on 2026-11-08.
 - Specs, pins and snapshots belong to the server. Their routes use the one service. With no served model, they are
   a 503 `unavailable`.
 - A service call blocks, so each call runs on a call thread of its own, on the pool CPUs (3.2a). At most 64 calls
@@ -4442,6 +4446,22 @@ the note above leaves these choices open, and each one is the simplest choice th
 - **Assistant audio.** An `assistant` audio part stays a 400 that names the part. Its count of positions comes
   from the codes that the service holds, and that service is a later step.
 
+**Video, and audio at any rate.** Decided 2026-11-08 (Amy, by interview), for milestone 24 step 10. These rules
+replace the rule above that a WAV must be 16 kHz mono, once step 10 builds them. Until then, that rule holds.
+
+- A `user` part can be a video object, such as `video/mp4` or `video/webm`. The family decodes it on the CPU with
+  ffmpeg's libraries. Reason: the reference loads a video through ffmpeg, so its frames are the closest to the oracle.
+- The decoder is behind a cargo feature. A build with no feature refuses a video part with a 400 that names the part,
+  and `media.inputs` lists no video type.
+- The versions of the ffmpeg libraries are build facts of the engine identity (12.1). Reason: a new decoder can give
+  other frames from the same bytes, and the recipe of a part (below) names only the bytes.
+- The frames follow the video processor of the checkpoint: 2 frames each second, from 4 to 384 frames, and at most
+  768 video tokens. Each frame goes through the vision tower.
+- The sound track of a video becomes an audio part beside its frames, in the order of the reference processor.
+- The resampler of the decoder gives 16 kHz mono to the sound track and to any `audio/wav`. A WAV of 16 kHz mono in
+  16 bits skips it, so its rows do not change.
+- Live input through PipeWire, from a microphone or a camera, is a later design.
+
 **The recipe of a media part.** Proposed by Claude Opus 5.5, 2026-11-06. Reason: the rows of a part are a function
 of the engine identity and the bytes of the object. The object's content id names the bytes.
 
@@ -4745,8 +4765,8 @@ The inventories found these items. We correct each one when its code moves. We d
    On 2026-10-21, splits across 256 and 512 tokens gave the same bits in both classes of context (6.13).
 5. How does a profile `PUT` work across machines (2.3, 2.4, 11.5)? The machine that takes the `PUT` cannot
    return the target's 507, and 2.3 ignores an old version where 11.5 answers 409 (kaibo, 2026-10-20). Since
-   2026-10-28, `PUT /nagaya/v1/profile` changes only its own machine (3.3), so the question stays open. Proposed
-   answer, 2026-11-02: the query `host` and a `version`, through `profile:desired:<host>` (2.4, "The routes of a
+   2026-10-28, `PUT /nagaya/v1/profile` changes only its own machine (3.3). Answered 2026-11-08 (Amy accepted the
+   note of 2026-11-02): the query `host` and a `version`, through `profile:desired:<host>` (2.4, "The routes of a
    profile for another host").
 6. The template engine differs from jinja2 on integers past 2^127 and on a float key that is not finite (milestone
    11.5 text step). The chat template uses none of them. Which ones do we match?

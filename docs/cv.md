@@ -2,7 +2,7 @@
 
 This doc studies one tool: a control vector that changes the residual of a model while it runs. It asks if the
 nagaya can carry the tool, and what the tool costs. It is a design note, not a milestone. No code exists for it.
-Each choice here is a proposal until Amy decides it.
+Amy accepted each Proposed note here on 2026-11-08 (spec, header).
 
 Amy, 2026-11-06: "I'm mostly interested in the technique's viability. could we write a docs/cv.md about adding
 control vector support, which I'll come back to later. I want to think about it alongside the delayed j-lens feature

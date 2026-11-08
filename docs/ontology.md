@@ -136,7 +136,7 @@ lease with an owner and an expiry (`docs/spec.md` 6.15). kaijutsu's CAS holds th
 
 **Control vector.** An object that holds one vector for each layer of one model. A context names it with an
 operation and a strength, and the engine changes the residual after each such layer (`docs/spec.md` 11.12). Other
-texts call it a steering vector. The term is Proposed in `docs/cv.md`, "The term".
+texts call it a steering vector. Amy accepted the term on 2026-11-08 (`docs/cv.md`, "The term").
 
 **Recipe.** What a snapshot was made from: a hash of the engine identity, the inputs and the boundaries. For an
 engine that declares a geometry key, the recipe holds that key too. The store maps a recipe to the content ids made
