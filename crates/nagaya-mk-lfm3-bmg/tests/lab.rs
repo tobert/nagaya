@@ -7,7 +7,7 @@ use std::path::Path;
 
 use common::Which;
 use nagaya_mk_bmg::safetensors::SafeTensorsView;
-use nagaya_mk_lfm3_bmg::lab::{Entry, Unembedding, ends_of, rank};
+use nagaya_mk_lfm3_bmg::lab::{Entry, Facts, Unembedding, ends_of, rank};
 use nagaya_mk_lfm3_bmg::spec::Model;
 
 fn bf16(values: &[f32]) -> Vec<u8> {
@@ -21,10 +21,13 @@ fn bf16(values: &[f32]) -> Vec<u8> {
 /// end tokens `ends`. Each value must be exact in BF16.
 fn checkpoint(dir: &Path, model: Model, table: &[Vec<f32>], norm: &[f32], ends: &str) {
     let (architecture, config) = match model {
-        Model::Text => ("Lfm3ForCausalLM", serde_json::json!({"num_hidden_layers": 2})),
+        Model::Text => (
+            "Lfm3ForCausalLM",
+            serde_json::json!({"num_hidden_layers": 2, "hidden_size": norm.len()}),
+        ),
         Model::Omni => (
             "Lfm3OmniForConditionalGeneration",
-            serde_json::json!({"text_config": {"num_hidden_layers": 2}}),
+            serde_json::json!({"text_config": {"num_hidden_layers": 2, "hidden_size": norm.len()}}),
         ),
     };
     let mut config = config;
@@ -95,7 +98,7 @@ fn a_folder_without_the_tensors_or_the_end_tokens_is_an_error() {
     checkpoint(dir.path(), Model::Omni, &[vec![1.0]], &[1.0], "1");
     std::fs::write(
         dir.path().join("config.json"),
-        r#"{"architectures": ["Lfm3ForCausalLM"], "num_hidden_layers": 2}"#,
+        r#"{"architectures": ["Lfm3ForCausalLM"], "num_hidden_layers": 2, "hidden_size": 1}"#,
     )
     .unwrap();
     let error = Unembedding::open(dir.path()).err().unwrap();
@@ -108,6 +111,43 @@ fn a_folder_without_the_tensors_or_the_end_tokens_is_an_error() {
     checkpoint(dir.path(), Model::Text, &[vec![1.0]], &[1.0], "[1]");
     let error = Unembedding::open(dir.path()).err().unwrap();
     assert!(error.contains("past the 1 rows"), "{error}");
+}
+
+/// The facts of a model folder for `trace` read no weights (`docs/lab.md`, "The rules of `trace`").
+#[test]
+fn the_facts_of_a_folder_are_its_layers_its_width_and_its_end_tokens() {
+    for model in [Model::Text, Model::Omni] {
+        let dir = tempfile::tempdir().unwrap();
+        checkpoint(dir.path(), model, &[vec![1.0, 2.0, 3.0]], &[1.0, 1.0, 1.0], "[3, 4]");
+        std::fs::remove_file(dir.path().join("model.safetensors")).unwrap();
+        let facts = Facts::open(dir.path()).unwrap();
+        assert_eq!(
+            facts,
+            Facts {
+                model,
+                layers: 2,
+                width: 3,
+                ends: vec![3, 4]
+            }
+        );
+    }
+    let dir = tempfile::tempdir().unwrap();
+    checkpoint(dir.path(), Model::Text, &[vec![1.0, 2.0]], &[1.0, 1.0], "[0]");
+    std::fs::write(
+        dir.path().join("config.json"),
+        r#"{"architectures": ["Lfm3ForCausalLM"], "num_hidden_layers": 2}"#,
+    )
+    .unwrap();
+    let error = Facts::open(dir.path()).err().unwrap();
+    assert!(error.contains("hidden_size"), "{error}");
+    // The width of the table and of config.json agree, or the folder is an error.
+    std::fs::write(
+        dir.path().join("config.json"),
+        r#"{"architectures": ["Lfm3ForCausalLM"], "num_hidden_layers": 2, "hidden_size": 3}"#,
+    )
+    .unwrap();
+    let error = Unembedding::open(dir.path()).err().unwrap();
+    assert!(error.contains("hidden_size 3"), "{error}");
 }
 
 #[test]

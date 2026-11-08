@@ -59,6 +59,10 @@ pub const CONTROL_TABLES: u32 = 8;
 /// The tap that gives the residual after each layer at each logit row (spec 13.1).
 pub const RESIDUAL_TAP: &str = "residual";
 
+/// The tap that gives the logit lens of each layer at the one logit row of a pass (spec 13.1): the final norm and the
+/// head of the row of each layer.
+pub const LENS_TAP: &str = "lens";
+
 /// A sliding layer of a slot longer than this keeps its keys and values in a ring of this many rows. The row of a key
 /// is its position modulo the ring. The ring holds a block and the window before it, in rows of 32.
 pub const RING_ROWS: usize = 2048;
@@ -574,10 +578,16 @@ pub fn limits(b: &Backbone, config: &Config, weights: u64, vision: Option<Vision
         segments_exact: false,
         determinism: Determinism::Always,
         bit_dependence: Vec::new(),
-        taps: vec![TapLimit {
-            name: RESIDUAL_TAP.to_owned(),
-            conditions: Vec::new(),
-        }],
+        taps: vec![
+            TapLimit {
+                name: RESIDUAL_TAP.to_owned(),
+                conditions: Vec::new(),
+            },
+            TapLimit {
+                name: LENS_TAP.to_owned(),
+                conditions: vec!["one logit row".to_owned()],
+            },
+        ],
         checkpoint_grain: None,
         residual_row_bytes: 0,
         control,

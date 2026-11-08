@@ -14,6 +14,7 @@ pub mod reads;
 pub mod slots;
 pub mod specs;
 pub mod staging;
+pub mod trace;
 pub mod vectors;
 
 use std::path::Path;

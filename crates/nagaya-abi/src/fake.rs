@@ -30,6 +30,9 @@ pub const FAKE_CONTROL_WIDTH: u32 = 4;
 /// The tap that gives the residual after each layer at each logit row (spec 13.1).
 pub const RESIDUAL_TAP: &str = "residual";
 
+/// The tap that gives the logit row of each layer's residual at the one logit row of a pass (spec 13.1).
+pub const LENS_TAP: &str = "lens";
+
 /// The name of the one part of the fake arena, on device 0 (spec 10.2).
 pub const FAKE_ARENA_PART: &str = "w";
 
@@ -209,6 +212,21 @@ impl FakeAlways {
             conditions: Vec::new(),
         });
         self.0.table = vec![vec![0.0; limit.entry_bytes() as usize / 4]; tables as usize];
+        self
+    }
+
+    /// Give the engine the tap `lens` (spec 13.1). Call it after [`FakeAlways::with_vocab`] and
+    /// [`FakeAlways::with_control`]. The row of each layer but the last is a function of the state and the layer. The
+    /// row of the last layer is the logit row, as the lens of the last layer is the head of the model.
+    pub fn with_lens(mut self) -> Self {
+        assert!(
+            self.0.vocab.is_some() && self.0.limits.control.is_some(),
+            "a lens needs a vocabulary and the layers of a control table; call with_vocab and with_control first"
+        );
+        self.0.limits.taps.push(TapLimit {
+            name: LENS_TAP.to_owned(),
+            conditions: vec!["one logit row".to_owned()],
+        });
         self
     }
 }
@@ -466,7 +484,8 @@ impl Fake {
                 message: format!("nothing ran: the fake has no tap `{}`", tap.name),
             });
         }
-        let tapped = !taps.is_empty();
+        let tapped = taps.iter().any(|tap| tap.name == RESIDUAL_TAP);
+        let lensed = taps.iter().any(|tap| tap.name == LENS_TAP);
         // A pass that the fake refuses runs no segment and changes no state (engine-abi, "A pass that did not run").
         if segments.len() > self.limits.max_segments as usize {
             return Err(PassError {
@@ -514,6 +533,14 @@ impl Fake {
                 message: format!(
                     "the pass asks for {logit_rows} logit rows; the fake gives {}",
                     self.limits.max_logit_rows
+                ),
+            });
+        }
+        if lensed && logit_rows != 1 {
+            return Err(PassError {
+                kind: PassErrorKind::Refused,
+                message: format!(
+                    "nothing ran: the tap `{LENS_TAP}` reads one logit row, and the pass asks for {logit_rows}"
                 ),
             });
         }
@@ -580,11 +607,13 @@ impl Fake {
             let steer = self.steer(&segment.control);
             let mut logit_outputs = Vec::new();
             let mut residual = Vec::new();
+            let mut lens = Vec::new();
             {
                 // Fold one token at a time, so that a row sees the state at its own position.
                 let mut folded = state_bytes;
                 let mut rows: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
                 let mut tapped_rows: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
+                let mut lens_rows: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
                 for (index, token) in tokens.iter().enumerate() {
                     let position = segment.positions.get(index).copied().unwrap_or(index as u64);
                     fold_steered(&mut folded, *token, position, steer.as_ref());
@@ -596,6 +625,13 @@ impl Fake {
                     }
                     if tapped {
                         tapped_rows.insert(position, residual_row(&folded));
+                    }
+                    if lensed {
+                        let vocab = self.vocab.expect("a fake with a lens has a vocabulary");
+                        let rows = (0..FAKE_CONTROL_LAYERS)
+                            .flat_map(|layer| lens_row(&folded, layer, vocab, self.logit_bias.as_deref()))
+                            .collect();
+                        lens_rows.insert(position, rows);
                     }
                 }
                 // The output order is the request order.
@@ -609,6 +645,9 @@ impl Fake {
                     }
                     if let Some(bytes) = tapped_rows.get(row) {
                         residual.extend_from_slice(bytes);
+                    }
+                    if let Some(bytes) = lens_rows.get(row) {
+                        lens.extend_from_slice(bytes);
                     }
                 }
             }
@@ -646,6 +685,13 @@ impl Fake {
                     name: RESIDUAL_TAP.to_owned(),
                     dtype: Dtype::F32,
                     bytes: residual,
+                });
+            }
+            if lensed {
+                outputs.push(Output {
+                    name: LENS_TAP.to_owned(),
+                    dtype: Dtype::F32,
+                    bytes: lens,
                 });
             }
         }
@@ -871,6 +917,17 @@ fn residual_row(state: &[u8; 16]) -> Vec<u8> {
             ((f32::from(byte) - 127.5) / 32.0 + (index / FAKE_CONTROL_WIDTH as usize) as f32).to_le_bytes()
         })
         .collect()
+}
+
+/// The lens of one layer at a row: the logit row for the last layer, and the logit row of a state that the layer
+/// changes for each other layer.
+fn lens_row(state: &[u8; 16], layer: u32, vocab: usize, bias: Option<&[f32]>) -> Vec<u8> {
+    if layer + 1 == FAKE_CONTROL_LAYERS {
+        return logit_row(state, vocab, bias);
+    }
+    let mut changed = *state;
+    changed[0] ^= 0x55 ^ layer as u8;
+    logit_row(&changed, vocab, bias)
 }
 
 /// One logit row: `vocab` little-endian F32 values between -6 and 6, a function of the state bytes only. A bias adds

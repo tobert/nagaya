@@ -4692,6 +4692,12 @@ close a door.
 the segment, the residual after each layer, as `f32`. The rows are in layer order, and each row has the width of
 the residual. The residual is the stream that each layer adds to, before the norm of the next layer.
 
+**The lens tap.** Proposed by Claude Opus 5.5, 2026-11-07, for milestone 26 step 2 (`docs/lab.md`, "Where the lens
+runs"). An engine declares the tap `lens` in `limits().taps`, with the condition `one logit row`. A segment that names
+it gets the output `lens`. For each layer, it holds the logit row of the residual after that layer, through the final
+norm and the head. The rows are `f32` in layer order, and each has the width of a logit row. A pass that names `lens`
+and not one logit row is refused, because the `lens` of one row of LFM3-1.7B is 12 MiB.
+
 **13.2 Lenses.** A lens (mkviolet J-Lens) is a state object of its own. It belongs to one model, has a content id,
 and runs on a CPU device (2.1). Two models cannot share a lens. Models are compared in the lens's concept
 coordinates, not in raw residuals.

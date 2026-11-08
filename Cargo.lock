@@ -1138,6 +1138,7 @@ dependencies = [
  "nagaya-text-toy",
  "opentelemetry",
  "png",
+ "safetensors",
  "serde",
  "serde_json",
  "tempfile",
@@ -1175,6 +1176,7 @@ dependencies = [
  "indexmap",
  "nagaya-abi",
  "nagaya-store",
+ "safetensors",
  "serde_json",
  "sha2",
 ]

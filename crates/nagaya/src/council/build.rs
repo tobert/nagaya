@@ -68,6 +68,9 @@ pub struct Shared {
 /// The tap that gives the residual after each layer at each logit row (spec 13.1).
 pub const RESIDUAL_TAP: &str = "residual";
 
+/// The tap that gives the logit lens of each layer at the one logit row of a pass (spec 13.1).
+pub const LENS_TAP: &str = "lens";
+
 /// The control list of a job: its checked items and vectors, and the claim that keeps its vectors in the table while
 /// the job is queued or runs (engine-abi "Control vectors").
 pub struct JobControl {
@@ -418,13 +421,15 @@ pub enum Want {
         /// The kind of the quanta (spec 5.2).
         kind: Kind,
     },
-    /// Feed tokens after the rows of the slot, and give the residual tap of the last token (spec 13.1). The feed takes
-    /// one quantum of `kind` for each pass, and only its last pass names the tap.
+    /// Feed tokens after the rows of the slot, and give the logit row and the residual tap of the last token (spec
+    /// 13.1). The feed takes one quantum of `kind` for each pass, and only its last pass names the tap.
     Tap {
         /// The tokens.
         tokens: Vec<u32>,
         /// The kind of the quanta (spec 5.2).
         kind: Kind,
+        /// True when the last pass also names the tap `lens`.
+        lens: bool,
     },
     /// Keep a copy of the state of the slot in memory.
     Mark,
@@ -455,8 +460,13 @@ pub enum Got {
     Resumed(Vec<BoundaryRecipe>),
     /// The feed is complete. The row is there when the feed asked for it.
     Fed(Option<Vec<f32>>),
-    /// The feed of a [`Want::Tap`] is complete: the bytes of the output `residual` of its last token.
-    Tapped(Vec<u8>),
+    /// The feed of a [`Want::Tap`] is complete: the logit row of its last token, and the bytes of the outputs
+    /// `residual` and, when the want named it, `lens`.
+    Tapped {
+        row: Vec<f32>,
+        residual: Vec<u8>,
+        lens: Option<Vec<u8>>,
+    },
     /// The mark or the rewind is complete.
     Copied,
     /// The store holds the snapshot, or holds its bytes under another recipe (`None`).
@@ -503,6 +513,8 @@ struct Feeding {
     base: usize,
     /// True when the last pass names the residual tap.
     tap: bool,
+    /// True when the last pass also names the tap `lens`.
+    lens: bool,
 }
 
 /// What the body does in one of its later quanta.
@@ -555,6 +567,8 @@ pub struct ContextBody<T: Then> {
     copies: bool,
     /// The output `residual` of the last pass of a tapped feed.
     residual: Option<Vec<u8>>,
+    /// The output `lens` of the last pass of a tapped feed that names it.
+    lens: Option<Vec<u8>>,
     tokens: Arc<[u32]>,
     recipes: Vec<BoundaryRecipe>,
     /// The cuts where the job may start, from the highest down.
@@ -639,6 +653,7 @@ impl<T: Then> ContextBody<T> {
             items: Vec::new(),
             copies: true,
             residual: None,
+            lens: None,
             tokens,
             recipes,
             cuts: Vec::new(),
@@ -965,9 +980,9 @@ impl<T: Then> ContextBody<T> {
                 Kind::Copy
             }
             Want::Feed { .. } | Want::Tap { .. } => {
-                let (tokens, logits, kind, tap) = match want {
-                    Want::Feed { tokens, logits, kind } => (tokens, logits, kind, false),
-                    Want::Tap { tokens, kind } => (tokens, true, kind, true),
+                let (tokens, logits, kind, tap, lens) = match want {
+                    Want::Feed { tokens, logits, kind } => (tokens, logits, kind, false, false),
+                    Want::Tap { tokens, kind, lens } => (tokens, true, kind, true, lens),
                     _ => unreachable!("the arm holds a feed"),
                 };
                 if tokens.is_empty() {
@@ -995,6 +1010,7 @@ impl<T: Then> ContextBody<T> {
                     kind,
                     base,
                     tap,
+                    lens,
                 });
                 kind
             }
@@ -1020,14 +1036,22 @@ impl<T: Then> ContextBody<T> {
             "the scheduler gave a quantum of another kind than the unit"
         );
         if matches!(unit, Unit::Build(Step::Feed { .. }) | Unit::Feed { .. }) {
-            let tapped = matches!(unit, Unit::Feed { row: true, .. }) && self.feeding.as_ref().is_some_and(|f| f.tap);
+            let last = matches!(unit, Unit::Feed { row: true, .. });
+            let feeding = self.feeding.as_ref();
+            let tapped = last && feeding.is_some_and(|f| f.tap);
+            let lensed = last && feeding.is_some_and(|f| f.lens);
             let segment = self.begin(unit)?;
-            let taps = match tapped {
-                true => vec![Tap {
+            let mut taps = Vec::new();
+            if tapped {
+                taps.push(Tap {
                     name: RESIDUAL_TAP.to_owned(),
-                }],
-                false => Vec::new(),
-            };
+                });
+            }
+            if lensed {
+                taps.push(Tap {
+                    name: LENS_TAP.to_owned(),
+                });
+            }
             let result = engine.pass(&[segment], &taps);
             let last_error = engine.last_error();
             return self.passed(result, last_error, engine);
@@ -1168,17 +1192,36 @@ impl<T: Then> ContextBody<T> {
                 };
                 self.residual = Some(output.bytes.clone());
             }
+            if self.feeding.as_ref().is_some_and(|feeding| feeding.lens) {
+                let mut taps = out.outputs.iter().filter(|output| output.name == LENS_TAP);
+                let (Some(output), None) = (taps.next(), taps.next()) else {
+                    return Err(ServiceError::internal(format!(
+                        "a pass over tokens {from} to {to} named the tap `{LENS_TAP}` and did not give one output of \
+                         it"
+                    )));
+                };
+                self.lens = Some(output.bytes.clone());
+            }
         }
         let got = if !pending.build && self.units.is_empty() && self.in_flight.is_empty() {
-            let tapped = self.feeding.take().is_some_and(|feeding| feeding.tap);
-            match tapped {
+            let feeding = self.feeding.take();
+            match feeding.as_ref().is_some_and(|feeding| feeding.tap) {
                 true => {
-                    self.row = None;
+                    let row = self
+                        .row
+                        .take()
+                        .ok_or_else(|| ServiceError::internal("a tapped feed ended with no logit row"))?;
                     let residual = self
                         .residual
                         .take()
                         .ok_or_else(|| ServiceError::internal("a tapped feed ended with no output of the tap"))?;
-                    Some(Got::Tapped(residual))
+                    let lens = self.lens.take();
+                    if lens.is_some() != feeding.is_some_and(|feeding| feeding.lens) {
+                        return Err(ServiceError::internal(
+                            "a tapped feed ended with another output of the tap `lens` than it named",
+                        ));
+                    }
+                    Some(Got::Tapped { row, residual, lens })
                 }
                 false => Some(Got::Fed(self.row.take())),
             }

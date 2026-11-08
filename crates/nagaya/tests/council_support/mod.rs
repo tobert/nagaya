@@ -191,6 +191,8 @@ pub struct TermFactory {
     /// The entries of the control table of the engine, or `None` for an engine with no table (engine-abi "Control
     /// vectors").
     pub control: Option<u32>,
+    /// True for an engine with the tap `lens` (spec 13.1). It needs the control table.
+    pub lens: bool,
     /// What the engines saw of control vectors.
     pub log: ControlLog,
 }
@@ -210,6 +212,7 @@ impl TermFactory {
             seal: true,
             close: false,
             control: None,
+            lens: false,
             log: ControlLog::default(),
         }
     }
@@ -224,6 +227,9 @@ impl TermFactory {
         }
         if let Some(tables) = self.control {
             inner = inner.with_control(tables);
+        }
+        if self.lens {
+            inner = inner.with_lens();
         }
         WithContextTerm {
             inner,

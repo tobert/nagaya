@@ -509,12 +509,19 @@ fn the_text_model_declares_a_control_table_of_8_vectors_and_the_residual_tap() {
         (term.bytes, term.tier, term.lifetime),
         (1_572_864, Tier::Device(0), Lifetime::Engine)
     );
+    // The tap lens of spec 13.1 reads one logit row.
     assert_eq!(
         l.taps,
-        vec![TapLimit {
-            name: RESIDUAL_TAP.to_owned(),
-            conditions: Vec::new()
-        }]
+        vec![
+            TapLimit {
+                name: RESIDUAL_TAP.to_owned(),
+                conditions: Vec::new()
+            },
+            TapLimit {
+                name: "lens".to_owned(),
+                conditions: vec!["one logit row".to_owned()]
+            }
+        ]
     );
     // Omni follows later: a frame of Omni is a pass with no control list, so Omni declares no table yet.
     let omni = Backbone::parse(OMNI_CONFIG).unwrap();
@@ -523,5 +530,5 @@ fn the_text_model_declares_a_control_table_of_8_vectors_and_the_residual_tap() {
     assert!(!l.capabilities.contains(&Capability::Control));
     assert_eq!(l.control, None);
     assert!(l.memory.mandatory.iter().all(|t| t.name != CONTROL_TERM));
-    assert_eq!(l.taps.len(), 1, "the residual tap needs no table");
+    assert_eq!(l.taps.len(), 2, "the taps residual and lens need no table");
 }

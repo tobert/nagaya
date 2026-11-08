@@ -30,9 +30,10 @@ impl Then for TapThen {
             Got::Built(recipes) if recipes.is_empty() => Ok(Want::Tap {
                 tokens: std::mem::take(&mut self.tokens),
                 kind: Kind::Prefill,
+                lens: false,
             }),
-            Got::Tapped(rows) => {
-                self.rows = Some(rows);
+            Got::Tapped { residual, .. } => {
+                self.rows = Some(residual);
                 Ok(Want::Done)
             }
             other => Err(ServiceError::internal(format!(
