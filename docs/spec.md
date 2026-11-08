@@ -4491,6 +4491,21 @@ above leave these choices open, and each one is the simplest choice that a fake 
 - **Inside a span.** A boundary never falls inside a span, because a part is inside a message. An interval copy
   (6.13) inside a span names the span, so two images of one size never give one recipe.
 
+**Media in a decision.** Proposed by Claude Opus 5.5, 2026-11-08 (milestone 24 step 9; Amy: "Now, finish step 9").
+Reason: gogi reads `case_media` "with the case in order", and a decision context is a context. Each choice below is
+the simplest one that the suite and a fake can check.
+
+- **The case.** In a plain read, the case turn is one user message. It holds the label and the case as one text
+  part, then each object of `case_media` in its order, as object parts.
+- **The context.** A decision context may hold media parts. The build reads them as a build of that context does.
+- **The rows.** The family prepares the rows of each span of the read's text, and the job feeds them by position, as
+  a build does. A count of positions comes from the header of the object, as in a rendering.
+- **The hash.** `rendered_hash` covers the text of the read. With media, it covers the text, then the id of each
+  object of the read in order. A read with no media keeps the hash of before.
+- **A queue read.** Its case is the result of a call, so it holds no media. A `case_media` of a queue read, or a media
+  part in its context, is a 400 that names it.
+- A family with no media refuses `case_media` with a 400 that names `case_media[0]`, as the check of objects does.
+
 **The generation modes.** Proposed by Claude Opus 5.5, 2026-11-06. Reason: gogi's `output` already names a reply
 with an object (gogi "Outputs"), so no new member is needed.
 
