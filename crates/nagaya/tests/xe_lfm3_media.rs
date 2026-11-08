@@ -211,7 +211,7 @@ fn a_generation_of_omni_reads_the_image_and_the_clip_of_the_oracle() {
             .iter()
             .find(|prompt| prompt["name"] == name)
             .unwrap_or_else(|| panic!("the oracle has the prompt {name}"));
-        let context = json!({"messages": [{"role": "user", "content": [
+        let context = json!({"thinking": false, "messages": [{"role": "user", "content": [
             {"type": "object", "id": id, "mime": mime}, {"type": "text", "text": text}]}]});
         // The rendering is the prompt of transformers, token for token.
         let body = json!({"model": "lfm3-omni", "context": context, "generation_prompt": true});

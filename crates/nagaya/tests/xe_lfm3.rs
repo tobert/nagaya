@@ -104,8 +104,8 @@ fn suite(url: &str, model: &str) -> (usize, usize, usize, Vec<String>) {
         .filter(|check| check.status == Status::Fail)
         .map(|check| check.name.clone())
         .collect();
-    // The checks of control vectors run, not skip, on a served model that declares control_vectors (spec 11.12).
-    if model == "lfm3" {
+    // The checks of control vectors run, not skip, on each LFM3 model: both declare control_vectors (spec 11.12).
+    {
         let ok = |name: &str| {
             report
                 .checks
@@ -228,15 +228,13 @@ fn serve(name: &str, dir: &Path) {
         );
     }
 
-    // LFM3-1.7B declares control_vectors, and Omni does not yet (spec 11.12, milestone 25 step 9).
+    // Both models declare control_vectors since milestone 25 step 9 (spec 11.12).
     let declares = identity["models"][0]["capabilities"]
         .as_array()
         .unwrap()
         .contains(&json!("control_vectors"));
-    assert_eq!(declares, name == "lfm3", "{identity}");
-    if name == "lfm3" {
-        control_gate(&council);
-    }
+    assert!(declares, "{identity}");
+    control_gate(&council, name);
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
@@ -264,11 +262,11 @@ const STAGE_TOL: f64 = 1e-4;
 
 /// The oracle of control vectors, `lfm3.control.safetensors` of `tools/lfm3_golden.sh`, from `LFM3_GOLDEN_DIR` or
 /// `target/lfm3-golden`. `None` when the file is absent, and a failure then with `NAGAYA_REQUIRE_MODELS=1`.
-fn control_oracle() -> Option<(serde_json::Map<String, Value>, Vec<u8>, Value)> {
+fn control_oracle(model: &str) -> Option<(serde_json::Map<String, Value>, Vec<u8>, Value)> {
     let dir = std::env::var_os("LFM3_GOLDEN_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/lfm3-golden"));
-    let path = dir.join("lfm3.control.safetensors");
+    let path = dir.join(format!("{model}.control.safetensors"));
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -342,8 +340,8 @@ fn user(text: &str) -> Value {
 }
 
 /// The ids of the tokens of a streamed generation.
-fn streamed_ids(council: &Arc<Council>, context: Value, max_tokens: u64) -> Vec<u64> {
-    let body = json!({"model": "lfm3", "context": context, "max_tokens": max_tokens, "sample": {"temperature": 0},
+fn streamed_ids(council: &Arc<Council>, model: &str, context: Value, max_tokens: u64) -> Vec<u64> {
+    let body = json!({"model": model, "context": context, "max_tokens": max_tokens, "sample": {"temperature": 0},
                       "stream": true});
     let (status, bytes) = send_raw(council, "POST", "/council/v2/generations", Some(body));
     let text = String::from_utf8(bytes).unwrap();
@@ -370,8 +368,8 @@ fn streamed_ids(council: &Arc<Council>, context: Value, max_tokens: u64) -> Vec<
 
 /// The route makes the vector of the oracle's prompt sets on the card, and the vector matches the oracle's. A
 /// generation with an ablate of 1 of that vector gives the oracle's greedy ids (spec 11.12, milestone 25 step 7).
-fn control_gate(council: &Arc<Council>) {
-    let Some((header, data, meta)) = control_oracle() else {
+fn control_gate(council: &Arc<Council>, model: &str) {
+    let Some((header, data, meta)) = control_oracle(model) else {
         return;
     };
     let texts = |side: &str| -> Vec<String> {
@@ -387,7 +385,7 @@ fn control_gate(council: &Arc<Council>) {
     let mut prompt = 0;
     for (side, list) in [("positive", &positive), ("negative", &negative)] {
         for (i, text) in list.iter().enumerate() {
-            let body = json!({"model": "lfm3", "context": user(text), "generation_prompt": true});
+            let body = json!({"model": model, "context": user(text), "generation_prompt": true});
             let (status, rendered) = send(council, "POST", "/nagaya/v1/render", Some(body));
             assert_eq!(status, StatusCode::OK, "{rendered}");
             let want: Vec<u64> = oracle_tensor(&header, &data, &format!("{side}{i}.ids"))
@@ -404,7 +402,7 @@ fn control_gate(council: &Arc<Council>) {
             prompt += want.len() as u64;
         }
     }
-    let body = json!({"model": "lfm3", "positive": positive.iter().map(|t| user(t)).collect::<Vec<_>>(),
+    let body = json!({"model": model, "positive": positive.iter().map(|t| user(t)).collect::<Vec<_>>(),
                       "negative": negative.iter().map(|t| user(t)).collect::<Vec<_>>()});
     let started = Instant::now();
     let (status, made) = send(council, "POST", "/council/v2/control-vectors", Some(body.clone()));
@@ -426,7 +424,7 @@ fn control_gate(council: &Arc<Council>) {
     let (status, bytes) = send_raw(council, "GET", &format!("/council/v2/objects/{id}"), None);
     assert_eq!(status, StatusCode::OK);
     let vector = gogi_proto::control::ControlVector::parse(&bytes).unwrap();
-    assert_eq!(vector.model, "lfm3");
+    assert_eq!(vector.model, model);
     let want = oracle_tensor(&header, &data, "vector");
     let rows: Vec<Vec<f64>> = (0..4)
         .map(|i| oracle_tensor(&header, &data, &format!("positive{i}.rows")))
@@ -471,7 +469,7 @@ fn control_gate(council: &Arc<Council>) {
             .iter()
             .map(|v| *v as u64)
             .collect();
-        let got = streamed_ids(council, context, want.len() as u64);
+        let got = streamed_ids(council, model, context, want.len() as u64);
         println!("{name}: greedy ids {got:?}, oracle {want:?}");
         assert_eq!(got, want, "{name}: the greedy ids differ from the oracle's");
     }

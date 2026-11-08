@@ -123,7 +123,7 @@ fn ids(path: &Path, name: &str) -> Vec<u64> {
 /// The generation of an oracle run: its system message and its text, in `mode`.
 fn request(record: &Value, mode: &str, stream: bool) -> Value {
     json!({"model": "lfm3-omni",
-        "context": {"messages": [
+        "context": {"thinking": false, "messages": [
             {"role": "system", "content": record["system"]},
             {"role": "user", "content": record["text"]}]},
         "max_tokens": 64, "sample": {"temperature": 0, "seed": 1234},
