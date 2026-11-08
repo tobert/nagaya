@@ -181,3 +181,43 @@ pub fn sound_bounds(indices: &[usize], fps: f64, rows: usize) -> Vec<usize> {
     }
     bounds
 }
+
+/// The prepared parts of a video: the time text and the rows of each pair, and the sound with the bounds of its runs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Video {
+    /// The time text of each pair, such as `<0.3 seconds>`.
+    pub times: Vec<String>,
+    /// The rows of each pair, each an image of one frame in time.
+    pub pairs: Vec<ImageRows>,
+    /// The mel rows of the sound track and the bounds of its runs, one run for each pair, or `None` with no sound.
+    pub sound: Option<(super::AudioRows, Vec<usize>)>,
+}
+
+/// The rows of a run of a clip: `count` encoder rows from row `start` of the clip `clip` (spec 11.11, "The video of a
+/// request"). The engine encodes the whole clip and takes the rows of the run.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AudioRun {
+    pub clip: std::sync::Arc<super::AudioRows>,
+    pub start: usize,
+    pub count: usize,
+}
+
+/// Decode a video and prepare its pairs and its sound (spec 11.11, "The video of a request").
+#[cfg(feature = "video")]
+pub fn prepare(bytes: &[u8]) -> Result<Video, MediaError> {
+    let decoded = super::decode::decode(bytes)?;
+    let first = &decoded.frames[0];
+    let (height, width) = smart_resize(decoded.frames.len(), first.height, first.width)?;
+    let resized = resize_frames(&decoded.frames, height, width);
+    let pairs = pair_rows(&resized);
+    let times = timestamps(&decoded.indices, decoded.fps)
+        .into_iter()
+        .map(time_text)
+        .collect();
+    let sound = decoded.sound.map(|samples| {
+        let rows = super::audio::mel(&samples);
+        let bounds = sound_bounds(&decoded.indices, decoded.fps, rows.positions());
+        (rows, bounds)
+    });
+    Ok(Video { times, pairs, sound })
+}

@@ -68,6 +68,8 @@ impl std::error::Error for MediaError {}
 pub enum MediaRows {
     Image(ImageRows),
     Audio(AudioRows),
+    /// A run of the rows of a clip, such as the sound of one pair of a video.
+    Run(video::AudioRun),
 }
 
 impl MediaRows {
@@ -76,6 +78,7 @@ impl MediaRows {
         match self {
             MediaRows::Image(rows) => rows.positions(),
             MediaRows::Audio(rows) => rows.positions(),
+            MediaRows::Run(run) => run.count,
         }
     }
 
@@ -83,7 +86,7 @@ impl MediaRows {
     pub fn width(&self) -> usize {
         match self {
             MediaRows::Image(_) => image::ROW,
-            MediaRows::Audio(_) => audio::BINS,
+            MediaRows::Audio(_) | MediaRows::Run(_) => audio::BINS,
         }
     }
 
@@ -92,6 +95,7 @@ impl MediaRows {
         match self {
             MediaRows::Image(rows) => &rows.values,
             MediaRows::Audio(rows) => &rows.values,
+            MediaRows::Run(run) => &run.clip.values,
         }
     }
 }

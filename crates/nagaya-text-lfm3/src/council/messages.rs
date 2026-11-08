@@ -19,6 +19,9 @@ pub enum MediaKind {
     Audio,
     /// A clip of an `assistant` message, which the model spoke: `<|audio_out|>`.
     AudioOut,
+    /// A video of a message that the model reads: `<|video|>`. It expands to its pairs of frames and its sound
+    /// (spec 11.11, "The video of a request").
+    Video,
 }
 
 impl MediaKind {
@@ -28,6 +31,7 @@ impl MediaKind {
             MediaKind::Image => "image",
             MediaKind::Audio => "audio",
             MediaKind::AudioOut => "audio_out",
+            MediaKind::Video => "video",
         }
     }
 
@@ -37,6 +41,7 @@ impl MediaKind {
             MediaKind::Image => "<|image|>",
             MediaKind::Audio => "<|audio|>",
             MediaKind::AudioOut => "<|audio_out|>",
+            MediaKind::Video => "<|video|>",
         }
     }
 }
@@ -83,6 +88,11 @@ pub(crate) fn media_kind(
         )),
         (_, "image/png" | "image/jpeg") => Ok(MediaKind::Image),
         (_, "audio/wav") => Ok(MediaKind::Audio),
+        (_, "video/mp4" | "video/webm") if cfg!(feature = "video") => Ok(MediaKind::Video),
+        (_, "video/mp4" | "video/webm") => Err(FamilyError::client_param(
+            param,
+            "this build of the server reads no video: it has no feature `video`. Send the frames as images.",
+        )),
         _ => Err(FamilyError::client_param(
             param,
             format!("lfm3-omni reads image/png, image/jpeg and audio/wav, not {mime}. Send one of those."),

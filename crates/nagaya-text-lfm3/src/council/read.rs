@@ -19,7 +19,7 @@ use nagaya_council::family::{
 };
 use serde_json::Value;
 
-use super::messages::{MediaPart, media_kind, message_json, messages_json, tools_json, turn_json};
+use super::messages::{MediaKind, MediaPart, media_kind, message_json, messages_json, tools_json, turn_json};
 use super::{Kind, Lfm3Family, refusal};
 use crate::tokenizer::{Tokenizer, check_text};
 use nagaya_jinja::Json;
@@ -428,25 +428,35 @@ fn expand_read(
         return Ok((base[context.len()..].to_vec(), Vec::new()));
     }
     let mut parts = context_parts;
-    let mut counts = Vec::with_capacity(parts.len() + case_media.len());
+    let mut layouts = Vec::with_capacity(parts.len() + case_media.len());
     for part in &parts {
-        let bytes = family.part_bytes(part)?;
-        counts.push(crate::media::positions(&bytes, &part.mime).map_err(|e| super::media_error(part, e))?);
+        layouts.push(family.layout(part)?);
     }
     for (i, object) in case_media.iter().enumerate() {
         let param = format!("case_media[{i}]");
         let kind = media_kind(true, Role::User, case_index, i + 1, &object.mime).map_err(|e| rename(e, &param))?;
-        let bytes = family.object_bytes(&object.id, &param)?;
-        let count = crate::media::positions(&bytes, &object.mime)
-            .map_err(|e| FamilyError::client_param(&param, format!("nothing ran: the object {} {e}.", object.id)))?;
-        parts.push(MediaPart {
+        let part = MediaPart {
             message: case_index,
             part: i + 1,
             kind,
             id: object.id.clone(),
             mime: object.mime.clone(),
-        });
-        counts.push(count);
+        };
+        let layout = match kind {
+            MediaKind::Video => family.layout(&part).map_err(|e| rename(e, &param))?,
+            _ => {
+                let bytes = family.object_bytes(&object.id, &param)?;
+                let count = crate::media::positions(&bytes, &object.mime).map_err(|e| {
+                    FamilyError::client_param(&param, format!("nothing ran: the object {} {e}.", object.id))
+                })?;
+                vec![super::media::Piece::Span {
+                    token: family.placeholder_token(kind),
+                    count,
+                }]
+            }
+        };
+        parts.push(part);
+        layouts.push(layout);
     }
     let placeholders = Rendering {
         tokens: base.to_vec(),
@@ -455,26 +465,21 @@ fn expand_read(
         control_text: Vec::new(),
         media: Vec::new(),
     };
-    let expanded = super::media::expand(family, placeholders, &parts, &counts)?;
+    let expanded = super::media::expand_layouts(family, placeholders, &parts, &layouts)?;
     let tokens = expanded.rendering.tokens;
     if !tokens.starts_with(context) {
         return Err(FamilyError::internal(
             "the read does not extend the rendering of its context. The rendering is not the context's.",
         ));
     }
-    let mut media = Vec::new();
-    for (span, part) in expanded.spans.iter().zip(&parts) {
-        if span.first < context.len() {
-            continue;
-        }
-        let span = nagaya_council::family::MediaSpan {
-            first: span.first,
-            count: span.count,
-            mime: part.mime.clone(),
-            id: part.id.clone(),
-        };
-        media.push(family.media_input(&span)?);
-    }
+    let prefix_spans: Vec<_> = expanded
+        .rendering
+        .media
+        .iter()
+        .filter(|span| span.first >= context.len())
+        .cloned()
+        .collect();
+    let media = family.inputs_of(&prefix_spans)?;
     Ok((tokens[context.len()..].to_vec(), media))
 }
 

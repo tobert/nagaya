@@ -22,6 +22,17 @@ const STEREO: &str = "blake3:333333333333333333333333333333333333333333333333333
 const SMALL: &str = "blake3:4444444444444444444444444444444444444444444444444444444444444444";
 const MID: &str = "blake3:5555555555555555555555555555555555555555555555555555555555555555";
 const CHIRP: &str = "blake3:6666666666666666666666666666666666666666666666666666666666666666";
+/// The two videos of the oracle (`tools/lfm3_golden.sh --stages video`), and the placeholder tokens of a video and a
+/// clip in Omni's tokenizer.
+#[cfg(feature = "video")]
+const VIDEO_AV: &str = "blake3:9999999999999999999999999999999999999999999999999999999999999999";
+#[cfg(feature = "video")]
+const VIDEO_V: &str = "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+#[cfg(feature = "video")]
+const VIDEO_TOKEN: u32 = 125_029;
+#[cfg(feature = "video")]
+const AUDIO_TOKEN: u32 = 125_031;
+
 /// The bytes of PHOTO under another id.
 const TWIN: &str = "blake3:8888888888888888888888888888888888888888888888888888888888888888";
 const ABSENT: &str = "blake3:7777777777777777777777777777777777777777777777777777777777777777";
@@ -63,7 +74,15 @@ fn objects() -> Map {
     map.insert(TWIN.to_string(), std::fs::read(fixture_path("photo.jpg")).unwrap());
     map.insert(CLIP.to_string(), wav(1, 24_000));
     map.insert(STEREO.to_string(), wav(2, 1_000));
-    for (id, file) in [(SMALL, "image_small.png"), (MID, "image_mid.png"), (CHIRP, "chirp.wav")] {
+    for (id, file) in [
+        (SMALL, "image_small.png"),
+        (MID, "image_mid.png"),
+        (CHIRP, "chirp.wav"),
+        #[cfg(feature = "video")]
+        (VIDEO_AV, "video_av.mp4"),
+        #[cfg(feature = "video")]
+        (VIDEO_V, "video_v.mp4"),
+    ] {
         let path = common::model::golden_dir().join(file);
         if path.is_file() {
             map.insert(id.to_string(), std::fs::read(path).unwrap());
@@ -252,7 +271,12 @@ fn omni_lists_its_media_inputs_and_the_text_model_lists_none() {
     if absent_any() {
         return;
     }
-    assert_eq!(omni().media_inputs(), ["image/png", "image/jpeg", "audio/wav"]);
+    // A build with the feature `video` reads video too (spec 11.11, "The video of a request").
+    let mut want = vec!["image/png", "image/jpeg", "audio/wav"];
+    if cfg!(feature = "video") {
+        want.extend(["video/mp4", "video/webm"]);
+    }
+    assert_eq!(omni().media_inputs(), want);
     assert!(family("text").media_inputs().is_empty());
 }
 
@@ -499,4 +523,116 @@ fn a_queue_read_refuses_case_media_with_a_400_that_names_it() {
         .err()
         .expect("a queue read with case media is refused");
     assert_eq!(param(error).0.as_deref(), Some("case_media[0]"));
+}
+
+/// The ids and the spans of a video part, against the reference with `use_audio_in_video` (spec 11.11, "The video of
+/// a request"): each pair writes its time and its video tokens, and the sound's rows follow each pair.
+#[cfg(feature = "video")]
+#[test]
+fn a_video_part_renders_as_the_reference_and_gives_the_rows_of_each_pair_and_each_run() {
+    use safetensors::SafeTensors;
+    if absent_omni() {
+        return;
+    }
+    let Some(path) = golden_path("video.safetensors") else {
+        return;
+    };
+    let oracle = std::fs::read(path).unwrap();
+    let st = SafeTensors::deserialize(&oracle).unwrap();
+    let i64s = |name: &str| -> Vec<u32> {
+        st.tensor(name)
+            .unwrap()
+            .data()
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|b| i64::from_le_bytes(*b) as u32)
+            .collect()
+    };
+    let f32s = |name: &str| -> Vec<f32> {
+        st.tensor(name)
+            .unwrap()
+            .data()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
+            .collect()
+    };
+    for (name, id) in [("av", VIDEO_AV), ("v", VIDEO_V)] {
+        let c = context(json!({"thinking": false, "messages": [{"role": "user", "content": [
+            {"type": "object", "id": id, "mime": "video/mp4"}, {"type": "text", "text": "Describe the video."}]}]}));
+        let rendering = omni().render(&c, true).unwrap();
+        assert_eq!(
+            rendering.tokens,
+            i64s(&format!("{name}.ids")),
+            "{name}: the ids of the reference"
+        );
+        let inputs = omni().media_rows(&rendering).unwrap();
+        let grid = i64s(&format!("{name}.grid_thw"));
+        let (pairs, per) = (grid[0] as usize, (grid[1] * grid[2]) as usize);
+        let images: Vec<_> = inputs.iter().filter(|i| words(&i.meta)[0] == 1).collect();
+        assert_eq!(images.len(), pairs, "{name}: a span for each pair");
+        let patches = f32s(&format!("{name}.pixel_values"));
+        for (k, input) in images.iter().enumerate() {
+            assert_eq!(
+                words(&input.meta)[4..7],
+                [1, grid[1], grid[2]],
+                "{name}: pair {k} is an image of one frame"
+            );
+            let want: Vec<u8> = patches[k * per * 1536..(k + 1) * per * 1536]
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect();
+            assert_eq!(&input.rows[..], &want[..], "{name}: the rows of pair {k}");
+            assert!(
+                input.span.mime.starts_with("video/mp4;avformat="),
+                "{}",
+                input.span.mime
+            );
+            assert!(
+                rendering.tokens[input.span.positions()]
+                    .iter()
+                    .all(|&t| t == VIDEO_TOKEN)
+            );
+        }
+        let runs: Vec<_> = inputs.iter().filter(|i| words(&i.meta)[0] == 3).collect();
+        if name == "av" {
+            // The runs of the sound: 15, 15 and 2 rows of 32, each after the tokens of its pair.
+            let counts: Vec<u32> = runs.iter().map(|i| words(&i.meta)[1]).collect();
+            assert_eq!(counts, [15, 15, 2]);
+            let starts: Vec<u32> = runs.iter().map(|i| words(&i.meta)[5]).collect();
+            assert_eq!(starts, [0, 15, 30]);
+            let mel = f32s("av.mel");
+            for run in &runs {
+                let frames = words(&run.meta)[4] as usize;
+                assert_eq!(frames * 128, mel.len());
+                // The rows are the clip's mel rows, frames first: the transpose of the reference's [128, T].
+                let got: Vec<f32> = run
+                    .rows
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|b| f32::from_le_bytes(*b))
+                    .collect();
+                // The family computes the mel in f64 and the reference in f32, so the gate has the bounds of the audio
+                // gate for each level of the reference value (`tests/media.rs`, ORACLE_MEL_GAPS).
+                for (level, bound) in [(-2.0f32, 2.5e-2f32), (-1.0, 6e-4), (0.0, 7e-6)] {
+                    let gap = (0..frames)
+                        .flat_map(|f| (0..128).map(move |b| (f, b)))
+                        .filter(|&(f, b)| mel[b * frames + f] >= level)
+                        .map(|(f, b)| (got[f * 128 + b] - mel[b * frames + f]).abs())
+                        .fold(0.0f32, f32::max);
+                    assert!(gap <= bound, "the mel of the sound from {level} differs by {gap:e}");
+                }
+                assert!(
+                    rendering.tokens[run.span.positions()]
+                        .iter()
+                        .all(|&tk| tk == AUDIO_TOKEN)
+                );
+            }
+        } else {
+            assert!(runs.is_empty(), "a video with no sound has no runs");
+        }
+    }
 }

@@ -139,6 +139,9 @@ pub(crate) struct Marks {
     pub call_close: u32,
     pub audio_start: u32,
     pub mixed_start: u32,
+    /// The markers around a video and around each of its pairs (spec 11.11, "The video of a request").
+    pub vision_start: u32,
+    pub vision_end: u32,
 }
 
 /// The LFM3 family library of one model folder.
@@ -153,10 +156,31 @@ pub struct Lfm3Family {
     stop: Vec<u32>,
     marks: Marks,
     /// The placeholder token of each media kind.
-    placeholders: [(MediaKind, u32); 3],
+    placeholders: [(MediaKind, u32); 4],
     template_id: String,
     /// The reader of the objects of this machine. A family without one refuses each media part.
     objects: Option<Arc<dyn Objects>>,
+    /// The prepared videos of the last few video parts, by content id. A render, its rows and a read each need them,
+    /// and a decode is slow.
+    videos: std::sync::Mutex<Vec<(String, Arc<crate::media::video::Video>)>>,
+}
+
+/// The prepared videos that a family keeps.
+const VIDEOS_KEPT: usize = 4;
+
+/// Decode and prepare a video part that `param` names.
+#[cfg(feature = "video")]
+fn prepare_video(bytes: &[u8], param: &str) -> Result<crate::media::video::Video, FamilyError> {
+    crate::media::video::prepare(bytes).map_err(|e| FamilyError::client_param(param, format!("{param} {e}.")))
+}
+
+/// A build with no feature `video` reads no video. `media_kind` refuses a video part first, so this is a guard.
+#[cfg(not(feature = "video"))]
+fn prepare_video(_bytes: &[u8], param: &str) -> Result<crate::media::video::Video, FamilyError> {
+    Err(FamilyError::client_param(
+        param,
+        "this build of the server reads no video: it has no feature `video`.",
+    ))
 }
 
 impl std::fmt::Debug for Lfm3Family {
@@ -259,11 +283,18 @@ impl Lfm3Family {
             call_close: id("</tool_call>")?,
             audio_start: id("<|audio_start|>")?,
             mixed_start: id("<|mixed_start|>")?,
+            vision_start: id("<|vision_start|>")?,
+            vision_end: id("<|vision_end|>")?,
         };
-        let placeholders =
-            [MediaKind::Image, MediaKind::Audio, MediaKind::AudioOut].map(|k| id(k.placeholder()).map(|t| (k, t)));
-        let [a, b, c] = placeholders;
-        let placeholders = [a?, b?, c?];
+        let placeholders = [
+            MediaKind::Image,
+            MediaKind::Audio,
+            MediaKind::AudioOut,
+            MediaKind::Video,
+        ]
+        .map(|k| id(k.placeholder()).map(|t| (k, t)));
+        let [a, b, c, d] = placeholders;
+        let placeholders = [a?, b?, c?, d?];
         let stop = stop_of(&files.generation, &tokenizer)?;
         let mut family = Lfm3Family {
             kind,
@@ -275,6 +306,7 @@ impl Lfm3Family {
             placeholders,
             template_id: String::new(),
             objects: None,
+            videos: std::sync::Mutex::new(Vec::new()),
         };
         let council = council_hash(&test_set::renders(&family));
         family.template_id = template_id(&council, FAMILY, &hash16(files.template.as_bytes()));
@@ -528,37 +560,147 @@ impl Lfm3Family {
         media::expand(self, rendering, &parts, counts)
     }
 
+    /// The placeholder token of a media kind.
+    pub(crate) fn placeholder_token(&self, kind: MediaKind) -> u32 {
+        self.placeholders
+            .iter()
+            .find(|(k, _)| *k == kind)
+            .map(|(_, t)| *t)
+            .expect("the family has a placeholder of each kind")
+    }
+
+    /// The media type of a part in its recipe item (tag 9). A video part also names the versions of the decoder,
+    /// because a new decoder can give other rows from the same bytes (spec 11.11, Decided 2026-11-08).
+    pub(crate) fn recipe_mime(&self, part: &MediaPart) -> String {
+        #[cfg(feature = "video")]
+        if part.kind == MediaKind::Video {
+            return format!("{};{}", part.mime, crate::media::decode::versions());
+        }
+        part.mime.clone()
+    }
+
+    /// The prepared video of the object `id`, from the family's few kept videos or from a decode. `param` names the
+    /// part in an error.
+    fn video(&self, id: &str, param: &str) -> Result<Arc<crate::media::video::Video>, FamilyError> {
+        if let Some((_, video)) = self
+            .videos
+            .lock()
+            .expect("the video lock")
+            .iter()
+            .find(|(k, _)| k == id)
+        {
+            return Ok(Arc::clone(video));
+        }
+        let bytes = self.object_bytes(id, param)?;
+        let video = Arc::new(prepare_video(&bytes, param)?);
+        let mut kept = self.videos.lock().expect("the video lock");
+        kept.retain(|(k, _)| k != id);
+        kept.push((id.to_owned(), Arc::clone(&video)));
+        if kept.len() > VIDEOS_KEPT {
+            kept.remove(0);
+        }
+        Ok(video)
+    }
+
+    /// The pieces of a video in the token space of the template, and the rows of each span, in order: for each pair,
+    /// its time, its markers, its video tokens and its run of sound (spec 11.11, "The video of a request").
+    fn video_layout(
+        &self,
+        video: &crate::media::video::Video,
+    ) -> Result<(Vec<media::Piece>, Vec<crate::media::MediaRows>), FamilyError> {
+        let mut pieces = Vec::new();
+        let mut rows = Vec::new();
+        let clip = video
+            .sound
+            .as_ref()
+            .map(|(clip, bounds)| (Arc::new(clip.clone()), bounds));
+        for (k, (time, pair)) in video.times.iter().zip(&video.pairs).enumerate() {
+            pieces.push(media::Piece::Tokens(
+                self.tokenizer().encode_content(time).map_err(internal)?,
+            ));
+            pieces.push(media::Piece::Tokens(vec![self.marks.vision_start]));
+            pieces.push(media::Piece::Span {
+                token: self.placeholder_token(MediaKind::Video),
+                count: pair.positions(),
+            });
+            rows.push(crate::media::MediaRows::Image(pair.clone()));
+            pieces.push(media::Piece::Tokens(vec![self.marks.vision_end]));
+            if let Some((clip, bounds)) = &clip {
+                let (start, end) = (bounds[k], bounds[k + 1]);
+                if end > start {
+                    pieces.push(media::Piece::Span {
+                        token: self.placeholder_token(MediaKind::Audio),
+                        count: end - start,
+                    });
+                    rows.push(crate::media::MediaRows::Run(crate::media::video::AudioRun {
+                        clip: Arc::clone(clip),
+                        start,
+                        count: end - start,
+                    }));
+                }
+            }
+        }
+        Ok((pieces, rows))
+    }
+
+    /// The layout of a media part: one span of its count for an image or a clip, from its header, and the pieces of
+    /// a video.
+    pub(crate) fn layout(&self, part: &MediaPart) -> Result<Vec<media::Piece>, FamilyError> {
+        if part.kind == MediaKind::Video {
+            let video = self.video(&part.id, &part_param(part))?;
+            return Ok(self.video_layout(&video)?.0);
+        }
+        let bytes = self.part_bytes(part)?;
+        let count = crate::media::positions(&bytes, &part.mime).map_err(|e| media_error(part, e))?;
+        Ok(vec![media::Piece::Span {
+            token: self.placeholder_token(part.kind),
+            count,
+        }])
+    }
+
+    /// The rows of each span of a media part, in order: one for an image or a clip, and one for each pair and each
+    /// run of a video.
+    fn part_rows(&self, part: &MediaPart) -> Result<Vec<crate::media::MediaRows>, FamilyError> {
+        if part.kind == MediaKind::Video {
+            let video = self.video(&part.id, &part_param(part))?;
+            return Ok(self.video_layout(&video)?.1);
+        }
+        let bytes = self.part_bytes(part)?;
+        let header = crate::media::positions(&bytes, &part.mime).map_err(|e| media_error(part, e))?;
+        let prepared = crate::media::prepare(&bytes, &part.mime).map_err(|e| media_error(part, e))?;
+        if prepared.positions() != header {
+            return Err(FamilyError::internal(format!(
+                "media part {} of message {} has {} positions from its header and {} from its rows",
+                part.part,
+                part.message,
+                header,
+                prepared.positions()
+            )));
+        }
+        Ok(vec![prepared])
+    }
+
     /// Render a context with its media, and prepare the rows of each media part for the engine.
     /// The header of each part gives its count of positions, and the whole part must give the same count.
     pub fn prepare(&self, context: &Context, generation_prompt: bool) -> Result<Prepared, FamilyError> {
         let parts = self.media_parts(context)?;
-        let mut rows = Vec::with_capacity(parts.len());
+        let mut rows = Vec::new();
+        let mut layouts = Vec::with_capacity(parts.len());
         for part in &parts {
-            let bytes = self.part_bytes(part)?;
-            let header = crate::media::positions(&bytes, &part.mime).map_err(|e| media_error(part, e))?;
-            let prepared = crate::media::prepare(&bytes, &part.mime).map_err(|e| media_error(part, e))?;
-            if prepared.positions() != header {
-                return Err(FamilyError::internal(format!(
-                    "media part {} of message {} has {} positions from its header and {} from its rows",
-                    part.part,
-                    part.message,
-                    header,
-                    prepared.positions()
-                )));
-            }
-            rows.push(prepared);
+            layouts.push(self.layout(part)?);
+            rows.extend(self.part_rows(part)?);
         }
-        let counts: Vec<usize> = rows.iter().map(crate::media::MediaRows::positions).collect();
         let rendering = self.render_placeholders(context, generation_prompt)?;
-        let MediaRendering { rendering, spans } = media::expand(self, rendering, &parts, &counts)?;
+        let MediaRendering { rendering, spans } = media::expand_layouts(self, rendering, &parts, &layouts)?;
         let inputs = spans
             .into_iter()
             .zip(rows)
             .map(|(span, rows)| {
                 let matches = matches!(
                     (span.kind, &rows),
-                    (MediaKind::Image, crate::media::MediaRows::Image(_))
+                    (MediaKind::Image | MediaKind::Video, crate::media::MediaRows::Image(_))
                         | (MediaKind::Audio, crate::media::MediaRows::Audio(_))
+                        | (MediaKind::Video, crate::media::MediaRows::Run(_))
                 );
                 assert!(matches, "a span of {:?} got rows of another kind", span.kind);
                 MediaInput { span, rows }
@@ -669,15 +811,12 @@ impl Family for Lfm3Family {
         if parts.is_empty() {
             return self.render_placeholders(context, generation_prompt);
         }
-        let counts = parts
+        let layouts = parts
             .iter()
-            .map(|part| {
-                let bytes = self.part_bytes(part)?;
-                crate::media::positions(&bytes, &part.mime).map_err(|e| media_error(part, e))
-            })
-            .collect::<Result<Vec<usize>, FamilyError>>()?;
+            .map(|part| self.layout(part))
+            .collect::<Result<Vec<_>, FamilyError>>()?;
         let rendering = self.render_placeholders(context, generation_prompt)?;
-        Ok(media::expand(self, rendering, &parts, &counts)?.rendering)
+        Ok(media::expand_layouts(self, rendering, &parts, &layouts)?.rendering)
     }
 
     fn decision_read(&self, input: &DecisionInput<'_>) -> Result<Box<dyn ReadPlan>, FamilyError> {
@@ -745,18 +884,25 @@ impl Family for Lfm3Family {
 
     fn media_inputs(&self) -> Vec<String> {
         match self.kind {
-            Kind::Omni => MEDIA_INPUTS.iter().map(|mime| (*mime).to_owned()).collect(),
+            Kind::Omni => media_inputs().iter().map(|mime| (*mime).to_owned()).collect(),
             Kind::Text => Vec::new(),
         }
     }
 
     fn media_rows(&self, rendering: &Rendering) -> Result<Vec<nagaya_council::family::MediaInput>, FamilyError> {
-        rendering.media.iter().map(|span| self.media_input(span)).collect()
+        self.inputs_of(&rendering.media)
     }
 }
 
-/// The media types that Omni reads (spec 11.11, "The served LFM3 models").
-pub const MEDIA_INPUTS: [&str; 3] = ["image/png", "image/jpeg", "audio/wav"];
+/// The media types that Omni reads (spec 11.11, "The served LFM3 models"), and the video types of a build with the
+/// feature `video` ("The video of a request").
+pub fn media_inputs() -> &'static [&'static str] {
+    if cfg!(feature = "video") {
+        &["image/png", "image/jpeg", "audio/wav", "video/mp4", "video/webm"]
+    } else {
+        &["image/png", "image/jpeg", "audio/wav"]
+    }
+}
 
 /// The bytes of one record of `meta` (engine-abi "The LFM3 vision binding"): the kind, the count of positions, the
 /// first position as a `u64`, and four words of the shape.
@@ -768,6 +914,8 @@ pub fn media_record(first: usize, rows: &crate::media::MediaRows) -> Vec<u8> {
     let (kind, shape) = match rows {
         crate::media::MediaRows::Image(image) => (1u32, [image.grid[0], image.grid[1], image.grid[2], 0]),
         crate::media::MediaRows::Audio(audio) => (2u32, [audio.frames, 0, 0, 0]),
+        // A run of a clip: the frames of the whole clip, and the first encoder row of the run (spec 11.11).
+        crate::media::MediaRows::Run(run) => (3u32, [run.clip.frames, run.start, 0, 0]),
     };
     let word = |value: usize| u32::try_from(value).expect("a shape of a media part fits in 32 bits");
     let mut record = Vec::with_capacity(RECORD_BYTES);
@@ -781,6 +929,43 @@ pub fn media_record(first: usize, rows: &crate::media::MediaRows) -> Vec<u8> {
 }
 
 impl Lfm3Family {
+    /// The record and the rows of each span of `spans`, in order. The spans of a video come in the order of its
+    /// layout, so the n-th span of a video takes the n-th rows of its layout.
+    pub(crate) fn inputs_of(
+        &self,
+        spans: &[nagaya_council::family::MediaSpan],
+    ) -> Result<Vec<nagaya_council::family::MediaInput>, FamilyError> {
+        let mut out = Vec::with_capacity(spans.len());
+        let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for span in spans {
+            // The recipe media type of a video span starts with its own type (`recipe_mime`).
+            if !span.mime.starts_with("video/") {
+                out.push(self.media_input(span)?);
+                continue;
+            }
+            let video = self.video(&span.id, &format!("the object {}", span.id))?;
+            let (_, rows) = self.video_layout(&video)?;
+            let n = seen.entry(span.id.as_str()).or_insert(0);
+            let rows = &rows[*n % rows.len()];
+            *n += 1;
+            if rows.positions() != span.count {
+                return Err(FamilyError::internal(format!(
+                    "the span of {} has {} positions, and its rows give {}",
+                    span.id,
+                    span.count,
+                    rows.positions()
+                )));
+            }
+            let values: Vec<u8> = rows.values().iter().flat_map(|v| v.to_le_bytes()).collect();
+            out.push(nagaya_council::family::MediaInput {
+                span: span.clone(),
+                meta: media_record(span.first, rows),
+                rows: values.into(),
+            });
+        }
+        Ok(out)
+    }
+
     /// The record and the rows of one span of a rendering. The object can leave the store after the render, so an
     /// absent object is a client error. A count that the object does not give is a defect of the caller.
     fn media_input(
