@@ -17,6 +17,7 @@ use nagaya_council::family::{
     Boundary, Family, FamilyError, ParsedReply, Rendering, ReplyCall, ReplyParser, ReplyStart,
 };
 use nagaya_council::sampler::{Settings, pick};
+use nagaya_council::trace::Trace;
 use nagaya_store::{ContentId, Reason, RecipeId, recipe_boundary};
 
 use super::build::{ContextBody, Got, Then, Want};
@@ -61,6 +62,34 @@ impl PartStats {
             max_entropy: self.entropy_max,
         })
     }
+}
+
+/// The trace of a generation (`docs/lab.md`, "`trace`"): its records, and the taps of the step that the job fed last.
+pub(crate) struct Tracing {
+    trace: Trace,
+    /// The residual tap of the last logit row, until the sample of that row records it.
+    residual: Option<Vec<f32>>,
+    /// The tap `lens` of the last logit row, when the trace has a lens.
+    lens: Option<Vec<f32>>,
+}
+
+impl Tracing {
+    pub fn new(trace: Trace) -> Self {
+        Self {
+            trace,
+            residual: None,
+            lens: None,
+        }
+    }
+}
+
+fn f32s(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b))
+        .collect()
 }
 
 /// Where a generation is.
@@ -128,6 +157,9 @@ pub(crate) struct GenerateThen {
     keeps_head: bool,
     /// The phase of the next token after the last sampled token.
     next_phase: Option<Phase>,
+    /// The trace, when the request asks for one. It reads each logit row and its taps, and it changes no want but
+    /// the taps of a feed.
+    tracing: Option<Tracing>,
 }
 
 impl GenerateThen {
@@ -154,6 +186,17 @@ impl GenerateThen {
         let position = self.prompt.len() + self.sampled.len();
         let chosen = pick(row, &self.settings, position as u64)
             .map_err(|error| ServiceError::internal(format!("the sample at position {position} failed: {error}")))?;
+        if let Some(tracing) = &mut self.tracing {
+            let residual = tracing
+                .residual
+                .take()
+                .ok_or_else(|| ServiceError::internal("a traced logit row came with no residual tap"))?;
+            let lens = tracing.lens.take();
+            tracing
+                .trace
+                .record(chosen.token, row, &residual, lens.as_deref())
+                .map_err(|error| ServiceError::internal(format!("the trace at position {position}: {error}")))?;
+        }
         let parser = self
             .parser
             .as_mut()
@@ -211,12 +254,30 @@ impl GenerateThen {
         }
         match (end, parsed) {
             (Some(cut), Some(parsed)) => self.finish(cut, parsed),
-            _ => Ok(Want::Feed {
-                tokens: vec![chosen.token],
-                logits: true,
-                kind: Kind::Decode,
-            }),
+            _ => Ok(self.row_feed(vec![chosen.token], Kind::Decode)),
         }
+    }
+
+    /// The feed of tokens whose last logit row the generation samples. A trace names the taps on its last pass. The
+    /// passes are the same with or without the taps.
+    fn row_feed(&self, tokens: Vec<u32>, kind: Kind) -> Want {
+        match &self.tracing {
+            Some(tracing) => Want::Tap {
+                tokens,
+                kind,
+                lens: tracing.trace.plan().lens,
+            },
+            None => Want::Feed {
+                tokens,
+                logits: true,
+                kind,
+            },
+        }
+    }
+
+    /// The trace, once the work is done.
+    pub fn take_trace(&mut self) -> Option<Trace> {
+        self.tracing.take().map(|tracing| tracing.trace)
     }
 
     /// End the reply. `cut` names why a reply that did not end its turn stopped. `parsed` is the reply that the
@@ -353,11 +414,7 @@ impl GenerateThen {
                 "the family rendered no generation prompt, so the reply has no first logit row",
             ));
         }
-        Ok(Want::Feed {
-            tokens,
-            logits: true,
-            kind: Kind::Prefill,
-        })
+        Ok(self.row_feed(tokens, Kind::Prefill))
     }
 
     fn done(&mut self) -> Want {
@@ -467,7 +524,13 @@ impl Then for GenerateThen {
                 self.recipes = recipes;
                 self.feed_prompt()
             }
-            (Stage::Sampling, Got::Fed(Some(row))) => self.sample(&row),
+            (Stage::Sampling, Got::Fed(Some(row))) if self.tracing.is_none() => self.sample(&row),
+            (Stage::Sampling, Got::Tapped { row, residual, lens }) if self.tracing.is_some() => {
+                let tracing = self.tracing.as_mut().expect("the arm holds a trace");
+                tracing.residual = Some(f32s(&residual));
+                tracing.lens = lens.as_deref().map(f32s);
+                self.sample(&row)
+            }
             (Stage::Head { recipe, .. }, Got::Fed(None)) => Ok(Want::Snapshot {
                 recipe: *recipe,
                 reason: Reason::PrefillDone,
@@ -503,6 +566,19 @@ impl Service {
         request: &GenerationRequest,
         events: Option<SyncSender<TokenEvent>>,
     ) -> Result<GenerationDone, ServiceError> {
+        let (done, trace) = self.generate_traced(request, events, None)?;
+        assert!(trace.is_none(), "a generation with no trace gives none");
+        Ok(done)
+    }
+
+    /// Sample a reply after a context, as [`Service::generate`] does, and record its trace when `tracing` is given
+    /// (`docs/lab.md`, "`trace`"). The trace changes no token and no member of the response.
+    pub(crate) fn generate_traced(
+        &self,
+        request: &GenerationRequest,
+        events: Option<SyncSender<TokenEvent>>,
+        tracing: Option<Tracing>,
+    ) -> Result<(GenerationDone, Option<Trace>), ServiceError> {
         request.validate()?;
         self.reads_text_only(&gogi_proto::objects::objects_of(&request.context.messages))?;
         if let Some(output) = &request.output {
@@ -596,6 +672,7 @@ impl Service {
             head: None,
             keeps_head: self.shared.limits.feed.is_none(),
             next_phase: None,
+            tracing,
         };
         let shared = Arc::clone(&self.shared);
         let control = steer.control;
@@ -605,10 +682,11 @@ impl Service {
                 .extension(extension)
                 .control(root, control)
         };
-        let finished = self.run_context(job, Schedule::of(request.class, request.priority), None)?;
+        let mut finished = self.run_context(job, Schedule::of(request.class, request.priority), None)?;
         let ids = finished
             .then
             .call_ids(finished.then.parsed.as_ref().map_or(0, |p| p.calls.len()));
+        let trace = finished.then.take_trace();
         let reply = finished.then.reply();
         let mut held = super::held_boundaries(&finished.outcome);
         held.extend(reply.head);
@@ -619,7 +697,7 @@ impl Service {
             .head
             .map(|(_, id)| snapshot_id(&id))
             .filter(|head| snapshots.iter().any(|snapshot| snapshot.id == *head));
-        Ok(GenerationDone {
+        let done = GenerationDone {
             model: self.config.model.clone(),
             content: reply.parsed.content.clone(),
             reasoning: reply.parsed.reasoning.clone(),
@@ -643,6 +721,7 @@ impl Service {
             seed: Some(settings.seed),
             phase: reply.phase,
             outputs: Vec::new(),
-        })
+        };
+        Ok((done, trace))
     }
 }

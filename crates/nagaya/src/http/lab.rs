@@ -1,9 +1,9 @@
 //! The lab routes under `/nagaya/v1/lab/` (`docs/lab.md`, "Where the routes live"): `project`, a direction through the
-//! head of a served model.
+//! head of a served model, and `trace`, a generation with its numbers.
 //!
 //! `project` reads the checkpoint of the model folder, not the engine. Thus it runs while the engine is unloaded. It
 //! runs on a call thread, as the council routes do (spec 3.2). The rules are in `docs/lab.md`, "The rules of
-//! `project`".
+//! `project`" and "The rules of `trace`".
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -14,7 +14,9 @@ use axum::extract::{Extension, State};
 use axum::response::Response;
 use axum::routing::post;
 use gogi_proto::Invalid;
-use nagaya_mk_lfm3_bmg::lab::{Entry, Unembedding, ends_of, rank};
+use gogi_proto::generation::GenerationRequest;
+use nagaya_council::trace::Trace;
+use nagaya_mk_lfm3_bmg::lab::{Entry, Facts, Unembedding, ends_of, rank};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -23,6 +25,7 @@ use super::routes::{answer, bytes};
 use super::{Council, RequestId, Served};
 use crate::council::control;
 use crate::council::error::ServiceError;
+use crate::council::trace::{ModelFacts, TraceMembers};
 
 type Shared = State<Arc<Council>>;
 type Id = Extension<RequestId>;
@@ -36,9 +39,15 @@ pub const MAX_TOP_K: u64 = 256;
 /// The one matrix of `through` now: the head, with the weight of the final norm.
 pub const UNEMBED: &str = "unembed";
 
+/// The largest trace object. The job keeps the numbers of a trace in host memory, outside the ledger, until the reply
+/// ends (`docs/lab.md`, "The budget").
+pub const MAX_TRACE_BYTES: u64 = 1 << 30;
+
 /// The routes of the lab. The caller adds the fallbacks.
 pub fn routes() -> Router<Arc<Council>> {
-    Router::new().route("/nagaya/v1/lab/project", post(project))
+    Router::new()
+        .route("/nagaya/v1/lab/project", post(project))
+        .route("/nagaya/v1/lab/trace", post(trace))
 }
 
 #[derive(Deserialize)]
@@ -286,6 +295,158 @@ fn run(served: &Served, dir: &Path, request: ProjectRequest) -> Result<Projected
         layers,
     })
 }
+
+/// The members of `trace`, with the types of `docs/lab.md`. A member of another type, or another member, is a 400 that
+/// names it.
+fn members(value: Value) -> Result<TraceMembers, ServiceError> {
+    let Value::Object(map) = value else {
+        return Err(invalid(
+            "trace",
+            format!("nothing ran: trace is {value}; send an object of the members of a trace"),
+        ));
+    };
+    let mut members = TraceMembers::default();
+    for (key, value) in map {
+        let param = format!("trace.{key}");
+        let wrong = |what: &str| invalid(&param, format!("nothing ran: {param} is {value}; send {what}"));
+        match key.as_str() {
+            "layers" => {
+                members.layers = match &value {
+                    Value::String(all) if all == "all" => None,
+                    Value::Array(items) => Some(
+                        items
+                            .iter()
+                            .map(|item| item.as_u64().and_then(|n| u32::try_from(n).ok()))
+                            .collect::<Option<Vec<u32>>>()
+                            .ok_or_else(|| wrong("\"all\" or a list of layers"))?,
+                    ),
+                    _ => return Err(wrong("\"all\" or a list of layers")),
+                }
+            }
+            "vectors" => {
+                members.vectors = value
+                    .as_array()
+                    .and_then(|items| {
+                        items
+                            .iter()
+                            .map(|item| item.as_str().map(str::to_owned))
+                            .collect::<Option<Vec<String>>>()
+                    })
+                    .ok_or_else(|| wrong("a list of control vector ids"))?
+            }
+            "top_k" => members.top_k = Some(value.as_u64().ok_or_else(|| wrong("a count"))?),
+            "lens" => {
+                members.lens = match &value {
+                    Value::Null => None,
+                    Value::String(lens) => Some(lens.clone()),
+                    _ => return Err(wrong("the name of a lens")),
+                }
+            }
+            "rows" => members.rows = value.as_bool().ok_or_else(|| wrong("true or false"))?,
+            _ => {
+                return Err(invalid(
+                    &param,
+                    format!(
+                        "nothing ran: a trace has no member {key}; its members are layers, vectors, top_k, lens and \
+                         rows"
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(members)
+}
+
+async fn trace(State(council): Shared, Extension(id): Id, body: Body) -> Response {
+    let result = async {
+        let mut value: Value = parse(&bytes(body).await?, "trace")?;
+        let trace = value
+            .as_object_mut()
+            .and_then(|map| map.remove("trace"))
+            .ok_or_else(|| {
+                Failure::from(invalid(
+                    "trace",
+                    "nothing ran: a trace request is a generation request with the member trace; send trace".to_owned(),
+                ))
+            })?;
+        let body = serde_json::to_vec(&value).expect("a JSON value encodes");
+        let request: GenerationRequest = parse(&body, "trace")?;
+        let members = members(trace)?;
+        let (served, dir) = council.lab_model(&request.model)?;
+        if request.stream == Some(true) {
+            return Err(Failure::from(invalid(
+                "stream",
+                "nothing ran: a trace does not stream, because its object is complete only at the end of the reply; \
+                 send stream: false"
+                    .to_owned(),
+            )));
+        }
+        let store = council.objects().ok_or_else(|| {
+            Failure::from(invalid(
+                "trace",
+                "nothing ran: the server holds no objects, so it cannot keep a trace; its profile names no `objects` \
+                 budget in `[store]` (spec 6.15)"
+                    .to_owned(),
+            ))
+        })?;
+        // The checks of the trace come before the status of the model: they read no engine.
+        let checks = Arc::clone(&served);
+        let max_tokens = request.max_tokens as usize;
+        let plan = council
+            .call(move || {
+                let facts = Facts::open(&dir).map_err(|error| {
+                    ServiceError::internal(format!(
+                        "the lab cannot read the model folder of {}: {error}",
+                        checks.service.model()
+                    ))
+                })?;
+                let facts = ModelFacts {
+                    layers: facts.layers,
+                    width: facts.width,
+                    ends: facts.ends,
+                };
+                let plan = checks.service.trace_plan(&members, &facts)?;
+                let limit = store
+                    .lock()
+                    .expect("the object store lock is poisoned")
+                    .object_bytes()
+                    .min(MAX_TRACE_BYTES);
+                let needed = Trace::object_bytes(&plan, max_tokens);
+                if needed > limit {
+                    let param = if plan.rows { "trace.rows" } else { "max_tokens" };
+                    return Err(ServiceError::TooLarge {
+                        param: param.to_owned(),
+                        message: format!(
+                            "nothing ran: a trace of {max_tokens} steps is {needed} bytes, and the largest trace here \
+                             is {limit} bytes; send fewer max_tokens or layers, or no rows"
+                        ),
+                    });
+                }
+                Ok(plan)
+            })
+            .await?;
+        let served = council.route_contexts(&request.model, &[&request.context], false)?;
+        let inner = Arc::clone(&council);
+        let (done, trace) = council
+            .call(move || {
+                let put = |bytes: &[u8]| {
+                    let id = super::voice::seal(&inner, bytes, TRACE_MEDIA_TYPE)?;
+                    Ok(gogi_proto::ids::ContentId::parse(format!("blake3:{}", id.hex()))
+                        .expect("a content id makes a valid gogi id"))
+                };
+                served.service.trace(&request, plan, &put)
+            })
+            .await?;
+        let mut out = serde_json::to_value(&done).expect("a generation response encodes");
+        out["trace"] = Value::String(trace.as_str().to_owned());
+        Ok(out)
+    }
+    .await;
+    answer(&id, result)
+}
+
+/// The media type of a trace object: canonical safetensors (D10).
+pub const TRACE_MEDIA_TYPE: &str = "application/x-safetensors";
 
 impl Council {
     /// The served model of a lab route and its model folder. A model that this node does not serve, or one whose

@@ -198,7 +198,8 @@ leaves these choices open. Each rule is the simplest choice that lets a client c
 **The object.** The tensors are in bytewise order of their names, and the header follows D10 rules 3 and 5. The ids
 are `U32`, and the numbers are `F32`. The tensor `layers` `[L]` gives the layer of each place on the axis `L`.
 `__metadata__` names the `model`, the `weight_hash`, the `lens`, and the `vectors` in order, with a comma between two
-ids. The same request with the same seed gives the same bytes.
+ids. The same request with the same seed gives the same bytes. The object has the media type
+`application/x-safetensors`, as a control vector has.
 
 **The logit lens of a row.** This answers open question 3. The lens of a residual row is the final RMSNorm of the
 model, with its division and its epsilon, then the head. A row has a scale, so the lens divides by it, as the model

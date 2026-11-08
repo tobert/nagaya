@@ -146,7 +146,7 @@ impl Then for DecisionThen {
                 self.advance(Some(&letters))
             }
             Got::Held(_) => Err(ServiceError::internal("a decision read holds no snapshot of its own")),
-            Got::Tapped(_) => Err(ServiceError::internal("a decision read names no tap")),
+            Got::Tapped { .. } => Err(ServiceError::internal("a decision read names no tap")),
         }
     }
 }
