@@ -121,6 +121,7 @@ fn engine(name: &str, kind: &str, residency: Residency) -> EnginePlacement {
         devices: vec![0],
         config: toml::Table::new(),
         family: toml::Table::new(),
+        lab: toml::Table::new(),
         share: 1,
         pin_identity: false,
         residency,

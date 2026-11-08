@@ -13,6 +13,7 @@ fn engine(name: &str, residency: Residency) -> EnginePlacement {
         devices: vec![0],
         config,
         family: toml::Table::new(),
+        lab: toml::Table::new(),
         share: 1,
         pin_identity: false,
         residency,
@@ -115,8 +116,8 @@ fn a_new_entry_is_a_load_and_restarts() {
 }
 
 #[test]
-fn each_change_of_kind_devices_config_family_or_pin_is_a_reload_and_restarts() {
-    let edits: [fn(&mut EnginePlacement); 5] = [
+fn each_change_of_kind_devices_config_family_lab_or_pin_is_a_reload_and_restarts() {
+    let edits: [fn(&mut EnginePlacement); 6] = [
         |e| e.kind = "other".to_owned(),
         |e| e.devices = vec![1],
         |e| {
@@ -127,6 +128,14 @@ fn each_change_of_kind_devices_config_family_or_pin_is_a_reload_and_restarts() {
                 .insert("chat_template".to_owned(), toml::Value::String("x".to_owned()));
         },
         |e| e.pin_identity = true,
+        // The lab reads the lens of the profile, so a new lens reloads the engine (docs/lab.md, "The rules of the
+        // J-Lens").
+        |e| {
+            e.lab.insert(
+                "jlens".to_owned(),
+                toml::Value::String("/lenses/a.safetensors".to_owned()),
+            );
+        },
     ];
     for (index, edit) in edits.iter().enumerate() {
         let mut new = active();

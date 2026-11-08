@@ -49,6 +49,7 @@ fn profile() -> PlacementProfile {
             devices: vec![0],
             config: toml::Table::new(),
             family: toml::Table::new(),
+            lab: toml::Table::new(),
             share: 1,
             pin_identity: false,
             residency: Default::default(),

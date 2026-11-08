@@ -95,6 +95,7 @@ fn compare(old: &EnginePlacement, new: &EnginePlacement) -> Action {
         && old.devices == new.devices
         && old.config == new.config
         && old.family == new.family
+        && old.lab == new.lab
         && old.pin_identity == new.pin_identity;
     if !opens_the_same {
         Action::Reload

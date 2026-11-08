@@ -13,6 +13,7 @@ fn engine(name: &str, kind: &str, share: u64) -> EnginePlacement {
         devices: vec![0],
         config: toml::Table::new(),
         family: toml::Table::new(),
+        lab: toml::Table::new(),
         share,
         pin_identity: false,
         residency: Default::default(),

@@ -107,6 +107,7 @@ fn engine(name: &str, devices: Vec<u32>, residency: Residency) -> EnginePlacemen
         devices,
         config,
         family: toml::Table::new(),
+        lab: toml::Table::new(),
         share: 1,
         pin_identity: false,
         residency,

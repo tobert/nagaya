@@ -113,6 +113,10 @@ pub struct EnginePlacement {
     /// The files of the engine's family library (spec 11.3, "The engine registry"). The family opens from this
     /// table and from the engine identity.
     pub family: toml::Table,
+    /// The files of the lab routes, such as the lens of the served model (`docs/lab.md`, "The rules of the J-Lens").
+    /// An entry with no lab table writes no key.
+    #[serde(skip_serializing_if = "toml::Table::is_empty")]
+    pub lab: toml::Table,
     /// The engine's share of the spare memory (D9).
     pub share: u64,
     /// True when the profile pins the engine's identity (spec 12.1).
@@ -138,6 +142,8 @@ struct PlacementInput {
     config: toml::Table,
     #[serde(default)]
     family: toml::Table,
+    #[serde(default)]
+    lab: toml::Table,
     share: u64,
     #[serde(default)]
     pin_identity: bool,
@@ -167,6 +173,7 @@ impl TryFrom<PlacementInput> for EnginePlacement {
             devices: input.devices,
             config: input.config,
             family: input.family,
+            lab: input.lab,
             share: input.share,
             pin_identity: input.pin_identity,
             residency: input.residency,

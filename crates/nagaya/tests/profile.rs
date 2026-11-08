@@ -42,6 +42,7 @@ fn example_profile() -> PlacementProfile {
                 devices: vec![0],
                 config: "slots = 2\n".parse::<toml::Table>().unwrap(),
                 family: toml::Table::new(),
+                lab: toml::Table::new(),
                 share: 1,
                 pin_identity: true,
                 residency: Residency::Resident,
@@ -53,6 +54,7 @@ fn example_profile() -> PlacementProfile {
                 devices: vec![0],
                 config: toml::Table::new(),
                 family: toml::Table::new(),
+                lab: toml::Table::new(),
                 share: 3,
                 pin_identity: false,
                 residency: Residency::OnDemand,
@@ -189,6 +191,24 @@ fn an_engine_entry_names_the_files_of_its_family() {
     let profile = PlacementProfile::parse(&text).unwrap();
     assert_eq!(profile.engines[0].family["gguf"].as_str(), Some("/models/a.gguf"));
     assert_eq!(profile.engines[1].family, toml::Table::new());
+}
+
+#[test]
+fn an_engine_entry_names_its_lab_table_and_an_entry_without_one_writes_no_key() {
+    let text = EXAMPLE.replacen(
+        "[engines.config]",
+        "[engines.lab]\njlens = \"/lenses/lfm3.safetensors\"\n\n[engines.config]",
+        1,
+    );
+    let profile = PlacementProfile::parse(&text).unwrap();
+    assert_eq!(
+        profile.engines[0].lab["jlens"].as_str(),
+        Some("/lenses/lfm3.safetensors")
+    );
+    assert_eq!(profile.engines[1].lab, toml::Table::new());
+    let written = profile.to_toml().unwrap();
+    assert_eq!(written.matches("[engines.lab]").count(), 1, "{written}");
+    assert_eq!(PlacementProfile::parse(&written).unwrap(), profile);
 }
 
 #[test]
