@@ -4454,7 +4454,8 @@ replace the rule above that a WAV must be 16 kHz mono, once step 10 builds them.
 - The decoder is behind a cargo feature. A build with no feature refuses a video part with a 400 that names the part,
   and `media.inputs` lists no video type.
 - The versions of the ffmpeg libraries are build facts of the engine identity (12.1). Reason: a new decoder can give
-  other frames from the same bytes, and the recipe of a part (below) names only the bytes.
+  other frames from the same bytes, and the recipe of a part (below) names only the bytes. Replaced on 2026-11-08:
+  the recipe item of a video part names them ("The video of a request", below).
 - The frames follow the video processor of the checkpoint: 2 frames each second, from 4 to 384 frames, and at most
   768 video tokens. Each frame goes through the vision tower.
 - The sound track of a video becomes an audio part beside its frames, in the order of the reference processor.
@@ -4469,11 +4470,11 @@ above leaves these choices open. Each follows the checkpoint's own processors (`
 - **A reading of the note above.** The processor caps a frame at 768 video tokens only with `cap_pixels_per_frame`,
   and the checkpoint sets it false. So the bound is a pixel budget: all the frames together hold from 4,096 to
   25,165,824 pixels.
-- **The decoder version.** The note above puts the ffmpeg versions in the identity. Today the build facts are in the
-  identity digest (12.1), so an update of ffmpeg would make each held context fill again, text contexts too. This
-  note proposes a narrower rule. The media type in the recipe item of a video part (tag 9) names the versions of
-  libavformat, libavcodec, libswscale and libswresample. Thus an update changes only the recipes of video parts. Amy
-  decides.
+- **The decoder version.** Today the build facts are in the identity digest (12.1). So with the versions in the
+  identity, an update of ffmpeg would make each held context fill again, text contexts too. The media type in the
+  recipe item of a video part (tag 9) names the versions of libavformat, libavcodec, libswscale and libswresample.
+  Thus an update changes only the recipes of video parts. Decided 2026-11-08 (Amy, by interview: "Video recipe item").
+  This replaces the rule of the identity above.
 - **Sampling.** The frame count is the floor of the frames of the stream divided by its rate and multiplied by 2. It
   is then at least 4, at most 384, and at most the frames of the stream. The indices are evenly spaced from the first
   frame to the last, rounded half to even.

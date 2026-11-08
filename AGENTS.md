@@ -629,8 +629,8 @@ senpai may stop and start the web app on b70host at will (`python3 tools/nagaya_
         by interview:
         - **Input:** a video object, for example `video/mp4` or `video/webm`. The family decodes it on the CPU.
         - **Decoder:** ffmpeg's libraries (libavformat, libavcodec, libswscale and libswresample), behind a cargo
-          feature. Their versions go into the engine identity (12.1), because a new decoder can change the rows. With
-          no feature, a video part is a 400 that names the part. Amy installs `ffmpeg` on b70host.
+          feature. Their versions go into the recipe item of a video part, because a new decoder can change the rows
+          (Amy, 2026-11-08). With no feature, a video part is a 400 that names the part.
         - **Frames:** the rules of the checkpoint's video processor. It takes 2 frames each second, from 4 to 384
           frames, within its pixel budget (spec 11.11, "The video of a request").
         - **Sound:** the sound track of a video is an audio part beside its frames.
