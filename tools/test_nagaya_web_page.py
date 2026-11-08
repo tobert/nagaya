@@ -478,6 +478,17 @@ class Page(unittest.TestCase):
         self.assertIn("&lt;b&gt;", out["html"])
         self.assertNotIn("<b>", out["html"])
 
+    def test_the_lab_projects_through_the_jlens_when_the_person_chooses_it(self):
+        out = self.run_page(f"""
+            vectors = [{{name: "refusal", id: "{self.VECTOR}", model: "lfm3", host}}];
+            set("lab-model", "lfm3"); fillVectors(); set("lab-vector", "{self.VECTOR}"); set("lab-lens-k", "8");
+            set("lab-through", "jlens");
+            await document.getElementById("lab-project").onclick();
+            out.body = JSON.parse(calls.filter((c) => c[1] === "/nagaya/v1/lab/project").pop()[2]);
+            out.html = document.getElementById("lab-lens").innerHTML;""")
+        self.assertEqual(out["body"]["through"], "jlens")
+        self.assertIn("J-Lens", out["html"])
+
     def test_the_lab_lists_only_the_local_models_of_the_lfm3_engine_kind(self):
         out = self.run_page('out.models = document.getElementById("lab-model").innerHTML;')
         self.assertEqual(out["models"], '<option value="lfm3-omni">lfm3-omni</option><option value="lfm3">lfm3</option>')
@@ -540,6 +551,18 @@ class Page(unittest.TestCase):
         self.assertEqual(len(out["bodies"]), 1)
         self.assertNotIn("control", out["bodies"][0]["context"])
         self.assertEqual(out["bodies"][0]["trace"], {"top_k": 3})
+
+    def test_a_trace_with_the_jlens_sends_it_and_the_page_keeps_each_trace_object(self):
+        out = self.run_page(self.LAB + """
+            set("lab-use-lens", "jlens");
+            await document.getElementById("lab-trace").onclick();
+            out.bodies = traced();
+            out.keep = JSON.parse(calls.filter((c) => c[1] === "/council/v2/keeps/nagaya-web").pop()[2]).objects;
+            out.saved = traces.map((x) => [x.id, x.model]);""")
+        self.assertEqual([b["trace"]["lens"] for b in out["bodies"]], ["jlens", "jlens"])
+        self.assertIn(TRACE_ID, out["keep"])
+        self.assertIn(LAB_VECTOR, out["keep"])
+        self.assertEqual(out["saved"], [[TRACE_ID, "lfm3"]])
 
     def test_the_lab_draws_both_runs_and_the_chosen_step_with_the_token_text_escaped(self):
         out = self.run_page(self.LAB + """

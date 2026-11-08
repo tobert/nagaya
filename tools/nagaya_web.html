@@ -303,7 +303,9 @@ audio { width: 100%; }
       <label>Vector <span class="note">— a saved vector of this model, from the Steering tab</span></label>
       <select id="lab-vector"></select>
       <h2>Project</h2>
-      <div class="row"><div><label>Tokens</label><input id="lab-lens-k" type="number" min="1" max="256" value="8"></div></div>
+      <div class="row"><div><label>Tokens</label><input id="lab-lens-k" type="number" min="1" max="256" value="8"></div>
+        <div><label>Through</label><select id="lab-through"><option value="unembed">the unembedding</option>
+          <option value="jlens">the J-Lens of the model</option></select></div></div>
       <div class="actions"><button class="plain" id="lab-project">Project the vector</button></div>
       <h2>Trace</h2>
       <div class="row">
@@ -318,12 +320,14 @@ audio { width: 100%; }
         <div><label>Top k</label><input id="lab-k" type="number" min="1" max="64" value="8"></div>
       </div>
       <label>Lens</label>
-      <select id="lab-use-lens"><option value="logit">the logit lens of each layer</option><option value="">none</option></select>
+      <select id="lab-use-lens"><option value="logit">the logit lens of each layer</option>
+        <option value="jlens">the J-Lens of each layer</option><option value="">none</option></select>
       <div class="actions"><button class="go" id="lab-trace">Trace plain and steered</button>
         <span id="lab-status" class="note"></span></div>
       <div id="lab-error" class="err"></div>
       <p class="note">Project puts each layer of the vector through the unembedding: the tokens that it pushes up and down,
-        and the rank of each end token. Trace runs the prompt plain, then with the vector and the operation above. Both
+        and the rank of each end token. The J-Lens first moves each layer to the last layer, as the later layers would
+        (docs/lab.md); the profile of the model names it. Trace runs the prompt plain, then with the vector and the operation above. Both
         runs use one seed, so the replies differ only by the vector. With no vector, only the plain run goes. A trace
         is a job of the engine, so the model must be ready (docs/lab.md). Choose a step: click a token or a chart.</p>
     </div>
@@ -780,9 +784,9 @@ $("img-loras").addEventListener("click", (ev) => {
   loras.splice(+drop, 1); saveLoras(); drawLoras(); keepAll();
 });
 
-/** Put a keep on the LoRAs, the gallery and the control vectors, so the store does not evict them. A keep lasts 30 days (spec 6.15). */
+/** Put a keep on the LoRAs, the gallery, the control vectors and the recent traces, so the store does not evict them. A keep lasts 30 days (spec 6.15). */
 async function keepAll() {
-  const objects = [...new Set(loras.concat(gallery, vectors).filter((x) => here(x.host)).map((x) => x.id))]
+  const objects = [...new Set(loras.concat(gallery, vectors, traces).filter((x) => here(x.host)).map((x) => x.id))]
     .filter((id) => /^blake3:[0-9a-f]{64}$/.test(id));
   try {
     await call("PUT", "/council/v2/keeps/nagaya-web", {objects, ttl_s: 30 * 86400});
@@ -1077,6 +1081,10 @@ $("chat-go").onclick = async () => {
 // ---- steering
 let vectors = [];
 try { vectors = JSON.parse(localStorage.getItem("nagaya-vectors") || "[]"); } catch (e) {}
+/** The recent trace objects, newest first. The keep holds them, because the route sets no keep (docs/lab.md). */
+let traces = [];
+try { traces = JSON.parse(localStorage.getItem("nagaya-traces") || "[]"); } catch (e) {}
+function saveTraces() { try { localStorage.setItem("nagaya-traces", JSON.stringify(traces)); } catch (e) {} }
 function saveVectors() { try { localStorage.setItem("nagaya-vectors", JSON.stringify(vectors)); } catch (e) {} }
 /** Whether a served model takes a control list in its contexts (gogi "Contexts", spec 11.12). */
 const steers = (name) => models.some((m) => m.model === name && m.capabilities?.includes("control_vectors"));
@@ -1206,9 +1214,10 @@ $("lab-project").onclick = async () => {
   $("lab-lens").innerHTML = `<p class="note">projecting ${esc(v.name)}…</p>`;
   try {
     const r = await call("POST", "/nagaya/v1/lab/project",
-                         {model: v.model, vector: v.id, through: "unembed", top_k: +$("lab-lens-k").value || 8});
+                         {model: v.model, vector: v.id, through: $("lab-through").value || "unembed", top_k: +$("lab-lens-k").value || 8});
     const words = (list) => list.map((t) => `<code>${esc(t.token ?? `#${t.id}`)}</code>`).join(" ");
-    $("lab-lens").innerHTML = `<h2>Lens of ${esc(v.name)}</h2><table class="lens"><tr><th>layer</th><th>up</th>
+    const through = r.through === "jlens" ? "the J-Lens" : "the unembedding";
+    $("lab-lens").innerHTML = `<h2>${esc(v.name)} through ${through}</h2><table class="lens"><tr><th>layer</th><th>up</th>
       <th>down</th><th>end rank</th></tr>` + r.layers.map((l) => `<tr><td>${l.layer ?? ""}</td><td>${words(l.up)}</td>
       <td>${words(l.down)}</td><td>${l.end.map((e) => `${esc(e.token ?? e.id)} ${e.rank}`).join(", ")}</td></tr>`)
       .join("") + "</table>";
@@ -1281,7 +1290,9 @@ $("lab-trace").onclick = async () => {
                                                                trace});
       const t = await traceObject(done.trace);
       labRuns.push({name, cls, model, done, t, pieces: await piecesOf(model, t.tokens.data)});
+      traces = [{id: done.trace, host, model, name}].concat(traces.filter((x) => x.id !== done.trace)).slice(0, 40);
     }
+    saveTraces(); keepAll();
     labAt = 0;
     status(`seed ${sample.seed}`);
     drawLab();
