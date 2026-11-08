@@ -45,7 +45,7 @@ fn at(param: &'static str) -> impl Fn(FamilyError) -> ServiceError {
             invalid.param.get_or_insert_with(|| param.to_owned());
             ServiceError::Invalid(invalid)
         }
-        internal @ FamilyError::Internal(_) => internal.into(),
+        other @ (FamilyError::Internal(_) | FamilyError::NotHeld { .. }) => other.into(),
     }
 }
 

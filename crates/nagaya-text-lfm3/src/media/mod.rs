@@ -15,6 +15,12 @@ use std::fmt;
 pub use audio::AudioRows;
 pub use image::ImageRows;
 
+/// The codes of one frame of speech.
+pub const SPEECH_CODES: usize = 12;
+
+/// The end code of speech: an end frame holds it in each codebook.
+pub const END_CODE: u32 = 2016;
+
 /// Why the bytes of a media part are not media that the family reads. The text completes a sentence that starts
 /// with the name of the part, and it says what the client can do.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,6 +76,8 @@ pub enum MediaRows {
     Audio(AudioRows),
     /// A run of the rows of a clip, such as the sound of one pair of a video.
     Run(video::AudioRun),
+    /// The codes of the frames of speech of an `assistant` audio part, 12 for each frame, the end frame last.
+    Codes(Vec<u32>),
 }
 
 impl MediaRows {
@@ -79,6 +87,7 @@ impl MediaRows {
             MediaRows::Image(rows) => rows.positions(),
             MediaRows::Audio(rows) => rows.positions(),
             MediaRows::Run(run) => run.count,
+            MediaRows::Codes(codes) => codes.len() / SPEECH_CODES,
         }
     }
 
@@ -87,6 +96,7 @@ impl MediaRows {
         match self {
             MediaRows::Image(_) => image::ROW,
             MediaRows::Audio(_) | MediaRows::Run(_) => audio::BINS,
+            MediaRows::Codes(_) => SPEECH_CODES,
         }
     }
 
@@ -96,6 +106,16 @@ impl MediaRows {
             MediaRows::Image(rows) => &rows.values,
             MediaRows::Audio(rows) => &rows.values,
             MediaRows::Run(run) => &run.clip.values,
+            // The codes of speech are not f32 values: their rows are `bytes`.
+            MediaRows::Codes(_) => &[],
+        }
+    }
+
+    /// The bytes of the rows for the engine, little-endian: f32 values, or the u32 codes of speech.
+    pub fn bytes(&self) -> Vec<u8> {
+        match self {
+            MediaRows::Codes(codes) => codes.iter().flat_map(|c| c.to_le_bytes()).collect(),
+            other => other.values().iter().flat_map(|v| v.to_le_bytes()).collect(),
         }
     }
 }

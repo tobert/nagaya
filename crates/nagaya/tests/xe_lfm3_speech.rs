@@ -242,6 +242,25 @@ fn omni_speaks_the_oracle_prompts_through_council_v2() {
             done["content"],
             record["frames_with_end"].as_u64().unwrap_or(0).saturating_sub(1)
         );
+        // The reply goes back as an assistant audio part, and the next turn reads its codes (spec 11.11, "Read it
+        // back"): a text reply after it runs, and it reads one object.
+        // A reply of speech alone has no text, so its part holds the audio only.
+        let mut parts = Vec::new();
+        if !done["content"].as_str().unwrap_or("").is_empty() {
+            parts.push(json!({"type": "text", "text": done["content"]}));
+        }
+        parts.push(json!({"type": "object", "id": id, "mime": "audio/wav"}));
+        let back = json!({"model": "lfm3-omni", "context": {"thinking": false, "messages": [
+            {"role": "system", "content": record["system"]},
+            {"role": "user", "content": record["text"]},
+            {"role": "assistant", "content": parts},
+            {"role": "user", "content": "Say it again."}]},
+            "max_tokens": 8, "sample": {"temperature": 0}});
+        let (status, bytes) = send(&council, "POST", "/council/v2/generations", Some(back));
+        let after = json_of(&bytes);
+        assert_eq!(status, StatusCode::OK, "{run}: the reply read back: {after}");
+        assert_eq!(after["usage"]["media"]["read"]["objects"], 1, "{run}: {after}");
+        println!("{run}: read back, then {:?}", after["content"]);
         if run == "mixed" {
             assert!(
                 !done["content"].as_str().unwrap().is_empty(),

@@ -258,7 +258,7 @@ audio { width: 100%; }
       </div>
       <div class="actions"><button class="plain" id="omni-clear">New conversation</button></div>
       <p class="note">Each file goes to the nagaya as an object, and the message names it. A spoken reply plays here,
-        and the next turn sends back its text: the family reads no assistant audio yet (spec 11.11).</p>
+        and the next turn sends it back as the assistant's audio (spec 11.11, "Read it back").</p>
     </div>
     <div class="card">
       <div id="omni-log"></div>
@@ -1160,9 +1160,8 @@ $("omni-go").onclick = async () => {
   for (const t of omni) {
     const parts = (t.text ? [{type: "text", text: t.text}] : [])
       .concat(t.files.map((f) => ({type: "object", id: f.id, mime: f.mime})));
-    // The family reads no assistant audio part yet (spec 11.11, "The choices of the media preprocessing"), so a spoken
-    // reply goes back as its text.
-    messages.push(t.role === "user" ? {role: "user", content: parts, snap: true} : {role: "assistant", content: t.text});
+    // A spoken reply goes back as its text and its audio, whose codes the service keeps (spec 11.11, "Read it back").
+    messages.push(t.role === "user" ? {role: "user", content: parts, snap: true} : {role: "assistant", content: parts});
   }
   const body = {model, max_tokens: +$("omni-max").value, sample: {temperature: +$("omni-temp").value},
                 context: {thinking: false, messages}};

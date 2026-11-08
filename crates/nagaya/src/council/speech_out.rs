@@ -759,7 +759,7 @@ impl Service {
         codes: Vec<u32>,
         held: &dyn Fn(&nagaya_store::ContentId) -> bool,
     ) {
-        let mut book = self.output_codes.lock().expect("the code lock is poisoned");
+        let mut book = self.output_codes.0.lock().expect("the code lock is poisoned");
         book.retain(|kept, _| held(kept));
         book.insert(id, codes);
     }
@@ -767,6 +767,7 @@ impl Service {
     /// The codes of an output that this service wrote, when it still holds them.
     pub fn output_codes(&self, id: &nagaya_store::ContentId) -> Option<Vec<u32>> {
         self.output_codes
+            .0
             .lock()
             .expect("the code lock is poisoned")
             .get(id)

@@ -541,12 +541,13 @@ class Page(unittest.TestCase):
         self.assertIn('/council/v2/objects/blake3:' + "a" * 64 + '"', out["log"])
         self.assertIn("blake3:" + "a" * 64, out["keep"])
         self.assertIn("blake3:" + "f" * 64, out["keep"])
-        # The next turn sends the spoken reply back as its text: the family reads no assistant audio part yet (spec
-        # 11.11). No output asks for text only.
+        # The next turn sends the spoken reply back as its text and its audio (spec 11.11, "Read it back"), and no
+        # output asks for text only.
         second = out["second"]
         self.assertNotIn("output", second)
         reply = second["context"]["messages"][2]
-        self.assertEqual(reply, {"role": "assistant", "content": "A <b>cat</b>."})
+        self.assertEqual(reply, {"role": "assistant", "content": [{"type": "text", "text": "A <b>cat</b>."},
+                                 {"type": "object", "id": "blake3:" + "a" * 64, "mime": "audio/wav"}]})
         self.assertEqual(second["context"]["messages"][3]["content"], [{"type": "text", "text": "And now?"}])
 
     def test_the_omni_tab_refuses_a_file_of_a_type_that_the_model_does_not_read(self):

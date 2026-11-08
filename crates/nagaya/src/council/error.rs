@@ -112,6 +112,7 @@ impl From<FamilyError> for ServiceError {
         match error {
             FamilyError::Client(invalid) => ServiceError::Invalid(invalid),
             FamilyError::Internal(message) => ServiceError::Internal(message),
+            FamilyError::NotHeld { param, message } => ServiceError::NotHeld { param, message },
         }
     }
 }

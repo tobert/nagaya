@@ -236,14 +236,19 @@ fn a_part_that_the_family_cannot_read_is_a_client_error_that_names_it() {
             assert!(message.contains(text), "{message}");
         }
     }
-    // An assistant audio part needs the codes of the speech output, which a later step keeps.
+    // An assistant audio part reads the codes of its output, and a clip that is no output of the service has none:
+    // a 404 that names the part (spec 11.11, "Read it back", Amy 2026-11-08).
     let spoken = context(json!({"thinking": false, "messages": [
         {"role": "user", "content": "Say hi."},
         {"role": "assistant", "content": [{"type": "object", "id": CLIP, "mime": "audio/wav"}]},
         {"role": "user", "content": "again"}]}));
-    let (p, message) = param(omni().render(&spoken, true).unwrap_err());
-    assert_eq!(p.as_deref(), Some("messages[1].content[0]"));
-    assert!(message.contains("assistant audio part"), "{message}");
+    match omni().render(&spoken, true).unwrap_err() {
+        FamilyError::NotHeld { param, message } => {
+            assert_eq!(param, "messages[1].content[0]");
+            assert!(message.contains("holds no codes"), "{message}");
+        }
+        other => panic!("a part with no codes: {other:?}"),
+    }
 }
 
 #[test]
@@ -635,4 +640,77 @@ fn a_video_part_renders_as_the_reference_and_gives_the_rows_of_each_pair_and_eac
             assert!(runs.is_empty(), "a video with no sound has no runs");
         }
     }
+}
+
+/// The codes of the outputs of a test service: one output, the TTS run of the oracle.
+struct Book(Vec<u32>);
+
+impl nagaya_council::family::OutputCodes for Book {
+    fn codes(&self, id: &str) -> Option<Vec<u32>> {
+        (id == SPOKEN).then(|| self.0.clone())
+    }
+}
+
+/// The id of the spoken output of the test.
+const SPOKEN: &str = "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+/// An assistant audio part reads the codes of its output (spec 11.11, "Read it back"): a position for each frame and
+/// the end frame, the ids of the reference, and a 404 that names the part when the service holds no codes.
+#[test]
+fn an_assistant_audio_part_reads_the_codes_of_its_output() {
+    use safetensors::SafeTensors;
+    if absent_omni() {
+        return;
+    }
+    let Some(path) = golden_path("audio_out.safetensors") else {
+        return;
+    };
+    let oracle = std::fs::read(path).unwrap();
+    let st = SafeTensors::deserialize(&oracle).unwrap();
+    let i64s = |name: &str| -> Vec<u32> {
+        st.tensor(name)
+            .unwrap()
+            .data()
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|b| i64::from_le_bytes(*b) as u32)
+            .collect()
+    };
+    let codes = i64s("codes");
+    let family = Lfm3Family::from_dir(&dir(OMNI_VARIABLE))
+        .unwrap()
+        .with_objects(Arc::new(objects()));
+    let c = context(json!({"thinking": false, "messages": [
+        {"role": "system", "content": "Perform TTS in American English using a female voice."},
+        {"role": "user", "content": "Say hello."},
+        {"role": "assistant", "content": [{"type": "text", "text": "Hello."},
+                                          {"type": "object", "id": SPOKEN, "mime": "audio/wav"}]},
+        {"role": "user", "content": "Say it again, slower."}]}));
+    // With no codes, the part is a 404 that names it.
+    match family.render(&c, true) {
+        Err(FamilyError::NotHeld { param, .. }) => assert_eq!(param, "messages[2].content[1]"),
+        other => panic!("a part with no codes: {other:?}"),
+    }
+    family.read_codes(Arc::new(Book(codes.clone())));
+    let rendering = family.render(&c, true).unwrap();
+    assert_eq!(rendering.tokens, i64s("ids"), "the ids of the reference");
+    let inputs = family.media_rows(&rendering).unwrap();
+    assert_eq!(inputs.len(), 1);
+    assert_eq!(words(&inputs[0].meta)[..2], [4, (codes.len() / 12 + 1) as u32]);
+    let mut want = codes.clone();
+    want.extend([2016u32; 12]);
+    let got: Vec<u32> = inputs[0]
+        .rows
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| u32::from_le_bytes(*b))
+        .collect();
+    assert_eq!(got, want, "the codes and the end frame");
+    assert!(
+        inputs[0].span.mime.starts_with("audio/wav;codes=blake3:"),
+        "{}",
+        inputs[0].span.mime
+    );
 }

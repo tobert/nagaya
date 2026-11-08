@@ -160,6 +160,8 @@ pub struct Lfm3Family {
     template_id: String,
     /// The reader of the objects of this machine. A family without one refuses each media part.
     objects: Option<Arc<dyn Objects>>,
+    /// The codes of the speech outputs of the service, for an `assistant` audio part (spec 11.11, "Read it back").
+    codes: std::sync::OnceLock<Arc<dyn nagaya_council::family::OutputCodes>>,
     /// The prepared videos of the last few video parts, by content id. A render, its rows and a read each need them,
     /// and a decode is slow.
     videos: std::sync::Mutex<Vec<(String, Arc<crate::media::video::Video>)>>,
@@ -307,6 +309,7 @@ impl Lfm3Family {
             template_id: String::new(),
             objects: None,
             videos: std::sync::Mutex::new(Vec::new()),
+            codes: std::sync::OnceLock::new(),
         };
         let council = council_hash(&test_set::renders(&family));
         family.template_id = template_id(&council, FAMILY, &hash16(files.template.as_bytes()));
@@ -572,6 +575,13 @@ impl Lfm3Family {
     /// The media type of a part in its recipe item (tag 9). A video part also names the versions of the decoder,
     /// because a new decoder can give other rows from the same bytes (spec 11.11, Decided 2026-11-08).
     pub(crate) fn recipe_mime(&self, part: &MediaPart) -> String {
+        // The speech of an assistant part enters the recipe as its codes do (spec 11.11, "Read it back").
+        if part.kind == MediaKind::AudioOut
+            && let Ok(codes) = self.output_codes(part)
+        {
+            let bytes: Vec<u8> = codes.iter().flat_map(|c| c.to_le_bytes()).collect();
+            return format!("{};codes={}", part.mime, gogi_proto::canon::content_id(&bytes));
+        }
         #[cfg(feature = "video")]
         if part.kind == MediaKind::Video {
             return format!("{};{}", part.mime, crate::media::decode::versions());
@@ -651,9 +661,43 @@ impl Lfm3Family {
         rows
     }
 
+    /// The codes of the speech of an `assistant` audio part, with the end frame: the kept codes of its output. A part
+    /// whose codes the service does not hold is a 404 that names it (spec 11.11, "Read it back").
+    fn output_codes(&self, part: &MediaPart) -> Result<Vec<u32>, FamilyError> {
+        let param = part_param(part);
+        let codes = self
+            .codes
+            .get()
+            .and_then(|book| book.codes(&part.id))
+            .ok_or_else(|| FamilyError::NotHeld {
+                param: param.clone(),
+                message: format!(
+                    "{param} names {}, and this server holds no codes of that output: it is not an output of this \
+                 served model, or the server dropped its codes. Send the reply's text instead.",
+                    part.id
+                ),
+            })?;
+        if !codes.len().is_multiple_of(crate::media::SPEECH_CODES) || codes.iter().any(|c| *c > crate::media::END_CODE)
+        {
+            return Err(FamilyError::internal(format!(
+                "the kept codes of {} are not frames of 12 codes below 2017",
+                part.id
+            )));
+        }
+        let mut codes = codes;
+        codes.extend([crate::media::END_CODE; crate::media::SPEECH_CODES]);
+        Ok(codes)
+    }
+
     /// The layout of a media part: one span of its count for an image or a clip, from its header, and the pieces of
     /// a video.
     pub(crate) fn layout(&self, part: &MediaPart) -> Result<Vec<media::Piece>, FamilyError> {
+        if part.kind == MediaKind::AudioOut {
+            return Ok(vec![media::Piece::Span {
+                token: self.placeholder_token(MediaKind::AudioOut),
+                count: self.output_codes(part)?.len() / crate::media::SPEECH_CODES,
+            }]);
+        }
         if part.kind == MediaKind::Video {
             let video = self.video(&part.id, &part_param(part))?;
             return self.video_pieces(&video);
@@ -669,6 +713,9 @@ impl Lfm3Family {
     /// The rows of each span of a media part, in order: one for an image or a clip, and one for each pair and each
     /// run of a video.
     fn part_rows(&self, part: &MediaPart) -> Result<Vec<crate::media::MediaRows>, FamilyError> {
+        if part.kind == MediaKind::AudioOut {
+            return Ok(vec![crate::media::MediaRows::Codes(self.output_codes(part)?)]);
+        }
         if part.kind == MediaKind::Video {
             let video = self.video(&part.id, &part_param(part))?;
             return Ok(self.video_rows(&video));
@@ -900,6 +947,11 @@ impl Family for Lfm3Family {
     fn media_rows(&self, rendering: &Rendering) -> Result<Vec<nagaya_council::family::MediaInput>, FamilyError> {
         self.inputs_of(&rendering.media)
     }
+
+    fn read_codes(&self, codes: Arc<dyn nagaya_council::family::OutputCodes>) {
+        // A service gives its book once, at its attach.
+        let _ = self.codes.set(codes);
+    }
 }
 
 /// The media types that Omni reads (spec 11.11, "The served LFM3 models"), and the video types of a build with the
@@ -924,6 +976,8 @@ pub fn media_record(first: usize, rows: &crate::media::MediaRows) -> Vec<u8> {
         crate::media::MediaRows::Audio(audio) => (2u32, [audio.frames, 0, 0, 0]),
         // A run of a clip: the frames of the whole clip, and the first encoder row of the run (spec 11.11).
         crate::media::MediaRows::Run(run) => (3u32, [run.clip.frames, run.start, 0, 0]),
+        // Speech: 12 codes for each frame (spec 11.11, "Read it back").
+        crate::media::MediaRows::Codes(_) => (4u32, [crate::media::SPEECH_CODES, 0, 0, 0]),
     };
     let word = |value: usize| u32::try_from(value).expect("a shape of a media part fits in 32 bits");
     let mut record = Vec::with_capacity(RECORD_BYTES);
@@ -948,6 +1002,23 @@ impl Lfm3Family {
         // The rows of each video, made once for all its spans.
         let mut made: std::collections::HashMap<&str, Vec<crate::media::MediaRows>> = std::collections::HashMap::new();
         for span in spans {
+            // The speech of an assistant part reads the kept codes of its output (`recipe_mime`).
+            if span.mime.starts_with("audio/wav;codes=") {
+                let part = MediaPart {
+                    message: 0,
+                    part: 0,
+                    kind: MediaKind::AudioOut,
+                    id: span.id.clone(),
+                    mime: "audio/wav".to_owned(),
+                };
+                let rows = crate::media::MediaRows::Codes(self.output_codes(&part)?);
+                out.push(nagaya_council::family::MediaInput {
+                    span: span.clone(),
+                    meta: media_record(span.first, &rows),
+                    rows: rows.bytes().into(),
+                });
+                continue;
+            }
             // The recipe media type of a video span starts with its own type (`recipe_mime`).
             if !span.mime.starts_with("video/") {
                 out.push(self.media_input(span)?);
@@ -969,7 +1040,7 @@ impl Lfm3Family {
                     rows.positions()
                 )));
             }
-            let values: Vec<u8> = rows.values().iter().flat_map(|v| v.to_le_bytes()).collect();
+            let values: Vec<u8> = rows.bytes();
             out.push(nagaya_council::family::MediaInput {
                 span: span.clone(),
                 meta: media_record(span.first, rows),

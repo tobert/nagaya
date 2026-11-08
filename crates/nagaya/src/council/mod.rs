@@ -321,7 +321,7 @@ pub struct Service {
     /// and 2 is a 404.
     objects: OnceLock<Arc<Mutex<nagaya_store::objects::ObjectStore>>>,
     /// The codes of each audio output that this service wrote, by content id (spec 11.11, "Codes").
-    output_codes: Mutex<std::collections::BTreeMap<ContentId, Vec<u32>>>,
+    output_codes: Arc<CodesBook>,
 }
 
 /// The root recipe of a context and its control list, after the checks (spec 11.12).
@@ -330,6 +330,17 @@ pub(crate) struct Steer {
     pub root: RecipeId,
     /// The list, with the claim of its vectors. `None` for a plain context.
     pub control: Option<JobControl>,
+}
+
+/// The codes of each audio output that a service wrote, by content id (spec 11.11, "Codes").
+#[derive(Default)]
+pub(crate) struct CodesBook(pub(crate) Mutex<std::collections::BTreeMap<ContentId, Vec<u32>>>);
+
+impl nagaya_council::family::OutputCodes for CodesBook {
+    fn codes(&self, id: &str) -> Option<Vec<u32>> {
+        let id = ContentId::from_hex(id.strip_prefix("blake3:")?).ok()?;
+        self.0.lock().expect("the code lock is poisoned").get(&id).cloned()
+    }
 }
 
 /// The objects that a request reads, for `usage.media.read` (gogi "Generations"): each distinct object once.
@@ -506,8 +517,13 @@ impl Service {
             pins: files.pins,
             config,
             objects: OnceLock::new(),
-            output_codes: Mutex::new(std::collections::BTreeMap::new()),
+            output_codes: Arc::new(CodesBook::default()),
         };
+        // A family that speaks reads the codes of this service's outputs for an assistant audio part (spec 11.11).
+        if service.config.speech.is_some() {
+            let codes: Arc<dyn nagaya_council::family::OutputCodes> = Arc::clone(&service.output_codes) as _;
+            service.family.read_codes(codes);
+        }
         service.settle_pins()?;
         Ok(service)
     }

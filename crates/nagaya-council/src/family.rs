@@ -34,6 +34,9 @@ pub enum FamilyError {
     /// The library or its caller has a defect. The route answers with a 500 `internal`, and the process stops
     /// (spec 8.5, 11.5).
     Internal(String),
+    /// The server does not hold what a part names, such as the codes of an output (spec 11.11). The route answers
+    /// with a 404 that names `param`.
+    NotHeld { param: String, message: String },
 }
 
 impl FamilyError {
@@ -63,6 +66,7 @@ impl fmt::Display for FamilyError {
         match self {
             FamilyError::Client(invalid) => write!(f, "{}", invalid.message),
             FamilyError::Internal(message) => write!(f, "internal error in a family library: {message}"),
+            FamilyError::NotHeld { message, .. } => write!(f, "{message}"),
         }
     }
 }
@@ -73,6 +77,13 @@ impl From<Invalid> for FamilyError {
     fn from(invalid: Invalid) -> Self {
         FamilyError::Client(invalid)
     }
+}
+
+/// The codes of the speech outputs that a service keeps, by the content id of each output (spec 11.11, "Read it
+/// back"). A family that speaks reads them for an `assistant` audio part.
+pub trait OutputCodes: Send + Sync {
+    /// The codes of the output `id`, 12 for each frame and no end frame, or `None` when the service holds none.
+    fn codes(&self, id: &str) -> Option<Vec<u32>>;
 }
 
 /// A boundary in a rendering: the end of a message that the client marked, where a snapshot may be kept.
@@ -379,6 +390,10 @@ pub trait Family: Send + Sync {
     /// Plan a decision read of one context, or of no context. A queue schema that does not match the asked
     /// questions is [`FamilyError::Client`].
     fn decision_read(&self, input: &DecisionInput<'_>) -> Result<Box<dyn ReadPlan>, FamilyError>;
+
+    /// Read the codes of the outputs of this service for an `assistant` audio part (spec 11.11, "Read it back"). A
+    /// family that does not speak ignores them.
+    fn read_codes(&self, _codes: std::sync::Arc<dyn OutputCodes>) {}
 
     /// Plan a decision read whose case holds `case_media`, the objects that the read takes after the case, in order
     /// (spec 11.11, "Media in a decision"). A family with no media refuses any with a 400 that names it.
