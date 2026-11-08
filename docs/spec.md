@@ -4462,6 +4462,39 @@ replace the rule above that a WAV must be 16 kHz mono, once step 10 builds them.
   16 bits skips it, so its rows do not change.
 - Live input through PipeWire, from a microphone or a camera, is a later design.
 
+**The video of a request.** **Proposed** by Claude Opus 5.5, 2026-11-08, for milestone 24 step 10. Reason: the note
+above leaves these choices open. Each follows the checkpoint's own processors (`video_processing_lfm3_vl.py`,
+`processing_lfm3_omni.py`), so that the oracle can check it.
+
+- **A reading of the note above.** The processor caps a frame at 768 video tokens only with `cap_pixels_per_frame`,
+  and the checkpoint sets it false. So the bound is a pixel budget: all the frames together hold from 4,096 to
+  25,165,824 pixels.
+- **The decoder version.** The note above puts the ffmpeg versions in the identity. Today the build facts are in the
+  identity digest (12.1), so an update of ffmpeg would make each held context fill again, text contexts too. This
+  note proposes a narrower rule. The media type in the recipe item of a video part (tag 9) names the versions of
+  libavformat, libavcodec, libswscale and libswresample. Thus an update changes only the recipes of video parts. Amy
+  decides.
+- **Sampling.** The frame count is the floor of the frames of the stream divided by its rate and multiplied by 2. It
+  is then at least 4, at most 384, and at most the frames of the stream. The indices are evenly spaced from the first
+  frame to the last, rounded half to even.
+- **Pairs.** Two frames are one patch in time. An odd count repeats the last frame. A stream of fewer than 2 frames is
+  a 400 that names the part.
+- **The size.** Every frame of a video resizes to one size, by the rule of the image (above) with a factor of 32 and
+  the pixel budget. The arithmetic of the resize is the arithmetic of an image.
+- **The text.** The video is one pair of vision markers. Inside, each pair of frames writes its time, as
+  `<t seconds>` with one decimal, then its video tokens in their own vision markers. The time is the mean of the
+  indices of its two frames, divided by the stream's rate, rounded to 6 decimals.
+- **The tower.** Each pair of frames goes through the vision tower as an image of one frame in time. Thus each pair
+  is a span of the kind of an image, at the positions of its video tokens. The engine needs no new kind for frames.
+- **The sound.** The sound track resamples to 16 kHz mono, and its mel rows go through the audio encoder once. Its
+  encoder rows are split at the time of the first frame of each pair, as the reference splits them. Each part follows
+  the video tokens of its pair. This needs a new span kind in the engine: a run of the rows of one clip.
+- **The decode gate.** The frames come from ffmpeg in the family, and from torchcodec in the reference. Both use
+  ffmpeg's decoder, but the color conversion can differ. So the gate of the decoded frames is a bound on the bytes
+  that differ, as for a JPEG. Every stage after the decode has a gate of bits or of the tolerances of 11.11.
+- **Types.** `media.inputs` lists `video/mp4` and `video/webm` in a build with the feature. A video with no video
+  stream is a 400 that names the part. A video with no sound track gives frames only.
+
 **The recipe of a media part.** Proposed by Claude Opus 5.5, 2026-11-06. Reason: the rows of a part are a function
 of the engine identity and the bytes of the object. The object's content id names the bytes.
 
