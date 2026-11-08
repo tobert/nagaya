@@ -635,6 +635,109 @@ def run_audio(model, processor, out, facts, media_entries):
     log(f"audio: {len(samples)} samples, {frames} mel frames, {positions} positions")
 
 
+def synthetic_video(path, seconds, rate, size, sound):
+    """A video of ffmpeg's test pattern in H.264, with a 440 Hz tone in AAC at 44.1 kHz when `sound`. The bytes depend
+    on the ffmpeg build, so the file is kept beside the oracle and its hash is in the metadata."""
+    import subprocess
+
+    command = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+               f"testsrc2=size={size[1]}x{size[0]}:rate={rate}:duration={seconds}"]
+    if sound:
+        command += ["-f", "lavfi", "-i", f"sine=frequency=440:sample_rate=44100:duration={seconds}"]
+    command += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-threads", "1"]
+    command += ["-c:a", "aac", "-shortest"] if sound else ["-an"]
+    subprocess.run(command + [str(path)], check=True)
+
+
+def video_patchify(frames):
+    """Pairs of frames [2k, 3, h, w] in [0, 1] as the processor's patches: [k * h/16 * w/16, 1536] in merge-block
+    order, each patch channel, time, row and column (video_processing_lfm3_vl.py, patchify)."""
+    n, c, h, w = frames.shape
+    gt, gh, gw = n // 2, h // 16, w // 16
+    x = frames.view(1, gt, 2, c, gh // 2, 2, 16, gw // 2, 2, 16)
+    x = x.permute(0, 1, 4, 7, 5, 8, 3, 2, 6, 9)
+    return x.reshape(gt * gh * gw, c * 2 * 16 * 16)
+
+
+def run_video(model, processor, out, facts):
+    """The video gate of Omni (spec 11.11, "The video of a request"): two synthetic videos, one with sound. Its top
+    logits go to lfm3-omni.video.json, so a run of this stage alone keeps lfm3-omni.media.json."""
+    from torchcodec.decoders import AudioDecoder, VideoDecoder
+
+    tensors = {}
+    record = {}
+    media_entries = []
+    video_token, audio_token = model.config.video_token_id, model.config.audio_token_id
+    vp = processor.video_processor
+    for name, seconds, rate, size, sound in (("av", 2.5, 10, (120, 160), True), ("v", 3.0, 12, (240, 320), False)):
+        path = Path(out) / f"video_{name}.mp4"
+        synthetic_video(path, seconds, rate, size, sound)
+        conv = [{"role": "user", "content": [{"type": "video", "path": str(path)},
+                                             {"type": "text", "text": "Describe the video."}]}]
+        inputs = processor.apply_chat_template(conv, add_generation_prompt=True, tokenize=True, return_dict=True,
+                                               return_tensors="pt", load_audio_from_video=sound,
+                                               processor_kwargs={"use_audio_in_video": sound})
+        ids = inputs["input_ids"][0]
+        pixel_values, grid = inputs["pixel_values_videos"], inputs["video_grid_thw"]
+        gt, gh, gw = (int(v) for v in grid[0])
+        decoder = VideoDecoder(str(path))
+        total, fps = decoder.metadata.num_frames, round(float(decoder.metadata.average_fps), 6)
+        count = min(max(int(total / fps * vp.fps), vp.min_frames), vp.max_frames, total)
+        indices = np.linspace(0, total - 1, count).round().astype(int)
+        check(-(-count // 2) == gt, f"video {name}: {count} frames give {gt} pairs")
+        decoded = decoder.get_frames_at([int(i) for i in indices]).data  # [n, 3, H, W] u8
+        frames = decoded if count % 2 == 0 else torch.cat([decoded, decoded[-1:]])
+        resized = torch.stack([resize_like_processor(f.permute(1, 2, 0).contiguous(), gh * 16, gw * 16)
+                               for f in frames])
+        # The processor fuses the rescale by 1/255 into the mean and the std of 0.5, as for an image (patchify).
+        scaled = (resized.float() - 127.5) / 127.5
+        close(video_patchify(scaled), pixel_values, 0.0, f"video {name}: frames, u8 resize, scale, patches")
+        check(int((ids == video_token).sum()) == gt * gh * gw // 4, f"video {name}: video tokens")
+        with torch.no_grad():
+            rows = model.model.get_video_features(pixel_values, grid)
+            rows = torch.cat(list(rows)) if isinstance(rows, (list, tuple)) else rows
+            output = model(**inputs, use_cache=False, logits_to_keep=1)
+        # Each pair is an image of one frame in time: the tower of a pair alone gives its rows.
+        per = gh * gw // 4
+        for k in range(gt):
+            one = pixel_values[k * gh * gw:(k + 1) * gh * gw]
+            with torch.no_grad():
+                alone = model.model.get_image_features(one, torch.tensor([[1, gh, gw]]))
+            alone = torch.cat(list(alone)) if isinstance(alone, (list, tuple)) else alone
+            close(alone, rows[k * per:(k + 1) * per], 1e-5, f"video {name}: pair {k} is an image")
+        tensors[f"{name}.ids"] = ids.to(torch.int64)
+        tensors[f"{name}.indices"] = torch.from_numpy(indices.astype(np.int64))
+        tensors[f"{name}.decoded_rgb"] = decoded.permute(0, 2, 3, 1).contiguous()
+        tensors[f"{name}.resized_rgb"] = resized.permute(0, 2, 3, 1).contiguous()
+        tensors[f"{name}.pixel_values"] = pixel_values.float()
+        tensors[f"{name}.grid_thw"] = grid.to(torch.int64)
+        tensors[f"{name}.rows"] = rows.float()
+        entry = {"seconds": seconds, "rate": rate, "size": list(size), "sound": sound, "stream_frames": total,
+                 "fps": fps, "frames": count, "grid_thw": [gt, gh, gw], "mp4_sha256": sha256(path)}
+        if sound:
+            features, mask = inputs["input_features"], inputs["feature_attention_mask"]
+            samples = AudioDecoder(str(path), sample_rate=16000, num_channels=1).get_all_samples().data[0]
+            check(int(mask.sum()) == processor.feature_extractor.num_frames(len(samples)), f"video {name}: mel")
+            with torch.no_grad():
+                audio_rows = model.model.get_audio_features(features, mask)
+            audio_rows = torch.cat(list(audio_rows)) if isinstance(audio_rows, (list, tuple)) else audio_rows
+            check(int((ids == audio_token).sum()) == audio_rows.shape[0], f"video {name}: sound tokens")
+            tensors[f"{name}.samples"] = samples.float()
+            tensors[f"{name}.mel"] = features[0].float()
+            tensors[f"{name}.audio_rows"] = audio_rows.float()
+            entry["audio_positions"] = int(audio_rows.shape[0])
+        media_entries.append(top_entry(f"video_{name}", "synthetic H.264 video of this tool, with a question",
+                                       processor.tokenizer.decode(ids), ids.tolist(), output.logits[0, -1]))
+        record[name] = entry
+        log(f"video {name}: {total} frames at {fps} fps -> {count} frames, grid {gt}x{gh}x{gw}, {len(ids)} ids")
+    meta = {"videos": record, "versions": versions()}
+    save(tensors, Path(out) / "video.safetensors", meta)
+    document = {"format": 1, "model": "lfm3-omni", "vocab": model.config.text_config.vocab_size,
+                "versions": versions(), "prompts": media_entries}
+    (Path(out) / "lfm3-omni.video.json").write_text(json.dumps(document, indent=1, ensure_ascii=False) + "\n")
+    facts["video"] = record
+
+
 def teacher_forced(model, ids, codes):
     """One forward over a whole run, with the codes of each audio placeholder: the hidden state of each position."""
     with torch.no_grad():
@@ -861,7 +964,7 @@ def main():
             run_project(model.model, model.lm_head, tokenizer, args.out, facts)
         del model
 
-    if stages & {"text", "vision", "audio", "speech", "control-omni"}:
+    if stages & {"text", "vision", "audio", "speech", "control-omni", "video"}:
         log("load LFM3-Omni-2B")
         model = AutoModelForMultimodalLM.from_pretrained(
             args.omni, dtype=torch.float32, attn_implementation="eager", trust_remote_code=True
@@ -878,6 +981,8 @@ def main():
             run_vision(model, processor, args.out, facts, media_entries)
         if "audio" in stages:
             run_audio(model, processor, args.out, facts, media_entries)
+        if "video" in stages:
+            run_video(model, processor, args.out, facts)
         if media_entries:
             document = {"format": 1, "model": "lfm3-omni", "vocab": model.config.text_config.vocab_size,
                         "versions": versions(), "prompts": media_entries}

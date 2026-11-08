@@ -83,6 +83,12 @@
 #   <op>.decode_top_ids [8, 64] i64, <op>.decode_top [8, 64]   the top-64 logits of each decode step
 # lfm3-omni.control.safetensors (--stages control-omni, not in the default): the same gate for LFM3-Omni-2B, with the
 #   same prompts and strengths, through Omni's language model and its tokenizer. Its vector acts on the text passes.
+# video.safetensors, video_av.mp4, video_v.mp4, lfm3-omni.video.json (--stages video, not in the default): the video
+#   gate of Omni (spec 11.11, "The video of a request"). av is 2.5 s at 10 fps of 160 by 120 with a 440 Hz tone, v
+#   is 3 s at 12 fps of 320 by 240 with no sound. The mp4 bytes depend on the ffmpeg build; the hash is in the metadata.
+#   For <n> in av, v: <n>.ids [P], <n>.indices [n] i64 (the sampled frames), <n>.decoded_rgb [n, H, W, 3] u8
+#   (torchcodec), <n>.resized_rgb [2k, h, w, 3] u8, <n>.pixel_values [k*h/16*w/16, 1536], <n>.grid_thw [1, 3],
+#   <n>.rows [k*h*w/1024, 2048]. av also: samples [S] (16 kHz mono), mel [128, T], audio_rows [A, 2048].
 # lfm3.project.safetensors (--stages project, not in the default): the project gate of LFM3-1.7B (docs/lab.md). It
 #   reads lfm3.control.safetensors, so run the control stage first. For each layer l in 0, 12 and 23, u is the weight
 #   of the final norm times vector[l], with no division by its root mean square, and the scores are the head of u.
