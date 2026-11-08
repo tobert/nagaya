@@ -22,7 +22,8 @@ IDENTITY = {"models": [
     {"model": "gemma-4-26b-a4b", "engine": "nagaya:84828966646e6ce1", "status": "ready",
      "capabilities": ["generate", "thinking"]},
     # As on b70host, identity gives an LFM3 model the hash of its engine, not the name of the engine in the profile.
-    {"model": "lfm3-omni", "engine": "nagaya:f3f9adb00b28ace0", "status": "ready", "capabilities": ["generate"],
+    {"model": "lfm3-omni", "engine": "nagaya:f3f9adb00b28ace0", "status": "ready",
+     "capabilities": ["generate", "control_vectors"],
      "media": {"inputs": ["image/png", "image/jpeg", "audio/wav"], "outputs": ["audio/wav"], "text_replies": True}},
     {"model": "lfm3", "engine": "nagaya:e974350551901f8c", "status": "ready", "capabilities": ["generate", "thinking", "control_vectors"],
      "limits": {"control_vector_contexts": 64}},
@@ -595,6 +596,20 @@ class Page(unittest.TestCase):
         self.assertEqual(out["log"].count("<audio controls"), 3)
         # A sentence longer than a chunk splits at its words.
         self.assertEqual([len(c.split()) for c in out["chunks"]], [2, 40, 40, 10, 1])
+
+    def test_an_omni_turn_takes_a_vector_of_its_model_and_not_one_of_another_model(self):
+        omni_vector = "blake3:" + "9" * 64
+        out = self.run_page(self.OMNI + f"""
+            vectors = [{{name: "omni refusal", id: "{omni_vector}", model: "lfm3-omni", host}},
+                       {{name: "text refusal", id: "{LAB_VECTOR}", model: "lfm3", host}}];
+            fillVectors();
+            out.options = document.getElementById("omni-vector").innerHTML;
+            set("omni-vector", "{omni_vector}"); set("omni-op", "ablate"); set("omni-strength", "0.5");
+            await document.getElementById("omni-go").onclick();
+            out.body = sent()[0];""")
+        self.assertIn("omni refusal", out["options"])
+        self.assertNotIn("text refusal", out["options"])
+        self.assertEqual(out["body"]["context"]["control"], [{"vector": omni_vector, "op": "ablate", "strength": 0.5}])
 
     def test_the_lab_lists_only_the_local_models_of_the_lfm3_engine_kind(self):
         out = self.run_page('out.models = document.getElementById("lab-model").innerHTML;')
