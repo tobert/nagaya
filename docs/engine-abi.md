@@ -1393,6 +1393,7 @@ limits().control: {tables, layers, width}?   tables vectors fit on the device at
 control_write(index, bytes) -> ok | why      writes one vector into table entry index; never allocates
 segment.control: [{index, op: add | ablate | clamp, strength: f32}]   in order, for every layer the vector holds
 taps: residual                               the residual after each layer at each logit row (spec 13.1)
+taps: lens                                   the final norm and the head of each layer's row (spec 13.1)
 ```
 
 - **The table.** `open` allocates the table as a mandatory term with lifetime `engine`. Thus `pass` and

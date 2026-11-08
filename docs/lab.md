@@ -148,7 +148,7 @@ The trace object is canonical safetensors (D10). For `S` steps, `L` layers, `V` 
 | `tokens` | `[S]` | the id of each step |
 | `entropy` | `[S]` | the entropy of the sampled distribution, in nats |
 | `top_ids`, `top_logprobs` | `[S, K]` | the top entries of each step |
-| `end_logprob` | `[S]` | the log probability of each end token of the family |
+| `end_logprob` | `[S, E]` | the log probability of each of the `E` end tokens of the model |
 | `norms` | `[S, L]` | the norm of the residual after each layer |
 | `along` | `[S, L, V]` | `h · v̂` for each vector, after the control items of that layer |
 | `lens_ids`, `lens_logprobs` | `[S, L, K]` | the top entries of the lens at each layer |
@@ -159,6 +159,68 @@ other tensors are a few KiB for each step. The prompt pass gives the row of its 
 
 For a loop, the trace shows which number collapses first. The entropy can fall, the end token can lose its mass, or
 `along` can grow at one layer. Compare a plain and a steered trace of the same context.
+
+### The rules of `trace`
+
+**Proposed** (Claude Opus 5.5, 2026-11-07, milestone 26 step 2). The route follows these rules. Reason: the shape above
+leaves these choices open. Each rule is the simplest choice that lets a client compare a plain and a steered reply.
+
+- **Members.** The request is a generation request (gogi "Generations") and the member `trace`, which is required. The
+  members of `trace` are `layers`, `vectors`, `top_k`, `lens` and `rows`, and each one is optional. Another member of
+  `trace` is a 400 that names it, such as `trace.layer`.
+- **Models.** The route serves a model of the engine kind `mk-lfm3-bmg` whose engine declares the tap `residual`:
+  `lfm3`, and the text passes of `lfm3-omni`. Another served model is a 400 that names `model`. A model of a peer is a
+  400 too: the route does not forward.
+- **The engine.** A trace is a job of the engine, so a model that is not `ready` is a 503 `model_unavailable`.
+- **No stream.** `stream: true` is a 400 that names `stream`. The object is complete only at the end of the reply.
+- **The response.** It is the generation response, with each member and value as the same generation with no trace
+  gives. One member follows: `trace`, the id of the object. No keep holds the object, so the client keeps it.
+- **Steps.** Step `i` is the logit row that gave the token `i` of the reply. Thus step 0 is the last prompt position,
+  and `S` is `usage.completion`. The tokens that the job feeds after the reply to hold a head are not steps.
+- **The distribution.** `entropy`, `top_logprobs` and `end_logprob` come from the softmax of the logit row over the
+  whole vocabulary, in `f64`. That is before `temperature`, `top_k`, `top_p` and `min_p`. It is the distribution of
+  `p` and `h` in the token events. Reason: a loop is a fact of the model, and the request names the sampler.
+- **`layers`.** `"all"` or a list of layers below the layer count, in the order of the object. A repeat or an empty
+  list is a 400 that names `trace.layers`. With no `layers`, the trace has every layer.
+- **`top_k`.** The default is 8, and the limit is 64. A value of 0 or past 64 is a 400 that names `trace.top_k`. An
+  entry with a larger value comes first, and a tie goes to the smaller id.
+- **`vectors`.** Each id names a control vector object. The route checks it as `project` checks it, and a fault is a
+  404 or a 400 that names `trace.vectors[i]`. A repeat is a 400. `along` is absent when the list is empty.
+- **`along`.** `v̂` is the vector of the layer over its norm, summed in `f64`. `h · v̂` sums in `f64` and gives `f32`. A
+  layer that the vector does not hold, or that is all zeros, has no direction, so its `along` is NaN.
+- **`norms`.** The Euclidean norm of the row, summed in `f64`.
+- **The end tokens.** They are the ids of `eos_token_id` in `generation_config.json`, as in `project`. The tensor
+  `end_ids` `[E]` gives them in that order.
+- **`lens`.** `"logit"` gives the logit lens of each layer. With no `lens`, the object has no lens tensors. Another
+  value is a 400 that names `trace.lens`. `"jlens"` comes in step 5.
+- **`rows`.** `true` puts the residual rows into the object. The default is `false`.
+
+**The object.** The tensors are in bytewise order of their names, and the header follows D10 rules 3 and 5. The ids
+are `U32`, and the numbers are `F32`. The tensor `layers` `[L]` gives the layer of each place on the axis `L`.
+`__metadata__` names the `model`, the `weight_hash`, the `lens`, and the `vectors` in order, with a comma between two
+ids. The same request with the same seed gives the same bytes.
+
+**The logit lens of a row.** This answers open question 3. The lens of a residual row is the final RMSNorm of the
+model, with its division and its epsilon, then the head. A row has a scale, so the lens divides by it, as the model
+does before the head. The log softmax sums over the whole vocabulary in `f64`.
+
+**Where the lens runs.** The card computes it with the tap `lens` (spec 13.1). After the head of a pass, one matmul
+of `L` rows takes the final norm of each tapped row through the head. The host copies the `L` logit rows back. It
+takes the log softmax and the top entries on at most 8 threads of the CPUs of the job's thread.
+
+- The card always computes every layer. `layers` chooses what the object holds, not the work on the card.
+- The CPU product of `project` takes 9.7 ms for each layer. Thus a CPU lens of 24 layers and 400 steps takes 93 s.
+  The matmul on the card reads the table once for all `L` rows.
+- The lens of the last layer reads the same row as the head. But its matmul of `L` rows uses another reduction than
+  the head's matmul of one row (engine-abi D11). Thus its values can differ from the logits by `f32` rounding.
+
+**The budget.** The job keeps the numbers in host memory, outside the ledger, until the reply ends. The route takes
+the size of the object for `max_tokens` steps before the job. When it is past the largest object of the store, or
+past 1 GiB, the route gives a 413. It names `trace.rows` when `rows` is `true`, and `max_tokens` when not. Reason:
+the rows of `LFM3-1.7B` are 192 KiB for each step.
+
+**The bits.** The taps do not change the generation. The tap `residual` copies each row, and the lens runs after the
+head, into its own buffers. Thus a trace gives the tokens and the logit bits of the same generation with no trace.
 
 ## The J-Lens in the nagaya
 
@@ -215,4 +277,5 @@ what is needed.
 1. Does `trace` stream its numbers with the tokens, or only write the object at the end?
 2. Does the J-Lens fit run on gfx1151host's GPU with the reference, or on the CPU of b70host?
 3. Does the logit lens of a residual row use the final norm with its division? gmk's lens does, with the final norm.
+   Proposed: yes ("The logit lens of a row").
 4. Who keeps a trace object: the client with a keep, or the nagaya for a fixed time?
