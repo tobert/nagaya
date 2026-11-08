@@ -595,6 +595,23 @@ impl Lfm3Family {
         })
     }
 
+    /// The bytes of the object `id` that the request member `param` names, such as `case_media[0]`. An absent reader
+    /// and an absent object are client errors that name it.
+    fn object_bytes(&self, id: &str, param: &str) -> Result<Vec<u8>, FamilyError> {
+        let Some(objects) = &self.objects else {
+            return Err(FamilyError::client_param(
+                param,
+                "this server gives the LFM3 family no objects, so it cannot read a media part. Send text only.",
+            ));
+        };
+        objects.bytes(id).ok_or_else(|| {
+            FamilyError::client_param(
+                param,
+                format!("the object {id} is not on this server. Upload it, then send the request again."),
+            )
+        })
+    }
+
     /// The media kind of a placeholder token, or none.
     pub(crate) fn placeholder_kind(&self, token: u32) -> Option<MediaKind> {
         self.placeholders.iter().find(|(_, t)| *t == token).map(|(k, _)| *k)
@@ -664,7 +681,21 @@ impl Family for Lfm3Family {
     }
 
     fn decision_read(&self, input: &DecisionInput<'_>) -> Result<Box<dyn ReadPlan>, FamilyError> {
-        read::decision_read(self, input)
+        read::decision_read(self, input, &[])
+    }
+
+    fn decision_read_with_media(
+        &self,
+        input: &DecisionInput<'_>,
+        case_media: &[gogi_proto::objects::ObjectRef],
+    ) -> Result<Box<dyn ReadPlan>, FamilyError> {
+        if self.kind == Kind::Text && !case_media.is_empty() {
+            return Err(FamilyError::client_param(
+                "case_media[0]",
+                "the served model lfm3 reads text only. Send the decision with case_media to lfm3-omni.",
+            ));
+        }
+        read::decision_read(self, input, case_media)
     }
 
     fn raw_read(&self, letters: &[String], suffixes: &[String]) -> Result<RawRead, FamilyError> {

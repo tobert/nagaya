@@ -10,13 +10,16 @@ use std::sync::Arc;
 use gogi_proto::canon::content_id;
 use gogi_proto::context::Context;
 use gogi_proto::decision::{check_queue_schema, queue_call, queue_tool};
+use gogi_proto::message::{Content, Message, Part, Role};
+use gogi_proto::objects::ObjectRef;
 use gogi_proto::spec::{QuestionKind, Spec};
 use nagaya_council::family::{
-    Advance, Asked, Continues, ControlHit, DecisionInput, FamilyError, RawRead, ReadDone, ReadPlan, ReadStep, Rendering,
+    Advance, Asked, Continues, ControlHit, DecisionInput, FamilyError, MediaInput, RawRead, ReadDone, ReadPlan,
+    ReadStep, Rendering,
 };
 use serde_json::Value;
 
-use super::messages::{messages_json, tools_json, turn_json};
+use super::messages::{MediaPart, media_kind, message_json, messages_json, tools_json, turn_json};
 use super::{Kind, Lfm3Family, refusal};
 use crate::tokenizer::{Tokenizer, check_text};
 use nagaya_jinja::Json;
@@ -269,11 +272,25 @@ fn check_asked(family: &Lfm3Family, spec: &Spec, asked: &[Asked]) -> Result<(), 
     Ok(())
 }
 
-pub(crate) fn decision_read(family: &Lfm3Family, input: &DecisionInput<'_>) -> Result<Box<dyn ReadPlan>, FamilyError> {
+pub(crate) fn decision_read(
+    family: &Lfm3Family,
+    input: &DecisionInput<'_>,
+    case_media: &[ObjectRef],
+) -> Result<Box<dyn ReadPlan>, FamilyError> {
     check_asked(family, input.spec, input.asked)?;
     match input.context {
-        Some((c, rendering)) if queue_call(c).is_some() => queue_plan(family, input, c, rendering),
-        _ => plain_plan(family, input),
+        Some((c, rendering)) if queue_call(c).is_some() => {
+            // spec 11.11, "Media in a decision": the case of a queue read is the result of a call, with no media.
+            if !case_media.is_empty() {
+                return Err(FamilyError::client_param(
+                    "case_media[0]",
+                    "nothing ran: the case of a queue read is the result of its call, which holds no media. Send the \
+                     object in a message of the context.",
+                ));
+            }
+            queue_plan(family, input, c, rendering)
+        }
+        _ => plain_plan(family, input, case_media),
     }
 }
 
@@ -285,15 +302,19 @@ fn context_tokens<'a>(input: &DecisionInput<'a>) -> &'a [u32] {
     }
 }
 
-/// The messages and tools of the context of a read. A read with no context has none. A read of a context with media
-/// waits for the media preprocessing, as a render does (spec 11.11).
-fn context_messages(family: &Lfm3Family, input: &DecisionInput<'_>) -> Result<(Vec<Json>, Vec<Json>), FamilyError> {
+/// The messages and tools of the context of a read. A read with no context has none. A queue read holds no media
+/// (spec 11.11, "Media in a decision"), so `media` false refuses a media part of the context.
+fn context_messages(
+    family: &Lfm3Family,
+    input: &DecisionInput<'_>,
+    media: bool,
+) -> Result<(Vec<Json>, Vec<Json>), FamilyError> {
     match input.context {
         Some((c, _)) => {
-            if let Some(part) = family.media_parts(c)?.first() {
+            if let (false, Some(part)) = (media, family.media_parts(c)?.first()) {
                 return Err(FamilyError::client_param(
                     format!("messages[{}].content[{}]", part.message, part.part),
-                    "this build cannot read media yet: a media part needs the media preprocessing. Send text only.",
+                    "nothing ran: a queue read holds no media. Send the decision with a plain context.",
                 ));
             }
             // The context rendered with its own thinking, and the thinking changes only the generation prompt.
@@ -314,9 +335,15 @@ struct PlainPlan {
     steps: Vec<(Vec<u32>, Vec<u32>)>,
     cursor: Cursor,
     control_text: Vec<ControlHit>,
+    /// The rows of each media span of the prefix.
+    media: Vec<MediaInput>,
 }
 
-fn plain_plan(family: &Lfm3Family, input: &DecisionInput<'_>) -> Result<Box<dyn ReadPlan>, FamilyError> {
+fn plain_plan(
+    family: &Lfm3Family,
+    input: &DecisionInput<'_>,
+    case_media: &[ObjectRef],
+) -> Result<Box<dyn ReadPlan>, FamilyError> {
     let spec = spec_layer(input.spec)?;
     // The label goes in the case turn too, as in mkviolet.
     let case_turn = format!("{}:\n{}", input.spec.input_label, input.case);
@@ -324,20 +351,32 @@ fn plain_plan(family: &Lfm3Family, input: &DecisionInput<'_>) -> Result<Box<dyn 
     control_text.extend(family.hits("spec", &input.spec.input_label));
     control_text.extend(family.hits("case", input.case));
 
-    let (mut messages, tools) = context_messages(family, input)?;
+    let (mut messages, tools) = context_messages(family, input, true)?;
     messages.push(turn_json("user", &spec.text));
-    messages.push(turn_json("user", &case_turn));
+    // spec 11.11, "Media in a decision": the case media follow the case text in the case turn, in order.
+    let case_message = Message {
+        content: Some(Content::Parts(
+            std::iter::once(Part::Text {
+                text: case_turn.clone(),
+            })
+            .chain(case_media.iter().map(|o| Part::Object {
+                id: o.id.clone(),
+                mime: o.mime.clone(),
+            }))
+            .collect(),
+        )),
+        ..Message::user("")
+    };
+    let case_index = messages.len();
+    messages.push(match case_media.is_empty() {
+        true => turn_json("user", &case_turn),
+        false => message_json(&case_message, case_index, true)?,
+    });
     // A read closes the thinking, so the case turn ends with the prompt of the template for thinking off.
     let rendered = family.run(&messages, &tools, false, true)?;
     let escaped = format!("{}{ANSWER}", rendered.escaped);
     let base = family.encode(&escaped)?;
-    let context = context_tokens(input);
-    if !base.starts_with(context) {
-        return Err(FamilyError::internal(
-            "the read does not extend the rendering of its context. The rendering is not the context's.",
-        ));
-    }
-    let prefix = base[context.len()..].to_vec();
+    let (prefix, media) = expand_read(family, input, &base, case_index, case_media)?;
 
     let mut steps = Vec::new();
     for a in input.asked {
@@ -356,16 +395,128 @@ fn plain_plan(family: &Lfm3Family, input: &DecisionInput<'_>) -> Result<Box<dyn 
     Ok(Box::new(PlainPlan {
         prefix,
         // gogi: the hash covers the text that the read was conditioned on. mkviolet hashes the label of the head.
-        rendered_hash: hash_of_escaped(family.tokenizer(), &escaped)?,
+        // With media, it covers the id of each object of the read too (spec 11.11, "Media in a decision").
+        rendered_hash: hash_of_read(family, input, &escaped, case_media)?,
         steps,
         cursor: Cursor::new(),
         control_text,
+        media,
     }))
+}
+
+/// The prefix of a plain read in the token space of the engine, and the rows of each span of the prefix. `base` holds
+/// one placeholder token for each media part of the context and of the case. Each becomes the count of positions of
+/// its object, as in a rendering (spec 11.11). A read with no media keeps its tokens.
+fn expand_read(
+    family: &Lfm3Family,
+    input: &DecisionInput<'_>,
+    base: &[u32],
+    case_index: usize,
+    case_media: &[ObjectRef],
+) -> Result<(Vec<u32>, Vec<MediaInput>), FamilyError> {
+    let context = context_tokens(input);
+    let context_parts = match input.context {
+        Some((c, _)) => family.media_parts(c)?,
+        None => Vec::new(),
+    };
+    if context_parts.is_empty() && case_media.is_empty() {
+        if !base.starts_with(context) {
+            return Err(FamilyError::internal(
+                "the read does not extend the rendering of its context. The rendering is not the context's.",
+            ));
+        }
+        return Ok((base[context.len()..].to_vec(), Vec::new()));
+    }
+    let mut parts = context_parts;
+    let mut counts = Vec::with_capacity(parts.len() + case_media.len());
+    for part in &parts {
+        let bytes = family.part_bytes(part)?;
+        counts.push(crate::media::positions(&bytes, &part.mime).map_err(|e| super::media_error(part, e))?);
+    }
+    for (i, object) in case_media.iter().enumerate() {
+        let param = format!("case_media[{i}]");
+        let kind = media_kind(true, Role::User, case_index, i + 1, &object.mime).map_err(|e| rename(e, &param))?;
+        let bytes = family.object_bytes(&object.id, &param)?;
+        let count = crate::media::positions(&bytes, &object.mime)
+            .map_err(|e| FamilyError::client_param(&param, format!("nothing ran: the object {} {e}.", object.id)))?;
+        parts.push(MediaPart {
+            message: case_index,
+            part: i + 1,
+            kind,
+            id: object.id.clone(),
+            mime: object.mime.clone(),
+        });
+        counts.push(count);
+    }
+    let placeholders = Rendering {
+        tokens: base.to_vec(),
+        end: base.len(),
+        boundaries: Vec::new(),
+        control_text: Vec::new(),
+        media: Vec::new(),
+    };
+    let expanded = super::media::expand(family, placeholders, &parts, &counts)?;
+    let tokens = expanded.rendering.tokens;
+    if !tokens.starts_with(context) {
+        return Err(FamilyError::internal(
+            "the read does not extend the rendering of its context. The rendering is not the context's.",
+        ));
+    }
+    let mut media = Vec::new();
+    for (span, part) in expanded.spans.iter().zip(&parts) {
+        if span.first < context.len() {
+            continue;
+        }
+        let span = nagaya_council::family::MediaSpan {
+            first: span.first,
+            count: span.count,
+            mime: part.mime.clone(),
+            id: part.id.clone(),
+        };
+        media.push(family.media_input(&span)?);
+    }
+    Ok((tokens[context.len()..].to_vec(), media))
+}
+
+/// The client error `error` with the param `param`.
+fn rename(error: FamilyError, param: &str) -> FamilyError {
+    match error {
+        FamilyError::Client(invalid) => FamilyError::client_param(param, invalid.message),
+        other => other,
+    }
+}
+
+/// The `rendered_hash` of a plain read: the hash of its text, and with media, of its text and the id of each object
+/// of the read, in order (spec 11.11, "Media in a decision").
+fn hash_of_read(
+    family: &Lfm3Family,
+    input: &DecisionInput<'_>,
+    escaped: &str,
+    case_media: &[ObjectRef],
+) -> Result<String, FamilyError> {
+    let mut ids: Vec<String> = match input.context {
+        Some((c, _)) => family.media_parts(c)?.into_iter().map(|p| p.id).collect(),
+        None => Vec::new(),
+    };
+    ids.extend(case_media.iter().map(|o| o.id.clone()));
+    if ids.is_empty() {
+        return hash_of_escaped(family.tokenizer(), escaped);
+    }
+    let mut text = family.tokenizer().unescape(escaped).map_err(refusal)?;
+    for id in ids {
+        text.push('\n');
+        text.push_str(&id);
+    }
+    Ok(content_id(text.as_bytes()))
 }
 
 impl ReadPlan for PlainPlan {
     fn prefix(&self) -> &[u32] {
         &self.prefix
+    }
+
+    fn media(&self) -> Vec<MediaInput> {
+        self.media.clone()
     }
 
     fn control_text(&self) -> &[ControlHit] {
@@ -453,7 +604,7 @@ fn queue_plan(
     });
 
     // The template matches a result to its call by order, so the call's id is not rendered.
-    let (mut messages, tools) = context_messages(family, input)?;
+    let (mut messages, tools) = context_messages(family, input, false)?;
     messages.push(turn_json("tool", input.case));
     let rendered = family.run(&messages, &tools, false, true)?;
     let mut escaped = rendered.escaped;

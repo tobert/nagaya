@@ -22,6 +22,8 @@ const STEREO: &str = "blake3:333333333333333333333333333333333333333333333333333
 const SMALL: &str = "blake3:4444444444444444444444444444444444444444444444444444444444444444";
 const MID: &str = "blake3:5555555555555555555555555555555555555555555555555555555555555555";
 const CHIRP: &str = "blake3:6666666666666666666666666666666666666666666666666666666666666666";
+/// The bytes of PHOTO under another id.
+const TWIN: &str = "blake3:8888888888888888888888888888888888888888888888888888888888888888";
 const ABSENT: &str = "blake3:7777777777777777777777777777777777777777777777777777777777777777";
 
 /// The objects of a test: a map of ids to bytes.
@@ -58,6 +60,7 @@ fn wav(channels: u16, samples: usize) -> Vec<u8> {
 fn objects() -> Map {
     let mut map = HashMap::new();
     map.insert(PHOTO.to_string(), std::fs::read(fixture_path("photo.jpg")).unwrap());
+    map.insert(TWIN.to_string(), std::fs::read(fixture_path("photo.jpg")).unwrap());
     map.insert(CLIP.to_string(), wav(1, 24_000));
     map.insert(STEREO.to_string(), wav(2, 1_000));
     for (id, file) in [(SMALL, "image_small.png"), (MID, "image_mid.png"), (CHIRP, "chirp.wav")] {
@@ -298,7 +301,7 @@ fn the_media_rows_of_a_rendering_are_the_record_and_the_rows_of_each_span() {
         assert_eq!(&input.rows[..], &rows[..]);
     }
     // A rendering with no media has no inputs.
-    let text = context(json!({"messages": [{"role": "user", "content": "hello"}]}));
+    let text = context(json!({"thinking": false, "messages": [{"role": "user", "content": "hello"}]}));
     assert!(
         omni()
             .media_rows(&omni().render(&text, true).unwrap())
@@ -309,4 +312,191 @@ fn the_media_rows_of_a_rendering_are_the_record_and_the_rows_of_each_span() {
     let mut wrong = rendering.clone();
     wrong.media[0].count = 71;
     assert!(matches!(omni().media_rows(&wrong), Err(FamilyError::Internal(_))));
+}
+
+fn spec() -> gogi_proto::spec::Spec {
+    gogi_proto::spec::parse_spec(
+        &json!({"name": "g", "instructions": "i", "input_label": "x", "questions": [
+            {"id": "verdict", "type": "choice", "instructions": "What. Pick one.", "criteria": [
+                {"option": "allow", "means": "a"}, {"option": "no", "means": "c"}]}]}),
+        &gogi_proto::spec::SpecRules::default(),
+    )
+    .unwrap()
+}
+
+fn object(id: &str, mime: &str) -> gogi_proto::objects::ObjectRef {
+    serde_json::from_value(json!({"id": id, "mime": mime})).unwrap()
+}
+
+/// A plain read of Omni takes the case media after the case text, in order, and gives the rows of each at its
+/// position in the whole read (spec 11.11, "Media in a decision").
+#[test]
+fn a_plain_read_puts_the_case_media_after_the_case_and_gives_their_rows() {
+    use nagaya_council::family::{Advance, Asked, DecisionInput};
+    if absent_omni() {
+        return;
+    }
+    let spec = spec();
+    let asked = [Asked {
+        question: 0,
+        options: vec![0, 1],
+    }];
+    let c = context(json!({"thinking": false, "messages": [{"role": "user", "content": "hi"}]}));
+    let rendering = omni().render(&c, false).unwrap();
+    let input = DecisionInput {
+        context: Some((&c, &rendering)),
+        spec: &spec,
+        case: "a case",
+        asked: &asked,
+    };
+    let plain = omni().decision_read(&input).unwrap();
+    let media = [object(PHOTO, "image/jpeg"), object(CLIP, "audio/wav")];
+    let mut plan = omni().decision_read_with_media(&input, &media).unwrap();
+    let inputs = plan.media();
+    assert_eq!(inputs.len(), 2);
+    let end = rendering.end;
+    let (photo, clip) = (&inputs[0].span, &inputs[1].span);
+    assert_eq!(
+        (photo.id.as_str(), photo.mime.as_str(), photo.count),
+        (PHOTO, "image/jpeg", 70)
+    );
+    assert_eq!(
+        (clip.id.as_str(), clip.mime.as_str(), clip.count),
+        (CLIP, "audio/wav", 19)
+    );
+    // The spans are in the prefix, after the case text, the photo first.
+    let prefix = plan.prefix().to_vec();
+    let at = |p: usize| prefix[p - end];
+    assert!(photo.first > end && photo.first + photo.count <= clip.first);
+    assert!(clip.first + clip.count <= end + prefix.len());
+    let image = omni().tokenize_special("<|image|>").unwrap()[0];
+    let audio = omni().tokenize_special("<|audio|>").unwrap()[0];
+    assert!(photo.positions().all(|p| at(p) == image));
+    assert!(clip.positions().all(|p| at(p) == audio));
+    // The template opens an image with its marker, so the case text comes just before the marker.
+    let before = omni().detokenize(&prefix[..photo.first - end]).unwrap();
+    assert!(before.ends_with("x:\na case<|vision_start|>"), "{before:?}");
+    // The rows are the rows that a rendering of the same objects gives.
+    let prepared = omni()
+        .prepare(
+            &user(json!([{"type": "object", "id": PHOTO, "mime": "image/jpeg"}])),
+            true,
+        )
+        .unwrap();
+    let rows: Vec<u8> = prepared.inputs[0]
+        .rows
+        .values()
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    assert_eq!(&inputs[0].rows[..], &rows[..]);
+    // The steps of the questions follow the prefix, and the hash covers the media.
+    let Advance::Step(step) = plan.advance(None).unwrap() else {
+        panic!("a step first");
+    };
+    assert!(!step.feed.is_empty());
+    let Advance::Done(done) = plan.advance(Some(&[-1.0, -2.0])).unwrap() else {
+        panic!("one question");
+    };
+    let mut plain = plain;
+    plain.advance(None).unwrap();
+    let Advance::Done(plain_done) = plain.advance(Some(&[-1.0, -2.0])).unwrap() else {
+        panic!("one question");
+    };
+    assert_ne!(done.rendered_hash, plain_done.rendered_hash);
+    // The same pixels under another id give the same tokens and another hash: the hash covers the ids.
+    let mut twin = omni()
+        .decision_read_with_media(&input, &[object(TWIN, "image/jpeg"), object(CLIP, "audio/wav")])
+        .unwrap();
+    assert_eq!(twin.prefix(), &prefix[..]);
+    twin.advance(None).unwrap();
+    let Advance::Done(twin_done) = twin.advance(Some(&[-1.0, -2.0])).unwrap() else {
+        panic!("one question");
+    };
+    assert_ne!(twin_done.rendered_hash, done.rendered_hash);
+    let again = omni().decision_read_with_media(&input, &media).unwrap();
+    assert_eq!(again.prefix(), &prefix[..]);
+    // With no case media, the read is the plain read.
+    let none = omni().decision_read_with_media(&input, &[]).unwrap();
+    assert_eq!(none.prefix(), omni().decision_read(&input).unwrap().prefix());
+    assert!(none.media().is_empty());
+}
+
+/// A decision context may hold media: the read goes on from its rendering, and the build reads its rows.
+#[test]
+fn a_plain_read_of_a_context_with_media_goes_on_from_its_rendering() {
+    use nagaya_council::family::{Asked, DecisionInput};
+    if absent_omni() {
+        return;
+    }
+    let spec = spec();
+    let asked = [Asked {
+        question: 0,
+        options: vec![0, 1],
+    }];
+    let c = user(json!([{"type": "object", "id": PHOTO, "mime": "image/jpeg"}, {"type": "text", "text": "this"}]));
+    let rendering = omni().render(&c, false).unwrap();
+    let input = DecisionInput {
+        context: Some((&c, &rendering)),
+        spec: &spec,
+        case: "a case",
+        asked: &asked,
+    };
+    let plan = omni().decision_read(&input).unwrap();
+    assert!(plan.media().is_empty(), "the context's media are the build's");
+    let text = context(json!({"thinking": false, "messages": [{"role": "user", "content": "this"}]}));
+    let text_rendering = omni().render(&text, false).unwrap();
+    let text_plan = omni()
+        .decision_read(&DecisionInput {
+            context: Some((&text, &text_rendering)),
+            ..input
+        })
+        .unwrap();
+    // The read after the context is the same text in both: the spec turn and the case turn.
+    let tail = |p: &[u32]| omni().detokenize(p).unwrap();
+    assert_eq!(tail(plan.prefix()), tail(text_plan.prefix()));
+}
+
+/// A queue read holds no media: its case is the result of a call (spec 11.11, "Media in a decision").
+#[test]
+fn a_queue_read_refuses_case_media_with_a_400_that_names_it() {
+    use nagaya_council::family::{Asked, DecisionInput};
+    if absent_omni() {
+        return;
+    }
+    let spec = spec();
+    let asked = [Asked {
+        question: 0,
+        options: vec![0, 1],
+    }];
+    let tool = json!({"name": "next", "input_schema": {"type": "object", "properties": {"answers": {"type": "object",
+        "properties": {"verdict": {"type": "string", "enum": ["A", "B"]}}}}}});
+    let c = context(
+        json!({"thinking": false, "tools": [tool], "queue": "next", "messages": [
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "tool_calls": [{"id": "c0", "name": "next", "input": {}}]}]}),
+    );
+    // Without media, the read is a queue read.
+    assert!(
+        omni()
+            .decision_read(&DecisionInput {
+                context: Some((&c, &omni().render(&c, false).unwrap())),
+                spec: &spec,
+                case: "a result",
+                asked: &asked
+            })
+            .is_ok()
+    );
+    let rendering = omni().render(&c, false).unwrap();
+    let input = DecisionInput {
+        context: Some((&c, &rendering)),
+        spec: &spec,
+        case: "a result",
+        asked: &asked,
+    };
+    let error = omni()
+        .decision_read_with_media(&input, &[object(PHOTO, "image/jpeg")])
+        .err()
+        .expect("a queue read with case media is refused");
+    assert_eq!(param(error).0.as_deref(), Some("case_media[0]"));
 }

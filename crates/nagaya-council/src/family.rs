@@ -258,6 +258,12 @@ pub trait ReadPlan: Send {
     /// the step before, in the order of its `letters`. A call after `Done` is an internal error. So is a first call
     /// with a `last`, a later call without one, and a `last` of the wrong length.
     fn advance(&mut self, last: Option<&[f64]>) -> Result<Advance, FamilyError>;
+
+    /// The input of the engine for each media span of the prefix, at its position in the whole read (spec 11.11,
+    /// "Media in a decision"). The media of the context are the build's. A read with no media gives none.
+    fn media(&self) -> Vec<MediaInput> {
+        Vec::new()
+    }
 }
 
 /// The input of a raw read, before its contexts.
@@ -373,6 +379,22 @@ pub trait Family: Send + Sync {
     /// Plan a decision read of one context, or of no context. A queue schema that does not match the asked
     /// questions is [`FamilyError::Client`].
     fn decision_read(&self, input: &DecisionInput<'_>) -> Result<Box<dyn ReadPlan>, FamilyError>;
+
+    /// Plan a decision read whose case holds `case_media`, the objects that the read takes after the case, in order
+    /// (spec 11.11, "Media in a decision"). A family with no media refuses any with a 400 that names it.
+    fn decision_read_with_media(
+        &self,
+        input: &DecisionInput<'_>,
+        case_media: &[gogi_proto::objects::ObjectRef],
+    ) -> Result<Box<dyn ReadPlan>, FamilyError> {
+        if !case_media.is_empty() {
+            return Err(FamilyError::client_param(
+                "case_media[0]",
+                "nothing ran: this served model reads text only, so its decisions hold no case_media; send none",
+            ));
+        }
+        self.decision_read(input)
+    }
 
     /// Tokenize the letters and the suffixes of a raw read.
     fn raw_read(&self, letters: &[String], suffixes: &[String]) -> Result<RawRead, FamilyError>;

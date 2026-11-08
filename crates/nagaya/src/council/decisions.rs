@@ -10,7 +10,7 @@ use gogi_proto::{Invalid, math};
 use nagaya_abi::Kind;
 use nagaya_council::build::boundary_recipes;
 use nagaya_council::decision::{answers, asked, case_text};
-use nagaya_council::family::{Advance, Continues, DecisionInput, ReadPlan, ReadStep};
+use nagaya_council::family::{Advance, Continues, DecisionInput, MediaInput, ReadPlan, ReadStep};
 use nagaya_council::read::log_probs;
 
 use super::build::{ContextBody, Got, Then, Want};
@@ -175,18 +175,6 @@ impl Service {
                 }),
         );
         let read = self.check_objects(&objects)?;
-        // The read plan of a family renders the case as text, so no family reads case media yet.
-        if !request.case_media.is_empty() {
-            return Err(Invalid::param(
-                "case_media[0]",
-                format!(
-                    "nothing ran: {} reads case_media in a later build; send the object as a part of a context \
-                     message",
-                    self.config.model
-                ),
-            )
-            .into());
-        }
         if request.think.is_some_and(|think| think.tokens > 0) {
             return Err(Invalid::param(
                 "think",
@@ -257,12 +245,16 @@ impl Service {
                     ),
                 });
             }
-            let plan = self.family.decision_read(&DecisionInput {
-                context: context.zip(rendering.as_ref()),
-                spec: &spec,
-                case: &case,
-                asked: &asked,
-            })?;
+            // The case media follow the case in the read (spec 11.11, "Media in a decision").
+            let plan = self.family.decision_read_with_media(
+                &DecisionInput {
+                    context: context.zip(rendering.as_ref()),
+                    spec: &spec,
+                    case: &case,
+                    asked: &asked,
+                },
+                &request.case_media,
+            )?;
             if control.is_none() {
                 control = Some(signals(plan.control_text()));
             }
@@ -280,6 +272,8 @@ impl Service {
                 ),
                 _ => (Arc::from(Vec::new()), Vec::new(), Vec::new(), Arc::from(Vec::new())),
             };
+            // The rows of the read's own spans follow the rows of the context, in the order of the positions.
+            let media: Arc<[MediaInput]> = media.iter().cloned().chain(plan.media()).collect();
             let then = DecisionThen::new(plan, asked.len());
             let shared = Arc::clone(&self.shared);
             let job = |tx| {
