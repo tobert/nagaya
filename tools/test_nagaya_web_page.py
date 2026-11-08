@@ -22,7 +22,8 @@ IDENTITY = {"models": [
     {"model": "gemma-4-26b-a4b", "engine": "nagaya:84828966646e6ce1", "status": "ready",
      "capabilities": ["generate", "thinking"]},
     # As on b70host, identity gives an LFM3 model the hash of its engine, not the name of the engine in the profile.
-    {"model": "lfm3-omni", "engine": "nagaya:f3f9adb00b28ace0", "status": "ready", "capabilities": ["generate"]},
+    {"model": "lfm3-omni", "engine": "nagaya:f3f9adb00b28ace0", "status": "ready", "capabilities": ["generate"],
+     "media": {"inputs": ["image/png", "image/jpeg", "audio/wav"], "outputs": ["audio/wav"], "text_replies": True}},
     {"model": "lfm3", "engine": "nagaya:e974350551901f8c", "status": "ready", "capabilities": ["generate", "thinking", "control_vectors"],
      "limits": {"control_vector_contexts": 64}},
     {"model": "sdxl-0", "engine": "sdxl-0", "status": "unloaded", "capabilities": ["generate"],
@@ -488,6 +489,14 @@ class Page(unittest.TestCase):
             out.html = document.getElementById("lab-lens").innerHTML;""")
         self.assertEqual(out["body"]["through"], "jlens")
         self.assertIn("J-Lens", out["html"])
+
+    def test_a_model_that_speaks_beside_its_text_is_a_chat_model_and_not_a_speech_model(self):
+        out = self.run_page("""
+            out.chat = document.getElementById("chat-model").innerHTML;
+            out.speech = document.getElementById("sp-model").innerHTML;""")
+        self.assertIn('value="lfm3-omni"', out["chat"])
+        self.assertNotIn("lfm3-omni", out["speech"])
+        self.assertIn('value="voice"', out["speech"])
 
     def test_the_lab_lists_only_the_local_models_of_the_lfm3_engine_kind(self):
         out = self.run_page('out.models = document.getElementById("lab-model").innerHTML;')

@@ -541,7 +541,8 @@ const kindOf = (m) => {
   if (m.capabilities?.includes("embed")) return "embed";
   const out = m.media?.outputs || [];
   if (out.some((o) => o.startsWith("image/"))) return "image";
-  if (out.some((o) => o.startsWith("audio/"))) return "speech";
+  // A model whose replies hold text, such as Omni, speaks beside its text: it is a chat model (spec 11.11).
+  if (out.some((o) => o.startsWith("audio/")) && m.media?.text_replies === false) return "speech";
   return m.media?.text_replies === false ? "other" : "text";
 };
 /** The profile engine of a served model: the one that the cluster route names, the one that its identity names, or
