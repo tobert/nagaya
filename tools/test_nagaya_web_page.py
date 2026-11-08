@@ -152,8 +152,12 @@ function fetch(path, o) {
                    ["done", {outputs: [{index: 0, id: "blake3:" + "d".repeat(64), mime: "image/png"}], seed: 7}]]);
   }
   if (path === "/council/v2/generations") {
-    return reply(200, {outputs: [{index: 0, id: "blake3:" + "a".repeat(64), mime: "audio/wav"}],
-                       usage: {media: {written: {objects: 1, bytes: 80684, audio_ms: 1680}}}});
+    const b = JSON.parse(o.body);
+    // A spoken reply of Omni holds its text and one WAV; a text reply holds no output.
+    const outputs = b.model === "lfm3-omni" && !b.output ? []
+      : [{index: 0, id: "blake3:" + "a".repeat(64), mime: "audio/wav"}];
+    return reply(200, {content: b.model === "lfm3-omni" ? "A <b>cat</b>." : "", finish: "end_turn", outputs,
+                       usage: {prompt: 90, completion: 5, media: {written: {objects: 1, bytes: 80684, audio_ms: 1680}}}});
   }
   return reply(200, {});
 }
@@ -497,6 +501,53 @@ class Page(unittest.TestCase):
         self.assertIn('value="lfm3-omni"', out["chat"])
         self.assertNotIn("lfm3-omni", out["speech"])
         self.assertIn('value="voice"', out["speech"])
+
+    def test_the_omni_tab_lists_the_models_that_read_media_and_reply_with_text(self):
+        out = self.run_page('out.models = document.getElementById("omni-model").innerHTML;')
+        self.assertEqual(out["models"], '<option value="lfm3-omni">lfm3-omni</option>')
+
+    # The values of the Omni form, as a person sets them, with one image attached.
+    OMNI = """
+        set("omni-model", "lfm3-omni"); set("omni-system", "Respond with interleaved text and audio.");
+        set("omni-max", "64"); set("omni-temp", "0.3"); set("omni-output", "interleaved");
+        omniFiles = [{id: "blake3:" + "f".repeat(64), mime: "image/png", name: "cat.png", host}];
+        set("omni-input", "What is this?");
+        const sent = () => calls.filter((c) => c[1] === "/council/v2/generations").map((c) => JSON.parse(c[2]));"""
+
+    def test_an_omni_turn_sends_the_text_and_the_objects_and_plays_the_spoken_reply(self):
+        out = self.run_page(self.OMNI + """
+            await document.getElementById("omni-go").onclick();
+            out.body = sent()[0]; out.log = document.getElementById("omni-log").innerHTML;
+            out.err = document.getElementById("omni-error").textContent;
+            out.keep = JSON.parse(calls.filter((c) => c[1] === "/council/v2/keeps/nagaya-web").pop()[2]).objects;
+            set("omni-input", "And now?"); set("omni-output", "");
+            await document.getElementById("omni-go").onclick();
+            out.second = sent()[1];""")
+        self.assertEqual(out["err"], "")
+        body = out["body"]
+        self.assertEqual(body["model"], "lfm3-omni")
+        self.assertEqual(body["output"], {"mime": "audio/wav", "options": {"mode": "interleaved"}})
+        self.assertEqual(body["max_tokens"], 64)
+        self.assertEqual(body["sample"], {"temperature": 0.3})
+        self.assertFalse(body["context"]["thinking"])
+        system, user = body["context"]["messages"]
+        self.assertEqual(system, {"role": "system", "content": "Respond with interleaved text and audio.", "snap": True})
+        self.assertEqual(user["content"], [{"type": "text", "text": "What is this?"},
+                                           {"type": "object", "id": "blake3:" + "f" * 64, "mime": "image/png"}])
+        # The reply's text shows escaped, and its audio plays from the object.
+        self.assertIn("A &lt;b&gt;cat&lt;/b&gt;.", out["log"])
+        self.assertNotIn("<b>cat", out["log"])
+        self.assertIn("<audio controls", out["log"])
+        self.assertIn('/council/v2/objects/blake3:' + "a" * 64 + '"', out["log"])
+        self.assertIn("blake3:" + "a" * 64, out["keep"])
+        self.assertIn("blake3:" + "f" * 64, out["keep"])
+        # The next turn sends the spoken reply back as its text and its audio, and no output asks for text only.
+        second = out["second"]
+        self.assertNotIn("output", second)
+        reply = second["context"]["messages"][2]
+        self.assertEqual(reply, {"role": "assistant", "content": [{"type": "text", "text": "A <b>cat</b>."},
+                                 {"type": "object", "id": "blake3:" + "a" * 64, "mime": "audio/wav"}]})
+        self.assertEqual(second["context"]["messages"][3]["content"], [{"type": "text", "text": "And now?"}])
 
     def test_the_lab_lists_only_the_local_models_of_the_lfm3_engine_kind(self):
         out = self.run_page('out.models = document.getElementById("lab-model").innerHTML;')

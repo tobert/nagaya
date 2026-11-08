@@ -115,6 +115,7 @@ audio { width: 100%; }
   <nav>
     <button data-tab="images" class="on">Images</button>
     <button data-tab="chat">Chat</button>
+    <button data-tab="omni">Omni</button>
     <button data-tab="steer">Steering</button>
     <button data-tab="lab">Lab</button>
     <button data-tab="speech">Speech</button>
@@ -237,6 +238,40 @@ audio { width: 100%; }
           <button class="plain" id="chat-stop" hidden>Stop</button>
         </div>
       </div>
+    </div>
+  </div>
+</section>
+
+<section id="omni">
+  <div class="cols">
+    <div class="card">
+      <label>Model <span class="note">— a model that reads images, audio or video</span></label>
+      <div class="row"><select id="omni-model"></select><span id="omni-model-state" class="note"></span></div>
+      <label>System message <span class="note">— the voice and the language, in the words of the model card</span></label>
+      <textarea id="omni-system" rows="3" placeholder="Respond with interleaved text and audio."></textarea>
+      <label>Reply</label>
+      <select id="omni-output"><option value="">text</option><option value="interleaved">text and speech</option>
+        <option value="speech">speech</option></select>
+      <div class="row">
+        <div><label>Max tokens</label><input id="omni-max" type="number" min="1" value="512"></div>
+        <div><label>Temperature</label><input id="omni-temp" type="number" min="0" step="0.1" value="0.3"></div>
+      </div>
+      <div class="actions"><button class="plain" id="omni-clear">New conversation</button></div>
+      <p class="note">Each file goes to the nagaya as an object, and the message names it. A spoken reply plays here,
+        and the next turn sends it back as the assistant's audio (spec 11.11).</p>
+    </div>
+    <div class="card">
+      <div id="omni-log"></div>
+      <div id="omni-error" class="err"></div>
+      <div id="omni-files" class="note"></div>
+      <div class="actions" style="align-items:stretch">
+        <textarea id="omni-input" rows="3" style="flex:1" placeholder="Message"></textarea>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <label class="plain" style="text-align:center">Attach<input id="omni-file" type="file" multiple hidden></label>
+          <button class="go" id="omni-go">Send</button>
+        </div>
+      </div>
+      <span id="omni-status" class="note"></span>
     </div>
   </div>
 </section>
@@ -581,7 +616,7 @@ async function refresh() {
     `<span class="chip"><b>${esc(m.model)}</b> <span class="${esc(m.status)}">${esc(m.status)}</span></span>`).join("");
   fillSelect("img-model", "image"); drawImageForm(); fillSelect("chat-model", "text"); fillSelect("sp-model", "speech");
   fillSelect("em-model", "embed"); fillEmbed(); fillSelect("cv-model", "steer");
-  fillSelect("lab-model", "lab"); fillVectors();
+  fillSelect("lab-model", "lab"); fillVectors(); fillSelect("omni-model", "omni"); omniAccept();
   $("eng-rows").innerHTML = engines.map((e) => {
     const m = modelOf(e.name), st = m?.status || "absent";
     const loaded = st === "ready" || st === "loading";
@@ -599,7 +634,8 @@ async function refresh() {
 
 function fillSelect(id, kind) {
   const sel = $(id), keep = sel.value;
-  const list = models.filter((m) => kind === "steer" ? steers(m.model) : kind === "lab" ? labs(m) : kindOf(m) === kind);
+  const list = models.filter((m) => kind === "steer" ? steers(m.model) : kind === "lab" ? labs(m)
+    : kind === "omni" ? omnis(m) : kindOf(m) === kind);
   const html = list.map((m) => `<option value="${esc(m.model)}">${esc(m.model)}</option>`).join("");
   if (sel.dataset.html !== html) {
     sel.innerHTML = html; sel.dataset.html = html;
@@ -611,7 +647,7 @@ function fillSelect(id, kind) {
   state.innerHTML = m ? `<span class="${esc(m.status)}">${esc(m.status)}</span>` +
     (m.status === "ready" ? "" : ` <button class="plain" data-load="${esc(engineOf(m) || "")}">Load</button>`) : "none served";
 }
-for (const id of ["img-model", "chat-model", "sp-model", "em-model", "cv-model", "lab-model"]) {
+for (const id of ["img-model", "chat-model", "sp-model", "em-model", "cv-model", "lab-model", "omni-model"]) {
   $(id).onchange = () => { try { localStorage.setItem(`nagaya-${id}`, $(id).value); } catch (e) {} refresh(); };
 }
 
@@ -787,7 +823,8 @@ $("img-loras").addEventListener("click", (ev) => {
 
 /** Put a keep on the LoRAs, the gallery, the control vectors and the recent traces, so the store does not evict them. A keep lasts 30 days (spec 6.15). */
 async function keepAll() {
-  const objects = [...new Set(loras.concat(gallery, vectors, traces).filter((x) => here(x.host)).map((x) => x.id))]
+  const objects = [...new Set(loras.concat(gallery, vectors, traces, omniKept).filter((x) => here(x.host))
+    .map((x) => x.id))]
     .filter((id) => /^blake3:[0-9a-f]{64}$/.test(id));
   try {
     await call("PUT", "/council/v2/keeps/nagaya-web", {objects, ttl_s: 30 * 86400});
@@ -1077,6 +1114,72 @@ $("chat-go").onclick = async () => {
   }
   drawChat();
   $("chat-go").disabled = false; $("chat-stop").hidden = true;
+};
+
+// ---- omni
+/** A model of the Omni tab: it reads media and its replies hold text (spec 11.11). */
+const omnis = (m) => (m.media?.inputs?.length ?? 0) > 0 && m.media?.text_replies !== false;
+/** The conversation of the tab, the files of the next message, and the objects that the keep holds. */
+let omni = [], omniFiles = [], omniKept = [];
+function omniAccept() {
+  const m = models.find((x) => x.model === $("omni-model").value);
+  $("omni-file").accept = (m?.media?.inputs || []).join(",");
+}
+function drawOmni() {
+  $("omni-log").innerHTML = omni.map((t) => `<div class="msg ${t.role}"><div>${esc(t.text)}</div>` +
+    t.files.map((f) => f.mime === "audio/wav"
+      ? `<audio controls src="${objectUrl(f.id, f.host)}"></audio>`
+      : `<div class="note">${esc(f.name || f.mime)}</div>`).join("") +
+    (t.stat ? `<div class="note">${esc(t.stat)}</div>` : "") + "</div>").join("");
+  $("omni-files").textContent = omniFiles.map((f) => f.name).join(", ");
+}
+$("omni-file").onchange = async (ev) => {
+  const files = [...ev.target.files], status = (t) => { $("omni-status").textContent = t; };
+  ev.target.value = "";
+  try {
+    for (const file of files) {
+      const id = await putObject(file, file.type, status);
+      omniFiles.push({id, mime: file.type, name: file.name, host});
+    }
+    status(""); drawOmni();
+  } catch (e) { $("omni-error").textContent = e.message; status(""); }
+};
+$("omni-clear").onclick = () => { omni = []; omniFiles = []; drawOmni(); };
+$("omni-go").onclick = async () => {
+  const text = $("omni-input").value.trim(), model = $("omni-model").value;
+  if ((!text && !omniFiles.length) || !model) return;
+  $("omni-error").textContent = "";
+  const files = omniFiles.filter((f) => here(f.host));
+  omni.push({role: "user", text, files}); omniFiles = []; $("omni-input").value = ""; drawOmni();
+  const messages = [];
+  if ($("omni-system").value.trim()) messages.push({role: "system", content: $("omni-system").value.trim(), snap: true});
+  for (const t of omni) {
+    const parts = (t.text ? [{type: "text", text: t.text}] : [])
+      .concat(t.files.map((f) => ({type: "object", id: f.id, mime: f.mime})));
+    messages.push(t.role === "user" ? {role: "user", content: parts, snap: true} : {role: "assistant", content: parts});
+  }
+  const body = {model, max_tokens: +$("omni-max").value, sample: {temperature: +$("omni-temp").value},
+                context: {thinking: false, messages}};
+  if ($("omni-output").value) body.output = {mime: "audio/wav", options: {mode: $("omni-output").value}};
+  $("omni-go").disabled = true;
+  try {
+    await ready(model, (t) => { $("omni-status").textContent = t; });
+    $("omni-status").textContent = "thinking…";
+    const done = await call("POST", "/council/v2/generations", body);
+    const spoken = (done.outputs || []).filter((o) => o.mime === "audio/wav").map((o) => ({id: o.id, mime: o.mime, host}));
+    const u = done.usage || {};
+    omni.push({role: "assistant", text: done.content || "", files: spoken,
+               stat: `${u.completion ?? "?"} tokens · ${done.finish ?? ""}` +
+                 (u.media?.written?.audio_ms ? ` · ${(u.media.written.audio_ms / 1000).toFixed(1)} s of speech` : "")});
+    omniKept = omniKept.concat(files, spoken).slice(-200);
+    keepAll();
+  } catch (e) {
+    omni.pop(); $("omni-input").value = text; omniFiles = files;
+    $("omni-error").textContent = e.message;
+  }
+  $("omni-status").textContent = "";
+  drawOmni();
+  $("omni-go").disabled = false;
 };
 
 // ---- steering
