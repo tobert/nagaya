@@ -258,7 +258,7 @@ audio { width: 100%; }
       </div>
       <div class="actions"><button class="plain" id="omni-clear">New conversation</button></div>
       <p class="note">Each file goes to the nagaya as an object, and the message names it. A spoken reply plays here,
-        and the next turn sends it back as the assistant's audio (spec 11.11).</p>
+        and the next turn sends back its text: the family reads no assistant audio yet (spec 11.11).</p>
     </div>
     <div class="card">
       <div id="omni-log"></div>
@@ -1128,7 +1128,7 @@ function omniAccept() {
 function drawOmni() {
   $("omni-log").innerHTML = omni.map((t) => `<div class="msg ${t.role}"><div>${esc(t.text)}</div>` +
     t.files.map((f) => f.mime === "audio/wav"
-      ? `<audio controls src="${objectUrl(f.id, f.host)}"></audio>`
+      ? `<audio controls src="${esc(objectUrl(f.id, f.host))}"></audio>`
       : `<div class="note">${esc(f.name || f.mime)}</div>`).join("") +
     (t.stat ? `<div class="note">${esc(t.stat)}</div>` : "") + "</div>").join("");
   $("omni-files").textContent = omniFiles.map((f) => f.name).join(", ");
@@ -1137,7 +1137,11 @@ $("omni-file").onchange = async (ev) => {
   const files = [...ev.target.files], status = (t) => { $("omni-status").textContent = t; };
   ev.target.value = "";
   try {
+    const reads = models.find((x) => x.model === $("omni-model").value)?.media?.inputs || [];
     for (const file of files) {
+      if (!reads.includes(file.type)) {
+        throw new Error(`${file.name} is ${file.type || "of no known type"}; this model reads ${reads.join(", ")}`);
+      }
       const id = await putObject(file, file.type, status);
       omniFiles.push({id, mime: file.type, name: file.name, host});
     }
@@ -1156,7 +1160,9 @@ $("omni-go").onclick = async () => {
   for (const t of omni) {
     const parts = (t.text ? [{type: "text", text: t.text}] : [])
       .concat(t.files.map((f) => ({type: "object", id: f.id, mime: f.mime})));
-    messages.push(t.role === "user" ? {role: "user", content: parts, snap: true} : {role: "assistant", content: parts});
+    // The family reads no assistant audio part yet (spec 11.11, "The choices of the media preprocessing"), so a spoken
+    // reply goes back as its text.
+    messages.push(t.role === "user" ? {role: "user", content: parts, snap: true} : {role: "assistant", content: t.text});
   }
   const body = {model, max_tokens: +$("omni-max").value, sample: {temperature: +$("omni-temp").value},
                 context: {thinking: false, messages}};

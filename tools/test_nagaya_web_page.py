@@ -541,13 +541,24 @@ class Page(unittest.TestCase):
         self.assertIn('/council/v2/objects/blake3:' + "a" * 64 + '"', out["log"])
         self.assertIn("blake3:" + "a" * 64, out["keep"])
         self.assertIn("blake3:" + "f" * 64, out["keep"])
-        # The next turn sends the spoken reply back as its text and its audio, and no output asks for text only.
+        # The next turn sends the spoken reply back as its text: the family reads no assistant audio part yet (spec
+        # 11.11). No output asks for text only.
         second = out["second"]
         self.assertNotIn("output", second)
         reply = second["context"]["messages"][2]
-        self.assertEqual(reply, {"role": "assistant", "content": [{"type": "text", "text": "A <b>cat</b>."},
-                                 {"type": "object", "id": "blake3:" + "a" * 64, "mime": "audio/wav"}]})
+        self.assertEqual(reply, {"role": "assistant", "content": "A <b>cat</b>."})
         self.assertEqual(second["context"]["messages"][3]["content"], [{"type": "text", "text": "And now?"}])
+
+    def test_the_omni_tab_refuses_a_file_of_a_type_that_the_model_does_not_read(self):
+        out = self.run_page("""
+            set("omni-model", "lfm3-omni");
+            await document.getElementById("omni-file").onchange({target: {files: [{name: "x.wav", type: "audio/x-wav"}],
+                                                                           value: ""}});
+            out.err = document.getElementById("omni-error").textContent;
+            out.puts = calls.filter((c) => c[0] === "PUT").length;""")
+        self.assertIn("x.wav is audio/x-wav", out["err"])
+        self.assertIn("audio/wav", out["err"])
+        self.assertEqual(out["puts"], 0)
 
     def test_the_lab_lists_only_the_local_models_of_the_lfm3_engine_kind(self):
         out = self.run_page('out.models = document.getElementById("lab-model").innerHTML;')
