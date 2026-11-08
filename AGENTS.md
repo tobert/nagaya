@@ -642,6 +642,9 @@ senpai may stop and start the web app on b70host at will (`python3 tools/nagaya_
     11. **Omni tab.** A tab of the web app for `lfm3-omni`: it attaches images, audio and video, and it shows the text
         reply and plays its speech. Today the page puts Omni in its speech tab, because Omni writes audio. Amy,
         2026-11-08: "maybe we need to add an omni tab to the web app".
+    12. **Audio read back.** An `assistant` audio part feeds the kept codes of its output: one position for each frame,
+        with the frame's summed codebook embedding. Amy, 2026-11-08: "Read it back". Then the Omni tab sends a spoken
+        reply back as its audio. Gate: the teacher-forced rows of the oracle's speech run.
 
     Each stop and start of `nagaya.service` goes into `signoff.md`. The tests read Omni's folder from
     `LFM3_OMNI_MODEL_DIR` and the text model's folder from `LFM3_MODEL_DIR`. Neither has a default.

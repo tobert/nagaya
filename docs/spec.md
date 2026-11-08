@@ -4443,8 +4443,9 @@ the note above leaves these choices open, and each one is the simplest choice th
   for each size of the fixture, from 37 by 53 to 3,000 by 4,000 pixels.
 - **Mel rows.** The family computes the spectrum and the mel sums in f64, and it rounds once to f32. The reference
   computes in f32, so its bins of low power hold the noise of that rounding. The test bounds the gap at each level.
-- **Assistant audio.** An `assistant` audio part stays a 400 that names the part. Its count of positions comes
-  from the codes that the service holds, and that service is a later step.
+- **Assistant audio.** Replaced on 2026-11-08 (Amy, by interview: "Read it back"): the rule of "The generation
+  modes" below holds. An `assistant` audio part names an output of this served model, and its positions are the
+  frames of the codes that the service keeps. Until milestone 24 step 12 builds it, the part is a 400 that names it.
 
 **Video, and audio at any rate.** Decided 2026-11-08 (Amy, by interview), for milestone 24 step 10. These rules
 replace the rule above that a WAV must be 16 kHz mono, once step 10 builds them. Until then, that rule holds.
@@ -4556,7 +4557,9 @@ with an object (gogi "Outputs"), so no new member is needed.
 - The reply holds its text and one `audio/wav` output with all its frames, as 11.8a writes a line. The WAV is PCM, mono,
   16 bits, at 24 kHz, and each frame is 1,920 samples.
 - An `assistant` audio part must name an output of this served model, as in 11.8a. The service keeps the codes of
-  each output, and audio whose codes it does not hold is a 404 that names the part.
+  each output, and audio whose codes it does not hold is a 404 that names the part. Decided 2026-11-08 (Amy, by
+  interview: "Read it back"). Each frame of the codes is one position. Its row is the frame's summed codebook
+  embedding, as the speech loop feeds a frame. The codes enter the recipe as the speech positions do (11.8a).
 
 **The speech loop of a generation.** Proposed by Claude Opus 5.5, 2026-11-06 (milestone 24 step 9). Reason: the
 notes above leave these choices open. Each one is the simplest choice that follows gogi and the reference loop
