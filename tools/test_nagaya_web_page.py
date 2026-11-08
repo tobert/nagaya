@@ -94,6 +94,8 @@ function fetch(path, o) {
       "a load can name them in `unload`; the pinned engines `embeddinggemma-2` stay loaded"}});
     return reply(202, {engine: load[1], unload: JSON.parse(o.body).unload, load: [load[1]]});
   }
+  if (path === "/council/v2/objects/blake3:" + "e".repeat(64)) return reply(404, {error: {type: "not_found",
+    message: "no object has this id"}});
   if (path === "/council/v2/control-vectors") {
     const b = JSON.parse(o.body);
     return reply(200, {model: b.model, vector: "blake3:" + "c".repeat(64), layers: 24, width: 2048,
@@ -405,6 +407,24 @@ class Page(unittest.TestCase):
         self.assertIn("toward", out["empty"])
         self.assertIn("64", out["many"])
         self.assertEqual(out["sent"], 0)
+
+
+    def test_a_vector_added_by_id_is_saved_for_the_model_and_kept_only_when_the_nagaya_holds_it(self):
+        out = self.run_page(f"""
+            set("cv-model", "lfm3"); set("cv-add-id", "  {self.VECTOR}  "); set("cv-add-name", "late layers");
+            await document.getElementById("cv-add").onclick();
+            out.saved = vectors.map((v) => [v.name, v.id, v.model]);
+            out.keep = JSON.parse(calls.filter((c) => c[1] === "/council/v2/keeps/nagaya-web").pop()[2]).objects;
+            set("cv-add-id", "blake3:" + "e".repeat(64)); await document.getElementById("cv-add").onclick();
+            out.missing = document.getElementById("cv-error").textContent;
+            set("cv-add-id", "not an id"); await document.getElementById("cv-add").onclick();
+            out.bad = document.getElementById("cv-error").textContent;
+            out.count = vectors.length;""")
+        self.assertEqual(out["saved"], [["late layers", self.VECTOR, "lfm3"]])
+        self.assertIn(self.VECTOR, out["keep"])
+        self.assertIn("does not hold", out["missing"])
+        self.assertIn("blake3:", out["bad"])
+        self.assertEqual(out["count"], 1)
 
 
 if __name__ == "__main__":

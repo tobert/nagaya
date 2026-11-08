@@ -241,6 +241,12 @@ audio { width: 100%; }
         only the count of its lines.</p>
       <h2>Saved vectors</h2>
       <div id="cv-list"></div>
+      <label>Add a vector by id <span class="note">— a vector of the model above that the nagaya holds</span></label>
+      <div class="row">
+        <input id="cv-add-id" placeholder="blake3:…" style="flex:2">
+        <input id="cv-add-name" placeholder="a name" style="flex:1">
+        <button class="plain" id="cv-add">Add</button>
+      </div>
     </div>
     <div class="card">
       <label>Vector</label>
@@ -1064,6 +1070,22 @@ $("cv-make").onclick = async () => {
     $("cv-error").textContent = e.message; status("");
   }
   $("cv-make").disabled = false;
+};
+$("cv-add").onclick = async () => {
+  const id = $("cv-add-id").value.trim(), model = $("cv-model").value;
+  $("cv-error").textContent = "";
+  if (!/^blake3:[0-9a-f]{64}$/.test(id)) { $("cv-error").textContent = "an id is blake3: and 64 hex digits"; return; }
+  if (!model) { $("cv-error").textContent = "the nagaya serves no model with control_vectors"; return; }
+  try {
+    const r = await fetch(base() + `/council/v2/objects/${id}`, {method: "HEAD"});
+    if (!r.ok) { $("cv-error").textContent = `the nagaya does not hold ${id} (HEAD returned ${r.status})`; return; }
+  } catch (e) {
+    $("cv-error").textContent = e.message; return;
+  }
+  const name = $("cv-add-name").value.trim() || `vector ${vectors.length + 1}`;
+  vectors = [{name, id, model, host, toward: "?", away: "?"}].concat(vectors.filter((v) => v.id !== id));
+  saveVectors(); fillVectors(); await keepAll();
+  $("cv-status").textContent = `${name} added for ${model}`;
 };
 $("cv-try").onclick = async () => {
   const model = $("cv-model").value, text = $("cv-prompt").value.trim();
