@@ -40,9 +40,9 @@ fn directory(variable: &str) -> Option<PathBuf> {
     }
 }
 
-/// One LFM3 model resident on device 0, with one slot, as step 9 puts it on b70host. The object store holds the
-/// control vectors (spec 11.12). The process serves one text
-/// model now (spec 11.7), so each model gets its own process.
+/// One LFM3 model resident on device 0, with one slot and an object store, as step 9 puts it on b70host. The object
+/// store holds the control vectors (spec 11.12) and the media of Omni, and gogi's suite asks a server with such a model
+/// for objects. Each model gets its own process.
 fn profile(name: &str, dir: &Path) -> PlacementProfile {
     let dir = dir.display();
     PlacementProfile::parse(&format!(
@@ -52,7 +52,7 @@ fn profile(name: &str, dir: &Path) -> PlacementProfile {
          [[budgets]]\ntiers = [\"device(0)\"]\nbytes = 34359738368\n\
          [[budgets]]\ntiers = [\"device(1)\"]\nbytes = 34359738368\n\
          [[budgets]]\ntiers = [\"host\"]\nbytes = 34359738368\n\
-         [store]\nnvme = 17179869184\nhost = 8589934592\nobjects = 1073741824\n"
+         [store]\nnvme = 17179869184\nhost = 8589934592\nobjects = 4294967296\n"
     ))
     .expect("the profile parses")
 }

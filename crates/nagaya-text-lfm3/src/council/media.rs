@@ -108,6 +108,16 @@ pub(crate) fn expand(
             .collect(),
         control_text: rendering.control_text,
         tokens,
+        media: spans
+            .iter()
+            .zip(parts)
+            .map(|(span, part)| nagaya_council::family::MediaSpan {
+                first: span.first,
+                count: span.count,
+                mime: part.mime.clone(),
+                id: part.id.clone(),
+            })
+            .collect(),
     };
     Ok(MediaRendering { rendering, spans })
 }

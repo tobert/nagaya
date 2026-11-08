@@ -26,8 +26,12 @@ pub struct OpenedFamily {
     pub tokenizer_hash: Option<String>,
 }
 
-/// An opener makes a family library from the identity of an engine and the table `[engines.family]` of its entry.
-type Opener = Box<dyn Fn(&Identity, &toml::Table) -> Result<OpenedFamily, String> + Send + Sync>;
+/// The objects of the process, which a family reads for the media parts of a context (spec 6.15, 11.11).
+pub type ObjectReader = Arc<std::sync::Mutex<nagaya_store::objects::ObjectStore>>;
+
+/// An opener makes a family library from the identity of an engine, the table `[engines.family]` of its entry, and
+/// the objects of the process when the profile has an object store.
+type Opener = Box<dyn Fn(&Identity, &toml::Table, Option<&ObjectReader>) -> Result<OpenedFamily, String> + Send + Sync>;
 
 /// The family library and the config of one served model.
 pub struct Plan {
@@ -66,7 +70,7 @@ impl FamilyRegistry {
         #[cfg(feature = "xe")]
         registry.register(nagaya_mk_gemma4_bmg::spec::FAMILY, crate::gemma4::open_family);
         #[cfg(feature = "xe")]
-        registry.register(nagaya_mk_lfm3_bmg::spec::FAMILY, crate::lfm3::open_family);
+        registry.register_with_objects(nagaya_mk_lfm3_bmg::spec::FAMILY, crate::lfm3::open_family_with);
         registry
     }
 
@@ -75,6 +79,19 @@ impl FamilyRegistry {
         &mut self,
         family: &str,
         opener: impl Fn(&Identity, &toml::Table) -> Result<OpenedFamily, String> + Send + Sync + 'static,
+    ) {
+        self.register_with_objects(family, move |identity, table, _| opener(identity, table));
+    }
+
+    /// Add the opener of a family that reads the objects of the process, such as the LFM3 family of Omni (spec
+    /// 11.11). A second opener for one name is a defect, and it panics.
+    pub fn register_with_objects(
+        &mut self,
+        family: &str,
+        opener: impl Fn(&Identity, &toml::Table, Option<&ObjectReader>) -> Result<OpenedFamily, String>
+        + Send
+        + Sync
+        + 'static,
     ) {
         let old = self.openers.insert(family.to_owned(), Box::new(opener));
         assert!(old.is_none(), "the family `{family}` has two openers");
@@ -85,11 +102,21 @@ impl FamilyRegistry {
     /// `table` is the `[engines.family]` table of the engine's entry in the profile. The context limit is the
     /// largest slot of the engine, in tokens.
     pub fn plan(&self, engine: &OpenedEngine, table: &toml::Table) -> Result<Option<Plan>, String> {
+        self.plan_with(engine, table, None)
+    }
+
+    /// Like [`FamilyRegistry::plan`], with the objects of the process for a family that reads media.
+    pub fn plan_with(
+        &self,
+        engine: &OpenedEngine,
+        table: &toml::Table,
+        objects: Option<&ObjectReader>,
+    ) -> Result<Option<Plan>, String> {
         let identity = &engine.identity;
         let Some(opener) = self.openers.get(&identity.family) else {
             return Ok(None);
         };
-        let opened = opener(identity, table).map_err(|error| {
+        let opened = opener(identity, table, objects).map_err(|error| {
             format!(
                 "cannot open the family `{}` for engine `{}`: {error}",
                 identity.family, engine.name
@@ -272,6 +299,16 @@ pub fn council_with(
     call_cpus: Option<Vec<u32>>,
 ) -> Result<Council, String> {
     let mut models = Vec::new();
+    // The object store opens first: a family and a text service read the object parts of a request from it.
+    let objects: Option<ObjectReader> = match profile.store.and_then(|store| store.objects) {
+        None => None,
+        Some(budget) => {
+            let store = nagaya_store::objects::ObjectStore::open(&store_dir.join("objects"), budget)
+                .map_err(|error| format!("cannot open the objects in the store directory: {error}"))?;
+            tracing::info!("objects: {} of a budget of {budget} bytes held", store.used());
+            Some(Arc::new(std::sync::Mutex::new(store)))
+        }
+    };
     // A described engine goes through the same family plan as an opened one, from the facts of its description.
     let as_opened: Vec<(OpenedEngine, bool)> = opened
         .iter()
@@ -297,7 +334,7 @@ pub fn council_with(
             .iter()
             .find(|placement| placement.name == engine.name)
             .ok_or_else(|| format!("the opened engine `{}` is not in the profile", engine.name))?;
-        let Some(plan) = families.plan(engine, &placement.family)? else {
+        let Some(plan) = families.plan_with(engine, &placement.family, objects.as_ref())? else {
             tracing::info!(
                 "engine `{}` has the family `{}`, which has no library, so it is not a served model",
                 engine.name,
@@ -327,8 +364,11 @@ pub fn council_with(
             .collect();
         let files = files.clone().expect("a plan opened the files of the server");
         let described = is_described.then(|| (engine.identity.clone(), engine.limits.clone()));
-        let service = Service::attach_to(ports.clone(), plan.family, files, plan.config, described)
+        let mut service = Service::attach_to(ports.clone(), plan.family, files, plan.config, described)
             .map_err(|error| format!("cannot serve engine `{}`: {error}", engine.name))?;
+        if let Some(objects) = &objects {
+            service = service.with_objects(Arc::clone(objects));
+        }
         if is_described {
             tracing::info!(
                 "serving model `{}` on engine `{}`, which loads on demand",
@@ -346,13 +386,8 @@ pub fn council_with(
     }
     let (folders, lenses) = lab_files(profile)?;
     let council = Council::new(models, call_cpus)?.with_lab(folders).with_lenses(lenses);
-    match profile.store.and_then(|store| store.objects) {
-        None => Ok(council),
-        Some(budget) => {
-            let store = nagaya_store::objects::ObjectStore::open(&store_dir.join("objects"), budget)
-                .map_err(|error| format!("cannot open the objects in the store directory: {error}"))?;
-            tracing::info!("objects: {} of a budget of {budget} bytes held", store.used());
-            Ok(council.with_objects(store))
-        }
-    }
+    Ok(match objects {
+        None => council,
+        Some(objects) => council.with_object_store(objects),
+    })
 }

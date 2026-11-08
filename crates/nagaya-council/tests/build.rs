@@ -4,8 +4,9 @@
 #![allow(clippy::single_range_in_vec_init)]
 
 use nagaya_abi::Kind;
-use nagaya_council::build::{Step, boundary_recipes, plan_chunks, plan_steps, root_recipe};
-use nagaya_council::family::{Boundary, FamilyError, Rendering};
+use nagaya_council::build::{Step, boundary_recipes, plan_chunks, plan_steps, range_recipe, root_recipe};
+use nagaya_council::family::{Boundary, FamilyError, MediaSpan, Rendering};
+use nagaya_store::{ContentId, RecipeMedia, recipe_boundary, recipe_boundary_media};
 
 fn rendering(tokens: Vec<u32>, cuts: &[(usize, usize)]) -> Rendering {
     let end = tokens.len();
@@ -17,6 +18,7 @@ fn rendering(tokens: Vec<u32>, cuts: &[(usize, usize)]) -> Rendering {
             .map(|&(message, tokens)| Boundary { message, tokens })
             .collect(),
         control_text: Vec::new(),
+        media: Vec::new(),
     }
 }
 
@@ -244,5 +246,81 @@ fn the_recipes_with_cuts_have_each_cut_among_the_boundaries() {
             matches!(recipes_with_cuts(root(), &plain, &bad), Err(FamilyError::Internal(_))),
             "a cut at token {tokens}"
         );
+    }
+}
+
+/// A media span of an image, with the content id of 64 copies of the hex digit `digit`.
+fn image(first: usize, count: usize, digit: char) -> MediaSpan {
+    MediaSpan {
+        first,
+        count,
+        mime: "image/png".to_owned(),
+        id: format!("blake3:{}", digit.to_string().repeat(64)),
+    }
+}
+
+/// The tokens 1 to 3, an image of 3 positions (the placeholder 9), then 4 to 6, with boundaries after 3 and at the end.
+fn with_image(digit: char) -> Rendering {
+    let mut r = rendering(vec![1, 2, 3, 9, 9, 9, 4, 5, 6], &[(0, 3), (1, 9)]);
+    r.media = vec![image(3, 3, digit)];
+    r
+}
+
+/// A media span enters the recipe of the range that holds its first position, as tag 9 (spec 11.11, "Media through
+/// the council"). The range before it keeps the recipe of its tokens.
+#[test]
+fn a_media_span_enters_the_recipe_of_the_range_that_holds_its_first_position() {
+    let r = with_image('a');
+    let recipes = boundary_recipes(root(), &r).unwrap();
+    assert_eq!(recipes[0].recipe, recipe_boundary(&root(), &[1, 2, 3], 3));
+    let id = ContentId::from_hex(&"a".repeat(64)).unwrap();
+    let media = [RecipeMedia {
+        mime: "image/png",
+        id: &id,
+        positions: 3,
+    }];
+    assert_eq!(
+        recipes[1].recipe,
+        recipe_boundary_media(&recipes[0].recipe, &[9, 9, 9, 4, 5, 6], 9, &media)
+    );
+    // Two images of one size give two recipes.
+    let other = boundary_recipes(root(), &with_image('b')).unwrap();
+    assert_eq!(other[0], recipes[0]);
+    assert_ne!(other[1], recipes[1]);
+    // The range recipe gives the same recipe over the same range.
+    assert_eq!(
+        range_recipe(&recipes[0].recipe, &r.tokens, &r.media, 3, 9).unwrap(),
+        recipes[1].recipe
+    );
+    // A range that starts inside the span does not hold its first position, so the span is not in it.
+    assert_eq!(
+        range_recipe(&recipes[0].recipe, &r.tokens, &r.media, 4, 9).unwrap(),
+        recipe_boundary(&recipes[0].recipe, &[9, 9, 4, 5, 6], 9)
+    );
+    // A range that ends inside the span holds its first position, so the span is in it.
+    assert_eq!(
+        range_recipe(&recipes[0].recipe, &r.tokens, &r.media, 3, 4).unwrap(),
+        recipe_boundary_media(&recipes[0].recipe, &[9], 4, &media)
+    );
+}
+
+/// A span that is not inside the tokens, spans out of order, and a span with a bad content id are defects of the
+/// family library.
+#[test]
+fn a_bad_media_span_is_an_internal_error() {
+    let cases = [
+        vec![image(7, 3, 'a')],
+        vec![image(3, 0, 'a')],
+        vec![image(3, 2, 'a'), image(4, 1, 'b')],
+        vec![MediaSpan {
+            id: "blake3:short".to_owned(),
+            ..image(3, 3, 'a')
+        }],
+    ];
+    for media in cases {
+        let mut r = with_image('a');
+        r.media = media.clone();
+        let error = boundary_recipes(root(), &r).unwrap_err();
+        assert!(matches!(error, FamilyError::Internal(_)), "{media:?}: {error:?}");
     }
 }

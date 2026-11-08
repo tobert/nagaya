@@ -161,6 +161,7 @@ impl Family for ToyFamily {
                 })
                 .collect(),
             control_text,
+            media: Vec::new(),
         })
     }
 

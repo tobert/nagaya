@@ -11,13 +11,13 @@ use nagaya_abi::{
     ControlItem, Engine, Kind, Limits, OutputsWanted, PassError, PassOut, PassStatus, Segment, SegmentInputs, State,
     Tap, WriteResult,
 };
-use nagaya_council::build::{BoundaryRecipe, Step, plan_chunks, plan_steps};
-use nagaya_council::family::Boundary;
+use nagaya_council::build::{BoundaryRecipe, Step, plan_chunks, plan_steps, range_recipe};
+use nagaya_council::family::{Boundary, MediaInput, MediaSpan};
 use nagaya_council::read::logit_row;
 use nagaya_sched::{IntervalCopies, Item, JobState};
 use nagaya_store::{
     ContentId, EngineFacts, EntryState, Put, Reason, RecipeId, Restored, Snapshot, Store, StoreError, Tier, Tolerance,
-    recipe_boundary, recipe_not_sealed, write_snapshots,
+    recipe_not_sealed, write_snapshots,
 };
 use nagaya_telemetry::EngineState;
 
@@ -216,12 +216,19 @@ fn restore_entry(
     }
 }
 
-/// The recipe of an interval copy at a token of a context with `tokens` and boundaries `recipes`, with the last seal
-/// before it. A token on a boundary has none: the sealed snapshot there serves a build (spec 6.13).
+/// The recipe of the tokens from `at` to `position` after the seal `base`, with the media spans that start there
+/// (spec 11.11). The spans of a job passed `boundary_recipes` before the job, so a bad span here is a defect.
+fn seal_recipe(base: &RecipeId, tokens: &[u32], media: &[MediaSpan], at: usize, position: usize) -> RecipeId {
+    range_recipe(base, tokens, media, at, position).expect("boundary_recipes checked the media spans of the job")
+}
+
+/// The recipe of an interval copy at a token of a context with `tokens`, media spans `media` and boundaries `recipes`,
+/// with the last seal before it. A token on a boundary has none: the sealed snapshot there serves a build (spec 6.13).
 fn copy_recipe_at(
     root: RecipeId,
     recipes: &[BoundaryRecipe],
     tokens: &[u32],
+    media: &[MediaSpan],
     position: usize,
 ) -> Option<(RecipeId, RecipeId, usize)> {
     if recipes.iter().any(|recipe| recipe.boundary.tokens == position) || position > tokens.len() {
@@ -232,7 +239,7 @@ fn copy_recipe_at(
         .rev()
         .find(|recipe| recipe.boundary.tokens < position)
         .map_or((root, 0), |recipe| (recipe.recipe, recipe.boundary.tokens));
-    let sealed = recipe_boundary(&base, &tokens[at..position], position as u64);
+    let sealed = seal_recipe(&base, tokens, media, at, position);
     Some((recipe_not_sealed(&sealed), base, at))
 }
 
@@ -243,6 +250,7 @@ fn best_copy(
     root: RecipeId,
     recipes: &[BoundaryRecipe],
     tokens: &[u32],
+    media: &[MediaSpan],
     above: usize,
 ) -> Option<(usize, ContentId, RecipeId, usize)> {
     shared.intervals.as_ref()?;
@@ -261,7 +269,7 @@ fn best_copy(
             if position <= above {
                 return None;
             }
-            let (recipe, base, at) = copy_recipe_at(root, recipes, tokens, position)?;
+            let (recipe, base, at) = copy_recipe_at(root, recipes, tokens, media, position)?;
             (recipe == entry.recipe).then_some((position, entry.content_id, base, at))
         })
         .max_by_key(|(position, ..)| *position)
@@ -282,6 +290,8 @@ pub struct LookupBody {
     extension: Option<Extension>,
     /// The tokens of the plan.
     tokens: Arc<[u32]>,
+    /// The media spans of the plan. An interval copy inside a span names it (spec 11.11).
+    media: Vec<MediaSpan>,
     /// The tokens that the slot of the job would hold: the context, or all the open rendering of a continuation.
     room: usize,
     tx: Option<Sender<Result<Outcome, ServiceError>>>,
@@ -305,6 +315,7 @@ impl LookupBody {
             cuts: Vec::new(),
             extension: None,
             tokens,
+            media: Vec::new(),
             room,
             tx: Some(tx),
         }
@@ -313,6 +324,12 @@ impl LookupBody {
     /// Look up the context under this root recipe: the root of its control list (spec 11.12).
     pub fn root(mut self, root: RecipeId) -> Self {
         self.root = root;
+        self
+    }
+
+    /// Give the media spans of the plan, which the recipes of its interval copies name.
+    pub fn media(mut self, media: Vec<MediaSpan>) -> Self {
+        self.media = media;
         self
     }
 
@@ -353,7 +370,8 @@ impl LookupBody {
         let start = highest(&held);
         let above = start.map_or(0, |index| recipes[index].boundary.tokens);
         // A build restores an interval copy above the highest held boundary, so a dry run reports it (spec 6.13).
-        if let Some((position, id, ..)) = best_copy(&self.shared, self.root, &recipes, &self.tokens, above) {
+        if let Some((position, id, ..)) = best_copy(&self.shared, self.root, &recipes, &self.tokens, &self.media, above)
+        {
             return Ok(Outcome {
                 from: Some(id),
                 kept: position,
@@ -570,6 +588,8 @@ pub struct ContextBody<T: Then> {
     /// The output `lens` of the last pass of a tapped feed that names it.
     lens: Option<Vec<u8>>,
     tokens: Arc<[u32]>,
+    /// The input of the engine for each media span of the context, in the order of the positions (spec 11.11).
+    media: Arc<[MediaInput]>,
     recipes: Vec<BoundaryRecipe>,
     /// The cuts where the job may start, from the highest down.
     cuts: Vec<Cut>,
@@ -655,6 +675,7 @@ impl<T: Then> ContextBody<T> {
             residual: None,
             lens: None,
             tokens,
+            media: Arc::from(Vec::new()),
             recipes,
             cuts: Vec::new(),
             extension: None,
@@ -679,6 +700,35 @@ impl<T: Then> ContextBody<T> {
             then: Some(then),
             tx: Some(tx),
         }
+    }
+
+    /// Give the input of each media span of the context, in the order of the positions. A pass of the build that
+    /// holds a position of a span sends the span whole (spec 11.11, "Media through the council").
+    pub fn media(mut self, media: Arc<[MediaInput]>) -> Self {
+        self.media = media;
+        self
+    }
+
+    /// The media spans of the context.
+    fn spans(&self) -> Vec<MediaSpan> {
+        self.media.iter().map(|input| input.span.clone()).collect()
+    }
+
+    /// The inputs of a pass over the positions `from..to` of the slot. A pass that holds a position of a media span
+    /// sends `TokensAndRows`: the record of each such span in `meta`, and the rows of each span whole. Any other pass
+    /// sends its tokens alone.
+    fn inputs(&self, tokens: Vec<u32>, from: usize, to: usize) -> (SegmentInputs, Vec<u8>) {
+        let read: Vec<&MediaInput> = self
+            .media
+            .iter()
+            .filter(|input| input.span.first < to && input.span.first + input.span.count > from)
+            .collect();
+        if read.is_empty() {
+            return (SegmentInputs::Tokens(tokens), Vec::new());
+        }
+        let meta = read.iter().flat_map(|input| input.meta.iter().copied()).collect();
+        let rows = read.iter().flat_map(|input| input.rows.iter().copied()).collect();
+        (SegmentInputs::TokensAndRows { tokens, rows }, meta)
     }
 
     /// Let the job start from a held cut above its highest held boundary. A cut is the end of a message that the
@@ -1130,12 +1180,15 @@ impl<T: Then> ContextBody<T> {
             )));
         }
         let to = pending.from + pending.tokens.len();
+        // The positions of a pass name the spans that it reads. A generation with no build plan feeds the context
+        // in its own feed, so a pass of the work can read a span too.
+        let (inputs, meta) = self.inputs(pending.tokens.clone(), pending.from, to);
         let segment = Segment {
             control: self.items.clone(),
             state: self.state(),
-            inputs: SegmentInputs::Tokens(pending.tokens.clone()),
+            inputs,
             positions: (pending.from as u64..to as u64).collect(),
-            meta: Vec::new(),
+            meta,
             outputs: OutputsWanted {
                 logit_rows: if pending.row { vec![to as u64 - 1] } else { Vec::new() },
             },
@@ -1326,7 +1379,7 @@ impl<T: Then> ContextBody<T> {
         let state = self.state();
         let position = self.fed.len();
         let (base, at) = self.sealed.expect("a job knows its last seal after its start");
-        let sealed = recipe_boundary(&base, &self.fed[at..position], position as u64);
+        let sealed = seal_recipe(&base, &self.fed, &self.spans(), at, position);
         let _staging = match self.stage(engine, state, "make an interval copy") {
             Ok(staging) => staging,
             Err(ServiceError::ContextRefused(error)) => {
@@ -1390,7 +1443,9 @@ impl<T: Then> ContextBody<T> {
     /// Restore the longest interval copy of the context above the token `above`, when the store holds one. A restore
     /// writes the copy's parts, and the build replays the tokens after it (spec 6.13). It gives true on a restore.
     fn restore_copy(&mut self, engine: &mut dyn Engine, above: usize) -> Result<bool, ServiceError> {
-        let Some((position, id, base, at)) = best_copy(&self.shared, self.root, &self.recipes, &self.tokens, above)
+        let spans = self.spans();
+        let Some((position, id, base, at)) =
+            best_copy(&self.shared, self.root, &self.recipes, &self.tokens, &spans, above)
         else {
             return Ok(false);
         };

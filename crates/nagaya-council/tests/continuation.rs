@@ -3,7 +3,7 @@
 
 use gogi_proto::context::Context;
 use nagaya_council::continuation::open_plan;
-use nagaya_council::family::{Boundary, FamilyError, Rendering, ReplyStart};
+use nagaya_council::family::{Boundary, FamilyError, MediaSpan, Rendering, ReplyStart};
 use serde_json::json;
 
 fn context(thinking: Option<bool>, last: serde_json::Value) -> Context {
@@ -78,6 +78,7 @@ fn rendering(len: u32, end: usize, boundaries: &[(usize, usize)]) -> Rendering {
             .map(|&(message, tokens)| Boundary { message, tokens })
             .collect(),
         control_text: Vec::new(),
+        media: Vec::new(),
     }
 }
 
@@ -126,4 +127,27 @@ fn an_open_rendering_with_a_generation_prompt_is_a_family_defect() {
             "{bad:?}"
         );
     }
+}
+
+/// An image of 2 positions at `first`.
+fn image(first: usize) -> MediaSpan {
+    MediaSpan {
+        first,
+        count: 2,
+        mime: "image/png".to_owned(),
+        id: format!("blake3:{}", "c".repeat(64)),
+    }
+}
+
+/// The plan keeps the media spans of the tokens that it builds, so its recipes name them (spec 11.11).
+#[test]
+fn the_plan_of_an_open_context_keeps_the_media_spans_that_it_builds() {
+    let mut open = rendering(10, 10, &[(0, 4), (2, 10)]);
+    open.media = vec![image(1), image(5)];
+    let mut before = rendering(7, 7, &[(0, 4), (1, 7)]);
+    before.media = vec![image(1), image(5)];
+    assert_eq!(open_plan(&open, &before).unwrap().media, before.media);
+    // The plan that is not the context before the open message ends at token 4, so it holds only the first span.
+    before.tokens[6] = 99;
+    assert_eq!(open_plan(&open, &before).unwrap().media, [image(1)]);
 }

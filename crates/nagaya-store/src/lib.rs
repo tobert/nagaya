@@ -481,6 +481,23 @@ pub fn recipe_root(
 
 /// The recipe at a later boundary.
 pub fn recipe_boundary(previous: &RecipeId, tokens: &[u32], position: u64) -> RecipeId {
+    recipe_boundary_media(previous, tokens, position, &[])
+}
+
+/// A media part whose span starts in the tokens of a recipe (spec 11.11, "Media through the council").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecipeMedia<'a> {
+    /// The media type of the object.
+    pub mime: &'a str,
+    /// The content id of the object.
+    pub id: &'a ContentId,
+    /// The count of positions of the span.
+    pub positions: u64,
+}
+
+/// The recipe at a later boundary, with the media parts whose spans start in `tokens`, in the order of the positions.
+/// Each part is one item of tag 9 after tag 7. With no part, the recipe is [`recipe_boundary`].
+pub fn recipe_boundary_media(previous: &RecipeId, tokens: &[u32], position: u64, media: &[RecipeMedia]) -> RecipeId {
     let mut hasher = blake3::Hasher::new_derive_key("nagaya recipe v1");
     add_item(&mut hasher, 5, &previous.0);
     let mut token_bytes = Vec::with_capacity(tokens.len() * 4);
@@ -489,6 +506,14 @@ pub fn recipe_boundary(previous: &RecipeId, tokens: &[u32], position: u64) -> Re
     }
     add_item(&mut hasher, 6, &token_bytes);
     add_item(&mut hasher, 7, &position.to_le_bytes());
+    for part in media {
+        let mut item = Vec::with_capacity(8 + part.mime.len() + 32 + 8);
+        item.extend_from_slice(&(part.mime.len() as u64).to_le_bytes());
+        item.extend_from_slice(part.mime.as_bytes());
+        item.extend_from_slice(&part.id.0);
+        item.extend_from_slice(&part.positions.to_le_bytes());
+        add_item(&mut hasher, 9, &item);
+    }
     RecipeId(*hasher.finalize().as_bytes())
 }
 

@@ -6,7 +6,7 @@
 //! card only in a build with the feature `xe`. `Registry::compiled_in` registers the kind in that build only.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use nagaya_abi::{Identity, Limits};
 use nagaya_mk_lfm3_bmg::spec::{self, Config};
@@ -102,12 +102,54 @@ pub fn plan(table: &toml::Table, devices: &[GroupDevice]) -> Result<Limits, Plan
     spec::plan(&config).map_err(|message| PlanError { message })
 }
 
+/// The objects of the process, as the LFM3 family reads the bytes of a media part (spec 6.15, 11.11).
+pub struct StoreObjects(Arc<Mutex<nagaya_store::objects::ObjectStore>>);
+
+impl StoreObjects {
+    /// A reader of `store`.
+    pub fn new(store: Arc<Mutex<nagaya_store::objects::ObjectStore>>) -> Self {
+        Self(store)
+    }
+}
+
+impl nagaya_text_lfm3::Objects for StoreObjects {
+    /// The bytes of a held object. An object that the store does not hold, or whose file went, is none: the family
+    /// then refuses the part, and the client puts it again (gogi "Objects and keeps").
+    fn bytes(&self, id: &str) -> Option<Vec<u8>> {
+        let id = nagaya_store::ContentId::from_hex(id.strip_prefix("blake3:")?).ok()?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("the clock is before the epoch")
+            .as_millis() as u64;
+        let found = match self.0.lock().expect("the object store lock is poisoned").get(&id, now) {
+            Ok(found) => found?,
+            Err(error) => {
+                tracing::warn!("cannot read the object {}: {error}", id.hex());
+                return None;
+            }
+        };
+        std::fs::read(&found.path).ok()
+    }
+}
+
 /// The LFM3 family from the model folder: the key `model_dir` of `[engines.family]`. The registry compares its
 /// tokenizer hash with the identity (spec 11.3).
 pub fn open_family(identity: &Identity, table: &toml::Table) -> Result<OpenedFamily, String> {
+    open_family_with(identity, table, None)
+}
+
+/// Like [`open_family`], with the objects of the process: the family of Omni reads the media parts from them.
+pub fn open_family_with(
+    identity: &Identity,
+    table: &toml::Table,
+    objects: Option<&crate::serving::ObjectReader>,
+) -> Result<OpenedFamily, String> {
     let dir = model_dir(table, "the table `[engines.family]`")?;
-    let family = nagaya_text_lfm3::Lfm3Family::from_dir(&dir)
+    let mut family = nagaya_text_lfm3::Lfm3Family::from_dir(&dir)
         .map_err(|error| format!("cannot build the LFM3 family from `{}`: {error}", dir.display()))?;
+    if let Some(objects) = objects {
+        family = family.with_objects(Arc::new(StoreObjects::new(Arc::clone(objects))));
+    }
     let model = match family.kind() {
         nagaya_text_lfm3::Kind::Text => spec::Model::Text,
         nagaya_text_lfm3::Kind::Omni => spec::Model::Omni,

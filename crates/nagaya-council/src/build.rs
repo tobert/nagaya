@@ -1,10 +1,10 @@
 //! The pure parts of a build (spec 6.2, 11.3c): the recipe of each boundary, and the steps that feed the rest.
 
 use nagaya_abi::Kind;
-use nagaya_store::{RecipeId, recipe_boundary, recipe_root};
+use nagaya_store::{ContentId, RecipeId, RecipeMedia, recipe_boundary_media, recipe_root};
 
 use crate::control::{self, ControlEntry};
-use crate::family::{Boundary, FamilyError, Rendering};
+use crate::family::{Boundary, FamilyError, MediaSpan, Rendering};
 
 /// A boundary and the recipe of the snapshot there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +48,7 @@ pub fn boundary_recipes(root: RecipeId, rendering: &Rendering) -> Result<Vec<Bou
             rendering.tokens.len()
         )));
     }
+    check_media(&rendering.media, rendering.tokens.len())?;
     let mut recipes = Vec::with_capacity(rendering.boundaries.len());
     let mut previous = root;
     let mut position = 0usize;
@@ -58,11 +59,13 @@ pub fn boundary_recipes(root: RecipeId, rendering: &Rendering) -> Result<Vec<Bou
                 boundary.message, boundary.tokens
             )));
         }
-        let recipe = recipe_boundary(
+        let recipe = range_recipe(
             &previous,
-            &rendering.tokens[position..boundary.tokens],
-            boundary.tokens as u64,
-        );
+            &rendering.tokens,
+            &rendering.media,
+            position,
+            boundary.tokens,
+        )?;
         recipes.push(BoundaryRecipe {
             boundary: *boundary,
             recipe,
@@ -71,6 +74,64 @@ pub fn boundary_recipes(root: RecipeId, rendering: &Rendering) -> Result<Vec<Bou
         position = boundary.tokens;
     }
     Ok(recipes)
+}
+
+/// Check the media spans of `len` tokens: each holds a position, they lie inside the tokens in the order of their
+/// positions with no overlap, and each names a whole content id. Any other span is a defect of the family library.
+pub fn check_media(media: &[MediaSpan], len: usize) -> Result<(), FamilyError> {
+    let mut after = 0usize;
+    for span in media {
+        let end = span.first.checked_add(span.count);
+        if span.count == 0 || span.first < after || end.is_none_or(|end| end > len) {
+            return Err(FamilyError::internal(format!(
+                "the media span of {} holds {} positions from position {}; a span holds a position, inside the {len} \
+                 tokens, after the span before it",
+                span.id, span.count, span.first
+            )));
+        }
+        content_id(span)?;
+        after = span.first + span.count;
+    }
+    Ok(())
+}
+
+/// The content id of a span.
+fn content_id(span: &MediaSpan) -> Result<ContentId, FamilyError> {
+    span.id
+        .strip_prefix("blake3:")
+        .and_then(|hex| ContentId::from_hex(hex).ok())
+        .ok_or_else(|| {
+            FamilyError::internal(format!(
+                "the media span at position {} names `{}`, which is not a whole content id",
+                span.first, span.id
+            ))
+        })
+}
+
+/// The recipe of the tokens `tokens[from..to]` after the recipe `previous`, at the position `to` (spec 6.2). Each media
+/// span whose first position is in that range enters it as tag 9, in order (spec 11.11, "Media through the council").
+/// A span with a bad content id is [`FamilyError::Internal`].
+pub fn range_recipe(
+    previous: &RecipeId,
+    tokens: &[u32],
+    media: &[MediaSpan],
+    from: usize,
+    to: usize,
+) -> Result<RecipeId, FamilyError> {
+    let spans: Vec<(&MediaSpan, ContentId)> = media
+        .iter()
+        .filter(|span| (from..to).contains(&span.first))
+        .map(|span| content_id(span).map(|id| (span, id)))
+        .collect::<Result<_, _>>()?;
+    let items: Vec<RecipeMedia> = spans
+        .iter()
+        .map(|(span, id)| RecipeMedia {
+            mime: &span.mime,
+            id,
+            positions: span.count as u64,
+        })
+        .collect();
+    Ok(recipe_boundary_media(previous, &tokens[from..to], to as u64, &items))
 }
 
 /// The recipes of a rendering with one more boundary, at `cut` (spec 11.3c).

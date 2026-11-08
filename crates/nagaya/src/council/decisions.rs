@@ -173,7 +173,19 @@ impl Service {
                     assistant: false,
                 }),
         );
-        self.reads_text_only(&objects)?;
+        let read = self.check_objects(&objects)?;
+        // The read plan of a family renders the case as text, so no family reads case media yet.
+        if !request.case_media.is_empty() {
+            return Err(Invalid::param(
+                "case_media[0]",
+                format!(
+                    "nothing ran: {} reads case_media in a later build; send the object as a part of a context \
+                     message",
+                    self.config.model
+                ),
+            )
+            .into());
+        }
         if request.think.is_some_and(|think| think.tokens > 0) {
             return Err(Invalid::param(
                 "think",
@@ -258,18 +270,20 @@ impl Service {
                 Some(steer) => (steer.root, steer.control),
                 None => (self.root, None),
             };
-            let (tokens, recipes, cuts): (Arc<[u32]>, _, _) = match (&rendering, context) {
+            let (tokens, recipes, cuts, media): (Arc<[u32]>, _, _, _) = match (&rendering, context) {
                 (Some(r), Some(c)) => (
                     r.tokens[..r.end].into(),
                     boundary_recipes(root, r)?,
                     self.cuts(root, c, r)?,
+                    self.media_rows(r)?,
                 ),
-                _ => (Arc::from(Vec::new()), Vec::new(), Vec::new()),
+                _ => (Arc::from(Vec::new()), Vec::new(), Vec::new(), Arc::from(Vec::new())),
             };
             let then = DecisionThen::new(plan, asked.len());
             let shared = Arc::clone(&self.shared);
             let job = |tx| {
                 ContextBody::with(shared, tokens, recipes, room, then, tx)
+                    .media(media)
                     .cuts(cuts)
                     .control(root, job_control)
             };
@@ -322,6 +336,7 @@ impl Service {
         for (read, answers) in reads.iter_mut().zip(answers.reads) {
             read.answers = answers;
         }
+        usage.media = read;
         let mut identity = self.identity();
         identity.spec_id = Some(held.spec_id.clone());
         let response = DecisionResponse {

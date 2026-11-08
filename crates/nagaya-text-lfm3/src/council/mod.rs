@@ -503,6 +503,7 @@ impl Lfm3Family {
             end,
             boundaries,
             control_text,
+            media: Vec::new(),
         })
     }
 
@@ -709,5 +710,77 @@ impl Family for Lfm3Family {
     /// `lfm3` thinks before its reply. Omni does not reason.
     fn thinks(&self) -> bool {
         self.kind == Kind::Text
+    }
+
+    fn media_inputs(&self) -> Vec<String> {
+        match self.kind {
+            Kind::Omni => MEDIA_INPUTS.iter().map(|mime| (*mime).to_owned()).collect(),
+            Kind::Text => Vec::new(),
+        }
+    }
+
+    fn media_rows(&self, rendering: &Rendering) -> Result<Vec<nagaya_council::family::MediaInput>, FamilyError> {
+        rendering.media.iter().map(|span| self.media_input(span)).collect()
+    }
+}
+
+/// The media types that Omni reads (spec 11.11, "The served LFM3 models").
+pub const MEDIA_INPUTS: [&str; 3] = ["image/png", "image/jpeg", "audio/wav"];
+
+/// The bytes of one record of `meta` (engine-abi "The LFM3 vision binding"): the kind, the count of positions, the
+/// first position as a `u64`, and four words of the shape.
+pub const RECORD_BYTES: usize = 32;
+
+/// The record of a span in `meta`, little-endian. An image has the kind 1 and its grid. A clip has the kind 2 and its
+/// count of mel frames. `nagaya-mk-lfm3-bmg` reads the same layout (`media::decode`).
+pub fn media_record(first: usize, rows: &crate::media::MediaRows) -> Vec<u8> {
+    let (kind, shape) = match rows {
+        crate::media::MediaRows::Image(image) => (1u32, [image.grid[0], image.grid[1], image.grid[2], 0]),
+        crate::media::MediaRows::Audio(audio) => (2u32, [audio.frames, 0, 0, 0]),
+    };
+    let word = |value: usize| u32::try_from(value).expect("a shape of a media part fits in 32 bits");
+    let mut record = Vec::with_capacity(RECORD_BYTES);
+    record.extend(kind.to_le_bytes());
+    record.extend(word(rows.positions()).to_le_bytes());
+    record.extend((first as u64).to_le_bytes());
+    for value in shape {
+        record.extend(word(value).to_le_bytes());
+    }
+    record
+}
+
+impl Lfm3Family {
+    /// The record and the rows of one span of a rendering. The object can leave the store after the render, so an
+    /// absent object is a client error. A count that the object does not give is a defect of the caller.
+    fn media_input(
+        &self,
+        span: &nagaya_council::family::MediaSpan,
+    ) -> Result<nagaya_council::family::MediaInput, FamilyError> {
+        let objects = self.objects.as_ref().ok_or_else(|| {
+            FamilyError::internal("a rendering holds a media span, and the family has no object reader")
+        })?;
+        let bytes = objects.bytes(&span.id).ok_or_else(|| {
+            FamilyError::client(format!(
+                "nothing ran: the object {} left the server after the request named it. Upload it, then send the \
+                 request again.",
+                span.id
+            ))
+        })?;
+        let rows = crate::media::prepare(&bytes, &span.mime)
+            .map_err(|e| FamilyError::client(format!("nothing ran: the object {} {e}.", span.id)))?;
+        if rows.positions() != span.count {
+            return Err(FamilyError::internal(format!(
+                "the media span of {} has {} positions, and its object gives {}",
+                span.id,
+                span.count,
+                rows.positions()
+            )));
+        }
+        let values: Vec<u8> = rows.values().iter().flat_map(|value| value.to_le_bytes()).collect();
+        Ok(nagaya_council::family::MediaInput {
+            span: span.clone(),
+            meta: media_record(span.first, &rows),
+            rows: values.into(),
+        })
     }
 }

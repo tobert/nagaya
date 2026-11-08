@@ -101,7 +101,7 @@ impl Service {
     /// reads from the head.
     pub fn read(&self, request: &ReadsRequest) -> Result<ReadsResponse, ServiceError> {
         request.validate()?;
-        self.reads_text_only(&Self::objects_in(&request.contexts))?;
+        let read = self.check_objects(&Self::objects_in(&request.contexts))?;
         let count = request.top.unwrap_or(DEFAULT_TOP);
         if count > MAX_TOP {
             return Err(Invalid::param("top", format!("top is {count}; a read lists at most {MAX_TOP} tokens")).into());
@@ -142,9 +142,11 @@ impl Service {
             };
             let shared = Arc::clone(&self.shared);
             let cuts = self.cuts(root, context, &rendering)?;
+            let media = self.media_rows(&rendering)?;
             let control = steer.control;
             let job = |tx| {
                 ContextBody::with(shared, tokens, recipes, end + longest, then, tx)
+                    .media(media)
                     .cuts(cuts)
                     .control(root, control)
             };
@@ -190,6 +192,7 @@ impl Service {
                 });
             }
         }
+        usage.media = read;
         Ok(ReadsResponse {
             model: self.config.model.clone(),
             reads,
