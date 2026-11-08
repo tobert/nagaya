@@ -366,3 +366,76 @@ fn a_pass_that_reads_a_clip_gives_the_logits_of_transformers() {
         }
     }
 }
+
+/// The placeholder of a frame of speech.
+const AUDIO_OUT: u32 = 125_032;
+
+/// An assistant audio part feeds the codes of its frames (spec 11.11, "Read it back"): each position takes the sum of
+/// its 12 codebook rows, the end frame last, and the logits after the conversation are those of transformers.
+#[test]
+fn a_pass_that_reads_the_speech_of_an_assistant_part_gives_the_logits_of_transformers() {
+    if common::absent(Which::Omni)
+        || common::golden_absent("audio_out.safetensors")
+        || common::golden_absent("lfm3-omni.audio_out.json")
+    {
+        return;
+    }
+    let golden = common::golden_tensors("audio_out.safetensors");
+    let oracle = common::golden_json("lfm3-omni.audio_out.json");
+    let prompt = &oracle["prompts"][0];
+    let ids: Vec<u32> = prompt["ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap() as u32)
+        .collect();
+    assert_eq!(ids, golden["ids"].ids(), "the ids of the two oracle files");
+    let mut codes: Vec<u32> = golden["codes"].ids();
+    // The end frame follows the speech, as the processor writes it.
+    codes.extend(std::iter::repeat_n(2016u32, media::FRAME_CODES));
+    let frames = codes.len() / media::FRAME_CODES;
+    let first = ids
+        .iter()
+        .position(|t| *t == AUDIO_OUT)
+        .expect("the prompt holds speech");
+    let span = Span {
+        kind: SpanKind::Codes,
+        first: first as u64,
+        count: ids.iter().filter(|t| **t == AUDIO_OUT).count(),
+    };
+    assert_eq!(span.count, frames, "a position for each frame and the end frame");
+    let rows: Vec<u8> = codes.iter().flat_map(|c| c.to_le_bytes()).collect();
+    let top: Vec<usize> = prompt["top_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap() as usize)
+        .collect();
+    let want: Vec<f64> = prompt["top_logits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap())
+        .collect();
+    for block_len in [512usize, 8] {
+        let mut engine = common::open(Which::Omni, 1, block_len);
+        let (logits, ms) = feed(&mut engine, &ids, &span, &rows, block_len);
+        let gap = top
+            .iter()
+            .zip(&want)
+            .map(|(id, w)| (logits[*id] as f64 - w).abs())
+            .fold(0.0f64, f64::max);
+        let best = (0..logits.len())
+            .max_by(|a, b| logits[*a].total_cmp(&logits[*b]))
+            .unwrap();
+        println!(
+            "audio_out ({} ids, {frames} frames at {}, blocks of {block_len}, passes of {ms:?} ms): top-64 gap \
+             {gap:.3e}, top {best} against {}",
+            ids.len(),
+            span.first,
+            top[0]
+        );
+        assert_eq!(best, top[0], "audio_out: the top token differs");
+        assert!(gap < common::LOGIT_TOL, "audio_out: a top-64 logit differs by {gap}");
+    }
+}

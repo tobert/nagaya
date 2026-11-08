@@ -24,7 +24,7 @@ use nagaya_text_lfm3::{Kind as FamilyKind, Lfm3Family};
 
 use crate::audio::{self, AudioBufs, AudioWeights, Clip, MAX_CLIP_POSITIONS, Stage};
 use crate::device::{Device, OnCard};
-use crate::media::{MAX_IMAGE_PATCHES, PATCH_ROW, SpanKind};
+use crate::media::{self, MAX_IMAGE_PATCHES, PATCH_ROW, SpanKind};
 use crate::model::{self, Bufs, Run, SlotMemory, bufs_bytes, scratch_floats};
 use crate::spec::{
     self, Backbone, Block, Config, FAMILY, Held, LayerKind, Model, Part, RING_ROWS, SLOT_TOKENS, VisionBytes,
@@ -233,6 +233,8 @@ impl Lfm3Engine {
                 vision::load(&mut tower_count, &v, &view)?;
                 let mut rules = vision::media_rules(&config_text)?;
                 rules.audio_encoder = b.audio.is_some();
+                // Omni loads its speech path with its codebook table, so an assistant audio part can feed its frames.
+                rules.audio_out_token = Some(crate::frames::AUDIO_OUT_TOKEN);
                 Some((v, tower_count.bytes, rules))
             }
         };
@@ -514,6 +516,46 @@ impl Lfm3Engine {
                 // The encoder writes every row of the clip into its own rows. A copy then takes the rows of this
                 // block to their place in the media rows of the tower, as the tower writes an image's rows. A run of
                 // a clip takes its rows from the run's first row of the clip (spec 11.11, "The video of a request").
+                // The frames of an assistant audio part (spec 11.11, "Read it back"): each row is the sum of the 12
+                // codebook rows of its frame, as the speech loop feeds a frame. The host turns the codes of the block's
+                // frames into rows of the table, and 12 embeds of the block's frames sum them into the media rows.
+                SpanKind::Codes => {
+                    let speech = self
+                        .speech
+                        .as_ref()
+                        .expect("check_pass refuses speech when the model has no speech path");
+                    let tower = self
+                        .tower
+                        .as_ref()
+                        .expect("Omni has a vision tower beside its speech path");
+                    let codes = &bytes.as_chunks::<4>().0
+                        [used.take.start * media::FRAME_CODES..used.take.end * media::FRAME_CODES];
+                    let ids: Vec<u8> = codes
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(i, b)| {
+                            let g = (i % media::FRAME_CODES) as u32;
+                            (g * media::CODEBOOK_CODES + u32::from_le_bytes(*b)).to_le_bytes()
+                        })
+                        .collect();
+                    // The pixel buffer of the tower holds the ids; no image of this block uses it.
+                    self.device.write(self.card(), tower.bufs.pixels, &ids);
+                    let row = (self.b.hidden * 4) as u64;
+                    (0..media::FRAME_CODES)
+                        .map(|g| {
+                            tasks::embed(
+                                tower.bufs.pixels + (g * 4) as u64,
+                                speech.codebook(),
+                                tower.bufs.media + used.block_row as u64 * row,
+                                used.take.len() as u32,
+                                self.b.hidden as u32,
+                                media::FRAME_CODES as u32,
+                                false,
+                                g > 0,
+                            )
+                        })
+                        .collect()
+                }
                 SpanKind::Audio { frames } | SpanKind::Run { frames, .. } => {
                     let start = match used.span.kind {
                         SpanKind::Run { start, .. } => start,

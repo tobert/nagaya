@@ -128,6 +128,7 @@ impl Omni {
             image_token: Some(token("<|image|>")),
             audio_token: Some(token("<|audio|>")),
             video_token: Some(token("<|video|>")),
+            audio_out_token: Some(token("<|audio_out|>")),
             audio_encoder: true,
         }
     }

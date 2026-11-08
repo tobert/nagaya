@@ -37,6 +37,13 @@ struct SpeechSlot {
 }
 
 /// The speech path of the engine: the weights, the buffers and the state of each slot.
+impl Speech {
+    /// The codebook table of the backbone: the rows that a frame of speech sums (`depth::frame_embedding`).
+    pub(super) fn codebook(&self) -> u64 {
+        self.depth.codebook
+    }
+}
+
 pub(super) struct Speech {
     depth: depth::Weights,
     codec: codec::Weights,

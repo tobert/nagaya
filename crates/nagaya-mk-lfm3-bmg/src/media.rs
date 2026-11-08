@@ -24,6 +24,16 @@ pub const KIND_AUDIO: u32 = 2;
 /// The kind of a run of a clip in a record: the sound of one pair of a video (spec 11.11, "The video of a request").
 pub const KIND_RUN: u32 = 3;
 
+/// The kind of the speech of an `assistant` audio part in a record: the codes of its frames, the end frame last
+/// (spec 11.11, "Read it back").
+pub const KIND_CODES: u32 = 4;
+
+/// The codes of one frame of speech.
+pub const FRAME_CODES: usize = 12;
+
+/// The codes of a codebook, the end code too (`depth::CODES`).
+pub const CODEBOOK_CODES: u32 = 2017;
+
 /// The values of one patch row of an image: 3 channels, 2 copies in time, 16 by 16 pixels
 /// (`image_processing_lfm3_vl.py:186`, `nagaya-text-lfm3` `media::image::ROW`).
 pub const PATCH_ROW: usize = 1536;
@@ -46,6 +56,9 @@ pub enum SpanKind {
     Audio { frames: usize },
     /// The encoder rows from `start` of a clip of `frames` mel frames. The rows of the segment are the whole clip.
     Run { frames: usize, start: usize },
+    /// Frames of speech: one position for each frame, whose row is the sum of its 12 codebook rows. The rows of the
+    /// segment are the codes, 12 `u32` for each frame.
+    Codes,
 }
 
 /// One media span of `meta`.
@@ -69,6 +82,7 @@ impl Span {
         match self.kind {
             SpanKind::Image { grid } => grid.iter().product(),
             SpanKind::Audio { frames } | SpanKind::Run { frames, .. } => frames,
+            SpanKind::Codes => self.count,
         }
     }
 
@@ -77,6 +91,7 @@ impl Span {
         match self.kind {
             SpanKind::Image { .. } => PATCH_ROW,
             SpanKind::Audio { .. } | SpanKind::Run { .. } => MEL_ROW,
+            SpanKind::Codes => FRAME_CODES,
         }
     }
 
@@ -94,6 +109,7 @@ pub fn encode(spans: &[Span]) -> Vec<u8> {
             SpanKind::Image { grid } => (KIND_IMAGE, [grid[0] as u32, grid[1] as u32, grid[2] as u32, 0]),
             SpanKind::Audio { frames } => (KIND_AUDIO, [frames as u32, 0, 0, 0]),
             SpanKind::Run { frames, start } => (KIND_RUN, [frames as u32, start as u32, 0, 0]),
+            SpanKind::Codes => (KIND_CODES, [FRAME_CODES as u32, 0, 0, 0]),
         };
         out.extend(kind.to_le_bytes());
         out.extend((span.count as u32).to_le_bytes());
@@ -189,9 +205,20 @@ pub fn decode(meta: &[u8]) -> Result<Vec<Span>, String> {
                 }
                 SpanKind::Run { frames, start }
             }
+            KIND_CODES => {
+                if rest != [FRAME_CODES, 0, 0, 0] {
+                    return Err(format!(
+                        "media record {i} is speech with words {rest:?}; it names {FRAME_CODES} codes for each frame"
+                    ));
+                }
+                if count == 0 {
+                    return Err(format!("media record {i} is speech with no frames"));
+                }
+                SpanKind::Codes
+            }
             other => {
                 return Err(format!(
-                    "media record {i} has the kind {other}, not an image, a clip or a run"
+                    "media record {i} has the kind {other}, not an image, a clip, a run or speech"
                 ));
             }
         };
@@ -210,6 +237,8 @@ pub struct MediaRules {
     pub audio_token: Option<u32>,
     /// The placeholder of a video (`video_token_id`). The pair of a video is an image span at its positions.
     pub video_token: Option<u32>,
+    /// The placeholder of a frame of speech (`audio_out_token_id`), when the engine has the codebook table.
+    pub audio_out_token: Option<u32>,
     /// True when the engine runs the audio encoder: the model has one.
     pub audio_encoder: bool,
 }
@@ -228,6 +257,9 @@ impl MediaRules {
                     crate::audio::MAX_CLIP_FRAMES
                 ))
             }
+            SpanKind::Codes => self.audio_out_token.ok_or_else(|| {
+                format!("media record {i} is speech, and this model has no codebook table; send its text only")
+            }),
             SpanKind::Audio { .. } | SpanKind::Run { .. } => match self.audio_token {
                 Some(token) if self.audio_encoder => Ok(token),
                 Some(_) => Err(format!(
@@ -322,10 +354,15 @@ pub fn check_spans(
             "the segment has {rows} bytes of rows, and its media records need {rows_at}"
         ));
     }
-    let placeholders: Vec<u32> = [rules.image_token, rules.audio_token, rules.video_token]
-        .into_iter()
-        .flatten()
-        .collect();
+    let placeholders: Vec<u32> = [
+        rules.image_token,
+        rules.audio_token,
+        rules.video_token,
+        rules.audio_out_token,
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     if let Some(t) = (0..tokens.len()).find(|t| !covered[*t] && placeholders.contains(&tokens[*t])) {
         return Err(format!(
             "position {} holds the media placeholder {}, and no media record names it",
@@ -343,12 +380,14 @@ mod tests {
     const IMAGE: u32 = 125_030;
     const AUDIO: u32 = 125_031;
     const VIDEO: u32 = 125_029;
+    const AUDIO_OUT: u32 = 125_032;
 
     fn rules() -> MediaRules {
         MediaRules {
             image_token: Some(IMAGE),
             audio_token: Some(AUDIO),
             video_token: Some(VIDEO),
+            audio_out_token: Some(AUDIO_OUT),
             audio_encoder: false,
         }
     }
@@ -560,5 +599,33 @@ mod tests {
         let mixed: Vec<u32> = (0..20).map(|i| if i < 10 { VIDEO } else { IMAGE }).collect();
         let e = check_spans(&rules(), &[span], &mixed, 0, span.bytes()).unwrap_err();
         assert!(e.contains("position 10 is in media record 0"), "{e}");
+    }
+
+    /// The speech of an assistant audio part: one position for each frame, and 12 codes of rows for each.
+    #[test]
+    fn speech_goes_through_its_bytes_and_takes_12_codes_for_each_frame() {
+        let span = Span {
+            kind: SpanKind::Codes,
+            first: 30,
+            count: 47,
+        };
+        let meta = encode(&[span]);
+        assert_eq!(&meta[..4], &KIND_CODES.to_le_bytes());
+        assert_eq!(&meta[16..20], &12u32.to_le_bytes());
+        assert_eq!(decode(&meta).unwrap(), [span]);
+        assert_eq!(span.bytes(), 47 * 12 * 4);
+        let uses = check_spans(&rules(), &[span], &[AUDIO_OUT; 47], 30, span.bytes()).unwrap();
+        assert_eq!((uses[0].take.clone(), uses[0].block_row), (0..47, 0));
+        let mut bad = meta.clone();
+        bad[16] = 11;
+        assert!(decode(&bad).unwrap_err().contains("12 codes"));
+        let e = check_spans(&rules(), &[], &[7, AUDIO_OUT], 0, 0).unwrap_err();
+        assert!(e.contains("position 1 holds the media placeholder 125032"), "{e}");
+        let none = MediaRules {
+            audio_out_token: None,
+            ..rules()
+        };
+        let e = check_spans(&none, &[span], &[AUDIO_OUT; 47], 30, span.bytes()).unwrap_err();
+        assert!(e.contains("no codebook table"), "{e}");
     }
 }

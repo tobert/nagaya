@@ -240,6 +240,8 @@ pub fn media_rules(text: &str) -> Result<crate::media::MediaRules, String> {
         image_token: Some(id("image_token_id")?),
         audio_token: Some(id("audio_token_id")?),
         video_token: Some(id("video_token_id")?),
+        // The engine sets the placeholder of speech when it loads the codebook table.
+        audio_out_token: None,
         audio_encoder: false,
     })
 }
