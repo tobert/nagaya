@@ -460,6 +460,10 @@ pub enum Want {
         /// The reason of the store (spec 6.4).
         reason: Reason,
     },
+    /// Make one frame of audio in the slot, and decode it (spec 11.11). The frame takes the next position of the slot.
+    Frame(super::speech_out::FrameWant),
+    /// Give the last samples of the codec of the slot, and free its window.
+    CodecEnd,
     /// The work is complete.
     Done,
     /// The client went away. The job ends as cancelled and holds nothing more (spec 5.9).
@@ -489,6 +493,10 @@ pub enum Got {
     Copied,
     /// The store holds the snapshot, or holds its bytes under another recipe (`None`).
     Held(Option<ContentId>),
+    /// The frame is fed, and the codec decoded it.
+    Frame(super::speech_out::FrameGot),
+    /// The last samples of the codec.
+    Samples(Vec<f32>),
 }
 
 /// The work after a build, as a state machine with no I/O. The body drives it on the group thread.
@@ -550,6 +558,10 @@ enum Unit {
     Snapshot(RecipeId, Reason),
     /// An interval copy of the state after the last pass (spec 6.13).
     Interval,
+    /// A frame of audio, and its decode.
+    Frame(super::speech_out::FrameWant),
+    /// The end of the codec of the slot.
+    CodecEnd,
 }
 
 /// A pass that began: its tokens, the position of its first token, and what its end gives.
@@ -867,9 +879,9 @@ impl<T: Then> ContextBody<T> {
             .slot_high(self.slot()) as usize)
     }
 
-    /// Send the result to the caller. The slot is free before the caller hears, so the caller sees it free.
-    fn send(&mut self, result: Result<Finished<T>, ServiceError>) {
-        // The store keeps the last copy after the context ends. The cap and eviction remove it (spec 6.13).
+    /// Stop the interval copies of the slot. The store keeps the last copy after the context ends. The cap and
+    /// eviction remove it (spec 6.13).
+    fn untrack(&mut self) {
         if self.tracked {
             self.tracked = false;
             let slot = u64::from(self.slot());
@@ -881,6 +893,11 @@ impl<T: Then> ContextBody<T> {
                     .expect("a tracked slot is in the tracker");
             }
         }
+    }
+
+    /// Send the result to the caller. The slot is free before the caller hears, so the caller sees it free.
+    fn send(&mut self, result: Result<Finished<T>, ServiceError>) {
+        self.untrack();
         self.lease = None;
         // The mark is host memory. Free it and its charge before the caller hears the result.
         self.mark = None;
@@ -1029,6 +1046,14 @@ impl<T: Then> ContextBody<T> {
                 self.units.push_back(Unit::Snapshot(recipe, reason));
                 Kind::Copy
             }
+            Want::Frame(frame) => {
+                self.units.push_back(Unit::Frame(frame));
+                Kind::Decode
+            }
+            Want::CodecEnd => {
+                self.units.push_back(Unit::CodecEnd);
+                Kind::Decode
+            }
             Want::Feed { .. } | Want::Tap { .. } => {
                 let (tokens, logits, kind, tap, lens) = match want {
                     Want::Feed { tokens, logits, kind } => (tokens, logits, kind, false, false),
@@ -1074,6 +1099,7 @@ impl<T: Then> ContextBody<T> {
             Unit::Build(step) => step.kind(),
             Unit::Feed { .. } => self.feeding.as_ref().expect("a pass belongs to a feed").kind,
             Unit::Mark | Unit::Rewind | Unit::Snapshot(..) | Unit::Interval => Kind::Copy,
+            Unit::Frame(_) | Unit::CodecEnd => Kind::Decode,
         }
     }
 
@@ -1148,6 +1174,14 @@ impl<T: Then> ContextBody<T> {
                 self.interval_copy(engine)?;
                 self.after_copy.take()
             }
+            Unit::Frame(frame) => {
+                // The recipe of an interval copy names tokens, and a frame is codes. So the slot gets no more copies.
+                self.untrack();
+                let got = super::speech_out::frame(engine, self.slot(), &frame, self.shared.vocab)?;
+                self.fed.push(frame.placeholder);
+                Some(Got::Frame(got))
+            }
+            Unit::CodecEnd => Some(Got::Samples(super::speech_out::codec_end(engine, self.slot())?)),
         };
         self.after(got, false, engine)
     }
@@ -1357,6 +1391,10 @@ impl<T: Then> ContextBody<T> {
         let Some(intervals) = self.shared.intervals.as_ref().filter(|_| self.copies) else {
             return Ok(false);
         };
+        // A slot after a frame of audio is not tracked.
+        if !self.tracked {
+            return Ok(false);
+        }
         let rows = self.rows(engine)?;
         if rows != self.fed.len() {
             return Err(ServiceError::internal(format!(

@@ -147,6 +147,7 @@ impl Then for DecisionThen {
             }
             Got::Held(_) => Err(ServiceError::internal("a decision read holds no snapshot of its own")),
             Got::Tapped { .. } => Err(ServiceError::internal("a decision read names no tap")),
+            Got::Frame(_) | Got::Samples(_) => Err(ServiceError::internal("a decision read makes no audio")),
         }
     }
 }

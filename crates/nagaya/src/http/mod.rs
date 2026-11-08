@@ -17,6 +17,7 @@ mod peers;
 pub mod pending;
 mod profile;
 mod routes;
+pub mod speech_out;
 mod stream;
 pub mod voice;
 
@@ -334,6 +335,14 @@ impl Council {
         }
     }
 
+    /// The served text model of this process with the name `model`, not an alias.
+    pub fn text_model(&self, model: &str) -> Option<Arc<Served>> {
+        self.models
+            .iter()
+            .find(|served| served.service.model() == model)
+            .cloned()
+    }
+
     /// The speech service of a served speech model.
     pub fn speech_service(&self, model: &str) -> Option<Arc<crate::speech::SpeechService>> {
         self.speech.iter().find(|service| service.model() == model).cloned()
@@ -510,14 +519,17 @@ impl Council {
             engine: identity.engine,
             device: served.device.clone(),
             text_stop: None,
-            // A family that reads media lists its types (spec 11.11). Its replies hold text.
-            media: Some(service.family().media_inputs())
-                .filter(|inputs| !inputs.is_empty())
-                .map(|inputs| gogi_proto::identity::Media {
+            // A family that reads media lists its types, and a model that speaks writes `audio/wav` beside its text
+            // (spec 11.11). Its replies hold text.
+            media: {
+                let inputs = service.family().media_inputs();
+                let outputs: Vec<String> = config.speech.iter().map(|_| speech_out::WAV.to_owned()).collect();
+                (!inputs.is_empty() || !outputs.is_empty()).then_some(gogi_proto::identity::Media {
                     inputs,
-                    outputs: Vec::new(),
+                    outputs,
                     text_replies: true,
-                }),
+                })
+            },
             limits: ModelLimits {
                 control_vector_contexts: service.controls().then_some(CONTROL_VECTOR_CONTEXTS),
                 context_tokens: config.context_tokens as u64,

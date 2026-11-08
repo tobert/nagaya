@@ -119,6 +119,32 @@ fn the_family_opens_from_the_folder_of_its_model() {
     assert!(other.contains("lfm3-omni"), "{other}");
 }
 
+/// The family of Omni gives the speech path from its folder, and `lfm3` writes text only (spec 11.11).
+#[test]
+fn the_family_of_omni_speaks_and_the_text_model_does_not() {
+    let (Some(text), Some(omni)) = (folder("LFM3_MODEL_DIR"), folder("LFM3_OMNI_MODEL_DIR")) else {
+        return;
+    };
+    let mut identity = FakeAlways::new().with_family("lfm3").identity();
+    identity.model = "lfm3".to_owned();
+    let opened = open_family(&identity, &table(&format!("model_dir = \"{}\"", text.display()))).expect("a family");
+    assert_eq!(opened.speech, None, "lfm3 writes text only");
+    identity.model = "lfm3-omni".to_owned();
+    let opened = open_family(&identity, &table(&format!("model_dir = \"{}\"", omni.display()))).expect("a family");
+    let speech = opened.speech.expect("Omni speaks");
+    // The ids of `config.json` of the pinned checkpoint (AGENTS milestone 24).
+    assert_eq!(
+        (
+            speech.audio_start,
+            speech.mixed_start,
+            speech.text_end,
+            speech.audio_out
+        ),
+        (125_012, 125_015, 125_014, 125_032)
+    );
+    assert_eq!((speech.n_text, speech.n_audio), (6, 12));
+}
+
 /// The kind and the family exist in a build with the feature `xe`, and in no other build.
 #[test]
 fn the_kind_and_the_family_exist_only_with_the_feature_xe() {

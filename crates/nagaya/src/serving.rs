@@ -24,6 +24,8 @@ pub struct OpenedFamily {
     /// The hash of the tokenizer that the library loaded, or `None` for a family with no tokenizer file. It must
     /// equal the `tokenizer_hash` of the engine identity (spec 11.3).
     pub tokenizer_hash: Option<String>,
+    /// The speech path of a family that speaks (spec 11.11). The served model then writes `audio/wav` too.
+    pub speech: Option<crate::council::speech_out::SpeechOut>,
 }
 
 /// The objects of the process, which a family reads for the media parts of a context (spec 6.15, 11.11).
@@ -63,6 +65,7 @@ impl FamilyRegistry {
             Ok(OpenedFamily {
                 family: Arc::new(nagaya_text_toy::ToyFamily::new()),
                 tokenizer_hash: None,
+                speech: None,
             })
         });
         #[cfg(feature = "hip")]
@@ -146,6 +149,7 @@ impl FamilyRegistry {
         let mut config = ServiceConfig::new(&identity.model, &engine.name);
         config.context_tokens =
             usize::try_from(tokens).map_err(|_| format!("a slot of {tokens} tokens is too large"))?;
+        config.speech = opened.speech;
         Ok(Some(Plan {
             family: opened.family,
             config,
@@ -178,6 +182,7 @@ fn open_qwen38(identity: &Identity, table: &toml::Table) -> Result<OpenedFamily,
     Ok(OpenedFamily {
         family: Arc::new(family),
         tokenizer_hash: Some(hash),
+        speech: None,
     })
 }
 

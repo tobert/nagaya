@@ -24,6 +24,7 @@ fn toy_opener(_: &Identity, _: &toml::Table) -> Result<OpenedFamily, String> {
     Ok(OpenedFamily {
         family: Arc::new(ToyFamily::new()),
         tokenizer_hash: None,
+        speech: None,
     })
 }
 
@@ -84,6 +85,7 @@ fn a_tokenizer_hash_that_the_identity_does_not_have_refuses_the_family() {
         Ok(OpenedFamily {
             family: Arc::new(ToyFamily::new()),
             tokenizer_hash: Some("sha256:other".to_owned()),
+            speech: None,
         })
     });
     let error = registry

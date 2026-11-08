@@ -239,6 +239,7 @@ fn a_described_engine_is_a_served_model_that_answers_after_a_load() {
         Ok(OpenedFamily {
             family: Arc::new(ToyFamily::new()),
             tokenizer_hash: None,
+            speech: None,
         })
     });
     let council = Arc::new(

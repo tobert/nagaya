@@ -13,6 +13,7 @@ pub mod pins;
 pub mod reads;
 pub mod slots;
 pub mod specs;
+pub mod speech_out;
 pub mod staging;
 pub mod trace;
 pub mod vectors;
@@ -119,6 +120,9 @@ pub struct ServiceConfig {
     /// the server (gogi "Served models"), such as those of a speech engine (spec 11.8a). Each is the name of the
     /// engine in the profile and its served model.
     pub peers: Vec<(String, String)>,
+    /// The speech path of a served model that also speaks (spec 11.11), from its family library. `None` writes text
+    /// only.
+    pub speech: Option<speech_out::SpeechOut>,
 }
 
 /// The sample settings that a generation takes when its request does not name them. Each engine has its own
@@ -162,6 +166,7 @@ impl ServiceConfig {
             pin_bytes: 1 << 30,
             spec_rules: SpecRules::default(),
             peers: Vec::new(),
+            speech: None,
         }
     }
 }
@@ -315,6 +320,8 @@ pub struct Service {
     /// 11.12). The process sets it once, when it has an object store. With none, each object part that passes rules 1
     /// and 2 is a 404.
     objects: OnceLock<Arc<Mutex<nagaya_store::objects::ObjectStore>>>,
+    /// The codes of each audio output that this service wrote, by content id (spec 11.11, "Codes").
+    output_codes: Mutex<std::collections::BTreeMap<ContentId, Vec<u32>>>,
 }
 
 /// The root recipe of a context and its control list, after the checks (spec 11.12).
@@ -499,6 +506,7 @@ impl Service {
             pins: files.pins,
             config,
             objects: OnceLock::new(),
+            output_codes: Mutex::new(std::collections::BTreeMap::new()),
         };
         service.settle_pins()?;
         Ok(service)
