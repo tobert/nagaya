@@ -118,9 +118,9 @@ backward fit. Thus it is not the plan.
 
 ## Where the routes live
 
-**Proposed** (Claude Opus 5.5, 2026-11-07): put `project` and `trace` on nagaya routes under `/nagaya/v1/lab/`
-first. Move `trace` into gogi when its shape settles and a client needs it. Keep the routes that read tensors in the
-nagaya.
+Decided 2026-11-07 (Amy: "ok yeah, start on /nagaya/v1/lab/"): put `project` and `trace` on nagaya routes under
+`/nagaya/v1/lab/` first. Move `trace` into gogi when its shape settles and a client needs it. Keep the routes that read
+tensors in the nagaya.
 
 - `project` and `trace` use ideas that each language model has: layers, a residual width, an unembedding and tokens.
   gogi already has layers and widths in its control vectors, so they can go there later.

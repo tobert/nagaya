@@ -99,8 +99,8 @@ done, and `docs/history.md` keeps their full text, and the merges where the run 
 is done on gfx1151host, and milestones 15s, 16, 17, 18, 19 and 20 are done on b70host. Milestone 21 waits, and
 milestone 22 is done on gfx1151host.
 
-Milestone 24, LFM3 Omni, is deployed on b70host, and its video step waits. Milestone 25, control vectors, is next
-(Amy, 2026-11-07). Milestone 23, the cluster, follows it.
+Milestone 24, LFM3 Omni, is deployed on b70host, and its video step waits. Milestone 25, control vectors, is deployed
+(steps 8 and 9 wait), and milestone 26, the lab tools, is next (Amy, 2026-11-07). Milestone 23, the cluster, follows.
 
 1. **Workspace.** The Cargo workspace, its crates, `rustfmt.toml` and the dev profile. Done.
 2. **Engine trait.** The ABI core and capabilities as traits, with a fake engine and a broken fake for the gates. Done.
@@ -649,7 +649,25 @@ Milestone 24, LFM3 Omni, is deployed on b70host, and its video step waits. Miles
        text"). Its speech frames take no list.
 
     Each stop and start of `nagaya.service` goes into `signoff.md`.
-26. Stop and ask Amy for the next milestone.
+26. **Lab tools.** Look inside a model while it runs, with `project` and `trace` (`docs/lab.md`). Amy, 2026-11-07,
+    after loops in some steered replies: "how might we analyze that? could we build something into the nagaya for
+    looking at weights to see what's up?" Then "ok yeah, start on /nagaya/v1/lab/". The rules:
+    - **Routes:** nagaya routes under `/nagaya/v1/lab/` first. `trace` moves to gogi when its shape settles and a
+      client needs it. Routes that read tensors stay in the nagaya.
+    - **Model:** `lfm3` first, then Omni's text passes.
+    - **The J-Lens:** a reference tool outside the nagaya fits it, as gmk did on gfx1151host. The nagaya applies it.
+
+    Do the steps in this order:
+    1. **`project`.** A vector through the unembedding, with the weight of the final norm. Its oracle is the product
+       of the reference on the CPU. Then project the refusal vector, and report the rank of `<|im_end|>`.
+    2. **`trace`.** A generation that writes a trace object (`docs/lab.md`, "`trace`"). Its card gate: a trace gives
+       the bits of the same generation with no trace.
+    3. **Web app.** A Lab tab that projects a saved vector, and draws a trace of a plain and a steered reply.
+    4. **Deploy.** Deploy on b70host, and trace Amy's loops with her.
+    5. **J-Lens.** Fit the lens of LFM3-1.7B with the reference, and read through it in `project` and `trace`.
+
+    Each stop and start of `nagaya.service` goes into `signoff.md`.
+27. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
 
