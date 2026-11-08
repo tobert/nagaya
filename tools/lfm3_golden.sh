@@ -89,6 +89,9 @@
 #   For <n> in av, v: <n>.ids [P], <n>.indices [n] i64 (the sampled frames), <n>.decoded_rgb [n, H, W, 3] u8
 #   (torchcodec), <n>.resized_rgb [2k, h, w, 3] u8, <n>.pixel_values [k*h/16*w/16, 1536], <n>.grid_thw [1, 3],
 #   <n>.rows [k*h*w/1024, 2048]. av also: samples [S] (16 kHz mono), mel [128, T], audio_rows [A, 2048].
+# audio_out.safetensors, lfm3-omni.audio_out.json (--stages audio-out, not in the default; after speech): the TTS run
+#   of speech.safetensors as an assistant audio part (spec 11.11, "Read it back"). ids [P] with one <|audio_out|> for
+#   each frame and the end frame; codes [F, 12] without the end frame; rows [F + 1, 2048] the summed codebook rows.
 # lfm3.project.safetensors (--stages project, not in the default): the project gate of LFM3-1.7B (docs/lab.md). It
 #   reads lfm3.control.safetensors, so run the control stage first. For each layer l in 0, 12 and 23, u is the weight
 #   of the final norm times vector[l], with no division by its root mean square, and the scores are the head of u.

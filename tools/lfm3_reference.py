@@ -738,6 +738,46 @@ def run_video(model, processor, out, facts):
     facts["video"] = record
 
 
+def run_audio_out(model, processor, out, facts):
+    """The gate of an assistant audio part (spec 11.11, "Read it back"): a conversation whose assistant turn holds the
+    text and the speech of the TTS run of the speech stage, through the model with its codes. The processor would
+    encode a waveform with the codec; the nagaya holds the codes, so this stage gives the model the codes."""
+    from safetensors.torch import load_file
+
+    speech = load_file(str(Path(out) / "speech.safetensors"))
+    codes = speech["tts.codes"].to(torch.int64)
+    eos = int(processor.audio_eos_code)
+    if bool((codes[-1] == eos).all()):
+        codes = codes[:-1]
+    # The prompt and the targets carry the end frame after the speech, as generate(return_audio_eos=True) does.
+    with_eos = torch.cat([codes, torch.full((1, codes.shape[1]), eos, dtype=codes.dtype)])
+    tok = processor.tokenizer
+    messages = [
+        {"role": "system", "content": "Perform TTS in American English using a female voice."},
+        {"role": "user", "content": "Say hello."},
+        {"role": "assistant", "content": [{"type": "text", "text": "Hello."}, {"type": "audio_out"}]},
+        {"role": "user", "content": "Say it again, slower."},
+    ]
+    text = tok.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+    check(text.count(processor.audio_out_token) == 1, "the template writes one audio_out placeholder")
+    text = text.replace(processor.audio_out_token, processor.audio_out_token * with_eos.shape[0])
+    ids = tok(text, add_special_tokens=False, return_tensors="pt")["input_ids"]
+    check(int((ids == model.config.audio_out_token_id).sum()) == with_eos.shape[0], "a position for each frame")
+    with torch.no_grad():
+        output = model(input_ids=ids, audio_out_codes=with_eos, use_cache=False, logits_to_keep=1)
+        rows = model.model.get_audio_out_embeds(with_eos)
+    tensors = {"ids": ids[0].to(torch.int64), "codes": codes, "rows": rows.float()}
+    record = {"frames": int(codes.shape[0]), "positions": int(with_eos.shape[0]), "eos": eos}
+    save(tensors, Path(out) / "audio_out.safetensors", {"audio_out": record, "versions": versions()})
+    entry = top_entry("audio_out", "the TTS run of the speech stage as an assistant audio part", text,
+                      ids[0].tolist(), output.logits[0, -1])
+    document = {"format": 1, "model": "lfm3-omni", "vocab": model.config.text_config.vocab_size,
+                "versions": versions(), "prompts": [entry]}
+    (Path(out) / "lfm3-omni.audio_out.json").write_text(json.dumps(document, indent=1, ensure_ascii=False) + "\n")
+    facts["audio_out"] = record
+    log(f"audio_out: {record['frames']} frames, {record['positions']} positions, {ids.shape[1]} ids")
+
+
 def teacher_forced(model, ids, codes):
     """One forward over a whole run, with the codes of each audio placeholder: the hidden state of each position."""
     with torch.no_grad():
@@ -964,7 +1004,7 @@ def main():
             run_project(model.model, model.lm_head, tokenizer, args.out, facts)
         del model
 
-    if stages & {"text", "vision", "audio", "speech", "control-omni", "video"}:
+    if stages & {"text", "vision", "audio", "speech", "control-omni", "video", "audio-out"}:
         log("load LFM3-Omni-2B")
         model = AutoModelForMultimodalLM.from_pretrained(
             args.omni, dtype=torch.float32, attn_implementation="eager", trust_remote_code=True
@@ -990,6 +1030,8 @@ def main():
         if "speech" in stages:
             codec = processor.audio_tokenizer.float().eval()
             run_speech(model, processor, codec, args.out, facts)
+        if "audio-out" in stages:
+            run_audio_out(model, processor, args.out, facts)
 
     facts["seconds"] = round(time.time() - STARTED)
     facts_path.write_text(json.dumps(facts, indent=1, ensure_ascii=False) + "\n")
