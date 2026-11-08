@@ -189,6 +189,24 @@ pub fn bf16_to_f32(bits: u16) -> f32 {
     f32::from_bits((bits as u32) << 16)
 }
 
+/// Convert IEEE half precision (`u16`) to `f32`. Each value is exact in `f32`.
+pub fn f16_to_f32(bits: u16) -> f32 {
+    let sign = if bits & 0x8000 != 0 { -1.0f32 } else { 1.0 };
+    let exp = ((bits >> 10) & 0x1F) as i32;
+    let mant = (bits & 0x3FF) as f32;
+    match exp {
+        0 => sign * mant * 2f32.powi(-24),
+        31 => {
+            if mant == 0.0 {
+                sign * f32::INFINITY
+            } else {
+                f32::NAN
+            }
+        }
+        _ => sign * (1.0 + mant / 1024.0) * 2f32.powi(exp - 15),
+    }
+}
+
 unsafe extern "C" {
     fn mmap(
         addr: *mut std::ffi::c_void,

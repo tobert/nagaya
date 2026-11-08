@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use nagaya_mk_bmg::safetensors::{Dtype, MappedSafeTensors, bf16_to_f32};
+use nagaya_mk_bmg::safetensors::{Dtype, MappedSafeTensors, SafeTensorsView, bf16_to_f32, f16_to_f32};
 
 use crate::spec::{Model, WEIGHTS_FILE};
 
@@ -31,6 +31,8 @@ pub struct Unembedding {
     ends: Vec<u32>,
     /// The weight of the final norm, as `f32`.
     norm: Vec<f32>,
+    /// The epsilon of the final norm: `norm_eps` of `config.json`.
+    eps: f64,
 }
 
 /// One entry of a projection: a row of the head and its score.
@@ -163,6 +165,15 @@ impl Unembedding {
             .map(|b| bf16_to_f32(u16::from_le_bytes(*b)))
             .collect();
         drop(view);
+        let config = read_json(&dir.join("config.json"))?;
+        let text = match model {
+            Model::Text => &config,
+            Model::Omni => &config["text_config"],
+        };
+        let eps = text["norm_eps"]
+            .as_f64()
+            .filter(|eps| *eps > 0.0)
+            .ok_or_else(|| format!("config.json of {} has no positive number norm_eps", dir.display()))?;
         Ok(Unembedding {
             file,
             model,
@@ -171,6 +182,7 @@ impl Unembedding {
             layers,
             ends,
             norm,
+            eps,
         })
     }
 
@@ -197,6 +209,21 @@ impl Unembedding {
     /// The end tokens of the model, from `generation_config.json`.
     pub fn ends(&self) -> &[u32] {
         &self.ends
+    }
+
+    /// The logit rows of residual rows, as the final norm and the head give them: each row divides by its root mean
+    /// square with the epsilon, and then takes the scores of a direction. The lenses of `trace` read through it.
+    pub fn readout(&self, rows: &[&[f32]]) -> Vec<Vec<f32>> {
+        let scaled: Vec<Vec<f32>> = rows
+            .iter()
+            .map(|h| {
+                let mean = h.iter().map(|x| *x as f64 * *x as f64).sum::<f64>() / h.len() as f64;
+                let inverse = 1.0 / (mean + self.eps).sqrt();
+                h.iter().map(|x| (*x as f64 * inverse) as f32).collect()
+            })
+            .collect();
+        let refs: Vec<&[f32]> = scaled.iter().map(Vec::as_slice).collect();
+        self.scores(&refs)
     }
 
     /// The scores of each direction in `vectors`: one score for each row of the head. Each direction has `width`
@@ -312,4 +339,105 @@ pub fn rank(scores: &[f32], id: u32) -> usize {
         .enumerate()
         .filter(|(i, s)| s.total_cmp(&own).is_gt() || (s.total_cmp(&own).is_eq() && (*i as u32) < id))
         .count()
+}
+
+/// The value of `nagaya.lens` in the metadata of a J-Lens.
+pub const JLENS: &str = "jlens";
+
+/// A J-Lens of one model (`docs/lab.md`, "The rules of the J-Lens"): the matrix `J_l` of each layer before the last,
+/// in `f32`. The lens of the last layer is the identity.
+pub struct JLens {
+    id: String,
+    layers: u32,
+    width: usize,
+    /// `J_l` for `l` from 0 to `layers - 2`, each `width` rows of `width` values. Row `i` gives entry `i` of `J_l h`.
+    matrices: Vec<Vec<f32>>,
+}
+
+impl JLens {
+    /// Read the lens file `path` of a model with the weights `weight_hash`, `layers` layers and a residual of `width`.
+    /// A file that does not fit is an error that names the reason.
+    pub fn read(path: &Path, weight_hash: &str, layers: u32, width: usize) -> Result<JLens, String> {
+        let bytes = std::fs::read(path).map_err(|e| format!("cannot read the lens {}: {e}", path.display()))?;
+        let at = |why: String| format!("the lens {}: {why}", path.display());
+        let view = SafeTensorsView::parse(&bytes).map_err(at)?;
+        let header: serde_json::Value = serde_json::from_slice(&bytes[8..view.data_offset])
+            .map_err(|e| at(format!("the header is not JSON: {e}")))?;
+        let meta = &header["__metadata__"];
+        let kind = meta["nagaya.lens"].as_str().unwrap_or("");
+        if kind != JLENS {
+            return Err(at(format!("its metadata names the lens {kind:?}, not {JLENS:?}")));
+        }
+        let hash = meta["weight_hash"].as_str().unwrap_or("");
+        if hash != weight_hash {
+            return Err(at(format!(
+                "it was fitted for weight_hash {hash}, and the served model has weight_hash {weight_hash}; fit a lens \
+                 for these weights"
+            )));
+        }
+        let held = layers.saturating_sub(1);
+        let mut names: Vec<&String> = view.tensors.keys().collect();
+        names.sort();
+        if let Some(name) = names
+            .iter()
+            .find(|name| !(0..held).any(|l| **name == &format!("layers.{l}")))
+        {
+            return Err(at(format!(
+                "it holds the tensor {name}; a lens of {layers} layers holds layers.0 to layers.{} only, because the \
+                 lens of the last layer is the identity",
+                held.saturating_sub(1)
+            )));
+        }
+        let mut matrices = Vec::with_capacity(held as usize);
+        for l in 0..held {
+            let name = format!("layers.{l}");
+            let meta = view
+                .tensors
+                .get(&name)
+                .ok_or_else(|| at(format!("it holds no tensor {name}")))?;
+            if meta.dtype != Dtype::F16 {
+                return Err(at(format!("tensor {name} is {:?}; a lens holds F16", meta.dtype)));
+            }
+            if meta.shape != [width, width] {
+                return Err(at(format!(
+                    "tensor {name} has the shape {:?}, and the residual has the width {width}; it is [{width}, {width}]",
+                    meta.shape
+                )));
+            }
+            let data = view.tensor_bytes(&name).expect("the view found the tensor");
+            matrices.push(
+                data.as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|b| f16_to_f32(u16::from_le_bytes(*b)))
+                    .collect(),
+            );
+        }
+        Ok(JLens {
+            id: format!("blake3:{}", blake3::hash(&bytes).to_hex()),
+            layers,
+            width,
+            matrices,
+        })
+    }
+
+    /// The content id of the lens file.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// `J_l h` for the residual row `h` of layer `layer`. The sums run in `f64` in a fixed order. A layer past the
+    /// model or a row of another width is a defect of the caller, and it panics.
+    pub fn transport(&self, layer: u32, h: &[f32]) -> Vec<f32> {
+        assert!(
+            layer < self.layers,
+            "the layer {layer} is in the model of {} layers",
+            self.layers
+        );
+        assert_eq!(h.len(), self.width, "a row has the width of the residual");
+        let Some(matrix) = self.matrices.get(layer as usize) else {
+            return h.to_vec();
+        };
+        matrix.chunks_exact(self.width).map(|row| dot(row, h)).collect()
+    }
 }

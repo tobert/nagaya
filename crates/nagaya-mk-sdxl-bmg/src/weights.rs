@@ -79,23 +79,8 @@ pub fn needs_f32(name: &str) -> bool {
         || name.ends_with("position_embedding.weight")
 }
 
-/// The F32 values of F16 bits.
-pub fn f16_to_f32(bits: u16) -> f32 {
-    let sign = if bits & 0x8000 != 0 { -1.0f32 } else { 1.0 };
-    let exp = ((bits >> 10) & 0x1F) as i32;
-    let mant = (bits & 0x3FF) as f32;
-    match exp {
-        0 => sign * mant * 2f32.powi(-24),
-        31 => {
-            if mant == 0.0 {
-                sign * f32::INFINITY
-            } else {
-                f32::NAN
-            }
-        }
-        _ => sign * (1.0 + mant / 1024.0) * 2f32.powi(exp - 15),
-    }
-}
+/// The F32 values of F16 bits. The B70 engines share the decoder.
+pub use nagaya_mk_bmg::safetensors::f16_to_f32;
 
 /// The bytes of `f32` values.
 pub fn f32_bytes(values: &[f32]) -> Vec<u8> {

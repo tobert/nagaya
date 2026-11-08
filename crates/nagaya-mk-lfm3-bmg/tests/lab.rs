@@ -7,7 +7,7 @@ use std::path::Path;
 
 use common::Which;
 use nagaya_mk_bmg::safetensors::SafeTensorsView;
-use nagaya_mk_lfm3_bmg::lab::{Entry, Facts, Unembedding, ends_of, rank};
+use nagaya_mk_lfm3_bmg::lab::{Entry, Facts, JLens, Unembedding, ends_of, rank};
 use nagaya_mk_lfm3_bmg::spec::Model;
 
 fn bf16(values: &[f32]) -> Vec<u8> {
@@ -23,11 +23,11 @@ fn checkpoint(dir: &Path, model: Model, table: &[Vec<f32>], norm: &[f32], ends: 
     let (architecture, config) = match model {
         Model::Text => (
             "Lfm3ForCausalLM",
-            serde_json::json!({"num_hidden_layers": 2, "hidden_size": norm.len()}),
+            serde_json::json!({"num_hidden_layers": 2, "hidden_size": norm.len(), "norm_eps": 0.25}),
         ),
         Model::Omni => (
             "Lfm3OmniForConditionalGeneration",
-            serde_json::json!({"text_config": {"num_hidden_layers": 2, "hidden_size": norm.len()}}),
+            serde_json::json!({"text_config": {"num_hidden_layers": 2, "hidden_size": norm.len(), "norm_eps": 0.25}}),
         ),
     };
     let mut config = config;
@@ -263,4 +263,208 @@ fn the_scores_of_lfm3_match_the_oracle_of_transformers() {
         at(62_590) < 8,
         "the sea vector puts \" seawater\" near the top at layer 23"
     );
+}
+
+/// The lens that `tools/lfm3_jlens_fit.py` writes with its own writer: `layers.0` of [3, 3] in F16 for a model of 2
+/// layers, with the weight hash `blake3:abab…`.
+const LENS_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/jlens_small.safetensors");
+
+fn fixture_hash() -> String {
+    format!("blake3:{}", "ab".repeat(32))
+}
+
+/// A lens file with these tensors and metadata, in the layout of the fit tool: sorted keys, a compact header padded
+/// with spaces to 4 KiB, and the tensors in the order of their names.
+fn lens_file(tensors: &[(&str, &str, &[usize], Vec<u8>)], metadata: &[(&str, &str)]) -> Vec<u8> {
+    let mut header = std::collections::BTreeMap::new();
+    let mut offset = 0;
+    let mut sorted: Vec<_> = tensors.iter().collect();
+    sorted.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+    for (name, dtype, shape, data) in &sorted {
+        header.insert(
+            name.to_string(),
+            serde_json::json!({"data_offsets": [offset, offset + data.len()], "dtype": dtype, "shape": shape}),
+        );
+        offset += data.len();
+    }
+    let meta: serde_json::Map<String, serde_json::Value> = metadata
+        .iter()
+        .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
+        .collect();
+    header.insert("__metadata__".to_owned(), serde_json::Value::Object(meta));
+    let text = serde_json::to_vec(&header).unwrap();
+    let padding = (4096 - (8 + text.len()) % 4096) % 4096;
+    let mut out = ((text.len() + padding) as u64).to_le_bytes().to_vec();
+    out.extend_from_slice(&text);
+    out.resize(8 + text.len() + padding, b' ');
+    for (_, _, _, data) in &sorted {
+        out.extend_from_slice(data);
+    }
+    out
+}
+
+fn f16s(values: &[f32]) -> Vec<u8> {
+    // Each value in these tests is exact in F16: a small integer or a half.
+    values
+        .iter()
+        .flat_map(|v| {
+            let bits: u16 = match *v {
+                0.0 => 0x0000,
+                1.0 => 0x3c00,
+                2.0 => 0x4000,
+                0.5 => 0x3800,
+                -1.0 => 0xbc00,
+                other => panic!("{other} is not a value of these tests"),
+            };
+            bits.to_le_bytes()
+        })
+        .collect()
+}
+
+const MATRIX: [f32; 9] = [1.0, 2.0, 0.0, 0.0, 1.0, 0.0, 0.5, 0.0, -1.0];
+
+fn good_metadata(hash: &str) -> Vec<(&'static str, String)> {
+    vec![
+        ("model", "lfm3".to_owned()),
+        ("nagaya.lens", "jlens".to_owned()),
+        ("nagaya.lens.corpus_sha256", "0".repeat(64)),
+        ("nagaya.lens.estimator", "fixture".to_owned()),
+        ("nagaya.lens.max_seq_len", "128".to_owned()),
+        ("nagaya.lens.prompts", "1".to_owned()),
+        ("nagaya.lens.target_layer", "1".to_owned()),
+        ("weight_hash", hash.to_owned()),
+    ]
+}
+
+#[test]
+fn the_lens_of_the_fit_tool_moves_a_row_by_its_matrix_and_the_last_layer_is_the_identity() {
+    let lens = JLens::read(Path::new(LENS_FIXTURE), &fixture_hash(), 2, 3).unwrap();
+    assert_eq!(lens.transport(0, &[1.0, 1.0, 1.0]), [3.0, 1.0, -0.5]);
+    assert_eq!(lens.transport(0, &[2.0, -1.0, 4.0]), [0.0, -1.0, -3.0]);
+    assert_eq!(lens.transport(1, &[2.0, -1.0, 4.0]), [2.0, -1.0, 4.0]);
+    let bytes = std::fs::read(LENS_FIXTURE).unwrap();
+    assert_eq!(lens.id(), format!("blake3:{}", blake3::hash(&bytes).to_hex()));
+}
+
+#[test]
+fn the_tests_write_a_lens_with_the_bytes_of_the_fit_tool() {
+    let metadata = good_metadata(&fixture_hash());
+    let metadata: Vec<(&str, &str)> = metadata.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let ours = lens_file(&[("layers.0", "F16", &[3, 3], f16s(&MATRIX))], &metadata);
+    assert_eq!(ours, std::fs::read(LENS_FIXTURE).unwrap());
+}
+
+#[test]
+fn a_lens_of_other_weights_is_refused_and_the_error_names_both_hashes() {
+    let other = format!("blake3:{}", "cd".repeat(32));
+    let error = JLens::read(Path::new(LENS_FIXTURE), &other, 2, 3).err().unwrap();
+    assert!(error.contains(&fixture_hash()) && error.contains(&other), "{error}");
+}
+
+/// A case of a lens that does not fit: what it shows, its tensors, its metadata, the layers and the width of the model,
+/// and a word of the error.
+type Case<'a> = (
+    &'a str,
+    Vec<(&'a str, &'a str, Vec<usize>, Vec<u8>)>,
+    Vec<(String, String)>,
+    u32,
+    usize,
+    &'a str,
+);
+
+#[test]
+fn a_lens_that_does_not_fit_the_model_is_refused_with_the_reason() {
+    let hash = fixture_hash();
+    let good = good_metadata(&hash);
+    let meta = |edit: Option<(&str, &str)>| -> Vec<(String, String)> {
+        good.iter()
+            .map(|(k, v)| match edit {
+                Some((key, value)) if key == *k => (k.to_string(), value.to_owned()),
+                _ => (k.to_string(), v.clone()),
+            })
+            .collect()
+    };
+    let m = MATRIX.to_vec();
+    let cases: Vec<Case> = vec![
+        ("no tensor of a layer", vec![], meta(None), 2, 3, "layers.0"),
+        (
+            "another shape",
+            vec![("layers.0", "F16", vec![3, 2], f16s(&m[..6]))],
+            meta(None),
+            2,
+            3,
+            "[3, 2]",
+        ),
+        (
+            "another dtype",
+            vec![("layers.0", "BF16", vec![3, 3], f16s(&m))],
+            meta(None),
+            2,
+            3,
+            "F16",
+        ),
+        (
+            "the last layer",
+            vec![
+                ("layers.0", "F16", vec![3, 3], f16s(&m)),
+                ("layers.1", "F16", vec![3, 3], f16s(&m)),
+            ],
+            meta(None),
+            2,
+            3,
+            "layers.1",
+        ),
+        (
+            "another lens",
+            vec![("layers.0", "F16", vec![3, 3], f16s(&m))],
+            meta(Some(("nagaya.lens", "tuned"))),
+            2,
+            3,
+            "tuned",
+        ),
+        (
+            "another width",
+            vec![("layers.0", "F16", vec![3, 3], f16s(&m))],
+            meta(None),
+            2,
+            4,
+            "width",
+        ),
+        (
+            "more layers",
+            vec![("layers.0", "F16", vec![3, 3], f16s(&m))],
+            meta(None),
+            3,
+            3,
+            "layers.1",
+        ),
+    ];
+    let dir = tempfile::tempdir().unwrap();
+    for (what, tensors, metadata, layers, width, needle) in cases {
+        let tensors: Vec<(&str, &str, &[usize], Vec<u8>)> = tensors
+            .iter()
+            .map(|(n, d, s, b)| (*n, *d, s.as_slice(), b.clone()))
+            .collect();
+        let metadata: Vec<(&str, &str)> = metadata.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let path = dir.path().join("lens.safetensors");
+        std::fs::write(&path, lens_file(&tensors, &metadata)).unwrap();
+        let error = JLens::read(&path, &hash, layers, width)
+            .err()
+            .unwrap_or_else(|| panic!("{what}: no error"));
+        assert!(error.contains(needle), "{what}: {error}");
+    }
+    let missing = dir.path().join("absent.safetensors");
+    let error = JLens::read(&missing, &hash, 2, 3).err().unwrap();
+    assert!(error.contains("absent.safetensors"), "{error}");
+}
+
+#[test]
+fn a_readout_divides_a_residual_row_by_its_root_mean_square_with_the_epsilon() {
+    let (_dir, lab) = small(Model::Text);
+    let h = [3.0f32, -1.0, 2.0];
+    // The mean of the squares is 14 / 3. With the epsilon 0.25 of the config, the row divides by its root.
+    let inverse = 1.0 / ((14.0f64 / 3.0) + 0.25).sqrt();
+    let scaled: Vec<f32> = h.iter().map(|x| (*x as f64 * inverse) as f32).collect();
+    assert_eq!(lab.readout(&[&h]), lab.scores(&[&scaled]));
+    assert_ne!(lab.readout(&[&h]), lab.scores(&[&h]));
 }
