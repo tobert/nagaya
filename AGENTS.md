@@ -109,7 +109,9 @@ order"):
 3. Milestone 24 step 9: media inputs and speech outputs of `lfm3-omni` through council v2. Done on 2026-11-08:
    lanes J and K of 2026-11-06 merged (`c16934d`, `c9c0bea`), and media in decisions (`dd5b9b5`). The gogi suite
    gave 399 ok, 0 FAIL and 18 skip for `lfm3-omni`, and 380 ok, 0 FAIL and 18 skip for `lfm3`.
-4. Milestone 24 step 10, video, and step 11, the Omni tab of the web app.
+4. Milestone 24 step 10, video, and step 11, the Omni tab of the web app. Done on 2026-11-08: video `3cfeff1` to
+   `c52287a`, deployed with `--features xe,video`; the card gate of both videos gives the oracle's first token. The
+   tab is `a9c476e`.
 5. Milestone 25 step 8 and milestone 26 step 4, with Amy. Milestone 24 step 3 waits for her photos.
 
 Amy decided on 2026-11-08: commit a small step each time the checks pass after a change. When a milestone is almost
