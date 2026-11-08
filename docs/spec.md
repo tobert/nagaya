@@ -4543,6 +4543,10 @@ context names its list in `control` (gogi "Contexts"). The first models are `lfm
 - **The order.** The items apply in their order in the list. An item changes the residual after each layer that
   the vector holds, before the next layer reads it. The prompt pass and each decode step get the same items.
 - **Strengths.** The client sets each strength. The nagaya searches for no strength (Amy: "Hand strength first").
+- **Omni.** Omni's vector acts on its text passes only (Amy, 2026-11-07: "we would only need to do this for omni's
+  text"). The prompt pass and each text step get the items, also over the rows of a media part. A speech frame is a
+  `frame` call (engine-abi "LFM3"), and it takes no control list. Its position still holds the rows that the steered
+  passes before it gave. The control list is in the root recipe, so the frames of a steered reply have its recipe.
 
 **The recipe of a control list.** Proposed by Claude Opus 5.5, 2026-11-07. A non-empty list goes into the root
 recipe as the lab state, tag 4 (6.2). Its bytes are these, little-endian:

@@ -105,8 +105,10 @@ order"):
 
 1. Milestone 26 step 5, the J-Lens. Its fit runs on the CPU while the other steps run.
 2. Milestone 25 step 9, Omni's control vector.
-3. Milestone 24 step 10, video, and step 11, the Omni tab of the web app.
-4. Milestone 25 step 8 and milestone 26 step 4, with Amy. Milestone 24 step 3 waits for her photos.
+3. Milestone 24 step 9: media inputs and speech outputs of `lfm3-omni` through council v2. Lanes J and K built them
+   on 2026-11-06, and nobody merged them. Until then, Omni serves text only through the routes (2026-11-08).
+4. Milestone 24 step 10, video, and step 11, the Omni tab of the web app.
+5. Milestone 25 step 8 and milestone 26 step 4, with Amy. Milestone 24 step 3 waits for her photos.
 
 Amy decided on 2026-11-08: commit a small step each time the checks pass after a change. When a milestone is almost
 done, run review rounds with kaibo (`docs/reviews.md`), and fix what they find.
