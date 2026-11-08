@@ -561,6 +561,18 @@ class Page(unittest.TestCase):
         self.assertIn("audio/wav", out["err"])
         self.assertEqual(out["puts"], 0)
 
+    def test_a_reply_mode_fills_in_the_system_prompt_of_the_model_card_and_keeps_one_the_person_wrote(self):
+        out = self.run_page("""
+            const pick = (mode) => { set("omni-output", mode); document.getElementById("omni-output").onchange();
+                                     return document.getElementById("omni-system").value; };
+            out.speech = pick("speech"); out.mixed = pick("interleaved"); out.text = pick("");
+            set("omni-system", "Perform TTS in British English using a male voice.");
+            out.kept = pick("speech");""")
+        self.assertEqual(out["speech"], "Perform TTS in American English using a female voice.")
+        self.assertEqual(out["mixed"], "Respond with interleaved text and audio.")
+        self.assertEqual(out["text"], "")
+        self.assertEqual(out["kept"], "Perform TTS in British English using a male voice.")
+
     def test_the_lab_lists_only_the_local_models_of_the_lfm3_engine_kind(self):
         out = self.run_page('out.models = document.getElementById("lab-model").innerHTML;')
         self.assertEqual(out["models"], '<option value="lfm3-omni">lfm3-omni</option><option value="lfm3">lfm3</option>')

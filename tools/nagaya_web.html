@@ -247,7 +247,7 @@ audio { width: 100%; }
     <div class="card">
       <label>Model <span class="note">— a model that reads images, audio or video</span></label>
       <div class="row"><select id="omni-model"></select><span id="omni-model-state" class="note"></span></div>
-      <label>System message <span class="note">— the voice and the language, in the words of the model card</span></label>
+      <label>System message <span class="note">— the reply mode fills in the model card's prompt; speech needs it</span></label>
       <textarea id="omni-system" rows="3" placeholder="Respond with interleaved text and audio."></textarea>
       <label>Reply</label>
       <select id="omni-output"><option value="">text</option><option value="interleaved">text and speech</option>
@@ -1149,6 +1149,15 @@ $("omni-file").onchange = async (ev) => {
   } catch (e) { $("omni-error").textContent = e.message; status(""); }
 };
 $("omni-clear").onclick = () => { omni = []; omniFiles = []; drawOmni(); };
+/** The system prompt of each reply mode, from the model card of LFM3-Omni-2B. Speech mode is TTS: it speaks the
+ *  user's text with the voice of its prompt, and with no prompt it has no voice. */
+const OMNI_SYSTEM = {"": "", interleaved: "Respond with interleaved text and audio.",
+                     speech: "Perform TTS in American English using a female voice."};
+$("omni-output").onchange = () => {
+  // A prompt that the person wrote stays; an empty one or the prompt of another mode follows the mode.
+  const now = $("omni-system").value.trim();
+  if (!now || Object.values(OMNI_SYSTEM).includes(now)) $("omni-system").value = OMNI_SYSTEM[$("omni-output").value];
+};
 $("omni-go").onclick = async () => {
   const text = $("omni-input").value.trim(), model = $("omni-model").value;
   if ((!text && !omniFiles.length) || !model) return;
