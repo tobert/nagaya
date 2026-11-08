@@ -43,7 +43,15 @@ PROFILE = {"engines": [
     {"name": "sdxl-1", "kind": "mk-sdxl-bmg", "devices": [1], "residency": "on_demand"},
     {"name": "embeddinggemma-2", "kind": "mk-embeddinggemma2-bmg", "devices": [1], "pinned": True},
     {"name": "pony-0", "kind": "mk-sdxl-bmg", "devices": [0], "residency": "on_demand"},
+    {"name": "lfm3-omni", "kind": "mk-lfm3-bmg", "devices": [0]},
+    {"name": "lfm3", "kind": "mk-lfm3-bmg", "devices": [0]},
 ]}
+
+# A trace object of lfm3 from b70host (2026-11-08): 4 steps, the layers 8 and 23, top_k 3, the logit lens, and the
+# vector LAB_VECTOR, which holds the layers 9 to 23. Thus its `along` at layer 8 is NaN.
+TRACE_BYTES = list(pathlib.Path(__file__).with_name("fixtures").joinpath("lab_trace.safetensors").read_bytes())
+LAB_VECTOR = "blake3:58c25c11d174204c4e0a0f1f37574c25136e08828fa6167a81a9ad4ccf7760b3"
+TRACE_ID = "blake3:a44f076e76b36e55d9e54733d4167b472e14d1ef0515952df120d842be072259"
 
 # A stub of the DOM that holds each element by id, and a fetch that answers as the nagaya does.
 STUB = r"""
@@ -61,7 +69,7 @@ function setTimeout(f) { f(); } function setInterval() {} function alert() {}
 function set(id, v) { document.getElementById(id).value = v; }
 function confirm(text) { confirms.push(text); return true; }
 // A stream of server-sent events, read in one piece. QuickJS has no TextDecoder, so the reader gives text.
-class TextDecoder { decode(v) { return v || ""; } }
+class TextDecoder { decode(v) { return typeof v === "string" ? v : v ? String.fromCharCode(...v) : ""; } }
 class AbortController { constructor() { this.signal = {}; } abort() {} }
 function sse(list) {
   let text = list.map(([name, data]) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`).join("");
@@ -106,6 +114,18 @@ function fetch(path, o) {
       {layer: 23, up: [{id: 3, token: "I", score: 2.7}], down: [{id: 4, token: "<b>", score: -1.7}],
        end: [{id: 124900, token: "<|im_end|>", score: -0.16, rank: 82169}]}]});
   }
+  if (path === "/nagaya/v1/lab/trace") {
+    const b = JSON.parse(o.body);
+    return reply(200, {model: b.model, content: b.context.control ? "Hi there! <b>" : "Hi there!", finish: "max_tokens",
+                       usage: {prompt: 17, completion: 4}, trace: TRACE_ID});
+  }
+  if (path === "/council/v2/objects/" + TRACE_ID) {
+    return Promise.resolve({ok: true, status: 200, arrayBuffer: () => Promise.resolve(new Uint8Array(TRACE_BYTES).buffer)});
+  }
+  if (path === "/nagaya/v1/detokenize") {
+    const b = JSON.parse(o.body), id = b.tokens[0];
+    return reply(200, {model: b.model, text: {41619: "Hi", 912: " there", 9: "!", 53841: "<b>"}[id] ?? `t${id}`});
+  }
   if (path === "/council/v2/control-vectors") {
     const b = JSON.parse(o.body);
     return reply(200, {model: b.model, vector: "blake3:" + "c".repeat(64), layers: 24, width: 2048,
@@ -139,7 +159,9 @@ class Page(unittest.TestCase):
         """Run the page script and then `test`, an async body that fills `out`. Give `out`."""
         script = re.search(r"<script>(.*)</script>", PAGE.read_text(), re.S).group(1)
         context = quickjs.Context()
-        context.eval(f"var IDENTITY = {json.dumps(IDENTITY)}, PROFILE = {json.dumps(PROFILE)};" + STUB + script +
+        context.eval(f"var IDENTITY = {json.dumps(IDENTITY)}, PROFILE = {json.dumps(PROFILE)}, "
+                     f"TRACE_BYTES = {json.dumps(TRACE_BYTES)}, TRACE_ID = {json.dumps(TRACE_ID)}, "
+                     f"LAB_VECTOR = {json.dumps(LAB_VECTOR)};" + STUB + script +
                      "var out = {}; (async () => { await refresh();" + test +
                      "})().catch((e) => { out.error = String(e); });")
         while context.execute_pending_job():
@@ -437,19 +459,97 @@ class Page(unittest.TestCase):
         self.assertEqual(out["count"], 1)
 
 
-    def test_the_lens_of_a_saved_vector_sends_project_and_shows_each_layer_with_its_end_rank_escaped(self):
+    def test_the_lab_projects_a_saved_vector_and_shows_each_layer_with_its_end_rank_escaped(self):
         out = self.run_page(f"""
             vectors = [{{name: "refusal", id: "{self.VECTOR}", model: "lfm3", host}}];
-            set("cv-model", "lfm3"); set("cv-lens-k", "8"); fillVectors();
-            await lens(0);
+            set("lab-model", "lfm3"); fillVectors(); set("lab-vector", "{self.VECTOR}"); set("lab-lens-k", "8");
+            await document.getElementById("lab-project").onclick();
             out.body = JSON.parse(calls.filter((c) => c[1] === "/nagaya/v1/lab/project").pop()[2]);
-            out.html = document.getElementById("cv-lens").innerHTML;""")
+            out.html = document.getElementById("lab-lens").innerHTML;""")
         self.assertEqual(out["body"], {"model": "lfm3", "vector": self.VECTOR, "through": "unembed", "top_k": 8})
         self.assertIn("82169", out["html"])
         self.assertIn(" sorry", out["html"])
         self.assertIn("&lt;b&gt;", out["html"])
         self.assertNotIn("<b>", out["html"])
 
+    def test_the_lab_lists_only_the_local_models_of_the_lfm3_engine_kind(self):
+        out = self.run_page('out.models = document.getElementById("lab-model").innerHTML;')
+        self.assertEqual(out["models"], '<option value="lfm3-omni">lfm3-omni</option><option value="lfm3">lfm3</option>')
+
+    def test_a_trace_object_parses_into_its_tensors_with_their_shapes(self):
+        out = self.run_page("""
+            const t = await traceObject(TRACE_ID);
+            const n = (x) => Number.isNaN(x) ? "nan" : +x.toFixed(4);
+            out.meta = t.meta; out.layers = Array.from(t.layers.data); out.tokens = Array.from(t.tokens.data);
+            out.along_shape = t.along.shape; out.along = Array.from(t.along.data).map(n);
+            out.entropy = Array.from(t.entropy.data).map(n); out.lens_shape = t.lens_ids.shape;
+            out.lens_last = t.lens_ids.data[t.lens_ids.data.length - 3];""")
+        self.assertEqual(out["meta"]["vectors"], LAB_VECTOR)
+        self.assertEqual(out["layers"], [8, 23])
+        self.assertEqual(out["tokens"], [41619, 912, 9, 53841])
+        self.assertEqual(out["along_shape"], [4, 2, 1])
+        self.assertEqual(out["along"][0], "nan")
+        self.assertEqual(out["along"][1], 0.075)
+        self.assertEqual(out["entropy"], [1.087, 1.3431, 0.483, 1.6207])
+        self.assertEqual(out["lens_shape"], [4, 2, 3])
+        self.assertEqual(out["lens_last"], 53841)
+
+    # The values of the lab form, as a person sets them.
+    LAB = f"""
+        vectors = [{{name: "refusal", id: "{LAB_VECTOR}", model: "lfm3", host}}];
+        set("lab-model", "lfm3"); fillVectors();
+        set("lab-vector", LAB_VECTOR); set("lab-op", "ablate"); set("lab-strength", "0.5");
+        set("lab-prompt", "Say hi."); set("lab-max", "4"); set("lab-temp", "0.7"); set("lab-k", "3");
+        set("lab-use-lens", "logit");
+        const traced = () => calls.filter((c) => c[1] === "/nagaya/v1/lab/trace").map((c) => JSON.parse(c[2]));"""
+
+    def test_a_trace_runs_the_prompt_plain_and_then_steered_with_one_seed_and_the_vector_in_along(self):
+        out = self.run_page(self.LAB + """
+            await document.getElementById("lab-trace").onclick();
+            out.bodies = traced(); out.err = document.getElementById("lab-error").textContent;""")
+        self.assertEqual(out["err"], "")
+        plain, steered = out["bodies"]
+        self.assertNotIn("control", plain["context"])
+        self.assertEqual(steered["context"]["control"], [{"vector": LAB_VECTOR, "op": "ablate", "strength": 0.5}])
+        self.assertEqual(plain["context"]["messages"], steered["context"]["messages"])
+        for body in out["bodies"]:
+            self.assertEqual(body["trace"], {"vectors": [LAB_VECTOR], "top_k": 3, "lens": "logit"})
+            self.assertEqual(body["max_tokens"], 4)
+            self.assertNotIn("stream", body)
+        self.assertEqual(plain["sample"]["temperature"], 0.7)
+        self.assertEqual(plain["sample"], steered["sample"])
+        # A seed past 2^53 does not survive a JavaScript number, so the page picks one below it.
+        self.assertIsInstance(plain["sample"]["seed"], int)
+        self.assertLess(plain["sample"]["seed"], 2 ** 53)
+
+    def test_a_trace_with_no_vector_runs_plain_only_and_sends_no_vectors_and_no_lens_when_it_is_off(self):
+        out = self.run_page(self.LAB + """
+            set("lab-vector", ""); set("lab-use-lens", "");
+            await document.getElementById("lab-trace").onclick();
+            out.bodies = traced();""")
+        self.assertEqual(len(out["bodies"]), 1)
+        self.assertNotIn("control", out["bodies"][0]["context"])
+        self.assertEqual(out["bodies"][0]["trace"], {"top_k": 3})
+
+    def test_the_lab_draws_both_runs_and_the_chosen_step_with_the_token_text_escaped(self):
+        out = self.run_page(self.LAB + """
+            await document.getElementById("lab-trace").onclick();
+            out.charts = document.getElementById("lab-charts").innerHTML;
+            out.replies = document.getElementById("lab-replies").innerHTML;
+            await labStep(3);
+            out.step = document.getElementById("lab-step").innerHTML;
+            out.asked = calls.filter((c) => c[1] === "/nagaya/v1/detokenize").map((c) => JSON.parse(c[2]).tokens[0]);""")
+        for name in ("entropy", "plain", "steered", "<svg", "<polyline"):
+            self.assertIn(name, out["charts"])
+        # Both runs, each with its 4 steps, and each token a button for its step.
+        self.assertEqual(out["replies"].count("data-lab-step="), 8)
+        self.assertIn("&lt;b&gt;", out["replies"])
+        self.assertNotIn("<b>", out["replies"] + out["step"])
+        self.assertIn("&lt;b&gt;", out["step"])
+        self.assertIn("23", out["step"])
+        # Layer 8 has no direction in the vector, so its along shows as a dash and not as NaN.
+        self.assertNotIn("NaN", out["step"] + out["charts"])
+        self.assertEqual(len(out["asked"]), len(set(out["asked"])))
 
     def test_forget_removes_the_vector_of_its_row_when_another_nagaya_has_vectors_first(self):
         out = self.run_page(f"""
