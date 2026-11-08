@@ -223,6 +223,17 @@ the rows of `LFM3-1.7B` are 192 KiB for each step.
 **The bits.** The taps do not change the generation. The tap `residual` copies each row, and the lens runs after the
 head, into its own buffers. Thus a trace gives the tokens and the logit bits of the same generation with no trace.
 
+**The facts of the first trace** (2026-11-07, `LFM3-1.7B` on card 0 of b70host, builds with `--release`):
+
+- `crates/nagaya-mk-lfm3-bmg/tests/xe_trace.rs`: a pass of one token took 9.05 ms with no tap, 9.11 ms with the tap
+  `residual`, and 12.69 ms with both taps. These are means of 200 greedy steps.
+- `crates/nagaya/tests/xe_lab_trace.rs`: a generation of 200 tokens took 1,875 ms. Its trace took 2,017 ms with no
+  lens, and 3,504 ms with the lens of 24 layers. With the lens of 4 layers, it took 3,032 ms.
+- The taps changed no logit bit in 32 greedy steps, plain and with an ablate of 1.
+- The lens of layer 23 differed from the logits by at most 2.7e-5, and it gave the same top token at each step.
+- After an ablate of 1, `along` was at most 7.5e-8 of the norm of the row. Plain `along` at step 0 differed from the
+  oracle's rows by at most 4.7e-7 of the row.
+
 ## The J-Lens in the nagaya
 
 A lens is a state object of one model (spec 13.2). The nagaya applies it, and a tool outside the process fits it.
