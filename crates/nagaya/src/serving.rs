@@ -198,6 +198,50 @@ pub fn describe_on_demand(
     Ok(described)
 }
 
+/// The model folders and the lens files of the lab routes, by engine name (`docs/lab.md`): the folder of each LFM3
+/// engine, and the J-Lens that its `[engines.lab]` table names. A lab table on another kind, a key other than `jlens`,
+/// or a path that is not a string is an error that names the engine. The start does not read the lens.
+#[allow(clippy::type_complexity)]
+pub fn lab_files(
+    profile: &PlacementProfile,
+) -> Result<
+    (
+        BTreeMap<String, std::path::PathBuf>,
+        BTreeMap<String, std::path::PathBuf>,
+    ),
+    String,
+> {
+    let (mut folders, mut lenses) = (BTreeMap::new(), BTreeMap::new());
+    for placement in &profile.engines {
+        let name = &placement.name;
+        if placement.kind != crate::lfm3::KIND {
+            if !placement.lab.is_empty() {
+                return Err(format!(
+                    "engine `{name}` of the kind `{}` has a table [engines.lab]; the lab reads only the kind `{}`, so \
+                     remove the table",
+                    placement.kind,
+                    crate::lfm3::KIND
+                ));
+            }
+            continue;
+        }
+        let what = format!("the config of engine `{name}`");
+        folders.insert(name.clone(), crate::lfm3::model_dir(&placement.config, &what)?);
+        for (key, value) in &placement.lab {
+            if key != "jlens" {
+                return Err(format!(
+                    "[engines.lab] of engine `{name}` has the key `{key}`; its one key is `jlens`, the path of a J-Lens"
+                ));
+            }
+            let path = value.as_str().ok_or_else(|| {
+                format!("[engines.lab] jlens of engine `{name}` is {value}; write the path of the lens file")
+            })?;
+            lenses.insert(name.clone(), std::path::PathBuf::from(path));
+        }
+    }
+    Ok((folders, lenses))
+}
+
 /// The council of a started process: a service for each opened engine whose kind has a family library.
 ///
 /// `peers` are the other engines whose snapshots the council reads and pins, with their served models, such as the
@@ -300,20 +344,8 @@ pub fn council_with(
             device: None,
         });
     }
-    // The lab routes read the checkpoint of each LFM3 engine from its model folder (docs/lab.md).
-    let mut lab = BTreeMap::new();
-    for placement in profile
-        .engines
-        .iter()
-        .filter(|placement| placement.kind == crate::lfm3::KIND)
-    {
-        let what = format!("the config of engine `{}`", placement.name);
-        lab.insert(
-            placement.name.clone(),
-            crate::lfm3::model_dir(&placement.config, &what)?,
-        );
-    }
-    let council = Council::new(models, call_cpus)?.with_lab(lab);
+    let (folders, lenses) = lab_files(profile)?;
+    let council = Council::new(models, call_cpus)?.with_lab(folders).with_lenses(lenses);
     match profile.store.and_then(|store| store.objects) {
         None => Ok(council),
         Some(budget) => {
