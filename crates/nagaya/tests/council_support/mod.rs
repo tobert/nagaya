@@ -531,3 +531,47 @@ pub fn post(server: &gogi_fake::Server, path: &str, body: serde_json::Value) -> 
     assert!(head.contains(" 200 "), "{head}\n{body}");
     serde_json::from_str(body).unwrap()
 }
+
+/// The F16 bits of `value`, which must be exact in F16: a normal number with at most 11 significant bits, or zero.
+pub fn f16_bits(value: f32) -> u16 {
+    if value == 0.0 {
+        return 0;
+    }
+    let bits = value.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exponent = ((bits >> 23) & 0xff) as i32 - 127 + 15;
+    assert!((1..31).contains(&exponent), "{value} is a normal F16 number");
+    assert_eq!(bits & 0x1fff, 0, "{value} has at most 11 significant bits");
+    sign | ((exponent as u16) << 10) | ((bits >> 13) & 0x3ff) as u16
+}
+
+/// Write a J-Lens file of the fit tool's format into `path` (`docs/lab.md`, "The rules of the J-Lens"): the F16
+/// matrix `layers.<l>` of [width, width] for each matrix, with `weight_hash` in its metadata. Give its bytes.
+pub fn lens_file(path: &Path, weight_hash: &str, matrices: &[Vec<f32>], width: usize) -> Vec<u8> {
+    let mut header = serde_json::Map::new();
+    let mut data = Vec::new();
+    let mut names: Vec<String> = (0..matrices.len()).map(|l| format!("layers.{l}")).collect();
+    names.sort();
+    for name in &names {
+        let l: usize = name["layers.".len()..].parse().unwrap();
+        assert_eq!(matrices[l].len(), width * width, "a matrix is [width, width]");
+        let start = data.len();
+        for value in &matrices[l] {
+            data.extend(f16_bits(*value).to_le_bytes());
+        }
+        header.insert(
+            name.clone(),
+            serde_json::json!({"dtype": "F16", "shape": [width, width], "data_offsets": [start, data.len()]}),
+        );
+    }
+    header.insert(
+        "__metadata__".to_owned(),
+        serde_json::json!({"model": "toy", "weight_hash": weight_hash, "nagaya.lens": "jlens"}),
+    );
+    let text = serde_json::Value::Object(header).to_string();
+    let mut bytes = (text.len() as u64).to_le_bytes().to_vec();
+    bytes.extend(text.as_bytes());
+    bytes.extend(data);
+    std::fs::write(path, &bytes).unwrap();
+    bytes
+}

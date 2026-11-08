@@ -265,7 +265,7 @@ impl GenerateThen {
             Some(tracing) => Want::Tap {
                 tokens,
                 kind,
-                lens: tracing.trace.plan().lens,
+                lens: tracing.trace.plan().lens == nagaya_council::trace::Lens::Logit,
             },
             None => Want::Feed {
                 tokens,

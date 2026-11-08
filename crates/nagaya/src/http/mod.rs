@@ -129,6 +129,9 @@ pub struct Council {
     cluster: Option<Arc<crate::cluster::Cluster>>,
     /// The model folder of each engine whose weights the lab routes read, by engine name (`docs/lab.md`).
     lab: std::collections::BTreeMap<String, std::path::PathBuf>,
+    /// The J-Lens of each engine whose profile entry names one, by engine name (`docs/lab.md`, "The rules of the
+    /// J-Lens"). The lab reads a lens at its first use.
+    lenses: std::collections::BTreeMap<String, lab::LensSlot>,
 }
 
 impl Council {
@@ -159,6 +162,7 @@ impl Council {
             profile: None,
             cluster: None,
             lab: std::collections::BTreeMap::new(),
+            lenses: std::collections::BTreeMap::new(),
         })
     }
 
@@ -166,6 +170,15 @@ impl Council {
     /// engine of the kind `mk-lfm3-bmg` has one now (`docs/lab.md`, "The rules of `project`").
     pub fn with_lab(mut self, folders: std::collections::BTreeMap<String, std::path::PathBuf>) -> Self {
         self.lab = folders;
+        self
+    }
+
+    /// Read the J-Lens of each engine of `files` from its path, by engine name, at its first use.
+    pub fn with_lenses(mut self, files: std::collections::BTreeMap<String, std::path::PathBuf>) -> Self {
+        self.lenses = files
+            .into_iter()
+            .map(|(engine, path)| (engine, lab::LensSlot::new(path)))
+            .collect();
         self
     }
 

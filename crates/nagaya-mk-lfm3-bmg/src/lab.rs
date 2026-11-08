@@ -344,6 +344,25 @@ pub fn rank(scores: &[f32], id: u32) -> usize {
 /// The value of `nagaya.lens` in the metadata of a J-Lens.
 pub const JLENS: &str = "jlens";
 
+/// Why a lens file does not read.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LensError {
+    /// The file cannot be read.
+    Unread(String),
+    /// The lens was fitted for other weights.
+    OtherWeights(String),
+    /// The file is not a lens of this model.
+    Malformed(String),
+}
+
+impl std::fmt::Display for LensError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LensError::Unread(why) | LensError::OtherWeights(why) | LensError::Malformed(why) => f.write_str(why),
+        }
+    }
+}
+
 /// A J-Lens of one model (`docs/lab.md`, "The rules of the J-Lens"): the matrix `J_l` of each layer before the last,
 /// in `f32`. The lens of the last layer is the identity.
 pub struct JLens {
@@ -357,9 +376,10 @@ pub struct JLens {
 impl JLens {
     /// Read the lens file `path` of a model with the weights `weight_hash`, `layers` layers and a residual of `width`.
     /// A file that does not fit is an error that names the reason.
-    pub fn read(path: &Path, weight_hash: &str, layers: u32, width: usize) -> Result<JLens, String> {
-        let bytes = std::fs::read(path).map_err(|e| format!("cannot read the lens {}: {e}", path.display()))?;
-        let at = |why: String| format!("the lens {}: {why}", path.display());
+    pub fn read(path: &Path, weight_hash: &str, layers: u32, width: usize) -> Result<JLens, LensError> {
+        let bytes = std::fs::read(path)
+            .map_err(|e| LensError::Unread(format!("cannot read the lens {}: {e}", path.display())))?;
+        let at = |why: String| LensError::Malformed(format!("the lens {}: {why}", path.display()));
         let view = SafeTensorsView::parse(&bytes).map_err(at)?;
         let header: serde_json::Value = serde_json::from_slice(&bytes[8..view.data_offset])
             .map_err(|e| at(format!("the header is not JSON: {e}")))?;
@@ -370,9 +390,13 @@ impl JLens {
         }
         let hash = meta["weight_hash"].as_str().unwrap_or("");
         if hash != weight_hash {
-            return Err(at(format!(
-                "it was fitted for weight_hash {hash}, and the served model has weight_hash {weight_hash}; fit a lens \
-                 for these weights"
+            return Err(LensError::OtherWeights(format!(
+                "the lens {}: {}",
+                path.display(),
+                format_args!(
+                    "it was fitted for weight_hash {hash}, and the served model has weight_hash {weight_hash}; fit a \
+                     lens for these weights"
+                )
             )));
         }
         let held = layers.saturating_sub(1);

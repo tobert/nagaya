@@ -13,8 +13,32 @@ fn plan(layers: Vec<u32>, vectors: Vec<Direction>, lens: bool, rows: bool) -> Pl
         top_k: 3,
         ends: vec![5],
         vectors,
-        lens,
+        lens: if lens { Lens::Logit } else { Lens::None },
         rows,
+    }
+}
+
+/// A readout of a fake lens: the logit row of a row of layer `l` is the row times `l + 1`, then the zeros, so the top
+/// ids follow the row.
+struct Scaled;
+
+impl Readout for Scaled {
+    fn logits(&self, rows: &[(u32, &[f32])]) -> Vec<Vec<f32>> {
+        rows.iter()
+            .map(|(l, h)| {
+                let mut row: Vec<f32> = h.iter().map(|x| x * (*l + 1) as f32).collect();
+                row.resize(6, 0.0);
+                row
+            })
+            .collect()
+    }
+}
+
+fn cpu_lens() -> Lens {
+    Lens::Cpu {
+        name: "jlens".to_owned(),
+        id: "blake3:00ff".to_owned(),
+        readout: std::sync::Arc::new(Scaled),
     }
 }
 
@@ -268,4 +292,47 @@ fn a_record_of_another_size_is_an_error_and_changes_nothing() {
     assert_eq!(t.steps(), 0);
     let mut plain = Trace::new(plan(vec![0], Vec::new(), false, false));
     assert!(plain.record(1, &LOGITS, &residual(0), Some(&lens_rows(0))).is_err());
+}
+
+#[test]
+fn a_cpu_lens_reads_each_traced_layer_through_its_readout_and_the_object_names_the_lens() {
+    let mut p = plan(vec![2, 0], vec![], false, false);
+    p.lens = cpu_lens();
+    let mut trace = Trace::new(p.clone());
+    trace.record(1, &LOGITS, &residual(0), None).unwrap();
+    let bytes = trace.to_bytes();
+    let st = SafeTensors::deserialize(&bytes).unwrap();
+    let ids = u32_of(st.tensor("lens_ids").unwrap().data());
+    let logprobs = f32_of(st.tensor("lens_logprobs").unwrap().data());
+    let mut want_ids = Vec::new();
+    let mut want_logprobs = Vec::new();
+    for l in [2u32, 0] {
+        let h = &residual(0)[l as usize * 4..(l as usize + 1) * 4];
+        let row = &Scaled.logits(&[(l, h)])[0];
+        let (lse, _) = distribution(row);
+        let top_ids = top(row, 3);
+        want_logprobs.extend(top_ids.iter().map(|id| (row[*id as usize] as f64 - lse) as f32));
+        want_ids.extend(top_ids);
+    }
+    assert_eq!(ids, want_ids);
+    assert_eq!(logprobs, want_logprobs);
+    let meta = st_metadata(&bytes);
+    assert_eq!(meta["lens"], "jlens");
+    assert_eq!(meta["lens_id"], "blake3:00ff");
+    assert_eq!(Trace::object_bytes(&p, 1), bytes.len() as u64);
+}
+
+#[test]
+fn a_cpu_lens_refuses_a_step_with_the_tap_lens_and_a_logit_lens_names_no_lens_id() {
+    let mut p = plan(vec![0], vec![], false, false);
+    p.lens = cpu_lens();
+    let mut trace = Trace::new(p);
+    let error = trace.record(1, &LOGITS, &residual(0), Some(&lens_rows(0))).unwrap_err();
+    assert!(error.contains("tap lens"), "{error}");
+    assert_eq!(trace.steps(), 0);
+    let mut logit = Trace::new(plan(vec![0], vec![], true, false));
+    logit.record(1, &LOGITS, &residual(0), Some(&lens_rows(0))).unwrap();
+    let meta = st_metadata(&logit.to_bytes());
+    assert_eq!(meta["lens"], "logit");
+    assert!(!meta.contains_key("lens_id"), "{meta:?}");
 }

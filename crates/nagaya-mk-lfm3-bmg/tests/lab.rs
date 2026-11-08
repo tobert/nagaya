@@ -7,7 +7,7 @@ use std::path::Path;
 
 use common::Which;
 use nagaya_mk_bmg::safetensors::SafeTensorsView;
-use nagaya_mk_lfm3_bmg::lab::{Entry, Facts, JLens, Unembedding, ends_of, rank};
+use nagaya_mk_lfm3_bmg::lab::{Entry, Facts, JLens, LensError, Unembedding, ends_of, rank};
 use nagaya_mk_lfm3_bmg::spec::Model;
 
 fn bf16(values: &[f32]) -> Vec<u8> {
@@ -358,6 +358,8 @@ fn the_tests_write_a_lens_with_the_bytes_of_the_fit_tool() {
 fn a_lens_of_other_weights_is_refused_and_the_error_names_both_hashes() {
     let other = format!("blake3:{}", "cd".repeat(32));
     let error = JLens::read(Path::new(LENS_FIXTURE), &other, 2, 3).err().unwrap();
+    assert!(matches!(error, LensError::OtherWeights(_)), "{error:?}");
+    let error = error.to_string();
     assert!(error.contains(&fixture_hash()) && error.contains(&other), "{error}");
 }
 
@@ -451,11 +453,13 @@ fn a_lens_that_does_not_fit_the_model_is_refused_with_the_reason() {
         let error = JLens::read(&path, &hash, layers, width)
             .err()
             .unwrap_or_else(|| panic!("{what}: no error"));
-        assert!(error.contains(needle), "{what}: {error}");
+        assert!(matches!(error, LensError::Malformed(_)), "{what}: {error:?}");
+        assert!(error.to_string().contains(needle), "{what}: {error}");
     }
     let missing = dir.path().join("absent.safetensors");
     let error = JLens::read(&missing, &hash, 2, 3).err().unwrap();
-    assert!(error.contains("absent.safetensors"), "{error}");
+    assert!(matches!(error, LensError::Unread(_)), "{error:?}");
+    assert!(error.to_string().contains("absent.safetensors"), "{error}");
 }
 
 #[test]

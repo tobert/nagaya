@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use council_support::{ControlLog, ENGINE, Fixture, TermFactory};
+use council_support::{ControlLog, ENGINE, Fixture, TermFactory, lens_file};
 use gogi_proto::control::{ControlVector, MEDIA_TYPE};
 use nagaya::council::{Service, ServiceConfig};
 use nagaya::http::{Council, Served, router};
@@ -51,9 +51,55 @@ fn folder(dir: &Path) {
     .unwrap();
 }
 
+/// The weight of the final norm of the small head of a J-Lens folder.
+const NORM: [f32; WIDTH] = [2.0, 0.5, -1.0, 1.0];
+/// The epsilon of the final norm of that folder.
+const EPS: f64 = 0.25;
+
+/// The value of the row `r` of the small head at the column `c`: small integers, which BF16 holds exactly.
+fn table(r: usize, c: usize) -> f32 {
+    ((r * 7 + c * 3) % 11) as f32 - 5.0
+}
+
+/// Add a small head to the model folder: a table of `VOCAB` rows, the norm weight `NORM` and the epsilon `EPS`.
+fn head(dir: &Path) {
+    std::fs::write(
+        dir.join("config.json"),
+        json!({"architectures": ["Lfm3ForCausalLM"], "num_hidden_layers": LAYERS, "hidden_size": WIDTH,
+               "norm_eps": EPS})
+        .to_string(),
+    )
+    .unwrap();
+    let bf16 = |values: &[f32]| -> Vec<u8> {
+        values
+            .iter()
+            .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
+            .collect()
+    };
+    let flat: Vec<f32> = (0..VOCAB).flat_map(|r| (0..WIDTH).map(move |c| table(r, c))).collect();
+    let (embed, norm) = (bf16(&flat), bf16(&NORM));
+    let header = json!({
+        "model.embed_tokens.weight": {"dtype": "BF16", "shape": [VOCAB, WIDTH], "data_offsets": [0, embed.len()]},
+        "model.embedding_norm.weight": {"dtype": "BF16", "shape": [WIDTH],
+                                        "data_offsets": [embed.len(), embed.len() + norm.len()]},
+    })
+    .to_string();
+    let mut bytes = (header.len() as u64).to_le_bytes().to_vec();
+    bytes.extend(header.as_bytes());
+    bytes.extend(embed);
+    bytes.extend(norm);
+    std::fs::write(dir.join("model.safetensors"), bytes).unwrap();
+}
+
 /// A council whose served model `toy` speaks the toy language on the fake. `taps` gives the fake its control table
 /// and the tap `residual`, and `lens` the tap `lens` too. `objects` is the budget of the object store.
 fn lab_with(taps: bool, lens: bool, objects: u64) -> Lab {
+    lab_full(taps, lens, objects, None)
+}
+
+/// `lab_with`, and with `jlens` the folder has a small head and the profile names a J-Lens of these weights and
+/// matrices.
+fn lab_full(taps: bool, lens: bool, objects: u64, jlens: Option<(&str, &[Vec<f32>])>) -> Lab {
     let log = ControlLog::default();
     let factory = TermFactory {
         control: taps.then_some(4),
@@ -81,10 +127,16 @@ fn lab_with(taps: bool, lens: bool, objects: u64) -> Lab {
     let dir = tempfile::tempdir().unwrap();
     folder(dir.path());
     let store = ObjectStore::open(&fixture.directory.path().join("objects"), objects).unwrap();
-    let council = Council::new(vec![served], None)
+    let mut council = Council::new(vec![served], None)
         .unwrap()
         .with_objects(store)
         .with_lab(BTreeMap::from([(ENGINE.to_owned(), dir.path().to_path_buf())]));
+    if let Some((hash, matrices)) = jlens {
+        head(dir.path());
+        let path = dir.path().join("lens.safetensors");
+        lens_file(&path, hash, matrices, WIDTH);
+        council = council.with_lenses(BTreeMap::from([(ENGINE.to_owned(), path)]));
+    }
     Lab {
         fixture,
         council: Arc::new(council),
@@ -587,7 +639,7 @@ fn plan(rows: bool) -> Plan {
         top_k: 8,
         ends: vec![END],
         vectors: Vec::new(),
-        lens: false,
+        lens: nagaya_council::trace::Lens::None,
         rows,
     }
 }
@@ -621,4 +673,85 @@ fn rows_past_the_budget_are_a_413_before_the_job() {
     body["max_tokens"] = json!(steps);
     let (status, r) = send(&lab.council, PATH, &body);
     assert_eq!(status, StatusCode::OK, "with no rows it fits: {r}");
+}
+
+/// The J-Lens of layer 0 of the fake. The lens of layer 1, the last, is the identity.
+fn j0() -> Vec<f32> {
+    vec![
+        1.0, 0.0, 2.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.5, 0.0, 0.0, 1.0,
+    ]
+}
+
+/// The logit row of the J-Lens of the residual row `h` of `layer`, by hand: `J_l h`, the final norm with its division,
+/// and the small head.
+fn jlens_row(layer: usize, h: &[f32]) -> Vec<f32> {
+    let moved: Vec<f32> = if layer == 0 {
+        let j = j0();
+        (0..WIDTH)
+            .map(|i| (0..WIDTH).map(|c| j[i * WIDTH + c] as f64 * h[c] as f64).sum::<f64>() as f32)
+            .collect()
+    } else {
+        h.to_vec()
+    };
+    let mean = moved.iter().map(|x| *x as f64 * *x as f64).sum::<f64>() / WIDTH as f64;
+    let inverse = 1.0 / (mean + EPS).sqrt();
+    let scaled: Vec<f32> = moved.iter().map(|x| (*x as f64 * inverse) as f32).collect();
+    (0..VOCAB)
+        .map(|r| {
+            (0..WIDTH)
+                .map(|c| table(r, c) as f64 * (NORM[c] * scaled[c]) as f64)
+                .sum::<f64>() as f32
+        })
+        .collect()
+}
+
+#[test]
+fn a_jlens_trace_reads_each_layer_through_the_lens_of_the_profile_from_the_tap_residual_only() {
+    let lab = lab_full(true, true, 1 << 24, Some(("fake:0", &[j0()])));
+    let trace = json!({"layers": [1, 0], "top_k": 5, "lens": "jlens", "rows": true});
+    let (status, r) = send(&lab.council, PATH, &traced(json!([]), trace));
+    assert_eq!(status, StatusCode::OK, "{r}");
+    let bytes = object(&lab.council, r["trace"].as_str().unwrap());
+    let st = SafeTensors::deserialize(&bytes).unwrap();
+    let get = |name: &str| st.tensor(name).unwrap();
+    let s = u32_of(get("tokens").data()).len();
+    let rows = f32_of(get("rows").data());
+    let (lens_ids, lens_lp) = (u32_of(get("lens_ids").data()), f32_of(get("lens_logprobs").data()));
+    assert_eq!(get("lens_ids").shape(), [s, 2, 5]);
+    for i in 0..s {
+        for (j, layer) in [1usize, 0].into_iter().enumerate() {
+            let h = &rows[(i * 2 + j) * WIDTH..(i * 2 + j + 1) * WIDTH];
+            let row = jlens_row(layer, h);
+            let at = (i * 2 + j) * 5;
+            assert_eq!(&lens_ids[at..at + 5], &argsort(&row, 5)[..], "step {i} layer {layer}");
+            assert_eq!(lens_lp[at], logprob(&row, lens_ids[at]), "step {i} layer {layer}");
+        }
+    }
+    let (_, meta) = SafeTensors::read_metadata(&bytes).unwrap();
+    let meta = meta.metadata().clone().unwrap();
+    assert_eq!(meta["lens"], "jlens");
+    let lens = std::fs::read(lab._folder.path().join("lens.safetensors")).unwrap();
+    assert_eq!(meta["lens_id"], format!("blake3:{}", blake3::hash(&lens).to_hex()));
+    // The CPU reads the lens, so the passes name the tap `residual` alone.
+    let passes = lab.log.take().passes;
+    let tapped: Vec<_> = passes.iter().filter(|(_, taps)| !taps.is_empty()).collect();
+    assert_eq!(tapped.len(), s);
+    assert!(tapped.iter().all(|(_, taps)| taps == &["residual"]), "{tapped:?}");
+}
+
+#[test]
+fn a_jlens_trace_refuses_a_model_with_no_lens_and_a_lens_of_other_weights() {
+    let trace = json!({"layers": "all", "lens": "jlens"});
+    let none = lab();
+    assert_refused(
+        send(&none.council, PATH, &traced(json!([]), trace.clone())),
+        StatusCode::BAD_REQUEST,
+        "trace.lens",
+    );
+    let other = lab_full(true, true, 1 << 24, Some(("blake3:00", &[j0()])));
+    assert_refused(
+        send(&other.council, PATH, &traced(json!([]), trace)),
+        StatusCode::BAD_REQUEST,
+        "trace.lens",
+    );
 }

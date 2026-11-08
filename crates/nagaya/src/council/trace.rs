@@ -3,7 +3,7 @@
 
 use gogi_proto::Invalid;
 use gogi_proto::generation::{GenerationDone, GenerationRequest};
-use nagaya_council::trace::{Direction, MAX_TOP_K, Plan, TOP_K, Trace};
+use nagaya_council::trace::{Direction, Lens, MAX_TOP_K, Plan, TOP_K, Trace};
 
 use super::Service;
 use super::build::{LENS_TAP, RESIDUAL_TAP};
@@ -11,8 +11,11 @@ use super::control;
 use super::error::ServiceError;
 use super::generations::Tracing;
 
-/// The one lens of `trace.lens` now: the logit lens.
+/// The lens of `trace.lens` from the tap `lens` of the engine.
 pub const LOGIT_LENS: &str = "logit";
+
+/// The lens of `trace.lens` that the CPU reads from the tap `residual` (`docs/lab.md`, "The rules of the J-Lens").
+pub const JLENS: &str = "jlens";
 
 /// The members of `trace` in a request, after their types were checked.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -41,8 +44,14 @@ fn invalid(param: &str, message: String) -> ServiceError {
 
 impl Service {
     /// The plan of a trace: the checks of `trace` against the engine, the model and the objects. A fault is a 400 that
-    /// names the member, or a 404 for a vector that the store does not hold. Nothing runs.
-    pub fn trace_plan(&self, members: &TraceMembers, facts: &ModelFacts) -> Result<Plan, ServiceError> {
+    /// names the member, or a 404 for a vector that the store does not hold. Nothing runs. `jlens` is the J-Lens of
+    /// the model, which the route reads when `trace.lens` names it.
+    pub fn trace_plan(
+        &self,
+        members: &TraceMembers,
+        facts: &ModelFacts,
+        jlens: Option<Lens>,
+    ) -> Result<Plan, ServiceError> {
         let model = &self.config.model;
         let taps = &self.shared.limits.taps;
         if taps.iter().all(|tap| tap.name != RESIDUAL_TAP) {
@@ -55,8 +64,9 @@ impl Service {
             ));
         }
         let lens = match members.lens.as_deref() {
-            None => false,
-            Some(LOGIT_LENS) if taps.iter().any(|tap| tap.name == LENS_TAP) => true,
+            None => Lens::None,
+            Some(LOGIT_LENS) if taps.iter().any(|tap| tap.name == LENS_TAP) => Lens::Logit,
+            Some(JLENS) => jlens.ok_or_else(|| ServiceError::internal("the route gives the J-Lens of a trace"))?,
             Some(LOGIT_LENS) => {
                 return Err(invalid(
                     "trace.lens",
@@ -66,7 +76,9 @@ impl Service {
             Some(other) => {
                 return Err(invalid(
                     "trace.lens",
-                    format!("nothing ran: trace.lens is {other:?}; the lab has the lens {LOGIT_LENS:?} only"),
+                    format!(
+                        "nothing ran: trace.lens is {other:?}; the lab has the lenses {LOGIT_LENS:?} and {JLENS:?}"
+                    ),
                 ));
             }
         };

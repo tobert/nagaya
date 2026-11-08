@@ -50,6 +50,62 @@ impl Direction {
     }
 }
 
+/// A lens that reads residual rows on the CPU (spec 13.2), such as a J-Lens.
+pub trait Readout: Send + Sync {
+    /// The logit row of each residual row, with the layer of the row.
+    fn logits(&self, rows: &[(u32, &[f32])]) -> Vec<Vec<f32>>;
+}
+
+/// The lens of each traced layer.
+#[derive(Clone)]
+pub enum Lens {
+    None,
+    /// The logit lens, from the tap `lens` of the engine.
+    Logit,
+    /// A lens on the CPU from the tap `residual`, with its name and the content id of its object.
+    Cpu {
+        name: String,
+        id: String,
+        readout: std::sync::Arc<dyn Readout>,
+    },
+}
+
+impl Lens {
+    /// The name of the lens in the metadata of the object, or `""` for none.
+    pub fn name(&self) -> &str {
+        match self {
+            Lens::None => "",
+            Lens::Logit => "logit",
+            Lens::Cpu { name, .. } => name,
+        }
+    }
+
+    /// True when the trace has a lens.
+    pub fn some(&self) -> bool {
+        !matches!(self, Lens::None)
+    }
+}
+
+impl std::fmt::Debug for Lens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Lens::Cpu { name, id, .. } => write!(f, "Cpu({name}, {id})"),
+            other => write!(f, "{}", if other.some() { "Logit" } else { "None" }),
+        }
+    }
+}
+
+/// Two lenses are equal when they have the same kind, name and object.
+impl PartialEq for Lens {
+    fn eq(&self, other: &Lens) -> bool {
+        match (self, other) {
+            (Lens::Cpu { name: a, id: x, .. }, Lens::Cpu { name: b, id: y, .. }) => a == b && x == y,
+            (Lens::None, Lens::None) | (Lens::Logit, Lens::Logit) => true,
+            _ => false,
+        }
+    }
+}
+
 /// What a trace records, after the route checked the request.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Plan {
@@ -67,8 +123,8 @@ pub struct Plan {
     /// The end tokens of the model.
     pub ends: Vec<u32>,
     pub vectors: Vec<Direction>,
-    /// True for the logit lens of each traced layer.
-    pub lens: bool,
+    /// The lens of each traced layer.
+    pub lens: Lens,
     /// True when the object holds the residual rows.
     pub rows: bool,
 }
@@ -223,9 +279,9 @@ impl Trace {
                 p.model_layers * p.width
             ));
         }
-        match (p.lens, lens) {
-            (true, Some(lens)) if lens.len() == p.model_layers * p.vocab => {}
-            (true, Some(lens)) => {
+        match (&p.lens, lens) {
+            (Lens::Logit, Some(lens)) if lens.len() == p.model_layers * p.vocab => {}
+            (Lens::Logit, Some(lens)) => {
                 return Err(format!(
                     "the tap lens has {} values; {} layers of {} are {}",
                     lens.len(),
@@ -234,9 +290,14 @@ impl Trace {
                     p.model_layers * p.vocab
                 ));
             }
-            (true, None) => return Err("the trace has a lens, and the step has no tap lens".to_owned()),
-            (false, Some(_)) => return Err("the trace has no lens, and the step has the tap lens".to_owned()),
-            (false, None) => {}
+            (Lens::Logit, None) => return Err("the trace has the logit lens, and the step has no tap lens".to_owned()),
+            (Lens::None, Some(_)) => return Err("the trace has no lens, and the step has the tap lens".to_owned()),
+            (Lens::Cpu { name, .. }, Some(_)) => {
+                return Err(format!(
+                    "the trace has the lens {name} on the CPU, and the step has the tap lens"
+                ));
+            }
+            (Lens::None | Lens::Cpu { .. }, None) => {}
         }
         let (lse, entropy) = distribution(logits);
         let ids = top(logits, p.top_k);
@@ -259,12 +320,29 @@ impl Trace {
                 self.rows.extend_from_slice(h);
             }
         }
-        if let Some(lens) = lens {
-            let rows: Vec<&[f32]> = p
-                .layers
-                .iter()
-                .map(|l| &lens[*l as usize * p.vocab..(*l as usize + 1) * p.vocab])
-                .collect();
+        let cpu_rows;
+        let rows: Option<Vec<&[f32]>> = match (&p.lens, lens) {
+            (Lens::Logit, Some(lens)) => Some(
+                p.layers
+                    .iter()
+                    .map(|l| &lens[*l as usize * p.vocab..(*l as usize + 1) * p.vocab])
+                    .collect(),
+            ),
+            (Lens::Cpu { readout, .. }, None) => {
+                let input: Vec<(u32, &[f32])> = p.layers.iter().map(|l| (*l, row(*l))).collect();
+                cpu_rows = readout.logits(&input);
+                if let Some(bad) = cpu_rows.iter().find(|r| r.len() != p.vocab) {
+                    return Err(format!(
+                        "the readout gave a logit row of {} values; the trace reads {}",
+                        bad.len(),
+                        p.vocab
+                    ));
+                }
+                Some(cpu_rows.iter().map(Vec::as_slice).collect())
+            }
+            _ => None,
+        };
+        if let Some(rows) = rows {
             let threads = std::thread::available_parallelism()
                 .map_or(1, |n| n.get())
                 .min(MAX_THREADS);
@@ -345,7 +423,7 @@ impl Trace {
                 bytes: u(&|t| f32s(&t.along)),
             });
         }
-        if plan.lens {
+        if plan.lens.some() {
             out.push(Tensor {
                 name: "lens_ids",
                 dtype: "U32",
@@ -376,12 +454,16 @@ impl Trace {
     fn header(plan: &Plan, tensors: &[Tensor]) -> Vec<u8> {
         let quote = |text: &str| serde_json::to_string(text).expect("a string is JSON");
         let vectors: Vec<&str> = plan.vectors.iter().map(|v| v.id.as_str()).collect();
-        let metadata = [
-            ("lens", if plan.lens { "logit" } else { "" }.to_owned()),
+        // The keys are in byte order. Only a lens with an object names its id, so the other traces keep their bytes.
+        let mut metadata = vec![("lens", plan.lens.name().to_owned())];
+        if let Lens::Cpu { id, .. } = &plan.lens {
+            metadata.push(("lens_id", id.clone()));
+        }
+        metadata.extend([
             ("model", plan.model.clone()),
             ("vectors", vectors.join(",")),
             ("weight_hash", plan.weight_hash.clone()),
-        ];
+        ]);
         let mut header = String::from("{\"__metadata__\":{");
         for (i, (key, value)) in metadata.iter().enumerate() {
             if i > 0 {

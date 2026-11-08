@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use council_support::{ENGINE, Fixture, TermFactory};
+use council_support::{ENGINE, Fixture, TermFactory, lens_file};
 use gogi_proto::control::{ControlVector, MEDIA_TYPE};
 use nagaya::council::{Service, ServiceConfig};
 use nagaya::http::{Council, Served, router};
@@ -75,8 +75,13 @@ struct Lab {
 }
 
 /// A council whose served model `toy` reads the small checkpoint when `weights`, with an object store. With no
-/// `weights`, the folder belongs to an engine that serves no model here.
+/// `weights`, the folder belongs to an engine that serves no model here. With `lens`, the profile names a J-Lens
+/// file of these weights and matrices.
 fn council_lab(weights: bool) -> Lab {
+    council_lab_with(weights, None)
+}
+
+fn council_lab_with(weights: bool, lens: Option<(&str, &[Vec<f32>])>) -> Lab {
     let factory = TermFactory {
         control: Some(4),
         ..TermFactory::toy()
@@ -101,7 +106,12 @@ fn council_lab(weights: bool) -> Lab {
     let council = Council::new(vec![served], None).unwrap().with_objects(objects);
     // With no weights, the folder belongs to another engine, so the served model `toy` has none.
     let engine = if weights { ENGINE } else { "another-engine" };
-    let council = council.with_lab(BTreeMap::from([(engine.to_owned(), dir.path().to_path_buf())]));
+    let mut council = council.with_lab(BTreeMap::from([(engine.to_owned(), dir.path().to_path_buf())]));
+    if let Some((hash, matrices)) = lens {
+        let path = dir.path().join("lens.safetensors");
+        lens_file(&path, hash, matrices, WIDTH);
+        council = council.with_lenses(BTreeMap::from([(engine.to_owned(), path)]));
+    }
     Lab {
         _fixture: fixture,
         council: Arc::new(council),
@@ -356,4 +366,70 @@ fn project_refuses_what_breaks_its_rules() {
     // A served model whose engine has no weights for the lab is a 400 that names `model`.
     let plain = council_lab(false);
     assert_refused(send(&plain.council, ok), bad, "model");
+}
+
+/// The J-Lens of layer 0 of the small model. The lens of layer 1, the last, is the identity.
+fn j0() -> Vec<f32> {
+    vec![
+        1.0, 0.0, 2.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.5, 0.0, 0.0, 1.0,
+    ]
+}
+
+#[test]
+fn project_through_the_jlens_moves_the_vector_by_the_matrix_of_its_layer() {
+    let lab = council_lab_with(true, Some(("fake:0", &[j0()])));
+    let v = [1.0, -2.0, 0.5, 3.0];
+    // J_0 v, by hand.
+    let moved = [2.0, -2.0, -0.5, 3.5];
+    let project = |vector: &[f32], layer: u32, through: &str| {
+        let (status, body) = send(
+            &lab.council,
+            json!({"model": "toy", "vector": vector, "layers": [layer], "through": through, "top_k": 4}),
+        );
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body
+    };
+    let lensed = project(&v, 0, "jlens");
+    assert_eq!(lensed["through"], "jlens");
+    let plain = project(&moved, 0, "unembed");
+    assert_eq!(lensed["layers"], plain["layers"]);
+    let up: Vec<u64> = lensed["layers"][0]["up"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["id"].as_u64().unwrap())
+        .collect();
+    let want: Vec<u64> = want_up(&want_scores(&moved), 4).into_iter().map(u64::from).collect();
+    assert_eq!(up, want);
+    // The last layer has the identity lens.
+    assert_eq!(project(&v, 1, "jlens")["layers"], project(&v, 1, "unembed")["layers"]);
+}
+
+#[test]
+fn project_through_the_jlens_refuses_a_model_with_no_lens_a_lens_of_other_weights_and_a_list_with_no_layer() {
+    let v = json!([1.0, -2.0, 0.5, 3.0]);
+    let none = council_lab(true);
+    assert_refused(
+        send(
+            &none.council,
+            json!({"model": "toy", "vector": v, "layers": [0], "through": "jlens"}),
+        ),
+        StatusCode::BAD_REQUEST,
+        "through",
+    );
+    let other = council_lab_with(true, Some(("blake3:00", &[j0()])));
+    assert_refused(
+        send(
+            &other.council,
+            json!({"model": "toy", "vector": v, "layers": [0], "through": "jlens"}),
+        ),
+        StatusCode::BAD_REQUEST,
+        "through",
+    );
+    let lab = council_lab_with(true, Some(("fake:0", &[j0()])));
+    assert_refused(
+        send(&lab.council, json!({"model": "toy", "vector": v, "through": "jlens"})),
+        StatusCode::BAD_REQUEST,
+        "layers",
+    );
 }

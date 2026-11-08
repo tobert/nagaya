@@ -15,8 +15,8 @@ use axum::response::Response;
 use axum::routing::post;
 use gogi_proto::Invalid;
 use gogi_proto::generation::GenerationRequest;
-use nagaya_council::trace::Trace;
-use nagaya_mk_lfm3_bmg::lab::{Entry, Facts, Unembedding, ends_of, rank};
+use nagaya_council::trace::{Lens, Readout, Trace};
+use nagaya_mk_lfm3_bmg::lab::{Entry, Facts, JLens, LensError, Unembedding, ends_of, rank};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -25,7 +25,7 @@ use super::routes::{answer, bytes};
 use super::{Council, RequestId, Served};
 use crate::council::control;
 use crate::council::error::ServiceError;
-use crate::council::trace::{ModelFacts, TraceMembers};
+use crate::council::trace::{JLENS, ModelFacts, TraceMembers};
 
 type Shared = State<Arc<Council>>;
 type Id = Extension<RequestId>;
@@ -36,8 +36,55 @@ pub const TOP_K: u64 = 20;
 /// The most entries at each end of a layer.
 pub const MAX_TOP_K: u64 = 256;
 
-/// The one matrix of `through` now: the head, with the weight of the final norm.
+/// The matrix of `through` that is the head, with the weight of the final norm.
 pub const UNEMBED: &str = "unembed";
+
+/// The most threads that move the rows of one step through a J-Lens.
+const LENS_THREADS: usize = 8;
+
+/// The J-Lens file of one engine, and the lens after its first read.
+pub struct LensSlot {
+    path: PathBuf,
+    read: std::sync::Mutex<Option<Arc<JLens>>>,
+}
+
+impl LensSlot {
+    pub fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            read: std::sync::Mutex::new(None),
+        }
+    }
+}
+
+/// The readout of a J-Lens in a trace: `J_l h` for each row, then the final norm with its division, and the head.
+struct JLensReadout {
+    lens: Arc<JLens>,
+    head: Unembedding,
+}
+
+impl Readout for JLensReadout {
+    fn logits(&self, rows: &[(u32, &[f32])]) -> Vec<Vec<f32>> {
+        let threads = std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .clamp(1, LENS_THREADS);
+        let per = rows.len().div_ceil(threads).max(1);
+        let moved: Vec<Vec<f32>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = rows
+                .chunks(per)
+                .map(|part| {
+                    scope.spawn(move || part.iter().map(|(l, h)| self.lens.transport(*l, h)).collect::<Vec<_>>())
+                })
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|h| h.join().expect("a thread of the J-Lens panicked"))
+                .collect()
+        });
+        let refs: Vec<&[f32]> = moved.iter().map(Vec::as_slice).collect();
+        self.head.readout(&refs)
+    }
+}
 
 /// The largest trace object. The job keeps the numbers of a trace in host memory, outside the ledger, until the reply
 /// ends (`docs/lab.md`, "The budget").
@@ -99,7 +146,16 @@ async fn project(State(council): Shared, Extension(id): Id, body: Body) -> Respo
     let result = async {
         let request: ProjectRequest = parse(&bytes(body).await?, "project")?;
         let (served, dir) = council.lab_model(&request.model)?;
-        council.call(move || run(&served, &dir, request)).await
+        let inner = Arc::clone(&council);
+        council
+            .call(move || {
+                let lens = match request.through.as_str() {
+                    JLENS => Some(inner.lab_lens(&served, &dir, "through")?),
+                    _ => None,
+                };
+                run(&served, &dir, request, lens.as_deref())
+            })
+            .await
     }
     .await;
     answer(&id, result)
@@ -219,13 +275,13 @@ fn directions(served: &Served, lab: &Unembedding, request: &ProjectRequest) -> R
     }
 }
 
-/// The work of `project` on a call thread.
-fn run(served: &Served, dir: &Path, request: ProjectRequest) -> Result<Projected, ServiceError> {
-    if request.through != UNEMBED {
+/// The work of `project` on a call thread. `lens` is the J-Lens of the model for `through: "jlens"`.
+fn run(served: &Served, dir: &Path, request: ProjectRequest, lens: Option<&JLens>) -> Result<Projected, ServiceError> {
+    if request.through != UNEMBED && request.through != JLENS {
         return Err(invalid(
             "through",
             format!(
-                "nothing ran: through is {:?}; the lab projects through {UNEMBED:?} only",
+                "nothing ran: through is {:?}; the lab projects through {UNEMBED:?} and {JLENS:?}",
                 request.through
             ),
         ));
@@ -243,7 +299,18 @@ fn run(served: &Served, dir: &Path, request: ProjectRequest) -> Result<Projected
             served.service.model()
         ))
     })?;
-    let chosen = directions(served, &lab, &request)?;
+    let mut chosen = directions(served, &lab, &request)?;
+    if let Some(lens) = lens {
+        for (layer, row) in &mut chosen {
+            let Some(layer) = layer else {
+                return Err(invalid(
+                    "layers",
+                    "nothing ran: the J-Lens moves a row of one layer; name the layer of the list in layers".to_owned(),
+                ));
+            };
+            *row = lens.transport(*layer, row);
+        }
+    }
     let rows: Vec<&[f32]> = chosen.iter().map(|(_, row)| row.as_slice()).collect();
     let scores = lab.scores(&rows);
     let family = served.service.family();
@@ -392,6 +459,7 @@ async fn trace(State(council): Shared, Extension(id): Id, body: Body) -> Respons
         // The checks of the trace come before the status of the model: they read no engine.
         let checks = Arc::clone(&served);
         let max_tokens = request.max_tokens as usize;
+        let lab = Arc::clone(&council);
         let plan = council
             .call(move || {
                 let facts = Facts::open(&dir).map_err(|error| {
@@ -405,7 +473,24 @@ async fn trace(State(council): Shared, Extension(id): Id, body: Body) -> Respons
                     width: facts.width,
                     ends: facts.ends,
                 };
-                let plan = checks.service.trace_plan(&members, &facts)?;
+                let jlens = match members.lens.as_deref() {
+                    Some(JLENS) => {
+                        let lens = lab.lab_lens(&checks, &dir, "trace.lens")?;
+                        let head = Unembedding::open(&dir).map_err(|error| {
+                            ServiceError::internal(format!(
+                                "the lab cannot read the checkpoint of {}: {error}",
+                                checks.service.model()
+                            ))
+                        })?;
+                        Some(Lens::Cpu {
+                            name: JLENS.to_owned(),
+                            id: lens.id().to_owned(),
+                            readout: Arc::new(JLensReadout { lens, head }),
+                        })
+                    }
+                    _ => None,
+                };
+                let plan = checks.service.trace_plan(&members, &facts, jlens)?;
                 let limit = store
                     .lock()
                     .expect("the object store lock is poisoned")
@@ -472,5 +557,38 @@ impl Council {
             ))
         })?;
         Ok((Arc::clone(served), dir.clone()))
+    }
+
+    /// The J-Lens of a served model of the lab, from the file that its profile entry names. The first use reads the
+    /// file, and later uses share it. No lens, or a lens of other weights, is a 400 that names `param`. A file that
+    /// does not read is a 500 that names the path.
+    fn lab_lens(&self, served: &Served, dir: &Path, param: &str) -> Result<Arc<JLens>, ServiceError> {
+        let model = served.service.model();
+        let slot = self.lenses.get(&served.service.config().engine).ok_or_else(|| {
+            invalid(
+                param,
+                format!(
+                    "nothing ran: the profile names no J-Lens for {model}; fit one with tools/lfm3_jlens_fit.py, and \
+                     name its file in [engines.lab] jlens"
+                ),
+            )
+        })?;
+        let mut read = slot.read.lock().expect("the lock of a lens is poisoned");
+        if let Some(lens) = &*read {
+            return Ok(Arc::clone(lens));
+        }
+        let facts = Facts::open(dir).map_err(|error| {
+            ServiceError::internal(format!("the lab cannot read the model folder of {model}: {error}"))
+        })?;
+        let weight_hash = served.service.identity().weight_hash;
+        let lens = JLens::read(&slot.path, &weight_hash, facts.layers, facts.width).map_err(|error| match error {
+            LensError::OtherWeights(why) => invalid(param, format!("nothing ran: {why}")),
+            LensError::Unread(why) | LensError::Malformed(why) => {
+                ServiceError::internal(format!("the J-Lens of {model} does not read: {why}"))
+            }
+        })?;
+        let lens = Arc::new(lens);
+        *read = Some(Arc::clone(&lens));
+        Ok(lens)
     }
 }
