@@ -265,3 +265,60 @@ fn the_fake_residual_tap_gives_each_layer_of_each_logit_row() {
     let error = FakeAlways::new().pass(&[], &[residual()]).unwrap_err();
     assert!(error.message.contains("residual"), "{}", error.message);
 }
+
+fn lens() -> Tap {
+    Tap {
+        name: "lens".to_owned(),
+    }
+}
+
+/// The tap `lens` of the fake (spec 13.1): a logit row for each layer of its one logit row. The row of the last layer
+/// is the logit row, as the head of the last layer is the head of the model.
+#[test]
+fn the_fake_lens_gives_a_logit_row_for_each_layer_and_the_last_is_the_head() {
+    let mut engine = steered_fake().with_lens();
+    let limits = engine.limits();
+    limits.check().unwrap();
+    let declared = limits.taps.iter().find(|tap| tap.name == "lens").unwrap();
+    assert_eq!(declared.conditions, ["one logit row"]);
+    let out = run(&mut engine, &[7, 8, 9], &[], &[lens()]);
+    let names: Vec<&str> = out.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["state", "logits", "lens"],
+        "the lens alone gives no residual rows"
+    );
+    let logits = &out[1].1;
+    let rows = &out[2].1;
+    assert_eq!(rows.len(), 2 * 32 * 4, "2 layers of 32 f32 values");
+    assert_eq!(
+        &rows[32 * 4..],
+        &logits[..],
+        "the lens of the last layer is the logit row"
+    );
+    assert_ne!(&rows[..32 * 4], &logits[..], "the lens of layer 0 is another row");
+    let both = run(&mut engine, &[7, 8, 9], &[], &[residual(), lens()]);
+    let names: Vec<&str> = both.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["state", "logits", "residual", "lens"]);
+    assert_eq!(both[0..2], out[0..2], "the taps change no other output");
+    // A control item changes the lens of each layer.
+    engine.control().unwrap().control_write(1, &vector([1.0; 8])).unwrap();
+    let steered = run(&mut engine, &[7, 8, 9], &[item(1, ControlOp::Add, 1.0)], &[lens()]);
+    assert_ne!(steered[2].1[..32 * 4], rows[..32 * 4]);
+    // The lens reads one logit row: a pass with two is refused.
+    engine.slots().unwrap().slot_clear(0);
+    let two = Segment {
+        state: State::Slot(0),
+        inputs: SegmentInputs::Tokens(vec![1, 2]),
+        positions: vec![0, 1],
+        meta: Vec::new(),
+        outputs: OutputsWanted { logit_rows: vec![0, 1] },
+        control: Vec::new(),
+    };
+    let error = engine.pass(&[two], &[lens()]).unwrap_err();
+    assert_eq!(error.kind, PassErrorKind::Refused);
+    assert!(error.message.contains("one logit row"), "{}", error.message);
+    // A fake with no lens refuses the tap.
+    let error = steered_fake().pass(&[], &[lens()]).unwrap_err();
+    assert!(error.message.contains("lens"), "{}", error.message);
+}
