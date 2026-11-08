@@ -240,6 +240,7 @@ impl Lfm3Engine {
                 // The text model alone declares `control`, and a frame is a pass of Omni.
                 control: &[],
                 tap: false,
+                lens: false,
             },
         );
         assert_eq!(

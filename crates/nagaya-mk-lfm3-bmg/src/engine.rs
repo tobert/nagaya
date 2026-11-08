@@ -26,10 +26,10 @@ use crate::audio::{self, AudioBufs, AudioWeights, Clip, MAX_CLIP_POSITIONS, Stag
 use crate::device::{Device, OnCard};
 use crate::media::{MAX_IMAGE_PATCHES, PATCH_ROW, SpanKind};
 use crate::model::{self, Bufs, Run, SlotMemory, bufs_bytes, scratch_floats};
-use crate::spec::RESIDUAL_TAP;
 use crate::spec::{
     self, Backbone, Block, Config, FAMILY, Held, LayerKind, Model, Part, RING_ROWS, SLOT_TOKENS, VisionBytes,
 };
+use crate::spec::{LENS_TAP, RESIDUAL_TAP};
 use crate::vision::{self, Until, Vision, VisionBufs, VisionWeights};
 use crate::weights::{self, Count, Weights, f32_values};
 
@@ -77,6 +77,13 @@ impl Drop for Lfm3Engine {
         self.ring.free(card);
         self.device.free_all(card);
     }
+}
+
+/// The taps that a pass names (spec 13.1).
+#[derive(Clone, Copy, Debug, Default)]
+struct Taps {
+    residual: bool,
+    lens: bool,
 }
 
 fn refused(message: String) -> PassError {
@@ -432,6 +439,7 @@ impl Lfm3Engine {
         after_embed: &[MkTaskDescriptor],
         control: &[model::Control],
         tap: bool,
+        lens: bool,
     ) {
         if pos0 == 0 {
             self.zero_conv(slot);
@@ -451,6 +459,7 @@ impl Lfm3Engine {
                 after_embed,
                 control,
                 tap,
+                lens,
             },
         );
         // Omni keeps the final norm of the last position for `frame` (engine-abi "The speech calls of LFM3").
@@ -606,7 +615,7 @@ impl Lfm3Engine {
         }
         self.held.clear(slot);
         self.held.check_pass(&[segment], self.config.max_block, self.vocab)?;
-        self.forward(slot, 0, ids, layers, norm.then_some(&[][..]), &[], &[], false);
+        self.forward(slot, 0, ids, layers, norm.then_some(&[][..]), &[], &[], false, false);
         let at = if norm { self.bufs.h } else { self.bufs.x };
         let out = self.read_f32(at, ids.len() * self.b.hidden);
         self.held.clear(slot);
@@ -684,23 +693,26 @@ impl Lfm3Engine {
         }
     }
 
-    /// The control items of the one segment of a pass, as tasks of the ring, and whether the pass taps the residual.
-    /// A list for an engine with no table, an item outside the table, or an unknown tap is refused.
+    /// The control items of the one segment of a pass, as tasks of the ring, and the taps that the pass names. A list
+    /// for an engine with no table, an item outside the table, or an unknown tap is refused.
     fn check_control_and_taps(
         &self,
         segments: &[Segment],
         taps: &[Tap],
-    ) -> Result<(Vec<model::Control>, bool), PassError> {
-        let mut tap = false;
+    ) -> Result<(Vec<model::Control>, Taps), PassError> {
+        let mut named = Taps::default();
         for t in taps {
-            if t.name != RESIDUAL_TAP {
-                return Err(refused(format!(
-                    "nothing ran: the engine has no tap `{}`; its tap is `{RESIDUAL_TAP}`",
-                    t.name
-                )));
+            match t.name.as_str() {
+                RESIDUAL_TAP => named.residual = true,
+                LENS_TAP => named.lens = true,
+                other => {
+                    return Err(refused(format!(
+                        "nothing ran: the engine has no tap `{other}`; its taps are `{RESIDUAL_TAP}` and `{LENS_TAP}`"
+                    )));
+                }
             }
-            tap = true;
         }
+        let tap = named;
         let items = segments.first().map_or(&[][..], |segment| &segment.control[..]);
         if items.is_empty() {
             return Ok((Vec::new(), tap));
@@ -755,6 +767,13 @@ impl Engine for Lfm3Engine {
             Ok(found) => found,
             Err(error) => return Err(self.fail(error)),
         };
+        if tap.lens && block.logit_rows.len() != 1 {
+            let error = refused(format!(
+                "nothing ran: the tap `{LENS_TAP}` reads one logit row, and the pass asks for {}",
+                block.logit_rows.len()
+            ));
+            return Err(self.fail(error));
+        }
         let start = Instant::now();
         let layers = self.b.layers.len();
         let places = self.encode(&segments[0], &block);
@@ -766,7 +785,8 @@ impl Engine for Lfm3Engine {
             Some(&block.logit_rows),
             &places,
             &control,
-            tap,
+            tap.residual || tap.lens,
+            tap.lens,
         );
         let row = self.b.vocab_rows * 4;
         let mut outputs: Vec<Output> = (0..block.logit_rows.len())
@@ -779,12 +799,25 @@ impl Engine for Lfm3Engine {
             })
             .collect();
         // The residual tap (spec 13.1): for each logit row, the residual after each layer, in layer order.
-        if tap {
+        if tap.residual {
             let bytes = block.logit_rows.len() * self.b.layers.len() * self.b.hidden * 4;
             outputs.push(Output {
                 name: RESIDUAL_TAP.to_owned(),
                 dtype: Dtype::F32,
                 bytes: self.device.read(self.card(), self.bufs.taps, bytes),
+            });
+        }
+        // The lens (spec 13.1): the logit row of each layer, as wide as the logit row of the head.
+        if tap.lens {
+            let mut bytes = Vec::with_capacity(self.b.layers.len() * self.vocab * 4);
+            for l in 0..self.b.layers.len() {
+                let at = self.bufs.lens + (l * self.b.vocab_rows * 4) as u64;
+                bytes.extend(self.device.read(self.card(), at, self.vocab * 4));
+            }
+            outputs.push(Output {
+                name: LENS_TAP.to_owned(),
+                dtype: Dtype::F32,
+                bytes,
             });
         }
         self.held.ran(&block);

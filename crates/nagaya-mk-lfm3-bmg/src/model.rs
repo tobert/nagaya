@@ -56,6 +56,10 @@ pub struct Bufs {
     pub logits: u64,
     /// The residual tap (spec 13.1): the residual after each layer at each logit row, `[MAX_LOGIT_ROWS][layers][hidden]`.
     pub taps: u64,
+    /// The lens (spec 13.1): the final norm of the tapped row of each layer of one logit row, `[layers][hidden]`.
+    pub lens_h: u64,
+    /// The lens: the logits of each layer of one logit row, `[layers][vocab_rows]`.
+    pub lens: u64,
 }
 
 impl Bufs {
@@ -79,6 +83,8 @@ impl Bufs {
             ) * 4),
             logits: z(MAX_LOGIT_ROWS * b.vocab_rows * 4),
             taps: z(MAX_LOGIT_ROWS * b.layers.len() * b.hidden * 4),
+            lens_h: z(b.layers.len() * b.hidden * 4),
+            lens: z(b.layers.len() * b.vocab_rows * 4),
         }
     }
 }
@@ -180,6 +186,9 @@ pub struct Run<'a> {
     pub control: &'a [Control],
     /// True when the ring copies the residual after each layer at each logit row into `bufs.taps` (spec 13.1).
     pub tap: bool,
+    /// True when the ring also gives the lens of each tapped row in `bufs.lens`: the final norm, then the head (spec
+    /// 13.1). It needs the tap and one logit row.
+    pub lens: bool,
 }
 
 fn accumulate(mut task: MkTaskDescriptor) -> MkTaskDescriptor {
@@ -199,6 +208,7 @@ pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskD
         after_embed,
         control,
         tap,
+        lens,
     } = run;
     assert!(
         layers <= b.layers.len() && (layers == b.layers.len() || logit_rows.is_none()),
@@ -213,6 +223,10 @@ pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskD
     assert!(
         !tap || logit_rows.is_some(),
         "the residual tap reads the logit rows, so a run with the tap gives logits"
+    );
+    assert!(
+        !lens || (tap && logit_rows.is_some_and(|rows| rows.len() == 1)),
+        "the lens reads the tapped rows of one logit row; the engine checks the pass first"
     );
     let (n32, h32, i32_) = (n as u32, b.hidden as u32, b.intermediate as u32);
     let (heads, kv, d) = (b.heads as u32, b.kv_heads as u32, b.head_dim as u32);
@@ -372,6 +386,21 @@ pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskD
                 false,
             ));
         }
+        // The lens runs after the head, into its own buffers, so it changes no bit of the logits. One matmul of the
+        // rows of every layer reads the table once.
+        if lens {
+            let l32 = b.layers.len() as u32;
+            t.push(tasks::rmsnorm(bufs.taps, w.norm, bufs.lens_h, l32, h32, b.eps, false));
+            t.push(tasks::matmul(
+                bufs.lens_h,
+                w.embed,
+                bufs.lens,
+                l32,
+                b.vocab_rows as u32,
+                h32,
+                false,
+            ));
+        }
     }
     assert!(t.len() < MAX_TASKS_PER_CARD, "the pass has {} tasks", t.len());
     t
@@ -440,6 +469,7 @@ mod tests {
                 after_embed: &[],
                 control: &[],
                 tap: false,
+                lens: false,
             },
         );
         assert_eq!(t[0].opcode, OP_EMBED);
@@ -505,6 +535,7 @@ mod tests {
                     after_embed: &[],
                     control,
                     tap: false,
+                    lens: false,
                 },
             )
         };
@@ -573,6 +604,7 @@ mod tests {
                 after_embed: &[],
                 control: &control,
                 tap: true,
+                lens: false,
             },
         );
         let items: Vec<usize> = t
@@ -606,9 +638,87 @@ mod tests {
                 after_embed: &[],
                 control: &control,
                 tap: false,
+                lens: false,
             },
         );
         assert_eq!(count(&untapped, OP_COPY), 0);
+    }
+
+    /// The lens (spec 13.1): after the head, one norm and one head matmul take the tapped row of each layer of the one
+    /// logit row into the buffers of the lens. The tasks before them are the tasks of the tap alone.
+    #[test]
+    fn the_lens_takes_the_final_norm_and_the_head_of_each_tapped_row_after_the_head() {
+        let b = backbone();
+        let (w, bufs, slot) = (weights_with_norms(&b), bufs(&b), memory(&b, 1024));
+        let run = |tap: bool, lens: bool| {
+            pass(
+                &b,
+                &w,
+                &bufs,
+                Run {
+                    slot: &slot,
+                    pos0: 0,
+                    n: 8,
+                    layers: b.layers.len(),
+                    logit_rows: Some(&[7]),
+                    after_embed: &[],
+                    control: &[],
+                    tap,
+                    lens,
+                },
+            )
+        };
+        let tapped = run(true, false);
+        let lensed = run(true, true);
+        assert_eq!(lensed.len(), tapped.len() + 2);
+        assert!(
+            lensed
+                .iter()
+                .zip(&tapped)
+                .all(|(a, t)| format!("{a:?}") == format!("{t:?}")),
+            "the lens adds tasks after the head and changes none before"
+        );
+        let (norm, head) = (&lensed[tapped.len()], &lensed[tapped.len() + 1]);
+        assert_eq!(
+            (norm.opcode, norm.a, norm.b, norm.c, norm.n, norm.k),
+            (
+                nagaya_mk_bmg::protocol::OP_RMSNORM,
+                bufs.taps,
+                w.norm,
+                bufs.lens_h,
+                24,
+                2048
+            )
+        );
+        assert_eq!(norm.x, b.eps.to_bits() as u64, "the final norm with its epsilon");
+        assert_eq!(
+            (head.opcode, head.a, head.b, head.c, head.n, head.m, head.k),
+            (OP_MATMUL, bufs.lens_h, w.embed, bufs.lens, 24, 128_000, 2048)
+        );
+        assert_ne!(bufs.lens_h, bufs.h, "the lens has its own buffers");
+    }
+
+    #[test]
+    #[should_panic(expected = "one logit row")]
+    fn a_lens_of_two_logit_rows_is_a_defect() {
+        let b = backbone();
+        let (w, bufs, slot) = (weights(&b), bufs(&b), memory(&b, 1024));
+        pass(
+            &b,
+            &w,
+            &bufs,
+            Run {
+                slot: &slot,
+                pos0: 0,
+                n: 8,
+                layers: b.layers.len(),
+                logit_rows: Some(&[6, 7]),
+                after_embed: &[],
+                control: &[],
+                tap: true,
+                lens: true,
+            },
+        );
     }
 
     #[test]
@@ -627,7 +737,11 @@ mod tests {
             512,
             4096,
         );
-        assert_eq!(*sizes.last().unwrap(), 16 * 24 * 2048 * 4);
+        // The taps, then the normed rows and the logit rows of the lens of one logit row.
+        assert_eq!(
+            sizes[sizes.len() - 3..],
+            [16 * 24 * 2048 * 4, 24 * 2048 * 4, 24 * 128_000 * 4]
+        );
         assert_eq!(with, sizes.iter().map(|s| rounded(*s)).sum::<usize>());
     }
 
@@ -649,6 +763,7 @@ mod tests {
                 after_embed: &[place],
                 control: &[],
                 tap: false,
+                lens: false,
             },
         );
         assert_eq!((t[0].opcode, t[1].opcode), (OP_EMBED, OP_COPY));
@@ -678,6 +793,7 @@ mod tests {
                 after_embed: &[],
                 control: &[],
                 tap: false,
+                lens: false,
             },
         );
         assert_eq!((count(&one, OP_ATTN), count(&one, OP_ATTN_SCORES)), (11, 0));
@@ -696,6 +812,7 @@ mod tests {
                 after_embed: &[],
                 control: &[],
                 tap: false,
+                lens: false,
             },
         );
         let copies: Vec<&MkTaskDescriptor> = wrap.iter().filter(|task| task.opcode == OP_COPY).collect();
