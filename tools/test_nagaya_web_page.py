@@ -573,6 +573,29 @@ class Page(unittest.TestCase):
         self.assertEqual(out["text"], "")
         self.assertEqual(out["kept"], "Perform TTS in British English using a male voice.")
 
+    def test_speech_mode_speaks_a_long_text_in_chunks_of_whole_sentences(self):
+        long = " ".join(["This is sentence number %d of a long story that goes on." % i for i in range(1, 9)])
+        out = self.run_page(f"""
+            set("omni-model", "lfm3-omni"); set("omni-output", "speech");
+            document.getElementById("omni-output").onchange();
+            set("omni-input", {json.dumps(long)});
+            await document.getElementById("omni-go").onclick();
+            out.bodies = calls.filter((c) => c[1] === "/council/v2/generations").map((c) => JSON.parse(c[2]));
+            out.log = document.getElementById("omni-log").innerHTML;
+            out.chunks = speechChunks("one two. " + "w ".repeat(90).trim() + ". three.");""")
+        bodies = out["bodies"]
+        # 8 sentences of 12 words: 3 a chunk, so 3 chunks; each a TTS request of one user message.
+        self.assertEqual(len(bodies), 3)
+        for b in bodies:
+            system, user = b["context"]["messages"]
+            self.assertEqual(system["content"], "Perform TTS in American English using a female voice.")
+            self.assertLessEqual(len(user["content"].split()), 40)
+            self.assertEqual(b["output"], {"mime": "audio/wav", "options": {"mode": "speech"}})
+        self.assertEqual(" ".join(b["context"]["messages"][1]["content"] for b in bodies), long)
+        self.assertEqual(out["log"].count("<audio controls"), 3)
+        # A sentence longer than a chunk splits at its words.
+        self.assertEqual([len(c.split()) for c in out["chunks"]], [2, 40, 40, 10, 1])
+
     def test_the_lab_lists_only_the_local_models_of_the_lfm3_engine_kind(self):
         out = self.run_page('out.models = document.getElementById("lab-model").innerHTML;')
         self.assertEqual(out["models"], '<option value="lfm3-omni">lfm3-omni</option><option value="lfm3">lfm3</option>')

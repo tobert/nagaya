@@ -1158,10 +1158,73 @@ $("omni-output").onchange = () => {
   const now = $("omni-system").value.trim();
   if (!now || Object.values(OMNI_SYSTEM).includes(now)) $("omni-system").value = OMNI_SYSTEM[$("omni-output").value];
 };
+/** The words of a chunk of speech. Speech runs about 2.5 words a second, so a chunk is about 16 s: the model card
+ *  generates at most 256 tokens of speech, about 20 s, and longer speech drifts. */
+const SPEECH_WORDS = 40;
+/** The text in chunks of whole sentences of at most `SPEECH_WORDS` words. A longer sentence splits at its words. */
+function speechChunks(text) {
+  const sentences = text.split(/(?<=[.!?;:])\s+/).map((s) => s.trim()).filter(Boolean);
+  const chunks = [];
+  let now = [];
+  const flush = () => { if (now.length) chunks.push(now.join(" ")); now = []; };
+  for (const sentence of sentences) {
+    const words = sentence.split(/\s+/);
+    if (now.length + words.length > SPEECH_WORDS) flush();
+    for (let i = 0; i < words.length; i += SPEECH_WORDS) {
+      if (words.length > SPEECH_WORDS) { flush(); now = words.slice(i, i + SPEECH_WORDS); flush(); }
+      else now = now.concat(words);
+    }
+  }
+  flush();
+  return chunks;
+}
+/** Speech mode is TTS: each chunk of the text is its own request, so no clip drifts, and the clips play in order. */
+async function omniSpeak(model, text) {
+  const system = $("omni-system").value.trim();
+  const clips = [];
+  let frames = 0;
+  for (const [i, chunk] of speechChunks(text).entries()) {
+    $("omni-status").textContent = `speaking part ${i + 1}…`;
+    const body = {model, max_tokens: +$("omni-max").value, sample: {temperature: +$("omni-temp").value},
+                  context: {thinking: false, messages: (system ? [{role: "system", content: system}] : [])
+                    .concat([{role: "user", content: chunk}])},
+                  output: {mime: "audio/wav", options: {mode: "speech"}}};
+    const done = await call("POST", "/council/v2/generations", body);
+    for (const o of done.outputs || []) if (o.mime === "audio/wav") clips.push({id: o.id, mime: o.mime, host});
+    frames += done.usage?.media?.written?.audio_ms || 0;
+  }
+  return {clips, seconds: frames / 1000};
+}
+// The clips of one reply play one after the other.
+document.addEventListener("ended", (ev) => {
+  const next = ev.target?.nextElementSibling;
+  if (next && next.tagName === "AUDIO") next.play().catch(() => {});
+}, true);
+
 $("omni-go").onclick = async () => {
   const text = $("omni-input").value.trim(), model = $("omni-model").value;
   if ((!text && !omniFiles.length) || !model) return;
   $("omni-error").textContent = "";
+  if ($("omni-output").value === "speech" && text && !omniFiles.length) {
+    omni.push({role: "user", text, files: []}); $("omni-input").value = ""; drawOmni();
+    $("omni-go").disabled = true;
+    try {
+      await ready(model, (t) => { $("omni-status").textContent = t; });
+      const {clips, seconds} = await omniSpeak(model, text);
+      omni.push({role: "assistant", text: "", files: clips,
+                 stat: `${clips.length} clips · ${seconds.toFixed(1)} s of speech`});
+      omniKept = omniKept.concat(clips).slice(-200);
+      keepAll();
+    } catch (e) {
+      omni.pop(); $("omni-input").value = text;
+      $("omni-error").textContent = e.message;
+    }
+    $("omni-status").textContent = "";
+    drawOmni();
+    document.querySelector?.("#omni-log .msg:last-child audio")?.play?.().catch(() => {});
+    $("omni-go").disabled = false;
+    return;
+  }
   const files = omniFiles.filter((f) => here(f.host));
   omni.push({role: "user", text, files}); omniFiles = []; $("omni-input").value = ""; drawOmni();
   const messages = [];
