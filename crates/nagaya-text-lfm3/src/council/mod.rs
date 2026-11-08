@@ -586,6 +586,14 @@ impl Lfm3Family {
         if part.kind == MediaKind::Video {
             return format!("{};{}", part.mime, crate::media::decode::versions());
         }
+        // A WAV that the resampler made names the resampler too, as a video names its decoder.
+        #[cfg(feature = "video")]
+        if part.kind == MediaKind::Audio
+            && let Ok(bytes) = self.part_bytes(part)
+            && crate::media::audio::read_wav(&bytes).is_err()
+        {
+            return format!("{};{}", part.mime, crate::media::decode::resampler_version());
+        }
         part.mime.clone()
     }
 
@@ -1066,7 +1074,9 @@ impl Lfm3Family {
                 span.id
             ))
         })?;
-        let rows = crate::media::prepare(&bytes, &span.mime)
+        // The recipe media type can name the resampler after a `;`: the rows read the type itself.
+        let mime = span.mime.split(';').next().unwrap_or(&span.mime);
+        let rows = crate::media::prepare(&bytes, mime)
             .map_err(|e| FamilyError::client(format!("nothing ran: the object {} {e}.", span.id)))?;
         if rows.positions() != span.count {
             return Err(FamilyError::internal(format!(

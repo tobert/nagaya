@@ -33,6 +33,10 @@ const VIDEO_TOKEN: u32 = 125_029;
 #[cfg(feature = "video")]
 const AUDIO_TOKEN: u32 = 125_031;
 
+/// A WAV at 24 kHz in stereo, the rate of Omni's own speech: 1.5 s of a 440 Hz tone.
+#[cfg(feature = "video")]
+const WIDE: &str = "blake3:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
 /// The bytes of PHOTO under another id.
 const TWIN: &str = "blake3:8888888888888888888888888888888888888888888888888888888888888888";
 const ABSENT: &str = "blake3:7777777777777777777777777777777777777777777777777777777777777777";
@@ -68,12 +72,39 @@ fn wav(channels: u16, samples: usize) -> Vec<u8> {
     out
 }
 
+/// A WAV of PCM in 16 bits of a 440 Hz tone at `rate` with `channels` channels and `frames` frames.
+#[cfg(feature = "video")]
+fn tone(rate: u32, channels: u16, frames: usize) -> Vec<u8> {
+    let data: Vec<u8> = (0..frames)
+        .flat_map(|i| {
+            let v = ((i as f64 / f64::from(rate) * 440.0 * std::f64::consts::TAU).sin() * 8_000.0) as i16;
+            (0..channels).flat_map(move |_| v.to_le_bytes())
+        })
+        .collect();
+    let mut out = b"RIFF".to_vec();
+    out.extend((36 + data.len() as u32).to_le_bytes());
+    out.extend(b"WAVEfmt ");
+    out.extend(16u32.to_le_bytes());
+    out.extend(1u16.to_le_bytes());
+    out.extend(channels.to_le_bytes());
+    out.extend(rate.to_le_bytes());
+    out.extend((rate * 2 * u32::from(channels)).to_le_bytes());
+    out.extend((2 * channels).to_le_bytes());
+    out.extend(16u16.to_le_bytes());
+    out.extend(b"data");
+    out.extend((data.len() as u32).to_le_bytes());
+    out.extend(data);
+    out
+}
+
 fn objects() -> Map {
     let mut map = HashMap::new();
     map.insert(PHOTO.to_string(), std::fs::read(fixture_path("photo.jpg")).unwrap());
     map.insert(TWIN.to_string(), std::fs::read(fixture_path("photo.jpg")).unwrap());
     map.insert(CLIP.to_string(), wav(1, 24_000));
     map.insert(STEREO.to_string(), wav(2, 1_000));
+    #[cfg(feature = "video")]
+    map.insert(WIDE.to_string(), tone(24_000, 2, 36_000));
     for (id, file) in [
         (SMALL, "image_small.png"),
         (MID, "image_mid.png"),
@@ -207,14 +238,19 @@ fn a_part_that_the_family_cannot_read_is_a_client_error_that_names_it() {
         return;
     }
     let at = |parts: Value| user(parts);
+    // A stereo WAV resamples in a build with the feature video (spec 11.11, "Video, and audio at any rate"); without
+    // it, the WAV is refused with what it holds.
+    let stereo = at(json!([{"type": "object", "id": STEREO, "mime": "audio/wav"}]));
+    if cfg!(feature = "video") {
+        omni().render(&stereo, true).expect("a stereo WAV resamples");
+    } else {
+        let (_, message) = param(omni().render(&stereo, true).unwrap_err());
+        assert!(message.contains("2 channels"), "{message}");
+    }
     let cases = [
         (
             json!([{"type": "object", "id": ABSENT, "mime": "image/png"}]),
             "is not on this server",
-        ),
-        (
-            json!([{"type": "object", "id": STEREO, "mime": "audio/wav"}]),
-            "2 channels",
         ),
         (
             json!([{"type": "object", "id": CLIP, "mime": "image/png"}]),
@@ -713,4 +749,36 @@ fn an_assistant_audio_part_reads_the_codes_of_its_output() {
         "{}",
         inputs[0].span.mime
     );
+}
+
+/// A WAV at another rate or with more channels resamples to 16 kHz mono with ffmpeg's resampler, and its recipe names
+/// the resampler. A WAV of 16 kHz mono in 16 bits skips it (spec 11.11, "Video, and audio at any rate").
+#[cfg(feature = "video")]
+#[test]
+fn a_wav_at_another_rate_resamples_and_a_wav_of_16_khz_mono_keeps_its_rows() {
+    if absent_omni() {
+        return;
+    }
+    let part = |id: &str| {
+        user(json!([{"type": "object", "id": id, "mime": "audio/wav"}, {"type": "text", "text": "What is it?"}]))
+    };
+    let wide = omni().render(&part(WIDE), true).unwrap();
+    let inputs = omni().media_rows(&wide).unwrap();
+    assert_eq!(inputs.len(), 1);
+    // 1.5 s at 16 kHz is 24,000 samples: 148 mel frames, 19 positions.
+    let frames = words(&inputs[0].meta)[4] as usize;
+    assert!((147..=149).contains(&frames), "{frames} mel frames");
+    assert_eq!(inputs[0].span.count, frames.div_ceil(8));
+    assert!(
+        inputs[0].span.mime.starts_with("audio/wav;swresample="),
+        "{}",
+        inputs[0].span.mime
+    );
+    // The clip of 16 kHz mono keeps the rows and the recipe of before.
+    let clip = omni().render(&part(CLIP), true).unwrap();
+    let rows = omni().media_rows(&clip).unwrap();
+    assert_eq!(rows[0].span.mime, "audio/wav");
+    let want = nagaya_text_lfm3::media::audio::prepare(&objects().0[CLIP]).unwrap();
+    let want: Vec<u8> = want.values.iter().flat_map(|v| v.to_le_bytes()).collect();
+    assert_eq!(&rows[0].rows[..], &want[..]);
 }

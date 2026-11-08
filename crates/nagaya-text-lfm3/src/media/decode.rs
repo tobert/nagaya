@@ -224,6 +224,21 @@ fn sound(path: &str) -> Result<Option<Vec<f32>>, MediaError> {
     Ok(Some(out))
 }
 
+/// The sound of an audio file, such as a WAV at 24 kHz in stereo, as 16 kHz mono f32 with ffmpeg's resampler (spec
+/// 11.11, "Video, and audio at any rate").
+pub fn audio(bytes: &[u8]) -> Result<Vec<f32>, MediaError> {
+    ff::init().map_err(error)?;
+    ff::util::log::set_level(ff::util::log::Level::Error);
+    let (_fd, path) = memfd(bytes)?;
+    sound(&path)?.ok_or_else(|| error("it has no sound stream"))
+}
+
+/// The version of the resampler, which the recipe item of a resampled WAV names.
+pub fn resampler_version() -> String {
+    let n = ff::software::resampling::version();
+    format!("swresample={}.{}.{}", n >> 16, (n >> 8) & 0xff, n & 0xff)
+}
+
 /// Decode a video: count its frames, sample them, and keep the sampled frames and the sound track.
 pub fn decode(bytes: &[u8]) -> Result<Decoded, MediaError> {
     ff::init().map_err(error)?;

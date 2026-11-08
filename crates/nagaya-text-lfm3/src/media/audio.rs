@@ -139,6 +139,19 @@ pub fn read_wav(bytes: &[u8]) -> Result<Vec<i16>, MediaError> {
     })
 }
 
+/// The samples of a WAV at 16 kHz mono, and true when the resampler made them. A WAV of PCM in 16 bits, mono, at 16
+/// kHz reads as before, so its rows do not change. In a build with the feature `video`, any other WAV that ffmpeg
+/// reads resamples to 16 kHz mono (spec 11.11, "Video, and audio at any rate"). Without it, such a WAV is refused.
+pub fn clip_samples(bytes: &[u8]) -> Result<(Vec<f32>, bool), MediaError> {
+    match read_wav(bytes) {
+        Ok(pcm) => Ok((samples(&pcm), false)),
+        #[cfg(feature = "video")]
+        Err(strict) => super::decode::audio(bytes).map(|s| (s, true)).map_err(|_| strict),
+        #[cfg(not(feature = "video"))]
+        Err(strict) => Err(strict),
+    }
+}
+
 /// The samples of a clip in f32: each PCM sample divided by 32768, as the reference does.
 pub fn samples(pcm: &[i16]) -> Vec<f32> {
     pcm.iter().map(|&v| f32::from(v) / 32768.0).collect()
@@ -258,5 +271,5 @@ pub fn mel(samples: &[f32]) -> AudioRows {
 
 /// Read a WAV and compute its mel rows.
 pub fn prepare(bytes: &[u8]) -> Result<AudioRows, MediaError> {
-    Ok(mel(&samples(&read_wav(bytes)?)))
+    Ok(mel(&clip_samples(bytes)?.0))
 }

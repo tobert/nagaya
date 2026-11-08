@@ -128,7 +128,7 @@ pub fn positions(bytes: &[u8], mime: &str) -> Result<usize, MediaError> {
             let (height, width) = image::size(bytes, mime)?;
             image::positions(height, width)
         }
-        "audio/wav" => Ok(audio::positions(audio::frames(audio::read_wav(bytes)?.len()))),
+        "audio/wav" => Ok(audio::positions(audio::frames(audio::clip_samples(bytes)?.0.len()))),
         other => Err(MediaError::Mime(other.to_string())),
     }
 }

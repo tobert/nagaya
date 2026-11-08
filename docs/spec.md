@@ -4448,7 +4448,8 @@ the note above leaves these choices open, and each one is the simplest choice th
   frames of the codes that the service keeps. Until milestone 24 step 12 builds it, the part is a 400 that names it.
 
 **Video, and audio at any rate.** Decided 2026-11-08 (Amy, by interview), for milestone 24 step 10. These rules
-replace the rule above that a WAV must be 16 kHz mono, once step 10 builds them. Until then, that rule holds.
+replace the rule above that a WAV must be 16 kHz mono. Step 10 built them on 2026-11-08. A build with no feature
+`video` keeps the rule above.
 
 - A `user` part can be a video object, such as `video/mp4` or `video/webm`. The family decodes it on the CPU with
   ffmpeg's libraries. Reason: the reference loads a video through ffmpeg, so its frames are the closest to the oracle.
@@ -4461,7 +4462,8 @@ replace the rule above that a WAV must be 16 kHz mono, once step 10 builds them.
   768 video tokens. Each frame goes through the vision tower.
 - The sound track of a video becomes an audio part beside its frames, in the order of the reference processor.
 - The resampler of the decoder gives 16 kHz mono to the sound track and to any `audio/wav`. A WAV of 16 kHz mono in
-  16 bits skips it, so its rows do not change.
+  16 bits skips it, so its rows do not change. The recipe item of a resampled WAV names the version of the
+  resampler, as a video names its decoder.
 - Live input through PipeWire, from a microphone or a camera, is a later design.
 
 **The video of a request.** **Proposed** by Claude Opus 5.5, 2026-11-08, for milestone 24 step 10. Reason: the note
