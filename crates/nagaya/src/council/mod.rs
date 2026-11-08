@@ -559,22 +559,7 @@ impl Service {
             )
             .into());
         };
-        let objects = self.objects.get();
-        let mut lookup = |id: &ContentId| -> Result<Option<(String, Vec<u8>)>, ServiceError> {
-            let Some(objects) = objects else {
-                return Ok(None);
-            };
-            let mut objects = objects.lock().expect("the object store lock is poisoned");
-            let found = objects
-                .get(id, objects_now())
-                .map_err(|error| ServiceError::internal(format!("cannot read the object {}: {error}", id.hex())))?;
-            let Some(found) = found else {
-                return Ok(None);
-            };
-            let bytes = std::fs::read(&found.path)
-                .map_err(|error| ServiceError::internal(format!("cannot read `{}`: {error}", found.path.display())))?;
-            Ok(Some((found.mime, bytes)))
-        };
+        let mut lookup = |id: &ContentId| self.object(id);
         let fit = Fit {
             weight_hash: &self.identity.checkpoint_digest,
             limit,
@@ -587,6 +572,24 @@ impl Service {
             root,
             control: Some(JobControl { checked, claim }),
         })
+    }
+
+    /// The media type and the bytes of a held object, or `None` when the process holds no such object or has no object
+    /// store (spec 6.15).
+    pub(crate) fn object(&self, id: &ContentId) -> Result<Option<(String, Vec<u8>)>, ServiceError> {
+        let Some(objects) = self.objects.get() else {
+            return Ok(None);
+        };
+        let mut objects = objects.lock().expect("the object store lock is poisoned");
+        let found = objects
+            .get(id, objects_now())
+            .map_err(|error| ServiceError::internal(format!("cannot read the object {}: {error}", id.hex())))?;
+        let Some(found) = found else {
+            return Ok(None);
+        };
+        let bytes = std::fs::read(&found.path)
+            .map_err(|error| ServiceError::internal(format!("cannot read `{}`: {error}", found.path.display())))?;
+        Ok(Some((found.mime, bytes)))
     }
 
     /// The family library of the served model. The text routes under `/nagaya/v1` use it (spec 11.4b).

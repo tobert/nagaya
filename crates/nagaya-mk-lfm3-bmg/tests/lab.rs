@@ -152,6 +152,18 @@ fn the_scores_of_lfm3_match_the_oracle_of_transformers() {
     let started = std::time::Instant::now();
     let scores = lab.scores(&directions);
     eprintln!("project: {} layers in {:?}", layers.len(), started.elapsed());
+    // The time of 1 layer and of all 24 layers, for the record of docs/lab.md. A build with --release measures it.
+    let one = std::time::Instant::now();
+    lab.scores(&directions[..1]);
+    let one = one.elapsed();
+    let every: Vec<&[f32]> = vector.chunks(2048).collect();
+    let all = std::time::Instant::now();
+    lab.scores(&every);
+    eprintln!(
+        "project: 1 layer in {one:?}, {} layers in {:?}",
+        every.len(),
+        all.elapsed()
+    );
     assert_eq!(lab.scores(&directions), scores, "a second product gives the same bits");
 
     // The table and the norm weight, read here on their own, for the bound of each score.

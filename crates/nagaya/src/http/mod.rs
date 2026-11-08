@@ -10,6 +10,7 @@ mod errors;
 mod extensions;
 mod forward;
 pub mod image;
+mod lab;
 mod loads;
 mod objects;
 mod peers;
@@ -126,6 +127,8 @@ pub struct Council {
     profile: Option<std::sync::mpsc::Sender<crate::reprofile::ProfileCall>>,
     /// The cluster from gossip (spec 11.1a). A council with none serves its own models only.
     cluster: Option<Arc<crate::cluster::Cluster>>,
+    /// The model folder of each engine whose weights the lab routes read, by engine name (`docs/lab.md`).
+    lab: std::collections::BTreeMap<String, std::path::PathBuf>,
 }
 
 impl Council {
@@ -155,7 +158,15 @@ impl Council {
             loads: None,
             profile: None,
             cluster: None,
+            lab: std::collections::BTreeMap::new(),
         })
+    }
+
+    /// Serve the lab routes for the engines of `folders`: the model folder of each one, by engine name. Only an
+    /// engine of the kind `mk-lfm3-bmg` has one now (`docs/lab.md`, "The rules of `project`").
+    pub fn with_lab(mut self, folders: std::collections::BTreeMap<String, std::path::PathBuf>) -> Self {
+        self.lab = folders;
+        self
     }
 
     /// Serve the cluster that gossip shows (spec 11.1a).

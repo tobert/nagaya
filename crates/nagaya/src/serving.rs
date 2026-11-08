@@ -300,7 +300,20 @@ pub fn council_with(
             device: None,
         });
     }
-    let council = Council::new(models, call_cpus)?;
+    // The lab routes read the checkpoint of each LFM3 engine from its model folder (docs/lab.md).
+    let mut lab = BTreeMap::new();
+    for placement in profile
+        .engines
+        .iter()
+        .filter(|placement| placement.kind == crate::lfm3::KIND)
+    {
+        let what = format!("the config of engine `{}`", placement.name);
+        lab.insert(
+            placement.name.clone(),
+            crate::lfm3::model_dir(&placement.config, &what)?,
+        );
+    }
+    let council = Council::new(models, call_cpus)?.with_lab(lab);
     match profile.store.and_then(|store| store.objects) {
         None => Ok(council),
         Some(budget) => {
