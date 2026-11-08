@@ -151,7 +151,12 @@ fn a_broadcast_read_takes_the_first_answer_that_is_not_a_404() {
         .expect("one peer holds the id");
     assert_eq!(peer, hit.peer);
     assert_eq!(runtime.block_on(text(response)), (200, "hit".to_owned()));
-    // Each live peer got the call at once.
+    // Each live peer got the call at once. The read returns at the hit, so the miss can still be answering: the test
+    // waits for it, at most 5 s. Under load, a check at once failed (2026-11-07 and 2026-11-08).
+    let waited = std::time::Instant::now();
+    while miss.seen.lock().unwrap().is_empty() && waited.elapsed() < std::time::Duration::from_secs(5) {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     assert_eq!(miss.seen.lock().unwrap().len(), 1);
     assert_eq!(hit.seen.lock().unwrap()[0].headers[FORWARDED_HEADER], "host-a");
 }
