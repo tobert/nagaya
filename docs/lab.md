@@ -247,6 +247,32 @@ A lens is a state object of one model (spec 13.2). The nagaya applies it, and a 
   says. A row of `W_U J_l` is a concept vector of one token at layer `l`. With `add`, it pushes that concept
   (`docs/cv.md`, "With the J-Lens and the other tools").
 
+**The lens of a served model.** Decided 2026-11-08 (Amy, by interview: "Profile names it"). The profile entry of the
+served model names its lens, and a request names only `jlens`. Thus a served model has at most one lens.
+
+**The rules of the J-Lens.** **Proposed** (Claude Opus 5.5, 2026-11-08, milestone 26 step 5). Reason: the decision
+above and the reference leave these choices open, and each is the simplest one that a test can check.
+
+- **The profile.** The entry gets the table `[engines.lab]` with one key, `jlens`, the path of the lens file. Another
+  key, or the table on an engine kind that the lab does not read, stops the start with exit 3.
+- **A change.** A profile change to `[engines.lab]` reloads the engine, as a change to `[engines.config]` does
+  (3.3). Reason: the lab then never reads a lens that the profile no longer names.
+- **The file.** `tools/lfm3_jlens_fit.py` writes it in canonical safetensors (D10). It holds an F16 tensor
+  `layers.<l>` of `[W, W]` for each layer before the last. The reference stores F16, because the entries are near 1.
+  The lens of the last layer is the identity, so the file does not hold it. For LFM3-1.7B, the file is 193 MB.
+- **The metadata.** `model`, `weight_hash`, and `nagaya.lens` with the value `jlens`, as a control vector names
+  its weights (spec 11.12). The route refuses a lens of other weights with a 400 that names `through` or
+  `trace.lens`.
+- **The read.** The lab reads the file at its first use and keeps it in host memory, outside the ledger, as it keeps
+  the head. A file that is missing or does not read is a 500 that names the path. The start does not read it, so a
+  bad lens does not stop the served model.
+- **`project`.** With `through: "jlens"`, the route multiplies the vector of layer `l` by `J_l`. Then it follows the
+  rule of `unembed`: the weight of the final norm, and no division.
+- **`trace`.** With `lens: "jlens"`, the job reads the tap `residual`, not the tap `lens`. For each traced layer, the
+  CPU computes `J_l h`, the final norm with its division, and the head. The trace keeps the shape of the logit lens,
+  and its metadata names `jlens` and the content id of the lens.
+- A served model with no lens refuses `jlens` with a 400 that names `through` or `trace.lens`.
+
 A fit with forward passes only is possible: an `add` of a small step at layer `l` and a tap give one column of `J_l`.
 But each column needs its own pass, for each layer and each prompt. For LFM3, that is 24 times the passes of the
 backward fit. Thus it is not the plan.
