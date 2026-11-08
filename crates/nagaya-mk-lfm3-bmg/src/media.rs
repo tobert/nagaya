@@ -354,15 +354,12 @@ pub fn check_spans(
             "the segment has {rows} bytes of rows, and its media records need {rows_at}"
         ));
     }
-    let placeholders: Vec<u32> = [
-        rules.image_token,
-        rules.audio_token,
-        rules.video_token,
-        rules.audio_out_token,
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
+    // The speech placeholder is not here: a frame of the speech loop feeds it alone, and the frame call writes its
+    // row (`depth::frame_embedding`). A span of speech still checks its own positions.
+    let placeholders: Vec<u32> = [rules.image_token, rules.audio_token, rules.video_token]
+        .into_iter()
+        .flatten()
+        .collect();
     if let Some(t) = (0..tokens.len()).find(|t| !covered[*t] && placeholders.contains(&tokens[*t])) {
         return Err(format!(
             "position {} holds the media placeholder {}, and no media record names it",
@@ -619,8 +616,8 @@ mod tests {
         let mut bad = meta.clone();
         bad[16] = 11;
         assert!(decode(&bad).unwrap_err().contains("12 codes"));
-        let e = check_spans(&rules(), &[], &[7, AUDIO_OUT], 0, 0).unwrap_err();
-        assert!(e.contains("position 1 holds the media placeholder 125032"), "{e}");
+        // A frame of the speech loop feeds the placeholder alone, with no span: the frame call writes its row.
+        assert!(check_spans(&rules(), &[], &[7, AUDIO_OUT], 0, 0).unwrap().is_empty());
         let none = MediaRules {
             audio_out_token: None,
             ..rules()
