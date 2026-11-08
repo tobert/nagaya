@@ -67,7 +67,8 @@ for this and their megakernels live on"). The docs name them only as the source 
 - `docs/reviews.md`: reviews of these documents and what we did with each finding.
 - `docs/prior-art.md`: what ds4-recipe and Ai2's scheduler teach us, as proposals.
 - `docs/deepinfer.md`: what DeepSeek's DeepInfer teaches us, as proposals.
-- `docs/cv.md`: control vectors that change the residual while a model runs, as a design with no code.
+- `docs/cv.md`: control vectors that change the residual while a model runs. Milestone 25 builds them.
+- `docs/lab.md`: tools that look inside a model: a vector through a matrix, a trace of a generation, the J-Lens.
 
 ## Later (doors to keep open, nothing to build in the first pass)
 

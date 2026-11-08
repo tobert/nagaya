@@ -126,7 +126,8 @@ may not remove that refusal. Thus the prompt sets for such a model hold images t
 
 ## With the J-Lens and the other tools
 
-The J-Lens waits for a later milestone (spec 13.2). The J-Lens and control vectors use the same point in the pass:
+The J-Lens waits for a later milestone (spec 13.2), and `docs/lab.md` designs it. The J-Lens and control vectors use
+the same point in the pass:
 the residual after a layer. The J-Lens reads it, and a control vector writes it. mkviolet's design puts both into
 one op (`OP_JLENS_TAP` and `OP_JLENS_STEER`, mkviolet `docs/04-jlens-and-multi-model-stack.md`).
 

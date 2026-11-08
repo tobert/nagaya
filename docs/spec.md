@@ -4696,6 +4696,10 @@ the residual. The residual is the stream that each layer adds to, before the nor
 and runs on a CPU device (2.1). Two models cannot share a lens. Models are compared in the lens's concept
 coordinates, not in raw residuals.
 
+The J-Lens exists outside the nagaya: gmk on gfx1151host fitted one for Gemma 4 12B on 2026-10-11 to 14, with Anthropic's
+`jacobian-lens` code. mkviolet did not build its port. `docs/lab.md` designs the fit, the lens object and the routes
+`project` and `trace` that read through it.
+
 **13.3 Composition between models.** kaijutsu composes models through the council API, for example a judge that
 follows a coder. The nagaya keeps the engines loaded side by side and schedules their classes. Tensor transfer
 between engines is out of v0. (mkviolet `docs/02` designs KV bridges and residual splices.) If it comes, these
