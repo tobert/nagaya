@@ -4696,7 +4696,7 @@ the residual. The residual is the stream that each layer adds to, before the nor
 runs"). An engine declares the tap `lens` in `limits().taps`, with the condition `one logit row`. A segment that names
 it gets the output `lens`. For each layer, it holds the logit row of the residual after that layer, through the final
 norm and the head. The rows are `f32` in layer order, and each has the width of a logit row. A pass that names `lens`
-and has another count of logit rows than one is refused. Reason: the `lens` of one row of LFM3-1.7B is 12 MiB.
+and not one logit row is refused, because the `lens` of one row of LFM3-1.7B is 12 MiB.
 
 **13.2 Lenses.** A lens (mkviolet J-Lens) is a state object of its own. It belongs to one model, has a content id,
 and runs on a CPU device (2.1). Two models cannot share a lens. Models are compared in the lens's concept
