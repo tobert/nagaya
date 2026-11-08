@@ -45,7 +45,7 @@ fn bf16(values: &[f32]) -> Vec<u8> {
 fn checkpoint(dir: &Path) {
     std::fs::write(
         dir.join("config.json"),
-        r#"{"architectures": ["Lfm3ForCausalLM"], "num_hidden_layers": 2}"#,
+        r#"{"architectures": ["Lfm3ForCausalLM"], "num_hidden_layers": 2, "hidden_size": 4}"#,
     )
     .unwrap();
     std::fs::write(

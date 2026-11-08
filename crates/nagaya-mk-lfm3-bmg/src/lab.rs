@@ -45,10 +45,21 @@ fn read_json(path: &Path) -> Result<serde_json::Value, String> {
     serde_json::from_str(&text).map_err(|e| format!("{} is not JSON: {e}", path.display()))
 }
 
-impl Unembedding {
-    /// Map the weights of the model folder `dir`, and read its `config.json` and `generation_config.json`. A folder
-    /// that is not an LFM3 checkpoint is an error that names the file or the tensor.
-    pub fn open(dir: &Path) -> Result<Unembedding, String> {
+/// The facts of an LFM3 model folder that need no weights, for the lab route `trace`: the model, the layers, the
+/// width of the residual and the end tokens.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Facts {
+    pub model: Model,
+    pub layers: u32,
+    pub width: usize,
+    /// The end tokens: `eos_token_id` of `generation_config.json`.
+    pub ends: Vec<u32>,
+}
+
+impl Facts {
+    /// Read `config.json` and `generation_config.json` of the model folder `dir`. A folder that is not an LFM3 model
+    /// folder is an error that names the file or the key.
+    pub fn open(dir: &Path) -> Result<Facts, String> {
         let config = read_json(&dir.join("config.json"))?;
         let (model, text) = match config["architectures"][0].as_str() {
             Some("Lfm3ForCausalLM") => (Model::Text, &config),
@@ -65,6 +76,11 @@ impl Unembedding {
             .as_u64()
             .and_then(|n| u32::try_from(n).ok())
             .ok_or_else(|| format!("config.json of {} has no count num_hidden_layers", dir.display()))?;
+        let width = text["hidden_size"]
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| *n > 0)
+            .ok_or_else(|| format!("config.json of {} has no count hidden_size", dir.display()))?;
         let generation = read_json(&dir.join("generation_config.json"))?;
         let ends: Vec<u32> = match &generation["eos_token_id"] {
             serde_json::Value::Number(n) => n.as_u64().into_iter().collect(),
@@ -80,6 +96,25 @@ impl Unembedding {
                 dir.display()
             ));
         }
+        Ok(Facts {
+            model,
+            layers,
+            width,
+            ends,
+        })
+    }
+}
+
+impl Unembedding {
+    /// Map the weights of the model folder `dir`, and read its `config.json` and `generation_config.json`. A folder
+    /// that is not an LFM3 checkpoint is an error that names the file or the tensor.
+    pub fn open(dir: &Path) -> Result<Unembedding, String> {
+        let Facts {
+            model,
+            layers,
+            width: config_width,
+            ends,
+        } = Facts::open(dir)?;
         let file = MappedSafeTensors::open(&dir.join(WEIGHTS_FILE))?;
         let view = file.view()?;
         let prefix = model.prefix();
@@ -101,6 +136,12 @@ impl Unembedding {
                 "tensor {embed} has the shape {embed_shape:?}; it is [rows, width]"
             ));
         };
+        if width != config_width {
+            return Err(format!(
+                "tensor {embed} has the width {width}, and config.json of {} has hidden_size {config_width}",
+                dir.display()
+            ));
+        }
         if norm_shape != [width] || width == 0 || rows == 0 {
             return Err(format!(
                 "tensor {norm_name} has the shape {norm_shape:?}, and {embed} has {embed_shape:?}; the norm has the width \
