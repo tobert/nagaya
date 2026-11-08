@@ -52,8 +52,10 @@ function el(id) { return {id, value: "", textContent: "", innerHTML: "", dataset
   hidden: false, checked: false, classList: {toggle() {}}, addEventListener() {}, querySelector() { return null; },
   appendChild() {}}; }
 var els = {};
+var listeners = [];
 var document = {getElementById: (id) => els[id] || (els[id] = el(id)), querySelectorAll: () => [],
-  querySelector: () => null, addEventListener() {}, createElement: () => el("script"), head: {appendChild() {}}};
+  querySelector: () => null, addEventListener(name, f) { if (name === "click") listeners.push(f); },
+  createElement: () => el("script"), head: {appendChild() {}}};
 var window = {}, localStorage = {getItem: () => null, setItem() {}}, performance = {now: () => 0};
 function setTimeout(f) { f(); } function setInterval() {} function alert() {}
 function set(id, v) { document.getElementById(id).value = v; }
@@ -96,6 +98,14 @@ function fetch(path, o) {
   }
   if (path === "/council/v2/objects/blake3:" + "e".repeat(64)) return reply(404, {error: {type: "not_found",
     message: "no object has this id"}});
+  if (path === "/nagaya/v1/lab/project") {
+    const b = JSON.parse(o.body);
+    return reply(200, {model: b.model, through: b.through, layers: [
+      {layer: 12, up: [{id: 1, token: " sorry", score: 0.4}], down: [{id: 2, token: " Sure", score: -0.3}],
+       end: [{id: 124900, token: "<|im_end|>", score: 0.05, rank: 13901}]},
+      {layer: 23, up: [{id: 3, token: "I", score: 2.7}], down: [{id: 4, token: "<b>", score: -1.7}],
+       end: [{id: 124900, token: "<|im_end|>", score: -0.16, rank: 82169}]}]});
+  }
   if (path === "/council/v2/control-vectors") {
     const b = JSON.parse(o.body);
     return reply(200, {model: b.model, vector: "blake3:" + "c".repeat(64), layers: 24, width: 2048,
@@ -425,6 +435,31 @@ class Page(unittest.TestCase):
         self.assertIn("does not hold", out["missing"])
         self.assertIn("blake3:", out["bad"])
         self.assertEqual(out["count"], 1)
+
+
+    def test_the_lens_of_a_saved_vector_sends_project_and_shows_each_layer_with_its_end_rank_escaped(self):
+        out = self.run_page(f"""
+            vectors = [{{name: "refusal", id: "{self.VECTOR}", model: "lfm3", host}}];
+            set("cv-model", "lfm3"); set("cv-lens-k", "8"); fillVectors();
+            await lens(0);
+            out.body = JSON.parse(calls.filter((c) => c[1] === "/nagaya/v1/lab/project").pop()[2]);
+            out.html = document.getElementById("cv-lens").innerHTML;""")
+        self.assertEqual(out["body"], {"model": "lfm3", "vector": self.VECTOR, "through": "unembed", "top_k": 8})
+        self.assertIn("82169", out["html"])
+        self.assertIn(" sorry", out["html"])
+        self.assertIn("&lt;b&gt;", out["html"])
+        self.assertNotIn("<b>", out["html"])
+
+
+    def test_forget_removes_the_vector_of_its_row_when_another_nagaya_has_vectors_first(self):
+        out = self.run_page(f"""
+            vectors = [{{name: "far", id: "blake3:" + "f".repeat(64), model: "lfm3", host: "gfx1151host"}},
+                       {{name: "near", id: "{self.VECTOR}", model: "lfm3", host}}];
+            fillVectors();
+            const row = document.getElementById("cv-list").innerHTML.match(/data-drop-vector="(\\d+)"/)[1];
+            for (const f of listeners) f({{target: {{dataset: {{dropVector: row}}}}}});
+            out.left = vectors.map((v) => v.name);""")
+        self.assertEqual(out["left"], ["far"])
 
 
 if __name__ == "__main__":

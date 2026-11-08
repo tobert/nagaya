@@ -85,6 +85,8 @@ audio { width: 100%; }
 #img-mask-canvas { position: absolute; inset: 0; mix-blend-mode: screen; opacity: .6; cursor: crosshair;
                    touch-action: none; }
 .tile .use { float: right; color: var(--muted); }
+.lens td { font-size: 12px; padding: 4px 6px; vertical-align: top; }
+.lens code { font-size: 11px; }
 .matrix td { text-align: center; font-size: 12px; padding: 4px; border: 0; }
 .matrix th { font-size: 11px; padding: 4px; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
@@ -241,6 +243,9 @@ audio { width: 100%; }
         only the count of its lines.</p>
       <h2>Saved vectors</h2>
       <div id="cv-list"></div>
+      <label>Lens <span class="note">— the tokens that each layer pushes up and down, through the unembedding</span></label>
+      <div class="row"><div><label>Tokens</label><input id="cv-lens-k" type="number" min="1" max="256" value="8"></div></div>
+      <div id="cv-lens"></div>
       <label>Add a vector by id <span class="note">— a vector of the model above that the nagaya holds</span></label>
       <div class="row">
         <input id="cv-add-id" placeholder="blake3:…" style="flex:2">
@@ -1022,16 +1027,35 @@ function fillVectors() {
     const sel = $(id), keep = sel.value;
     if (sel.dataset.html !== html) { sel.innerHTML = html; sel.dataset.html = html; sel.value = keep; }
   }
-  $("cv-list").innerHTML = vectors.filter((v) => here(v.host)).map((v, i) =>
+  // Each button names the index of its vector in `vectors`, the list that Forget and Lens change and read.
+  $("cv-list").innerHTML = vectors.map((v, i) => [v, i]).filter(([v]) => here(v.host)).map(([v, i]) =>
     `<div class="lora"><span class="name" title="${esc(v.id)}">${esc(v.name)} <span class="note">${esc(v.model)}, ${
-      v.toward} toward, ${v.away} away</span></span><span></span>
+      v.toward} toward, ${v.away} away</span></span><button class="plain" data-lens-vector="${i}">Lens</button>
      <button class="plain" data-drop-vector="${i}">Forget</button></div>`).join("") || `<p class="note">None yet.</p>`;
 }
 document.addEventListener("click", (ev) => {
-  const drop = ev.target.dataset?.dropVector;
-  if (drop === undefined) return;
-  vectors.splice(+drop, 1); saveVectors(); fillVectors(); keepAll();
+  const {dropVector, lensVector} = ev.target.dataset || {};
+  if (lensVector !== undefined) { lens(+lensVector); return; }
+  if (dropVector === undefined) return;
+  vectors.splice(+dropVector, 1); saveVectors(); fillVectors(); keepAll();
 });
+/** The logit lens of saved vector `i` (POST /nagaya/v1/lab/project, docs/lab.md): the tokens that each layer of the
+ *  vector pushes up and down, and the 0-based rank of each end token among all tokens. */
+async function lens(i) {
+  const v = vectors[i];
+  $("cv-error").textContent = ""; $("cv-lens").innerHTML = `<p class="note">projecting ${esc(v.name)}…</p>`;
+  try {
+    const r = await call("POST", "/nagaya/v1/lab/project",
+                         {model: v.model, vector: v.id, through: "unembed", top_k: +$("cv-lens-k").value || 8});
+    const words = (list) => list.map((t) => `<code>${esc(t.token ?? `#${t.id}`)}</code>`).join(" ");
+    $("cv-lens").innerHTML = `<h2>Lens of ${esc(v.name)}</h2><table class="lens"><tr><th>layer</th><th>up</th>
+      <th>down</th><th>end rank</th></tr>` + r.layers.map((l) => `<tr><td>${l.layer ?? ""}</td><td>${words(l.up)}</td>
+      <td>${words(l.down)}</td><td>${l.end.map((e) => `${esc(e.token ?? e.id)} ${e.rank}`).join(", ")}</td></tr>`)
+      .join("") + "</table>";
+  } catch (e) {
+    $("cv-lens").innerHTML = ""; $("cv-error").textContent = e.message;
+  }
+}
 for (const side of ["toward", "away"]) {
   $(`cv-${side}-file`).onchange = async (ev) => {
     const file = ev.target.files?.[0];
