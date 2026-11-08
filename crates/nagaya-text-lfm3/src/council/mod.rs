@@ -602,18 +602,10 @@ impl Lfm3Family {
         Ok(video)
     }
 
-    /// The pieces of a video in the token space of the template, and the rows of each span, in order: for each pair,
-    /// its time, its markers, its video tokens and its run of sound (spec 11.11, "The video of a request").
-    fn video_layout(
-        &self,
-        video: &crate::media::video::Video,
-    ) -> Result<(Vec<media::Piece>, Vec<crate::media::MediaRows>), FamilyError> {
+    /// The pieces of a video in the token space of the template: for each pair, its time, its markers, its video
+    /// tokens and its run of sound (spec 11.11, "The video of a request"). It copies no rows.
+    fn video_pieces(&self, video: &crate::media::video::Video) -> Result<Vec<media::Piece>, FamilyError> {
         let mut pieces = Vec::new();
-        let mut rows = Vec::new();
-        let clip = video
-            .sound
-            .as_ref()
-            .map(|(clip, bounds)| (Arc::new(clip.clone()), bounds));
         for (k, (time, pair)) in video.times.iter().zip(&video.pairs).enumerate() {
             pieces.push(media::Piece::Tokens(
                 self.tokenizer().encode_content(time).map_err(internal)?,
@@ -623,24 +615,40 @@ impl Lfm3Family {
                 token: self.placeholder_token(MediaKind::Video),
                 count: pair.positions(),
             });
-            rows.push(crate::media::MediaRows::Image(pair.clone()));
             pieces.push(media::Piece::Tokens(vec![self.marks.vision_end]));
-            if let Some((clip, bounds)) = &clip {
-                let (start, end) = (bounds[k], bounds[k + 1]);
-                if end > start {
-                    pieces.push(media::Piece::Span {
-                        token: self.placeholder_token(MediaKind::Audio),
-                        count: end - start,
-                    });
-                    rows.push(crate::media::MediaRows::Run(crate::media::video::AudioRun {
-                        clip: Arc::clone(clip),
-                        start,
-                        count: end - start,
-                    }));
-                }
+            if let Some((_, bounds)) = &video.sound
+                && bounds[k + 1] > bounds[k]
+            {
+                pieces.push(media::Piece::Span {
+                    token: self.placeholder_token(MediaKind::Audio),
+                    count: bounds[k + 1] - bounds[k],
+                });
             }
         }
-        Ok((pieces, rows))
+        Ok(pieces)
+    }
+
+    /// The rows of each span of a video, in the order of its pieces: the rows of each pair, and the run of each pair
+    /// that has sound.
+    fn video_rows(&self, video: &crate::media::video::Video) -> Vec<crate::media::MediaRows> {
+        let clip = video
+            .sound
+            .as_ref()
+            .map(|(clip, bounds)| (Arc::new(clip.clone()), bounds));
+        let mut rows = Vec::new();
+        for (k, pair) in video.pairs.iter().enumerate() {
+            rows.push(crate::media::MediaRows::Image(pair.clone()));
+            if let Some((clip, bounds)) = &clip
+                && bounds[k + 1] > bounds[k]
+            {
+                rows.push(crate::media::MediaRows::Run(crate::media::video::AudioRun {
+                    clip: Arc::clone(clip),
+                    start: bounds[k],
+                    count: bounds[k + 1] - bounds[k],
+                }));
+            }
+        }
+        rows
     }
 
     /// The layout of a media part: one span of its count for an image or a clip, from its header, and the pieces of
@@ -648,7 +656,7 @@ impl Lfm3Family {
     pub(crate) fn layout(&self, part: &MediaPart) -> Result<Vec<media::Piece>, FamilyError> {
         if part.kind == MediaKind::Video {
             let video = self.video(&part.id, &part_param(part))?;
-            return Ok(self.video_layout(&video)?.0);
+            return self.video_pieces(&video);
         }
         let bytes = self.part_bytes(part)?;
         let count = crate::media::positions(&bytes, &part.mime).map_err(|e| media_error(part, e))?;
@@ -663,7 +671,7 @@ impl Lfm3Family {
     fn part_rows(&self, part: &MediaPart) -> Result<Vec<crate::media::MediaRows>, FamilyError> {
         if part.kind == MediaKind::Video {
             let video = self.video(&part.id, &part_param(part))?;
-            return Ok(self.video_layout(&video)?.1);
+            return Ok(self.video_rows(&video));
         }
         let bytes = self.part_bytes(part)?;
         let header = crate::media::positions(&bytes, &part.mime).map_err(|e| media_error(part, e))?;
@@ -937,14 +945,19 @@ impl Lfm3Family {
     ) -> Result<Vec<nagaya_council::family::MediaInput>, FamilyError> {
         let mut out = Vec::with_capacity(spans.len());
         let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        // The rows of each video, made once for all its spans.
+        let mut made: std::collections::HashMap<&str, Vec<crate::media::MediaRows>> = std::collections::HashMap::new();
         for span in spans {
             // The recipe media type of a video span starts with its own type (`recipe_mime`).
             if !span.mime.starts_with("video/") {
                 out.push(self.media_input(span)?);
                 continue;
             }
-            let video = self.video(&span.id, &format!("the object {}", span.id))?;
-            let (_, rows) = self.video_layout(&video)?;
+            if !made.contains_key(span.id.as_str()) {
+                let video = self.video(&span.id, &format!("the object {}", span.id))?;
+                made.insert(span.id.as_str(), self.video_rows(&video));
+            }
+            let rows = &made[span.id.as_str()];
             let n = seen.entry(span.id.as_str()).or_insert(0);
             let rows = &rows[*n % rows.len()];
             *n += 1;

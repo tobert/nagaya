@@ -95,7 +95,10 @@ pub(crate) fn media_kind(
         )),
         _ => Err(FamilyError::client_param(
             param,
-            format!("lfm3-omni reads image/png, image/jpeg and audio/wav, not {mime}. Send one of those."),
+            format!(
+                "lfm3-omni reads {}, not {mime}. Send one of those.",
+                super::media_inputs().join(", ")
+            ),
         )),
     }
 }

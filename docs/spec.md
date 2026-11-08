@@ -4484,7 +4484,8 @@ above leaves these choices open. Each follows the checkpoint's own processors (`
   the pixel budget. The arithmetic of the resize is the arithmetic of an image.
 - **The text.** The video is one pair of vision markers. Inside, each pair of frames writes its time, as
   `<t seconds>` with one decimal, then its video tokens in their own vision markers. The time is the mean of the
-  indices of its two frames, divided by the stream's rate, rounded to 6 decimals.
+  indices of its two frames, divided by the stream's rate. The rate is rounded to 6 decimals first, as the
+  processor rounds it.
 - **The tower.** Each pair of frames goes through the vision tower as an image of one frame in time. Thus each pair
   is a span of the kind of an image, at the positions of its video tokens. The engine needs no new kind for frames.
 - **The sound.** The sound track resamples to 16 kHz mono, and its mel rows go through the audio encoder once. Its
@@ -4493,6 +4494,8 @@ above leaves these choices open. Each follows the checkpoint's own processors (`
 - **The decode gate.** The frames come from ffmpeg in the family, and from torchcodec in the reference. Both use
   ffmpeg's decoder, its color conversion and its resampler. On 2026-11-08 with ffmpeg 9.0.2, both gave the same bits
   of the frames and of the sound. So the decode gate is a gate of bits with the same ffmpeg build.
+- **Limits.** A pair of more than 2,048 positions is a 400 that names the part. So is a sound of more than 4,096 mel
+  frames, about 41 s. These are the limits of the engine's tower and encoder. The family checks them before its work.
 - **Types.** `media.inputs` lists `video/mp4` and `video/webm` in a build with the feature. A video with no video
   stream is a 400 that names the part. A video with no sound track gives frames only.
 

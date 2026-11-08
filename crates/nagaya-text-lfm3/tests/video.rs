@@ -201,3 +201,21 @@ fn the_decode_gives_the_bits_of_the_frames_and_the_sound_of_the_reference() {
     }
     println!("{}", decode::versions());
 }
+
+/// The limits of the engine come before the work: a pair of more than 2,048 positions, and a sound of more than 4,096
+/// mel frames, are refused with the reason (spec 11.11, "The video of a request").
+#[test]
+fn a_video_past_the_limits_of_the_engine_is_refused_before_the_work() {
+    assert!(
+        video::limits(1440, 1408, None).is_ok(),
+        "45 by 44 blocks are 1,980 positions"
+    );
+    let e = video::limits(1440, 2560, None).unwrap_err().to_string();
+    assert!(e.contains("3600 positions") && e.contains("at most 2048"), "{e}");
+    // 4,096 mel frames are 400 + 4,095 * 160 samples; one more frame is too long.
+    assert!(video::limits(320, 320, Some(400 + 4_095 * 160)).is_ok());
+    let e = video::limits(320, 320, Some(400 + 4_096 * 160))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("at most 4096 mel frames"), "{e}");
+}

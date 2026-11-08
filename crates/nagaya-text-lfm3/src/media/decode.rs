@@ -40,6 +40,17 @@ pub fn versions() -> String {
 /// The samples of each frame that the flush of the resampler fills.
 const FLUSH_SAMPLES: usize = 4_096;
 
+/// True when the decoder gave a frame, false when it needs a packet or has no more. Any other error stops the decode,
+/// so a corrupt frame never makes a shorter video in silence (spec 8.5).
+fn more(result: Result<(), ff::Error>) -> Result<bool, MediaError> {
+    match result {
+        Ok(()) => Ok(true),
+        Err(ff::Error::Eof) => Ok(false),
+        Err(ff::Error::Other { errno }) if errno == libc::EAGAIN => Ok(false),
+        Err(e) => Err(error(format!("ffmpeg cannot decode a frame: {e}"))),
+    }
+}
+
 fn error(why: impl std::fmt::Display) -> MediaError {
     MediaError::Video(why.to_string())
 }
@@ -77,7 +88,7 @@ fn frames(path: &str, wanted: &dyn Fn(usize) -> bool, keep: &mut dyn FnMut(usize
     let mut count = 0usize;
     let mut take = |decoder: &mut ff::decoder::Video, count: &mut usize| -> Result<(), MediaError> {
         let mut frame = ff::frame::Video::empty();
-        while decoder.receive_frame(&mut frame).is_ok() {
+        while more(decoder.receive_frame(&mut frame))? {
             if wanted(*count) {
                 let scaler = match &mut scaler {
                     Some(s) => s,
@@ -175,7 +186,7 @@ fn sound(path: &str) -> Result<Option<Vec<f32>>, MediaError> {
     };
     let mut drain = |decoder: &mut ff::decoder::Audio, resampler: &mut Option<ff::software::resampling::Context>| {
         let mut frame = ff::frame::Audio::empty();
-        while decoder.receive_frame(&mut frame).is_ok() {
+        while more(decoder.receive_frame(&mut frame))? {
             // An AAC frame often names no channel layout. The resampler needs one, so it takes the default of the count.
             if frame.channel_layout().is_empty() {
                 frame.set_channel_layout(ff::ChannelLayout::default(i32::from(frame.channels())));
@@ -225,16 +236,15 @@ pub fn decode(bytes: &[u8]) -> Result<Decoded, MediaError> {
     let mut kept: Vec<(usize, Rgb)> = Vec::with_capacity(indices.len());
     let wanted = |i: usize| indices.binary_search(&i).is_ok();
     frames(&path, &wanted, &mut |i, rgb| kept.push((i, rgb)))?;
-    // An index can repeat when the stream is short; each sampled index takes the frame of that index.
-    let frames = indices
-        .iter()
-        .map(|i| {
-            kept.iter()
-                .find(|(k, _)| k == i)
-                .map(|(_, rgb)| rgb.clone())
-                .ok_or_else(|| error(format!("ffmpeg gave no frame {i} on the second pass")))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    // The sampled indices rise strictly, so the kept frames are the sampled frames in order. They move, with no copy.
+    if kept.iter().map(|(i, _)| *i).ne(indices.iter().copied()) {
+        return Err(error(format!(
+            "ffmpeg gave {} of the {} sampled frames on the second pass",
+            kept.len(),
+            indices.len()
+        )));
+    }
+    let frames = kept.into_iter().map(|(_, rgb)| rgb).collect();
     Ok(Decoded {
         total,
         fps,

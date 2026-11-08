@@ -13,6 +13,13 @@ pub const MAX_FRAMES: usize = 384;
 /// The pixel budget of all the frames of a video together: `size.shortest_edge` and `size.longest_edge`.
 pub const MIN_PIXELS: usize = 4_096;
 pub const MAX_PIXELS: usize = 25_165_824;
+/// The positions of the largest pair: the engine takes an image of at most 2,048 positions
+/// (`nagaya-mk-lfm3-bmg` `media::MAX_IMAGE_POSITIONS`).
+pub const MAX_PAIR_POSITIONS: usize = 2_048;
+/// The mel frames of the longest sound: the audio encoder takes at most 4,096, about 41 s
+/// (`nagaya-mk-lfm3-bmg` `audio::MAX_CLIP_FRAMES`).
+pub const MAX_SOUND_FRAMES: usize = 4_096;
+
 /// The rate of the sound that the audio encoder reads.
 pub const SOUND_RATE: u32 = 16_000;
 /// The seconds of sound in one row of the audio encoder: the hop of 160 samples, the stride of 8, at 16 kHz.
@@ -182,6 +189,29 @@ pub fn sound_bounds(indices: &[usize], fps: f64, rows: usize) -> Vec<usize> {
     bounds
 }
 
+/// Check a video against the limits of the engine: each pair of `height` by `width` pixels takes at most
+/// [`MAX_PAIR_POSITIONS`], and a sound of `samples` samples at 16 kHz takes at most [`MAX_SOUND_FRAMES`] mel frames.
+pub fn limits(height: usize, width: usize, samples: Option<usize>) -> Result<(), MediaError> {
+    let positions = (height / image::FACTOR) * (width / image::FACTOR);
+    if positions > MAX_PAIR_POSITIONS {
+        return Err(MediaError::Video(format!(
+            "each pair of its frames resizes to {height} by {width} pixels, {positions} positions, and the engine takes \
+             at most {MAX_PAIR_POSITIONS}. Send a video of fewer pixels, or of more frames"
+        )));
+    }
+    if let Some(samples) = samples {
+        let frames = super::audio::frames(samples);
+        if frames > MAX_SOUND_FRAMES {
+            return Err(MediaError::Video(format!(
+                "its sound is {:.1} s, and the audio encoder takes at most {MAX_SOUND_FRAMES} mel frames, about 41 s. \
+                 Send a shorter video, or one with no sound",
+                samples as f64 / f64::from(SOUND_RATE)
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// The prepared parts of a video: the time text and the rows of each pair, and the sound with the bounds of its runs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Video {
@@ -208,6 +238,9 @@ pub fn prepare(bytes: &[u8]) -> Result<Video, MediaError> {
     let decoded = super::decode::decode(bytes)?;
     let first = &decoded.frames[0];
     let (height, width) = smart_resize(decoded.frames.len(), first.height, first.width)?;
+    // The limits of the engine come before the work of the resize and the mel, so the client gets a 400 that names
+    // the part (spec 11.11, "The video of a request").
+    limits(height, width, decoded.sound.as_ref().map(Vec::len))?;
     let resized = resize_frames(&decoded.frames, height, width);
     let pairs = pair_rows(&resized);
     let times = timestamps(&decoded.indices, decoded.fps)
