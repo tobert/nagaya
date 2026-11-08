@@ -432,4 +432,13 @@ fn project_through_the_jlens_refuses_a_model_with_no_lens_a_lens_of_other_weight
         StatusCode::BAD_REQUEST,
         "layers",
     );
+    // The checks of the request come before the read of the lens, so a bad top_k names top_k.
+    assert_refused(
+        send(
+            &none.council,
+            json!({"model": "toy", "vector": v, "layers": [0], "through": "jlens", "top_k": 0}),
+        ),
+        StatusCode::BAD_REQUEST,
+        "top_k",
+    );
 }

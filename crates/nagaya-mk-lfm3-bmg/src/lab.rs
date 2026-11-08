@@ -429,13 +429,22 @@ impl JLens {
                 )));
             }
             let data = view.tensor_bytes(&name).expect("the view found the tensor");
-            matrices.push(
-                data.as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|b| f16_to_f32(u16::from_le_bytes(*b)))
-                    .collect(),
-            );
+            let matrix: Vec<f32> = data
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|b| f16_to_f32(u16::from_le_bytes(*b)))
+                .collect();
+            // A value that is not finite would give scores of NaN with no error, so the file is refused.
+            if let Some(i) = matrix.iter().position(|x| !x.is_finite()) {
+                return Err(at(format!(
+                    "tensor {name} holds {} at row {} column {}; each value of a lens is finite",
+                    matrix[i],
+                    i / width,
+                    i % width
+                )));
+            }
+            matrices.push(matrix);
         }
         Ok(JLens {
             id: format!("blake3:{}", blake3::hash(&bytes).to_hex()),

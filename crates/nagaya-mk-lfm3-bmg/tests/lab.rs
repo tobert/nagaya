@@ -321,6 +321,13 @@ fn f16s(values: &[f32]) -> Vec<u8> {
         .collect()
 }
 
+/// The F16 bytes of `values` with a NaN in place of entry 4.
+fn nan_at_4(values: &[f32]) -> Vec<u8> {
+    let mut bytes = f16s(values);
+    bytes[8..10].copy_from_slice(&0x7e00u16.to_le_bytes());
+    bytes
+}
+
 const MATRIX: [f32; 9] = [1.0, 2.0, 0.0, 0.0, 1.0, 0.0, 0.5, 0.0, -1.0];
 
 fn good_metadata(hash: &str) -> Vec<(&'static str, String)> {
@@ -439,6 +446,14 @@ fn a_lens_that_does_not_fit_the_model_is_refused_with_the_reason() {
             3,
             3,
             "layers.1",
+        ),
+        (
+            "a value that is not finite",
+            vec![("layers.0", "F16", vec![3, 3], nan_at_4(&m))],
+            meta(None),
+            2,
+            3,
+            "finite",
         ),
     ];
     let dir = tempfile::tempdir().unwrap();

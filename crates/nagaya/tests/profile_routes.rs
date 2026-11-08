@@ -338,6 +338,25 @@ fn a_body_that_does_not_decode_or_breaks_a_rule_is_a_400_that_names_profile() {
     }
 }
 
+/// A lab table on an engine kind that the lab does not read is a 400 before the change, as at the start (docs/lab.md,
+/// "The rules of the J-Lens"). Without the check, the node would accept it, restart, and stop with exit 3.
+#[test]
+fn a_lab_table_on_another_kind_is_a_400_that_names_profile() {
+    let main = Main::new();
+    let mut lab = as_json(&profile(1000));
+    lab["engines"][0]["lab"] = json!({"jlens": "/lenses/a.safetensors"});
+    let (status, answer) = main.send("PUT", Some(lab));
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+    assert_eq!(answer["error"]["param"], json!("profile"), "{answer}");
+    assert!(
+        answer["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("[engines.lab]"),
+        "{answer}"
+    );
+}
+
 /// The idle time is gone (spec 3.3a, "Explicit layout"). A `PUT` that names it is a 400, and the message says so.
 #[test]
 fn a_profile_with_an_idle_time_is_a_400_that_says_the_key_is_gone() {

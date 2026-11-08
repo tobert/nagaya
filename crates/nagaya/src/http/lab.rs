@@ -148,13 +148,7 @@ async fn project(State(council): Shared, Extension(id): Id, body: Body) -> Respo
         let (served, dir) = council.lab_model(&request.model)?;
         let inner = Arc::clone(&council);
         council
-            .call(move || {
-                let lens = match request.through.as_str() {
-                    JLENS => Some(inner.lab_lens(&served, &dir, "through")?),
-                    _ => None,
-                };
-                run(&served, &dir, request, lens.as_deref())
-            })
+            .call(move || run(&served, &dir, request, &|| inner.lab_lens(&served, &dir, "through")))
             .await
     }
     .await;
@@ -275,8 +269,14 @@ fn directions(served: &Served, lab: &Unembedding, request: &ProjectRequest) -> R
     }
 }
 
-/// The work of `project` on a call thread. `lens` is the J-Lens of the model for `through: "jlens"`.
-fn run(served: &Served, dir: &Path, request: ProjectRequest, lens: Option<&JLens>) -> Result<Projected, ServiceError> {
+/// The work of `project` on a call thread. `lens` reads the J-Lens of the model, for `through: "jlens"`, after the
+/// checks of the request.
+fn run(
+    served: &Served,
+    dir: &Path,
+    request: ProjectRequest,
+    lens: &dyn Fn() -> Result<Arc<JLens>, ServiceError>,
+) -> Result<Projected, ServiceError> {
     if request.through != UNEMBED && request.through != JLENS {
         return Err(invalid(
             "through",
@@ -300,7 +300,8 @@ fn run(served: &Served, dir: &Path, request: ProjectRequest, lens: Option<&JLens
         ))
     })?;
     let mut chosen = directions(served, &lab, &request)?;
-    if let Some(lens) = lens {
+    if request.through == JLENS {
+        let lens = lens()?;
         for (layer, row) in &mut chosen {
             let Some(layer) = layer else {
                 return Err(invalid(

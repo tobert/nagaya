@@ -262,7 +262,9 @@ above and the reference leave these choices open, and each is the simplest one t
   The lens of the last layer is the identity, so the file does not hold it. For LFM3-1.7B, the file is 193 MB.
 - **The metadata.** `model`, `weight_hash`, and `nagaya.lens` with the value `jlens`, as a control vector names
   its weights (spec 11.12). The route refuses a lens of other weights with a 400 that names `through` or
-  `trace.lens`.
+  `trace.lens`. It checks `weight_hash` and `nagaya.lens`; `model` is for a person who reads the file. Reason: an
+  alias of a served model has another name and the same weights.
+- **The values.** A value that is not finite stops the read, because it would give scores of NaN with no error.
 - **The read.** The lab reads the file at its first use and keeps it in host memory, outside the ledger, as it keeps
   the head. A file that is missing or does not read is a 500 that names the path. The start does not read it, so a
   bad lens does not stop the served model.
@@ -271,6 +273,8 @@ above and the reference leave these choices open, and each is the simplest one t
 - **`trace`.** With `lens: "jlens"`, the job reads the tap `residual`, not the tap `lens`. For each traced layer, the
   CPU computes `J_l h`, the final norm with its division, and the head. The trace keeps the shape of the logit lens,
   and its metadata names `jlens` and the content id of the lens.
+- **The cost.** The readout runs in the step of the trace, on the group thread. Thus the other jobs of the group
+  wait for it at each step. Each step reads the head once for all traced layers. The deploy measures the time.
 - A served model with no lens refuses `jlens` with a 400 that names `through` or `trace.lens`.
 
 A fit with forward passes only is possible: an `add` of a small step at layer `l` and a tap give one column of `J_l`.

@@ -294,6 +294,10 @@ impl Changer {
                 "the profile has engines and no `store.nvme` budget; add a [store] table".to_owned(),
             ));
         }
+        // The lab tables follow the rules of the start, so an accepted change never stops a restart (docs/lab.md).
+        if let Err(reason) = crate::serving::lab_files(&profile) {
+            return Ok(PutAnswer::Invalid(reason));
+        }
         let active = swap.active().clone();
         if profile == active {
             return Ok(PutAnswer::Unchanged(change(&active, &profile, |_| true)));
