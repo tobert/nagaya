@@ -21,6 +21,9 @@ pub const KIND_IMAGE: u32 = 1;
 /// The kind of a clip span in a record.
 pub const KIND_AUDIO: u32 = 2;
 
+/// The kind of a run of a clip in a record: the sound of one pair of a video (spec 11.11, "The video of a request").
+pub const KIND_RUN: u32 = 3;
+
 /// The values of one patch row of an image: 3 channels, 2 copies in time, 16 by 16 pixels
 /// (`image_processing_lfm3_vl.py:186`, `nagaya-text-lfm3` `media::image::ROW`).
 pub const PATCH_ROW: usize = 1536;
@@ -41,6 +44,8 @@ pub enum SpanKind {
     Image { grid: [usize; 3] },
     /// A clip of `frames` mel frames.
     Audio { frames: usize },
+    /// The encoder rows from `start` of a clip of `frames` mel frames. The rows of the segment are the whole clip.
+    Run { frames: usize, start: usize },
 }
 
 /// One media span of `meta`.
@@ -63,7 +68,7 @@ impl Span {
     pub fn rows(&self) -> usize {
         match self.kind {
             SpanKind::Image { grid } => grid.iter().product(),
-            SpanKind::Audio { frames } => frames,
+            SpanKind::Audio { frames } | SpanKind::Run { frames, .. } => frames,
         }
     }
 
@@ -71,7 +76,7 @@ impl Span {
     pub fn width(&self) -> usize {
         match self.kind {
             SpanKind::Image { .. } => PATCH_ROW,
-            SpanKind::Audio { .. } => MEL_ROW,
+            SpanKind::Audio { .. } | SpanKind::Run { .. } => MEL_ROW,
         }
     }
 
@@ -88,6 +93,7 @@ pub fn encode(spans: &[Span]) -> Vec<u8> {
         let (kind, rest) = match span.kind {
             SpanKind::Image { grid } => (KIND_IMAGE, [grid[0] as u32, grid[1] as u32, grid[2] as u32, 0]),
             SpanKind::Audio { frames } => (KIND_AUDIO, [frames as u32, 0, 0, 0]),
+            SpanKind::Run { frames, start } => (KIND_RUN, [frames as u32, start as u32, 0, 0]),
         };
         out.extend(kind.to_le_bytes());
         out.extend((span.count as u32).to_le_bytes());
@@ -166,7 +172,28 @@ pub fn decode(meta: &[u8]) -> Result<Vec<Span>, String> {
                 }
                 SpanKind::Audio { frames }
             }
-            other => return Err(format!("media record {i} has the kind {other}, not an image or a clip")),
+            KIND_RUN => {
+                let (frames, start) = (rest[0], rest[1]);
+                if rest[2..] != [0, 0] {
+                    return Err(format!("media record {i} is a run of a clip with words {rest:?}"));
+                }
+                if count == 0 {
+                    return Err(format!("media record {i} is a run of a clip with no positions"));
+                }
+                let rows = frames.div_ceil(8);
+                if frames == 0 || start + count > rows {
+                    return Err(format!(
+                        "media record {i} is a run of {count} rows from row {start} of a clip of {frames} frames, \
+                         past the {rows} rows of the clip"
+                    ));
+                }
+                SpanKind::Run { frames, start }
+            }
+            other => {
+                return Err(format!(
+                    "media record {i} has the kind {other}, not an image, a clip or a run"
+                ));
+            }
         };
         spans.push(Span { kind, first, count });
     }
@@ -181,6 +208,8 @@ pub struct MediaRules {
     pub image_token: Option<u32>,
     /// The placeholder of a clip (`audio_token_id`).
     pub audio_token: Option<u32>,
+    /// The placeholder of a video (`video_token_id`). The pair of a video is an image span at its positions.
+    pub video_token: Option<u32>,
     /// True when the engine runs the audio encoder: the model has one.
     pub audio_encoder: bool,
 }
@@ -192,12 +221,14 @@ impl MediaRules {
             SpanKind::Image { .. } => self.image_token.ok_or_else(|| {
                 format!("media record {i} is an image, and this model has no vision tower; send text only")
             }),
-            SpanKind::Audio { frames } if frames > crate::audio::MAX_CLIP_FRAMES => Err(format!(
-                "media record {i} is a clip of {frames} frames, and the audio encoder takes at most {} frames \
+            SpanKind::Audio { frames } | SpanKind::Run { frames, .. } if frames > crate::audio::MAX_CLIP_FRAMES => {
+                Err(format!(
+                    "media record {i} is a clip of {frames} frames, and the audio encoder takes at most {} frames \
                  (about 41 s); send a shorter clip",
-                crate::audio::MAX_CLIP_FRAMES
-            )),
-            SpanKind::Audio { .. } => match self.audio_token {
+                    crate::audio::MAX_CLIP_FRAMES
+                ))
+            }
+            SpanKind::Audio { .. } | SpanKind::Run { .. } => match self.audio_token {
                 Some(token) if self.audio_encoder => Ok(token),
                 Some(_) => Err(format!(
                     "media record {i} is a clip, and this engine has no audio encoder yet (milestone 24 step 7); \
@@ -243,8 +274,16 @@ pub fn check_spans(
     let mut rows_at = 0usize;
     let mut last_end = 0u64;
     for (i, span) in spans.iter().enumerate() {
-        let token = rules.token(span, i)?;
+        let mut token = rules.token(span, i)?;
         let p = span.positions();
+        // An image span holds the image placeholder, or the video placeholder for a pair of a video. Its first
+        // position in the block names which, and each of its positions holds that one.
+        if let (SpanKind::Image { .. }, Some(video)) = (span.kind, rules.video_token)
+            && p.start.max(pos0) < end
+            && tokens.get((p.start.max(pos0).saturating_sub(pos0)) as usize) == Some(&video)
+        {
+            token = video;
+        }
         if i > 0 && p.start < last_end {
             return Err(format!(
                 "media record {i} starts at {} inside the span before it, which ends at {last_end}",
@@ -283,7 +322,10 @@ pub fn check_spans(
             "the segment has {rows} bytes of rows, and its media records need {rows_at}"
         ));
     }
-    let placeholders: Vec<u32> = [rules.image_token, rules.audio_token].into_iter().flatten().collect();
+    let placeholders: Vec<u32> = [rules.image_token, rules.audio_token, rules.video_token]
+        .into_iter()
+        .flatten()
+        .collect();
     if let Some(t) = (0..tokens.len()).find(|t| !covered[*t] && placeholders.contains(&tokens[*t])) {
         return Err(format!(
             "position {} holds the media placeholder {}, and no media record names it",
@@ -300,11 +342,13 @@ mod tests {
 
     const IMAGE: u32 = 125_030;
     const AUDIO: u32 = 125_031;
+    const VIDEO: u32 = 125_029;
 
     fn rules() -> MediaRules {
         MediaRules {
             image_token: Some(IMAGE),
             audio_token: Some(AUDIO),
+            video_token: Some(VIDEO),
             audio_encoder: false,
         }
     }
@@ -472,5 +516,49 @@ mod tests {
         let span = image(0, 2, 2);
         let e = check_spans(&MediaRules::default(), &[span], &[IMAGE], 0, span.bytes()).unwrap_err();
         assert!(e.contains("no vision tower"), "{e}");
+    }
+
+    fn run(first: u64, frames: usize, start: usize, count: usize) -> Span {
+        Span {
+            kind: SpanKind::Run { frames, start },
+            first,
+            count,
+        }
+    }
+
+    /// A run of a clip takes the whole clip's mel rows and names the first encoder row of its positions (spec 11.11,
+    /// "The video of a request").
+    #[test]
+    fn a_run_of_a_clip_goes_through_its_bytes_and_takes_the_rows_of_its_positions() {
+        let r = run(40, 249, 15, 15);
+        let meta = encode(&[r]);
+        assert_eq!(&meta[..4], &KIND_RUN.to_le_bytes());
+        assert_eq!(&meta[16..24], &[249, 0, 0, 0, 15, 0, 0, 0]);
+        assert_eq!(decode(&meta).unwrap(), [r]);
+        assert_eq!(r.bytes(), 249 * 128 * 4, "the rows of the whole clip");
+        // The clip has ceil(249 / 8) = 32 encoder rows, so a run from 30 holds at most 2.
+        assert!(decode(&encode(&[run(0, 249, 30, 2)])).is_ok());
+        let e = decode(&encode(&[run(0, 249, 30, 3)])).unwrap_err();
+        assert!(e.contains("past the 32 rows"), "{e}");
+        let e = decode(&encode(&[run(0, 249, 0, 0)])).unwrap_err();
+        assert!(e.contains("no positions"), "{e}");
+        let rules = MediaRules {
+            audio_encoder: true,
+            ..rules()
+        };
+        let uses = check_spans(&rules, &[r], &[AUDIO; 15], 40, r.bytes()).unwrap();
+        assert_eq!((uses[0].take.clone(), uses[0].block_row), (0..15, 0));
+    }
+
+    /// The pair of a video is an image of one frame in time at the positions of the video placeholder.
+    #[test]
+    fn an_image_span_takes_the_video_placeholder_too() {
+        let span = image(0, 8, 10);
+        check_spans(&rules(), &[span], &[VIDEO; 20], 0, span.bytes()).expect("a pair of a video");
+        let e = check_spans(&rules(), &[], &[7, VIDEO], 0, 0).unwrap_err();
+        assert!(e.contains("position 1 holds the media placeholder 125029"), "{e}");
+        let mixed: Vec<u32> = (0..20).map(|i| if i < 10 { VIDEO } else { IMAGE }).collect();
+        let e = check_spans(&rules(), &[span], &mixed, 0, span.bytes()).unwrap_err();
+        assert!(e.contains("position 10 is in media record 0"), "{e}");
     }
 }

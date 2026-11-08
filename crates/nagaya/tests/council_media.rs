@@ -121,12 +121,13 @@ impl Omni {
         self.fixture.service.build(context, false, Schedule::default())
     }
 
-    /// The placeholder of an image and of a clip, and the rules of the engine for them.
+    /// The placeholders of an image, a clip and a video, and the rules of the engine for them.
     fn rules(&self) -> MediaRules {
         let token = |text: &str| self.family.tokenizer().token_id(text).unwrap();
         MediaRules {
             image_token: Some(token("<|image|>")),
             audio_token: Some(token("<|audio|>")),
+            video_token: Some(token("<|video|>")),
             audio_encoder: true,
         }
     }

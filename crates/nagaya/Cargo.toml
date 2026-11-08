@@ -23,6 +23,8 @@ xe = [
     "nagaya-mk-embeddinggemma2-bmg/xe",
     "nagaya-mk-lfm3-bmg/xe",
 ]
+# The video parts of Omni (spec 11.11, "The video of a request"). It needs ffmpeg's libraries and libclang to build.
+video = ["nagaya-text-lfm3/video"]
 
 [dependencies]
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio", "matched-path"] }

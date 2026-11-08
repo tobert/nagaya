@@ -239,6 +239,7 @@ pub fn media_rules(text: &str) -> Result<crate::media::MediaRules, String> {
     Ok(crate::media::MediaRules {
         image_token: Some(id("image_token_id")?),
         audio_token: Some(id("audio_token_id")?),
+        video_token: Some(id("video_token_id")?),
         audio_encoder: false,
     })
 }

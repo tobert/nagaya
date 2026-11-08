@@ -148,7 +148,16 @@ fn a_generation_of_omni_reads_the_image_and_the_clip_of_the_oracle() {
     let (Some(dir), Some(golden)) = (directory("LFM3_OMNI_MODEL_DIR"), golden()) else {
         return;
     };
-    let oracle: Value = serde_json::from_slice(&std::fs::read(golden.join("lfm3-omni.media.json")).unwrap()).unwrap();
+    let mut oracle: Value =
+        serde_json::from_slice(&std::fs::read(golden.join("lfm3-omni.media.json")).unwrap()).unwrap();
+    // A build with the feature video also reads the videos of the oracle (spec 11.11, "The video of a request").
+    let video = cfg!(feature = "video");
+    if video {
+        let videos: Value =
+            serde_json::from_slice(&std::fs::read(golden.join("lfm3-omni.video.json")).unwrap()).unwrap();
+        let prompts = oracle["prompts"].as_array_mut().unwrap();
+        prompts.extend(videos["prompts"].as_array().unwrap().iter().cloned());
+    }
     let probe = FileProbe::new("/");
     let mut inventory = Probe::probe(&probe).expect("the inventory of this machine");
     let ignore = vec![IGNORE.to_owned()];
@@ -188,11 +197,11 @@ fn a_generation_of_omni_reads_the_image_and_the_clip_of_the_oracle() {
     );
     assert_eq!(status, StatusCode::OK, "{identity}");
     let identity: Value = serde_json::from_str(&identity).unwrap();
-    assert_eq!(
-        identity["models"][0]["media"]["inputs"],
-        json!(["image/png", "image/jpeg", "audio/wav"]),
-        "{identity}"
-    );
+    let mut inputs = json!(["image/png", "image/jpeg", "audio/wav"]);
+    if video {
+        inputs = json!(["image/png", "image/jpeg", "audio/wav", "video/mp4", "video/webm"]);
+    }
+    assert_eq!(identity["models"][0]["media"]["inputs"], inputs, "{identity}");
 
     let image = put(
         &council,
@@ -200,10 +209,20 @@ fn a_generation_of_omni_reads_the_image_and_the_clip_of_the_oracle() {
         "image/png",
     );
     let chirp = put(&council, std::fs::read(golden.join("chirp.wav")).unwrap(), "audio/wav");
-    let cases = [
+    let mut cases = vec![
         ("image_small", image, "image/png", "Describe the image."),
         ("audio_chirp", chirp, "audio/wav", "What do you hear?"),
     ];
+    if video {
+        for name in ["video_av", "video_v"] {
+            let id = put(
+                &council,
+                std::fs::read(golden.join(format!("{name}.mp4"))).unwrap(),
+                "video/mp4",
+            );
+            cases.push((name, id, "video/mp4", "Describe the video."));
+        }
+    }
     for (name, id, mime, text) in cases {
         let prompt = oracle["prompts"]
             .as_array()

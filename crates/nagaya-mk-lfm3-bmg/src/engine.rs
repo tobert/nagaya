@@ -512,8 +512,13 @@ impl Lfm3Engine {
                     )
                 }
                 // The encoder writes every row of the clip into its own rows. A copy then takes the rows of this
-                // block to their place in the media rows of the tower, as the tower writes an image's rows.
-                SpanKind::Audio { frames } => {
+                // block to their place in the media rows of the tower, as the tower writes an image's rows. A run of
+                // a clip takes its rows from the run's first row of the clip (spec 11.11, "The video of a request").
+                SpanKind::Audio { frames } | SpanKind::Run { frames, .. } => {
+                    let start = match used.span.kind {
+                        SpanKind::Run { start, .. } => start,
+                        _ => 0,
+                    };
                     let (w, bufs) = self
                         .audio
                         .as_ref()
@@ -539,7 +544,7 @@ impl Lfm3Engine {
                     );
                     let row = (self.b.hidden * 4) as u64;
                     tasks.push(tasks::copy(
-                        bufs.rows + used.take.start as u64 * row,
+                        bufs.rows + (start + used.take.start) as u64 * row,
                         media + used.block_row as u64 * row,
                         (used.take.len() * self.b.hidden) as u32,
                     ));

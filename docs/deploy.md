@@ -399,13 +399,14 @@ The process reads the copy in the store directory, so a new file in `deploy/b70h
 
 ### Build and install
 
-Build the release binary with the feature `xe`. The feature registers the kinds `mk-gemma4-bmg`, `qwen3tts-bmg`,
-`mk-sdxl-bmg` and `mk-embeddinggemma2-bmg`, and `build.rs` compiles the kernels with `ocloc`. A build without it has
-no engine and exits 3.
+Build the release binary with the features `xe` and `video`. The feature `xe` registers the kinds `mk-gemma4-bmg`,
+`qwen3tts-bmg`, `mk-sdxl-bmg`, `mk-embeddinggemma2-bmg` and `mk-lfm3-bmg`, and `build.rs` compiles the kernels with
+`ocloc`. A build without it has no engine and exits 3. The feature `video` lets `lfm3-omni` read video parts with
+ffmpeg's libraries (spec 11.11), so the machine needs the package `ffmpeg` and libclang.
 
 ```
 cd ~/src/nagaya
-nice -n 10 cargo build --release -p nagaya --features xe
+nice -n 10 cargo build --release -p nagaya --features xe,video
 ls -l target/release/nagaya
 ```
 
