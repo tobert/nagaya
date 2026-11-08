@@ -427,6 +427,9 @@ Qwen3-TTS designs a voice from a text prompt.</textarea>
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;"}[c]));
 let models = [], engines = [];
+// The profile engine of each served model of this nagaya, from the cluster route: {model: engine}. Identity gives some
+// models the hash of their engine, not its name in the profile.
+let engineNames = {};
 // The start image of img2img and inpainting: {blob, width, height}, or null (spec 11.9b).
 let init = null;
 const takesImages = (model) =>
@@ -537,8 +540,10 @@ const kindOf = (m) => {
   if (out.some((o) => o.startsWith("audio/"))) return "speech";
   return m.media?.text_replies === false ? "other" : "text";
 };
-/** The profile engine of a served model: the one its identity names, or else the engine that names no model. */
+/** The profile engine of a served model: the one that the cluster route names, the one that its identity names, or
+ *  else the engine that names no model. */
 function engineOf(m) {
+  if (engineNames[m.model]) return engineNames[m.model];
   if (engines.some((e) => e.name === m.engine)) return m.engine;
   const named = new Set(models.map((x) => x.engine));
   return engines.find((e) => !named.has(e.name))?.name;
@@ -549,11 +554,16 @@ async function refresh() {
   await hostsReady;
   const asked = host;
   try {
-    const [id, profile] = await Promise.all([call("GET", "/council/v2/identity"),
-                                             call("GET", "/nagaya/v1/profile").catch(() => ({engines: []}))]);
+    const [id, profile, cluster] = await Promise.all([call("GET", "/council/v2/identity"),
+                                             call("GET", "/nagaya/v1/profile").catch(() => ({engines: []})),
+                                             call("GET", "/nagaya/v1/cluster").catch(() => ({nodes: []}))]);
     // A refresh that started before the choice of another nagaya ends with no effect.
     if (asked !== host) return;
     models = id.models; engines = profile.engines || [];
+    engineNames = {};
+    for (const e of (cluster?.nodes || []).find((n) => n.self)?.engines || []) {
+      for (const model of e.models || []) engineNames[model] = e.name;
+    }
     $("eng-error").textContent = "";
     const text = JSON.stringify(profile, null, 2);
     if ($("eng-profile").textContent !== text) $("eng-profile").textContent = text;
@@ -1184,7 +1194,7 @@ $("cv-try").onclick = async () => {
 // ---- lab
 /** Whether the lab routes serve a served model: its engine on this nagaya has the kind mk-lfm3-bmg (docs/lab.md). A
  *  model of a peer has no engine in this profile, and the lab routes do not forward. */
-const labs = (m) => engines.some((e) => e.name === m.engine && e.kind === "mk-lfm3-bmg");
+const labs = (m) => engines.some((e) => e.name === engineNames[m.model] && e.kind === "mk-lfm3-bmg");
 /** The saved vector of the lab form, or undefined. */
 const labVector = () => vectors.find((v) => v.id === $("lab-vector").value && v.model === $("lab-model").value &&
                                             here(v.host));

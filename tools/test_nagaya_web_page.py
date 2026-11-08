@@ -21,8 +21,9 @@ PAGE = pathlib.Path(__file__).with_name("nagaya_web.html")
 IDENTITY = {"models": [
     {"model": "gemma-4-26b-a4b", "engine": "nagaya:84828966646e6ce1", "status": "ready",
      "capabilities": ["generate", "thinking"]},
-    {"model": "lfm3-omni", "engine": "lfm3-omni", "status": "ready", "capabilities": ["generate"]},
-    {"model": "lfm3", "engine": "lfm3", "status": "ready", "capabilities": ["generate", "thinking", "control_vectors"],
+    # As on b70host, identity gives an LFM3 model the hash of its engine, not the name of the engine in the profile.
+    {"model": "lfm3-omni", "engine": "nagaya:f3f9adb00b28ace0", "status": "ready", "capabilities": ["generate"]},
+    {"model": "lfm3", "engine": "nagaya:e974350551901f8c", "status": "ready", "capabilities": ["generate", "thinking", "control_vectors"],
      "limits": {"control_vector_contexts": 64}},
     {"model": "sdxl-0", "engine": "sdxl-0", "status": "unloaded", "capabilities": ["generate"],
      "media": {"inputs": [], "outputs": ["image/png"], "text_replies": False}},
@@ -91,6 +92,11 @@ function fetch(path, o) {
   if (path === "/at/gfx1151host/nagaya/v1/profile") return reply(200, {engines: [{name: "qwen-image-fusal",
     kind: "qwenimage21", devices: [0]}]});
   if (path === "/council/v2/identity") return reply(200, IDENTITY);
+  // The cluster route names the served models of each engine of this node (spec 2.3).
+  if (path === "/nagaya/v1/cluster") return reply(200, {nodes: [
+    {name: "gfx1151host", self: false, engines: [{name: "lfm3", state: "ready", models: ["elsewhere"]}]},
+    {name: "b70host", self: true, engines: [{name: "lfm3-omni", state: "ready", models: ["lfm3-omni"]},
+                                               {name: "lfm3", state: "ready", models: ["lfm3"]}]}]});
   if (path === "/nagaya/v1/profile" && o.method === "PUT") {
     return reply(202, {actions: JSON.parse(o.body).engines.map((e) => ({engine: e.name, action: "keep"})), restart: false});
   }
@@ -475,6 +481,10 @@ class Page(unittest.TestCase):
     def test_the_lab_lists_only_the_local_models_of_the_lfm3_engine_kind(self):
         out = self.run_page('out.models = document.getElementById("lab-model").innerHTML;')
         self.assertEqual(out["models"], '<option value="lfm3-omni">lfm3-omni</option><option value="lfm3">lfm3</option>')
+
+    def test_a_model_with_the_hash_of_its_engine_gets_the_engine_that_the_cluster_route_names(self):
+        out = self.run_page('out.engine = engineOf(models.find((m) => m.model === "lfm3"));')
+        self.assertEqual(out["engine"], "lfm3")
 
     def test_a_trace_object_parses_into_its_tensors_with_their_shapes(self):
         out = self.run_page("""
