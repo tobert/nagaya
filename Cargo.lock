@@ -1175,6 +1175,7 @@ dependencies = [
  "indexmap",
  "nagaya-abi",
  "nagaya-store",
+ "safetensors",
  "serde_json",
  "sha2",
 ]

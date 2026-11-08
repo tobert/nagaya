@@ -9,3 +9,4 @@ pub mod family;
 pub mod read;
 pub mod sampler;
 pub mod template_id;
+pub mod trace;
