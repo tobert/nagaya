@@ -6,6 +6,7 @@
 
 pub mod audio;
 pub mod image;
+pub mod video;
 
 use std::fmt;
 
@@ -26,6 +27,8 @@ pub enum MediaError {
     Wav(String),
     /// The media type is not one that the family reads. This is a defect of the caller.
     Mime(String),
+    /// The bytes are not a video that the server can read. The text says what the decoder found.
+    Video(String),
 }
 
 impl fmt::Display for MediaError {
@@ -48,6 +51,10 @@ impl fmt::Display for MediaError {
                 "is not a WAV that the server can read: {why}. Send a WAV of PCM in 16 bits, mono, at 16 kHz"
             ),
             MediaError::Mime(mime) => write!(f, "has the media type {mime}, which the LFM3 family does not read"),
+            MediaError::Video(why) => write!(
+                f,
+                "is not a video that the server can read: {why}. Send an MP4 or a WebM with a video stream"
+            ),
         }
     }
 }
