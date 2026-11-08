@@ -283,3 +283,22 @@ fn a_tower_with_a_lost_or_other_tensor_is_refused_before_any_upload() {
     assert!(e.contains("model.vision_tower.post_layernorm.weight"), "{e}");
     assert_eq!(count.bytes, 0, "a refused tower uploads nothing");
 }
+
+/// Both models have the control table of 8 vectors (spec 11.12). Omni's vector acts on its text passes: a speech frame
+/// is a `frame` call, which takes no control list (AGENTS.md milestone 25 step 9).
+#[test]
+fn both_models_have_a_control_table_of_their_layers_and_width() {
+    for text in [
+        include_str!("fixtures/lfm3.config.json"),
+        include_str!("fixtures/lfm3-omni.config.json"),
+    ] {
+        let b = Backbone::parse(text).unwrap();
+        let limit = spec::control_limit(&b).unwrap_or_else(|| panic!("{:?} has a control table", b.model));
+        assert_eq!(
+            (limit.tables, limit.layers, limit.width),
+            (8, 24, 2048),
+            "{:?}",
+            b.model
+        );
+    }
+}

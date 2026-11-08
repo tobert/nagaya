@@ -81,6 +81,8 @@
 #   <op>.logits [128000], <op>.rows [L, W]     the test prompt with one item: add 4, ablate 1, clamp 8
 #   <op>.decode_ids [8]              the greedy decode of 8 tokens with the item, for plain and each op
 #   <op>.decode_top_ids [8, 64] i64, <op>.decode_top [8, 64]   the top-64 logits of each decode step
+# lfm3-omni.control.safetensors (--stages control-omni, not in the default): the same gate for LFM3-Omni-2B, with the
+#   same prompts and strengths, through Omni's language model and its tokenizer. Its vector acts on the text passes.
 # lfm3.project.safetensors (--stages project, not in the default): the project gate of LFM3-1.7B (docs/lab.md). It
 #   reads lfm3.control.safetensors, so run the control stage first. For each layer l in 0, 12 and 23, u is the weight
 #   of the final norm times vector[l], with no division by its root mean square, and the scores are the head of u.

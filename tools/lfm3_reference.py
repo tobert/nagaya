@@ -334,8 +334,9 @@ def greedy(model, ids, steps):
     return tokens, top.indices, top.values
 
 
-def run_control(model, backbone, lm_head, tokenizer, layer_count, out, facts):
-    """The control vector gate of LFM3-1.7B (spec 11.12): the means of two prompt sets, and each operation."""
+def run_control(model, backbone, lm_head, tokenizer, layer_count, out, facts, label="lfm3"):
+    """The control vector gate of one model (spec 11.12): the means of two prompt sets, and each operation. `label` is
+    `lfm3` or `lfm3-omni`; Omni's vector acts on its text passes only (AGENTS.md milestone 25 step 9)."""
     sets = {}
     tensors = {}
     for name, texts in (("positive", CONTROL_POSITIVE), ("negative", CONTROL_NEGATIVE)):
@@ -391,12 +392,12 @@ def run_control(model, backbone, lm_head, tokenizer, layer_count, out, facts):
         steer.remove()
         close(rows, plain_rows, 0.0, f"{op} with strength 0 is the plain model")
 
-    meta = {"model": "lfm3", "strengths": CONTROL_STRENGTHS, "positive": CONTROL_POSITIVE,
+    meta = {"model": label, "strengths": CONTROL_STRENGTHS, "positive": CONTROL_POSITIVE,
             "negative": CONTROL_NEGATIVE, "test": CONTROL_TEST, "rendered_test": rendered,
             "decode_steps": CONTROL_DECODE, "versions": versions()}
-    save(tensors, Path(out) / "lfm3.control.safetensors", meta)
-    facts["lfm3_control"] = {"strengths": CONTROL_STRENGTHS, "test_tokens": len(ids)}
-    log(f"wrote {Path(out) / 'lfm3.control.safetensors'}")
+    save(tensors, Path(out) / f"{label}.control.safetensors", meta)
+    facts[f"{label}_control"] = {"strengths": CONTROL_STRENGTHS, "test_tokens": len(ids)}
+    log(f"wrote {Path(out) / f'{label}.control.safetensors'}")
 
 
 # The layers of the project gate: the first, one in the middle and the last.
@@ -860,7 +861,7 @@ def main():
             run_project(model.model, model.lm_head, tokenizer, args.out, facts)
         del model
 
-    if stages & {"text", "vision", "audio", "speech"}:
+    if stages & {"text", "vision", "audio", "speech", "control-omni"}:
         log("load LFM3-Omni-2B")
         model = AutoModelForMultimodalLM.from_pretrained(
             args.omni, dtype=torch.float32, attn_implementation="eager", trust_remote_code=True
@@ -869,6 +870,9 @@ def main():
         if "text" in stages:
             run_text(model, model.model.language_model, model.lm_head, processor.tokenizer, "lfm3-omni", args.omni,
                      model.config.text_config.num_hidden_layers, args.out, facts)
+        if "control-omni" in stages:
+            run_control(model, model.model.language_model, model.lm_head, processor.tokenizer,
+                        model.config.text_config.num_hidden_layers, args.out, facts, label="lfm3-omni")
         media_entries = []
         if "vision" in stages:
             run_vision(model, processor, args.out, facts, media_entries)

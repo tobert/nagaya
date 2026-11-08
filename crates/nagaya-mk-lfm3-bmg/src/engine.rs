@@ -62,7 +62,7 @@ pub struct Lfm3Engine {
     audio: Option<(AudioWeights, AudioBufs)>,
     /// The depth decoder and the codec of Omni. The text model has none.
     speech: Option<speech::Speech>,
-    /// The control table on the card and its limit (engine-abi "Control vectors"). Omni has none yet.
+    /// The control table on the card and its limit (engine-abi "Control vectors").
     control: Option<(u64, ControlLimit)>,
 }
 

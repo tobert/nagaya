@@ -490,7 +490,7 @@ fn the_text_model_refuses_an_image_and_omni_plans_its_tower() {
 }
 
 #[test]
-fn the_text_model_declares_a_control_table_of_8_vectors_and_the_residual_tap() {
+fn both_models_declare_a_control_table_of_8_vectors_and_the_residual_tap() {
     let (b, c) = (backbone(), config(1));
     let l = limits(&b, &c, 1000, None);
     l.check().unwrap();
@@ -523,12 +523,14 @@ fn the_text_model_declares_a_control_table_of_8_vectors_and_the_residual_tap() {
             }
         ]
     );
-    // Omni follows later: a frame of Omni is a pass with no control list, so Omni declares no table yet.
+    // Omni has the same table since milestone 25 step 9. Its vector acts on its text passes: a frame of its speech is
+    // a `frame` call, which takes no control list (spec 11.12).
     let omni = Backbone::parse(OMNI_CONFIG).unwrap();
-    let l = limits(&omni, &c, 1000, None);
-    l.check().unwrap();
-    assert!(!l.capabilities.contains(&Capability::Control));
-    assert_eq!(l.control, None);
-    assert!(l.memory.mandatory.iter().all(|t| t.name != CONTROL_TERM));
-    assert_eq!(l.taps.len(), 2, "the taps residual and lens need no table");
+    let o = limits(&omni, &c, 1000, None);
+    o.check().unwrap();
+    assert!(o.capabilities.contains(&Capability::Control));
+    assert_eq!(o.control, l.control);
+    let omni_term = o.memory.mandatory.iter().find(|t| t.name == CONTROL_TERM).unwrap();
+    assert_eq!(omni_term.bytes, term.bytes);
+    assert_eq!(o.taps, l.taps);
 }

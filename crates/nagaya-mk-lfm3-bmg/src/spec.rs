@@ -597,10 +597,10 @@ pub fn limits(b: &Backbone, config: &Config, weights: u64, vision: Option<Vision
     }
 }
 
-/// The control table of a backbone: `LFM3-1.7B` has one, and Omni has none yet. A frame of Omni's speech is a pass that
-/// takes no control list, so a table on Omni would leave its frames without the items (spec 11.12).
+/// The control table of a backbone. Both models have one. Omni's vector acts on its text passes only: a frame of its
+/// speech is a `frame` call, which takes no control list (spec 11.12, AGENTS.md milestone 25 step 9).
 pub fn control_limit(b: &Backbone) -> Option<ControlLimit> {
-    (b.model == Model::Text).then_some(ControlLimit {
+    Some(ControlLimit {
         tables: CONTROL_TABLES,
         layers: b.layers.len() as u32,
         width: b.hidden as u32,
