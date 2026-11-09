@@ -116,7 +116,8 @@ order"):
    at 16:15 on 2026-11-08.
 5. Milestone 25 step 8 and milestone 26 step 4, with Amy. Milestone 24 step 3 waits for her photos.
 6. Milestone 27, batched passes on LFM3. Amy put it next on 2026-11-09. Done on 2026-11-09.
-7. Milestone 28, tuned control vectors. Amy put it next on 2026-11-09.
+7. Milestone 28, tuned control vectors. Amy put it next on 2026-11-09. Steps 1 to 4 are done and deployed:
+   the docs `26ad93f`, gogi `62847b0` and the pin `8e90c3f`, and `compose` `42e77d5`. The first trial of step 5 ran.
 
 Amy decided on 2026-11-08: commit a small step each time the checks pass after a change. When a milestone is almost
 done, run review rounds with kaibo (`docs/reviews.md`), and fix what they find.
