@@ -738,8 +738,8 @@ senpai may stop and start the web app on b70host at will (`python3 tools/nagaya_
     Each stop and start of `nagaya.service` goes into `signoff.md`.
 
     Done on 2026-11-09, on b70host. `nagaya.service` runs the build of `abcaccd`, with eight slots for each LFM3
-    model. Live, with greedy replies of 200 tokens, `lfm3` gave 109, 249 and 317 tokens each second in total at 1, 4
-    and 8 contexts, and `lfm3-omni` gave 109, 247 and 313. A reply among 8 was the reply alone, on both models. The
+    model. Live, greedy replies of 200 tokens ran at 1, 4 and 8 contexts. `lfm3` gave 109, 249 and 317 tokens each
+    second in total, and `lfm3-omni` gave 109, 247 and 313. A reply among 8 was the reply alone, on both models. The
     gogi suite gave 438 ok, 0 FAIL and 16 skip for `lfm3`, and 457 ok, 0 FAIL and 16 skip for `lfm3-omni`.
 
     The correction of `19413de` is Proposed: decode segments join by D11 rule 6, and `segments_exact` stays false.
