@@ -103,8 +103,9 @@ Milestone 23, the cluster, is done on both machines. Milestones 24, LFM3 Omni, 2
 tools, are deployed on b70host, and each has open steps. Senpai chose this order on 2026-11-08 (Amy: "you may decide
 order"):
 
-1. Milestone 26 step 5, the J-Lens. Its fit runs on the CPU while the other steps run. The host code is done, and
-   the lens deploys after the fit.
+1. Milestone 26 step 5, the J-Lens. Done on 2026-11-09: the fit ended at 04:31, and the lens of `lfm3` is in the
+   profile (`01991db`). The first live trace found a defect, fixed in `a7af717`. A live trace matched an
+   independent NumPy readout in 144 of 144 lists.
 2. Milestone 25 step 9, Omni's control vector. Done on 2026-11-08: `5b26dcd`, deployed with `dd5b9b5`.
 3. Milestone 24 step 9: media inputs and speech outputs of `lfm3-omni` through council v2. Done on 2026-11-08:
    lanes J and K of 2026-11-06 merged (`c16934d`, `c9c0bea`), and media in decisions (`dd5b9b5`). The gogi suite
