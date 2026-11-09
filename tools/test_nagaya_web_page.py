@@ -427,6 +427,42 @@ class Page(unittest.TestCase):
         self.assertTrue(out["plain"])
         self.assertTrue(out["other"])
 
+    def test_the_layers_of_a_chat_turn_give_the_strength_of_each_layer(self):
+        out = self.run_page(f"""
+            vectors = [{{name: "sea", id: "{self.VECTOR}", model: "lfm3", host}}];
+            const sent = () => calls.filter((c) => c[1] === "/council/v2/generations").length;
+            const body = () => JSON.parse(calls.filter((c) => c[1] === "/council/v2/generations").pop()[2]);
+            set("chat-model", "lfm3");
+            set("chat-vector", "{self.VECTOR}"); set("chat-op", "ablate"); set("chat-strength", "1");
+            set("chat-layers", "9-11, 14:0.5"); document.getElementById("chat-layers").oninput();
+            out.note = document.getElementById("chat-layers-note").textContent;
+            set("chat-input", "hi"); await document.getElementById("chat-go").onclick();
+            out.shaped = body().context.control;
+            document.getElementById("chat-layers-early").onclick();
+            out.early = document.getElementById("chat-layers").value;
+            set("chat-input", "hi"); await document.getElementById("chat-go").onclick();
+            out.early_sent = body().context.control[0].layers;
+            document.getElementById("chat-layers-all").onclick();
+            set("chat-input", "hi"); await document.getElementById("chat-go").onclick();
+            out.all = body().context.control;
+            const before = sent();
+            set("chat-layers", "9-x"); document.getElementById("chat-layers").oninput();
+            out.bad_note = document.getElementById("chat-layers-note").textContent;
+            set("chat-input", "hi"); await document.getElementById("chat-go").onclick();
+            out.bad_sent = sent() - before;
+            out.chat_error = document.getElementById("chat-error").textContent;
+            out.twice = (() => {{ try {{ parseLayers("3, 2-4"); return "ok"; }} catch (e) {{ return e.message; }} }})();""")
+        self.assertEqual(out["shaped"], [{"vector": self.VECTOR, "op": "ablate", "strength": 1,
+                                          "layers": {"9": 1, "10": 1, "11": 1, "14": 0.5}}])
+        self.assertIn("4 layers", out["note"])
+        self.assertEqual(out["early"], "9-14")
+        self.assertEqual(out["early_sent"], {str(l): 1 for l in range(9, 15)})
+        self.assertEqual(out["all"], [{"vector": self.VECTOR, "op": "ablate", "strength": 1}])
+        self.assertEqual(out["bad_sent"], 0)
+        self.assertIn("9-x", out["chat_error"])
+        self.assertIn("9-x", out["bad_note"])
+        self.assertIn("layer 3 twice", out["twice"])
+
     def test_a_try_runs_the_prompt_plain_and_then_with_the_item(self):
         out = self.run_page(f"""
             vectors = [{{name: "sea", id: "{self.VECTOR}", model: "lfm3", host}}];
