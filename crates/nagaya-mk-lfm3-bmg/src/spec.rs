@@ -46,8 +46,9 @@ pub const SLOT_TOKENS: usize = 32_768;
 /// `the_longest_quantum_fits_its_bound` measures the last block of a full slot.
 pub const MAX_QUANTUM_MS: u32 = 2_000;
 
-/// The most segments in a pass. One ring runs one block of one slot.
-pub const MAX_SEGMENTS: u32 = 1;
+/// The most segments in a pass. Several segments are a batch of decode rows, each on its own slot, and the tiled
+/// path keeps the bits of a row for 1 to 8 rows (engine-abi "LFM3", "Batched passes").
+pub const MAX_SEGMENTS: u32 = 8;
 
 /// The most logit rows of one pass.
 pub const MAX_LOGIT_ROWS: usize = 16;

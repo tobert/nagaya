@@ -46,6 +46,9 @@ pub struct Bufs {
     pub q: u64,
     /// The gate of each head: `[n][heads]`.
     pub gates: u64,
+    /// The keys and the values of a batch before their copies to the slots: `[n][kv_heads * head_dim]` each.
+    pub k: u64,
+    pub v: u64,
     /// The output of a projection before its norm: `[n][hidden]`.
     pub o: u64,
     /// The SwiGLU rows: `[n][intermediate]`.
@@ -74,6 +77,8 @@ impl Bufs {
             y: z(f(b.hidden)),
             q: z(f(b.heads * b.head_dim)),
             gates: z(f(b.heads)),
+            k: z(f(b.kv_row())),
+            v: z(f(b.kv_row())),
             o: z(f(b.hidden)),
             g: z(f(b.intermediate)),
             scores: z(tasks::score_floats(
@@ -423,6 +428,168 @@ pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskD
     t
 }
 
+/// What a batched ring runs: one decode row on each of several slots, with one control list for all of them (engine-abi
+/// "LFM3", "Batched passes"). The ids are in `bufs.ids`, one for each row.
+#[derive(Clone, Copy, Debug)]
+pub struct Batch<'a> {
+    /// The slot of each row and the position of its token.
+    pub rows: &'a [(&'a SlotMemory, usize)],
+    pub control: &'a [Control],
+}
+
+/// The tasks of a batch. The weight ops run once over the rows, on the tiled path. Each row has its own convolution,
+/// K and V rows, rotation and attention on its own slot, as a pass of one row has. Thus a row gets the bits of a pass
+/// alone. `bufs.logits` row `i` holds the logits of row `i`.
+pub fn batch(b: &Backbone, w: &Weights, bufs: &Bufs, batch: Batch<'_>) -> Vec<MkTaskDescriptor> {
+    let Batch { rows, control } = batch;
+    let n = rows.len();
+    assert!(
+        (1..=MAX_LOGIT_ROWS).contains(&n),
+        "a batch has 1 to {MAX_LOGIT_ROWS} rows, not {n}; the engine checks the pass first"
+    );
+    for (slot, pos) in rows {
+        assert!(*pos < slot.seq, "position {pos} does not fit a slot of {}", slot.seq);
+    }
+    let (n32, h32, i32_) = (n as u32, b.hidden as u32, b.intermediate as u32);
+    let (heads, kv, d) = (b.heads as u32, b.kv_heads as u32, b.head_dim as u32);
+    let (hidden, q_row, kv_row) = (b.hidden * 4, b.heads * b.head_dim * 4, b.kv_row() * 4);
+    let mut t = vec![tasks::embed(bufs.ids, w.embed, bufs.x, n32, h32, 0, false, false)];
+    for (l, lw) in w.layers.iter().enumerate() {
+        let kind = b.layers[l];
+        t.push(tasks::rmsnorm(bufs.x, lw.operator_norm, bufs.h, n32, h32, b.eps, false));
+        match kind {
+            LayerKind::Conv => {
+                t.push(tiled(tasks::matmul(
+                    bufs.h,
+                    lw.in_proj,
+                    bufs.bcx,
+                    n32,
+                    3 * h32,
+                    h32,
+                    false,
+                )));
+                for (i, (slot, _)) in rows.iter().enumerate() {
+                    t.push(tasks::short_conv(
+                        bufs.bcx + (i * 3 * hidden) as u64,
+                        lw.conv,
+                        slot.layers[l],
+                        bufs.y + (i * hidden) as u64,
+                        1,
+                        h32,
+                        b.taps as u32,
+                        false,
+                    ));
+                }
+                t.push(tiled(tasks::matmul(bufs.y, lw.out_proj, bufs.o, n32, h32, h32, false)));
+            }
+            LayerKind::Full | LayerKind::Sliding => {
+                let (rope, window) = match kind {
+                    LayerKind::Full => (b.full_rope, 0u32),
+                    _ => (b.sliding_rope, b.window as u32),
+                };
+                let full = kind == LayerKind::Full;
+                t.push(tiled(tasks::matmul(bufs.h, lw.q, bufs.q, n32, heads * d, h32, false)));
+                t.push(tiled(tasks::matmul(bufs.h, lw.k, bufs.k, n32, kv * d, h32, false)));
+                t.push(tiled(tasks::matmul(bufs.h, lw.v, bufs.v, n32, kv * d, h32, false)));
+                t.push(tiled(tasks::matmul(
+                    bufs.h, lw.gate, bufs.gates, n32, heads, h32, false,
+                )));
+                // The queries carry the scale head_dim^-0.5, because the attention ops do not scale.
+                let scale = (b.head_dim as f32).powf(-0.5);
+                let ring = slot_ring(b, rows, l);
+                for (i, (slot, pos)) in rows.iter().enumerate() {
+                    let (kr, vr) = (slot.row(b, l, false, *pos), slot.row(b, l, true, *pos));
+                    // A row of one token never wraps a ring, so its rows go straight to their places.
+                    t.push(tasks::copy(bufs.k + (i * kv_row) as u64, kr, kv * d));
+                    t.push(tasks::copy(bufs.v + (i * kv_row) as u64, vr, kv * d));
+                    let q = bufs.q + (i * q_row) as u64;
+                    t.push(tasks::partial_rotation(
+                        tasks::qk_rope(q, lw.q_norm, heads, heads, d, *pos as u32, full, true, b.eps, scale),
+                        rope.pairs as u32,
+                    ));
+                    t.push(tasks::partial_rotation(
+                        tasks::qk_rope(kr, lw.k_norm, kv, kv, d, *pos as u32, full, true, b.eps, 1.0),
+                        rope.pairs as u32,
+                    ));
+                    let mut attend = tasks::attend_one(
+                        q,
+                        slot.layers[l],
+                        bufs.y + (i * hidden) as u64,
+                        heads,
+                        kv,
+                        d,
+                        *pos as u32,
+                        slot.seq as u32,
+                        window,
+                    );
+                    for task in &mut attend {
+                        task.layer = ring[i] as u32;
+                    }
+                    t.extend(attend);
+                }
+                t.push(tasks::head_gate(bufs.y, bufs.gates, bufs.y, n32, heads, d, heads));
+                t.push(tiled(tasks::matmul(bufs.y, lw.o, bufs.o, n32, h32, heads * d, false)));
+            }
+        }
+        t.push(accumulate(tasks::rmsnorm(
+            bufs.o,
+            lw.post_operator_norm,
+            bufs.x,
+            n32,
+            h32,
+            b.eps,
+            false,
+        )));
+        t.push(tasks::rmsnorm(bufs.x, lw.ffn_norm, bufs.h, n32, h32, b.eps, false));
+        t.push(tiled(tasks::swiglu(bufs.h, lw.w13, bufs.g, n32, i32_, h32)));
+        t.push(tiled(tasks::matmul(bufs.g, lw.w2, bufs.o, n32, h32, i32_, false)));
+        t.push(accumulate(tasks::rmsnorm(
+            bufs.o,
+            lw.post_ffn_norm,
+            bufs.x,
+            n32,
+            h32,
+            b.eps,
+            false,
+        )));
+        // One control list for every row. The op changes each row on its own, so a row has the bits of a pass alone.
+        let layer_vector = (l * b.hidden * 4) as u64;
+        for item in control {
+            if item.strength == 0.0 && item.op != ControlOp::Clamp {
+                continue;
+            }
+            t.push(tasks::control(
+                bufs.x,
+                item.vector + layer_vector,
+                n32,
+                h32,
+                item.op,
+                item.strength,
+            ));
+        }
+    }
+    t.push(tasks::rmsnorm(bufs.x, w.norm, bufs.h, n32, h32, b.eps, false));
+    // Each row is its own head matmul of one row, as in a pass of one row.
+    for i in 0..n {
+        t.push(tasks::matmul(
+            bufs.h + (i * hidden) as u64,
+            w.embed,
+            bufs.logits + (i * b.vocab_rows * 4) as u64,
+            1,
+            b.vocab_rows as u32,
+            h32,
+            false,
+        ));
+    }
+    assert!(t.len() < MAX_TASKS_PER_CARD, "the batch has {} tasks", t.len());
+    t
+}
+
+/// The ring rows of layer `l` of the slot of each row.
+fn slot_ring(b: &Backbone, rows: &[(&SlotMemory, usize)], l: usize) -> Vec<usize> {
+    rows.iter().map(|(slot, _)| slot.ring(b, l)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,7 +607,12 @@ mod tests {
     }
 
     fn memory(b: &Backbone, seq: usize) -> SlotMemory {
-        let mut next = 1u64 << 40;
+        memory_at(b, seq, 1 << 40)
+    }
+
+    /// The memory of a slot from `base`, so that several slots of a test do not overlap.
+    fn memory_at(b: &Backbone, seq: usize, base: u64) -> SlotMemory {
+        let mut next = base;
         SlotMemory::new(
             &mut |bytes| {
                 let at = next;
@@ -536,6 +708,86 @@ mod tests {
         for task in weight_ops {
             assert_ne!(task.flags & FLAG_TILED, 0, "op {} of {} rows", task.opcode, task.m);
         }
+    }
+
+    /// A batch of three rows on three slots: the weight ops run once over 3 rows, and each row has its own convolution,
+    /// K and V rows, rotation and attention on its own slot, then its own head (engine-abi "LFM3", "Batched passes").
+    #[test]
+    fn a_batch_runs_the_weight_ops_once_and_each_row_on_its_own_slot() {
+        let b = backbone();
+        let (w, bufs) = (weights(&b), bufs(&b));
+        let slots = [
+            memory_at(&b, 1024, 1 << 40),
+            memory_at(&b, 1024, 2 << 40),
+            memory_at(&b, 1024, 3 << 40),
+        ];
+        let at = [5usize, 300, 1000];
+        let rows: Vec<(&SlotMemory, usize)> = slots.iter().zip(at).collect();
+        let t = batch(
+            &b,
+            &w,
+            &bufs,
+            Batch {
+                rows: &rows,
+                control: &[],
+            },
+        );
+        assert_eq!(t[0].opcode, OP_EMBED);
+        assert_eq!(t[0].n, 3);
+        // The weight ops: 3 rows each, on the tiled path. Then one head matmul for each row.
+        let heads: Vec<&MkTaskDescriptor> = t.iter().filter(|task| task.m == 128_000).collect();
+        let weight_ops: Vec<&MkTaskDescriptor> = t
+            .iter()
+            .filter(|task| (task.opcode == OP_MATMUL && task.m != 128_000) || task.opcode == OP_GEGLU)
+            .collect();
+        assert_eq!(weight_ops.len(), 13 * 3 + 11 * 6 + 24);
+        assert!(
+            weight_ops
+                .iter()
+                .all(|task| task.n == 3 && task.flags & FLAG_TILED != 0)
+        );
+        assert_eq!(heads.len(), 3);
+        for (i, task) in heads.iter().enumerate() {
+            assert_eq!((task.n, task.a), (1, bufs.h + (i * 2048 * 4) as u64));
+            assert_eq!(task.c, bufs.logits + (i * 128_000 * 4) as u64);
+        }
+        for (l, kind) in b.layers.iter().enumerate() {
+            let on = |slot: &SlotMemory, pos: usize, value: bool| slot.row(&b, l, value, pos);
+            match kind {
+                LayerKind::Conv => {
+                    let convs: Vec<(u64, u64, u32)> = t
+                        .iter()
+                        .filter(|task| task.opcode == OP_SHORT_CONV && slots.iter().any(|s| s.layers[l] == task.x))
+                        .map(|task| (task.x, task.a, task.n))
+                        .collect();
+                    let want: Vec<(u64, u64, u32)> = (0..3)
+                        .map(|i| (slots[i].layers[l], bufs.bcx + (i * 3 * 2048 * 4) as u64, 1))
+                        .collect();
+                    assert_eq!(convs, want, "layer {l}");
+                }
+                _ => {
+                    for (i, slot) in slots.iter().enumerate() {
+                        for value in [false, true] {
+                            assert!(
+                                t.iter()
+                                    .any(|task| task.opcode == OP_COPY && task.c == on(slot, at[i], value)),
+                                "layer {l} row {i}: the copy of its {} row",
+                                if value { "value" } else { "key" }
+                            );
+                        }
+                        let attend = t
+                            .iter()
+                            .find(|task| task.opcode == OP_ATTN && task.b == slot.layers[l])
+                            .unwrap_or_else(|| panic!("layer {l} row {i} attends on its slot"));
+                        assert_eq!(
+                            (attend.p0, attend.a),
+                            (at[i] as u32, bufs.q + (i * 16 * 128 * 4) as u64)
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(t.iter().filter(|task| task.opcode == OP_ATTN).count(), 11 * 3);
     }
 
     /// Weights with a distinct address for the norm of each layer, so a test finds the accumulate of each layer.

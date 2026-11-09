@@ -25,11 +25,11 @@ use nagaya_text_lfm3::{Kind as FamilyKind, Lfm3Family};
 use crate::audio::{self, AudioBufs, AudioWeights, Clip, MAX_CLIP_POSITIONS, Stage};
 use crate::device::{Device, OnCard};
 use crate::media::{self, MAX_IMAGE_PATCHES, PATCH_ROW, SpanKind};
-use crate::model::{self, Bufs, Run, SlotMemory, bufs_bytes, scratch_floats};
+use crate::model::{self, Batch, Bufs, Run, SlotMemory, bufs_bytes, scratch_floats};
 use crate::spec::{
     self, Backbone, Block, Config, FAMILY, Held, LayerKind, Model, Part, RING_ROWS, SLOT_TOKENS, VisionBytes,
 };
-use crate::spec::{LENS_TAP, RESIDUAL_TAP};
+use crate::spec::{LENS_TAP, MAX_SEGMENTS, RESIDUAL_TAP};
 use crate::vision::{self, Until, Vision, VisionBufs, VisionWeights};
 use crate::weights::{self, Count, Weights, f32_values};
 
@@ -474,6 +474,110 @@ impl Lfm3Engine {
         self.run(&tasks);
     }
 
+    /// Run one decode row on the slot of each block in one ring (engine-abi "LFM3", "Batched passes").
+    fn forward_batch(&mut self, blocks: &[Block], control: &[model::Control]) {
+        for block in blocks {
+            if block.pos0 == 0 {
+                self.zero_conv(block.slot);
+            }
+        }
+        let bytes: Vec<u8> = blocks.iter().flat_map(|b| b.tokens[0].to_le_bytes()).collect();
+        self.device.write(self.card(), self.bufs.ids, &bytes);
+        let mut tasks = {
+            let rows: Vec<(&SlotMemory, usize)> = blocks.iter().map(|b| (&self.slots[b.slot], b.pos0)).collect();
+            model::batch(&self.b, &self.weights, &self.bufs, Batch { rows: &rows, control })
+        };
+        // Omni keeps the final norm of each row for `frame`, as a pass of one row does.
+        if let Some(speech) = &self.speech {
+            for (i, block) in blocks.iter().enumerate() {
+                tasks.push(speech.keep_hidden(block.slot, self.bufs.h, i));
+            }
+        }
+        self.run(&tasks);
+    }
+
+    /// The blocks of a batch: each segment is one decode token with its logit row, on a slot of its own, and all have
+    /// one control list. A pass with a tap is one segment. Any break is refused before a slot changes.
+    fn check_batch(&self, segments: &[Segment], taps: &[Tap]) -> Result<Vec<Block>, PassError> {
+        let refuse = |why: String| refused(format!("nothing ran: {why}"));
+        if segments.len() > MAX_SEGMENTS as usize {
+            return Err(refuse(format!(
+                "the pass has {} segments; the engine takes 1 to {MAX_SEGMENTS}",
+                segments.len()
+            )));
+        }
+        if !taps.is_empty() {
+            return Err(refuse(format!(
+                "a batch of {} segments names a tap; a pass with a tap has one segment",
+                segments.len()
+            )));
+        }
+        let mut blocks: Vec<Block> = Vec::with_capacity(segments.len());
+        for (i, segment) in segments.iter().enumerate() {
+            let block = self
+                .held
+                .check_pass(std::slice::from_ref(segment), self.config.max_block, self.vocab)
+                .map_err(|why| refuse(format!("segment {i}: {why}")))?;
+            if block.tokens.len() != 1 || !block.spans.is_empty() {
+                return Err(refuse(format!(
+                    "segment {i} has {} tokens; each segment of a batch is one decode token with no media",
+                    block.tokens.len()
+                )));
+            }
+            if block.logit_rows != [0] {
+                return Err(refuse(format!(
+                    "segment {i} asks for {} logit rows; each segment of a batch gives the logits of its token",
+                    block.logit_rows.len()
+                )));
+            }
+            if let Some(j) = blocks.iter().position(|b| b.slot == block.slot) {
+                return Err(refuse(format!("segments {j} and {i} are both on slot {}", block.slot)));
+            }
+            if segment.control != segments[0].control {
+                return Err(refuse(format!(
+                    "segment {i} has another control list than segment 0; a batch has one list"
+                )));
+            }
+            blocks.push(block);
+        }
+        Ok(blocks)
+    }
+
+    /// A pass of several segments: one decode row on each slot, in one ring.
+    fn pass_batch(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
+        let blocks = match self.check_batch(segments, taps) {
+            Ok(blocks) => blocks,
+            Err(error) => return Err(self.fail(error)),
+        };
+        let (control, _) = match self.check_control_and_taps(segments, taps) {
+            Ok(found) => found,
+            Err(error) => return Err(self.fail(error)),
+        };
+        let start = Instant::now();
+        self.forward_batch(&blocks, &control);
+        let row = self.b.vocab_rows * 4;
+        let outputs: Vec<Output> = (0..blocks.len())
+            .map(|i| Output {
+                name: "logits".to_owned(),
+                dtype: Dtype::F32,
+                bytes: self
+                    .device
+                    .read(self.card(), self.bufs.logits + (i * row) as u64, self.vocab * 4),
+            })
+            .collect();
+        for block in &blocks {
+            self.held.ran(block);
+            if let Some(speech) = &mut self.speech {
+                speech.kept(block.slot, self.held.n[block.slot]);
+            }
+        }
+        Ok(PassOut {
+            status: PassStatus::Ok,
+            ms: start.elapsed().as_millis() as u64,
+            outputs,
+        })
+    }
+
     /// Clear the hidden row of the last position of `slot`: the slot changed in another way than a pass or a feed.
     fn forget_hidden(&mut self, slot: usize) {
         if let Some(speech) = &mut self.speech {
@@ -806,6 +910,9 @@ impl Engine for Lfm3Engine {
     }
 
     fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
+        if segments.len() > 1 {
+            return self.pass_batch(segments, taps);
+        }
         let block = match self.check_block(segments) {
             Ok(block) => block,
             Err(error) => return Err(self.fail(error)),

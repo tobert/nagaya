@@ -171,9 +171,10 @@ fn the_limits_keep_the_feed_rule_and_the_terms() {
     let l = limits(&b, &c, 3_456_000_000, None);
     l.check().unwrap();
     assert_eq!(l.feed, Some(FeedRule { block: 512 }));
+    // Decode segments share a pass by D11 rule 6, so `segments_exact` stays false (engine-abi "Batched passes").
     assert!(!l.segments_exact && l.checkpoint_grain.is_none());
     assert_eq!(l.determinism, Determinism::Always);
-    assert_eq!((l.max_segments, l.max_pass_inputs, l.max_logit_rows), (1, 512, 16));
+    assert_eq!((l.max_segments, l.max_pass_inputs, l.max_logit_rows), (8, 512, 16));
     assert_eq!(l.inputs, Inputs::Tokens);
     assert_eq!(l.devices, vec![0]);
     assert!(l.stages.is_empty());
