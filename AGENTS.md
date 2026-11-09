@@ -114,6 +114,7 @@ order"):
    tab is `a9c476e`. Step 12, the read back of an assistant audio part, is done too: `c312d3d` to `b6fe817`, deployed
    at 16:15 on 2026-11-08.
 5. Milestone 25 step 8 and milestone 26 step 4, with Amy. Milestone 24 step 3 waits for her photos.
+6. Milestone 27, batched passes on LFM3. Amy put it next on 2026-11-09.
 
 Amy decided on 2026-11-08: commit a small step each time the checks pass after a change. When a milestone is almost
 done, run review rounds with kaibo (`docs/reviews.md`), and fix what they find.
@@ -712,7 +713,29 @@ senpai may stop and start the web app on b70host at will (`python3 tools/nagaya_
        with a keep (`docs/lab.md`, "Open questions").
 
     Each stop and start of `nagaya.service` goes into `signoff.md`.
-27. Stop and ask Amy for the next milestone.
+27. **Batched passes on LFM3.** Several contexts share one decode pass of the LFM3 engine, so the weights are read
+    once for each step of all of them. Amy, 2026-11-09, after the swarm ideas (`docs/swarm-ideas.md`): "what's the
+    lift to enable batching for LFM3? I'd like to do that". She decided these rules on 2026-11-09, by interview:
+    - **Bits:** a context's bits never depend on the other segments of its pass. One context decodes on the path of
+      the matrix multiply for 2 to 8 rows. Thus one row and eight rows sum in one order. The engine identity
+      changes, and each held context fills again once.
+    - **Order:** this milestone comes now. The J-Lens deploys when its fit ends, and the steps with Amy stay open.
+    - **Models:** both `lfm3` and `lfm3-omni`. Omni's speech frames stay one context in a pass for now.
+
+    Do the steps in this order. Each step ends with the checks green.
+    1. **Probe.** A card test of the matrix multiply and of SwiGLU: each row gives the same bits at 1 to 8 rows.
+       Also time the decode of one context on both paths. Stop and report if a row differs.
+    2. **One path.** The LFM3 decode of one row takes the path for 2 to 8 rows. Run the oracle gates on the card.
+    3. **The batched pass.** `model::pass` builds its tasks for a list of slots and positions. Each row has its own
+       rotation, attention, convolution and K and V rows. Declare 8 segments and `segments_exact`. The card gate: B
+       segments give the bits of B passes alone.
+    4. **Control lists.** A pass joins only segments with equal control lists, at first.
+    5. **The process.** The group driver puts every segment of a quantum into one pass. Then it gives each job its
+       rows. Now `crates/nagaya/src/jobs.rs:249` asserts one segment.
+    6. **Deploy and measure.** Decode tokens each second at 1, 4 and 8 contexts. Run the gogi suite for both models.
+
+    Each stop and start of `nagaya.service` goes into `signoff.md`.
+28. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
 

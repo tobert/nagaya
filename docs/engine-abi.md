@@ -1383,6 +1383,17 @@ notes above leave each one open, and each is the simplest choice that the gates 
 - **The output.** The rows of the encoder stay on the card. The pass copies them over the embedding rows of the
   placeholders, before the first layer of the backbone.
 
+**Batched passes.** Decided 2026-11-09 (Amy, by interview, milestone 27). Several contexts share one decode pass of
+the LFM3 engine:
+
+- A context's bits never depend on the other segments of its pass. Each row of the matrix multiply for 2 to 8 rows
+  sums in one order. Thus the decode takes that path, also for one row.
+- The engine declares 8 segments and `segments_exact`. The weight ops run once over the rows of all segments. Each
+  row has its own rotation, attention, convolution and K and V rows, on its own slot.
+- A pass joins only segments with equal control lists, at first.
+- Omni's speech frames stay one context in a pass.
+- The change of path gives a new engine identity, so each held context fills again once (12.1).
+
 ## Control vectors
 
 Proposed by Claude Opus 5.5, 2026-11-07, for milestone 25 (spec 11.12). Amy decided the operations, the context
