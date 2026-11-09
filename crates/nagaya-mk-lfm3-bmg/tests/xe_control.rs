@@ -117,7 +117,12 @@ fn refs(set: &[Vec<f32>]) -> Vec<&[f32]> {
 }
 
 fn item(op: ControlOp, strength: f32) -> ControlItem {
-    ControlItem { index: 3, op, strength }
+    ControlItem {
+        index: 3,
+        op,
+        strength,
+        layers: None,
+    }
 }
 
 #[test]
@@ -374,6 +379,7 @@ fn the_table_refuses_what_does_not_fit_and_a_pass_refuses_an_item_outside_it() {
             index: 8,
             op: ControlOp::Add,
             strength: 1.0,
+            layers: None,
         }];
         let error = engine.pass(&[segment], &[]).unwrap_err();
         assert_eq!(error.kind, PassErrorKind::Refused);

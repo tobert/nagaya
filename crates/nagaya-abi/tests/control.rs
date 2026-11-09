@@ -37,7 +37,12 @@ fn refused(limits: &Limits, words: &str) {
 }
 
 fn item(index: u32, op: ControlOp, strength: f32) -> ControlItem {
-    ControlItem { index, op, strength }
+    ControlItem {
+        index,
+        op,
+        strength,
+        layers: None,
+    }
 }
 
 #[test]

@@ -446,6 +446,23 @@ impl ControlLimit {
                     item.strength
                 ));
             }
+            if let Some(layers) = &item.layers {
+                if layers.is_empty() {
+                    return Err(format!(
+                        "control item {i} names no layer; leave `layers` out to act on each"
+                    ));
+                }
+                if let Some((layer, s)) = layers.iter().find(|(_, s)| !s.is_finite()) {
+                    return Err(format!(
+                        "control item {i} has the strength {s} at layer {layer}; a strength is a finite number"
+                    ));
+                }
+                if layers.windows(2).any(|w| w[0].0 >= w[1].0) {
+                    return Err(format!(
+                        "control item {i} names its layers out of rising order, or twice"
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -615,7 +632,7 @@ pub enum ControlOp {
 }
 
 /// One control item of a segment: an entry of the table, its operation and its strength.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ControlItem {
     /// The entry of the table that holds the vector.
     pub index: u32,
@@ -623,21 +640,47 @@ pub struct ControlItem {
     pub op: ControlOp,
     /// The strength.
     pub strength: f32,
+    /// The layers that the item acts on, each with its own strength, in rising layer order. `None`: every layer of
+    /// the vector at `strength` (spec 11.12, "The strength of each layer").
+    pub layers: Option<Vec<(u32, f32)>>,
 }
 
 /// Two items are equal when their bits are equal, so a segment stays `Eq`.
 impl PartialEq for ControlItem {
     fn eq(&self, other: &Self) -> bool {
-        self.index == other.index && self.op == other.op && self.strength.to_bits() == other.strength.to_bits()
+        let bits = |layers: &Option<Vec<(u32, f32)>>| {
+            layers
+                .as_ref()
+                .map(|l| l.iter().map(|(layer, s)| (*layer, s.to_bits())).collect::<Vec<_>>())
+        };
+        self.index == other.index
+            && self.op == other.op
+            && self.strength.to_bits() == other.strength.to_bits()
+            && bits(&self.layers) == bits(&other.layers)
     }
 }
 
 impl Eq for ControlItem {}
 
 impl ControlItem {
-    /// True when the item changes no bit: an `add` or an `ablate` with strength 0 (engine-abi "Control vectors").
+    /// True when the item changes no bit: an `add` or an `ablate` with strength 0 at each layer that it acts on
+    /// (engine-abi "Control vectors").
     pub fn changes_nothing(&self) -> bool {
-        self.strength == 0.0 && self.op != ControlOp::Clamp
+        if self.op == ControlOp::Clamp {
+            return false;
+        }
+        match &self.layers {
+            None => self.strength == 0.0,
+            Some(layers) => layers.iter().all(|(_, s)| *s == 0.0),
+        }
+    }
+
+    /// The strength of the item at layer `l`, or `None` when its layers leave `l` out, so it leaves `l` untouched.
+    pub fn strength_at(&self, l: u32) -> Option<f32> {
+        match &self.layers {
+            None => Some(self.strength),
+            Some(layers) => layers.iter().find(|(layer, _)| *layer == l).map(|(_, s)| *s),
+        }
     }
 }
 

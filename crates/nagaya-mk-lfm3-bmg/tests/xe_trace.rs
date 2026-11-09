@@ -118,6 +118,7 @@ fn the_taps_change_no_bit_of_a_greedy_reply_and_the_lens_of_the_last_layer_is_th
         index: 3,
         op: ControlOp::Ablate,
         strength: 1.0,
+        layers: None,
     }];
     for (name, control) in [("plain", &[][..]), ("ablate 1", &ablate[..])] {
         let bare = reply(&mut engine, &ids, STEPS, control, &[]);

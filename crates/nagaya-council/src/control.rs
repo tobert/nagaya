@@ -5,12 +5,15 @@ use nagaya_abi::ControlOp;
 use nagaya_store::ContentId;
 
 /// One item of the control list of a context: the vector object, the operation and the strength that the client sent.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ControlEntry {
     /// The content id of the vector object.
     pub vector: ContentId,
     pub op: ControlOp,
     pub strength: f64,
+    /// The layers that the item names, each with the number that the client sent, in rising layer order. `None`
+    /// when the item names none (spec 11.12, "The strength of each layer").
+    pub layers: Option<Vec<(u32, f64)>>,
 }
 
 /// The byte of an operation in the recipe: 1 for `add`, 2 for `ablate` and 3 for `clamp` (spec 11.12).
@@ -24,7 +27,9 @@ pub fn op_byte(op: ControlOp) -> u8 {
 
 /// The lab state of a control list in the root recipe (spec 11.12, tag 4), little-endian: a `u64` count, then for each
 /// item the 32 bytes of the vector's content id, the operation byte and the `f64` strength. An empty list has no bytes,
-/// so the root of a plain context does not change.
+/// so the root of a plain context does not change. An item with layers sets the bit `0x80` of its operation byte, and
+/// a `u32` count and each `u32` layer with its `f64` number follow its strength. An item without layers keeps its
+/// bytes.
 pub fn recipe_bytes(list: &[ControlEntry]) -> Vec<u8> {
     if list.is_empty() {
         return Vec::new();
@@ -33,8 +38,16 @@ pub fn recipe_bytes(list: &[ControlEntry]) -> Vec<u8> {
     bytes.extend_from_slice(&(list.len() as u64).to_le_bytes());
     for item in list {
         bytes.extend_from_slice(item.vector.as_bytes());
-        bytes.push(op_byte(item.op));
+        let layered = if item.layers.is_some() { 0x80 } else { 0 };
+        bytes.push(op_byte(item.op) | layered);
         bytes.extend_from_slice(&item.strength.to_le_bytes());
+        if let Some(layers) = &item.layers {
+            bytes.extend_from_slice(&(layers.len() as u32).to_le_bytes());
+            for (layer, number) in layers {
+                bytes.extend_from_slice(&layer.to_le_bytes());
+                bytes.extend_from_slice(&number.to_le_bytes());
+            }
+        }
     }
     bytes
 }

@@ -897,6 +897,7 @@ impl Lfm3Engine {
                     ControlOp::Clamp => nagaya_mk_bmg::protocol::ControlOp::Clamp,
                 },
                 strength: item.strength,
+                layers: item.layers.clone(),
             })
             .collect();
         Ok((control, tap))

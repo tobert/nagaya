@@ -708,6 +708,7 @@ impl Fake {
     fn steer(&self, items: &[ControlItem]) -> Option<[u8; 16]> {
         let mut changed = false;
         let mut hash = 0x7374_6565_7200_u64;
+        let width = self.limits.control.map_or(1, |limit| limit.width as usize).max(1);
         for item in items.iter().filter(|item| !item.changes_nothing()) {
             changed = true;
             let op = match item.op {
@@ -715,10 +716,34 @@ impl Fake {
                 ControlOp::Ablate => 2,
                 ControlOp::Clamp => 3,
             };
+            let entry = &self.table[item.index as usize];
+            // A layer whose rows are all zero has no tensor, so no strength touches it. An item whose layers give each
+            // layer with a tensor the item's strength mixes as the item with no layers (spec 11.12).
+            let held: Vec<usize> = (0..entry.len() / width)
+                .filter(|l| entry[l * width..(l + 1) * width].iter().any(|v| *v != 0.0))
+                .collect();
+            let uniform = item.layers.is_none()
+                || held
+                    .iter()
+                    .all(|l| item.strength_at(*l as u32).map(f32::to_bits) == Some(item.strength.to_bits()));
             hash = mix(hash ^ op);
-            hash = mix(hash ^ u64::from(item.strength.to_bits()));
-            for value in &self.table[item.index as usize] {
-                hash = mix(hash ^ u64::from(value.to_bits()));
+            if uniform {
+                hash = mix(hash ^ u64::from(item.strength.to_bits()));
+                for value in entry {
+                    hash = mix(hash ^ u64::from(value.to_bits()));
+                }
+                continue;
+            }
+            for l in &held {
+                let Some(s) = item.strength_at(*l as u32) else { continue };
+                if s == 0.0 && item.op != ControlOp::Clamp {
+                    continue;
+                }
+                hash = mix(hash ^ (*l as u64) << 32);
+                hash = mix(hash ^ u64::from(s.to_bits()));
+                for value in &entry[l * width..(l + 1) * width] {
+                    hash = mix(hash ^ u64::from(value.to_bits()));
+                }
             }
         }
         if !changed {

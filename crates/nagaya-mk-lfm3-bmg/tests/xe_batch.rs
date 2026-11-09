@@ -148,10 +148,11 @@ fn a_batch_that_breaks_a_rule_is_refused_and_changes_no_slot() {
         index: 0,
         op: ControlOp::Add,
         strength: 1.0,
+        layers: None,
     };
     let long = |slot: u32, items: usize| {
         let mut segment = one(slot);
-        segment.control = vec![item; items];
+        segment.control = vec![item.clone(); items];
         segment
     };
     for (segments, why) in [

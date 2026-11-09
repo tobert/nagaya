@@ -15,6 +15,7 @@ fn entry(byte: u8, op: ControlOp, strength: f64) -> ControlEntry {
         vector: id(byte),
         op,
         strength,
+        layers: None,
     }
 }
 
@@ -40,6 +41,35 @@ fn the_bytes_are_the_count_then_the_id_the_op_byte_and_the_f64_strength_of_each_
     assert_eq!(bytes, want);
     assert_eq!(bytes.len(), 8 + 2 * (32 + 1 + 8));
     assert_eq!(recipe_bytes(&[entry(0, ControlOp::Ablate, 1.0)])[8 + 32], 2);
+}
+
+/// An item with layers sets the bit 0x80 of its op byte, and its layers follow its strength (spec 11.12, "The
+/// strength of each layer"). An item without layers keeps its bytes, and other layers give another root.
+#[test]
+fn an_item_with_layers_marks_its_op_byte_and_writes_its_layers_after_its_strength() {
+    let mut layered = entry(0xab, ControlOp::Ablate, 2.0);
+    layered.layers = Some(vec![(3, 1.5), (10, 0.0)]);
+    let list = [layered.clone(), entry(0x01, ControlOp::Add, 1.0)];
+    let bytes = recipe_bytes(&list);
+    let mut want = 2u64.to_le_bytes().to_vec();
+    want.extend([0xab; 32]);
+    want.push(0x82);
+    want.extend(2.0f64.to_le_bytes());
+    want.extend(2u32.to_le_bytes());
+    want.extend(3u32.to_le_bytes());
+    want.extend(1.5f64.to_le_bytes());
+    want.extend(10u32.to_le_bytes());
+    want.extend(0.0f64.to_le_bytes());
+    want.extend([0x01; 32]);
+    want.push(1);
+    want.extend(1.0f64.to_le_bytes());
+    assert_eq!(bytes, want);
+    let digest = [3u8; 32];
+    let root = |list: &[ControlEntry]| root_recipe_with_control(&digest, b"", list);
+    let mut other = layered.clone();
+    other.layers = Some(vec![(3, 1.5), (11, 0.0)]);
+    assert_ne!(root(&[layered.clone()]), root(&[other]));
+    assert_ne!(root(&[layered]), root(&[entry(0xab, ControlOp::Ablate, 2.0)]));
 }
 
 #[test]

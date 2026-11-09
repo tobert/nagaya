@@ -168,11 +168,23 @@ impl SlotMemory {
 
 /// One control item of a run (engine-abi "Control vectors"): the address of layer 0 of its vector in the table, the
 /// op and the strength. Layer `l` of the vector follows at `l * hidden` values.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Control {
     pub vector: u64,
     pub op: ControlOp,
     pub strength: f32,
+    /// The layers that the item acts on, each with its own strength. `None`: each layer at `strength` (spec 11.12).
+    pub layers: Option<Vec<(u32, f32)>>,
+}
+
+impl Control {
+    /// The strength at layer `l`, or `None` when the item leaves `l` untouched.
+    pub fn strength_at(&self, l: usize) -> Option<f32> {
+        match &self.layers {
+            None => Some(self.strength),
+            Some(layers) => layers.iter().find(|(layer, _)| *layer as usize == l).map(|(_, s)| *s),
+        }
+    }
 }
 
 /// What one ring runs: a block of `n` tokens at `pos0` of one slot, and how far it goes.
@@ -366,7 +378,10 @@ pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskD
         // changes no bit, so it gets no task (engine-abi "Control vectors").
         let layer_vector = (l * b.hidden * 4) as u64;
         for item in control {
-            if item.strength == 0.0 && item.op != ControlOp::Clamp {
+            let Some(strength) = item.strength_at(l) else {
+                continue;
+            };
+            if strength == 0.0 && item.op != ControlOp::Clamp {
                 continue;
             }
             t.push(tasks::control(
@@ -375,7 +390,7 @@ pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskD
                 n32,
                 h32,
                 item.op,
-                item.strength,
+                strength,
             ));
         }
         if tap {
@@ -555,7 +570,10 @@ pub fn batch(b: &Backbone, w: &Weights, bufs: &Bufs, batch: Batch<'_>) -> Vec<Mk
         // One control list for every row. The op changes each row on its own, so a row has the bits of a pass alone.
         let layer_vector = (l * b.hidden * 4) as u64;
         for item in control {
-            if item.strength == 0.0 && item.op != ControlOp::Clamp {
+            let Some(strength) = item.strength_at(l) else {
+                continue;
+            };
+            if strength == 0.0 && item.op != ControlOp::Clamp {
                 continue;
             }
             t.push(tasks::control(
@@ -564,7 +582,7 @@ pub fn batch(b: &Backbone, w: &Weights, bufs: &Bufs, batch: Batch<'_>) -> Vec<Mk
                 n32,
                 h32,
                 item.op,
-                item.strength,
+                strength,
             ));
         }
     }
@@ -802,6 +820,7 @@ mod tests {
             vector: 0xC000_0000,
             op: ControlOp::Add,
             strength: 1.0,
+            layers: None,
         };
         let count = |items: usize| {
             batch(
@@ -810,13 +829,57 @@ mod tests {
                 &bufs,
                 Batch {
                     rows: &rows,
-                    control: &vec![item; items],
+                    control: &vec![item.clone(); items],
                 },
             )
             .len()
         };
         assert!(count(40) < nagaya_mk_bmg::protocol::MAX_TASKS_PER_CARD);
         assert!(count(49) >= nagaya_mk_bmg::protocol::MAX_TASKS_PER_CARD);
+    }
+
+    /// An item with layers gets a control task only at the layers that it names, each at its own strength; an `add`
+    /// of 0 at a layer gets none, and a `clamp` of 0 still gets one (spec 11.12, "The strength of each layer").
+    #[test]
+    fn an_item_with_layers_runs_only_at_its_layers_with_their_strengths() {
+        let b = backbone();
+        let (w, bufs, slot) = (weights(&b), bufs(&b), memory(&b, 1024));
+        let tasks_of = |control: &[Control]| {
+            let t = pass(
+                &b,
+                &w,
+                &bufs,
+                Run {
+                    slot: &slot,
+                    pos0: 0,
+                    n: 4,
+                    layers: b.layers.len(),
+                    logit_rows: Some(&[3]),
+                    after_embed: &[],
+                    control,
+                    tap: false,
+                    lens: false,
+                },
+            );
+            let hidden = (b.hidden * 4) as u64;
+            t.iter()
+                .filter(|task| task.opcode == OP_CONTROL)
+                .map(|task| ((task.b - 0xC000_0000) / hidden, f32::from_bits(task.m)))
+                .collect::<Vec<(u64, f32)>>()
+        };
+        let item = |op, strength, layers: Option<Vec<(u32, f32)>>| Control {
+            vector: 0xC000_0000,
+            op,
+            strength,
+            layers,
+        };
+        let layered = tasks_of(&[item(ControlOp::Add, 1.0, Some(vec![(3, 2.0), (10, 0.0), (20, -0.5)]))]);
+        assert_eq!(layered, [(3, 2.0), (20, -0.5)]);
+        assert_eq!(tasks_of(&[item(ControlOp::Add, 1.0, None)]).len(), b.layers.len());
+        assert_eq!(
+            tasks_of(&[item(ControlOp::Clamp, 1.0, Some(vec![(7, 0.0)]))]),
+            [(7, 0.0)]
+        );
     }
 
     /// Weights with a distinct address for the norm of each layer, so a test finds the accumulate of each layer.
@@ -838,21 +901,25 @@ mod tests {
                 vector: 0xC000_0000,
                 op: ControlOp::Add,
                 strength: 4.0,
+                layers: None,
             },
             Control {
                 vector: 0xD000_0000,
                 op: ControlOp::Ablate,
                 strength: 0.0,
+                layers: None,
             },
             Control {
                 vector: 0xD000_0000,
                 op: ControlOp::Add,
                 strength: -0.0,
+                layers: None,
             },
             Control {
                 vector: 0xE000_0000,
                 op: ControlOp::Clamp,
                 strength: 0.0,
+                layers: None,
             },
         ];
         let run = |control: &[Control]| {
@@ -924,6 +991,7 @@ mod tests {
             vector: 0xC000_0000,
             op: ControlOp::Clamp,
             strength: 8.0,
+            layers: None,
         }];
         let t = pass(
             &b,

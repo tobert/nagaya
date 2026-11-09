@@ -270,6 +270,7 @@ fn replay(prompt: &[u32], sampled: &[u32], items: &[(ControlOp, f32)]) -> Replay
             index: 0,
             op: *op,
             strength: *strength,
+            layers: None,
         })
         .collect();
     let tokens: Vec<u32> = prompt.iter().chain(&sampled[..sampled.len() - 1]).copied().collect();

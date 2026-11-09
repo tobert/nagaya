@@ -29,12 +29,16 @@ pub type Lookup<'a> = dyn FnMut(&ContentId) -> Result<Option<(String, Vec<u8>)>,
 pub struct Checked {
     /// The entries of the root recipe, with the `f64` strengths that the client sent (spec 11.12).
     pub entries: Vec<ControlEntry>,
-    /// The items, in order, with the strength as `f32` for the engine.
-    pub items: Vec<(ContentId, ControlOp, f32)>,
+    /// The items, in order, with the strength as `f32` for the engine, and the `f32` strength of each layer that an
+    /// item names: its strength times the layer's number (spec 11.12).
+    pub items: Vec<CheckedItem>,
     /// Each vector that the list names once, in the order of its first item, as `layers` times `width` `f32` values in
     /// layer order (engine-abi "Control vectors"). A layer that the vector does not hold is all zeros.
     pub vectors: Vec<(ContentId, Arc<[u8]>)>,
 }
+
+/// One item after the checks: its vector, its operation, its strength, and the strength of each layer that it names.
+pub type CheckedItem = (ContentId, ControlOp, f32, Option<Vec<(u32, f32)>>);
 
 fn op_of(op: gogi_proto::control::ControlOp) -> ControlOp {
     match op {
@@ -88,12 +92,38 @@ pub fn check(
             checked.vectors.push((id, bytes));
         }
         let op = op_of(item.op);
+        // Each layer's strength is the item's strength times the layer's number, as f32 for the engine (spec 11.12).
+        let layers: Option<Vec<(u32, f64)>> = item.layers.as_ref().map(|m| m.iter().map(|(l, x)| (*l, *x)).collect());
+        let by_layer = match &layers {
+            None => None,
+            Some(layers) => {
+                let mut out = Vec::with_capacity(layers.len());
+                for (layer, number) in layers {
+                    let s = (item.strength * number) as f32;
+                    if !s.is_finite() {
+                        let param = format!("{at}control[{i}].layers");
+                        return Err(Invalid::param(
+                            param.clone(),
+                            format!(
+                                "nothing ran: {param} gives layer {layer} the strength {} times {number}, which is not \
+                                 finite as a 32-bit float",
+                                item.strength
+                            ),
+                        )
+                        .into());
+                    }
+                    out.push((*layer, s));
+                }
+                Some(out)
+            }
+        };
         checked.entries.push(ControlEntry {
             vector: id,
             op,
             strength: item.strength,
+            layers,
         });
-        checked.items.push((id, op, strength));
+        checked.items.push((id, op, strength, by_layer));
     }
     if checked.vectors.len() > fit.limit.tables as usize {
         let param = format!("{at}control");
@@ -310,14 +340,10 @@ impl ControlTable {
 }
 
 /// The items of a segment: the entry of each item's vector, its operation and its strength.
-pub fn items(
-    checked: &[(ContentId, ControlOp, f32)],
-    vectors: &[(ContentId, Arc<[u8]>)],
-    indices: &[u32],
-) -> Vec<ControlItem> {
+pub fn items(checked: &[CheckedItem], vectors: &[(ContentId, Arc<[u8]>)], indices: &[u32]) -> Vec<ControlItem> {
     checked
         .iter()
-        .map(|(vector, op, strength)| {
+        .map(|(vector, op, strength, layers)| {
             let at = vectors
                 .iter()
                 .position(|(v, _)| v == vector)
@@ -326,6 +352,7 @@ pub fn items(
                 index: indices[at],
                 op: *op,
                 strength: *strength,
+                layers: layers.clone(),
             }
         })
         .collect()
@@ -380,6 +407,7 @@ mod tests {
 
     fn item(vector: &gogi_proto::ids::ContentId, op: Op, strength: f64) -> Control {
         Control {
+            layers: None,
             vector: vector.clone(),
             op,
             strength,
@@ -423,6 +451,26 @@ mod tests {
         assert_eq!(checked.vectors.len(), 2, "a vector named twice is written once");
         assert_eq!(values(&checked.vectors[0].1), [1.0, 2.0, 0.0, 0.0, 3.0, -4.0]);
         assert_eq!(values(&checked.vectors[1].1), [0.0, 0.0, 0.5, 0.25, 0.0, 0.0]);
+    }
+
+    /// An item with layers keeps the numbers that the client sent in its entry, and gives the engine the strength of
+    /// each layer: its strength times the layer's number (spec 11.12, "The strength of each layer").
+    #[test]
+    fn an_item_with_layers_gives_the_engine_the_strength_of_each_layer() {
+        let mut objects = Objects(BTreeMap::new());
+        let a = objects.put(MEDIA_TYPE, vector("0xW", &[(0, [1.0, 2.0]), (2, [3.0, -4.0])]));
+        let mut layered = item(&a, Op::Ablate, 2.0);
+        layered.layers = Some([(0, 1.5), (2, 0.0)].into_iter().collect());
+        let checked = objects.check(&[layered, item(&a, Op::Add, 1.0)], "").unwrap();
+        assert_eq!(checked.entries[0].layers, Some(vec![(0, 1.5), (2, 0.0)]));
+        assert_eq!(checked.entries[1].layers, None);
+        assert_eq!(checked.items[0].3, Some(vec![(0, 3.0), (2, 0.0)]));
+        assert_eq!(checked.items[1].3, None);
+        // A product past f32 is a 400 that names the layers.
+        let mut huge = item(&a, Op::Add, 1e30);
+        huge.layers = Some([(0, 1e30)].into_iter().collect());
+        let error = objects.check(&[huge], "contexts[1].").unwrap_err();
+        assert_eq!(param(error), "400 contexts[1].control[0].layers");
     }
 
     #[test]
@@ -594,11 +642,16 @@ mod tests {
     fn the_items_name_the_entry_of_their_vector() {
         let vectors = vec![(id(1), bytes(1)), (id(2), bytes(2))];
         let checked = [
-            (id(2), ControlOp::Add, 1.0),
-            (id(1), ControlOp::Clamp, 0.0),
-            (id(2), ControlOp::Ablate, 0.5),
+            (id(2), ControlOp::Add, 1.0, None),
+            (id(1), ControlOp::Clamp, 0.0, Some(vec![(4, 2.0)])),
+            (id(2), ControlOp::Ablate, 0.5, None),
         ];
         let items = items(&checked, &vectors, &[7, 3]);
+        assert_eq!(
+            items[1].layers,
+            Some(vec![(4, 2.0)]),
+            "an item keeps the strength of each layer"
+        );
         let got: Vec<(u32, ControlOp, f32)> = items.iter().map(|i| (i.index, i.op, i.strength)).collect();
         assert_eq!(
             got,
