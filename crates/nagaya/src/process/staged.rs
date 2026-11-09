@@ -753,6 +753,7 @@ impl StagedJobs {
                 devices: devices.to_vec(),
                 buffers,
                 max_quantum_ms,
+                decode_joins: BTreeMap::new(),
             })),
             bodies: BTreeMap::new(),
             spans: BTreeMap::new(),

@@ -13,6 +13,7 @@ fn scheduler() -> StageScheduler {
         devices: vec![0, 1],
         buffers: 2,
         max_quantum_ms: 10,
+        decode_joins: Default::default(),
     })
 }
 
@@ -456,4 +457,87 @@ fn a_pass_on_a_device_with_no_stage_is_an_error() {
         state.append_items(1, &[Item::On(Kind::Decode, 7)]),
         Err(StageError::NoStageDevice(1, 7))
     );
+}
+
+/// Decode items on one device join one quantum when the device batches decode (engine-abi "LFM3", "Batched passes").
+/// A quantum takes jobs of one class, up to the limit of the device. Each job ends or goes on by its own result.
+#[test]
+fn decode_items_on_a_batching_device_join_one_quantum() {
+    let mut run = Run::new();
+    run.state.as_mut().unwrap().set_decode_joins([(0, 3)].into());
+    let on = |n: usize| vec![Item::On(Kind::Decode, 0); n];
+    let first = run.arrive(job(1, Class::Interactive, &on(2)));
+    assert_eq!(
+        (first[0].job, first[0].joined.clone()),
+        (1, vec![]),
+        "job 1 starts alone at its arrival"
+    );
+    for id in 2..=5 {
+        assert!(run.arrive(job(id, Class::Interactive, &on(2))).is_empty());
+    }
+    run.arrive(job(6, Class::Batch, &on(1)));
+    let mut next = run.complete(0, 1);
+    let mut quanta: Vec<(Vec<u64>, Class)> = Vec::new();
+    let mut failed = None;
+    while let Some(q) = next.first().cloned() {
+        let jobs: Vec<u64> = std::iter::once(q.job).chain(q.joined.iter().copied()).collect();
+        assert_eq!(q.work, Work::On { device: 0 });
+        for id in &jobs {
+            assert_eq!(run.job(*id).state, JobState::Running);
+        }
+        // The first joined quantum loses one job to a failure, and the others go on.
+        if failed.is_none() && jobs.len() == 3 {
+            let id = jobs[2];
+            run.state.as_mut().unwrap().fail_job(id).unwrap();
+            failed = Some(id);
+        }
+        assert!(run.state.as_mut().unwrap().fail_job(99).is_err(), "job 99 does not run");
+        quanta.push((jobs, q.class));
+        next = run.complete(0, 1);
+    }
+    let failed = failed.expect("a quantum of 3 jobs ran");
+    assert!(quanta.iter().any(|(jobs, _)| jobs.len() == 3), "{quanta:?}");
+    for (jobs, class) in &quanta {
+        assert!(jobs.len() <= 3, "{quanta:?}");
+        assert!(
+            jobs.iter().all(|id| run.job(*id).class == *class),
+            "one class: {quanta:?}"
+        );
+    }
+    assert_eq!(quanta.last().unwrap().0, [6], "the batch job runs alone, last");
+    assert_eq!(run.job(failed).state, JobState::Failed);
+    for id in (1..=6).filter(|id| *id != failed) {
+        assert_eq!(run.job(id).state, JobState::Done, "job {id}");
+    }
+    // Each job ran each of its items once, and the failed job ran no item after its failure.
+    let runs = |id: u64| quanta.iter().filter(|(jobs, _)| jobs.contains(&id)).count();
+    for id in 2..=5 {
+        assert_eq!(runs(id), if id == failed { 1 } else { 2 }, "job {id}");
+    }
+    assert_eq!(runs(1), 1, "job 1 ran its first item alone");
+}
+
+/// A device that does not batch, and an item of another kind, run one job in a quantum.
+#[test]
+fn a_device_that_does_not_batch_runs_one_decode_job_in_a_quantum() {
+    let mut run = Run::new();
+    run.state.as_mut().unwrap().set_decode_joins([(1, 8)].into());
+    run.arrive(job(
+        1,
+        Class::Interactive,
+        &[Item::On(Kind::Decode, 0), Item::On(Kind::Decode, 0)],
+    ));
+    run.arrive(job(2, Class::Interactive, &[Item::On(Kind::Decode, 0)]));
+    let next = run.complete(0, 1);
+    assert!(next[0].joined.is_empty(), "{next:?}");
+    let mut run = Run::new();
+    run.state.as_mut().unwrap().set_decode_joins([(0, 8)].into());
+    run.arrive(job(
+        1,
+        Class::Interactive,
+        &[Item::On(Kind::Prefill, 0), Item::On(Kind::Prefill, 0)],
+    ));
+    run.arrive(job(2, Class::Interactive, &[Item::On(Kind::Prefill, 0)]));
+    let next = run.complete(0, 1);
+    assert!(next[0].joined.is_empty(), "{next:?}");
 }

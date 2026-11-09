@@ -36,6 +36,9 @@ pub struct StagedEngine {
     pub buffers: u32,
     /// The longest that one stage quantum may run, in milliseconds (`Limits::max_quantum_ms`, D8).
     pub max_quantum_ms: u64,
+    /// The devices whose decode items join one quantum, and the most jobs of such a quantum. An engine with a feed
+    /// rule and more than one segment on that device batches decode rows (engine-abi "LFM3", "Batched passes").
+    pub decode_joins: BTreeMap<Device, u32>,
 }
 
 /// One unit of the work of a job.
@@ -91,6 +94,9 @@ pub struct StageQuantum {
     pub work: Work,
     /// The devices that the quantum holds.
     pub devices: Vec<Device>,
+    /// The other jobs of a joined decode quantum on one device, in the order of the scheduler. Each one started its
+    /// front item with this quantum, and each one ends or goes on by its own result (engine-abi "Batched passes").
+    pub joined: Vec<JobId>,
 }
 
 /// One job of a group with stages.
@@ -381,7 +387,36 @@ impl StageScheduler {
     }
 
     fn job_runs(&self, job: JobId) -> bool {
-        self.running.values().any(|running| running.quantum.job == job)
+        self.running
+            .values()
+            .any(|running| running.quantum.job == job || running.quantum.joined.contains(&job))
+    }
+
+    /// Set the devices whose decode items join, and the most jobs of a joined quantum on each. The group sets them
+    /// from the engines that its device threads hold, before each choice.
+    pub fn set_decode_joins(&mut self, joins: BTreeMap<Device, u32>) {
+        self.engine.decode_joins = joins;
+    }
+
+    /// Fail one job of a quantum that runs, before its `Complete` event. The other jobs of a joined quantum go on. A
+    /// refusal changes nothing.
+    pub fn fail_job(&mut self, job: JobId) -> Result<(), StageError> {
+        if !self.job_runs(job) {
+            let state = self.jobs.iter().find(|held| held.id == job).map(|held| held.state);
+            return Err(match state {
+                Some(state) => StageError::AppendToIdleJob(job, state),
+                None => StageError::UnknownJob(job),
+            });
+        }
+        let held = self
+            .jobs
+            .iter_mut()
+            .find(|held| held.id == job)
+            .ok_or(StageError::UnknownJob(job))?;
+        held.state = JobState::Failed;
+        held.items.clear();
+        self.flights.remove(&job);
+        Ok(())
     }
 
     /// The residual buffers that the blocks hold at the boundary after stage `stage`.
@@ -612,12 +647,18 @@ impl StageScheduler {
                 vec![self.engine.devices[stage]]
             }
         };
+        let (first, class) = (job.id, job.class);
+        let joined = match candidate.work {
+            Work::On { device } if candidate.kind == Kind::Decode => self.join_decode(first, class, device),
+            _ => Vec::new(),
+        };
         let quantum = StageQuantum {
-            job: job.id,
-            class: job.class,
+            job: first,
+            class,
             kind: candidate.kind,
             work: candidate.work,
             devices: devices.clone(),
+            joined,
         };
         for device in devices {
             self.running.insert(
@@ -629,6 +670,44 @@ impl StageScheduler {
             );
         }
         quantum
+    }
+
+    /// The jobs that join the decode quantum of `first` on `device`: eligible jobs of the same class whose front item
+    /// is a decode item on that device, in the order of the scheduler, up to the limit of the device. Each starts its
+    /// front item now.
+    fn join_decode(&mut self, first: JobId, class: Class, device: Device) -> Vec<JobId> {
+        let limit = self.engine.decode_joins.get(&device).copied().unwrap_or(1) as usize;
+        if limit < 2 {
+            return Vec::new();
+        }
+        let mut others: Vec<usize> = (0..self.jobs.len())
+            .filter(|&index| {
+                let job = &self.jobs[index];
+                job.id != first
+                    && job.class == class
+                    && Self::eligible(job)
+                    && job.items.front() == Some(&Item::On(Kind::Decode, device))
+                    && self.flights.get(&job.id).is_none_or(|flights| flights.is_empty())
+                    && !self.job_runs(job.id)
+            })
+            .collect();
+        let candidate = |job: usize| Candidate {
+            job,
+            kind: Kind::Decode,
+            work: Work::On { device },
+            starts_item: true,
+        };
+        others.sort_by(|a, b| self.before(&candidate(*a), &candidate(*b)));
+        others.truncate(limit - 1);
+        others
+            .into_iter()
+            .map(|index| {
+                let job = &mut self.jobs[index];
+                job.items.pop_front();
+                job.state = JobState::Running;
+                job.id
+            })
+            .collect()
     }
 
     fn complete(&mut self, device: Device, duration_ms: u64, outcome: Completion) -> Result<(), StageError> {
@@ -644,12 +723,18 @@ impl StageScheduler {
                 .filter(|job| job.class == Class::Interactive && !job.state.is_terminal())
                 .map(|job| (job.id, job.arrival_ms))
                 .collect();
-            let arrival = self
-                .jobs
-                .iter()
-                .find(|job| job.id == quantum.job)
-                .map_or(u64::MAX, |job| job.arrival_ms);
-            for (id, delta) in charges(&[(quantum.job, arrival)], duration_ms, &present) {
+            let segments: Vec<(JobId, u64)> = std::iter::once(quantum.job)
+                .chain(quantum.joined.iter().copied())
+                .map(|id| {
+                    let arrival = self
+                        .jobs
+                        .iter()
+                        .find(|job| job.id == id)
+                        .map_or(u64::MAX, |job| job.arrival_ms);
+                    (id, arrival)
+                })
+                .collect();
+            for (id, delta) in charges(&segments, duration_ms, &present) {
                 if let Some(job) = self.jobs.iter_mut().find(|job| job.id == id) {
                     job.balance_ms = clamp_balance(job.balance_ms, delta);
                 }
@@ -669,21 +754,29 @@ impl StageScheduler {
                 flights.pop_front();
             }
         }
-        let runs = self.job_runs(quantum.job);
-        let Some(job) = self.jobs.iter_mut().find(|job| job.id == quantum.job) else {
-            return Ok(());
+        for id in std::iter::once(quantum.job).chain(quantum.joined.iter().copied()) {
+            self.finish(id, outcome);
+        }
+        Ok(())
+    }
+
+    /// The state of a job of a quantum that ended. A job that `fail_job` failed stays failed.
+    fn finish(&mut self, id: JobId, outcome: Completion) {
+        let runs = self.job_runs(id);
+        let Some(job) = self.jobs.iter_mut().find(|job| job.id == id) else {
+            return;
         };
         if job.state.is_terminal() {
-            return Ok(());
+            return;
         }
         if outcome == Completion::Failed {
             job.state = JobState::Failed;
             job.items.clear();
             self.flights.remove(&job.id);
-            return Ok(());
+            return;
         }
         if runs {
-            return Ok(());
+            return;
         }
         let in_flight = self.flights.get(&job.id).is_some_and(|flights| !flights.is_empty());
         job.state = if job.cancel_requested {
@@ -695,7 +788,6 @@ impl StageScheduler {
         } else {
             JobState::Ready
         };
-        Ok(())
     }
 
     fn expire(&mut self, now_ms: u64) {
