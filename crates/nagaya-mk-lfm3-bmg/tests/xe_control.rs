@@ -220,6 +220,60 @@ fn no_item_and_items_of_strength_0_give_the_bits_of_plain() {
     }
 }
 
+/// An item with layers acts at each named layer with that layer's strength (spec 11.12, "The strength of each
+/// layer"). Every layer at the item's strength gives the bits of the item with no layers, whatever `strength` says;
+/// a subset of the layers gives other logits.
+#[test]
+fn an_item_with_layers_gives_the_bits_of_the_same_strengths_without_layers() {
+    for which in Which::BOTH {
+        let Some(golden) = golden(which) else { continue };
+        println!("{which:?}");
+        let mut engine = common::open(which, 1, 512);
+        engine
+            .control()
+            .unwrap()
+            .control_write(3, &vector_bytes(&golden))
+            .unwrap();
+        let ids = golden["test.ids"].ids();
+        let layered = |strength: f32, layers: Vec<(u32, f32)>| ControlItem {
+            index: 3,
+            op: ControlOp::Add,
+            strength,
+            layers: Some(layers),
+        };
+        let whole = feed(&mut engine, &ids, &[ids.len()], &[item(ControlOp::Add, 4.0)]);
+        let each = feed(
+            &mut engine,
+            &ids,
+            &[ids.len()],
+            &[layered(99.0, (0..LAYERS as u32).map(|l| (l, 4.0)).collect())],
+        );
+        assert_eq!(common::first_other_bits(&each.0, &whole.0), None, "the logits differ");
+        assert_eq!(common::first_other_bits(&each.1, &whole.1), None, "the rows differ");
+        let late = feed(
+            &mut engine,
+            &ids,
+            &[ids.len()],
+            &[layered(4.0, (12..LAYERS as u32).map(|l| (l, 4.0)).collect())],
+        );
+        let (plain, _) = feed(&mut engine, &ids, &[ids.len()], &[]);
+        assert!(
+            common::first_other_bits(&late.0, &whole.0).is_some(),
+            "half the layers is not all"
+        );
+        assert!(
+            common::first_other_bits(&late.0, &plain).is_some(),
+            "half the layers is not none"
+        );
+        // The rows of the layers before 12 are the rows of plain: the item leaves them untouched.
+        let (_, plain_rows) = feed(&mut engine, &ids, &[ids.len()], &[]);
+        assert_eq!(
+            common::first_other_bits(&late.1[..12 * WIDTH], &plain_rows[..12 * WIDTH]),
+            None
+        );
+    }
+}
+
 #[test]
 fn each_operation_follows_transformers_in_its_rows_its_logits_and_8_decode_steps() {
     for which in Which::BOTH {

@@ -1,6 +1,8 @@
 //! Control vectors with no I/O (spec 11.12): the recipe bytes of a control list, and the vector of the means of two
 //! prompt sets.
 
+use std::collections::BTreeMap;
+
 use nagaya_abi::ControlOp;
 use nagaya_store::ContentId;
 
@@ -50,6 +52,44 @@ pub fn recipe_bytes(list: &[ControlEntry]) -> Vec<u8> {
         }
     }
     bytes
+}
+
+/// The layers of a composed control vector (`docs/lab.md`, "compose"). Each `add` is a direction for each of its
+/// layers with a weight; each `remove` is a direction for each of its layers. At each layer, the sum of the weighted
+/// adds comes first, in list order. Then each remove takes the part of the sum along its unit direction out, in list
+/// order. The sums run in `f64`. A layer whose result has norm 0 is left out, and so is a remove of a zero direction.
+pub fn compose(
+    adds: &[(&BTreeMap<u32, Vec<f32>>, f64)],
+    removes: &[&BTreeMap<u32, Vec<f32>>],
+) -> BTreeMap<u32, Vec<f32>> {
+    let mut sums: BTreeMap<u32, Vec<f64>> = BTreeMap::new();
+    for (layers, weight) in adds {
+        for (layer, row) in layers.iter() {
+            let sum = sums.entry(*layer).or_insert_with(|| vec![0.0; row.len()]);
+            assert_eq!(sum.len(), row.len(), "the rows of a composed vector have one width");
+            for (s, x) in sum.iter_mut().zip(row) {
+                *s += weight * f64::from(*x);
+            }
+        }
+    }
+    for layers in removes {
+        for (layer, row) in layers.iter() {
+            let Some(sum) = sums.get_mut(layer) else { continue };
+            // The part along x is ((s · x) / (x · x)) x, with no square root, so an exact case stays exact.
+            let square = row.iter().map(|x| f64::from(*x) * f64::from(*x)).sum::<f64>();
+            if square == 0.0 {
+                continue;
+            }
+            let along = sum.iter().zip(row).map(|(s, x)| s * f64::from(*x)).sum::<f64>() / square;
+            for (s, x) in sum.iter_mut().zip(row) {
+                *s -= along * f64::from(*x);
+            }
+        }
+    }
+    sums.into_iter()
+        .map(|(layer, sum)| (layer, sum.into_iter().map(|s| s as f32).collect::<Vec<f32>>()))
+        .filter(|(_, row)| row.iter().any(|x| *x != 0.0))
+        .collect()
 }
 
 /// The control vector of two prompt sets (spec 11.12): the mean of the `positive` rows less the mean of the `negative`

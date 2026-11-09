@@ -5,6 +5,7 @@
 //! call (spec 3.2). Every response carries a `request-id` header, and every error body carries the same id (11.5).
 
 mod cluster;
+mod compose;
 pub mod embeddings;
 mod errors;
 mod extensions;

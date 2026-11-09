@@ -95,6 +95,7 @@ pub fn routes() -> Router<Arc<Council>> {
     Router::new()
         .route("/nagaya/v1/lab/project", post(project))
         .route("/nagaya/v1/lab/trace", post(trace))
+        .route("/nagaya/v1/lab/compose", post(super::compose::compose))
 }
 
 #[derive(Deserialize)]
@@ -138,7 +139,7 @@ struct Ranked {
     rank: usize,
 }
 
-fn invalid(param: &str, message: String) -> ServiceError {
+pub(super) fn invalid(param: &str, message: String) -> ServiceError {
     ServiceError::Invalid(Invalid::param(param, message))
 }
 
@@ -537,7 +538,7 @@ pub const TRACE_MEDIA_TYPE: &str = "application/x-safetensors";
 impl Council {
     /// The served model of a lab route and its model folder. A model that this node does not serve, or one whose
     /// engine kind the lab does not read, is a 400 that names `model`. Its status does not matter.
-    fn lab_model(&self, name: &str) -> Result<(Arc<Served>, PathBuf), Failure> {
+    pub(super) fn lab_model(&self, name: &str) -> Result<(Arc<Served>, PathBuf), Failure> {
         let served = self
             .models
             .iter()
@@ -563,7 +564,7 @@ impl Council {
     /// The J-Lens of a served model of the lab, from the file that its profile entry names. The first use reads the
     /// file, and later uses share it. No lens, or a lens of other weights, is a 400 that names `param`. A file that
     /// does not read is a 500 that names the path.
-    fn lab_lens(&self, served: &Served, dir: &Path, param: &str) -> Result<Arc<JLens>, ServiceError> {
+    pub(super) fn lab_lens(&self, served: &Served, dir: &Path, param: &str) -> Result<Arc<JLens>, ServiceError> {
         let model = served.service.model();
         let slot = self.lenses.get(&served.service.config().engine).ok_or_else(|| {
             invalid(

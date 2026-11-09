@@ -211,6 +211,31 @@ impl Unembedding {
         &self.ends
     }
 
+    /// The weight of the final norm, as `f32`.
+    pub fn norm(&self) -> &[f32] {
+        &self.norm
+    }
+
+    /// The row of the head for the id `id`, as `f32`. An id past the table is a defect of the caller, and it panics.
+    pub fn head_row(&self, id: u32) -> Vec<f32> {
+        assert!(
+            (id as usize) < self.rows,
+            "the id {id} is in the table of {} rows",
+            self.rows
+        );
+        let view = self.file.view().expect("open parsed the header");
+        let table = view
+            .tensor_bytes(&format!("{}embed_tokens.weight", self.model.prefix()))
+            .expect("open found the table");
+        let at = id as usize * self.width * 2;
+        table[at..at + self.width * 2]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| bf16_to_f32(u16::from_le_bytes(*b)))
+            .collect()
+    }
+
     /// The logit rows of residual rows, as the final norm and the head give them: each row divides by its root mean
     /// square with the epsilon, and then takes the scores of a direction. The lenses of `trace` read through it.
     pub fn readout(&self, rows: &[&[f32]]) -> Vec<Vec<f32>> {
@@ -472,5 +497,26 @@ impl JLens {
             return h.to_vec();
         };
         matrix.chunks_exact(self.width).map(|row| dot(row, h)).collect()
+    }
+
+    /// `J_lᵀ u` for a direction `u` of the output of the lens at layer `layer`: the backward lens. The lens of the last
+    /// layer is the identity. The sums run in `f64` in a fixed order.
+    pub fn transport_back(&self, layer: u32, u: &[f32]) -> Vec<f32> {
+        assert!(
+            layer < self.layers,
+            "the layer {layer} is in the model of {} layers",
+            self.layers
+        );
+        assert_eq!(u.len(), self.width, "a row has the width of the residual");
+        let Some(matrix) = self.matrices.get(layer as usize) else {
+            return u.to_vec();
+        };
+        let mut out = vec![0f64; self.width];
+        for (row, ui) in matrix.chunks_exact(self.width).zip(u) {
+            for (o, r) in out.iter_mut().zip(row) {
+                *o += f64::from(*r) * f64::from(*ui);
+            }
+        }
+        out.into_iter().map(|x| x as f32).collect()
     }
 }

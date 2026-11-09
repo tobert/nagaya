@@ -3,7 +3,7 @@
 
 use nagaya_abi::ControlOp;
 use nagaya_council::build::{root_recipe, root_recipe_with_control};
-use nagaya_council::control::{ControlEntry, recipe_bytes, vector_of_means};
+use nagaya_council::control::{ControlEntry, compose, recipe_bytes, vector_of_means};
 use nagaya_store::{ContentId, recipe_root};
 
 fn id(byte: u8) -> ContentId {
@@ -132,4 +132,28 @@ fn a_row_that_is_not_finite_is_refused() {
     let bad: &[f32] = &[1.0, f32::NAN];
     let error = vector_of_means(&[row], &[bad]).unwrap_err();
     assert!(error.contains("not finite"), "{error}");
+}
+
+/// Compose adds the weighted directions of each layer, then takes each removed direction out (docs/lab.md,
+/// "compose"). A layer of norm 0 is left out.
+#[test]
+fn compose_adds_the_weighted_layers_and_then_takes_the_removed_directions_out() {
+    let a: std::collections::BTreeMap<u32, Vec<f32>> = [(1, vec![1.0, 2.0]), (2, vec![3.0, 0.0])].into();
+    let b: std::collections::BTreeMap<u32, Vec<f32>> = [(2, vec![0.0, 4.0]), (5, vec![1.0, 1.0])].into();
+    let out = compose(&[(&a, 2.0), (&b, 0.5)], &[]);
+    assert_eq!(
+        out,
+        [(1, vec![2.0, 4.0]), (2, vec![6.0, 2.0]), (5, vec![0.5, 0.5])].into()
+    );
+    // Remove the direction (1, 0) at layer 2: what is left there is (0, 2). Layer 1 has no remove, and keeps its sum.
+    let x: std::collections::BTreeMap<u32, Vec<f32>> = [(2, vec![5.0, 0.0]), (9, vec![1.0, 0.0])].into();
+    let out = compose(&[(&a, 2.0), (&b, 0.5)], &[&x]);
+    assert_eq!(out[&2], [0.0, 2.0]);
+    assert_eq!(out[&1], [2.0, 4.0]);
+    assert!(!out.contains_key(&9), "a remove adds no layer");
+    // A remove that takes all of a layer leaves the layer out, and a zero direction removes nothing.
+    let all: std::collections::BTreeMap<u32, Vec<f32>> = [(5, vec![1.0, 1.0]), (1, vec![0.0, 0.0])].into();
+    let out = compose(&[(&a, 2.0), (&b, 0.5)], &[&all]);
+    assert!(!out.contains_key(&5));
+    assert_eq!(out[&1], [2.0, 4.0]);
 }

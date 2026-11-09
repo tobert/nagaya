@@ -159,15 +159,23 @@ fn put(council: &Arc<Council>, weight_hash: &str, layers: &[(u32, Vec<f32>)]) ->
     }
     .to_bytes();
     let id = gogi_proto::content_id(&bytes);
-    let (status, body) = send_raw(
-        council,
-        "PUT",
-        &format!("/council/v2/objects/{id}"),
-        bytes,
-        Some(MEDIA_TYPE),
-    );
-    assert!(status.is_success(), "{status}: {}", String::from_utf8_lossy(&body));
-    id
+    // The puts of every test in this binary share the limit of puts at once, and a 429 busy says to try again.
+    for _ in 0..200 {
+        let (status, body) = send_raw(
+            council,
+            "PUT",
+            &format!("/council/v2/objects/{id}"),
+            bytes.clone(),
+            Some(MEDIA_TYPE),
+        );
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            continue;
+        }
+        assert!(status.is_success(), "{status}: {}", String::from_utf8_lossy(&body));
+        return id;
+    }
+    panic!("the put of {id} stayed busy for a second")
 }
 
 /// The score of each row for the direction `v`, in `f64`: the row times the norm weight times `v`.
@@ -441,4 +449,133 @@ fn project_through_the_jlens_refuses_a_model_with_no_lens_a_lens_of_other_weight
         StatusCode::BAD_REQUEST,
         "top_k",
     );
+}
+
+/// Send a request to `compose` (`docs/lab.md`, "compose").
+fn compose(council: &Arc<Council>, body: Value) -> (StatusCode, Value) {
+    let (status, bytes) = send_raw(
+        council,
+        "POST",
+        "/nagaya/v1/lab/compose",
+        body.to_string().into_bytes(),
+        None,
+    );
+    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+/// The layers of the control vector object `id`.
+fn layers_of(council: &Arc<Council>, id: &str) -> BTreeMap<u32, Vec<f32>> {
+    let (status, bytes) = send_raw(council, "GET", &format!("/council/v2/objects/{id}"), Vec::new(), None);
+    assert!(status.is_success(), "{status}");
+    let vector = ControlVector::parse(&bytes).unwrap();
+    assert_eq!((vector.model.as_str(), vector.weight_hash.as_str()), ("toy", "fake:0"));
+    vector.layers
+}
+
+fn close(got: &[f32], want: &[f64]) {
+    assert_eq!(got.len(), want.len());
+    for (g, w) in got.iter().zip(want) {
+        assert!((f64::from(*g) - w).abs() < 1e-5, "{got:?} and {want:?}");
+    }
+}
+
+#[test]
+fn compose_adds_weighted_vectors_at_their_layers_and_takes_a_direction_out() {
+    let lab = council_lab(true);
+    let a = put(
+        &lab.council,
+        "fake:0",
+        &[(0, vec![1.0, 2.0, 0.0, 0.0]), (1, vec![0.0, 0.0, 3.0, 0.0])],
+    );
+    let b = put(&lab.council, "fake:0", &[(1, vec![1.0, 0.0, 0.0, 4.0])]);
+    let x = put(&lab.council, "fake:0", &[(1, vec![0.0, 0.0, 1.0, 0.0])]);
+    let (status, body) = compose(
+        &lab.council,
+        json!({"model": "toy", "parts": [
+            {"vector": a, "weight": 2.0},
+            {"vector": b, "weight": 0.5, "layers": [1]},
+            {"vector": x, "remove": true, "layers": [1]}]}),
+    );
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["layers"], json!([0, 1]));
+    let layers = layers_of(&lab.council, body["vector"].as_str().unwrap());
+    close(&layers[&0], &[2.0, 4.0, 0.0, 0.0]);
+    // Layer 1: 2 * (0, 0, 3, 0) + 0.5 * (1, 0, 0, 4), then the part along (0, 0, 1, 0) goes.
+    close(&layers[&1], &[0.5, 0.0, 0.0, 2.0]);
+    assert!(
+        (body["norms"]["1"].as_f64().unwrap() - (0.25f64 + 4.0).sqrt()).abs() < 1e-6,
+        "{body}"
+    );
+    // The result is a control vector of the model, so project reads it.
+    let (status, _) = send(
+        &lab.council,
+        json!({"model": "toy", "vector": body["vector"], "through": "unembed"}),
+    );
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[test]
+fn a_words_part_adds_a_unit_direction_of_the_backward_lens_at_its_layers() {
+    let lab = council_lab_with(true, Some(("fake:0", &[j0()])));
+    let text = "hi";
+    let ids = ToyFamily::new().tokenize(text).unwrap();
+    let rows: Vec<f64> = (0..WIDTH)
+        .map(|c| ids.iter().map(|id| f64::from(table(*id as usize, c))).sum::<f64>() * f64::from(NORM[c]))
+        .collect();
+    let unit = |v: Vec<f64>| {
+        let n = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+        v.into_iter().map(|x| x / n).collect::<Vec<f64>>()
+    };
+    // The backward lens of layer 0 is J_0 transposed; layer 1 has the identity.
+    let j = j0();
+    let back: Vec<f64> = (0..WIDTH)
+        .map(|c| (0..WIDTH).map(|r| f64::from(j[r * WIDTH + c]) * rows[r]).sum())
+        .collect();
+    for (through, want0) in [("unembed", unit(rows.clone())), ("jlens", unit(back))] {
+        let (status, body) = compose(
+            &lab.council,
+            json!({"model": "toy", "parts": [{"words": [text], "through": through, "weight": 3.0, "layers": [0, 1]}]}),
+        );
+        assert_eq!(status, StatusCode::OK, "{through}: {body}");
+        assert_eq!(body["words"][0]["ids"], json!(ids), "{body}");
+        let layers = layers_of(&lab.council, body["vector"].as_str().unwrap());
+        close(&layers[&0], &want0.iter().map(|x| 3.0 * x).collect::<Vec<_>>());
+        close(
+            &layers[&1],
+            &unit(rows.clone()).iter().map(|x| 3.0 * x).collect::<Vec<_>>(),
+        );
+    }
+}
+
+#[test]
+fn compose_refuses_a_part_that_breaks_its_rules() {
+    let lab = council_lab(true);
+    let a = put(&lab.council, "fake:0", &[(0, vec![1.0, 2.0, 0.0, 0.0])]);
+    let theirs = put(&lab.council, "fake:9", &[(0, vec![1.0, 2.0, 0.0, 0.0])]);
+    for (parts, param) in [
+        (json!([{"vector": a, "words": ["hi"]}]), "parts[0]"),
+        (json!([{"weight": 1.0}]), "parts[0]"),
+        (json!([{"vector": a, "remove": true, "weight": 1.0}]), "parts[0].weight"),
+        (json!([{"words": ["hi"], "through": "unembed"}]), "parts[0].layers"),
+        (
+            json!([{"words": ["hi"], "through": "jlens", "layers": [0]}]),
+            "parts[0].through",
+        ),
+        (
+            json!([{"words": ["hi"], "through": "sideways", "layers": [0]}]),
+            "parts[0].through",
+        ),
+        (json!([{"vector": a, "layers": [0, 0]}]), "parts[0].layers"),
+        (json!([{"vector": a, "layers": [7]}]), "parts[0].layers"),
+        (json!([{"vector": a, "strength": 1}]), "parts[0].strength"),
+        (json!([{"vector": theirs}]), "parts[0].vector"),
+        (json!([{"vector": a, "remove": true}]), "parts"),
+        (json!([]), "parts"),
+    ] {
+        assert_refused(
+            compose(&lab.council, json!({"model": "toy", "parts": parts})),
+            StatusCode::BAD_REQUEST,
+            param,
+        );
+    }
 }

@@ -487,3 +487,30 @@ fn a_readout_divides_a_residual_row_by_its_root_mean_square_with_the_epsilon() {
     assert_eq!(lab.readout(&[&h]), lab.scores(&[&scaled]));
     assert_ne!(lab.readout(&[&h]), lab.scores(&[&h]));
 }
+
+/// The backward lens is the transpose: `u · (J h) = (Jᵀ u) · h` for each pair, and the last layer is the identity
+/// (docs/lab.md, "compose").
+#[test]
+fn the_backward_lens_is_the_transpose_of_the_lens() {
+    let lens = JLens::read(Path::new(LENS_FIXTURE), &fixture_hash(), 2, 3).unwrap();
+    let dot = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| f64::from(*x) * f64::from(*y)).sum::<f64>();
+    for u in [[1.0f32, 2.0, -1.0], [0.5, 0.0, 3.0]] {
+        for h in [[1.0f32, 1.0, 1.0], [2.0, -1.0, 4.0], [0.0, 1.0, 0.0]] {
+            let forward = dot(&u, &lens.transport(0, &h));
+            let backward = dot(&lens.transport_back(0, &u), &h);
+            assert!(
+                (forward - backward).abs() < 1e-6,
+                "u {u:?}, h {h:?}: {forward} and {backward}"
+            );
+        }
+    }
+    assert_eq!(lens.transport_back(1, &[2.0, -1.0, 4.0]), [2.0, -1.0, 4.0]);
+}
+
+#[test]
+fn a_head_row_is_the_row_of_the_table_and_the_norm_is_its_weight() {
+    let (_dir, lab) = small(Model::Text);
+    assert_eq!(lab.head_row(4), [-1.0, 0.5, 2.0]);
+    assert_eq!(lab.head_row(1), [0.0, 1.0, 0.0]);
+    assert_eq!(lab.norm(), [2.0, 0.5, -1.0]);
+}
