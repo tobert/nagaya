@@ -45,6 +45,14 @@
 #define FLAG_SOFTCAP_30     4u   // result = 30 * tanh(result / 30)
 #define FLAG_ROPE_GLOBAL    8u   // theta 1e6, proportional RoPE with partial_rotary_factor 0.25
 #define FLAG_ROPE           32u  // OP_RMSNORM on head rows: rotate each normalized row; see there
+// OP_MATMUL, OP_GEGLU: one row takes the path of 2 to 8 rows, so its bits do not change with the count of rows (a
+// batched decode). Only the LFM3 binary reads it, so the other binaries keep their bytes.
+#define FLAG_TILED          16384u
+#ifdef MK_LFM3
+#define ONE_ROW_PATH(flags) (((flags) & FLAG_TILED) == 0)
+#else
+#define ONE_ROW_PATH(flags) true
+#endif
 
 #define NO_EVENT            0xFFFFFFFFu
 
@@ -782,7 +790,7 @@ __kernel void mk_persistent_interpreter(
             __global float*        Y = (__global float*)task.c;
             uint M = task.m, N = task.n, K = task.k;
             bool softcap = (flags & FLAG_SOFTCAP_30) != 0;
-            if (N == 1 && M <= SPLIT_K_MAX_ROWS) {
+            if (N == 1 && M <= SPLIT_K_MAX_ROWS && ONE_ROW_PATH(flags)) {
                 uint per = (K / 8 + SPLIT_K - 1) / SPLIT_K, lo = k_part * per, hi = min(K / 8, lo + per);
                 for (uint base = 0; base < M; base += split_stride) {
                     uint r = base + k_slot * num_wgs + wg_id;
@@ -872,7 +880,7 @@ __kernel void mk_persistent_interpreter(
             __global const ushort* W = (__global const ushort*)task.b;
             __global float*        Y = (__global float*)task.c;
             uint M = task.m, N = task.n, K = task.k;
-            if (N == 1) {
+            if (N == 1 && ONE_ROW_PATH(flags)) {
                 uint per = (K / 8 + SPLIT_K - 1) / SPLIT_K, lo = k_part * per, hi = min(K / 8, lo + per);
                 for (uint base = 0; base < M; base += split_stride) {
                     uint r = base + k_slot * num_wgs + wg_id;

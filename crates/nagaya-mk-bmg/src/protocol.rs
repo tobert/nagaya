@@ -115,6 +115,9 @@ pub const FLAG_SILU: u16 = 1 << 11;
 pub const FLAG_CAUSAL: u16 = 1 << 12;
 /// `OP_CONV2D` and `OP_GEMM`: the pad is at the bottom and the right only, as in the down sampler of the VAE encoder.
 pub const FLAG_PAD_END: u16 = 1 << 13;
+/// `OP_MATMUL` and `OP_GEGLU`: one row takes the path of 2 to 8 rows, so a row has the same bits for 1 to 8 rows
+/// (engine-abi "LFM3", "Batched passes").
+pub const FLAG_TILED: u16 = 1 << 14;
 
 pub const NO_EVENT: u32 = u32::MAX;
 pub const NUM_EXPERTS: usize = 128;
