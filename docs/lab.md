@@ -283,6 +283,45 @@ A fit with forward passes only is possible: an `add` of a small step at layer `l
 But each column needs its own pass, for each layer and each prompt. For LFM3, that is 24 times the passes of the
 backward fit. Thus it is not the plan.
 
+## `compose`: a control vector from parts
+
+**Proposed** (Claude Opus 5.5, 2026-11-09, milestone 28). Amy wants an agent to compose a control vector set and tune
+it with the J-Lens. Reason for the shape: each part is one idea that a projection can show, and the result is a plain
+control vector object. Thus every client can use it with no new member.
+
+```json
+POST /nagaya/v1/lab/compose
+{"model": "lfm3",
+ "parts": [{"vector": "blake3:…", "weight": 1.0, "layers": [15, 16, 17, 18, 19, 20, 21, 22]},
+           {"words": [" story", " imagine"], "through": "jlens", "weight": 4.0, "layers": [14, 15, 16]},
+           {"vector": "blake3:…", "remove": true, "layers": [10, 11]}]}
+-> {"model": "lfm3", "vector": "blake3:…", "layers": [14, 15, …], "norms": {"14": 4.0, …},
+    "words": [{"text": " story", "ids": [3290]}, …]}
+```
+
+- **A `vector` part** adds `weight` times the vector at each of its `layers` that the vector holds. Without
+  `layers`, it adds at each layer of the vector.
+- **A `words` part** adds `weight` times a unit direction at each of its `layers`, which it names. The direction
+  at layer `l` is the backward lens of the sum of the head rows of the ids of the words. For `jlens` it is `J_lᵀ
+  (g ⊙ u)`; for `unembed` it is `g ⊙ u`. Here `u` is the sum of the rows, and `g` is the weight of the final norm. The
+  family tokenizes each text as it is, so a leading space is part of the word.
+- **A part with `remove`** takes the part of the sum along its unit direction out, at each of its `layers`. A
+  `remove` part runs after every part that adds, in list order. It has no `weight`.
+- **The result** holds each layer where a part added something. The route writes it as a control vector object of the
+  model, with its weights, and it gives the norm of each layer. A layer of norm 0 is left out.
+- **Errors.** A part with both `vector` and `words`, or with neither, is a 400 that names `parts[i]`. A vector of other
+  weights is a 400 that names `parts[i].vector`. `through: "jlens"` on a model with no lens is a 400. A result with no
+  layer is a 400 that names `parts`.
+
+**The loop of an agent.** These are the steps of one round:
+
+1. Make a vector from two prompt sets: `POST /council/v2/control-vectors`.
+2. Read it through the J-Lens at each layer: `POST /nagaya/v1/lab/project` with `through: "jlens"`. Note the layers
+   where it reads as the idea you want, and the words that you do not want.
+3. Compose: keep those layers, take out a direction of the words that you do not want, or add a direction toward words.
+4. Try it: a generation with a control item, with `layers` for the strength of each layer (spec 11.12).
+5. Trace one reply with `lens: "jlens"`, and count the replies that you want over a prompt set. Go to step 2.
+
 ## Where the routes live
 
 Decided 2026-11-07 (Amy: "ok yeah, start on /nagaya/v1/lab/"): put `project` and `trace` on nagaya routes under

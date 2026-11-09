@@ -4669,6 +4669,21 @@ does not change. A list of `add` and `ablate` items with strength 0 gives the bi
 model, but it still has its own recipe. Reason: one rule with no special case, and the cost is one fill of the
 cache for each such list.
 
+**The strength of each layer.** **Proposed** by Claude Opus 5.5, 2026-11-09, for milestone 28. Amy decided that the
+strength by layer is a member of the control item (`AGENTS.md` milestone 28). Reason for the shape: an agent sets one
+strength and a shape over the layers. A layer that it leaves out stays untouched, also for `clamp`.
+
+- **The member.** An item can have `layers`: an object from a layer number, in decimal, to a finite number. With
+  `layers`, the item acts only on the listed layers, at `strength` times the number of each. Without it, the item acts
+  on each layer of its vector at `strength`, as before.
+- **The checks.** An object with no member is a 400 that names `control[i].layers`. So is a key that is not a decimal
+  layer number, and a number that is not finite. A layer that the vector does not hold is untouched.
+- **The recipe.** An item with `layers` sets the bit `0x80` of its operation byte. A `u32` count of layers follows
+  its strength, then each layer as a `u32` with its `f64` number, in rising layer order. An item without `layers`
+  keeps its bytes, so the recipes of the lists of today do not change.
+- **The engine.** The control item of the engine ABI gets the strength of each listed layer (engine-abi "Control
+  vectors"). An `add` or an `ablate` of strength 0 at a layer gets no task there, as for a whole item.
+
 **The route that makes a vector.** Proposed by Claude Opus 5.5, 2026-11-07. `POST /council/v2/control-vectors` is
 a job of the served model. Its class is `batch` unless the request names another class.
 

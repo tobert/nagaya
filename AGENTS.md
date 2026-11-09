@@ -116,6 +116,7 @@ order"):
    at 16:15 on 2026-11-08.
 5. Milestone 25 step 8 and milestone 26 step 4, with Amy. Milestone 24 step 3 waits for her photos.
 6. Milestone 27, batched passes on LFM3. Amy put it next on 2026-11-09. Done on 2026-11-09.
+7. Milestone 28, tuned control vectors. Amy put it next on 2026-11-09.
 
 Amy decided on 2026-11-08: commit a small step each time the checks pass after a change. When a milestone is almost
 done, run review rounds with kaibo (`docs/reviews.md`), and fix what they find.
@@ -752,7 +753,28 @@ senpai may stop and start the web app on b70host at will (`python3 tools/nagaya_
       red test `7558623`;
     - step 6, eight slots: `200461d`;
     - the fixes of a kaibo review: `abcaccd`.
-28. Stop and ask Amy for the next milestone.
+28. **Tuned control vectors.** An agent composes a control vector set and tunes it with the J-Lens. Amy, 2026-11-09:
+    "maybe we expose what an agent will need to compose a control vector set that is tuned using the j-lens. and
+    maybe we add something to it to indicate strength by layer?" She decided these rules on 2026-11-09, by
+    interview, and she is "cool with this being a lil haphazard just to try it":
+    - **Strength by layer:** in the control item of council v2, not in the vector. gogi writes it first.
+    - **Steer toward words:** a direction toward a list of words, through the J-Lens run backwards.
+    - **Mix in safe directions:** a part of a composed vector can add a direction, or take one out, at chosen layers.
+
+    Do the steps in this order:
+    1. **Docs.** The member `layers` of a control item (spec 11.12), and the route `compose` (`docs/lab.md`). Amy
+       decides each Proposed note.
+    2. **gogi.** The member `layers` in the contract, `gogi-proto`, `gogi-fake` and the suite checks. Merge, push,
+       then move the pin.
+    3. **The engine.** A control item acts on its listed layers only, each at its own strength. Card gate: `layers`
+       with every layer at 1 gives the bits of no `layers`.
+    4. **`compose`.** The route under `/nagaya/v1/lab/`, with the parts `vector`, `words` and `remove`. Its oracle is
+       the same sums in NumPy.
+    5. **Try it.** Compose a few vectors of `lfm3` with an agent, read them through the J-Lens, and count refusals on
+       the public prompt sets. Write only counts into `signoff.md`.
+
+    Each stop and start of `nagaya.service` goes into `signoff.md`.
+29. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
 
