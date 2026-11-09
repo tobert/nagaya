@@ -348,7 +348,8 @@ checkpoint, so run it with `GEMMA4_MODEL_DIR` set.
 - The profile puts the engine `gemma` of kind `mk-gemma4-bmg` on devices 0 and 1, the cards at `0000:03:00.0`
   and `0000:08:00.0`. It is on demand since milestone 24, and it loads only through the load routes (spec 3.3b).
 - The profile puts `lfm3-omni` and `lfm3` of kind `mk-lfm3-bmg` on device 0. Both are resident (spec 11.11). They
-  plan 14,255,941,640 bytes of card 0 together, with two slots each.
+  plan 24,742,512,648 bytes of card 0 together, with eight slots each. Eight slots let a batched decode pass hold
+  eight contexts (milestone 27); with two, they planned 14,255,941,640 bytes.
 - The slots are mkviolet's: one of 4,096 positions and one of 65,536. A block holds 512 tokens.
 - The profile puts the speech engine `voice` of kind `qwen3tts-bmg` on device 1, on demand (spec 3.3a, 11.8). It serves
   the council model `Qwen3-TTS-12Hz-1.7B-VoiceDesign` (spec 11.8a). Until M18 step 3 it also served

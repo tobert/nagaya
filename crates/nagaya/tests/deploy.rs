@@ -653,7 +653,8 @@ fn the_b70host_profile_names_both_lfm3_models_resident_on_card_zero() {
                 dir.display()
             );
         }
-        assert_eq!(engine.config["slots"].as_integer(), Some(2), "{name}");
+        // Eight slots, so a batched decode pass can hold eight contexts (milestone 27).
+        assert_eq!(engine.config["slots"].as_integer(), Some(8), "{name}");
     }
 }
 
