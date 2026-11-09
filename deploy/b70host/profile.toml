@@ -168,6 +168,11 @@ slots = 8
 [engines.family]
 model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-1.7B/snapshots/0dc4268b561499c648c7ba7c9466bf3d8d01517a"
 
+# The J-Lens of LFM3-1.7B (docs/lab.md, "The rules of the J-Lens"): `tools/lfm3_jlens_fit.py` fitted it on this CPU
+# over 100 prompts, from 2026-11-08 11:46 to 2026-11-09 04:31. The file is 193 MB, F16, outside the ledger.
+[engines.lab]
+jlens = "/home/atobey/.local/share/nagaya/lens/lfm3.jlens.safetensors"
+
 # One budget for each card's device memory, and one for host memory (spec 4.1). Each B70 has 32 GiB of GDDR6
 # (BAR 2 of `resource`, spec 2.1). The budget of a card is all of it: the device has no safety floor. The plan of
 # this profile gives 29,964,945,932 bytes of mandatory terms on device 0 and 31,889,794,060 on device 1, and

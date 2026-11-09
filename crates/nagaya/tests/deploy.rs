@@ -656,6 +656,17 @@ fn the_b70host_profile_names_both_lfm3_models_resident_on_card_zero() {
         // Eight slots, so a batched decode pass can hold eight contexts (milestone 27).
         assert_eq!(engine.config["slots"].as_integer(), Some(8), "{name}");
     }
+    // The J-Lens of LFM3-1.7B, fitted on b70host's CPU (milestone 26 step 5, docs/lab.md). Omni has none yet.
+    let lab = |i: usize| profile.engines[i].lab.clone();
+    assert!(lab(9).is_empty(), "lfm3-omni names no lens");
+    let jlens = std::path::PathBuf::from(lab(10)["jlens"].as_str().expect("lfm3 names its J-Lens"));
+    assert_eq!(lab(10).len(), 1, "the table has one key");
+    assert!(jlens.is_absolute(), "the loader does not expand `~`");
+    assert!(
+        jlens.ends_with(".local/share/nagaya/lens/lfm3.jlens.safetensors"),
+        "{}",
+        jlens.display()
+    );
 }
 
 #[test]
