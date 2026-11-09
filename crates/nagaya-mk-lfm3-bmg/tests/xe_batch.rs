@@ -9,7 +9,7 @@
 mod common;
 
 use common::Which;
-use nagaya_abi::{Engine, PassErrorKind, Tap};
+use nagaya_abi::{ControlItem, ControlOp, Engine, PassErrorKind, Tap};
 
 /// The prompts of the rows: lengths on both sides of the window of 256 and of a feed block.
 const PROMPTS: [usize; 8] = [7, 33, 300, 1, 129, 256, 517, 64];
@@ -137,9 +137,55 @@ fn a_batch_that_breaks_a_rule_is_refused_and_changes_no_slot() {
         assert_eq!(e.kind, PassErrorKind::Refused, "{why}: {}", e.message);
         println!("{why}: {}", e.message);
     }
+    // A control list too long for one ring is refused, in a batch and in a pass alone.
+    let entry = vec![0u8; 24 * 2048 * 4];
+    engine
+        .control()
+        .expect("lfm3 has a table")
+        .control_write(0, &entry)
+        .unwrap();
+    let item = ControlItem {
+        index: 0,
+        op: ControlOp::Add,
+        strength: 1.0,
+    };
+    let long = |slot: u32, items: usize| {
+        let mut segment = one(slot);
+        segment.control = vec![item; items];
+        segment
+    };
+    for (segments, why) in [
+        // Each item adds a task after each of 24 layers: 120 items pass the ring's limit of 2,047 at any row count.
+        (vec![long(0, 120), long(1, 120), long(2, 120)], "a batch of 120 items"),
+        (vec![long(0, 200)], "a pass of 200 items"),
+    ] {
+        let e = engine.pass(&segments, &[]).expect_err(why);
+        assert_eq!(e.kind, PassErrorKind::Refused, "{why}: {}", e.message);
+        assert!(e.message.contains("send fewer control items"), "{why}: {}", e.message);
+        println!("{why}: {}", e.message);
+    }
     // No slot moved: a pass at position 5 of each slot still runs.
     let out = engine
         .pass(&[one(0), one(1), one(2)], &[])
         .expect("the batch after the refusals");
     assert_eq!(out.outputs.len(), 3);
+}
+
+/// A batch has one row for each segment, and the buffers hold `max_block` rows. An engine with a block of 4 takes at
+/// most 4 segments.
+#[test]
+fn a_small_block_takes_at_most_that_many_segments() {
+    if common::absent(Which::Text) {
+        return;
+    }
+    let mut engine = common::open(Which::Text, 6, 4);
+    assert_eq!(engine.limits().max_segments, 4);
+    for slot in 0..6u32 {
+        common::feed_split(&mut engine, slot, 0, &common::ids(3, u64::from(slot)), &[3]);
+    }
+    let segments: Vec<_> = (0..6).map(|slot| common::segment(slot, 3, &[17], &[3])).collect();
+    let e = engine.pass(&segments, &[]).expect_err("6 segments with a block of 4");
+    assert_eq!(e.kind, PassErrorKind::Refused, "{}", e.message);
+    let out = engine.pass(&segments[..4], &[]).expect("4 segments with a block of 4");
+    assert_eq!(out.outputs.len(), 4);
 }

@@ -535,3 +535,21 @@ fn both_models_declare_a_control_table_of_8_vectors_and_the_residual_tap() {
     assert_eq!(omni_term.bytes, term.bytes);
     assert_eq!(o.taps, l.taps);
 }
+
+/// A batch has one row for each segment, and the buffers hold `max_block` rows, so a small block lowers the segment
+/// limit (engine-abi "LFM3", "Batched passes").
+#[test]
+fn the_segment_limit_is_at_most_the_block() {
+    let b = backbone();
+    for (block, want) in [(512, 8), (8, 8), (4, 4), (1, 1)] {
+        let c = Config {
+            max_block: block,
+            ..config(3)
+        };
+        assert_eq!(
+            limits(&b, &c, 3_456_000_000, None).max_segments,
+            want,
+            "a block of {block}"
+        );
+    }
+}

@@ -1039,6 +1039,8 @@ impl StagedJobs {
         let others = self.joined.remove(&lead).expect("the lead names its joined jobs");
         let all: Vec<JobId> = std::iter::once(lead).chain(others).collect();
         let device = *self.on.get(&lead).expect("a quantum on one device has its device");
+        // A job that sent a body has a result. A job with no body was cancelled before the quantum started.
+        let sent: std::collections::BTreeSet<JobId> = jobs.iter().map(|(job, ..)| *job).collect();
         for (job, _, body) in jobs {
             if self.scheduler().jobs().iter().any(|held| held.id == job) {
                 self.bodies.insert(job, body);
@@ -1050,11 +1052,16 @@ impl StagedJobs {
         let mut lead_running = None;
         for &job in &all {
             let running = self.running_on.remove(&job);
-            let ran = results
-                .iter()
-                .find(|(id, _)| *id == job)
-                .map(|(_, ran)| ran.clone())
-                .unwrap_or(Ran::Cancelled);
+            let ran = match results.iter().find(|(id, _)| *id == job) {
+                Some((_, ran)) => ran.clone(),
+                None => {
+                    assert!(
+                        !sent.contains(&job),
+                        "job {job} sent its body to the joined quantum, and the device thread gave no result for it"
+                    );
+                    Ran::Cancelled
+                }
+            };
             if !self.bodies.contains_key(&job) {
                 // A cancelled job: its quantum ends with it.
             } else if matches!(ran, Ran::Failed) {

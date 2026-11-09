@@ -429,7 +429,8 @@ impl Lfm3Engine {
     }
 
     /// Run a block from position `pos0` of `slot`, up to the end of `layers` layers, with the logit rows when given.
-    /// The caller checked the block. A block from position 0 starts from zero conv states.
+    /// The caller checked the block. A block from position 0 starts from zero conv states. A ring past the task limit
+    /// of the card is refused before the slot changes.
     #[allow(clippy::too_many_arguments)]
     fn forward(
         &mut self,
@@ -442,12 +443,7 @@ impl Lfm3Engine {
         control: &[model::Control],
         tap: bool,
         lens: bool,
-    ) {
-        if pos0 == 0 {
-            self.zero_conv(slot);
-        }
-        let bytes: Vec<u8> = tokens.iter().flat_map(|v| v.to_le_bytes()).collect();
-        self.device.write(self.card(), self.bufs.ids, &bytes);
+    ) -> Result<(), String> {
         let mut tasks = model::pass(
             &self.b,
             &self.weights,
@@ -471,18 +467,18 @@ impl Lfm3Engine {
         {
             tasks.push(speech.keep_hidden(slot, self.bufs.h, tokens.len() - 1));
         }
+        fits(&tasks, control.len())?;
+        if pos0 == 0 {
+            self.zero_conv(slot);
+        }
+        let bytes: Vec<u8> = tokens.iter().flat_map(|v| v.to_le_bytes()).collect();
+        self.device.write(self.card(), self.bufs.ids, &bytes);
         self.run(&tasks);
+        Ok(())
     }
 
     /// Run one decode row on the slot of each block in one ring (engine-abi "LFM3", "Batched passes").
-    fn forward_batch(&mut self, blocks: &[Block], control: &[model::Control]) {
-        for block in blocks {
-            if block.pos0 == 0 {
-                self.zero_conv(block.slot);
-            }
-        }
-        let bytes: Vec<u8> = blocks.iter().flat_map(|b| b.tokens[0].to_le_bytes()).collect();
-        self.device.write(self.card(), self.bufs.ids, &bytes);
+    fn forward_batch(&mut self, blocks: &[Block], control: &[model::Control]) -> Result<(), String> {
         let mut tasks = {
             let rows: Vec<(&SlotMemory, usize)> = blocks.iter().map(|b| (&self.slots[b.slot], b.pos0)).collect();
             model::batch(&self.b, &self.weights, &self.bufs, Batch { rows: &rows, control })
@@ -493,16 +489,26 @@ impl Lfm3Engine {
                 tasks.push(speech.keep_hidden(block.slot, self.bufs.h, i));
             }
         }
+        fits(&tasks, control.len())?;
+        for block in blocks {
+            if block.pos0 == 0 {
+                self.zero_conv(block.slot);
+            }
+        }
+        let bytes: Vec<u8> = blocks.iter().flat_map(|b| b.tokens[0].to_le_bytes()).collect();
+        self.device.write(self.card(), self.bufs.ids, &bytes);
         self.run(&tasks);
+        Ok(())
     }
 
     /// The blocks of a batch: each segment is one decode token with its logit row, on a slot of its own, and all have
     /// one control list. A pass with a tap is one segment. Any break is refused before a slot changes.
     fn check_batch(&self, segments: &[Segment], taps: &[Tap]) -> Result<Vec<Block>, PassError> {
         let refuse = |why: String| refused(format!("nothing ran: {why}"));
-        if segments.len() > MAX_SEGMENTS as usize {
+        let most = (MAX_SEGMENTS as usize).min(self.config.max_block);
+        if segments.len() > most {
             return Err(refuse(format!(
-                "the pass has {} segments; the engine takes 1 to {MAX_SEGMENTS}",
+                "the pass has {} segments; the engine takes 1 to {most}",
                 segments.len()
             )));
         }
@@ -554,7 +560,9 @@ impl Lfm3Engine {
             Err(error) => return Err(self.fail(error)),
         };
         let start = Instant::now();
-        self.forward_batch(&blocks, &control);
+        if let Err(why) = self.forward_batch(&blocks, &control) {
+            return Err(self.fail(refused(format!("nothing ran: {why}"))));
+        }
         let row = self.b.vocab_rows * 4;
         let outputs: Vec<Output> = (0..blocks.len())
             .map(|i| Output {
@@ -766,7 +774,8 @@ impl Lfm3Engine {
         }
         self.held.clear(slot);
         self.held.check_pass(&[segment], self.config.max_block, self.vocab)?;
-        self.forward(slot, 0, ids, layers, norm.then_some(&[][..]), &[], &[], false, false);
+        self.forward(slot, 0, ids, layers, norm.then_some(&[][..]), &[], &[], false, false)
+            .expect("a probe with no control item fits the ring");
         let at = if norm { self.bufs.h } else { self.bufs.x };
         let out = self.read_f32(at, ids.len() * self.b.hidden);
         self.held.clear(slot);
@@ -931,7 +940,7 @@ impl Engine for Lfm3Engine {
         let start = Instant::now();
         let layers = self.b.layers.len();
         let places = self.encode(&segments[0], &block);
-        self.forward(
+        if let Err(why) = self.forward(
             block.slot,
             block.pos0,
             &block.tokens,
@@ -941,7 +950,9 @@ impl Engine for Lfm3Engine {
             &control,
             tap.residual || tap.lens,
             tap.lens,
-        );
+        ) {
+            return Err(self.fail(refused(format!("nothing ran: {why}"))));
+        }
         let row = self.b.vocab_rows * 4;
         let mut outputs: Vec<Output> = (0..block.logit_rows.len())
             .map(|i| Output {
@@ -1148,4 +1159,17 @@ impl Coverage for Lfm3Engine {
     fn fits(&self, coverage: &CoverageSpan, slot: SlotId) -> Result<(), String> {
         self.held.fits(slot as usize, coverage)
     }
+}
+
+/// A ring holds fewer than `MAX_TASKS_PER_CARD` tasks. A long control list can pass it, because each item adds a task
+/// after each layer; such a pass is refused before it changes a slot.
+fn fits(tasks: &[MkTaskDescriptor], items: usize) -> Result<(), String> {
+    if tasks.len() < nagaya_mk_bmg::protocol::MAX_TASKS_PER_CARD {
+        return Ok(());
+    }
+    Err(format!(
+        "the pass needs {} tasks with {items} control items, and a ring holds fewer than {}; send fewer control items",
+        tasks.len(),
+        nagaya_mk_bmg::protocol::MAX_TASKS_PER_CARD
+    ))
 }

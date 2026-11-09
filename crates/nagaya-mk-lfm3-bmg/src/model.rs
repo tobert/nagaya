@@ -12,7 +12,7 @@
 //! gates each head with `sigmoid(gate_proj(h))` (modeling_lfm3.py:245-272). A conv layer reads and writes the conv
 //! state of the slot (`OP_SHORT_CONV`).
 
-use nagaya_mk_bmg::protocol::{ControlOp, FLAG_ACCUMULATE, FLAG_TILED, MAX_TASKS_PER_CARD, MkTaskDescriptor};
+use nagaya_mk_bmg::protocol::{ControlOp, FLAG_ACCUMULATE, FLAG_TILED, MkTaskDescriptor};
 use nagaya_mk_bmg::tasks;
 
 use crate::spec::{Backbone, HEAD_DIM, LayerKind, MAX_BLOCK, MAX_LOGIT_ROWS, plane_rows, ring_of};
@@ -424,7 +424,7 @@ pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskD
             ));
         }
     }
-    assert!(t.len() < MAX_TASKS_PER_CARD, "the pass has {} tasks", t.len());
+    // The engine refuses a ring past MAX_TASKS_PER_CARD before it runs, so a long control list is a refusal.
     t
 }
 
@@ -581,7 +581,7 @@ pub fn batch(b: &Backbone, w: &Weights, bufs: &Bufs, batch: Batch<'_>) -> Vec<Mk
             false,
         ));
     }
-    assert!(t.len() < MAX_TASKS_PER_CARD, "the batch has {} tasks", t.len());
+    // The engine refuses a ring past MAX_TASKS_PER_CARD before it runs, so a long control list is a refusal.
     t
 }
 
@@ -788,6 +788,35 @@ mod tests {
             }
         }
         assert_eq!(t.iter().filter(|task| task.opcode == OP_ATTN).count(), 11 * 3);
+    }
+
+    /// Each control item adds a task after each layer. A batch of 8 rows with 49 items passes the task limit of a
+    /// ring, so the engine must refuse it before it runs (engine-abi "LFM3", "Batched passes").
+    #[test]
+    fn a_long_control_list_passes_the_task_limit_of_a_ring() {
+        let b = backbone();
+        let (w, bufs) = (weights(&b), bufs(&b));
+        let slots: Vec<SlotMemory> = (1..=8).map(|i| memory_at(&b, 1024, i << 40)).collect();
+        let rows: Vec<(&SlotMemory, usize)> = slots.iter().map(|s| (s, 5)).collect();
+        let item = Control {
+            vector: 0xC000_0000,
+            op: ControlOp::Add,
+            strength: 1.0,
+        };
+        let count = |items: usize| {
+            batch(
+                &b,
+                &w,
+                &bufs,
+                Batch {
+                    rows: &rows,
+                    control: &vec![item; items],
+                },
+            )
+            .len()
+        };
+        assert!(count(40) < nagaya_mk_bmg::protocol::MAX_TASKS_PER_CARD);
+        assert!(count(49) >= nagaya_mk_bmg::protocol::MAX_TASKS_PER_CARD);
     }
 
     /// Weights with a distinct address for the norm of each layer, so a test finds the accumulate of each layer.

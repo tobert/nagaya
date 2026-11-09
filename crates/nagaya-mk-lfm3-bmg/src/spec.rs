@@ -562,7 +562,8 @@ pub fn limits(b: &Backbone, config: &Config, weights: u64, vision: Option<Vision
         },
         devices: vec![0],
         stages: Vec::new(),
-        max_segments: MAX_SEGMENTS,
+        // A batch has one row for each segment, and the buffers hold `max_block` rows.
+        max_segments: MAX_SEGMENTS.min(config.max_block as u32),
         max_pass_inputs: config.max_block as u32,
         max_logit_rows: MAX_LOGIT_ROWS as u32,
         slots: slot_limits(b, &config.seqs()),

@@ -509,6 +509,19 @@ fn split(result: Result<PassOut, PassError>, segments: &[Segment]) -> Vec<Result
     if segments.len() == 1 {
         return vec![Ok(out)];
     }
+    // A pass that poisoned or timed out gives its status to each segment, as a pass alone does, with no rows.
+    if out.status != nagaya_abi::PassStatus::Ok {
+        return segments
+            .iter()
+            .map(|_| {
+                Ok(PassOut {
+                    status: out.status,
+                    ms: out.ms,
+                    outputs: Vec::new(),
+                })
+            })
+            .collect();
+    }
     let rows: usize = segments.iter().map(|s| s.outputs.logit_rows.len()).sum();
     assert!(
         out.outputs.len() == rows && out.outputs.iter().all(|o| o.name == "logits"),
@@ -527,4 +540,39 @@ fn split(result: Result<PassOut, PassError>, segments: &[Segment]) -> Vec<Result
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+    use nagaya_abi::{OutputsWanted, PassStatus, SegmentInputs, State};
+
+    fn segment(slot: u32) -> Segment {
+        Segment {
+            control: Vec::new(),
+            state: State::Slot(slot),
+            inputs: SegmentInputs::Tokens(vec![1]),
+            positions: vec![4],
+            meta: Vec::new(),
+            outputs: OutputsWanted { logit_rows: vec![4] },
+        }
+    }
+
+    /// A joined pass that poisoned gives its status to each segment with no rows, as a pass alone does; it does not
+    /// stop the driver.
+    #[test]
+    fn a_poisoned_joined_pass_gives_each_segment_its_status() {
+        let segments = [segment(0), segment(1), segment(2)];
+        let out = PassOut {
+            status: PassStatus::Poison,
+            ms: 3,
+            outputs: Vec::new(),
+        };
+        let each = split(Ok(out), &segments);
+        assert_eq!(each.len(), 3);
+        for result in each {
+            let out = result.unwrap();
+            assert_eq!((out.status, out.outputs.len()), (PassStatus::Poison, 0));
+        }
+    }
 }
