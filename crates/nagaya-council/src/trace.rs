@@ -52,7 +52,8 @@ impl Direction {
 
 /// A lens that reads residual rows on the CPU (spec 13.2), such as a J-Lens.
 pub trait Readout: Send + Sync {
-    /// The logit row of each residual row, with the layer of the row.
+    /// The logit row of each residual row, with the layer of the row. A row holds a value for each row of the head;
+    /// the trace keeps the first `vocab`, so the padding rows of a head drop out.
     fn logits(&self, rows: &[(u32, &[f32])]) -> Vec<Vec<f32>>;
 }
 
@@ -331,14 +332,16 @@ impl Trace {
             (Lens::Cpu { readout, .. }, None) => {
                 let input: Vec<(u32, &[f32])> = p.layers.iter().map(|l| (*l, row(*l))).collect();
                 cpu_rows = readout.logits(&input);
-                if let Some(bad) = cpu_rows.iter().find(|r| r.len() != p.vocab) {
+                // A head can have padding rows past the vocabulary, as LFM3's has. The trace keeps the first
+                // `vocab` values, as the engine does with its logits. A shorter row is a defect of the readout.
+                if let Some(bad) = cpu_rows.iter().find(|r| r.len() < p.vocab) {
                     return Err(format!(
                         "the readout gave a logit row of {} values; the trace reads {}",
                         bad.len(),
                         p.vocab
                     ));
                 }
-                Some(cpu_rows.iter().map(Vec::as_slice).collect())
+                Some(cpu_rows.iter().map(|r| &r[..p.vocab]).collect())
             }
             _ => None,
         };

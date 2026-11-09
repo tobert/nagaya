@@ -336,3 +336,40 @@ fn a_cpu_lens_refuses_a_step_with_the_tap_lens_and_a_logit_lens_names_no_lens_id
     assert_eq!(meta["lens"], "logit");
     assert!(!meta.contains_key("lens_id"), "{meta:?}");
 }
+
+/// A head with padding rows past the vocabulary, as LFM3's of 128,000 rows for 125,033 ids. The readout gives a row of
+/// each head row, and the trace keeps the first `vocab`, as the engine does with its logits. A shorter row is an error.
+struct Padded(usize);
+
+impl Readout for Padded {
+    fn logits(&self, rows: &[(u32, &[f32])]) -> Vec<Vec<f32>> {
+        Scaled
+            .logits(rows)
+            .into_iter()
+            .map(|mut row| {
+                row.resize(self.0, 99.0);
+                row
+            })
+            .collect()
+    }
+}
+
+#[test]
+fn a_cpu_lens_keeps_the_vocabulary_of_a_padded_head_and_refuses_a_short_row() {
+    let with = |readout: Padded| {
+        let mut p = plan(vec![2, 0], vec![], false, false);
+        p.lens = Lens::Cpu {
+            name: "jlens".to_owned(),
+            id: "blake3:00ff".to_owned(),
+            readout: std::sync::Arc::new(readout),
+        };
+        let mut trace = Trace::new(p);
+        trace.record(1, &LOGITS, &residual(0), None).map(|()| trace.to_bytes())
+    };
+    let padded = with(Padded(9)).expect("a head of 9 rows for a vocabulary of 6");
+    let plain = with(Padded(6)).unwrap();
+    // The padding rows score 99, so a trace that read them would put ids 6 to 8 on top.
+    assert_eq!(padded, plain);
+    let error = with(Padded(5)).unwrap_err();
+    assert!(error.contains("5 values"), "{error}");
+}

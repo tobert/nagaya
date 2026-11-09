@@ -272,7 +272,9 @@ above and the reference leave these choices open, and each is the simplest one t
   rule of `unembed`: the weight of the final norm, and no division.
 - **`trace`.** With `lens: "jlens"`, the job reads the tap `residual`, not the tap `lens`. For each traced layer, the
   CPU computes `J_l h`, the final norm with its division, and the head. The trace keeps the shape of the logit lens,
-  and its metadata names `jlens` and the content id of the lens.
+  and its metadata names `jlens` and the content id of the lens. The head of LFM3 has 128,000 rows for 125,033 ids.
+  Thus the trace keeps the first 125,033 values of each row, as the engine does with its logits. The first live trace
+  found it on 2026-11-09.
 - **The cost.** The readout runs in the step of the trace, on the group thread. Thus the other jobs of the group
   wait for it at each step. Each step reads the head once for all traced layers. The deploy measures the time.
 - A served model with no lens refuses `jlens` with a 400 that names `through` or `trace.lens`.
