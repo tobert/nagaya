@@ -727,11 +727,12 @@ senpai may stop and start the web app on b70host at will (`python3 tools/nagaya_
        Also time the decode of one context on both paths. Stop and report if a row differs.
     2. **One path.** The LFM3 decode of one row takes the path for 2 to 8 rows. Run the oracle gates on the card.
     3. **The batched pass.** `model::pass` builds its tasks for a list of slots and positions. Each row has its own
-       rotation, attention, convolution and K and V rows. Declare 8 segments and `segments_exact`. The card gate: B
-       segments give the bits of B passes alone.
+       rotation, attention, convolution and K and V rows. Declare 8 segments; `segments_exact` stays false (D11
+       rule 4). The card gate: B segments give the bits of B passes alone.
     4. **Control lists.** A pass joins only segments with equal control lists, at first.
-    5. **The process.** The group driver puts every segment of a quantum into one pass. Then it gives each job its
-       rows. Now `crates/nagaya/src/jobs.rs:249` asserts one segment.
+    5. **The process.** The scheduler joins the decode quanta of an engine with a feed rule (D11 rule 6). The group
+       driver puts every segment of a quantum into one pass. Then it gives each job its rows. Now
+       `crates/nagaya/src/jobs.rs:249` asserts one segment.
     6. **Deploy and measure.** Decode tokens each second at 1, 4 and 8 contexts. Run the gogi suite for both models.
 
     Each stop and start of `nagaya.service` goes into `signoff.md`.
