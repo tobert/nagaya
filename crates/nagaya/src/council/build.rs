@@ -1627,9 +1627,23 @@ impl<T: Then> ContextBody<T> {
     }
 }
 
+/// True when `unit` is one decode row that can share a pass with the rows of other jobs: a feed of one token that
+/// gives its row, and names no tap (engine-abi "LFM3", "Batched passes"). A frame, a codec end or a copy cannot.
+fn joinable_unit(kind: Kind, unit: Option<&Unit>, feeding: Option<&Feeding>) -> bool {
+    let tapped = feeding.is_some_and(|f| f.tap || f.lens);
+    kind == Kind::Decode
+        && feeding.is_some_and(|f| f.kind == Kind::Decode)
+        && matches!(unit, Some(Unit::Feed { start, end, row: true }) if end - start == 1)
+        && !tapped
+}
+
 impl<T: Then> JobBody for ContextBody<T> {
     fn request(&self) -> &'static str {
         T::REQUEST
+    }
+
+    fn joinable(&self, kind: Kind) -> bool {
+        self.started && joinable_unit(kind, self.units.front(), self.feeding.as_ref())
     }
 
     fn run(&mut self, kind: Kind, engines: &mut [Box<dyn Engine>]) -> Ran {
@@ -1703,5 +1717,83 @@ impl<T: Then> JobBody for ContextBody<T> {
             engine: engine.to_owned(),
             state,
         }));
+    }
+}
+
+#[cfg(test)]
+mod joinable_tests {
+    use super::*;
+
+    fn feeding(kind: Kind, tap: bool, lens: bool) -> Feeding {
+        Feeding {
+            tokens: vec![5],
+            kind,
+            base: 0,
+            tap,
+            lens,
+        }
+    }
+
+    #[test]
+    fn only_a_decode_feed_of_one_token_with_its_row_and_no_tap_joins() {
+        let one = Unit::Feed {
+            start: 0,
+            end: 1,
+            row: true,
+        };
+        let plain = feeding(Kind::Decode, false, false);
+        assert!(joinable_unit(Kind::Decode, Some(&one), Some(&plain)));
+        let two = Unit::Feed {
+            start: 0,
+            end: 2,
+            row: true,
+        };
+        let no_row = Unit::Feed {
+            start: 0,
+            end: 1,
+            row: false,
+        };
+        for (why, kind, unit, feed) in [
+            (
+                "two tokens",
+                Kind::Decode,
+                Some(&two),
+                Some(feeding(Kind::Decode, false, false)),
+            ),
+            (
+                "no row",
+                Kind::Decode,
+                Some(&no_row),
+                Some(feeding(Kind::Decode, false, false)),
+            ),
+            (
+                "a tap",
+                Kind::Decode,
+                Some(&one),
+                Some(feeding(Kind::Decode, true, false)),
+            ),
+            (
+                "a lens",
+                Kind::Decode,
+                Some(&one),
+                Some(feeding(Kind::Decode, true, true)),
+            ),
+            (
+                "a prefill feed",
+                Kind::Prefill,
+                Some(&one),
+                Some(feeding(Kind::Prefill, false, false)),
+            ),
+            ("no feed", Kind::Decode, Some(&one), None),
+            (
+                "a frame or a copy",
+                Kind::Decode,
+                Some(&Unit::Mark),
+                Some(feeding(Kind::Decode, false, false)),
+            ),
+            ("no unit", Kind::Decode, None, Some(feeding(Kind::Decode, false, false))),
+        ] {
+            assert!(!joinable_unit(kind, unit, feed.as_ref()), "{why}");
+        }
     }
 }
