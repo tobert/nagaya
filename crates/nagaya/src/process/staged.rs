@@ -161,6 +161,16 @@ impl Elsewhere {
         })
     }
 
+    /// The place of an engine on a device thread with these limits, for a test of the group thread.
+    #[cfg(test)]
+    fn hosted_with(limits: Limits) -> Box<dyn Engine> {
+        Box::new(Self {
+            name: "a test engine".to_owned(),
+            limits: Some(limits),
+            place: "it runs on the stage thread of its device",
+        })
+    }
+
     /// The place of each other engine of the group, as a stage thread sees it.
     fn absent(index: usize) -> Box<dyn Engine> {
         Box::new(Self {
@@ -2289,7 +2299,10 @@ mod tests {
             engine: 0,
             body: Box::new(Held),
         };
-        jobs.add(spec, Span::none(), Place::On(0), &mut [], &threads);
+        // The group thread holds a place for each engine of the group; this one has the limits of a plain fake.
+        let mut engines: Vec<Box<dyn Engine>> =
+            vec![Elsewhere::hosted_with(nagaya_abi::fake::FakeAlways::new().limits())];
+        jobs.add(spec, Span::none(), Place::On(0), &mut engines, &threads);
         assert!(
             matches!(work.try_recv(), Ok(StageWork::Run { job: 1, .. })),
             "the quantum went to the device thread"
