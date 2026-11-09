@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use nagaya_abi::{Engine, Kind, PassError, PassOut, Segment};
-use nagaya_sched::{Class, Completion, Event, Item, Job, JobId, JobState, ObservedScheduler, Scheduler};
+use nagaya_sched::{Class, Completion, Event, Item, Job, JobId, JobState, ObservedScheduler, Quantum, Scheduler};
 use nagaya_telemetry::EngineState;
 use tracing::Span;
 
@@ -57,6 +57,13 @@ pub trait JobBody: Send {
     /// quantum, which [`JobBody::run`] runs while it holds every device.
     fn item(&self, kind: Kind) -> Item {
         Item::Whole(kind)
+    }
+
+    /// True when the next quantum of `kind` is one decode row that can share a pass with the rows of other jobs
+    /// (engine-abi "LFM3", "Batched passes"). Then the group gives its segment through [`JobBody::begin_pass`] and its
+    /// rows through [`JobBody::end_pass`], even on an engine with no stages. The default is false.
+    fn joinable(&self, _kind: Kind) -> bool {
+        false
     }
 
     /// Begin a pass of `kind` on an engine with stages: give its segments. A body whose `item` gives a `Block`
@@ -232,6 +239,8 @@ impl GroupJobs {
                 job.inputs_present = true;
             }
         }
+        // The facts of the engines come before the event that chooses the next quantum.
+        self.learn_joins(engines);
         let now_ms = self.now_ms();
         match self.finished.take() {
             Some((duration_ms, outcome)) => self.event(Event::Complete {
@@ -245,11 +254,10 @@ impl GroupJobs {
         let Some(quantum) = self.scheduler.state().running.clone() else {
             return false;
         };
-        assert!(
-            quantum.segments.len() == 1,
-            "the group driver runs one segment in a pass; the scheduler joined {}",
-            quantum.segments.len()
-        );
+        if quantum.segments.len() > 1 {
+            self.run_joined(quantum, engines);
+            return true;
+        }
         let id = quantum.segments[0];
         let body = self.bodies.get_mut(&id).expect("a chosen job has a body");
         // Reading the counters costs four files, so a decode quantum skips it (spec 9.6).
@@ -274,7 +282,92 @@ impl GroupJobs {
                 None => evidence::failed_unwatched(&failure),
             };
         }
-        let outcome = match ran {
+        let outcome = self.apply(id, ran);
+        self.finished = Some((duration_ms, outcome));
+        true
+    }
+
+    /// Tell the scheduler which engines of the group batch decode rows: an engine with a feed rule and more than one
+    /// segment (engine-abi D11 rule 6, "LFM3", "Batched passes"). The driver joins only decode quanta. The group is
+    /// the scheduler's engine, so its limit is the largest of its engines. A joined quantum still runs each engine's
+    /// rows in passes of at most that engine's limit.
+    fn learn_joins(&mut self, engines: &[Box<dyn Engine>]) {
+        let max_segments = engines
+            .iter()
+            .map(|engine| engine.limits())
+            .filter(|limits| limits.feed.is_some() && limits.max_segments > 1)
+            .map(|limits| limits.max_segments)
+            .max();
+        let facts = max_segments.map(|max_segments| nagaya_sched::Engine {
+            id: self.group,
+            segments_exact: false,
+            max_segments,
+            joins_reads: false,
+            joins_decode: true,
+        });
+        let state = self.scheduler.state_mut();
+        state.engines.retain(|engine| engine.id != self.group);
+        state.engines.extend(facts);
+    }
+
+    /// Run a quantum of several decode segments. A body that can join gives its segment, and one pass runs the plain
+    /// rows of each engine that share a control list, up to that engine's limit. Every other body runs alone in this
+    /// quantum. Each body gets its own rows, and each job ends or goes on by its own result.
+    fn run_joined(&mut self, quantum: Quantum, engines: &mut [Box<dyn Engine>]) {
+        let kind = quantum.kind;
+        assert_eq!(kind, Kind::Decode, "the driver joins only decode quanta");
+        let span = self.scheduler.running_span().cloned();
+        let _entered = span.as_ref().map(|span| span.enter());
+        let started = Instant::now();
+        let mut results: Vec<(JobId, Ran)> = Vec::new();
+        let mut begun: Vec<(JobId, usize, Segment)> = Vec::new();
+        for &id in &quantum.segments {
+            let engine = self.engines[&id];
+            let body = self.bodies.get_mut(&id).expect("a chosen job has a body");
+            if !(matches!(body.item(kind), Item::Block(_)) && body.joinable(kind)) {
+                results.push((id, body.run(kind, engines)));
+                continue;
+            }
+            match body.begin_pass(kind, engines) {
+                Ok(mut segments) => {
+                    assert_eq!(segments.len(), 1, "a body that joins gives one segment");
+                    begun.push((id, engine, segments.pop().expect("one segment")));
+                }
+                Err(ran) => results.push((id, ran)),
+            }
+        }
+        for batch in batches(begun, engines) {
+            let engine = batch[0].1;
+            let segments: Vec<Segment> = batch.iter().map(|(_, _, segment)| segment.clone()).collect();
+            let result = engines[engine].pass(&segments, &[]);
+            for ((id, _, _), result) in batch.iter().zip(split(result, &segments)) {
+                let body = self.bodies.get_mut(id).expect("a chosen job has a body");
+                results.push((*id, body.end_pass(kind, result, engines)));
+            }
+        }
+        let duration_ms = started.elapsed().as_millis() as u64;
+        for (id, ran) in results {
+            if matches!(ran, Ran::Failed) {
+                let failure = format!(
+                    "decode quantum of a {} request on engine {}",
+                    self.bodies[&id].request(),
+                    self.names[self.engines[&id]]
+                );
+                evidence::failed_unwatched(&failure);
+                self.scheduler
+                    .state_mut()
+                    .fail_running(id)
+                    .expect("a job of the joined quantum is running");
+                continue;
+            }
+            self.apply(id, ran);
+        }
+        self.finished = Some((duration_ms, Completion::Done));
+    }
+
+    /// Give the scheduler what a body's quantum added, and the outcome of the quantum for that job.
+    fn apply(&mut self, id: JobId, ran: Ran) -> Completion {
+        match ran {
             Ran::Done => Completion::Done,
             Ran::More(kinds) => {
                 self.scheduler
@@ -299,9 +392,7 @@ impl GroupJobs {
                 });
                 Completion::Done
             }
-        };
-        self.finished = Some((duration_ms, outcome));
-        true
+        }
     }
 
     /// Drop the jobs that reached a terminal state, and their bodies. A job that leaves takes its balance (spec 5.4).
@@ -340,4 +431,71 @@ impl GroupJobs {
         self.scheduler.abandon(self.finished.take());
         count
     }
+}
+
+/// The passes of a joined quantum. The plain rows of one engine with one control list share a pass, up to the
+/// engine's limit; a plain row is one token with its logit row and no media. Every other segment has a pass alone.
+fn batches(begun: Vec<(JobId, usize, Segment)>, engines: &[Box<dyn Engine>]) -> Vec<Vec<(JobId, usize, Segment)>> {
+    let mut out: Vec<Vec<(JobId, usize, Segment)>> = Vec::new();
+    let limits: Vec<u32> = engines
+        .iter()
+        .map(|engine| {
+            let limits = engine.limits();
+            if limits.feed.is_some() { limits.max_segments } else { 1 }
+        })
+        .collect();
+    for item in begun {
+        let (_, engine, segment) = &item;
+        let plain = segment.positions.len() == 1
+            && segment.outputs.logit_rows.len() == 1
+            && segment.meta.is_empty()
+            && matches!(segment.inputs, nagaya_abi::SegmentInputs::Tokens(_));
+        let joins = out.iter_mut().find(|batch| {
+            let (_, other, first) = &batch[0];
+            plain
+                && other == engine
+                && batch.len() < limits[*engine] as usize
+                && first.positions.len() == 1
+                && first.outputs.logit_rows.len() == 1
+                && first.meta.is_empty()
+                && matches!(first.inputs, nagaya_abi::SegmentInputs::Tokens(_))
+                && first.control == segment.control
+        });
+        match joins {
+            Some(batch) => batch.push(item),
+            None => out.push(vec![item]),
+        }
+    }
+    out
+}
+
+/// The result of each segment of a pass: its own logit rows, in segment order (engine-abi "Logits"). An error goes to
+/// each segment. A pass whose outputs are not one `logits` for each logit row breaks the ABI, and the driver stops
+/// (spec 8.5).
+fn split(result: Result<PassOut, PassError>, segments: &[Segment]) -> Vec<Result<PassOut, PassError>> {
+    let out = match result {
+        Ok(out) => out,
+        Err(error) => return segments.iter().map(|_| Err(error.clone())).collect(),
+    };
+    if segments.len() == 1 {
+        return vec![Ok(out)];
+    }
+    let rows: usize = segments.iter().map(|s| s.outputs.logit_rows.len()).sum();
+    assert!(
+        out.outputs.len() == rows && out.outputs.iter().all(|o| o.name == "logits"),
+        "a pass of {} segments gave {} outputs, not one `logits` for each of {rows} logit rows",
+        segments.len(),
+        out.outputs.len()
+    );
+    let mut outputs = out.outputs.into_iter();
+    segments
+        .iter()
+        .map(|segment| {
+            Ok(PassOut {
+                status: out.status,
+                ms: out.ms,
+                outputs: outputs.by_ref().take(segment.outputs.logit_rows.len()).collect(),
+            })
+        })
+        .collect()
 }
