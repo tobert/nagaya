@@ -43,7 +43,7 @@ use super::{
 };
 use crate::arena::FdStore;
 use crate::evidence::{self, Machine, Watch};
-use crate::jobs::{JobBody, JobSpec, Ran};
+use crate::jobs::{JobBody, JobSpec, Ran, run_joined_bodies};
 use crate::park::StoreMessage;
 
 /// A call that a stage thread makes on its handle for the group thread.
@@ -76,6 +76,14 @@ enum StageWork {
         job: JobId,
         kind: Kind,
         body: Box<dyn JobBody>,
+        span: Option<Span>,
+    },
+    /// Run one joined decode quantum of several jobs of engines on this thread, each with the place of its engine.
+    /// The bodies come back in [`HostedJoinedDone`] (engine-abi "LFM3", "Batched passes").
+    RunJoined {
+        lead: JobId,
+        kind: Kind,
+        jobs: Vec<(JobId, usize, Box<dyn JobBody>)>,
         span: Option<Span>,
     },
     /// Take the handle of a stage from the engine with stages that opened. The stage is the one whose device is the
@@ -116,6 +124,15 @@ pub(crate) enum SwapStep {
 
 /// Why an open on a stage or device thread failed: the kind, which decides the exit code (spec 10.4), and the message.
 type OpenFailure = (super::OpenErrorKind, String);
+
+/// The end of a joined decode quantum on a device thread: the bodies, and the result of each job.
+pub(crate) struct HostedJoinedDone {
+    lead: JobId,
+    kind: Kind,
+    jobs: Vec<(JobId, usize, Box<dyn JobBody>)>,
+    results: Vec<(JobId, Ran)>,
+    ms: u64,
+}
 
 /// The end of a quantum of an engine that a stage thread holds.
 pub(crate) struct HostedDone {
@@ -388,6 +405,28 @@ fn stage_thread(
                     ms: started.elapsed().as_millis() as u64,
                 };
                 if done.send(GroupMessage::HostedDone(end)).is_err() {
+                    return;
+                }
+            }
+            Ok(StageWork::RunJoined {
+                lead,
+                kind,
+                mut jobs,
+                span,
+            }) => {
+                let started = Instant::now();
+                let results = match &span {
+                    Some(span) => span.in_scope(|| run_joined_bodies(kind, &mut jobs, &mut hosted)),
+                    None => run_joined_bodies(kind, &mut jobs, &mut hosted),
+                };
+                let end = HostedJoinedDone {
+                    lead,
+                    kind,
+                    jobs,
+                    results,
+                    ms: started.elapsed().as_millis() as u64,
+                };
+                if done.send(GroupMessage::HostedJoinedDone(end)).is_err() {
                     return;
                 }
             }
@@ -724,6 +763,11 @@ struct StagedJobs {
     whole: std::collections::BTreeSet<JobId>,
     /// The quanta of those jobs that run on a stage thread. Their bodies are there.
     running_on: BTreeMap<JobId, RunningStage>,
+    /// The engines on device threads, each with its device and the most jobs of a joined decode quantum: its
+    /// `max_segments` when it has a feed rule, else 1 (engine-abi "LFM3", "Batched passes").
+    decode_limits: BTreeMap<usize, (Device, u32)>,
+    /// The other jobs of each joined decode quantum that runs, by its lead job.
+    joined: BTreeMap<JobId, Vec<JobId>>,
     /// The jobs that a cancel counted. A cancelled job stays in `running_on` until its quantum ends, so a later
     /// cancel does not count it again.
     cancelled: std::collections::BTreeSet<JobId>,
@@ -771,6 +815,8 @@ impl StagedJobs {
             on: BTreeMap::new(),
             whole: std::collections::BTreeSet::new(),
             running_on: BTreeMap::new(),
+            decode_limits: BTreeMap::new(),
+            joined: BTreeMap::new(),
             cancelled: std::collections::BTreeSet::new(),
         }
     }
@@ -824,6 +870,7 @@ impl StagedJobs {
             Place::Stages => {}
             Place::On(device) => {
                 self.on.insert(id, device);
+                self.learn_decode_limit(spec.engine, device, engines);
             }
             Place::Group => {
                 self.whole.insert(id);
@@ -903,6 +950,136 @@ impl StagedJobs {
         }
     }
 
+    /// Learn the decode limit of the engine at `engine` on `device`, and give the scheduler the limit of each device:
+    /// the most of its engines (engine-abi "LFM3", "Batched passes"). A device thread runs alone any job that cannot
+    /// join, so a limit that an unload left behind is safe.
+    fn learn_decode_limit(&mut self, engine: usize, device: Device, engines: &[Box<dyn Engine>]) {
+        let limits = engines[engine].limits();
+        let limit = if limits.feed.is_some() {
+            limits.max_segments.max(1)
+        } else {
+            1
+        };
+        self.decode_limits.insert(engine, (device, limit));
+        let mut joins: BTreeMap<Device, u32> = BTreeMap::new();
+        for (device, limit) in self.decode_limits.values() {
+            if *limit > 1 {
+                let most = joins.entry(*device).or_insert(1);
+                *most = (*most).max(*limit);
+            }
+        }
+        self.scheduler
+            .as_mut()
+            .expect("the scheduler is in place between steps")
+            .set_decode_joins(joins);
+    }
+
+    /// Send a joined decode quantum to its device thread, with the body of each job. A job that a client cancelled
+    /// before the quantum started has no body; it ends as cancelled when the quantum ends.
+    fn send_joined(&mut self, quantum: &StageQuantum, device: Device, threads: &StageThreads) {
+        let now_ms = self.now_ms();
+        let ready = self.ready_since.get(&quantum.job).copied().unwrap_or(now_ms);
+        let lead = self.engine_of_job(quantum.job);
+        let span = self.start_quantum(quantum, lead, now_ms.saturating_sub(ready));
+        let mut jobs = Vec::new();
+        for job in std::iter::once(quantum.job).chain(quantum.joined.iter().copied()) {
+            let engine = self.engine_of_job(job);
+            let request = self.requests.get(&job).copied().unwrap_or("job");
+            self.running_on.insert(
+                job,
+                RunningStage {
+                    engine,
+                    kind: quantum.kind,
+                    class: quantum.class,
+                    request,
+                    watch: None,
+                    span: if job == quantum.job { span.clone() } else { None },
+                },
+            );
+            if let Some(body) = self.bodies.remove(&job) {
+                jobs.push((job, engine, body));
+            }
+        }
+        assert!(
+            self.scheduler().engine().devices.contains(&device),
+            "the scheduler started a quantum on device {device}, which has no device thread"
+        );
+        let place = device as usize;
+        threads.senders[place]
+            .send(StageWork::RunJoined {
+                lead: quantum.job,
+                kind: quantum.kind,
+                jobs,
+                span,
+            })
+            .unwrap_or_else(|_| panic!("device thread {place} stopped"));
+        self.joined.insert(quantum.job, quantum.joined.clone());
+    }
+
+    /// The end of a joined decode quantum on a device thread. Each job ends or goes on by its own result, and the
+    /// quantum ends once on its device.
+    fn hosted_joined_done(&mut self, done: HostedJoinedDone, engines: &mut [Box<dyn Engine>], threads: &StageThreads) {
+        let HostedJoinedDone {
+            lead,
+            kind,
+            jobs,
+            results,
+            ms,
+        } = done;
+        let others = self.joined.remove(&lead).expect("the lead names its joined jobs");
+        let all: Vec<JobId> = std::iter::once(lead).chain(others).collect();
+        let device = *self.on.get(&lead).expect("a quantum on one device has its device");
+        for (job, _, body) in jobs {
+            if self.scheduler().jobs().iter().any(|held| held.id == job) {
+                self.bodies.insert(job, body);
+            } else {
+                let mut body = body;
+                body.ended(JobState::Cancelled);
+            }
+        }
+        let mut lead_running = None;
+        for &job in &all {
+            let running = self.running_on.remove(&job);
+            let ran = results
+                .iter()
+                .find(|(id, _)| *id == job)
+                .map(|(_, ran)| ran.clone())
+                .unwrap_or(Ran::Cancelled);
+            if !self.bodies.contains_key(&job) {
+                // A cancelled job: its quantum ends with it.
+            } else if matches!(ran, Ran::Failed) {
+                if let Some(running) = &running {
+                    self.log_failure(running.engine, kind, running.request, None);
+                }
+                self.scheduler
+                    .as_mut()
+                    .expect("the scheduler is in place between steps")
+                    .fail_job(job)
+                    .expect("a job of the joined quantum runs");
+            } else {
+                self.apply(job, ran);
+            }
+            if job == lead {
+                lead_running = running;
+            }
+        }
+        if let Some(running) = lead_running {
+            self.end_quantum(running.engine, kind, running.class, ms, Completion::Done, running.span);
+        }
+        let now_ms = self.now_ms();
+        for &job in &all {
+            self.ready_since.insert(job, now_ms);
+        }
+        self.event(StageEvent::Complete {
+            now_ms,
+            device,
+            duration_ms: ms,
+            outcome: Completion::Done,
+        });
+        self.forget_ended_jobs();
+        self.pump(engines, threads);
+    }
+
     /// Send a quantum of an engine on a stage thread to that thread, with the body of its job.
     fn send_on(
         &mut self,
@@ -911,6 +1088,9 @@ impl StagedJobs {
         engines: &mut [Box<dyn Engine>],
         threads: &StageThreads,
     ) {
+        if !quantum.joined.is_empty() {
+            return self.send_joined(quantum, device, threads);
+        }
         let job = quantum.job;
         let Some(body) = self.bodies.remove(&job) else {
             // The job was cancelled before its quantum started, so the quantum ends here at once.
@@ -1911,6 +2091,7 @@ pub(super) fn serve(
             Ok(GroupMessage::Ask(ask)) => loads::take_ask(ask, asks, &links.ledger),
             Ok(GroupMessage::StageDone(done)) => jobs.stage_done(done, engines, threads),
             Ok(GroupMessage::HostedDone(done)) => jobs.hosted_done(done, engines, threads),
+            Ok(GroupMessage::HostedJoinedDone(done)) => jobs.hosted_joined_done(done, engines, threads),
             Ok(GroupMessage::SwapStep(step)) => {
                 let running = swapping.take().expect("a swap step comes from a swap that runs");
                 swapping = running.step(step, &mut hosted, members, engines, threads, links);

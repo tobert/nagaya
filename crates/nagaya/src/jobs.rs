@@ -319,31 +319,20 @@ impl GroupJobs {
         let span = self.scheduler.running_span().cloned();
         let _entered = span.as_ref().map(|span| span.enter());
         let started = Instant::now();
-        let mut results: Vec<(JobId, Ran)> = Vec::new();
-        let mut begun: Vec<(JobId, usize, Segment)> = Vec::new();
-        for &id in &quantum.segments {
-            let engine = self.engines[&id];
-            let body = self.bodies.get_mut(&id).expect("a chosen job has a body");
-            if !(matches!(body.item(kind), Item::Block(_)) && body.joinable(kind)) {
-                results.push((id, body.run(kind, engines)));
-                continue;
-            }
-            match body.begin_pass(kind, engines) {
-                Ok(mut segments) => {
-                    assert_eq!(segments.len(), 1, "a body that joins gives one segment");
-                    begun.push((id, engine, segments.pop().expect("one segment")));
-                }
-                Err(ran) => results.push((id, ran)),
-            }
-        }
-        for batch in batches(begun, engines) {
-            let engine = batch[0].1;
-            let segments: Vec<Segment> = batch.iter().map(|(_, _, segment)| segment.clone()).collect();
-            let result = engines[engine].pass(&segments, &[]);
-            for ((id, _, _), result) in batch.iter().zip(split(result, &segments)) {
-                let body = self.bodies.get_mut(id).expect("a chosen job has a body");
-                results.push((*id, body.end_pass(kind, result, engines)));
-            }
+        let mut jobs: Vec<(JobId, usize, Box<dyn JobBody>)> = quantum
+            .segments
+            .iter()
+            .map(|id| {
+                (
+                    *id,
+                    self.engines[id],
+                    self.bodies.remove(id).expect("a chosen job has a body"),
+                )
+            })
+            .collect();
+        let results = run_joined_bodies(kind, &mut jobs, engines);
+        for (id, _, body) in jobs {
+            self.bodies.insert(id, body);
         }
         let duration_ms = started.elapsed().as_millis() as u64;
         for (id, ran) in results {
@@ -433,17 +422,57 @@ impl GroupJobs {
     }
 }
 
+/// Run one joined decode quantum of `jobs`, each with the place of its engine in `engines`. A body that can join
+/// gives its segment, and one pass runs the plain rows of each engine that share a control list, up to that engine's
+/// limit. Every other body runs alone. Each body gets its own rows. The results are in the order of `jobs` for the
+/// bodies that ran alone or failed to begin, then in the order of the passes (engine-abi "LFM3", "Batched passes").
+pub fn run_joined_bodies(
+    kind: Kind,
+    jobs: &mut [(JobId, usize, Box<dyn JobBody>)],
+    engines: &mut [Box<dyn Engine>],
+) -> Vec<(JobId, Ran)> {
+    let mut results: Vec<(JobId, Ran)> = Vec::new();
+    let mut begun: Vec<(JobId, usize, Segment)> = Vec::new();
+    for (id, engine, body) in jobs.iter_mut() {
+        if !(matches!(body.item(kind), Item::Block(_)) && body.joinable(kind)) {
+            results.push((*id, body.run(kind, engines)));
+            continue;
+        }
+        match body.begin_pass(kind, engines) {
+            Ok(mut segments) => {
+                assert_eq!(segments.len(), 1, "a body that joins gives one segment");
+                begun.push((*id, *engine, segments.pop().expect("one segment")));
+            }
+            Err(ran) => results.push((*id, ran)),
+        }
+    }
+    for batch in batches(begun, engines) {
+        let engine = batch[0].1;
+        let segments: Vec<Segment> = batch.iter().map(|(_, _, segment)| segment.clone()).collect();
+        let result = engines[engine].pass(&segments, &[]);
+        for ((id, _, _), result) in batch.iter().zip(split(result, &segments)) {
+            let (_, _, body) = jobs
+                .iter_mut()
+                .find(|(job, _, _)| job == id)
+                .expect("a segment has its job");
+            results.push((*id, body.end_pass(kind, result, engines)));
+        }
+    }
+    results
+}
+
 /// The passes of a joined quantum. The plain rows of one engine with one control list share a pass, up to the
 /// engine's limit; a plain row is one token with its logit row and no media. Every other segment has a pass alone.
 fn batches(begun: Vec<(JobId, usize, Segment)>, engines: &[Box<dyn Engine>]) -> Vec<Vec<(JobId, usize, Segment)>> {
     let mut out: Vec<Vec<(JobId, usize, Segment)>> = Vec::new();
-    let limits: Vec<u32> = engines
-        .iter()
-        .map(|engine| {
-            let limits = engine.limits();
+    // Only the engines of these segments: on a device thread, the place of an engine elsewhere has no limits.
+    let mut limits: BTreeMap<usize, u32> = BTreeMap::new();
+    for (_, engine, _) in &begun {
+        limits.entry(*engine).or_insert_with(|| {
+            let limits = engines[*engine].limits();
             if limits.feed.is_some() { limits.max_segments } else { 1 }
-        })
-        .collect();
+        });
+    }
     for item in begun {
         let (_, engine, segment) = &item;
         let plain = segment.positions.len() == 1
@@ -454,7 +483,7 @@ fn batches(begun: Vec<(JobId, usize, Segment)>, engines: &[Box<dyn Engine>]) -> 
             let (_, other, first) = &batch[0];
             plain
                 && other == engine
-                && batch.len() < limits[*engine] as usize
+                && batch.len() < limits[engine] as usize
                 && first.positions.len() == 1
                 && first.outputs.logit_rows.len() == 1
                 && first.meta.is_empty()
