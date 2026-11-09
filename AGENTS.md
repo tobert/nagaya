@@ -114,7 +114,7 @@ order"):
    tab is `a9c476e`. Step 12, the read back of an assistant audio part, is done too: `c312d3d` to `b6fe817`, deployed
    at 16:15 on 2026-11-08.
 5. Milestone 25 step 8 and milestone 26 step 4, with Amy. Milestone 24 step 3 waits for her photos.
-6. Milestone 27, batched passes on LFM3. Amy put it next on 2026-11-09.
+6. Milestone 27, batched passes on LFM3. Amy put it next on 2026-11-09. Done on 2026-11-09.
 
 Amy decided on 2026-11-08: commit a small step each time the checks pass after a change. When a milestone is almost
 done, run review rounds with kaibo (`docs/reviews.md`), and fix what they find.
@@ -736,6 +736,21 @@ senpai may stop and start the web app on b70host at will (`python3 tools/nagaya_
     6. **Deploy and measure.** Decode tokens each second at 1, 4 and 8 contexts. Run the gogi suite for both models.
 
     Each stop and start of `nagaya.service` goes into `signoff.md`.
+
+    Done on 2026-11-09, on b70host. `nagaya.service` runs the build of `abcaccd`, with eight slots for each LFM3
+    model. Live, with greedy replies of 200 tokens, `lfm3` gave 109, 249 and 317 tokens each second in total at 1, 4
+    and 8 contexts, and `lfm3-omni` gave 109, 247 and 313. A reply among 8 was the reply alone, on both models. The
+    gogi suite gave 438 ok, 0 FAIL and 16 skip for `lfm3`, and 457 ok, 0 FAIL and 16 skip for `lfm3-omni`.
+
+    The correction of `19413de` is Proposed: decode segments join by D11 rule 6, and `segments_exact` stays false.
+    The commits:
+
+    - steps 1 and 2, the tiled path: `d2380de`, `912113e`;
+    - steps 3 and 4, the batched pass: `911fc3b`;
+    - step 5, the schedulers and the drivers: `e057205`, `3f46d47`, `edd5bee`, `3ae6345`, `27c5cee`, and the fix of a
+      red test `7558623`;
+    - step 6, eight slots: `200461d`;
+    - the fixes of a kaibo review: `abcaccd`.
 28. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
