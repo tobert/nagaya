@@ -232,6 +232,7 @@ fn a_pass_with_two_segments_counts_one_quantum_and_the_wait_of_its_lead_segment(
         segments_exact: true,
         max_segments: 4,
         joins_reads: false,
+        joins_decode: false,
     }];
     let mut lead = job(1, Class::Batch, 4, 0, &[Kind::Prefill]);
     lead.admitted = true;

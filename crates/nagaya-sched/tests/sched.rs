@@ -216,6 +216,7 @@ fn ready_segments_of_one_class_share_a_pass() {
         segments_exact: true,
         max_segments: 16,
         joins_reads: false,
+        joins_decode: false,
     }];
     let (_, next) = step(scheduler, Event::Tick { now_ms: 0 });
     assert_eq!(next, quantum(Class::Batch, Kind::Prefill, &[1, 2]));
@@ -228,6 +229,7 @@ fn an_engine_with_a_feed_rule_joins_reads_only() {
         segments_exact: false,
         max_segments: 16,
         joins_reads: true,
+        joins_decode: false,
     };
     let reads = vec![
         job(1, Class::Batch, 0, 0, 0, &[Kind::Read]),
@@ -246,6 +248,80 @@ fn an_engine_with_a_feed_rule_joins_reads_only() {
     scheduler.engines = vec![feed];
     let (_, next) = step(scheduler, Event::Tick { now_ms: 0 });
     assert_eq!(next, quantum(Class::Batch, Kind::Prefill, &[1]));
+}
+
+/// An engine with a feed rule and batched decode joins decode quanta, whose rows the store never keeps (engine-abi
+/// D11 rule 6, "LFM3", "Batched passes"). A prefill still has a pass alone.
+#[test]
+fn an_engine_that_joins_decode_joins_decode_quanta_and_not_prefills() {
+    let batched = Engine {
+        id: 0,
+        segments_exact: false,
+        max_segments: 8,
+        joins_reads: true,
+        joins_decode: true,
+    };
+    let decodes = || {
+        (1..=10)
+            .map(|id| job(id, Class::Interactive, 0, id, 0, &[Kind::Decode]))
+            .collect::<Vec<_>>()
+    };
+    let mut scheduler = state(decodes());
+    scheduler.engines = vec![batched];
+    let (_, next) = step(scheduler, Event::Tick { now_ms: 0 });
+    assert_eq!(
+        next,
+        quantum(Class::Interactive, Kind::Decode, &[1, 2, 3, 4, 5, 6, 7, 8])
+    );
+    // Without joins_decode, a decode quantum is alone.
+    let mut scheduler = state(decodes());
+    scheduler.engines = vec![Engine {
+        joins_decode: false,
+        ..batched
+    }];
+    let (_, next) = step(scheduler, Event::Tick { now_ms: 0 });
+    assert_eq!(next, quantum(Class::Interactive, Kind::Decode, &[1]));
+    let mut scheduler = state(vec![
+        job(1, Class::Interactive, 0, 0, 0, &[Kind::Prefill]),
+        job(2, Class::Interactive, 0, 1, 0, &[Kind::Prefill]),
+    ]);
+    scheduler.engines = vec![batched];
+    let (_, next) = step(scheduler, Event::Tick { now_ms: 0 });
+    assert_eq!(next, quantum(Class::Interactive, Kind::Prefill, &[1]));
+}
+
+/// One job of a joined quantum can fail alone. The others go on.
+#[test]
+fn one_job_of_a_joined_quantum_fails_and_the_others_go_on() {
+    let mut scheduler = state(vec![
+        job(1, Class::Interactive, 0, 0, 0, &[Kind::Decode, Kind::Decode]),
+        job(2, Class::Interactive, 0, 1, 0, &[Kind::Decode, Kind::Decode]),
+    ]);
+    scheduler.engines = vec![Engine {
+        id: 0,
+        segments_exact: false,
+        max_segments: 8,
+        joins_reads: true,
+        joins_decode: true,
+    }];
+    let (mut scheduler, next) = step(scheduler, Event::Tick { now_ms: 0 });
+    assert_eq!(next, quantum(Class::Interactive, Kind::Decode, &[1, 2]));
+    scheduler.fail_running(2).unwrap();
+    assert!(
+        scheduler.fail_running(3).is_err(),
+        "job 3 is not in the running quantum"
+    );
+    let (scheduler, next) = step(
+        scheduler,
+        Event::Complete {
+            now_ms: 5,
+            duration_ms: 5,
+            outcome: Completion::Done,
+        },
+    );
+    let state_of = |id: JobId| scheduler.jobs.iter().find(|j| j.id == id).unwrap().state;
+    assert_eq!(state_of(2), JobState::Failed);
+    assert_eq!(next, quantum(Class::Interactive, Kind::Decode, &[1]));
 }
 
 #[test]
@@ -504,12 +580,14 @@ fn two_engines_get_their_own_passes() {
             segments_exact: true,
             max_segments: 16,
             joins_reads: false,
+            joins_decode: false,
         },
         Engine {
             id: 1,
             segments_exact: true,
             max_segments: 16,
             joins_reads: false,
+            joins_decode: false,
         },
     ];
     let (scheduler, next) = step(scheduler, Event::Tick { now_ms: 0 });
@@ -617,6 +695,7 @@ fn limited_engine(max_segments: u32) -> Vec<Engine> {
         segments_exact: true,
         max_segments,
         joins_reads: false,
+        joins_decode: false,
     }]
 }
 

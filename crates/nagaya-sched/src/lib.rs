@@ -25,6 +25,9 @@ pub struct Engine {
     /// True when the engine has a feed rule. It joins only the segments of reads, whose rows the store does not keep
     /// (spec 5.7, engine-abi D11 rule 6).
     pub joins_reads: bool,
+    /// True when an engine with a feed rule batches decode rows. The store keeps no decode row, so decode quanta join
+    /// by the same rule (engine-abi "LFM3", "Batched passes").
+    pub joins_decode: bool,
 }
 
 /// How urgently a job's quanta run.
@@ -225,6 +228,8 @@ pub enum StepError {
     NothingRunning,
     /// A caller appends quanta to a job that has no quantum that runs.
     AppendToIdleJob(JobId, JobState),
+    /// A caller fails a job that is not a segment of the running quantum.
+    NotRunning(JobId),
 }
 
 impl std::fmt::Display for StepError {
@@ -239,6 +244,10 @@ impl std::fmt::Display for StepError {
             StepError::AppendToIdleJob(id, state) => write!(
                 f,
                 "job {id} is in state {state:?}: append quanta only while a quantum of the job runs"
+            ),
+            StepError::NotRunning(id) => write!(
+                f,
+                "job {id} is not a segment of the running quantum: fail only a job of the quantum that runs"
             ),
         }
     }
@@ -317,6 +326,22 @@ impl Scheduler {
         Ok(())
     }
 
+    /// Fail one job of the running quantum, before its `Complete` event. The other segments go on. A joined quantum
+    /// uses it when one body fails (engine-abi "LFM3", "Batched passes"). A refusal changes nothing.
+    pub fn fail_running(&mut self, job: JobId) -> Result<(), StepError> {
+        if !self.running.as_ref().is_some_and(|q| q.segments.contains(&job)) {
+            return Err(StepError::NotRunning(job));
+        }
+        let held = self
+            .jobs
+            .iter_mut()
+            .find(|candidate| candidate.id == job)
+            .ok_or(StepError::UnknownJob(job))?;
+        held.state = JobState::Failed;
+        held.quanta.clear();
+        Ok(())
+    }
+
     /// Put quanta before the quanta that a running job has, in the given order. An interval copy uses it: the copy
     /// holds the state at the end of the quantum that ran (spec 6.13).
     pub fn prepend_quanta(&mut self, job: JobId, kinds: &[Kind]) -> Result<(), StepError> {
@@ -350,6 +375,10 @@ impl Scheduler {
 
         for id in &running.segments {
             if let Some(job) = self.jobs.iter_mut().find(|job| job.id == *id) {
+                // A job that `fail_running` failed stays failed.
+                if job.state == JobState::Failed {
+                    continue;
+                }
                 if outcome == Completion::Failed {
                     job.state = JobState::Failed;
                     job.quanta.clear();
@@ -433,7 +462,10 @@ impl Scheduler {
                         info.max_segments > 0,
                         "engine {engine} has max_segments 0, so no pass can run"
                     );
-                    if info.segments_exact || (info.joins_reads && kind == Kind::Read) {
+                    if info.segments_exact
+                        || (info.joins_reads && kind == Kind::Read)
+                        || (info.joins_decode && kind == Kind::Decode)
+                    {
                         info.max_segments as usize
                     } else {
                         1
