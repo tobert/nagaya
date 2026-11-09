@@ -12,7 +12,7 @@
 //! gates each head with `sigmoid(gate_proj(h))` (modeling_lfm3.py:245-272). A conv layer reads and writes the conv
 //! state of the slot (`OP_SHORT_CONV`).
 
-use nagaya_mk_bmg::protocol::{ControlOp, FLAG_ACCUMULATE, MAX_TASKS_PER_CARD, MkTaskDescriptor};
+use nagaya_mk_bmg::protocol::{ControlOp, FLAG_ACCUMULATE, FLAG_TILED, MAX_TASKS_PER_CARD, MkTaskDescriptor};
 use nagaya_mk_bmg::tasks;
 
 use crate::spec::{Backbone, HEAD_DIM, LayerKind, MAX_BLOCK, MAX_LOGIT_ROWS, plane_rows, ring_of};
@@ -196,6 +196,13 @@ fn accumulate(mut task: MkTaskDescriptor) -> MkTaskDescriptor {
     task
 }
 
+/// A weight op on the tiled path: one row sums in the order of 2 to 8 rows, so a context's bits do not depend on the
+/// other segments of a pass (engine-abi "LFM3", "Batched passes").
+fn tiled(mut task: MkTaskDescriptor) -> MkTaskDescriptor {
+    task.flags |= FLAG_TILED;
+    task
+}
+
 /// The tasks of one run. The ids are in `bufs.ids`. After the run, `bufs.x` holds the residual stream after the layers
 /// that ran, `bufs.h` holds the final norm, and `bufs.logits` row `i` holds the logits of logit row `i`.
 pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskDescriptor> {
@@ -237,7 +244,15 @@ pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskD
         t.push(tasks::rmsnorm(bufs.x, lw.operator_norm, bufs.h, n32, h32, b.eps, false));
         match kind {
             LayerKind::Conv => {
-                t.push(tasks::matmul(bufs.h, lw.in_proj, bufs.bcx, n32, 3 * h32, h32, false));
+                t.push(tiled(tasks::matmul(
+                    bufs.h,
+                    lw.in_proj,
+                    bufs.bcx,
+                    n32,
+                    3 * h32,
+                    h32,
+                    false,
+                )));
                 t.push(tasks::short_conv(
                     bufs.bcx,
                     lw.conv,
@@ -248,7 +263,7 @@ pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskD
                     b.taps as u32,
                     false,
                 ));
-                t.push(tasks::matmul(bufs.y, lw.out_proj, bufs.o, n32, h32, h32, false));
+                t.push(tiled(tasks::matmul(bufs.y, lw.out_proj, bufs.o, n32, h32, h32, false)));
             }
             LayerKind::Full | LayerKind::Sliding => {
                 let (rope, window) = match kind {
@@ -257,10 +272,12 @@ pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskD
                 };
                 let full = kind == LayerKind::Full;
                 let (kr, vr) = (slot.row(b, l, false, pos0), slot.row(b, l, true, pos0));
-                t.push(tasks::matmul(bufs.h, lw.q, bufs.q, n32, heads * d, h32, false));
-                t.push(tasks::matmul(bufs.h, lw.k, kr, n32, kv * d, h32, false));
-                t.push(tasks::matmul(bufs.h, lw.v, vr, n32, kv * d, h32, false));
-                t.push(tasks::matmul(bufs.h, lw.gate, bufs.gates, n32, heads, h32, false));
+                t.push(tiled(tasks::matmul(bufs.h, lw.q, bufs.q, n32, heads * d, h32, false)));
+                t.push(tiled(tasks::matmul(bufs.h, lw.k, kr, n32, kv * d, h32, false)));
+                t.push(tiled(tasks::matmul(bufs.h, lw.v, vr, n32, kv * d, h32, false)));
+                t.push(tiled(tasks::matmul(
+                    bufs.h, lw.gate, bufs.gates, n32, heads, h32, false,
+                )));
                 // The queries carry the scale head_dim^-0.5, because the attention ops do not scale.
                 let scale = (b.head_dim as f32).powf(-0.5);
                 t.push(tasks::partial_rotation(
@@ -316,7 +333,7 @@ pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskD
                 }
                 t.extend(attend);
                 t.push(tasks::head_gate(bufs.y, bufs.gates, bufs.y, n32, heads, d, heads));
-                t.push(tasks::matmul(bufs.y, lw.o, bufs.o, n32, h32, heads * d, false));
+                t.push(tiled(tasks::matmul(bufs.y, lw.o, bufs.o, n32, h32, heads * d, false)));
             }
         }
         t.push(accumulate(tasks::rmsnorm(
@@ -329,8 +346,8 @@ pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskD
             false,
         )));
         t.push(tasks::rmsnorm(bufs.x, lw.ffn_norm, bufs.h, n32, h32, b.eps, false));
-        t.push(tasks::swiglu(bufs.h, lw.w13, bufs.g, n32, i32_, h32));
-        t.push(tasks::matmul(bufs.g, lw.w2, bufs.o, n32, h32, i32_, false));
+        t.push(tiled(tasks::swiglu(bufs.h, lw.w13, bufs.g, n32, i32_, h32)));
+        t.push(tiled(tasks::matmul(bufs.g, lw.w2, bufs.o, n32, h32, i32_, false)));
         t.push(accumulate(tasks::rmsnorm(
             bufs.o,
             lw.post_ffn_norm,
@@ -410,7 +427,9 @@ pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskD
 mod tests {
     use super::*;
     use crate::spec::tests::backbone;
-    use nagaya_mk_bmg::protocol::{OP_ATTN, OP_ATTN_SCORES, OP_CONTROL, OP_COPY, OP_EMBED, OP_MATMUL, OP_SHORT_CONV};
+    use nagaya_mk_bmg::protocol::{
+        OP_ATTN, OP_ATTN_SCORES, OP_CONTROL, OP_COPY, OP_EMBED, OP_GEGLU, OP_MATMUL, OP_SHORT_CONV,
+    };
 
     fn weights(b: &Backbone) -> Weights {
         Weights {
@@ -482,6 +501,40 @@ mod tests {
             assert_eq!((task.opcode, task.n, task.m), (OP_MATMUL, 1, 128_000));
             assert_eq!(task.a, bufs.h + (rows[i] * 2048 * 4) as u64);
             assert_eq!(task.c, bufs.logits + (i * 128_000 * 4) as u64);
+        }
+    }
+
+    /// Each matrix multiply and SwiGLU of the backbone takes the tiled path, so a decode row has the bits of a row in
+    /// any batch of 1 to 8 (engine-abi "LFM3", "Batched passes"). The heads are 128,000 rows tall, so one row already
+    /// takes that path.
+    #[test]
+    fn each_matmul_and_swiglu_of_the_backbone_takes_the_tiled_path() {
+        let b = backbone();
+        let (w, bufs, slot) = (weights(&b), bufs(&b), memory(&b, 1024));
+        let rows = [0usize];
+        let t = pass(
+            &b,
+            &w,
+            &bufs,
+            Run {
+                slot: &slot,
+                pos0: 5,
+                n: 1,
+                layers: b.layers.len(),
+                logit_rows: Some(&rows),
+                after_embed: &[],
+                control: &[],
+                tap: false,
+                lens: false,
+            },
+        );
+        let weight_ops: Vec<&MkTaskDescriptor> = t
+            .iter()
+            .filter(|task| (task.opcode == OP_MATMUL && task.m != 128_000) || task.opcode == OP_GEGLU)
+            .collect();
+        assert_eq!(weight_ops.len(), 13 * 3 + 11 * 6 + 24);
+        for task in weight_ops {
+            assert_ne!(task.flags & FLAG_TILED, 0, "op {} of {} rows", task.opcode, task.m);
         }
     }
 
