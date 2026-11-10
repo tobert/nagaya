@@ -501,7 +501,7 @@ fn batches(begun: Vec<(JobId, usize, Segment)>, engines: &[Box<dyn Engine>]) -> 
 /// The result of each segment of a pass: its own logit rows, in segment order (engine-abi "Logits"). An error goes to
 /// each segment. A pass whose outputs are not one `logits` for each logit row breaks the ABI, and the driver stops
 /// (spec 8.5).
-fn split(result: Result<PassOut, PassError>, segments: &[Segment]) -> Vec<Result<PassOut, PassError>> {
+pub(crate) fn split(result: Result<PassOut, PassError>, segments: &[Segment]) -> Vec<Result<PassOut, PassError>> {
     let out = match result {
         Ok(out) => out,
         Err(error) => return segments.iter().map(|_| Err(error.clone())).collect(),

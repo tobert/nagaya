@@ -28,6 +28,8 @@ pub struct ControlLog(Arc<Mutex<Logged>>);
 #[derive(Clone, Debug, Default)]
 pub struct Logged {
     pub passes: Vec<(Vec<ControlItem>, Vec<String>)>,
+    /// The segment count of each pass, in the order of `passes`.
+    pub sizes: Vec<usize>,
     pub writes: Vec<(u32, f32)>,
 }
 
@@ -138,7 +140,9 @@ impl Engine for WithContextTerm {
         std::thread::sleep(self.delay);
         if let Some(segment) = segments.first() {
             let taps = taps.iter().map(|tap| tap.name.clone()).collect();
-            self.log.0.lock().unwrap().passes.push((segment.control.clone(), taps));
+            let mut log = self.log.0.lock().unwrap();
+            log.passes.push((segment.control.clone(), taps));
+            log.sizes.push(segments.len());
         }
         if let Some(seen) = &self.seen {
             seen.0.lock().unwrap().extend(segments.iter().cloned());

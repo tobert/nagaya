@@ -7,6 +7,7 @@
 pub mod build;
 pub mod control;
 pub mod decisions;
+pub mod ensemble;
 pub mod error;
 pub mod generations;
 pub mod pins;

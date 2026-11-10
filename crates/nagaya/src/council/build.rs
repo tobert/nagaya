@@ -464,6 +464,9 @@ pub enum Want {
     Frame(super::speech_out::FrameWant),
     /// Give the last samples of the codec of the slot, and free its window.
     CodecEnd,
+    /// Wait for the owner of the job, with no quantum. The owner wakes the work with [`ContextBody::wake`], and the
+    /// work gets [`Got::Woken`]. Only a body that another body runs can wait: the ensemble of `docs/lab.md`.
+    Wait,
     /// The work is complete.
     Done,
     /// The client went away. The job ends as cancelled and holds nothing more (spec 5.9).
@@ -491,6 +494,8 @@ pub enum Got {
     },
     /// The mark or the rewind is complete.
     Copied,
+    /// The owner woke a work that waited ([`Want::Wait`]).
+    Woken,
     /// The store holds the snapshot, or holds its bytes under another recipe (`None`).
     Held(Option<ContentId>),
     /// The frame is fed, and the codec decoded it.
@@ -618,6 +623,8 @@ pub struct ContextBody<T: Then> {
     started: bool,
     /// True while the build runs, before its work starts.
     building: bool,
+    /// True when the work waits for its owner ([`Want::Wait`]).
+    waiting: bool,
     units: VecDeque<Unit>,
     feeding: Option<Feeding>,
     /// The row that the last pass of the feed gave.
@@ -697,6 +704,7 @@ impl<T: Then> ContextBody<T> {
             lease: None,
             started: false,
             building: true,
+            waiting: false,
             units: VecDeque::new(),
             feeding: None,
             row: None,
@@ -895,6 +903,31 @@ impl<T: Then> ContextBody<T> {
         }
     }
 
+    /// True when the work waits for its owner ([`Want::Wait`]).
+    pub(crate) fn waiting(&self) -> bool {
+        self.waiting
+    }
+
+    /// True when the job sent its result: it finished or failed, and it runs no more quanta.
+    pub(crate) fn finished(&self) -> bool {
+        self.tx.is_none()
+    }
+
+    /// Wake a work that waits, and plan the quanta of its next want. An error goes to the caller, as in a quantum, and
+    /// gives `Ran::Failed`.
+    pub(crate) fn wake(&mut self, engines: &mut [Box<dyn Engine>]) -> Ran {
+        assert!(self.waiting, "only a work that waits wakes");
+        self.waiting = false;
+        let engine = engines[self.shared.engine_index].as_mut();
+        match self.next_want(engine, Got::Woken) {
+            Ok(ran) => ran,
+            Err(error) => {
+                self.send(Err(error));
+                Ran::Failed
+            }
+        }
+    }
+
     /// Send the result to the caller. The slot is free before the caller hears, so the caller sees it free.
     fn send(&mut self, result: Result<Finished<T>, ServiceError>) {
         self.untrack();
@@ -1030,6 +1063,10 @@ impl<T: Then> ContextBody<T> {
             .next(got)?;
         let kind = match want {
             Want::Done => return Ok(self.finish()),
+            Want::Wait => {
+                self.waiting = true;
+                return Ok(Ran::Done);
+            }
             Want::Cancel => return Ok(Ran::Cancelled),
             Want::Mark => {
                 self.units.push_back(Unit::Mark);

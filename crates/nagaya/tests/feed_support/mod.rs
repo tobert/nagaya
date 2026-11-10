@@ -48,6 +48,8 @@ pub struct FeedFactory {
     pub surprise_stage: Arc<AtomicUsize>,
     /// The stage and the thread name of each stage pass and each part, slot or coverage call of a stage handle.
     pub threads: ThreadLog,
+    /// The segment count of each pass, logged once a pass: by a whole pass, or by stage 0 of a staged pass.
+    pub sizes: Arc<Mutex<Vec<usize>>>,
     /// The profile's `devices` list of the engine. `None` gives `0` to `stages - 1`.
     pub devices: Option<Vec<u32>>,
 }
@@ -78,6 +80,7 @@ impl FeedFactory {
             fail_stage: Arc::new(AtomicUsize::new(NO_STAGE)),
             surprise_stage: Arc::new(AtomicUsize::new(NO_STAGE)),
             threads: Arc::default(),
+            sizes: Arc::default(),
             devices: None,
         }
     }
@@ -92,6 +95,7 @@ pub struct Traced {
     fail_stage: Arc<AtomicUsize>,
     surprise_stage: Arc<AtomicUsize>,
     threads: ThreadLog,
+    sizes: Arc<Mutex<Vec<usize>>>,
 }
 
 impl Engine for Traced {
@@ -104,6 +108,7 @@ impl Engine for Traced {
     }
 
     fn pass(&mut self, segments: &[nagaya_abi::Segment], taps: &[nagaya_abi::Tap]) -> Result<PassOut, PassError> {
+        self.sizes.lock().unwrap().push(segments.len());
         self.inner.pass(segments, taps)
     }
 
@@ -149,6 +154,7 @@ impl Stages for Traced {
                     fail_stage: Arc::clone(&self.fail_stage),
                     surprise_stage: Arc::clone(&self.surprise_stage),
                     threads: Arc::clone(&self.threads),
+                    sizes: Arc::clone(&self.sizes),
                 }) as Box<dyn StageHandle + Send>
             })
             .collect()
@@ -164,10 +170,14 @@ struct TracedStage {
     fail_stage: Arc<AtomicUsize>,
     surprise_stage: Arc<AtomicUsize>,
     threads: ThreadLog,
+    sizes: Arc<Mutex<Vec<usize>>>,
 }
 
 impl StageHandle for TracedStage {
     fn stage_pass(&mut self, segments: &[nagaya_abi::Segment], residual: &mut Residual) -> Result<StageOut, PassError> {
+        if self.stage == 0 {
+            self.sizes.lock().unwrap().push(segments.len());
+        }
         if self.panic_stage.load(Ordering::SeqCst) == self.stage {
             panic!("stage {} breaks on purpose", self.stage);
         }
@@ -250,6 +260,7 @@ impl Factory for FeedFactory {
             fail_stage: Arc::clone(&self.fail_stage),
             surprise_stage: Arc::clone(&self.surprise_stage),
             threads: Arc::clone(&self.threads),
+            sizes: Arc::clone(&self.sizes),
         }))
     }
 }

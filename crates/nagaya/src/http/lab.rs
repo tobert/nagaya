@@ -15,6 +15,7 @@ use axum::response::Response;
 use axum::routing::post;
 use gogi_proto::Invalid;
 use gogi_proto::generation::GenerationRequest;
+use nagaya_council::ensemble::{Combine, EnsembleError, combine};
 use nagaya_council::trace::{Lens, Readout, Trace};
 use nagaya_mk_lfm3_bmg::lab::{Entry, Facts, JLens, LensError, Unembedding, ends_of, rank};
 use serde::{Deserialize, Serialize};
@@ -95,6 +96,7 @@ pub fn routes() -> Router<Arc<Council>> {
     Router::new()
         .route("/nagaya/v1/lab/project", post(project))
         .route("/nagaya/v1/lab/trace", post(trace))
+        .route("/nagaya/v1/lab/ensemble", post(ensemble))
         .route("/nagaya/v1/lab/compose", post(super::compose::compose))
 }
 
@@ -527,6 +529,116 @@ async fn trace(State(council): Shared, Extension(id): Id, body: Body) -> Respons
         let mut out = serde_json::to_value(&done).expect("a generation response encodes");
         out["trace"] = Value::String(trace.as_str().to_owned());
         Ok(out)
+    }
+    .await;
+    answer(&id, result)
+}
+
+/// The members of an ensemble request (`docs/lab.md`, "`ensemble`").
+const ENSEMBLE_MEMBERS: [&str; 7] = [
+    "model",
+    "contexts",
+    "combine",
+    "weights",
+    "strength",
+    "max_tokens",
+    "sample",
+];
+
+/// The strength of `contrast` when the request sends none.
+const CONTRAST_STRENGTH: f64 = 0.5;
+
+/// One reply from joined forks (`docs/lab.md`, "`ensemble`: joined forks").
+async fn ensemble(State(council): Shared, Extension(id): Id, body: Body) -> Response {
+    let result = async {
+        let value: Value = parse(&bytes(body).await?, "ensemble")?;
+        let refuse = |param: &str, message: &str| Failure::from(invalid(param, format!("nothing ran: {message}")));
+        let map = value
+            .as_object()
+            .ok_or_else(|| refuse("ensemble", "an ensemble request is a JSON object"))?;
+        if let Some(other) = map.keys().find(|key| !ENSEMBLE_MEMBERS.contains(&key.as_str())) {
+            return Err(refuse(
+                other,
+                &format!("an ensemble request has no member {other}; remove it"),
+            ));
+        }
+        let model = map
+            .get("model")
+            .and_then(Value::as_str)
+            .ok_or_else(|| refuse("model", "send the model"))?;
+        council.lab_model(model)?;
+        let contexts = map
+            .get("contexts")
+            .and_then(Value::as_array)
+            .filter(|contexts| (1..=8).contains(&contexts.len()))
+            .ok_or_else(|| refuse("contexts", "send 1 to 8 contexts"))?;
+        let strength = match map.get("strength") {
+            None => CONTRAST_STRENGTH,
+            Some(value) => value
+                .as_f64()
+                .ok_or_else(|| refuse("strength", "the strength is a number"))?,
+        };
+        let rule = match map.get("combine").and_then(Value::as_str) {
+            Some("logprob_sum") => Combine::LogprobSum,
+            Some("prob_mean") => Combine::ProbMean,
+            Some("contrast") => Combine::Contrast { strength },
+            _ => return Err(refuse("combine", "combine is logprob_sum, prob_mean or contrast")),
+        };
+        let weights = match map.get("weights") {
+            None => vec![1.0; contexts.len()],
+            Some(Value::Array(values)) => values
+                .iter()
+                .enumerate()
+                .map(|(i, value)| {
+                    value
+                        .as_f64()
+                        .ok_or_else(|| refuse(&format!("weights[{i}]"), "a weight is a number above 0"))
+                })
+                .collect::<Result<Vec<f64>, Failure>>()?,
+            Some(_) => return Err(refuse("weights", "weights is a list of numbers, one for each context")),
+        };
+        // The rules of combine check the count, the weights and the strength, with one value for each context.
+        let one = [0.0f32];
+        if let Err(error) = combine(&vec![&one[..]; contexts.len()], &rule, &weights) {
+            let param = match error {
+                EnsembleError::WeightCount => "weights".to_owned(),
+                EnsembleError::Weight(i) => format!("weights[{i}]"),
+                EnsembleError::ContrastCount(_) => "combine".to_owned(),
+                EnsembleError::Strength => "strength".to_owned(),
+                other => return Err(Failure::from(ServiceError::internal(other.to_string()))),
+            };
+            return Err(refuse(&param, &error.to_string()));
+        }
+        if let Some(i) = contexts
+            .iter()
+            .position(|c| c.get("control") != contexts[0].get("control"))
+        {
+            return Err(refuse(
+                &format!("contexts[{i}].control"),
+                "the contexts of an ensemble share one control list, so their rows share a pass",
+            ));
+        }
+        let mut requests = Vec::with_capacity(contexts.len());
+        for context in contexts {
+            let mut request = serde_json::json!({"model": model, "context": context});
+            for member in ["max_tokens", "sample"] {
+                if let Some(value) = map.get(member) {
+                    request[member] = value.clone();
+                }
+            }
+            let body = serde_json::to_vec(&request).expect("a JSON value encodes");
+            requests.push(parse::<GenerationRequest>(&body, "ensemble")?);
+        }
+        let refs: Vec<&gogi_proto::Context> = requests.iter().map(|request| &request.context).collect();
+        let served = council.route_contexts(model, &refs, true)?;
+        let done = council
+            .call(move || served.service.ensemble(&requests, rule, weights))
+            .await?;
+        let out = serde_json::to_value(&done).expect("a generation response encodes");
+        Ok(
+            serde_json::json!({"model": out["model"], "content": out["content"], "finish": out["finish"],
+                              "usage": out["usage"]}),
+        )
     }
     .await;
     answer(&id, result)
