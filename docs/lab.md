@@ -356,6 +356,44 @@ POST /nagaya/v1/lab/merge
 - **Errors.** A snapshot of another model or other weights is a 400 that names `from` or `parts[i].from`. A range
   outside its snapshot is a 400 that names `parts[i]`.
 
+## `ensemble`: joined forks
+
+**Proposed** (Claude Opus 5.5, 2026-11-10, milestone 29). Amy chose plan, then code (`docs/swarm-ideas.md`, "Plan, then
+code"). Joined forks are one way to code a plan, or to distill ideas into one plan. Reason for a lab route: the rules of
+the combination are a trial, and a council v2 contract can follow when one rule wins.
+
+```json
+POST /nagaya/v1/lab/ensemble
+{"model": "lfm3", "contexts": [{"thinking": false, "messages": [...]}, …],
+ "combine": "logprob_sum", "weights": [1.0, 1.0], "strength": 0.5,
+ "max_tokens": 96, "sample": {"temperature": 1.0, "seed": 7}}
+-> {"model": "lfm3", "content": "…", "finish": "stop", "usage": {"prompt": 812, "fed": 140, "completion": 41}}
+```
+
+- **The job.** One job holds each context in its own slot. Each step is one batched pass, with one row of each
+  context. The job combines the logit rows into one row, and the sampler of spec 11.2 picks one token from it. Each
+  context takes that token at the next step.
+- **`contexts`.** 1 to 8 council v2 contexts of the model, with the same control list. A prefill with `continue: true`
+  is allowed. The store shares their prefixes, as it does for generations.
+- **`combine`.** Let `l_k` be the log softmax of row `k`, in `f64`, over the whole vocabulary. Then:
+  - `logprob_sum`: the row is `sum_k w_k l_k`. A token needs the support of every context.
+  - `prob_mean`: the row is `log(sum_k w_k exp(l_k))`, with the weights scaled to a sum of 1. One context can carry a
+    token.
+  - `contrast`: exactly 2 contexts, and the row is `(1 + s) l_0 - s l_1`, with `s` the `strength`. Context 0 has the
+    idea, and context 1 does not. This is context-aware decoding (Shi et al., 2023).
+- **`weights`.** One finite value above 0 for each context. With no `weights`, each weight is 1. A vote of a decision
+  can give them.
+- **The sampler.** The combined row goes to `f32`, and the sampler of spec 11.2 reads it with `sample`. The seed of a
+  step is the position of the reply in context 0, as for a generation.
+- **The reply.** The parser of context 0 reads the tokens, and its end ends the reply. `max_tokens` ends it too, and so
+  does a full context. `content` is the reply after the prefill of context 0. There is no stream, and no held head.
+- **Bits.** One context with `logprob_sum` and the weight 1 gives its row to the sampler unchanged. Thus it gives the
+  bits of the same generation. The card gate checks this.
+- **Errors.** A model with no batched passes is a 400 that names `model`. 0 or more than 8 contexts is a 400 that names
+  `contexts`. A context with another control list is a 400 that names `contexts[i].control`. `contrast` with other than
+  2 contexts is a 400 that names `combine`. A weight that is not finite or not above 0 is a 400 that names
+  `weights[i]`.
+
 ## Where the routes live
 
 Decided 2026-11-07 (Amy: "ok yeah, start on /nagaya/v1/lab/"): put `project` and `trace` on nagaya routes under
