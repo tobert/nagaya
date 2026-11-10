@@ -1310,9 +1310,10 @@ Reason: with two engines on gfx1151host, the host tier is 2 GiB (`docs/deploy.md
 of about 135 MB left the tier before a client read them again, and gogi's suite failed 7 checks on 2026-11-01. The
 NVMe tier has 50 GiB. A refused put still changes nothing: the store checks the room before it parks a victim.
 
-**A put of held bytes in another tier is a hit.** **Proposed** (Claude Opus 5.5, 2026-11-10). A put of bytes that the
-store holds live, under the same recipe and parent, gives the id of that entry. The entry stays in its tier. Reason:
-the store holds the bytes, so the put has nothing to do.
+**A host put of bytes on NVMe is a hit.** **Proposed** (Claude Opus 5.5, 2026-11-10). A put for the host tier can name
+bytes that the store holds live on NVMe, with the same recipe and parent. Then the put gives the id of that entry, which
+stays on NVMe. Reason: NVMe holds the bytes at least as long as the host tier (6.11). A put for NVMe of bytes in the
+host tier stays refused, because an Ok would promise more than the store holds.
 
 Before this rule, the store refused such a put, and the process stopped (spec 8.5). It happened live on 2026-11-10
 (`signoff.md`). Two builds of one prefix both missed, the first put moved to NVMe as a victim, and the second put asked
