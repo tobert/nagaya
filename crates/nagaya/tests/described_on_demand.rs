@@ -240,6 +240,7 @@ fn a_described_engine_is_a_served_model_that_answers_after_a_load() {
             family: Arc::new(ToyFamily::new()),
             tokenizer_hash: None,
             speech: None,
+            served: nagaya::serving::ServedName::Identity,
         })
     });
     let council = Arc::new(

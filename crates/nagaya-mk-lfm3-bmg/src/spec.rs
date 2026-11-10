@@ -75,17 +75,17 @@ const _: () = assert!(
     RING_ROWS.is_multiple_of(32) && RING_SPILL >= MAX_BLOCK && MAX_BLOCK <= SLOT_TOKENS && SLOT_TOKENS > RING_ROWS
 );
 
-/// The two LFM3 models. The served name is the model name of the identity (spec 11.11).
+/// The two LFM3 models. An engine serves under its engine name, and the identity names the model (spec 11.11).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Model {
-    /// `LFM3-1.7B`, served as `lfm3`.
+    /// `LFM3-1.7B`, with the model name `lfm3`.
     Text,
-    /// The language model of `LFM3-Omni-2B`, served as `lfm3-omni`.
+    /// The language model of `LFM3-Omni-2B`, with the model name `lfm3-omni`.
     Omni,
 }
 
 impl Model {
-    /// The served name, which is the model name of the identity.
+    /// The model name of the identity. The family checks its folder against it.
     pub fn name(self) -> &'static str {
         match self {
             Model::Text => "lfm3",

@@ -133,6 +133,12 @@ impl nagaya_text_lfm3::Objects for StoreObjects {
     }
 }
 
+/// The served model names of an engine of this kind (spec 11.11, "The served name of an LFM3 engine").
+/// The engine name is the served name, so two engines of one checkpoint serve two names.
+pub fn served_names(engine: &str, _config: &toml::Table) -> Option<Vec<String>> {
+    Some(vec![engine.to_owned()])
+}
+
 /// The LFM3 family from the model folder: the key `model_dir` of `[engines.family]`. The registry compares its
 /// tokenizer hash with the identity (spec 11.3).
 pub fn open_family(identity: &Identity, table: &toml::Table) -> Result<OpenedFamily, String> {
@@ -172,6 +178,7 @@ pub fn open_family_with(
         family: Arc::new(family),
         tokenizer_hash: Some(hash),
         speech,
+        served: crate::serving::ServedName::Engine,
     })
 }
 
@@ -254,8 +261,12 @@ mod factory {
             super::plan(table, devices)
         }
 
-        /// Upload the backbone to the card at the PCI address of the device, and open the engine on it. The served
-        /// name comes from `config.json` of the folder, so the kind gives no name before the open.
+        /// The served model is the engine name (spec 11.11, "The served name of an LFM3 engine").
+        fn served_names(&self, engine: &str, config: &toml::Table) -> Option<Vec<String>> {
+            super::served_names(engine, config)
+        }
+
+        /// Upload the backbone to the card at the PCI address of the device, and open the engine on it.
         fn open(&self, table: &toml::Table, devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
             check_devices(devices).map_err(|error| open_error(error.message))?;
             let config = config(table).map_err(|error| open_error(error.message))?;
