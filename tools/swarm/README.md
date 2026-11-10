@@ -36,6 +36,10 @@ holds the hashes of those bodies.
 - **`sample`.** An object with any of `temperature`, `top_p`, `top_k` and `min_p`, the members of the council v2
   sampler. The driver sets the seed. `sample.temperature` and the member `temperature` of the stage are one setting,
   so a recipe that sets both is refused. The vote stays greedy, so `select` takes no `sample`.
+- **`sample.ladder`.** A list of one or more temperatures, each with the rules of `temperature`. Member `i` of the
+  stage uses step `i` modulo the length of the list. The members are the think agents and the forks of `plain` or
+  `contrast`. The other members of `sample` act on each member. A ladder and a temperature cannot both be set. A
+  stage that makes one call refuses a ladder: `prime`, `distill` and `act` with `joined`.
 - **`thinking`.** True or false, sent as `context.thinking`. The default is false.
 - **No `repetition_penalty`.** The sampler of the nagaya (spec 11.2) has none, so a recipe with it is refused.
 
@@ -122,6 +126,11 @@ These recipes add the settings of the model card to `s2s-combine.json`, with a s
 
 The first number of each cell is the temperature.
 
+`s2s-combine-warm-ladder.json` is `s2s-combine-warm.json` with a ladder in think and in act. The 8 think agents use
+0.7, 0.8, 0.9, 1.0, 1.0, 1.1, 1.2 and 1.2, with `top_p` 0.95 and `top_k` 20. The 4 act forks use 0.3, 0.6, 0.9 and
+1.2, with `top_p` 0.95. On 2026-11-10, code forks at 0.1 gave 146 distinct programs of 1,576. Forks at 1.0 found the
+best scores, with more programs that failed.
+
 ## The log
 
 The log is a JSONL file with three kinds of lines.
@@ -134,6 +143,7 @@ A **program line** is one evaluated program:
 - `parent` is the score of the parent. `best` is the best score of the archive after this program.
 - `kind` names the methods of select, distill and act, for example `vote-pick-plain`.
 - `round`, `fork`, `model`, `plan`, `ideas` and `src` give the origin of the program.
+- `sample` gives the temperature of the act call that made the program, and the other members of `act.sample`.
 
 A **round line** has the member `round_stats`:
 
@@ -144,6 +154,7 @@ A **round line** has the member `round_stats`:
   and `evaluate`. A record gives `calls`, the tokens `prompt`, `fed` and `completion`, and `seconds` of wall time.
   The tokens are the sums of the usage of each reply. `models` gives the calls of each model.
 - `prime` gives the text of the prime, if the recipe has a prime.
+- `think_temperatures` gives the temperature of each think agent, in the order of the agents.
 
 The **summary line** has the member `summary`:
 
@@ -151,6 +162,8 @@ The **summary line** has the member `summary`:
   (2). `best_src` is its source.
 - `rounds`, the counts and the shares are the sums of all rounds. `stages` gives the sums of each stage.
 - `recipe` is the recipe with each default filled.
+- `by_temperature` has one row for each act temperature, in rising order. A row gives `programs`, `valid` and
+  `improved`, and `best_excess`, the best score of its valid programs. Thus a run shows which temperatures pay off.
 
 ## Tests
 

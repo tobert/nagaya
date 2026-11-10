@@ -134,6 +134,27 @@ def options(stage):
     return {k: stage[k] for k in CALL if k in stage}
 
 
+def temperature(stage, member):
+    """The temperature of one member of a stage: its step of the ladder, else the temperature of the stage."""
+    ladder = stage.get("ladder")
+    return ladder[member % len(ladder)] if ladder else stage["temperature"]
+
+
+def by_temperature(programs):
+    """One row for each act temperature of a list of program records, in the order of the temperature: the counts
+    programs, valid and improved, and the best excess of the valid programs (None when none is valid)."""
+    rows = {}
+    for p in programs:
+        t = p["sample"]["temperature"]
+        r = rows.setdefault(t, {"temperature": t, "programs": 0, "valid": 0, "improved": 0, "best_excess": None})
+        r["programs"] += 1
+        r["valid"] += bool(p["valid"])
+        r["improved"] += bool(p["improved"])
+        if p["valid"] and (r["best_excess"] is None or p["excess"] < r["best_excess"]):
+            r["best_excess"] = p["excess"]
+    return [rows[t] for t in sorted(rows)]
+
+
 class Driver:
     """One run of a recipe against one client."""
 
@@ -148,6 +169,7 @@ class Driver:
         self.archive = Archive(evaluate, log, clock)
         self.evaluate = evaluate
         self.rounds = []
+        self.programs = []
         self._rounds_lock = threading.Lock()
         self._counter = itertools.count(1)
 
@@ -172,15 +194,16 @@ class Driver:
         chosen = self._rand(lambda: self.rng.sample(foci, min(n, len(foci))) +
                             [self.rng.choice(foci) for _ in range(n - len(foci))])
         models = [self.spread.next() for _ in range(n)]
+        temperatures = [temperature(t, i) for i in range(n)]
 
         def one(i):
             user = (task.think_prompt(head, chosen[i]) if prime is None else
                     task.think_turns(head, prime, chosen[i]))
-            text = self._call(stage, models[i], self.client.generate, user, t["max_tokens"], t["temperature"],
+            text = self._call(stage, models[i], self.client.generate, user, t["max_tokens"], temperatures[i],
                               seed * 1000 + i, task.IDEA_PREFILL, latent=t["latent"], **options(t))
             return task.after_prefill(text, task.IDEA_PREFILL)
         with ThreadPoolExecutor(n) as ex:
-            return list(ex.map(one, range(n))), chosen
+            return list(ex.map(one, range(n))), temperatures
 
     def select(self, stage, head, ideas, seed):
         """The kept ideas and the record of the selection."""
@@ -214,7 +237,7 @@ class Driver:
         return task.after_prefill(text, task.PLAN_PREFILL).strip()
 
     def act(self, stage, head, plan, seed):
-        """The replies of the act stage, each with its model."""
+        """The replies of the act stage, each with its model and its temperature."""
         a = self.recipe["act"]
         prompt = task.act_prompt(head, plan)
         pre = task.CODE_PREFILL
@@ -222,18 +245,19 @@ class Driver:
             model = self.spread.next()
             text = self._call(stage, model, self.client.ensemble, [prompt] * a["forks"], a["combine"],
                               a["max_tokens"], a["temperature"], seed * 100, pre, latent=a["latent"], **options(a))
-            return [(model, text)]
+            return [(model, a["temperature"], text)]
         models = [self.spread.next() for _ in range(a["forks"])]
+        temperatures = [temperature(a, f) for f in range(a["forks"])]
 
         def one(f):
             if a["by"] == "contrast":
                 return self._call(stage, models[f], self.client.ensemble, [prompt, task.act_plain_prompt(head)],
-                                  "contrast", a["max_tokens"], a["temperature"], seed * 100 + f, pre,
+                                  "contrast", a["max_tokens"], temperatures[f], seed * 100 + f, pre,
                                   strength=a.get("strength"), latent=a["latent"], **options(a))
-            return self._call(stage, models[f], self.client.generate, prompt, a["max_tokens"], a["temperature"],
+            return self._call(stage, models[f], self.client.generate, prompt, a["max_tokens"], temperatures[f],
                               seed * 100 + f, pre, latent=a["latent"], **options(a))
         with ThreadPoolExecutor(a["forks"]) as ex:
-            return list(zip(models, ex.map(one, range(a["forks"]))))
+            return list(zip(models, temperatures, ex.map(one, range(a["forks"]))))
 
     def round(self, seed):
         """One round: a parent, the four stages and the evaluation. It logs and returns the round record."""
@@ -249,7 +273,7 @@ class Driver:
             return out
 
         primed = timed("prime", self.prime, head, seed) if "prime" in stages else None
-        ideas, _ = timed("think", self.think, head, seed, primed)
+        ideas, think_temperatures = timed("think", self.think, head, seed, primed)
         kept, pick = timed("select", self.select, head, ideas, seed)
         plan = timed("distill", self.distill, parent, head, kept, seed)
         replies = timed("act", self.act, head, plan, seed)
@@ -257,19 +281,22 @@ class Driver:
 
         def evaluate(stage, replies):
             def one(fr):
-                f, (model, text) = fr
+                f, (model, temp, text) = fr
                 src = task.program(task.after_prefill(text, task.CODE_PREFILL))
+                sample = {"temperature": temp, **self.recipe["act"].get("sample", {})}
                 return self.archive.add(src, parent[1], {"kind": kind, "round": seed, "fork": f, "model": model,
-                                                         "plan": plan, "ideas": ideas, **pick})
+                                                         "sample": sample, "plan": plan, "ideas": ideas, **pick})
             with ThreadPoolExecutor(len(replies)) as ex:
                 return list(ex.map(one, enumerate(replies)))
         programs = timed("evaluate", evaluate, replies)
         extra = {} if primed is None else {"prime": primed}
         rec = {"round": seed, "t": round(self.clock() - self.archive.t0, 1), "parent": parent[1], **pick, **extra,
-               **shares(programs), "stages": {n: s.record() for n, s in stages.items()}}
+               **shares(programs), "think_temperatures": think_temperatures,
+               "stages": {n: s.record() for n, s in stages.items()}}
         self.log.write({"round_stats": rec})
         with self._rounds_lock:
             self.rounds.append(rec)
+            self.programs.extend(programs)
         return rec
 
     def run(self):
@@ -291,6 +318,7 @@ class Driver:
         best = self.archive.best()
         test = self.evaluate(best[0], TEST_SEED)
         summary = {"recipe": self.recipe, "archive": len(self.archive.items), "best_train": best[1],
-                   "best_test": test.get("excess"), "best_src": best[0], **totals(self.rounds)}
+                   "best_test": test.get("excess"), "best_src": best[0], **totals(self.rounds),
+                   "by_temperature": by_temperature(self.programs)}
         self.log.write({"summary": summary})
         return summary
