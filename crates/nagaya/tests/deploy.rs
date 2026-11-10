@@ -360,6 +360,10 @@ impl Factory for Lfm3PlanOnly {
         nagaya::lfm3::plan(config, devices)
     }
 
+    fn served_names(&self, engine: &str, config: &toml::Table) -> Option<Vec<String>> {
+        nagaya::lfm3::served_names(engine, config)
+    }
+
     fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
         panic!("a deploy test opens no engine")
     }
@@ -698,10 +702,14 @@ fn the_b70host_profile_admits_on_the_probed_b70host() {
     registry.register(nagaya::sdxl::KIND, Box::new(ImagePlanOnly));
     registry.register(nagaya::embeddinggemma2::KIND, Box::new(EmbeddingPlanOnly));
     registry.register(nagaya::lfm3::KIND, Box::new(Lfm3PlanOnly));
-    let admitted = admit(&b70host_profile(), &registry, &inventory, &mut Ledger::new()).expect("b70host admits");
-    assert_eq!(admitted.engines.len(), 11);
-    // Both LFM3 models are resident on card 0 at the start (milestone 24): their terms fit the card together.
-    let on_card_0: u64 = admitted.engines[9..]
+    // The admission runs the start rules that need no card: the plans, the ledger and the residency (spec 3.3a).
+    let profile = b70host_profile();
+    let admitted = admit(&profile, &registry, &inventory, &mut Ledger::new()).expect("b70host admits");
+    assert_eq!(admitted.engines.len(), 12);
+    check_served_names(&profile, &admitted.engines);
+    // Both LFM3 models are resident on card 0 at the start (milestone 24): their terms fit the card together. A term
+    // names a group index (spec 2.4), so the sum reads only the two engines of card 0, not `lfm3-1` of card 1.
+    let on_card_0: u64 = admitted.engines[9..11]
         .iter()
         .flat_map(|engine| engine.limits.memory.mandatory.iter())
         .filter(|term| term.tier == Tier::Device(0))
@@ -737,6 +745,55 @@ fn the_b70host_profile_admits_on_the_probed_b70host() {
             .map(|term| term.bytes)
             .sum();
         println!("{tier:?}: {bytes} bytes of mandatory terms");
+    }
+}
+
+/// Check the served names of the start (spec 2.3): each LFM3 engine serves its engine name, both in the profile check
+/// and in the family plan of the council, and no two engines of the profile serve one name. The start of 12:59 on
+/// 2026-11-10 exited 3, because `lfm3` and `lfm3-1` both served `lfm3`.
+fn check_served_names(profile: &PlacementProfile, admitted: &[nagaya::admission::AdmittedEngine]) {
+    let mut families = nagaya::serving::FamilyRegistry::new();
+    families.register_with_objects("lfm3", nagaya::lfm3::open_family_with);
+    let mut names: Vec<String> = Vec::new();
+    for (placement, engine) in profile.engines.iter().zip(admitted) {
+        assert_eq!(placement.name, engine.name);
+        names.extend(engine.served.clone().unwrap_or_default());
+        if placement.kind != nagaya::lfm3::KIND {
+            continue;
+        }
+        assert_eq!(engine.served, Some(vec![engine.name.clone()]), "{}", engine.name);
+        let dir = PathBuf::from(placement.family["model_dir"].as_str().unwrap());
+        let family = nagaya_text_lfm3::Lfm3Family::from_dir(&dir).unwrap();
+        let mut identity = nagaya_abi::fake::FakeAlways::new().with_family("lfm3").identity();
+        identity.model = match family.kind() {
+            nagaya_text_lfm3::Kind::Text => "lfm3",
+            nagaya_text_lfm3::Kind::Omni => "lfm3-omni",
+        }
+        .to_owned();
+        identity.tokenizer_hash = family.tokenizer_hash().to_owned();
+        let opened = nagaya::process::OpenedEngine {
+            name: engine.name.clone(),
+            thread: std::thread::current().id(),
+            identity,
+            limits: engine.limits.clone(),
+            handoff: None,
+        };
+        let plan = families
+            .plan(&opened, &placement.family)
+            .unwrap()
+            .expect("the LFM3 family is registered");
+        assert_eq!(
+            plan.config.model, engine.name,
+            "the council serves the name of the profile check"
+        );
+    }
+    println!("the served names that the profile check knows: {names:?}");
+    let mut sorted = names.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sorted.len(), names.len(), "two engines serve one name: {names:?}");
+    for name in ["lfm3-omni", "lfm3", "lfm3-1"] {
+        assert!(names.iter().any(|served| served == name), "{name} is served");
     }
 }
 
