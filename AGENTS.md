@@ -836,13 +836,14 @@ senpai may stop and start the web app on b70host at will (`python3 tools/nagaya_
        with `segments_exact` and no feed rule. `ensemble` joins mk's forks too.
     5. **mk's spin bound.** On 2026-11-10, mk stopped twice on a spin-timeout while a cargo build ran beside it. A
        barrier wait counts 1 s of wall clock (`hip/src/rt/rt.h:97`), so a paused queue looks like a hang. Amy chose
-       to fix it before the deploy, with Qwen-Image resident until the fix passes. Do these in order:
-       - Record the poll count of a spin-timeout beside its wall time. Then make the stop again with a build beside
-         mk. Few polls in a second of wall time show a pause. Stop and report if they do not.
-       - A spin stops when about 1 s of polls and 1 s of wall clock have both passed. A real hang still stops in
-         about 1 s of polls, so the gfx ring keeps its margin (`rt.h:93-95`).
-       - Card gates: `MK_MUTATE_STALL_BARRIER` forces a hang, and the pass still stops in about 1 s. The stress run
-         with a build beside mk passes.
+       to fix it before the deploy, with Qwen-Image resident until the fix passes. What the card window found:
+       - The weight arena is a memfd that the GPU reads through a host registration, so swap could move its pages.
+         Amy, 2026-11-10: "oh, mlock or pin for sure". The open locks it with `mlock2(MLOCK_ONFAULT)`: the load
+         stays at about 21 s, and a card test checks that each page is locked.
+       - A diagnostic that names the polls of a spin-timeout faulted the GPU in 5 of 5 stress runs. The code without
+         it passed in 4 of 4. Its defect is not found, so it waits in `~/exomemory/nagaya/patches/`.
+       - A bound that counts polls waits for that diagnostic. A real hang must still stop in about 1 s, so the gfx
+         ring keeps its margin (`rt.h:93-95`).
     6. **Deploy and measure.** Decode tokens each second at 1, 4, 8 and 16 contexts. A reply among 16 must be the
        reply alone. Run the gogi suite for Qwen3.8.
     7. **Docs.** The tap hook of mk in engine-abi: "the residual after layer `l`", with the head's row as the last
