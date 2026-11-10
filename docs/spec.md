@@ -4368,6 +4368,20 @@ The checkpoints are LiquidAI `LFM3-Omni-2B` at `21d75123f86c1f7ffb4bef1ea202710c
 - Each slot holds 32,768 positions, the context of Omni's model card. `lfm3` also uses 32,768 in v0. Reason: one
   slot shape for the engine kind. Its 256K positions (its model card) are a later setting of the profile.
 
+**The served name of an LFM3 engine.** **Proposed** by Claude Opus 5.5, 2026-11-10. Reason: the profile of b70host
+has two engines of `LFM3-1.7B`, `lfm3` and `lfm3-1` (milestone 29). The rule of 11.1 gives both the served name
+`lfm3`, because both identities have the `model` `lfm3`. A served name is unique (2.3), so the start exited 3 at 12:59
+on 2026-11-10. The profile comment already said: "Each engine name is its served name."
+
+- The served model of an engine of the kind `mk-lfm3-bmg` is its engine name in the profile. This replaces the rule
+  of 11.1 for this kind only.
+- The `model` of the engine identity stays `lfm3` or `lfm3-omni`. The family checks its folder against it.
+- The kind gives its served name before the open (`Factory::served_names`, 2.3, "The check of a name").
+- The engines `lfm3` and `lfm3-omni` keep their served names, because their engine names are the same.
+- Other text kinds keep the rule of 11.1. Gemma 4 and mk serve the `model` of their identity.
+- The other choice was a served name in the config of the engine. It adds a key, and the engine name already gives a
+  name that is unique.
+
 **The LFM3 family.** Proposed by Claude Opus 5.5, 2026-11-06. The crate `nagaya-text-lfm3` holds the family library
 of both models (11.3).
 

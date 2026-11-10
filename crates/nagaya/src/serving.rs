@@ -26,6 +26,17 @@ pub struct OpenedFamily {
     pub tokenizer_hash: Option<String>,
     /// The speech path of a family that speaks (spec 11.11). The served model then writes `audio/wav` too.
     pub speech: Option<crate::council::speech_out::SpeechOut>,
+    /// The source of the served model name of an engine of this family.
+    pub served: ServedName,
+}
+
+/// The source of the served model name of an engine (spec 11.1, 11.11).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServedName {
+    /// The `model` of the engine identity, as gossip publishes it (spec 2.3, 11.1).
+    Identity,
+    /// The engine name of the profile. Thus two engines of one checkpoint serve two names (spec 11.11).
+    Engine,
 }
 
 /// The objects of the process, which a family reads for the media parts of a context (spec 6.15, 11.11).
@@ -66,6 +77,7 @@ impl FamilyRegistry {
                 family: Arc::new(nagaya_text_toy::ToyFamily::new()),
                 tokenizer_hash: None,
                 speech: None,
+                served: ServedName::Identity,
             })
         });
         #[cfg(feature = "hip")]
@@ -145,8 +157,11 @@ impl FamilyRegistry {
                     engine.name
                 )
             })?;
-        // The served model is the `model` of the engine identity, as gossip publishes it (spec 2.3).
-        let mut config = ServiceConfig::new(&identity.model, &engine.name);
+        let model = match opened.served {
+            ServedName::Identity => &identity.model,
+            ServedName::Engine => &engine.name,
+        };
+        let mut config = ServiceConfig::new(model, &engine.name);
         config.context_tokens =
             usize::try_from(tokens).map_err(|_| format!("a slot of {tokens} tokens is too large"))?;
         config.speech = opened.speech;
@@ -183,6 +198,7 @@ fn open_qwen38(identity: &Identity, table: &toml::Table) -> Result<OpenedFamily,
         family: Arc::new(family),
         tokenizer_hash: Some(hash),
         speech: None,
+        served: ServedName::Identity,
     })
 }
 

@@ -129,6 +129,7 @@ pub fn open_family(identity: &Identity, table: &toml::Table) -> Result<OpenedFam
         family: Arc::new(family),
         tokenizer_hash: Some(hash),
         speech: None,
+        served: crate::serving::ServedName::Identity,
     })
 }
 

@@ -192,6 +192,7 @@ fn families() -> FamilyRegistry {
             family: Arc::new(ToyFamily::new()),
             tokenizer_hash: None,
             speech: None,
+            served: nagaya::serving::ServedName::Identity,
         })
     });
     families

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use nagaya::process::OpenedEngine;
-use nagaya::serving::{FamilyRegistry, OpenedFamily};
+use nagaya::serving::{FamilyRegistry, OpenedFamily, ServedName};
 use nagaya_abi::SlotLimit;
 use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{Engine, Identity};
@@ -25,6 +25,7 @@ fn toy_opener(_: &Identity, _: &toml::Table) -> Result<OpenedFamily, String> {
         family: Arc::new(ToyFamily::new()),
         tokenizer_hash: None,
         speech: None,
+        served: ServedName::Identity,
     })
 }
 
@@ -53,6 +54,24 @@ fn the_identity_selects_the_family_and_the_largest_slot_sets_the_context() {
         .expect("the toy family is registered");
     assert_eq!(plan.config.context_tokens, 700);
     assert_eq!(plan.config.model, "fake-always");
+}
+
+#[test]
+fn a_family_that_names_by_engine_serves_the_engine_name() {
+    // Spec 11.11, "The served name of an LFM3 engine": two engines of one checkpoint serve two names.
+    let mut registry = FamilyRegistry::new();
+    registry.register("toy", |identity, table| {
+        Ok(OpenedFamily {
+            served: ServedName::Engine,
+            ..toy_opener(identity, table)?
+        })
+    });
+    let plan = registry
+        .plan(&opened("toy", slots()), &toml::Table::new())
+        .unwrap()
+        .expect("the toy family is registered");
+    assert_eq!(plan.config.model, "engine-one", "not the `model` of the identity");
+    assert_eq!(plan.config.engine, "engine-one");
 }
 
 #[test]
@@ -86,6 +105,7 @@ fn a_tokenizer_hash_that_the_identity_does_not_have_refuses_the_family() {
             family: Arc::new(ToyFamily::new()),
             tokenizer_hash: Some("sha256:other".to_owned()),
             speech: None,
+            served: ServedName::Identity,
         })
     });
     let error = registry
