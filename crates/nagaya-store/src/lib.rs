@@ -1450,7 +1450,10 @@ impl Store {
                     "the content id already has another recipe".to_owned(),
                 ));
             }
-            if tier != put.tier {
+            // Spec 6.9: a put for the host tier of bytes on NVMe is a hit, because NVMe holds them at least as long. A
+            // park can move the entry of one build to NVMe while a second build of the same prefix runs. A put for
+            // NVMe of bytes in the host tier asks for more than the store holds: an Ok would be a lie (6.11).
+            if tier == Tier::Host && put.tier == Tier::Nvme {
                 return Err(StoreError::Invalid(format!(
                     "the entry is in tier {tier:?}; the put asks for tier {:?}. Evict the entry first",
                     put.tier

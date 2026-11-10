@@ -2865,6 +2865,36 @@ fn a_park_moves_a_host_entry_to_nvme_and_a_restart_keeps_it() {
     assert_eq!(lookup(&mut store, recipe(170)).unwrap(), vec![id]);
 }
 
+/// Spec 6.9, "A host put of bytes on NVMe is a hit". Two builds of one prefix both miss, the first put is
+/// parked to NVMe as a victim, and then the second put asks for the host tier (2026-11-10, live).
+#[test]
+fn a_host_put_of_bytes_held_on_nvme_gives_the_held_id_and_moves_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let snapshot = base_snapshot(1);
+    let id = put_in(&mut store, &snapshot, recipe(175), 7, Tier::Host);
+    store.park(&id, 20).unwrap();
+    let before = store.entries().clone();
+    assert_eq!(put_in(&mut store, &snapshot, recipe(175), 7, Tier::Host), id);
+    assert_eq!(
+        store.entries(),
+        &before,
+        "the entry stays on NVMe, and nothing else changes"
+    );
+    assert_eq!(store.host_resident_bytes(), 0);
+    // An NVMe put of bytes in the host tier stays refused: `a_put_of_an_existing_id_in_another_tier_is_refused`.
+}
+
+#[test]
+fn a_put_of_held_bytes_under_another_recipe_is_still_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let snapshot = base_snapshot(1);
+    let id = put_in(&mut store, &snapshot, recipe(177), 7, Tier::Host);
+    store.park(&id, 20).unwrap();
+    assert!(try_put(&mut store, &snapshot, recipe(178), None, 7, Tier::Host, 30).is_err());
+}
+
 #[test]
 fn a_park_of_an_nvme_entry_changes_nothing() {
     let dir = tempfile::tempdir().unwrap();
