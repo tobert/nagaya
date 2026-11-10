@@ -451,6 +451,13 @@ pub trait Family: Send + Sync {
         Vec::new()
     }
 
+    /// The placeholder token of a latent position, and the `meta` record of `count` latent rows of `width` values from
+    /// position `first`, in the layout of the engine (engine-abi "Latent rows of LFM3"). A family whose engine takes
+    /// no latent rows gives `None`.
+    fn latent_record(&self, _first: usize, _count: usize, _width: usize) -> Option<(u32, Vec<u8>)> {
+        None
+    }
+
     /// The input of the engine for each media span of `rendering`, in its order (spec 11.11). A family with no media
     /// gives none. A rendering with a span that this family did not make is [`FamilyError::Internal`].
     fn media_rows(&self, rendering: &Rendering) -> Result<Vec<MediaInput>, FamilyError> {

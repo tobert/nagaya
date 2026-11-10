@@ -14,7 +14,7 @@ use nagaya_telemetry::EngineState;
 
 use super::build::{ContextBody, Finished, Got, Then, Want};
 use super::error::ServiceError;
-use super::generations::GenerateThen;
+use super::generations::{GenerateThen, Latent};
 use super::{Charge, Schedule, Service, submit};
 use crate::jobs::{JobBody, Ran};
 
@@ -57,7 +57,9 @@ impl Then for EnsembleThen {
     fn next(&mut self, got: Got) -> Result<Want, ServiceError> {
         match got {
             // A row waits for the rows of the other contexts.
+            // The row of the last latent step ends the latent stage of the context first.
             Got::Fed(Some(row)) => {
+                self.generation.end_latent(&row)?;
                 lock(&self.ballot).rows[self.index] = Some(row);
                 Ok(Want::Wait)
             }
@@ -93,7 +95,8 @@ impl Then for EnsembleThen {
                     kind: Kind::Decode,
                 })
             }
-            // The build, the feed of the prompt, and the head of the lead's reply are the generation's.
+            // The build, the feed of the prompt, the latent steps, and the head of the lead's reply are the
+            // generation's. A latent step is a tapped pass of one context, in the build turn of that context.
             got => self.generation.next(got),
         }
     }
@@ -367,7 +370,8 @@ impl Service {
         requests: &[GenerationRequest],
         rule: Combine,
         weights: Vec<f64>,
-    ) -> Result<GenerationDone, ServiceError> {
+        latent: Option<Latent>,
+    ) -> Result<Ensembled, ServiceError> {
         let count = requests.len();
         let limits = &self.shared.limits;
         // Batched passes need a feed rule and more than one segment, as the scheduler's joins do (`jobs.rs`).
@@ -401,7 +405,12 @@ impl Service {
         let mut results = Vec::with_capacity(count);
         let mut facts = None;
         for (index, request) in requests.iter().enumerate() {
-            let prepared = self.prepare(request, None, None)?;
+            // Each context takes the latent steps. Only context 0 reads them (docs/lab.md, "Latent steps").
+            let plan = latent.clone().map(|plan| Latent {
+                read: plan.read && index == 0,
+                ..plan
+            });
+            let prepared = self.prepare(request, None, None, plan)?;
             facts.get_or_insert(prepared.facts.clone());
             let then = EnsembleThen {
                 index,
@@ -443,10 +452,25 @@ impl Service {
             charge.release()?;
         }
         let Finished { outcome, then } = result?;
+        let generation = then.into_generation();
+        let read = match generation.latent_read() {
+            Some(ids) => Some(ids.iter().copied().zip(self.family.pieces(ids)?).collect()),
+            None => None,
+        };
         let finished = Finished {
             outcome,
-            then: then.into_generation(),
+            then: generation,
         };
-        Ok(self.answer(finished, &facts).0)
+        Ok(Ensembled {
+            done: self.answer(finished, &facts).0,
+            read,
+        })
     }
+}
+
+/// The response of an ensemble: the reply of context 0, and the top token of each latent step of context 0 when the
+/// request read them.
+pub(crate) struct Ensembled {
+    pub(crate) done: GenerationDone,
+    pub(crate) read: Option<Vec<(u32, String)>>,
 }

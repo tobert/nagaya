@@ -16,6 +16,7 @@ use nagaya_council::build::{BoundaryRecipe, range_recipe, recipes_with_cuts};
 use nagaya_council::family::{
     Boundary, Family, FamilyError, ParsedReply, Rendering, ReplyCall, ReplyParser, ReplyStart,
 };
+use nagaya_council::latent::{LatentMap, top};
 use nagaya_council::sampler::{Settings, pick_except};
 use nagaya_council::trace::Trace;
 use nagaya_store::{ContentId, Reason, RecipeId};
@@ -93,10 +94,32 @@ fn f32s(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
+/// The latent steps of a generation (docs/lab.md, "Latent steps in a request").
+#[derive(Clone, Debug)]
+pub(crate) struct Latent {
+    /// The steps after the last token of the prompt, 1 to [`nagaya_council::latent::MAX_STEPS`].
+    pub steps: usize,
+    /// True when the generation keeps the top token of the logit row of each step.
+    pub read: bool,
+    /// The map from the residual tap to the next input row.
+    pub map: Arc<LatentMap>,
+}
+
+/// The latent steps of a generation while they run.
+struct LatentRun {
+    plan: Latent,
+    /// The latent rows that the slot holds.
+    fed: usize,
+    /// The top token of the logit row of each step, when the plan reads them.
+    read: Vec<u32>,
+}
+
 /// Where a generation is.
 enum Stage {
     /// The build is running.
     Building,
+    /// The feed of the prompt with the residual tap, then the latent steps.
+    Latent,
     /// The feed of the generation prompt and of each sampled token.
     Sampling,
     /// The feed of the tokens after the reply, then the snapshot of the head.
@@ -163,9 +186,82 @@ pub(crate) struct GenerateThen {
     tracing: Option<Tracing>,
     /// The tokens that the reply never picks: the markers of the speech modes of a family that speaks (spec 11.11).
     dropped: Vec<u32>,
+    /// The latent steps before the first token of the reply, when the request asks for them.
+    latent: Option<LatentRun>,
 }
 
 impl GenerateThen {
+    /// The latent rows that the slot holds before the reply.
+    fn latent_steps(&self) -> usize {
+        self.latent.as_ref().map_or(0, |run| run.plan.steps)
+    }
+
+    /// One latent step after a tapped pass: read its logit row, then feed the next row (docs/lab.md, "Latent steps in a
+    /// request"). The pass of the prompt gives no read, because the reply's first token comes after the last step.
+    fn latent_step(&mut self, row: &[f32], residual: &[u8]) -> Result<Want, ServiceError> {
+        let position = self.prompt.len();
+        let run = self
+            .latent
+            .as_mut()
+            .expect("a generation in its latent stage has latent steps");
+        if run.fed > 0 && run.plan.read {
+            run.read
+                .push(top(row).ok_or_else(|| ServiceError::internal("a latent step gave an empty logit row"))?);
+        }
+        let next = run
+            .plan
+            .map
+            .row(residual)
+            .map_err(|error| ServiceError::internal(format!("latent step {}: {error}", run.fed + 1)))?;
+        let position = position + run.fed;
+        run.fed += 1;
+        let tap = run.fed < run.plan.steps;
+        let (token, meta) = self
+            .family
+            .latent_record(position, 1, run.plan.map.width)
+            .ok_or_else(|| ServiceError::internal("the family lost its latent rows after the request check"))?;
+        Ok(Want::Latent {
+            token,
+            meta,
+            row: next,
+            position,
+            tap,
+            kind: Kind::Decode,
+        })
+    }
+
+    /// Take the logit row of the last latent step: read it, and start the reply. A generation in another stage keeps
+    /// its row as it is. The ensemble calls it before it combines the row.
+    pub(crate) fn end_latent(&mut self, row: &[f32]) -> Result<(), ServiceError> {
+        if !matches!(self.stage, Stage::Latent) {
+            return Ok(());
+        }
+        let run = self
+            .latent
+            .as_mut()
+            .expect("a generation in its latent stage has latent steps");
+        if run.fed != run.plan.steps {
+            return Err(ServiceError::internal(format!(
+                "a latent stage ended after {} of {} steps",
+                run.fed, run.plan.steps
+            )));
+        }
+        if run.plan.read {
+            run.read
+                .push(top(row).ok_or_else(|| ServiceError::internal("a latent step gave an empty logit row"))?);
+        }
+        self.stage = Stage::Sampling;
+        Ok(())
+    }
+
+    /// The top token of each latent step, when the request read them.
+    pub(crate) fn latent_read(&self) -> Option<&[u32]> {
+        self.latent
+            .as_ref()
+            .filter(|run| run.plan.read)
+            .map(|run| run.read.as_slice())
+    }
+
     /// The reply, once the work is done.
     pub fn reply(self) -> Reply {
         assert!(
@@ -186,7 +282,7 @@ impl GenerateThen {
 
     /// Sample the next token from a logit row, and give it to the parser and to the stream.
     fn sample(&mut self, row: &[f32]) -> Result<Want, ServiceError> {
-        let position = self.prompt.len() + self.sampled.len();
+        let position = self.prompt.len() + self.latent_steps() + self.sampled.len();
         let chosen = pick_except(row, &self.settings, position as u64, &self.dropped)
             .map_err(|error| ServiceError::internal(format!("the sample at position {position} failed: {error}")))?;
         if let Some(tracing) = &mut self.tracing {
@@ -220,7 +316,7 @@ impl GenerateThen {
         // before `max_tokens` (gogi "Generations", `finish`).
         let end = if ended {
             Some(None)
-        } else if self.prompt.len() + n >= self.context_tokens {
+        } else if self.prompt.len() + self.latent_steps() + n >= self.context_tokens {
             Some(Some(Finish::ContextFull))
         } else if n == self.max_tokens {
             Some(Some(Finish::MaxTokens))
@@ -419,6 +515,15 @@ impl GenerateThen {
                 "the family rendered no generation prompt, so the reply has no first logit row",
             ));
         }
+        // With latent steps, the pass of the last prompt token gives the residual of the first latent row.
+        if self.latent.is_some() {
+            self.stage = Stage::Latent;
+            return Ok(Want::Tap {
+                tokens,
+                kind: Kind::Prefill,
+                lens: false,
+            });
+        }
         Ok(self.row_feed(tokens, Kind::Prefill))
     }
 
@@ -529,6 +634,11 @@ impl Then for GenerateThen {
                 self.recipes = recipes;
                 self.feed_prompt()
             }
+            (Stage::Latent, Got::Tapped { row, residual, .. }) => self.latent_step(&row, &residual),
+            (Stage::Latent, Got::Fed(Some(row))) => {
+                self.end_latent(&row)?;
+                self.sample(&row)
+            }
             (Stage::Sampling, Got::Fed(Some(row))) if self.tracing.is_none() => self.sample(&row),
             (Stage::Sampling, Got::Tapped { row, residual, lens }) if self.tracing.is_some() => {
                 let tracing = self.tracing.as_mut().expect("the arm holds a trace");
@@ -584,10 +694,68 @@ impl Service {
         events: Option<SyncSender<TokenEvent>>,
         tracing: Option<Tracing>,
     ) -> Result<(GenerationDone, Option<Trace>), ServiceError> {
-        let Prepared { then, parts, facts } = self.prepare(request, events, tracing)?;
+        let Prepared { then, parts, facts } = self.prepare(request, events, tracing, None)?;
         let schedule = Schedule::of(request.class, request.priority);
         let finished = self.run_context(|tx| parts.body(then, tx), schedule, None)?;
         Ok(self.answer(finished, &facts))
+    }
+
+    /// Check the latent steps of a request against the model (docs/lab.md, "Latent steps in a request"). A model with
+    /// no tap `residual`, or a family with no latent rows, is a 400 that names `latent`.
+    pub(crate) fn check_latent(&self, plan: &Latent, traced: bool) -> Result<(), ServiceError> {
+        if traced {
+            return Err(ServiceError::internal(
+                "a generation with a trace takes no latent steps",
+            ));
+        }
+        if plan.steps == 0 {
+            return Err(ServiceError::internal(
+                "a plan of latent steps has 0 steps; the route sends no plan for 0 steps",
+            ));
+        }
+        if plan.steps > nagaya_council::latent::MAX_STEPS {
+            return Err(Invalid::param(
+                "latent.steps",
+                format!(
+                    "nothing ran: latent.steps is {}; send 0 to {}",
+                    plan.steps,
+                    nagaya_council::latent::MAX_STEPS
+                ),
+            )
+            .into());
+        }
+        self.takes_latent(plan.map.width)
+    }
+
+    /// Check that the model takes latent rows of `width` values: its engine has the tap `residual`, and its family has
+    /// latent rows. A fault is a 400 that names `latent`.
+    pub(crate) fn takes_latent(&self, width: usize) -> Result<(), ServiceError> {
+        let model = &self.config.model;
+        if self
+            .shared
+            .limits
+            .taps
+            .iter()
+            .all(|tap| tap.name != super::build::RESIDUAL_TAP)
+        {
+            return Err(Invalid::param(
+                "latent",
+                format!(
+                    "nothing ran: the engine of {model} has no tap `{}`, so it takes no latent steps; send the \
+                     request with no latent",
+                    super::build::RESIDUAL_TAP
+                ),
+            )
+            .into());
+        }
+        if self.family.latent_record(0, 1, width).is_none() {
+            return Err(Invalid::param(
+                "latent",
+                format!("nothing ran: the family of {model} has no latent rows; send the request with no latent"),
+            )
+            .into());
+        }
+        Ok(())
     }
 
     /// Check a generation request, render its context, and plan its job (spec 11.3c). The work of the job is a
@@ -597,6 +765,7 @@ impl Service {
         request: &GenerationRequest,
         events: Option<SyncSender<TokenEvent>>,
         tracing: Option<Tracing>,
+        latent: Option<Latent>,
     ) -> Result<Prepared, ServiceError> {
         request.validate()?;
         let read = self.check_objects(&gogi_proto::objects::objects_of(&request.context.messages))?;
@@ -638,9 +807,13 @@ impl Service {
         // An open message renders in place of the generation prompt, and the family checks its seams.
         let rendering = self.family.render(context, true)?;
         let prompt = rendering.tokens.len();
-        if prompt >= context_tokens {
+        if let Some(plan) = &latent {
+            self.check_latent(plan, tracing.is_some())?;
+        }
+        let steps = latent.as_ref().map_or(0, |plan| plan.steps);
+        if prompt + steps >= context_tokens {
             return Err(ServiceError::ContextFull {
-                prompt_tokens: prompt as u64,
+                prompt_tokens: (prompt + steps) as u64,
                 context_tokens: context_tokens as u64,
             });
         }
@@ -661,7 +834,7 @@ impl Service {
         // A plan with no boundary builds nothing, and the generation feeds the whole prompt.
         let recipes = super::plan_recipes(root, &built)?;
         let end = built.end;
-        let room = (prompt + max_tokens + HEAD_FEED).min(context_tokens);
+        let room = (prompt + steps + max_tokens + HEAD_FEED).min(context_tokens);
         let tokens: Arc<[u32]> = built.tokens[..end].into();
         let (cuts, extension) = match context.open() {
             Some(_) => self.starts(root, context, &rendering.tokens, &built)?,
@@ -692,7 +865,8 @@ impl Service {
             finish: None,
             parsed: None,
             head: None,
-            keeps_head: self.shared.limits.feed.is_none(),
+            // A head names the tokens of the slot, and a latent row is not a token. So latent steps hold no head.
+            keeps_head: self.shared.limits.feed.is_none() && latent.is_none(),
             next_phase: None,
             tracing,
             dropped: self
@@ -701,6 +875,11 @@ impl Service {
                 .as_ref()
                 .map(|speech| speech.markers().to_vec())
                 .unwrap_or_default(),
+            latent: latent.map(|plan| LatentRun {
+                plan,
+                fed: 0,
+                read: Vec::new(),
+            }),
         };
         let parts = JobParts {
             shared: Arc::clone(&self.shared),

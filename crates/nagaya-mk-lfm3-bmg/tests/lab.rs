@@ -507,6 +507,47 @@ fn the_backward_lens_is_the_transpose_of_the_lens() {
     assert_eq!(lens.transport_back(1, &[2.0, -1.0, 4.0]), [2.0, -1.0, 4.0]);
 }
 
+/// The length of a latent row is the mean L2 norm of the rows of the table (docs/lab.md, "Latent steps in a request").
+#[test]
+fn the_mean_row_norm_is_the_mean_length_of_the_rows_of_the_table() {
+    let (_dir, lab) = small(Model::Text);
+    let want = (3.0 + 3f64.sqrt() + 5.25f64.sqrt()) / 5.0;
+    assert_eq!(lab.mean_row_norm(), want as f32);
+    assert_eq!(lab.eps(), 0.25);
+}
+
+/// The map of a latent step against the oracle `run_latent` of transformers: the scale of the table, and each input
+/// row from the hidden state of the step before it. No card runs.
+#[test]
+fn the_latent_map_gives_the_input_rows_of_the_oracle() {
+    if common::absent(Which::Text) || common::golden_absent("lfm3.latent.safetensors") {
+        return;
+    }
+    let lab = Unembedding::open(&common::model_dir(Which::Text)).unwrap();
+    let golden = common::golden_tensors("lfm3.latent.safetensors");
+    let scale = golden["scale"].f32()[0];
+    let ours = lab.mean_row_norm();
+    eprintln!("latent: the scale {ours} and the oracle's {scale}");
+    assert!(((ours - scale) / scale).abs() < 1e-6, "{ours} and {scale}");
+    let map = nagaya_council::latent::LatentMap {
+        layers: lab.layers() as usize,
+        width: lab.width(),
+        norm: lab.norm().to_vec(),
+        eps: lab.eps(),
+        scale: ours,
+    };
+    let (inputs, normed) = (golden["inputs"].f32(), golden["final_norm"].f32());
+    let mut worst = 0f32;
+    for k in 0..15 {
+        let row = map.scaled(&normed[k * 2048..(k + 1) * 2048]).unwrap();
+        for (a, b) in row.iter().zip(&inputs[(k + 1) * 2048..(k + 2) * 2048]) {
+            worst = worst.max((a - b).abs());
+        }
+    }
+    eprintln!("latent: the worst gap of an input row is {worst:e}");
+    assert!(worst < 1e-5, "{worst}");
+}
+
 #[test]
 fn a_head_row_is_the_row_of_the_table_and_the_norm_is_its_weight() {
     let (_dir, lab) = small(Model::Text);

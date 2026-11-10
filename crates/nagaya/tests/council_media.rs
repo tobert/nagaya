@@ -21,7 +21,7 @@ use nagaya::http::{Council, Served, router};
 use nagaya::lfm3::StoreObjects;
 use nagaya_abi::SegmentInputs;
 use nagaya_council::family::Family;
-use nagaya_mk_lfm3_bmg::media::{MediaRules, Span, SpanKind, check_spans, decode};
+use nagaya_mk_lfm3_bmg::media::{LatentRule, MediaRules, Span, SpanKind, check_spans, decode};
 use nagaya_store::objects::ObjectStore;
 use nagaya_text_lfm3::Lfm3Family;
 use serde_json::{Value, json};
@@ -130,7 +130,13 @@ impl Omni {
             video_token: Some(token("<|video|>")),
             audio_out_token: Some(token("<|audio_out|>")),
             audio_encoder: true,
-            latent: None,
+            latent: Some(
+                LatentRule::of(
+                    &std::fs::read_to_string(folder("LFM3_OMNI_MODEL_DIR").unwrap().join("config.json")).unwrap(),
+                    2048,
+                )
+                .unwrap(),
+            ),
         }
     }
 }
@@ -220,6 +226,26 @@ fn a_build_sends_the_record_and_the_rows_of_an_image_to_each_pass_that_holds_it(
 
 /// The same object gives the same recipe, so a second build feeds nothing. Another image of the same size is another
 /// context (spec 11.11, tag 9).
+/// The family's record of a latent row is the record that the engine takes, at a position of the engine's placeholder
+/// (engine-abi "Latent rows of LFM3").
+#[test]
+fn the_latent_record_of_the_family_is_the_span_of_the_engine() {
+    let Some(omni) = Omni::start(TermFactory::toy()) else {
+        return;
+    };
+    let (token, meta) = omni.family.latent_record(30, 1, 2048).unwrap();
+    let rules = omni.rules();
+    assert_eq!(Some(token), rules.latent.map(|rule| rule.token));
+    let spans = decode(&meta).unwrap();
+    let want = Span {
+        kind: SpanKind::Latent { width: 2048 },
+        first: 30,
+        count: 1,
+    };
+    assert_eq!(spans, [want]);
+    check_spans(&rules, &spans, &[token], 30, want.bytes()).unwrap();
+}
+
 #[test]
 fn the_same_object_reuses_the_snapshot_and_another_object_of_one_size_does_not() {
     let Some(omni) = Omni::start(TermFactory::toy()) else {

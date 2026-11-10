@@ -7,6 +7,7 @@ pub mod control;
 pub mod decision;
 pub mod ensemble;
 pub mod family;
+pub mod latent;
 pub mod read;
 pub mod sampler;
 pub mod template_id;

@@ -216,6 +216,32 @@ impl Unembedding {
         &self.norm
     }
 
+    /// The epsilon of the final norm: `norm_eps` of `config.json`.
+    pub fn eps(&self) -> f64 {
+        self.eps
+    }
+
+    /// The mean L2 norm of the rows of the table: the length of the input row of a latent step (docs/lab.md, "Latent
+    /// steps in a request"). Each norm and the mean run in `f64`, in row order.
+    pub fn mean_row_norm(&self) -> f32 {
+        let view = self.file.view().expect("open parsed the header");
+        let table = view
+            .tensor_bytes(&format!("{}embed_tokens.weight", self.model.prefix()))
+            .expect("open found the table");
+        let sum: f64 = table
+            .chunks(self.width * 2)
+            .map(|row| {
+                row.as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|b| f64::from(bf16_to_f32(u16::from_le_bytes(*b))).powi(2))
+                    .sum::<f64>()
+                    .sqrt()
+            })
+            .sum();
+        (sum / self.rows as f64) as f32
+    }
+
     /// The row of the head for the id `id`, as `f32`. An id past the table is a defect of the caller, and it panics.
     pub fn head_row(&self, id: u32) -> Vec<f32> {
         assert!(
