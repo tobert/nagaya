@@ -808,6 +808,11 @@ senpai may stop and start the web app on b70host at will (`python3 tools/nagaya_
 
     A tune of the distill step, and a coder from `LFM3-1.7B-Base`, wait for another day (Amy, 2026-11-10).
 
+    Steps 1a, 1b, 3 and 4 are done on 2026-11-10 (`docs/swarm-ideas.md`, "The second trials"). The route `ensemble`
+    (`e2b70db`) and latent steps (`a36b117`) passed their card gates and are deployed, and `lfm3-1` serves card 1
+    (`3a281d0`). The recipe driver is `tools/swarm`. Plan, then code (`s2s-combine`) won each seed. Joined forks and
+    latent steps gave no reliable gain on bin packing. Step 5, the merge, and step 6 wait.
+
     Each stop and start of `nagaya.service` goes into `signoff.md`.
 30. Stop and ask Amy for the next milestone.
 

@@ -215,6 +215,34 @@ write the plan. No one context reads every idea, so the sliding window does not 
 Two ideas wait for another day. A small tune of the distill step could learn from the logged plans and the scores of
 their code. `LiquidAI/LFM3-1.7B-Base` could become a narrow coder.
 
+## The second trials
+
+The trials of 2026-11-10 ran the recipes of `tools/swarm` on bin packing. Each run had 20 minutes alone on one card.
+The table gives the test excess for seeds 1, 2 and 3. Best fit scores 4.14.
+
+| Recipe | Seed 1 | Seed 2 | Seed 3 |
+|---|---|---|---|
+| `s2s-combine`: think 8, combine with the parent last, 4 forks at T 1.0 | **0.66** | **2.00** | **1.04** |
+| warm: system prompts, the card's think and distill, forks at T 0.7 | 0.72 | 3.85 | 3.95 |
+| warm with 16 latent steps on the distill | 3.94 | 3.94 | 1.60 |
+| warm with a prime pass of 384 tokens | 3.24 | 4.11 | 3.93 |
+| card: forks at T 0.1, top_k 50 | 4.14 | | |
+| ladder: forks at T 0.3, 0.6, 0.9 and 1.2 | 1.89 | 4.21 | 3.94 |
+| contrast: each fork is a joined pair, the plan against no plan | 3.97 | 3.90 | 2.83 |
+
+What the trials show:
+
+- `s2s-combine` won each seed. It is the only recipe that is strong on all three.
+- Care costs exploration. The recipes with more valid programs found less. The card's forks gave 146 programs of
+  1,576 that differ, and 88% had the score of their parent. The best runs had 57% to 73% valid programs.
+- A prime pass costs too many rounds: about 420 programs in 20 minutes, against about 850.
+- Latent steps on the distill won one seed of three. They are not a reliable gain on this task.
+- The ladder spread its rare gains over each temperature. Fixed forks at T 1.0 did better.
+- Contrast pushed the forks off the parent, but mostly into code that fails: 34% to 45% valid.
+- The joined distill of 8 contexts needs each slot of its card at once. Beside 4 rounds in flight, it stayed busy, and
+  each of the 3 runs stopped after about 18 minutes with no gain. A joined call needs a reserved slot set, or fewer
+  contexts.
+
 ## Swarms on both cards
 
 Amy, 2026-11-10: "over time I'm wondering if swarms could run on both cards, so we can do 16x experiments, or 8x with
