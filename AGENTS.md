@@ -796,6 +796,18 @@ senpai may stop and start the web app on b70host at will (`python3 tools/nagaya_
     6. **Latent swarm.** The task of step 1 with latent agents and a merged summarizer. Compare it with the text
        swarm. Stop if it gives no gain.
 
+    Step 1 ran on 2026-11-09 (`docs/swarm-ideas.md`, "The first trials"). One summary of 8 ideas never beat best fit,
+    and a vote that picked one idea gave the best result. Amy, 2026-11-10: "I feel like we shouldn't try to get good
+    code out of the thinking swarm. we need to distill it into something focused". She put two steps before step 4:
+
+    - **1a. Plan, then code.** Swarm 1 thinks, one step distills, and forks of one context code the plan. Also run the
+      summary with the parent last. This needs no new nagaya code.
+    - **1b. Joined forks.** The lab route `ensemble` (`docs/lab.md`), with the rules `logprob_sum`, `prob_mean` and
+      `contrast`. Card gate: one context gives the bits of the same generation. Compare the rules on the code step and
+      on the distill step.
+
+    A tune of the distill step, and a coder from `LFM3-1.7B-Base`, wait for another day (Amy, 2026-11-10).
+
     Each stop and start of `nagaya.service` goes into `signoff.md`.
 30. Stop and ask Amy for the next milestone.
 

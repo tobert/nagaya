@@ -153,11 +153,73 @@ Amy is thinking about a text swarm in kaijutsu. The nagaya gives it these parts 
   latent steps.
 - A decision pools the agents' answers to a fixed question.
 
-Batched passes are what it lacks. Today the agents of a round run one after the other on `lfm3`.
+Milestone 27 added batched passes, so 8 agents of a round decode in one pass on `lfm3`.
+
+## The first trials
+
+Milestone 29 step 1 ran on 2026-11-09 and 2026-11-10, on b70host. The task is online bin packing, after
+FunSearch: 5 sets of 5,000 items, with sizes from a Weibull shape. A program is one numpy expression that scores
+each bin. The score is the percent of excess bins over the lower bound. Best fit scores 4.08 on the train seed and
+4.14 on the test seed. A sandbox with no network runs each program on the CPU.
+
+Each run had 20 minutes on `lfm3`. The modes:
+
+- **direct:** 8 calls at once. Each call mutates a parent into a new program.
+- **swarm:** 16 agents write ideas. A novelty filter keeps 8, and one summary writes the code from all 8.
+- **hint:** direct, with one focus line at random.
+- **pick:** 8 agents write ideas, one idea is picked, and one call codes it. The pick is by consensus (the idea
+  nearest the others in embedding space) or by vote (the model names a number).
+
+| Mode | Seed | Programs | Valid | Train | Test |
+|---|---|---|---|---|---|
+| direct | 1 | 2,488 | 82% | 1.58 | 1.26 |
+| direct | 2 | 2,521 | 92% | 3.92 | 3.92 |
+| swarm | 1 | 193 | 43% | 4.08 | 4.14 |
+| swarm | 2 | 191 | 67% | 4.08 | 4.14 |
+| hint | 1 | 2,682 | 61% | 3.92 | 3.94 |
+| hint | 2 | 2,422 | 95% | 2.81 | 2.83 |
+| pick, consensus | 1 | 341 | 60% | 3.95 | 3.92 |
+| pick, consensus | 2 | 335 | 76% | 4.08 | 4.14 |
+| pick, vote | 1 | 320 | 88% | 1.20 | 0.97 |
+| pick, vote | 2 | 325 | 77% | 4.08 | 4.14 |
+
+What the logs show:
+
+- The summary of 8 ideas never beat best fit. 30% of its programs were a constant, such as `return 0.0`. Direct
+  gave 1% constants, and pick by vote gave 4%.
+- In the summary prompt, the parent program ends 434 tokens before the first code token. LFM3's sliding layers see
+  256 positions, and its convolutions are local. Thus only the 6 full attention layers see the program that changes.
+  In pick mode, the gap is 128 tokens. This is a hypothesis, and a trial with the parent last tests it.
+- 91% of the valid programs of direct scored the same as their parent. Only 0.2% to 0.6% of valid programs improved.
+- The best result is pick by vote on seed 1. Each mode won on at most one seed, so two seeds decide nothing.
+
+## Plan, then code
+
+Amy, 2026-11-10: "I feel like we shouldn't try to get good code out of the thinking swarm. we need to distill it into
+something focused". LFM3 writes good ideas at a high temperature, but it loses precision in a long context. Thus a
+round has three parts:
+
+1. **Swarm 1 thinks.** Agents write short ideas at a high temperature.
+2. **One step distills.** A vote picks one idea, or one call combines the ideas into one plan of two sentences.
+3. **Swarm 2 codes.** Forks of one context code the plan. The store shares their prefix, so a fork costs little.
+
+The forks of swarm 2 can end in two ways:
+
+- **Independent forks** give K programs, and the evaluator or a vote picks after. This needs no nagaya code.
+- **Joined forks** give one reply. Each step combines the K logit rows into one, the sampler picks one token, and
+  all K contexts take it. This needs a lab route (`docs/lab.md`, "`ensemble`").
+
+Joined forks can also do the distill step. Each fork holds the problem, the parent and one idea, and together they
+write the plan. No one context reads every idea, so the sliding window does not cut the parent.
+
+Two ideas wait for another day. A small tune of the distill step could learn from the logged plans and the scores of
+their code. `LiquidAI/LFM3-1.7B-Base` could become a narrow coder.
 
 ## Open questions
 
 - Is a context's bits dependent on its batch acceptable for any served model?
 - Do the 6 full attention layers of LFM3 carry enough between agents? A trial on the card can answer this.
+- Does the summary fail because the parent is outside the sliding window? The trial with the parent last answers it.
+- Which rule of joined forks helps: the sum of the log probabilities, the mean of the probabilities, or a contrast?
 - Is the merge a council v2 feature, or a lab route first (`/nagaya/v1/lab/`)?
 - Does a swarm round run as one job, or does the client drive it with many requests?
