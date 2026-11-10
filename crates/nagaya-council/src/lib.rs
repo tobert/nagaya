@@ -5,6 +5,7 @@ pub mod build;
 pub mod continuation;
 pub mod control;
 pub mod decision;
+pub mod ensemble;
 pub mod family;
 pub mod read;
 pub mod sampler;
