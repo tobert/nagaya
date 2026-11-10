@@ -92,6 +92,15 @@
 # audio_out.safetensors, lfm3-omni.audio_out.json (--stages audio-out, not in the default; after speech): the TTS run
 #   of speech.safetensors as an assistant audio part (spec 11.11, "Read it back"). ids [P] with one <|audio_out|> for
 #   each frame and the end frame; codes [F, 12] without the end frame; rows [F + 1, 2048] the summed codebook rows.
+# lfm3.latent.safetensors (--stages latent, not in the default): the latent gate of LFM3-1.7B (docs/lab.md,
+#   "`latent` and `merge`"). The prompt is LATENT_PROMPT of the tool, as one user message with thinking off. S = 16.
+#   ids [P] i64                      the prompt ids
+#   scale [1]                        the mean norm of the embedding rows
+#   inputs [S, 2048]                 the input row of each latent step
+#   final_norm [S, 2048]             the hidden state after each latent step, through the final norm
+#   mean [2048]                      the mean of final_norm
+#   top_ids [S, 64] i64, top_values [S, 64]            the top logits of each latent step
+#   then_tokens [8] i64, then_top_ids [8, 64] i64, then_top_values [8, 64]   greedy tokens after the steps
 # lfm3.project.safetensors (--stages project, not in the default): the project gate of LFM3-1.7B (docs/lab.md). It
 #   reads lfm3.control.safetensors, so run the control stage first. For each layer l in 0, 12 and 23, u is the weight
 #   of the final norm times vector[l], with no division by its root mean square, and the scores are the head of u.

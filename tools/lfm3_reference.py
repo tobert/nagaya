@@ -19,6 +19,8 @@ The stages, each with its own gate:
            It is not in the default stages; name it with --stages control.
   project  LFM3-1.7B only: the vector of the control stage through the final norm's weight and the head (lab.md).
            It reads the file of the control stage. It is not in the default stages; name it with --stages project.
+  latent   LFM3-1.7B only: 16 latent steps after a prompt, then 8 greedy tokens (lab.md, "`latent` and `merge`").
+           It is not in the default stages; name it with --stages latent.
 
 The tool stops with an AssertionError when a self check fails. The checks:
 
@@ -969,6 +971,71 @@ def codec_cache(codec):
     return module.LiquidCodecStreamingCache(codec.config)
 
 
+LATENT_PROMPT = "Plan a short story about a lighthouse keeper who finds a map. Think before you write."
+LATENT_STEPS = 16
+LATENT_THEN = 8
+
+
+def run_latent(model, backbone, lm_head, tokenizer, out, facts):
+    """The latent gate of LFM3-1.7B (docs/lab.md, "`latent` and `merge`"). After the prompt, each latent step feeds
+    the input of the head (the residual after the last layer, through the final norm), scaled to the mean norm of the
+    embedding rows, as the input row of the next position. Then greedy tokens go on from the latent context.
+
+    The stage checks that the final norm of the last layer's residual is the hidden state of the model, and that the
+    head is the embedding table, so the map of LatentMAS is a scale only.
+    """
+    _, ids = chat_ids(tokenizer, LATENT_PROMPT)
+    table = backbone.embed_tokens.weight.detach().float()
+    check(bool(torch.equal(lm_head.weight, backbone.embed_tokens.weight)), "the head is the embedding table")
+    scale = float(table.norm(dim=1).mean())
+    norm = backbone.embedding_norm
+    inputs, normed, top_ids, top_values = [], [], [], []
+    with torch.no_grad():
+        tap = LayerTap(backbone)
+        out_ = model(input_ids=torch.tensor([ids]), use_cache=True)
+        last = backbone.config.num_hidden_layers - 1
+        h = tap.outputs["final_norm"][0, -1]
+        close(norm(tap.outputs[f"layer{last}"][0, -1:])[0], h, 1e-5, "the final norm of the last residual")
+        for _ in range(LATENT_STEPS):
+            row = h * (scale / h.norm())
+            inputs.append(row)
+            out_ = model(inputs_embeds=row.view(1, 1, -1), past_key_values=out_.past_key_values, use_cache=True)
+            h = tap.outputs["final_norm"][0, -1]
+            normed.append(h)
+            logits = out_.logits[0, -1].float()
+            top = torch.topk(logits, TOP)
+            top_ids.append(top.indices)
+            top_values.append(top.values)
+        tap.remove()
+        then, then_ids, then_values = [], [], []
+        for _ in range(LATENT_THEN):
+            logits = out_.logits[0, -1].float()
+            token = int(torch.argmax(logits))
+            top = torch.topk(logits, TOP)
+            then.append(token)
+            then_ids.append(top.indices)
+            then_values.append(top.values)
+            out_ = model(input_ids=torch.tensor([[token]]), past_key_values=out_.past_key_values, use_cache=True)
+    tensors = {
+        "ids": torch.tensor(ids, dtype=torch.int64),
+        "scale": torch.tensor([scale]),
+        "inputs": torch.stack(inputs),
+        "final_norm": torch.stack(normed),
+        "mean": torch.stack(normed).mean(0),
+        "top_ids": torch.stack(top_ids),
+        "top_values": torch.stack(top_values),
+        "then_tokens": torch.tensor(then, dtype=torch.int64),
+        "then_top_ids": torch.stack(then_ids),
+        "then_top_values": torch.stack(then_values),
+    }
+    read = [tokenizer.decode([int(t[0])]) for t in top_ids]
+    meta = {"model": "lfm3", "prompt": LATENT_PROMPT, "steps": LATENT_STEPS, "then": LATENT_THEN,
+            "versions": versions()}
+    save(tensors, Path(out) / "lfm3.latent.safetensors", meta)
+    facts["lfm3_latent"] = {"steps": LATENT_STEPS, "scale": scale, "read": read, "then": tokenizer.decode(then)}
+    log(f"latent: scale {scale:.4f}, read {read!r}, then {tokenizer.decode(then)!r}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--omni", required=True, type=Path)
@@ -988,7 +1055,7 @@ def main():
     facts = json.loads(facts_path.read_text()) if facts_path.exists() else {}
     facts["versions"] = versions()
 
-    if stages & {"text", "control", "project"}:
+    if stages & {"text", "control", "project", "latent"}:
         log("load LFM3-1.7B")
         model = AutoModelForCausalLM.from_pretrained(
             args.text, dtype=torch.float32, attn_implementation="eager", trust_remote_code=True
@@ -1002,6 +1069,8 @@ def main():
                         facts)
         if "project" in stages:
             run_project(model.model, model.lm_head, tokenizer, args.out, facts)
+        if "latent" in stages:
+            run_latent(model, model.model, model.lm_head, tokenizer, args.out, facts)
         del model
 
     if stages & {"text", "vision", "audio", "speech", "control-omni", "video", "audio-out"}:
