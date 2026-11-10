@@ -322,6 +322,40 @@ POST /nagaya/v1/lab/compose
 4. Try it: a generation with a control item, with `layers` for the strength of each layer (spec 11.12).
 5. Trace one reply with `lens: "jlens"`, and count the replies that you want over a prompt set. Go to step 2.
 
+## `latent` and `merge`: the parts of a swarm
+
+**Proposed** (Claude Opus 5.5, 2026-11-09, milestone 29 step 2). Amy chose a text swarm first, then latent steps and
+the merge as a pair (`docs/swarm-ideas.md`). Reason for the shape: each route makes a held snapshot, so a generation,
+a decision or another route continues from it with no new member.
+
+```json
+POST /nagaya/v1/lab/latent
+{"model": "lfm3", "from": "blake3:…", "steps": 40, "read": true}
+-> {"model": "lfm3", "snapshot": "blake3:…", "steps": 40, "mean": "blake3:…",
+    "read": [{"id": 3290, "text": " story"}, …]}
+
+POST /nagaya/v1/lab/merge
+{"model": "lfm3", "parts": [{"from": "blake3:…", "start": 0, "end": 410},
+                            {"from": "blake3:…", "start": 380, "end": 420}, …]}
+-> {"model": "lfm3", "snapshot": "blake3:…", "positions": 1610}
+```
+
+- **A latent step** feeds the last hidden state as the input row of the next position. The hidden state is the input
+  of the head: the residual after the last layer, through the final norm. The engine scales it to the mean norm of the
+  embedding rows. LFM3's embeddings are tied, so this is the map of LatentMAS with a ridge weight near 0.
+- **`from`** is a held snapshot of the model. `steps` is 1 to 256. The result is a new held snapshot, and its recipe
+  names `from`, the step count and the map (spec 6.12).
+- **`mean`** is an object of `width` f32 values: the mean hidden state of the steps. A novelty filter reads it.
+- **`read: true`** also gives the top token of the logit row of each step. The token does not go into the context.
+  It is a view of the agent, as a trace is.
+- **A merge part** names a held snapshot and a range of its positions. The merge puts the ranges in list order, with
+  no gap. The key of each row at each full attention layer turns from its old position to its new one. A value does
+  not change. A sliding layer keeps the last 256 positions, and the convolution state comes from the last part.
+- **Bits.** A merge is not the bits of a pass over the same tokens, because two rotations round apart from one. Thus
+  its recipe names each part and the order, not the tokens.
+- **Errors.** A snapshot of another model or other weights is a 400 that names `from` or `parts[i].from`. A range
+  outside its snapshot is a 400 that names `parts[i]`.
+
 ## Where the routes live
 
 Decided 2026-11-07 (Amy: "ok yeah, start on /nagaya/v1/lab/"): put `project` and `trace` on nagaya routes under

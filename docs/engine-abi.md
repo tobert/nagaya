@@ -1397,6 +1397,21 @@ the LFM3 engine:
 - Omni's speech frames stay one context in a pass.
 - The change of path gives a new engine identity, so each held context fills again once (12.1).
 
+### Latent rows of LFM3
+
+**Proposed** by Claude Opus 5.5, 2026-11-09, for milestone 29 step 4 (`docs/lab.md`, "`latent` and `merge`"). Amy
+decides.
+
+- **A latent span.** A new kind of media span carries rows of `width` f32 values. The pass copies each row over the
+  embedding row of its placeholder, with no encoder. Its `meta` names the first position and the count.
+- **The first loop is on the host.** Each step is a pass of one position with a latent span and the tap of the
+  residual after the last layer. A client that reads along also wants the logit row. The host applies the final
+  norm and the scale, and it gives the row to the next pass. Reason: this needs no new kernel, and the trial says if a
+  loop on the card is worth it.
+- **The rows of the merge.** The host reads the K and V rows of each part with `cells_read`. It turns the keys of the
+  full attention layers, and it writes the result with `cells_write`. The rotated half of a key turns by the difference
+  of its new and old positions, with the theta of its layer.
+
 ## Control vectors
 
 Proposed by Claude Opus 5.5, 2026-11-07, for milestone 25 (spec 11.12). Amy decided the operations, the context
