@@ -173,10 +173,30 @@ model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-1.7B/sna
 [engines.lab]
 jlens = "/home/atobey/.local/share/nagaya/lens/lfm3.jlens.safetensors"
 
+# A second LFM3-1.7B on card 1, on demand, so a swarm runs 16 contexts on both cards (milestone 29; Amy, 2026-11-10:
+# "over time I'm wondering if swarms could run on both cards"). It is its own served model, because a served name is
+# the id of one model in the cluster (milestone 23). It holds about 12 GB, and an SDXL engine plans 21 GB, so a load
+# of an image engine on card 1 names `lfm3-1` in `unload`.
+[[engines]]
+name = "lfm3-1"
+kind = "mk-lfm3-bmg"
+devices = [1]
+share = 1
+pin_identity = false
+residency = "on_demand"
+
+[engines.config]
+model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-1.7B/snapshots/0dc4268b561499c648c7ba7c9466bf3d8d01517a"
+slots = 8
+
+[engines.family]
+model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-1.7B/snapshots/0dc4268b561499c648c7ba7c9466bf3d8d01517a"
+
 # One budget for each card's device memory, and one for host memory (spec 4.1). Each B70 has 32 GiB of GDDR6
 # (BAR 2 of `resource`, spec 2.1). The budget of a card is all of it: the device has no safety floor. The plan of
 # this profile gives 29,964,945,932 bytes of mandatory terms on device 0 and 31,889,794,060 on device 1, and
 # 1,515,343,872 in host memory (`crates/nagaya/tests/deploy.rs`, 2026-10-21). Card 1 has about 2.3 GB left.
+
 [[budgets]]
 tiers = ["device(0)"]
 bytes = 34359738368

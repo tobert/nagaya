@@ -281,7 +281,7 @@ fn the_b70host_profile_names_the_gemma4_engine_on_both_cards() {
     let profile = b70host_profile();
     assert_eq!(
         profile.engines.len(),
-        11,
+        12,
         "gemma, the speech engine, five image engines on demand, the pinned embedding engine, inpaint-0 and the two \
          LFM3 models"
     );
@@ -504,7 +504,7 @@ fn the_b70host_profile_names_an_image_engine_on_demand_on_each_card() {
     let profile = b70host_profile();
     assert_eq!(
         profile.engines.len(),
-        11,
+        12,
         "the image engines follow gemma and the speech engine"
     );
     for (engine, (name, device)) in profile.engines[2..4].iter().zip([("sdxl-0", 0), ("sdxl-1", 1)]) {
@@ -527,7 +527,7 @@ fn the_b70host_profile_names_pony_on_card_zero_and_autismmix_on_card_one() {
     // Amy, 2026-10-28: Pony V6 and AutismMix from Civitai, beside SDXL base, one engine on each card. The profile
     // names the files; this test checks only their form.
     let profile = b70host_profile();
-    assert_eq!(profile.engines.len(), 11);
+    assert_eq!(profile.engines.len(), 12);
     // Amy, 2026-10-29: SDXL-Lightning 4-step, a single file on card 0, shares that card with pony-0 (spec 11.9a).
     let singles = [("pony-0", 0), ("autismmix-1", 1), ("lightning-0", 0)];
     for (engine, (name, device)) in profile.engines[4..7].iter().zip(singles) {
@@ -627,7 +627,11 @@ fn the_b70host_profile_names_the_inpainting_engine_on_demand_on_card_one() {
 #[test]
 fn the_b70host_profile_names_both_lfm3_models_resident_on_card_zero() {
     let profile = b70host_profile();
-    assert_eq!(profile.engines.len(), 11, "the two LFM3 models come last");
+    assert_eq!(
+        profile.engines.len(),
+        12,
+        "the two LFM3 models of card 0 follow inpaint-0"
+    );
     for (engine, (name, repo, snapshot)) in profile.engines[9..].iter().zip([
         (
             "lfm3-omni",
@@ -837,4 +841,26 @@ fn the_address_wait_passes_a_present_address_and_fails_an_absent_one() {
         message.contains("192.0.2.1"),
         "the message names the address: {message}"
     );
+}
+
+/// Amy, 2026-11-10 (milestone 29): a second `LFM3-1.7B` on card 1, on demand, so a swarm runs on both cards. It is
+/// its own served model, and it reads the snapshot folder of `lfm3`.
+#[test]
+fn the_b70host_profile_names_lfm3_1_on_demand_on_card_one() {
+    let profile = b70host_profile();
+    let engine = profile.engines.last().unwrap();
+    assert_eq!(
+        (engine.name.as_str(), engine.kind.as_str()),
+        ("lfm3-1", nagaya::lfm3::KIND)
+    );
+    assert_eq!(engine.devices, vec![1]);
+    assert_eq!(
+        engine.residency,
+        Residency::OnDemand,
+        "an image engine of card 1 needs the room"
+    );
+    assert!(!engine.pinned);
+    let lfm3 = profile.engines.iter().find(|e| e.name == "lfm3").unwrap();
+    assert_eq!(engine.config, lfm3.config, "the same weights and slots as lfm3");
+    assert_eq!(engine.family, lfm3.family);
 }
