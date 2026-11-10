@@ -1312,9 +1312,11 @@ NVMe tier has 50 GiB. A refused put still changes nothing: the store checks the 
 
 **A put of held bytes in another tier is a hit.** **Proposed** (Claude Opus 5.5, 2026-11-10). A put of bytes that the
 store holds live, under the same recipe and parent, gives the id of that entry. The entry stays in its tier. Reason:
-the store holds the bytes, so the put has nothing to do. Before this rule, the store refused such a put, and the
-process stopped (spec 8.5). It happened live on 2026-11-10 (`signoff.md`). Two builds of one prefix both missed, the
-first put moved to NVMe as a victim, and the second put asked for the host tier.
+the store holds the bytes, so the put has nothing to do.
+
+Before this rule, the store refused such a put, and the process stopped (spec 8.5). It happened live on 2026-11-10
+(`signoff.md`). Two builds of one prefix both missed, the first put moved to NVMe as a victim, and the second put asked
+for the host tier.
 
 **6.10 Pins.** A pin is a lease on a snapshot, with an owner and an expiry (mkviolet v2: one day at most). A request
 pin holds a snapshot from its lookup to the end of its load. Pins stay through a restart (mkviolet `pins.json`).
