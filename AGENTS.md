@@ -834,18 +834,27 @@ senpai may stop and start the web app on b70host at will (`python3 tools/nagaya_
        Amy decides each Proposed note.
     4. **The process.** The scheduler and the drivers join the decode quanta of mk. Test it first on a fake engine
        with `segments_exact` and no feed rule. `ensemble` joins mk's forks too.
-    5. **Deploy and measure.** Decode tokens each second at 1, 4, 8 and 16 contexts. A reply among 16 must be the
+    5. **mk's spin bound.** On 2026-11-10, mk stopped twice on a spin-timeout while a cargo build ran beside it. A
+       barrier wait counts 1 s of wall clock (`hip/src/rt/rt.h:97`), so a paused queue looks like a hang. Amy chose
+       to fix it before the deploy, with Qwen-Image resident until the fix passes. Do these in order:
+       - Record the poll count of a spin-timeout beside its wall time. Then make the stop again with a build beside
+         mk. Few polls in a second of wall time show a pause. Stop and report if they do not.
+       - A spin stops when about 1 s of polls and 1 s of wall clock have both passed. A real hang still stops in
+         about 1 s of polls, so the gfx ring keeps its margin (`rt.h:93-95`).
+       - Card gates: `MK_MUTATE_STALL_BARRIER` forces a hang, and the pass still stops in about 1 s. The stress run
+         with a build beside mk passes.
+    6. **Deploy and measure.** Decode tokens each second at 1, 4, 8 and 16 contexts. A reply among 16 must be the
        reply alone. Run the gogi suite for Qwen3.8.
-    6. **Docs.** The tap hook of mk in engine-abi: "the residual after layer `l`", with the head's row as the last
+    7. **Docs.** The tap hook of mk in engine-abi: "the residual after layer `l`", with the head's row as the last
        layer. Also the latent rows of mk: the placeholder, the scale and the record. Amy decides each Proposed note.
-    7. **Oracle fixture.** The residual after each layer, and latent steps with the logits after each, from the
+    8. **Oracle fixture.** The residual after each layer, and latent steps with the logits after each, from the
        reference on the CPU (8.3).
-    8. **The tap hook.** A general hook on mk, not one for the head's row alone. Later milestones read it for
+    9. **The tap hook.** A general hook on mk, not one for the head's row alone. Later milestones read it for
        control vectors, `project` and `trace` (Amy, 2026-11-10: "let's get the tap hook earlier in the plan").
        Card gates: a pass with a tap gives the bits of the same pass with none, and the rows match the oracle.
-    9. **The latent span.** The latent span on mk. Card gate: the latent row of the placeholder's embedding gives
+    10. **The latent span.** The latent span on mk. Card gate: the latent row of the placeholder's embedding gives
        the bits of the placeholder token.
-    10. **Route and trial.** `ensemble` with `latent` on Qwen3.8. Deploy, then run a trial with Amy.
+    11. **Route and trial.** `ensemble` with `latent` on Qwen3.8. Deploy, then run a trial with Amy.
 
     Each stop and start of `nagaya.service` goes into `signoff.md`.
 31. Stop and ask Amy for the next milestone.
