@@ -843,10 +843,11 @@ fn the_address_wait_passes_a_present_address_and_fails_an_absent_one() {
     );
 }
 
-/// Amy, 2026-11-10 (milestone 29): a second `LFM3-1.7B` on card 1, on demand, so a swarm runs on both cards. It is
-/// its own served model, and it reads the snapshot folder of `lfm3`.
+/// Amy, 2026-11-10 (milestone 29): a second `LFM3-1.7B` on card 1, so a swarm runs on both cards. It is its own
+/// served model, and it reads the snapshot folder of `lfm3`. It is resident, because the process refuses a text model
+/// on demand with a `family` table (`admission.rs`): the start of 12:49 on 2026-11-10 failed with exit 3.
 #[test]
-fn the_b70host_profile_names_lfm3_1_on_demand_on_card_one() {
+fn the_b70host_profile_names_lfm3_1_resident_on_card_one() {
     let profile = b70host_profile();
     let engine = profile.engines.last().unwrap();
     assert_eq!(
@@ -856,8 +857,8 @@ fn the_b70host_profile_names_lfm3_1_on_demand_on_card_one() {
     assert_eq!(engine.devices, vec![1]);
     assert_eq!(
         engine.residency,
-        Residency::OnDemand,
-        "an image engine of card 1 needs the room"
+        Residency::Resident,
+        "a text model on demand is not built"
     );
     assert!(!engine.pinned);
     let lfm3 = profile.engines.iter().find(|e| e.name == "lfm3").unwrap();

@@ -218,9 +218,10 @@ their code. `LiquidAI/LFM3-1.7B-Base` could become a narrow coder.
 ## Swarms on both cards
 
 Amy, 2026-11-10: "over time I'm wondering if swarms could run on both cards, so we can do 16x experiments, or 8x with
-other work going on". The profile of b70host names `lfm3-1`, a second `LFM3-1.7B` on card 1, on demand. With it
-loaded, a swarm has 16 slots: 8 on each card. It holds about 12 GB, and an SDXL engine plans 21 GB. Thus an image
-engine of card 1 needs `lfm3-1` unloaded first, through the load routes (spec 3.3b).
+other work going on". The profile of b70host names `lfm3-1`, a second `LFM3-1.7B` on card 1. It is resident,
+because the process builds no text model on demand. Thus a swarm has 16 slots: 8 on each card. It holds about 12 GB,
+and an SDXL engine plans 21 GB. Thus an image engine of card 1 needs `lfm3-1` unloaded first, through the load routes
+(spec 3.3b).
 
 - A client spreads its agents over `lfm3` and `lfm3-1`. The two engines have the same identity, so a prefix that one
   held can serve the other from the store.

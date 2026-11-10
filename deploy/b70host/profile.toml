@@ -173,17 +173,17 @@ model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-1.7B/sna
 [engines.lab]
 jlens = "/home/atobey/.local/share/nagaya/lens/lfm3.jlens.safetensors"
 
-# A second LFM3-1.7B on card 1, on demand, so a swarm runs 16 contexts on both cards (milestone 29; Amy, 2026-11-10:
-# "over time I'm wondering if swarms could run on both cards"). It is its own served model, because a served name is
-# the id of one model in the cluster (milestone 23). It holds about 12 GB, and an SDXL engine plans 21 GB, so a load
-# of an image engine on card 1 names `lfm3-1` in `unload`.
+# A second LFM3-1.7B on card 1, so a swarm runs 16 contexts on both cards (milestone 29; Amy, 2026-11-10: "over time
+# I'm wondering if swarms could run on both cards"). It is its own served model, because a served name is the id of
+# one model in the cluster (milestone 23). It is resident: a text model on demand is not built (admission.rs, "a text
+# model on demand"), and its family table needs the snapshot folder. It holds about 12 GB, and an SDXL engine plans
+# 21 GB, so a load of an image engine on card 1 names `lfm3-1` in `unload`.
 [[engines]]
 name = "lfm3-1"
 kind = "mk-lfm3-bmg"
 devices = [1]
 share = 1
 pin_identity = false
-residency = "on_demand"
 
 [engines.config]
 model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-1.7B/snapshots/0dc4268b561499c648c7ba7c9466bf3d8d01517a"
