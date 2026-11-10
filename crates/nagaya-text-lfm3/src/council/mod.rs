@@ -956,6 +956,12 @@ impl Family for Lfm3Family {
         self.inputs_of(&rendering.media)
     }
 
+    /// Both models take latent rows at positions of `<|pad|>`, the `pad_token_id` of each config.
+    fn latent_record(&self, first: usize, count: usize, width: usize) -> Option<(u32, Vec<u8>)> {
+        let pad = self.tokenizer().token_id(PAD)?;
+        Some((pad, latent_record(first, count, width)))
+    }
+
     fn read_codes(&self, codes: Arc<dyn nagaya_council::family::OutputCodes>) {
         // A service gives its book once, at its attach.
         let _ = self.codes.set(codes);
@@ -993,6 +999,23 @@ pub fn media_record(first: usize, rows: &crate::media::MediaRows) -> Vec<u8> {
     record.extend(word(rows.positions()).to_le_bytes());
     record.extend((first as u64).to_le_bytes());
     for value in shape {
+        record.extend(word(value).to_le_bytes());
+    }
+    record
+}
+
+/// The placeholder of a latent position (engine-abi "Latent rows of LFM3").
+pub const PAD: &str = "<|pad|>";
+
+/// The record of a latent span in `meta`: the kind 5, then the width of a row and three 0. `nagaya-mk-lfm3-bmg` reads
+/// the same layout (`media::decode`).
+pub fn latent_record(first: usize, count: usize, width: usize) -> Vec<u8> {
+    let word = |value: usize| u32::try_from(value).expect("a latent span fits in 32 bits");
+    let mut record = Vec::with_capacity(RECORD_BYTES);
+    record.extend(5u32.to_le_bytes());
+    record.extend(word(count).to_le_bytes());
+    record.extend((first as u64).to_le_bytes());
+    for value in [width, 0, 0, 0] {
         record.extend(word(value).to_le_bytes());
     }
     record

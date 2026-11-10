@@ -236,7 +236,23 @@ impl Family for ToyFamily {
     fn thinks(&self) -> bool {
         true
     }
+
+    /// The fake takes latent rows at positions of the byte 0. Its record names the first position, the count and
+    /// the width, as the LFM3 record does.
+    fn latent_record(&self, first: usize, count: usize, width: usize) -> Option<(u32, Vec<u8>)> {
+        let mut record = Vec::with_capacity(32);
+        record.extend(5u32.to_le_bytes());
+        record.extend((count as u32).to_le_bytes());
+        record.extend((first as u64).to_le_bytes());
+        for value in [width as u32, 0, 0, 0] {
+            record.extend(value.to_le_bytes());
+        }
+        Some((LATENT_TOKEN, record))
+    }
 }
+
+/// The placeholder of a latent position of the toy family: the byte 0.
+pub const LATENT_TOKEN: u32 = 0;
 
 /// A token past the vocabulary is a client error that names `tokens`. `i` is its place in the request.
 fn check_token(i: usize, token: u32) -> Result<(), FamilyError> {

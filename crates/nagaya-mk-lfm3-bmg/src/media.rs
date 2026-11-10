@@ -4,6 +4,7 @@
 //! `meta` holds one record of [`RECORD_BYTES`] bytes for each media span, in the order of the positions. A record is
 //! little-endian: the kind (`u32`), the count of positions (`u32`), the first position (`u64`), then four `u32`. For
 //! an image they are `grid_t`, `grid_h`, `grid_w` and 0. For a clip they are the count of mel frames and three 0.
+//! For a latent span they are the width of a row and three 0.
 //! The rows of the segment are the rows of each span whole, in f32, in the order of the records.
 //!
 //! A span can be longer than a feed block, so a pass can hold only some of its positions. The pass still gets the
@@ -27,6 +28,10 @@ pub const KIND_RUN: u32 = 3;
 /// The kind of the speech of an `assistant` audio part in a record: the codes of its frames, the end frame last
 /// (spec 11.11, "Read it back").
 pub const KIND_CODES: u32 = 4;
+
+/// The kind of a latent span in a record: rows of the width of the residual that take the place of the embedding rows
+/// of their positions (engine-abi "Latent rows of LFM3").
+pub const KIND_LATENT: u32 = 5;
 
 /// The codes of one frame of speech.
 pub const FRAME_CODES: usize = 12;
@@ -59,6 +64,9 @@ pub enum SpanKind {
     /// Frames of speech: one position for each frame, whose row is the sum of its 12 codebook rows. The rows of the
     /// segment are the codes, 12 `u32` for each frame.
     Codes,
+    /// Latent rows: one row of `width` f32 values for each position. The pass copies each row over the embedding row
+    /// of its position, with no encoder.
+    Latent { width: usize },
 }
 
 /// One media span of `meta`.
@@ -82,7 +90,7 @@ impl Span {
         match self.kind {
             SpanKind::Image { grid } => grid.iter().product(),
             SpanKind::Audio { frames } | SpanKind::Run { frames, .. } => frames,
-            SpanKind::Codes => self.count,
+            SpanKind::Codes | SpanKind::Latent { .. } => self.count,
         }
     }
 
@@ -92,6 +100,7 @@ impl Span {
             SpanKind::Image { .. } => PATCH_ROW,
             SpanKind::Audio { .. } | SpanKind::Run { .. } => MEL_ROW,
             SpanKind::Codes => FRAME_CODES,
+            SpanKind::Latent { width } => width,
         }
     }
 
@@ -110,6 +119,7 @@ pub fn encode(spans: &[Span]) -> Vec<u8> {
             SpanKind::Audio { frames } => (KIND_AUDIO, [frames as u32, 0, 0, 0]),
             SpanKind::Run { frames, start } => (KIND_RUN, [frames as u32, start as u32, 0, 0]),
             SpanKind::Codes => (KIND_CODES, [FRAME_CODES as u32, 0, 0, 0]),
+            SpanKind::Latent { width } => (KIND_LATENT, [width as u32, 0, 0, 0]),
         };
         out.extend(kind.to_le_bytes());
         out.extend((span.count as u32).to_le_bytes());
@@ -216,9 +226,22 @@ pub fn decode(meta: &[u8]) -> Result<Vec<Span>, String> {
                 }
                 SpanKind::Codes
             }
+            KIND_LATENT => {
+                let width = rest[0];
+                if width == 0 || rest[1..] != [0, 0, 0] {
+                    return Err(format!(
+                        "media record {i} is a latent span with words {rest:?}; it names the width of its rows, then \
+                         three 0"
+                    ));
+                }
+                if count == 0 {
+                    return Err(format!("media record {i} is a latent span with no positions"));
+                }
+                SpanKind::Latent { width }
+            }
             other => {
                 return Err(format!(
-                    "media record {i} has the kind {other}, not an image, a clip, a run or speech"
+                    "media record {i} has the kind {other}, not an image, a clip, a run, speech or latent rows"
                 ));
             }
         };
@@ -241,6 +264,34 @@ pub struct MediaRules {
     pub audio_out_token: Option<u32>,
     /// True when the engine runs the audio encoder: the model has one.
     pub audio_encoder: bool,
+    /// The placeholder and the width of latent rows, when the engine takes them.
+    pub latent: Option<LatentRule>,
+}
+
+/// The rule of latent rows (engine-abi "Latent rows of LFM3"): the placeholder token of a latent position, and the
+/// width of a row, which is the width of the residual.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LatentRule {
+    pub token: u32,
+    pub width: usize,
+}
+
+impl LatentRule {
+    /// The rule of a model from its `config.json`. The placeholder is `pad_token_id`: at the root for `LFM3-1.7B`, and
+    /// in `text_config` for Omni. The width is the width of the residual.
+    pub fn of(config_text: &str, width: usize) -> Result<LatentRule, String> {
+        let root: serde_json::Value =
+            serde_json::from_str(config_text).map_err(|e| format!("config.json is not JSON: {e}"))?;
+        let pad = match &root["text_config"] {
+            serde_json::Value::Object(text) => &text["pad_token_id"],
+            _ => &root["pad_token_id"],
+        };
+        let token = pad
+            .as_u64()
+            .and_then(|v| u32::try_from(v).ok())
+            .ok_or_else(|| format!("config.json has pad_token_id {pad}, not a token id"))?;
+        Ok(LatentRule { token, width })
+    }
 }
 
 impl MediaRules {
@@ -260,6 +311,17 @@ impl MediaRules {
             SpanKind::Codes => self.audio_out_token.ok_or_else(|| {
                 format!("media record {i} is speech, and this model has no codebook table; send its text only")
             }),
+            SpanKind::Latent { width } => match self.latent {
+                Some(rule) if rule.width == width => Ok(rule.token),
+                Some(rule) => Err(format!(
+                    "media record {i} is a latent span of rows of {width} values, and a row of this model has {} \
+                     values; send rows of the width of the residual",
+                    rule.width
+                )),
+                None => Err(format!(
+                    "media record {i} is a latent span, and this engine takes no latent rows"
+                )),
+            },
             SpanKind::Audio { .. } | SpanKind::Run { .. } => match self.audio_token {
                 Some(token) if self.audio_encoder => Ok(token),
                 Some(_) => Err(format!(
@@ -386,7 +448,98 @@ mod tests {
             video_token: Some(VIDEO),
             audio_out_token: Some(AUDIO_OUT),
             audio_encoder: false,
+            latent: Some(LatentRule {
+                token: PAD,
+                width: 2048,
+            }),
         }
+    }
+
+    const PAD: u32 = 124_893;
+
+    fn latent(first: u64, count: usize, width: usize) -> Span {
+        Span {
+            kind: SpanKind::Latent { width },
+            first,
+            count,
+        }
+    }
+
+    /// A latent span names the width of its rows, and it takes one row of that width for each position (engine-abi
+    /// "Latent rows of LFM3").
+    #[test]
+    fn a_latent_span_goes_through_its_bytes_and_takes_one_row_for_each_position() {
+        let span = latent(30, 2, 2048);
+        let meta = encode(&[span]);
+        assert_eq!(&meta[..4], &KIND_LATENT.to_le_bytes());
+        assert_eq!(&meta[4..8], &2u32.to_le_bytes());
+        assert_eq!(&meta[8..16], &30u64.to_le_bytes());
+        assert_eq!(&meta[16..32], &[0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(decode(&meta).unwrap(), [span]);
+        assert_eq!(span.bytes(), 2 * 2048 * 4);
+        let uses = check_spans(&rules(), &[span], &[PAD, PAD], 30, span.bytes()).unwrap();
+        assert_eq!((uses[0].take.clone(), uses[0].block_row), (0..2, 0));
+        // A block of text before the latent position.
+        let one = latent(32, 1, 2048);
+        let uses = check_spans(&rules(), &[one], &[7, 7, PAD], 30, one.bytes()).unwrap();
+        assert_eq!((uses[0].take.clone(), uses[0].block_row), (0..1, 2));
+    }
+
+    #[test]
+    fn a_latent_span_that_breaks_its_rule_is_refused() {
+        let bad = |edit: &dyn Fn(&mut Vec<u8>), want: &str| {
+            let mut meta = encode(&[latent(0, 1, 2048)]);
+            edit(&mut meta);
+            let e = decode(&meta).unwrap_err();
+            assert!(e.contains(want), "{e}");
+        };
+        bad(
+            &|m| m[16..20].copy_from_slice(&[0; 4]),
+            "latent span with words [0, 0, 0, 0]",
+        );
+        bad(&|m| m[24] = 1, "latent span with words [2048, 0, 1, 0]");
+        bad(&|m| m[4] = 0, "latent span with no positions");
+        // A row of another width, a position that does not hold the placeholder, and rows of another size.
+        let span = latent(0, 1, 1024);
+        let e = check_spans(&rules(), &[span], &[PAD], 0, span.bytes()).unwrap_err();
+        assert!(
+            e.contains("rows of 1024 values") && e.contains("has 2048 values"),
+            "{e}"
+        );
+        let span = latent(0, 1, 2048);
+        let e = check_spans(&rules(), &[span], &[7], 0, span.bytes()).unwrap_err();
+        assert!(e.contains("not the placeholder 124893"), "{e}");
+        let e = check_spans(&rules(), &[span], &[PAD], 0, 4).unwrap_err();
+        assert!(e.contains("need 8192"), "{e}");
+        let none = MediaRules {
+            latent: None,
+            ..rules()
+        };
+        let e = check_spans(&none, &[span], &[PAD], 0, span.bytes()).unwrap_err();
+        assert!(e.contains("takes no latent rows"), "{e}");
+    }
+
+    /// The placeholder of a latent position is `pad_token_id`: at the root of `LFM3-1.7B`, in `text_config` of Omni.
+    #[test]
+    fn the_latent_rule_takes_the_pad_token_of_each_config() {
+        let text = include_str!("../tests/fixtures/lfm3.config.json");
+        let omni = include_str!("../tests/fixtures/lfm3-omni.config.json");
+        assert_eq!(
+            LatentRule::of(text, 2048).unwrap(),
+            LatentRule {
+                token: PAD,
+                width: 2048
+            }
+        );
+        assert_eq!(
+            LatentRule::of(omni, 2048).unwrap(),
+            LatentRule {
+                token: PAD,
+                width: 2048
+            }
+        );
+        let e = LatentRule::of(r#"{"pad_token_id": "x"}"#, 2048).unwrap_err();
+        assert!(e.contains("pad_token_id \"x\""), "{e}");
     }
 
     fn image(first: u64, grid_h: usize, grid_w: usize) -> Span {

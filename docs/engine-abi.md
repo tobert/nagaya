@@ -1412,6 +1412,17 @@ decides.
   full attention layers, and it writes the result with `cells_write`. The rotated half of a key turns by the difference
   of its new and old positions, with the theta of its layer.
 
+**Proposed** by Claude Opus 5.5, 2026-11-10, for milestone 29 step 4: the layout of a latent span. Reason: the note
+above leaves the record and the placeholder open, and the engine must check both.
+
+- **The record.** The kind is 5. The first of the four words is the width of a row, and the other three are 0.
+- **The placeholder.** A latent position holds `pad_token_id` of `config.json`: `<|pad|>`, id 124,893 in both models.
+  The family names the same token. A latent row of another width is refused.
+- **The declaration.** `LFM3-1.7B` keeps `inputs: tokens`. A latent span is a lab input, and no council route sends
+  rows to the text model.
+- **The copy.** The host writes the rows into the buffer of the normed rows. A copy puts them over the embedding rows
+  after the embedding. Thus the text model needs no vision tower for it.
+
 ## Control vectors
 
 Proposed by Claude Opus 5.5, 2026-11-07, for milestone 25 (spec 11.12). Amy decided the operations, the context

@@ -16,6 +16,7 @@ use axum::routing::post;
 use gogi_proto::Invalid;
 use gogi_proto::generation::GenerationRequest;
 use nagaya_council::ensemble::{Combine, EnsembleError, combine};
+use nagaya_council::latent::LatentMap;
 use nagaya_council::trace::{Lens, Readout, Trace};
 use nagaya_mk_lfm3_bmg::lab::{Entry, Facts, JLens, LensError, Unembedding, ends_of, rank};
 use serde::{Deserialize, Serialize};
@@ -26,6 +27,7 @@ use super::routes::{answer, bytes};
 use super::{Council, RequestId, Served};
 use crate::council::control;
 use crate::council::error::ServiceError;
+use crate::council::generations::Latent;
 use crate::council::trace::{JLENS, ModelFacts, TraceMembers};
 
 type Shared = State<Arc<Council>>;
@@ -535,7 +537,7 @@ async fn trace(State(council): Shared, Extension(id): Id, body: Body) -> Respons
 }
 
 /// The members of an ensemble request (`docs/lab.md`, "`ensemble`").
-const ENSEMBLE_MEMBERS: [&str; 7] = [
+const ENSEMBLE_MEMBERS: [&str; 8] = [
     "model",
     "contexts",
     "combine",
@@ -543,7 +545,61 @@ const ENSEMBLE_MEMBERS: [&str; 7] = [
     "strength",
     "max_tokens",
     "sample",
+    "latent",
 ];
+
+/// The member `latent` of an ensemble request (docs/lab.md, "Latent steps in a request"): the steps and the read. A
+/// member of another type, or another member, is a 400 that names it.
+fn latent_member(value: &Value) -> Result<(usize, bool), Failure> {
+    let refuse = |param: &str, message: String| Failure::from(invalid(param, format!("nothing ran: {message}")));
+    let Value::Object(map) = value else {
+        return Err(refuse(
+            "latent",
+            format!("latent is {value}; send an object with steps and read"),
+        ));
+    };
+    if let Some(other) = map.keys().find(|key| !["steps", "read"].contains(&key.as_str())) {
+        return Err(refuse(
+            &format!("latent.{other}"),
+            format!("latent has no member {other}; its members are steps and read"),
+        ));
+    }
+    let most = nagaya_council::latent::MAX_STEPS;
+    let steps = match map.get("steps") {
+        None => 0,
+        Some(steps) => steps.as_u64().filter(|steps| *steps <= most as u64).ok_or_else(|| {
+            refuse(
+                "latent.steps",
+                format!("latent.steps is {steps}; send a whole number from 0 to {most}"),
+            )
+        })? as usize,
+    };
+    let read = match map.get("read") {
+        None => false,
+        Some(read) => read
+            .as_bool()
+            .ok_or_else(|| refuse("latent.read", format!("latent.read is {read}; send true or false")))?,
+    };
+    Ok((steps, read))
+}
+
+/// The map of a latent step of the model in `dir`, from its checkpoint: the final norm and the mean norm of the rows of
+/// its table.
+fn latent_map(served: &Served, dir: &Path) -> Result<LatentMap, ServiceError> {
+    let head = Unembedding::open(dir).map_err(|error| {
+        ServiceError::internal(format!(
+            "the lab cannot read the checkpoint of {}: {error}",
+            served.service.model()
+        ))
+    })?;
+    Ok(LatentMap {
+        layers: head.layers() as usize,
+        width: head.width(),
+        norm: head.norm().to_vec(),
+        eps: head.eps(),
+        scale: head.mean_row_norm(),
+    })
+}
 
 /// The strength of `contrast` when the request sends none.
 const CONTRAST_STRENGTH: f64 = 0.5;
@@ -566,7 +622,8 @@ async fn ensemble(State(council): Shared, Extension(id): Id, body: Body) -> Resp
             .get("model")
             .and_then(Value::as_str)
             .ok_or_else(|| refuse("model", "send the model"))?;
-        council.lab_model(model)?;
+        let (lab_served, dir) = council.lab_model(model)?;
+        let latent = map.get("latent").map(latent_member).transpose()?;
         let contexts = map
             .get("contexts")
             .and_then(Value::as_array)
@@ -630,15 +687,39 @@ async fn ensemble(State(council): Shared, Extension(id): Id, body: Body) -> Resp
             requests.push(parse::<GenerationRequest>(&body, "ensemble")?);
         }
         let refs: Vec<&gogi_proto::Context> = requests.iter().map(|request| &request.context).collect();
+        // The latent steps read the final norm and the table of the checkpoint. Their checks read no engine.
+        let plan = match latent {
+            Some((steps, read)) if steps > 0 => {
+                lab_served.service.takes_latent(1)?;
+                let map = council.call(move || latent_map(&lab_served, &dir)).await?;
+                Some(Latent {
+                    steps,
+                    read,
+                    map: Arc::new(map),
+                })
+            }
+            _ => None,
+        };
         let served = council.route_contexts(model, &refs, true)?;
-        let done = council
-            .call(move || served.service.ensemble(&requests, rule, weights))
+        let ensembled = council
+            .call(move || served.service.ensemble(&requests, rule, weights, plan))
             .await?;
-        let out = serde_json::to_value(&done).expect("a generation response encodes");
-        Ok(
-            serde_json::json!({"model": out["model"], "content": out["content"], "finish": out["finish"],
-                              "usage": out["usage"]}),
-        )
+        let out = serde_json::to_value(&ensembled.done).expect("a generation response encodes");
+        let mut body = serde_json::json!({"model": out["model"], "content": out["content"], "finish": out["finish"],
+                                          "usage": out["usage"]});
+        if let Some((steps, read)) = latent {
+            body["latent"] = serde_json::json!({"steps": steps});
+            if read {
+                let tokens: Vec<Value> = ensembled
+                    .read
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(id, text)| serde_json::json!({"id": id, "text": text}))
+                    .collect();
+                body["latent"]["read"] = Value::Array(tokens);
+            }
+        }
+        Ok(body)
     }
     .await;
     answer(&id, result)

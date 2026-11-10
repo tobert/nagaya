@@ -238,6 +238,9 @@ impl Lfm3Engine {
                 Some((v, tower_count.bytes, rules))
             }
         };
+        // Each model takes latent rows at positions of its pad token (engine-abi "Latent rows of LFM3").
+        let latent = media::LatentRule::of(&config_text, b.hidden)
+            .map_err(|e| format!("{}: {e}", dir.join("config.json").display()))?;
         let checkpoint_digest = checkpoint_digest(&config_text, &view)?;
 
         // Only the engine's card gets a context, so the open does not stall the work of another card.
@@ -384,6 +387,7 @@ impl Lfm3Engine {
         if let Some((_, _, rules)) = vision {
             held.media = rules;
         }
+        held.media.latent = Some(latent);
         Ok(Self {
             b,
             config,
@@ -606,6 +610,20 @@ impl Lfm3Engine {
         let mut places = Vec::with_capacity(block.spans.len());
         for used in &block.spans {
             let bytes = &rows[used.rows_at..used.rows_at + used.span.bytes()];
+            // Latent rows need no encoder. The host writes the rows of the block into the normed rows, which the pass
+            // writes only after the embedding, and a copy puts them over the embedding rows of their positions.
+            if let SpanKind::Latent { width } = used.span.kind {
+                let row = width * 4;
+                let at = (used.block_row * row) as u64;
+                let taken = &bytes[used.take.start * row..used.take.end * row];
+                self.device.write(self.card(), self.bufs.h + at, taken);
+                places.push(tasks::copy(
+                    self.bufs.h + at,
+                    self.bufs.x + at,
+                    (used.take.len() * width) as u32,
+                ));
+                continue;
+            }
             let tasks = match used.span.kind {
                 SpanKind::Image { grid } => {
                     let tower = self
@@ -631,6 +649,7 @@ impl Lfm3Engine {
                 // The frames of an assistant audio part (spec 11.11, "Read it back"): each row is the sum of the 12
                 // codebook rows of its frame, as the speech loop feeds a frame. The host turns the codes of the block's
                 // frames into rows of the table, and 12 embeds of the block's frames sum them into the media rows.
+                SpanKind::Latent { .. } => unreachable!("latent rows take their place above"),
                 SpanKind::Codes => {
                     let speech = self
                         .speech

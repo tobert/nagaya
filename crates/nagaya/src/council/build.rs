@@ -449,6 +449,22 @@ pub enum Want {
         /// True when the last pass also names the tap `lens`.
         lens: bool,
     },
+    /// Feed one latent row at the next position of the slot, and give its logit row (docs/lab.md, "Latent steps in a
+    /// request"). With `tap`, the pass also names the residual tap, and the work gets [`Got::Tapped`]. The slot gets
+    /// no more interval copies, because a recipe names tokens and a latent row is not a token.
+    Latent {
+        /// The placeholder token of the position.
+        token: u32,
+        /// The `meta` record of the latent span, in the layout of the engine.
+        meta: Vec<u8>,
+        /// The row of the width of the residual.
+        row: Vec<f32>,
+        /// The position of the row. It is the count of rows in the slot.
+        position: usize,
+        tap: bool,
+        /// The kind of the quantum (spec 5.2).
+        kind: Kind,
+    },
     /// Keep a copy of the state of the slot in memory.
     Mark,
     /// Put the copy that `Mark` kept back into the slot.
@@ -546,6 +562,8 @@ struct Feeding {
     tap: bool,
     /// True when the last pass also names the tap `lens`.
     lens: bool,
+    /// The `meta` record and the row bytes of a feed of one latent row.
+    latent: Option<(Vec<u8>, Vec<u8>)>,
 }
 
 /// What the body does in one of its later quanta.
@@ -1091,6 +1109,45 @@ impl<T: Then> ContextBody<T> {
                 self.units.push_back(Unit::CodecEnd);
                 Kind::Decode
             }
+            Want::Latent {
+                token,
+                meta,
+                row,
+                position,
+                tap,
+                kind,
+            } => {
+                let base = self.rows(engine)?;
+                if base != position {
+                    return Err(ServiceError::internal(format!(
+                        "a latent row is for position {position}, but slot {} holds {base} rows",
+                        self.slot()
+                    )));
+                }
+                if !slots::fits(engine, &self.shared.limits, self.slot(), base + 1) {
+                    return Err(too_large(base + 1));
+                }
+                if self.shared.limits.max_logit_rows == 0 {
+                    return Err(ServiceError::internal("the engine gives no logit row in a pass"));
+                }
+                // A recipe names tokens, and a latent row is not a token. So the slot gets no more copies.
+                self.untrack();
+                self.units.push_back(Unit::Feed {
+                    start: 0,
+                    end: 1,
+                    row: true,
+                });
+                let rows = row.iter().flat_map(|v| v.to_le_bytes()).collect();
+                self.feeding = Some(Feeding {
+                    tokens: vec![token],
+                    kind,
+                    base,
+                    tap,
+                    lens: false,
+                    latent: Some((meta, rows)),
+                });
+                kind
+            }
             Want::Feed { .. } | Want::Tap { .. } => {
                 let (tokens, logits, kind, tap, lens) = match want {
                     Want::Feed { tokens, logits, kind } => (tokens, logits, kind, false, false),
@@ -1123,6 +1180,7 @@ impl<T: Then> ContextBody<T> {
                     base,
                     tap,
                     lens,
+                    latent: None,
                 });
                 kind
             }
@@ -1225,6 +1283,10 @@ impl<T: Then> ContextBody<T> {
 
     /// Begin the pass of a feed unit: check its first position and make its segment.
     fn begin(&mut self, unit: Unit) -> Result<Segment, ServiceError> {
+        let latent = match unit {
+            Unit::Feed { .. } => self.feeding.as_ref().and_then(|feeding| feeding.latent.clone()),
+            _ => None,
+        };
         let pending = match unit {
             Unit::Build(Step::Feed { from, to }) => Pending {
                 tokens: self.tokens[from..to].to_vec(),
@@ -1253,7 +1315,17 @@ impl<T: Then> ContextBody<T> {
         let to = pending.from + pending.tokens.len();
         // The positions of a pass name the spans that it reads. A generation with no build plan feeds the context
         // in its own feed, so a pass of the work can read a span too.
-        let (inputs, meta) = self.inputs(pending.tokens.clone(), pending.from, to);
+        // A latent row is the input of its position, and no media span of the context reaches past the prompt.
+        let (inputs, meta) = match latent {
+            Some((meta, rows)) => (
+                SegmentInputs::TokensAndRows {
+                    tokens: pending.tokens.clone(),
+                    rows,
+                },
+                meta,
+            ),
+            None => self.inputs(pending.tokens.clone(), pending.from, to),
+        };
         let segment = Segment {
             control: self.items.clone(),
             state: self.state(),
@@ -1665,9 +1737,10 @@ impl<T: Then> ContextBody<T> {
 }
 
 /// True when `unit` is one decode row that can share a pass with the rows of other jobs: a feed of one token that
-/// gives its row, and names no tap (engine-abi "LFM3", "Batched passes"). A frame, a codec end or a copy cannot.
+/// gives its row, and names no tap (engine-abi "LFM3", "Batched passes"). A frame, a codec end, a copy or a latent row
+/// cannot.
 fn joinable_unit(kind: Kind, unit: Option<&Unit>, feeding: Option<&Feeding>) -> bool {
-    let tapped = feeding.is_some_and(|f| f.tap || f.lens);
+    let tapped = feeding.is_some_and(|f| f.tap || f.lens || f.latent.is_some());
     kind == Kind::Decode
         && feeding.is_some_and(|f| f.kind == Kind::Decode)
         && matches!(unit, Some(Unit::Feed { start, end, row: true }) if end - start == 1)
@@ -1768,6 +1841,7 @@ mod joinable_tests {
             base: 0,
             tap,
             lens,
+            latent: None,
         }
     }
 
@@ -1820,6 +1894,15 @@ mod joinable_tests {
                 Kind::Prefill,
                 Some(&one),
                 Some(feeding(Kind::Prefill, false, false)),
+            ),
+            (
+                "a latent row",
+                Kind::Decode,
+                Some(&one),
+                Some(Feeding {
+                    latent: Some((vec![5], vec![0; 4])),
+                    ..feeding(Kind::Decode, false, false)
+                }),
             ),
             ("no feed", Kind::Decode, Some(&one), None),
             (
