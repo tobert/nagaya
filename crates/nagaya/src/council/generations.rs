@@ -2,7 +2,7 @@
 
 use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
-use std::sync::mpsc::SyncSender;
+use std::sync::mpsc::{Sender, SyncSender};
 use std::time::Instant;
 
 use gogi_proto::Invalid;
@@ -20,7 +20,8 @@ use nagaya_council::sampler::{Settings, pick_except};
 use nagaya_council::trace::Trace;
 use nagaya_store::{ContentId, Reason, RecipeId};
 
-use super::build::{ContextBody, Got, Then, Want};
+use super::MediaRead;
+use super::build::{ContextBody, Cut, Extension, Finished, Got, JobControl, Shared, Then, Want};
 use super::error::ServiceError;
 use super::{Schedule, Service, snapshot_id};
 
@@ -583,6 +584,20 @@ impl Service {
         events: Option<SyncSender<TokenEvent>>,
         tracing: Option<Tracing>,
     ) -> Result<(GenerationDone, Option<Trace>), ServiceError> {
+        let Prepared { then, parts, facts } = self.prepare(request, events, tracing)?;
+        let schedule = Schedule::of(request.class, request.priority);
+        let finished = self.run_context(|tx| parts.body(then, tx), schedule, None)?;
+        Ok(self.answer(finished, &facts))
+    }
+
+    /// Check a generation request, render its context, and plan its job (spec 11.3c). The work of the job is a
+    /// [`GenerateThen`]; the ensemble of `docs/lab.md` wraps it.
+    pub(crate) fn prepare(
+        &self,
+        request: &GenerationRequest,
+        events: Option<SyncSender<TokenEvent>>,
+        tracing: Option<Tracing>,
+    ) -> Result<Prepared, ServiceError> {
         request.validate()?;
         let read = self.check_objects(&gogi_proto::objects::objects_of(&request.context.messages))?;
         if let Some(output) = &request.output {
@@ -687,16 +702,31 @@ impl Service {
                 .map(|speech| speech.markers().to_vec())
                 .unwrap_or_default(),
         };
-        let shared = Arc::clone(&self.shared);
-        let control = steer.control;
-        let job = |tx| {
-            ContextBody::with(shared, tokens, recipes.clone(), room, then, tx)
-                .media(media)
-                .cuts(cuts)
-                .extension(extension)
-                .control(root, control)
+        let parts = JobParts {
+            shared: Arc::clone(&self.shared),
+            tokens,
+            recipes,
+            room,
+            media,
+            cuts,
+            extension,
+            root,
+            control: steer.control,
         };
-        let mut finished = self.run_context(job, Schedule::of(request.class, request.priority), None)?;
+        Ok(Prepared {
+            then,
+            parts,
+            facts: Facts { prompt, settings, read },
+        })
+    }
+
+    /// The response of a generation from its finished job.
+    pub(crate) fn answer(
+        &self,
+        mut finished: Finished<GenerateThen>,
+        facts: &Facts,
+    ) -> (GenerationDone, Option<Trace>) {
+        let Facts { prompt, settings, read } = facts.clone();
         let ids = finished
             .then
             .call_ids(finished.then.parsed.as_ref().map_or(0, |p| p.calls.len()));
@@ -736,6 +766,45 @@ impl Service {
             phase: reply.phase,
             outputs: Vec::new(),
         };
-        Ok((done, trace))
+        (done, trace)
+    }
+}
+
+/// A generation before its job: the work, the parts of the body, and the facts of the response.
+pub(crate) struct Prepared {
+    pub(crate) then: GenerateThen,
+    pub(crate) parts: JobParts,
+    pub(crate) facts: Facts,
+}
+
+/// The facts of a generation that its response names.
+#[derive(Clone)]
+pub(crate) struct Facts {
+    pub(crate) prompt: usize,
+    pub(crate) settings: Settings,
+    pub(crate) read: MediaRead,
+}
+
+/// What the body of a generation job takes, other than its work.
+pub(crate) struct JobParts {
+    shared: Arc<Shared>,
+    tokens: Arc<[u32]>,
+    recipes: Vec<BoundaryRecipe>,
+    room: usize,
+    media: Arc<[nagaya_council::family::MediaInput]>,
+    cuts: Vec<Cut>,
+    extension: Option<Extension>,
+    root: RecipeId,
+    control: Option<JobControl>,
+}
+
+impl JobParts {
+    /// The body of the job, with `then` as its work.
+    pub(crate) fn body<T: Then>(self, then: T, tx: Sender<Result<Finished<T>, ServiceError>>) -> ContextBody<T> {
+        ContextBody::with(self.shared, self.tokens, self.recipes, self.room, then, tx)
+            .media(self.media)
+            .cuts(self.cuts)
+            .extension(self.extension)
+            .control(self.root, self.control)
     }
 }
