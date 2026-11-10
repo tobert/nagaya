@@ -226,6 +226,39 @@ engine of card 1 needs `lfm3-1` unloaded first, through the load routes (spec 3.
   held can serve the other from the store.
 - Joined forks stay on one card, because the rows of one step share one pass.
 
+## An agent's interface to a swarm
+
+Amy, 2026-11-10: "the step loop as a general thing seems powerful. how might an agent interface with a swarm and set up
+looping params?" The answer has three layers.
+
+**1. Calls with their knobs.** The nagaya gives the parts, and each call takes its own settings:
+
+- a generation: `temperature`, `top_p`, `min_p`, `seed`, and a prefill;
+- `ensemble`: `combine`, `weights`, `strength`, and `latent` (`docs/lab.md`);
+- a decision: the log probability of each option, which gives a soft vote;
+- an embedding: a vector for the novelty filter.
+
+**2. A recipe for a round.** A round is a small JSON object. An agent writes it, and a driver runs it:
+
+```json
+{"models": ["lfm3", "lfm3-1"],
+ "think":   {"agents": 8, "foci": ["…"], "max_tokens": 48, "temperature": 1.0, "latent": 0},
+ "select":  {"by": "vote", "keep": 1},
+ "distill": {"by": "combine", "latent": 16, "max_tokens": 64, "temperature": 0.7},
+ "act":     {"forks": 4, "by": "plain", "max_tokens": 96, "temperature": 1.0},
+ "loop":    {"minutes": 20, "in_flight": 4, "parent": "tournament of the top 5"}}
+```
+
+- `think` is swarm 1. `select` is `vote`, `novelty` or `all`. `distill` is `pick`, `combine` or `joined`.
+- `act` is swarm 2. `by` is `plain` (independent forks), `contrast` or `joined`.
+- Each stage can take latent steps. Thus one recipe field tunes the step loop for that stage.
+
+**3. A driver and its numbers.** The driver runs the rounds and the evaluator, and it logs each stage. The numbers are
+the valid share, the share of constants, the share that improves, the tokens and the time. An agent reads them and
+changes the recipe between runs. For example, it raises `distill.latent` when the constants rise. The driver is a
+client first, such as `tools/swarm` or a kaijutsu tool. A route that runs a whole round on the server comes later,
+when the round trips cost more than the decode.
+
 ## Open questions
 
 - Is a context's bits dependent on its batch acceptable for any served model?
