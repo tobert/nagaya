@@ -130,6 +130,7 @@ impl Omni {
             video_token: Some(token("<|video|>")),
             audio_out_token: Some(token("<|audio_out|>")),
             audio_encoder: true,
+            latent: None,
         }
     }
 }

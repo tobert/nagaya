@@ -243,6 +243,8 @@ pub fn media_rules(text: &str) -> Result<crate::media::MediaRules, String> {
         // The engine sets the placeholder of speech when it loads the codebook table.
         audio_out_token: None,
         audio_encoder: false,
+        // The engine sets the rule of latent rows for each model.
+        latent: None,
     })
 }
 

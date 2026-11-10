@@ -490,6 +490,39 @@ fn the_text_model_refuses_an_image_and_omni_plans_its_tower() {
     assert_eq!(term(&omni, "work").bytes, term(&text, "work").bytes + 7_000);
 }
 
+/// The text model takes one latent row at the position of its pad token, after the tokens of its slot (engine-abi
+/// "Latent rows of LFM3"). The block names the span, so the pass copies the row over the embedding row.
+#[test]
+fn the_text_model_takes_a_latent_row_at_the_next_position() {
+    use crate::media::{LatentRule, Span, SpanKind};
+    let b = backbone();
+    let mut held = Held::new(&b, &[4096]);
+    let first = held.check_pass(&[segment(0, 0, &[1, 2, 3], &[2])], 512, VOCAB).unwrap();
+    held.ran(&first);
+    let span = Span {
+        kind: SpanKind::Latent { width: b.hidden },
+        first: 3,
+        count: 1,
+    };
+    let pad = 124_893;
+    let e = held
+        .check_pass(&[media_segment(3, &[pad], &[span])], 512, VOCAB)
+        .unwrap_err();
+    assert!(e.contains("takes no latent rows"), "{e}");
+    held.media.latent = Some(LatentRule::of(TEXT_CONFIG, b.hidden).unwrap());
+    let block = held
+        .check_pass(&[media_segment(3, &[pad], &[span])], 512, VOCAB)
+        .unwrap();
+    assert_eq!((block.pos0, block.logit_rows.clone()), (3, vec![0]));
+    assert_eq!((block.spans[0].take.clone(), block.spans[0].block_row), (0..1, 0));
+    // A latent span at another position than the block's is refused.
+    let away = Span { first: 4, ..span };
+    let e = held
+        .check_pass(&[media_segment(3, &[pad], &[away])], 512, VOCAB)
+        .unwrap_err();
+    assert!(e.contains("names only the spans that it reads"), "{e}");
+}
+
 #[test]
 fn both_models_declare_a_control_table_of_8_vectors_and_the_residual_tap() {
     let (b, c) = (backbone(), config(1));
