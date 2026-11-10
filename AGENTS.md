@@ -858,6 +858,17 @@ senpai may stop and start the web app on b70host at will (`python3 tools/nagaya_
     11. **Route and trial.** `ensemble` with `latent` on Qwen3.8. Deploy, then run a trial with Amy.
 
     Each stop and start of `nagaya.service` goes into `signoff.md`.
+
+    Steps 1 to 6 are done on gfx1151host, deployed at 16:07 on 2026-11-10 from `f7d9ea9`. Live, greedy replies of 200
+    tokens ran at 1, 4, 8 and 16 contexts: 17.8, 47.3, 46.6 and 65.0 tokens each second in total. Before the join, 4
+    contexts gave 18.4. Each reply among 16 was the reply alone, and the gogi suite gave 411 ok, 0 FAIL and 12 skip.
+
+    Why 8 contexts give no more than 4 is open, because no record shows the segments of each pass. The commits:
+
+    - step 1, the test fix `723aa6b` and the milestone `911ae76`;
+    - step 2, the gate `1d02ac5`;
+    - steps 3 and 4, the note `5a2f50f` and the join `2f40184`;
+    - step 5, `38e1dfa`, the lock `4e31aae` and its record `f7d9ea9`.
 31. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
