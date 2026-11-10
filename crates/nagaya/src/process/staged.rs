@@ -965,8 +965,8 @@ impl StagedJobs {
     /// join, so a limit that an unload left behind is safe.
     fn learn_decode_limit(&mut self, engine: usize, device: Device, engines: &[Box<dyn Engine>]) {
         let limits = engines[engine].limits();
-        let limit = if limits.feed.is_some() {
-            limits.max_segments.max(1)
+        let limit = if crate::jobs::joins_decode(&limits) {
+            limits.max_segments
         } else {
             1
         };

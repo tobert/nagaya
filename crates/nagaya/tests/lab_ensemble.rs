@@ -30,10 +30,17 @@ struct Lab {
 }
 
 fn lab() -> Lab {
+    lab_of(1)
+}
+
+/// A council on the toy with `segments` segments in a pass. With more than one, the toy joins its decode rows, as mk
+/// does: it declares `segments_exact` and no feed rule.
+fn lab_of(segments: u32) -> Lab {
     let log = ControlLog::default();
     let factory = TermFactory {
         seal: false,
         log: log.clone(),
+        segments,
         ..TermFactory::toy()
     };
     let fixture = Fixture::with_factory(factory, 1 << 20, None, ServiceConfig::new("toy", ENGINE));
@@ -178,6 +185,28 @@ fn k_contexts_decode_in_passes_of_k_segments() {
             "{stages} stages, passes: {sizes:?}"
         );
     }
+}
+
+/// Forks on an engine that declares `segments_exact` and no feed rule, as mk does, join their decode rows (spec 5.7,
+/// "The first joins of an engine with `segments_exact`").
+#[test]
+fn k_contexts_on_an_engine_with_segments_exact_decode_in_passes_of_k_segments() {
+    let lab = lab_of(8);
+    let texts = [
+        "Tell the tale of the dragon.",
+        "Tell the tale of the moon.",
+        "Tell the tale of the sea.",
+    ];
+    let body = ensemble(texts.iter().map(|t| context(t)).collect(), "prob_mean");
+    let (status, got) = send(&lab.council, PATH, &body);
+    assert_eq!(status, StatusCode::OK, "{got}");
+    let completion = got["usage"]["completion"].as_u64().unwrap() as usize;
+    assert!(completion >= 2, "{got}");
+    let sizes = lab.log.take().sizes;
+    // Each prompt feeds alone. Each step after the first row is one pass of the three rows.
+    let joined = sizes.iter().filter(|&&n| n == 3).count();
+    assert_eq!(joined, completion - 1, "passes: {sizes:?}");
+    assert!(sizes.iter().all(|&n| n == 1 || n == 3), "passes: {sizes:?}");
 }
 
 /// Equal contexts give equal rows, and each rule then gives a monotone map of that row: `2 l`, `l` and `l`. Thus the

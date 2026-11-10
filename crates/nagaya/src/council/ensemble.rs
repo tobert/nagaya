@@ -374,8 +374,8 @@ impl Service {
     ) -> Result<Ensembled, ServiceError> {
         let count = requests.len();
         let limits = &self.shared.limits;
-        // Batched passes need a feed rule and more than one segment, as the scheduler's joins do (`jobs.rs`).
-        let batched = limits.feed.is_some() && limits.max_segments > 1;
+        // Forks join in batched passes by the rule of the scheduler's joins.
+        let batched = crate::jobs::joins_decode(limits);
         if count > 1 && !batched {
             return Err(Invalid::param(
                 "model",

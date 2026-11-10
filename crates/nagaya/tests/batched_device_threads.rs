@@ -1,6 +1,8 @@
 //! Decode jobs of a batching engine on a device thread share passes (milestone 27 step 5, engine-abi "LFM3", "Batched
 //! passes"). `chat` with stages spans both cards, so the cards are one group with a device thread for each card, as on
 //! b70host. `batcher` on card 0 has a feed rule and 8 segments, so its decode quanta join on the thread of card 0.
+//! A second test gives `batcher` `segments_exact` and no feed rule, as mk has (spec 5.7, "The first joins of an
+//! engine with `segments_exact`"); its decode quanta join the same way.
 
 mod feed_support;
 
@@ -23,19 +25,21 @@ use nagaya_sched::{Class, Item};
 /// The segment count of each pass of `batcher`, with the name of the thread that ran it.
 type Passes = Arc<Mutex<Vec<(usize, String)>>>;
 
-/// An engine with a feed rule and 8 segments. For each logit row it gives one output `logits`: the slot and the
-/// position.
+/// An engine with 8 segments, and a feed rule or `segments_exact`. For each logit row it gives one output `logits`:
+/// the slot and the position.
 struct Batcher {
     fake: FakeAlways,
     passes: Passes,
+    exact: bool,
 }
 
-fn batcher_limits() -> Limits {
+/// The limits of `batcher`: `segments_exact` and no feed rule when `exact` is true, else a feed rule.
+fn batcher_limits(exact: bool) -> Limits {
     let mut limits = with_close(FakeAlways::new().limits());
-    limits.feed = Some(FeedRule {
+    limits.feed = (!exact).then(|| FeedRule {
         block: u64::from(limits.max_pass_inputs),
     });
-    limits.segments_exact = false;
+    limits.segments_exact = exact;
     limits.max_segments = 8;
     limits
 }
@@ -46,7 +50,7 @@ impl Engine for Batcher {
     }
 
     fn limits(&self) -> Limits {
-        batcher_limits()
+        batcher_limits(self.exact)
     }
 
     fn pass(&mut self, segments: &[Segment], _taps: &[Tap]) -> Result<PassOut, PassError> {
@@ -121,13 +125,14 @@ impl Engine for Closing {
     }
 }
 
-struct Fakes(Passes);
+/// The factory of both engines, with the passes of `batcher` and whether it declares `segments_exact`.
+struct Fakes(Passes, bool);
 
 impl Factory for Fakes {
     fn plan(&self, config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         Ok(match config["name"].as_str().unwrap() {
             "chat" => with_close(feed_support::engine(2).limits()),
-            _ => batcher_limits(),
+            _ => batcher_limits(self.1),
         })
     }
 
@@ -137,6 +142,7 @@ impl Factory for Fakes {
             _ => Box::new(Batcher {
                 fake: FakeAlways::new(),
                 passes: Arc::clone(&self.0),
+                exact: self.1,
             }),
         })
     }
@@ -234,10 +240,20 @@ impl JobBody for Decoder {
 
 #[test]
 fn decode_jobs_of_a_batching_engine_share_passes_on_its_device_thread() {
+    decode_jobs_share_passes(false);
+}
+
+#[test]
+fn decode_jobs_of_an_engine_with_segments_exact_share_passes_on_its_device_thread() {
+    decode_jobs_share_passes(true);
+}
+
+/// Run 4 decode jobs of `batcher` on the thread of card 0, and check that they shared a pass and each got its rows.
+fn decode_jobs_share_passes(exact: bool) {
     let directory = tempfile::tempdir().unwrap();
     let passes = Passes::default();
     let mut registry = Registry::new();
-    registry.register("fakes", Box::new(Fakes(Arc::clone(&passes))));
+    registry.register("fakes", Box::new(Fakes(Arc::clone(&passes), exact)));
     let budget = |tier: Tier, bytes| BudgetSpec {
         tiers: vec![TierSpec::from(tier)],
         bytes,

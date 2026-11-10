@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use nagaya_abi::{Engine, Kind, PassError, PassOut, Segment};
+use nagaya_abi::{Engine, Kind, Limits, PassError, PassOut, Segment};
 use nagaya_sched::{Class, Completion, Event, Item, Job, JobId, JobState, ObservedScheduler, Quantum, Scheduler};
 use nagaya_telemetry::EngineState;
 use tracing::Span;
@@ -287,15 +287,15 @@ impl GroupJobs {
         true
     }
 
-    /// Tell the scheduler which engines of the group batch decode rows: an engine with a feed rule and more than one
-    /// segment (engine-abi D11 rule 6, "LFM3", "Batched passes"). The driver joins only decode quanta. The group is
+    /// Tell the scheduler which engines of the group batch decode rows (`joins_decode`). The driver joins only decode
+    /// quanta. The group is
     /// the scheduler's engine, so its limit is the largest of its engines. A joined quantum still runs each engine's
     /// rows in passes of at most that engine's limit.
     fn learn_joins(&mut self, engines: &[Box<dyn Engine>]) {
         let max_segments = engines
             .iter()
             .map(|engine| engine.limits())
-            .filter(|limits| limits.feed.is_some() && limits.max_segments > 1)
+            .filter(joins_decode)
             .map(|limits| limits.max_segments)
             .max();
         let facts = max_segments.map(|max_segments| nagaya_sched::Engine {
@@ -461,6 +461,13 @@ pub fn run_joined_bodies(
     results
 }
 
+/// True when an engine joins the decode rows of several jobs in one pass, with more than one segment. An engine with
+/// a feed rule joins them by D11 rule 6 (engine-abi "LFM3", "Batched passes"). An engine that declares
+/// `segments_exact` joins them by spec 5.7 ("The first joins of an engine with `segments_exact`").
+pub(crate) fn joins_decode(limits: &Limits) -> bool {
+    (limits.feed.is_some() || limits.segments_exact) && limits.max_segments > 1
+}
+
 /// The passes of a joined quantum. The plain rows of one engine with one control list share a pass, up to the
 /// engine's limit; a plain row is one token with its logit row and no media. Every other segment has a pass alone.
 fn batches(begun: Vec<(JobId, usize, Segment)>, engines: &[Box<dyn Engine>]) -> Vec<Vec<(JobId, usize, Segment)>> {
@@ -470,7 +477,7 @@ fn batches(begun: Vec<(JobId, usize, Segment)>, engines: &[Box<dyn Engine>]) -> 
     for (_, engine, _) in &begun {
         limits.entry(*engine).or_insert_with(|| {
             let limits = engines[*engine].limits();
-            if limits.feed.is_some() { limits.max_segments } else { 1 }
+            if joins_decode(&limits) { limits.max_segments } else { 1 }
         });
     }
     for item in begun {
