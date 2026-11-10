@@ -118,6 +118,7 @@ order"):
 6. Milestone 27, batched passes on LFM3. Amy put it next on 2026-11-09. Done on 2026-11-09.
 7. Milestone 28, tuned control vectors. Amy put it next on 2026-11-09. Steps 1 to 4 are done and deployed:
    the docs `26ad93f`, gogi `62847b0` and the pin `8e90c3f`, and `compose` `42e77d5`. The first trial of step 5 ran.
+8. Milestone 29, swarms. Amy put it next on 2026-11-09.
 
 Amy decided on 2026-11-08: commit a small step each time the checks pass after a change. When a milestone is almost
 done, run review rounds with kaibo (`docs/reviews.md`), and fix what they find.
@@ -775,7 +776,28 @@ senpai may stop and start the web app on b70host at will (`python3 tools/nagaya_
        the public prompt sets. Write only counts into `signoff.md`.
 
     Each stop and start of `nagaya.service` goes into `signoff.md`.
-29. Stop and ask Amy for the next milestone.
+29. **Swarms.** Agents of one model work in parallel, and one context reads their work (`docs/swarm-ideas.md`).
+    Amy, 2026-11-09, on latent steps: "still interesting, might be good for our decisions too". She chose this order
+    on 2026-11-09: "Yeah, that order, and let's get some running tonight. I'd like to at least get some
+    measurements."
+
+    Do the steps in this order:
+    1. **Text swarm.** Agents write short ideas, a novelty filter keeps some, and a summarizer reads them as text.
+       Measure it against direct mutations at the same wall time, on a task with a CPU evaluator. This step needs no
+       new nagaya code. Write only counts and times into `signoff.md`.
+    2. **Docs.** Latent steps, the read of a latent step, and the merge of held contexts, in engine-abi, spec 6.12
+       and `docs/lab.md`. Amy decides each Proposed note.
+    3. **Oracle fixture.** Latent steps and a merge in transformers on the CPU, with the logits after each (8.3).
+    4. **Latent steps.** The engine feeds the last hidden state as the next input row, in batched passes. A latent
+       step can also give its logit row, so a client reads the text along the way. A held latent context continues
+       in tokens like any other.
+    5. **The merge.** A new held context from blocks of held contexts, on the host, with the keys rotated to their
+       new offsets. It is a lab route first.
+    6. **Latent swarm.** The task of step 1 with latent agents and a merged summarizer. Compare it with the text
+       swarm. Stop if it gives no gain.
+
+    Each stop and start of `nagaya.service` goes into `signoff.md`.
+30. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
 

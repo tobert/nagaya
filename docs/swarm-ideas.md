@@ -1,8 +1,8 @@
 # Swarm ideas
 
-This doc holds ideas, not rules. No milestone builds them yet. Amy asked for it on 2026-11-09, after she read
-SwarmEvolve: "I'm more interested in how we can do the parallel processing and then the merge." A copy of the paper is
-in `~/papers/2611.08483-swarmevolve.pdf`.
+This doc holds ideas, not rules. Milestone 29 builds some of them (`AGENTS.md`). Amy asked for it on 2026-11-09,
+after she read SwarmEvolve: "I'm more interested in how we can do the parallel processing and then the merge." A copy
+of the paper is in `~/papers/2611.08483-swarmevolve.pdf`.
 
 ## The paper
 
@@ -99,6 +99,25 @@ hidden state, scales it, and feeds it as the input row of the next position.
   keeps the result and shares it like any prefix.
 - The client reads the mean hidden state of the steps through a tap. The novelty filter runs in the client.
 - With batched passes, the agents of a swarm take their steps together, as the paper does.
+
+What a latent step gives, from the paper and from the LFM3 engine (senpai, 2026-11-09):
+
+- **A message that carries more.** A hidden state holds the whole leaning of the model at a step, not one sampled
+  token. The paper measured a small gain: 0.804 against 0.796 for text agents of 40 tokens.
+- **A little speed.** A latent step is still a pass through all 24 layers. It skips the head and the sampler. The head
+  is the table of 128,000 rows of width 2,048, about 15% of the weights that a step reads. The paper's larger gain in
+  speed comes from its Python loop.
+- **Fixed bits.** A latent step samples nothing, so the store keeps and shares it like a prefix. Two agents with the
+  same prompt give the same states, so the diversity comes from their prompts only.
+- **A need for the merge.** No text comes out, so only a context that attends to the agents' K and V rows reads them.
+  A text swarm needs no merge: its summarizer reads the texts as a prompt.
+
+The read along the way. LFM3 has no separate encoder: its head is its embedding table. Thus a latent step can also
+give its logit row, and a client can read the top token of each step as text. The text does not go back into the
+context. It is a view of the agent, as the trace of the J-Lens is.
+
+A held latent context is an ordinary context. It can continue in tokens and put its state into words. A decision can
+read its case after latent steps, too.
 
 ## The merge
 
