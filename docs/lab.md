@@ -322,6 +322,32 @@ POST /nagaya/v1/lab/compose
 4. Try it: a generation with a control item, with `layers` for the strength of each layer (spec 11.12).
 5. Trace one reply with `lens: "jlens"`, and count the replies that you want over a prompt set. Go to step 2.
 
+### Latent steps in a request
+
+**Proposed** (Claude Opus 5.5, 2026-11-10, milestone 29 step 4). Amy, 2026-11-10: "I feel like it might be most
+effective on the summarizer. but probably everywhere we can over time, and somewhat tunable per api call ideally."
+Thus a request of `ensemble` takes the member `latent`. One context with `logprob_sum` is a generation, so any
+generation of the lab can think in latent steps first.
+
+```json
+"latent": {"steps": 16, "read": true}
+-> "latent": {"steps": 16, "read": [{"id": 3290, "text": " story"}, …]}
+```
+
+- **Where.** Each context takes its steps after its last token, before the first token of the reply. A context with
+  a prefill takes them after the prefill.
+- **A step.** The pass of the last input gives the residual after the last layer, through the residual tap (spec
+  13.1). The host applies the final norm, and it scales the row to the mean norm of the embedding rows. The next pass
+  feeds that row at the next position, with a latent span (engine-abi "Latent rows of LFM3"). The logit row of the last
+  step gives the first token of the reply.
+- **`steps`.** 0 to 256. With 0, or with no `latent`, the request gives the bits of the same request with no member.
+- **`read`.** With `true`, the response gives the top token of the logit row of each step of context 0. The token
+  does not go into the context.
+- **Joins.** A pass with a tap has one segment (engine-abi "Batched passes"). Thus the steps of each context run alone,
+  in the build turn of that context. The decode of the reply joins as before.
+- **Errors.** `steps` past 256, or not a whole number, is a 400 that names `latent.steps`. A model with no tap
+  `residual` is a 400 that names `latent`.
+
 ## `latent` and `merge`: the parts of a swarm
 
 **Proposed** (Claude Opus 5.5, 2026-11-09, milestone 29 step 2). Amy chose a text swarm first, then latent steps and
