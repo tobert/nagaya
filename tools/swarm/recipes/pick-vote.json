@@ -1,0 +1,6 @@
+{"models": ["lfm3"],
+ "think":   {"agents": 8, "max_tokens": 48, "temperature": 1.0, "latent": 0},
+ "select":  {"by": "vote", "keep": 1},
+ "distill": {"by": "pick"},
+ "act":     {"forks": 1, "by": "plain", "max_tokens": 96, "temperature": 1.0},
+ "loop":    {"minutes": 20, "in_flight": 4, "parent": "tournament of the top 5"}}
