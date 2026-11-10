@@ -119,6 +119,8 @@ order"):
 7. Milestone 28, tuned control vectors. Amy put it next on 2026-11-09. Steps 1 to 4 are done and deployed:
    the docs `26ad93f`, gogi `62847b0` and the pin `8e90c3f`, and `compose` `42e77d5`. The first trial of step 5 ran.
 8. Milestone 29, swarms. Amy put it next on 2026-11-09.
+9. Milestone 30, Qwen3.8 batches and latent steps, on gfx1151host. Amy put it next on 2026-11-10. It runs beside the
+   trials of milestone 29 on b70host.
 
 Amy decided on 2026-11-08: commit a small step each time the checks pass after a change. When a milestone is almost
 done, run review rounds with kaibo (`docs/reviews.md`), and fix what they find.
@@ -809,7 +811,44 @@ senpai may stop and start the web app on b70host at will (`python3 tools/nagaya_
     A tune of the distill step, and a coder from `LFM3-1.7B-Base`, wait for another day (Amy, 2026-11-10).
 
     Each stop and start of `nagaya.service` goes into `signoff.md`.
-30. Stop and ask Amy for the next milestone.
+30. **Qwen3.8 batches and latent steps.** Several contexts of Qwen3.8 share one decode pass on gfx1151host, and a context
+    can think in latent steps. Amy, 2026-11-10: "I see latent steps as the more potentially useful addon for qwen, so
+    we can start with join but let's plan on doing latent steps, which I want to experiment with on regular inference
+    too." She decided these rules on 2026-11-10, by interview:
+    - **Order:** the join first, then latent steps.
+    - **Bits:** mk declares `segments_exact`, so a context's bits never depend on the other segments of its pass.
+    - **Where:** latent steps go on the lab route `ensemble` first, as on LFM3. One context there is a plain
+      generation. A council v2 member comes later, when the shape settles, and gogi writes it first.
+    - **The row:** a latent step feeds back the row that the head reads, after the 4 hyper-connection streams fold.
+      The host scales it to the mean norm of the embedding rows. It goes in at the embedding row, so the pass
+      copies it into the 4 streams.
+    - **PLE:** a latent position holds one placeholder token. The n-gram hash of layer 1 reads it as any token.
+    - **Machine:** gfx1151host is senpai's for the milestone, and Qwen-Image can unload (Amy, 2026-11-10: "the machine is
+      yours today, qwen-image is idle and can be unloaded").
+
+    Do the steps in this order. Each step ends with the checks green.
+    1. **Deploy.** Deploy `main` on gfx1151host: the checks, the mk `hip` tests and the oracle bench, then a start.
+    2. **Gate.** A card gate of decode rows at deep positions and beside a long prefill, alone and joined. Run it with
+       `MK_FAST_QMM` unset and with `MK_FAST_QMM=0`. Stop and report if a row differs.
+    3. **Docs.** The join of an engine with `segments_exact` and no feed rule (engine-abi "Batched passes", D11).
+       Amy decides each Proposed note.
+    4. **The process.** The scheduler and the drivers join the decode quanta of mk. Test it first on a fake engine
+       with `segments_exact` and no feed rule. `ensemble` joins mk's forks too.
+    5. **Deploy and measure.** Decode tokens each second at 1, 4, 8 and 16 contexts. A reply among 16 must be the
+       reply alone. Run the gogi suite for Qwen3.8.
+    6. **Docs.** The tap hook of mk in engine-abi: "the residual after layer `l`", with the head's row as the last
+       layer. Also the latent rows of mk: the placeholder, the scale and the record. Amy decides each Proposed note.
+    7. **Oracle fixture.** The residual after each layer, and latent steps with the logits after each, from the
+       reference on the CPU (8.3).
+    8. **The tap hook.** A general hook on mk, not one for the head's row alone. Later milestones read it for
+       control vectors, `project` and `trace` (Amy, 2026-11-10: "let's get the tap hook earlier in the plan").
+       Card gates: a pass with a tap gives the bits of the same pass with none, and the rows match the oracle.
+    9. **The latent span.** The latent span on mk. Card gate: the latent row of the placeholder's embedding gives
+       the bits of the placeholder token.
+    10. **Route and trial.** `ensemble` with `latent` on Qwen3.8. Deploy, then run a trial with Amy.
+
+    Each stop and start of `nagaya.service` goes into `signoff.md`.
+31. Stop and ask Amy for the next milestone.
 
 ### mk on gfx1151host
 
