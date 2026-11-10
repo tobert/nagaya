@@ -64,7 +64,8 @@ class RecipeTest(unittest.TestCase):
         here = os.path.join(os.path.dirname(__file__), "..", "recipes")
         files = sorted(glob.glob(os.path.join(here, "*.json")))
         self.assertEqual([os.path.basename(f) for f in files],
-                         ["pick-vote.json", "s2s-combine-latent.json", "s2s-combine.json", "s2s-vote.json"])
+                         ["pick-vote.json", "s2s-combine-card-prime.json", "s2s-combine-card.json",
+                          "s2s-combine-latent.json", "s2s-combine.json", "s2s-vote.json"])
         for f in files:
             with self.subTest(f=f):
                 recipe.load(f)

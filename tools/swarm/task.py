@@ -38,6 +38,7 @@ PLAN_PREFILL = "Plan:"
 VOTE_PREFILL = "Best idea: "
 THINK_ASK = "In at most two sentences, propose one concrete change to priority. Do not write code."
 IMPROVE = "Write an improved version. "
+PRIME_ASK = "Think about where this program wastes bins, and what kinds of change could lower the excess."
 
 
 def show(parent):
@@ -59,6 +60,19 @@ def listing(ideas):
 
 def think_prompt(head, focus):
     return head + f"\nFocus: {focus}\n" + THINK_ASK
+
+
+def prime_prompt(head):
+    """The user message of the prime, and the first user message of each think agent after a prime."""
+    return head + "\n" + PRIME_ASK
+
+
+def think_turns(head, prime, focus):
+    """The messages of a think agent after a prime: the head, the prime's text as the assistant's reply, then the
+    focus. Every agent shares the messages before the focus, so the store shares their prefix."""
+    return [{"role": "user", "content": prime_prompt(head)},
+            {"role": "assistant", "content": prime},
+            {"role": "user", "content": f"Focus: {focus}\n" + THINK_ASK}]
 
 
 def vote_prompt(head, ideas):

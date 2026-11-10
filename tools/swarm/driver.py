@@ -12,6 +12,7 @@ from . import binpack, client, task
 TRAIN_SEED = 1
 TEST_SEED = 2
 STAGE_NAMES = ("think", "select", "distill", "act", "evaluate")
+CALL = ("system", "sample", "thinking")
 TOKENS = ("prompt", "fed", "completion")
 
 
@@ -128,6 +129,11 @@ class Archive:
         return rec
 
 
+def options(stage):
+    """The keyword arguments of a call from the members system, sample and thinking of its stage."""
+    return {k: stage[k] for k in CALL if k in stage}
+
+
 class Driver:
     """One run of a recipe against one client."""
 
@@ -154,7 +160,13 @@ class Driver:
         stage.count(model, usage)
         return text
 
-    def think(self, stage, head, seed):
+    def prime(self, stage, head, seed):
+        """The text of the prime: one generation with thinking over the shared head."""
+        p = self.recipe["prime"]
+        return self._call(stage, self.spread.next(), self.client.prime, task.prime_prompt(head), p["max_tokens"],
+                          p["temperature"], seed, system=p.get("system"), sample=p.get("sample"))
+
+    def think(self, stage, head, seed, prime=None):
         t = self.recipe["think"]
         n, foci = t["agents"], t["foci"]
         chosen = self._rand(lambda: self.rng.sample(foci, min(n, len(foci))) +
@@ -162,9 +174,10 @@ class Driver:
         models = [self.spread.next() for _ in range(n)]
 
         def one(i):
-            text = self._call(stage, models[i], self.client.generate, task.think_prompt(head, chosen[i]),
-                              t["max_tokens"], t["temperature"], seed * 1000 + i, task.IDEA_PREFILL,
-                              latent=t["latent"])
+            user = (task.think_prompt(head, chosen[i]) if prime is None else
+                    task.think_turns(head, prime, chosen[i]))
+            text = self._call(stage, models[i], self.client.generate, user, t["max_tokens"], t["temperature"],
+                              seed * 1000 + i, task.IDEA_PREFILL, latent=t["latent"], **options(t))
             return task.after_prefill(text, task.IDEA_PREFILL)
         with ThreadPoolExecutor(n) as ex:
             return list(ex.map(one, range(n))), chosen
@@ -176,7 +189,7 @@ class Driver:
             return ideas, {}
         if s["by"] == "vote":
             text = self._call(stage, self.spread.next(), self.client.generate, task.vote_prompt(head, ideas), 4, 0.0,
-                              seed, task.VOTE_PREFILL)
+                              seed, task.VOTE_PREFILL, **options(s))
             j = task.vote_index(task.after_prefill(text, task.VOTE_PREFILL), len(ideas))
             bad = j is None
             if bad:
@@ -192,11 +205,12 @@ class Driver:
             return kept[0].strip()
         if d["by"] == "combine":
             text = self._call(stage, self.spread.next(), self.client.generate, task.combine_prompt(parent, kept),
-                              d["max_tokens"], d["temperature"], seed, task.PLAN_PREFILL, latent=d["latent"])
+                              d["max_tokens"], d["temperature"], seed, task.PLAN_PREFILL, latent=d["latent"],
+                              **options(d))
         else:
             text = self._call(stage, self.spread.next(), self.client.ensemble,
                               [task.joined_distill_prompt(head, x) for x in kept], "prob_mean", d["max_tokens"],
-                              d["temperature"], seed, task.PLAN_PREFILL, latent=d["latent"])
+                              d["temperature"], seed, task.PLAN_PREFILL, latent=d["latent"], **options(d))
         return task.after_prefill(text, task.PLAN_PREFILL).strip()
 
     def act(self, stage, head, plan, seed):
@@ -207,7 +221,7 @@ class Driver:
         if a["by"] == "joined":
             model = self.spread.next()
             text = self._call(stage, model, self.client.ensemble, [prompt] * a["forks"], a["combine"],
-                              a["max_tokens"], a["temperature"], seed * 100, pre, latent=a["latent"])
+                              a["max_tokens"], a["temperature"], seed * 100, pre, latent=a["latent"], **options(a))
             return [(model, text)]
         models = [self.spread.next() for _ in range(a["forks"])]
 
@@ -215,15 +229,16 @@ class Driver:
             if a["by"] == "contrast":
                 return self._call(stage, models[f], self.client.ensemble, [prompt, task.act_plain_prompt(head)],
                                   "contrast", a["max_tokens"], a["temperature"], seed * 100 + f, pre,
-                                  strength=a.get("strength"), latent=a["latent"])
+                                  strength=a.get("strength"), latent=a["latent"], **options(a))
             return self._call(stage, models[f], self.client.generate, prompt, a["max_tokens"], a["temperature"],
-                              seed * 100 + f, pre, latent=a["latent"])
+                              seed * 100 + f, pre, latent=a["latent"], **options(a))
         with ThreadPoolExecutor(a["forks"]) as ex:
             return list(zip(models, ex.map(one, range(a["forks"]))))
 
     def round(self, seed):
         """One round: a parent, the four stages and the evaluation. It logs and returns the round record."""
-        stages = {name: Stage() for name in STAGE_NAMES}
+        names = (("prime",) if "prime" in self.recipe else ()) + STAGE_NAMES
+        stages = {name: Stage() for name in names}
         parent = self._rand(self.archive.parent, self.rng)
         head = task.show(parent)
 
@@ -233,7 +248,8 @@ class Driver:
             stages[name].seconds = self.clock() - t
             return out
 
-        ideas, _ = timed("think", self.think, head, seed)
+        primed = timed("prime", self.prime, head, seed) if "prime" in stages else None
+        ideas, _ = timed("think", self.think, head, seed, primed)
         kept, pick = timed("select", self.select, head, ideas, seed)
         plan = timed("distill", self.distill, parent, head, kept, seed)
         replies = timed("act", self.act, head, plan, seed)
@@ -248,7 +264,8 @@ class Driver:
             with ThreadPoolExecutor(len(replies)) as ex:
                 return list(ex.map(one, enumerate(replies)))
         programs = timed("evaluate", evaluate, replies)
-        rec = {"round": seed, "t": round(self.clock() - self.archive.t0, 1), "parent": parent[1], **pick,
+        extra = {} if primed is None else {"prime": primed}
+        rec = {"round": seed, "t": round(self.clock() - self.archive.t0, 1), "parent": parent[1], **pick, **extra,
                **shares(programs), "stages": {n: s.record() for n, s in stages.items()}}
         self.log.write({"round_stats": rec})
         with self._rounds_lock:

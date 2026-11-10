@@ -1,0 +1,373 @@
+[
+ {
+  "name": "pick-vote.json",
+  "recipe": {
+   "models": [
+    "lfm3"
+   ],
+   "think": {
+    "agents": 8,
+    "max_tokens": 48,
+    "temperature": 1.0,
+    "latent": 0
+   },
+   "select": {
+    "by": "vote",
+    "keep": 1
+   },
+   "distill": {
+    "by": "pick"
+   },
+   "act": {
+    "forks": 1,
+    "by": "plain",
+    "max_tokens": 96,
+    "temperature": 1.0
+   },
+   "loop": {
+    "minutes": 5,
+    "in_flight": 1,
+    "rounds": 2
+   }
+  },
+  "calls": [
+   "1b2a163826c70f74d24a6b6df946658cfb6c4acfbf968a7cb5aa5e407ceca41b",
+   "20ecead2be5abbcdfdf5b3dcc9def301913056509f9609a30449be40775502c1",
+   "255a859d92631b9072fa5e737614f296518888d998a62bd866115fa95c9ed006",
+   "2f0803380c68e46261526e5d73a7db607cfccc84d6d8faf460f8949a28b4b7b2",
+   "3b0823950d68651700360a5e0807b4fc626494ee7f148b2c27bbf3419706ba9c",
+   "3ebbb4d7aba697aa90baf8edf067a68eff1cb3e1bc39174d064d5fb674aff8af",
+   "3fe7578232274b49d39ea1cf5799792c47b2111e3e3d10907452dd3d18119f06",
+   "4c38b4b6dad9962d5a8426d6d94cd09b00940185ae30cbe8424efd880bd2ee77",
+   "6ab6e1cedd8e9c00fe23911fb7ec2bd785ae84c0de53e85e6ea73a876030e8b7",
+   "817e920e873eaf3b050c9e092c953c27a0d61068b7f4e053799001f7173839db",
+   "900ff30d37c0e352b02e7f46c6d43664d7c25e6c662c3fd369bd870e774d5eda",
+   "9e7e0124326cb6395e9184aadabba2b1f2483b7d98fec4283bbf115e6c929ea5",
+   "a3ea9a7f6b5e0943e2f6afa06e3c490b3748bbc323c17b269dce9f7b06645b12",
+   "a4dc579332ba222e8b2c0aeec703bb08fe866255ee9968db166504674b47508d",
+   "b8d53f2fc7b8bec269668cb9677e2ad8444dc36ff34e9e68c554ca98dcbe30b8",
+   "be9cb1ade7a120e83bec77316f821de86fa7cd21f7c6cc157547d8fbec5a6a98",
+   "c27d918ab673fd8f6799900fa94b7c1a07112485378cec5f66ed6582975ee6f9",
+   "d74aa1bc6b68a4167f4802892694319569e06ddcd59c812157446ed387416e52",
+   "ec5a21f16100833bc1b471d7bdbf82664493ae59beaf4a7e3ec1bff016d88723",
+   "effa410ab2dc6bd959407c66fd366e7f70234dfeaa52d431482aa5e956b16f9e"
+  ]
+ },
+ {
+  "name": "s2s-combine-latent.json",
+  "recipe": {
+   "models": [
+    "lfm3"
+   ],
+   "think": {
+    "agents": 8,
+    "max_tokens": 48,
+    "temperature": 1.0,
+    "latent": 0
+   },
+   "select": {
+    "by": "all"
+   },
+   "distill": {
+    "by": "combine",
+    "latent": 16,
+    "max_tokens": 64,
+    "temperature": 0.7
+   },
+   "act": {
+    "forks": 4,
+    "by": "plain",
+    "max_tokens": 96,
+    "temperature": 1.0
+   },
+   "loop": {
+    "minutes": 5,
+    "in_flight": 1,
+    "rounds": 2
+   }
+  },
+  "calls": [
+   "07c579739879cb7d280c6195ff71cc906e24c117065adcaf27bd5cda45fc5fb5",
+   "1854ecb1f43218724314629f5d403d4eeed34c05d81ff7bed7d9770a10e8c461",
+   "1b2a163826c70f74d24a6b6df946658cfb6c4acfbf968a7cb5aa5e407ceca41b",
+   "20ecead2be5abbcdfdf5b3dcc9def301913056509f9609a30449be40775502c1",
+   "255a859d92631b9072fa5e737614f296518888d998a62bd866115fa95c9ed006",
+   "2f0803380c68e46261526e5d73a7db607cfccc84d6d8faf460f8949a28b4b7b2",
+   "3694b7783937661107f0650627995448967bc0a72b7a93423589832b720f5b41",
+   "3b0823950d68651700360a5e0807b4fc626494ee7f148b2c27bbf3419706ba9c",
+   "3ebbb4d7aba697aa90baf8edf067a68eff1cb3e1bc39174d064d5fb674aff8af",
+   "3fe7578232274b49d39ea1cf5799792c47b2111e3e3d10907452dd3d18119f06",
+   "47b21d3d68af0dbd0159b928daba28745d370851f6647360793528ea4c973f6c",
+   "4c38b4b6dad9962d5a8426d6d94cd09b00940185ae30cbe8424efd880bd2ee77",
+   "66b093aebdbb1193506591e9780f72a36ede76109d79b1fbe4b0acb1a4616a7a",
+   "6ab6e1cedd8e9c00fe23911fb7ec2bd785ae84c0de53e85e6ea73a876030e8b7",
+   "6be2ff35d576d23061a002950a4dec6dee3657c33bc926e8baed554f97abdd30",
+   "80428942a2d1e2d4e0b607fb42f4a3a1f0cad82f6afdbe346432eb00027866be",
+   "85a470b25ade68007069d26c8261d04d2a0280ea1cbc7203ded6a913ea814e73",
+   "8a02918d21af20bd5e41eab6607c584a1e960a0f7dc2415552aacaf491ffc538",
+   "900ff30d37c0e352b02e7f46c6d43664d7c25e6c662c3fd369bd870e774d5eda",
+   "9e7e0124326cb6395e9184aadabba2b1f2483b7d98fec4283bbf115e6c929ea5",
+   "a3ea9a7f6b5e0943e2f6afa06e3c490b3748bbc323c17b269dce9f7b06645b12",
+   "a4dc579332ba222e8b2c0aeec703bb08fe866255ee9968db166504674b47508d",
+   "a64d01ec91afaba8415b3c1af67ae850e5c6f60a23958fe09f132e70b024e9b7",
+   "be9cb1ade7a120e83bec77316f821de86fa7cd21f7c6cc157547d8fbec5a6a98",
+   "ec5a21f16100833bc1b471d7bdbf82664493ae59beaf4a7e3ec1bff016d88723",
+   "effa410ab2dc6bd959407c66fd366e7f70234dfeaa52d431482aa5e956b16f9e"
+  ]
+ },
+ {
+  "name": "s2s-combine.json",
+  "recipe": {
+   "models": [
+    "lfm3"
+   ],
+   "think": {
+    "agents": 8,
+    "max_tokens": 48,
+    "temperature": 1.0,
+    "latent": 0
+   },
+   "select": {
+    "by": "all"
+   },
+   "distill": {
+    "by": "combine",
+    "latent": 0,
+    "max_tokens": 64,
+    "temperature": 0.7
+   },
+   "act": {
+    "forks": 4,
+    "by": "plain",
+    "max_tokens": 96,
+    "temperature": 1.0
+   },
+   "loop": {
+    "minutes": 5,
+    "in_flight": 1,
+    "rounds": 2
+   }
+  },
+  "calls": [
+   "07c579739879cb7d280c6195ff71cc906e24c117065adcaf27bd5cda45fc5fb5",
+   "1854ecb1f43218724314629f5d403d4eeed34c05d81ff7bed7d9770a10e8c461",
+   "1b2a163826c70f74d24a6b6df946658cfb6c4acfbf968a7cb5aa5e407ceca41b",
+   "20ecead2be5abbcdfdf5b3dcc9def301913056509f9609a30449be40775502c1",
+   "255a859d92631b9072fa5e737614f296518888d998a62bd866115fa95c9ed006",
+   "28c59bd758872ddd123c5218a0db04854344bd6604f42c0d147adc203e67df21",
+   "2f0803380c68e46261526e5d73a7db607cfccc84d6d8faf460f8949a28b4b7b2",
+   "3694b7783937661107f0650627995448967bc0a72b7a93423589832b720f5b41",
+   "3b0823950d68651700360a5e0807b4fc626494ee7f148b2c27bbf3419706ba9c",
+   "3ebbb4d7aba697aa90baf8edf067a68eff1cb3e1bc39174d064d5fb674aff8af",
+   "3fe7578232274b49d39ea1cf5799792c47b2111e3e3d10907452dd3d18119f06",
+   "47b21d3d68af0dbd0159b928daba28745d370851f6647360793528ea4c973f6c",
+   "4c38b4b6dad9962d5a8426d6d94cd09b00940185ae30cbe8424efd880bd2ee77",
+   "56e9403bc88e76ba316475195e7d12b58c7ba45d2bb9dd92481c595f08c9fa25",
+   "66b093aebdbb1193506591e9780f72a36ede76109d79b1fbe4b0acb1a4616a7a",
+   "6ab6e1cedd8e9c00fe23911fb7ec2bd785ae84c0de53e85e6ea73a876030e8b7",
+   "6be2ff35d576d23061a002950a4dec6dee3657c33bc926e8baed554f97abdd30",
+   "85a470b25ade68007069d26c8261d04d2a0280ea1cbc7203ded6a913ea814e73",
+   "8a02918d21af20bd5e41eab6607c584a1e960a0f7dc2415552aacaf491ffc538",
+   "900ff30d37c0e352b02e7f46c6d43664d7c25e6c662c3fd369bd870e774d5eda",
+   "9e7e0124326cb6395e9184aadabba2b1f2483b7d98fec4283bbf115e6c929ea5",
+   "a3ea9a7f6b5e0943e2f6afa06e3c490b3748bbc323c17b269dce9f7b06645b12",
+   "a4dc579332ba222e8b2c0aeec703bb08fe866255ee9968db166504674b47508d",
+   "be9cb1ade7a120e83bec77316f821de86fa7cd21f7c6cc157547d8fbec5a6a98",
+   "ec5a21f16100833bc1b471d7bdbf82664493ae59beaf4a7e3ec1bff016d88723",
+   "effa410ab2dc6bd959407c66fd366e7f70234dfeaa52d431482aa5e956b16f9e"
+  ]
+ },
+ {
+  "name": "s2s-vote.json",
+  "recipe": {
+   "models": [
+    "lfm3"
+   ],
+   "think": {
+    "agents": 8,
+    "max_tokens": 48,
+    "temperature": 1.0,
+    "latent": 0
+   },
+   "select": {
+    "by": "vote",
+    "keep": 1
+   },
+   "distill": {
+    "by": "pick"
+   },
+   "act": {
+    "forks": 4,
+    "by": "plain",
+    "max_tokens": 96,
+    "temperature": 1.0
+   },
+   "loop": {
+    "minutes": 5,
+    "in_flight": 1,
+    "rounds": 2
+   }
+  },
+  "calls": [
+   "004f7e801d3ccd63dd393cbd9879f0733fdc2dfecc64a819e2a59f428423ee17",
+   "0b2c2bd0b046138351c01c1bdeadc9854e4e23e1d59d1b527db7bca1f1034755",
+   "1b2a163826c70f74d24a6b6df946658cfb6c4acfbf968a7cb5aa5e407ceca41b",
+   "20ecead2be5abbcdfdf5b3dcc9def301913056509f9609a30449be40775502c1",
+   "255a859d92631b9072fa5e737614f296518888d998a62bd866115fa95c9ed006",
+   "2f0803380c68e46261526e5d73a7db607cfccc84d6d8faf460f8949a28b4b7b2",
+   "3b0823950d68651700360a5e0807b4fc626494ee7f148b2c27bbf3419706ba9c",
+   "3ebbb4d7aba697aa90baf8edf067a68eff1cb3e1bc39174d064d5fb674aff8af",
+   "3fe7578232274b49d39ea1cf5799792c47b2111e3e3d10907452dd3d18119f06",
+   "4c38b4b6dad9962d5a8426d6d94cd09b00940185ae30cbe8424efd880bd2ee77",
+   "6ab6e1cedd8e9c00fe23911fb7ec2bd785ae84c0de53e85e6ea73a876030e8b7",
+   "76fd9a70d8bcb0bd9bf72b01d54762b5719678ae24179b36b3e64c4a162a5420",
+   "817e920e873eaf3b050c9e092c953c27a0d61068b7f4e053799001f7173839db",
+   "900ff30d37c0e352b02e7f46c6d43664d7c25e6c662c3fd369bd870e774d5eda",
+   "9e7e0124326cb6395e9184aadabba2b1f2483b7d98fec4283bbf115e6c929ea5",
+   "a3ea9a7f6b5e0943e2f6afa06e3c490b3748bbc323c17b269dce9f7b06645b12",
+   "a4dc579332ba222e8b2c0aeec703bb08fe866255ee9968db166504674b47508d",
+   "b8d53f2fc7b8bec269668cb9677e2ad8444dc36ff34e9e68c554ca98dcbe30b8",
+   "be9cb1ade7a120e83bec77316f821de86fa7cd21f7c6cc157547d8fbec5a6a98",
+   "c27d918ab673fd8f6799900fa94b7c1a07112485378cec5f66ed6582975ee6f9",
+   "ce5a82febb179f24420ad1c123e3f4bc44a767168137c2d998ef70dffc907537",
+   "d74aa1bc6b68a4167f4802892694319569e06ddcd59c812157446ed387416e52",
+   "ec5a21f16100833bc1b471d7bdbf82664493ae59beaf4a7e3ec1bff016d88723",
+   "ed9d88b71bc0fb84179c76f75266bf675db4979596e52fc806a46a409825b022",
+   "effa410ab2dc6bd959407c66fd366e7f70234dfeaa52d431482aa5e956b16f9e",
+   "f2a5b213d76dab462e1325c2b7f12ce2191cbce4e88056674c6456f278830840"
+  ]
+ },
+ {
+  "name": "vote-pick-contrast",
+  "recipe": {
+   "models": [
+    "lfm3",
+    "lfm3-1"
+   ],
+   "think": {
+    "agents": 4
+   },
+   "loop": {
+    "minutes": 5,
+    "in_flight": 1,
+    "rounds": 2
+   },
+   "select": {
+    "by": "vote"
+   },
+   "distill": {
+    "by": "pick"
+   },
+   "act": {
+    "forks": 2,
+    "by": "contrast",
+    "strength": 0.25
+   }
+  },
+  "calls": [
+   "12ebef7491e4ddee03c8f74be9fae7c825c6b6bb255f0ee2d326eb9c263cc3ff",
+   "20e2c599d8d2b8ebac96dadd2539e4fda19cf0052c19d6d2f250075a23c1813d",
+   "3b0823950d68651700360a5e0807b4fc626494ee7f148b2c27bbf3419706ba9c",
+   "3b906e066d5ec1983c8f8cd4234f9c973248f9d7a5a954385fe9bd2783d8db44",
+   "3c66549cf6b1b47849e02517809b83f5b2659fec5832780c54017865fb31ac7f",
+   "3ebbb4d7aba697aa90baf8edf067a68eff1cb3e1bc39174d064d5fb674aff8af",
+   "5150e0dec637cfa4d9c7031f0c28159d30a1660c5d6b8d0946a655a717ef412c",
+   "5f0c6e90f7b417c8b377fd44f23501e75f5770fd723428ee828a0293dd66d022",
+   "6cd71db531d746a3b2e9253aa28c20c400299182a5ce2bd03e033af76b7678b3",
+   "9923835a237c80e033ff9c1675d2671855f388bb4e05aa3806952026e4ddf5d1",
+   "9977e43f21cee17bf9ce56f41193c76d33e7ba19cbcbac75bdac58d1f00a6e70",
+   "c439242a63ce891e715122c708dc3efb56d46e0048e2c142b2abd4c1977f98a4",
+   "d6f61dc9abb1144960b812fd068143021591678378d19bcb025a799c61383329",
+   "faf6c6211a27ffd1c2182de15c9fdb4e349b29ffe6b37852454490ac01f6096e"
+  ]
+ },
+ {
+  "name": "novelty-joined-joined",
+  "recipe": {
+   "models": [
+    "lfm3",
+    "lfm3-1"
+   ],
+   "think": {
+    "agents": 4
+   },
+   "loop": {
+    "minutes": 5,
+    "in_flight": 1,
+    "rounds": 2
+   },
+   "select": {
+    "by": "novelty",
+    "keep": 3
+   },
+   "distill": {
+    "by": "joined"
+   },
+   "act": {
+    "forks": 3,
+    "by": "joined"
+   }
+  },
+  "calls": [
+   "319378cdf1268881a6dc2e7b5e8e59a43e222fc9a016d22b5cc88737a5de8511",
+   "391cb902fd9b865ebd6645a0dc714669780ea21eb0d54bfeb7070a8487ede6c9",
+   "3b0823950d68651700360a5e0807b4fc626494ee7f148b2c27bbf3419706ba9c",
+   "3c66549cf6b1b47849e02517809b83f5b2659fec5832780c54017865fb31ac7f",
+   "3ebbb4d7aba697aa90baf8edf067a68eff1cb3e1bc39174d064d5fb674aff8af",
+   "41a121ed660c42a4c04802c3337b9ee18494441199571b198e9cd926127f18ef",
+   "62e18be65d300056e092715b750a782d4c5df7d5af32d459a38d684edcc4e168",
+   "75f5fef9fd547339da251b5bc5f24320b4814411cb8d01f1aec4a747eb62bede",
+   "8699ba1d9a0aaa272b074f2f9a1042069f5a00bcb5dc713467bb80005652a99d",
+   "8c79e667bfc5e63d2afdff97926f2338bd5e4a2fb04f5cab9fda99f92fff5c9d",
+   "b492807f88b1003921aa456a027501778a7aae35b62e48cbaa4226526b399fda",
+   "c7f9d078f96df2f202f103fc0c500f1e5a0419f0df49e1cc2d3637f2786e8103",
+   "c7f9d078f96df2f202f103fc0c500f1e5a0419f0df49e1cc2d3637f2786e8103",
+   "faf6c6211a27ffd1c2182de15c9fdb4e349b29ffe6b37852454490ac01f6096e"
+  ]
+ },
+ {
+  "name": "all-combine-latent",
+  "recipe": {
+   "models": [
+    "lfm3",
+    "lfm3-1"
+   ],
+   "think": {
+    "agents": 4,
+    "latent": 8
+   },
+   "loop": {
+    "minutes": 5,
+    "in_flight": 1,
+    "rounds": 2
+   },
+   "select": {
+    "by": "all"
+   },
+   "distill": {
+    "by": "combine",
+    "latent": 16
+   },
+   "act": {
+    "forks": 2,
+    "latent": 4
+   }
+  },
+  "calls": [
+   "25d4cbb77ebf88beab2d6bd590851cf2f255c3ced31567fea3c867ef97c479d2",
+   "3ce5ddcf66b38d1c304b73062cbfdeb503c9f1cffcbe0a9cce1781dfe5d597ca",
+   "49062a6b380a3e18282581cda75fbccef91c76d461a35d19ff8e9b4eae94a608",
+   "9555842cae5ed7fc76bb9d9e6d2cd13532cf2514bb1bf898c8a14cf5a4cd88e1",
+   "a1620b8b7fafa732d7090111695ac00d984a14fd3c806bf79e8427b5d93fb5ca",
+   "ba9143f957c5863585b40f18a8794d7e8af8c6acff2f3e1e788f0f7b67774d19",
+   "c0e8dce31dfdf01ba264d8695ea73d059f958b9ce7d6326f6c9fe69d8acb7822",
+   "cb3252276a5d3bca6dc4a153927bea5323d91722c636cacd32c804e03c0266af",
+   "d583e25c79a56d7a1febbeb4a23ab57e001522bb3f28a34d1132712e9e274db5",
+   "d8f26f6b73cf246c68288921248e521e36fcb6ce9eaeab8ef0b4a1cb7cc1d125",
+   "dde0214b71f240d4f9334419a7b33d2eb4e42cc04044446e4b521c42e28ee745",
+   "e859d214bb9ff48b129fb3474de28d00a505b29b773faf2d88b1f2d544dfc9a5",
+   "e9451542ddefc7d05778db358d332b0834875e007bbec6a7d4bf9bf41ad057f5",
+   "f20a8f9e04c78312cb8e4f6104528b1121507a0ffc8d1a40bd051b1b13345d20"
+  ]
+ }
+]
