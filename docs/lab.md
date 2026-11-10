@@ -380,13 +380,14 @@ POST /nagaya/v1/lab/ensemble
   - `prob_mean`: the row is `log(sum_k w_k exp(l_k))`, with the weights scaled to a sum of 1. One context can carry a
     token.
   - `contrast`: exactly 2 contexts, and the row is `(1 + s) l_0 - s l_1`, with `s` the `strength`. Context 0 has the
-    idea, and context 1 does not. This is context-aware decoding (Shi et al., 2023).
+    idea, and context 1 does not. This is context-aware decoding (Shi et al., 2023). With no `strength`, `s` is 0.5.
 - **`weights`.** One finite value above 0 for each context. With no `weights`, each weight is 1. A vote of a decision
   can give them.
 - **The sampler.** The combined row goes to `f32`, and the sampler of spec 11.2 reads it with `sample`. The seed of a
   step is the position of the reply in context 0, as for a generation.
 - **The reply.** The parser of context 0 reads the tokens, and its end ends the reply. `max_tokens` ends it too, and so
   does a full context. `content` is the reply after the prefill of context 0. There is no stream, and no held head.
+  `finish` and `usage` are those of context 0.
 - **Bits.** One context with `logprob_sum` and the weight 1 gives its row to the sampler unchanged. Thus it gives the
   bits of the same generation. The card gate checks this.
 - **Errors.** A model with no batched passes is a 400 that names `model`. 0 or more than 8 contexts is a 400 that names
