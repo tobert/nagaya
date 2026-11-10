@@ -260,6 +260,18 @@ changes the recipe between runs. For example, it raises `distill.latent` when th
 client first, such as `tools/swarm` or a kaijutsu tool. A route that runs a whole round on the server comes later,
 when the round trips cost more than the decode.
 
+## A swarm in the chat of the web app
+
+Amy, 2026-11-10: "I'm thinking later we'll add a way for me to try a swarm from the web ui in a chat for creative
+stuff." The stages map to a chat with no evaluator: the user judges.
+
+- **Think:** agents answer from other angles, such as tone, point of view or a turn of the plot.
+- **Select:** the chat shows each idea, and the user picks. A vote or the novelty filter can pick instead.
+- **Distill:** one call merges the chosen ideas into an outline.
+- **Act:** forks write the passage, and the user picks one. Joined forks can write one blended draft.
+- **Knobs:** the settings of each stage, the ladder, latent steps and the cards. They are the fields of a recipe, so
+  the chat can save a session as a recipe.
+
 ## Open questions
 
 - Is a context's bits dependent on its batch acceptable for any served model?
