@@ -20,11 +20,14 @@ def fake_evaluate(src, seed):
 
 class StubTransport:
     """It records each POST, and it answers from the prefill of the first context. A generation gives its prefill
-    in the content, and an ensemble does not, as on the nagaya."""
+    in the content, and an ensemble does not, as on the nagaya. A generation whose last message is a user message
+    is a prime: it gives `prime`, a reply with reasoning and content."""
 
-    def __init__(self, vote="Best idea: 2"):
+    def __init__(self, vote="Best idea: 2", prime=None):
         self.calls = []
         self.vote = vote
+        self.prime = prime if prime is not None else {"reasoning": " Small gaps waste bins. ",
+                                                      "content": "Try a tighter fit.\n"}
         self._code = 0
         self._lock = threading.Lock()
 
@@ -46,6 +49,8 @@ class StubTransport:
         with self._lock:
             self.calls.append((path, body))
         usage = {"prompt": 100, "fed": 10, "completion": 5}
+        if path == client.GENERATIONS and body["context"]["messages"][-1]["role"] == "user":
+            return {**self.prime, "usage": usage}
         if path == client.GENERATIONS:
             return {"content": self._reply(body["context"]["messages"][-1]["content"]), "usage": usage}
         if path == client.ENSEMBLE:

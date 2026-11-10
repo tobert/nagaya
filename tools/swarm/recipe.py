@@ -1,5 +1,6 @@
 """The recipe of a round (docs/swarm-ideas.md, "An agent's interface to a swarm"). A recipe is a JSON object with the
-stages think, select, distill, act and loop. The parse fills the defaults and refuses a recipe that it cannot run."""
+stages prime, think, select, distill, act and loop. The parse fills the defaults and refuses a recipe that it cannot
+run. A member that is absent leaves the parse, and so the requests, as they were before the member existed."""
 import json
 import math
 
@@ -10,14 +11,20 @@ LATENT_MAX = 256
 ENSEMBLE_MAX = 8
 EMBED_MODEL = "embeddinggemma-2"
 
-STAGES = ("models", "think", "select", "distill", "act", "loop")
+STAGES = ("models", "system", "prime", "think", "select", "distill", "act", "loop")
+CALL = ("system", "sample", "thinking")
 KEYS = {
-    "think": ("agents", "foci", "max_tokens", "temperature", "latent"),
-    "select": ("by", "keep", "model", "dimensions"),
-    "distill": ("by", "latent", "max_tokens", "temperature"),
-    "act": ("forks", "by", "max_tokens", "temperature", "latent", "strength", "combine"),
+    "prime": ("max_tokens", "temperature", "sample", "system"),
+    "think": ("agents", "foci", "max_tokens", "temperature", "latent") + CALL,
+    "select": ("by", "keep", "model", "dimensions", "system", "thinking"),
+    "distill": ("by", "latent", "max_tokens", "temperature") + CALL,
+    "act": ("forks", "by", "max_tokens", "temperature", "latent", "strength", "combine") + CALL,
     "loop": ("minutes", "in_flight", "parent", "rounds"),
 }
+# The members of `sample` that the driver sends, in the order of the body. The driver sets the seed.
+SAMPLE = ("temperature", "top_p", "top_k", "min_p")
+NO_PENALTY = ("repetition_penalty is not a member: the sampler of the nagaya (spec 11.2) has no repetition penalty. "
+              "Remove it.")
 
 
 class RecipeError(ValueError):
@@ -51,9 +58,77 @@ def _stage(obj, name):
     if not isinstance(v, dict):
         raise RecipeError(f"{name} must be an object; it is {v!r}.")
     for k in v:
+        if k == "repetition_penalty":
+            raise RecipeError(f"{name}.{NO_PENALTY}")
         if k not in KEYS[name]:
             raise RecipeError(f"{name}.{k} is not a member. The members are {', '.join(KEYS[name])}.")
     return v
+
+
+def _sample(st, name, default_temperature):
+    """The temperature of a stage, and the other members of its `sample` in the order of SAMPLE. The member
+    `temperature` of the stage and `sample.temperature` are the same setting, so a stage sets at most one."""
+    v = st.get("sample", {})
+    if not isinstance(v, dict):
+        raise RecipeError(f"{name}.sample must be an object; it is {v!r}.")
+    for k in v:
+        if k == "repetition_penalty":
+            raise RecipeError(f"{name}.sample.{NO_PENALTY}")
+        if k not in SAMPLE:
+            raise RecipeError(f"{name}.sample.{k} is not a member. The members are {', '.join(SAMPLE)}; "
+                              "the driver sets the seed.")
+    if "temperature" in st and "temperature" in v:
+        raise RecipeError(f"{name}.temperature and {name}.sample.temperature are the same setting. Remove one.")
+    if "temperature" in v:
+        temperature = _num(v, "temperature", f"{name}.sample.temperature", None, 0.0)
+    else:
+        temperature = _num(st, "temperature", f"{name}.temperature", default_temperature, 0.0)
+    extra = {}
+    if "top_p" in v:
+        p = v["top_p"]
+        if isinstance(p, bool) or not isinstance(p, (int, float)) or not (0.0 < p <= 1.0):
+            raise RecipeError(f"{name}.sample.top_p must be above 0 and at most 1; it is {p!r}.")
+        extra["top_p"] = float(p)
+    if "top_k" in v:
+        extra["top_k"] = _int(v, "top_k", f"{name}.sample.top_k", None, 0)
+    if "min_p" in v:
+        p = v["min_p"]
+        if isinstance(p, bool) or not isinstance(p, (int, float)) or not (0.0 <= p < 1.0):
+            raise RecipeError(f"{name}.sample.min_p must be at least 0 and below 1; it is {p!r}.")
+        extra["min_p"] = float(p)
+    return temperature, extra
+
+
+def _system(st, name, top):
+    """The system prompt of a stage: its own member, else the top-level `system`, else None."""
+    v = st.get("system", top)
+    if v is not None and (not isinstance(v, str) or not v.strip()):
+        raise RecipeError(f"{name}.system must be a line of text; it is {v!r}.")
+    return v
+
+
+def _call_options(st, name, top, out, sample=True, default_temperature=None):
+    """Add the members system, sample and thinking of a stage that makes calls to `out`. Each absent member stays
+    out of `out`, so the parse of an old recipe does not change."""
+    if sample:
+        out["temperature"], extra = _sample(st, name, default_temperature)
+        if extra:
+            out["sample"] = extra
+    system = _system(st, name, top)
+    if system is not None:
+        out["system"] = system
+    if "thinking" in st:
+        if not isinstance(st["thinking"], bool):
+            raise RecipeError(f"{name}.thinking must be true or false; it is {st['thinking']!r}.")
+        out["thinking"] = st["thinking"]
+    return out
+
+
+def _no_call(st, name, why):
+    """Refuse the call members of a stage that makes no call."""
+    for k in CALL:
+        if k in st:
+            raise RecipeError(f"{name}.{k} acts only on a call, and {why}. Remove it.")
 
 
 def parse(obj):
@@ -69,6 +144,17 @@ def parse(obj):
         raise RecipeError(f"models must be a list of one or more served model names; it is {models!r}.")
     if len(set(models)) != len(models):
         raise RecipeError(f"models names a model twice: {models!r}.")
+    top = obj.get("system")
+    if top is not None and (not isinstance(top, str) or not top.strip()):
+        raise RecipeError(f"system must be a line of text; it is {top!r}.")
+
+    prime = None
+    if "prime" in obj:
+        pr = _stage(obj, "prime")
+        if "max_tokens" not in pr:
+            raise RecipeError("prime.max_tokens is missing. A prime thinks, so give it a token budget, such as 384.")
+        prime = _call_options(pr, "prime", top, {"max_tokens": _int(pr, "max_tokens", "prime.max_tokens", None, 1)},
+                              default_temperature=0.6)
 
     t = _stage(obj, "think")
     agents = _int(t, "agents", "think.agents", None, 1, 64)
@@ -77,8 +163,9 @@ def parse(obj):
         raise RecipeError(f"think.foci must be a list of one or more lines of text; it is {foci!r}.")
     think = {"agents": agents, "foci": list(foci),
              "max_tokens": _int(t, "max_tokens", "think.max_tokens", 48, 1),
-             "temperature": _num(t, "temperature", "think.temperature", 1.0, 0.0),
+             "temperature": None,
              "latent": _int(t, "latent", "think.latent", 0, 0, LATENT_MAX)}
+    _call_options(t, "think", top, think, default_temperature=1.0)
 
     s = _stage(obj, "select")
     by = _choice(s, "by", "select.by", None, ("vote", "novelty", "all"))
@@ -92,12 +179,21 @@ def parse(obj):
               "dimensions": _choice(s, "dimensions", "select.dimensions", 256, (768, 512, 256, 128))}
     if not isinstance(select["model"], str) or not select["model"]:
         raise RecipeError(f"select.model must name the embedding model; it is {select['model']!r}.")
+    if by == "vote":
+        _call_options(s, "select", top, select, sample=False)
+    else:
+        _no_call(s, "select", f"select.by {by} asks no model for text")
 
     d = _stage(obj, "distill")
     distill = {"by": _choice(d, "by", "distill.by", None, ("pick", "combine", "joined")),
                "latent": _int(d, "latent", "distill.latent", 0, 0, LATENT_MAX),
                "max_tokens": _int(d, "max_tokens", "distill.max_tokens", 64, 1),
-               "temperature": _num(d, "temperature", "distill.temperature", 0.7, 0.0)}
+               "temperature": None}
+    if distill["by"] == "pick":
+        _no_call(d, "distill", "distill.by pick makes no call")
+        distill["temperature"] = _num(d, "temperature", "distill.temperature", 0.7, 0.0)
+    else:
+        _call_options(d, "distill", top, distill, default_temperature=0.7)
     if distill["by"] == "pick":
         if keep != 1:
             raise RecipeError(f"distill.by pick needs select.keep 1, because it codes one idea; select.keep is {keep}.")
@@ -111,8 +207,9 @@ def parse(obj):
     act = {"forks": _int(a, "forks", "act.forks", 1, 1, 64),
            "by": _choice(a, "by", "act.by", "plain", ("plain", "contrast", "joined")),
            "max_tokens": _int(a, "max_tokens", "act.max_tokens", 96, 1),
-           "temperature": _num(a, "temperature", "act.temperature", 1.0, 0.0),
+           "temperature": None,
            "latent": _int(a, "latent", "act.latent", 0, 0, LATENT_MAX)}
+    _call_options(a, "act", top, act, default_temperature=1.0)
     if "strength" in a:
         if act["by"] != "contrast":
             raise RecipeError("act.strength acts only with act.by contrast. Remove it, or set act.by to contrast.")
@@ -136,7 +233,12 @@ def parse(obj):
     if "rounds" in lp:
         loop["rounds"] = _int(lp, "rounds", "loop.rounds", None, 1)
 
-    return {"models": list(models), "think": think, "select": select, "distill": distill, "act": act, "loop": loop}
+    out = {"models": list(models), "think": think, "select": select, "distill": distill, "act": act, "loop": loop}
+    if top is not None:
+        out["system"] = top
+    if prime is not None:
+        out["prime"] = prime
+    return out
 
 
 def load(path):
