@@ -28,7 +28,7 @@ struct Lab {
     council: Arc<Council>,
     log: ControlLog,
     seen: Seen,
-    _folder: tempfile::TempDir,
+    folder: tempfile::TempDir,
 }
 
 /// The value of the row `r` of the small table at the column `c`: small integers, which BF16 holds exactly.
@@ -116,7 +116,7 @@ fn lab_with(taps: bool) -> Lab {
         council: Arc::new(council),
         log,
         seen,
-        _folder: dir,
+        folder: dir,
     }
 }
 
@@ -256,4 +256,40 @@ fn latent_steps_hold_no_head_and_give_no_read_without_read() {
         lab.fixture.entries(),
         plain.fixture.entries()
     );
+}
+
+#[test]
+fn each_fault_of_latent_is_a_400_that_names_its_member() {
+    let lab = lab_with(true);
+    let cases = [
+        ("latent.steps", json!({"steps": 257})),
+        ("latent.steps", json!({"steps": 1.5})),
+        ("latent.steps", json!({"steps": -1})),
+        ("latent.steps", json!({"steps": "4"})),
+        ("latent.read", json!({"steps": 4, "read": "yes"})),
+        ("latent.depth", json!({"steps": 4, "depth": 2})),
+        ("latent", json!(4)),
+    ];
+    for (member, latent) in cases {
+        let (status, got) = send(&lab.council, &request(Some(latent.clone())));
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{latent}: {got}");
+        assert_eq!(got["error"]["param"], member, "{latent}: {got}");
+    }
+    assert!(lab.log.take().passes.is_empty(), "a refused request runs no pass");
+    let (status, got) = send(&lab.council, &request(Some(json!({"steps": 256}))));
+    assert_eq!(status, StatusCode::OK, "256 steps is the most: {got}");
+}
+
+#[test]
+fn a_model_with_no_tap_residual_is_a_400_that_names_latent() {
+    let lab = lab_with(false);
+    // The check reads no weights: the folder of a model with no tap need not hold them.
+    std::fs::remove_file(lab.folder.path().join("model.safetensors")).unwrap();
+    let (status, got) = send(&lab.council, &request(Some(json!({"steps": 1}))));
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{got}");
+    assert_eq!(got["error"]["param"], "latent", "{got}");
+    assert!(lab.log.take().passes.is_empty(), "a refused request runs no pass");
+    // With 0 steps, the request is the request with no member, so it runs.
+    let (status, got) = send(&lab.council, &request(Some(json!({"steps": 0}))));
+    assert_eq!(status, StatusCode::OK, "{got}");
 }

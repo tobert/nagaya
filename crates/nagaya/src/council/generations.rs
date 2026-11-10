@@ -708,21 +708,13 @@ impl Service {
                 "a generation with a trace takes no latent steps",
             ));
         }
-        if plan.steps == 0 {
-            return Err(ServiceError::internal(
-                "a plan of latent steps has 0 steps; the route sends no plan for 0 steps",
-            ));
-        }
-        if plan.steps > nagaya_council::latent::MAX_STEPS {
-            return Err(Invalid::param(
-                "latent.steps",
-                format!(
-                    "nothing ran: latent.steps is {}; send 0 to {}",
-                    plan.steps,
-                    nagaya_council::latent::MAX_STEPS
-                ),
-            )
-            .into());
+        // The route sends a plan of 1 to MAX_STEPS steps. Another count is a defect of the route.
+        if plan.steps == 0 || plan.steps > nagaya_council::latent::MAX_STEPS {
+            return Err(ServiceError::internal(format!(
+                "a plan of latent steps has {} steps; the route sends 1 to {}",
+                plan.steps,
+                nagaya_council::latent::MAX_STEPS
+            )));
         }
         self.takes_latent(plan.map.width)
     }
