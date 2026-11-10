@@ -1,0 +1,58 @@
+{
+  "models": [
+    "lfm3"
+  ],
+  "think": {
+    "agents": 8,
+    "max_tokens": 48,
+    "latent": 0,
+    "system": "You improve a heuristic for online bin packing. Propose one concrete change. Do not write code.",
+    "sample": {
+      "ladder": [
+        0.7,
+        0.8,
+        0.9,
+        1.0,
+        1.0,
+        1.1,
+        1.2,
+        1.2
+      ],
+      "top_p": 0.95,
+      "top_k": 20
+    }
+  },
+  "select": {
+    "by": "all"
+  },
+  "distill": {
+    "by": "combine",
+    "latent": 0,
+    "max_tokens": 64,
+    "system": "You merge ideas for a bin packing heuristic into one precise change. Do not write code.",
+    "sample": {
+      "temperature": 0.6,
+      "top_p": 0.95
+    }
+  },
+  "act": {
+    "forks": 4,
+    "by": "plain",
+    "max_tokens": 96,
+    "system": "You write exactly one numpy expression. No prose.",
+    "sample": {
+      "ladder": [
+        0.3,
+        0.6,
+        0.9,
+        1.2
+      ],
+      "top_p": 0.95
+    }
+  },
+  "loop": {
+    "minutes": 20,
+    "in_flight": 4,
+    "parent": "tournament of the top 5"
+  }
+}

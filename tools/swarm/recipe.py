@@ -23,6 +23,8 @@ KEYS = {
 }
 # The members of `sample` that the driver sends, in the order of the body. The driver sets the seed.
 SAMPLE = ("temperature", "top_p", "top_k", "min_p")
+# `ladder` gives a temperature to each member of a stage in turn. The driver sends the temperature, not the ladder.
+LADDER = "ladder"
 NO_PENALTY = ("repetition_penalty is not a member: the sampler of the nagaya (spec 11.2) has no repetition penalty. "
               "Remove it.")
 
@@ -74,12 +76,22 @@ def _sample(st, name, default_temperature):
     for k in v:
         if k == "repetition_penalty":
             raise RecipeError(f"{name}.sample.{NO_PENALTY}")
-        if k not in SAMPLE:
-            raise RecipeError(f"{name}.sample.{k} is not a member. The members are {', '.join(SAMPLE)}; "
+        if k not in SAMPLE + (LADDER,):
+            raise RecipeError(f"{name}.sample.{k} is not a member. The members are {', '.join(SAMPLE + (LADDER,))}; "
                               "the driver sets the seed.")
     if "temperature" in st and "temperature" in v:
         raise RecipeError(f"{name}.temperature and {name}.sample.temperature are the same setting. Remove one.")
-    if "temperature" in v:
+    ladder = None
+    if LADDER in v:
+        if "temperature" in st or "temperature" in v:
+            where = f"{name}.temperature" if "temperature" in st else f"{name}.sample.temperature"
+            raise RecipeError(f"{name}.sample.ladder and {where} both set the temperature. Remove one.")
+        ladder = v[LADDER]
+        if not isinstance(ladder, list) or not ladder:
+            raise RecipeError(f"{name}.sample.ladder must be a list of one or more temperatures; it is {ladder!r}.")
+        ladder = [_num({"t": t}, "t", f"{name}.sample.ladder[{i}]", None, 0.0) for i, t in enumerate(ladder)]
+        temperature = None
+    elif "temperature" in v:
         temperature = _num(v, "temperature", f"{name}.sample.temperature", None, 0.0)
     else:
         temperature = _num(st, "temperature", f"{name}.temperature", default_temperature, 0.0)
@@ -96,7 +108,7 @@ def _sample(st, name, default_temperature):
         if isinstance(p, bool) or not isinstance(p, (int, float)) or not (0.0 <= p < 1.0):
             raise RecipeError(f"{name}.sample.min_p must be at least 0 and below 1; it is {p!r}.")
         extra["min_p"] = float(p)
-    return temperature, extra
+    return temperature, extra, ladder
 
 
 def _system(st, name, top):
@@ -107,13 +119,19 @@ def _system(st, name, top):
     return v
 
 
-def _call_options(st, name, top, out, sample=True, default_temperature=None):
+def _call_options(st, name, top, out, sample=True, default_temperature=None, one_call=None):
     """Add the members system, sample and thinking of a stage that makes calls to `out`. Each absent member stays
-    out of `out`, so the parse of an old recipe does not change."""
+    out of `out`, so the parse of an old recipe does not change. `one_call` says why the stage makes one call, so
+    it refuses a ladder."""
     if sample:
-        out["temperature"], extra = _sample(st, name, default_temperature)
+        out["temperature"], extra, ladder = _sample(st, name, default_temperature)
         if extra:
             out["sample"] = extra
+        if ladder is not None:
+            if one_call is not None:
+                raise RecipeError(f"{name}.sample.ladder gives a temperature to each member of a stage, and "
+                                  f"{one_call}. Use {name}.sample.temperature.")
+            out[LADDER] = ladder
     system = _system(st, name, top)
     if system is not None:
         out["system"] = system
@@ -154,7 +172,7 @@ def parse(obj):
         if "max_tokens" not in pr:
             raise RecipeError("prime.max_tokens is missing. A prime thinks, so give it a token budget, such as 384.")
         prime = _call_options(pr, "prime", top, {"max_tokens": _int(pr, "max_tokens", "prime.max_tokens", None, 1)},
-                              default_temperature=0.6)
+                              default_temperature=0.6, one_call="a prime makes one call")
 
     t = _stage(obj, "think")
     agents = _int(t, "agents", "think.agents", None, 1, 64)
@@ -193,7 +211,8 @@ def parse(obj):
         _no_call(d, "distill", "distill.by pick makes no call")
         distill["temperature"] = _num(d, "temperature", "distill.temperature", 0.7, 0.0)
     else:
-        _call_options(d, "distill", top, distill, default_temperature=0.7)
+        _call_options(d, "distill", top, distill, default_temperature=0.7,
+                      one_call=f"distill.by {distill['by']} makes one call")
     if distill["by"] == "pick":
         if keep != 1:
             raise RecipeError(f"distill.by pick needs select.keep 1, because it codes one idea; select.keep is {keep}.")
@@ -209,7 +228,9 @@ def parse(obj):
            "max_tokens": _int(a, "max_tokens", "act.max_tokens", 96, 1),
            "temperature": None,
            "latent": _int(a, "latent", "act.latent", 0, 0, LATENT_MAX)}
-    _call_options(a, "act", top, act, default_temperature=1.0)
+    joined = a.get("by") == "joined"
+    _call_options(a, "act", top, act, default_temperature=1.0,
+                  one_call="act.by joined makes one call" if joined else None)
     if "strength" in a:
         if act["by"] != "contrast":
             raise RecipeError("act.strength acts only with act.by contrast. Remove it, or set act.by to contrast.")
