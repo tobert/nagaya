@@ -4,7 +4,6 @@
 //! is a hash of the seed, the position and the purpose. This crate never reads OS randomness. The caller gives
 //! the seed, and it chooses one when the client sent none.
 
-use std::cmp::Ordering;
 use std::fmt;
 
 /// The resolved settings of one generation. The engine gives the defaults, and the caller resolves them.
@@ -146,14 +145,16 @@ fn softmax(z: &[f64]) -> Vec<f64> {
     e.into_iter().map(|x| x / sum).collect()
 }
 
-/// The order of the filters: logit down, then id up. It is a total order, so a cut at a tie is exact.
-fn by_logit_then_id(l: &[f64]) -> impl Fn(&u32, &u32) -> Ordering + '_ {
-    move |&a, &b| {
-        l[b as usize]
-            .partial_cmp(&l[a as usize])
-            .expect("logits are finite")
-            .then(a.cmp(&b))
-    }
+/// The sort key of the order of the filters: logit down, then id up. It is a total order, so a cut at a tie is exact.
+/// The logits come from f32 (`widen`), so the f32 bits order them. Minus zero becomes plus zero, because the two tie as
+/// numbers. A sort of these keys is many times faster than a sort with a comparison of the logits.
+fn order_key(logit: f64, id: u32) -> u64 {
+    let x = logit as f32;
+    debug_assert!(f64::from(x) == logit, "a logit of the sampler comes from f32");
+    let x = if x == 0.0 { 0.0f32 } else { x };
+    let bits = x.to_bits();
+    let up = if bits >> 31 == 1 { !bits } else { bits | 0x8000_0000 };
+    (u64::from(!up) << 32) | u64::from(id)
 }
 
 /// The survivors of the filters. `dropped` are tokens that the reply never picks: they leave the row before each
@@ -174,17 +175,20 @@ fn candidates(l: &[f64], s: &Settings, dropped: &[u32]) -> Result<Survivors, Sam
             probs: vec![1.0],
         });
     }
-    let cmp = by_logit_then_id(l);
-    let mut ids: Vec<u32> = (0..l.len() as u32).filter(kept).collect();
-    if ids.is_empty() {
+    let mut keys: Vec<u64> = (0..l.len() as u32)
+        .filter(kept)
+        .map(|i| order_key(l[i as usize], i))
+        .collect();
+    if keys.is_empty() {
         return Err(SamplerError::AllDropped);
     }
-    if s.top_k > 0 && (s.top_k as usize) < ids.len() {
+    if s.top_k > 0 && (s.top_k as usize) < keys.len() {
         let k = s.top_k as usize;
-        ids.select_nth_unstable_by(k - 1, &cmp);
-        ids.truncate(k);
+        keys.select_nth_unstable(k - 1);
+        keys.truncate(k);
     }
-    ids.sort_unstable_by(&cmp);
+    keys.sort_unstable();
+    let mut ids: Vec<u32> = keys.iter().map(|k| *k as u32).collect();
     let mut z: Vec<f64> = ids.iter().map(|&i| l[i as usize]).collect();
     if s.top_p < 1.0 {
         // Keep the smallest prefix whose running mass reaches top_p, and never fewer than one.
@@ -225,12 +229,16 @@ pub fn survivors(logits: &[f32], s: &Settings) -> Result<Survivors, SamplerError
 
 /// The probability of the token and the entropy (nats) of the untempered softmax over the whole vocabulary.
 fn raw_stats(l: &[f64], token: u32) -> (f64, f64) {
+    // One loop with the same sums in the same order as two passes, so the bits stay, and nothing is allocated.
     let max = l.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let z: Vec<f64> = l.iter().map(|&x| x - max).collect();
-    let e: Vec<f64> = z.iter().map(|&x| x.exp()).collect();
-    let sum: f64 = e.iter().sum();
-    let weighted: f64 = e.iter().zip(&z).map(|(a, b)| a * b).sum();
-    (e[token as usize] / sum, sum.ln() - weighted / sum)
+    let (mut sum, mut weighted) = (0.0, 0.0);
+    for &x in l {
+        let z = x - max;
+        let e = z.exp();
+        sum += e;
+        weighted += e * z;
+    }
+    ((l[token as usize] - max).exp() / sum, sum.ln() - weighted / sum)
 }
 
 /// Pick a token with a given uniform value in [0, 1). Greedy settings ignore the value.
