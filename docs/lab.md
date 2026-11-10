@@ -348,6 +348,20 @@ generation of the lab can think in latent steps first.
 - **Errors.** `steps` past 256, or not a whole number, is a 400 that names `latent.steps`. A model with no tap
   `residual` is a 400 that names `latent`.
 
+**Proposed** by Claude Opus 5.5, 2026-11-10, for milestone 29 step 4: the choices that the rules above leave open.
+
+- **No head.** A reply after latent steps holds no head, and its slot makes no interval copy after the first step.
+  Reason: a recipe names tokens, and a latent row is not a token.
+- **The response.** `latent` echoes `steps`. It has `read` only when the request reads, and `read` is empty for 0
+  steps. The `text` of a read token is its piece.
+- **The seed.** The sampler takes the position in the slot, so the first token of the reply is at the prompt length
+  plus the step count.
+- **The norm.** The host takes the mean of the squares in `f64`, then each value in `f32` takes the weight. The scale
+  is the mean of the row norms of the BF16 table, in `f64`. On the CPU it is 0.90660375 for `LFM3-1.7B`; the
+  oracle gives 0.9066035.
+- **Members.** `latent` has only `steps` and `read`. Another member is a 400 that names `latent.<member>`, and
+  `read` that is not a boolean names `latent.read`.
+
 ## `latent` and `merge`: the parts of a swarm
 
 **Proposed** (Claude Opus 5.5, 2026-11-09, milestone 29 step 2). Amy chose a text swarm first, then latent steps and
