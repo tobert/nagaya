@@ -213,6 +213,21 @@ class Markup(unittest.TestCase):
         self.assertIn('<input id="chat-topk" type="number" min="1" value="50">', page)
         self.assertIn('<input id="chat-topp" type="number" min="0.01" max="1" step="0.01" placeholder="off">', page)
 
+    def test_the_instructions_of_a_tab_are_behind_its_help_button_and_long_hints_are_tooltips(self):
+        # Amy, 2026-11-11: "there's too much instruction text on the page, pls move to tooltips and/or help buttons".
+        page = WEB.joinpath("index.html").read_text()
+        self.assertNotIn('<p class="note">', page)
+        sections = re.findall(r'<section id="(\w+)">(.*?)</section>', page, re.S)
+        self.assertEqual(len(sections), 8)
+        for name, body in sections:
+            head = body[:body.index("</div>\n", body.index('<div class="head">'))]
+            self.assertEqual(head.count('<details class="help">'), 1, name)
+            self.assertEqual(body.count('<details class="help">'), 1, name)
+        # A hint that stays beside its label is short. A longer one is the hover text of a mark.
+        for hint in re.findall(r'<span class="note">— (.*?)</span>', page, re.S):
+            self.assertLessEqual(len(hint), 20, hint)
+        self.assertGreaterEqual(len(re.findall(r'<span class="tip" tabindex="0" title="[^"]+">ⓘ</span>', page)), 10)
+
     def test_each_tab_of_the_rail_has_its_section(self):
         page = WEB.joinpath("index.html").read_text()
         tabs = re.findall(r'<button data-tab="(\w+)">', page)

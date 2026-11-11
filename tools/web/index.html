@@ -32,7 +32,18 @@
 <main>
 
 <section id="chat">
-  <div class="head"><h1>Chat</h1><p>A conversation with a text model, with thinking and one control vector.</p></div>
+  <div class="head"><h1>Chat</h1>
+    <details class="help"><summary title="what this tab does">?</summary><div class="help-text">
+      <p>A conversation with a text model, with thinking and one control vector.</p>
+      <p>The start values follow the model card of LFM3: top k 50, and a low temperature. The card gives 0.1 for
+        general work, and 1.0 with top p 0.95 and top k 20 for math. The nagaya has no repetition penalty, which
+        the card sets to 1.1.</p>
+      <p>The nagaya holds a record of the chat, and each reply names it by a content id. The next turn sends
+        that id and only its new message. A nagaya that does not name a record, or that dropped it, gets the
+        chat whole. The id under a message is the model state after it: a turn starts from the longest state
+        that the nagaya holds, so it runs only the new tokens.</p>
+    </div></details>
+  </div>
   <div class="cols">
     <div class="card">
       <label>Model</label>
@@ -40,9 +51,8 @@
       <label>System message</label>
       <textarea id="chat-system" rows="4" placeholder="optional"></textarea>
       <label class="check"><input id="chat-thinking" type="checkbox" checked> Thinking
-        <span class="note">— the default of a model that thinks; with it off, LFM3 can write a stray
-          <code>&lt;/think&gt;</code> after a first draft</span></label>
-      <label>Steering <span class="note">— a vector of this model, from the Steering tab</span></label>
+        <span class="tip" tabindex="0" title="the default of a model that thinks; with it off, LFM3 can write a stray &lt;/think&gt; after a first draft">ⓘ</span></label>
+      <label>Steering <span class="tip" tabindex="0" title="a vector of this model, from the Steering tab">ⓘ</span></label>
       <div class="fields">
         <select id="chat-vector"></select>
         <select id="chat-op"><option>ablate</option><option>add</option><option>clamp</option></select>
@@ -66,14 +76,7 @@
         <div><label>Top p <span class="note">— empty: off</span></label>
           <input id="chat-topp" type="number" min="0.01" max="1" step="0.01" placeholder="off"></div>
       </div>
-      <p class="note">The start values follow the model card of LFM3: top k 50, and a low temperature. The card
-        gives 0.1 for general work, and 1.0 with top p 0.95 and top k 20 for math. The nagaya has no repetition
-        penalty, which the card sets to 1.1.</p>
       <div class="actions"><button class="plain" id="chat-clear">New chat</button></div>
-      <p class="note">The nagaya holds a record of the chat, and each reply names it by a content id. The next turn
-        sends that id and only its new message. A nagaya that does not name a record, or that dropped it, gets the
-        chat whole. The id under a message is the model state after it: a turn starts from the longest state that
-        the nagaya holds, so it runs only the new tokens.</p>
     </div>
     <div class="card">
       <div id="chat-log"></div>
@@ -90,14 +93,20 @@
 </section>
 
 <section id="omni">
-  <div class="head"><h1>Omni</h1><p>A conversation with a model that reads images, audio and video, and can speak its reply.</p></div>
+  <div class="head"><h1>Omni</h1>
+    <details class="help"><summary title="what this tab does">?</summary><div class="help-text">
+      <p>A conversation with a model that reads images, audio and video, and can speak its reply.</p>
+      <p>Each file goes to the nagaya as an object, and the message names it. A spoken reply plays here, and the
+        next turn sends it back as the assistant's audio (spec 11.11, "Read it back").</p>
+    </div></details>
+  </div>
   <div class="cols">
     <div class="card">
-      <label>Model <span class="note">— a model that reads images, audio or video</span></label>
+      <label>Model <span class="tip" tabindex="0" title="a model that reads images, audio or video">ⓘ</span></label>
       <div class="model"><select id="omni-model"></select><span id="omni-model-state" class="note"></span></div>
-      <label>System message <span class="note">— the reply mode fills in the model card's prompt; speech needs it</span></label>
+      <label>System message <span class="tip" tabindex="0" title="the reply mode fills in the model card's prompt; speech needs it">ⓘ</span></label>
       <textarea id="omni-system" rows="3" placeholder="Respond with interleaved text and audio."></textarea>
-      <label>Steering <span class="note">— a vector of this model, from the Steering tab; it steers the text</span></label>
+      <label>Steering <span class="tip" tabindex="0" title="a vector of this model, from the Steering tab; it steers the text">ⓘ</span></label>
       <div class="fields">
         <select id="omni-vector"></select>
         <select id="omni-op"><option>ablate</option><option>add</option><option>clamp</option></select>
@@ -111,8 +120,6 @@
         <div><label>Temperature</label><input id="omni-temp" type="number" min="0" step="0.1" value="0.3"></div>
       </div>
       <div class="actions"><button class="plain" id="omni-clear">New conversation</button></div>
-      <p class="note">Each file goes to the nagaya as an object, and the message names it. A spoken reply plays here,
-        and the next turn sends it back as the assistant's audio (spec 11.11, "Read it back").</p>
     </div>
     <div class="card">
       <div id="omni-log"></div>
@@ -131,7 +138,13 @@
 </section>
 
 <section id="images">
-  <div class="head"><h1>Images</h1><p>Text to image, img2img and inpainting, with LoRAs.</p></div>
+  <div class="head"><h1>Images</h1>
+    <details class="help"><summary title="what this tab does">?</summary><div class="help-text">
+      <p>Text to image, img2img and inpainting, with LoRAs.</p>
+      <p>The image sets the size: each side a multiple of 64 from 512 to 2048. The nagaya refuses another size
+        and does not resize.</p>
+    </div></details>
+  </div>
   <div class="cols">
     <div class="card">
       <label>Model</label>
@@ -144,7 +157,7 @@
       <label>Negative prompt</label>
       <textarea id="img-negative" rows="2">score_4, score_5, blurry</textarea>
       <div id="img-init-box">
-        <label>Start image <span class="note">— img2img; draw a mask to inpaint: white repaints, black keeps</span></label>
+        <label>Start image <span class="tip" tabindex="0" title="img2img; draw a mask to inpaint: white repaints, black keeps">ⓘ</span></label>
         <div class="actions flush">
           <label class="plain file">Choose an image…
             <input id="img-init-file" type="file" accept="image/*" hidden></label>
@@ -165,8 +178,6 @@
             <label class="plain file">Choose a mask…
               <input id="img-mask-file" type="file" accept="image/*" hidden></label>
           </div>
-          <p class="note">The image sets the size: each side a multiple of 64 from 512 to 2048. The nagaya refuses
-            another size and does not resize.</p>
         </div>
       </div>
       <label>Size <span class="note" id="img-size-note"></span></label>
@@ -180,14 +191,14 @@
       <select id="img-sampler">
         <option>dpm++ 2m karras</option><option>dpm++ 2m sde karras</option><option>euler a</option><option>euler</option>
       </select>
-      <label>Spacing <span class="note">— Euler only; few-step weights such as Lightning need trailing</span></label>
+      <label>Spacing <span class="tip" tabindex="0" title="Euler only; few-step weights such as Lightning need trailing">ⓘ</span></label>
       <select id="img-spacing"><option>leading</option><option>trailing</option></select>
       <div class="row">
         <div><label>Seed <span class="note">— empty: random</span></label><input id="img-seed" type="number" min="0"></div>
         <div><label>Clip skip</label>
           <select id="img-clip"><option value="">model default</option><option>2</option><option>3</option></select></div>
       </div>
-      <label>LoRAs <span class="note">— at most 8; weight from -2 to 2</span></label>
+      <label>LoRAs <span class="tip" tabindex="0" title="at most 8; weight from -2 to 2">ⓘ</span></label>
       <div id="img-loras"></div>
       <div class="actions tight">
         <label class="plain file">Add a LoRA file…
@@ -211,7 +222,12 @@
 </section>
 
 <section id="speech">
-  <div class="head"><h1>Speech</h1><p>Lines in a voice that a text prompt designs.</p></div>
+  <div class="head"><h1>Speech</h1>
+    <details class="help"><summary title="what this tab does">?</summary><div class="help-text">
+      <p>Lines in a voice that a text prompt designs.</p>
+      <p>With the lines kept, each line continues from the audio before it, so the voice drifts less.</p>
+    </div></details>
+  </div>
   <div class="cols">
     <div class="card">
       <label>Model</label>
@@ -234,7 +250,6 @@
           <input id="sp-topk" type="number" min="1" placeholder="50"></div>
       </div>
       <label class="check"><input id="sp-keep" type="checkbox" checked> Keep the lines before in the context</label>
-      <p class="note">With the lines kept, each line continues from the audio before it, so the voice drifts less.</p>
       <div class="actions"><button class="plain" id="sp-clear">New voice</button></div>
     </div>
     <div class="card">
@@ -249,28 +264,34 @@
 </section>
 
 <section id="steer">
-  <div class="head"><h1>Steering</h1><p>Make a control vector from two prompt sets, and try it against the plain model.</p></div>
+  <div class="head"><h1>Steering</h1>
+    <details class="help"><summary title="what this tab does">?</summary><div class="help-text">
+      <p>Make a control vector from two prompt sets, and try it against the plain model.</p>
+      <p>Each prompt is one user message with thinking off. The vector of each layer is the mean residual of
+        Toward less the mean of Away (spec 11.12). For refusals, Toward holds requests that the model refuses,
+        and Away holds requests that it answers. Then ablate the vector. A file loads into its box, and the page
+        shows only the count of its lines.</p>
+      <p>Temperature 0 is greedy, so the two replies differ only by the vector. add and ablate at strength 0
+        give the plain reply; clamp at 0 removes the concept.</p>
+    </div></details>
+  </div>
   <div class="cols">
     <div class="card">
       <label>Model</label>
       <div class="model"><select id="cv-model"></select><span id="cv-model-state" class="note"></span></div>
-      <label>Toward <span class="note">— one prompt on each line: what the vector adds</span></label>
+      <label>Toward <span class="tip" tabindex="0" title="one prompt on each line: what the vector adds">ⓘ</span></label>
       <textarea id="cv-toward" rows="6"></textarea>
       <input id="cv-toward-file" type="file" accept=".txt,text/plain" title="load the prompts from a text file">
-      <label>Away <span class="note">— one prompt on each line: what the vector takes away</span></label>
+      <label>Away <span class="tip" tabindex="0" title="one prompt on each line: what the vector takes away">ⓘ</span></label>
       <textarea id="cv-away" rows="6"></textarea>
       <input id="cv-away-file" type="file" accept=".txt,text/plain" title="load the prompts from a text file">
       <label>Name</label>
       <input id="cv-name" placeholder="a name for the vector">
       <div class="actions"><button class="go" id="cv-make">Make vector</button><span id="cv-status" class="note"></span></div>
       <div id="cv-error" class="err"></div>
-      <p class="note">Each prompt is one user message with thinking off. The vector of each layer is the mean residual
-        of Toward less the mean of Away (spec 11.12). For refusals, Toward holds requests that the model refuses, and
-        Away holds requests that it answers. Then ablate the vector. A file loads into its box, and the page shows
-        only the count of its lines.</p>
       <h2>Saved vectors</h2>
       <div id="cv-list"></div>
-      <label>Add a vector by id <span class="note">— a vector of the model above that the nagaya holds</span></label>
+      <label>Add a vector by id <span class="tip" tabindex="0" title="a vector of the model above that the nagaya holds">ⓘ</span></label>
       <div class="fields">
         <input id="cv-add-id" placeholder="blake3:…" class="wide">
         <input id="cv-add-name" placeholder="a name">
@@ -297,19 +318,27 @@
         <div><h2>Plain</h2><div id="cv-plain" class="msg assistant"></div></div>
         <div><h2>Steered</h2><div id="cv-steered" class="msg assistant"></div></div>
       </div>
-      <p class="note">Temperature 0 is greedy, so the two replies differ only by the vector. add and ablate at
-        strength 0 give the plain reply; clamp at 0 removes the concept.</p>
     </div>
   </div>
 </section>
 
 <section id="lab">
-  <div class="head"><h1>Trace</h1><p>Look inside a model while it runs: project a vector, and trace a plain and a steered reply.</p></div>
+  <div class="head"><h1>Trace</h1>
+    <details class="help"><summary title="what this tab does">?</summary><div class="help-text">
+      <p>Look inside a model while it runs: project a vector, and trace a plain and a steered reply.</p>
+      <p>Project puts each layer of the vector through the unembedding: the tokens that it pushes up and down,
+        and the rank of each end token. The J-Lens first moves each layer to the last layer, as the later layers
+        would (docs/lab.md); the profile of the model names it. Trace runs the prompt plain, then with the
+        vector and the operation above. Both runs use one seed, so the replies differ only by the vector. With
+        no vector, only the plain run goes. A trace is a job of the engine, so the model must be ready
+        (docs/lab.md). Choose a step: click a token or a chart.</p>
+    </div></details>
+  </div>
   <div class="cols">
     <div class="card">
       <label>Model</label>
       <div class="model"><select id="lab-model"></select><span id="lab-model-state" class="note"></span></div>
-      <label>Vector <span class="note">— a saved vector of this model, from the Steering tab</span></label>
+      <label>Vector <span class="tip" tabindex="0" title="a saved vector of this model, from the Steering tab">ⓘ</span></label>
       <select id="lab-vector"></select>
       <h2>Project</h2>
       <div class="row"><div><label>Tokens</label><input id="lab-lens-k" type="number" min="1" max="256" value="8"></div>
@@ -334,15 +363,10 @@
       <div class="actions"><button class="go" id="lab-trace">Trace plain and steered</button>
         <span id="lab-status" class="note"></span></div>
       <div id="lab-error" class="err"></div>
-      <p class="note">Project puts each layer of the vector through the unembedding: the tokens that it pushes up and down,
-        and the rank of each end token. The J-Lens first moves each layer to the last layer, as the later layers would
-        (docs/lab.md); the profile of the model names it. Trace runs the prompt plain, then with the vector and the operation above. Both
-        runs use one seed, so the replies differ only by the vector. With no vector, only the plain run goes. A trace
-        is a job of the engine, so the model must be ready (docs/lab.md). Choose a step: click a token or a chart.</p>
     </div>
     <div class="card">
       <div id="lab-lens"></div>
-      <div id="lab-replies"><p class="note">No trace yet.</p></div>
+      <div id="lab-replies"><span class="note">No trace yet.</span></div>
       <div id="lab-charts"></div>
       <div id="lab-step"></div>
     </div>
@@ -350,7 +374,13 @@
 </section>
 
 <section id="embed">
-  <div class="head"><h1>Embeddings</h1><p>Rank documents against a query, or compare them with each other.</p></div>
+  <div class="head"><h1>Embeddings</h1>
+    <details class="help"><summary title="what this tab does">?</summary><div class="help-text">
+      <p>Rank documents against a query, or compare them with each other.</p>
+      <p>The family writes the prompt of each task. The vectors come back normalized, so a dot product is the
+        cosine.</p>
+    </div></details>
+  </div>
   <div class="cols">
     <div class="card">
       <label>Model</label>
@@ -361,11 +391,9 @@
       </div>
       <label>Dimensions</label>
       <select id="em-dims"></select>
-      <p class="note">The family writes the prompt of each task. The vectors come back normalized, so a dot product is
-        the cosine.</p>
     </div>
     <div class="card">
-      <label>Query <span class="note">— empty: compare the documents with each other</span></label>
+      <label>Query <span class="tip" tabindex="0" title="empty: compare the documents with each other">ⓘ</span></label>
       <input id="em-query" value="how does the nagaya swap an engine">
       <label>Documents <span class="note">— one on each line</span></label>
       <textarea id="em-docs" rows="7">A load that does not fit names the engines in its way, and the client unloads them.
@@ -384,7 +412,14 @@ Qwen3-TTS designs a voice from a text prompt.</textarea>
 </section>
 
 <section id="engines">
-  <div class="head"><h1>Engines</h1><p>The engines of this nagaya: load, unload and pin.</p></div>
+  <div class="head"><h1>Engines</h1>
+    <details class="help"><summary title="what this tab does">?</summary><div class="help-text">
+      <p>The engines of this nagaya: load, unload and pin.</p>
+      <p>A load that does not fit names the engines in its way, and the page offers to unload them. No engine
+        loads or unloads by itself, and a pinned engine stays loaded. A pin changes the profile: the engine
+        becomes resident, so the next start loads it too.</p>
+    </div></details>
+  </div>
   <div class="card">
     <table>
       <thead><tr><th>Engine</th><th>Kind</th><th>Cards</th><th>Residency</th><th>Served model</th><th>State</th><th></th></tr></thead>
@@ -392,9 +427,6 @@ Qwen3-TTS designs a voice from a text prompt.</textarea>
     </table>
     <div id="eng-error" class="err"></div>
     <div id="eng-note" class="note"></div>
-    <p class="note">A load that does not fit names the engines in its way, and the page offers to unload them. No
-      engine loads or unloads by itself, and a pinned engine stays loaded. A pin changes the profile: the engine
-      becomes resident, so the next start loads it too.</p>
     <details><summary class="note">The profile of this nagaya</summary><pre id="eng-profile" class="note"></pre></details>
   </div>
 </section>
