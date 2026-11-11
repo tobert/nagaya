@@ -162,6 +162,41 @@ fn one_context_gives_the_response_and_the_passes_of_the_same_generation() {
     assert_eq!(joined.log.take().sizes, generated.sizes, "the same passes");
 }
 
+/// An ensemble takes a context that names a `parent`, and it holds the record of each context that it reads
+/// (`docs/lab.md`, "Context records in the lab routes"). It names no record.
+///
+/// Falsified by a route with no `whole`: the 400 of the unknown member `parent`. Also by an ensemble that holds no
+/// record: the second request is a 404.
+#[test]
+fn an_ensemble_takes_a_parent_and_holds_the_record_of_each_context() {
+    let lab = lab();
+    let whole = context("Tell the tale of the dragon.");
+    let (status, first) = send(&lab.council, PATH, &ensemble(vec![whole.clone()], "logprob_sum"));
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert!(first.get("context").is_none(), "an ensemble names no record: {first}");
+    let record: gogi_proto::Context = serde_json::from_value(whole).unwrap();
+    let parent = gogi_proto::context_id(&record).to_string();
+    let (status, again) = send(
+        &lab.council,
+        PATH,
+        &ensemble(vec![json!({"parent": parent})], "logprob_sum"),
+    );
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(again["content"], first["content"]);
+    assert_eq!(again["usage"]["prompt"], first["usage"]["prompt"]);
+    let gone = format!("blake3:{}", "0".repeat(64));
+    let (status, e) = send(
+        &lab.council,
+        PATH,
+        &ensemble(vec![json!({"parent": gone})], "logprob_sum"),
+    );
+    assert_eq!(
+        (status, e["error"]["param"].as_str()),
+        (StatusCode::NOT_FOUND, Some("contexts[0].parent")),
+        "{e}"
+    );
+}
+
 #[test]
 fn k_contexts_decode_in_passes_of_k_segments() {
     for stages in [1, 2] {

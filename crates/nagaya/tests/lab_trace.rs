@@ -455,6 +455,28 @@ fn a_trace_gives_the_response_of_the_generation_with_no_trace() {
     }
 }
 
+/// A trace takes a context that names a `parent`, and its response names the record with the reply, as a generation
+/// does (`docs/lab.md`, "Context records in the lab routes").
+///
+/// Falsified by a route with no `whole`: the 400 of the unknown member `parent`.
+#[test]
+fn a_trace_takes_a_parent_and_names_the_record_with_its_reply() {
+    let lab = lab();
+    let (status, want) = send(&lab.council, "/council/v2/generations", &generation(json!([])));
+    assert_eq!(status, StatusCode::OK, "{want}");
+    let record: gogi_proto::Context = serde_json::from_value(context(json!([]))).unwrap();
+    let mut body = traced(json!([]), json!({"lens": "logit"}));
+    body["context"] = json!({"parent": gogi_proto::context_id(&record).as_str()});
+    let (status, got) = send(&lab.council, PATH, &body);
+    assert_eq!(status, StatusCode::OK, "{got}");
+    assert!(got["trace"].as_str().unwrap().starts_with("blake3:"));
+    assert_eq!(got["content"], want["content"]);
+    assert!(got["context"].is_string(), "{got}");
+    assert_eq!(got["context"], want["context"], "the same context and the same reply");
+    body["context"] = json!({"parent": format!("blake3:{}", "0".repeat(64))});
+    assert_refused(send(&lab.council, PATH, &body), StatusCode::NOT_FOUND, "context.parent");
+}
+
 #[test]
 fn the_same_trace_gives_the_same_object() {
     let lab = lab();
