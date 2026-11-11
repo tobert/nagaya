@@ -447,18 +447,38 @@ Each stop and start of `nagaya.service` goes into `signoff.md`.
 
 ### Milestone 32: context records
 
-A change of the gogi contract. Amy decided it on 2026-11-11, by interview with the session of the web app. The
-number is reserved here, and the full text comes when gogi has the contract:
+A change of the gogi contract. Amy, 2026-11-11: "of course I want the contract change, gogi is not used by anyone
+else yet, let's get it aligned." She chose the shape by interview with the session of the web app.
 
 - The server holds each context as a record, and a content id names it.
 - A reply returns the id of "this context and my reply".
 - The next request sends `parent` with that id, and only its new messages.
 - A miss is a 404 that names `context.parent`. Then the client sends the whole context.
 
-gogi writes the contract first. Then the spec gets its Proposed notes.
+gogi `docs/council-api.md`, "Context records", has each rule. The rules below the shape are senpai's, and each is
+Proposed. `gogi-proto` has them as code in `record`: `context_id`, `resolve_request` and `with_reply`.
 
 Its cause is a finding of the swarm trials of 2026-11-10. The driver marked no boundary, so each run fed 60% to
-100% of each prompt again.
+100% of each prompt again. The recipe member `snapshots` marks them now (`53ee84c`).
+
+Do the steps in this order. Each step ends with the checks green.
+
+1. **gogi.** The contract, `gogi-proto`, `gogi-fake` and the suite checks. Done on 2026-11-11: `8012f82` and
+   `d9ce5d8`, merged as `4c063e0`. gogi main is not pushed: Amy reads the Proposed rules first.
+2. **Spec.** Where the nagaya holds a record, its budget, and its life through a restart (spec 6 and 10). The
+   forward of a request that names a `parent` (spec 11.1a). The lab routes that read contexts (`docs/lab.md`). Amy
+   decides each Proposed note.
+3. **Host code.** Move the pin. Make each context that names a `parent` whole before a council route decodes its
+   body. Hold a record of each context that a request reads. Serve `GET /council/v2/contexts/{id}`, the pin of a
+   record and the limit `context_records`. Gate: the gogi suite with the toy engine.
+4. **The head after a reply.** A generation of LFM3 gives `head: null` now, so the next turn feeds the reply again.
+   Hold the snapshot after the reply when the closed rendering starts with the sampled tokens. Card gate: a second
+   turn by `parent` feeds only its new message.
+5. **Clients.** The chat of the web app sends `parent` and its new message. The swarm driver names the record of
+   the shared head. Each sends the whole context after a 404.
+6. **Deploy.** Deploy both machines, and run the gogi suite through each.
+
+Each stop and start of `nagaya.service` goes into `signoff.md`.
 
 ## Working notes
 
