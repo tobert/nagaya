@@ -12,7 +12,7 @@ use gogi_proto::generation::{GenerationRequest, TokenEvent};
 use gogi_proto::pins::PinsPut;
 use gogi_proto::{ContextId, context_id, record_text};
 use nagaya::council::error::ServiceError;
-use nagaya::council::records::{RECORD_DIR, Records};
+use nagaya::council::records::{HEAD_DIR, HeadNote, RECORD_DIR, Records, SealNote};
 use nagaya::council::{Schedule, ServiceConfig};
 use serde_json::{Value, json};
 
@@ -286,4 +286,99 @@ fn a_generation_names_the_record_with_its_reply_and_a_failed_one_keeps_the_recor
     .unwrap();
     assert!(f.service.generate(&bad, None).is_err());
     assert!(!held(&f, "c"));
+}
+
+fn note(seed: u8) -> HeadNote {
+    HeadNote {
+        recipe: nagaya_store::recipe_root(&[seed; 32], b"", &[], &[]),
+        tokens: 9,
+        seals: vec![
+            SealNote {
+                tokens: 4,
+                prompt: None,
+            },
+            SealNote {
+                tokens: 9,
+                prompt: Some(6),
+            },
+        ],
+    }
+}
+
+/// The note of a decoded head is a file beside the records (spec 6.17, "The head note").
+#[test]
+fn a_head_note_lives_with_its_record_and_stays_through_a_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut book = Records::open_with(directory.path(), 2).unwrap();
+    let a = book.hold(&context("a"), &none()).unwrap();
+    assert_eq!(book.head(a.as_str()).unwrap(), None, "a record has no note at first");
+    book.note_head(a.as_str(), &note(1)).unwrap();
+    assert_eq!(book.head(a.as_str()).unwrap(), Some(note(1)));
+    // A second note of the record takes the place of the first.
+    book.note_head(a.as_str(), &note(2)).unwrap();
+    assert_eq!(book.head(a.as_str()).unwrap(), Some(note(2)));
+    // A record that the book does not hold takes no note.
+    let absent = context_id(&context("absent"));
+    assert!(matches!(
+        book.note_head(absent.as_str(), &note(1)),
+        Err(ServiceError::Internal(_))
+    ));
+    assert_eq!(book.head(absent.as_str()).unwrap(), None);
+    drop(book);
+    let mut book = Records::open_with(directory.path(), 2).unwrap();
+    assert_eq!(
+        book.head(a.as_str()).unwrap(),
+        Some(note(2)),
+        "the note stays through a restart"
+    );
+    // The drop of the record removes its note.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    book.hold(&context("b"), &none()).unwrap();
+    book.hold(&context("c"), &none()).unwrap();
+    assert!(!book.holds(a.as_str()));
+    assert_eq!(book.head(a.as_str()).unwrap(), None);
+    let file = directory.path().join(HEAD_DIR).join(format!("{a}.json"));
+    assert!(!file.exists(), "the drop of a record removes its note file");
+}
+
+#[test]
+fn the_open_removes_a_note_with_no_record_and_refuses_a_note_file_with_another_name() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut book = Records::open_with(directory.path(), 8).unwrap();
+    let a = book.hold(&context("a"), &none()).unwrap();
+    book.note_head(a.as_str(), &note(1)).unwrap();
+    drop(book);
+    let heads = directory.path().join(HEAD_DIR);
+    let orphan = heads.join(format!("{}.json", context_id(&context("gone"))));
+    std::fs::write(&orphan, serde_json::to_vec(&note(3)).unwrap()).unwrap();
+    let temporary = heads.join(format!("{a}.json.tmp"));
+    std::fs::write(&temporary, b"half").unwrap();
+    let mut book = Records::open_with(directory.path(), 8).unwrap();
+    assert!(!orphan.exists(), "a note with no record goes at the start");
+    assert!(!temporary.exists());
+    assert_eq!(book.head(a.as_str()).unwrap(), Some(note(1)));
+    drop(book);
+    std::fs::write(heads.join("notes.txt"), b"x").unwrap();
+    match Records::open_with(directory.path(), 8) {
+        Err(ServiceError::Internal(message)) => {
+            assert!(
+                message.contains("notes.txt") && message.contains("Remove the file"),
+                "{message}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_note_file_that_is_not_a_note_is_dropped_at_the_read() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut book = Records::open_with(directory.path(), 8).unwrap();
+    let a = book.hold(&context("a"), &none()).unwrap();
+    book.note_head(a.as_str(), &note(1)).unwrap();
+    let file = directory.path().join(HEAD_DIR).join(format!("{a}.json"));
+    std::fs::write(&file, b"{\"recipe\": 5").unwrap();
+    assert_eq!(book.head(a.as_str()).unwrap(), None, "a bad note is a miss");
+    assert!(!file.exists(), "the read removes the bad note");
+    assert!(book.holds(a.as_str()), "the record stays");
 }
