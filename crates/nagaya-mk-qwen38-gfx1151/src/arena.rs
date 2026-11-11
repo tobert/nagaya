@@ -374,6 +374,13 @@ pub(crate) unsafe fn create(
     if unsafe { libc::madvise(map, len, libc::MADV_HUGEPAGE) } != 0 {
         return Err(os_error("madvise(MADV_HUGEPAGE) on the arena"));
     }
+    // Lock the arena before the GPU maps it (milestone 30 step 5). Swap could move its pages, and a move remaps them
+    // under a running kernel that the driver cannot preempt (`rt.h`): on gfx1151host that gave spin-timeouts and a GPU fault.
+    if unsafe { libc::mlock2(map, len, libc::MLOCK_ONFAULT) } != 0 {
+        return Err(os_error(&format!(
+            "mlock the arena of {bytes} bytes (the unit needs LimitMEMLOCK=infinity)"
+        )));
+    }
     unsafe { (binding.rt_host_register)(map, bytes) };
     // SAFETY: the map is `len` writable bytes, and nothing else holds it yet.
     let arena = unsafe { std::slice::from_raw_parts_mut(map as *mut u8, len) };
