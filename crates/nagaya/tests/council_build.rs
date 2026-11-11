@@ -532,6 +532,7 @@ fn a_job_frees_its_slot_before_its_caller_hears_the_result() {
     let pool = Arc::new(Mutex::new(SlotPool::new(&limits)));
     let process = fixture();
     let shared = Arc::new(Shared {
+        in_flight: Default::default(),
         ports: process.process.ports(),
         store: Arc::new(Mutex::new(nagaya_store::Store::open(directory.path()).unwrap())),
         engine_index: 0,

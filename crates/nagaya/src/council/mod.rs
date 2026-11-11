@@ -10,6 +10,7 @@ pub mod decisions;
 pub mod ensemble;
 pub mod error;
 pub mod generations;
+pub mod in_flight;
 pub mod pins;
 pub mod reads;
 pub mod records;
@@ -505,6 +506,7 @@ impl Service {
             .control
             .map(|limit| Arc::new(Mutex::new(ControlTable::new(limit))));
         let shared = Arc::new(Shared {
+            in_flight: in_flight::InFlight::default(),
             control,
             root,
             intervals,
@@ -762,6 +764,7 @@ impl Service {
                     .cuts(cuts)
                     .control(root, control)
             };
+            let _claim = self.claim(&recipes);
             self.run_context(job, schedule, None)?.outcome
         };
         let prompt = rendering_end as u64;
@@ -962,6 +965,20 @@ impl Service {
         }
         cuts.sort_by_key(|(cut, _)| std::cmp::Reverse(cut.tokens));
         Ok((cuts, extension))
+    }
+
+    /// Wait for each boundary of `recipes` that a job in flight will hold, and claim those that the store does not
+    /// hold (gogi "Requests in flight share a prefix"). The wait is on the call thread, before the request takes a
+    /// charge or a slot. The claim lives as long as the job of the request.
+    pub(crate) fn claim(&self, recipes: &[nagaya_council::build::BoundaryRecipe]) -> in_flight::Claim<'_> {
+        let recipes: Vec<RecipeId> = recipes.iter().map(|boundary| boundary.recipe).collect();
+        self.shared.in_flight.enter(&recipes, |recipe| {
+            let store = self.store();
+            store
+                .entries()
+                .values()
+                .any(|entry| entry.recipe == *recipe && entry.state == nagaya_store::EntryState::Live)
+        })
     }
 
     /// Run a context job with the ledger charge of its context, and wait for its result (spec 4.2).

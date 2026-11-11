@@ -699,6 +699,7 @@ impl Service {
         // The checks passed, so the record of the context is held, also when the job fails (spec 11.13).
         self.hold_record(&request.context)?;
         let schedule = Schedule::of(request.class, request.priority);
+        let _claim = self.claim(&parts.recipes);
         let finished = self.run_context(|tx| parts.body(then, tx), schedule, None)?;
         let (mut done, trace) = self.answer(finished, &facts);
         self.name_reply(&request.context, &mut done)?;

@@ -1682,7 +1682,7 @@ One choice is left for later. It is a design, and nothing builds it now.
 
 **6.17 Context records.** **Proposed** by Claude Fable 5.2, 2026-11-11, for milestone 32 step 2. gogi "Context
 records" says what a record is, and it leaves the choices below to the server. Reason: each choice is the simplest
-one that keeps the contract. Each follows a rule that specs or pins have now. @tobert decides.
+one that keeps the contract. Each follows a rule that specs or pins have now. Amy decides.
 
 - **A record is a server file.** It is the file `contexts/<context id>.json` in the store directory, beside `specs/`
   and `pins.json`. The file holds the record text of gogi's `record_text`, and nothing else.
@@ -2743,7 +2743,7 @@ and 3.3b, 2.4 and 6.15 leave these choices open. The code of milestone 23 steps 
   `profile:active` again after each accepted change.
 
 **Context records in the cluster.** **Proposed** by Claude Fable 5.2, 2026-11-11, for milestone 32 step 2. Reason:
-the forward sends the same bytes (above), and a record is a file of one node (6.17). @tobert decides.
+the forward sends the same bytes (above), and a record is a file of one node (6.17). Amy decides.
 
 - **Records belong to a node.** Each node holds the records of the contexts that it reads. Gossip carries no record
   and no record id.
@@ -4841,7 +4841,7 @@ Reason: each choice is the smallest one that keeps every promise of the capabili
 **11.13 Context records.** gogi "Context records" has the rules (`AGENTS.md` milestone 32). 6.17 says where the
 nagaya holds a record, and 11.1a says what the cluster does. The notes below are **Proposed** by Claude Fable 5.2,
 2026-11-11, for milestone 32 step 2. Reason: gogi leaves these choices to the server, and each is the simplest one.
-@tobert decides.
+Amy decides.
 
 - **Whole before the decode.** The routes `contexts`, `decisions`, `reads`, `generations` and `control-vectors` call
   `gogi_proto::resolve_request` on the body as JSON, before they decode it. Only a generation reads an open message
@@ -4864,6 +4864,26 @@ nagaya holds a record, and 11.1a says what the cluster does. The notes below are
 - **`GET /council/v2/contexts/{id}`** gives `{id, context}`. An id that is not whole is a 400 that names `id`, as for
   a spec. A node with no home gives its 503 when no peer holds the id (11.1a, "A node with no home").
 - **A pin `GET`** always has the member `contexts`, and an owner with no record has an empty list.
+
+**11.14 Requests in flight share a prefix.** Decided 2026-11-11 (Amy, by interview), as a rule of gogi "Contexts".
+Two requests can be in flight together with contexts that begin with the same tokens, while the store holds no
+snapshot of them. Then the nagaya feeds those tokens once. The notes below are **Proposed** (claude-fable-5-2,
+2026-11-11), and each is the simplest way to keep the rule:
+
+- **A book for each engine.** The book holds the recipe of each boundary that a job in flight will hold
+  (`council/in_flight.rs`). A build and a generation enter the book before they take a charge or a slot.
+- **The wait.** A request waits on its call thread while the book holds a recipe of one of its boundaries. It counts
+  as one of the 64 calls of 11.7. A request that waits has no claim, so two requests never wait for each other.
+- **The claim.** Then the request claims each of its boundaries that the store does not hold. A boundary leaves the
+  book when the job of its claim holds its snapshot, or when that job ends. Thus a job that fails releases each
+  request that waits for it.
+- **The numbers do not change.** The later job looks up its boundaries when it starts, as each job does (6.6). It
+  finds the snapshot, and it gives the numbers that it gives alone.
+- **Not yet.** A decision, a raw read, a control-vector request and the lab routes do not enter the book.
+- **Measured before the rule.** On 2026-11-11, 8 generations ran at once on `lfm3`, each with the same new head of
+  217 tokens. Each one fed the head: 1,736 tokens, where 217 were needed.
+
+The tests are in `crates/nagaya/tests/council_in_flight.rs`.
 
 ## 12. Identity
 

@@ -35,6 +35,8 @@ pub const COUNCIL_OWNER: u64 = 1;
 
 /// What every body of one build or read shares.
 pub struct Shared {
+    /// The boundaries that the jobs in flight will hold.
+    pub in_flight: super::in_flight::InFlight,
     /// The ways into the process. A copy of engine state charges the ledger through them (spec 4.2).
     pub ports: Ports,
     /// The machine's store.
@@ -1670,6 +1672,19 @@ impl<T: Then> ContextBody<T> {
 
     /// Seal the context, read its parts, and put the snapshot in the store (spec 11.3c).
     fn snapshot(
+        &mut self,
+        engine: &mut dyn Engine,
+        recipe: RecipeId,
+        reason: Reason,
+        place: &str,
+    ) -> Result<Option<ContentId>, ServiceError> {
+        let held = self.put_snapshot(engine, recipe, reason, place);
+        // The store lock is free here. A request that waits for this boundary goes on, also after a failure.
+        self.shared.in_flight.done(&recipe);
+        held
+    }
+
+    fn put_snapshot(
         &mut self,
         engine: &mut dyn Engine,
         recipe: RecipeId,
