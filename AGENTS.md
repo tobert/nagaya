@@ -4,7 +4,7 @@ One process per machine that hosts our engines. The nagaya is an exokernel for m
 implementation, and the council v2 API as served. Start with `README.md`, then `docs/spec.md`. `docs/ontology.md`
 defines the terms. `docs/history.md` keeps milestones 1 to 29 as they were written.
 
-Amy owns the project, and she decides. An agent is a model session that works here.
+@tobert (Amy) owns the project, and she decides. An agent is a model session that works here.
 
 ## Direction
 
@@ -16,6 +16,8 @@ is done, each change must move the repository toward that reader, not away:
 - Do not write an old name in new text or new code ("Names").
 - Do not add a host name, a network address or a home path to code, tests or tools. Read them from config.
 - Do not add a quote, a private note or a session record to a doc. `signoff.md` holds those, and it stays local.
+- Name the owner less, and name her machines less. Where a doc must name her, write @tobert, which GitHub makes
+  a link. A rule stands without the name of the person who decided it.
 - Write each doc for a reader who has only the repository.
 
 ## For agents working here
@@ -76,10 +78,12 @@ write the name of the thing in the nagaya:
 | diffusepal | the old Qwen-Image tool | the diffusers reference |
 
 - "Megakernel" stays. It is the ontology's term for an engine that runs a model's pass as one kernel.
-- **Proposed** (Claude Fable 5.2, 2026-11-11): `mk` stays in crate names as the kind "megakernel engine"
-  ("Layout"). It is short, and one sentence defines it. Amy decides.
-- Existing text and identifiers keep an old name until milestone 30 changes them. Examples are `MK_SHARDS`,
-  `mk_engine_close`, and the served model `mk` on gfx1151host. Use them as they are, and do not copy the pattern.
+- `mk` stays in crate names as the kind "megakernel engine" ("Layout"). Decided 2026-11-11. This is the one
+  meaning of `mk` in the nagaya.
+- Each identifier that carries the name of an old project gets a new name, in the C++ and HIP code too. Decided
+  2026-11-11: the repository is private and all the code is here, so make the names as good as they can be.
+  Examples are `MK_SHARDS`, `MK_CHECK`, `mk_engine_close`, and the served model `mk` on gfx1151host.
+- Until milestone 30 step 3 changes an identifier, use it as it is, and do not copy the pattern.
 - `docs/history.md` can keep the old names. It is the record of how the code came here.
 
 ## Code
@@ -351,7 +355,13 @@ Do not start one of them unless Amy asks. Milestone 30 is the work now.
 
 Make the repository fit for a public post on GitHub. Amy started it on 2026-11-11, and the quotes are in
 "Direction" and "Names". The plan below is **Proposed** (Claude Fable 5.2, 2026-11-11). Amy decides each open
-question of `signoff.md` before the step that needs it.
+question of `signoff.md` before the step that needs it. She decided these rules on 2026-11-11:
+
+- **Names:** `mk` stays as the kind in crate names. Every other use of an old name goes, in all code.
+- **History:** the public repository starts from a new root commit, later. This repository stays the private
+  archive, so its history needs no scrub.
+- **License:** MIT, but not now. Step 6 waits for her word.
+- **People and machines:** the docs name her and her machines less. A doc that must name her writes @tobert.
 
 The rules:
 
@@ -376,17 +386,18 @@ Do the steps in this order. Each step ends with the checks green.
 2. **Docs.** Write `README.md` for a stranger: what the nagaya is, the hardware, the build, the checks with no
    GPU, and the status. Remove the old names from the spec, the ABI and the ontology. Move the story of each
    decision to `docs/history.md`.
-3. **Code names.** Remove the old names from comments, test names, identifiers, variables and profiles. Do the
-   names that change a digest last, in one deploy window on each machine.
+3. **Code names.** First write a table of each old identifier and its new name, and Amy reads it. Then remove the
+   old names from comments, test names, identifiers, variables, profiles and the C++ and HIP code. Do the names
+   that change a digest last, in one deploy window on each machine.
 4. **Machines.** Tests take what they need from config: a card, a model folder, an address. Tools take their
    hosts from flags. `deploy/` becomes a set of examples.
 5. **Build.** gogi comes from its GitHub URL, not from a local path. Remove home paths from the fixtures and from
    `Cargo.lock`. Add a workflow that runs the checks that need no GPU.
-6. **License.** Add the license file that Amy chooses. Keep the notice of each copied source, such as the ggml
+6. **License.** Add the MIT license file when Amy says so. Keep the notice of each copied source, such as the ggml
    notice of the GGUF code. Write the source of each fixture that comes from a model file.
 7. **Review.** Run kaibo review rounds on the whole tree as a stranger reads it. Then clone the tree on a machine
    with no GPU, and run the checks there.
-8. **Publication.** Amy chooses the form of the history, and she makes the post.
+8. **Publication.** Make the new root commit from the scrubbed tree. Amy makes the post.
 
 Each stop and start of `nagaya.service` goes into `signoff.md`.
 
