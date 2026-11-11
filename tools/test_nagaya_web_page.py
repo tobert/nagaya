@@ -1,4 +1,4 @@
-"""Tests of the script of nagaya_web.html in QuickJS, with a stub page and a fake fetch.
+"""Tests of the scripts of web/index.html in QuickJS, with a stub page and a fake fetch.
 
 Run: python3 -m unittest test_nagaya_web_page (in tools/). The tests need the `quickjs` package, and they skip
 without it, so the tools still need only the standard library. Make a venv for them with `uv venv` and
@@ -15,7 +15,14 @@ try:
 except ImportError:
     quickjs = None
 
-PAGE = pathlib.Path(__file__).with_name("nagaya_web.html")
+WEB = pathlib.Path(__file__).with_name("web")
+
+
+def page_script():
+    """The scripts that the page names, in the order of the page, as one script. They share one scope, as in a browser."""
+    names = re.findall(r'<script src="/app/web/([^"]+)"></script>', WEB.joinpath("index.html").read_text())
+    return "\n".join(WEB.joinpath(name).read_text() for name in names)
+
 
 # The served models and the profile of b70host, cut to what the page reads.
 IDENTITY = {"models": [
@@ -67,7 +74,7 @@ var listeners = [];
 var document = {getElementById: (id) => els[id] || (els[id] = el(id)), querySelectorAll: () => [],
   querySelector: () => null, addEventListener(name, f) { if (name === "click") listeners.push(f); },
   createElement: () => el("script"), head: {appendChild() {}}};
-var window = {}, localStorage = {getItem: () => null, setItem() {}}, performance = {now: () => 0};
+var window = {addEventListener() {}}, location = {hash: ""}, history = {replaceState() {}}, localStorage = {getItem: () => null, setItem() {}}, performance = {now: () => 0};
 function setTimeout(f) { f(); } function setInterval() {} function alert() {}
 function set(id, v) { document.getElementById(id).value = v; }
 function confirm(text) { confirms.push(text); return true; }
@@ -165,15 +172,42 @@ function fetch(path, o) {
 """
 
 
+class Markup(unittest.TestCase):
+    """Checks of the page text that need no QuickJS: the stub page of `Page` makes each element that a script asks for,
+    so it does not see an id that the page lacks."""
+
+    def test_each_id_that_a_script_reads_is_in_the_page(self):
+        page = WEB.joinpath("index.html").read_text()
+        ids = set(re.findall(r'\bid="([^"]+)"', page))
+        # `$("name")` with a plain name. An id that a script builds, such as `cur-bar-${i}`, is in no markup.
+        asked = set(re.findall(r'\$\("([a-z0-9-]+)"\)', page_script()))
+        self.assertGreater(len(asked), 100)
+        self.assertEqual(sorted(asked - ids), [])
+
+    def test_each_model_list_has_the_element_of_its_state(self):
+        page = WEB.joinpath("index.html").read_text()
+        lists = re.findall(r'modelSelect\("([a-z-]+)"', page_script())
+        self.assertGreaterEqual(len(lists), 7)
+        ids = set(re.findall(r'\bid="([^"]+)"', page))
+        self.assertEqual([name for name in lists if f"{name}-state" not in ids], [])
+
+    def test_each_tab_of_the_rail_has_its_section(self):
+        page = WEB.joinpath("index.html").read_text()
+        tabs = re.findall(r'<button data-tab="(\w+)">', page)
+        self.assertEqual(sorted(tabs), sorted(re.findall(r'<section id="(\w+)">', page)))
+        self.assertEqual(len(tabs), len(set(tabs)))
+
+
 @unittest.skipIf(quickjs is None, "the package quickjs is absent")
 class Page(unittest.TestCase):
-    def run_page(self, test):
-        """Run the page script and then `test`, an async body that fills `out`. Give `out`."""
-        script = re.search(r"<script>(.*)</script>", PAGE.read_text(), re.S).group(1)
+    def run_page(self, test, before=""):
+        """Run the page script and then `test`, an async body that fills `out`. Give `out`. `before` runs after the
+        stub and before the page script."""
+        script = page_script()
         context = quickjs.Context()
         context.eval(f"var IDENTITY = {json.dumps(IDENTITY)}, PROFILE = {json.dumps(PROFILE)}, "
                      f"TRACE_BYTES = {json.dumps(TRACE_BYTES)}, TRACE_ID = {json.dumps(TRACE_ID)}, "
-                     f"LAB_VECTOR = {json.dumps(LAB_VECTOR)};" + STUB + script +
+                     f"LAB_VECTOR = {json.dumps(LAB_VECTOR)};" + STUB + before + script +
                      "var out = {}; (async () => { await refresh();" + test +
                      "})().catch((e) => { out.error = String(e); });")
         while context.execute_pending_job():
@@ -181,6 +215,17 @@ class Page(unittest.TestCase):
         out = json.loads(context.eval("JSON.stringify(out)"))
         self.assertNotIn("error", out)
         return out
+
+    def test_the_start_of_the_page_puts_the_keep_of_what_this_browser_holds(self):
+        # Before the split of the page, the keep of the start read `vectors` before its declaration, and it never ran.
+        vector = "blake3:" + "7" * 64
+        out = self.run_page("""
+            out.keeps = calls.filter((c) => c[0] === "PUT" && c[1] === "/council/v2/keeps/nagaya-web").map((c) => c[2]);
+            out.failed = document.getElementById("keep-error").textContent;""",
+                            before=f"localStorage.getItem = (key) => key === 'nagaya-vectors' ? "
+                                   f"JSON.stringify([{{id: '{vector}', model: 'lfm3', name: 'v'}}]) : null;")
+        self.assertEqual(out["failed"], "")
+        self.assertEqual(json.loads(out["keeps"][0]), {"objects": [vector], "ttl_s": 30 * 86400})
 
     def test_a_load_that_does_not_fit_unloads_the_engines_that_the_nagaya_names_in_its_way(self):
         out = self.run_page("""
@@ -593,7 +638,7 @@ class Page(unittest.TestCase):
             await document.getElementById("omni-file").onchange({target: {files: [{name: "x.wav", type: "audio/x-wav"}],
                                                                            value: ""}});
             out.err = document.getElementById("omni-error").textContent;
-            out.puts = calls.filter((c) => c[0] === "PUT").length;""")
+            out.puts = calls.filter((c) => c[0] === "PUT" && c[1].includes("/objects/")).length;""")
         self.assertIn("x.wav is audio/x-wav", out["err"])
         self.assertIn("audio/wav", out["err"])
         self.assertEqual(out["puts"], 0)

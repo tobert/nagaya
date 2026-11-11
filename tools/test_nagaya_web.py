@@ -3,6 +3,7 @@
 import http.client
 import http.server
 import json
+import re
 import threading
 import unittest
 
@@ -88,6 +89,30 @@ class Proxy(unittest.TestCase):
         self.assertEqual(r.status, 200)
         self.assertTrue(r.getheader("content-type").startswith("text/html"))
         self.assertIn(b"<title>nagaya</title>", r.read())
+
+    def get(self, path):
+        c = self.connect()
+        c.request("GET", path)
+        r = c.getresponse()
+        return r.status, r.getheader("content-type"), r.read()
+
+    def test_the_page_names_only_files_that_the_app_serves(self):
+        page = self.get("/")[2].decode()
+        names = re.findall(r'(?:src|href)="(/app/web/[^"]+)"', page)
+        # The stylesheet, the core, the start script and one script or more for the tabs.
+        self.assertGreaterEqual(len(names), 4)
+        for name in names:
+            status, kind, body = self.get(name)
+            self.assertEqual(status, 200, name)
+            want = "text/css" if name.endswith(".css") else "text/javascript"
+            self.assertEqual(kind, f"{want}; charset=utf-8", name)
+            self.assertEqual(body, nagaya_web.WEB.joinpath(name.rpartition("/")[2]).read_bytes())
+
+    def test_a_file_that_is_not_of_the_page_is_a_404(self):
+        self.assertTrue(nagaya_web.WEB.joinpath("README.md").is_file())
+        for path in ("/app/web/nothing.js", "/app/web/README.md", "/app/web/", "/app/web/../nagaya_web.py",
+                     "/app/web/..%2Fnagaya_web.py", "/app/web/%2e%2e/nagaya_web.py", "/app/web/sub/core.js", "/app/web/../web/core.js"):
+            self.assertEqual(self.get(path)[0], 404, path)
 
     def test_a_council_route_passes_with_its_status_and_body(self):
         c = self.connect()

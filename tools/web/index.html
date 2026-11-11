@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nagaya</title>
+<link rel="stylesheet" href="/app/web/style.css">
+</head>
+<body>
+<aside id="rail">
+  <div class="brand"><button id="rail-toggle" class="plain small" title="the tabs">☰</button><b>nagaya</b></div>
+  <nav>
+    <h3>Make</h3>
+    <button data-tab="chat">Chat</button>
+    <button data-tab="omni">Omni</button>
+    <button data-tab="images">Images</button>
+    <button data-tab="speech">Speech</button>
+    <h3>Lab</h3>
+    <button data-tab="steer">Steering</button>
+    <button data-tab="lab">Trace</button>
+    <button data-tab="embed">Embeddings</button>
+    <h3>Machine</h3>
+    <button data-tab="engines">Engines</button>
+  </nav>
+</aside>
+<div id="page">
+<header>
+  <select id="host" hidden title="the nagaya that this page shows"></select>
+  <div id="chips"></div>
+  <span id="keep-error" class="err"></span>
+</header>
+<main>
+
+<section id="chat">
+  <div class="head"><h1>Chat</h1><p>A conversation with a text model, with thinking and one control vector.</p></div>
+  <div class="cols">
+    <div class="card">
+      <label>Model</label>
+      <div class="model"><select id="chat-model"></select><span id="chat-model-state" class="note"></span></div>
+      <label>System message</label>
+      <textarea id="chat-system" rows="4" placeholder="optional"></textarea>
+      <label class="check"><input id="chat-thinking" type="checkbox"> Thinking</label>
+      <label>Steering <span class="note">— a vector of this model, from the Steering tab</span></label>
+      <div class="fields">
+        <select id="chat-vector"></select>
+        <select id="chat-op"><option>ablate</option><option>add</option><option>clamp</option></select>
+        <input id="chat-strength" type="number" step="0.1" value="1" title="strength">
+      </div>
+      <label>Layers <span class="note" id="chat-layers-note">— every layer of the vector</span></label>
+      <div class="fields">
+        <input id="chat-layers" placeholder="every layer; or 9-14, or 9-14:0.3, 15-22:1" class="wide"
+               title="layers to act on, each at strength times its number (spec 11.12)">
+        <button class="plain" id="chat-layers-all">all</button>
+        <button class="plain" id="chat-layers-early">early 9-14</button>
+        <button class="plain" id="chat-layers-late">late 15-22</button>
+      </div>
+      <div class="row">
+        <div><label>Max tokens</label><input id="chat-max" type="number" min="1" value="2048"></div>
+        <div><label>Temperature</label><input id="chat-temp" type="number" min="0" step="0.1" value="1.0"></div>
+      </div>
+      <div class="actions"><button class="plain" id="chat-clear">New chat</button></div>
+      <p class="note">The chat lives in this page. The nagaya holds its snapshots, so each turn feeds only the new text.</p>
+    </div>
+    <div class="card">
+      <div id="chat-log"></div>
+      <div id="chat-error" class="err"></div>
+      <div class="composer">
+        <textarea id="chat-input" rows="3" placeholder="Message — Enter sends, Shift+Enter is a new line"></textarea>
+        <div class="stack">
+          <button class="go" id="chat-go">Send</button>
+          <button class="plain" id="chat-stop" hidden>Stop</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="omni">
+  <div class="head"><h1>Omni</h1><p>A conversation with a model that reads images, audio and video, and can speak its reply.</p></div>
+  <div class="cols">
+    <div class="card">
+      <label>Model <span class="note">— a model that reads images, audio or video</span></label>
+      <div class="model"><select id="omni-model"></select><span id="omni-model-state" class="note"></span></div>
+      <label>System message <span class="note">— the reply mode fills in the model card's prompt; speech needs it</span></label>
+      <textarea id="omni-system" rows="3" placeholder="Respond with interleaved text and audio."></textarea>
+      <label>Steering <span class="note">— a vector of this model, from the Steering tab; it steers the text</span></label>
+      <div class="fields">
+        <select id="omni-vector"></select>
+        <select id="omni-op"><option>ablate</option><option>add</option><option>clamp</option></select>
+        <input id="omni-strength" type="number" step="0.1" value="1" title="strength">
+      </div>
+      <label>Reply</label>
+      <select id="omni-output"><option value="">text</option><option value="interleaved">text and speech</option>
+        <option value="speech">speech</option></select>
+      <div class="row">
+        <div><label>Max tokens</label><input id="omni-max" type="number" min="1" value="512"></div>
+        <div><label>Temperature</label><input id="omni-temp" type="number" min="0" step="0.1" value="0.3"></div>
+      </div>
+      <div class="actions"><button class="plain" id="omni-clear">New conversation</button></div>
+      <p class="note">Each file goes to the nagaya as an object, and the message names it. A spoken reply plays here,
+        and the next turn sends it back as the assistant's audio (spec 11.11, "Read it back").</p>
+    </div>
+    <div class="card">
+      <div id="omni-log"></div>
+      <div id="omni-error" class="err"></div>
+      <div id="omni-files" class="note"></div>
+      <div class="composer">
+        <textarea id="omni-input" rows="3" placeholder="Message"></textarea>
+        <div class="stack">
+          <label class="plain file">Attach<input id="omni-file" type="file" multiple hidden></label>
+          <button class="go" id="omni-go">Send</button>
+        </div>
+      </div>
+      <span id="omni-status" class="note"></span>
+    </div>
+  </div>
+</section>
+
+<section id="images">
+  <div class="head"><h1>Images</h1><p>Text to image, img2img and inpainting, with LoRAs.</p></div>
+  <div class="cols">
+    <div class="card">
+      <label>Model</label>
+      <div class="model"><select id="img-model"></select><span id="img-model-state" class="note"></span></div>
+      <p id="img-qwen-note" class="note" hidden>Qwen-Image takes no negative prompt, CFG 1, Euler, and no clip skip,
+        spacing or LoRA. Write the trigger phrase yourself, such as <code>fusal style.</code> Previews show the steps
+        and no picture.</p>
+      <label>Prompt <span class="note" id="img-prompt-note">— A1111 weights work: (word:1.2), [word]</span></label>
+      <textarea id="img-prompt" rows="4">score_9, score_8_up, score_7_up, a red fox sitting in a snowy forest, watercolor, soft light</textarea>
+      <label>Negative prompt</label>
+      <textarea id="img-negative" rows="2">score_4, score_5, blurry</textarea>
+      <div id="img-init-box">
+        <label>Start image <span class="note">— img2img; draw a mask to inpaint: white repaints, black keeps</span></label>
+        <div class="actions flush">
+          <label class="plain file">Choose an image…
+            <input id="img-init-file" type="file" accept="image/*" hidden></label>
+          <button class="plain" id="img-init-clear" hidden>Remove</button>
+          <span id="img-init-status" class="note"></span>
+        </div>
+        <div id="img-init" hidden>
+          <div class="init"><canvas id="img-init-canvas"></canvas><canvas id="img-mask-canvas"></canvas></div>
+          <div class="row3">
+            <div><label>Strength</label>
+              <input id="img-strength" type="number" min="0.01" max="1" step="0.01" placeholder="0.75; 0.99 with a mask"></div>
+            <div><label>Mask blur, px</label><input id="img-mask-blur" type="number" min="0" max="64" placeholder="4"></div>
+            <div><label>Brush, px</label><input id="img-brush" type="number" min="1" max="512" value="48"></div>
+          </div>
+          <div class="actions">
+            <label class="check flush"><input type="checkbox" id="img-erase"> Erase</label>
+            <button class="plain" id="img-mask-clear">Clear the mask</button>
+            <label class="plain file">Choose a mask…
+              <input id="img-mask-file" type="file" accept="image/*" hidden></label>
+          </div>
+          <p class="note">The image sets the size: each side a multiple of 64 from 512 to 2048. The nagaya refuses
+            another size and does not resize.</p>
+        </div>
+      </div>
+      <label>Size <span class="note" id="img-size-note"></span></label>
+      <select id="img-size"><option>1024x1024</option></select>
+      <div class="row3">
+        <div><label>Steps</label><input id="img-steps" type="number" min="1" max="150" value="30"></div>
+        <div><label>CFG</label><input id="img-cfg" type="number" min="1" max="30" step="0.5" value="7"></div>
+        <div><label>Images</label><input id="img-count" type="number" min="1" max="4" value="1"></div>
+      </div>
+      <label>Sampler</label>
+      <select id="img-sampler">
+        <option>dpm++ 2m karras</option><option>dpm++ 2m sde karras</option><option>euler a</option><option>euler</option>
+      </select>
+      <label>Spacing <span class="note">— Euler only; few-step weights such as Lightning need trailing</span></label>
+      <select id="img-spacing"><option>leading</option><option>trailing</option></select>
+      <div class="row">
+        <div><label>Seed <span class="note">— empty: random</span></label><input id="img-seed" type="number" min="0"></div>
+        <div><label>Clip skip</label>
+          <select id="img-clip"><option value="">model default</option><option>2</option><option>3</option></select></div>
+      </div>
+      <label>LoRAs <span class="note">— at most 8; weight from -2 to 2</span></label>
+      <div id="img-loras"></div>
+      <div class="actions tight">
+        <label class="plain file">Add a LoRA file…
+          <input id="img-lora-file" type="file" accept=".safetensors" hidden></label>
+        <span id="img-lora-status" class="note"></span>
+      </div>
+      <label class="check"><input id="img-previews" type="checkbox" checked> Show a preview at each step</label>
+      <div class="actions">
+        <button class="go" id="img-go">Generate</button>
+        <button class="plain" id="img-stop" hidden>Stop</button>
+        <span id="img-status" class="note"></span>
+      </div>
+      <div id="img-error" class="err"></div>
+    </div>
+    <div>
+      <div id="img-current" class="tiles"></div>
+      <h2 class="split">This browser's images <button class="plain small" id="img-clear">Clear</button></h2>
+      <div id="img-gallery" class="tiles"></div>
+    </div>
+  </div>
+</section>
+
+<section id="speech">
+  <div class="head"><h1>Speech</h1><p>Lines in a voice that a text prompt designs.</p></div>
+  <div class="cols">
+    <div class="card">
+      <label>Model</label>
+      <div class="model"><select id="sp-model"></select><span id="sp-model-state" class="note"></span></div>
+      <label>Voice design</label>
+      <textarea id="sp-voice" rows="4">A calm, warm female voice in her thirties, speaking clearly at a relaxed pace.</textarea>
+      <div class="row">
+        <div><label>Language</label>
+          <select id="sp-lang">
+            <option>auto</option><option>english</option><option>chinese</option><option>japanese</option>
+            <option>korean</option><option>german</option><option>french</option><option>russian</option>
+            <option>portuguese</option><option>spanish</option><option>italian</option>
+          </select></div>
+        <div><label>Seed <span class="note">— empty: random</span></label><input id="sp-seed" type="number" min="0"></div>
+      </div>
+      <div class="row">
+        <div><label>Temperature <span class="note">— empty: 0.9</span></label>
+          <input id="sp-temp" type="number" min="0" step="0.05" placeholder="0.9"></div>
+        <div><label>Top k <span class="note">— empty: 50</span></label>
+          <input id="sp-topk" type="number" min="1" placeholder="50"></div>
+      </div>
+      <label class="check"><input id="sp-keep" type="checkbox" checked> Keep the lines before in the context</label>
+      <p class="note">With the lines kept, each line continues from the audio before it, so the voice drifts less.</p>
+      <div class="actions"><button class="plain" id="sp-clear">New voice</button></div>
+    </div>
+    <div class="card">
+      <div id="sp-lines" class="lines"></div>
+      <div id="sp-error" class="err"></div>
+      <div class="composer">
+        <textarea id="sp-input" rows="2" placeholder="A line to speak — Enter speaks it"></textarea>
+        <button class="go" id="sp-go">Speak</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="steer">
+  <div class="head"><h1>Steering</h1><p>Make a control vector from two prompt sets, and try it against the plain model.</p></div>
+  <div class="cols">
+    <div class="card">
+      <label>Model</label>
+      <div class="model"><select id="cv-model"></select><span id="cv-model-state" class="note"></span></div>
+      <label>Toward <span class="note">— one prompt on each line: what the vector adds</span></label>
+      <textarea id="cv-toward" rows="6"></textarea>
+      <input id="cv-toward-file" type="file" accept=".txt,text/plain" title="load the prompts from a text file">
+      <label>Away <span class="note">— one prompt on each line: what the vector takes away</span></label>
+      <textarea id="cv-away" rows="6"></textarea>
+      <input id="cv-away-file" type="file" accept=".txt,text/plain" title="load the prompts from a text file">
+      <label>Name</label>
+      <input id="cv-name" placeholder="a name for the vector">
+      <div class="actions"><button class="go" id="cv-make">Make vector</button><span id="cv-status" class="note"></span></div>
+      <div id="cv-error" class="err"></div>
+      <p class="note">Each prompt is one user message with thinking off. The vector of each layer is the mean residual
+        of Toward less the mean of Away (spec 11.12). For refusals, Toward holds requests that the model refuses, and
+        Away holds requests that it answers. Then ablate the vector. A file loads into its box, and the page shows
+        only the count of its lines.</p>
+      <h2>Saved vectors</h2>
+      <div id="cv-list"></div>
+      <label>Add a vector by id <span class="note">— a vector of the model above that the nagaya holds</span></label>
+      <div class="fields">
+        <input id="cv-add-id" placeholder="blake3:…" class="wide">
+        <input id="cv-add-name" placeholder="a name">
+        <button class="plain" id="cv-add">Add</button>
+      </div>
+    </div>
+    <div class="card">
+      <label>Vector</label>
+      <select id="cv-vector"></select>
+      <div class="row">
+        <div><label>Operation</label><select id="cv-op"><option>ablate</option><option>add</option><option>clamp</option></select></div>
+        <div><label>Strength</label><input id="cv-strength" type="number" step="0.1" value="1"></div>
+      </div>
+      <label>Prompt</label>
+      <textarea id="cv-prompt" rows="3">Tell me about a place that you like.</textarea>
+      <div class="row">
+        <div><label>Max tokens</label><input id="cv-max" type="number" min="1" value="256"></div>
+        <div><label>Temperature</label><input id="cv-temp" type="number" min="0" step="0.1" value="0"></div>
+      </div>
+      <div class="actions"><button class="go" id="cv-try">Try plain and steered</button>
+        <span id="cv-try-status" class="note"></span></div>
+      <div id="cv-try-error" class="err"></div>
+      <div class="cols">
+        <div><h2>Plain</h2><div id="cv-plain" class="msg assistant"></div></div>
+        <div><h2>Steered</h2><div id="cv-steered" class="msg assistant"></div></div>
+      </div>
+      <p class="note">Temperature 0 is greedy, so the two replies differ only by the vector. add and ablate at
+        strength 0 give the plain reply; clamp at 0 removes the concept.</p>
+    </div>
+  </div>
+</section>
+
+<section id="lab">
+  <div class="head"><h1>Trace</h1><p>Look inside a model while it runs: project a vector, and trace a plain and a steered reply.</p></div>
+  <div class="cols">
+    <div class="card">
+      <label>Model</label>
+      <div class="model"><select id="lab-model"></select><span id="lab-model-state" class="note"></span></div>
+      <label>Vector <span class="note">— a saved vector of this model, from the Steering tab</span></label>
+      <select id="lab-vector"></select>
+      <h2>Project</h2>
+      <div class="row"><div><label>Tokens</label><input id="lab-lens-k" type="number" min="1" max="256" value="8"></div>
+        <div><label>Through</label><select id="lab-through"><option value="unembed">the unembedding</option>
+          <option value="jlens">the J-Lens of the model</option></select></div></div>
+      <div class="actions"><button class="plain" id="lab-project">Project the vector</button></div>
+      <h2>Trace</h2>
+      <div class="row">
+        <div><label>Operation</label><select id="lab-op"><option>ablate</option><option>add</option><option>clamp</option></select></div>
+        <div><label>Strength</label><input id="lab-strength" type="number" step="0.1" value="1"></div>
+      </div>
+      <label>Prompt</label>
+      <textarea id="lab-prompt" rows="3">Tell me about a place that you like.</textarea>
+      <div class="row3">
+        <div><label>Max tokens</label><input id="lab-max" type="number" min="1" value="200"></div>
+        <div><label>Temperature</label><input id="lab-temp" type="number" min="0" step="0.1" value="0"></div>
+        <div><label>Top k</label><input id="lab-k" type="number" min="1" max="64" value="8"></div>
+      </div>
+      <label>Lens</label>
+      <select id="lab-use-lens"><option value="logit">the logit lens of each layer</option>
+        <option value="jlens">the J-Lens of each layer</option><option value="">none</option></select>
+      <div class="actions"><button class="go" id="lab-trace">Trace plain and steered</button>
+        <span id="lab-status" class="note"></span></div>
+      <div id="lab-error" class="err"></div>
+      <p class="note">Project puts each layer of the vector through the unembedding: the tokens that it pushes up and down,
+        and the rank of each end token. The J-Lens first moves each layer to the last layer, as the later layers would
+        (docs/lab.md); the profile of the model names it. Trace runs the prompt plain, then with the vector and the operation above. Both
+        runs use one seed, so the replies differ only by the vector. With no vector, only the plain run goes. A trace
+        is a job of the engine, so the model must be ready (docs/lab.md). Choose a step: click a token or a chart.</p>
+    </div>
+    <div class="card">
+      <div id="lab-lens"></div>
+      <div id="lab-replies"><p class="note">No trace yet.</p></div>
+      <div id="lab-charts"></div>
+      <div id="lab-step"></div>
+    </div>
+  </div>
+</section>
+
+<section id="embed">
+  <div class="head"><h1>Embeddings</h1><p>Rank documents against a query, or compare them with each other.</p></div>
+  <div class="cols">
+    <div class="card">
+      <label>Model</label>
+      <div class="model"><select id="em-model"></select><span id="em-model-state" class="note"></span></div>
+      <div class="row">
+        <div><label>Query task</label><select id="em-qtask"></select></div>
+        <div><label>Document task</label><select id="em-dtask"></select></div>
+      </div>
+      <label>Dimensions</label>
+      <select id="em-dims"></select>
+      <p class="note">The family writes the prompt of each task. The vectors come back normalized, so a dot product is
+        the cosine.</p>
+    </div>
+    <div class="card">
+      <label>Query <span class="note">— empty: compare the documents with each other</span></label>
+      <input id="em-query" value="how does the nagaya swap an engine">
+      <label>Documents <span class="note">— one on each line</span></label>
+      <textarea id="em-docs" rows="7">A load that does not fit names the engines in its way, and the client unloads them.
+The ledger admits a profile from the plan of each engine.
+SDXL-Lightning makes an image in four steps with trailing spacing.
+A pinned engine stays loaded through every swap.
+Qwen3-TTS designs a voice from a text prompt.</textarea>
+      <div class="actions">
+        <button class="go" id="em-go">Embed</button>
+        <span id="em-status" class="note"></span>
+      </div>
+      <div id="em-error" class="err"></div>
+      <div id="em-out"></div>
+    </div>
+  </div>
+</section>
+
+<section id="engines">
+  <div class="head"><h1>Engines</h1><p>The engines of this nagaya: load, unload and pin.</p></div>
+  <div class="card">
+    <table>
+      <thead><tr><th>Engine</th><th>Kind</th><th>Cards</th><th>Residency</th><th>Served model</th><th>State</th><th></th></tr></thead>
+      <tbody id="eng-rows"></tbody>
+    </table>
+    <div id="eng-error" class="err"></div>
+    <div id="eng-note" class="note"></div>
+    <p class="note">A load that does not fit names the engines in its way, and the page offers to unload them. No
+      engine loads or unloads by itself, and a pinned engine stays loaded. A pin changes the profile: the engine
+      becomes resident, so the next start loads it too.</p>
+    <details><summary class="note">The profile of this nagaya</summary><pre id="eng-profile" class="note"></pre></details>
+  </div>
+</section>
+
+</main>
+</div>
+<!-- The order matters: the core first, then each tab, then the start. `steer.js` fills the vector lists of the other
+     tabs, so it loads after them (README.md). -->
+<script src="/app/web/core.js"></script>
+<script src="/app/web/engines.js"></script>
+<script src="/app/web/chat.js"></script>
+<script src="/app/web/omni.js"></script>
+<script src="/app/web/images.js"></script>
+<script src="/app/web/speech.js"></script>
+<script src="/app/web/embed.js"></script>
+<script src="/app/web/lab.js"></script>
+<script src="/app/web/steer.js"></script>
+<script src="/app/web/main.js"></script>
+</body>
+</html>

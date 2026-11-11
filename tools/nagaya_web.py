@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """A web app in front of one or more nagayas: engines, images, chat, speech and embeddings, through council v2.
 
-The server sends the page `nagaya_web.html`, and it passes each request under `/council/` and `/nagaya/` to the first
-nagaya as it is. A request under `/at/<name>/council/` or `/at/<name>/nagaya/` goes to the nagaya with that name. It
-streams each response, so the events of a generation reach the page as the nagaya sends them. The page and the nagayas
-then have one origin, and the browser needs no CORS. `GET /app/nagayas` lists the names, and the page shows them.
+The server sends the page `web/index.html` and its files under `/app/web/`. It passes each request under `/council/`
+and `/nagaya/` to the first nagaya as it is. A request under `/at/<name>/council/` or `/at/<name>/nagaya/` goes to
+the nagaya with that name. It streams each response, so the events of a generation reach the page as the nagaya
+sends them. The page and the nagayas then have one origin, and the browser needs no CORS. `GET /app/nagayas` lists
+the names, and the page shows them.
 
 Examples:
 
@@ -65,7 +66,10 @@ def discover(seeds, host):
             nagayas.append((node["name"], "http://" + node["http"]))
         return local_first(nagayas, host)
     sys.exit("no seed gave the cluster route: " + "; ".join(failures) + ". Start a nagaya, or give --nagaya.")
-PAGE = pathlib.Path(__file__).with_name("nagaya_web.html")
+# The folder of the page: `index.html`, its stylesheet and its scripts (web/README.md).
+WEB = pathlib.Path(__file__).with_name("web")
+# The kinds of file that the app serves from the folder. A file of another kind, such as the README, is a 404.
+KINDS = {".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8"}
 PREFIXES = ("/council/", "/nagaya/")
 # The headers that the server passes on, in each direction. The others belong to one connection.
 REQUEST_HEADERS = ("content-type", "accept", "range")
@@ -103,7 +107,9 @@ def handler(nagayas):
 
         def do_GET(self):
             if self.path in ("/", "/index.html"):
-                self.page()
+                self.file(WEB / "index.html", "text/html; charset=utf-8")
+            elif self.path.startswith("/app/web/"):
+                self.web(self.path[len("/app/web/"):])
             elif self.path == "/app/nagayas":
                 self.send_response(200)
                 self.send_header("content-type", "application/json")
@@ -125,10 +131,19 @@ def handler(nagayas):
         def do_DELETE(self):
             self.forward()
 
-        def page(self):
-            body = PAGE.read_bytes()
+        def web(self, name):
+            """Send one file of the page. The name is one plain file name, so no path leaves the folder."""
+            kind = KINDS.get(pathlib.PurePosixPath(name).suffix)
+            if not NAME.fullmatch(name) or kind is None or not (WEB / name).is_file():
+                self.send_error(404, f"the page has no file {name!r}")
+                return
+            self.file(WEB / name, kind)
+
+        def file(self, path, kind):
+            # The app reads the file at each request, and the browser keeps no copy. Thus a change shows at a reload.
+            body = path.read_bytes()
             self.send_response(200)
-            self.send_header("content-type", "text/html; charset=utf-8")
+            self.send_header("content-type", kind)
             self.send_header("content-length", str(len(body)))
             self.send_header("cache-control", "no-store")
             self.end_headers()
