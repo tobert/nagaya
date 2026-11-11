@@ -84,6 +84,22 @@ On 2026-11-11, three rounds of `s2s-combine.json` on `lfm3` gave these counts. W
 of 6,366 prompt tokens, and act fed 4,532 of 4,532. With snapshots and a build call, think fed 1,504 of 6,929, and
 act fed 767 of 5,514. The runs of 2026-11-10 had no snapshots: they fed 60% to 100% of each prompt again.
 
+## One request for a stage
+
+`batch` is a top-level member, true or false. The default is false. Each recipe in `recipes/` sets it to true.
+
+With `batch` true, a stage sends one request for each model, not one for each reply (gogi "Several replies"):
+
+- The think agents of one model at one temperature are the `contexts` of one generation.
+- The act forks of one model are the `forks` of one generation, with one temperature for each fork.
+- Reply `i` of a request has the seed of the request plus `i`. Each request of a stage has its own block of seeds.
+- A stage with latent steps, and `act` with `contrast` or `joined`, keep their own calls: they go to `ensemble`.
+- The served model must declare the capability `replies`. The LFM3 models of the nagaya declare it.
+
+On 2026-11-11, three rounds of `s2s-combine.json` on `lfm3` made 9 requests with `batch`. Each round made 1 for
+think, 1 for distill and 1 for act. Without `batch` the rounds made 39. The tokens that think fed were the same:
+1,357 of 6,286.
+
 ## The prime
 
 `prime` is an optional stage. It runs once in each round, before think. It makes one generation with `thinking`

@@ -1,5 +1,6 @@
 {"models": ["lfm3"],
  "snapshots": true,
+ "batch": true,
  "think":   {"agents": 8, "max_tokens": 48, "temperature": 1.0, "latent": 0},
  "select":  {"by": "vote", "keep": 1},
  "distill": {"by": "pick"},

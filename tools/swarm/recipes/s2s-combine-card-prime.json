@@ -1,5 +1,6 @@
 {"models": ["lfm3"],
  "snapshots": true,
+ "batch": true,
  "prime":   {"max_tokens": 384,
              "system": "You study a heuristic for online bin packing. Find where it wastes bins.",
              "sample": {"temperature": 0.6, "top_p": 0.95}},

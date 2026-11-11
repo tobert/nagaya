@@ -13,6 +13,14 @@ def usage_of(reply):
     return {k: int(u.get(k, 0)) for k in ("prompt", "fed", "completion")}
 
 
+def groups(keys):
+    """The indices of `keys` in groups of equal keys. The groups are in the order of their first index."""
+    out = {}
+    for i, key in enumerate(keys):
+        out.setdefault(key, []).append(i)
+    return list(out.items())
+
+
 def _context(user, prefill, system=None, thinking=False):
     """A council v2 context. `user` is one user message, or a list of messages in order. A system prompt goes
     first. A prefill is an open assistant message with a `content` member. With thinking on, that member closes the
@@ -55,6 +63,31 @@ class Client:
             "model": model, "max_tokens": max_tokens, "sample": _sample(temperature, seed, sample),
             "context": _context(user, prefill, system, thinking)})
         return reply.get("content", ""), usage_of(reply)
+
+    def _replies(self, body, count):
+        """The text of each reply of a request with several replies, in order, and the usage of the request."""
+        reply = self.transport.post(GENERATIONS, body)
+        rows = sorted(reply["replies"], key=lambda r: r["index"])
+        if len(rows) != count:
+            raise RuntimeError(f"{GENERATIONS} gave {len(rows)} replies for {count}.")
+        return [r.get("content", "") for r in rows], usage_of(reply)
+
+    def generate_each(self, model, users, max_tokens, temperature, seed, prefill=None, system=None, sample=None,
+                      thinking=False):
+        """One reply after each of `users`, from one request with `contexts` (gogi "Several replies"). Reply `i` has
+        the seed `seed + i`. The nagaya feeds what the contexts share once."""
+        body = {"model": model, "max_tokens": max_tokens, "sample": _sample(temperature, seed, sample),
+                "contexts": [_context(u, prefill, system, thinking) for u in users]}
+        return self._replies(body, len(users))
+
+    def fork(self, model, user, max_tokens, temperatures, seed, prefill=None, system=None, sample=None,
+             thinking=False):
+        """One reply for each of `temperatures` after one context, from one request with `forks`. Fork `i` has the
+        seed `seed + i` and its own temperature."""
+        body = {"model": model, "max_tokens": max_tokens, "sample": _sample(temperatures[0], seed, sample),
+                "context": _context(user, prefill, system, thinking),
+                "forks": [{"temperature": t} for t in temperatures]}
+        return self._replies(body, len(temperatures))
 
     def prime(self, model, user, max_tokens, temperature, seed, system=None, sample=None):
         """One generation with thinking on and no prefill. The text is the reasoning, then the content

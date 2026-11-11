@@ -11,7 +11,7 @@ LATENT_MAX = 256
 ENSEMBLE_MAX = 8
 EMBED_MODEL = "embeddinggemma-2"
 
-STAGES = ("models", "system", "snapshots", "prime", "think", "select", "distill", "act", "loop")
+STAGES = ("models", "system", "snapshots", "batch", "prime", "think", "select", "distill", "act", "loop")
 CALL = ("system", "sample", "thinking")
 KEYS = {
     "prime": ("max_tokens", "temperature", "sample", "system"),
@@ -170,6 +170,10 @@ def parse(obj):
     if not isinstance(snapshots, bool):
         raise RecipeError(f"snapshots must be true or false; it is {snapshots!r}.")
 
+    batch = obj.get("batch", False)
+    if not isinstance(batch, bool):
+        raise RecipeError(f"batch must be true or false; it is {batch!r}.")
+
     prime = None
     if "prime" in obj:
         pr = _stage(obj, "prime")
@@ -258,8 +262,8 @@ def parse(obj):
     if "rounds" in lp:
         loop["rounds"] = _int(lp, "rounds", "loop.rounds", None, 1)
 
-    out = {"models": list(models), "snapshots": snapshots, "think": think, "select": select, "distill": distill,
-           "act": act, "loop": loop}
+    out = {"models": list(models), "snapshots": snapshots, "batch": batch, "think": think, "select": select,
+           "distill": distill, "act": act, "loop": loop}
     if top is not None:
         out["system"] = top
     if prime is not None:

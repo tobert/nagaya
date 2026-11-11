@@ -3,6 +3,7 @@
     "lfm3"
   ],
   "snapshots": true,
+  "batch": true,
   "think": {
     "agents": 8,
     "max_tokens": 48,

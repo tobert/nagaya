@@ -49,6 +49,14 @@ class StubTransport:
         with self._lock:
             self.calls.append((path, body))
         usage = {"prompt": 100, "fed": 10, "completion": 5}
+        if path == client.GENERATIONS and ("contexts" in body or "forks" in body):
+            # Several replies (gogi "Several replies"): one for each context, or one for each fork of one context.
+            contexts = body.get("contexts") or [body["context"]] * (
+                body["forks"] if isinstance(body["forks"], int) else len(body["forks"]))
+            replies = [{"index": i, "content": self._reply(c["messages"][-1]["content"]),
+                        "usage": {"completion": 5}} for i, c in enumerate(contexts)]
+            return {"usage": {"prompt": 100 * (len(contexts) if "contexts" in body else 1), "fed": 10,
+                              "completion": 5 * len(contexts)}, "replies": replies}
         if path == client.GENERATIONS and body["context"]["messages"][-1]["role"] == "user":
             return {**self.prime, "usage": usage}
         if path == client.GENERATIONS:

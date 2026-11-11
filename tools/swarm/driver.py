@@ -202,12 +202,26 @@ class Driver:
         temperatures = [temperature(t, i) for i in range(n)]
         shares = self.recipe["snapshots"]
 
-        def one(i):
-            user = (self._prompt(head, task.think_prompt(head, chosen[i])) if prime is None else
+        def user(i):
+            return (self._prompt(head, task.think_prompt(head, chosen[i])) if prime is None else
                     task.think_turns(head, prime, chosen[i], shares))
-            text = self._call(stage, models[i], self.client.generate, user, t["max_tokens"], temperatures[i],
+
+        def one(i):
+            text = self._call(stage, models[i], self.client.generate, user(i), t["max_tokens"], temperatures[i],
                               seed * 1000 + i, task.IDEA_PREFILL, latent=t["latent"], **options(t))
             return task.after_prefill(text, task.IDEA_PREFILL)
+
+        def several(group):
+            # One request for the agents of one model at one temperature. Each group has its own block of seeds.
+            g, ((model, temp), members) = group
+            texts = self._call(stage, model, self.client.generate_each, [user(i) for i in members], t["max_tokens"],
+                               temp, seed * 1000 + g * n, task.IDEA_PREFILL, **options(t))
+            return [(i, task.after_prefill(text, task.IDEA_PREFILL)) for i, text in zip(members, texts)]
+        if self.recipe["batch"] and not t["latent"]:
+            together = list(enumerate(client.groups(list(zip(models, temperatures)))))
+            with ThreadPoolExecutor(len(together)) as ex:
+                ideas = dict(pair for part in ex.map(several, together) for pair in part)
+            return [ideas[i] for i in range(n)], temperatures
         with ThreadPoolExecutor(n) as ex:
             return list(ex.map(one, range(n))), temperatures
 
@@ -261,6 +275,18 @@ class Driver:
             # Each fork has the same prompt, so its end is a boundary. The nagaya feeds the prompt once for the forks
             # in flight (spec 11.14), and a fork feeds only its prefill.
             prompt[-1]["snap"] = True
+
+        def several(group):
+            # One request for the forks of one model. Each fork has its temperature and the next seed of its block.
+            g, (model, members) = group
+            texts = self._call(stage, model, self.client.fork, prompt, a["max_tokens"],
+                               [temperatures[f] for f in members], seed * 100 + g * a["forks"], pre, **options(a))
+            return list(zip(members, texts))
+        if self.recipe["batch"] and a["by"] == "plain" and not a["latent"]:
+            together = list(enumerate(client.groups(models)))
+            with ThreadPoolExecutor(len(together)) as ex:
+                replies = dict(pair for part in ex.map(several, together) for pair in part)
+            return [(models[f], temperatures[f], replies[f]) for f in range(a["forks"])]
 
         def one(f):
             if a["by"] == "contrast":
