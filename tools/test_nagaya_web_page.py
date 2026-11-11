@@ -411,13 +411,14 @@ class Page(unittest.TestCase):
         self.assertIn("18 tokens", user)
         self.assertIn("device", user)
         self.assertNotIn("8336d95c", user)
-        # The reply says that the whole text went, and how few tokens ran.
-        self.assertIn(f"sent the whole context, {out['sent']} B", reply)
-        self.assertIn("kept 18 of 23 prompt tokens", reply)
-        self.assertIn("ran 5", reply)
-        # The snapshot of the system message has no message in the log, so the reply lists it.
-        self.assertIn("8336d95c", reply)
+        # One status line says that the whole text went, and how few tokens ran.
+        self.assertEqual(reply.count('class="stat"'), 1)
+        self.assertEqual(user.count('class="stat"'), 1)
+        self.assertIn(f"4 tokens · end_turn · sent {out['sent']} B (whole chat) · ran 5 of 23 prompt tokens", reply)
+        # The snapshot of the system message has no message in the log, so the hover text of the line names it.
+        self.assertIn("message 0: blake3:8336d95c", reply)
         self.assertIn("1.1 MB", reply)
+        self.assertIn("kept 18", reply)
 
     # Two chat turns against a nagaya that names a context record in `done` (gogi "Context records"). `RECORDS` gives
     # the `context` of each reply in turn; null is a nagaya from before the records. `refuse` makes the next request
@@ -459,10 +460,12 @@ class Page(unittest.TestCase):
         self.assertEqual(second, {"parent": self.R1, "thinking": False, "control": [],
                                   "messages": [{"role": "user", "content": "two", "snap": True}]})
         # The reply shows that only the new message went, and the record of each reply as a link.
-        self.assertIn("sent 1 new message", out["log"])
-        self.assertIn("and the id of the rest", out["log"])
+        self.assertEqual(out["log"].count("(new message only)"), 1)
         self.assertIn(f'href="/at/b70host/council/v2/contexts/{self.R2}"', out["log"])
-        self.assertEqual(out["log"].count("sent the whole context"), 1)
+        self.assertEqual(out["log"].count("(whole chat)"), 1)
+        # Each of the 4 messages has one status line or none.
+        self.assertLessEqual(out["log"].count('class="stat"'), 4)
+        self.assertEqual(out["log"].count('<div class="msg assistant">'), 2)
 
     def test_a_record_that_the_nagaya_dropped_makes_the_page_send_the_whole_chat_once(self):
         out = self.turns([self.R1, self.R2], 'await say("one"); refuse = true; await say("two");')
@@ -471,7 +474,7 @@ class Page(unittest.TestCase):
         self.assertEqual([m["role"] for m in whole["messages"]], ["system", "user", "assistant", "user"])
         self.assertEqual(whole["messages"][2], {"role": "assistant", "content": "reply 1"})
         self.assertEqual(whole["messages"][3]["content"], "two")
-        self.assertEqual(out["log"].count("sent the whole context"), 2)
+        self.assertEqual(out["log"].count("(whole chat)"), 2)
 
     def test_a_nagaya_with_no_records_gets_the_whole_chat_each_turn(self):
         out = self.turns([None, None], 'await say("one"); await say("two");')
@@ -508,8 +511,7 @@ class Page(unittest.TestCase):
         out = self.chat_turn(done)
         self.assertEqual(out["failed"], "")
         self.assertNotIn("/snapshots/", out["log"])
-        self.assertIn("kept 0 of 23 prompt tokens", out["log"])
-        self.assertIn("ran 23", out["log"])
+        self.assertIn("ran 23 of 23 prompt tokens", out["log"])
 
     def test_each_context_names_thinking_and_only_a_model_that_thinks_gets_true(self):
         out = self.run_page(self.FORM + """

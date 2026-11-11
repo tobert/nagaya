@@ -4,18 +4,34 @@
 // ---- chat
 let chat = [], chatAbort = null;
 /**
- * What one turn cost, under its reply. The page sent the whole context as text (gogi "Design"). The nagaya started
- * from the longest snapshot that it holds, so it ran only the tokens after it. `others` are the snapshots of the
- * turn that belong to no message of the log, such as the one of the system message.
+ * What one turn cost, as the end of the status line of its reply, and as the hover text of that line. The page sent
+ * the chat whole, or the id of its record and the new message (gogi "Context records"). The nagaya started from the
+ * longest snapshot that it holds, so it ran only the tokens after it. `others` are the snapshots of the turn that
+ * belong to no message of the log, such as the one of the system message.
  */
 function receiptOf(r) {
-  if (!r) return "";
   const u = r.usage, kept = u.kept ?? 0;
-  const sent = r.byParent ? `1 new message, ${sizeOf(r.sent)}, and the id of the rest` : `the whole context, ${sizeOf(r.sent)}`;
-  const record = r.record ? `<div class="stat">context ${recordChip(r.record)}</div>` : "";
-  return `<div class="stat">the page sent ${sent} · the nagaya kept ${kept} of ${u.prompt} prompt tokens and ran ${
-    u.fed}</div>` + record +
-    r.others.map((s) => `<div class="stat">message ${s.message}: ${snapshotChip(s)}</div>`).join("");
+  const parts = [`sent ${sizeOf(r.sent)} (${r.byParent ? "new message only" : "whole chat"})`,
+                 `ran ${u.fed} of ${u.prompt} prompt tokens`];
+  const hover = [r.byParent ? "The page sent the id of the record of the chat, and the new message."
+                            : "The page sent the chat whole.",
+                 `The nagaya kept ${kept} prompt tokens from its snapshots and ran ${u.fed}.`]
+    .concat(r.others.map((s) => `Snapshot of message ${s.message}: ${s.id}, ${s.tokens} tokens, ${s.tier}` +
+      (s.bytes == null ? "" : `, ${sizeOf(s.bytes)}`) + "."));
+  return {text: parts.join(" · "), hover: hover.join(" "), record: r.record};
+}
+/** The one status line of a message: the counts of a reply, what its turn cost, and the id of what the nagaya holds. */
+function statusOf(m) {
+  const parts = m.stat ? [esc(m.stat)] : [];
+  let hover = "";
+  if (m.receipt) {
+    const r = receiptOf(m.receipt);
+    parts.push(esc(r.text));
+    if (r.record) parts.push(recordChip(r.record));
+    hover = r.hover;
+  }
+  if (m.snapshot) parts.push(snapshotChip(m.snapshot));
+  return parts.length ? `<div class="stat" title="${esc(hover)}">${parts.join(" · ")}</div>` : "";
 }
 // The record of the chat with its last reply, when the nagaya names one: {id, host, system} (gogi "Context
 // records"). The next turn names it as its parent and sends only its new message. A new system message changes the
@@ -25,9 +41,7 @@ function drawChat(live) {
   const all = live ? chat.concat([live]) : chat;
   $("chat-log").innerHTML = all.map((m) => {
     const think = m.reasoning ? `<details ${m.open ? "open" : ""}><summary>thinking</summary>${esc(m.reasoning)}</details>` : "";
-    const stat = m.stat ? `<div class="stat">${esc(m.stat)}</div>` : "";
-    const held = m.snapshot ? `<div class="stat">${snapshotChip(m.snapshot)}</div>` : "";
-    return `<div class="msg ${m.role}">${think}${esc(m.content || "")}${stat}${held}${receiptOf(m.receipt)}</div>`;
+    return `<div class="msg ${m.role}">${think}${esc(m.content || "")}${statusOf(m)}</div>`;
   }).join("");
   $("chat-log").scrollTop = $("chat-log").scrollHeight;
 }
