@@ -1,4 +1,4 @@
-signoff.md
+signoff*.md
 target/
 *.gguf
 *.mkctx
