@@ -477,8 +477,9 @@ Do the steps in this order. Each step ends with the checks green.
    body. Hold a record of each context that a request reads. Serve `GET /council/v2/contexts/{id}`, the pin of a
    record and the limit `context_records`. Gate: the gogi suite with the toy engine.
 4. **The head after a reply.** A generation of LFM3 gives `head: null` now, so the next turn feeds the reply again.
-   Hold the snapshot after the reply when the closed rendering starts with the sampled tokens. Card gate: a second
-   turn by `parent` feeds only its new message.
+   Amy decided on 2026-11-11: hold the decoded state as a head with its own recipe (spec 6.14, "The decoded
+   head"). Do this step after steps 5 and 6. Card gates: a second turn by `parent` feeds only its new message. The
+   same request from the same head gives the same bits. The gate measures the difference from a build of the text.
 5. **A shared prefix.** Two requests in flight whose contexts begin with the same tokens feed those tokens once
    (gogi "Contexts", "Requests in flight share a prefix"). Thus a client builds no context only for its snapshot.
 6. **Several replies.** A generation with `forks` or `contexts` (gogi "Several replies"). Move the pin to

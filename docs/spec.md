@@ -1484,8 +1484,8 @@ of a state follow from them only when the rule made every row. Thus the store ke
 the rule made each of its rows. These rules follow:
 
 - **Decode.** A decode quantum feeds one token, or one token and its drafts. Its rows do not follow the rule. The job
-  path never puts a state with decode rows under a recipe of 6.2. The park recipe (6.2) names bytes, so a park of
-  such a state is still exact.
+  path puts a state with decode rows under no recipe of 6.2 but the recipe of a decoded head (below). The park recipe
+  (6.2) names bytes, so a park of such a state is still exact.
 - **Drafts.** A draft test feeds one token and k drafts in one pass, with k + 1 logit rows (mkviolet
   `mk_api.rs:1187-1222`). The rows of a rejected draft stay past the token count, and the next pass writes over them.
   The logits fall under the tolerance of the served model.
@@ -1500,10 +1500,37 @@ the rule made each of its rows. These rules follow:
 - **A continued span.** The last pass of a span can hold fewer than `block` tokens. Then a job that continues the
   span feeds that pass again (engine-abi D11 rule 7).
 
-Decided 2026-10-21 (Amy, by interview): a generation on an engine with a feed rule holds no head after its reply.
-Its `head` is null (11.3c). The reply rows come from decode quanta. The next build finds the last held boundary of the
-prompt, and it feeds the reply by the rule. Reason: a head would need a second feed of the reply now. The next build
-does that feed only when a client asks for it.
+**The decoded head.** Decided 2026-11-11 (Amy, by interview): a generation on an engine with a feed rule holds a head
+after its reply. The head keeps the decode rows of the reply. Amy: "yeah 3 for sure. let's realign the rules to
+match. I think it's understood that continue from cache is a bit different." This replaces the decision of
+2026-10-21, which gave such a generation no head. Its reason was the cost of a second feed of the reply. A decoded
+head needs no second feed: the engine has the state when the reply ends.
+
+The goal is that the nagaya does not run again what it has run (milestone 32). These rules are **Proposed**
+(claude-fable-5-2, 2026-11-11), and each is the simplest reading of the decision:
+
+- **Its recipe names its rows.** The recipe of a decoded head names the last boundary of the prompt and the sampled
+  tokens. It also says that a decode quantum made each of their rows. It is another recipe than the recipe of the
+  same tokens fed by the rule. Thus the bits of each state still follow from its recipe, and the tripwire (6.7)
+  stays whole.
+- **The record names the head.** The context record of a reply (gogi "The reply in a record") keeps the id of its
+  decoded head. A build of that context starts from the head on two conditions. The store holds the head, and
+  the rendering of the context starts with its tokens. It makes no difference whether the request names the record
+  as its `parent` or sends the context whole.
+- **The bits differ a little.** A request that starts from a decoded head gives other bits than the same context
+  built from its text. The rule made the rows of that build. Both are valid readings of the context. The
+  same request from the same head gives the same bits. The card gate of milestone 32 measures the difference of the
+  logits, and that number goes here.
+- **No head when the tokens differ.** The family can render the reply with other tokens than the model sampled. For
+  example, the reply parser of LFM3 removes white space at the ends of the content. Then the context has no decoded
+  head, and the next build feeds the reply by the rule, as before.
+- **No head from a draft.** A reply whose rows came from a pass with drafts has no decoded head, because those rows
+  depend on the drafts.
+- **The closing tokens.** The template ends the reply with tokens that the model did not sample, such as a newline
+  after the end token. The job feeds them after the reply, at most 8 tokens (11.3c), and then it holds the head.
+
+The code keeps the rule of 2026-10-21 until milestone 32 step 4. `keeps_head` in `council/generations.rs` is false
+for an engine with a feed rule, and `crates/nagaya/tests/council_feed.rs` checks a null head.
 
 **The job path.** The council jobs take passes of `block` for an engine with a feed rule (`council/mod.rs`, the
 `chunk` of a build). A build starts each span at a held boundary or at 0, and a generation holds no head. Thus no job
