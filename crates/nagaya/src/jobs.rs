@@ -66,6 +66,11 @@ pub trait JobBody: Send {
         false
     }
 
+    /// Hear that the pass that began shares its pass with the row of another job. The driver calls it before
+    /// [`JobBody::end_pass`]. A job on an engine with a feed rule then keeps no row of that pass in the store (spec
+    /// 6.14, "No head from a shared pass"). The default does nothing.
+    fn shared_pass(&mut self) {}
+
     /// Begin a pass of `kind` on an engine with stages: give its segments. A body whose `item` gives a `Block`
     /// implements it. An error is `Ran::Failed` or `Ran::Cancelled`, and the body told its caller why.
     fn begin_pass(&mut self, kind: Kind, _engines: &mut [Box<dyn Engine>]) -> Result<Vec<Segment>, Ran> {
@@ -455,6 +460,9 @@ pub fn run_joined_bodies(
                 .iter_mut()
                 .find(|(job, _, _)| job == id)
                 .expect("a segment has its job");
+            if segments.len() > 1 {
+                body.shared_pass();
+            }
             results.push((*id, body.end_pass(kind, result, engines)));
         }
     }

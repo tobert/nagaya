@@ -1,7 +1,7 @@
 //! The pure parts of a build (spec 6.2, 11.3c): the recipe of each boundary, and the steps that feed the rest.
 
 use nagaya_abi::Kind;
-use nagaya_store::{ContentId, RecipeId, RecipeMedia, recipe_boundary_media, recipe_root};
+use nagaya_store::{ContentId, RecipeId, RecipeMedia, recipe_boundary_media, recipe_decoded, recipe_root};
 
 use crate::control::{self, ControlEntry};
 use crate::family::{Boundary, FamilyError, MediaSpan, Rendering};
@@ -132,6 +132,58 @@ pub fn range_recipe(
         })
         .collect();
     Ok(recipe_boundary_media(previous, &tokens[from..to], to as u64, &items))
+}
+
+/// The recipe of a decoded head at the position `to`, after the seal `previous` at the position `from` (spec 6.14).
+/// The feed rule fed `tokens[from..prompt]` as one span, with the media spans that start there. Each token of
+/// `tokens[prompt..to]` had a pass alone.
+pub fn decoded_recipe(
+    previous: &RecipeId,
+    tokens: &[u32],
+    media: &[MediaSpan],
+    from: usize,
+    prompt: usize,
+    to: usize,
+) -> Result<RecipeId, FamilyError> {
+    let fed = range_recipe(previous, tokens, media, from, prompt)?;
+    Ok(recipe_decoded(&fed, &tokens[prompt..to], to as u64))
+}
+
+/// A seal of a state: a place where the job path held a snapshot of it (spec 6.14).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Seal {
+    /// The tokens of the state at the seal.
+    pub tokens: usize,
+    /// For a decoded head, the tokens of its prompt. The feed rule fed the tokens from the seal before to this count
+    /// as one span, and each later token had a pass alone. `None` for a boundary, whose span the rule fed whole.
+    pub prompt: Option<usize>,
+}
+
+/// The recipe of each seal of a state, in order (spec 6.2, 6.14). The first seal chains from `root`.
+///
+/// The result is `None` when the seals do not fit the tokens. The seals must increase from above 0, and none is past
+/// the tokens. The prompt of a decoded head is after the seal before it, and at or before its head.
+pub fn seal_recipes(
+    root: RecipeId,
+    tokens: &[u32],
+    media: &[MediaSpan],
+    seals: &[Seal],
+) -> Result<Option<Vec<RecipeId>>, FamilyError> {
+    let mut recipes = Vec::with_capacity(seals.len());
+    let (mut previous, mut at) = (root, 0usize);
+    for seal in seals {
+        if seal.tokens <= at || seal.tokens > tokens.len() {
+            return Ok(None);
+        }
+        let recipe = match seal.prompt {
+            None => range_recipe(&previous, tokens, media, at, seal.tokens)?,
+            Some(prompt) if prompt <= at || prompt > seal.tokens => return Ok(None),
+            Some(prompt) => decoded_recipe(&previous, tokens, media, at, prompt, seal.tokens)?,
+        };
+        recipes.push(recipe);
+        (previous, at) = (recipe, seal.tokens);
+    }
+    Ok(Some(recipes))
 }
 
 /// The recipes of a rendering with one more boundary, at `cut` (spec 11.3c).

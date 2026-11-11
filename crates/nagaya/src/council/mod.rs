@@ -21,6 +21,7 @@ pub mod staging;
 pub mod trace;
 pub mod vectors;
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -35,7 +36,8 @@ use gogi_proto::spec::{HeldSpec, SpecRules};
 use gogi_proto::{ContextId, SnapshotId};
 use nagaya_abi::{Capability, Engine, Limits};
 use nagaya_council::build::{
-    BoundaryRecipe, boundary_recipes, range_recipe, recipes_with_cuts, root_recipe, root_recipe_with_control,
+    BoundaryRecipe, Seal, boundary_recipes, range_recipe, recipes_with_cuts, root_recipe, root_recipe_with_control,
+    seal_recipes,
 };
 use nagaya_council::family::{Boundary, Family, MediaInput, Rendering};
 use nagaya_sched::{Class, IntervalCopies, IntervalPolicy};
@@ -47,7 +49,7 @@ use self::build::{BuildBody, ContextBody, Cut, Finished, JobControl, LookupBody,
 use self::control::{ControlTable, Fit};
 use self::error::ServiceError;
 use self::pins::{OwnerPins, PinBook, owner_key};
-use self::records::Records;
+use self::records::{HeadNote, Records};
 use self::slots::SlotPool;
 use self::specs::Specs;
 use crate::jobs::{JobBody, JobSpec, Ran};
@@ -340,6 +342,20 @@ pub struct Service {
     objects: OnceLock<Arc<Mutex<nagaya_store::objects::ObjectStore>>>,
     /// The codes of each audio output that this service wrote, by content id (spec 11.11, "Codes").
     output_codes: Arc<CodesBook>,
+}
+
+/// The most `assistant` messages of a context whose records a build reads for a head note (spec 6.14, "The search").
+pub const HEAD_SEARCH: usize = 4;
+
+/// The held snapshots where a job may start, other than the plain boundaries of its plan ([`Service::starts`]).
+pub(crate) struct Starts {
+    /// The cuts, from the highest down.
+    pub cuts: Vec<Cut>,
+    /// The open text of a continuation up to a held seal inside it.
+    pub extension: Option<build::Extension>,
+    /// The decoded heads among the seals of the cuts and of the extension: the recipe of each, and the tokens of its
+    /// prompt (spec 6.14).
+    pub decoded: BTreeMap<RecipeId, usize>,
 }
 
 /// The root recipe of a context and its control list, after the checks (spec 11.12).
@@ -729,7 +745,10 @@ impl Service {
         let recipes = plan_recipes(root, &rendering)?;
         let tokens: Arc<[u32]> = rendering.tokens[..rendering.end].into();
         let (cuts, extension) = match open {
-            true => self.starts(root, context, &open_rendering.tokens, &rendering)?,
+            true => {
+                let starts = self.starts(root, context, &open_rendering.tokens, &rendering)?;
+                (starts.cuts, starts.extension)
+            }
             false => (self.cuts(root, context, &rendering)?, None),
         };
         let outcome = if dry_run {
@@ -827,7 +846,74 @@ impl Service {
     fn cuts(&self, root: RecipeId, context: &Context, rendering: &Rendering) -> Result<Vec<Cut>, ServiceError> {
         Ok(self
             .starts(root, context, &rendering.tokens[..rendering.end], rendering)?
-            .0)
+            .cuts)
+    }
+
+    /// The decoded head where a job of `context` may start, from the head notes of its records (spec 6.14, "The
+    /// search"). It gives the seals of the state of the head, with their recipes, and the last one is the head.
+    ///
+    /// The search reads the record of the prefix that ends at each `assistant` message, from the last one down, at
+    /// most [`HEAD_SEARCH`] of them. It stops at the first record with a note. The recipe of the note must be the
+    /// recipe that its seals give with `tokens`, the tokens of this context. Thus the rendering starts with the
+    /// tokens of the head. `limit` is the highest position where the job may start.
+    fn noted_head(
+        &self,
+        root: RecipeId,
+        context: &Context,
+        tokens: &[u32],
+        media: &[nagaya_council::family::MediaSpan],
+        limit: usize,
+    ) -> Result<Option<Vec<(Seal, RecipeId)>>, ServiceError> {
+        if self.shared.limits.feed.is_none() {
+            return Ok(None);
+        }
+        let replies = (0..context.messages.len())
+            .rev()
+            .filter(|index| context.messages[*index].role == gogi_proto::message::Role::Assistant)
+            .take(HEAD_SEARCH);
+        for index in replies {
+            let mut prefix = context.clone();
+            prefix.messages.truncate(index + 1);
+            // The record of a closed reply marks it (gogi `with_reply`). An open reply is the record as it is.
+            if !prefix.messages[index].open {
+                prefix.messages[index].snap = true;
+            }
+            let id = gogi_proto::context_id(&prefix);
+            let note = self
+                .records
+                .lock()
+                .expect("the record lock is poisoned")
+                .head(id.as_str())?;
+            let Some(note) = note else {
+                continue;
+            };
+            let seals: Vec<Seal> = note
+                .seals
+                .iter()
+                .map(|seal| Seal {
+                    tokens: seal.tokens,
+                    prompt: seal.prompt,
+                })
+                .collect();
+            let head = seals
+                .last()
+                .is_some_and(|head| head.tokens == note.tokens && head.prompt.is_some());
+            if !head || note.tokens > limit {
+                return Ok(None);
+            }
+            let Some(recipes) = seal_recipes(root, tokens, media, &seals)? else {
+                return Ok(None);
+            };
+            if recipes.last() != Some(&note.recipe) {
+                tracing::debug!(
+                    "the decoded head of the context record {id} is a miss: this rendering does not start with its \
+                     tokens"
+                );
+                return Ok(None);
+            }
+            return Ok(Some(seals.into_iter().zip(recipes).collect()));
+        }
+        Ok(None)
     }
 
     /// The held snapshots where a job may start, other than the plain boundaries of its plan (spec 11.3c).
@@ -847,7 +933,7 @@ impl Service {
         context: &Context,
         tokens: &[u32],
         plan: &Rendering,
-    ) -> Result<(Vec<Cut>, Option<build::Extension>), ServiceError> {
+    ) -> Result<Starts, ServiceError> {
         let open = context.open().is_some();
         let limit = if open { tokens.len().saturating_sub(1) } else { plan.end };
         // The message of a seal that is not a boundary: the message of the next boundary, or the open message.
@@ -963,8 +1049,67 @@ impl Service {
             }
             cuts.push((cut.boundary, recipes));
         }
+        // The decoded head of a record of this context (spec 6.14). The index of `chains_from` does not find it:
+        // its recipe is not the recipe of a range.
+        let mut decoded = BTreeMap::new();
+        if let Some(seals) = self.noted_head(root, context, tokens, &plan.media, limit)? {
+            let (head, _) = *seals.last().expect("a noted head has its own seal");
+            let mut chain: Vec<BoundaryRecipe> = Vec::with_capacity(seals.len());
+            for (seal, recipe) in &seals {
+                let boundary = plan
+                    .boundaries
+                    .iter()
+                    .find(|boundary| boundary.tokens == seal.tokens)
+                    .copied()
+                    .unwrap_or(Boundary {
+                        message: message_at(seal.tokens),
+                        tokens: seal.tokens,
+                    });
+                chain.push(BoundaryRecipe {
+                    boundary,
+                    recipe: *recipe,
+                });
+                if let Some(prompt) = seal.prompt {
+                    decoded.insert(*recipe, prompt);
+                }
+            }
+            if head.tokens > plan.end {
+                // The head of a cut reply, inside the open text. The longest held seal wins in the job.
+                let longer = extension
+                    .as_ref()
+                    .and_then(|extension| extension.seals.last())
+                    .is_some_and(|seal| seal.boundary.tokens > head.tokens);
+                if !longer {
+                    let (inside, after): (Vec<BoundaryRecipe>, Vec<BoundaryRecipe>) =
+                        chain.iter().partition(|seal| seal.boundary.tokens <= plan.end);
+                    extension = Some(build::Extension {
+                        tokens: tokens[plan.end..head.tokens].to_vec(),
+                        chain: inside,
+                        seals: after,
+                    });
+                }
+            } else {
+                // Each boundary after the head chains from the head, as a new span (spec 6.14).
+                let cut = chain.last().expect("a noted head has its own seal").boundary;
+                let (mut previous, mut at) = (chain[chain.len() - 1].recipe, cut.tokens);
+                for boundary in plan.boundaries.iter().filter(|boundary| boundary.tokens > head.tokens) {
+                    let recipe = range_recipe(&previous, tokens, &plan.media, at, boundary.tokens)?;
+                    chain.push(BoundaryRecipe {
+                        boundary: *boundary,
+                        recipe,
+                    });
+                    (previous, at) = (recipe, boundary.tokens);
+                }
+                // The decoded head goes before a cut of the index at the same position.
+                cuts.insert(0, (cut, chain));
+            }
+        }
         cuts.sort_by_key(|(cut, _)| std::cmp::Reverse(cut.tokens));
-        Ok((cuts, extension))
+        Ok(Starts {
+            cuts,
+            extension,
+            decoded,
+        })
     }
 
     /// Wait for each boundary of `recipes` that a job in flight will hold, and claim those that the store does not
@@ -1384,13 +1529,22 @@ impl Service {
     /// The hold keeps the lock of the pin book until its drops end. Thus a `PUT` of pins never pins a record between
     /// the read of the pins and the drops.
     pub fn hold_record(&self, context: &Context) -> Result<ContextId, ServiceError> {
+        self.hold_record_with_head(context, None)
+    }
+
+    /// Hold the record of a context, as [`Service::hold_record`] does, and keep the note of its decoded head when
+    /// there is one (spec 6.17). The hold and the note are under one lock, so no other hold drops the record between
+    /// them.
+    fn hold_record_with_head(&self, context: &Context, note: Option<HeadNote>) -> Result<ContextId, ServiceError> {
         let now = self.now();
         let book = self.pins.lock().expect("the pin book lock is poisoned");
         let pinned = book.records(now);
-        self.records
-            .lock()
-            .expect("the record lock is poisoned")
-            .hold(context, &pinned)
+        let mut records = self.records.lock().expect("the record lock is poisoned");
+        let id = records.hold(context, &pinned)?;
+        if let Some(note) = note {
+            records.note_head(id.as_str(), &note)?;
+        }
+        Ok(id)
     }
 
     /// The context of a held record. An id that the server does not hold is `not_found`.
@@ -1426,7 +1580,18 @@ impl Service {
     /// Hold the record of a generation's context with its reply after it, and name it in `done.context` (gogi "The
     /// reply in a record").
     pub fn name_reply(&self, context: &Context, done: &mut GenerationDone) -> Result<(), ServiceError> {
-        done.context = Some(self.hold_record(&gogi_proto::with_reply(context, done))?);
+        self.name_reply_with_head(context, done, None)
+    }
+
+    /// Name the reply, as [`Service::name_reply`] does, and keep the note of the decoded head of the reply with its
+    /// record (spec 6.14, "The record names the head").
+    pub(crate) fn name_reply_with_head(
+        &self,
+        context: &Context,
+        done: &mut GenerationDone,
+        note: Option<HeadNote>,
+    ) -> Result<(), ServiceError> {
+        done.context = Some(self.hold_record_with_head(&gogi_proto::with_reply(context, done), note)?);
         Ok(())
     }
 

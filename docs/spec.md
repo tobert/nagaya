@@ -1142,6 +1142,7 @@ The tag numbers are in this table. Decided 2026-10-20 (reading).
 | 7 | the boundary position |
 | 8 | "not sealed", with no bytes: only on an interval copy (6.13). It follows tag 5, which holds the sealed recipe at the same position |
 | 9 | a media part (11.11): its media type, its content id and its count of positions. Proposed, 2026-11-06 |
+| 10 | "decoded", with no bytes: only on a decoded head (6.14). It follows tags 5, 6 and 7. Tag 5 holds the recipe of the prompt as the rule fed it. Tag 6 holds the tokens after the prompt. Proposed, 2026-11-11 |
 
 **The park recipe.** The park knows the bytes of a state in a slot. It does not know the inputs that made the state.
 Thus the park recipe names the bytes. 10.3 gives the one exception. The park recipe is a root recipe with four items:
@@ -1519,22 +1520,56 @@ The goal is that the nagaya does not run again what it has run (milestone 32). T
   as its `parent` or sends the context whole.
 - **The bits differ a little.** A request that starts from a decoded head gives other bits than the same context
   built from its text. The rule made the rows of that build. Both are valid readings of the context. The
-  same request from the same head gives the same bits. The card gate of milestone 32 measures the difference of the
-  logits, and that number goes here.
+  same request from the same head gives the same bits. The card gate of milestone 32 measures the difference, and
+  that number goes here. The council gives no logits, so the gate measures the next-token log probabilities.
 - **No head when the tokens differ.** The family can render the reply with other tokens than the model sampled. For
   example, the reply parser of LFM3 removes white space at the ends of the content. Then the context has no decoded
   head, and the next build feeds the reply by the rule, as before.
 - **No head from a draft.** A reply whose rows came from a pass with drafts has no decoded head, because those rows
-  depend on the drafts.
+  depend on the drafts. The drafts are not built (below), so this rule has no code yet.
 - **The closing tokens.** The template ends the reply with tokens that the model did not sample, such as a newline
   after the end token. The job feeds them after the reply, at most 8 tokens (11.3c), and then it holds the head.
+- **The items of the recipe.** The recipe has the items of tags 5, 6, 7 and 10 (6.2). Tag 5 is the recipe that the
+  prompt has as a span that the rule fed from the last seal, with its media parts. No seal is at the end of the
+  prompt. Tag 6 holds the sampled tokens and the closing tokens. Tag 7 is the position of the head.
+- **One token in each pass.** Each token of tag 6 had a pass of one token alone. The job feeds the last sampled
+  token and the closing tokens in that way too, as decode quanta with no logit row.
+- **No head from a shared pass.** A reply holds no decoded head when one of its decode rows shared a pass with a
+  row of another job. A reply of an ensemble (`docs/lab.md`) holds none. Reason: with a feed rule, the bits can
+  depend on the token count of the pass (engine-abi D11). The ABI has no declaration that they do not. Thus the
+  rule of 5.7 stays whole: no joined segment writes a row that the store keeps.
+- **LFM3 can do more later.** The bits of LFM3 do not depend on the other segments of a pass (engine-abi "Batched
+  passes"). A later declaration in the ABI can let it keep the head of a shared pass.
+- **The span after the head.** A decoded head is a seal, as a boundary is. A build that starts from it feeds the
+  rest by the rule, as a new span from the head. Each later boundary chains from the recipe of the head. The
+  response counts the tokens of the head in `usage.kept`.
+- **The search.** A build reads the record of the prefix that ends at each `assistant` message, from the last one
+  down. It reads at most 4 records. It reads the record id of that prefix with `snap: true` on its last message, as
+  gogi's `with_reply` writes it. The search stops at the first record that has a head note (6.17).
+- **The check of a note.** The build computes the recipe of the note again from its own rendering. A recipe that
+  differs is a miss, and so is a head that the store does not hold. After a miss, the build does what it does with
+  no decoded head. A read, a decision and a speech job make the same search, because each starts with a build.
+- **A cut reply.** A reply that ends with `max_tokens` holds a decoded head at the seam of its open rendering
+  (11.3c). The record of the context with the open reply names it, and a continuation of that context starts from
+  it. A cut reply that the client sends back closed has another record, so its build finds no note. It feeds the
+  reply by the rule. Thus the rule "in any form" of 11.3c holds only for an engine with no feed rule.
+- **A dry run.** A dry run names a head that the store does not hold by the recipe of the rule (11.3c). It does so
+  also when a build would start from a decoded head.
+- **No head after latent steps.** A latent row is not a token (`docs/lab.md`, "No head").
 
-The code keeps the rule of 2026-10-21 until milestone 32 step 4. `keeps_head` in `council/generations.rs` is false
-for an engine with a feed rule, and `crates/nagaya/tests/council_feed.rs` checks a null head.
+The code has these rules since milestone 32 step 4:
+
+- `GenerateThen::decoded_head` in `council/generations.rs` holds the head, and it writes the head note.
+- `Service::noted_head` in `council/mod.rs` makes the search. `council/records.rs` keeps the notes.
+- `JobBody::shared_pass` in `jobs.rs` tells a job that its decode row shared a pass.
+- `crates/nagaya/tests/council_feed.rs` has the tests, with the fake engine that has a feed rule.
+- `crates/nagaya/tests/http_conformance_feed.rs` runs gogi's suite on that engine, with its head checks.
+- `crates/nagaya/tests/xe_lfm3_head.rs` is the card gate of LFM3. It has not run yet.
 
 **The job path.** The council jobs take passes of `block` for an engine with a feed rule (`council/mod.rs`, the
-`chunk` of a build). A build starts each span at a held boundary or at 0, and a generation holds no head. Thus no job
-continues a span today, and rule 7 has no code yet. The tests are in `crates/nagaya/tests/council_feed.rs`.
+`chunk` of a build). A build starts each span at a held boundary, at a decoded head or at 0. A decoded head is a seal.
+Thus no job continues a span today, and rule 7 has no code yet. The tests are in
+`crates/nagaya/tests/council_feed.rs`.
 
 **Proposed** (claude-opus-5-5, 2026-10-21), and Decided 2026-10-28 (Amy, by interview): drafts are a setting of the
 served model, not a bit setting of the engine. The nagaya's generation job makes the prompt-lookup drafts, as mkviolet
@@ -1716,6 +1751,18 @@ one that keeps the contract. Each follows a rule that specs or pins have now. Am
   The context id of the file's text must be its name. A file that fails is removed, the log has a warning, and the
   read is a miss. Reason: gogi lets a server drop a record at any time. A change of gogi's record text makes each
   old file such a file, and a miss costs the client one whole context.
+- **The head note.** **Proposed** by Claude Fable 5.2, 2026-11-11, for milestone 32 step 4. The record of a reply
+  can have a head note: the file `context-heads/<context id>.json` in the store directory. The note holds the
+  recipe of the decoded head (6.14), its token count, and each seal of its state in order. A seal is a token count.
+  The seal of a decoded head also has the token count of its prompt. Reason: the build computes the recipe again
+  from these counts and its own tokens, so it trusts no token of the note.
+  - The note lives with its record. A drop of the record removes the note. At start, the book removes each note
+    that has no record. A file whose name is not `<context id>.json` stops the start.
+  - A note goes to a temporary file, then `fsync`, then a rename, as a record does. Thus a note stays through a
+    restart. The store decides if the head stays (6.9, 10.2).
+  - A note that is not valid text is removed, the log has a warning, and the read is a miss.
+  - A note is not an entry, and it keeps no entry in the store. A note whose head the store does not hold is a miss.
+  - The read of a note does not name its record.
 - **Pins.** The pin book keeps the record ids of each owner beside its snapshots (6.10), in `pins.json`. A pin keeps
   the records that the book held at the `PUT`. A `PUT` with held records and no held snapshot keeps its owner. The
   records of an owner end with its pins. At start, the pin book forgets each record whose file is gone.
@@ -3128,7 +3175,8 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
   - The slot holds a prefix of that rendering, at most 8 tokens short.
 
   Then the job feeds the rest and puts the snapshot. The head of a reply that ends with `max_tokens` is the seam
-  of its open rendering (see continuations below).
+  of its open rendering (see continuations below). On an engine with a feed rule, the head is a decoded head, and
+  6.14 has its rules.
 - A build can start at a cut. A cut is a held snapshot that is not at a boundary of the context. Examples are the end
   of a message that the client did not mark, and the head of a cut reply. The build starts at a cut when the store holds
   no higher boundary. An earlier context made that snapshot at a seal of its own. Reason: gogi's build starts from

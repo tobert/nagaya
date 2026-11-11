@@ -36,7 +36,7 @@ pub struct FeedFactory {
     pub stages: usize,
     /// The devices that each `open` got, in order.
     pub opened_on: Arc<Mutex<Vec<Vec<GroupDevice>>>>,
-    /// The time that each stage quantum takes, in milliseconds.
+    /// The time that each stage quantum takes, in milliseconds. A whole pass of the fake of one stage takes it too.
     pub delay_ms: Arc<AtomicU64>,
     /// The stage, the start and the end of each stage quantum.
     pub log: StageLog,
@@ -109,6 +109,7 @@ impl Engine for Traced {
 
     fn pass(&mut self, segments: &[nagaya_abi::Segment], taps: &[nagaya_abi::Tap]) -> Result<PassOut, PassError> {
         self.sizes.lock().unwrap().push(segments.len());
+        std::thread::sleep(Duration::from_millis(self.delay_ms.load(Ordering::SeqCst)));
         self.inner.pass(segments, taps)
     }
 
@@ -328,6 +329,11 @@ impl FeedFixture {
         Self::with(FeedFactory::new(stages), Duration::from_secs(10))
     }
 
+    /// A fixture of one stage whose service has this family, not the toy family.
+    pub fn with_family(family: Arc<dyn Family>) -> Self {
+        Self::build(FeedFactory::new(1), Duration::from_secs(10), None, None, family)
+    }
+
     /// A fixture with this factory and this watchdog timeout.
     pub fn with(factory: FeedFactory, timeout: Duration) -> Self {
         Self::with_sets(factory, timeout, None)
@@ -335,12 +341,12 @@ impl FeedFixture {
 
     /// A fixture with this factory, this watchdog timeout and these CPU sets.
     pub fn with_sets(factory: FeedFactory, timeout: Duration, sets: Option<nagaya::cpu_sets::CpuSets>) -> Self {
-        Self::build(factory, timeout, sets, None)
+        Self::build(factory, timeout, sets, None, Arc::new(ToyFamily::new()))
     }
 
     /// A fixture with this factory, this watchdog timeout and this machine tree.
     pub fn with_machine(factory: FeedFactory, timeout: Duration, machine: nagaya::evidence::Machine) -> Self {
-        Self::build(factory, timeout, None, Some(machine))
+        Self::build(factory, timeout, None, Some(machine), Arc::new(ToyFamily::new()))
     }
 
     fn build(
@@ -348,6 +354,7 @@ impl FeedFixture {
         timeout: Duration,
         sets: Option<nagaya::cpu_sets::CpuSets>,
         machine: Option<nagaya::evidence::Machine>,
+        family: Arc<dyn Family>,
     ) -> Self {
         abort_on_a_panic_with_no_plan();
         let stages = factory.stages;
@@ -376,7 +383,7 @@ impl FeedFixture {
         let read: Clock = Arc::new(move || clock.fetch_add(60_000, Ordering::SeqCst));
         let service = Service::attach_with_clock(
             process.ports(),
-            Arc::new(ToyFamily::new()),
+            family,
             directory.path(),
             ServiceConfig::new("toy", ENGINE),
             read,
