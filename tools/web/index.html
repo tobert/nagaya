@@ -277,6 +277,13 @@
         Toward less the mean of Away (spec 11.12). For refusals, Toward holds requests that the model refuses,
         and Away holds requests that it answers. Then ablate the vector. A file loads into its box, and the page
         shows only the count of its lines.</p>
+      <p>A box also takes a dataset file: Parquet, JSON Lines, JSON, CSV or TSV. JSON is an array of objects or of
+        strings, or an object with one array. The first row of a CSV or TSV file is its header. Then choose the
+        column, the count of rows, and the first rows or random rows of a seed. The count starts at the limit of
+        the model. A row with no text in the column is skipped. A prompt with a newline shows as one line with ↵,
+        and the request holds it whole. After an edit of the box, each line is one prompt again.</p>
+      <p>The Parquet reader, hyparquet, loads from cdn.jsdelivr.net at the first Parquet file. It reads Snappy and
+        no compression, as most files of Hugging Face have. It does not read ZSTD, GZip, Brotli or LZ4.</p>
       <p>Temperature 0 is greedy, so the two replies differ only by the vector. add and ablate at strength 0
         give the plain reply; clamp at 0 removes the concept.</p>
     </div></details>
@@ -287,10 +294,24 @@
       <div class="model"><select id="cv-model"></select><span id="cv-model-state" class="note"></span></div>
       <label>Toward <span class="tip" tabindex="0" title="one prompt on each line: what the vector adds">ⓘ</span></label>
       <textarea id="cv-toward" rows="6"></textarea>
-      <input id="cv-toward-file" type="file" accept=".txt,text/plain" title="load the prompts from a text file">
+      <input id="cv-toward-file" type="file" accept=".txt,.parquet,.jsonl,.ndjson,.json,.csv,.tsv,text/plain"
+             title="load the prompts from a text file, or from a dataset file: Parquet, JSON Lines, JSON, CSV or TSV">
+      <div id="cv-toward-pick" class="fields" hidden>
+        <select id="cv-toward-column" title="the column that holds the prompts"></select>
+        <input id="cv-toward-count" type="number" min="1" placeholder="all" title="how many rows; empty takes each row with text">
+        <select id="cv-toward-order" title="the first rows, or random rows of the seed"><option>first</option><option>random</option></select>
+        <input id="cv-toward-seed" type="number" min="0" value="0" title="the seed of random: the same seed chooses the same rows">
+      </div>
       <label>Away <span class="tip" tabindex="0" title="one prompt on each line: what the vector takes away">ⓘ</span></label>
       <textarea id="cv-away" rows="6"></textarea>
-      <input id="cv-away-file" type="file" accept=".txt,text/plain" title="load the prompts from a text file">
+      <input id="cv-away-file" type="file" accept=".txt,.parquet,.jsonl,.ndjson,.json,.csv,.tsv,text/plain"
+             title="load the prompts from a text file, or from a dataset file: Parquet, JSON Lines, JSON, CSV or TSV">
+      <div id="cv-away-pick" class="fields" hidden>
+        <select id="cv-away-column" title="the column that holds the prompts"></select>
+        <input id="cv-away-count" type="number" min="1" placeholder="all" title="how many rows; empty takes each row with text">
+        <select id="cv-away-order" title="the first rows, or random rows of the seed"><option>first</option><option>random</option></select>
+        <input id="cv-away-seed" type="number" min="0" value="0" title="the seed of random: the same seed chooses the same rows">
+      </div>
       <label>Name</label>
       <input id="cv-name" placeholder="a name for the vector">
       <div class="actions"><button class="go" id="cv-make">Make vector</button><span id="cv-status" class="note"></span></div>

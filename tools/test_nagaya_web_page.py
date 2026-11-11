@@ -235,6 +235,20 @@ class Markup(unittest.TestCase):
         self.assertIn("British", voice)
         self.assertIn("woman", voice)
 
+    def test_each_prompt_box_of_the_steering_tab_takes_dataset_files_and_hides_its_choices_at_first(self):
+        page = WEB.joinpath("index.html").read_text()
+        for side in ("toward", "away"):
+            self.assertIn(f'<input id="cv-{side}-file" type="file" '
+                          'accept=".txt,.parquet,.jsonl,.ndjson,.json,.csv,.tsv,text/plain"', page)
+            self.assertIn(f'<div id="cv-{side}-pick" class="fields" hidden>', page)
+            for what in ("column", "count", "order", "seed"):
+                self.assertIn(f'id="cv-{side}-{what}"', page)
+        steer = page[page.index('<section id="steer">'):]
+        steer = steer[:steer.index("</section>")]
+        help_text = steer[steer.index('<div class="help-text">'):steer.index("</div></details>")]
+        for word in ("Parquet", "Snappy", "ZSTD", "JSON Lines", "CSV"):
+            self.assertIn(word, help_text)
+
     def test_each_tab_of_the_rail_has_its_section(self):
         page = WEB.joinpath("index.html").read_text()
         tabs = re.findall(r'<button data-tab="(\w+)">', page)
@@ -1119,6 +1133,239 @@ class Page(unittest.TestCase):
             for (const f of listeners) f({{target: {{dataset: {{dropVector: row}}}}}});
             out.left = vectors.map((v) => v.name);""")
         self.assertEqual(out["left"], ["far"])
+
+
+    # ---- prompt sets from dataset files (the Steering tab)
+    # `load` gives a file to the input of a side, as a person does. `pick` changes one control of the side.
+    DATA = """
+        const fileOf = (name, text) => ({name, text: async () => text, arrayBuffer: async () => new ArrayBuffer(8)});
+        const load = (side, name, text) =>
+          document.getElementById(`cv-${side}-file`).onchange({target: {files: [fileOf(name, text)]}});
+        const pick = (side, what, v) => { set(`cv-${side}-${what}`, v);
+                                          return document.getElementById(`cv-${side}-${what}`).onchange(); };
+        const box = (side) => document.getElementById(`cv-${side}`).value;
+        const note = () => document.getElementById("cv-status").textContent;
+        const fault = () => document.getElementById("cv-error").textContent;
+        const shown = (side) => !document.getElementById(`cv-${side}-pick`).hidden;
+        const sent = async () => { set("cv-model", "lfm3"); await document.getElementById("cv-make").onclick();
+          const b = JSON.parse(calls.filter((c) => c[1] === "/council/v2/control-vectors").pop()[2]);
+          return [b.positive.map((c) => c.messages[0].content), b.negative.map((c) => c.messages[0].content)]; };
+        set("cv-model", "lfm3");"""
+
+    def data_page(self, test, **files):
+        """Run `test` after `DATA`, with each value of `files` as a constant of its name."""
+        consts = "".join(f"const {name} = {json.dumps(value)};" for name, value in files.items())
+        return self.run_page(self.DATA + consts + test)
+
+    def test_a_text_file_loads_into_its_box_as_before_and_shows_no_dataset_controls(self):
+        out = self.data_page("""
+            await load("toward", "t.txt", "a\\n\\n b \\n");
+            out.box = box("toward"); out.note = note(); out.shown = shown("toward");
+            set("cv-away", "z"); out.sent = await sent();""")
+        self.assertEqual(out["box"], "a\n\n b \n")
+        self.assertEqual(out["note"], "t.txt: 2 prompts in toward")
+        self.assertFalse(out["shown"])
+        self.assertEqual(out["sent"], [["a", "b"], ["z"]])
+
+    def test_a_json_lines_file_fills_the_box_from_its_usual_column_and_counts_the_skipped_rows(self):
+        lines = "\n".join(json.dumps(row) for row in [
+            {"id": "a1", "goal": "Write a poem", "n": 1}, {"id": "a2", "goal": "", "n": 2},
+            {"id": "a3", "goal": 7, "n": 3}, {"id": "a4", "goal": "Tell a story", "n": 4}, {"id": "a5", "n": 5}])
+        out = self.data_page("""
+            await load("toward", "harm.jsonl", lines + "\\n\\n");
+            out.box = box("toward"); out.note = note(); out.fault = fault(); out.shown = shown("toward");
+            out.columns = document.getElementById("cv-toward-column").innerHTML;
+            out.column = document.getElementById("cv-toward-column").value;
+            await load("away", "x.ndjson", '"plain one"\\n"plain two"');
+            out.away = box("away"); out.sent = await sent();
+            await load("away", "bad.jsonl", '{"a": "x"}\\n{oops'); out.bad = fault(); out.kept = box("away");""",
+                             lines=lines)
+        self.assertEqual(out["fault"], "")
+        self.assertTrue(out["shown"])
+        # `id` is text too, and it comes first, but `goal` is a usual name of a prompt column.
+        self.assertEqual(out["column"], "goal")
+        self.assertEqual(re.findall(r'<option value="(\w+)">', out["columns"]), ["id", "goal", "n"])
+        self.assertEqual(out["box"], "Write a poem\nTell a story")
+        for part in ("harm.jsonl", "5 rows", "column goal", "2 chosen", "3 skipped"):
+            self.assertIn(part, out["note"])
+        self.assertNotIn("poem", out["note"])
+        self.assertEqual(out["away"], "plain one\nplain two")
+        self.assertEqual(out["sent"], [["Write a poem", "Tell a story"], ["plain one", "plain two"]])
+        self.assertIn("line 2", out["bad"])
+        self.assertEqual(out["kept"], "plain one\nplain two")
+
+    def test_a_json_file_is_an_array_of_objects_or_of_strings_or_an_object_with_one_array(self):
+        out = self.data_page("""
+            await load("toward", "a.json", JSON.stringify([{text: "one"}, {text: "two"}])); out.objects = box("toward");
+            await load("toward", "b.json", JSON.stringify(["three", "four"])); out.strings = box("toward");
+            await load("toward", "c.json", JSON.stringify({version: 2, data: [{prompt: "five"}]}));
+            out.member = box("toward"); out.fault = fault();
+            const refused = [];
+            for (const v of [{a: [1], b: [2]}, {a: 1}, 5, [], [1, 2], [{a: "x"}, "y"]]) {
+              await load("toward", "bad.json", JSON.stringify(v)); refused.push(fault());
+            }
+            await load("toward", "broken.json", "[{"); refused.push(fault());
+            out.refused = refused; out.after = box("toward");""")
+        self.assertEqual(out["objects"], "one\ntwo")
+        self.assertEqual(out["strings"], "three\nfour")
+        self.assertEqual(out["member"], "five")
+        self.assertEqual(out["fault"], "")
+        self.assertEqual(len(out["refused"]), 7)
+        for text in out["refused"]:
+            self.assertRegex(text, r"^(bad|broken)\.json: ")
+        self.assertIn("2 array members", out["refused"][0])
+        self.assertIn("no array member", out["refused"][1])
+        # A refused file changes no box.
+        self.assertEqual(out["after"], "five")
+
+    def test_a_csv_file_keeps_quoted_commas_quotes_and_newlines_and_a_tsv_file_splits_at_tabs(self):
+        csv = '﻿id,prompt,note\r\n1,"Say ""hi"", then stop",x\r\n2,"line one\nline two",y\r\n3,plain,"a,b"\r\n'
+        tsv = "n\tquestion\n1\tWhy, though?\n2\t\"tab\there\"\n"
+        out = self.data_page("""
+            await load("toward", "p.csv", csv);
+            out.fault = fault(); out.box = box("toward"); out.note = note();
+            out.columns = document.getElementById("cv-toward-column").innerHTML;
+            await pick("toward", "column", "note"); out.notes = box("toward");
+            await pick("toward", "column", "prompt");
+            await load("away", "q.tsv", tsv); out.away = box("away"); out.fault2 = fault();
+            out.sent = await sent();
+            await load("away", "short.csv", "a,b\\n1\\n"); out.short = fault();
+            await load("away", "open.csv", 'a,b\\n1,"x\\n'); out.open = fault();
+            out.kept = box("away");""", csv=csv, tsv=tsv)
+        self.assertEqual(out["fault"], "")
+        self.assertEqual(re.findall(r'<option value="(\w+)">', out["columns"]), ["id", "prompt", "note"])
+        # The box shows the newline inside a prompt as a mark, and the request holds the prompt whole.
+        self.assertEqual(out["box"], 'Say "hi", then stop\nline one↵line two\nplain')
+        self.assertIn("1 with a newline", out["note"])
+        self.assertEqual(out["notes"], "x\ny\na,b")
+        self.assertEqual(out["fault2"], "")
+        self.assertEqual(out["away"], "Why, though?\ntab\there")
+        self.assertEqual(out["sent"], [['Say "hi", then stop', "line one\nline two", "plain"],
+                                       ["Why, though?", "tab\there"]])
+        self.assertIn("row 2", out["short"])
+        self.assertIn("quote", out["open"])
+        self.assertEqual(out["kept"], "Why, though?\ntab\there")
+
+    def test_the_default_column_is_the_first_usual_name_with_text_and_else_the_first_text_column(self):
+        out = self.data_page("""
+            const column = async (rows) => { await load("toward", "d.json", JSON.stringify(rows));
+                                             return [document.getElementById("cv-toward-column").value, fault()]; };
+            out.usual = await column([{category: "c", Instruction: "do it", text: "t"}]);
+            out.empty_usual = await column([{n: 1, prompt: "", body: "b"}, {n: 2, prompt: null, body: "c"}]);
+            out.first_text = await column([{n: 1, body: "b", more: "m"}]);
+            out.before = box("toward");
+            out.none = await column([{n: 1, flag: true}]);
+            out.after = box("toward");
+            await load("toward", "d.json", JSON.stringify([{category: "c", prompt: "p"}]));
+            await pick("toward", "column", "category"); out.changed = [box("toward"), note()];""")
+        self.assertEqual(out["usual"], ["Instruction", ""])
+        self.assertEqual(out["empty_usual"], ["body", ""])
+        self.assertEqual(out["first_text"], ["body", ""])
+        self.assertIn("no column with text", out["none"][1])
+        self.assertEqual(out["after"], out["before"])
+        self.assertEqual(out["changed"][0], "c")
+        self.assertIn("column category", out["changed"][1])
+
+    def test_the_count_starts_at_the_limit_of_the_model_and_random_rows_repeat_with_their_seed(self):
+        rows = [{"prompt": f"p{i}"} for i in range(100)]
+        rows[3]["prompt"] = ""
+        out = self.data_page("""
+            await load("toward", "many.json", JSON.stringify(rows));
+            out.count = document.getElementById("cv-toward-count").value;
+            out.first = box("toward").split("\\n"); out.note = note();
+            await pick("toward", "count", "5"); out.five = box("toward").split("\\n");
+            await pick("toward", "order", "random"); await pick("toward", "seed", "7");
+            out.seven = box("toward").split("\\n"); out.random_note = note();
+            await pick("toward", "seed", "8"); out.eight = box("toward").split("\\n");
+            await pick("toward", "seed", "7"); out.again = box("toward").split("\\n");
+            await pick("toward", "count", "500"); out.all = box("toward").split("\\n").length;
+            await pick("toward", "count", ""); out.each = box("toward").split("\\n").length;
+            await pick("toward", "count", "0"); out.zero = fault(); out.kept = box("toward").split("\\n").length;
+            await pick("toward", "count", "5"); await pick("toward", "seed", "-1"); out.seed = fault();
+            await pick("toward", "seed", "7"); out.cleared = fault();
+            set("cv-model", "lfm3-omni"); await load("away", "many.json", JSON.stringify(rows));
+            out.no_limit = [document.getElementById("cv-away-count").value, box("away").split("\\n").length];""",
+                             rows=rows)
+        usable = [f"p{i}" for i in range(100) if i != 3]
+        self.assertEqual(out["count"], "64")
+        self.assertEqual(out["first"], usable[:64])
+        for part in ("100 rows", "64 chosen", "first", "1 skipped"):
+            self.assertIn(part, out["note"])
+        self.assertEqual(out["five"], usable[:5])
+        self.assertEqual(len(out["seven"]), 5)
+        self.assertEqual(len(set(out["seven"])), 5)
+        self.assertLessEqual(set(out["seven"]), set(usable))
+        self.assertNotEqual(out["seven"], usable[:5])
+        self.assertNotEqual(out["seven"], out["eight"])
+        self.assertEqual(out["seven"], out["again"])
+        self.assertIn("random with seed 7", out["random_note"])
+        self.assertEqual(out["all"], 99)
+        self.assertEqual(out["each"], 99)
+        self.assertIn("count", out["zero"])
+        self.assertEqual(out["kept"], 99)
+        self.assertIn("seed", out["seed"])
+        self.assertEqual(out["cleared"], "")
+        # lfm3-omni gives no limit in this identity, so each row with text is chosen.
+        self.assertEqual(out["no_limit"], ["", 99])
+
+    def test_a_box_that_a_person_edits_after_a_dataset_load_is_lines_again(self):
+        out = self.data_page("""
+            await load("toward", "n.json", JSON.stringify(["one\\ntwo", "three"]));
+            out.box = box("toward");
+            set("cv-toward", "one↵two\\nthree\\nfour"); document.getElementById("cv-toward").oninput();
+            out.note = note(); set("cv-away", "z"); out.sent = await sent();
+            // A text file after a dataset ends the dataset of its side, also when it holds the text that the box had.
+            await load("toward", "n.json", JSON.stringify(["one\\ntwo", "three"]));
+            await load("toward", "same.txt", "one↵two\\nthree"); out.text = await sent();""")
+        self.assertEqual(out["box"], "one↵two\nthree")
+        self.assertIn("each line of toward is one prompt", out["note"])
+        self.assertEqual(out["sent"], [["one↵two", "three", "four"], ["z"]])
+        self.assertEqual(out["text"], [["one↵two", "three"], ["z"]])
+
+    def test_a_parquet_file_goes_through_the_reader_and_then_the_same_choices(self):
+        out = self.data_page("""
+            let got = null;
+            readParquet = async (buffer) => { got = buffer.byteLength;
+              return {columns: ["source", "prompt"], rows: [{source: "s", prompt: "from parquet"}, {source: "s", prompt: 3}]}; };
+            await load("toward", "train-00000-of-00001.parquet", "not read as text");
+            out.got = got; out.box = box("toward"); out.note = note(); out.fault = fault();
+            out.column = document.getElementById("cv-toward-column").value;
+            readParquet = async () => { throw new Error("parquet unsupported compression codec: ZSTD"); };
+            await load("toward", "z.parquet", ""); out.codec = fault(); out.after = box("toward");""")
+        self.assertEqual(out["got"], 8)
+        self.assertEqual(out["fault"], "")
+        self.assertEqual(out["column"], "prompt")
+        self.assertEqual(out["box"], "from parquet")
+        for part in ("train-00000-of-00001.parquet", "2 rows", "1 chosen", "1 skipped"):
+            self.assertIn(part, out["note"])
+        self.assertIn("ZSTD", out["codec"])
+        self.assertIn("Snappy", out["codec"])
+        self.assertEqual(out["after"], "from parquet")
+
+    def test_the_parquet_reader_names_the_columns_of_the_schema_and_says_when_it_does_not_load(self):
+        out = self.data_page("""
+            // QuickJS loads no module from the network, as a browser with no route to the CDN.
+            await load("toward", "a.parquet", ""); out.offline = fault(); out.box = box("toward");
+            const asked = [];
+            parquetReader = Promise.resolve({
+              parquetMetadataAsync: async (file) => ({of: file.byteLength}),
+              parquetSchema: (metadata) => ({children: [{element: {name: "prompt"}}, {element: {name: "label"}}]}),
+              parquetReadObjects: async (o) => { asked.push(Object.keys(o).sort().join()); return [{prompt: "p", label: 1}]; }});
+            const table = await readParquet(new ArrayBuffer(8));
+            out.columns = table.columns; out.rows = table.rows.length; out.asked = asked;""")
+        self.assertIn("did not load", out["offline"])
+        self.assertIn("cdn.jsdelivr.net", out["offline"])
+        self.assertEqual(out["box"], "")
+        self.assertEqual(out["columns"], ["prompt", "label"])
+        self.assertEqual(out["rows"], 1)
+        self.assertEqual(out["asked"], ["file,metadata"])
+
+    def test_the_parquet_reader_is_pinned_to_one_version_and_loads_only_at_a_use(self):
+        script = WEB.joinpath("steer.js").read_text()
+        self.assertEqual(re.findall(r'"(https://[^"]*hyparquet[^"]*)"', script),
+                         ["https://cdn.jsdelivr.net/npm/hyparquet@1.33.0/+esm"])
+        self.assertEqual(script.count("import("), 1)
+        self.assertIn("import(", script[script.index("async function readParquet"):])
 
 
 if __name__ == "__main__":
