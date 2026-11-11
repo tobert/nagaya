@@ -492,6 +492,27 @@ Do the steps in this order. Each step ends with the checks green.
 
 Each stop and start of `nagaya.service` goes into `signoff.md`.
 
+Steps 1 to 7 are done on b70host on 2026-11-11, and `nagaya.service` runs the build of `9d71d2c`. The merges are
+`1941df0` (records), `a11ccae` (a shared prefix), `831c362` and `72db614` (several replies), and `9d71d2c` (the
+decoded head). Live on `lfm3`:
+
+- A second chat turn by `parent` sent 221 bytes. With the decoded head, a turn after a reply of 142 tokens fed 13
+  of its 175 prompt tokens.
+- 8 generations at once with a new head of 217 tokens fed 343 tokens, where they fed 1,736 before.
+- `forks: 8` gave 8 replies in 1.25 s. A swarm round makes 3 requests, where it made 13.
+- The card gate `xe_lfm3_head` compares a turn from a decoded head with a build of the text. The next-token log
+  probabilities differ by 7.2e-6 at most.
+
+Open:
+
+- Step 8 on gfx1151host. Amy does it (2026-11-11: "I'll take care of gfx1151host later"). Until then, a pin with `contexts` is
+  a 400 from gfx1151host, and the gogi suite fails one check here. Clippy with `hip` did not run on this code.
+- A reply whose decode row shared a pass holds no head, so forks and chats that decode at once get a null head.
+- A reply that `max_tokens` cut, and that the next turn closes, has no head for that turn.
+- A build that marks an earlier message of a held context can be a 500 (`Service::starts`). It is older than this
+  milestone.
+- No kaibo review round ran on this milestone.
+
 ### Milestone 33: swarms and the stream of thought
 
 Amy chose this list and its order on 2026-11-11: "I like yours let's go with it." Milestone 32 gave the nagaya

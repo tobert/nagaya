@@ -1520,8 +1520,9 @@ The goal is that the nagaya does not run again what it has run (milestone 32). T
   as its `parent` or sends the context whole.
 - **The bits differ a little.** A request that starts from a decoded head gives other bits than the same context
   built from its text. The rule made the rows of that build. Both are valid readings of the context. The
-  same request from the same head gives the same bits. The card gate of milestone 32 measures the difference, and
-  that number goes here. The council gives no logits, so the gate measures the next-token log probabilities.
+  same request from the same head gives the same bits. The council gives no logits, so the card gate `xe_lfm3_head`
+  measures the next-token log probabilities. On 2026-11-11 on `lfm3`, they differed by 7.2e-6 at most, over the 68
+  tokens that both reads list.
 - **No head when the tokens differ.** The family can render the reply with other tokens than the model sampled. For
   example, the reply parser of LFM3 removes white space at the ends of the content. Then the context has no decoded
   head, and the next build feeds the reply by the rule, as before.
