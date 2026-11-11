@@ -1363,9 +1363,13 @@ impl Service {
 
     /// Hold the record of a context, and give its id (gogi "Context records", spec 6.17). Past the limit, the
     /// records that no live pin keeps go, the least recently named first.
+    ///
+    /// The hold keeps the lock of the pin book until its drops end. Thus a `PUT` of pins never pins a record between
+    /// the read of the pins and the drops.
     pub fn hold_record(&self, context: &Context) -> Result<ContextId, ServiceError> {
         let now = self.now();
-        let pinned = self.pins.lock().expect("the pin book lock is poisoned").records(now);
+        let book = self.pins.lock().expect("the pin book lock is poisoned");
+        let pinned = book.records(now);
         self.records
             .lock()
             .expect("the record lock is poisoned")
