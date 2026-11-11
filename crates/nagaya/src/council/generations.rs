@@ -583,6 +583,7 @@ fn reply_done(parsed: &ParsedReply, ids: &[String]) -> GenerationDone {
         finish: Finish::EndTurn,
         usage: Usage::default(),
         head: None,
+        context: None,
         snapshots: Vec::new(),
         stats: None,
         decisions: Vec::new(),
@@ -695,9 +696,13 @@ impl Service {
         tracing: Option<Tracing>,
     ) -> Result<(GenerationDone, Option<Trace>), ServiceError> {
         let Prepared { then, parts, facts } = self.prepare(request, events, tracing, None)?;
+        // The checks passed, so the record of the context is held, also when the job fails (spec 11.13).
+        self.hold_record(&request.context)?;
         let schedule = Schedule::of(request.class, request.priority);
         let finished = self.run_context(|tx| parts.body(then, tx), schedule, None)?;
-        Ok(self.answer(finished, &facts))
+        let (mut done, trace) = self.answer(finished, &facts);
+        self.name_reply(&request.context, &mut done)?;
+        Ok((done, trace))
     }
 
     /// Check the latent steps of a request against the model (docs/lab.md, "Latent steps in a request"). A model with
@@ -927,6 +932,7 @@ impl Service {
                 media: read,
             },
             head,
+            context: None,
             snapshots,
             stats: Some(ReplyStats {
                 reasoning: reply.reasoning_stats,

@@ -3,6 +3,8 @@
 //! The fake's previews hold the step and the image index in each byte. Its images hold the low byte of their seed, so
 //! a test sees which seed made which image.
 
+mod council_support;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -332,6 +334,23 @@ impl Fixture {
             Council::new(Vec::new(), None)
                 .unwrap()
                 .with_images(vec![service])
+                .with_objects(objects),
+        )
+    }
+
+    /// A council as [`Fixture::council`] makes, with the toy text model of `home` too. The text model is the home,
+    /// which holds the context records of the server (spec 6.17).
+    fn council_with_home(&self, home: &council_support::Fixture) -> Arc<Council> {
+        let objects = ObjectStore::open(&self.directory.path().join("objects"), 1 << 26).unwrap();
+        let served = nagaya::http::Served {
+            service: home.attach_again(),
+            aliases: Vec::new(),
+            device: None,
+        };
+        Arc::new(
+            Council::new(vec![served], None)
+                .unwrap()
+                .with_images(vec![self.service()])
                 .with_objects(objects),
         )
     }
@@ -864,6 +883,88 @@ fn checked_steps(events: &[(String, Value)], previews: bool) {
         .map(|(name, data)| StreamEvent::parse(name, &data.to_string()).unwrap().unwrap())
         .collect();
     check_steps(&decoded, previews).unwrap();
+}
+
+/// Check the records of a generation with an output (gogi "The reply in a record", spec 11.13). `done.context` names
+/// the record of the request's context with the reply after it: an assistant message with a mark, whose content
+/// ends with one object part for each output. The record of the request's context is held too.
+fn assert_reply_record(council: &Arc<Council>, context: &Value, done: &Value) {
+    let read = |id: &str| {
+        let (status, _, _, bytes) = send(council, "GET", &format!("/council/v2/contexts/{id}"), None);
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&bytes));
+        json(&bytes)
+    };
+    let asked: gogi_proto::Context = serde_json::from_value(context.clone()).unwrap();
+    let asked_id = gogi_proto::context_id(&asked).to_string();
+    let reply: gogi_proto::generation::GenerationDone = serde_json::from_value(done.clone()).unwrap();
+    let with_reply = gogi_proto::with_reply(&asked, &reply);
+    assert_eq!(
+        done["context"],
+        json!(gogi_proto::context_id(&with_reply).as_str()),
+        "{done}"
+    );
+    assert_eq!(read(&asked_id)["context"], *context);
+    let record = read(done["context"].as_str().unwrap());
+    let messages = record["context"]["messages"].as_array().unwrap();
+    let last = messages.last().unwrap();
+    assert_eq!(messages.len(), asked.messages.len() + 1, "{record}");
+    assert_eq!(
+        (&last["role"], &last["snap"]),
+        (&json!("assistant"), &json!(true)),
+        "{last}"
+    );
+    let outputs = done["outputs"].as_array().unwrap();
+    assert!(!outputs.is_empty(), "{done}");
+    let parts: Vec<Value> = outputs
+        .iter()
+        .map(|output| json!({"type": "object", "id": output["id"], "mime": output["mime"]}))
+        .collect();
+    assert_eq!(last["content"], json!(parts), "one object part for each output: {last}");
+}
+
+/// A generation of the image model names the record of its context with its reply, with and without a stream. The
+/// reply has one object part for each image.
+///
+/// Falsified by a route that makes the images with no records: `done` has no `context`.
+#[test]
+fn an_image_generation_names_the_record_with_one_part_for_each_image() {
+    for stream in [false, true] {
+        let fixture = Fixture::new();
+        let home = council_support::Fixture::new();
+        let council = fixture.council_with_home(&home);
+        let mut body = request("a red fox", json!({"count": 2, "steps": 2}), json!({"seed": 5}));
+        let done = if stream {
+            body["stream"] = json!(true);
+            let (status, _, _, bytes) = send(&council, "POST", "/council/v2/generations", Some(body.clone()));
+            assert_eq!(status, StatusCode::OK);
+            let (name, done) = events(&bytes).pop().unwrap();
+            assert_eq!(name, "done");
+            done
+        } else {
+            let (status, done) = generate(&council, body.clone());
+            assert_eq!(status, StatusCode::OK, "{done}");
+            done
+        };
+        assert_eq!(done["outputs"].as_array().unwrap().len(), 2, "{done}");
+        assert_reply_record(&council, &body["context"], &done);
+        // A request that names the record of the first prompt as its parent is the same context.
+        let asked: gogi_proto::Context = serde_json::from_value(body["context"].clone()).unwrap();
+        let mut by_parent = request("", json!({"count": 2, "steps": 2}), json!({"seed": 5}));
+        by_parent["context"] = json!({"parent": gogi_proto::context_id(&asked).as_str()});
+        let (status, again) = generate(&council, by_parent);
+        assert_eq!(status, StatusCode::OK, "{again}");
+        assert_eq!(again["context"], done["context"], "the same context, seed and images");
+    }
+}
+
+/// A node with no text model has no home, so its image generation names no record (spec 6.17).
+#[test]
+fn an_image_generation_on_a_node_with_no_home_names_no_record() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let (status, done) = generate(&council, request("a red fox", json!({"steps": 2}), json!({"seed": 5})));
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert!(done.get("context").is_none(), "{done}");
 }
 
 #[test]

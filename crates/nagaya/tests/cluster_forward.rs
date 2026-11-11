@@ -73,6 +73,62 @@ fn a_job_route_for_a_peer_model_sends_the_request_as_it_came_and_gives_the_answe
     assert_eq!(seen.headers["nagaya-request-id"], reply.headers["request-id"]);
 }
 
+/// A context that names a `parent` forwards as it came (spec 11.1a, "Context records in the cluster"). The
+/// coordinator holds the record, and it still does not make the context whole: the target reads its own records.
+///
+/// Falsified by a forward layer that makes the body whole before the forward: the peer sees the whole context.
+#[test]
+fn a_parent_forwards_as_it_came_also_when_the_coordinator_holds_its_record() {
+    let fixture = Fixture::new();
+    let (council, cluster) = council(&fixture);
+    let stub = Stub::start(Answer::Whole(
+        200,
+        "application/json",
+        "{\"from\": \"the peer\"}".to_owned(),
+    ));
+    set_peers(
+        &council,
+        &cluster,
+        vec![peer_node(
+            PEER,
+            PEER_ID,
+            stub.http,
+            "ready",
+            &[entry_like_local(&council, "toy-b")],
+        )],
+    );
+    // A build of the local model holds the record here, and the local model reads it as a parent.
+    let whole = json!({"model": "toy", "context": {"thinking": true, "messages": [{"role": "user", "content": "hi"}]}});
+    let built = send(&council, "POST", "/council/v2/contexts", &whole.to_string(), &[]);
+    assert_eq!(built.status, 200);
+    let parent = built.json()["context"].as_str().unwrap().to_owned();
+    let local = json!({"model": "toy", "context": {"parent": parent.as_str()}}).to_string();
+    assert_eq!(send(&council, "POST", "/council/v2/contexts", &local, &[]).status, 200);
+    for (path, body) in [
+        (
+            "/council/v2/generations",
+            json!({"model": "toy-b", "context": {"parent": parent.as_str(), "messages": [{"role": "user", "content": "more"}]}, "max_tokens": 4}),
+        ),
+        (
+            "/council/v2/reads",
+            json!({"model": "toy-b", "contexts": [{"parent": parent.as_str()}], "suffixes": ["x"], "letters": ["A", "B"]}),
+        ),
+    ] {
+        let body = body.to_string();
+        let reply = send(&council, "POST", path, &body, &[]);
+        assert_eq!(reply.status, 200, "{path}");
+        assert_eq!(reply.body.as_ref(), b"{\"from\": \"the peer\"}");
+        let seen = stub.seen();
+        let last = seen.last().unwrap();
+        assert_eq!(last.uri, path);
+        assert_eq!(
+            last.body.as_ref(),
+            body.as_bytes(),
+            "{path}: the parent goes as it came"
+        );
+    }
+}
+
 #[test]
 fn each_job_route_forwards() {
     let fixture = Fixture::new();

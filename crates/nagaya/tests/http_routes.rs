@@ -882,3 +882,173 @@ fn every_route_that_reads_a_context_refuses_media_by_name() {
     );
     assert_eq!(status, StatusCode::OK);
 }
+
+/// The id of a context's record, as gogi's `context_id` gives it.
+fn record_id(context: &Value) -> String {
+    let context: gogi_proto::Context = serde_json::from_value(context.clone()).unwrap();
+    gogi_proto::context_id(&context).to_string()
+}
+
+/// A parent that ends with an open message (gogi "Context records", spec 11.13). A generation that names it alone
+/// continues the message, and its record holds one reply. A build reads the message closed.
+///
+/// Falsified by `close: true` in the route of a generation: the reply is a new message after the closed one. Also by
+/// `close: false` in the route of a build: the build is a 400 that names `continue`.
+#[test]
+fn an_open_parent_continues_in_a_generation_and_reads_closed_in_a_build() {
+    let f = Fixture::new();
+    let council = council(&f);
+    let open = json!({"thinking": false, "messages": [
+        {"role": "user", "content": "Delete the build directory.", "snap": true},
+        {"role": "assistant", "content": "so far", "continue": true}]});
+    let generation = |context: Value| {
+        let body = json!({"model": "toy", "context": context, "max_tokens": 4, "sample": {"temperature": 0.0}});
+        send(&council, "POST", "/council/v2/generations", Some(body))
+    };
+    // A generation holds the record of its context, so the open context has a record.
+    let (status, _, whole) = generation(open.clone());
+    assert_eq!(status, StatusCode::OK, "{whole}");
+    let parent = record_id(&open);
+    let (status, _, done) = generation(json!({"parent": parent}));
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert!(done["content"].as_str().unwrap().starts_with("so far"), "{done}");
+    assert_eq!(done["content"], whole["content"]);
+    assert_eq!(done["context"], whole["context"], "the two forms are one context");
+    let path = format!("/council/v2/contexts/{}", done["context"].as_str().unwrap());
+    let (status, _, record) = send(&council, "GET", &path, None);
+    assert_eq!(status, StatusCode::OK, "{record}");
+    let messages = record["context"]["messages"].as_array().unwrap();
+    assert_eq!(
+        messages.len(),
+        2,
+        "the reply takes the place of the open message: {record}"
+    );
+    assert_eq!(messages[1]["content"], done["content"]);
+    // A build reads the open message closed, so it is another context with another record.
+    let body = json!({"model": "toy", "context": {"parent": parent}});
+    let (status, _, built) = send(&council, "POST", "/council/v2/contexts", Some(body));
+    assert_eq!(status, StatusCode::OK, "{built}");
+    let mut closed = open.clone();
+    closed["messages"][1].as_object_mut().unwrap().remove("continue");
+    assert_eq!(built["context"], json!(record_id(&closed)));
+    assert_ne!(built["context"], json!(parent));
+}
+
+/// Each council route that reads contexts makes a parent whole before it decodes its body (spec 11.13). A parent that
+/// the server does not hold is a 404 that names its member. A raw read holds the record of each context it reads.
+///
+/// Falsified by a route of raw reads or of control vectors with no `whole`: the 400 of the unknown member `parent`.
+/// Also by a raw read that holds no record: the `GET` of its context is a 404.
+#[test]
+fn each_route_names_the_parent_that_the_server_does_not_hold_and_a_raw_read_holds_its_records() {
+    let f = Fixture::new();
+    let council = council(&f);
+    let gone = format!("blake3:{}", "0".repeat(64));
+    let lost = json!({"parent": gone});
+    let cases = [
+        (
+            "/council/v2/contexts",
+            json!({"model": "toy", "context": lost}),
+            "context.parent",
+        ),
+        (
+            "/council/v2/generations",
+            json!({"model": "toy", "context": lost, "max_tokens": 4}),
+            "context.parent",
+        ),
+        (
+            "/council/v2/reads",
+            json!({"model": "toy", "contexts": [context(), lost], "suffixes": ["x"], "letters": ["A", "B"]}),
+            "contexts[1].parent",
+        ),
+        (
+            "/council/v2/decisions",
+            json!({"model": "toy", "spec_id": gone, "case": "x", "contexts": [lost]}),
+            "contexts[0].parent",
+        ),
+        (
+            "/council/v2/control-vectors",
+            json!({"model": "toy", "positive": [context()], "negative": [context(), lost]}),
+            "negative[1].parent",
+        ),
+    ];
+    for (path, body, param) in cases {
+        let (status, _, e) = send(&council, "POST", path, Some(body));
+        assert_eq!(
+            (status, e["error"]["type"].as_str(), e["error"]["param"].as_str()),
+            (StatusCode::NOT_FOUND, Some("not_found"), Some(param)),
+            "{path}: {e}"
+        );
+        assert!(e["error"]["message"].as_str().unwrap().contains(&gone), "{e}");
+    }
+    // No refused request held the record of the whole context beside the lost parent.
+    let path = format!("/council/v2/contexts/{}", record_id(&context()));
+    assert_eq!(send(&council, "GET", &path, None).0, StatusCode::NOT_FOUND);
+    // A raw read holds the record, and a later read names it as a parent.
+    let read = |context: Value| {
+        let body = json!({"model": "toy", "contexts": [context], "suffixes": ["x"], "letters": ["A", "B"]});
+        send(&council, "POST", "/council/v2/reads", Some(body))
+    };
+    let (status, _, first) = read(context());
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert!(first.get("context").is_none(), "a raw read names no record: {first}");
+    let (status, _, record) = send(&council, "GET", &path, None);
+    assert_eq!(status, StatusCode::OK, "{record}");
+    assert_eq!(record["context"], context());
+    let (status, _, second) = read(json!({"parent": record_id(&context())}));
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(second["reads"][0]["logprobs"], first["reads"][0]["logprobs"]);
+}
+
+/// A node that serves no text model holds no record (spec 6.17). A parent on it is gogi's 404, and the read of a
+/// record is the 503 of a node with no home.
+///
+/// Falsified by a `whole` that sends the body on when the node has no home: the 400 of the unknown member `parent`.
+#[test]
+fn a_council_with_no_model_holds_no_record() {
+    let council = Arc::new(Council::new(Vec::new(), None).unwrap());
+    let (_, _, identity) = send(&council, "GET", "/council/v2/identity", None);
+    assert!(identity["limits"].get("context_records").is_none(), "{identity}");
+    let gone = format!("blake3:{}", "0".repeat(64));
+    let body = json!({"model": "toy", "context": {"parent": gone}});
+    let (status, _, e) = send(&council, "POST", "/council/v2/contexts", Some(body));
+    assert_eq!(
+        (status, e["error"]["param"].as_str()),
+        (StatusCode::NOT_FOUND, Some("context.parent")),
+        "{e}"
+    );
+    let (status, _, e) = send(&council, "GET", &format!("/council/v2/contexts/{gone}"), None);
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{e}");
+}
+
+/// The text routes take a whole context (spec 11.13): a `parent` in `render` is the 400 of an unknown member. The
+/// list of an owner's pins always has `contexts`, and identity names `context_records`.
+///
+/// Falsified by a pin listing that leaves `contexts` out when it is empty.
+#[test]
+fn render_refuses_a_parent_and_a_pin_list_always_has_contexts() {
+    let f = Fixture::new();
+    let council = council(&f);
+    let (_, _, built) = send(
+        &council,
+        "POST",
+        "/council/v2/contexts",
+        Some(json!({"model": "toy", "context": context()})),
+    );
+    let record = built["context"].as_str().unwrap();
+    assert_eq!(record, record_id(&context()));
+    let body = json!({"model": "toy", "context": {"parent": record}});
+    let (status, _, e) = send(&council, "POST", "/nagaya/v1/render", Some(body));
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{e}");
+    assert!(e["error"]["message"].as_str().unwrap().contains("parent"), "{e}");
+    // The clock of the fixture reads a minute later at each call, so the pin needs a long term.
+    let pins = json!({"snapshots": [built["head"]], "ttl_s": 3600});
+    let (status, _, put) = send(&council, "PUT", "/council/v2/pins/kernel-9", Some(pins));
+    assert_eq!(status, StatusCode::OK, "{put}");
+    assert!(put.get("contexts").is_none(), "a PUT with no record names none: {put}");
+    let (status, _, listed) = send(&council, "GET", "/council/v2/pins/kernel-9", None);
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert_eq!(listed["contexts"], json!([]));
+    let (_, _, identity) = send(&council, "GET", "/council/v2/identity", None);
+    assert_eq!(identity["limits"]["context_records"], json!(10_000));
+}

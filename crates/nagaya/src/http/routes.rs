@@ -36,6 +36,7 @@ pub fn routes() -> Router<Arc<Council>> {
     Router::new()
         .route("/council/v2/identity", get(identity))
         .route("/council/v2/contexts", post(contexts))
+        .route("/council/v2/contexts/{id}", get(context_get))
         .route("/council/v2/snapshots/{id}", get(snapshot))
         .route(
             "/council/v2/pins/{owner}",
@@ -113,9 +114,62 @@ async fn identity(State(council): Shared) -> Response {
     json(StatusCode::OK, &council.identity())
 }
 
+/// The body of a request with each context that names a `parent` made whole (gogi "Context records", spec 11.13).
+/// `close` is false only for a generation. A body with no `parent` goes on as its bytes came, and so does a body that
+/// is not JSON: its route gives the 400. The read of a parent runs on a call thread.
+pub(super) async fn whole(council: &Council, body: Bytes, close: bool) -> Result<Bytes, Failure> {
+    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return Ok(body);
+    };
+    if !crate::council::records::names_parent(&value) {
+        return Ok(body);
+    }
+    let value = match council.home() {
+        Ok(home) => {
+            council
+                .call(move || {
+                    home.service.resolve(&mut value, close)?;
+                    Ok(value)
+                })
+                .await?
+        }
+        // A node with no home holds no record, so each parent is a miss (spec 6.17).
+        Err(_) => {
+            crate::council::resolve_with(&mut value, close, &mut |_| Ok(None)).map_err(Failure::from)?;
+            value
+        }
+    };
+    Ok(Bytes::from(serde_json::to_vec(&value).expect("a JSON value is JSON")))
+}
+
+/// A context record by its id (gogi "Context records"): `{id, context}`, with the context whole. On a miss, the
+/// first peer that holds the record answers (spec 11.1a, "Context records in the cluster").
+async fn context_get(
+    State(council): Shared,
+    Extension(id): Id,
+    Path(record): Path<String>,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(failure) = path_id(&record) {
+        return failure.respond(&id);
+    }
+    let result = async {
+        let home = council.home()?;
+        let record = gogi_proto::ContextId::parse(record).map_err(|e| Failure::from(ServiceError::internal(e)))?;
+        let context = {
+            let record = record.clone();
+            council.call(move || home.service.record(&record)).await?
+        };
+        Ok(json!({"id": record, "context": context}))
+    }
+    .await;
+    read_by_id(&council, answer(&id, result), &uri, &headers, &id).await
+}
+
 async fn contexts(State(council): Shared, Extension(id): Id, body: Body) -> Response {
     let result = async {
-        let request: ContextBuild = parse(&bytes(body).await?, "context")?;
+        let request: ContextBuild = parse(&whole(&council, bytes(body).await?, true).await?, "context")?;
         let served = council.route_contexts(&request.model, &[&request.context], false)?;
         let dry_run = request.dry_run.unwrap_or(false);
         let schedule = Schedule::of(request.class, request.priority);
@@ -129,6 +183,7 @@ async fn contexts(State(council): Shared, Extension(id): Id, body: Body) -> Resp
             usage: built.usage,
             from: built.from,
             dry_run,
+            context: built.context,
             snapshots: built.snapshots,
         })
     }
@@ -220,7 +275,7 @@ async fn pins_put(
         &id,
     );
     let answers = peers::write_all(&council, local, call, Capability::Pins, &headers).await;
-    peers::join_sets(answers, "snapshots", true, || no_home(&council, &id))
+    peers::join_sets(answers, &["snapshots", "contexts"], true, || no_home(&council, &id))
 }
 
 async fn pins_get(
@@ -236,7 +291,7 @@ async fn pins_get(
     };
     let call = peers::call(Method::GET, &peers::raw_path(&uri), &headers, &[], Bytes::new(), &id);
     let answers = peers::write_all(&council, local, call, Capability::Pins, &headers).await;
-    peers::join_sets(answers, "snapshots", false, || no_home(&council, &id))
+    peers::join_sets(answers, &["snapshots", "contexts"], false, || no_home(&council, &id))
 }
 
 async fn pins_delete(
@@ -327,7 +382,7 @@ async fn spec_delete(
 
 async fn decisions(State(council): Shared, Extension(id): Id, body: Body) -> Response {
     let result = async {
-        let request: DecisionRequest = parse(&bytes(body).await?, "decision")?;
+        let request: DecisionRequest = parse(&whole(&council, bytes(body).await?, true).await?, "decision")?;
         let contexts: Vec<_> = request.contexts.iter().collect();
         let served = council.route_contexts(&request.model, &contexts, true)?;
         let mut response = council.call(move || served.service.decide(&request)).await?;
@@ -342,7 +397,7 @@ async fn decisions(State(council): Shared, Extension(id): Id, body: Body) -> Res
 
 async fn reads(State(council): Shared, Extension(id): Id, body: Body) -> Response {
     let result = async {
-        let request: ReadsRequest = parse(&bytes(body).await?, "reads")?;
+        let request: ReadsRequest = parse(&whole(&council, bytes(body).await?, true).await?, "reads")?;
         let contexts: Vec<_> = request.contexts.iter().collect();
         let served = council.route_contexts(&request.model, &contexts, true)?;
         let mut response = council.call(move || served.service.read(&request)).await?;
@@ -393,7 +448,8 @@ async fn embeddings(State(council): Shared, Extension(id): Id, body: Body) -> Re
 /// model that is not ready. The job of the text service makes the vector, and the object store holds its bytes.
 async fn control_vectors(State(council): Shared, Extension(id): Id, body: Body) -> Response {
     let result = async {
-        let request: gogi_proto::control::ControlVectorRequest = parse(&bytes(body).await?, "control-vectors")?;
+        let body = whole(&council, bytes(body).await?, true).await?;
+        let request: gogi_proto::control::ControlVectorRequest = parse(&body, "control-vectors")?;
         request.validate().map_err(ServiceError::Invalid)?;
         let identity = council.identity();
         let model = identity.route(&request.model).map_err(ServiceError::Invalid)?;
@@ -426,7 +482,7 @@ enum Media {
 
 async fn generations(State(council): Shared, Extension(id): Id, body: Body) -> Response {
     let request = async {
-        let request: GenerationRequest = parse(&bytes(body).await?, "generation")?;
+        let request: GenerationRequest = parse(&whole(&council, bytes(body).await?, false).await?, "generation")?;
         if let Some((service, model)) = super::voice::route(&council, &request.model) {
             if model.status != gogi_proto::identity::ModelStatus::Ready {
                 return Err(Failure::unavailable(&model));

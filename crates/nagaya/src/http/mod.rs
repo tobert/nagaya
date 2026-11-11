@@ -307,6 +307,23 @@ impl Council {
         Ok((served, peer.entry.model.clone()))
     }
 
+    /// Run the job of a generation of a speech model or an image model, with its records (spec 11.13). The record
+    /// of the context is held before the job, and the record with the reply after it, which `done.context` names.
+    /// The records are files of the home, so a node with no home holds none and names none (spec 6.17).
+    pub(crate) fn recorded(
+        &self,
+        context: &gogi_proto::Context,
+        job: impl FnOnce() -> Result<gogi_proto::generation::GenerationDone, ServiceError>,
+    ) -> Result<gogi_proto::generation::GenerationDone, ServiceError> {
+        let Some(home) = self.models.first() else {
+            return job();
+        };
+        home.service.hold_record(context)?;
+        let mut done = job()?;
+        home.service.name_reply(context, &mut done)?;
+        Ok(done)
+    }
+
     /// The calls of the profile routes, when the council has them.
     fn profile_calls(&self) -> Option<std::sync::mpsc::Sender<crate::reprofile::ProfileCall>> {
         self.profile.clone()
@@ -463,6 +480,7 @@ impl Council {
                 choice_options: config.spec_rules.choice_options as u64,
                 questions_per_spec: Some(config.spec_rules.questions_per_spec as u64),
                 pin_bytes: pins.then_some(config.pin_bytes),
+                context_records: pins.then_some(config.context_records as u64),
                 object_bytes: objects.map(|(object, _)| object),
                 keep_bytes: objects.map(|(_, keep)| keep),
             },

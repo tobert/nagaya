@@ -1680,6 +1680,47 @@ One choice is left for later. It is a design, and nothing builds it now.
 - The keys and values of the conditioning rows in the 32 blocks take 512 KiB for each row. They depend on the
   transformer and its LoRA. A later rule can keep them as entries too, so that a hit skips all of `image_begin`.
 
+**6.17 Context records.** **Proposed** by Claude Fable 5.2, 2026-11-11, for milestone 32 step 2. gogi "Context
+records" says what a record is, and it leaves the choices below to the server. Reason: each choice is the simplest
+one that keeps the contract. Each follows a rule that specs or pins have now. @tobert decides.
+
+- **A record is a server file.** It is the file `contexts/<context id>.json` in the store directory, beside `specs/`
+  and `pins.json`. The file holds the record text of gogi's `record_text`, and nothing else.
+- **A record is not an entry.** The index of 6.4 does not list it, and it has no recipe, no tier and no chain. It
+  takes no bytes of a budget of 4.1a, and eviction (6.9) never reads it. Reason: a record is text of the client, not
+  model state (gogi "Context records").
+- **One book for the server.** The server opens the records once, with the specs and the pin book (11.7, "Several
+  text models in one process"). Each text service has a handle to the same book. A record names no served model.
+- **A node with no home holds no record.** A node that serves no text model has no specs and no pins (11.1a), and it
+  has no records. A `parent` on it is the 404 of gogi, and its generations name no record.
+- **The limit is a count.** `limits.context_records` is 10,000, a constant in the code. Identity names it when the
+  node has a home. Reason: gogi's limit is a count, and the fake holds 10,000.
+- **No byte limit.** The body limit of 16 MiB (11.7) bounds what one request adds. A context past `context_tokens`
+  fails its checks, so it holds no record. A byte limit can follow if the files grow too large.
+- **Past the limit.** After each hold, the book drops records until it has 10,000. It drops the least recently named
+  record first. It never drops a record that a live pin keeps, and it never drops the record of that hold. Thus
+  pinned records can take the book past the limit.
+- **What names a record.** A hold names it. So does a request that names it as a `parent`, and so does a `GET` of
+  it. A pin does not name it.
+- **The order is in memory.** No request writes the order to disk. At start, the records take the order of their
+  file times, the oldest first, and then the byte order of their ids. Reason: a read must not write a file.
+- **The book keeps ids in memory.** It reads the text of a record from its file at each name. Reason: 10,000 long
+  contexts do not belong in host memory outside the ledger (4.1).
+- **A hold writes once.** A new record goes to a temporary file, then `fsync`, then a rename, as a spec does. A hold
+  of a record that the book has writes nothing. Thus a crash leaves no half record.
+- **A drop removes the file.**
+- **Restart.** At start, the book lists the directory. It removes each temporary file. A file whose name is not
+  `<context id>.json` stops the start, as a bad spec file does (8.5). The message says to remove it. The stop of
+  10.3 writes nothing for records.
+- **A check at each read.** The book checks a record when a request reads it, as the store checks an entry (6.11).
+  The context id of the file's text must be its name. A file that fails is removed, the log has a warning, and the
+  read is a miss. Reason: gogi lets a server drop a record at any time. A change of gogi's record text makes each
+  old file such a file, and a miss costs the client one whole context.
+- **Pins.** The pin book keeps the record ids of each owner beside its snapshots (6.10), in `pins.json`. A pin keeps
+  the records that the book held at the `PUT`. A `PUT` with held records and no held snapshot keeps its owner. The
+  records of an owner end with its pins. At start, the pin book forgets each record whose file is gone.
+- **Lock order.** A method that needs several locks takes the pin book first, then the store, then the records.
+
 ## 7. IO
 
 **7.1 One IO service per machine.** Engines (through the `io` capability) and the store send IO requests
@@ -2700,6 +2741,27 @@ and 3.3b, 2.4 and 6.15 leave these choices open. The code of milestone 23 steps 
 - **The order of a desired profile.** The target admits it, checks its names, persists it and acts on it, through the
   code of a local `PUT`. It records the version after that code answers, also for a refusal. It writes
   `profile:active` again after each accepted change.
+
+**Context records in the cluster.** **Proposed** by Claude Fable 5.2, 2026-11-11, for milestone 32 step 2. Reason:
+the forward sends the same bytes (above), and a record is a file of one node (6.17). @tobert decides.
+
+- **Records belong to a node.** Each node holds the records of the contexts that it reads. Gossip carries no record
+  and no record id.
+- **A forward sends `parent` as it came.** The coordinator does not make the context whole. The target makes it whole
+  from its own records. A target that does not hold the parent gives gogi's 404, and the client sends the whole
+  context. Reason: the response of a forwarded build or generation names a record of the target.
+- **The objects of a forward.** The coordinator takes to the target the objects that the body names (6.15). It does
+  not read the parent, so it takes no object of the parent. The target got those objects when it first read the
+  parent. If it evicted one, its 404 names the message of the parent, as for any object.
+- **The read by id.** `GET /council/v2/contexts/{id}` reads the local records first. On a miss, it makes a broadcast
+  read to the live nodes that declare `pins`, as a spec read does. A 404 comes only when no node holds the id.
+- **Pins.** A `PUT` of pins carries `contexts` to each live node that declares `pins`, and each node pins the records
+  that it holds. The join gives `contexts` the rules of `snapshots`: a record is `held` when any node holds it, and a
+  `GET` joins the lists.
+- **The limit.** `limits.context_records` in identity is the limit of this node.
+- Known limit: a record that node A holds is not a parent for a model of node B. The client gets the 404 and sends
+  the whole context once. The other choice was that the coordinator makes the context whole. Then the two forms give
+  ids on two nodes, and the coordinator must parse and write each forwarded body.
 
 **Trust.** Decided 2026-11-02 (Amy, by interview), proposed by Claude Opus 5.5, 2026-11-02. The cluster trusts the
 tailnet. Each node binds its HTTP and gossip addresses on the tailnet (2.1, 11.6). It trusts the gossip of each peer and
@@ -4775,6 +4837,33 @@ choices below are open in the rules above and in gogi.
   before the job.
 
 Reason: each choice is the smallest one that keeps every promise of the capability true.
+
+**11.13 Context records.** gogi "Context records" has the rules (`AGENTS.md` milestone 32). 6.17 says where the
+nagaya holds a record, and 11.1a says what the cluster does. The notes below are **Proposed** by Claude Fable 5.2,
+2026-11-11, for milestone 32 step 2. Reason: gogi leaves these choices to the server, and each is the simplest one.
+@tobert decides.
+
+- **Whole before the decode.** The routes `contexts`, `decisions`, `reads`, `generations` and `control-vectors` call
+  `gogi_proto::resolve_request` on the body as JSON, before they decode it. Only a generation reads an open message
+  of a parent as open. Thus each check and each job reads a whole context, and the two forms cannot differ.
+- **A body with no `parent` goes on as its bytes came.** The route does not write it again.
+- **The read of a parent runs on a call thread.** It reads a file, and the control runtime runs no blocking call
+  (3.2). It counts as one of the 64 calls of 11.7.
+- **Each model kind.** A generation of a speech model or of an image model takes `parent` too. The route makes the
+  context whole before it chooses a service.
+- **The record of a build.** A build that is not a dry run holds the record of its context when it succeeds, and
+  `context` names it.
+- **The records of a generation.** A generation holds the record of its context after its checks pass, before its
+  job starts. It holds the record with the reply when the reply is complete, and `context` of the response or of
+  `done` names it. A reply with an output is complete after its output is sealed.
+- **A generation that fails** keeps the record of its context, and it holds no record of a reply (gogi).
+- **A decision, a raw read and a control-vector request** hold the record of each of their contexts when the
+  request succeeds. They name none. Reason: gogi's reference server holds them at the 200.
+- **The text routes take a whole context.** `render`, `tokenize` and `detokenize` (11.4b) are not council routes. A
+  `parent` in their context is the 400 of an unknown member. A client reads the record with the `GET` first.
+- **`GET /council/v2/contexts/{id}`** gives `{id, context}`. An id that is not whole is a 400 that names `id`, as for
+  a spec. A node with no home gives its 503 when no peer holds the id (11.1a, "A node with no home").
+- **A pin `GET`** always has the member `contexts`, and an owner with no record has an empty list.
 
 ## 12. Identity
 

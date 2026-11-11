@@ -102,8 +102,12 @@ pub async fn generation(
         let result = council
             .call(move || {
                 let plan = served.service.prepare_speech(&request)?;
+                // The checks passed, so the record of the context is held (spec 11.13).
+                served.service.hold_record(&request.context)?;
                 let spoken = served.service.speak(plan, None, None)?;
-                sealed(&inner, &served, spoken)
+                let mut done = sealed(&inner, &served, spoken)?;
+                served.service.name_reply(&request.context, &mut done)?;
+                Ok(done)
             })
             .await;
         return super::routes::answer(&id, result);
@@ -119,6 +123,7 @@ pub async fn generation(
         let result = guarded(|| {
             // The checks run first, so a request that breaks a rule gets a status (spec 11.11, "The stream").
             let plan = served.service.prepare_speech(&request)?;
+            served.service.hold_record(&request.context)?;
             let (pending, output) = inner.pending().start(WAV);
             started = Some(pending.clone());
             output.push(&wav_header(None));
@@ -147,7 +152,10 @@ pub async fn generation(
                 .speak(plan, Some(tokens), Some(sink(Arc::clone(&output), out.clone())));
             // The sender of the token events dropped with the job, so the forward thread ends.
             let _ = forwarder.join();
-            sealed(&inner, &served, spoken?)
+            // The output is sealed, so the record with the reply names its object (gogi "The reply in a record").
+            let mut done = sealed(&inner, &served, spoken?)?;
+            served.service.name_reply(&request.context, &mut done)?;
+            Ok(done)
         });
         // Outside the guard, so a panic in the call also ends its pending id.
         if let Some(pending) = &started {

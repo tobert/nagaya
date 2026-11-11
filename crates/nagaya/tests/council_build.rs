@@ -327,6 +327,7 @@ fn a_pin_keeps_a_snapshot_in_the_host_tier() {
         if pinned {
             let put = gogi_proto::pins::PinsPut {
                 snapshots: vec![head.to_string()],
+                contexts: Vec::new(),
                 ttl_s: 3600,
             };
             let result = f.service.put_pins("owner", &put).unwrap();
@@ -648,6 +649,7 @@ fn a_snapshot_that_the_store_has_no_room_for_is_not_an_error() {
     );
     let put = gogi_proto::pins::PinsPut {
         snapshots: vec![a.head.unwrap().to_string()],
+        contexts: Vec::new(),
         ttl_s: 3600,
     };
     f.service.put_pins("owner", &put).unwrap();

@@ -117,6 +117,70 @@ fn pins_go_to_each_node_and_their_answers_join() {
     assert_eq!(send(&a, "DELETE", "/council/v2/pins/kernel-1", None).status, 404);
 }
 
+/// A held record on `node`, of a context with `text`: a build through the council of the node. It gives the id of
+/// the record.
+fn recorded(node: &Node, text: &str) -> String {
+    let body = json!({"model": "toy", "context":
+        {"thinking": true, "messages": [{"role": "user", "content": text, "snap": true}]}});
+    let built = send(node, "POST", "/council/v2/contexts", Some(&body));
+    assert_eq!(built.status, 200, "{}", built.text());
+    built.json()["context"].as_str().unwrap().to_owned()
+}
+
+/// A context record of a peer reads by id (spec 11.1a, "Context records in the cluster").
+///
+/// Falsified by a `GET` of a record that answers from this node alone: the read through host-a is a 404.
+#[test]
+fn a_record_of_a_peer_reads_by_id() {
+    let (a, b) = pair();
+    let id = recorded(&b, "a context that only host-b read");
+    let read = send(&a, "GET", &format!("/council/v2/contexts/{id}"), None);
+    assert_eq!(read.status, 200, "{}", read.text());
+    assert_eq!(read.json()["id"], json!(id));
+    assert_eq!(
+        read.json()["context"]["messages"][0]["content"],
+        "a context that only host-b read"
+    );
+    let missing = format!("/council/v2/contexts/blake3:{}", "0".repeat(64));
+    assert_eq!(send(&a, "GET", &missing, None).status, 404);
+}
+
+/// The pins of records go to each node, and `contexts` joins as `snapshots` does (spec 11.1a).
+///
+/// Falsified by a join of `snapshots` alone: the record of host-b reports `held: false` through host-a.
+#[test]
+fn pins_of_records_go_to_each_node_and_their_answers_join() {
+    let (a, b) = pair();
+    let on_a = recorded(&a, "a context of host-a");
+    let on_b = recorded(&b, "a context of host-b");
+    let nowhere = format!("blake3:{}", "0".repeat(64));
+    let body = json!({"snapshots": [], "contexts": [on_a, on_b, nowhere], "ttl_s": 600});
+    let put = send(&a, "PUT", "/council/v2/pins/kernel-1", Some(&body));
+    assert_eq!(put.status, 200, "{}", put.text());
+    assert_eq!(
+        put.json()["contexts"],
+        json!([{"id": on_a, "held": true}, {"id": on_b, "held": true}, {"id": nowhere, "held": false}]),
+        "{}",
+        put.text()
+    );
+    assert_eq!(put.json()["expires_in_s"], json!(600));
+    let got = send(&a, "GET", "/council/v2/pins/kernel-1", None);
+    assert_eq!(got.status, 200, "{}", got.text());
+    let mut ids: Vec<String> = serde_json::from_value(got.json()["contexts"].clone()).unwrap();
+    ids.sort();
+    let mut want = vec![on_a.clone(), on_b.clone()];
+    want.sort();
+    assert_eq!(ids, want);
+    // Each node pins only the records that it holds.
+    let own = b.send("GET", "/council/v2/pins/kernel-1", &[], &[("nagaya-forwarded", "test")]);
+    assert_eq!(own.json()["contexts"], json!([on_b]));
+    // A set of snapshots alone still joins, and its answer has no list of records.
+    let none = json!({"snapshots": [nowhere], "ttl_s": 600});
+    let put = send(&a, "PUT", "/council/v2/pins/kernel-2", Some(&none));
+    assert_eq!(put.status, 200, "{}", put.text());
+    assert!(put.json().get("contexts").is_none(), "{}", put.text());
+}
+
 #[test]
 fn the_smallest_expiry_of_the_nodes_is_the_answer() {
     let (a, b) = pair();

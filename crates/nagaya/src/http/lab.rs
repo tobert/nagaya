@@ -432,7 +432,10 @@ fn members(value: Value) -> Result<TraceMembers, ServiceError> {
 
 async fn trace(State(council): Shared, Extension(id): Id, body: Body) -> Response {
     let result = async {
-        let mut value: Value = parse(&bytes(body).await?, "trace")?;
+        // A context that names a `parent` is whole before the decode, as in a generation (`docs/lab.md`, "Context
+        // records in the lab routes").
+        let body = super::routes::whole(&council, bytes(body).await?, false).await?;
+        let mut value: Value = parse(&body, "trace")?;
         let trace = value
             .as_object_mut()
             .and_then(|map| map.remove("trace"))
@@ -607,7 +610,8 @@ const CONTRAST_STRENGTH: f64 = 0.5;
 /// One reply from joined forks (`docs/lab.md`, "`ensemble`: joined forks").
 async fn ensemble(State(council): Shared, Extension(id): Id, body: Body) -> Response {
     let result = async {
-        let value: Value = parse(&bytes(body).await?, "ensemble")?;
+        let body = super::routes::whole(&council, bytes(body).await?, false).await?;
+        let value: Value = parse(&body, "ensemble")?;
         let refuse = |param: &str, message: &str| Failure::from(invalid(param, format!("nothing ran: {message}")));
         let map = value
             .as_object()

@@ -272,6 +272,29 @@ fn the_route_puts_the_difference_of_the_means_as_an_object_and_leaves_no_state()
 }
 
 /// An engine with a checkpoint grain makes interval copies in a long feed (spec 6.13). The job of a vector makes none.
+/// A control-vector request holds the record of each context of both sets, and it names none (gogi "Context
+/// records", spec 11.13). A later request names a record as a `parent` and gives the same vector.
+///
+/// Falsified by a `control_vector` that holds no record: the request with the parents is a 404.
+#[test]
+fn the_route_holds_the_record_of_each_context_and_takes_a_parent() {
+    let (f, _) = fixture(Some(4));
+    let council = council(&f);
+    let sets = [said("I can't write that."), said("The dragon lands on the tower.")];
+    let body = json!({"model": "toy", "positive": [sets[0]], "negative": [sets[1]]});
+    let (status, first) = send(&council, "/council/v2/control-vectors", body);
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert!(first.get("context").is_none(), "{first}");
+    let id = |context: &Value| {
+        let context: gogi_proto::context::Context = serde_json::from_value(context.clone()).unwrap();
+        gogi_proto::context_id(&context).to_string()
+    };
+    let body = json!({"model": "toy", "positive": [{"parent": id(&sets[0])}], "negative": [{"parent": id(&sets[1])}]});
+    let (status, again) = send(&council, "/council/v2/control-vectors", body);
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(again["vector"], first["vector"]);
+}
+
 #[test]
 fn the_route_makes_no_interval_copy_on_an_engine_with_a_grain() {
     let log = ControlLog::default();

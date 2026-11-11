@@ -26,6 +26,7 @@ fn built(f: &Fixture, text: &str) -> SnapshotId {
 fn put(ids: &[&SnapshotId], ttl_s: u64) -> PinsPut {
     PinsPut {
         snapshots: ids.iter().map(|id| id.to_string()).collect(),
+        contexts: Vec::new(),
         ttl_s,
     }
 }

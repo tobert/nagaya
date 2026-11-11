@@ -413,6 +413,7 @@ pub fn speak(
             }),
         },
         head: spoken.head.as_ref().map(crate::council::snapshot_id),
+        context: None,
         snapshots,
         stats: None,
         decisions: Vec::new(),
@@ -521,7 +522,9 @@ pub async fn generation(
         let result = council
             .call(move || {
                 let checked = check(&inner, &service, &model, &request)?;
-                speak(&inner, &service, &model.model, checked, None, &|| false)
+                inner.recorded(&request.context, || {
+                    speak(&inner, &service, &model.model, checked, None, &|| false)
+                })
             })
             .await;
         return super::routes::answer(&id, result);
@@ -546,8 +549,10 @@ pub async fn generation(
             if out.blocking_send(Item::Output(event)).is_err() {
                 return Err(ServiceError::Cancelled);
             }
-            speak(&inner, &service, &model.model, checked, Some(&output), &|| {
-                out.is_closed()
+            inner.recorded(&request.context, || {
+                speak(&inner, &service, &model.model, checked, Some(&output), &|| {
+                    out.is_closed()
+                })
             })
         });
         // Outside the guard, so a panic in the call also ends its pending id.

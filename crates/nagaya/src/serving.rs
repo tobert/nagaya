@@ -373,7 +373,7 @@ pub fn council_with(
     // The specs and the pin book of the server open once, with the spec rules of the home.
     let files = plans
         .first()
-        .map(|(_, _, plan)| ServerFiles::open(store_dir, plan.config.spec_rules))
+        .map(|(_, _, plan)| ServerFiles::open(store_dir, plan.config.spec_rules, plan.config.context_records))
         .transpose()
         .map_err(|error| format!("cannot open the specs and the pins of the server: {error}"))?;
     for (engine, is_described, mut plan) in plans {

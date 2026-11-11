@@ -4,6 +4,8 @@
 //! The fake's row is a hash of the row before it and of the position. The codes of a frame are a hash of the last row,
 //! the seed and the frame. Thus a line gives the same codes only from the same state, fed or restored.
 
+mod council_support;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -440,6 +442,25 @@ impl Fixture {
         )
     }
 
+    /// A council as [`Fixture::council`] makes, with the toy text model of `home` too. The text model is the home,
+    /// which holds the context records of the server (spec 6.17).
+    fn council_with_home(&self, home: &council_support::Fixture) -> Arc<Council> {
+        let dir = self.directory.path();
+        let service = self.service().with_codes(CodeBook::open(dir).unwrap());
+        let objects = ObjectStore::open(&dir.join("objects"), 1 << 24).unwrap();
+        let served = nagaya::http::Served {
+            service: home.attach_again(),
+            aliases: Vec::new(),
+            device: None,
+        };
+        Arc::new(
+            Council::new(vec![served], None)
+                .unwrap()
+                .with_speech(vec![service])
+                .with_objects(objects),
+        )
+    }
+
     fn service(&self) -> SpeechService {
         let mut config = SpeechConfig::new(MODEL, "voice", 2);
         config.context_positions = ROOM;
@@ -785,6 +806,102 @@ fn events(body: &[u8]) -> Vec<(String, Value)> {
         out.push((name, serde_json::from_str(&data).unwrap_or(Value::Null)));
     }
     out
+}
+
+/// Check the records of a generation with an output (gogi "The reply in a record", spec 11.13). `done.context` names
+/// the record of the request's context with the reply after it: an assistant message with a mark, whose content
+/// ends with one object part for each output. The record of the request's context is held too.
+fn assert_reply_record(council: &Arc<Council>, context: &Value, done: &Value) {
+    let read = |id: &str| {
+        let (status, _, _, bytes) = send(council, "GET", &format!("/council/v2/contexts/{id}"), None);
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&bytes));
+        json(&bytes)
+    };
+    let asked: gogi_proto::Context = serde_json::from_value(context.clone()).unwrap();
+    let asked_id = gogi_proto::context_id(&asked).to_string();
+    let reply: gogi_proto::generation::GenerationDone = serde_json::from_value(done.clone()).unwrap();
+    let with_reply = gogi_proto::with_reply(&asked, &reply);
+    assert_eq!(
+        done["context"],
+        json!(gogi_proto::context_id(&with_reply).as_str()),
+        "{done}"
+    );
+    assert_eq!(read(&asked_id)["context"], *context);
+    let record = read(done["context"].as_str().unwrap());
+    let messages = record["context"]["messages"].as_array().unwrap();
+    let last = messages.last().unwrap();
+    assert_eq!(messages.len(), asked.messages.len() + 1, "{record}");
+    assert_eq!(
+        (&last["role"], &last["snap"]),
+        (&json!("assistant"), &json!(true)),
+        "{last}"
+    );
+    let outputs = done["outputs"].as_array().unwrap();
+    assert!(!outputs.is_empty(), "{done}");
+    let parts: Vec<Value> = outputs
+        .iter()
+        .map(|output| json!({"type": "object", "id": output["id"], "mime": output["mime"]}))
+        .collect();
+    assert_eq!(last["content"], json!(parts), "one object part for each output: {last}");
+}
+
+/// A generation of the speech model names the record of its context with its reply, with and without a stream. The
+/// next line names that record as its `parent`, and it is the context that a client sends whole.
+///
+/// Falsified by a route that speaks with no records: `done` has no `context`.
+#[test]
+fn a_speech_generation_names_the_record_with_its_output_and_the_next_line_takes_it_as_a_parent() {
+    for stream in [false, true] {
+        let fixture = Fixture::new();
+        let home = council_support::Fixture::new();
+        let council = fixture.council_with_home(&home);
+        let mut body = messages(&[json!({"role": "user", "content": "hello"})]);
+        let done = if stream {
+            body["stream"] = json!(true);
+            let (status, _, _, bytes) = send(&council, "POST", "/council/v2/generations", Some(body.clone()));
+            assert_eq!(status, StatusCode::OK);
+            let (name, done) = events(&bytes).pop().unwrap();
+            assert_eq!(name, "done");
+            done
+        } else {
+            let (status, done) = generate(&council, body.clone());
+            assert_eq!(status, StatusCode::OK, "{done}");
+            done
+        };
+        assert_reply_record(&council, &body["context"], &done);
+        // The next line: the record and one new message, and then the same context whole.
+        let mut by_parent = messages(&[]);
+        by_parent["context"] = json!({"parent": done["context"], "messages": [{"role": "user", "content": "world"}]});
+        let (status, next) = generate(&council, by_parent);
+        assert_eq!(status, StatusCode::OK, "{next}");
+        let reply: GenerationDone = serde_json::from_value(done.clone()).unwrap();
+        let mut reply = serde_json::to_value(reply.as_message().unwrap()).unwrap();
+        reply["snap"] = json!(true);
+        let whole = messages(&[
+            json!({"role": "user", "content": "hello"}),
+            reply,
+            json!({"role": "user", "content": "world"}),
+        ]);
+        let (status, same) = generate(&council, whole);
+        assert_eq!(status, StatusCode::OK, "{same}");
+        assert_eq!(next["context"], same["context"], "the two forms are one context");
+        assert_eq!(next["usage"]["prompt"], same["usage"]["prompt"]);
+    }
+}
+
+/// A node with no text model has no home, so it holds no record (spec 6.17). Its speech generation names none, and
+/// a `parent` is gogi's 404.
+#[test]
+fn a_speech_generation_on_a_node_with_no_home_names_no_record() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let (status, done) = generate(&council, messages(&[json!({"role": "user", "content": "hello"})]));
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert!(done.get("context").is_none(), "{done}");
+    let mut by_parent = messages(&[]);
+    by_parent["context"] = json!({"parent": format!("blake3:{}", "0".repeat(64))});
+    let (status, param) = refused(&council, by_parent);
+    assert_eq!((status, param.as_str()), (StatusCode::NOT_FOUND, "context.parent"));
 }
 
 #[test]
