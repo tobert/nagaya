@@ -205,6 +205,14 @@ class Markup(unittest.TestCase):
         page = WEB.joinpath("index.html").read_text()
         self.assertIn('<input id="chat-thinking" type="checkbox" checked>', page)
 
+    def test_the_sampler_of_a_chat_starts_from_the_model_card_of_lfm3(self):
+        # The card gives temperature 0.1 and top k 50 for general work, and 1.0, top p 0.95 and top k 20 for math.
+        # The page starts warmer than 0.1, because a chat at 0.1 repeats itself, and it keeps the top k of 50.
+        page = WEB.joinpath("index.html").read_text()
+        self.assertIn('<input id="chat-temp" type="number" min="0" step="0.1" value="0.3">', page)
+        self.assertIn('<input id="chat-topk" type="number" min="1" value="50">', page)
+        self.assertIn('<input id="chat-topp" type="number" min="0.01" max="1" step="0.01" placeholder="off">', page)
+
     def test_each_tab_of_the_rail_has_its_section(self):
         page = WEB.joinpath("index.html").read_text()
         tabs = re.findall(r'<button data-tab="(\w+)">', page)
@@ -535,6 +543,24 @@ class Page(unittest.TestCase):
         self.assertEqual(len(three["messages"]), 6)
         self.assertNotIn("parent", four)
         self.assertEqual([m["content"] for m in four["messages"]], ["Be long.", "four"])
+
+    def test_a_chat_turn_sends_the_sampler_fields_that_are_set_and_no_field_that_is_empty(self):
+        out = self.run_page("""
+            const sent = [];
+            const real = fetch;
+            fetch = (path, o) => /generations$/.test(path)
+              ? (sent.push(JSON.parse(o.body).sample), sse([["done", {content: "ok", finish: "end_turn", snapshots: [],
+                                                                     usage: {prompt: 1, fed: 1, completion: 1}}]]))
+              : real(path, o);
+            const say = async () => { set("chat-input", "hi"); await document.getElementById("chat-go").onclick(); };
+            set("chat-model", "lfm3"); set("chat-temp", "0.3"); set("chat-topk", "50"); set("chat-topp", "");
+            await say();
+            set("chat-topk", ""); set("chat-topp", "0.95"); set("chat-temp", "1");
+            await say();
+            out.sent = sent;
+            out.failed = document.getElementById("chat-error").textContent;""")
+        self.assertEqual(out["failed"], "")
+        self.assertEqual(out["sent"], [{"temperature": 0.3, "top_k": 50}, {"temperature": 1, "top_p": 0.95}])
 
     def test_a_chat_reply_with_no_snapshots_shows_its_counts_and_no_id(self):
         done = dict(self.CHAT_DONE, snapshots=[], usage={"prompt": 23, "fed": 23, "completion": 4})

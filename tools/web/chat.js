@@ -75,7 +75,11 @@ $("chat-go").onclick = async () => {
   };
   // The settings of this turn stand beside the parent and replace those of the record.
   let byParent = !!chatRecord && here(chatRecord.host) && chatRecord.system === system;
-  const body = {model, max_tokens: +$("chat-max").value, sample: {temperature: +$("chat-temp").value},
+  // An empty field leaves its member out, so the nagaya does not cut the choice of tokens by it.
+  const sample = {temperature: +$("chat-temp").value};
+  if ($("chat-topk").value !== "") sample.top_k = +$("chat-topk").value;
+  if ($("chat-topp").value !== "") sample.top_p = +$("chat-topp").value;
+  const body = {model, max_tokens: +$("chat-max").value, sample,
                 context: byParent ? {parent: chatRecord.id, thinking, control: control || [],
                                      messages: [{role: "user", content: text, snap: true}]} : whole()};
   const live = {role: "assistant", content: "", reasoning: "", open: true};
