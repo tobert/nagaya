@@ -201,20 +201,27 @@ async function chatSpeak(i) {
     const speech = kindOf(models.find((x) => x.model === model)) === "speech";
     const chunks = speechChunks(m.content);
     let ms = 0, clips = 0;
+    // A speech model takes the voice of the Speech tab. Each chunk continues from the chunks and the clips before
+    // it, so the voice stays the same through the text (spec 11.8a). The nagaya holds their state, so a chunk feeds
+    // only its own text.
+    const spoken = [{role: "system", content: $("sp-voice").value, snap: true}];
     for (const [n, chunk] of chunks.entries()) {
       job.status(`speaking part ${n + 1} of ${chunks.length}…`);
-      // A speech model takes the voice of the Speech tab. A model that speaks beside its text takes the prompt of its
-      // speech mode.
+      // A model that speaks beside its text takes the prompt of its speech mode, and each chunk alone.
       const body = speech
-        ? {model, max_tokens: 1, context: {thinking: false, messages: [{role: "system", content: $("sp-voice").value},
-                                                                        {role: "user", content: chunk}]},
+        ? {model, max_tokens: 1, context: {thinking: false, messages: spoken.concat([{role: "user", content: chunk}])},
            output: {mime: "audio/wav", options: {language: $("sp-lang").value || "auto"}}}
         : {model, max_tokens: 512, sample: {temperature: 0.3},
            context: {thinking: false, messages: [{role: "system", content: OMNI_SYSTEM.speech},
                                                  {role: "user", content: chunk}]},
            output: {mime: "audio/wav", options: {mode: "speech"}}};
       const done = await call("POST", "/council/v2/generations", body);
-      for (const o of (done.outputs || []).filter((o) => o.mime === "audio/wav")) {
+      const made = (done.outputs || []).filter((o) => o.mime === "audio/wav");
+      if (made.length) {
+        spoken.push({role: "user", content: chunk, snap: true},
+                    {role: "assistant", content: [{type: "object", id: made[0].id, mime: "audio/wav"}], snap: true});
+      }
+      for (const o of made) {
         chatMade = chatMade.concat([{id: o.id, host}]).slice(-200);
         job.add(`<audio controls src="${esc(objectUrl(o.id))}"></audio>`);
         if (clips++ === 0) job.clips().querySelector?.("audio")?.play?.().catch(() => {});

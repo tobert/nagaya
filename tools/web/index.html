@@ -85,8 +85,7 @@
       <div class="actions"><button class="plain" id="chat-clear">New chat</button></div>
     </div>
     <div class="card">
-      <div id="chat-log"></div>
-      <div id="chat-tray" class="tray"></div>
+      <div class="dock"><div id="chat-log"></div><div id="chat-tray" class="tray"></div></div>
       <div id="chat-error" class="err"></div>
       <div class="composer">
         <textarea id="chat-input" rows="3" placeholder="Message — Enter sends, Shift+Enter is a new line"></textarea>
@@ -240,7 +239,7 @@
       <label>Model</label>
       <div class="model"><select id="sp-model"></select><span id="sp-model-state" class="note"></span></div>
       <label>Voice design</label>
-      <textarea id="sp-voice" rows="4">A calm, warm female voice in her thirties, speaking clearly at a relaxed pace.</textarea>
+      <textarea id="sp-voice" rows="4">A woman in her thirties with a clear British accent. Her voice is warm and calm, with a medium pitch. She speaks at an even, relaxed pace, and she says each word clearly.</textarea>
       <div class="row">
         <div><label>Language</label>
           <select id="sp-lang">

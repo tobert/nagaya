@@ -155,9 +155,14 @@ audio { width: 100%; }
 #chat-log, #omni-log { display: flex; flex-direction: column; gap: 10px; min-height: 200px;
                        max-height: calc(100vh - 290px); overflow-y: auto; padding-right: 4px; }
 /* The jobs that a chat started beside itself: the speech and the images of its messages. */
-.tray { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.dock { display: flex; gap: 12px; align-items: flex-start; }
+.dock > #chat-log { flex: 1; min-width: 0; }
+.tray { display: flex; flex-direction: column; gap: 8px; flex: 0 0 280px; max-height: calc(100vh - 290px);
+        overflow-y: auto; border-left: 1px solid var(--line); padding-left: 12px; }
 .tray:empty { display: none; }
-.job { border-top: 1px solid var(--line); padding-top: 8px; }
+.job + .job { border-top: 1px solid var(--line); padding-top: 8px; }
+@media (max-width: 820px) { .dock { flex-direction: column; } .tray { flex: none; width: 100%; border-left: 0;
+                                                                      padding-left: 0; max-height: none; } }
 .job .clips { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
 .job .tiles { grid-template-columns: repeat(auto-fill, minmax(160px, 240px)); }
 /* A named thing of a list with a number and a button: a LoRA, a saved vector. */

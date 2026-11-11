@@ -228,6 +228,13 @@ class Markup(unittest.TestCase):
             self.assertLessEqual(len(hint), 20, hint)
         self.assertGreaterEqual(len(re.findall(r'<span class="tip" tabindex="0" title="[^"]+">ⓘ</span>', page)), 10)
 
+    def test_the_tray_of_the_chat_is_beside_its_log_and_the_voice_starts_british(self):
+        page = WEB.joinpath("index.html").read_text()
+        self.assertIn('<div class="dock"><div id="chat-log"></div><div id="chat-tray" class="tray"></div></div>', page)
+        voice = re.search(r'<textarea id="sp-voice" rows="4">(.*?)</textarea>', page, re.S).group(1)
+        self.assertIn("British", voice)
+        self.assertIn("woman", voice)
+
     def test_each_tab_of_the_rail_has_its_section(self):
         page = WEB.joinpath("index.html").read_text()
         tabs = re.findall(r'<button data-tab="(\w+)">', page)
@@ -619,7 +626,7 @@ class Page(unittest.TestCase):
             out.keep = JSON.parse(calls.filter((c) => c[1] === "/council/v2/keeps/nagaya-web").pop()[2]).objects;""")
         (body,) = out["bodies"]
         self.assertEqual(body["model"], "voice")
-        self.assertEqual(body["context"]["messages"], [{"role": "system", "content": "A calm voice."},
+        self.assertEqual(body["context"]["messages"], [{"role": "system", "content": "A calm voice.", "snap": True},
                                                        {"role": "user", "content": "Hello there. A red fox sits in the snow."}])
         self.assertEqual(body["output"], {"mime": "audio/wav", "options": {"language": "english"}})
         self.assertIn("message 2", out["tray"])
@@ -627,6 +634,24 @@ class Page(unittest.TestCase):
         self.assertIn('<audio controls src="/at/b70host/council/v2/objects/blake3:' + "a" * 64 + '"', out["clips"])
         self.assertIn("1 clip", out["status"])
         self.assertIn("blake3:" + "a" * 64, out["keep"])
+
+    def test_each_chunk_of_speech_continues_from_the_clips_before_it_so_the_voice_stays(self):
+        # A text of 3 sentences of 20 words each is 2 chunks of at most 40 words. The second request holds the first
+        # chunk and its clip, as the Speech tab does with "Keep the lines before" (spec 11.8a).
+        sentence = " ".join(["word"] * 19) + " end."
+        out = self.run_page(self.SEND_TO + f"""
+            chat.push({{role: "assistant", content: "{sentence} {sentence} {sentence}"}});
+            set("chat-speak", "voice"); set("sp-voice", "A calm voice.");
+            await press({{chatSpeak: "2"}});
+            out.bodies = bodies();""")
+        first, second = out["bodies"]
+        clip = {"role": "assistant", "content": [{"type": "object", "id": "blake3:" + "a" * 64, "mime": "audio/wav"}],
+                "snap": True}
+        self.assertEqual(first["context"]["messages"], [{"role": "system", "content": "A calm voice.", "snap": True},
+                                                        {"role": "user", "content": f"{sentence} {sentence}"}])
+        self.assertEqual(second["context"]["messages"], [{"role": "system", "content": "A calm voice.", "snap": True},
+                                                         {"role": "user", "content": f"{sentence} {sentence}", "snap": True},
+                                                         clip, {"role": "user", "content": sentence}])
 
     def test_a_message_goes_to_a_model_that_speaks_beside_its_text_with_the_prompt_of_its_speech_mode(self):
         out = self.run_page(self.SEND_TO + """
