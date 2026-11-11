@@ -413,6 +413,7 @@ pub fn speak(
             }),
         },
         head: spoken.head.as_ref().map(crate::council::snapshot_id),
+        context: None,
         snapshots,
         stats: None,
         decisions: Vec::new(),

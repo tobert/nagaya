@@ -12,6 +12,7 @@ pub mod error;
 pub mod generations;
 pub mod pins;
 pub mod reads;
+pub mod records;
 pub mod slots;
 pub mod specs;
 pub mod speech_out;
@@ -25,11 +26,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use gogi_proto::Invalid;
-use gogi_proto::SnapshotId;
 use gogi_proto::context::{Context, SnapshotInfo, Tier as SnapshotTier, Usage};
 use gogi_proto::decision::DecisionIdentity;
-use gogi_proto::pins::{PinHeld, PinOwner, PinsPut, PinsPutResult, SnapshotDetail, validate_owner};
+use gogi_proto::generation::GenerationDone;
+use gogi_proto::pins::{PinHeld, PinOwner, PinsPut, PinsPutResult, RecordHeld, SnapshotDetail, validate_owner};
 use gogi_proto::spec::{HeldSpec, SpecRules};
+use gogi_proto::{ContextId, SnapshotId};
 use nagaya_abi::{Capability, Engine, Limits};
 use nagaya_council::build::{
     BoundaryRecipe, boundary_recipes, range_recipe, recipes_with_cuts, root_recipe, root_recipe_with_control,
@@ -44,6 +46,7 @@ use self::build::{BuildBody, ContextBody, Cut, Finished, JobControl, LookupBody,
 use self::control::{ControlTable, Fit};
 use self::error::ServiceError;
 use self::pins::{OwnerPins, PinBook, owner_key};
+use self::records::Records;
 use self::slots::SlotPool;
 use self::specs::Specs;
 use crate::jobs::{JobBody, JobSpec, Ran};
@@ -115,6 +118,8 @@ pub struct ServiceConfig {
     pub sample: SampleDefaults,
     /// The most snapshot bytes that all pins keep together.
     pub pin_bytes: u64,
+    /// The most context records that the server holds when no pin keeps one (spec 6.17).
+    pub context_records: usize,
     /// What a spec may hold.
     pub spec_rules: SpecRules,
     /// The other engines of the server, whose snapshots this service reads and pins too: snapshots and pins belong to
@@ -165,6 +170,7 @@ impl ServiceConfig {
             default_timeout_ms: 30_000,
             sample: SampleDefaults::default(),
             pin_bytes: 1 << 30,
+            context_records: records::CONTEXT_RECORDS,
             spec_rules: SpecRules::default(),
             peers: Vec::new(),
             speech: None,
@@ -185,6 +191,8 @@ pub struct Built {
     pub snapshots: Vec<SnapshotInfo>,
     /// The recipe of the head. A dry run that finds no held head names the head with it (spec 11.3c).
     pub head_recipe: nagaya_store::RecipeId,
+    /// The record of the context. A dry run holds none (gogi "Context records").
+    pub context: Option<ContextId>,
 }
 
 /// The pins of one owner (gogi "Snapshots and pins").
@@ -194,6 +202,8 @@ pub struct PinListing {
     pub owner: String,
     /// The snapshots that the owner pinned.
     pub snapshots: Vec<SnapshotId>,
+    /// The context records that the owner pinned.
+    pub contexts: Vec<ContextId>,
     /// The seconds until the pins end.
     pub expires_in_s: u64,
 }
@@ -281,21 +291,24 @@ impl Drop for Charge<'_> {
     }
 }
 
-/// The specs and the pin book of the server: the files in the store directory (spec 11.7, "Several text models in one
-/// process", Proposed). The server opens them once, and each text service holds a clone, so two services never write
-/// one file. A clone is a handle to the same specs and the same book.
+/// The specs, the pin book and the context records of the server: the files in the store directory (spec 11.7,
+/// "Several text models in one process", and 6.17). The server opens them once, and each text service holds a clone,
+/// so two services never write one file. A clone is a handle to the same specs, the same book and the same records.
 #[derive(Clone)]
 pub struct ServerFiles {
     specs: Arc<Mutex<Specs>>,
     pins: Arc<Mutex<PinBook>>,
+    records: Arc<Mutex<Records>>,
 }
 
 impl ServerFiles {
-    /// Open the specs and the pin book in `store_dir`. `rules` are what a held spec may hold.
-    pub fn open(store_dir: &Path, rules: SpecRules) -> Result<Self, ServiceError> {
+    /// Open the specs, the pin book and the context records in `store_dir`. `rules` are what a held spec may hold,
+    /// and `context_records` is the most records that the server holds.
+    pub fn open(store_dir: &Path, rules: SpecRules, context_records: usize) -> Result<Self, ServiceError> {
         Ok(Self {
             specs: Arc::new(Mutex::new(Specs::open(store_dir, rules)?)),
             pins: Arc::new(Mutex::new(PinBook::open(store_dir)?)),
+            records: Arc::new(Mutex::new(Records::open_with(store_dir, context_records)?)),
         })
     }
 }
@@ -317,6 +330,9 @@ pub struct Service {
     /// (`shared.store`), never the store before `pins`. A method that needs both locks `pins` first. Two methods that
     /// lock in two orders can wait for each other for ever.
     pins: Arc<Mutex<PinBook>>,
+    /// The context records of the server, which each text service shares (spec 6.17). Lock order: `pins`, then the
+    /// store, then `records`.
+    records: Arc<Mutex<Records>>,
     /// The objects of the process, where a context finds its control vectors and its media parts (spec 6.15, 11.11,
     /// 11.12). The process sets it once, when it has an object store. With none, each object part that passes rules 1
     /// and 2 is a 404.
@@ -377,7 +393,7 @@ impl Service {
         identity: nagaya_abi::Identity,
         limits: Limits,
     ) -> Result<Self, ServiceError> {
-        let files = ServerFiles::open(store_dir, config.spec_rules)?;
+        let files = ServerFiles::open(store_dir, config.spec_rules, config.context_records)?;
         Self::attach_to(ports, family, files, config, Some((identity, limits)))
     }
 
@@ -401,7 +417,7 @@ impl Service {
         config: ServiceConfig,
         clock: Clock,
     ) -> Result<Self, ServiceError> {
-        let files = ServerFiles::open(store_dir, config.spec_rules)?;
+        let files = ServerFiles::open(store_dir, config.spec_rules, config.context_records)?;
         Self::attach_facts(ports, family, files, config, clock, None)
     }
 
@@ -516,6 +532,7 @@ impl Service {
             identity,
             specs: files.specs,
             pins: files.pins,
+            records: files.records,
             config,
             objects: OnceLock::new(),
             output_codes: Arc::new(CodesBook::default()),
@@ -762,6 +779,10 @@ impl Service {
             self.infos(&held_boundaries(&outcome))
         };
         Ok(Built {
+            context: match dry_run {
+                true => None,
+                false => Some(self.hold_record(context)?),
+            },
             head_recipe,
             // The store can evict the head before the list is read. A build names only a head that it lists.
             head: match open {
@@ -1153,6 +1174,7 @@ impl Service {
 
     /// Replace the pins of an owner (gogi "Snapshots and pins"). A snapshot that the store does not hold reports
     /// `held: false` and pins nothing. So does an interval copy. A set past `pin_bytes` pins nothing and is `too_large`.
+    /// A context record that the server does not hold reports `held: false` too. A record costs no `pin_bytes`.
     pub fn put_pins(&self, owner: &str, put: &PinsPut) -> Result<PinsPutResult, ServiceError> {
         validate_owner(owner)?;
         put.validate()?;
@@ -1198,6 +1220,23 @@ impl Service {
                 ),
             });
         }
+        // Each record of the request, and the ones that the server holds, each once (spec 6.17).
+        let (contexts, records) = {
+            let held = self.records.lock().expect("the record lock is poisoned");
+            let mut records: Vec<String> = Vec::new();
+            let mut contexts = Vec::with_capacity(put.contexts.len());
+            for text in &put.contexts {
+                let is_held = held.holds(text);
+                contexts.push(RecordHeld {
+                    id: ContextId::parse(text.clone()).expect("put.validate checked each id"),
+                    held: is_held,
+                });
+                if is_held && !records.contains(text) {
+                    records.push(text.clone());
+                }
+            }
+            (contexts, records)
+        };
         let old: Vec<ContentId> = book.get(owner).map(|pins| pins.snapshots.clone()).unwrap_or_default();
         for id in old.iter().filter(|id| !wanted.contains(id)) {
             store
@@ -1209,7 +1248,7 @@ impl Service {
                 .pin(*id, key, expires_ms, now)
                 .map_err(|error| ServiceError::internal(format!("cannot pin a snapshot: {error}")))?;
         }
-        let expires_in_s = if wanted.is_empty() {
+        let expires_in_s = if wanted.is_empty() && records.is_empty() {
             book.set(owner, None);
             None
         } else {
@@ -1217,6 +1256,7 @@ impl Service {
                 owner,
                 Some(OwnerPins {
                     snapshots: wanted,
+                    contexts: records,
                     expires_ms,
                 }),
             );
@@ -1226,6 +1266,7 @@ impl Service {
         Ok(PinsPutResult {
             owner: owner.to_owned(),
             snapshots: report,
+            contexts,
             expires_in_s,
         })
     }
@@ -1239,6 +1280,11 @@ impl Service {
             Some(pins) if pins.expires_ms > now => Ok(PinListing {
                 owner: owner.to_owned(),
                 snapshots: pins.snapshots.iter().map(snapshot_id).collect(),
+                contexts: pins
+                    .contexts
+                    .iter()
+                    .map(|id| ContextId::parse(id.clone()).expect("the book holds whole context ids"))
+                    .collect(),
                 expires_in_s: (pins.expires_ms - now).div_ceil(1000),
             }),
             _ => Err(ServiceError::NotFound(format!("{owner} pins nothing"))),
@@ -1263,11 +1309,13 @@ impl Service {
         book.save()
     }
 
-    /// At attach: drop the owners whose pins ended, and the snapshots that a restart took (spec 6.11).
+    /// At attach: drop the owners whose pins ended, and the snapshots that a restart took (spec 6.11). Also forget
+    /// each pinned record whose file is gone (spec 6.17).
     fn settle_pins(&self) -> Result<(), ServiceError> {
         let now = self.now();
         let mut book = self.pins.lock().expect("the pin book lock is poisoned");
         let mut store = self.store();
+        let records = self.records.lock().expect("the record lock is poisoned");
         let owners: Vec<(String, OwnerPins)> = book.owners().iter().map(|(o, p)| (o.clone(), p.clone())).collect();
         let mut changed = false;
         for (owner, pins) in owners {
@@ -1279,7 +1327,13 @@ impl Service {
                 .copied()
                 .filter(|id| live && store.entries().contains_key(id))
                 .collect();
-            if kept.len() == pins.snapshots.len() {
+            let kept_records: Vec<String> = pins
+                .contexts
+                .iter()
+                .filter(|id| live && records.holds(id))
+                .cloned()
+                .collect();
+            if kept.len() == pins.snapshots.len() && kept_records.len() == pins.contexts.len() {
                 continue;
             }
             for id in pins.snapshots.iter().filter(|id| !kept.contains(id)) {
@@ -1291,8 +1345,9 @@ impl Service {
             }
             book.set(
                 &owner,
-                (!kept.is_empty()).then_some(OwnerPins {
+                (!kept.is_empty() || !kept_records.is_empty()).then_some(OwnerPins {
                     snapshots: kept,
+                    contexts: kept_records,
                     expires_ms: pins.expires_ms,
                 }),
             );
@@ -1301,6 +1356,56 @@ impl Service {
         if changed {
             book.save()?;
         }
+        Ok(())
+    }
+
+    // ---- context records
+
+    /// Hold the record of a context, and give its id (gogi "Context records", spec 6.17). Past the limit, the
+    /// records that no live pin keeps go, the least recently named first.
+    pub fn hold_record(&self, context: &Context) -> Result<ContextId, ServiceError> {
+        let now = self.now();
+        let pinned = self.pins.lock().expect("the pin book lock is poisoned").records(now);
+        self.records
+            .lock()
+            .expect("the record lock is poisoned")
+            .hold(context, &pinned)
+    }
+
+    /// The context of a held record. An id that the server does not hold is `not_found`.
+    pub fn record(&self, id: &ContextId) -> Result<Context, ServiceError> {
+        self.records
+            .lock()
+            .expect("the record lock is poisoned")
+            .get(id.as_str())?
+            .ok_or_else(|| {
+                ServiceError::NotFound(format!(
+                    "no context record {id}: send the context whole, which holds its record again"
+                ))
+            })
+    }
+
+    /// The most context records that the server holds when no pin keeps one.
+    pub fn context_records(&self) -> usize {
+        self.records.lock().expect("the record lock is poisoned").limit()
+    }
+
+    /// Make each context of a request body whole (gogi "Context records", spec 11.13). `close` is false only for a
+    /// generation, which continues an open message of a parent. A parent that the server does not hold is the 404
+    /// that names it.
+    pub fn resolve(&self, body: &mut Value, close: bool) -> Result<(), ServiceError> {
+        resolve_with(body, close, &mut |id| {
+            self.records
+                .lock()
+                .expect("the record lock is poisoned")
+                .get(id.as_str())
+        })
+    }
+
+    /// Hold the record of a generation's context with its reply after it, and name it in `done.context` (gogi "The
+    /// reply in a record").
+    pub fn name_reply(&self, context: &Context, done: &mut GenerationDone) -> Result<(), ServiceError> {
+        done.context = Some(self.hold_record(&gogi_proto::with_reply(context, done))?);
         Ok(())
     }
 
@@ -1325,6 +1430,35 @@ impl Service {
     pub fn drop_spec(&self, id: &str) -> Result<(), ServiceError> {
         self.specs.lock().expect("the spec lock is poisoned").drop_spec(id)
     }
+}
+
+/// Make each context of a request body whole, with `lookup` as the read of a record (gogi `resolve_request`). A read
+/// that fails ends the call with its error.
+pub fn resolve_with(
+    body: &mut Value,
+    close: bool,
+    lookup: &mut dyn FnMut(&ContextId) -> Result<Option<Context>, ServiceError>,
+) -> Result<(), ServiceError> {
+    let failed: std::cell::RefCell<Option<ServiceError>> = std::cell::RefCell::new(None);
+    let lookup = std::cell::RefCell::new(lookup);
+    let read = |id: &ContextId| match (lookup.borrow_mut())(id) {
+        Ok(found) => found,
+        Err(error) => {
+            failed.borrow_mut().get_or_insert(error);
+            None
+        }
+    };
+    let resolved = gogi_proto::resolve_request(body, close, &read);
+    if let Some(error) = failed.into_inner() {
+        return Err(error);
+    }
+    resolved.map_err(|unresolved| match unresolved {
+        gogi_proto::Unresolved::Invalid(invalid) => ServiceError::Invalid(invalid),
+        gogi_proto::Unresolved::NotHeld { param, id } => ServiceError::NotHeld {
+            param,
+            message: gogi_proto::Unresolved::not_held_message(&id),
+        },
+    })
 }
 
 /// The boundaries of a job's context that the store holds, with their entries. A cut is not a boundary of the context,

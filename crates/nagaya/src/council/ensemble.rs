@@ -461,6 +461,11 @@ impl Service {
             outcome,
             then: generation,
         };
+        // An ensemble holds the record of each context, and it names none (`docs/lab.md`, "Context records in the
+        // lab routes").
+        for request in requests {
+            self.hold_record(&request.context)?;
+        }
         Ok(Ensembled {
             done: self.answer(finished, &facts).0,
             read,

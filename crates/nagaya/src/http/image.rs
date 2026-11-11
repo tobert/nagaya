@@ -1107,6 +1107,7 @@ fn done(
             }),
         },
         head: None,
+        context: None,
         snapshots: Vec::new(),
         stats: None,
         decisions: Vec::new(),

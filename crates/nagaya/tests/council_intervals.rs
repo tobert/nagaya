@@ -227,6 +227,7 @@ fn a_client_cannot_pin_a_copy_so_a_stop_parks_a_slot_that_holds_the_bytes_of_a_c
 
     let pins = gogi_proto::pins::PinsPut {
         snapshots: vec![id.as_str().to_owned()],
+        contexts: Vec::new(),
         ttl_s: 3600,
     };
     // The park reads the system clock, so the pin must use it too.

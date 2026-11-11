@@ -349,6 +349,10 @@ impl Service {
         // A number that fails the check is a defect, never an answer (gogi "Errors").
         math::verify(&response, &request.expect())
             .map_err(|mismatch| ServiceError::internal(format!("a decision failed its check: {mismatch}")))?;
+        // A decision holds the record of each context that it read, and it names none (spec 11.13).
+        for context in &request.contexts {
+            self.hold_record(context)?;
+        }
         Ok(response)
     }
 }

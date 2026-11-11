@@ -463,6 +463,7 @@ impl Council {
                 choice_options: config.spec_rules.choice_options as u64,
                 questions_per_spec: Some(config.spec_rules.questions_per_spec as u64),
                 pin_bytes: pins.then_some(config.pin_bytes),
+                context_records: pins.then_some(config.context_records as u64),
                 object_bytes: objects.map(|(object, _)| object),
                 keep_bytes: objects.map(|(_, keep)| keep),
             },

@@ -193,6 +193,10 @@ impl Service {
             }
         }
         usage.media = read;
+        // A raw read holds the record of each context that it read, and it names none (spec 11.13).
+        for context in &request.contexts {
+            self.hold_record(context)?;
+        }
         Ok(ReadsResponse {
             model: self.config.model.clone(),
             reads,

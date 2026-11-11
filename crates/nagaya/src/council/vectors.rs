@@ -168,6 +168,10 @@ impl Service {
         let bytes = vector.to_bytes();
         response.vector = Some(put(&bytes)?);
         response.usage = usage(Some(bytes.len() as u64));
+        // The request holds the record of each context of both sets, and it names none (spec 11.13).
+        for context in request.positive.iter().chain(&request.negative) {
+            self.hold_record(context)?;
+        }
         Ok(response)
     }
 }

@@ -22,6 +22,35 @@ const PROFILE: &str = "[[engines]]\nname = \"toy\"\nkind = \"fake-toy\"\ndevices
      [[budgets]]\ntiers = [\"host\"]\nbytes = 33554432\n\
      [store]\nnvme = 67108864\nhost = 16777216\nobjects = 25165824\n";
 
+/// The checks of gogi's suite for context records that do not depend on the reply (gogi `checks/records.rs`). Each
+/// must run and pass, not skip.
+const RECORD_CHECKS: [&str; 24] = [
+    "a build names the record of its context",
+    "the context id is the content id of the record's text",
+    "identity names context_records, at least 1",
+    "a record reads back with its id and no parent",
+    "a record reads back as its context",
+    "an unknown record is a 404",
+    "a record id that is not whole names id",
+    "a parent alone is the same context",
+    "a build from a parent starts from the parent's snapshots",
+    "a context sent with a parent and sent whole is one context",
+    "a member beside parent replaces the parent's",
+    "a dry run names no record",
+    "a dry run holds no record",
+    "a parent the server does not hold names context.parent and quotes the id",
+    "a parent that is not a whole content id is a 400 naming context.parent",
+    "a member that does not stand beside parent is a 400 naming it",
+    "a bad new message names its place in the whole context",
+    "a decision names the parent under contexts",
+    "a decision from a parent gives the numbers of the whole context",
+    "a decision holds the record of its context",
+    "a pin reports each record with whether it is held",
+    "a pin list names the held records only",
+    "a pin of a record id that is not whole names contexts",
+    "a generation names the record of its context and its reply",
+];
+
 /// The checks of gogi's suite for a served model with `control_vectors` (gogi `checks/control.rs`). Each must run and
 /// pass, not skip.
 const CONTROL_CHECKS: [&str; 19] = [
@@ -258,6 +287,11 @@ fn gogi_conformance_passes_against_the_process_with_the_fake_engine() {
     for name in CONTROL_CHECKS {
         assert!(ok(name), "{name}");
     }
+    // The record checks ran (gogi "Context records", spec 6.17, 11.13).
+    for name in RECORD_CHECKS {
+        assert!(ok(name), "{name}");
+    }
+    assert!(ok("a context record survives a restart"));
     // The checks of a cut reply need a whole reply of two tokens or more. The suite's context holds a random nonce,
     // and about one run in twenty, the fake engine's greedy reply is one token. Then the suite skips them.
     let short = report.checks.iter().any(|check| {
@@ -373,6 +407,10 @@ fn gogi_conformance_passes_on_each_of_two_text_models_of_one_process() {
             ],
         };
         for name in control {
+            assert!(ok(name), "{model}: {name}");
+        }
+        // Both served models share the records of the server.
+        for name in RECORD_CHECKS {
             assert!(ok(name), "{model}: {name}");
         }
     }

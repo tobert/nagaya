@@ -447,7 +447,7 @@ async fn keep_route(
     if delete {
         peers::join_delete(answers, || no_store(council, id))
     } else {
-        peers::join_sets(answers, "objects", put, || no_store(council, id))
+        peers::join_sets(answers, &["objects"], put, || no_store(council, id))
     }
 }
 

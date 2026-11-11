@@ -732,6 +732,7 @@ impl Service {
             },
             // A reply with audio holds no head (spec 11.11, "No head").
             head: None,
+            context: None,
             snapshots,
             stats: Some(ReplyStats {
                 reasoning: then.stats[0].finish(),

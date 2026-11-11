@@ -27,6 +27,10 @@ pub fn owner_key(owner: &str) -> u64 {
 pub struct OwnerPins {
     /// The content ids that the owner pinned, which the store held at the time.
     pub snapshots: Vec<ContentId>,
+    /// The ids of the context records that the owner pinned, which the server held at the time (spec 6.17). A book
+    /// of an older nagaya has none.
+    #[serde(default)]
+    pub contexts: Vec<String>,
     /// The end of the pins, in milliseconds of the service clock.
     pub expires_ms: u64,
 }
@@ -89,6 +93,15 @@ impl PinBook {
     /// Every owner and its pins.
     pub fn owners(&self) -> &BTreeMap<String, OwnerPins> {
         &self.owners
+    }
+
+    /// The ids of the context records that a pin keeps at the time `now_ms`. A pin that ended keeps nothing.
+    pub fn records(&self, now_ms: u64) -> std::collections::BTreeSet<String> {
+        self.owners
+            .values()
+            .filter(|pins| pins.expires_ms > now_ms)
+            .flat_map(|pins| pins.contexts.iter().cloned())
+            .collect()
     }
 
     /// The name of the owner that has this key, when the book knows it.

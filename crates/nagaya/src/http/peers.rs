@@ -227,12 +227,19 @@ pub(super) fn join_delete(mut answers: Vec<Answer>, none: impl FnOnce() -> Respo
     answers.into_iter().next().map_or_else(none, Answer::respond)
 }
 
-/// The join of the sets of pins or keeps of an owner, under the member `key` (spec 11.1a, "The routes with no model").
+/// The join of the sets of pins or keeps of an owner, under each member of `keys` (spec 11.1a, "The routes with no
+/// model"). Pins have the members `snapshots` and `contexts`, and keeps have `objects`.
 ///
 /// A `PUT` gives each id of the request once, held when any node held it. A `GET` gives the union of the held ids.
+/// A member that no node gave stays out.
 /// `expires_in_s` is the smallest that a node gave, and a `PUT` with no held id gives `null`. An owner that no node
 /// knows is the first 404. `none` is the response when no node answered.
-pub(super) fn join_sets(mut answers: Vec<Answer>, key: &str, put: bool, none: impl FnOnce() -> Response) -> Response {
+pub(super) fn join_sets(
+    mut answers: Vec<Answer>,
+    keys: &[&str],
+    put: bool,
+    none: impl FnOnce() -> Response,
+) -> Response {
     if let Some(refused) = refusal(&mut answers) {
         return refused.respond();
     }
@@ -247,24 +254,30 @@ pub(super) fn join_sets(mut answers: Vec<Answer>, key: &str, put: bool, none: im
     let mut joined = first.clone();
     let expires = sets.iter().filter_map(|set| set["expires_in_s"].as_u64()).min();
     joined["expires_in_s"] = expires.map_or(serde_json::Value::Null, serde_json::Value::from);
-    if put {
-        let held = |at: usize| sets.iter().any(|set| set[key][at]["held"] == true);
-        if let Some(entries) = joined[key].as_array_mut() {
+    for key in keys {
+        // A node of an older build gives no `contexts`, and a `PUT` with no record gives none.
+        let Some(list) = sets.iter().find_map(|set| set.get(*key).filter(|list| list.is_array())) else {
+            continue;
+        };
+        if put {
+            let held = |at: usize| sets.iter().any(|set| set[*key][at]["held"] == true);
+            let mut entries = list.as_array().cloned().unwrap_or_default();
             for (at, entry) in entries.iter_mut().enumerate() {
                 entry["held"] = serde_json::Value::Bool(held(at));
             }
-        }
-    } else {
-        let mut ids: Vec<serde_json::Value> = Vec::new();
-        for id in sets
-            .iter()
-            .flat_map(|set| set[key].as_array().cloned().unwrap_or_default())
-        {
-            if !ids.contains(&id) {
-                ids.push(id);
+            joined[*key] = serde_json::Value::Array(entries);
+        } else {
+            let mut ids: Vec<serde_json::Value> = Vec::new();
+            for id in sets
+                .iter()
+                .flat_map(|set| set[*key].as_array().cloned().unwrap_or_default())
+            {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
             }
+            joined[*key] = serde_json::Value::Array(ids);
         }
-        joined[key] = serde_json::Value::Array(ids);
     }
     super::routes::json(StatusCode::OK, &joined)
 }
