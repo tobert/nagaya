@@ -70,20 +70,19 @@ With `snapshots` true, the driver lets the nagaya hold the part that the calls o
 
 - The head of a round, which is the problem and the parent, is its own user message with `snap` true. The rest of
   each prompt is a second user message. Thus the model reads two user messages in place of one.
-- Before the think agents, the driver builds the shared messages once for each model, with
-  `POST /council/v2/contexts`. Without a prime, they are the head. After a prime, they are the head, the request of
-  the prime and its text. Then an agent feeds only its focus.
-- Before the forks of `plain` or `contrast`, the driver builds the whole act prompt once for each model. Then a fork
-  feeds only its prefill.
-- A build goes first because the calls of a stage run at once. Without it, no call finds the snapshot of another.
-- The record of a stage counts each build in `calls` and in its tokens.
+- After a prime, the request of the prime and its text are shared too, and the text of the prime ends with a
+  boundary. Then an agent feeds only its focus.
+- Each fork of `plain` or `contrast` has the same prompt, so the end of the prompt is a boundary. Then a fork feeds
+  only its prefill.
+- The driver makes no call only for a snapshot. The calls of a stage run at once. The nagaya feeds a prefix once
+  for the requests in flight that share it (spec 11.14). Until 2026-11-11 the driver built the shared messages first,
+  with one more call for each model, because each call fed the shared part.
 
 `distill` with `combine` shares nothing: its prompt has the parent last, after the ideas.
 
 On 2026-11-11, three rounds of `s2s-combine.json` on `lfm3` gave these counts. Without snapshots, think fed 4,624
-of 6,366 prompt tokens, and act fed 4,532 of 4,532. With snapshots, think fed 1,504 of 6,929, and act fed 767 of
-5,514. The wall time of think stayed at 9.6 s, and act went from 7.1 s to 5.8 s. The runs of 2026-11-10 had no
-snapshots: they fed 60% to 100% of each prompt again.
+of 6,366 prompt tokens, and act fed 4,532 of 4,532. With snapshots and a build call, think fed 1,504 of 6,929, and
+act fed 767 of 5,514. The runs of 2026-11-10 had no snapshots: they fed 60% to 100% of each prompt again.
 
 ## The prime
 

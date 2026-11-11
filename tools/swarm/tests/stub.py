@@ -49,8 +49,6 @@ class StubTransport:
         with self._lock:
             self.calls.append((path, body))
         usage = {"prompt": 100, "fed": 10, "completion": 5}
-        if path == client.CONTEXTS:
-            return {"head": "blake3:" + "0" * 64, "usage": {"prompt": 60, "fed": 60, "completion": 0}}
         if path == client.GENERATIONS and body["context"]["messages"][-1]["role"] == "user":
             return {**self.prime, "usage": usage}
         if path == client.GENERATIONS:

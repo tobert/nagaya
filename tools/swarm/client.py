@@ -3,7 +3,6 @@ its text and its usage, so the driver counts the tokens of each stage."""
 import numpy as np
 
 GENERATIONS = "/council/v2/generations"
-CONTEXTS = "/council/v2/contexts"
 ENSEMBLE = "/nagaya/v1/lab/ensemble"
 EMBEDDINGS = "/council/v2/embeddings"
 
@@ -56,14 +55,6 @@ class Client:
             "model": model, "max_tokens": max_tokens, "sample": _sample(temperature, seed, sample),
             "context": _context(user, prefill, system, thinking)})
         return reply.get("content", ""), usage_of(reply)
-
-    def build(self, model, messages, system=None):
-        """Build the snapshots of `messages`, with a boundary at the last one (gogi "Contexts"). A later call that
-        starts with these messages feeds only what comes after them. The result is the usage of the build."""
-        messages = [dict(m) for m in messages]
-        messages[-1]["snap"] = True
-        reply = self.transport.post(CONTEXTS, {"model": model, "context": _context(messages, None, system)})
-        return usage_of(reply)
 
     def prime(self, model, user, max_tokens, temperature, seed, system=None, sample=None):
         """One generation with thinking on and no prefill. The text is the reasoning, then the content

@@ -186,15 +186,6 @@ class Driver:
         """The user part of a call: the text, or with `snapshots` the head as its own message, then the rest."""
         return task.split(head, prompt) if self.recipe["snapshots"] else prompt
 
-    def _build(self, stage, models, messages, st):
-        """With `snapshots`, build the shared messages of a stage once for each of its models, before its calls.
-        The calls run at once, so without the build each of them feeds the shared part. The stage counts each
-        build as a call."""
-        if not self.recipe["snapshots"]:
-            return
-        for model in sorted(set(models)):
-            stage.count(model, self.client.build(model, messages, system=st.get("system")))
-
     def prime(self, stage, head, seed):
         """The text of the prime: one generation with thinking over the shared head."""
         p = self.recipe["prime"]
@@ -210,10 +201,6 @@ class Driver:
         models = [self.spread.next() for _ in range(n)]
         temperatures = [temperature(t, i) for i in range(n)]
         shares = self.recipe["snapshots"]
-        if shares:
-            shared = (task.split(head, head)[:1] if prime is None else
-                      task.think_turns(head, prime, chosen[0], True)[:-1])
-            self._build(stage, models, shared, t)
 
         def one(i):
             user = (self._prompt(head, task.think_prompt(head, chosen[i])) if prime is None else
@@ -271,10 +258,9 @@ class Driver:
         models = [self.spread.next() for _ in range(a["forks"])]
         temperatures = [temperature(a, f) for f in range(a["forks"])]
         if self.recipe["snapshots"]:
-            # Each fork has the same prompt, so the build holds all of it, and a fork feeds only its prefill. The
-            # forks mark the boundary of the build, because boundaries are content (gogi "Contexts").
+            # Each fork has the same prompt, so its end is a boundary. The nagaya feeds the prompt once for the forks
+            # in flight (spec 11.14), and a fork feeds only its prefill.
             prompt[-1]["snap"] = True
-            self._build(stage, models, prompt, a)
 
         def one(f):
             if a["by"] == "contrast":

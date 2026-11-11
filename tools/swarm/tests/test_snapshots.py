@@ -1,5 +1,6 @@
 """Tests of the member `snapshots` of a recipe: the shared part of the prompts of a stage is its own messages with a
-boundary, and the driver builds it once for each model before the calls that share it."""
+boundary. The driver makes no call only for a snapshot: the nagaya feeds a prefix once for the requests in flight that
+share it (spec 11.14)."""
 import json
 import unittest
 
@@ -12,18 +13,14 @@ ON = with_(BASE, snapshots=True)
 
 
 def builds(stub):
-    return [b for p, b in stub.calls if p == client.CONTEXTS]
+    """The calls of a build route. The driver has none: a build before a fan-out is a call that the nagaya makes
+    needless."""
+    return [b for p, b in stub.calls if p == "/council/v2/contexts"]
 
 
 def gens(stub, prefill):
     return [b for p, b in stub.calls if p == client.GENERATIONS and
             b["context"]["messages"][-1].get("content") == prefill]
-
-
-def first(stub, path, prefill):
-    """The index of the first call of `path` whose last message holds `prefill`."""
-    return next(i for i, (p, b) in enumerate(stub.calls) if p == path and
-                b["context"]["messages"][-1].get("content") == prefill)
 
 
 class RecipeTest(unittest.TestCase):
@@ -52,17 +49,6 @@ class SplitTest(unittest.TestCase):
             task.split("the head", "another text")
 
 
-class ClientTest(unittest.TestCase):
-    def test_a_build_sends_the_messages_with_a_boundary_at_the_last_one(self):
-        stub = StubTransport()
-        usage = client.Client(stub).build("lfm3", [{"role": "user", "content": "H", "snap": True},
-                                                   {"role": "user", "content": "A"}], system="S")
-        self.assertEqual(stub.calls, [(client.CONTEXTS, {"model": "lfm3", "context": {"thinking": False, "messages": [
-            {"role": "system", "content": "S"}, {"role": "user", "content": "H", "snap": True},
-            {"role": "user", "content": "A", "snap": True}]}})])
-        self.assertEqual(usage, {"prompt": 60, "fed": 60, "completion": 0})
-
-
 class DriverTest(unittest.TestCase):
     def test_a_recipe_with_snapshots_off_builds_nothing_and_sends_one_text(self):
         stub, _, _ = run(BASE)
@@ -71,7 +57,15 @@ class DriverTest(unittest.TestCase):
             self.assertIsInstance(b["context"]["messages"][0]["content"], str)
             self.assertEqual(len(b["context"]["messages"]), 2)
 
-    def test_the_think_agents_share_a_head_that_the_driver_builds_first_for_each_model(self):
+    def test_a_recipe_with_snapshots_makes_no_call_only_for_a_snapshot(self):
+        for extra in ({}, {"prime": {"max_tokens": 64}}, {"act": {"forks": 2, "by": "contrast"}}):
+            stub, lines, _ = run(with_(ON, **extra))
+            self.assertEqual(builds(stub), [])
+            self.assertEqual(set(stub.paths()) - {client.GENERATIONS, client.ENSEMBLE}, set())
+        # The record of a stage counts its calls to the model, and no other call.
+        self.assertEqual(lines[-2]["round_stats"]["stages"]["think"]["calls"], 4)
+
+    def test_the_think_agents_share_a_head_with_a_boundary(self):
         stub, lines, _ = run(ON)
         ideas = gens(stub, task.IDEA_PREFILL)
         self.assertEqual(len(ideas), 4)
@@ -85,16 +79,10 @@ class DriverTest(unittest.TestCase):
             self.assertTrue(focus["content"].startswith("Focus: "), focus)
             self.assertNotIn("snap", focus)
             self.assertEqual(len(b["context"]["messages"]), 3)
-        # One build of the head for each model of the agents, before the first agent.
-        before = stub.calls[:first(stub, client.GENERATIONS, task.IDEA_PREFILL)]
-        self.assertEqual(sorted(b["model"] for p, b in before if p == client.CONTEXTS), ["lfm3", "lfm3-1"])
-        for p, b in before:
-            self.assertEqual(b["context"], {"thinking": False, "messages": [head]})
-        # The record of the stage counts the builds: 4 agents and 2 builds.
         think = lines[-2]["round_stats"]["stages"]["think"]
-        self.assertEqual((think["calls"], think["prompt"], think["fed"]), (6, 4 * 100 + 2 * 60, 4 * 10 + 2 * 60))
+        self.assertEqual((think["calls"], think["prompt"], think["fed"]), (4, 4 * 100, 4 * 10))
 
-    def test_the_act_forks_share_their_whole_prompt_that_the_driver_builds_first(self):
+    def test_the_act_forks_share_their_whole_prompt_with_a_boundary_at_its_end(self):
         stub, _, _ = run(ON)
         forks = gens(stub, task.CODE_PREFILL)
         self.assertEqual(len(forks), 4)
@@ -103,11 +91,6 @@ class DriverTest(unittest.TestCase):
         self.assertTrue(shared[1]["content"].startswith("Apply this idea: "))
         for b in forks:
             self.assertEqual(b["context"]["messages"][:-1], shared)
-        at = first(stub, client.GENERATIONS, task.CODE_PREFILL)
-        act_builds = [b for p, b in stub.calls[:at] if p == client.CONTEXTS and len(b["context"]["messages"]) == 2]
-        self.assertEqual(sorted(b["model"] for b in act_builds), sorted({b["model"] for b in forks}))
-        for b in act_builds:
-            self.assertEqual(b["context"]["messages"], shared)
 
     def test_the_vote_shares_the_head_of_the_round(self):
         stub, _, _ = run(ON)
@@ -125,11 +108,6 @@ class DriverTest(unittest.TestCase):
         for b in ideas:
             self.assertEqual(b["context"]["messages"][:3], shared)
             self.assertTrue(b["context"]["messages"][3]["content"].startswith("Focus: "))
-        before = stub.calls[:first(stub, client.GENERATIONS, task.IDEA_PREFILL)]
-        long = [b for p, b in before if p == client.CONTEXTS and len(b["context"]["messages"]) == 3]
-        self.assertEqual(sorted(b["model"] for b in long), ["lfm3", "lfm3-1"])
-        for b in long:
-            self.assertEqual(b["context"]["messages"], shared)
         # The prime itself sends the head as its own message, so its model holds the head after it.
         prime = [b for p, b in stub.calls if p == client.GENERATIONS and b["context"]["thinking"]][0]
         self.assertEqual(prime["context"]["messages"], shared[:2])
@@ -155,11 +133,11 @@ class DriverTest(unittest.TestCase):
             self.assertEqual(c["messages"][0], head)
             self.assertTrue(c["messages"][1]["content"].startswith("An agent proposed: "))
 
-    def test_a_stage_system_prompt_goes_first_in_its_build(self):
+    def test_a_stage_system_prompt_goes_before_the_head(self):
         stub, _, _ = run(with_(ON, think={"agents": 4, "system": "Be bold."}))
-        before = stub.calls[:first(stub, client.GENERATIONS, task.IDEA_PREFILL)]
-        for p, b in before:
+        for b in gens(stub, task.IDEA_PREFILL):
             self.assertEqual(b["context"]["messages"][0], {"role": "system", "content": "Be bold."})
+            self.assertEqual(b["context"]["messages"][1]["snap"], True)
 
 
 if __name__ == "__main__":
