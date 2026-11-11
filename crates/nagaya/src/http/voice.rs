@@ -482,6 +482,7 @@ pub fn served_model(service: &SpeechService, status: gogi_proto::identity::Model
             contexts_per_decision: 0,
             default_timeout_ms: config.timeout.as_millis() as u64,
             text_tokens: None,
+            replies_per_generation: None,
         },
         embeddings: None,
         capabilities: vec![gogi_proto::identity::Capability::Generate],

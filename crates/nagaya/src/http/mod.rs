@@ -557,6 +557,7 @@ impl Council {
                 contexts_per_decision: config.contexts_per_decision as u64,
                 default_timeout_ms: config.default_timeout_ms,
                 text_tokens: None,
+                replies_per_generation: None,
             },
             // Each family library renders an open message and checks its seams, so each served model continues a
             // reply (gogi "Continuations"). Riding decisions are not built, so no model declares `ride`.

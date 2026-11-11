@@ -31,10 +31,10 @@ resolver = "3"
 
 # gogi is not pushed yet. Senpai changes the URL later. A path dependency breaks in a worktree.
 [workspace.dependencies]
-gogi-proto = { git = "file:///home/atobey/src/gogi", rev = "4c063e0bf859bce49c96cc0b4df44dfc1b82e30a" }
-gogi-fake = { git = "file:///home/atobey/src/gogi", rev = "4c063e0bf859bce49c96cc0b4df44dfc1b82e30a" }
-gogi-toy = { git = "file:///home/atobey/src/gogi", rev = "4c063e0bf859bce49c96cc0b4df44dfc1b82e30a" }
-gogi-conformance = { git = "file:///home/atobey/src/gogi", rev = "4c063e0bf859bce49c96cc0b4df44dfc1b82e30a" }
+gogi-proto = { git = "file:///home/atobey/src/gogi", rev = "16cea61fcc12313cbc73a5c76f645355525cc890" }
+gogi-fake = { git = "file:///home/atobey/src/gogi", rev = "16cea61fcc12313cbc73a5c76f645355525cc890" }
+gogi-toy = { git = "file:///home/atobey/src/gogi", rev = "16cea61fcc12313cbc73a5c76f645355525cc890" }
+gogi-conformance = { git = "file:///home/atobey/src/gogi", rev = "16cea61fcc12313cbc73a5c76f645355525cc890" }
 
 [profile.dev]
 debug = "line-tables-only"
