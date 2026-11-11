@@ -191,6 +191,14 @@ class Markup(unittest.TestCase):
         ids = set(re.findall(r'\bid="([^"]+)"', page))
         self.assertEqual([name for name in lists if f"{name}-state" not in ids], [])
 
+    def test_the_choice_of_the_nagaya_is_in_the_rail_and_the_bar_holds_the_loaded_models_only(self):
+        page = WEB.joinpath("index.html").read_text()
+        rail = page[page.index('<aside id="rail">'):page.index("</aside>")]
+        bar = page[page.index("<header>"):page.index("</header>")]
+        self.assertIn('id="host"', rail)
+        self.assertNotIn('id="host"', bar)
+        self.assertIn('id="chips"', bar)
+
     def test_each_tab_of_the_rail_has_its_section(self):
         page = WEB.joinpath("index.html").read_text()
         tabs = re.findall(r'<button data-tab="(\w+)">', page)
@@ -226,6 +234,22 @@ class Page(unittest.TestCase):
                                    f"JSON.stringify([{{id: '{vector}', model: 'lfm3', name: 'v'}}]) : null;")
         self.assertEqual(out["failed"], "")
         self.assertEqual(json.loads(out["keeps"][0]), {"objects": [vector], "ttl_s": 30 * 86400})
+
+    def test_the_bar_shows_the_models_that_are_loaded_and_one_that_failed_and_no_unloaded_one(self):
+        out = self.run_page("""
+            out.before = document.getElementById("chips").innerHTML;
+            models[0].status = "failed"; models[1].status = "loading"; models[2].status = "draining";
+            IDENTITY.models = models;
+            await refresh();
+            out.after = document.getElementById("chips").innerHTML;""")
+        for name in ("gemma-4-26b-a4b", "lfm3-omni", "lfm3", "embeddinggemma-2", "voice", "pony-0"):
+            self.assertIn(f"</i>{name}</span>", out["before"])
+        # sdxl-0 and sdxl-1 are unloaded: the Engines tab lists them, and the bar does not.
+        self.assertNotIn("sdxl", out["before"])
+        self.assertIn("2 not loaded", out["before"])
+        self.assertIn('<span class="chip failed" title="failed"><i></i>gemma-4-26b-a4b</span>', out["after"])
+        self.assertIn('<span class="chip loading" title="loading"><i></i>lfm3-omni</span>', out["after"])
+        self.assertIn('<span class="chip draining" title="draining"><i></i>lfm3</span>', out["after"])
 
     def test_a_load_that_does_not_fit_unloads_the_engines_that_the_nagaya_names_in_its_way(self):
         out = self.run_page("""

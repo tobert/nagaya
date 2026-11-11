@@ -166,8 +166,12 @@ async function refresh() {
     $("eng-error").textContent = e.message;
     return;
   }
-  $("chips").innerHTML = models.map((m) =>
-    `<span class="chip ${esc(m.status)}" title="${esc(m.status)}"><i></i>${esc(m.model)}</span>`).join("");
+  // The bar shows the models that hold memory now, and one that failed. The Engines tab lists each engine.
+  const shown = models.filter((m) => m.status !== "unloaded" && m.status !== "absent");
+  const rest = models.length - shown.length;
+  $("chips").innerHTML = shown.map((m) =>
+    `<span class="chip ${esc(m.status)}" title="${esc(m.status)}"><i></i>${esc(m.model)}</span>`).join("") +
+    (rest ? `<a class="note" href="#engines" title="the Engines tab lists them">${rest} not loaded</a>` : "");
   for (const draw of refreshDraws) draw(profile);
 }
 
