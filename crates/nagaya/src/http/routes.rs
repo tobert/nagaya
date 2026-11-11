@@ -481,8 +481,19 @@ enum Media {
 }
 
 async fn generations(State(council): Shared, Extension(id): Id, body: Body) -> Response {
+    let body = async { whole(&council, bytes(body).await?, false).await }.await;
+    let body = match body {
+        Ok(body) => body,
+        Err(failure) => return failure.respond(&id),
+    };
+    // A request with `forks` or `contexts` writes several replies (gogi "Several replies", spec 11.15).
+    match super::replies::several(&council, &body) {
+        Ok(Some(split)) => return super::replies::generation(council, split, id).await,
+        Ok(None) => {}
+        Err(failure) => return failure.respond(&id),
+    }
     let request = async {
-        let request: GenerationRequest = parse(&whole(&council, bytes(body).await?, false).await?, "generation")?;
+        let request: GenerationRequest = parse(&body, "generation")?;
         if let Some((service, model)) = super::voice::route(&council, &request.model) {
             if model.status != gogi_proto::identity::ModelStatus::Ready {
                 return Err(Failure::unavailable(&model));

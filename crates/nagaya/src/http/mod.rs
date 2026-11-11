@@ -17,6 +17,7 @@ mod objects;
 mod peers;
 pub mod pending;
 mod profile;
+pub mod replies;
 mod routes;
 pub mod speech_out;
 mod stream;
@@ -557,7 +558,7 @@ impl Council {
                 contexts_per_decision: config.contexts_per_decision as u64,
                 default_timeout_ms: config.default_timeout_ms,
                 text_tokens: None,
-                replies_per_generation: None,
+                replies_per_generation: Some(replies::REPLIES_PER_GENERATION),
             },
             // Each family library renders an open message and checks its seams, so each served model continues a
             // reply (gogi "Continuations"). Riding decisions are not built, so no model declares `ride`.
@@ -568,6 +569,8 @@ impl Council {
                 Capability::Continuation,
                 Capability::DryRun,
                 Capability::LeaveOneOut,
+                // The replies of a text served model hold text, so one generation writes several (spec 11.15).
+                Capability::Replies,
             ]
             .into_iter()
             .chain(service.family().thinks().then_some(Capability::Thinking))

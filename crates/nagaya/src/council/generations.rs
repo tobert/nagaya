@@ -664,7 +664,7 @@ impl Then for GenerateThen {
 
 /// A seed for a request that sends none. It comes from the hasher keys of the standard library, which the
 /// operating system seeds.
-pub(super) fn fresh_seed() -> u64 {
+pub(crate) fn fresh_seed() -> u64 {
     let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
     hasher.write_u64(0);
     hasher.finish()

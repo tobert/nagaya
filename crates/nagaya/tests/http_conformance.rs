@@ -51,6 +51,37 @@ const RECORD_CHECKS: [&str; 24] = [
     "a generation names the record of its context and its reply",
 ];
 
+/// The checks of gogi's suite for several replies from one generation (gogi `checks/replies.rs`, spec 11.15). Each must
+/// run and pass, not skip.
+const REPLY_CHECKS: [&str; 26] = [
+    "a served model with replies names replies_per_generation, at least 1",
+    "forks give one reply for each fork, in order",
+    "the seed of reply i is the seed of the request plus i",
+    "a response with replies has no reply of its own",
+    "a fork is the reply that the same request gives alone",
+    "usage counts the context of forks once and the replies together",
+    "a fork's usage has its own completion and no prompt",
+    "replies ids leave the text out",
+    "replies ids name the records of the same replies",
+    "a reply reads back later as the last message of its record",
+    "a fork of a list takes the sample of its entry",
+    "a fork of a list keeps a seed of its own",
+    "one fork still has replies",
+    "contexts give one reply after each, and each is the reply of its context alone",
+    "a reply of contexts has the usage of its own context",
+    "usage counts each context of contexts",
+    "an unheld parent of contexts names its context",
+    "a bad message of contexts names its context and its place",
+    "context beside contexts names contexts",
+    "forks beside contexts names forks",
+    "forks of 0 is a 400 naming forks",
+    "forks past replies_per_generation is a 400 naming forks",
+    "forks that is not a count or a list is a 400 naming forks",
+    "replies with no forks is a 400 naming replies",
+    "a stream with forks is a 400 naming stream",
+    "replies that is not full or ids is a 400 naming replies",
+];
+
 /// The checks of gogi's suite for a served model with `control_vectors` (gogi `checks/control.rs`). Each must run and
 /// pass, not skip.
 const CONTROL_CHECKS: [&str; 19] = [
@@ -292,6 +323,10 @@ fn gogi_conformance_passes_against_the_process_with_the_fake_engine() {
         assert!(ok(name), "{name}");
     }
     assert!(ok("a context record survives a restart"));
+    // The reply checks ran: the served model declares `replies` (gogi "Several replies", spec 11.15).
+    for name in REPLY_CHECKS {
+        assert!(ok(name), "{name}");
+    }
     // The checks of a cut reply need a whole reply of two tokens or more. The suite's context holds a random nonce,
     // and about one run in twenty, the fake engine's greedy reply is one token. Then the suite skips them.
     let short = report.checks.iter().any(|check| {
@@ -411,6 +446,9 @@ fn gogi_conformance_passes_on_each_of_two_text_models_of_one_process() {
         }
         // Both served models share the records of the server.
         for name in RECORD_CHECKS {
+            assert!(ok(name), "{model}: {name}");
+        }
+        for name in REPLY_CHECKS {
             assert!(ok(name), "{model}: {name}");
         }
     }
