@@ -492,6 +492,39 @@ Do the steps in this order. Each step ends with the checks green.
 
 Each stop and start of `nagaya.service` goes into `signoff.md`.
 
+### Milestone 33: swarms and the stream of thought
+
+Amy chose this list and its order on 2026-11-11: "I like yours let's go with it." Milestone 32 gave the nagaya
+context records and several replies, and these steps use them. Do the steps in this order. Each step ends with the
+checks green.
+
+1. **Swarms in the web app.** The Chat tab sends one message as N forks with a temperature ladder, and the person
+   picks one to go on from. A Swarm tab runs think, select, distill and act, with the person as the judge
+   (`docs/swarm-ideas.md`, "A swarm in the chat of the web app"). A session saves and loads as a recipe of
+   `tools/swarm`. The page drives the round with `contexts`, `forks` and `parent`.
+2. **The stream of thought.** With thinking off, a second turn of `lfm3` writes a first draft, then a second
+   `</think>`, then its answer. The reference model does the same (2026-11-11: 6 to 23 of 24 replies). Amy: "think
+   of it (hah!) more as being able to dial up the stream of consciousness nature of non-thinking calls to the model;
+   I think they'll be handy for creative stuff, and then we'll use thinking where we need it to be precise."
+   - Make a control vector from contexts that write a draft and contexts that do not. The trigger is an old reply
+     with an empty think block, and an old reply with a reasoning stops it.
+   - Measure how often a reply has the draft at each strength, with `add` and with `ablate`. Write the counts.
+   - No reply loses text: a stray tag stays in the content, and the client shows it (Amy, 2026-11-11).
+   - **Latent steps as another way to think.** Amy: "I'm also curious if we give it some latent steps as an
+     alternate thinking option, what changes? I wanna try it." Run the same prompts with thinking off and N latent
+     steps before the reply (`docs/lab.md`, "Latent steps in a request"). Compare the count of drafts, the replies
+     and the tokens with thinking on and with thinking off. The web app gets a field for the latent steps of a
+     chat turn.
+3. **One identity on two engines.** `lfm3` and `lfm3-1` have one identity, so they share their snapshots. The gogi
+   suite fails "builds the same context into a snapshot of its own". Amy decides: the contract lets equal engines
+   share, or the second engine gets an identity of its own.
+4. **A repetition penalty.** An optional member of `sample`. It is off unless a request sets it (Amy, 2026-11-11:
+   "if we add the repetition penalty, I think I want it optional"). gogi writes it first.
+5. **The sampler that a model recommends.** Identity gives the start values of each served model, from its model
+   card. Then the chat page reads them, and it holds no values of LFM3.
+6. **The response as an object.** A response holds its counts, its stats and its seed under an id. Then a client
+   reads them later, as it reads a reply by its record.
+
 ## Working notes
 
 - `signoff.md` is the handoff between sessions and machines. Read it first, and keep it current. It is never
