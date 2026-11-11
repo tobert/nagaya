@@ -461,10 +461,15 @@ Proposed. `gogi-proto` has them as code in `record`: `context_id`, `resolve_requ
 Its cause is a finding of the swarm trials of 2026-11-10. The driver marked no boundary, so each run fed 60% to
 100% of each prompt again. The recipe member `snapshots` marks them now (`53ee84c`).
 
+The goal is not speed. Amy, 2026-11-11: "it was never about speed. more... mechanical sympathy kinda things, and
+cutting out round trips it shouldn't need". Thus the measure of a step is what a client sends again, what the
+nagaya runs again, and the count of round trips.
+
 Do the steps in this order. Each step ends with the checks green.
 
 1. **gogi.** The contract, `gogi-proto`, `gogi-fake` and the suite checks. Done on 2026-11-11: `8012f82` and
-   `d9ce5d8`, merged as `4c063e0`. gogi main is not pushed: Amy reads the Proposed rules first.
+   `d9ce5d8`, merged as `4c063e0`. Several replies are `aa4c089` and `6a8eef4`, merged as `16cea61`. gogi main is
+   pushed (Amy, 2026-11-11: "you may push gogi at will").
 2. **Spec.** Where the nagaya holds a record, its budget, and its life through a restart (spec 6 and 10). The
    forward of a request that names a `parent` (spec 11.1a). The lab routes that read contexts (`docs/lab.md`). Amy
    decides each Proposed note.
@@ -474,9 +479,15 @@ Do the steps in this order. Each step ends with the checks green.
 4. **The head after a reply.** A generation of LFM3 gives `head: null` now, so the next turn feeds the reply again.
    Hold the snapshot after the reply when the closed rendering starts with the sampled tokens. Card gate: a second
    turn by `parent` feeds only its new message.
-5. **Clients.** The chat of the web app sends `parent` and its new message. The swarm driver names the record of
-   the shared head. Each sends the whole context after a 404.
-6. **Deploy.** Deploy both machines, and run the gogi suite through each.
+5. **A shared prefix.** Two requests in flight whose contexts begin with the same tokens feed those tokens once
+   (gogi "Contexts", "Requests in flight share a prefix"). Thus a client builds no context only for its snapshot.
+6. **Several replies.** A generation with `forks` or `contexts` (gogi "Several replies"). Move the pin to
+   `16cea61`. The host splits the request with `gogi_proto::replies::split`, runs each reply as a job, and joins
+   them. The decode quanta of the replies join in one pass, as milestone 27 built.
+7. **Clients.** The chat of the web app sends `parent` and its new message: done, `aff157f`. The swarm driver uses
+   `contexts`, `forks` and `parent`, and it loses its build call. Each client sends the whole context after a 404.
+8. **Deploy.** Deploy both machines, and run the gogi suite through each. senpai may deploy, update the binaries in
+   `~/bin` and restart the nagaya as the steps come together (Amy, 2026-11-11).
 
 Each stop and start of `nagaya.service` goes into `signoff.md`.
 
