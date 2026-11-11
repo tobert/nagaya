@@ -419,6 +419,90 @@ class Page(unittest.TestCase):
         self.assertIn("8336d95c", reply)
         self.assertIn("1.1 MB", reply)
 
+    # Two chat turns against a nagaya that names a context record in `done` (gogi "Context records"). `RECORDS` gives
+    # the `context` of each reply in turn; null is a nagaya from before the records. `refuse` makes the next request
+    # that names a parent a 404, as after the nagaya dropped the record.
+    TURNS = """
+        const sent = [], asked = [];
+        let refuse = false, turn = 0;
+        const real = fetch;
+        fetch = (path, o) => {
+          if (!/generations$/.test(path)) return real(path, o);
+          const body = JSON.parse(o.body);
+          asked.push(body.context);
+          if (body.context.parent && refuse) {
+            refuse = false;
+            return reply(404, {error: {type: "not_found", param: "context.parent", message: "nothing was read: no record"}});
+          }
+          sent.push(body.context);
+          const context = RECORDS[turn++];
+          return sse([["done", {content: "reply " + turn, reasoning: "", finish: "end_turn", snapshots: [],
+                                usage: {prompt: 10 * turn, kept: 0, fed: 10 * turn, completion: 2}, ...(context ? {context} : {})}]]);
+        };
+        const say = async (text) => { set("chat-input", text); await document.getElementById("chat-go").onclick(); };
+        set("chat-model", "lfm3"); set("chat-system", "Be brief.");"""
+    R1, R2 = "blake3:" + "1" * 64, "blake3:" + "2" * 64
+
+    def turns(self, records, test):
+        out = self.run_page(f"const RECORDS = {json.dumps(records)};" + self.TURNS + test + """
+            out.sent = sent; out.asked = asked;
+            out.failed = document.getElementById("chat-error").textContent;
+            out.log = document.getElementById("chat-log").innerHTML;""")
+        self.assertEqual(out["failed"], "")
+        return out
+
+    def test_the_second_chat_turn_names_the_record_of_the_first_and_sends_only_its_new_message(self):
+        out = self.turns([self.R1, self.R2], 'await say("one"); await say("two");')
+        first, second = out["sent"]
+        self.assertEqual(first, {"thinking": False, "messages": [{"role": "system", "content": "Be brief.", "snap": True},
+                                                                 {"role": "user", "content": "one", "snap": True}]})
+        self.assertEqual(second, {"parent": self.R1, "thinking": False, "control": [],
+                                  "messages": [{"role": "user", "content": "two", "snap": True}]})
+        # The reply shows that only the new message went, and the record of each reply as a link.
+        self.assertIn("sent 1 new message", out["log"])
+        self.assertIn("and the id of the rest", out["log"])
+        self.assertIn(f'href="/at/b70host/council/v2/contexts/{self.R2}"', out["log"])
+        self.assertEqual(out["log"].count("sent the whole context"), 1)
+
+    def test_a_record_that_the_nagaya_dropped_makes_the_page_send_the_whole_chat_once(self):
+        out = self.turns([self.R1, self.R2], 'await say("one"); refuse = true; await say("two");')
+        self.assertEqual([("parent" in c) for c in out["asked"]], [False, True, False])
+        whole = out["sent"][1]
+        self.assertEqual([m["role"] for m in whole["messages"]], ["system", "user", "assistant", "user"])
+        self.assertEqual(whole["messages"][2], {"role": "assistant", "content": "reply 1"})
+        self.assertEqual(whole["messages"][3]["content"], "two")
+        self.assertEqual(out["log"].count("sent the whole context"), 2)
+
+    def test_a_nagaya_with_no_records_gets_the_whole_chat_each_turn(self):
+        out = self.turns([None, None], 'await say("one"); await say("two");')
+        self.assertEqual([("parent" in c) for c in out["sent"]], [False, False])
+        self.assertEqual(len(out["sent"][1]["messages"]), 4)
+        self.assertNotIn("/council/v2/contexts/", out["log"])
+
+    def test_a_reply_with_no_record_ends_the_use_of_the_record_before_it(self):
+        # The record of turn 1 does not hold turn 2, so turn 3 must not name it.
+        out = self.turns([self.R1, None, self.R2], 'await say("one"); await say("two"); await say("three");')
+        self.assertEqual([("parent" in c) for c in out["sent"]], [False, True, False])
+        self.assertEqual(len(out["sent"][2]["messages"]), 6)
+
+    def test_a_new_system_message_or_a_new_chat_sends_the_whole_chat_and_other_settings_stand_beside_the_parent(self):
+        out = self.turns([self.R1, self.R2, self.R1, self.R2], """
+            await say("one");
+            document.getElementById("chat-thinking").checked = true;
+            await say("two");
+            set("chat-system", "Be long.");
+            await say("three");
+            await document.getElementById("chat-clear").onclick();
+            await say("four");""")
+        one, two, three, four = out["sent"]
+        # lfm3 thinks, so the choice goes beside the parent, and the record serves both.
+        self.assertEqual((two["parent"], two["thinking"]), (self.R1, True))
+        self.assertNotIn("parent", three)
+        self.assertEqual(three["messages"][0]["content"], "Be long.")
+        self.assertEqual(len(three["messages"]), 6)
+        self.assertNotIn("parent", four)
+        self.assertEqual([m["content"] for m in four["messages"]], ["Be long.", "four"])
+
     def test_a_chat_reply_with_no_snapshots_shows_its_counts_and_no_id(self):
         done = dict(self.CHAT_DONE, snapshots=[], usage={"prompt": 23, "fed": 23, "completion": 4})
         out = self.chat_turn(done)

@@ -213,6 +213,12 @@ function snapshotChip(s) {
     `title="${esc(s.id)}: the model state after this message. A request that starts with the same tokens starts ` +
     `from it.">${esc(shortId(s.id))}</a> <span class="note">${esc(facts.join(" · "))}</span>`;
 }
+/** A context record as a link to its context on the nagaya: the next request names this id as its parent. */
+function recordChip(id) {
+  return `<a class="cid" href="${esc(base())}/council/v2/contexts/${esc(id)}" target="_blank" title="${esc(id)}: ` +
+    `the record of this chat with this reply. The next turn names it and sends only its new message.">${
+    esc(shortId(id))}</a>`;
+}
 /** An object of a message as a link to its bytes: its id and its type. A request names the id, not the bytes. */
 function objectChip(f) {
   return `<a class="cid" href="${esc(objectUrl(f.id, f.host))}" target="_blank" title="${esc(f.id)}: the request ` +

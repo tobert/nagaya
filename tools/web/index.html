@@ -59,9 +59,10 @@
         <div><label>Temperature</label><input id="chat-temp" type="number" min="0" step="0.1" value="1.0"></div>
       </div>
       <div class="actions"><button class="plain" id="chat-clear">New chat</button></div>
-      <p class="note">The chat lives in this page, and each turn sends it whole. The nagaya names the model state
-        after each message by a content id, and a turn starts from the longest state that it holds. Thus it runs only
-        the new tokens. The id under a message is that state.</p>
+      <p class="note">The nagaya holds a record of the chat, and each reply names it by a content id. The next turn
+        sends that id and only its new message. A nagaya that does not name a record, or that dropped it, gets the
+        chat whole. The id under a message is the model state after it: a turn starts from the longest state that
+        the nagaya holds, so it runs only the new tokens.</p>
     </div>
     <div class="card">
       <div id="chat-log"></div>
