@@ -4885,6 +4885,46 @@ snapshot of them. Then the nagaya feeds those tokens once. The notes below are *
 
 The tests are in `crates/nagaya/tests/council_in_flight.rs`.
 
+**11.15 Several replies.** gogi "Several replies" has the rules: a generation with `forks` or `contexts` gives one
+reply for each (`AGENTS.md` milestone 32 step 6). The route makes each `parent` whole first (11.13). Then
+`gogi_proto::replies::split` gives one plain generation body for each reply. The route runs each body as a plain
+generation and joins the results with `gogi_proto::replies::join`.
+
+The notes below are **Proposed** by Claude Fable 5.2 (claude-fable-5-2), 2026-11-11. Reason: gogi leaves these
+choices to the server, and each is the simplest one. @tobert decides.
+
+- **The replies run at the same time.** Each reply is a call of 11.7 with its own call thread and its own job. Thus
+  a request with 8 replies takes 8 of the 64 calls. Reason: the book of 11.14 then feeds a shared prompt once. Also,
+  the decode quanta of the replies join in one pass on an engine that joins (engine-abi D11).
+- **A reply takes a slot as any job does.** A reply with no free slot is `busy` (11.3c), and then the request is
+  a 429. Thus a request for more replies than the engine has free slots fails, and the client sends it again with
+  fewer. No job waits for a slot.
+- **The limit.** `replies_per_generation` is 8 for each served model that declares `replies`. It does not depend on
+  the slot count of the engine. Reason: the LFM3 engine joins 8 segments in one pass (milestone 27). Known limit: an
+  engine with fewer than 8 slots declares a count that it cannot run. A limit of the slot count, at most 8, is
+  the alternative.
+- **Which served models declare `replies`.** Each text served model declares it: its replies hold text. A speech
+  model, an image model and an embedding model do not declare it. There, `forks` or `contexts` in a generation is a
+  400 that names the member. Only the check of `model` runs before it.
+- **A reply with an output.** `split` refuses `output` beside `forks` or `contexts`. Thus a served model that also
+  speaks, such as `lfm3-omni`, writes text replies only in such a request.
+- **The seed.** A request with no seed gets the seed of reply 0 from the same source as a plain generation. The
+  route chooses it once, and `split` gives reply `i` that seed plus `i`.
+- **The error.** The route waits for every reply. When one or more replies fail, the response is the error of the
+  failed reply with the lowest index. With `contexts`, `gogi_proto::replies::param_in` renames its `param`. The
+  records of the other replies stay held.
+- **The `usage` of forks.** The replies start together, so the reply that feeds the prompt is not always reply 0.
+  The top `kept` and `fed` are those of the fork that fed the most tokens. The other forks kept what it fed.
+  Each of them feeds the last token of the prompt again for its logits, and the top `usage` does not count that.
+- **The forward.** A request for a served model of a peer goes to that peer as it came, with `forks` or `contexts`
+  in it (11.1a). The target splits it. The coordinator carries the objects of each context of `contexts`.
+- **The lab routes write one reply.** `trace` decodes one generation body, so `forks`, `contexts` or `replies` there
+  is the 400 of an unknown member. `ensemble` joins its own `contexts` into one reply (`docs/lab.md`). It does not
+  read `forks` or `replies`.
+
+The tests are in `crates/nagaya/tests/http_replies.rs` and `crates/nagaya/tests/http_conformance.rs`. The test of a
+speech model is in `crates/nagaya/tests/speech_context.rs`.
+
 ## 12. Identity
 
 **12.1 Fields.** An engine identity has the fields of `identity()` in the ABI:

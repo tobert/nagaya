@@ -792,6 +792,39 @@ fn a_generation_names_each_member_that_a_speech_model_does_not_take() {
     assert!(council.failure().is_none(), "{:?}", council.failure());
 }
 
+/// The replies of a speech model hold no text, so it does not declare `replies` (spec 11.15). Then `forks` or
+/// `contexts` in a generation is a 400 that names the member (gogi "Several replies").
+///
+/// Falsified by a route with no capability check: the request is a 500, because the model names no limit.
+#[test]
+fn a_speech_model_does_not_declare_replies_and_refuses_forks_and_contexts() {
+    let fixture = Fixture::new();
+    let council = fixture.council();
+    let (_, _, _, bytes) = send(&council, "GET", "/council/v2/identity", None);
+    let identity: gogi_proto::identity::ServerIdentity = serde_json::from_slice(&bytes).unwrap();
+    let model = &identity.models[0];
+    assert!(!model.has(gogi_proto::identity::Capability::Replies));
+    assert_eq!(model.limits.replies_per_generation, None);
+
+    let line = json!({"role": "user", "content": "hello"});
+    let mut forks = messages(std::slice::from_ref(&line));
+    forks["forks"] = json!(2);
+    let mut contexts = messages(std::slice::from_ref(&line));
+    let context = contexts.as_object_mut().unwrap().remove("context").unwrap();
+    contexts["contexts"] = json!([context]);
+    for (body, member) in [(forks, "forks"), (contexts, "contexts")] {
+        let (status, e) = generate(&council, body);
+        assert_eq!(
+            (status, &e["error"]["param"]),
+            (StatusCode::BAD_REQUEST, &json!(member)),
+            "{e}"
+        );
+        let message = e["error"]["message"].as_str().unwrap();
+        assert!(message.contains("does not declare the capability replies"), "{message}");
+    }
+    assert!(council.failure().is_none(), "{:?}", council.failure());
+}
+
 /// The events of a stream body, as name and data.
 fn events(body: &[u8]) -> Vec<(String, Value)> {
     let text = String::from_utf8_lossy(body);

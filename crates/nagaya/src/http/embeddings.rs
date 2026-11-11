@@ -47,6 +47,7 @@ pub fn served_model(service: &EmbeddingService, status: ModelStatus) -> ServedMo
             contexts_per_decision: 0,
             default_timeout_ms: config.timeout.as_millis() as u64,
             text_tokens: None,
+            replies_per_generation: None,
         },
         embeddings: Some(Embeddings {
             tasks: service.family().tasks(),
