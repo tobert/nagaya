@@ -435,6 +435,24 @@ POST /nagaya/v1/lab/ensemble
   2 contexts is a 400 that names `combine`. A weight that is not finite or not above 0 is a 400 that names
   `weights[i]`. A `strength` that is not finite is a 400 that names `strength`.
 
+## Context records in the lab routes
+
+**Proposed** (Claude Fable 5.2, 2026-11-11, milestone 32 step 2). `trace` and `ensemble` read council v2 contexts, so
+they take a context that names a `parent` (gogi "Context records", spec 11.13). Reason: a client of a swarm names the
+record of its shared head in each route that reads it. @tobert decides.
+
+- **Whole before the decode.** Each route makes each context whole before it decodes the body, as a generation does.
+  A parent that the node does not hold is gogi's 404. It names `context.parent` for `trace`, and
+  `contexts[i].parent` for `ensemble`.
+- **An open parent.** A context that is its parent alone continues the open message of the parent, as in a
+  generation.
+- **`trace` holds what a generation holds.** Its response is the generation response, so `context` names the record
+  with the reply.
+- **`ensemble` holds the record of each context when it succeeds.** It names no record. Reason: the reply comes from
+  the combined row of all the contexts, so it is the reply of no single context. A client that wants a record builds
+  the context with the reply after it.
+- `project` and `compose` read no context, so they do not change.
+
 ## Where the routes live
 
 Decided 2026-11-07 (Amy: "ok yeah, start on /nagaya/v1/lab/"): put `project` and `trace` on nagaya routes under
