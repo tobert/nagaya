@@ -220,6 +220,11 @@ their code. `LiquidAI/LFM3-1.7B-Base` could become a narrow coder.
 The trials of 2026-11-10 ran the recipes of `tools/swarm` on bin packing. Each run had 20 minutes alone on one card.
 The table gives the test excess for seeds 1, 2 and 3. Best fit scores 4.14.
 
+These runs marked no snapshot boundary, so each call fed most of its prompt again. Think fed 10% to 100% of its
+prompt tokens, and distill and act fed 72% to 100%. Thus each run had fewer rounds in its 20 minutes than the card
+can give. The scores stay valid for these recipes. A run with the recipe member `snapshots` (`tools/swarm/README.md`)
+has more rounds, so its scores do not compare with this table.
+
 | Recipe | Seed 1 | Seed 2 | Seed 3 |
 |---|---|---|---|
 | `s2s-combine`: think 8, combine with the parent last, 4 forks at T 1.0 | **0.66** | **2.00** | **1.04** |
