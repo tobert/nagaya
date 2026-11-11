@@ -1,4 +1,5 @@
 {"models": ["lfm3"],
+ "snapshots": true,
  "think":   {"agents": 8, "max_tokens": 48, "latent": 0,
              "system": "You improve a heuristic for online bin packing. Propose one concrete change. Do not write code.",
              "sample": {"temperature": 1.0, "top_p": 0.95, "top_k": 20}},

@@ -2,6 +2,7 @@
   "models": [
     "lfm3"
   ],
+  "snapshots": true,
   "think": {
     "agents": 8,
     "max_tokens": 48,

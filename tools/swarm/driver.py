@@ -182,10 +182,24 @@ class Driver:
         stage.count(model, usage)
         return text
 
+    def _prompt(self, head, prompt):
+        """The user part of a call: the text, or with `snapshots` the head as its own message, then the rest."""
+        return task.split(head, prompt) if self.recipe["snapshots"] else prompt
+
+    def _build(self, stage, models, messages, st):
+        """With `snapshots`, build the shared messages of a stage once for each of its models, before its calls.
+        The calls run at once, so without the build each of them feeds the shared part. The stage counts each
+        build as a call."""
+        if not self.recipe["snapshots"]:
+            return
+        for model in sorted(set(models)):
+            stage.count(model, self.client.build(model, messages, system=st.get("system")))
+
     def prime(self, stage, head, seed):
         """The text of the prime: one generation with thinking over the shared head."""
         p = self.recipe["prime"]
-        return self._call(stage, self.spread.next(), self.client.prime, task.prime_prompt(head), p["max_tokens"],
+        return self._call(stage, self.spread.next(), self.client.prime,
+                          self._prompt(head, task.prime_prompt(head)), p["max_tokens"],
                           p["temperature"], seed, system=p.get("system"), sample=p.get("sample"))
 
     def think(self, stage, head, seed, prime=None):
@@ -195,10 +209,15 @@ class Driver:
                             [self.rng.choice(foci) for _ in range(n - len(foci))])
         models = [self.spread.next() for _ in range(n)]
         temperatures = [temperature(t, i) for i in range(n)]
+        shares = self.recipe["snapshots"]
+        if shares:
+            shared = (task.split(head, head)[:1] if prime is None else
+                      task.think_turns(head, prime, chosen[0], True)[:-1])
+            self._build(stage, models, shared, t)
 
         def one(i):
-            user = (task.think_prompt(head, chosen[i]) if prime is None else
-                    task.think_turns(head, prime, chosen[i]))
+            user = (self._prompt(head, task.think_prompt(head, chosen[i])) if prime is None else
+                    task.think_turns(head, prime, chosen[i], shares))
             text = self._call(stage, models[i], self.client.generate, user, t["max_tokens"], temperatures[i],
                               seed * 1000 + i, task.IDEA_PREFILL, latent=t["latent"], **options(t))
             return task.after_prefill(text, task.IDEA_PREFILL)
@@ -211,7 +230,8 @@ class Driver:
         if s["by"] == "all":
             return ideas, {}
         if s["by"] == "vote":
-            text = self._call(stage, self.spread.next(), self.client.generate, task.vote_prompt(head, ideas), 4, 0.0,
+            text = self._call(stage, self.spread.next(), self.client.generate,
+                              self._prompt(head, task.vote_prompt(head, ideas)), 4, 0.0,
                               seed, task.VOTE_PREFILL, **options(s))
             j = task.vote_index(task.after_prefill(text, task.VOTE_PREFILL), len(ideas))
             bad = j is None
@@ -232,14 +252,16 @@ class Driver:
                               **options(d))
         else:
             text = self._call(stage, self.spread.next(), self.client.ensemble,
-                              [task.joined_distill_prompt(head, x) for x in kept], "prob_mean", d["max_tokens"],
+                              [self._prompt(head, task.joined_distill_prompt(head, x)) for x in kept], "prob_mean",
+                              d["max_tokens"],
                               d["temperature"], seed, task.PLAN_PREFILL, latent=d["latent"], **options(d))
         return task.after_prefill(text, task.PLAN_PREFILL).strip()
 
     def act(self, stage, head, plan, seed):
         """The replies of the act stage, each with its model and its temperature."""
         a = self.recipe["act"]
-        prompt = task.act_prompt(head, plan)
+        prompt = self._prompt(head, task.act_prompt(head, plan))
+        plain = self._prompt(head, task.act_plain_prompt(head))
         pre = task.CODE_PREFILL
         if a["by"] == "joined":
             model = self.spread.next()
@@ -248,10 +270,15 @@ class Driver:
             return [(model, a["temperature"], text)]
         models = [self.spread.next() for _ in range(a["forks"])]
         temperatures = [temperature(a, f) for f in range(a["forks"])]
+        if self.recipe["snapshots"]:
+            # Each fork has the same prompt, so the build holds all of it, and a fork feeds only its prefill. The
+            # forks mark the boundary of the build, because boundaries are content (gogi "Contexts").
+            prompt[-1]["snap"] = True
+            self._build(stage, models, prompt, a)
 
         def one(f):
             if a["by"] == "contrast":
-                return self._call(stage, models[f], self.client.ensemble, [prompt, task.act_plain_prompt(head)],
+                return self._call(stage, models[f], self.client.ensemble, [prompt, plain],
                                   "contrast", a["max_tokens"], temperatures[f], seed * 100 + f, pre,
                                   strength=a.get("strength"), latent=a["latent"], **options(a))
             return self._call(stage, models[f], self.client.generate, prompt, a["max_tokens"], temperatures[f],

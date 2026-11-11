@@ -61,6 +61,30 @@ Thus a prefilled call with `thinking` true writes no reasoning. Its `content` is
 with thinking off, and the driver reads it the same way. To think first, use `prime`. `lfm3-omni` does not think: a
 context with `thinking` true gets a 400 that names `thinking`.
 
+## Snapshots
+
+`snapshots` is a top-level member, true or false. The default is false, and then a recipe sends the bytes of the
+driver before this member. Each recipe in `recipes/` sets it to true.
+
+With `snapshots` true, the driver lets the nagaya hold the part that the calls of a stage share:
+
+- The head of a round, which is the problem and the parent, is its own user message with `snap` true. The rest of
+  each prompt is a second user message. Thus the model reads two user messages in place of one.
+- Before the think agents, the driver builds the shared messages once for each model, with
+  `POST /council/v2/contexts`. Without a prime, they are the head. After a prime, they are the head, the request of
+  the prime and its text. Then an agent feeds only its focus.
+- Before the forks of `plain` or `contrast`, the driver builds the whole act prompt once for each model. Then a fork
+  feeds only its prefill.
+- A build goes first because the calls of a stage run at once. Without it, no call finds the snapshot of another.
+- The record of a stage counts each build in `calls` and in its tokens.
+
+`distill` with `combine` shares nothing: its prompt has the parent last, after the ideas.
+
+On 2026-11-11, three rounds of `s2s-combine.json` on `lfm3` gave these counts. Without snapshots, think fed 4,624
+of 6,366 prompt tokens, and act fed 4,532 of 4,532. With snapshots, think fed 1,504 of 6,929, and act fed 767 of
+5,514. The wall time of think stayed at 9.6 s, and act went from 7.1 s to 5.8 s. The runs of 2026-11-10 had no
+snapshots: they fed 60% to 100% of each prompt again.
+
 ## The prime
 
 `prime` is an optional stage. It runs once in each round, before think. It makes one generation with `thinking`
@@ -76,8 +100,8 @@ where the parent wastes bins.
   2. the user message of the prime;
   3. the text of the prime, as an assistant message;
   4. the focus and the request for one idea, as a user message.
-- Every agent shares the messages before its focus. The store snapshots that prefix, so an agent can use the
-  snapshot and feed only its focus.
+- Every agent shares the messages before its focus. With `snapshots` true, the nagaya holds that part, and an
+  agent feeds only its focus. Without it, each agent feeds the whole prompt.
 - The round line gives the text in `prime`, and the stage record `prime` gives its calls and tokens.
 
 The text of the prime goes into `content`, not into `reasoning`. The chat template of LFM3 removes the reasoning of

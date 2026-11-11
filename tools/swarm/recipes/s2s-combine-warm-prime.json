@@ -2,6 +2,7 @@
   "models": [
     "lfm3"
   ],
+  "snapshots": true,
   "prime": {
     "max_tokens": 384,
     "system": "You study a heuristic for online bin packing. Find where it wastes bins.",

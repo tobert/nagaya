@@ -58,6 +58,15 @@ def listing(ideas):
     return "\n".join(f"{j + 1}. {x.strip()}" for j, x in enumerate(ideas))
 
 
+def split(head, prompt):
+    """The messages of a prompt that starts with the head: the head with a boundary, then the rest. Each prompt of a
+    round starts with the same head, so the nagaya feeds it once and holds its snapshot."""
+    if not prompt.startswith(head):
+        raise ValueError("The prompt does not start with the head of its round.")
+    return [{"role": "user", "content": head, "snap": True},
+            {"role": "user", "content": prompt[len(head):].lstrip("\n")}]
+
+
 def think_prompt(head, focus):
     return head + f"\nFocus: {focus}\n" + THINK_ASK
 
@@ -67,12 +76,15 @@ def prime_prompt(head):
     return head + "\n" + PRIME_ASK
 
 
-def think_turns(head, prime, focus):
+def think_turns(head, prime, focus, snapshots=False):
     """The messages of a think agent after a prime: the head, the prime's text as the assistant's reply, then the
-    focus. Every agent shares the messages before the focus, so the store shares their prefix."""
-    return [{"role": "user", "content": prime_prompt(head)},
-            {"role": "assistant", "content": prime},
-            {"role": "user", "content": f"Focus: {focus}\n" + THINK_ASK}]
+    focus. Every agent shares the messages before the focus. With `snapshots`, the head is its own message, and the
+    prime's text ends with a boundary, so the nagaya holds the shared part. Without it, each agent feeds it again."""
+    asked = split(head, prime_prompt(head)) if snapshots else [{"role": "user", "content": prime_prompt(head)}]
+    reply = {"role": "assistant", "content": prime}
+    if snapshots:
+        reply["snap"] = True
+    return asked + [reply, {"role": "user", "content": f"Focus: {focus}\n" + THINK_ASK}]
 
 
 def vote_prompt(head, ideas):
