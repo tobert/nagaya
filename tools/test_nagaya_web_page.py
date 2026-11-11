@@ -199,6 +199,12 @@ class Markup(unittest.TestCase):
         self.assertNotIn('id="host"', bar)
         self.assertIn('id="chips"', bar)
 
+    def test_a_chat_thinks_unless_the_person_turns_it_off(self):
+        # LFM3 thinks by default, and its card says that a reply with thinking off "can be inconsistent". On
+        # 2026-11-11, a second turn with thinking off wrote a second close-think tag in 6 to 23 of 24 replies.
+        page = WEB.joinpath("index.html").read_text()
+        self.assertIn('<input id="chat-thinking" type="checkbox" checked>', page)
+
     def test_each_tab_of_the_rail_has_its_section(self):
         page = WEB.joinpath("index.html").read_text()
         tabs = re.findall(r'<button data-tab="(\w+)">', page)

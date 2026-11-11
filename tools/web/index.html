@@ -39,7 +39,9 @@
       <div class="model"><select id="chat-model"></select><span id="chat-model-state" class="note"></span></div>
       <label>System message</label>
       <textarea id="chat-system" rows="4" placeholder="optional"></textarea>
-      <label class="check"><input id="chat-thinking" type="checkbox"> Thinking</label>
+      <label class="check"><input id="chat-thinking" type="checkbox" checked> Thinking
+        <span class="note">— the default of a model that thinks; with it off, LFM3 can write a stray
+          <code>&lt;/think&gt;</code> after a first draft</span></label>
       <label>Steering <span class="note">— a vector of this model, from the Steering tab</span></label>
       <div class="fields">
         <select id="chat-vector"></select>
