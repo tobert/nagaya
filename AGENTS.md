@@ -362,6 +362,11 @@ question of `signoff.md` before the step that needs it. She decided these rules 
   archive, so its history needs no scrub.
 - **License:** MIT, but not now. Step 6 waits for her word.
 - **People and machines:** the docs name her and her machines less. A doc that must name her writes @tobert.
+- **New names of the Qwen3.8 identifiers:** a variable of the engine takes `QWEN38_`, as in `QWEN38_SHARDS`. A
+  variable of the whole process takes `NAGAYA_`, as in `NAGAYA_FAST_QMM`. A macro of the HIP runtime takes `HIP_`,
+  as in `HIP_CHECK`. The served model `mk` becomes `qwen38`. The table of step 3 follows these patterns.
+- **The merge comes first.** gfx1151host has Qwen work that is not on `main` yet. Merge it before a rename of an
+  identifier, so the rename does not conflict with it.
 
 The rules:
 
