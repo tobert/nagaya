@@ -160,6 +160,63 @@ These tests show that the tool works. Each one can fail.
   state out of `recipe_root`.
 - On the reference in Python, the same control vector gives the same logits as the engine, to the gate of the oracle.
 
+## The stream of thought: the trials of 2026-11-11
+
+Milestone 33 step 2. With thinking off, a second turn of `lfm3` can write a first draft, then a second `</think>`,
+then its answer. The reference model in transformers does the same, so the cause is the model. Amy, 2026-11-11:
+"think of it (hah!) more as being able to dial up the stream of consciousness nature of non-thinking calls to the
+model". Each count below is of 24 replies at temperature 1.0 on b70host, unless the row says another value.
+
+**The trigger.** An old reply with an empty think block in the history. A first turn gave a draft in 0 of 72
+replies. A second turn gave 15 (a color), 6 (a story) and 23 (arithmetic). An old reply with a short reasoning gave
+1, and thinking on gave 0.
+
+**Temperature.** For arithmetic the draft is the most probable reply: 24, 24, 24, 23 and 20 at 0.1, 0.3, 0.6, 1.0
+and 1.3. For a story it comes with temperature: 0, 0, 2, 6 and 3.
+
+**The vector.** Toward: 12 second turns with an old reply that has no reasoning. Away: the same 12 with a short
+reasoning in the old reply. Its id is `blake3:face3f09c6e79b1be15658d93e8ac53db16928edf9a2a9adeda8472bcbbf0378`.
+The table gives the drafts with `add` at each strength, and the right answers of the arithmetic.
+
+| Strength | Story, turn 2 | Arithmetic, turn 2 | Right, turn 2 | Story, turn 1 | Arithmetic, turn 1 |
+|---|---|---|---|---|---|
+| -0.2 | 0 | 0 | 19 | 0 | 2 |
+| -0.1 | 0 | 7 | 21 | 0 | 0 |
+| -0.05 | 1 | 19 | 22 | 0 | 1 |
+| 0 | 6 | 23 | 24 | 1 | 1 |
+| +0.05 | 8 | 24 | 24 | 0 | 1 |
+| +0.1 | 24 | 24 | 22 | 2 | 1 |
+| +0.2 | 19 | 14 | 8 | 9 | 0 |
+
+- The vector is a dial on a second turn, from -0.2 to +0.1. On a first turn it adds few drafts.
+- At +0.2 the replies start to break. At 0.4 and above, with either sign, each reply is noise. A strength of 1, 2
+  or 4 gave noise in each of 576 replies.
+- `ablate` at strength 1 is weaker: 23 to 16 for the arithmetic and 6 to 1 for the story on turn 2. It raised the
+  drafts of the arithmetic on turn 1 from 1 to 10. A small strength below 0 with `add` is the better way down.
+
+**Latent steps** (`docs/lab.md`, "Latent steps in a request"), with thinking off:
+
+- One step is enough to change how a reply starts. With one step, 22 to 24 story replies started in the middle of
+  a sentence. With no step, 0 did. The first steps hold the first words of the reply, and the reply then starts
+  after them.
+- With 16 to 64 steps it is the same. With 128 and 256 steps it goes away (7 of 24). The arithmetic stays right at
+  each count, 23 or 24 of 24, and the replies get longer.
+- 20 arithmetic problems with 6 replies each gave 120, 120, 119 and 118 right of 120 at 0, 1, 2 and 4 steps. Thus
+  the steps do not make this arithmetic better or worse. The task is too easy to show a difference.
+
+**Latent steps with thinking on.** The steps come after `<think>`, and the model then writes its thinking.
+
+- The steps do not take the place of the written thinking. For `17 times 23` its median stayed near 95 tokens at
+  0, 1 and 2 steps. It grew to 165 to 177 tokens at 16 steps and more.
+- Thinking needs room. With 160 tokens, 18 of 24 replies had the right answer. With 600 tokens, 24 of 24 had it. The
+  shortest thinking was 50 to 75 tokens for `17 times 23`, and 140 to 170 tokens for a puzzle of two equations.
+- For a story, 1 or 2 steps cut the median thinking from 439 tokens to 209 to 271. Then 23 of 24 replies reached
+  their answer, where 17 did with no step.
+
+Not tried: latent steps, then a `</think>` that the request writes. The route puts the steps last, so it cannot
+feed a token after them. The raw replies of these trials are in `target/trials-2026-11-11/` on b70host, which
+git does not hold.
+
 ## Open questions
 
 1. Does the op run before or after the norm of the next layer? Arditi et al. change the residual, so the first
