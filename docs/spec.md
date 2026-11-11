@@ -1520,13 +1520,13 @@ The goal is that the nagaya does not run again what it has run (milestone 32). T
   as its `parent` or sends the context whole.
 - **The bits differ a little.** A request that starts from a decoded head gives other bits than the same context
   built from its text. The rule made the rows of that build. Both are valid readings of the context. The
-  same request from the same head gives the same bits. The card gate of milestone 32 measures the difference of the
-  logits, and that number goes here.
+  same request from the same head gives the same bits. The card gate of milestone 32 measures the difference, and
+  that number goes here. The council gives no logits, so the gate measures the next-token log probabilities.
 - **No head when the tokens differ.** The family can render the reply with other tokens than the model sampled. For
   example, the reply parser of LFM3 removes white space at the ends of the content. Then the context has no decoded
   head, and the next build feeds the reply by the rule, as before.
 - **No head from a draft.** A reply whose rows came from a pass with drafts has no decoded head, because those rows
-  depend on the drafts.
+  depend on the drafts. The drafts are not built (below), so this rule has no code yet.
 - **The closing tokens.** The template ends the reply with tokens that the model did not sample, such as a newline
   after the end token. The job feeds them after the reply, at most 8 tokens (11.3c), and then it holds the head.
 - **The items of the recipe.** The recipe has the items of tags 5, 6, 7 and 10 (6.2). Tag 5 is the recipe that the
@@ -1544,21 +1544,32 @@ The goal is that the nagaya does not run again what it has run (milestone 32). T
   rest by the rule, as a new span from the head. Each later boundary chains from the recipe of the head. The
   response counts the tokens of the head in `usage.kept`.
 - **The search.** A build reads the record of the prefix that ends at each `assistant` message, from the last one
-  down. It reads the record id of that prefix with `snap: true` on its last message, as gogi's `with_reply` writes
-  it. The search stops at the first record that has a head note (6.17). The build computes the recipe of the note
-  again from its own rendering. A recipe that differs is a miss, and so is a head that the store does not hold.
-  After a miss, the build does what it does with no decoded head.
+  down. It reads at most 4 records. It reads the record id of that prefix with `snap: true` on its last message, as
+  gogi's `with_reply` writes it. The search stops at the first record that has a head note (6.17).
+- **The check of a note.** The build computes the recipe of the note again from its own rendering. A recipe that
+  differs is a miss, and so is a head that the store does not hold. After a miss, the build does what it does with
+  no decoded head. A read, a decision and a speech job make the same search, because each starts with a build.
 - **A cut reply.** A reply that ends with `max_tokens` holds a decoded head at the seam of its open rendering
   (11.3c). The record of the context with the open reply names it, and a continuation of that context starts from
-  it.
+  it. A cut reply that the client sends back closed has another record, so its build finds no note. It feeds the
+  reply by the rule. Thus the rule "in any form" of 11.3c holds only for an engine with no feed rule.
+- **A dry run.** A dry run names a head that the store does not hold by the recipe of the rule (11.3c). It does so
+  also when a build would start from a decoded head.
 - **No head after latent steps.** A latent row is not a token (`docs/lab.md`, "No head").
 
-The code keeps the rule of 2026-10-21 until milestone 32 step 4. `keeps_head` in `council/generations.rs` is false
-for an engine with a feed rule, and `crates/nagaya/tests/council_feed.rs` checks a null head.
+The code has these rules since milestone 32 step 4:
+
+- `GenerateThen::decoded_head` in `council/generations.rs` holds the head, and it writes the head note.
+- `Service::noted_head` in `council/mod.rs` makes the search. `council/records.rs` keeps the notes.
+- `JobBody::shared_pass` in `jobs.rs` tells a job that its decode row shared a pass.
+- `crates/nagaya/tests/council_feed.rs` has the tests, with the fake engine that has a feed rule.
+- `crates/nagaya/tests/http_conformance_feed.rs` runs gogi's suite on that engine, with its head checks.
+- `crates/nagaya/tests/xe_lfm3_head.rs` is the card gate of LFM3. It has not run yet.
 
 **The job path.** The council jobs take passes of `block` for an engine with a feed rule (`council/mod.rs`, the
-`chunk` of a build). A build starts each span at a held boundary or at 0, and a generation holds no head. Thus no job
-continues a span today, and rule 7 has no code yet. The tests are in `crates/nagaya/tests/council_feed.rs`.
+`chunk` of a build). A build starts each span at a held boundary, at a decoded head or at 0. A decoded head is a seal.
+Thus no job continues a span today, and rule 7 has no code yet. The tests are in
+`crates/nagaya/tests/council_feed.rs`.
 
 **Proposed** (claude-opus-5-5, 2026-10-21), and Decided 2026-10-28 (Amy, by interview): drafts are a setting of the
 served model, not a bit setting of the engine. The nagaya's generation job makes the prompt-lookup drafts, as mkviolet
@@ -3164,7 +3175,8 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
   - The slot holds a prefix of that rendering, at most 8 tokens short.
 
   Then the job feeds the rest and puts the snapshot. The head of a reply that ends with `max_tokens` is the seam
-  of its open rendering (see continuations below).
+  of its open rendering (see continuations below). On an engine with a feed rule, the head is a decoded head, and
+  6.14 has its rules.
 - A build can start at a cut. A cut is a held snapshot that is not at a boundary of the context. Examples are the end
   of a message that the client did not mark, and the head of a cut reply. The build starts at a cut when the store holds
   no higher boundary. An earlier context made that snapshot at a seal of its own. Reason: gogi's build starts from
