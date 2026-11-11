@@ -988,6 +988,13 @@ The rules:
 
 Spec 6.14 gives how decode steps, drafts and branch blocks meet the rule.
 
+**Proposed** (claude-fable-5-2, 2026-11-11), for the decoded head (spec 6.14, milestone 32 step 4). The store now
+keeps the decode rows of a reply, under the recipe of a decoded head. Two rules change their reading:
+
+- In rule 2, a span also starts at a decoded head. A decoded head is a seal, as a boundary is.
+- Rule 6 stays as it is. A reply whose decode row shared a pass holds no decoded head, so the store keeps no row of
+  a pass with two segments.
+
 Reason: this is what mkviolet does now, and it keeps the recipe as tokens plus boundaries. The other way is a kernel
 whose reductions do not depend on the token count (spec 5.7). That costs speed on the one-token path, and it is a
 change inside mkviolet's kernels.
@@ -1391,8 +1398,9 @@ the LFM3 engine:
 - The engine declares 8 segments. The weight ops run once over the rows of all segments. Each row has its own
   rotation, attention, convolution and K and V rows, on its own slot.
 - `segments_exact` stays false, because LFM3 has a feed rule (D11 rule 4). Decode segments share a pass by D11 rule 6,
-  because the store keeps no decode row (spec 6.14). Other segments run one in a pass. **Proposed** by Claude Opus
-  5.5, 2026-11-09. Reason: the first text of this rule named `segments_exact`, and D11 rule 4 forbids it here.
+  because the store keeps no decode row of such a pass (spec 6.14). Other segments run one in a pass. **Proposed**
+  by Claude Opus 5.5, 2026-11-09. Reason: the first text of this rule named `segments_exact`, and D11 rule 4 forbids
+  it here.
 - A pass joins only segments with equal control lists, at first.
 - Omni's speech frames stay one context in a pass.
 - The change of path gives a new engine identity, so each held context fills again once (12.1).

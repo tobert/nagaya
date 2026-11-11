@@ -1142,6 +1142,7 @@ The tag numbers are in this table. Decided 2026-10-20 (reading).
 | 7 | the boundary position |
 | 8 | "not sealed", with no bytes: only on an interval copy (6.13). It follows tag 5, which holds the sealed recipe at the same position |
 | 9 | a media part (11.11): its media type, its content id and its count of positions. Proposed, 2026-11-06 |
+| 10 | "decoded", with no bytes: only on a decoded head (6.14). It follows tags 5, 6 and 7. Tag 5 holds the recipe of the prompt as the rule fed it. Tag 6 holds the tokens after the prompt. Proposed, 2026-11-11 |
 
 **The park recipe.** The park knows the bytes of a state in a slot. It does not know the inputs that made the state.
 Thus the park recipe names the bytes. 10.3 gives the one exception. The park recipe is a root recipe with four items:
@@ -1528,6 +1529,29 @@ The goal is that the nagaya does not run again what it has run (milestone 32). T
   depend on the drafts.
 - **The closing tokens.** The template ends the reply with tokens that the model did not sample, such as a newline
   after the end token. The job feeds them after the reply, at most 8 tokens (11.3c), and then it holds the head.
+- **The items of the recipe.** The recipe has the items of tags 5, 6, 7 and 10 (6.2). Tag 5 is the recipe that the
+  prompt has as a span that the rule fed from the last seal, with its media parts. No seal is at the end of the
+  prompt. Tag 6 holds the sampled tokens and the closing tokens. Tag 7 is the position of the head.
+- **One token in each pass.** Each token of tag 6 had a pass of one token alone. The job feeds the last sampled
+  token and the closing tokens in that way too, as decode quanta with no logit row.
+- **No head from a shared pass.** A reply holds no decoded head when one of its decode rows shared a pass with a
+  row of another job. A reply of an ensemble (`docs/lab.md`) holds none. Reason: with a feed rule, the bits can
+  depend on the token count of the pass (engine-abi D11). The ABI has no declaration that they do not. Thus the
+  rule of 5.7 stays whole: no joined segment writes a row that the store keeps.
+- **LFM3 can do more later.** The bits of LFM3 do not depend on the other segments of a pass (engine-abi "Batched
+  passes"). A later declaration in the ABI can let it keep the head of a shared pass.
+- **The span after the head.** A decoded head is a seal, as a boundary is. A build that starts from it feeds the
+  rest by the rule, as a new span from the head. Each later boundary chains from the recipe of the head. The
+  response counts the tokens of the head in `usage.kept`.
+- **The search.** A build reads the record of the prefix that ends at each `assistant` message, from the last one
+  down. It reads the record id of that prefix with `snap: true` on its last message, as gogi's `with_reply` writes
+  it. The search stops at the first record that has a head note (6.17). The build computes the recipe of the note
+  again from its own rendering. A recipe that differs is a miss, and so is a head that the store does not hold.
+  After a miss, the build does what it does with no decoded head.
+- **A cut reply.** A reply that ends with `max_tokens` holds a decoded head at the seam of its open rendering
+  (11.3c). The record of the context with the open reply names it, and a continuation of that context starts from
+  it.
+- **No head after latent steps.** A latent row is not a token (`docs/lab.md`, "No head").
 
 The code keeps the rule of 2026-10-21 until milestone 32 step 4. `keeps_head` in `council/generations.rs` is false
 for an engine with a feed rule, and `crates/nagaya/tests/council_feed.rs` checks a null head.
@@ -1716,6 +1740,18 @@ one that keeps the contract. Each follows a rule that specs or pins have now. Am
   The context id of the file's text must be its name. A file that fails is removed, the log has a warning, and the
   read is a miss. Reason: gogi lets a server drop a record at any time. A change of gogi's record text makes each
   old file such a file, and a miss costs the client one whole context.
+- **The head note.** **Proposed** by Claude Fable 5.2, 2026-11-11, for milestone 32 step 4. The record of a reply
+  can have a head note: the file `context-heads/<context id>.json` in the store directory. The note holds the
+  recipe of the decoded head (6.14), its token count, and each seal of its state in order. A seal is a token count.
+  The seal of a decoded head also has the token count of its prompt. Reason: the build computes the recipe again
+  from these counts and its own tokens, so it trusts no token of the note.
+  - The note lives with its record. A drop of the record removes the note. At start, the book removes each note
+    that has no record. A file whose name is not `<context id>.json` stops the start.
+  - A note goes to a temporary file, then `fsync`, then a rename, as a record does. Thus a note stays through a
+    restart. The store decides if the head stays (6.9, 10.2).
+  - A note that is not valid text is removed, the log has a warning, and the read is a miss.
+  - A note is not an entry, and it keeps no entry in the store. A note whose head the store does not hold is a miss.
+  - The read of a note does not name its record.
 - **Pins.** The pin book keeps the record ids of each owner beside its snapshots (6.10), in `pins.json`. A pin keeps
   the records that the book held at the `PUT`. A `PUT` with held records and no held snapshot keeps its owner. The
   records of an owner end with its pins. At start, the pin book forgets each record whose file is gone.
