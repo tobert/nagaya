@@ -12,9 +12,8 @@ function omniAccept() {
 }
 function drawOmni() {
   $("omni-log").innerHTML = omni.map((t) => `<div class="msg ${t.role}"><div>${esc(t.text)}</div>` +
-    t.files.map((f) => f.mime === "audio/wav"
-      ? `<audio controls src="${esc(objectUrl(f.id, f.host))}"></audio>`
-      : `<div class="note">${esc(f.name || f.mime)}</div>`).join("") +
+    t.files.map((f) => (f.mime === "audio/wav" ? `<audio controls src="${esc(objectUrl(f.id, f.host))}"></audio>` : "") +
+      `<div class="stat">${objectChip(f)}</div>`).join("") +
     (t.stat ? `<div class="note">${esc(t.stat)}</div>` : "") + "</div>").join("");
   $("omni-files").textContent = omniFiles.map((f) => f.name).join(", ");
 }
@@ -86,8 +85,10 @@ async function omniSpeak(model, text) {
 }
 // The clips of one reply play one after the other.
 document.addEventListener("ended", (ev) => {
-  const next = ev.target?.nextElementSibling;
-  if (next && next.tagName === "AUDIO") next.play().catch(() => {});
+  if (ev.target?.tagName !== "AUDIO") return;
+  // The id of each clip stands between the clips, so the next clip is the next audio of the same message.
+  const clips = [...ev.target.closest(".msg")?.querySelectorAll("audio") || []];
+  clips[clips.indexOf(ev.target) + 1]?.play().catch(() => {});
 }, true);
 
 $("omni-go").onclick = async () => {

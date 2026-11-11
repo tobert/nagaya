@@ -200,6 +200,26 @@ function modelSelect(id, accepts) {
 /** The path of an object on the nagaya `h`. An image or a LoRA keeps the name of its nagaya. */
 const objectUrl = (id, h = host) => `${base(h)}/council/v2/objects/${id}`;
 
+// ---- content ids
+// The nagaya names an object and a snapshot by a content id: `blake3:` and 64 hex digits. The page shows the first 8.
+const shortId = (id) => String(id).replace(/^blake3:/, "").slice(0, 8);
+const sizeOf = (n) => n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : n >= 1e3 ? `${(n / 1e3).toFixed(1)} kB` : `${n} B`;
+/** The count of bytes of a text in UTF-8, which is its size in a request. */
+const utf8Length = (text) => encodeURIComponent(text).replace(/%[0-9A-F]{2}/g, "x").length;
+/** A snapshot of a reply as a link to its record on the nagaya: its id, its tokens, its tier and its size. */
+function snapshotChip(s) {
+  const facts = [`${s.tokens} tokens`, s.tier].concat(s.bytes == null ? [] : [sizeOf(s.bytes)]).filter(Boolean);
+  return `<a class="cid" href="${esc(base())}/council/v2/snapshots/${esc(s.id)}" target="_blank" ` +
+    `title="${esc(s.id)}: the model state after this message. A request that starts with the same tokens starts ` +
+    `from it.">${esc(shortId(s.id))}</a> <span class="note">${esc(facts.join(" · "))}</span>`;
+}
+/** An object of a message as a link to its bytes: its id and its type. A request names the id, not the bytes. */
+function objectChip(f) {
+  return `<a class="cid" href="${esc(objectUrl(f.id, f.host))}" target="_blank" title="${esc(f.id)}: the request ` +
+    `names this id, and the nagaya reads the bytes from its store.">${esc(shortId(f.id))}</a> ` +
+    `<span class="note">${esc([f.name, f.mime].filter(Boolean).join(" · "))}</span>`;
+}
+
 // A tab gives `keeps` a function that returns its objects, each {id, host}. One keep holds them all, so the store
 // does not evict them. A keep lasts 30 days (spec 6.15).
 const keepLists = [];

@@ -130,6 +130,13 @@ audio { width: 100%; }
 .msg:empty { min-height: 40px; }
 .msg details { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
 .msg .stat { font-size: 11px; color: var(--muted); margin-top: 6px; }
+.msg .stat + .stat { margin-top: 2px; }
+/* A content id: the first 8 hex digits, as a link to the record of the thing. */
+.cid { font-family: var(--mono); font-size: 11px; background: var(--code); border: 1px solid var(--line);
+       border-radius: 4px; padding: 0 5px; text-decoration: none; color: var(--ink); }
+.cid::before { content: "blake3:"; color: var(--muted); }
+.cid:hover { border-color: var(--accent); }
+.msg .stat .note { font-size: 11px; }
 #chat-log, #omni-log { display: flex; flex-direction: column; gap: 10px; min-height: 200px;
                        max-height: calc(100vh - 290px); overflow-y: auto; padding-right: 4px; }
 /* A named thing of a list with a number and a button: a LoRA, a saved vector. */

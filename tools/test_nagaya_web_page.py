@@ -382,6 +382,51 @@ class Page(unittest.TestCase):
         self.assertEqual(out["set"], {"seed": 5, "temperature": 0.7, "top_k": 20})
         self.assertIsNone(out["empty"])
 
+    # The end of a chat stream as the nagaya of b70host sent it on 2026-11-11, with a system message at index 0.
+    CHAT_DONE = {"model": "lfm3", "content": "Hi there!", "reasoning": "", "finish": "end_turn",
+                 "usage": {"prompt": 23, "kept": 18, "fed": 5, "completion": 4, "reasoning": 0},
+                 "snapshots": [{"id": "blake3:8336d95c" + "0" * 56, "message": 0, "tokens": 10, "tier": "host",
+                                "bytes": 1097728},
+                               {"id": "blake3:390ed0d6" + "1" * 56, "message": 1, "tokens": 18, "tier": "device",
+                                "bytes": 1458176}]}
+
+    def chat_turn(self, done):
+        return self.run_page(f"const DONE = {json.dumps(done)};" + """
+            const real = fetch;
+            fetch = (path, o) => /generations$/.test(path) ? (calls.push(["POST", path, o.body]), sse([["done", DONE]]))
+                                                           : real(path, o);
+            set("chat-model", "lfm3"); set("chat-system", "Be brief."); set("chat-input", "hi <b>");
+            await document.getElementById("chat-go").onclick();
+            out.failed = document.getElementById("chat-error").textContent;
+            out.sent = calls.filter((c) => /generations$/.test(c[1])).pop()[2].length;
+            out.log = document.getElementById("chat-log").innerHTML;""")
+
+    def test_a_chat_reply_shows_what_the_page_sent_and_what_the_nagaya_kept_and_ran(self):
+        out = self.chat_turn(self.CHAT_DONE)
+        self.assertEqual(out["failed"], "")
+        user, reply = out["log"].split('<div class="msg assistant">')
+        # The message of the person carries the content id of the snapshot at its end, as a link to the snapshot.
+        self.assertIn('href="/at/b70host/council/v2/snapshots/blake3:390ed0d6' + "1" * 56 + '"', user)
+        self.assertIn("390ed0d6", user)
+        self.assertIn("18 tokens", user)
+        self.assertIn("device", user)
+        self.assertNotIn("8336d95c", user)
+        # The reply says that the whole text went, and how few tokens ran.
+        self.assertIn(f"sent the whole context, {out['sent']} B", reply)
+        self.assertIn("kept 18 of 23 prompt tokens", reply)
+        self.assertIn("ran 5", reply)
+        # The snapshot of the system message has no message in the log, so the reply lists it.
+        self.assertIn("8336d95c", reply)
+        self.assertIn("1.1 MB", reply)
+
+    def test_a_chat_reply_with_no_snapshots_shows_its_counts_and_no_id(self):
+        done = dict(self.CHAT_DONE, snapshots=[], usage={"prompt": 23, "fed": 23, "completion": 4})
+        out = self.chat_turn(done)
+        self.assertEqual(out["failed"], "")
+        self.assertNotIn("/snapshots/", out["log"])
+        self.assertIn("kept 0 of 23 prompt tokens", out["log"])
+        self.assertIn("ran 23", out["log"])
+
     def test_each_context_names_thinking_and_only_a_model_that_thinks_gets_true(self):
         out = self.run_page(self.FORM + """
             set("img-model", "pony-0"); drawImageForm();
@@ -623,6 +668,10 @@ class Page(unittest.TestCase):
         self.assertIn('/council/v2/objects/blake3:' + "a" * 64 + '"', out["log"])
         self.assertIn("blake3:" + "a" * 64, out["keep"])
         self.assertIn("blake3:" + "f" * 64, out["keep"])
+        # Each file of a message shows the content id that the request names in place of its bytes.
+        self.assertIn('objects/blake3:' + "f" * 64 + '" target="_blank" title="blake3:' + "f" * 64, out["log"])
+        self.assertIn(">ffffffff</a>", out["log"])
+        self.assertIn(">aaaaaaaa</a>", out["log"])
         # The next turn sends the spoken reply back as its text and its audio (spec 11.11, "Read it back"), and no
         # output asks for text only.
         second = out["second"]
