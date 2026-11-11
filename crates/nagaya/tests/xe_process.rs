@@ -275,8 +275,9 @@ fn the_process_serves_gemma4_on_both_cards() {
         println!("{:?} {}: {}", check.status, check.name, check.detail);
     }
     host.borrow_mut().close();
-    // Spec 6.14 (decided 2026-10-21): a generation on an engine with a feed rule holds no head. Since gogi a07d85e,
-    // gogi's check of the head skips a null head, so no check may fail.
+    // Spec 6.14 (decided 2026-11-11): a generation on an engine with a feed rule holds a decoded head, when the
+    // rendering of its reply has the sampled tokens. gogi's checks of the head run on such a head, and they skip a
+    // null head. So no check may fail.
     let failed: Vec<&str> = report
         .checks
         .iter()
@@ -301,5 +302,6 @@ fn the_process_serves_gemma4_on_both_cards() {
             "{name} did not pass"
         );
     }
-    assert!(generation["head"].is_null(), "{generation}");
+    // The head is null when the family renders the reply with other tokens than the model sampled (spec 6.14).
+    println!("the head of the generation: {}", generation["head"]);
 }

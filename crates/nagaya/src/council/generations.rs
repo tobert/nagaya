@@ -1,5 +1,6 @@
 //! Generations (gogi "Generations"): a reply sampled after a context, with the sampler of spec 11.2.
 
+use std::collections::{BTreeMap, VecDeque};
 use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
 use std::sync::mpsc::{Sender, SyncSender};
@@ -12,7 +13,7 @@ use gogi_proto::generation::{
 };
 use gogi_proto::message::Message;
 use nagaya_abi::Kind;
-use nagaya_council::build::{BoundaryRecipe, range_recipe, recipes_with_cuts};
+use nagaya_council::build::{BoundaryRecipe, decoded_recipe, range_recipe, recipes_with_cuts};
 use nagaya_council::family::{
     Boundary, Family, FamilyError, ParsedReply, Rendering, ReplyCall, ReplyParser, ReplyStart,
 };
@@ -24,6 +25,7 @@ use nagaya_store::{ContentId, Reason, RecipeId};
 use super::MediaRead;
 use super::build::{ContextBody, Cut, Extension, Finished, Got, JobControl, Shared, Then, Want};
 use super::error::ServiceError;
+use super::records::{HeadNote, SealNote};
 use super::{Schedule, Service, snapshot_id};
 
 /// The most tokens that a generation feeds after its reply to hold the head (gogi "Generations": "at most a few
@@ -122,10 +124,26 @@ enum Stage {
     Latent,
     /// The feed of the generation prompt and of each sampled token.
     Sampling,
-    /// The feed of the tokens after the reply, then the snapshot of the head.
-    Head { recipe: RecipeId, boundary: Boundary },
+    /// The feed of the tokens after the reply, then the snapshot of the head. `alone` are the tokens that a decoded
+    /// head still feeds, each in a pass alone (spec 6.14).
+    Head {
+        recipe: RecipeId,
+        boundary: Boundary,
+        alone: VecDeque<u32>,
+    },
     /// The reply and the head are complete.
     Done,
+}
+
+/// How a generation holds the head after its reply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Heads {
+    /// No head: a latent row is not a token, so no recipe names the state (`docs/lab.md`, "No head").
+    None,
+    /// A sealed head under the recipe of its boundary (spec 11.3c): the engine has no feed rule.
+    Boundary,
+    /// A decoded head under its own recipe (spec 6.14): the engine has a feed rule.
+    Decoded,
 }
 
 /// What a generation gives back.
@@ -177,8 +195,15 @@ pub(crate) struct GenerateThen {
     finish: Option<Finish>,
     parsed: Option<ParsedReply>,
     head: Option<(Boundary, ContentId)>,
-    /// False on an engine with a feed rule: the reply rows come from decode quanta, so no head is kept (spec 6.14).
-    keeps_head: bool,
+    /// How the generation holds its head.
+    heads: Heads,
+    /// True when a decode row of the reply shared its pass with the row of another job. Then the reply holds no
+    /// decoded head (spec 6.14, "No head from a shared pass").
+    shared: bool,
+    /// The decoded heads that the build can start from: the recipe of each, and the tokens of its prompt.
+    decoded: BTreeMap<RecipeId, usize>,
+    /// The note of the decoded head, for the record of the reply (spec 6.17).
+    note: Option<HeadNote>,
     /// The phase of the next token after the last sampled token.
     next_phase: Option<Phase>,
     /// The trace, when the request asks for one. It reads each logit row and its taps, and it changes no want but
@@ -260,6 +285,11 @@ impl GenerateThen {
             .as_ref()
             .filter(|run| run.plan.read)
             .map(|run| run.read.as_slice())
+    }
+
+    /// The note of the decoded head that the job held, for the record of the reply (spec 6.17).
+    pub(crate) fn head_note(&self) -> Option<HeadNote> {
+        self.note.clone().filter(|_| self.head.is_some())
     }
 
     /// The reply, once the work is done.
@@ -406,8 +436,7 @@ impl GenerateThen {
             _ => done.as_message(),
         };
         self.parsed = Some(parsed);
-        // Decided 2026-10-21 (spec 6.14): a generation on an engine with a feed rule holds no head after its reply.
-        if !self.keeps_head {
+        if self.heads == Heads::None || (self.heads == Heads::Decoded && self.shared) {
             return Ok(self.done());
         }
         let Some(reply) = reply else {
@@ -425,6 +454,10 @@ impl GenerateThen {
             Err(FamilyError::Client(_)) => return Ok(self.done()),
             Err(error) => return Err(error.into()),
         };
+        // Decided 2026-11-11 (spec 6.14): a generation on an engine with a feed rule holds a decoded head.
+        if self.heads == Heads::Decoded {
+            return self.decoded_head(&rendering, context.open().is_some(), context.messages.len() - 1);
+        }
         if context.open().is_some() {
             return Ok(self.cut_head(&rendering, context.messages.len() - 1));
         }
@@ -451,6 +484,7 @@ impl GenerateThen {
         self.stage = Stage::Head {
             recipe: last.recipe,
             boundary: last.boundary,
+            alone: VecDeque::new(),
         };
         if tokens.len() == fed {
             return Ok(Want::Snapshot {
@@ -493,6 +527,7 @@ impl GenerateThen {
         self.stage = Stage::Head {
             recipe,
             boundary: Boundary { message, tokens: seam },
+            alone: VecDeque::new(),
         };
         if seam == fed {
             return Want::Snapshot {
@@ -504,6 +539,84 @@ impl GenerateThen {
             tokens: tokens[fed..seam].to_vec(),
             logits: false,
             kind: Kind::Prefill,
+        }
+    }
+
+    /// Hold the decoded head of the reply (spec 6.14, "The decoded head"): a snapshot of the state with the decode
+    /// rows of the reply, under the recipe of a decoded head. `rendering` is the rendering of the context with the
+    /// reply, the message at index `message`. The head of a closed reply is the end of that rendering. The head of an
+    /// `open` reply, which ended with `max_tokens`, is the seam of its open rendering (spec 11.3c).
+    ///
+    /// The slot holds the prompt and each sampled token but the last. The rule fed the prompt as one span from the
+    /// last seal, and each sampled token had a pass alone. The job feeds the rest in the same way: the last sampled
+    /// token and the closing tokens of the template, each in a pass alone. A rendering with other tokens than the
+    /// slot holds has no head.
+    fn decoded_head(&mut self, rendering: &Rendering, open: bool, message: usize) -> Result<Want, ServiceError> {
+        let tokens = &rendering.tokens[..rendering.end];
+        let prompt = self.prompt.len();
+        let fed = prompt + self.sampled.len() - 1;
+        let to = if open {
+            tokens.len().saturating_sub(1)
+        } else {
+            tokens.len()
+        };
+        let in_slot = to >= fed
+            && tokens[..prompt] == self.prompt[..]
+            && tokens[prompt..fed] == self.sampled[..self.sampled.len() - 1];
+        if !in_slot || to - fed > HEAD_FEED || to > self.room {
+            return Ok(self.done());
+        }
+        let (base, at) = self
+            .recipes
+            .last()
+            .map_or((self.root, 0), |recipe| (recipe.recipe, recipe.boundary.tokens));
+        if at >= prompt {
+            return Err(ServiceError::internal(format!(
+                "the last seal of a reply is at token {at}, but its prompt ends at token {prompt}; the prompt has a \
+                 token after its last seal"
+            )));
+        }
+        let recipe = decoded_recipe(&base, tokens, &rendering.media, at, prompt, to)?;
+        let mut seals: Vec<SealNote> = self
+            .recipes
+            .iter()
+            .map(|seal| SealNote {
+                tokens: seal.boundary.tokens,
+                prompt: self.decoded.get(&seal.recipe).copied(),
+            })
+            .collect();
+        seals.push(SealNote {
+            tokens: to,
+            prompt: Some(prompt),
+        });
+        self.note = Some(HeadNote {
+            recipe,
+            tokens: to,
+            seals,
+        });
+        self.stage = Stage::Head {
+            recipe,
+            boundary: Boundary { message, tokens: to },
+            alone: tokens[fed..to].iter().copied().collect(),
+        };
+        Ok(self.head_step())
+    }
+
+    /// The next want of the head: the feed of the next token that has a pass alone, then the snapshot.
+    fn head_step(&mut self) -> Want {
+        let Stage::Head { recipe, alone, .. } = &mut self.stage else {
+            unreachable!("only the head stage takes a head step");
+        };
+        match alone.pop_front() {
+            Some(token) => Want::Feed {
+                tokens: vec![token],
+                logits: false,
+                kind: Kind::Decode,
+            },
+            None => Want::Snapshot {
+                recipe: *recipe,
+                reason: Reason::PrefillDone,
+            },
         }
     }
 
@@ -647,10 +760,7 @@ impl Then for GenerateThen {
                 tracing.lens = lens.as_deref().map(f32s);
                 self.sample(&row)
             }
-            (Stage::Head { recipe, .. }, Got::Fed(None)) => Ok(Want::Snapshot {
-                recipe: *recipe,
-                reason: Reason::PrefillDone,
-            }),
+            (Stage::Head { .. }, Got::Fed(None)) => Ok(self.head_step()),
             (Stage::Head { boundary, .. }, Got::Held(id)) => {
                 self.head = id.map(|id| (*boundary, id));
                 Ok(self.done())
@@ -659,6 +769,10 @@ impl Then for GenerateThen {
                 "a generation got {got:?} where it did not expect it"
             ))),
         }
+    }
+
+    fn shared_pass(&mut self) {
+        self.shared = true;
     }
 }
 
@@ -701,8 +815,11 @@ impl Service {
         let schedule = Schedule::of(request.class, request.priority);
         let _claim = self.claim(&parts.recipes);
         let finished = self.run_context(|tx| parts.body(then, tx), schedule, None)?;
+        let note = finished.then.head_note();
         let (mut done, trace) = self.answer(finished, &facts);
-        self.name_reply(&request.context, &mut done)?;
+        // The response names no head that the store lost, and the record names none then.
+        let note = note.filter(|_| done.head.is_some());
+        self.name_reply_with_head(&request.context, &mut done, note)?;
         Ok((done, trace))
     }
 
@@ -834,10 +951,11 @@ impl Service {
         let end = built.end;
         let room = (prompt + steps + max_tokens + HEAD_FEED).min(context_tokens);
         let tokens: Arc<[u32]> = built.tokens[..end].into();
-        let (cuts, extension) = match context.open() {
+        let starts = match context.open() {
             Some(_) => self.starts(root, context, &rendering.tokens, &built)?,
-            None => (self.cuts(root, context, &built)?, None),
+            None => self.starts(root, context, &built.tokens[..built.end], &built)?,
         };
+        let (cuts, extension, decoded) = (starts.cuts, starts.extension, starts.decoded);
         // The rows of each span of the prompt. A prompt with no build plan feeds its spans in the work.
         let media = self.media_rows(&rendering)?;
         let then = GenerateThen {
@@ -864,7 +982,14 @@ impl Service {
             parsed: None,
             head: None,
             // A head names the tokens of the slot, and a latent row is not a token. So latent steps hold no head.
-            keeps_head: self.shared.limits.feed.is_none() && latent.is_none(),
+            heads: match (&latent, &self.shared.limits.feed) {
+                (Some(_), _) => Heads::None,
+                (None, None) => Heads::Boundary,
+                (None, Some(_)) => Heads::Decoded,
+            },
+            shared: false,
+            decoded,
+            note: None,
             next_phase: None,
             tracing,
             dropped: self

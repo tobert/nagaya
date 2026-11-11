@@ -410,8 +410,10 @@ impl Service {
                 read: plan.read && index == 0,
                 ..plan
             });
-            let prepared = self.prepare(request, None, None, plan)?;
+            let mut prepared = self.prepare(request, None, None, plan)?;
             facts.get_or_insert(prepared.facts.clone());
+            // The contexts of an ensemble share each pass of a step, so the lead holds no decoded head (spec 6.14).
+            prepared.then.shared_pass();
             let then = EnsembleThen {
                 index,
                 generation: prepared.then,

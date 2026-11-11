@@ -533,6 +533,10 @@ pub trait Then: Send + 'static {
 
     /// Give the next want, from what the last want gave.
     fn next(&mut self, got: Got) -> Result<Want, ServiceError>;
+
+    /// Hear that a decode row of the work shared its pass with the row of another job (spec 6.14, "No head from a
+    /// shared pass"). The default does nothing.
+    fn shared_pass(&mut self) {}
 }
 
 /// No work after the build.
@@ -1769,6 +1773,12 @@ impl<T: Then> JobBody for ContextBody<T> {
 
     fn joinable(&self, kind: Kind) -> bool {
         self.started && joinable_unit(kind, self.units.front(), self.feeding.as_ref())
+    }
+
+    fn shared_pass(&mut self) {
+        if let Some(then) = &mut self.then {
+            then.shared_pass();
+        }
     }
 
     fn run(&mut self, kind: Kind, engines: &mut [Box<dyn Engine>]) -> Ran {

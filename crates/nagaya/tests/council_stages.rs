@@ -75,10 +75,10 @@ fn a_build_a_generation_and_a_read_on_two_stages_give_the_bits_of_one_stage() {
         (&expected.content, &expected.reasoning)
     );
     assert_eq!(reply.usage.completion, expected.usage.completion);
-    assert_eq!(
-        reply.head, None,
-        "an engine with a feed rule holds no head after a reply"
-    );
+    // Decided 2026-11-11 (spec 6.14): a generation on an engine with a feed rule holds a decoded head. The id of a
+    // head is the hash of its bytes, so two stages make the state of one stage.
+    assert!(reply.head.is_some(), "{reply:?}");
+    assert_eq!(reply.head, expected.head);
 
     let read = two.service.read(&reads()).unwrap();
     assert_eq!(read.reads, one.service.read(&reads()).unwrap().reads);

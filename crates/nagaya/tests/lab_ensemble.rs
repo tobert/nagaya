@@ -211,6 +211,11 @@ fn k_contexts_decode_in_passes_of_k_segments() {
         assert_eq!(status, StatusCode::OK, "{stages} stages: {got}");
         let completion = got["usage"]["completion"].as_u64().unwrap() as usize;
         assert!(completion >= 2, "{got}");
+        // The rows of the lead shared each pass of a step, so the reply holds no decoded head (spec 6.14). The store
+        // holds the boundary at the end of each context, and nothing more.
+        let ports = lab._process.ports();
+        let entries = ports.store().unwrap().lock().unwrap().entries().len();
+        assert_eq!(entries, texts.len(), "{stages} stages");
         let sizes = std::mem::take(&mut *lab.sizes.lock().unwrap());
         // Each prompt feeds alone. Each step after the first row is one pass of the three rows.
         let joined = sizes.iter().filter(|&&n| n == 3).count();
