@@ -743,6 +743,68 @@ fn a_stream_sends_the_output_event_then_the_tokens_then_done_and_the_pending_id_
     assert_eq!(status, StatusCode::PERMANENT_REDIRECT);
 }
 
+/// A reply with audio names the record of its context with its reply: the text, then the object part of its WAV
+/// (gogi "The reply in a record", spec 11.13). The record of the request's context is held too.
+///
+/// Falsified by a route that seals the reply and names no record: `done.context` is none.
+#[test]
+fn a_reply_with_audio_names_the_record_with_its_text_and_its_output() {
+    for stream in [false, true] {
+        let rig = rig();
+        {
+            let mut plan = rig.plan.lock().unwrap();
+            plan.text = bytes("Hi");
+            plan.text.push(TEXT_END);
+            plan.end_at = 3;
+        }
+        let council = council(&rig);
+        let mut request = request(None, 64, 7);
+        request.stream = Some(stream);
+        let (status, bytes) = send(&council, "POST", "/council/v2/generations", Some(body(request.clone())));
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&bytes));
+        let done: GenerationDone = if stream {
+            let text = String::from_utf8(bytes).unwrap();
+            let last = text
+                .split("\n\n")
+                .filter(|chunk| !chunk.trim().is_empty())
+                .last()
+                .unwrap();
+            assert!(last.contains("event: done"), "{last}");
+            let data: String = last.lines().filter_map(|line| line.strip_prefix("data:")).collect();
+            serde_json::from_str(data.trim_start()).unwrap()
+        } else {
+            serde_json::from_slice(&bytes).unwrap()
+        };
+        let with_reply = gogi_proto::with_reply(&request.context, &done);
+        assert_eq!(
+            done.context,
+            Some(gogi_proto::context_id(&with_reply)),
+            "stream {stream}"
+        );
+        let read = |id: &gogi_proto::ContextId| {
+            let (status, bytes) = send(&council, "GET", &format!("/council/v2/contexts/{id}"), None);
+            assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&bytes));
+            serde_json::from_slice::<Value>(&bytes).unwrap()
+        };
+        let record = read(done.context.as_ref().unwrap());
+        let last = record["context"]["messages"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            last["content"],
+            json!([{"type": "text", "text": done.content},
+                   {"type": "object", "id": done.outputs[0].id.as_str(), "mime": "audio/wav"}]),
+            "{last}"
+        );
+        assert_eq!(last["snap"], json!(true));
+        let asked = read(&gogi_proto::context_id(&request.context));
+        assert_eq!(asked["context"], serde_json::to_value(&request.context).unwrap());
+    }
+}
+
 #[test]
 fn a_mode_that_is_not_known_is_a_400_at_the_route() {
     let rig = rig();

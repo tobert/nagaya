@@ -1181,7 +1181,9 @@ pub async fn generation(
         let result = council
             .call(move || {
                 let checked = check(&service, &model, &request, objects.as_deref())?;
-                make(&inner, &service, &model.model, checked, false, &|_| true)
+                inner.recorded(&request.context, || {
+                    make(&inner, &service, &model.model, checked, false, &|_| true)
+                })
             })
             .await;
         return super::routes::answer(&id, result);
@@ -1197,7 +1199,9 @@ pub async fn generation(
         let send = |item| send_or_drop(&out, &dropped, item);
         let result = guarded(|| {
             let checked = check(&service, &model, &request, objects.as_deref())?;
-            make(&inner, &service, &model.model, checked, true, &send)
+            inner.recorded(&request.context, || {
+                make(&inner, &service, &model.model, checked, true, &send)
+            })
         });
         send(Item::End(Box::new(result)));
         drop(permit);
