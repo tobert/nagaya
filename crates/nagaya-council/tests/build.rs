@@ -324,3 +324,95 @@ fn a_bad_media_span_is_an_internal_error() {
         assert!(matches!(error, FamilyError::Internal(_)), "{media:?}: {error:?}");
     }
 }
+
+/// The seals of a state give its recipes (spec 6.14, "The decoded head"). A boundary has the recipe of its span. A
+/// decoded head has the recipe of its prompt, then its decoded tokens with the item "decoded". A later seal chains
+/// from the head.
+#[test]
+fn the_seals_of_a_state_give_the_recipe_of_a_decoded_head_and_of_each_seal_after_it() {
+    use nagaya_council::build::{Seal, seal_recipes};
+    use nagaya_store::recipe_decoded;
+    let tokens = [1u32, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let rule = |tokens| Seal { tokens, prompt: None };
+    let seals = [
+        rule(3),
+        Seal {
+            tokens: 7,
+            prompt: Some(5),
+        },
+        rule(10),
+    ];
+    let got = seal_recipes(root(), &tokens, &[], &seals).unwrap().unwrap();
+    let boundary = recipe_boundary(&root(), &[1, 2, 3], 3);
+    let prompt = recipe_boundary(&boundary, &[4, 5], 5);
+    let head = recipe_decoded(&prompt, &[6, 7], 7);
+    assert_eq!(got, vec![boundary, head, recipe_boundary(&head, &[8, 9, 10], 10)]);
+    // The same tokens with no decoded head have the recipes of the boundaries.
+    let plain = seal_recipes(root(), &tokens, &[], &[rule(3), rule(7), rule(10)])
+        .unwrap()
+        .unwrap();
+    let by_rule = boundary_recipes(root(), &rendering(tokens.to_vec(), &[(0, 3), (1, 7), (2, 10)])).unwrap();
+    assert_eq!(plain, by_rule.iter().map(|recipe| recipe.recipe).collect::<Vec<_>>());
+    assert_ne!(got[1], plain[1], "a decoded head is not the boundary at its position");
+    // Another split between the prompt and the decoded tokens is another recipe.
+    let other = [
+        rule(3),
+        Seal {
+            tokens: 7,
+            prompt: Some(6),
+        },
+    ];
+    assert_ne!(seal_recipes(root(), &tokens, &[], &other).unwrap().unwrap()[1], head);
+    // A head with no decoded token is the head of a cut reply of one token. It is not the recipe of its prompt.
+    let empty = [Seal {
+        tokens: 5,
+        prompt: Some(5),
+    }];
+    let prompt = recipe_boundary(&root(), &[1, 2, 3, 4, 5], 5);
+    assert_eq!(
+        seal_recipes(root(), &tokens, &[], &empty).unwrap().unwrap(),
+        vec![recipe_decoded(&prompt, &[], 5)]
+    );
+}
+
+/// A media span that starts in the prompt of a decoded head enters the recipe of the prompt (spec 11.11).
+#[test]
+fn a_media_span_in_the_prompt_of_a_decoded_head_enters_its_recipe() {
+    use nagaya_council::build::{Seal, seal_recipes};
+    let tokens = [1u32, 2, 3, 4, 5, 6];
+    let seals = [Seal {
+        tokens: 6,
+        prompt: Some(4),
+    }];
+    let plain = seal_recipes(root(), &tokens, &[], &seals).unwrap().unwrap();
+    let with_image = seal_recipes(root(), &tokens, &[image(1, 2, 'a')], &seals)
+        .unwrap()
+        .unwrap();
+    assert_ne!(plain, with_image);
+    let other_image = seal_recipes(root(), &tokens, &[image(1, 2, 'b')], &seals)
+        .unwrap()
+        .unwrap();
+    assert_ne!(with_image, other_image);
+}
+
+/// Seals that do not fit the tokens give no recipe: the note of a head came from another rendering.
+#[test]
+fn seals_that_do_not_fit_the_tokens_give_no_recipe() {
+    use nagaya_council::build::{Seal, seal_recipes};
+    let tokens = [1u32, 2, 3, 4, 5, 6];
+    let rule = |tokens| Seal { tokens, prompt: None };
+    let decoded = |prompt, tokens| Seal {
+        tokens,
+        prompt: Some(prompt),
+    };
+    for (why, seals) in [
+        ("a seal past the tokens", vec![rule(7)]),
+        ("a seal at 0", vec![rule(0)]),
+        ("seals that do not increase", vec![rule(3), rule(3)]),
+        ("a prompt at the seal before it", vec![rule(3), decoded(3, 5)]),
+        ("a prompt after its head", vec![decoded(5, 4)]),
+    ] {
+        assert_eq!(seal_recipes(root(), &tokens, &[], &seals).unwrap(), None, "{why}");
+    }
+    assert_eq!(seal_recipes(root(), &tokens, &[], &[]).unwrap(), Some(Vec::new()));
+}

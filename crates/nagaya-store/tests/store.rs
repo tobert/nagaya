@@ -5,8 +5,8 @@ use nagaya_abi::{
     SlotLimit, State, WriteResult,
 };
 use nagaya_store::{
-    ContentId, RecipeMedia, Snapshot, Tensor, content_id, recipe_boundary, recipe_boundary_media, recipe_not_sealed,
-    recipe_root, snapshot_from_engine,
+    ContentId, RecipeMedia, Snapshot, Tensor, content_id, recipe_boundary, recipe_boundary_media, recipe_decoded,
+    recipe_not_sealed, recipe_root, snapshot_from_engine,
 };
 use serde_json::Value;
 
@@ -161,6 +161,34 @@ fn the_not_sealed_item_changes_the_recipe() {
     assert_ne!(copy, recipe_not_sealed(&recipe_boundary(&root, &[1, 2, 3], 4)));
     // The copy of the root differs from the root.
     assert_ne!(recipe_not_sealed(&root), root);
+}
+
+/// The recipe of a decoded head has the items 5, 6, 7 and 10 (spec 6.2, 6.14). It is never the recipe of the same
+/// tokens that the feed rule fed.
+#[test]
+fn the_decoded_item_changes_the_recipe() {
+    let root = recipe_root(&[1u8; 32], b"", &[], &[]);
+    let prompt = recipe_boundary(&root, &[1, 2, 3], 3);
+    let tokens = [7u32, 8, 9];
+    let head = recipe_decoded(&prompt, &tokens, 6);
+    let token_bytes: Vec<u8> = tokens.iter().flat_map(|t| t.to_le_bytes()).collect();
+    let expected = items_hash(&[
+        (5, unhex(&prompt.hex())),
+        (6, token_bytes),
+        (7, 6u64.to_le_bytes().to_vec()),
+        (10, Vec::new()),
+    ]);
+    assert_eq!(head.hex(), expected);
+    assert_ne!(
+        head,
+        recipe_boundary(&prompt, &tokens, 6),
+        "a decoded head never has the recipe of the same tokens fed by the rule"
+    );
+    assert_ne!(head, recipe_decoded(&prompt, &[7, 8, 10], 6));
+    assert_ne!(head, recipe_decoded(&prompt, &tokens, 7));
+    assert_ne!(head, recipe_decoded(&root, &tokens, 6));
+    // A head with no decoded token differs from the recipe of its prompt.
+    assert_ne!(recipe_decoded(&prompt, &[], 3), prompt);
 }
 
 /// The hash of an item list, written apart from the crate: each item is a `u16` tag, a `u64` length and its bytes.

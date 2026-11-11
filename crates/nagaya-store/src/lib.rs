@@ -526,6 +526,23 @@ pub fn recipe_not_sealed(sealed: &RecipeId) -> RecipeId {
     RecipeId(*hasher.finalize().as_bytes())
 }
 
+/// The recipe of a decoded head (spec 6.14). `prompt` is the recipe that the prompt has as a span that the feed rule
+/// fed, `tokens` are the tokens after the prompt, and `position` is the position of the head. The item "decoded" (tag
+/// 10, no bytes) says that each of these tokens had a pass alone. Thus the recipe is never the recipe of the same
+/// tokens that the rule fed.
+pub fn recipe_decoded(prompt: &RecipeId, tokens: &[u32], position: u64) -> RecipeId {
+    let mut hasher = blake3::Hasher::new_derive_key("nagaya recipe v1");
+    add_item(&mut hasher, 5, &prompt.0);
+    let mut token_bytes = Vec::with_capacity(tokens.len() * 4);
+    for token in tokens {
+        token_bytes.extend_from_slice(&token.to_le_bytes());
+    }
+    add_item(&mut hasher, 6, &token_bytes);
+    add_item(&mut hasher, 7, &position.to_le_bytes());
+    add_item(&mut hasher, 10, &[]);
+    RecipeId(*hasher.finalize().as_bytes())
+}
+
 fn add_item(hasher: &mut blake3::Hasher, tag: u16, bytes: &[u8]) {
     hasher.update(&tag.to_le_bytes());
     hasher.update(&(bytes.len() as u64).to_le_bytes());
