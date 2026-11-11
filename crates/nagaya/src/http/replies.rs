@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use axum::response::Response;
+use gogi_proto::error::ErrorType;
 use gogi_proto::generation::{GenerationDone, GenerationRequest};
 use gogi_proto::identity::Capability;
 use gogi_proto::replies::{Split, join, param_in, split};
@@ -64,14 +65,35 @@ pub(super) fn several(council: &Council, body: &[u8]) -> Result<Option<Split>, F
 
 /// Run each reply of a request as a plain generation, all at the same time, and join them.
 ///
-/// Each reply is a call with its own call thread and its own job. The route waits for every reply. The error of the
-/// failed reply with the lowest index is the error of the request.
+/// Each reply is a call with its own call thread and its own job. A reply that finds no free slot is `busy` (spec
+/// 11.3c). It waits for the replies of this request that run: when one of them ended, its slot is free, and the
+/// route runs the waiting replies again (spec 11.15). When no reply of the request ended, the request has nothing
+/// to wait for, and the `busy` stands. The error of the failed reply with the lowest index is the error of the
+/// request.
 pub(super) async fn generation(council: Arc<Council>, split: Split, id: RequestId) -> Response {
-    let runs = split.requests.iter().map(|request| one(&council, request));
-    let results = futures_util::future::join_all(runs).await;
+    let mut results: Vec<Option<Result<GenerationDone, Failure>>> = split.requests.iter().map(|_| None).collect();
+    let mut waiting: Vec<usize> = (0..split.requests.len()).collect();
+    while !waiting.is_empty() {
+        let runs = waiting.iter().map(|&i| one(&council, &split.requests[i]));
+        let round = futures_util::future::join_all(runs).await;
+        let mut ended = false;
+        let mut busy = Vec::new();
+        for (&i, result) in waiting.iter().zip(round) {
+            match &result {
+                Ok(_) => ended = true,
+                Err(failure) if failure.body.error.r#type == ErrorType::Busy => busy.push(i),
+                Err(_) => {}
+            }
+            results[i] = Some(result);
+        }
+        if !ended {
+            break;
+        }
+        waiting = busy;
+    }
     let mut dones = Vec::with_capacity(results.len());
     for (i, result) in results.into_iter().enumerate() {
-        match result {
+        match result.expect("each reply ran in the first round") {
             Ok(done) => dones.push(done),
             Err(mut failure) => {
                 // An error of a context of `contexts` names its place in the list.

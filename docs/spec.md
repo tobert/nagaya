@@ -4896,13 +4896,16 @@ choices to the server, and each is the simplest one. @tobert decides.
 - **The replies run at the same time.** Each reply is a call of 11.7 with its own call thread and its own job. Thus
   a request with 8 replies takes 8 of the 64 calls. Reason: the book of 11.14 then feeds a shared prompt once. Also,
   the decode quanta of the replies join in one pass on an engine that joins (engine-abi D11).
-- **A reply takes a slot as any job does.** A reply with no free slot is `busy` (11.3c), and then the request is
-  a 429. Thus a request for more replies than the engine has free slots fails, and the client sends it again with
-  fewer. No job waits for a slot.
+- **A reply waits for a slot of its own request.** A reply takes a slot as any job does, and a reply with no free
+  slot is `busy` (11.3c). Then the reply waits for the replies of its request that run. When one or more of them
+  ended, the route runs the waiting replies again. Thus a request for 8 replies on an engine with 4 free slots runs
+  4 replies, then 4 more. When no reply of the request ended, the request has nothing to wait for, and it is a 429,
+  as a plain generation is.
+- **The reason for the wait** (claude-fable-5-2, 2026-11-11): a client must not count the free slots of an engine
+  before it asks.
 - **The limit.** `replies_per_generation` is 8 for each served model that declares `replies`. It does not depend on
-  the slot count of the engine. Reason: the LFM3 engine joins 8 segments in one pass (milestone 27). Known limit: an
-  engine with fewer than 8 slots declares a count that it cannot run. A limit of the slot count, at most 8, is
-  the alternative.
+  the slot count of the engine, because a reply can wait. Reason: the LFM3 engine joins 8 segments in one pass
+  (milestone 27).
 - **Which served models declare `replies`.** Each text served model declares it: its replies hold text. A speech
   model, an image model and an embedding model do not declare it. There, `forks` or `contexts` in a generation is a
   400 that names the member. Only the check of `model` runs before it.

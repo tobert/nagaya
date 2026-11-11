@@ -169,24 +169,50 @@ fn equal_contexts_of_one_request_feed_their_tokens_once() {
     );
 }
 
-/// A reply takes a slot as any job does: with no free slot it is `busy` (spec 11.3c). The error of that reply is the
-/// error of the request.
+/// A reply that finds no free slot waits for a reply of its request to end (spec 11.15). With 2 slots, 4 forks run
+/// 2 at a time, and each is the reply that the same request gives alone.
 ///
-/// Falsified by a route that leaves out a failed reply: the request is a 200 with two replies.
+/// Falsified by a route that gives the `busy` of a reply as the error of the request: the request is a 429.
 #[test]
-fn a_request_with_more_forks_than_free_slots_is_busy() {
+fn a_request_with_more_forks_than_slots_runs_its_forks_as_the_slots_come_free() {
     let f = slow(2, &ControlLog::default());
     let council = council(&f);
-    let (status, e) = generate(
-        &council,
-        &with(request(&context("Write a plan."), 3), "forks", json!(4)),
-    );
-    assert_eq!(
-        (status, &e["error"]["type"]),
-        (StatusCode::TOO_MANY_REQUESTS, &json!("busy")),
-        "{e}"
-    );
-    assert!(e.get("replies").is_none(), "{e}");
+    let body = request(&context("Write a plan."), 3);
+    let (status, several) = generate(&council, &with(body.clone(), "forks", json!(4)));
+    assert_eq!(status, StatusCode::OK, "{several}");
+    let replies = several["replies"].as_array().unwrap();
+    assert_eq!(replies.len(), 4);
+    for (i, reply) in replies.iter().enumerate() {
+        let (_, alone) = generate(&council, &request(&context("Write a plan."), 3 + i as u64));
+        assert_eq!(reply_of(reply), reply_of(&alone), "fork {i}");
+    }
+}
+
+/// When no reply of a request gets a slot, the request is `busy`, as a plain generation is (spec 11.3c): the request
+/// has no reply of its own to wait for.
+///
+/// Falsified by a route that tries again with no reply that ended: the request never ends.
+#[test]
+fn a_request_whose_replies_find_no_slot_at_all_is_busy() {
+    let f = slow(1, &ControlLog::default());
+    let council = council(&f);
+    std::thread::scope(|scope| {
+        // A plain generation of 0.8 s or more holds the one slot.
+        let other = Arc::clone(&council);
+        let held = scope.spawn(move || generate(&other, &request(&context("Hold the slot."), 9)));
+        std::thread::sleep(Duration::from_millis(100));
+        let (status, e) = generate(
+            &council,
+            &with(request(&context("Write a plan."), 3), "forks", json!(2)),
+        );
+        assert_eq!(
+            (status, &e["error"]["type"]),
+            (StatusCode::TOO_MANY_REQUESTS, &json!("busy")),
+            "{e}"
+        );
+        assert!(e.get("replies").is_none(), "{e}");
+        assert_eq!(held.join().unwrap().0, StatusCode::OK);
+    });
 }
 
 /// Falsified by a route that gives the error of the last failed reply: the 400 names `contexts[2]`.
