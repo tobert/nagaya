@@ -2,7 +2,7 @@
 
 One process per machine that hosts our engines. The nagaya is an exokernel for megakernels, its reference
 implementation, and the council v2 API as served. Start with `README.md`, then `docs/spec.md`. `docs/ontology.md`
-defines the terms. `docs/history.md` keeps milestones 1 to 29 as they were written.
+defines the terms. `docs/history.md` keeps milestones 1 to 30 as they were written.
 
 @tobert (Amy) owns the project, and she decides. An agent is a model session that works here.
 
@@ -10,7 +10,7 @@ defines the terms. `docs/history.md` keeps milestones 1 to 29 as they were writt
 
 Amy, 2026-11-11: "I want to start scrubbing nagaya to consider for posting on github."
 
-The next reader of this repository is a stranger. Milestone 30 prepares the repository for that reader. Until it
+The next reader of this repository is a stranger. Milestone 31 prepares the repository for that reader. Until it
 is done, each change must move the repository toward that reader, not away:
 
 - Do not write an old name in new text or new code ("Names").
@@ -83,7 +83,7 @@ write the name of the thing in the nagaya:
 - Each identifier that carries the name of an old project gets a new name, in the C++ and HIP code too. Decided
   2026-11-11: the repository is private and all the code is here, so make the names as good as they can be.
   Examples are `MK_SHARDS`, `MK_CHECK`, `mk_engine_close`, and the served model `mk` on gfx1151host.
-- Until milestone 30 step 3 changes an identifier, use it as it is, and do not copy the pattern.
+- Until milestone 31 step 2 changes an identifier, use it as it is, and do not copy the pattern.
 - `docs/history.md` can keep the old names. It is the record of how the code came here.
 
 ## Code
@@ -340,8 +340,24 @@ pipe hides the status. This mistake put three red commits into the history.
 
 ## Milestones
 
-Milestones 1 to 29 are in `docs/history.md`, with their rules, their steps and their commits. A comment that says
-"`AGENTS.md` milestone N" points there now. These steps of them are open:
+Milestones 1 to 30 are in `docs/history.md`, with their rules, their steps and their commits. A comment that says
+"`AGENTS.md` milestone N" points there now.
+
+Amy, 2026-11-11: "go ahead and rework milestones in whatever order makes sense now." This is the order (Claude
+Fable 5.2, 2026-11-11):
+
+1. Milestone 31 step 1, the inventory and the table of names. It needs no GPU.
+2. Milestone 31 step 2, the code names. The Qwen3.8 engine comes first, on gfx1151host, because milestone 30 waits for
+   it.
+3. Milestone 30 steps 7 to 11, the tap hook and latent steps of Qwen3.8, on gfx1151host. They use the new names from
+   their first line. They can run beside the next item.
+4. Milestone 31 steps 3 to 7: the docs, the machines, the build, the license and the review.
+5. Milestone 31 step 8, the publication, when Amy says so.
+
+Milestone 32, context records, starts in gogi and runs beside these. It changes the contract, so it must be done
+before the publication.
+
+These steps of the older milestones are open. Do not start one of them unless Amy asks:
 
 - Milestone 21, image speed on the B70 cards: not started.
 - Milestone 24 step 3, the refusal probe: it waits for Amy's photos.
@@ -349,13 +365,36 @@ Milestones 1 to 29 are in `docs/history.md`, with their rules, their steps and t
 - Milestone 28 step 5: its first trial ran. More trials are Amy's choice.
 - Milestone 29 step 5, the merge, and step 6, the latent swarm: they wait.
 
-Do not start one of them unless Amy asks. Milestone 30 is the work now.
+### Milestone 30: Qwen3.8 batches and latent steps
 
-### Milestone 30: the scrub for a public repository
+Several contexts of Qwen3.8 share one decode pass on gfx1151host, and a context can think in latent steps. Amy started
+it on 2026-11-10. `docs/history.md` has its rules and its full steps. Steps 1 to 6 are done and deployed on gfx1151host
+from `f7d9ea9`. The engine joins its decode quanta, and its weight arena is locked in memory.
+
+These steps are open. Each step ends with the checks green:
+
+7. **Docs.** The tap hook of the engine in engine-abi: "the residual after layer `l`", with the head's row as the
+   last layer. Also its latent rows: the placeholder, the scale and the record. Amy decides each Proposed note.
+8. **Oracle fixture.** The residual after each layer, and latent steps with the logits after each, from the
+   reference on the CPU (8.3).
+9. **The tap hook.** A general hook, not one for the head's row alone. Later milestones read it for control
+   vectors, `project` and `trace`. Card gates: a pass with a tap gives the bits of the same pass with none, and the
+   rows match the oracle.
+10. **The latent span.** Card gate: the latent row of the placeholder's embedding gives the bits of the
+    placeholder token.
+11. **Route and trial.** `ensemble` with `latent` on Qwen3.8. Deploy, then run a trial with Amy.
+
+Two things from steps 5 and 6 are open too:
+
+- A bound of the barrier wait that counts polls, not time. It waits for a diagnostic that faulted the GPU in 5 of
+  5 stress runs. The patch is on gfx1151host, outside the repository.
+- 8 contexts give no more tokens each second than 4 (46.6 against 47.3), and 16 give 65.0. No record shows the
+  segments of each pass, so the cause is not known.
+
+### Milestone 31: the scrub for a public repository
 
 Make the repository fit for a public post on GitHub. Amy started it on 2026-11-11, and the quotes are in
-"Direction" and "Names". The plan below is **Proposed** (Claude Fable 5.2, 2026-11-11). Amy decides each open
-question of `signoff.md` before the step that needs it. She decided these rules on 2026-11-11:
+"Direction" and "Names". She decided these rules on 2026-11-11:
 
 - **Names:** `mk` stays as the kind in crate names. Every other use of an old name goes, in all code.
 - **History:** the public repository starts from a new root commit, later. This repository stays the private
@@ -364,11 +403,10 @@ question of `signoff.md` before the step that needs it. She decided these rules 
 - **People and machines:** the docs name her and her machines less. A doc that must name her writes @tobert.
 - **New names of the Qwen3.8 identifiers:** a variable of the engine takes `QWEN38_`, as in `QWEN38_SHARDS`. A
   variable of the whole process takes `NAGAYA_`, as in `NAGAYA_FAST_QMM`. A macro of the HIP runtime takes `HIP_`,
-  as in `HIP_CHECK`. The served model `mk` becomes `qwen38`. The table of step 3 follows these patterns.
-- **The merge comes first.** gfx1151host has Qwen work that is not on `main` yet. Merge it before a rename of an
-  identifier, so the rename does not conflict with it.
+  as in `HIP_CHECK`. The served model `mk` becomes `qwen38`. The table of step 1 follows these patterns.
+- **The merge came first.** The Qwen work of gfx1151host is on `main` since 2026-11-11, so a rename can start.
 
-The rules:
+The rules of the work:
 
 - **No change in behavior.** A scrub commit changes names, text, config and tests. It does not change what an
   engine calculates. The gates give the same results before and after.
@@ -387,13 +425,14 @@ Do the steps in this order. Each step ends with the checks green.
 
 1. **Inventory.** Count each class of detail, and list its files. The classes are old names, people and roles,
    host names, addresses and home paths. They are also license headers, and fixtures that come from model files.
-   Amy answers the open questions.
-2. **Docs.** Write `README.md` for a stranger: what the nagaya is, the hardware, the build, the checks with no
+   Write a table of each old identifier and its new name. Amy reads the table and answers the open questions.
+2. **Code names.** Remove the old names from comments, test names, identifiers, variables, profiles and the C++
+   and HIP code. Do the Qwen3.8 engine first, on gfx1151host, with the `hip` tests and the oracle bench. Do the names
+   that change a digest last, in one deploy window on each machine. Tell the kaijutsu session before the served
+   model changes its name.
+3. **Docs.** Write `README.md` for a stranger: what the nagaya is, the hardware, the build, the checks with no
    GPU, and the status. Remove the old names from the spec, the ABI and the ontology. Move the story of each
    decision to `docs/history.md`.
-3. **Code names.** First write a table of each old identifier and its new name, and Amy reads it. Then remove the
-   old names from comments, test names, identifiers, variables, profiles and the C++ and HIP code. Do the names
-   that change a digest last, in one deploy window on each machine.
 4. **Machines.** Tests take what they need from config: a card, a model folder, an address. Tools take their
    hosts from flags. `deploy/` becomes a set of examples.
 5. **Build.** gogi comes from its GitHub URL, not from a local path. Remove home paths from the fixtures and from
@@ -405,6 +444,21 @@ Do the steps in this order. Each step ends with the checks green.
 8. **Publication.** Make the new root commit from the scrubbed tree. Amy makes the post.
 
 Each stop and start of `nagaya.service` goes into `signoff.md`.
+
+### Milestone 32: context records
+
+A change of the gogi contract. Amy decided it on 2026-11-11, by interview with the session of the web app. The
+number is reserved here, and the full text comes when gogi has the contract:
+
+- The server holds each context as a record, and a content id names it.
+- A reply returns the id of "this context and my reply".
+- The next request sends `parent` with that id, and only its new messages.
+- A miss is a 404 that names `context.parent`. Then the client sends the whole context.
+
+gogi writes the contract first. Then the spec gets its Proposed notes.
+
+Its cause is a finding of the swarm trials of 2026-11-10. The driver marked no boundary, so each run fed 60% to
+100% of each prompt again.
 
 ## Working notes
 

@@ -61,6 +61,47 @@ fn row_len(part: usize) -> usize {
     }
 }
 
+/// The weight arena is locked in memory (milestone 30 step 5). It is a memfd that the GPU reads through a host
+/// registration. Swap could move its pages, and a move remaps them under a running kernel that the driver cannot
+/// preempt. On 2026-11-10 that gave spin-timeouts and a "Page not present" fault on gfx1151host.
+#[test]
+fn the_weight_arena_is_locked_in_memory() {
+    let _engine = open().expect("open mk");
+    let smaps = std::fs::read_to_string("/proc/self/smaps").expect("read /proc/self/smaps");
+    let mut lines = smaps.lines();
+    let mut found = 0;
+    while let Some(line) = lines.next() {
+        if !line.contains("memfd:mk-weights") {
+            continue;
+        }
+        let mut size = None;
+        let mut locked = None;
+        for field in lines.by_ref() {
+            let kib = |name: &str| -> Option<u64> {
+                field.strip_prefix(name)?.trim().strip_suffix("kB")?.trim().parse().ok()
+            };
+            if let Some(value) = kib("Size:") {
+                size = Some(value);
+            }
+            if let Some(value) = kib("Locked:") {
+                locked = Some(value);
+            }
+            if let Some(value) = kib("Rss:") {
+                println!("Rss: {value} kB");
+            }
+            if field.starts_with("VmFlags:") {
+                break;
+            }
+        }
+        let (size, locked) = (size.expect("a Size line"), locked.expect("a Locked line"));
+        println!("{line}: {size} kB, {locked} kB locked");
+        assert_eq!(locked, size, "the weight arena is not locked in memory: {line}");
+        found += size;
+    }
+    // The arena holds 65,490,227,200 bytes (deploy/gfx1151host/profile.toml), so the locked maps hold at least that.
+    assert!(found * 1024 >= 65_490_227_200, "the locked weight maps hold {found} kB");
+}
+
 #[test]
 fn the_binding_opens_mk_and_declares_its_parts() {
     let engine = open().expect("open mk");

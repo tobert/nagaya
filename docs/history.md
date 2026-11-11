@@ -814,3 +814,66 @@ This is the text of `AGENTS.md` for these milestones, as it was on 2026-11-11. M
     latent steps gave no reliable gain on bin packing. Step 5, the merge, and step 6 wait.
 
     Each stop and start of `nagaya.service` goes into `signoff.md`.
+
+## Milestone 30
+
+This is the text of `AGENTS.md` on gfx1151host for this milestone, as it was on 2026-11-10. Steps 7 to 11 are open.
+
+30. **Qwen3.8 batches and latent steps.** Several contexts of Qwen3.8 share one decode pass on gfx1151host, and a context
+    can think in latent steps. Amy, 2026-11-10: "I see latent steps as the more potentially useful addon for qwen, so
+    we can start with join but let's plan on doing latent steps, which I want to experiment with on regular inference
+    too." She decided these rules on 2026-11-10, by interview:
+    - **Order:** the join first, then latent steps.
+    - **Bits:** mk declares `segments_exact`, so a context's bits never depend on the other segments of its pass.
+    - **Where:** latent steps go on the lab route `ensemble` first, as on LFM3. One context there is a plain
+      generation. A council v2 member comes later, when the shape settles, and gogi writes it first.
+    - **The row:** a latent step feeds back the row that the head reads, after the 4 hyper-connection streams fold.
+      The host scales it to the mean norm of the embedding rows. It goes in at the embedding row, so the pass
+      copies it into the 4 streams.
+    - **PLE:** a latent position holds one placeholder token. The n-gram hash of layer 1 reads it as any token.
+    - **Machine:** gfx1151host is senpai's for the milestone, and Qwen-Image can unload (Amy, 2026-11-10: "the machine is
+      yours today, qwen-image is idle and can be unloaded").
+
+    Do the steps in this order. Each step ends with the checks green.
+    1. **Deploy.** Deploy `main` on gfx1151host: the checks, the mk `hip` tests and the oracle bench, then a start.
+    2. **Gate.** A card gate of decode rows at deep positions and beside a long prefill, alone and joined. Run it with
+       `MK_FAST_QMM` unset and with `MK_FAST_QMM=0`. Stop and report if a row differs.
+    3. **Docs.** The join of an engine with `segments_exact` and no feed rule (engine-abi "Batched passes", D11).
+       Amy decides each Proposed note.
+    4. **The process.** The scheduler and the drivers join the decode quanta of mk. Test it first on a fake engine
+       with `segments_exact` and no feed rule. `ensemble` joins mk's forks too.
+    5. **mk's spin bound.** On 2026-11-10, mk stopped twice on a spin-timeout while a cargo build ran beside it. A
+       barrier wait counts 1 s of wall clock (`hip/src/rt/rt.h:97`), so a paused queue looks like a hang. Amy chose
+       to fix it before the deploy, with Qwen-Image resident until the fix passes. What the card window found:
+       - The weight arena is a memfd that the GPU reads through a host registration, so swap could move its pages.
+         Amy, 2026-11-10: "oh, mlock or pin for sure". The open locks it with `mlock2(MLOCK_ONFAULT)`: the load
+         stays at about 21 s, and a card test checks that each page is locked.
+       - A diagnostic that names the polls of a spin-timeout faulted the GPU in 5 of 5 stress runs. The code without
+         it passed in 4 of 4. Its defect is not found, so it waits in `~/exomemory/nagaya/patches/`.
+       - A bound that counts polls waits for that diagnostic. A real hang must still stop in about 1 s, so the gfx
+         ring keeps its margin (`rt.h:93-95`).
+    6. **Deploy and measure.** Decode tokens each second at 1, 4, 8 and 16 contexts. A reply among 16 must be the
+       reply alone. Run the gogi suite for Qwen3.8.
+    7. **Docs.** The tap hook of mk in engine-abi: "the residual after layer `l`", with the head's row as the last
+       layer. Also the latent rows of mk: the placeholder, the scale and the record. Amy decides each Proposed note.
+    8. **Oracle fixture.** The residual after each layer, and latent steps with the logits after each, from the
+       reference on the CPU (8.3).
+    9. **The tap hook.** A general hook on mk, not one for the head's row alone. Later milestones read it for
+       control vectors, `project` and `trace` (Amy, 2026-11-10: "let's get the tap hook earlier in the plan").
+       Card gates: a pass with a tap gives the bits of the same pass with none, and the rows match the oracle.
+    10. **The latent span.** The latent span on mk. Card gate: the latent row of the placeholder's embedding gives
+       the bits of the placeholder token.
+    11. **Route and trial.** `ensemble` with `latent` on Qwen3.8. Deploy, then run a trial with Amy.
+
+    Each stop and start of `nagaya.service` goes into `signoff.md`.
+
+    Steps 1 to 6 are done on gfx1151host, deployed at 16:07 on 2026-11-10 from `f7d9ea9`. Live, greedy replies of 200
+    tokens ran at 1, 4, 8 and 16 contexts: 17.8, 47.3, 46.6 and 65.0 tokens each second in total. Before the join, 4
+    contexts gave 18.4. Each reply among 16 was the reply alone, and the gogi suite gave 411 ok, 0 FAIL and 12 skip.
+
+    Why 8 contexts give no more than 4 is open, because no record shows the segments of each pass. The commits:
+
+    - step 1, the test fix `723aa6b` and the milestone `911ae76`;
+    - step 2, the gate `1d02ac5`;
+    - steps 3 and 4, the note `5a2f50f` and the join `2f40184`;
+    - step 5, `38e1dfa`, the lock `4e31aae` and its record `f7d9ea9`.

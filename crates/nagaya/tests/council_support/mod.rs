@@ -100,6 +100,7 @@ pub struct WithContextTerm {
     close: bool,
     log: ControlLog,
     seen: Option<Seen>,
+    segments: u32,
 }
 
 impl Control for WithContextTerm {
@@ -121,6 +122,7 @@ impl Engine for WithContextTerm {
     fn limits(&self) -> Limits {
         let mut limits = self.inner.limits();
         limits.checkpoint_grain = self.grain;
+        limits.max_segments = self.segments;
         if self.close {
             limits.capabilities.push(Capability::Close);
         }
@@ -164,10 +166,31 @@ impl Engine for WithContextTerm {
             .collect();
         let segments = tokens.as_slice();
         let mut out = self.inner.pass(segments, taps)?;
-        assert!(segments.len() <= 1, "the council jobs run one segment in a pass");
-        if let Some(segment) = segments.first() {
+        assert!(
+            segments.len() <= self.segments as usize,
+            "a pass holds at most the engine's segments"
+        );
+        if let [segment] = segments {
             self.script
                 .apply(&segment.outputs.logit_rows, &mut out.outputs, self.vocab);
+        } else if !segments.is_empty() {
+            // A joined pass gives only `logits`, one for each logit row, as mk does (engine-abi "Logit outputs"). The fake
+            // also gives a `state` output for each segment, which the process's split refuses, so this engine drops
+            // it. A joined pass carries no tap (council `joinable_unit`).
+            assert!(taps.is_empty(), "a joined pass carries no tap");
+            out.outputs.retain(|output| output.name == "logits");
+            let rows: usize = segments.iter().map(|segment| segment.outputs.logit_rows.len()).sum();
+            assert_eq!(
+                out.outputs.len(),
+                rows,
+                "a joined pass gives one `logits` for each logit row"
+            );
+            let mut rest = out.outputs.as_mut_slice();
+            for segment in segments {
+                let (mine, after) = std::mem::take(&mut rest).split_at_mut(segment.outputs.logit_rows.len());
+                self.script.apply(&segment.outputs.logit_rows, mine, self.vocab);
+                rest = after;
+            }
         }
         Ok(out)
     }
@@ -230,6 +253,9 @@ pub struct TermFactory {
     pub lens: bool,
     /// What the engines saw of control vectors.
     pub log: ControlLog,
+    /// The most segments in a pass. The toy has 1, so its council jobs never join. With more, the engine declares
+    /// `segments_exact` (the fake's), so its decode quanta join (spec 5.7).
+    pub segments: u32,
     /// The log of the segments of each pass, or none.
     pub seen: Option<Seen>,
 }
@@ -252,6 +278,7 @@ impl TermFactory {
             lens: false,
             log: ControlLog::default(),
             seen: None,
+            segments: 1,
         }
     }
 
@@ -280,6 +307,7 @@ impl TermFactory {
             close: self.close,
             log: self.log.clone(),
             seen: self.seen.clone(),
+            segments: self.segments,
         }
     }
 }

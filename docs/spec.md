@@ -1035,6 +1035,18 @@ changes them adds the key (2.1). Decided 2026-10-20 (reading).
 An engine with a feed rule (6.14) declares no `segments_exact`. The scheduler joins its segments only when no
 segment writes rows that the store keeps, as for reads and branch blocks. Decided 2026-10-21 (engine-abi D11).
 
+**The first joins of an engine with `segments_exact`.** **Proposed** by Claude Opus 5.5, 2026-11-10, for milestone
+30 step 3. The process joins only the decode quanta of such an engine at first, as it does for a feed rule
+(engine-abi "Batched passes"):
+
+- A decode segment is one token with its logit row, no media and no tap. Other segments run one in a pass.
+- Segments join only when their control lists are equal.
+- A pass holds at most the engine's `max_segments` segments. For mk, that is 16.
+
+Reason: this rule permits more, such as the prefills of several jobs in one pass. But the drivers build only joined
+decode quanta today, and Amy asked for the join first. The card gate `tests/hip_joined.rs` of the mk crate checks
+mk's decode rows at deep positions, alone and joined, and beside a prefill.
+
 A pass holds segments of one kind only (5.2), and at most the engine's `max_segments`.
 The scheduler joins a ready job only when its next quantum has the
 kind of the first segment. Decided 2026-10-20 (reading).

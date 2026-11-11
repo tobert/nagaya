@@ -23,11 +23,16 @@ struct Rows {
 }
 
 impl Rows {
-    fn new(feed: bool, max_segments: u32, passes: &Passes) -> Self {
+    /// An engine with a feed rule when `feed` is true, or one that declares `segments_exact` when `exact` is true.
+    fn new(feed: bool, exact: bool, max_segments: u32, passes: &Passes) -> Self {
+        assert!(
+            !(feed && exact),
+            "an engine with a feed rule declares no segments_exact (engine-abi D11 rule 4)"
+        );
         let fake = FakeAlways::new();
         let mut limits = fake.limits();
         limits.feed = feed.then_some(FeedRule { block: 512 });
-        limits.segments_exact = false;
+        limits.segments_exact = exact;
         limits.max_segments = max_segments;
         Self {
             limits,
@@ -203,8 +208,28 @@ fn saw_its_own_rows(seen: &Seen, slot: u32, steps: usize) {
 #[test]
 fn the_decode_quanta_of_a_batching_engine_share_one_pass_and_each_job_gets_its_rows() {
     let passes = Passes::default();
-    let mut engines: Vec<Box<dyn Engine>> = vec![Box::new(Rows::new(true, 8, &passes))];
+    let mut engines: Vec<Box<dyn Engine>> = vec![Box::new(Rows::new(true, false, 8, &passes))];
     let mut jobs = GroupJobs::new(0, ["lfm3"]);
+    let mut seen = Vec::new();
+    for slot in 0..3 {
+        let (body, s) = decoder(slot, 4, true, None);
+        add(&mut jobs, body);
+        seen.push(s);
+    }
+    run_all(&mut jobs, &mut engines);
+    assert_eq!(*passes.lock().unwrap(), [3, 3, 3, 3]);
+    for (slot, s) in seen.iter().enumerate() {
+        saw_its_own_rows(s, slot as u32, 4);
+    }
+}
+
+/// An engine that declares `segments_exact` and no feed rule, as mk does, joins its decode quanta too (spec 5.7,
+/// "The first joins of an engine with `segments_exact`").
+#[test]
+fn the_decode_quanta_of_an_engine_with_segments_exact_share_one_pass() {
+    let passes = Passes::default();
+    let mut engines: Vec<Box<dyn Engine>> = vec![Box::new(Rows::new(false, true, 16, &passes))];
+    let mut jobs = GroupJobs::new(0, ["mk"]);
     let mut seen = Vec::new();
     for slot in 0..3 {
         let (body, s) = decoder(slot, 4, true, None);
@@ -220,22 +245,26 @@ fn the_decode_quanta_of_a_batching_engine_share_one_pass_and_each_job_gets_its_r
 
 #[test]
 fn an_engine_with_no_feed_rule_or_one_segment_runs_each_decode_alone() {
-    for (feed, max) in [(false, 8), (true, 1)] {
+    for (feed, exact, max) in [(false, false, 8), (true, false, 1), (false, true, 1)] {
         let passes = Passes::default();
-        let mut engines: Vec<Box<dyn Engine>> = vec![Box::new(Rows::new(feed, max, &passes))];
+        let mut engines: Vec<Box<dyn Engine>> = vec![Box::new(Rows::new(feed, exact, max, &passes))];
         let mut jobs = GroupJobs::new(0, ["toy"]);
         for slot in 0..3 {
             add(&mut jobs, decoder(slot, 2, true, None).0);
         }
         run_all(&mut jobs, &mut engines);
-        assert_eq!(*passes.lock().unwrap(), [1; 6], "feed {feed}, {max} segments");
+        assert_eq!(
+            *passes.lock().unwrap(),
+            [1; 6],
+            "feed {feed}, exact {exact}, {max} segments"
+        );
     }
 }
 
 #[test]
 fn a_job_that_cannot_join_runs_alone_in_the_quantum_and_one_job_fails_alone() {
     let passes = Passes::default();
-    let mut engines: Vec<Box<dyn Engine>> = vec![Box::new(Rows::new(true, 8, &passes))];
+    let mut engines: Vec<Box<dyn Engine>> = vec![Box::new(Rows::new(true, false, 8, &passes))];
     let mut jobs = GroupJobs::new(0, ["lfm3"]);
     let (a, seen_a) = decoder(0, 3, true, None);
     let (b, seen_b) = decoder(1, 3, false, None);
