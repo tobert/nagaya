@@ -68,7 +68,7 @@ STUB = r"""
 var calls = [], confirms = [];
 function el(id) { return {id, value: "", textContent: "", innerHTML: "", dataset: {}, style: {}, disabled: false,
   hidden: false, checked: false, classList: {toggle() {}}, addEventListener() {}, querySelector() { return null; },
-  appendChild() {}}; }
+  appendChild() {}, insertAdjacentHTML(where, html) { this.innerHTML += html; }}; }
 var els = {};
 var listeners = [];
 var document = {getElementById: (id) => els[id] || (els[id] = el(id)), querySelectorAll: () => [],
@@ -438,6 +438,8 @@ class Page(unittest.TestCase):
     # The end of a chat stream as the nagaya of b70host sent it on 2026-11-11, with a system message at index 0.
     CHAT_DONE = {"model": "lfm3", "content": "Hi there!", "reasoning": "", "finish": "end_turn",
                  "usage": {"prompt": 23, "kept": 18, "fed": 5, "completion": 4, "reasoning": 0},
+                 "stats": {"reasoning": None, "content": {"tokens": 4, "mean_logprob": -0.2362, "min_logprob": -0.6274,
+                                                          "mean_entropy": 0.4974, "max_entropy": 0.9935}},
                  "snapshots": [{"id": "blake3:8336d95c" + "0" * 56, "message": 0, "tokens": 10, "tier": "host",
                                 "bytes": 1097728},
                                {"id": "blake3:390ed0d6" + "1" * 56, "message": 1, "tokens": 18, "tier": "device",
@@ -472,6 +474,9 @@ class Page(unittest.TestCase):
         self.assertIn("message 0: blake3:8336d95c", reply)
         self.assertIn("1.1 MB", reply)
         self.assertIn("kept 18", reply)
+        # The hover text also has how sure the model was of its tokens (gogi "Generations", `stats`).
+        self.assertIn("mean entropy 0.50 nats, at most 0.99", reply)
+        self.assertIn("mean log probability -0.24, at least -0.63", reply)
 
     # Two chat turns against a nagaya that names a context record in `done` (gogi "Context records"). `RECORDS` gives
     # the `context` of each reply in turn; null is a nagaya from before the records. `refuse` makes the next request
@@ -576,6 +581,93 @@ class Page(unittest.TestCase):
             out.failed = document.getElementById("chat-error").textContent;""")
         self.assertEqual(out["failed"], "")
         self.assertEqual(out["sent"], [{"temperature": 0.3, "top_k": 50}, {"temperature": 1, "top_p": 0.95}])
+
+    # A chat with one reply of two sentences, and a way to press a button of a message.
+    SEND_TO = """
+        chat.push({role: "user", content: "Say hello."});
+        chat.push({role: "assistant", content: "Hello there. A red fox sits in the snow."});
+        const press = async (data) => { for (const f of listeners) await f({target: {dataset: data}}); };
+        const bodies = () => calls.filter((c) => /generations$/.test(c[1])).map((c) => JSON.parse(c[2]));"""
+
+    def test_a_chat_message_has_a_button_for_speech_and_for_an_image_only_when_a_model_is_chosen(self):
+        out = self.run_page(self.SEND_TO + """
+            out.speak = document.getElementById("chat-speak").innerHTML;
+            out.draw = document.getElementById("chat-draw").innerHTML;
+            drawChat(); out.off = document.getElementById("chat-log").innerHTML;
+            set("chat-speak", "voice"); set("chat-draw", "pony-0");
+            drawChat(); out.on = document.getElementById("chat-log").innerHTML;""")
+        # The speech list has the speech models and the models that speak beside their text. The first choice is off.
+        self.assertTrue(out["speak"].startswith('<option value="">off</option>'))
+        for name in ("voice", "lfm3-omni"):
+            self.assertIn(f'<option value="{name}">{name}</option>', out["speak"])
+        self.assertNotIn("gemma", out["speak"])
+        for name in ("sdxl-0", "pony-0"):
+            self.assertIn(f'<option value="{name}">{name}</option>', out["draw"])
+        self.assertNotIn("data-chat-speak", out["off"])
+        self.assertNotIn("data-chat-draw", out["off"])
+        self.assertIn('data-chat-speak="1"', out["on"])
+        self.assertIn('data-chat-draw="0"', out["on"])
+
+    def test_a_message_goes_to_a_speech_model_in_chunks_and_its_clips_go_to_the_tray(self):
+        out = self.run_page(self.SEND_TO + """
+            set("chat-speak", "voice"); set("sp-voice", "A calm voice."); set("sp-lang", "english");
+            await press({chatSpeak: "1"});
+            out.bodies = bodies();
+            out.tray = document.getElementById("chat-tray").innerHTML;
+            out.clips = document.getElementById("chat-job-0-clips").innerHTML;
+            out.status = document.getElementById("chat-job-0-status").textContent;
+            out.keep = JSON.parse(calls.filter((c) => c[1] === "/council/v2/keeps/nagaya-web").pop()[2]).objects;""")
+        (body,) = out["bodies"]
+        self.assertEqual(body["model"], "voice")
+        self.assertEqual(body["context"]["messages"], [{"role": "system", "content": "A calm voice."},
+                                                       {"role": "user", "content": "Hello there. A red fox sits in the snow."}])
+        self.assertEqual(body["output"], {"mime": "audio/wav", "options": {"language": "english"}})
+        self.assertIn("message 2", out["tray"])
+        self.assertIn("voice", out["tray"])
+        self.assertIn('<audio controls src="/at/b70host/council/v2/objects/blake3:' + "a" * 64 + '"', out["clips"])
+        self.assertIn("1 clip", out["status"])
+        self.assertIn("blake3:" + "a" * 64, out["keep"])
+
+    def test_a_message_goes_to_a_model_that_speaks_beside_its_text_with_the_prompt_of_its_speech_mode(self):
+        out = self.run_page(self.SEND_TO + """
+            set("chat-speak", "lfm3-omni");
+            await press({chatSpeak: "1"});
+            out.bodies = bodies();""")
+        (body,) = out["bodies"]
+        self.assertEqual(body["model"], "lfm3-omni")
+        self.assertEqual(body["output"], {"mime": "audio/wav", "options": {"mode": "speech"}})
+        self.assertEqual(body["context"]["messages"][0]["role"], "system")
+        self.assertIn("TTS", body["context"]["messages"][0]["content"])
+        self.assertEqual(body["context"]["messages"][1]["content"], "Hello there. A red fox sits in the snow.")
+
+    def test_a_message_goes_to_an_image_model_and_its_image_goes_to_the_tray_and_the_gallery(self):
+        out = self.run_page(self.SEND_TO + """
+            set("chat-draw", "pony-0");
+            await press({chatDraw: "1"});
+            out.bodies = bodies();
+            out.clips = document.getElementById("chat-job-0-clips").innerHTML;
+            out.status = document.getElementById("chat-job-0-status").textContent;
+            out.gallery = gallery.map((g) => [g.model, g.prompt]);""")
+        (body,) = out["bodies"]
+        self.assertEqual((body["model"], body["stream"], body["max_tokens"]), ("pony-0", True, 1))
+        self.assertEqual(body["context"]["messages"], [{"role": "user", "content": "Hello there. A red fox sits in the snow."}])
+        self.assertEqual(body["output"], {"mime": "image/png", "options": {
+            "width": 1024, "height": 1024, "steps": 30, "count": 1, "cfg": 7, "sampler": "dpm++ 2m karras", "negative": ""}})
+        self.assertIn('/council/v2/objects/blake3:' + "d" * 64, out["clips"])
+        self.assertIn("seed 7", out["status"])
+        self.assertEqual(out["gallery"], [["pony-0", "Hello there. A red fox sits in the snow."]])
+
+    def test_a_job_that_fails_shows_its_error_in_the_tray_and_the_chat_goes_on(self):
+        out = self.run_page(self.SEND_TO + """
+            const real = fetch;
+            fetch = (path, o) => /generations$/.test(path)
+              ? reply(400, {error: {type: "invalid_request", message: "nothing ran: no voice"}}) : real(path, o);
+            set("chat-speak", "voice");
+            await press({chatSpeak: "1"});
+            out.status = document.getElementById("chat-job-0-status").textContent;
+            out.chat = chat.length;""")
+        self.assertIn("nothing ran: no voice", out["status"])
+        self.assertEqual(out["chat"], 2)
 
     def test_a_chat_reply_with_no_snapshots_shows_its_counts_and_no_id(self):
         done = dict(self.CHAT_DONE, snapshots=[], usage={"prompt": 23, "fed": 23, "completion": 4})

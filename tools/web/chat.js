@@ -16,6 +16,11 @@ function receiptOf(r) {
   const hover = [r.byParent ? "The page sent the id of the record of the chat, and the new message."
                             : "The page sent the chat whole.",
                  `The nagaya kept ${kept} prompt tokens from its snapshots and ran ${u.fed}.`]
+    .concat(["content", "reasoning"].filter((part) => r.stats?.[part]).map((part) => {
+      const s = r.stats[part];
+      return `The ${part}: mean entropy ${s.mean_entropy.toFixed(2)} nats, at most ${s.max_entropy.toFixed(2)}; ` +
+        `mean log probability ${s.mean_logprob.toFixed(2)}, at least ${s.min_logprob.toFixed(2)}.`;
+    }))
     .concat(r.others.map((s) => `Snapshot of message ${s.message}: ${s.id}, ${s.tokens} tokens, ${s.tier}` +
       (s.bytes == null ? "" : `, ${sizeOf(s.bytes)}`) + "."));
   return {text: parts.join(" · "), hover: hover.join(" "), record: r.record};
@@ -39,9 +44,9 @@ function statusOf(m) {
 let chatRecord = null;
 function drawChat(live) {
   const all = live ? chat.concat([live]) : chat;
-  $("chat-log").innerHTML = all.map((m) => {
+  $("chat-log").innerHTML = all.map((m, i) => {
     const think = m.reasoning ? `<details ${m.open ? "open" : ""}><summary>thinking</summary>${esc(m.reasoning)}</details>` : "";
-    return `<div class="msg ${m.role}">${think}${esc(m.content || "")}${statusOf(m)}</div>`;
+    return `<div class="msg ${m.role}">${think}${esc(m.content || "")}${statusOf(m)}${sendButtons(m, i)}</div>`;
   }).join("");
   $("chat-log").scrollTop = $("chat-log").scrollHeight;
 }
@@ -115,7 +120,7 @@ $("chat-go").onclick = async () => {
     }
     chat.push({role: "assistant", content: done.content, reasoning: done.reasoning,
                stat: `${u.completion} tokens${tps ? ` · ${tps.toFixed(1)} tok/s` : ""} · ${done.finish}`,
-               receipt: {sent, usage: u, others, byParent, record: done.context}});
+               receipt: {sent, usage: u, others, byParent, record: done.context, stats: done.stats}});
   } catch (e) {
     // The turn did not finish, so the message goes back to the input, and the chat stays as it was.
     chat.pop(); $("chat-input").value = text;
@@ -141,4 +146,115 @@ $("chat-layers").oninput = () => { $("chat-layers-note").textContent = layersNot
 for (const [id, text] of [["chat-layers-all", ""], ["chat-layers-early", "9-14"], ["chat-layers-late", "15-22"]]) {
   $(id).onclick = () => { $("chat-layers").value = text; $("chat-layers").oninput(); };
 }
+// ---- a message of the chat as speech or as an image
+// The person chooses a speech model and an image model. Then each message has a button for each. A job runs beside
+// the chat: the chat goes on, and the clips or the image go into the tray under it when they are made. The tray
+// keeps its elements, so a new message does not stop a clip that plays.
+
+/** A model that speaks: a speech model, or a model that speaks beside its text, such as Omni (spec 11.8a, 11.11). */
+const speaks = (m) => kindOf(m) === "speech" ||
+  (omnis(m) && (m.media?.outputs || []).some((o) => o.startsWith("audio/")));
+function fillSendTo() {
+  for (const [id, accepts] of [["chat-speak", speaks], ["chat-draw", (m) => kindOf(m) === "image"]]) {
+    const sel = $(id), keep = sel.value || recall(`nagaya-${id}`) || "";
+    const list = models.filter(accepts);
+    const html = `<option value="">off</option>` +
+      list.map((m) => `<option value="${esc(m.model)}">${esc(m.model)}</option>`).join("");
+    if (sel.dataset.html === html) continue;
+    sel.innerHTML = html; sel.dataset.html = html;
+    sel.value = list.some((m) => m.model === keep) ? keep : "";
+  }
+}
+onRefresh(fillSendTo);
+for (const id of ["chat-speak", "chat-draw"]) {
+  $(id).onchange = () => { remember(`nagaya-${id}`, $(id).value); drawChat(); };
+}
+/** The buttons of a message with text: one for each kind of model that the person chose. */
+function sendButtons(m, i) {
+  if (!m.content || m.open) return "";
+  const speak = $("chat-speak").value, draw = $("chat-draw").value;
+  const buttons = (speak ? `<button class="plain small" data-chat-speak="${i}" title="speak with ${esc(speak)}">speak</button>` : "") +
+    (draw ? ` <button class="plain small" data-chat-draw="${i}" title="draw with ${esc(draw)}">draw</button>` : "");
+  return buttons ? `<div class="stat">${buttons}</div>` : "";
+}
+let chatJobs = 0;
+/** The objects of the jobs of the tray, for the keep of the page. */
+let chatMade = [];
+keeps(() => chatMade);
+/** Add a job to the tray, and give the way to change its status and to add to its results. */
+function trayJob(what, i, model) {
+  const n = chatJobs++;
+  $("chat-tray").insertAdjacentHTML("beforeend", `<div class="job"><div class="note">${what} of message ${i + 1} · ${
+    esc(model)} · <span id="chat-job-${n}-status"></span></div><div id="chat-job-${n}-clips" class="clips"></div></div>`);
+  return {status: (text) => { $(`chat-job-${n}-status`).textContent = text; },
+          add: (html) => { $(`chat-job-${n}-clips`).insertAdjacentHTML("beforeend", html); },
+          clips: () => $(`chat-job-${n}-clips`)};
+}
+/** Speak message `i` with the chosen model. A long text goes in chunks of whole sentences, and each clip is added
+ *  when it is made, so the first one can play while the next ones are made. */
+async function chatSpeak(i) {
+  const m = chat[i], model = $("chat-speak").value;
+  if (!m?.content || !model) return;
+  const job = trayJob("speech", i, model);
+  try {
+    await ready(model, job.status);
+    const speech = kindOf(models.find((x) => x.model === model)) === "speech";
+    const chunks = speechChunks(m.content);
+    let ms = 0, clips = 0;
+    for (const [n, chunk] of chunks.entries()) {
+      job.status(`speaking part ${n + 1} of ${chunks.length}…`);
+      // A speech model takes the voice of the Speech tab. A model that speaks beside its text takes the prompt of its
+      // speech mode.
+      const body = speech
+        ? {model, max_tokens: 1, context: {thinking: false, messages: [{role: "system", content: $("sp-voice").value},
+                                                                        {role: "user", content: chunk}]},
+           output: {mime: "audio/wav", options: {language: $("sp-lang").value || "auto"}}}
+        : {model, max_tokens: 512, sample: {temperature: 0.3},
+           context: {thinking: false, messages: [{role: "system", content: OMNI_SYSTEM.speech},
+                                                 {role: "user", content: chunk}]},
+           output: {mime: "audio/wav", options: {mode: "speech"}}};
+      const done = await call("POST", "/council/v2/generations", body);
+      for (const o of (done.outputs || []).filter((o) => o.mime === "audio/wav")) {
+        chatMade = chatMade.concat([{id: o.id, host}]).slice(-200);
+        job.add(`<audio controls src="${esc(objectUrl(o.id))}"></audio>`);
+        if (clips++ === 0) job.clips().querySelector?.("audio")?.play?.().catch(() => {});
+      }
+      ms += done.usage?.media?.written?.audio_ms || 0;
+    }
+    job.status(`${clips} clip${clips === 1 ? "" : "s"}${ms ? ` · ${(ms / 1000).toFixed(1)} s of speech` : ""}`);
+    keepAll();
+  } catch (e) {
+    job.status(e.message);
+  }
+}
+/** Draw message `i` with the chosen model: the text of the message is the prompt. */
+async function chatDraw(i) {
+  const m = chat[i], model = $("chat-draw").value;
+  if (!m?.content || !model) return;
+  const job = trayJob("image", i, model);
+  const options = quickImageOptions(model);
+  const body = {model, max_tokens: 1, context: {thinking: false, messages: [{role: "user", content: m.content}]},
+                output: {mime: "image/png", options}};
+  const started = performance.now();
+  try {
+    await ready(model, job.status);
+    job.status("waiting…");
+    const done = await stream(body, undefined, (name, d) => {
+      if (name === "progress") job.status(`step ${d.step} of ${d.of}`);
+    });
+    const made = done.outputs.map((o) => ({id: o.id, host, model, prompt: m.content, seed: done.seed + o.index,
+                                           size: `${options.width}x${options.height}`, steps: options.steps}));
+    job.add(`<div class="tiles">${made.map(tile).join("")}</div>`);
+    gallery = made.concat(gallery); saveGallery(); drawGallery(); keepAll();
+    job.status(`seed ${done.seed} · ${((performance.now() - started) / 1000).toFixed(1)} s`);
+  } catch (e) {
+    job.status(e.message);
+  }
+}
+document.addEventListener("click", (ev) => {
+  const {chatSpeak: speak, chatDraw: draw} = ev.target.dataset || {};
+  if (speak !== undefined) return chatSpeak(+speak);
+  if (draw !== undefined) return chatDraw(+draw);
+});
+
 modelSelect("chat-model", (m) => kindOf(m) === "text");

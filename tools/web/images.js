@@ -32,6 +32,14 @@ function qwenImage(model) {
 // pixels (spec 11.9c), so it adds larger sizes.
 const SIZES = ["1024x1024", "896x1152", "1152x896", "832x1216", "1216x832", "768x1344", "1344x768", "512x512"];
 const QWEN_SIZES = SIZES.concat(["1440x1440", "1664x928", "928x1664", "1280x1280"]);
+/** The options of an image of 1024 by 1024 with the usual settings of the kind of `model`, for a job that has no
+ *  form: Qwen-Image takes 40 steps (spec 11.9c), SDXL-Lightning 4 steps with trailing spacing, and SDXL 30 steps. */
+function quickImageOptions(model) {
+  const options = {width: 1024, height: 1024, steps: 30, count: 1};
+  if (qwenImage(model)) return {...options, steps: 40};
+  if (/lightning/i.test(model)) return {...options, steps: 4, cfg: 1, sampler: "euler", spacing: "trailing", negative: ""};
+  return {...options, cfg: 7, sampler: "dpm++ 2m karras", negative: ""};
+}
 /** Turn off each field that the image model does not take, and give the sizes that it takes. */
 function drawImageForm() {
   const qwen = qwenImage($("img-model").value);

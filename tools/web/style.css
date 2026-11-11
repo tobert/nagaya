@@ -154,6 +154,12 @@ audio { width: 100%; }
 .msg .stat .note { font-size: 11px; }
 #chat-log, #omni-log { display: flex; flex-direction: column; gap: 10px; min-height: 200px;
                        max-height: calc(100vh - 290px); overflow-y: auto; padding-right: 4px; }
+/* The jobs that a chat started beside itself: the speech and the images of its messages. */
+.tray { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.tray:empty { display: none; }
+.job { border-top: 1px solid var(--line); padding-top: 8px; }
+.job .clips { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.job .tiles { grid-template-columns: repeat(auto-fill, minmax(160px, 240px)); }
 /* A named thing of a list with a number and a button: a LoRA, a saved vector. */
 .lora { display: grid; grid-template-columns: 1fr 70px auto; gap: 6px; align-items: center; margin-top: 6px; }
 .lora .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 0; }

@@ -86,8 +86,9 @@ async function omniSpeak(model, text) {
 // The clips of one reply play one after the other.
 document.addEventListener("ended", (ev) => {
   if (ev.target?.tagName !== "AUDIO") return;
-  // The id of each clip stands between the clips, so the next clip is the next audio of the same message.
-  const clips = [...ev.target.closest(".msg")?.querySelectorAll("audio") || []];
+  // The id of each clip stands between the clips, so the next clip is the next audio of the same message or of
+  // the same job of the chat tray.
+  const clips = [...ev.target.closest(".msg, .job")?.querySelectorAll("audio") || []];
   clips[clips.indexOf(ev.target) + 1]?.play().catch(() => {});
 }, true);
 

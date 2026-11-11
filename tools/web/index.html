@@ -48,6 +48,12 @@
     <div class="card">
       <label>Model</label>
       <div class="model"><select id="chat-model"></select><span id="chat-model-state" class="note"></span></div>
+      <div class="row">
+        <div><label>Speak with <span class="tip" tabindex="0" title="A speech model for a message of the chat. Each message gets a button, and its clips go under the chat. The voice comes from the Speech tab.">ⓘ</span></label>
+          <select id="chat-speak"></select></div>
+        <div><label>Draw with <span class="tip" tabindex="0" title="An image model for a message of the chat. Each message gets a button, and its image goes under the chat and into the gallery. The chat goes on while the image is made.">ⓘ</span></label>
+          <select id="chat-draw"></select></div>
+      </div>
       <label>System message</label>
       <textarea id="chat-system" rows="4" placeholder="optional"></textarea>
       <label class="check"><input id="chat-thinking" type="checkbox" checked> Thinking
@@ -80,6 +86,7 @@
     </div>
     <div class="card">
       <div id="chat-log"></div>
+      <div id="chat-tray" class="tray"></div>
       <div id="chat-error" class="err"></div>
       <div class="composer">
         <textarea id="chat-input" rows="3" placeholder="Message — Enter sends, Shift+Enter is a new line"></textarea>
