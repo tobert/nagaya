@@ -174,9 +174,9 @@ impl Engine for WithContextTerm {
             self.script
                 .apply(&segment.outputs.logit_rows, &mut out.outputs, self.vocab);
         } else if !segments.is_empty() {
-            // A joined pass gives only `logits`, one for each logit row, as the Qwen3.8 engine does (engine-abi "Logit outputs"). The fake
-            // also gives a `state` output for each segment, which the process's split refuses, so this engine drops
-            // it. A joined pass carries no tap (council `joinable_unit`).
+            // A joined pass gives only `logits`, one for each logit row, as the Qwen3.8 engine does (engine-abi "Logit
+            // outputs"). The fake also gives a `state` output for each segment, which the process's split refuses, so
+            // this engine drops it. A joined pass carries no tap (council `joinable_unit`).
             assert!(taps.is_empty(), "a joined pass carries no tap");
             out.outputs.retain(|output| output.name == "logits");
             let rows: usize = segments.iter().map(|segment| segment.outputs.logit_rows.len()).sum();

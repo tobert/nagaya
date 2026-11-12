@@ -1,4 +1,5 @@
-//! The loader of the op libraries and the calls that most op tests share. It ports `tests/ops/mkops.py` of the reference.
+//! The loader of the op libraries and the calls that most op tests share. It ports `tests/ops/mkops.py` of the
+//! reference.
 
 #![allow(dead_code)]
 
@@ -51,8 +52,8 @@ pub fn lib_with(op: &str, trap_sink: bool) -> &'static Library {
     entry.library
 }
 
-/// The library `libqwen38_<op>.so`, loaded as a raw load leaves it: with no trap sink, and marked so that `lib` does not
-/// install the sink later. It is the state of a library that a program loads with no knowledge of the sink.
+/// The library `libqwen38_<op>.so`, loaded as a raw load leaves it: with no trap sink, and marked so that `lib` does
+/// not install the sink later. It is the state of a library that a program loads with no knowledge of the sink.
 pub fn lib_raw(op: &str) -> &'static Library {
     let library = lib_with(op, false);
     let mut guard = LIBRARIES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());

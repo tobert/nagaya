@@ -3,13 +3,14 @@
 //!
 //! Head order: every input stays in GGUF (tiled) order. Value head `p` uses the key and query head `p % 16`.
 //!
-//! The tolerance of the reference stays: `REL(T) = 4 T 128 2^-24` in relative L2 error. The recurrence of the op and the chunked
-//! algorithm of the reference are the same recurrence with another f32 association. Each decay is at most 0, so the error
-//! grows about linearly in T.
+//! The tolerance of the reference stays: `REL(T) = 4 T 128 2^-24` in relative L2 error. The recurrence of the op and
+//! the chunked algorithm of the reference are the same recurrence with another f32 association. Each decay is at most
+//! 0, so the error grows about linearly in T.
 //!
-//! Changes from the reference's test: the weights and the inputs come from the generator, not from layer 0 of the GGUF and numpy.
-//! The reference output is in a fixture. It holds `y` and a corner of the final state of three value heads only, so the
-//! relative error is over those heads. The cases with T = 64 and T = 200 are dropped: the fixture would be over its size.
+//! Changes from the reference's test: the weights and the inputs come from the generator, not from layer 0 of the GGUF
+//! and numpy. The reference output is in a fixture. It holds `y` and a corner of the final state of three value heads
+//! only, so the relative error is over those heads. The cases with T = 64 and T = 200 are dropped: the fixture would be
+//! over its size.
 
 use crate::fixture::Fixture;
 use crate::inputs;

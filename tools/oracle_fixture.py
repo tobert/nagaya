@@ -23,8 +23,8 @@ from pathlib import Path
 REFERENCE = Path(os.environ.get("QWEN38_REFERENCE_REPO", Path.home() / "src/megakernel-qwen38-flashnext-strixhalo"))
 TOP = 64
 
-# The most tokens that the engine binding takes in one context of the small class: 4096 (spec.rs CONTEXT_CLASSES). A prompt
-# longer than 256 tokens (engine kMaxPassTokens) takes several passes.
+# The most tokens that the engine binding takes in one context of the small class: 4096 (spec.rs CONTEXT_CLASSES). A
+# prompt longer than 256 tokens (engine kMaxPassTokens) takes several passes.
 MAX_TOKENS = 4096
 
 AUTHOR = "written by Claude Sonnet 5.5 for this tool, 2026-10-20"
@@ -36,8 +36,9 @@ LONG = (
     'The harbour master works in a narrow room above the customs shed. On his desk lie a brass barometer, a ledger of arrivals and a mug of tea that has gone cold. He writes down each vessel by name, by tonnage and by the hour of its mooring. When the weather turns, he rings the bell on the pier, and the boats still at sea make for the shelter of the breakwater. In winter the storms can last for days. The waves climb the sea wall and break over the road, and the town waits, with its lamps lit and its doors barred, until the wind drops.'
 )
 
-# Five paragraphs, 596 tokens: three passes of the engine (256, 256 and 84). A sixth paragraph makes 721 tokens, and there the engine
-# and the reference disagree by 0.23 in a logit. The break is between 630 and 655 tokens (spec 15, question 8).
+# Five paragraphs, 596 tokens: three passes of the engine (256, 256 and 84). A sixth paragraph makes 721 tokens, and
+# there the engine and the reference disagree by 0.23 in a logit. The break is between 630 and 655 tokens (spec 15,
+# question 8).
 LONGER = (
     'The railway workshop stands at the end of the line, where the tracks fan out into sidings and the grass grows between the sleepers. Before dawn the lamps are lit in the long iron shed, and the first shift of fitters walks in out of the cold with their tin boxes under their arms. They hang their coats on the hooks beside the tool racks, and each man checks that his own spanners are where he left them. A locomotive waits on the pit road with its fire dropped and its boiler still warm, and a boy climbs along its frames with a can of oil, feeding every joint in turn.\n\n'
     'The foreman keeps a board by the door with chalk marks for every engine in the yard. A circle means that the engine is waiting for a part. A cross means that it is ready for the road. A line means that the men are working on it now. He rubs out the marks with his sleeve and writes them again as the day goes on, and the men glance at the board when they pass, as sailors glance at the sky. Nobody remembers who first drew the system, and nobody has ever proposed to change it.\n\n'

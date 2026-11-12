@@ -521,7 +521,8 @@ fn the_conformance_suite_passes_on_the_engine() {
     println!("{suite}");
     assert!(suite.passed(), "{suite}");
     assert_eq!(suite.failures().count(), 0, "{suite}");
-    // The engine declares `coverage`, so every gate applies, also `quantum_resume_fit`. The engine has no stages and no feed rule.
+    // The engine declares `coverage`, so every gate applies, also `quantum_resume_fit`. The engine has no stages and no
+    // feed rule.
     let not_applicable: Vec<&str> = suite.not_applicable().map(|gate| gate.name).collect();
     assert_eq!(not_applicable, vec!["stage_path_bits", "feed_rule_bits"]);
 }
@@ -796,9 +797,9 @@ fn an_interval_copy_restores_and_replays_to_the_bits_of_the_live_context() {
 
 #[test]
 fn a_restore_past_the_dense_reach_pools_the_keys_and_replays_to_the_bits() {
-    // A pass whose context reaches past 2051 visible cells scores the pooled block keys (the engine's indexer). The pooled
-    // keys are derived state: a restore pools them from the written index keys (host.rs pool_context). A restore at
-    // 2304 tokens, then a replay, must give the bits of the live context, so the replay reads the pooled keys.
+    // A pass whose context reaches past 2051 visible cells scores the pooled block keys (the engine's indexer). The
+    // pooled keys are derived state: a restore pools them from the written index keys (host.rs pool_context). A restore
+    // at 2304 tokens, then a replay, must give the bits of the live context, so the replay reads the pooled keys.
     const AT: usize = 9 * 256;
     let ids = synthetic_ids(AT + 120);
     let mut engine = open().expect("open the engine");
@@ -882,7 +883,8 @@ fn elide_0_runs_the_stages_in_build_order_with_the_same_bits() {
     assert!(scheduled == plain, "QWEN38_ELIDE=0 changed the logits");
 }
 
-/// The process serves the engine on demand from `describe()` before a load, so the description must be the open's facts.
+/// The process serves the engine on demand from `describe()` before a load, so the description must be the open's
+/// facts.
 #[test]
 fn describe_gives_the_identity_and_the_limits_of_the_open() {
     let (identity, limits) = nagaya_mk_qwen38_gfx1151::describe().expect("describe the engine");

@@ -1,10 +1,10 @@
-//! The joined decode of the engine on gfx1151 (milestone 30 step 2): a decode row gives the bits that it gives alone, also at
-//! deep positions, in a pass of 16 segments, and beside a long prefill.
+//! The joined decode of the engine on gfx1151 (milestone 30 step 2): a decode row gives the bits that it gives alone,
+//! also at deep positions, in a pass of 16 segments, and beside a long prefill.
 //!
-//! The engine declares `segments_exact` (engine-abi D11). The conformance gate `segments_exact_bits` checks it at position 0
-//! with segments of 1 and 2 tokens. This gate checks the decode rows that a joined quantum of the process makes: one
-//! token for each context, after a prefill of thousands of tokens, past the indexer budget of the attention layers.
-//! Run it with `QWEN38_FAST_QMM` unset and with `QWEN38_FAST_QMM=0`, and with `--test-threads=1`.
+//! The engine declares `segments_exact` (engine-abi D11). The conformance gate `segments_exact_bits` checks it at
+//! position 0 with segments of 1 and 2 tokens. This gate checks the decode rows that a joined quantum of the process
+//! makes: one token for each context, after a prefill of thousands of tokens, past the indexer budget of the attention
+//! layers. Run it with `QWEN38_FAST_QMM` unset and with `QWEN38_FAST_QMM=0`, and with `--test-threads=1`.
 
 #![cfg(feature = "hip")]
 

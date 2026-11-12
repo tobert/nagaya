@@ -1,8 +1,8 @@
 //! Build the engine from `hip/` into the static library `libqwen38engine.a`, under the feature `hip`.
 //!
-//! The commands are the commands of the reference CMake build at commit `555a2a3`, as its `build/compile_commands.json` lists them.
-//! The flags are part of the model's definition: the conformance gates compare bits. Thus this script calls the
-//! compiler with an exact list of flags, and adds no flag of its own. A build without `hip` compiles nothing and
+//! The commands are the commands of the reference CMake build at commit `555a2a3`, as its `build/compile_commands.json`
+//! lists them. The flags are part of the model's definition: the conformance gates compare bits. Thus this script calls
+//! the compiler with an exact list of flags, and adds no flag of its own. A build without `hip` compiles nothing and
 //! needs no ROCm.
 //!
 //! The script gives the build facts to the crate as environment variables. The identity holds them (spec 12.1).
@@ -19,7 +19,8 @@ const ROCM: &str = "/opt/rocm";
 /// The one device target. The reference build is for gfx1151 only.
 const OFFLOAD_ARCH: &str = "--offload-arch=gfx1151";
 
-/// The flags that the top-level CMake file of the reference and its build type `RelWithDebInfo` give to every translation unit.
+/// The flags that the top-level CMake file of the reference and its build type `RelWithDebInfo` give to every
+/// translation unit.
 ///
 /// `-ffp-contract=off -fno-fast-math` keep the float operations of the model's definition. The order is CMake's order.
 const COMMON: &[&str] = &["-O2", "-g", "-DNDEBUG", "-std=gnu++20"];
@@ -39,8 +40,9 @@ const HIP_DEFINES: &[&str] = &["-DUSE_PROF_API=1", "-D__HIP_PLATFORM_AMD__=1", "
 
 /// The translation units of the engine library, as the reference CMake build lists them.
 ///
-/// `extern.hip` is the thin extern layer that took the place of the C ABI `capi.hip` of the reference in milestone 15 step 4. The file
-/// `blocks.hip` of the reference built the stages of the model's blocks; the Rust pass build (`src/pass.rs`) took its place in step 6.
+/// `extern.hip` is the thin extern layer that took the place of the C ABI `capi.hip` of the reference in milestone 15
+/// step 4. The file `blocks.hip` of the reference built the stages of the model's blocks; the Rust pass build
+/// (`src/pass.rs`) took its place in step 6.
 const ENGINE_UNITS: &[&str] = &["engine.hip", "mega.hip", "extern.hip", "convert.hip", "round.hip"];
 
 /// The compiler writes each object to stdout, and the script writes it to `OUT_DIR`.
@@ -57,15 +59,17 @@ pub(crate) struct Unit {
     pub(crate) arguments: Vec<String>,
 }
 
-/// The compiler of every unit. The reference CMake build calls it directly, not the wrapper hipcc (`CMakeLists.txt:4-5`).
+/// The compiler of every unit. The reference CMake build calls it directly, not the wrapper hipcc
+/// (`CMakeLists.txt:4-5`).
 pub(crate) fn compiler() -> PathBuf {
     Path::new(ROCM).join("llvm").join("bin").join("clang++")
 }
 
 /// Every compile of the engine, in the order of the reference targets: the engine units, then `rt.cpp`.
 ///
-/// The GGUF units of the reference (`gguf.cpp`, `dequant.cpp`) are not here. The Rust reader took their place in milestone 15 step 3
-/// (`src/gguf.rs`, `src/dequant.rs`). `src` is the directory `hip/src`, and `out` is the directory of the objects.
+/// The GGUF units of the reference (`gguf.cpp`, `dequant.cpp`) are not here. The Rust reader took their place in
+/// milestone 15 step 3 (`src/gguf.rs`, `src/dequant.rs`). `src` is the directory `hip/src`, and `out` is the directory
+/// of the objects.
 pub(crate) fn units(src: &Path, out: &Path) -> Vec<Unit> {
     let mut units: Vec<Unit> = ENGINE_UNITS.iter().map(|name| engine_unit(src, out, name)).collect();
     units.push(rt_unit(src, out));
@@ -90,7 +94,8 @@ fn engine_unit(src: &Path, out: &Path, name: &str) -> Unit {
     arguments.extend(strings(COMMON));
     arguments.push(OFFLOAD_ARCH.to_owned());
     arguments.extend(strings(WARNINGS_AND_FLOATS));
-    // The engine target adds -O3 after the build type's -O2 (reference `src/engine/CMakeLists.txt:4`). The last -O wins.
+    // The engine target adds -O3 after the build type's -O2 (reference `src/engine/CMakeLists.txt:4`). The last -O
+    // wins.
     arguments.push("-O3".to_owned());
     hip_tail(
         src.join("engine").join(name),

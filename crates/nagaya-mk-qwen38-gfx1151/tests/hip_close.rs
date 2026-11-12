@@ -1,5 +1,5 @@
-//! The close of the engine on gfx1151 (engine-abi "close"): the drop of the last handle frees the weights, and the next open
-//! loads them again with the same logits. Its own binary, so no hold keeps the weights.
+//! The close of the engine on gfx1151 (engine-abi "close"): the drop of the last handle frees the weights, and the next
+//! open loads them again with the same logits. Its own binary, so no hold keeps the weights.
 //!
 //! It needs the GPU and `QWEN38_SHARDS`, and `nagaya.service` stopped (spec 3.1). It loads the weights three times.
 //! Run: `cargo test -p nagaya-mk-qwen38-gfx1151 --features hip --test hip_close -- --nocapture`.

@@ -1,11 +1,12 @@
 //! The stage list of a pass, built in Rust (milestone 15 step 6).
 //!
 //! The reference's `engine.hip` `build`, `build_stages`, `split_k`, `fuse_prologues`, `fuse_hc` and `fuse_hc_mix`, and
-//! `blocks.hip` `add_gdn`, `add_attn`, `add_moe` and `pool_stages` built the stages in C++ (reference commit 555a2a3). This module
-//! builds the same stages, field for field. The schedule (`schedule.rs`) then orders them. The stages name device
-//! buffers: the weights in the arena, the context buffers, and the named scratch buffers of the pass.
+//! `blocks.hip` `add_gdn`, `add_attn`, `add_moe` and `pool_stages` built the stages in C++ (reference commit 555a2a3).
+//! This module builds the same stages, field for field. The schedule (`schedule.rs`) then orders them. The stages name
+//! device buffers: the weights in the arena, the context buffers, and the named scratch buffers of the pass.
 
-// The port keeps the reference's argument lists and its comparisons, so that each line reads as the C++ line it replaces.
+// The port keeps the reference's argument lists and its comparisons, so that each line reads as the C++ line it
+// replaces.
 #![allow(clippy::too_many_arguments, clippy::int_plus_one, clippy::ptr_eq)]
 // A build without the feature hip runs no pass, so the rope table has no reader there.
 #![cfg_attr(not(feature = "hip"), allow(dead_code))]

@@ -553,7 +553,8 @@ fn fast_qmm() -> Result<bool, Qwen38Error> {
     }
 }
 
-/// Read `QWEN38_TILES` as the engine reads it: unset or 1 is tiled, 0 is the GGUF layout, and any other value stops the engine.
+/// Read `QWEN38_TILES` as the engine reads it: unset or 1 is tiled, 0 is the GGUF layout, and any other value stops the
+/// engine.
 fn tiles() -> Result<bool, Qwen38Error> {
     match std::env::var("QWEN38_TILES") {
         Ok(value) => tiles_from(Some(&value)),
@@ -601,7 +602,8 @@ fn watchdog_deadline(value: Option<&str>) -> Result<f64, Qwen38Error> {
     }
 }
 
-/// The host safety floor. The engine keeps 12 GiB of MemAvailable free (spec 4.7; reference `service/contexts.py`, `FLOOR_BYTES`).
+/// The host safety floor. The engine keeps 12 GiB of MemAvailable free (spec 4.7; reference `service/contexts.py`,
+/// `FLOOR_BYTES`).
 const MEMORY_FLOOR: u64 = 12 << 30;
 
 /// Refuse an allocation of `needed` bytes that leaves less than the floor free. `what` names the allocation.
@@ -627,7 +629,8 @@ fn mem_available() -> Result<u64, Qwen38Error> {
         .ok_or_else(|| Qwen38Error::new("/proc/meminfo has no MemAvailable"))
 }
 
-/// Refuse a load that cannot fit in the free memory. The engine allocates the weight arena in full, and the floor stays free.
+/// Refuse a load that cannot fit in the free memory. The engine allocates the weight arena in full, and the floor stays
+/// free.
 fn check_memory(needed: u64) -> Result<(), Qwen38Error> {
     memory_problem("the shards", mem_available()?, needed).map_err(Qwen38Error::new)
 }
@@ -750,8 +753,8 @@ impl ThreadState {
                 arena_bytes,
             }),
         };
-        // The engine has no call for the pool's size. Measure it here, before a caller's pass, so a larger pool is an open
-        // error and the ledger's term is what the engine holds.
+        // The engine has no call for the pool's size. Measure it here, before a caller's pass, so a larger pool is an
+        // open error and the ledger's term is what the engine holds.
         let pass_scratch = state.measure_pass_scratch().map_err(Qwen38Error::new)?;
         spec::scratch_problem(pass_scratch).map_err(Qwen38Error::new)?;
 
@@ -830,9 +833,9 @@ impl ThreadState {
 
     /// The pass scratch in bytes: the device free memory that the pool's first asks take.
     ///
-    /// A pass of 1 token asks for `qmm_part2`, and a pass of 17 or more tokens does not (reference `engine.hip:1187`). The
-    /// second pass has the 255 tokens that remain, with logits, so it asks for every other buffer at `kMaxPassTokens`.
-    /// The engine keeps the pool for its life. The probe context is freed before the second reading.
+    /// A pass of 1 token asks for `qmm_part2`, and a pass of 17 or more tokens does not (reference `engine.hip:1187`).
+    /// The second pass has the 255 tokens that remain, with logits, so it asks for every other buffer at
+    /// `kMaxPassTokens`. The engine keeps the pool for its life. The probe context is freed before the second reading.
     fn measure_pass_scratch(&mut self) -> Result<u64, String> {
         let before = self.free_device_bytes()?;
         let context = unsafe { (self.binding.ctx_new)(self.engine, spec::PROBE_CAPACITY) };
@@ -1256,7 +1259,8 @@ impl ThreadState {
             let context = unsafe { &*(ptr as *const crate::context::Qwen38Context) };
             unsafe { host::pool_context(&self.binding, self.engine, host, weights, context) };
         }
-        // The engine returns nothing here. A call that left the context poisoned is a failure (spec 6.8), so check first.
+        // The engine returns nothing here. A call that left the context poisoned is a failure (spec 6.8), so check
+        // first.
         if unsafe { (self.binding.ctx_poisoned)(ptr) } {
             return Call::Failed("set_n poisoned the context".to_owned());
         }
@@ -1314,7 +1318,8 @@ impl ThreadState {
         if unsafe { (self.binding.ctx_poisoned)(ptr) } {
             return Call::Refused(POISONED.to_owned());
         }
-        // qwen38_ctx_round_gdn_bf16 stops the program on a non-finite value, or one that rounds to infinity. Check first.
+        // qwen38_ctx_round_gdn_bf16 stops the program on a non-finite value, or one that rounds to infinity. Check
+        // first.
         let mut state = Aligned::zeroed(spec::GDN_STATE_BYTES as usize);
         unsafe { (self.binding.state_read)(self.engine, ptr, 0, state.as_mut_ptr()) };
         for (index, value) in state.f32_values().enumerate() {
@@ -1333,8 +1338,8 @@ impl ThreadState {
 
     fn pass(&mut self, request: PassRequest) -> Result<PassReply, PassProblem> {
         let problem = |message: String| PassProblem { message, poison: false };
-        // The engine reads QWEN38_FAST_QMM at each pass build. A change after open would change the bits, and the identity
-        // would be wrong, so refuse the pass.
+        // The engine reads QWEN38_FAST_QMM at each pass build. A change after open would change the bits, and the
+        // identity would be wrong, so refuse the pass.
         match fast_qmm() {
             Ok(value) if value == self.fast_qmm => {}
             Ok(value) => {
@@ -1346,8 +1351,8 @@ impl ThreadState {
             }
             Err(error) => return Err(problem(error.to_string())),
         }
-        // The engine reads QWEN38_TILES once, at load. A change after open makes the environment disagree with the identity,
-        // so refuse the pass, as for QWEN38_FAST_QMM.
+        // The engine reads QWEN38_TILES once, at load. A change after open makes the environment disagree with the
+        // identity, so refuse the pass, as for QWEN38_FAST_QMM.
         match tiles() {
             Ok(value) if value == self.tiles => {}
             Ok(value) => {
@@ -1391,7 +1396,8 @@ impl ThreadState {
             pointers.push(context.ptr);
         }
 
-        // The binding runs the segment check of the engine first, because the engine stops the program on a bad segment.
+        // The binding runs the segment check of the engine first, because the engine stops the program on a bad
+        // segment.
         let segments = binding::segments(&pointers, &request.lens, &request.tokens);
         let rows = if request.want_logits { count } else { 0 };
         let mut logits = vec![0f32; rows * spec::VOCAB as usize];
@@ -1489,7 +1495,8 @@ impl ThreadState {
     }
 }
 
-/// A byte buffer that is aligned for the f32 stores of the engine. The engine reads and writes a part as f32 values in host memory.
+/// A byte buffer that is aligned for the f32 stores of the engine. The engine reads and writes a part as f32 values in
+/// host memory.
 ///
 /// A `Vec<u8>` holds no alignment promise. This buffer holds its bytes in 8-byte words, so the pointer is 8-byte
 /// aligned. It copies bytes into the words and out again, so it makes no assumption about the host byte order.
@@ -1669,7 +1676,8 @@ mod tests {
 
     #[test]
     fn the_probe_asks_for_the_small_pass_and_then_the_logits_row() {
-        // A pass of 1 token asks for qmm_part2 (reference engine.hip:1187). The second pass asks for the rest, with logits.
+        // A pass of 1 token asks for qmm_part2 (reference engine.hip:1187). The second pass asks for the rest, with
+        // logits.
         assert_eq!(probe_shapes(256), [(1, false), (255, true)]);
         let total: u32 = probe_shapes(256).iter().map(|(tokens, _)| tokens).sum();
         assert_eq!(total, crate::spec::PROBE_CAPACITY);

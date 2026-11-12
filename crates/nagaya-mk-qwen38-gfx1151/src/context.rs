@@ -1,11 +1,11 @@
-//! The engine's contexts in Rust: the device buffers of one context, and its parts to and from host memory (milestone 15
-//! step 6).
+//! The engine's contexts in Rust: the device buffers of one context, and its parts to and from host memory (milestone
+//! 15 step 6).
 //!
-//! The reference's `engine.hip` held `new_context`, `free_context`, `state_read`, `state_write`, `state_write_cells` and
-//! `restore_n` in C++ (reference commit 555a2a3). They are here now, over the thin runtime calls `hip_rt_*` of `rt.cpp`. The pass
-//! still reads and advances a context in C++, so `Qwen38Context` is `struct Context` of `engine.h`, field for field. The
-//! layout test (`layout.rs`) compares the two. The checks of each call are in the worker (`worker.rs`), as before.
-//! A call here that gets input that the worker refuses is a defect, so it stops the program.
+//! The reference's `engine.hip` held `new_context`, `free_context`, `state_read`, `state_write`, `state_write_cells`
+//! and `restore_n` in C++ (reference commit 555a2a3). They are here now, over the thin runtime calls `hip_rt_*` of
+//! `rt.cpp`. The pass still reads and advances a context in C++, so `Qwen38Context` is `struct Context` of `engine.h`,
+//! field for field. The layout test (`layout.rs`) compares the two. The checks of each call are in the worker
+//! (`worker.rs`), as before. A call here that gets input that the worker refuses is a defect, so it stops the program.
 //!
 //! The functions have the C types of the binding's calls (`binding.rs`), so the stub binding of the tests stays.
 

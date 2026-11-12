@@ -33,8 +33,8 @@ fn lab() -> Lab {
     lab_of(1)
 }
 
-/// A council on the toy with `segments` segments in a pass. With more than one, the toy joins its decode rows, as the Qwen3.8 engine
-/// does: it declares `segments_exact` and no feed rule.
+/// A council on the toy with `segments` segments in a pass. With more than one, the toy joins its decode rows, as the
+/// Qwen3.8 engine does: it declares `segments_exact` and no feed rule.
 fn lab_of(segments: u32) -> Lab {
     let log = ControlLog::default();
     let factory = TermFactory {
@@ -227,8 +227,8 @@ fn k_contexts_decode_in_passes_of_k_segments() {
     }
 }
 
-/// Forks on an engine that declares `segments_exact` and no feed rule, as the Qwen3.8 engine does, join their decode rows (spec 5.7,
-/// "The first joins of an engine with `segments_exact`").
+/// Forks on an engine that declares `segments_exact` and no feed rule, as the Qwen3.8 engine does, join their decode
+/// rows (spec 5.7, "The first joins of an engine with `segments_exact`").
 #[test]
 fn k_contexts_on_an_engine_with_segments_exact_decode_in_passes_of_k_segments() {
     let lab = lab_of(8);

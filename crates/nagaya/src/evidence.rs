@@ -1,8 +1,8 @@
 //! The evidence on failure (spec 9.6).
 //!
 //! Before and after a quantum that fails, the nagaya reads the counters of the machine. It logs the change with the
-//! failure. The counters come from `service/telemetry.py` of the reference: the KFD `evicted_ms` of this process, `MemAvailable`,
-//! the GTT in use, and four counters of `/proc/vmstat`.
+//! failure. The counters come from `service/telemetry.py` of the reference: the KFD `evicted_ms` of this process,
+//! `MemAvailable`, the GTT in use, and four counters of `/proc/vmstat`.
 //!
 //! The code that runs a quantum calls [`Machine::watch`] before the quantum. When the quantum fails, it calls
 //! [`Watch::failed`] with the failure. Each `watch` reads four files, so a caller may skip it for quanta that run

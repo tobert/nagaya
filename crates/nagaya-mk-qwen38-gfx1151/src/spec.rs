@@ -1,7 +1,7 @@
 //! The constants and the declared shapes of the Qwen3.8 engine.
 //!
-//! The numbers come from the reference's `src/ops/model.h` and `src/engine/engine.h`. The engine has one device group and one
-//! context pool in this binding (docs/engine-abi.md, "v0 binding choices").
+//! The numbers come from the reference's `src/ops/model.h` and `src/engine/engine.h`. The engine has one device group
+//! and one context pool in this binding (docs/engine-abi.md, "v0 binding choices").
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -89,7 +89,8 @@ pub fn class_problem(class: ContextClass, measured: u64) -> Result<(), String> {
     Ok(())
 }
 
-/// The longest quantum that the engine declares, in milliseconds. The watchdog of the engine aborts a pass at 10 s (`engine.h:302-306`).
+/// The longest quantum that the engine declares, in milliseconds. The watchdog of the engine aborts a pass at 10 s
+/// (`engine.h:302-306`).
 pub const MAX_QUANTUM_MS: u32 = 10_000;
 
 /// The most segments in one pass (the reference `kMaxSegments`).
@@ -186,7 +187,8 @@ pub fn parts() -> Vec<PartLimits> {
     ]
 }
 
-/// The part index, when the engine stores that part. The `state_bytes` call of the engine dies on part 6 (derived) and on any part past 5.
+/// The part index, when the engine stores that part. The `state_bytes` call of the engine dies on part 6 (derived) and
+/// on any part past 5.
 pub fn stored_part(part: u32) -> Result<u32, String> {
     if part < 6 {
         Ok(part)
@@ -262,8 +264,8 @@ pub fn fits(span: &CoverageSpan, slot: u32) -> Result<(), String> {
     Ok(())
 }
 
-/// Ok when a cells read asks for a whole cells part. The engine reads a part whole, so a read from 0 of all rows is the only
-/// range that it gives. The worker checks that `n` is the context's token count.
+/// Ok when a cells read asks for a whole cells part. The engine reads a part whole, so a read from 0 of all rows is the
+/// only range that it gives. The worker checks that `n` is the context's token count.
 pub fn whole_read_problem(part: usize, from: u64, n: u64, len: usize) -> Result<(), String> {
     let row = row_bytes(part).ok_or_else(|| format!("part {part} is not a cells part; read it with part_read"))?;
     if from != 0 {
@@ -446,7 +448,8 @@ pub fn limits(arena_bytes: u64) -> Limits {
                     lifetime: Lifetime::Engine,
                     kinds: vec![Kind::Prefill, Kind::Decode],
                 },
-                // The engine makes the whole pool at open, so the term holds every context and lives as long as the engine.
+                // The engine makes the whole pool at open, so the term holds every context and lives as long as the
+                // engine.
                 MandatoryTerm {
                     name: "context".to_owned(),
                     tier: Tier::Device(0),
@@ -590,7 +593,8 @@ mod tests {
         for part in 0..=5 {
             assert_eq!(stored_part(part), Ok(part), "part {part}");
         }
-        // The `state_bytes` call of the engine dies on part 6, which is derived, and on a part past 5. The binding must not call it.
+        // The `state_bytes` call of the engine dies on part 6, which is derived, and on a part past 5. The binding must
+        // not call it.
         assert!(stored_part(6).is_err());
         assert!(stored_part(99).is_err());
     }

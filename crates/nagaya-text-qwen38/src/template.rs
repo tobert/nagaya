@@ -1,4 +1,5 @@
-//! The chat template of Qwen3.8: the Jinja source in the GGUF, run by `nagaya-jinja` with the variables of the reference.
+//! The chat template of Qwen3.8: the Jinja source in the GGUF, run by `nagaya-jinja` with the variables of the
+//! reference.
 
 use crate::Error;
 use crate::gguf::{Metadata, Value as MetaValue};

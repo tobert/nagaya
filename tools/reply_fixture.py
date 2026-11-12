@@ -29,8 +29,8 @@ DEFAULT_GGUF = ("/tank/ml/models/llama.cpp/Qwen3.8-Flash-Next-GGUF/UD-IQ4_XS/"
                 "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf")
 DEFAULT_OUT = Path(__file__).resolve().parent.parent / "crates/nagaya-text-qwen38/tests/fixtures/reply.json"
 
-# The tool sets. "reference" is the set of the reference's own tests (tests/svc/test_chatfmt.py): one tool with every type, a tool with
-# no parameters, and a tool with a required parameter.
+# The tool sets. "reference" is the set of the reference's own tests (tests/svc/test_chatfmt.py): one tool with every
+# type, a tool with no parameters, and a tool with a required parameter.
 TOOLSETS = {
     "none": None,
     "reference": [

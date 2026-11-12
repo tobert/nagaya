@@ -1,11 +1,14 @@
-//! GPU dequant and quantized matmul (`ops/quant.h`, `ops/qmm.h`). It ports `test_qmm.py` and `test_qmmh.py` of the reference.
+//! GPU dequant and quantized matmul (`ops/quant.h`, `ops/qmm.h`). It ports `test_qmm.py` and `test_qmmh.py` of the
+//! reference.
 //!
 //! - dequant: bit-identical to gguf-py, with the expected values in a fixture of `tools/op_fixtures.py`.
-//! - qmm: `y = x W^T` against an f64 reference. The weights of the reference come from `qwen38_dequant`, which the dequant
-//!   test holds to gguf-py. The bound is the one of the reference: `K * 2^-24 * sum_k |w_k x_k|` (Higham, recursive summation).
+//! - qmm: `y = x W^T` against an f64 reference. The weights of the reference come from `qwen38_dequant`, which the
+//!   dequant test holds to gguf-py. The bound is the one of the reference: `K * 2^-24 * sum_k |w_k x_k|` (Higham,
+//!   recursive summation).
 //! - the exact kernel equals the oracle kernel bit for bit, for every grid size and every row map.
 //!
-//! The reference used real rows of the Qwen3.8 GGUF. These tests use rows that `inputs::raw_rows` makes, with the same types and shapes.
+//! The reference used real rows of the Qwen3.8 GGUF. These tests use rows that `inputs::raw_rows` makes, with the same
+//! types and shapes.
 
 use crate::fixture::Fixture;
 use crate::inputs::{self, Qtype};
@@ -15,7 +18,8 @@ use crate::ops_lib::{
 };
 use crate::{child, sym};
 
-/// One weight matrix: the type, the rows, the K, and the seed of its bytes. The label is the tensor of the reference's test.
+/// One weight matrix: the type, the rows, the K, and the seed of its bytes. The label is the tensor of the reference's
+/// test.
 #[derive(Clone, Copy)]
 pub struct Case {
     pub label: &'static str,

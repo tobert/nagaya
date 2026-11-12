@@ -1,7 +1,7 @@
 //! The reply parser: the tokens of a reply to its phases, its parts and its tool calls.
 //!
-//! This is a port of `ReplyTracker` in the reference's `service/chatfmt.py`, with the token loop of `Generation._loop` in the reference's
-//! `service/generate.py`. The format is the format of the Qwen3.8 chat template:
+//! This is a port of `ReplyTracker` in the reference's `service/chatfmt.py`, with the token loop of `Generation._loop`
+//! in the reference's `service/generate.py`. The format is the format of the Qwen3.8 chat template:
 //!
 //! - With thinking on, the text of the reply starts inside the thinking, and `</think>` ends it. With thinking off,
 //!   the text starts in the content.
@@ -54,8 +54,8 @@ pub enum Finish {
     ContextFull,
 }
 
-/// The ends of the reply that `ReplyParser::finish_keeping` keeps as they are. The reference trims both ends of each part. gogi
-/// keeps two ends (gogi "Continuations").
+/// The ends of the reply that `ReplyParser::finish_keeping` keeps as they are. The reference trims both ends of each
+/// part. gogi keeps two ends (gogi "Continuations").
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Keep {
     /// Keep the white space at the start of the first part. A continuation joins its open text and the new text,
@@ -88,8 +88,8 @@ pub struct TokenEvent {
     /// The text of this token: the bytes of the token, once the character is complete. It is empty while a
     /// character is not complete. It includes marker text that the tracker holds back or releases.
     pub piece: String,
-    /// What the reference's `ReplyTracker.feed` released for this token. The text of a marker that is not complete stays out.
-    /// The end of thinking, `</think>`, is the last text of the reasoning.
+    /// What the reference's `ReplyTracker.feed` released for this token. The text of a marker that is not complete
+    /// stays out. The end of thinking, `</think>`, is the last text of the reasoning.
     pub released: Vec<(Phase, String)>,
 }
 
@@ -458,8 +458,8 @@ fn named_tag<'a>(text: &'a str, pos: usize, open: &str) -> Option<(&'a str, usiz
     Some((&rest[..end], pos + open.len() + end + 2))
 }
 
-/// `_parse_one` of the reference. The call starts at `pos` with `<tool_call>`. A call that cannot be read runs to the next
-/// `<tool_call>`, or to the end, so that the rest of the reply is still read. Returns the end of the call.
+/// `_parse_one` of the reference. The call starts at `pos` with `<tool_call>`. A call that cannot be read runs to the
+/// next `<tool_call>`, or to the end, so that the rest of the reply is still read. Returns the end of the call.
 fn parse_one(text: &str, pos: usize, specs: &ToolSpecs) -> (usize, ToolCall) {
     let (end, name, params) = match read_call(text, pos) {
         Ok(read) => read,
@@ -545,8 +545,8 @@ fn read_call(text: &str, pos: usize) -> Result<(usize, String, Params<'_>), Malf
     Ok((i + CALL_CLOSE.len(), name.to_string(), params))
 }
 
-/// The checks of the reference after a call is read: the function exists, each parameter is declared once and has the right
-/// type, and the required parameters are there. Returns the input as a `Json::Object` in the order of the text.
+/// The checks of the reference after a call is read: the function exists, each parameter is declared once and has the
+/// right type, and the required parameters are there. Returns the input as a `Json::Object` in the order of the text.
 fn check_call(name: &str, params: &Params, specs: &ToolSpecs) -> Result<Json, String> {
     let Some(spec) = specs.0.get(name) else {
         return Err(format!(
@@ -590,7 +590,8 @@ fn check_call(name: &str, params: &Params, specs: &ToolSpecs) -> Result<Json, St
     Ok(Json::Object(arguments))
 }
 
-/// `_parse_calls` of the reference: the text from the first `<tool_call>` to the end. Text between calls is an error entry.
+/// `_parse_calls` of the reference: the text from the first `<tool_call>` to the end. Text between calls is an error
+/// entry.
 fn parse_calls(text: &str, specs: &ToolSpecs) -> Vec<ToolCall> {
     let mut calls = Vec::new();
     let mut pos = 0;

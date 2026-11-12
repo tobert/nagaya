@@ -1,8 +1,8 @@
 //! The Qwen3.8 family library for the council (spec 11.3, 11.3a): nagaya's family interface on this crate.
 //!
-//! A context renders with the chat template of the GGUF. The template runs with the reasoning effort `medium`, as
-//! the council of the reference does, so a context renders the same with thinking on and off except for its generation prompt.
-//! Client text is content: its special token text is escaped before the template runs and tokenized as text.
+//! A context renders with the chat template of the GGUF. The template runs with the reasoning effort `medium`, as the
+//! council of the reference does, so a context renders the same with thinking on and off except for its generation
+//! prompt. Client text is content: its special token text is escaped before the template runs and tokenized as text.
 //!
 //! A decision puts a spec, a case and a letter menu after the context. This is mkviolet's rendering (mkviolet
 //! `src/template.rs`) in Qwen3.8's chat format. A plain read is:
@@ -50,7 +50,8 @@ use crate::{Error, Qwen38, Rendered, Tokenizer};
 /// The name of the family in the template id.
 const FAMILY: &str = "qwen38";
 
-/// The reasoning effort of every render. At `medium` the template writes no effort line (the reference `council_v1.py`).
+/// The reasoning effort of every render. At `medium` the template writes no effort line (the reference
+/// `council_v1.py`).
 const EFFORT: &str = "medium";
 
 /// Where in the library the test hook changes tokens. The hook exists in test builds only.
@@ -270,8 +271,9 @@ impl Qwen38Family {
         Ok(Rendered { escaped, text, ids })
     }
 
-    /// The seam check of the reference's `prefill` (gogi "Continuations"): each open field that is not empty must tokenize on its
-    /// own. The rendering up to the start of the field must be a token prefix of the rendering through its end.
+    /// The seam check of the reference's `prefill` (gogi "Continuations"): each open field that is not empty must
+    /// tokenize on its own. The rendering up to the start of the field must be a token prefix of the rendering through
+    /// its end.
     fn check_seams(
         &self,
         messages: &[Json],

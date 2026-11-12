@@ -941,7 +941,8 @@ fn every_case_names_its_buffers() {
         assert!(!names.is_empty(), "{name} names no buffer");
         total += names.len();
     }
-    // The cases and the buffers of the reference's `abi_cases.py` at reference commit 555a2a3. A case that goes missing is a check that goes.
+    // The cases and the buffers of the reference's `abi_cases.py` at reference commit 555a2a3. A case that goes missing
+    // is a check that goes.
     assert_eq!((all.len(), total), (29, 110));
 }
 

@@ -1,7 +1,7 @@
 //! Benchmark: the gap between the engine on gfx1151 and the CPU reference (milestone 11.5, spec 8.3).
 //!
-//! The fixture `tests/fixtures/oracle/qwen38.json` holds the token ids and the top-64 logits of the last position
-//! from the CPU reference. The bench opens the engine once and runs each prompt in its own context, in passes of at most 256
+//! The fixture `tests/fixtures/oracle/qwen38.json` holds the token ids and the top-64 logits of the last position from
+//! the CPU reference. The bench opens the engine once and runs each prompt in its own context, in passes of at most 256
 //! tokens. It prints one row for each prompt and exits with status 1 when a tolerance breaks. The tolerances live in
 //! `tests/support/oracle.rs`, which a test shares.
 //!

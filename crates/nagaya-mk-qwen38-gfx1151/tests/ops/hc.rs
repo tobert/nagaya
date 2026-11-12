@@ -1,8 +1,8 @@
 //! Split-K, fused staging, and the hyper-connection ops. It ports `test_qmmh_split.py`, `test_qmmh_xin.py`,
 //! `test_qmmh_hcmix.py`, `test_hc.py` and `test_hc_fused.py` of the reference.
 //!
-//! The reference used real rows of the Qwen3.8 GGUF. These tests use rows that `inputs::raw_rows` makes, with the same types and
-//! shapes. The tests of `test_hc.py` that compared with the HF module use synthetic weights: see `hc_pre`.
+//! The reference used real rows of the Qwen3.8 GGUF. These tests use rows that `inputs::raw_rows` makes, with the same
+//! types and shapes. The tests of `test_hc.py` that compared with the HF module use synthetic weights: see `hc_pre`.
 
 use crate::fixture::Fixture;
 use crate::inputs::{self, Qtype};
@@ -232,8 +232,8 @@ fn child_bad_ksplit() {
 
 // ---- Q8_0 tiles, for the next two groups ----
 
-/// Q8_0 rows of the GGUF as the tiles of `qwen38_relayout_q8`. The output starts as 0xAB, so a byte that the kernel does not
-/// write shows.
+/// Q8_0 rows of the GGUF as the tiles of `qwen38_relayout_q8`. The output starts as 0xAB, so a byte that the kernel
+/// does not write shows.
 fn relayout_q8(raw: &[u8], rows: usize, k: usize) -> Vec<u8> {
     let mut out = vec![0xABu8; raw.len()];
     let f = sym!(
@@ -285,8 +285,8 @@ struct Xin<'a> {
     grid: u32,
 }
 
-/// The fused stage and the stages it replaces, on the same partials: `qwen38_qmmh_xin`. It returns the two outputs. The staged
-/// x of both must be equal in f32, before the f16 staging could hide a rounding that differs.
+/// The fused stage and the stages it replaces, on the same partials: `qwen38_qmmh_xin`. It returns the two outputs. The
+/// staged x of both must be equal in f32, before the f16 staging could hide a rounding that differs.
 fn xin(a: &Xin) -> (Vec<f32>, Vec<f32>) {
     let t = a.parts.len() / (a.xks as usize * a.k);
     let (mut yf, mut yr) = (vec![f32::NAN; t * a.n], vec![f32::NAN; t * a.n]);
@@ -424,8 +424,8 @@ struct HcMix<'a> {
     grid: u32,
 }
 
-/// The fused stage and the matmul then `op_hc_mix`: `qwen38_qmmh_hcmix`. The outputs start as NaN, so an element that the
-/// fused stage does not write fails the comparison. It returns `(mixed_f, inject_f, mixed_r, inject_r)`.
+/// The fused stage and the matmul then `op_hc_mix`: `qwen38_qmmh_hcmix`. The outputs start as NaN, so an element that
+/// the fused stage does not write fails the comparison. It returns `(mixed_f, inject_f, mixed_r, inject_r)`.
 fn hcmix(a: &HcMix) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
     let (e, t) = (a.e, a.t);
     let (mut mf, mut mr) = (vec![f32::NAN; t * e], vec![f32::NAN; t * e]);
@@ -577,7 +577,8 @@ fn fused_hc_up_mix_with_xin_silu_sum_from_split_k_partials() {
 
 // ---- test_hc_fused.py ----
 
-/// `qwen38_hc_combine_rms`: `h += out x inject`, then the RMS norm of `h` by groups of `e`. `fused` runs the one fused stage.
+/// `qwen38_hc_combine_rms`: `h += out x inject`, then the RMS norm of `h` by groups of `e`. `fused` runs the one fused
+/// stage.
 fn combine_rms(
     h: &[f32],
     out: &[f32],
@@ -664,10 +665,11 @@ fn fixed_d(mut raw: Vec<u8>, bits: u16) -> Vec<u8> {
 
 /// The hyper-connection pre stage against the HF module `Qwen4ExpTextGatedResidual` (`mixed` and `inject`).
 ///
-/// The reference used the real weights of layer 0 and the embeddings of random tokens. This test uses synthetic weights at the real
-/// shapes, which the generator makes, and the fixture holds the output of the HF module for them. The tolerance is the reference's:
-/// f32 accumulation has a typical error of `sqrt(K) 2^-24` (about 6e-6 at K = 10240), four stages with Lipschitz 1 or less
-/// stay under 3e-5, and 1e-4 allows for that. A wrong stream, gamma or weight is an error of order 1.
+/// The reference used the real weights of layer 0 and the embeddings of random tokens. This test uses synthetic weights
+/// at the real shapes, which the generator makes, and the fixture holds the output of the HF module for them. The
+/// tolerance is the reference's: f32 accumulation has a typical error of `sqrt(K) 2^-24` (about 6e-6 at K = 10240),
+/// four stages with Lipschitz 1 or less stay under 3e-5, and 1e-4 allows for that. A wrong stream, gamma or weight is
+/// an error of order 1.
 #[test]
 fn hc_pre_matches_reference() {
     const E: usize = 2560;

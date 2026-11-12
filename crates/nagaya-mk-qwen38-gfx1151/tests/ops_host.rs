@@ -127,7 +127,8 @@ fn the_groups_on_disk_are_the_groups_that_the_tests_load() {
     );
 }
 
-/// A site that traps without recording would be a silent trap. `HIP_TRAP` is the only way to trap (`hip/src/rt/trap.h`).
+/// A site that traps without recording would be a silent trap. `HIP_TRAP` is the only way to trap
+/// (`hip/src/rt/trap.h`).
 #[test]
 fn no_bare_builtin_trap_outside_the_trap_header() {
     fn walk(dir: &std::path::Path, found: &mut Vec<String>) {
@@ -180,8 +181,9 @@ fn each_group_names_the_source_files_it_reads() {
     }
 }
 
-/// The convention of the crates is 1 MB. The op fixtures hold the expected outputs of 20 test files of the reference, and they were 1.2 MB
-/// before the tiles group. Proposed (Claude Sonnet 5.5, 2026-10-22): 2 MB for this crate. Amy decides.
+/// The convention of the crates is 1 MB. The op fixtures hold the expected outputs of 20 test files of the reference,
+/// and they were 1.2 MB before the tiles group. Proposed (Claude Sonnet 5.5, 2026-10-22): 2 MB for this crate. Amy
+/// decides.
 #[test]
 fn the_fixtures_stay_small() {
     let total: u64 = std::fs::read_dir(fixture::directory())

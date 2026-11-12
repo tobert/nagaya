@@ -1,5 +1,5 @@
-//! The detokenizer against the outputs of the reference's Python (`service/chatfmt.py` `Utf8Stream`, `service/common.py`
-//! `piece_text`).
+//! The detokenizer against the outputs of the reference's Python (`service/chatfmt.py` `Utf8Stream`,
+//! `service/common.py` `piece_text`).
 
 mod common;
 

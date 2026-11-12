@@ -1,15 +1,15 @@
 //! QSA attention (`ops/attn.h`, `ops/attn.hip`) against the HF module `Qwen4ExpTextAttention`. It ports `test_attn.py` and
 //! `test_attn_long.py` of the reference.
 //!
-//! The reference ran the HF module with the real weights of layer 3 on real embeddings. These tests give the op raw projections that
-//! the generator makes. `tools/op_groups/attn.py` runs the HF module on the same projections, with stand-ins for its
-//! projection layers, and writes the output before `o_proj`, the selected cells and, for the long cases, the block scores.
-//! The expected outputs hold the heads 0, 11, 12 and 23 only, to keep the fixture small. The relative L2 error is over those
-//! heads.
+//! The reference ran the HF module with the real weights of layer 3 on real embeddings. These tests give the op raw
+//! projections that the generator makes. `tools/op_groups/attn.py` runs the HF module on the same projections, with
+//! stand-ins for its projection layers, and writes the output before `o_proj`, the selected cells and, for the long
+//! cases, the block scores. The expected outputs hold the heads 0, 11, 12 and 23 only, to keep the fixture small. The
+//! relative L2 error is over those heads.
 //!
-//! The tolerances are the ones of the reference, and the reference's text gives their design: `TOL` 5e-4 on `attn_out`, `NEAR_TIE` 1e-4 for the
-//! sparse selection, `KTOL` 1e-4 for the K cells, and 8 * 128 * 2^-24 * S_abs for a block score. The fixture holds the bound
-//! of each block that it names, so the constants of the bound are in `attn.py`.
+//! The tolerances are the ones of the reference, and the reference's text gives their design: `TOL` 5e-4 on `attn_out`,
+//! `NEAR_TIE` 1e-4 for the sparse selection, `KTOL` 1e-4 for the K cells, and 8 * 128 * 2^-24 * S_abs for a block
+//! score. The fixture holds the bound of each block that it names, so the constants of the bound are in `attn.py`.
 
 use crate::fixture::Fixture;
 use crate::inputs::normal_at;
@@ -126,7 +126,8 @@ impl Out {
     }
 }
 
-/// `qwen38_attn`: the port of `call_attn` of `test_attn.py`. The cache holds `p0 + t` cells, and the call writes the last `t`.
+/// `qwen38_attn`: the port of `call_attn` of `test_attn.py`. The cache holds `p0 + t` cells, and the call writes the
+/// last `t`.
 #[allow(clippy::too_many_arguments)]
 fn call_attn(
     t: usize,

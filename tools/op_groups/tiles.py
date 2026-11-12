@@ -5,7 +5,8 @@ import numpy as np
 
 SOURCE_FILES = ["tests/ops/test_tiles.py"]
 
-# (format, type, rows, k, seed). A tile needs rows % 16 == 0. The reference used rows of real tensors; these shapes are small.
+# (format, type, rows, k, seed). A tile needs rows % 16 == 0. The reference used rows of real tensors; these shapes are
+# small.
 CASES = [
     ("iq3s", "IQ3_S", 16, 512, 701),
     ("iq3s", "IQ3_S", 32, 256, 702),

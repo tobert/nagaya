@@ -1,8 +1,8 @@
 //! The interpreter of a chat template: Jinja source run with the rules of Python's jinja2.
 //!
-//! The reference renders with Python's jinja2, set up as Hugging Face transformers sets it up (`service/template.py`). This module
-//! runs the same source with minijinja and makes the same three choices: `trim_blocks` and `lstrip_blocks` are on,
-//! `tojson` writes what `json.dumps` writes with `ensure_ascii` off, and `trim` strips what `str.strip` strips.
+//! The reference renders with Python's jinja2, set up as Hugging Face transformers sets it up (`service/template.py`).
+//! This module runs the same source with minijinja and makes the same three choices: `trim_blocks` and `lstrip_blocks`
+//! are on, `tojson` writes what `json.dumps` writes with `ensure_ascii` off, and `trim` strips what `str.strip` strips.
 
 use crate::Error;
 use crate::json::Json;

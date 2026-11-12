@@ -30,8 +30,8 @@ fn worker() -> Result<Arc<Worker>, Qwen38Error> {
     Ok(worker)
 }
 
-/// The identity and the limits of the engine on the shards of `QWEN38_SHARDS`, with no GPU and no load. An open gives the
-/// same facts.
+/// The identity and the limits of the engine on the shards of `QWEN38_SHARDS`, with no GPU and no load. An open gives
+/// the same facts.
 pub fn describe() -> Result<(Identity, Limits), Qwen38Error> {
     crate::worker::describe(&Qwen38Paths::from_env()?)
 }
@@ -132,8 +132,8 @@ impl Qwen38Engine {
     }
 }
 
-/// The first row of a cells write. The engine writes rows from 0 and cannot place them later (engine-abi, "The first row
-/// of a cells write").
+/// The first row of a cells write. The engine writes rows from 0 and cannot place them later (engine-abi, "The first
+/// row of a cells write").
 fn write_from(from: u64) -> Result<(), String> {
     if from == 0 {
         Ok(())
@@ -144,7 +144,8 @@ fn write_from(from: u64) -> Result<(), String> {
     }
 }
 
-/// The close of the engine (engine-abi "close"): the handle frees its contexts, and the last handle or hold frees the weights.
+/// The close of the engine (engine-abi "close"): the handle frees its contexts, and the last handle or hold frees the
+/// weights.
 impl Drop for Qwen38Engine {
     fn drop(&mut self) {
         let ids = std::mem::take(&mut self.states).into_iter().flatten().collect();
@@ -153,8 +154,8 @@ impl Drop for Qwen38Engine {
     }
 }
 
-/// A hold keeps the engine's weights loaded with no context pool. A test binary or a bench keeps one, so that each handle it
-/// opens and drops does not load the weights again.
+/// A hold keeps the engine's weights loaded with no context pool. A test binary or a bench keeps one, so that each
+/// handle it opens and drops does not load the weights again.
 pub struct Hold {
     worker: Arc<Worker>,
 }
@@ -537,8 +538,8 @@ impl Slots for Qwen38Engine {
 
     /// Free the context and make a new one of the same capacity. The engine has no call that empties a context.
     ///
-    /// The context term holds the pool (spec 4.2), so the new context needs no new admission. When the engine cannot make
-    /// it, the slot has no context, and the result is `Failed`.
+    /// The context term holds the pool (spec 4.2), so the new context needs no new admission. When the engine cannot
+    /// make it, the slot has no context, and the result is `Failed`.
     fn slot_clear(&mut self, slot: SlotId) -> WriteResult {
         let Some(id) = self.context(State::Slot(slot)) else {
             self.last_error = Some(format!("slot {slot} has no context in this engine"));
@@ -611,8 +612,8 @@ mod tests {
 
     #[test]
     fn a_segment_that_breaks_an_engine_rule_is_refused_before_the_pass() {
-        // The context holds three tokens, so the engine appends at position 3. plan_pass takes no worker, so these checks
-        // need no GPU and no library.
+        // The context holds three tokens, so the engine appends at position 3. plan_pass takes no worker, so these
+        // checks need no GPU and no library.
         let contexts = [SegmentContext { id: 7, n: 3 }];
 
         let wrong = token_segment(&[11, 12], 4);

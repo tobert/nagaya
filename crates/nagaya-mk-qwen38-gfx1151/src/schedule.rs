@@ -1,4 +1,5 @@
-//! The schedule of a fused pass: fewer grid barriers, the same bits. It was the reference's `stage_sched.h` (reference commit `555a2a3`).
+//! The schedule of a fused pass: fewer grid barriers, the same bits. It was the reference's `stage_sched.h` (reference
+//! commit `555a2a3`).
 //!
 //! The megakernel puts a grid barrier after each stage. Most stages of a decode step are a few microseconds of work,
 //! and a barrier costs about 1.2 to 4.4 us. Two stages need a barrier between them only if one touches what the other
@@ -707,7 +708,8 @@ fn kv_reach(s: &Stage, w: &[Stage]) -> u64 {
 }
 
 /// Reorder `stages` by their plan, set the `sched` word of each one, and give the grid barriers of the pass. It is the
-/// form of the reference's `schedule_stages`, for the tests. The engine applies the plan itself (`engine.hip` `Engine::build`).
+/// form of the reference's `schedule_stages`, for the tests. The engine applies the plan itself (`engine.hip`
+/// `Engine::build`).
 #[cfg(test)]
 pub(crate) fn schedule_stages(
     stages: &mut Vec<Stage>,

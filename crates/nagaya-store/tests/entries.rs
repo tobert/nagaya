@@ -2497,7 +2497,8 @@ fn a_restart_loses_the_interval_copies() {
     assert!(store.entries().is_empty());
 }
 
-/// An engine whose `cells_write` leaves the logical row count alone, as the Qwen3.8 engine does. It records each `set_n`.
+/// An engine whose `cells_write` leaves the logical row count alone, as the Qwen3.8 engine does. It records each
+/// `set_n`.
 struct CountSpy {
     inner: Scripted,
     set_n_calls: Vec<u64>,

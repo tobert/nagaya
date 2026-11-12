@@ -59,9 +59,9 @@ impl fmt::Display for Suite {
 
 /// Run every gate of spec 8.3 on fresh engines from `make`.
 pub fn run_all<E: Engine>(make: &mut dyn FnMut() -> E) -> Suite {
-    // A temporary in a `vec![...]` lives until the end of the whole statement. Each gate that takes one engine gets
-    // its own statement, so that its engine is dropped before the next gate. An engine with a large pool (the Qwen3.8 engine: 12
-    // GiB) cannot hold the engines of all gates at once.
+    // A temporary in a `vec![...]` lives until the end of the whole statement. Each gate that takes one engine gets its
+    // own statement, so that its engine is dropped before the next gate. An engine with a large pool (the Qwen3.8
+    // engine: 12 GiB) cannot hold the engines of all gates at once.
     let park = park_and_restore(&mut make());
     let seal = seal_only_at_boundaries(&mut make());
     let identity = quantum_identity(make);

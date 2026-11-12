@@ -1,7 +1,7 @@
 //! The reply parser of the council family (spec 11.3), through the `ReplyParser` trait of `nagaya-council`.
 //!
-//! The cases are `tests/fixtures/reply.json`, the outputs of the reference's Python. The raw parser has its own tests in
-//! `tests/reply.rs`. These tests check the adapter: the stop token, the phase and piece of each step, the tail, the
+//! The cases are `tests/fixtures/reply.json`, the outputs of the reference's Python. The raw parser has its own tests
+//! in `tests/reply.rs`. These tests check the adapter: the stop token, the phase and piece of each step, the tail, the
 //! calls and the tool list.
 
 mod common;
@@ -58,7 +58,8 @@ fn phase_of(name: &str) -> Phase {
     }
 }
 
-/// The ids of a case, then a stop token when the reference stopped. The reference's loop does not feed the stop token to its tracker.
+/// The ids of a case, then a stop token when the reference stopped. The reference's loop does not feed the stop token
+/// to its tracker.
 fn ids_of(case: &Value) -> Vec<u32> {
     let mut ids: Vec<u32> = case["ids"]
         .as_array()
@@ -95,8 +96,8 @@ fn cases() -> &'static Vec<Value> {
     fixture()["cases"].as_array().expect("cases")
 }
 
-/// The steps that the reference's released text gives for one token: the phase of the token, and the text released in that
-/// phase. The end of thinking is not part of the reasoning.
+/// The steps that the reference's released text gives for one token: the phase of the token, and the text released in
+/// that phase. The end of thinking is not part of the reasoning.
 fn want_step(event: &Value) -> ReplyStep {
     let phase = phase_of(event[0].as_str().expect("a phase"));
     let piece: String = event[2]

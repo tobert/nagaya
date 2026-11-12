@@ -1,11 +1,12 @@
-//! The GGUF reader of the Qwen3.8 engine: the shards' metadata, their tensor records, and the read-only maps of the files.
+//! The GGUF reader of the Qwen3.8 engine: the shards' metadata, their tensor records, and the read-only maps of the
+//! files.
 //!
-//! The reader is a port of the reference's `src/gguf/gguf.cpp` (reference commit `555a2a3`). It keeps the reference's checks: a file that does not hold
-//! what it promises is an error that names the file and the byte. The family library parses the metadata values
-//! (`nagaya_text_qwen38::gguf::Metadata`), so the workspace has one parser of GGUF values.
+//! The reader is a port of the reference's `src/gguf/gguf.cpp` (reference commit `555a2a3`). It keeps the reference's
+//! checks: a file that does not hold what it promises is an error that names the file and the byte. The family library
+//! parses the metadata values (`nagaya_text_qwen38::gguf::Metadata`), so the workspace has one parser of GGUF values.
 //!
-//! The reader also gives the spot digest of the weight shards. The reference's `weight_hash` is a spot check: it hashes each
-//! shard's size and every byte before the tensor data. The spec labels it a spot check until we have a logical
+//! The reader also gives the spot digest of the weight shards. The reference's `weight_hash` is a spot check: it hashes
+//! each shard's size and every byte before the tensor data. The spec labels it a spot check until we have a logical
 //! checkpoint digest (spec 12.2).
 
 use std::collections::HashMap;
@@ -481,7 +482,8 @@ impl Model {
 
     /// Dequantize rows `[row0, row1)` of tensor `index` into `out`, which holds `(row1 - row0) * ne[0]` values.
     ///
-    /// The tests compare these rows with the reference's C++ copy. The engine calls `dequant_f32` on its PLE rows directly.
+    /// The tests compare these rows with the reference's C++ copy. The engine calls `dequant_f32` on its PLE rows
+    /// directly.
     #[cfg(test)]
     pub(crate) fn dequant_rows(&self, index: usize, row0: u64, row1: u64, out: &mut [f32]) -> Result<(), String> {
         let tensor = &self.tensors[index];

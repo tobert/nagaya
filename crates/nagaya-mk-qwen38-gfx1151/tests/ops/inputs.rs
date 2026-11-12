@@ -1,9 +1,10 @@
 //! The input generator of the op tests: a stream of u64 values that is a pure function of a seed and an index.
 //!
-//! `tools/op_fixtures.py` has the same generator, and the test `the_generator_matches_the_python_generator` compares the
-//! two. Thus Python writes the expected outputs for inputs that Rust remakes with no fixture file. Every operation is an
-//! integer operation or an IEEE f64 operation that is exact in both languages, so the values are equal bit for bit.
-//! The reference's own op tests use numpy's `default_rng`; this generator has the same shapes of input but not the same values.
+//! `tools/op_fixtures.py` has the same generator, and the test `the_generator_matches_the_python_generator` compares
+//! the two. Thus Python writes the expected outputs for inputs that Rust remakes with no fixture file. Every operation
+//! is an integer operation or an IEEE f64 operation that is exact in both languages, so the values are equal bit for
+//! bit. The reference's own op tests use numpy's `default_rng`; this generator has the same shapes of input but not the
+//! same values.
 
 #![allow(dead_code)]
 

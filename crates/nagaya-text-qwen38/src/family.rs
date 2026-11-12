@@ -1,8 +1,8 @@
 //! The family library of Qwen3.8: the tokenizer and the chat template together.
 //!
-//! This is `render_messages` of the reference's `service/common.py`. Every string in the messages and the tools is content. Its
-//! special token text is escaped before the template runs, so that the markers of the template are the only special
-//! tokens in the ids.
+//! This is `render_messages` of the reference's `service/common.py`. Every string in the messages and the tools is
+//! content. Its special token text is escaped before the template runs, so that the markers of the template are the
+//! only special tokens in the ids.
 
 use crate::Error;
 use crate::gguf::Metadata;

@@ -1,8 +1,8 @@
 //! The byte-level BPE tokenizer of Qwen3.8, from the vocabulary in the GGUF metadata.
 //!
-//! This is a port of the reference's `harness/tokenizer.py`. Special tokens match as whole tokens before BPE, longest text first.
-//! Content that a client sends is escaped first: each special token's text becomes one Unicode noncharacter, so that
-//! the client cannot forge a role of the chat template.
+//! This is a port of the reference's `harness/tokenizer.py`. Special tokens match as whole tokens before BPE, longest
+//! text first. Content that a client sends is escaped first: each special token's text becomes one Unicode
+//! noncharacter, so that the client cannot forge a role of the chat template.
 
 use crate::Error;
 use crate::chars::{is_letter, is_mark, is_number, is_space};
@@ -210,7 +210,8 @@ impl Tokenizer {
         for (i, (text, id)) in specials_longest_first.iter().enumerate() {
             match text.as_bytes().first() {
                 Some(&b) => special_start[b as usize].push(i),
-                // The reference builds an empty alternative here and splits the text at every position. We refuse the file.
+                // The reference builds an empty alternative here and splits the text at every position. We refuse the
+                // file.
                 None => {
                     return Err(Error::Vocab(format!(
                         "special token {id} has an empty text. {FAMILY_HINT}"

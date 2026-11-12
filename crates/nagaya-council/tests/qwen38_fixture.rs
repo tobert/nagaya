@@ -1,10 +1,10 @@
 //! The sampler against fixed outputs of `service/sampling.py` of the reference (tools/sampler_fixture.py).
 //!
-//! Tolerance for probabilities: 1e-12 absolute. Both sides use float64. They differ only in the order of the
-//! summation (numpy's pairwise sum, a plain loop here) and in `exp`. Each differs by a few units of 2^-53
-//! (1.1e-16) for each term. A vocabulary of 1000 terms stays under 1e-13, so 1e-12 leaves room, and still
-//! fails for any change of a filter, the temperature, or the order of the filters.
-//! The entropy `h` is a sum of 1000 terms of size up to a few nats, so it gets 1e-9 (as the test of `h` in the reference).
+//! Tolerance for probabilities: 1e-12 absolute. Both sides use float64. They differ only in the order of the summation
+//! (numpy's pairwise sum, a plain loop here) and in `exp`. Each differs by a few units of 2^-53 (1.1e-16) for each
+//! term. A vocabulary of 1000 terms stays under 1e-13, so 1e-12 leaves room, and still fails for any change of a
+//! filter, the temperature, or the order of the filters. The entropy `h` is a sum of 1000 terms of size up to a few
+//! nats, so it gets 1e-9 (as the test of `h` in the reference).
 
 use nagaya_council::sampler::{Settings, pick_with, survivors};
 use serde_json::Value;

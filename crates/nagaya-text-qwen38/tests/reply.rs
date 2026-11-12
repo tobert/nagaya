@@ -1,5 +1,5 @@
-//! The reply parser against the outputs of the reference's Python (`service/chatfmt.py` `ReplyTracker`, and the token loop of
-//! `service/generate.py`). The fixture is `tests/fixtures/reply.json`, made by `tools/reply_fixture.py`.
+//! The reply parser against the outputs of the reference's Python (`service/chatfmt.py` `ReplyTracker`, and the token
+//! loop of `service/generate.py`). The fixture is `tests/fixtures/reply.json`, made by `tools/reply_fixture.py`.
 
 mod common;
 

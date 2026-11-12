@@ -241,7 +241,8 @@ fn refuses_a_token_type_that_does_not_fit_a_signed_64_bit_integer() {
 
 #[test]
 fn refuses_a_special_token_with_an_empty_text_and_names_its_id() {
-    // The reference builds an empty alternative here and then splits the text at every position. This reader refuses it.
+    // The reference builds an empty alternative here and then splits the text at every position. This reader refuses
+    // it.
     for kind in [CONTROL, USER_DEFINED] {
         let tokens = [("a", NORMAL), ("<|s|>", CONTROL), ("", kind)];
         match Tokenizer::from_metadata(&small_metadata("qwen35", "gpt2", &tokens, None, &[])) {

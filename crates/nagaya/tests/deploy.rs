@@ -102,7 +102,8 @@ fn the_profile_names_the_qwen38_engine_and_the_store_budgets() {
     let engine = &profile.engines[0];
     assert_eq!(engine.name, "mk");
     assert_eq!(engine.kind, "mk-qwen38-gfx1151");
-    // Amy, 2026-11-01: Qwen-Image stays loaded on gfx1151host for a while, and the Qwen3.8 engine swaps in through the API (spec 3.3b).
+    // Amy, 2026-11-01: Qwen-Image stays loaded on gfx1151host for a while, and the Qwen3.8 engine swaps in through the API
+    // (spec 3.3b).
     assert_eq!(engine.residency, Residency::OnDemand);
     assert_eq!(engine.devices, vec![0]);
     // The factory of the Qwen3.8 engine plans from this key (`nagaya::qwen38`). It refuses any other key.
@@ -167,8 +168,8 @@ fn both_engines_and_the_store_fit_the_pool_with_room_for_a_staging_copy() {
     );
 }
 
-/// The mandatory terms of the Qwen3.8 engine for its weights: the weights, the pass scratch and the context pool. They are
-/// docs/deploy.md's numbers; the engine crate builds only with the feature `hip`.
+/// The mandatory terms of the Qwen3.8 engine for its weights: the weights, the pass scratch and the context pool. They
+/// are docs/deploy.md's numbers; the engine crate builds only with the feature `hip`.
 fn nagaya_mk_qwen38_gfx1151_plan(weights: u64) -> u64 {
     assert_eq!(
         weights, 65_490_227_200,

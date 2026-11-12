@@ -2,12 +2,14 @@
 //! `test_attn_split.py` and `test_attn_mask.py` of the reference.
 //!
 //! - select: the parallel selection (`attn.h` `attn_select_emit`) equals the serial selection that it replaced
-//!   (`attn_select_oracle.h`) bit for bit, and both equal the statement of the definition, which is ported to Rust below.
+//!   (`attn_select_oracle.h`) bit for bit, and both equal the statement of the definition, which is ported to Rust
+//!   below.
 //! - split: stage 3 alone (`qwen38_attn_attend`), against its definition at q = 0 and against its numeric bound in f64.
-//! - mask: `qwen38_attn_masked` against the f64 reference model, which `tools/op_groups/attn_a.py` runs for the fixture.
+//! - mask: `qwen38_attn_masked` against the f64 reference model, which `tools/op_groups/attn_a.py` runs for the
+//!   fixture.
 //!
-//! The inputs come from the stateless generator in `inputs.rs`. The reference used numpy's `default_rng`, so the values differ, and the
-//! shapes and the meanings of the inputs are the same.
+//! The inputs come from the stateless generator in `inputs.rs`. The reference used numpy's `default_rng`, so the values
+//! differ, and the shapes and the meanings of the inputs are the same.
 
 use crate::fixture::Fixture;
 use crate::inputs;
@@ -474,7 +476,8 @@ fn bound_case(seed: u64, ns: &[usize], qscale: f32, shape: &str) -> BoundCase {
     BoundCase { q, gate, kv, sel, cnt }
 }
 
-/// The op against the exact f64 softmax of its own f32 inputs, within the bound `E (W_d + |o_d|) sig_d` of the reference's design.
+/// The op against the exact f64 softmax of its own f32 inputs, within the bound `E (W_d + |o_d|) sig_d` of the
+/// reference's design.
 #[test]
 fn split_bound() {
     for (shape, qscale, seed) in [

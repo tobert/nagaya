@@ -18,7 +18,8 @@ fn context(v: Value) -> Context {
     serde_json::from_value(v).expect("the test context is valid")
 }
 
-/// The fixture of `tools/make_council_fixture.py`: renders that the reference's Python front-end and the layout of the port gave.
+/// The fixture of `tools/make_council_fixture.py`: renders that the reference's Python front-end and the layout of the
+/// port gave.
 fn fixture() -> &'static Value {
     static F: OnceLock<Value> = OnceLock::new();
     F.get_or_init(|| {

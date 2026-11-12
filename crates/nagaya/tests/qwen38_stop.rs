@@ -81,7 +81,8 @@ fn a_stop_with_the_qwen38_engine_parks_the_states_that_hold_tokens_and_is_clean(
     assert_eq!(report.parked.entries, 2, "{report:?}");
     // Each state has the fixed parts 0-2 and 5, and the cells parts 3 and 4. `idx_pooled` is derived.
     assert_eq!(report.parked.parts, 12, "{report:?}");
-    // Spec 10.3: the process exits after the park. Do not join the group thread: its drop would free the contexts of the engine.
+    // Spec 10.3: the process exits after the park. Do not join the group thread: its drop would free the contexts of
+    // the engine.
     std::mem::forget(ready);
 
     let store = Store::open(store.path()).unwrap();

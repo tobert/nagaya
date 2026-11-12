@@ -2,10 +2,12 @@
 //!
 //! - Route: the router's top-10 and the grouping stage (`qwen38_moe_route`) give exact answers. A fixture of
 //!   `tools/op_groups/moe.py` holds SHA-256 digests of the integer answers and the f32 weights.
-//! - Block: `qwen38_moe` against a float64 reference in the same fixture, on two synthetic layers. The reference compared against the HF
-//!   module with the real weights of layers 0 and 3. The HF module needs many GB of dense expert weights, so the
-//!   check here is numpy with the maths of that module. The tolerances are the ones of the reference.
-//! - Block: the same bits for every grid size and over repeats, and with the expert lookahead off (`libqwen38_moe_nolook`).
+//! - Block: `qwen38_moe` against a float64 reference in the same fixture, on two synthetic layers. The reference
+//!   compared against the HF module with the real weights of layers 0 and 3. The HF module needs many GB of dense
+//!   expert weights, so the check here is numpy with the maths of that module. The tolerances are the ones of the
+//!   reference.
+//! - Block: the same bits for every grid size and over repeats, and with the expert lookahead off
+//!   (`libqwen38_moe_nolook`).
 //!
 //! The synthetic pools of a layer have the byte sizes of the real tensors: 512 experts of IQ3_S gate and up (640 rows of
 //! K = 2560), IQ4_NL down (2560 rows of K = 640), Q8_0 shared experts, and an F32 router. A pool takes about 1.2 GB.
@@ -392,8 +394,9 @@ fn moe_grid_independent() {
     }
 }
 
-/// The one-step lookahead of the expert item only moves loads. The build without it (`libqwen38_moe_nolook`, the path of
-/// `k_stage`) gives the same bits as the one with it, on the f16 path, for a decode step, a partial token block and a pass.
+/// The one-step lookahead of the expert item only moves loads. The build without it (`libqwen38_moe_nolook`, the path
+/// of `k_stage`) gives the same bits as the one with it, on the f16 path, for a decode step, a partial token block and
+/// a pass.
 #[test]
 fn moe_lookahead_off_same_bits() {
     let pool = &*POOL_A;

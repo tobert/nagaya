@@ -140,7 +140,8 @@ fn render_refuses_what_the_reference_refuses_and_says_why() {
                     "case {name}: the reference says {said:?}"
                 );
             }
-            // Errors of the engine, and exceptions of Python that the reference does not catch, have no message to compare.
+            // Errors of the engine, and exceptions of Python that the reference does not catch, have no message to
+            // compare.
             ("undefined" | "template" | "exception", Err(Error::Template(_))) => {}
             (kind, other) => panic!("case {name}: the reference refuses ({kind}) with {said:?}; got {other:?}"),
         }

@@ -13,8 +13,8 @@ pub const KIND: &str = "mk-qwen38-gfx1151";
 
 /// The key in the engine config that gives the size of the weight arena of the engine, in bytes.
 ///
-/// The engine knows the arena size only after the weights load, and `plan` reads no weights (spec 2.4). The profile gives the
-/// size. `open` checks it against the real arena.
+/// The engine knows the arena size only after the weights load, and `plan` reads no weights (spec 2.4). The profile
+/// gives the size. `open` checks it against the real arena.
 pub const WEIGHTS_KEY: &str = "weights_bytes";
 
 /// The factory of the Qwen3.8 engine.
