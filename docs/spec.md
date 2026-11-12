@@ -9,9 +9,9 @@ English (`AGENTS.md`).
 
 When this spec and another doc do not agree, correct one of them. Neither one wins without a decision.
 
-Status: draft, 2026-10-22. The sources are the design conversations with Amy and inventories of mk and mkviolet,
-our two learning megakernels (`docs/ontology.md`, "The other projects"). The code follows `AGENTS.md`. Each open
-question has the mark **Open**, and section 15 lists all of them.
+Status: draft, 2026-10-22. The sources are the design conversations with Amy and inventories of the Qwen3.8 engine and
+mkviolet, our two learning megakernels (`docs/ontology.md`, "The other projects"). The code follows `AGENTS.md`. Each
+open question has the mark **Open**, and section 15 lists all of them.
 
 We change this spec before we change the code (Amy, 2026-10-20: "I want to keep updating the spec before the code so
 we could redo it all again if we decide to"). The mark "Decided 2026-10-20 (reading)" is on a rule that began as a
@@ -358,8 +358,8 @@ before an engine opens, and the rule above needs the names of a new profile.
 
 - A factory gives the served model names of an entry with no open and no read of a file (`Factory::served_names`). An
   image, speech or embedding kind gives the engine name or its fixed model. The kind `fake-toy` gives its key `model`.
-- A kind that cannot give them gives none. Today mk and Qwen-Image give none, so the check of a profile skips their
-  entries. Only the start check finds a clash of their names.
+- A kind that cannot give them gives none. Today the Qwen3.8 engine and Qwen-Image give none, so the check of a profile
+  skips their entries. Only the start check finds a clash of their names.
 - The check of a profile reads the names with the plans of the ledger check (2.4). A name is added when no entry of the
   active profile gives it.
 - A refused local `PUT` is a 400 `invalid_request` with the param `profile`, because the profile breaks a rule of 2.3.
@@ -523,9 +523,10 @@ isolation.
   work.
 - A start with no CPU sets pins no thread. Only a test starts that way. The binary always makes the sets (below).
 - An engine's own threads keep the mask of the group thread that starts them. Linux gives a new thread the mask of the
-  thread that starts it. mk starts its worker thread (`qwen38-engine`) in `open`, on the group thread, so the worker
-  runs on the pool set. Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02. Reason: the process crate
-  makes the sets, and the group thread is pinned before it opens an engine. Thus the factory needs no CPU argument.
+  thread that starts it. The Qwen3.8 engine starts its worker thread (`qwen38-engine`) in `open`, on the group thread,
+  so the worker runs on the pool set. Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02. Reason: the
+  process crate makes the sets, and the group thread is pinned before it opens an engine. Thus the factory needs no CPU
+  argument.
 
 The binary reads the online CPUs through the file probe (2.1) and makes the sets before it starts gossip. A probe
 error or a split error is a refusal to start: exit 3 (10.4).
@@ -576,11 +577,12 @@ the group thread, so those threads start with the pool set. The nagaya does not 
 **Open:** measure the masks of the Level Zero threads on b70host, as on gfx1151.
 
 **3.3 Engine lifecycle and profile swaps.** The nagaya opens each engine at start, from the profile. The HIP runtime
-cannot end inside a process: "the HIP runtime's own teardown segfaults" (mk `service/__main__.py`). Thus in the first
-v0, when `PUT /nagaya/v1/profile` changed the profile, the nagaya persisted the profile and stopped as in 10.3. It kept
-its arenas in the file-descriptor store (10.2) and exited with code 4, and systemd started it again. Since milestone
-16, an engine whose `close()` is safe loads and unloads in place (README door 1, and the rules below). mk has a
-`close` since `6e8e013`: it frees its weights and keeps the HIP runtime (engine-abi "The close of mk").
+cannot end inside a process: "the HIP runtime's own teardown segfaults" (the first Qwen3.8 engine, in
+`service/__main__.py`). Thus in the first v0, when `PUT /nagaya/v1/profile` changed the profile, the nagaya persisted
+the profile and stopped as in 10.3. It kept its arenas in the file-descriptor store (10.2) and exited with code 4, and
+systemd started it again. Since milestone 16, an engine whose `close()` is safe loads and unloads in place (README door
+1, and the rules below). The Qwen3.8 engine has a `close` since `6e8e013`: it frees its weights and keeps the HIP
+runtime (engine-abi "The close of the Qwen3.8 engine").
 
 **A profile change in place.** Proposed by senpai (Claude Opus 5.5), 2026-10-25, and Decided 2026-10-27 (Amy, by
 interview). Reason: a client sets the work of the fleet with one `PUT /nagaya/v1/profile` to each machine (Amy: "the
@@ -664,7 +666,7 @@ interview), with the explicit loads of 3.3. Reason: these rules make each swap o
   entry. No load and no unload removes a pinned engine. Only a profile `PUT` does (3.3a, "Explicit layout").
 - **Only engines that close.** A profile refuses an on-demand engine unless each engine of its device group declares
   `close` (engine-abi "Capabilities"). Reason: a swap frees an engine in the process, and only `close` makes that
-  safe. mk has no `close`, so gfx1151host keeps its restart (3.3).
+  safe. The Qwen3.8 engine has no `close`, so gfx1151host keeps its restart (3.3).
 - **Admission.** The resident engines must fit together (2.4). Each on-demand engine must also fit with the resident
   engines of the other device groups. Reason: in the worst case, a swap unloads every other engine of the group.
 - **One thread decides.** The group thread of an engine runs its swaps. A load (3.3) names its engine, and the group
@@ -829,8 +831,8 @@ engine.
 - The other choice was a unique engine name in the cluster, as for a served model (2.3). It needs a new conflict
   rule, and two machines can then not both name an engine `gemma`.
 
-**Open:** Do the GPU queues of an idle engine slow the other engines on its device? mk has a note that its idle
-queues slow another process, but we did not find the source. A measurement answers the question.
+**Open:** Do the GPU queues of an idle engine slow the other engines on its device? The Qwen3.8 engine has a note that
+its idle queues slow another process, but we did not find the source. A measurement answers the question.
 
 ## 4. Ledger
 
@@ -856,8 +858,8 @@ warning (Amy, 2026-10-19). The owner quota is unbounded, and the chain limit is 
 `open` (2.4).
 
 - Mandatory terms `{name, tier, bytes, lifetime, kinds}`. The lifetime is per engine, per context, or loaned (one
-  holder at a time). mk declares its whole pool as one term with lifetime `engine`. The ledger reads the lifetime
-  like this. Decided 2026-10-20 (reading, from a note by Sonnet 5.5 in milestone 12).
+  holder at a time). The Qwen3.8 engine declares its whole pool as one term with lifetime `engine`. The ledger reads the
+  lifetime like this. Decided 2026-10-20 (reading, from a note by Sonnet 5.5 in milestone 12).
   - `open` charges each `engine` term and each `loan` term once. A loan has one holder, so one copy is enough.
   - `open` does not charge a `context` term. Each `ctx_new` charges the bytes of every `context` term of its
     engine, in the tier of the term.
@@ -867,7 +869,7 @@ warning (Amy, 2026-10-19). The owner quota is unbounded, and the chain limit is 
   - The end of a context releases its bytes.
 
   Reason: this is the smallest rule that gives the lifetime a meaning. No engine declares a `context` term today,
-  so mk does not change.
+  so the Qwen3.8 engine does not change.
 - Elastic terms `{name, tier, unit_bytes, minimum, maximum, kinds}`. The minimum and maximum are counts of units.
 - A term's tier is `device(i)` or `host`, where `i` is an index into the engine's device group. The ledger maps each
   tier to a budget (4.1). On gfx1151host and sm121host, `device(0)` and `host` map to one pool. NVMe belongs to the store.
@@ -882,7 +884,7 @@ charge. One is the copy that a read or a decision keeps, so that its later quest
 buffer that holds a snapshot until the store takes it. Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 
 - The size is the stored bytes of one slot. A fixed part counts whole. A cells part and a ring part count their rows
-  up to the highest row of the slot. A 32,768-token mk context is about 1.93 GB.
+  up to the highest row of the slot. A 32,768-token Qwen3.8 context is about 1.93 GB.
 - The job asks the ledger for the bytes before it reads the state. The tier is `host`. The bytes come from the
   unassigned bytes of its budget (4.4 step 4), as the bytes of a new context do.
 - A refusal reads nothing and changes nothing (4.3). The client gets 429 `busy` (11.5), with the shortfall in bytes.
@@ -944,14 +946,14 @@ while a lease refers to what would go. (A pin is a lease too.)
 A park out of a slot uses `part_read`, which changes nothing in the slot. The nagaya frees the device copy only
 after the copy in the lower tier is durable. Reclaim never seals. It never discards state that has no other copy.
 
-**4.7 Host safety floor.** mk keeps 12 GiB of MemAvailable free (mk `service/contexts.py`, `FLOOR_BYTES`). In the
-nagaya, a safety floor is a check for what the ledger cannot see: other processes, tmpfs and swap. It does not set
-any size. When free memory goes below the floor, the ledger refuses new admissions, resizes nothing, and reports
-the event.
+**4.7 Host safety floor.** The first Qwen3.8 engine keeps 12 GiB of MemAvailable free (`FLOOR_BYTES` in its
+`service/contexts.py`). In the nagaya, a safety floor is a check for what the ledger cannot see: other processes, tmpfs
+and swap. It does not set any size. When free memory goes below the floor, the ledger refuses new admissions, resizes
+nothing, and reports the event.
 
 On machines with unified memory, RSS and the OOM scorer do not show GTT. Thus the nagaya sets its own OOM score.
 
-Not built. The ledger checks no floor, and the process sets no OOM score. The mk binding checks the floor when it
+Not built. The ledger checks no floor, and the process sets no OOM score. The Qwen3.8 binding checks the floor when it
 opens (engine-abi, "The context term holds the pool").
 
 ## 5. Scheduling
@@ -964,14 +966,14 @@ ready after the stage before it ends. The job's lease keeps every other job from
 (engine-abi D1, "The hold of the slot"). Decided 2026-10-21.
 
 An engine meets its `max_quantum_ms` (D8) when it chooses the size of each unit of work. The engine knows its own
-speed, so it picks the size from its own measurements. (mk splits a prefill into 256-token chunks in its Python
-service, and that split moves into mk's engine wrapper.) The watchdog reports each quantum that runs past the bound
-(7.4).
+speed, so it picks the size from its own measurements. (The first Qwen3.8 engine splits a prefill into 256-token chunks
+in its Python service, and that split moves into the wrapper of the Qwen3.8 engine.) The watchdog reports each quantum
+that runs past the bound (7.4).
 
 **5.2 Kinds.** Each quantum has a kind: `read`, `prefill`, `decode`, `embed`, `copy`, `step` (an image step), or
-`train` (a micro-batch). Metrics and the cost model use kinds. A kind does not set urgency (mk `mk.gpu.kind`). An
-image job runs one `embed` for its text encoders, one `step` for each denoising step, and one `step` for the VAE decode
-(11.9). An embedding job runs one `embed` for each input (11.10).
+`train` (a micro-batch). Metrics and the cost model use kinds. A kind does not set urgency (the first Qwen3.8 engine did
+the same). An image job runs one `embed` for its text encoders, one `step` for each denoising step, and one `step` for
+the VAE decode (11.9). An embedding job runs one `embed` for each input (11.10).
 
 **5.3 Classes.** The classes are `interactive`, `batch` and `filler`. A client sends `interactive` or `batch` in
 council v2's `class` field (gogi). Only jobs that the nagaya or a profile starts, such as training and the audit, are
@@ -1041,11 +1043,11 @@ segment writes rows that the store keeps, as for reads and branch blocks. Decide
 
 - A decode segment is one token with its logit row, no media and no tap. Other segments run one in a pass.
 - Segments join only when their control lists are equal.
-- A pass holds at most the engine's `max_segments` segments. For mk, that is 16.
+- A pass holds at most the engine's `max_segments` segments. For the Qwen3.8 engine, that is 16.
 
 Reason: this rule permits more, such as the prefills of several jobs in one pass. But the drivers build only joined
-decode quanta today, and Amy asked for the join first. The card gate `tests/hip_joined.rs` of the mk crate checks
-mk's decode rows at deep positions, alone and joined, and beside a prefill.
+decode quanta today, and Amy asked for the join first. The card gate `tests/hip_joined.rs` of the Qwen3.8 crate checks
+The Qwen3.8 engine's decode rows at deep positions, alone and joined, and beside a prefill.
 
 A pass holds segments of one kind only (5.2), and at most the engine's `max_segments`.
 The scheduler joins a ready job only when its next quantum has the
@@ -1070,8 +1072,8 @@ loss of one such snapshot cost a cold prefill of 35 minutes.)
 Every terminal state of a job releases its loans and leases. The terminal states are done, cancelled, failed and
 expired. A release does not delete a snapshot. Only eviction (6.9) removes a stored entry.
 
-**5.10 The door limit.** The client API accepts a limited number of requests in flight for each engine (mk:
-16). Above that limit it answers 429 with `Retry-After`.
+**5.10 The door limit.** The client API accepts a limited number of requests in flight for each engine (the Qwen3.8
+engine: 16). Above that limit it answers 429 with `Retry-After`.
 
 Milestone 12 step 6 limits the calls in another way (11.7). It allows 64 calls at once for the process, and it answers
 429 `busy` with no `Retry-After`. The limit for each engine is not built.
@@ -1094,7 +1096,7 @@ Not built. The nagaya fits no cost curve yet, and it times no measured prior.
 **6.1 One store per machine.** One content-addressed store holds the snapshots of every engine (D3). The store has
 tiers (host memory, NVMe) and gets its budgets from the ledger. It replaces these stores:
 
-- mk's parked files (`.mkctx`, a 50 GiB budget);
+- The first Qwen3.8 engine's parked files (a 50 GiB budget);
 - mkviolet's `council_server` snapshots, its `held::Store`, and the prefix cache in `mk_api`. These are three
   formats and three SHA-256 id schemes on one host.
 
@@ -1155,8 +1157,8 @@ Thus the park recipe names the bytes. 10.3 gives the one exception. The park rec
 Equal bytes give one entry, and the tripwire fires only on a real duplicate. Decided 2026-10-20 (reading, kaibo
 job-2 finding 2).
 
-mk's `context_id` and mkviolet's `snap:<sha256>` are the input part of a recipe. They do not include the engine
-identity. mk's id is a SHA-256 of the tokens and boundaries with `|gdn-bf16-v1|`.
+The Qwen3.8 engine's `context_id` and mkviolet's `snap:<sha256>` are the input part of a recipe. They do not include the
+engine identity. The Qwen3.8 engine's id is a SHA-256 of the tokens and boundaries with `|gdn-bf16-v1|`.
 
 **The printed form of a content id.** Decided 2026-10-25 (Amy: "blake3 it is"; "256 bit addresses everywhere").
 
@@ -1210,8 +1212,8 @@ The index also holds two kinds of record that are not entries. They are the expe
 store entries (engine-abi "Capabilities"). Decided 2026-10-18.
 
 The store sets `none` after a restart, before it hashes the blob. It sets `full` after it hashes the blob. It does
-not produce `spot` in v0. Reason: `spot` now names mk's digest, and the store does a full hash of each entry.
-Decided 2026-10-18 evening.
+not produce `spot` in v0. Reason: `spot` now names the Qwen3.8 engine's digest, and the store does a full hash of each
+entry. Decided 2026-10-18 evening.
 
 **6.5 Chains.** Each engine declares a maximum chain depth and a size fraction. (ds4-recipe: depth 1, and a delta
 only when it is at most a quarter of a full snapshot.) A delta holds, for each cells part and ring part, the rows
@@ -1319,9 +1321,10 @@ The NVMe tier makes room by its own rules. The put removes a victim that a park 
 - a child whose parent stays in the host tier, because a restart would cut the chain (6.11);
 - a victim with no room on NVMe.
 
-Reason: with two engines on gfx1151host, the host tier is 2 GiB (`docs/deploy.md`, "Two engines on gfx1151host"). mk's snapshots
-of about 135 MB left the tier before a client read them again, and gogi's suite failed 7 checks on 2026-11-01. The
-NVMe tier has 50 GiB. A refused put still changes nothing: the store checks the room before it parks a victim.
+Reason: with two engines on gfx1151host, the host tier is 2 GiB (`docs/deploy.md`, "Two engines on gfx1151host"). The Qwen3.8
+engine's snapshots of about 135 MB left the tier before a client read them again, and gogi's suite failed 7 checks on
+2026-11-01. The NVMe tier has 50 GiB. A refused put still changes nothing: the store checks the room before it parks a
+victim.
 
 **A host put of bytes on NVMe is a hit.** **Proposed** (Claude Opus 5.5, 2026-11-10). A put for the host tier can name
 bytes that the store holds live on NVMe, with the same recipe and parent. Then the put gives the id of that entry, which
@@ -1354,8 +1357,8 @@ parks the pinned ones first, below.) Decided
 `index.json` stores `hits` and `last_used_ms`, so a restart keeps them for every NVMe entry. A lookup updates them in
 memory, and the next index write saves them to disk. Decided 2026-10-24 (Amy).
 
-At start, the store also wakes pinned entries into slots when the profile asks for them. (mk wakes its pinned
-parked contexts before `READY=1`.) Not built: the nagaya wakes no pinned entry at start.
+At start, the store also wakes pinned entries into slots when the profile asks for them. (The Qwen3.8 engine wakes its
+pinned parked contexts before `READY=1`.) Not built: the nagaya wakes no pinned entry at start.
 
 **The stop parks the pinned entries of the host tier.** After the groups park their states (10.3 step 3), the stop
 parks each live entry of the host tier that a live pin holds. It parks the entries under it first, because a park
@@ -1373,17 +1376,17 @@ Amy, 2026-10-23: "ah, let's save add the saves then".
 - The stop waits for the park of pinned entries for at most one park budget (2.1). A park past it makes the process
   exit 1, as for a group (10.3). Reason: the budget bounds the whole stop, and a new budget needs a config field.
 
-**6.12 Steering and lab inputs.** Some state changes bits but is not an input, for example mk's attention cell mask
-or a control vector (11.12). Such state goes into the recipe. Thus a steered or masked result never has a plain
-recipe. The bytes of a control list are in 11.12.
+**6.12 Steering and lab inputs.** Some state changes bits but is not an input, for example the Qwen3.8 engine's
+attention cell mask or a control vector (11.12). Such state goes into the recipe. Thus a steered or masked result never
+has a plain recipe. The bytes of a control list are in 11.12.
 
 **6.13 Interval copies.** An engine can declare a checkpoint grain in `limits()`, in tokens. Then, between quanta,
 the scheduler makes an interval copy (ontology) of each context that passed a multiple of the grain. Milestone 11.5
 built the store's part. Milestone 12 step 7 built the scheduler's part on the job path.
 Decided 2026-10-20 (`docs/deepinfer.md` 3), and reworked the same day after kaibo's review.
 
-mk declares a grain of 256 tokens. Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02. Two GPU tests in
-`crates/nagaya-mk-qwen38-gfx1151/tests/hip.rs` measured it on gfx1151:
+The Qwen3.8 engine declares a grain of 256 tokens. Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02. Two
+GPU tests in `crates/nagaya-mk-qwen38-gfx1151/tests/hip.rs` measured it on gfx1151:
 
 - `an_interval_copy_restores_and_replays_to_the_bits_of_the_live_context`: a copy at 512 tokens left the live
   bits as they were. A context of 32,768 tokens restored the copy and replayed 188 tokens. Every part and all
@@ -1429,7 +1432,7 @@ mk declares a grain of 256 tokens. Decided by senpai 2026-10-20 night, accepted 
   position, so they could share a copy. It costs more passes.
 - **One try for each multiple.** The scheduler makes one attempt for each multiple that a context crosses. If the
   put fails (for example, pins block the cap), the scheduler waits for the next multiple. It does not retry at once,
-  because each attempt reads about 112 MiB on mk.
+  because each attempt reads about 112 MiB on the Qwen3.8 engine.
 - **The previous copy.** When the store holds the new copy, the scheduler removes the previous copy of that context.
   The scheduler does not remove a copy when its context ends. The cap and eviction remove it later.
 - **Bad limits.** A grain of 0, or a grain on an engine without `segments_exact`, is an error.
@@ -1467,14 +1470,14 @@ The copy serves three uses: a branch from an earlier position, a truncate, and a
 lost. Amy, 2026-10-20: "I suspect we only want a few copies online and won't benefit as much as a commerical service
 does, but it is cool and we'll do it."
 
-For mk, the fixed parts of a copy are about 112 MiB. They are the GDN state in f32 (108 MiB) and the conv state
-(4.3 MiB, mk `DESIGN.md`). The K/V, the index keys and the pooled keys add 55.5 KiB (56,832 bytes) for each
+For the Qwen3.8 engine, the fixed parts of a copy are about 112 MiB. They are the GDN state in f32 (108 MiB) and the
+conv state (4.3 MiB). The K/V, the index keys and the pooled keys add 55.5 KiB (56,832 bytes) for each
 token. With a grain of 256 tokens, a decode makes a copy every 10-15 s.
 
-On mk, the split of tokens into passes does not change bits. The probe `examples/split_bits.rs` in the mk crate
-(`427fdc3`) compared one pass, one pass for each token, and uneven chunks, at 64 and 200 tokens. Every part and all
-248,320 logits were equal. One pass of 200 tokens took 424 ms, and 200 passes of one token took 10,079 ms. Thus a
-replay of up to 255 tokens takes about 0.5 s on mk.
+On the Qwen3.8 engine, the split of tokens into passes does not change bits. The probe `examples/split_bits.rs` in the
+Qwen3.8 crate (`427fdc3`) compared one pass, one pass for each token, and uneven chunks, at 64 and 200 tokens. Every
+part and all 248,320 logits were equal. One pass of 200 tokens took 424 ms, and 200 passes of one token took 10,079 ms.
+Thus a replay of up to 255 tokens takes about 0.5 s on the Qwen3.8 engine.
 
 **6.14 The feed rule.** Decided 2026-10-21 (Amy, engine-abi D11). An engine can declare a feed rule, `{block}`. The
 scheduler feeds each span between boundaries in passes of `block` tokens from the start of the span. mkviolet
@@ -1675,8 +1678,8 @@ exists because its bits depend on the split of a pass. The test runs on the B70 
 - Compare the rows that the slot holds after each run, bit for bit.
 - Equal bits accept the note above. Other bits make drafts a bit setting, or a rule that a verify pass follows.
 
-gfx1151host cannot run this test. mk declares `segments_exact: true` (`crates/nagaya-mk-qwen38-gfx1151/src/spec.rs:463`),
-so the test cannot fail there for this reason.
+gfx1151host cannot run this test. The Qwen3.8 engine declares `segments_exact: true`
+(`crates/nagaya-mk-qwen38-gfx1151/src/spec.rs:463`), so the test cannot fail there for this reason.
 
 **6.16 Conditionings.** Amy decided on 2026-10-31 that the store keeps the encoder output of each prompt (`AGENTS.md`
 milestone 22). The rules below are Decided by senpai 2026-11-01, and accepted by Amy 2026-11-02. Amy decided on
@@ -1799,15 +1802,15 @@ state (8.5).
 A group with stages has one heartbeat for each stage thread, and the watchdog watches each one (engine-abi D1). A
 stall of one stage thread is a stall of the group.
 
-The timeout is 30 s, three times the longest declared quantum bound (mk: 10 s). It has no key in the
+The timeout is 30 s, three times the longest declared quantum bound (the Qwen3.8 engine: 10 s). It has no key in the
 bootstrap config. The code takes it as a start parameter, so the tests use a short value.
 Decided 2026-10-20 (reading).
 
 **Open:** The group thread sends no beat while a quantum runs. On a slow NVMe, a copy quantum could run past the 30 s
 timeout, and the watchdog would end the process. We have not measured it (kaibo review job-1, finding 4).
 
-**The watchdog during an open.** An engine's open can take longer than the timeout: mk loaded in 24-50 s on
-2026-10-20. A group beats its heartbeat while its engine opens, so a long open is not a stall. Amy, 2026-10-20: the
+**The watchdog during an open.** An engine's open can take longer than the timeout: the Qwen3.8 engine loaded in 24-50 s
+on 2026-10-20. A group beats its heartbeat while its engine opens, so a long open is not a stall. Amy, 2026-10-20: the
 heartbeat during an open is part of milestone 14. The group thread is blocked in the open. Thus a helper thread sends
 the beats, at the heartbeat interval, until the open ends. The helper stops when the group thread leaves the open
 for any reason.
@@ -1815,21 +1818,22 @@ for any reason.
 The beat hides a hung open from the watchdog. The wait for the opens is the backstop (10.1). It ends a hung open
 after 300 s, and the process exits 1 (10.4). The 300 s equals `TimeoutStartSec` in the unit.
 
-Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02: the wait for the opens is 300 s. Reason: mk waits up to
-60 s for free memory, then loads for about 35 s. The old wait of 60 s ended a slow open that was not hung.
+Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02: the wait for the opens is 300 s. Reason: the Qwen3.8
+engine waits up to 60 s for free memory, then loads for about 35 s. The old wait of 60 s ended a slow open that was not
+hung.
 
 ## 8. Correctness at runtime
 
 **8.1 Canary.** The nagaya records a canary for each engine: fixed inputs and the exact outputs that the engine gave
-for them. The nagaya runs the canary through the engine, with its own sampler and decision code. mk's canary has
-pilot reads and an 8-step greedy decode (mk `service/canary.py`). It keeps letter logits as f32 bit patterns, the
-top 5, and a SHA-256 of all logits. The canary's hash is part of the engine identity.
+for them. The nagaya runs the canary through the engine, with its own sampler and decision code. The Qwen3.8 engine's
+canary has pilot reads and an 8-step greedy decode (`service/canary.py` of the first Qwen3.8 engine). It keeps letter
+logits as f32 bit patterns, the top 5, and a SHA-256 of all logits. The canary's hash is part of the engine identity.
 
 The nagaya runs the canary again before the engine is ready, with no tolerance. At start, a mismatch makes the
 nagaya exit with code 3, "do not restart" (10.4). After start, a mismatch marks the engine fatal (8.2), and the
 process continues with its other engines.
 
-Not built. The process runs no canary, and the mk binding gives an empty `canary_hash` (engine-abi "v0 mk binding
+Not built. The process runs no canary, and the Qwen3.8 binding gives an empty `canary_hash` (engine-abi "v0 binding
 choices"). A start checks no canary.
 
 **8.2 Pass failures.** A pass returns ok, poison (D6), or timeout. The nagaya treats outputs that are not finite as
@@ -1841,10 +1845,10 @@ poison. After a poison or a timeout, the nagaya does these steps:
 3. If the canary does not match, or if this is the engine's fourth timeout in the last 600 s, mark the engine fatal.
    Refuse every later job for it.
 
-(mk `service/gpu.py` does this.)
+(The first Qwen3.8 engine did this in `service/gpu.py`.)
 
 **8.3 Conformance.** The crate `nagaya-conformance` holds one suite for every engine, generic over the `Engine`
-trait. The GPU tests of each engine crate run it on the real device. They are `tests/hip.rs` in the mk crate and
+trait. The GPU tests of each engine crate run it on the real device. They are `tests/hip.rs` in the Qwen3.8 crate and
 `tests/xe.rs` in the Gemma 4 crate. The fake engines run it with no GPU. It checks these properties:
 
 - park and restore keep every bit;
@@ -1862,12 +1866,12 @@ reference, on any vendor's device. The reference runs on the CPU, so it does not
 oracle has a tolerance, and a spike measures the gap first.
 
 **The Qwen3.8 oracle.** The tool `tools/oracle_fixture.py` writes the fixture. It runs the model's transformers code
-from mk's archive, with mk's venv (`AGENTS.md`, "Checks").
+from the reference repository of the Qwen3.8 engine, with its venv (`AGENTS.md`, "Checks").
 
 The fixture holds five prompts of 5 to 596 tokens, with the top 64 logits and the logsumexp of the last position.
-The bench `oracle` in the mk crate compares mk with it.
-mk's exact path (`QWEN38_FAST_QMM=0`) is the gate. Its largest gap was a logit difference of 1.7e-5 on 2026-10-20.
-Decided 2026-10-20 (reading).
+The bench `oracle` in the Qwen3.8 crate compares the Qwen3.8 engine with it.
+The Qwen3.8 engine's exact path (`QWEN38_FAST_QMM=0`) is the gate. Its largest gap was a logit difference of 1.7e-5 on
+2026-10-20. Decided 2026-10-20 (reading).
 
 - On the exact path, the argmax agrees when the reference's top two differ by more than 0.25. The reference's top 8
   are in the engine's top 16. The largest logit difference is at most 1e-3, the KL at most 1e-8, and the logsumexp
@@ -1875,8 +1879,8 @@ Decided 2026-10-20 (reading).
 - The fast path (`QWEN38_FAST_QMM` unset) is an approximation (12.1). It keeps only the argmax and top-8 rules, and the
   bench reports its other numbers. At 249 tokens its largest logit difference was 1.03.
 
-The fixture covers prompts of up to 596 tokens. Past about 640 tokens, the gap between mk and the reference is not
-explained (15 item 8). The oracle does not gate a longer prompt.
+The fixture covers prompts of up to 596 tokens. Past about 640 tokens, the gap between the Qwen3.8 engine and the
+reference is not explained (15 item 8). The oracle does not gate a longer prompt.
 
 A family with no reference has no oracle. Both families of v0 have one: the Qwen3.8 oracle above, and the Gemma 4
 oracle below, which the first port of mkviolet built.
@@ -2045,9 +2049,9 @@ The nagaya records an invalid header as an attribute, not an error. The spans ne
 2. `nagaya.job`, with engine, class and request kind;
 3. `nagaya.quantum` for each quantum, with engine, device group, kind, class, segments, and wait and run times in ms.
 
-Decode quanta make metrics only: "one span per generated token would bury a generation's trace" (mk). The trace
-context goes to the group thread with the job. The nagaya gives it to the engine through the telemetry capability,
-and the engine adds its own spans under the quantum. No engine carries it onto GPU work: none declares the
+Decode quanta make metrics only: "one span per generated token would bury a generation's trace" (the Qwen3.8 engine).
+The trace context goes to the group thread with the job. The nagaya gives it to the engine through the telemetry
+capability, and the engine adds its own spans under the quantum. No engine carries it onto GPU work: none declares the
 capability `telemetry` (`Capability::Telemetry`, `crates/nagaya-abi/src/lib.rs:346`).
 
 Built: the spans `nagaya.process` (the run, with `exit_code`), `nagaya.start` and `nagaya.stop` (with `engines` and
@@ -2186,8 +2190,8 @@ NVML. Each provider maps its values onto shared names:
 
 `nagaya.device.evicted` stays amdgpu only.
 
-mk's `mk.gpu.*` names and mkviolet's `mkviolet.*` names map onto these names. Council decision metrics (count,
-spread, confidence) belong to the council layer (11.1).
+The metric names of the first Qwen3.8 engine and mkviolet's `mkviolet.*` names map onto these names. Council decision
+metrics (count, spread, confidence) belong to the council layer (11.1).
 
 **9.5 Each instrument has a call site under test.** mkviolet defines `record_gpu_pass` but calls it only from its
 smoke test. It calls `record_council_decision` only in tests. Its docs name instruments for routing entropy and
@@ -2216,8 +2220,8 @@ as a number. A stream ends later than its response head, so the point does not c
 2026-10-20 night, accepted by Amy 2026-11-02.
 
 **9.6 Evidence on failure.** Before and after a quantum that fails, the nagaya reads the machine's counters. It logs
-the change with the failure. mk reads these counters: KFD evicted ms, MemAvailable, GTT, and from `/proc/vmstat`
-compaction stalls, migrations, swap-outs and direct scans.
+the change with the failure. The Qwen3.8 engine reads these counters: KFD evicted ms, MemAvailable, GTT, and from
+`/proc/vmstat` compaction stalls, migrations, swap-outs and direct scans.
 
 Built as `nagaya::evidence` in `crates/nagaya/src/evidence.rs`, with fixed trees in the tests. The code that runs a
 quantum calls `Machine::watch` before the quantum and `Watch::failed` in its error branch. `GroupJobs::run_one` does
@@ -2246,7 +2250,8 @@ amdgpu sense. Thus a Xe machine reads these sources in their place:
 The fdinfo reader sums the keys once per `drm-client-id` across `/proc/<pid>/fdinfo`, and the GT reader reads each
 `card*/device/tile*/gt*/freq0/throttle` entry. A source that is absent is `evidence unavailable`, as above.
 
-**9.7 Status feed.** Each machine has one SSE status feed (mk `/mk/v1/status`, mkviolet `PassBus`):
+**9.7 Status feed.** Each machine has one SSE status feed (the status route of the first Qwen3.8 engine, mkviolet
+`PassBus`):
 
 - a snapshot when a client connects;
 - one `quantum` event for each quantum, with engine, device group, kind, ms, and queue length by class;
@@ -2311,8 +2316,8 @@ data: {"t_ms": 91790, "engine": "mk-qwen38-gfx1151", "device_group": 0, "kind": 
 
 In a real event, the `data` is one line.
 
-- **Decode events.** A decode quantum makes an event too, as mk's `pass` event did. Decode makes metrics only in 9.2,
-  but a feed is for a person. A client that wants less volume filters by `kind`.
+- **Decode events.** A decode quantum makes an event too, as the first Qwen3.8 engine's `pass` event did. Decode makes
+  metrics only in 9.2, but a feed is for a person. A client that wants less volume filters by `kind`.
 - **Order.** The events of one group are in order. The events of two groups have no order. `t_ms` tells the client
   which came first.
 - **Filters.** A filter is the query `engine` or the query `kind` of the connect request. Each takes values joined
@@ -2320,8 +2325,8 @@ In a real event, the `data` is one line.
   that names the query. Reason: an empty result from a typo would hide the fault.
 - **What a filter drops.** The `kind` filter drops quantum events only. The `engine` filter also drops entries of
   the snapshot.
-- **The keepalive.** The keepalive comes every 15 s without an event, as in mk. A machine with no engine sends a
-  snapshot with an empty `engines`, and then the keepalive.
+- **The keepalive.** The keepalive comes every 15 s without an event, as in the Qwen3.8 engine. A machine with no engine
+  sends a snapshot with an empty `engines`, and then the keepalive.
 - **Open feeds.** At most 16 feeds are open at once. A request past that is a 429 `busy`. A feed does not count
   toward the 64 calls of 11.7, because it holds no call thread.
 - **A stop.** A stop ends each feed after the `draining` state (10.3). A client reconnects and gets a new snapshot.
@@ -2350,7 +2355,7 @@ value.
   thread, so a slow subscriber never blocks a group. A full channel removes the subscriber, and its stream ends. The
   nagaya logs `status feed dropped a slow subscriber` as a warning.
 - The route is a handler in `crates/nagaya/src/http/extensions.rs`. It subscribes before it reads the snapshot, so no
-  quantum falls between them (as mk's `gpu.subscribe` does).
+  quantum falls between them (as the first Qwen3.8 engine's `gpu.subscribe` does).
 
 Tests that can fail: a fake engine runs a build and a failing quantum, and the test reads the events from a
 subscriber. It checks each member of 9.7a against the metric and the span. A subscriber that never reads must be
@@ -2463,7 +2468,7 @@ Built: the process side (`crates/nagaya/src/arena.rs`, `crates/nagaya/src/proces
 Gemma 4 engine, with its head slab (`Loaded::attach`). On b70host on 2026-10-21, a cold `Loaded::load` took 7.1 s,
 and an attach from the 31 slabs took 1.2 s (`tests/xe_arena.rs`, release build). A process restart took 7.1 s to
 `READY=1` cold and 1.2 s hot (`crates/nagaya/tests/xe_restart.rs`). The b70host unit sets
-`FileDescriptorStoreMax=512` (`deploy/b70host/nagaya.service`). The mk engine on gfx1151host exports no arena yet.
+`FileDescriptorStoreMax=512` (`deploy/b70host/nagaya.service`). The Qwen3.8 engine on gfx1151host exports no arena yet.
 
 **10.3 Stop.** On SIGTERM, the nagaya does these steps:
 
@@ -2494,8 +2499,8 @@ process with exit 0. Decided 2026-10-20 (reading).
 - An engine with no cells or ring part has no row count. The park keeps each of its states.
 
 Reason: step 3 parks pinned and wanted contexts. The process does not track pins or wants on live states yet, so
-it parks each state with tokens. An empty state of mk is 118,038,528 bytes of fixed parts ("v0 mk binding choices").
-A park of mk's 16 empty states would write about 1.9 GB and use most of the 10 s budget.
+it parks each state with tokens. An empty state of the Qwen3.8 engine is 118,038,528 bytes of fixed parts ("v0 binding
+choices"). A park of the Qwen3.8 engine's 16 empty states would write about 1.9 GB and use most of the 10 s budget.
 
 **A park of bytes that the store holds.** Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 
@@ -2510,11 +2515,11 @@ A park of mk's 16 empty states would write about 1.9 GB and use most of the 10 s
 - A park of an entry makes room on NVMe as a put does (6.9). A delta parks only when its parent is on NVMe.
 - A quarantined entry with the same bytes makes the park fail, and the process exits 1.
 
-Reason: on gfx1151 on 2026-10-21 at 00:44, the park of one mk state failed with "the content id already has another
+Reason: on gfx1151 on 2026-10-21 at 00:44, the park of one Qwen3.8 state failed with "the content id already has another
 recipe". The stop exited 1. The recipe of a build names the inputs, so it is a better key than the park recipe.
 
 **Open:** the park's copy of a state in host memory has no staging charge (4.2 "Staging"). The park holds one copy
-at a time, on the group thread. A copy of a 32,768-token mk context is about 1.93 GB. The charge path
+at a time, on the group thread. A copy of a 32,768-token Qwen3.8 context is about 1.93 GB. The charge path
 (`Ports::admit_staging`) refuses while the process stops, and the group thread holds no `Ports`. A charge for the park
 needs a ledger path that the stop keeps open.
 
@@ -2531,15 +2536,15 @@ needs no new dependency. A later step can use a signal stream from `tokio` inste
 | 3 | a refusal to start: a bad bootstrap config (2.1), a probe error (2.1), a profile that does not fit, a canary mismatch at start, a mismatch of a pinned identity (12.1), of a part size or of the weight arena size, a store that does not open, a gossip bind or an HTTP bind that fails, or a council service that does not attach (11.7) | `RestartPreventExitStatus=3` |
 | 4 | a planned restart: a new profile (2.3, 3.3) | `RestartForceExitStatus=4` |
 
-The restart policy follows mk's unit: `Restart=on-failure`, `RestartSec=30`, and at most 3 starts in 600 s.
-systemd counts each start against that limit, also a start after code 4. Thus a fourth profile swap in 600 s fails.
+The restart policy follows the Qwen3.8 engine's unit: `Restart=on-failure`, `RestartSec=30`, and at most 3 starts in 600
+s. systemd counts each start against that limit, also a start after code 4. Thus a fourth profile swap in 600 s fails.
 
 An engine that does not open at start stops the process. A mismatch of a pinned identity (12.1), a part size or the
 weight arena size is a refusal to start: exit 3. Any other failure to open is a crash. The process exits 1, and
 systemd restarts it within its start limit. A message on stderr names the engine and the reason. Decided 2026-10-20
 (reading).
 
-The library pin was a refusal to start too. It is gone, because the binary links mk's engine. Amy decided this on
+The library pin was a refusal to start too. It is gone, because the binary links the Qwen3.8 engine. Amy decided this on
 2026-10-22 (AGENTS.md milestone 15).
 
 **One exit path.** Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
@@ -2550,9 +2555,9 @@ The library pin was a refusal to start too. It is gone, because the binary links
 - Then `leave` calls `_exit(2)`. It runs no `atexit` handler and no static destructor.
 - The fake build takes the same path, so the host tests run the path of the GPU build.
 
-Reason: mk's HIP runtime stops the program in its static destructors, as its teardown does (3.3). On gfx1151 on
-2026-10-20, a clean stop with `exit(3)` printed "pure virtual method called" and ended with SIGABRT (status 134) and
-a core dump. Nothing in the process needs an `atexit` handler.
+Reason: the Qwen3.8 engine's HIP runtime stops the program in its static destructors, as its teardown does (3.3). On
+gfx1151 on 2026-10-20, a clean stop with `exit(3)` printed "pure virtual method called" and ended with SIGABRT (status
+134) and a core dump. Nothing in the process needs an `atexit` handler.
 
 ## 11. Client API
 
@@ -2614,14 +2619,14 @@ required param.").
 
 Pooling and the decision numbers come from `gogi_proto::math`, which all engines share. The council
 `identity.engine` covers two things: the engine identity, and the nagaya code that turns logits into decisions.
-(mk: `libmkengine:<sha>+numbers:<sha>`.)
+(The Qwen3.8 engine puts the SHA-256 of `libqwen38engine.a` in `numbers`, as `engine_build_sha256`.)
 
-**A text engine on demand.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-11-01. Reason: Amy made mk on
-demand on gfx1151host (`docs/deploy.md`, "The layout of gfx1151host"), and the council served only the engines that opened at the
-start. Then mk was no served model, and gogi found no ready model.
+**A text engine on demand.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-11-01. Reason: Amy made the
+Qwen3.8 engine on demand on gfx1151host (`docs/deploy.md`, "The layout of gfx1151host"), and the council served only the engines
+that opened at the start. Then the Qwen3.8 engine was no served model, and gogi found no ready model.
 
 - A factory can describe an engine: the identity and the limits that its open will report, with no GPU and no load
-  (`Factory::describe`). mk describes itself from its shards, its build and its knobs.
+  (`Factory::describe`). The Qwen3.8 engine describes itself from its shards, its build and its knobs.
 - At the start, the council serves each engine on demand that its factory describes, from the description. The model
   is `unloaded` until a load, and a request for it gets a 503 `model_unavailable` (3.3).
 - An open that reports another identity than the description is an open error. The council's recipes would have
@@ -2633,7 +2638,7 @@ profile of `5c1cf18` put Gemma 4 on demand, and `mk-gemma4-bmg` had no descripti
 `gemma-4-26b-a4b`. Its identity names the Level Zero driver, which no file holds. Amy: "ideally description is cheap
 but if it can do some poking in model on cpu real quick that's fine too for fidelity."
 
-- `Factory::describe` gets the devices of the group, as `plan` does. mk does not read them.
+- `Factory::describe` gets the devices of the group, as `plan` does. The Qwen3.8 engine does not read them.
 - `mk-gemma4-bmg` describes itself from the checkpoint, sysfs and the version of the Level Zero driver. It asks the
   driver for its version, and it opens no card: no context, no queue and no module.
 - The load reads the vendor, the device and the revision of each card from sysfs too. It refuses a card whose Level
@@ -2845,12 +2850,14 @@ its own purpose, so it never moves a later draw. Thus the reported seed does not
   [0, 1).
 - A child seed is the first 8 bytes of a BLAKE3 hash, little-endian. The hash is of `nagaya fork v1`, the parent
   seed and the branch number, each 8 bytes little-endian.
-- The pick is mk's inverse CDF: the survivors in order of logit down and id up, in float64.
+- The pick is the first Qwen3.8 engine's inverse CDF: the survivors in order of logit down and id up, in float64.
 
-Thus mk's own uniform value, put into the nagaya's pick, gives mk's token. The sampler's tests use that.
+Thus the first Qwen3.8 engine's own uniform value, put into the nagaya's pick, gives the first Qwen3.8 engine's token.
+The sampler's tests use that.
 
-mk's sampler draws from one PCG64 stream for each request (mk `service/sampling.py:106`, `:153`). The nagaya does
-not match those bits. It matches mk's filter order and its probabilities (milestone 12 step 2).
+The first Qwen3.8 engine's sampler draws from one PCG64 stream for each request (`service/sampling.py` of the first
+Qwen3.8 engine). The nagaya does not match those bits. It matches the first Qwen3.8 engine's filter order and its
+probabilities (milestone 12 step 2).
 
 **11.3 Text front-end.** Each model family has its own text rules. They are a tokenizer, a template, escapes for
 special tokens in client text, and parsers for tool calls and thinking. The nagaya holds one library per family
@@ -2860,7 +2867,7 @@ text. They take tokens, rows, or both (D2).
 Decided 2026-10-17 (Amy: "oh, yes, b for sure, plus that can support the tokenize apis nicely for when we bring back
 kaijutsu's semantic search and stuff"). Thus one renderer serves every engine of a family, on any vendor's card.
 The rendering rules in gogi, such as where a boundary exists and where thinking renders, get one implementation and
-one set of conformance tests. mk's C ABI does not need a tokenizer.
+one set of conformance tests. The first Qwen3.8 engine's C ABI does not need a tokenizer.
 
 **The Qwen3.8 library.** The library follows these rules. Decided 2026-10-20 (Amy accepted the note from
 milestones 11 and 11b).
@@ -2868,16 +2875,18 @@ milestones 11 and 11b).
 - The library reads the template from the GGUF key `tokenizer.chat_template` and runs it with a Jinja interpreter.
   It does not hold a hand-written copy. The template is part of the identity, so a new template in a GGUF needs no
   new code.
-- The interpreter matches mk's Python on four points. `trim` strips what Python's `str.strip` strips, which includes
-  U+001C to U+001F. `tojson` writes what Python's `json.dumps` writes, with `ensure_ascii` off. A map
-  key that is an integer, a float, a bool or none becomes a string as in Python.
+- The interpreter matches the first Qwen3.8 engine's Python on four points. `trim` strips what Python's `str.strip`
+  strips, which includes U+001C to U+001F. `tojson` writes what Python's `json.dumps` writes, with `ensure_ascii` off. A
+  map key that is an integer, a float, a bool or none becomes a string as in Python.
   A map keeps its key order.
 - A value in `{{ }}` and the `string` filter follow Python's `str`. Thus none is `None` and a bool is `True`. A float
   is its `repr`, and a string in a list has quotes.
-- A render refuses the same input as mk. A template error is an error. A message that holds a Unicode noncharacter is
-  an error, because mk keeps those for its escapes (`harness/tokenizer.py`, `RESERVED`). The error names the
-  character and its offset in characters, as mk does. A message of `raise_exception` reaches the error.
-- mk lets some Python exceptions pass, such as a `TypeError`. The library gives a template error for those.
+- A render refuses the same input as the first Qwen3.8 engine. A template error is an error. A message that holds a
+  Unicode noncharacter is an error, because the first Qwen3.8 engine keeps those for its escapes (`RESERVED` in its
+  `harness/tokenizer.py`). The error names the character and its offset in characters, as the first Qwen3.8 engine does.
+  A message of `raise_exception` reaches the error.
+- The first Qwen3.8 engine lets some Python exceptions pass, such as a `TypeError`. The library gives a template error
+  for those.
 - **String methods.** The engine has no Python methods. The library holds these methods of `str`, with the results of
   Python 3.14:
   - `startswith` and `endswith`, also with a tuple, `start` and `end`;
@@ -2896,9 +2905,9 @@ milestones 11 and 11b).
   `undefined`, `none`, `true`, `false`, `boolean`, `integer`, `float` and `callable` give the answers of jinja2.
   A string is a sequence, and a bool is a number. The undefined value writes nothing, it has no items, and a loop
   over it is empty. An attribute of it is an error. This is the default `Undefined` of jinja2.
-- **Messages.** The library refuses a `messages` value that is not an array. This is a deliberate difference. mk
-  passes any value to jinja2. For a map or a string, the loop runs over keys or characters by accident. The API
-  takes a list of messages. A caller that sends another type has a bug, and the refusal shows it (8.5).
+- **Messages.** The library refuses a `messages` value that is not an array. This is a deliberate difference. The first
+  Qwen3.8 engine passes any value to jinja2. For a map or a string, the loop runs over keys or characters by accident.
+  The API takes a list of messages. A caller that sends another type has a bug, and the refusal shows it (8.5).
 - **Differences that stay.** Each one has a test that pins it. The chat template uses none of them.
   - The operator `~` writes a float with an exponent, a list and a map in the form of the engine.
   - The engine has no tuple. A tuple in a template is a list. Thus `startswith` takes a list, where Python refuses
@@ -2909,33 +2918,34 @@ milestones 11 and 11b).
     where Python gives an undefined value.
   - A key with the name of a method of a dict, such as `items`, reads as the key. Python reads the method.
 - The library takes JSON in its own type that keeps key order. It refuses `NaN`, `Infinity` and an integer outside
-  the range of a signed 128-bit integer. Python accepts those, so this is stricter than mk.
+  the range of a signed 128-bit integer. Python accepts those, so this is stricter than the first Qwen3.8 engine.
   It refuses nesting of more than 512 levels.
   Python stops near 1000 levels.
 - The GGUF reader bounds its allocations. A string of more than 16 MiB is an error, and a string is read in chunks.
   An array grows with the values that the file gives. A key twice in one file is an error.
 - The tokenizer reads `tokenizer.ggml.token_type` of any integer type. A value that does not fit a signed 64-bit
-  integer, and any float, is an error. A special token with an empty text is an error. mk builds an empty
-  alternative that splits the text at every position, so a file like that is a mistake.
+  integer, and any float, is an error. A special token with an empty text is an error. The first Qwen3.8 engine builds
+  an empty alternative that splits the text at every position, so a file like that is a mistake.
 - Milestone 11 built the tokenizer, the template and the detokenizer. Milestone 12 step 4 built the parsers for tool
-  calls and thinking. They match mk's `service/chatfmt.py` (`ReplyTracker`), and fixed outputs of mk's Python test
-  them.
-- **The finish.** mk gives only `stop` and `length`. The parser maps a stop token with one or more entries in
-  `tool_calls` to `tool_use`, and a stop token with none to `end_turn`. An entry that did not parse counts as a call,
-  because the model tried one. The caller says whether a cut came from `max_tokens` or from a full context. The
+  calls and thinking. They match `service/chatfmt.py` (`ReplyTracker`) of the first Qwen3.8 engine, and fixed outputs of
+  its Python test them.
+- **The finish.** The first Qwen3.8 engine gives only `stop` and `length`. The parser maps a stop token with one or more
+  entries in `tool_calls` to `tool_use`, and a stop token with none to `end_turn`. An entry that did not parse counts as
+  a call, because the model tried one. The caller says whether a cut came from `max_tokens` or from a full context. The
   parser makes no call ids: the server names each call. Decided 2026-10-20 (reading, from a note by Sonnet 5.5).
-- **The pieces of a stream.** mk's `piece` is the text of the token. It holds `</think>` in the reasoning pieces, and
-  the letters of a marker that arrive in separate tokens. Thus gogi's rule for pieces fails on mk's pieces in 64 of
-  211 cases of the fixture. The rule says that joined pieces equal the part, up to `strip()`.
+- **The pieces of a stream.** The first Qwen3.8 engine's `piece` is the text of the token. It holds `</think>` in the
+  reasoning pieces, and the letters of a marker that arrive in separate tokens. Thus gogi's rule for pieces fails on the
+  first Qwen3.8 engine's pieces in 64 of 211 cases of the fixture. The rule says that joined pieces equal the part, up
+  to `strip()`.
 
-  The parser also gives the text that mk's tracker released for each token (`released`). That text keeps the rule in
-  every case, with the end of thinking left out. The reply parser of the family library writes the pieces of a step
-  from `released`. Decided 2026-10-20 (reading, from a note by Sonnet 5.5).
+  The parser also gives the text that the first Qwen3.8 engine's tracker released for each token (`released`). That text
+  keeps the rule in every case, with the end of thinking left out. The reply parser of the family library writes the
+  pieces of a step from `released`. Decided 2026-10-20 (reading, from a note by Sonnet 5.5).
 - One token can release text in two phases, but a gogi `token` event has one phase. This is rare, because each
   Qwen3.8 marker is one token. 11.3a has the rule for the step of such a token.
 
 **The Gemma 4 library.** Decided 2026-10-22 (Amy: "accepted"). The crate `nagaya-text-gemma4` holds the Gemma
-4 family. It ports mkviolet's text code, which served council v2 and `/mk/v1` on b70host until 2026-10-21.
+4 family. It ports mkviolet's text code, which served council v2 and an older route set on b70host until 2026-10-21.
 
 - **Tokenizer.** The library reads the `tokenizer.json` of the checkpoint with the `tokenizers` crate, as mkviolet
   did (`tokenizer.rs:27-48`). The tokenizer hash is of that file (12.3).
@@ -2991,7 +3001,8 @@ through it. A feature that Gemma 4's template needs and the interpreter lacks is
 Reason: one template engine for every family, as Amy chose, with no second copy of it.
 
 **The engine registry.** Decided 2026-10-22 (Amy: "accepted"). Before this rule, a hard map from the engine kind
-picked the family (`if kind == crate::mk::KIND` in `crates/nagaya/src/serving.rs`). These rules replace it:
+picked the family (`if kind == crate::the Qwen3.8 engine::KIND` in `crates/nagaya/src/serving.rs`). These rules replace
+it:
 
 - The identity gets one more field, `family`: `toy`, `qwen38` or `gemma4`. The engine sets it.
 - The process holds a registry of family libraries by that name. A family library opens from the identity and the
@@ -2999,7 +3010,7 @@ picked the family (`if kind == crate::mk::KIND` in `crates/nagaya/src/serving.rs
 - The opened library must give the `tokenizer_hash` of the identity, as 11.7 says now. Another hash refuses the
   start (exit 3).
 - `context_tokens` of the served model is the largest slot of the engine, in tokens. `SlotLimit` gets a member
-  `tokens` for it. This replaces the 4096 and mk's `MAX_CONTEXT` of 11.7.
+  `tokens` for it. This replaces the 4096 and the Qwen3.8 engine's `MAX_CONTEXT` of 11.7.
 
 Reason: the identity names what the engine computes, so it selects the text rules too (11.3). A new engine kind then
 needs no change in `serving.rs`. mkviolet gives `context_tokens` as the slot size less one (`council_server.rs:334`).
@@ -3020,8 +3031,8 @@ The nagaya does not copy that.
 - The key `model_dir` of `[engines.family]` names the checkpoint directory of the `gemma4` family. With no key, the
   library reads `GEMMA4_MODEL_DIR`. The engine config reads the checkpoint in the same way (engine-abi "The first
   Gemma 4 binding").
-- `context_tokens` is `SlotLimit.tokens` of the largest slot, with no "less one". mk declares 32,768, the value
-  that `MAX_CONTEXT` had.
+- `context_tokens` is `SlotLimit.tokens` of the largest slot, with no "less one". The Qwen3.8 engine declares 32,768,
+  the value that `MAX_CONTEXT` had.
 
 **11.3a Council rendering.** A decision and a raw read put a spec, a case and a letter menu after each context. The
 nagaya renders them with mkviolet's rules (mkviolet `src/template.rs` and its council code), ported to each family.
@@ -3047,8 +3058,8 @@ reply does not change the id.
 2026-10-20. Each rule has the mark "Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02", and Amy can veto
 it.
 
-- Every render uses the reasoning effort `medium`, as mk's council does. The template then writes no effort line.
-  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
+- Every render uses the reasoning effort `medium`, as the Qwen3.8 engine's council does. The template then writes no
+  effort line. Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 - Thinking follows the context: the render uses `thinking` of the context. A context renders the same with thinking on
   and off, except for the generation prompt. A past assistant message keeps its reasoning in both. A test compares the
   two renders.
@@ -3059,10 +3070,10 @@ it.
 - A plain read keeps mkviolet's layout: spec turn, case turn, `Answer to question`, then ` N (stem):`. The letter
   token has a leading space, as in mkviolet. A raw read uses the letters that the client sends.
   Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
-- A plain read tokenizes the template text and the client text in one pass, as mk renders a chat. mkviolet tokenizes
-  the pieces one by one, and the two ways can differ at a join. The library checks that the tokens of the context
-  begin the tokens of the read. It also checks that each step begins with the tokens before it. A failed check is an
-  internal error (`council/read.rs`).
+- A plain read tokenizes the template text and the client text in one pass, as the Qwen3.8 engine renders a chat.
+  mkviolet tokenizes the pieces one by one, and the two ways can differ at a join. The library checks that the tokens of
+  the context begin the tokens of the read. It also checks that each step begins with the tokens before it. A failed
+  check is an internal error (`council/read.rs`).
   Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 - A queue read writes the call in Qwen3.8's form, with the parameter `answers` as one JSON object. It reads a bare
   letter after the opening quote of the value.
@@ -3233,8 +3244,8 @@ these ways. Each served model declares the capability `continuation` (`crates/na
   model saw when it sampled the reply, so a cut reply goes on from the same tokens. The closed rendering's tokens
   do not begin with them, so a cut reply that the client sends back closed starts from the last boundary.
 - **The seam check.** The family checks each open field in `render`, with `gogi_proto::continuation::check_seam`. A
-  field that does not tokenize on its own is a 400 that names `continue`. This is the prefix check of mk's
-  `prefill` (`service/generate.py`, `_with_prefill`).
+  field that does not tokenize on its own is a 400 that names `continue`. This is the prefix check of the first Qwen3.8
+  engine's `prefill` (`_with_prefill` in its `service/generate.py`).
 - **The parse.** The reply parser starts in the phase that the open message sets (`ReplyStart::of`). It reads only
   the sampled tokens. After an open message, the Qwen3.8 parser keeps the white space at the start of its first part.
   At `max_tokens`, it keeps the white space at the end of its last part (`Keep` in
@@ -3243,9 +3254,9 @@ these ways. Each served model declares the capability `continuation` (`crates/na
   `usage.completion` count only the sampled tokens (`GenerateThen::finish`, `crates/nagaya/src/council/generations.rs`).
 - The build plan: a continuation builds the context before its open message (`Service::open_plan`,
   `nagaya_council::continuation::open_plan`). Then it feeds the open message as a generation feeds its generation
-  prompt, with no seal. Reason: a seal changes bits (mk rounds the GDN state to bf16). A seal inside the open text
-  makes a continuation differ from the reply that it continues. The next request starts from the head after the
-  reply. Decided by Amy 2026-10-21.
+  prompt, with no seal. Reason: a seal changes bits (the Qwen3.8 engine rounds the GDN state to bf16). A seal inside the
+  open text makes a continuation differ from the reply that it continues. The next request starts from the head after
+  the reply. Decided by Amy 2026-10-21.
 - The head of a cut reply: a reply that ends with `max_tokens` seals a snapshot of its open rendering. It gives
   that snapshot as `head`, listed last in `snapshots` (`GenerateThen::cut_head`). A continuation of that reply
   starts from the head: the longest held snapshot wins, as for any build. It may differ from the uncut reply, which
@@ -3289,12 +3300,13 @@ these ways. Each served model declares the capability `continuation` (`crates/na
 - A riding `before` is not built, because the nagaya does not serve `ride`. A generation with `decisions` is a 400
   that names `decisions`.
 
-**11.4 `/mk/v1`.** kaijutsu's mk provider uses `model`, `render` and `generate` (mkviolet `mk_api.rs`).
+**11.4 The routes of the first Qwen3.8 engine.** The provider of kaijutsu used `model`, `render` and `generate`
+(mkviolet `mk_api.rs`).
 
-Decided 2026-10-17: the nagaya does not serve `/mk/v1`. kaijutsu moved to council v2 and uses the gogi reference.
-Amy: "kaijutsu will move to council v2 and use the new gogi (~/src/gogi) reference. it's happening now, on
-b70host". In council v2 the server renders messages with its model's own template, and the template is part of
-identity (gogi `docs/council-api.md`, "Terms").
+Decided 2026-10-17: the nagaya does not serve the route set of the first Qwen3.8 engine. kaijutsu moved to council v2
+and uses the gogi reference. Amy: "kaijutsu will move to council v2 and use the new gogi (~/src/gogi) reference. it's
+happening now, on b70host". In council v2 the server renders messages with its model's own template, and the template
+is part of identity (gogi `docs/council-api.md`, "Terms").
 
 **11.4a Extensions.** gogi puts model-specific routes under the server's own prefix, listed in
 `identity.extensions` (gogi `docs/council-api.md`, "Extensions"). The nagaya's prefix is `/nagaya/v1`:
@@ -3341,8 +3353,8 @@ GET /nagaya/v1/cluster
 below. The rules of 11.4b to 11.4f are each "Decided by senpai 2026-10-22, accepted by Amy 2026-11-02". Claude Sonnet
 5.5 proposed them on 2026-10-21, and the code of that day follows them.
 
-Their sources were mk's `/mk/v1` routes and mkviolet's `mk_api.rs`. Bench tools use them to see what a council
-request feeds. The semantic search of kaijutsu uses them to count and to cut text by tokens.
+Their sources were the routes of the first Qwen3.8 engine and mkviolet's `mk_api.rs`. Bench tools use them to see what a
+council request feeds. The semantic search of kaijutsu uses them to count and to cut text by tokens.
 
 - **The model.** Each body has a required `model`, as a council request has. A body without it, or with a name that
   no served model has, is a 400 `invalid_request` that names `model`. The routes never choose a model for a client
@@ -3370,8 +3382,9 @@ A `FamilyError::Client` becomes a 400. The existing `From<FamilyError>` for `Ser
 (`crates/nagaya/src/council/error.rs`) does this. A `FamilyError::Internal` is a 500, and the process stops (8.5).
 
 **The `param` of a family error.** A family error can have no `param`. Then the route sets it to the request member
-at fault: `text` for `tokenize`, `tokens` for `detokenize`, and `context` for `render`. mk and mkviolet named only the
-message. A family error that has a `param`, such as `continue`, keeps it (`at` in `extensions.rs`).
+at fault: `text` for `tokenize`, `tokens` for `detokenize`, and `context` for `render`. The first Qwen3.8 engine and
+mkviolet named only the message. A family error that has a `param`, such as `continue`, keeps it (`at` in
+`extensions.rs`).
 
 **11.4c Render.** `POST /nagaya/v1/render` gives the text and the tokens of a context, as a council request feeds
 them. It is for bench tools and for the debug of a template.
@@ -3430,17 +3443,17 @@ The numbers in the example show the shape only.
 Senpai chose between two options in each of these three rules. Amy can change each one.
 
 - **The generation prompt.** `generation_prompt` is `false` by default. This matches a build and a decision, which
-  render with no generation prompt, and so `boundaries` match a build. mk and mkviolet defaulted to `true`. A client
-  that wants the prompt of a generation sends `true`.
+  render with no generation prompt, and so `boundaries` match a build. The first Qwen3.8 engine and mkviolet defaulted
+  to `true`. A client that wants the prompt of a generation sends `true`.
 - **One member for the context.** The context is one member, `context`. The same object then goes to
-  `/council/v2/contexts`. The other option was mk's flat body, with `messages`, `tools` and `thinking` at the top.
-  It saves one level, and a client copies less.
+  `/council/v2/contexts`. The other option was the first Qwen3.8 engine's flat body, with `messages`, `tools` and
+  `thinking` at the top. It saves one level, and a client copies less.
 - **No reasoning effort.** The route has no `reasoning_effort`. gogi's context has none, and the Qwen3.8 library
   fixes it to `medium` (`EFFORT` in `crates/nagaya-text-qwen38/src/council/mod.rs`). A body with it is a 400.
 
 A message that the template refuses, a context that fails `Context::check`, and a Unicode noncharacter in a string
-are each a 400 `invalid_request`. The message names the fault, as mk does. The `param` is `context`, unless the fault
-is in a member that has its own name, such as an unknown member of the context.
+are each a 400 `invalid_request`. The message names the fault, as the first Qwen3.8 engine does. The `param` is
+`context`, unless the fault is in a member that has its own name, such as an unknown member of the context.
 
 The route detokenizes the tokens of the rendering to make `text`. These tokens come from valid text, so a failure
 there is a defect: a 500 `internal`, and the process stops (8.5).
@@ -3479,17 +3492,18 @@ POST /nagaya/v1/detokenize
   2). For Qwen3.8 this is `Qwen38Family::tokenize`: it escapes the text as content, then it calls `encode_escaped`.
 - **Detokenize.** `detokenize` calls `Family::detokenize`. A token outside the vocabulary is a 400 with `param`
   `tokens`. The message of `Error::TokenId` already gives the vocabulary size.
-- **Split characters.** Tokens that do not make whole UTF-8 text are a 400 with `param` `tokens`. mk and mkviolet
-  replaced the bad bytes. Here the route follows `Family::detokenize`, and a silent replacement would hide a split
-  character. The other option was a member `lossy` that replaces the bytes.
+- **Split characters.** Tokens that do not make whole UTF-8 text are a 400 with `param` `tokens`. The first Qwen3.8
+  engine and mkviolet replaced the bad bytes. Here the route follows `Family::detokenize`, and a silent replacement
+  would hide a split character. The other option was a member `lossy` that replaces the bytes.
 - **Empty input.** An empty `text` gives an empty `tokens`. An empty `tokens` gives an empty `text`. Neither is an
   error.
 - **Pieces.** `pieces` are lossy by design. A piece is the bytes of one token, and a token can end inside a
   character. The route replaces bad bytes with U+FFFD in each piece (`String::from_utf8_lossy`). The piece of a
   marker is its text.
-- **A cut at the end of a piece.** The code found a difference from mk. mk's `piece_text` dropped a cut-off character
-  at the end of a piece. The route keeps a U+FFFD, so that a client sees the cut. A token of several stray bytes can
-  give more than one U+FFFD, and a top token in a raw read (11.3c) always gives one.
+- **A cut at the end of a piece.** The code found a difference from the first Qwen3.8 engine. The first Qwen3.8 engine's
+  `piece_text` dropped a cut-off character at the end of a piece. The route keeps a U+FFFD, so that a client sees the
+  cut. A token of several stray bytes can give more than one U+FFFD, and a top token in a raw read (11.3c) always gives
+  one.
 - **The members of each route.** Each route has its own members. `special` and `pieces` in a `detokenize` body, and
   `tokens` in a `tokenize` body, are each a 400 that names the member. A `tokens` member must be an array of unsigned
   32-bit integers. Any other value is a 400 with `param` `tokens`, and the message names the place of the bad id.
@@ -3511,29 +3525,31 @@ Tests that can fail (all built, in `crates/nagaya/tests/extensions.rs` and `exte
 
 - `detokenize(render.tokens)` equals `render.text`, for each fixture of the family.
 - `tokenize` with `special` on, applied to a `render.text` with no `control_text`, gives `render.tokens`.
-- The same call, applied to a text with `control_text`, gives other tokens. This pins the mk behavior in its
-  OpenAPI text.
+- The same call, applied to a text with `control_text`, gives other tokens. This pins the behavior of the first Qwen3.8
+  engine in its OpenAPI text.
 - A noncharacter, an id past the vocabulary, and a split character each give a 400 with the `param`.
 
-**11.4e Model and health.** The first set has no `model` route and no `health` route. Both existed in mk, and
-`GET /council/v2/identity` covers most of what they gave. Decided by senpai 2026-10-22, accepted by Amy 2026-11-02.
+**11.4e Model and health.** The first set has no `model` route and no `health` route. Both existed in the first Qwen3.8
+engine, and `GET /council/v2/identity` covers most of what they gave. Decided by senpai 2026-10-22, accepted by Amy
+2026-11-02.
 
-- **`model`.** mk's object had `id`, `weight_hash`, `max_context`, `build.engine_sha256` and `device`. The council
-  identity has `model`, `weight_hash`, `engine`, `limits.context_tokens` and `device` for each served model. The
-  members `hidden_size` and `vocab_size` are not there. A client needs them for a vector space, so they belong to the
-  `embeddings` response, which this section does not cover. `Family::vocab_size` already holds the vocabulary size.
-- **`health`.** mk answered 200 while it served and 503 after a failure. The nagaya stops the process at a failure
-  (8.5), so it has no state that serves and is unhealthy. A probe uses `identity`: a 200 with each model `ready` is
-  healthy. A fatal engine reports `unloaded` there (11.1). systemd sees `READY=1` when the routes serve (10.1).
-  The watchdog thread ends a hung process (7.4).
-- **`weights`.** mk's `health` told `attached` or `loaded`. The nagaya counts this as `nagaya.arena.handoff` (9.4),
-  with the status `hot` or `cold`. No client route is needed.
+- **`model`.** The first Qwen3.8 engine's object had `id`, `weight_hash`, `max_context`, `build.engine_sha256` and
+  `device`. The council identity has `model`, `weight_hash`, `engine`, `limits.context_tokens` and `device` for each
+  served model. The members `hidden_size` and `vocab_size` are not there. A client needs them for a vector space, so
+  they belong to the `embeddings` response, which this section does not cover. `Family::vocab_size` already holds the
+  vocabulary size.
+- **`health`.** The first Qwen3.8 engine answered 200 while it served and 503 after a failure. The nagaya stops the
+  process at a failure (8.5), so it has no state that serves and is unhealthy. A probe uses `identity`: a 200 with each
+  model `ready` is healthy. A fatal engine reports `unloaded` there (11.1). systemd sees `READY=1` when the routes serve
+  (10.1). The watchdog thread ends a hung process (7.4).
+- **`weights`.** The first Qwen3.8 engine's `health` told `attached` or `loaded`. The nagaya counts this as
+  `nagaya.arena.handoff` (9.4), with the status `hot` or `cold`. No client route is needed.
 
 The other option was a `GET /nagaya/v1/health` that gives only `{"status": "ok"}`, for a load balancer that cannot
 read `identity`. It costs one route and no new state.
 
 **11.4f Extensions in identity.** `identity.extensions` lists the prefix `/nagaya/v1` once. gogi's example lists
-`/mk/v1` this way, and it lists no route (gogi "Extensions"). The rules below were built on 2026-10-21.
+a route prefix this way, and it lists no route (gogi "Extensions"). The rules below were built on 2026-10-21.
 
 - **When the list holds the prefix.** `Council::identity` returns `["/nagaya/v1"]` as soon as the process serves one
   route under the prefix. The text routes need a family. Thus the list holds the prefix when the council has a served
@@ -3586,7 +3602,7 @@ has a tailnet address in its code.)
   hash of that family must equal the `tokenizer_hash` of the engine identity. Thus the identity selects the library
   (11.3). Another kind is not a served model, and the log says so.
 - The served model is the `model` of the engine identity, as gossip publishes it (2.3). It has no alias and no
-  `device` yet. Its `context_tokens` is 4096, or mk's `MAX_CONTEXT` for mk.
+  `device` yet. Its `context_tokens` is 4096, or `MAX_CONTEXT` for the Qwen3.8 engine.
 - A process serves at most one model in milestone 12. The specs and the pins of a service are files in the store
   directory, and two services would write one file. A profile with two served engines refuses the start (exit 3).
   The note "Several text models in one process" below replaces this rule. Amy accepted it on 2026-11-08.
@@ -4528,7 +4544,7 @@ on 2026-11-10. The profile comment already said: "Each engine name is its served
 - The `model` of the engine identity stays `lfm3` or `lfm3-omni`. The family checks its folder against it.
 - The kind gives its served name before the open (`Factory::served_names`, 2.3, "The check of a name").
 - The engines `lfm3` and `lfm3-omni` keep their served names, because their engine names are the same.
-- Other text kinds keep the rule of 11.1. Gemma 4 and mk serve the `model` of their identity.
+- Other text kinds keep the rule of 11.1. Gemma 4 and the Qwen3.8 engine serve the `model` of their identity.
 - The other choice was a served name in the config of the engine. It adds a key, and the engine name already gives a
   name that is unique.
 
@@ -4984,7 +5000,7 @@ speech model is in `crates/nagaya/tests/speech_context.rs`.
 - `model`;
 - `checkpoint_digest`, the first of the two weight ids (12.2);
 - `tokenizer_hash`, the hash of the tokenizer that the engine uses: of its tokenizer file, or of the tokenizer keys
-  of its GGUF (engine-abi "v0 mk binding choices");
+  of its GGUF (engine-abi "v0 binding choices");
 - `template`, the text of the chat template, for example the GGUF key `tokenizer.chat_template`. The identity digest
   covers it, so a new template is a new recipe. Gossip carries the digest, not the text (2.3). Decided 2026-10-20
   (reading, kaibo job-2 finding 7);
@@ -5007,10 +5023,10 @@ different most of the time."
 - The identity gets a member `build`, with the facts of the build. It holds the SHA-256 of each kernel binary and
   engine library, and the compiler version. It also holds the driver or runtime version, and the PCI ids of the card.
 - The identity digest does not cover `build`. It covers the other fields of 12.1, also the canary hash.
-- `numbers` keeps the values that change bits by choice, such as mk's `fast_qmm` and `tiles`. A file path is not a
-  number. mk's `engine_lib` path is gone, because the binary links mk's engine (Amy, 2026-10-22, AGENTS.md milestone
-  15). Until `build` exists, `numbers` holds mk's build facts: `engine_build_sha256`, `engine_compiler` and
-  `engine_hip` (`crates/nagaya-mk-qwen38-gfx1151/src/spec.rs:515-517`).
+- `numbers` keeps the values that change bits by choice, such as the `fast_qmm` and `tiles` of the Qwen3.8 engine. A
+  file path is not a number. The `engine_lib` path is gone, because the binary links the Qwen3.8 engine (Amy,
+  2026-10-22, AGENTS.md milestone 15). Until `build` exists, `numbers` holds the Qwen3.8 engine's build facts:
+  `engine_build_sha256`, `engine_compiler` and `engine_hip` (`crates/nagaya-mk-qwen38-gfx1151/src/spec.rs:515-517`).
 - Thus a new build with the same canary bits has the same digest. Its held entries stay usable, and the gate
   thresholds still fit. A new build with other canary bits has a new digest, as now.
 - Each entry records the `build` that made it. A context with rows of two builds is then visible.
@@ -5026,7 +5042,7 @@ that it runs, so its inputs must run each path that the limits allow.
 **The plan table of a HIP engine.** Amy decided on 2026-10-31 that hipBLASLt does the large bf16 matrix multiplies of
 Qwen-Image (11.9c). Amy: "hipBLASLt for GEMMs but we let it ride with changes over time, ok with some change in behavior
 if upstream changes". The rules below are Decided by senpai 2026-11-01, and accepted by Amy 2026-11-02. Reason: the plan
-table of the ontology holds such choices, and mk has none (ontology "Plan table").
+table of the ontology holds such choices, and the Qwen3.8 engine has none (ontology "Plan table").
 
 - The engine declares the determinism `pinned` (D3). Each GEMM runs the hipBLASLt algorithm that the plan table names
   for its shape.
@@ -5061,8 +5077,8 @@ table of the ontology holds such choices, and mk has none (ontology "Plan table"
 so a new packing does not change it. The arena id is the content id of the packed bytes that the engine runs.
 `arena_export` returns it.
 
-The identity carries the checkpoint digest. The arena records its own id and the strength of its check. mk's
-`weight_hash` and mkviolet's `header_hash` hash only the shard headers and sizes. They are spot checks, and the
+The identity carries the checkpoint digest. The arena records its own id and the strength of its check. The Qwen3.8
+engine's `weight_hash` and mkviolet's `header_hash` hash only the shard headers and sizes. They are spot checks, and the
 identity labels them as spot checks until we replace them.
 
 **12.3 Identity defects to correct in the port.**
@@ -5076,16 +5092,17 @@ identity labels them as spot checks until we replace them.
 - mkviolet's `tokenizer_hash` is the first 16 hex digits of the SHA-256 of the file (`tokenizer.rs:22`). Decided
   2026-10-22 (Amy: "accepted"): the port hashes the whole file and writes `sha256:` and 64 hex digits, as the Qwen3.8
   library does. Reason: one form for every family.
-- mkviolet's `weight_hash` hashes the shard headers only (`main.rs:216`). The port labels it `spot-sha256:`, as the mk
-  binding does (12.2).
+- mkviolet's `weight_hash` hashes the shard headers only (`main.rs:216`). The port labels it `spot-sha256:`, as the
+  Qwen3.8 engine binding does (12.2).
 - mkviolet's metrics label card 1 `google/embeddinggemma-2` (`telemetry.rs:492`, `:523`). The port takes the label
   from the identity.
 
 ## 13. Taps, lenses and composition
 
-**13.1 Taps.** An engine declares its taps in `limits()`, with the conditions that each tap needs (mk: unfused, one
-segment). A tap gives one of these outputs: a residual at a layer (rows), routes, or gates. The store keeps large
-tap outputs as content-addressed artifacts, with an owner and a budget. (mk keeps traces as per-layer `.npy` files.)
+**13.1 Taps.** An engine declares its taps in `limits()`, with the conditions that each tap needs (the Qwen3.8 engine:
+unfused, one segment). A tap gives one of these outputs: a residual at a layer (rows), routes, or gates. The store keeps
+large tap outputs as content-addressed artifacts, with an owner and a budget. (The Qwen3.8 engine keeps traces as
+per-layer `.npy` files.)
 
 **mkviolet's taps, for later.** These taps are not in the first port. They are noted here so that the port does not
 close a door.
@@ -5130,14 +5147,15 @@ rules apply:
 
 The inventories found these items. We correct each one when its code moves. We do not copy them.
 
-- mk splits a prefill in its Python service (`contexts._feed`). The split moves under `max_quantum_ms` (5.1).
-- mk's `prefill` field of `/mk/v1/generate` (`service/generate.py`, `_with_prefill`) becomes a gogi
+- The first Qwen3.8 engine splits a prefill in its Python service (`_feed` in `service/contexts.py`). The split moves
+  under `max_quantum_ms` (5.1).
+- The first Qwen3.8 engine's `prefill` field of its old `generate` route (`_with_prefill`) becomes a gogi
   continuation. Its prefix check at the seam moved with it (11.3c, the seam check). The new name keeps "prefill" for
   the prompt pass.
-- mk orders jobs first in, first out in its one high tier. The nagaya uses the order in 5.4.
-- mk's "park" writes through to disk and seals at each "hold". In nagaya terms, a hold is a declared boundary, and
-  a write to disk is a park to NVMe (D7).
-- mk's MemAvailable floor becomes the safety floor in 4.7. It does not set any size.
+- The first Qwen3.8 engine orders jobs first in, first out in its one high tier. The nagaya uses the order in 5.4.
+- The first Qwen3.8 engine's "park" writes through to disk and seals at each "hold". In nagaya terms, a hold is a
+  declared boundary, and a write to disk is a park to NVMe (D7).
+- The first Qwen3.8 engine's MemAvailable floor becomes the safety floor in 4.7. It does not set any size.
 - mkviolet's three caches merge into the store (6.1). Its fixed budgets become ledger terms.
 - mkviolet's telemetry setup leaks a runtime (`Box::leak`). Its HTTP server is hand-written, and its bind address is
   in its code.
@@ -5149,11 +5167,11 @@ The inventories found these items. We correct each one when its code moves. We d
 ## 15. Open questions
 
 1. Do an idle engine's GPU queues slow the other engines on its device (3.3)? A measurement answers this.
-2. Answered by engine-abi "The close of mk", Decided 2026-11-01: what makes `close()` safe for mk (3.3)? The close
-   frees the weights and keeps the HIP runtime.
-3. How long does the conversion to canonical safetensors take on mk and mkviolet (10.3, D10)?
-4. Answered 2026-10-20: on mk, one pass of many tokens gives the same bits as one pass for each token (6.13).
-   On 2026-10-21, splits across 256 and 512 tokens gave the same bits in both classes of context (6.13).
+2. Answered by engine-abi "The close of the Qwen3.8 engine", Decided 2026-11-01: what makes `close()` safe for the
+   Qwen3.8 engine (3.3)? The close frees the weights and keeps the HIP runtime.
+3. How long does the conversion to canonical safetensors take on the Qwen3.8 engine and mkviolet (10.3, D10)?
+4. Answered 2026-10-20: on the Qwen3.8 engine, one pass of many tokens gives the same bits as one pass for each token
+   (6.13). On 2026-10-21, splits across 256 and 512 tokens gave the same bits in both classes of context (6.13).
 5. How does a profile `PUT` work across machines (2.3, 2.4, 11.5)? The machine that takes the `PUT` cannot
    return the target's 507, and 2.3 ignores an old version where 11.5 answers 409 (kaibo, 2026-10-20). Since
    2026-10-28, `PUT /nagaya/v1/profile` changes only its own machine (3.3). Answered 2026-11-08 (Amy accepted the
@@ -5161,16 +5179,16 @@ The inventories found these items. We correct each one when its code moves. We d
    profile for another host").
 6. The template engine differs from jinja2 on integers past 2^127 and on a float key that is not finite (milestone
    11.5 text step). The chat template uses none of them. Which ones do we match?
-7. How far does mk's fast path (`QWEN38_FAST_QMM` unset) move council decisions? At 249 tokens it moved logits by up to
-   1.03, and the argmax and the top 8 held (8.3). Amy, 2026-10-20: "we'll measure later".
+7. How far does the Qwen3.8 engine's fast path (`QWEN38_FAST_QMM` unset) move council decisions? At 249 tokens it moved
+   logits by up to 1.03, and the argmax and the top 8 held (8.3). Amy, 2026-10-20: "we'll measure later".
 8. What causes the oracle gap past about 640 tokens, and how large is it at 2,000 tokens and more? The contexts
    hold 4,096 and 32,768 tokens now, and a long prompt takes several passes. On the exact path, the findings are
    these:
-   - mk agrees with the oracle up to 630 tokens. The largest logit difference is 5.2e-5 at 478 tokens, 1.9e-5 at
-     604 and 1.5e-5 at 630 (diagnostic prompts).
+   - The Qwen3.8 engine agrees with the oracle up to 630 tokens. The largest logit difference is 5.2e-5 at 478 tokens,
+     1.9e-5 at 604 and 1.5e-5 at 630 (diagnostic prompts).
    - At 655 tokens the difference is 0.29. At 684 it is 0.16. At 721 it is 0.23.
-   - The split into passes does not change mk's bits, so the pass split is not the cause.
-   - The cause is not known: mk or the reference. The indexer is dense below about 2,050 tokens in both.
+   - The split into passes does not change the Qwen3.8 engine's bits, so the pass split is not the cause.
+   - The cause is not known: the Qwen3.8 engine or the reference. The indexer is dense below about 2,050 tokens in both.
 
    Amy, 2026-10-20: "we can save and do the measurement later".
 9. Should the control threads run at elevated priority (3.2, 3.2a)? A raised priority needs `CAP_SYS_NICE` or a
@@ -5181,10 +5199,11 @@ The inventories found these items. We correct each one when its code moves. We d
     today. The charge path refuses while the process stops.
 12. Can a copy quantum run past the 30 s watchdog timeout on a slow NVMe (7.4)? We have not measured it (kaibo review
     job-1, finding 4).
-13. How does mk reset a context without a new allocation (engine-abi "v0 mk binding choices")? `slot_clear` frees the
-    context and allocates a new one. A `hipMalloc` that fails stops the process. mk needs a reset call.
-14. Can the nagaya pin the two HIP runtime threads of mk (3.2a)? The HIP runtime starts them and sets their masks. The
-    mask of both is 0-31 on gfx1151.
+13. How does the Qwen3.8 engine reset a context without a new allocation (engine-abi "v0 binding choices")? `slot_clear`
+    frees the context and allocates a new one. A `hipMalloc` that fails stops the process. The Qwen3.8 engine needs a
+    reset call.
+14. Can the nagaya pin the two HIP runtime threads of the Qwen3.8 engine (3.2a)? The HIP runtime starts them and sets
+    their masks. The mask of both is 0-31 on gfx1151.
 15. Should the template id (11.3a) cover more than the tokens of the test renders? A change in how the family parses a
     reply keeps the id today.
 16. Answered 2026-10-21: the job path uses `ObservedScheduler` and the evidence module (9.2, 9.6). Two things stay
@@ -5210,12 +5229,12 @@ before the last one are from 2026-10-20 night.
 - 2.1: a build with the feature `fake` keeps a made-up inventory.
 - 2.1: a probe error at start exits 3, and a build with no `fake` probes the files of `/`.
 - 3.2a: the housekeeping set is the two lowest online CPUs, and the pool set is the others.
-- 3.2a: mk's worker thread keeps the pool set of its group thread.
+- 3.2a: the Qwen3.8 engine's worker thread keeps the pool set of its group thread.
 - 3.2a: the group threads run on the pool set.
 - 3.2a: the sets use logical CPUs and do not know SMT siblings.
 - 4.2: a staging charge covers each host copy of engine state, up to one slot.
 - 4.3: the admission of a profile keeps the live context and staging charges, or it refuses with the shortfall.
-- 6.13: mk declares a checkpoint grain of 256 tokens.
+- 6.13: the Qwen3.8 engine declares a checkpoint grain of 256 tokens.
 - 6.13: the job path makes the interval copy as the next quantum, and a build restores the longest copy.
 - 6.13: a refused charge or a put with no space skips the copy, and a client cannot pin a copy.
 - 7.4: the wait for the opens is 300 s.
@@ -5268,8 +5287,8 @@ before the last one are from 2026-10-20 night.
 - 11.3c: the decision limits are mkviolet's until the profile names others.
 - 11.7: the process serves an engine only when its kind has a family library with the same tokenizer hash. The
   engine registry of 11.3 (Decided 2026-10-22) replaces this rule: the family of the identity selects the library.
-- 11.7: the served model is the engine's `model`, with 4096 tokens of context, or mk's maximum. The engine registry
-  of 11.3 replaces the context size: it is the largest slot of the engine.
+- 11.7: the served model is the engine's `model`, with 4096 tokens of context, or the Qwen3.8 engine's maximum. The
+  engine registry of 11.3 replaces the context size: it is the largest slot of the engine.
 - 11.7: a process serves at most one model.
 - 11.7: the specs, pins and snapshots routes use the one service, or give 503.
 - 11.7: each service call runs on its own thread, at most 64 at once, and the 65th gets 429.
@@ -5290,10 +5309,11 @@ before the last one are from 2026-10-20 night.
 
 **In `docs/engine-abi.md`**
 
-- "v0 mk binding choices": mk declares `slots` and `coverage`, and `slot_clear` frees and allocates a context.
-- "v0 mk binding choices": the factory plans from the config key `weights_bytes`, and a wrong size exits 3.
-- "v0 mk binding choices": the pool is 12 contexts of 4,096 tokens and 4 of 32,768.
-- "v0 mk binding choices": mk declares a checkpoint grain of 256 tokens.
+- "v0 binding choices": the Qwen3.8 engine declares `slots` and `coverage`, and `slot_clear` frees and allocates a
+  context.
+- "v0 binding choices": the factory plans from the config key `weights_bytes`, and a wrong size exits 3.
+- "v0 binding choices": the pool is 12 contexts of 4,096 tokens and 4 of 32,768.
+- "v0 binding choices": the Qwen3.8 engine declares a checkpoint grain of 256 tokens.
 
 **In `docs/deploy.md`, section "Decided by senpai 2026-10-20 night"**
 
@@ -5307,7 +5327,7 @@ before the last one are from 2026-10-20 night.
 - `QWEN38_FAST_QMM` stays unset. Milestone 15 removed the library pin.
 - The profile is copied into the store directory once, and it is not a link.
 - The release binary is built with `--features hip`.
-- `weights_bytes` is the size of mk's weight arena, and a wrong size exits 3.
+- `weights_bytes` is the size of the Qwen3.8 engine's weight arena, and a wrong size exits 3.
 - A probe error at start exits 3.
 
 **On 2026-10-22, from Proposed notes**

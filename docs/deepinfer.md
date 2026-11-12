@@ -43,8 +43,8 @@ Four of their designs match rules that the spec already states. This is evidence
   file named by the SHA-256 of the model and the parallel layout (`deepinfer/worker/decode_perf_cache.py:40-52`).
   This is the plan table's idea (D3 amendment): a measured choice, saved under a key, and used again.
 - **Spin waits time out.** Every wait in DeepGEMM's grid barrier stops after 60 s with a message
-  (`vendor/DeepGEMM/deep_gemm/include/deep_gemm/comm/barrier.cuh:11-24`). mk has spin timeouts too (engine-abi,
-  "test limits of the spin-timeout opt-in").
+  (`vendor/DeepGEMM/deep_gemm/include/deep_gemm/comm/barrier.cuh:11-24`). The Qwen3.8 engine has spin timeouts too
+  (engine-abi, "test limits of the spin-timeout opt-in").
 
 ## Proposed changes to the spec
 
@@ -53,15 +53,15 @@ Each item gives the lesson, its source, and the place in our docs where it lands
 
 ### 1. A sampler draw that is a function of the seed and the position (spec 11.2)
 
-**Decided:** adopted. Milestone 12 matches mk's filter order and probabilities, not mk's bits.
+**Decided:** adopted. Milestone 12 matches the first Qwen3.8 engine's filter order and probabilities, not its bits.
 
 DeepInfer keeps no random state for a sequence. Each draw seeds the generator from the sequence seed and a counter
 (`deepinfer/model_executor/layers/tilelang_ops/cuda/random_sampling.py:113`). The counter is three times the
 absolute position, plus a case: sample, resample, or accept test (`random_sampling.py:247`). The draw then uses an
 integer CDF over fixed-point probabilities, so the thread layout does not change the result.
 
-mk's sampler is different. It draws from one PCG64 stream for each request, one uniform for each step
-(`service/sampling.py:23`, `:106`, `:153`). The draw at step k thus depends on how many draws came before it.
+The sampler of the first Qwen3.8 engine is different. It draws from one PCG64 stream for each request, one uniform for
+each step (`service/sampling.py:23`, `:106`, `:153`). The draw at step k thus depends on how many draws came before it.
 
 Proposed rule: the draw for a token is a function of the seed, the absolute position, and the purpose of the draw.
 The sampler holds no state between tokens. A fork gets a child seed: a hash of the parent seed and a branch number.
@@ -69,8 +69,9 @@ The sampler holds no state between tokens. A fork gets a child seed: a hash of t
 Reason: park, restore and fork then keep the sampler's bits with nothing to save. A generation that resumes after a
 restart gives the same tokens. Speculative drafts (11.2) get their own purpose, so a draft never moves a later draw.
 
-**For Amy:** this conflicts with milestone 12. Milestone 12 asks the sampler to match mk's PCG64 draws bit for bit.
-We can match mk and keep a step counter in each job, or take the new rule and match mk's filter order only.
+**For Amy:** this conflicts with milestone 12. Milestone 12 asks the sampler to match the PCG64 draws of the first
+Qwen3.8 engine bit for bit. We can match its draws and keep a step counter in each job, or take the new rule and match
+only its filter order.
 
 ### 2. A reduction order that depends only on the shape (D3, spec 5.7)
 
@@ -109,14 +110,14 @@ the position, with the same boundaries.
 Proposed: an engine can declare a checkpoint grain in `limits()`. The scheduler then makes an interval copy at each
 multiple of the grain. (The decision above replaces this text.)
 
-mk's seal rounds the GDN state to bf16 (ontology "Seal"), so a seal changes the bits that follow. There were two
-choices for an interval checkpoint:
+The Qwen3.8 engine's seal rounds the GDN state to bf16 (ontology "Seal"), so a seal changes the bits that follow. There
+were two choices for an interval checkpoint:
 
 - a seal at a declared boundary, so the grain positions join the recipe;
 - a copy that does not seal, which has no content id until it goes into the store (engine-abi, D7).
 
 The first choice changes every generation's bits at each grain. The second choice keeps the bits but needs a new
-store rule. This connects to the "shadow rounding points" from mk's goal 06.
+store rule. This connects to the "shadow rounding points" from goal 06 of the first Qwen3.8 engine.
 
 ### 4. A cost model with a measured prior (spec 5.11)
 
@@ -171,17 +172,17 @@ prefix lives (doc line 111). Our links are gigabit. A few hundred MB of state ta
 Proposed: when coordinator routing comes (11.1), it routes a request to the machine whose store holds the deepest
 chain for its recipe. Load breaks ties. Revisit this rule when the links are faster.
 
-## Lessons for mk's kernels
+## Lessons for the kernels of the Qwen3.8 engine
 
-These lessons are inside the engine, so the spec does not hold them. They apply to mk's HIP code, which comes into
-this repository at milestone 15. mk already has a grid barrier whose generation needs no reset (mk
-`src/rt/rt.h:184`).
+These lessons are inside the engine, so the spec does not hold them. They apply to the HIP code of the Qwen3.8 engine,
+which comes into this repository at milestone 15. The Qwen3.8 engine already has a grid barrier whose generation needs
+no reset (`src/rt/rt.h:184`).
 
 1. **Counters for each tile, not a barrier for each stage.** DeepGEMM's down projection waits on a 64-bit mask, with
    one bit for each up-projection tile (`deep_gemm/include/deep_gemm/layout/mega_moe.cuh:82-89`). A producer flips its
    bit with a release XOR. The expected value flips each round, so the mask needs no reset. A consumer thus starts
-   when its own inputs are done, not when the whole stage is done. First measure how long mk waits at stage
-   barriers in decode.
+   when its own inputs are done, not when the whole stage is done. First measure how long the Qwen3.8 engine waits at
+   stage barriers in decode.
 2. **A global queue of tasks.** Each workgroup takes the next task number from an atomic counter. One wave turns the
    number into an expert and a block, with a prefix sum over the expert counts. A closed form proves that the order
    cannot deadlock (`deep_gemm/include/deep_gemm/scheduler/mega_moe.cuh:15-45`).
@@ -190,8 +191,8 @@ this repository at milestone 15. mk already has a grid barrier whose generation 
 4. **The producer writes the consumer's layout.** The up-projection's epilogue does the clamp, SwiGLU, the routing
    weight and the quantization. It writes in the layout that the down projection reads. Gate and up rows interleave
    in groups of 8, so SwiGLU stays in one thread.
-5. **A timeout and a message on every wait.** mk has spin timeouts. Each one should print what it waited for, as
-   DeepGEMM's `wait_until` does.
+5. **A timeout and a message on every wait.** The Qwen3.8 engine has spin timeouts. Each one should print what it waited
+   for, as DeepGEMM's `wait_until` does.
 
 These do not port to gfx1151: TMEM, UMMA, TMA, clusters of two blocks, and warps that trade registers. AMD fixes
 the register count for each kernel. Thus waves that change role for each task suit RDNA3.5 better than fixed roles.

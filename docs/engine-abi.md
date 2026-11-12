@@ -7,30 +7,31 @@ its layouts, its kernels and its caches. Above it, the nagaya keeps the ledger, 
 
 We drafted the ABI on 2026-10-17 from two sources, our two learning megakernels:
 
-- mk's C ABI (`src/engine/capi.hip`, `src/engine/engine.h`);
+- The C ABI of the first Qwen3.8 engine (`src/engine/capi.hip`, `src/engine/engine.h`);
 - mkviolet's Gemma 4 engine (`src/gemma4.rs`, `src/held.rs`, `src/protocol.rs`, `src/hot_handoff.rs`).
 
-A file path after "mk" or "mkviolet" in this doc names the source of a copy or of a measurement. The copies live in
-`crates/nagaya-mk-qwen38-gfx1151` and `crates/nagaya-mk-gemma4-bmg`.
+A file path after "the first Qwen3.8 engine" or "mkviolet" in this doc names the source of a copy or of a measurement.
+The copies live in `crates/nagaya-mk-qwen38-gfx1151` and `crates/nagaya-mk-gemma4-bmg`.
 
 On the same day, a kaibo review (deepseek cast) checked the draft against copies of that source. The review's
-headline: the first draft's call list was mk's `Context` model, and mkviolet, the second engine, already failed half
-of it. Thus the ABI is now a small core that every engine has, plus capabilities that an engine declares.
+headline: the first draft's call list was the `Context` model of the first Qwen3.8 engine. mkviolet, the second
+engine, already failed half of it. Thus the ABI is now a small core that every engine has, plus capabilities that an
+engine declares.
 
 v0 covers three kinds of engine: inference, image batch, and training (Amy, 2026-10-17).
 
 ## Shape
 
 The nagaya is Rust. An engine is a Rust type that implements the `Engine` trait. Some engines use another language
-(mk: C++ and HIP behind `extern "C"`). Such an engine exports a C ABI, and a thin Rust wrapper implements the trait
-on top of it. mkviolet's Gemma 4 engine implements the trait directly.
+(The Qwen3.8 engine: C++ and HIP behind `extern "C"`). Such an engine exports a C ABI, and a thin Rust wrapper
+implements the trait on top of it. mkviolet's Gemma 4 engine implements the trait directly.
 
 Each engine runs on a **device group**: the set of devices that one or more engines use. Each device group has one
 nagaya thread. Calls for the engines in the group come only from that thread, and they are synchronous. A pass
 blocks the thread.
 
 An engine that spans devices declares stages (D1). Each stage quantum runs on the device thread of its device. The
-device threads live as long as the group (spec 3.2). mk has a group of one device and no stages.
+device threads live as long as the group (spec 3.2). The Qwen3.8 engine has a group of one device and no stages.
 mkviolet's group is both B70 cards, with two stages.
 
 ### Rust shape
@@ -62,7 +63,7 @@ The config is a TOML table from the placement profile. The engine parses it and 
 know. Thus the nagaya holds every engine as `Box<dyn Engine>`.
 
 **The factory gets its devices.** Decided 2026-10-22 (Amy: "accepted"). Before this rule, `open` took only the
-config. mk uses the HIP device that is current on the calling thread.
+config. The Qwen3.8 engine uses the HIP device that is current on the calling thread.
 
 ```rust
 struct GroupDevice { id: DeviceId, name: String, pci_address: String, memory_bytes: u64 }
@@ -147,7 +148,7 @@ limits() -> {
     checkpoint_grain: tokens?,   the scheduler makes an interval copy at each multiple (spec 6.13)
     feed: {block: tokens}?,      the feed rule (D11): each span between boundaries goes in passes of `block`
     determinism: always | pinned | per-process,   and bit_dependence: [residency, ...] (D3)
-    taps: [...], with the conditions each needs (mk: unfused, one segment)
+    taps: [...], with the conditions each needs (the Qwen3.8 engine: unfused, one segment)
 }
 pass(segments, taps) -> status, ms, outputs
     segment = {state, inputs, positions, meta, outputs wanted}
@@ -163,7 +164,8 @@ engine has slots.
 
 `pass` never allocates. Its scratch is a mandatory term, keyed by the kinds of quantum that use it. These calls do
 allocate, and the ledger admits each one before it runs: `open`, `attach`, `ctx_new`, `ctx_fork`, `ctx_copy`,
-`part_write`, and `resize`. (`set_n` and `cells_write` do not allocate: mk sizes a context at `ctx_new(max)`.)
+`part_write`, and `resize`. (`set_n` and `cells_write` do not allocate: the Qwen3.8 engine sizes a context at
+`ctx_new(max)`.)
 
 ## Capabilities (declared in `limits()`)
 
@@ -207,9 +209,9 @@ Decided 2026-10-28 (Amy, by interview).
 Reason: the `Box<dyn Engine>` already drops at the end of the group thread. A drop that frees everything needs no
 second path, and a test can count the memory after it.
 
-**The close of mk.** Decided 2026-11-01 (Amy, by interview): "mk can stay loaded and use some memory. I was thinking
-we'd let some model weights get freed, should clear up a bulk of memory". HIP teardown stops the process (spec 3.3),
-so mk's close frees the weights and keeps the runtime.
+**The close of the Qwen3.8 engine.** Decided 2026-11-01 (Amy, by interview): "mk can stay loaded and use some memory. I
+was thinking we'd let some model weights get freed, should clear up a bulk of memory". HIP teardown stops the process
+(spec 3.3), so the Qwen3.8 engine's close frees the weights and keeps the runtime.
 
 - The drop of the last handle frees the contexts and the weights. The HIP runtime, the C++ engine and the pass host
   stay. A test binary keeps a `Hold`, so its handles do not load the weights again.
@@ -290,19 +292,20 @@ is in the state, not in the part bytes. The old call reported 0..n after a wrap.
 
 ### A pass that did not run
 
-**A refused pass returns an error.** A pass that the mk binding refuses before it calls mk returns an error, not
-`PassStatus::Ok`. `PassStatus` stays `Ok | Poison | Timeout` for passes that ran. Decided 2026-10-18.
+**A refused pass returns an error.** A pass that the Qwen3.8 binding refuses before it calls the Qwen3.8 engine returns
+an error, not `PassStatus::Ok`. `PassStatus` stays `Ok | Poison | Timeout` for passes that ran. Decided 2026-10-18.
 
-The mk binding refuses a pass before it calls mk when a segment breaks an mk rule. The rule can be a position that
-is not the context's n, a token past the vocabulary, or rows instead of tokens. That pass did not run, and no context
-changed. A caller tells a refusal from a pass that ran, and it need not read `last_error` to know (review finding 9).
+The Qwen3.8 binding refuses a pass before it calls the Qwen3.8 engine when a segment breaks a rule of the Qwen3.8
+engine. The rule can be a position that is not the context's n, a token past the vocabulary, or rows instead of tokens.
+That pass did not run, and no context changed. A caller tells a refusal from a pass that ran, and it need not read
+`last_error` to know (review finding 9).
 
 A refused pass returns a `PassError` with kind `PassErrorKind::Refused`. Each engine refuses a pass with more
 segments than `max_segments` in this way, before it changes any state.
 
-A fault after the pass is different. The mk binding returns `Poison` when the logits buffer is shorter than the
-wanted rows. The pass ran, so the state is unknown (D6, spec 8.2). A unit test pins this decision. Real mk gives the
-full buffer, so the test calls the builder and not a pass.
+A fault after the pass is different. The Qwen3.8 binding returns `Poison` when the logits buffer is shorter than the
+wanted rows. The pass ran, so the state is unknown (D6, spec 8.2). A unit test pins this decision. The real engine gives
+the full buffer, so the test calls the builder and not a pass.
 
 ### Canonical file bytes
 
@@ -350,7 +353,7 @@ the same bits. `FakeFeed::reverse_residual` breaks the stage path, and `FakeFeed
 
 ### Logit outputs
 
-The mk binding gives logits one way, and the fake engine follows it. Decided 2026-10-20 (reading, from a note by
+The Qwen3.8 binding gives logits one way, and the fake engine follows it. Decided 2026-10-20 (reading, from a note by
 Sonnet 5.5 in milestone 12).
 
 - `logit_rows` holds positions that the segment feeds. A position outside `positions` is a refused pass.
@@ -359,25 +362,25 @@ Sonnet 5.5 in milestone 12).
 - The dtype is F32 and the bytes are little-endian. A row has one element for each token of the vocabulary.
 - The vocabulary size is not in `limits()`. The family library knows it (spec 11.3).
 - The fake engine gives logits only when it has a vocabulary size. Its outputs for one segment are `state`, then its
-  `logits` rows. The mk binding gives `logits` only, and only for the last position.
+  `logits` rows. The Qwen3.8 binding gives `logits` only, and only for the last position.
 
 Reason: the fake engine must serve a family with a vocabulary, and the output rows must compare as F32 in the gates
-(spec 8.3). The simplest rule is the one that mk already follows.
+(spec 8.3). The simplest rule is the one that the Qwen3.8 engine already follows.
 
-## How mk maps
+## How the Qwen3.8 engine maps
 
-| ABI | mk (`extern.hip`) | Notes |
+| ABI | The Qwen3.8 engine (`extern.hip`) | Notes |
 |---|---|---|
 | open / attach | `qwen38_engine_open(watchdog_deadline_s)`; no attach | no device argument: the HIP device is the calling thread's current one, so the wrapper sets it on the group's thread; the Rust reader parses the three GGUF shards, and the Rust host fills the arena (Proposed notes below); the C++ engine is the runtime layer only: the launches under the control block and the watchdog |
-| plan | none yet | the wrapper computes the terms from the config and mk's fixed shapes |
-| arena | `arena::plan` and `arena::create` in Rust (`arena.rs`) | one sealed memfd in mk's `arena.h` layout; no check of another process's arena yet: milestone 15 step 6 removed the C++ check, which had no call |
-| identity | built in the Python service | moves into the engine; must include `fused` and `QWEN38_FAST_QMM` |
+| plan | none yet | the wrapper computes the terms from the config and the Qwen3.8 engine's fixed shapes |
+| arena | `arena::plan` and `arena::create` in Rust (`arena.rs`) | one sealed memfd in the layout of `arena.h` of the first Qwen3.8 engine; no check of another process's arena yet: milestone 15 step 6 removed the C++ check, which had no call |
+| identity | `identity` in `spec.rs` | built in Rust; includes `fused` and `QWEN38_FAST_QMM` |
 | contexts | `context::ctx_new`, `ctx_free`, `ctx_n` in Rust (`context.rs`) | over the runtime calls `hip_rt_malloc`, `hip_rt_free` and `hip_rt_memset` of `rt.cpp`; no fork and no copy |
 | parts | `context::state_read`, `state_write`, `cells_write`, `set_n` in Rust | over `hip_rt_memcpy` and `hip_rt_memcpy_2d`; after `set_n` the worker pools the index keys (`host.rs` `pool_context`, through `qwen38_launch_each`). Parts 0-2 and 5 fixed, 3-4 cells; `idx_pooled` derived. `cells_read` takes only rows 0 to n, the whole part: snapshots are stored whole (about 316 MB at n = 3584, ontology "Part") |
 | slots | `ctx_n`, `ctx_free` then `ctx_new` | `slot_high` is the token count; `slot_clear` makes a new context of the same capacity |
 | coverage | none | rows 0 to n of each cells part; `fits` compares the rows with the slot's capacity |
 | seal | `qwen38_ctx_round_gdn_bf16` | changes bits in place |
-| poison / last_error | `MkContext::poisoned`, `mk_last_error` | |
+| poison / last_error | `Qwen38Context::poisoned` (`context.rs`); `last_error` of the handle (`engine.rs`) | |
 | part writes | `context::state_write`, `cells_write`, `set_n` | return nothing and stop the program on input they refuse; the wrapper checks every precondition first (part index, bytes, an empty context for parts 3-5, n within `max`, not poisoned) and returns refused; a write to a context that is already poisoned is refused, because this call changes nothing; after the call, the poison flag gives failed (decided 2026-10-18) |
 | close | the drop of the last handle or `Hold` (`engine.rs`) | frees the contexts, then the weights: the arena, the shard maps, the PLE table, the weight table (`worker.rs` `unload`); the next `open` loads them again from the same shards; the HIP runtime, the C++ engine and the pass host stay (see below) |
 | pass_check / pass | `host::segments_problem`, `host::run_pass` in Rust; `qwen38_launch_fused` | tokens only (PLE needs token ids); the worker refuses a segment count outside 1 to 16, then a problem of `segments_problem`, then a poisoned context, then a bad knob; the host gathers the PLE rows (`ple.rs`), builds the stages (`pass.rs`), and launches them; outputs are logits per segment |
@@ -385,33 +388,35 @@ Reason: the fake engine must serve a family with a vocabulary, and the output ro
 | telemetry | none | milestone 15 step 6 removed the op times and the event ring of a pass, which had no call |
 | determinism | `always` | `stage.h`: "every op's output bits depend only on its work items"; top-k ties break by index; bit settings in the identity |
 
-### v0 mk binding choices
+### v0 binding choices
 
 Decided 2026-10-20 (reading). The milestone 8 binding needs these choices. Each is the simplest choice that fits
 the ABI.
 
-- **A context is a state.** `State` is `Slot(u32)` in v0, so each mk context has a slot index. `limits().slots`
-  declares the pool that one handle creates at open, as two classes of slots. The small class comes first, as in
-  the fake engine.
+- **A context is a state.** `State` is `Slot(u32)` in v0, so each the Qwen3.8 engine context has a slot index.
+  `limits().slots` declares the pool that one handle creates at open, as two classes of slots. The small class comes
+  first, as in the fake engine.
   - Slots 0 to 11 hold 4,096 tokens each. Slots 12 to 15 hold 32,768 tokens each.
   - The process opens one handle. The conformance suite opens a handle for each gate.
-  - This binding does not bind `mk_ctx_fork`.
-- **mk declares `slots` and `coverage`.** Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02. The park on
-  stop (spec 10.3) and the council build (spec 11.3c) need both.
-  - `slot_high(slot)` is the context's token count (`mk_ctx_n`). A slot with no context gives 0.
-  - `slot_clear(slot)` frees the context and makes a new one of the same capacity, under the same slot. mk has no
-    call that empties a context. The free comes first, because the context term holds one context for each slot.
-  - A clear also empties a poisoned context (spec 8.2). `mk_ctx_free` does not check the poison.
-  - When mk makes a context of another capacity, the slot has no context, and the clear gives `Failed`.
+  - The engine has no call that forks a context (`context.rs`: "the engine has no fork").
+- **The Qwen3.8 engine declares `slots` and `coverage`.** Decided by senpai 2026-10-20 night, accepted by Amy
+  2026-11-02. The park on stop (spec 10.3) and the council build (spec 11.3c) need both.
+  - `slot_high(slot)` is the context's token count (`ctx_n` in `context.rs`). A slot with no context gives 0.
+  - `slot_clear(slot)` frees the context and makes a new one of the same capacity, under the same slot. The Qwen3.8
+    engine has no call that empties a context. The free comes first, because the context term holds one context for each
+    slot.
+  - A clear also empties a poisoned context (spec 8.2). `ctx_free` (`context.rs`) does not check the poison.
+  - When the Qwen3.8 engine makes a context of another capacity, the slot has no context, and the clear gives `Failed`.
   - `coverage` gives rows 0 to n for part 3 (`kv`) and part 4 (`idx_keys`), from the byte count of the rows. It
     gives no position for a fixed part.
   - `fits` accepts a span of a cells part that starts at 0 and ends at or below the slot's capacity in tokens.
   - `cells_read` takes `from` 0 and `n` equal to the token count. Then it is a whole read. It refuses every other
-    range, because mk has no range read.
+    range, because the Qwen3.8 engine has no range read.
 
   **Open:** `context::ctx_new` stops the program when `hipMalloc` fails (`hip_rt_malloc` in `rt.cpp`). Thus a clear
   that cannot allocate ends the process, and the binding never sees a null context. The free comes first, so the
-  allocator holds the bytes. mk needs a reset call that keeps the buffers, so that a clear does not allocate.
+  allocator holds the bytes. The Qwen3.8 engine needs a reset call that keeps the buffers, so that a clear does not
+  allocate.
   - The factory of the process crate gives `plan(config)` (next rule), and this binding fixes the pool.
 - **The factory plans from `weights_bytes`.** Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
   - The size of the weight arena comes from `arena::plan`, which reads the tensor records of the shards at open. The
@@ -427,31 +432,32 @@ the ABI.
   2026-11-02. The pool had 16 contexts of 256 tokens (Amy, 2026-10-20: "grow the pool"). A kaijutsu context needs
   thousands of tokens, so 256 cannot serve council v2.
   - The count stays 16, which equals `max_segments`. A pass can hold one segment for each context.
-  - mk takes any capacity that is a multiple of 256, up to 32,768 (`context.rs` `ctx_new`).
+  - The Qwen3.8 engine takes any capacity that is a multiple of 256, up to 32,768 (`context.rs` `ctx_new`).
   - Two sizes keep the long contexts few and the short ones many.
   - The measured bytes are in "The context term holds the pool", below.
   - To change the classes, edit `CONTEXT_CLASSES` in `spec.rs`. The tests derive their numbers from it.
 - **A long prompt takes several passes.** A pass holds at most 256 tokens (`kMaxPassTokens`), so `max_pass_inputs`
   stays 256. The caller feeds a prompt in passes of at most 256 tokens. Each pass starts at the context's token
-  count. mk gives the same bits for any split (spec 6.13).
-- **mk declares a checkpoint grain of 256 tokens.** Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02. The
-  GPU tests of spec 6.13 measured a copy round trip and pass splits across 256 tokens. mk also declares
-  `segments_exact`, which a grain needs. The grain is `CHECKPOINT_GRAIN` in `spec.rs`.
+  count. The Qwen3.8 engine gives the same bits for any split (spec 6.13).
+- **The Qwen3.8 engine declares a checkpoint grain of 256 tokens.** Decided by senpai 2026-10-20 night, accepted by Amy
+  2026-11-02. The GPU tests of spec 6.13 measured a copy round trip and pass splits across 256 tokens. The Qwen3.8
+  engine also declares `segments_exact`, which a grain needs. The grain is `CHECKPOINT_GRAIN` in `spec.rs`.
   - A profile with `interval_copies = 0` makes no copies. The gfx1151host profile has 0.
-- **`max_quantum_ms` is 10000.** mk splits a pass at 256 tokens (`kMaxPassTokens`). A prefill chunk of that size takes
-  about 2 s. mk's watchdog stops the program at a 10 s deadline (`worker.rs` `watchdog_deadline`), so the declared
-  bound is 10 s.
-- **`cells_write` writes `n` rows from `from`.** The binding refuses a `from` other than 0 and changes nothing. mk
-  writes n cells into an empty context that owns its K/V. The caller calls `set_n` after it writes every part.
-- **`positions` are strict and `meta` is empty.** mk appends the tokens at the context's n. The binding refuses a
-  segment whose first position is not n, or whose positions are not contiguous. mk reads no per-token metadata, so
-  `meta` must be empty.
+- **`max_quantum_ms` is 10000.** The Qwen3.8 engine splits a pass at 256 tokens (`kMaxPassTokens`). A prefill chunk of
+  that size takes about 2 s. The Qwen3.8 engine's watchdog stops the program at a 10 s deadline (`worker.rs`
+  `watchdog_deadline`), so the declared bound is 10 s.
+- **`cells_write` writes `n` rows from `from`.** The binding refuses a `from` other than 0 and changes nothing. The
+  Qwen3.8 engine writes n cells into an empty context that owns its K/V. The caller calls `set_n` after it writes every
+  part.
+- **`positions` are strict and `meta` is empty.** The Qwen3.8 engine appends the tokens at the context's n. The binding
+  refuses a segment whose first position is not n, or whose positions are not contiguous. The Qwen3.8 engine reads no
+  per-token metadata, so `meta` must be empty.
 - **A pass is fused.** Milestone 15 step 6 removed the unfused pass, which no call used. The restore's pool stages
   still run one launch each (`qwen38_launch_each`). This binding declares no taps.
-- **The checkpoint digest is a spot check.** The binding hashes each shard's size and its GGUF header, as mk's
-  `weight_hash` does. The digest starts with `spot-sha256:`.
-- **`tokenizer_hash` is a hash of the GGUF tokenizer.** mk loads no tokenizer file. The binding hashes the
-  tokenizer keys of the GGUF metadata, and the family library computes the same hash from the same keys (spec 11.3).
+- **The checkpoint digest is a spot check.** The binding hashes each shard's size and its GGUF header, as the Qwen3.8
+  engine's `weight_hash` does. The digest starts with `spot-sha256:`.
+- **`tokenizer_hash` is a hash of the GGUF tokenizer.** The Qwen3.8 engine loads no tokenizer file. The binding hashes
+  the tokenizer keys of the GGUF metadata, and the family library computes the same hash from the same keys (spec 11.3).
   Amy chose this on 2026-10-20, so a change of the tokenizer changes the recipe. The hash is `sha256:` and 64 hex
   digits, made by `nagaya-text-qwen38` (`hash.rs`). It covers `tokenizer.ggml.model`, `.pre`, `.tokens`,
   `.token_type` and `.merges`, and the bos, eos, eot, padding and unknown token ids when they exist. The template is
@@ -478,7 +484,8 @@ the ABI.
   - The weights take 61 GiB. One handle leaves about 51 GB of MemAvailable. Each further handle takes about 12.2 GB.
   - `open` refuses a pool that would leave less than the 12 GiB floor. Thus at most three handles are open at once.
   - A gate of the conformance suite holds at most three handles.
-- **`canary_hash` is empty.** This binding does not run mk's canary. The process does not run it yet (spec 8.1).
+- **`canary_hash` is empty.** This binding does not run the Qwen3.8 engine's canary. The process does not run it yet
+  (spec 8.1).
 - **The identity carries `QWEN38_FAST_QMM`, `QWEN38_TILES` and `fused`.** They are `Approx`, `ReferenceDefining` and
   `Approx`. The worker reads `QWEN38_FAST_QMM` at each pass build (`worker.rs` `fast_qmm`). `QWEN38_TILES` chooses the
   tiled or the GGUF layout at load (`worker.rs` `tiles`, `arena.rs` `plan`). The binding has not measured whether
@@ -486,20 +493,21 @@ the ABI.
 
 Reason for all: the code must not guess.
 
-**Corrected** by deepseek-flash, 2026-10-18: `max_quantum_ms` was 30000. mk's watchdog aborts a pass at 10 s
-(`engine.h:302-306`), so a 30 s bound promises a quantum that mk would stop. Review finding 13.
+**Corrected** by deepseek-flash, 2026-10-18: `max_quantum_ms` was 30000. The Qwen3.8 engine's watchdog aborts a pass at
+10 s (`engine.h:302-306`), so a 30 s bound promises a quantum that the Qwen3.8 engine would stop. Review finding 13.
 
-**The binary links mk's engine statically.** Amy decided this on 2026-10-22, by interview (AGENTS.md milestone 15).
-It replaces the rule "The deploy profile pins the mk library" (Decided 2026-10-18).
+**The binary links the Qwen3.8 engine statically.** Amy decided this on 2026-10-22, by interview (AGENTS.md milestone
+15). It replaces the rule "The deploy profile pins the engine library" (Decided 2026-10-18).
 
-- The crate holds a copy of mk's sources in `hip/`, from mk commit `555a2a3`. The layout under `src/` is mk's.
-- Under the feature `hip`, `build.rs` compiles the engine units into `libmkengine.a`. It uses ROCm's `clang++` and the
-  flags of mk's CMake build, flag for flag. A test compares them with mk's `compile_commands.json`
-  (`tests/build_flags.rs`). The float flags `-ffp-contract=off -fno-fast-math` stay.
+- The crate holds a copy of the sources of the first Qwen3.8 engine in `hip/`, from its commit `555a2a3`. The layout
+  under `src/` is the same.
+- Under the feature `hip`, `build.rs` compiles the engine units into `libqwen38engine.a`. It uses ROCm's `clang++` and
+  the flags of the CMake build of the first Qwen3.8 engine, flag for flag. A test compares them with its
+  `compile_commands.json` (`tests/build_flags.rs`). The float flags `-ffp-contract=off -fno-fast-math` stay.
 - The crate links the archive whole, so that each HIP object registers its kernels. The HIP runtime and the C++
   library stay shared.
-- `MK_ENGINE_LIB` and the library pin `MK_ENGINE_LIB_SHA256` are gone. The build facts take the place of the pin.
-  `numbers` holds `engine_build_sha256`, the SHA-256 of `libmkengine.a`. It also holds `engine_compiler` and
+- The variable that named the engine library and the pin of its SHA-256 are gone. The build facts take the place of the
+  pin. `numbers` holds `engine_build_sha256`, the SHA-256 of `libqwen38engine.a`. It also holds `engine_compiler` and
   `engine_hip`, the versions of the compiler and of HIP. No path is in `numbers` (spec 12.1).
 - The build facts stay in the identity digest until the canary runs at each start (spec 12.1). Thus a new build
   makes the held entries unusable. Amy accepted one refill for this change.
@@ -507,37 +515,37 @@ It replaces the rule "The deploy profile pins the mk library" (Decided 2026-10-1
   for each profile and feature set. A path of the build directory in the command would change a HIP symbol name.
 - The SHA-256 differs between two checkouts, because `__FILE__` and the debug information hold the source paths.
   Build the deployed binary from the same checkout each time.
-- mk has no call for the vocabulary size. `extern.hip` states `kVocab` and the other sizes of the binding's buffers
-  in `static_assert` lines. A host test compares them with `spec.rs` (`src/layout.rs`).
+- The Qwen3.8 engine has no call for the vocabulary size. `extern.hip` states `kVocab` and the other sizes of the
+  binding's buffers in `static_assert` lines. A host test compares them with `spec.rs` (`src/layout.rs`).
 
 Reason: the binary now holds its engine. The digest of the archive is a fact of the build, so a pin would only
 compare the build with itself.
 
-**The Rust host and the extern layer.** Milestone 15 moved the host code of mk into Rust. Step 3 moved the GGUF
-reader (`gguf.rs`), and step 5 moved the stage schedule (`schedule.rs`). Step 6 moved the arena plan, the PLE gather
-and the stage build (`arena.rs`, `ple.rs` and `pass.rs`):
+**The Rust host and the extern layer.** Milestone 15 moved the host code of the Qwen3.8 engine into Rust. Step 3 moved
+the GGUF reader (`gguf.rs`), and step 5 moved the stage schedule (`schedule.rs`). Step 6 moved the arena plan, the PLE
+gather and the stage build (`arena.rs`, `ple.rs` and `pass.rs`):
 
-- `qwen38_engine_open` takes a `mk_weight_table` (`weight_table.h`): each tensor of the arena by name, in its final
-  layout. The export of the arena (spec 10.2) builds the attach in Rust, from `arena.rs`.
+- `qwen38_engine_open` takes only the watchdog deadline (`binding.rs`). The arena holds each tensor by name, in its
+  final layout (`arena.rs`). The export of the arena (spec 10.2) builds it in Rust, from `arena.rs`.
 - Rust mirrors `Stage` and the argument type of each op as `#[repr(C)]` types (`src/stage.rs`). One file holds each
   size, offset and constant of that mirror (`hip/src/engine/stage_layout.def`). Both the C++ build and the Rust build
   check against it, so a change on one side alone stops a build.
 - `QWEN38_ELIDE` and the other knobs of the build are read in Rust at each pass, and a bad value refuses the pass.
 - The C++ extern layer (`hip/src/engine/extern.hip`) holds only the calls that the binding uses. Each call takes C
   types and calls one `Engine` method or reads one field. The binding declares each call of the layer, and a test
-  compares the two lists. Step 4 removed the calls that only mk's Python harness and lab used, and step 6
-  removed the C++ methods behind them.
+  compares the two lists. Step 4 removed the calls that only a Python harness and a lab used,
+  and step 6 removed the C++ methods behind them.
 
-**mk's pass scratch is a mandatory term.** The ABI says that `pass` never allocates and that its scratch is a
-mandatory term. mk allocates one scratch pool at its first ask and keeps it for the engine's life
+**The Qwen3.8 engine's pass scratch is a mandatory term.** The ABI says that `pass` never allocates and that its scratch
+is a mandatory term. The Qwen3.8 engine allocates one scratch pool at its first ask and keeps it for the engine's life
 (`engine.h:104-112`). The term is `{name: "pass_scratch", tier: device(0), bytes: the measured constant (milestone
 9c), lifetime: engine, kinds: [prefill, decode]}`.
 
-mk has no call for the size. The process measures the pool once on gfx1151 and declares that constant. It refuses
-the engine when a later measurement is larger than the constant. Decided 2026-10-18. **Open** (nagaya-coder-12,
-2026-10-18): the declared bytes are the measured device cost, which is 59 800 564 bytes above the pool's 263 934
-988-byte ask. The HIP runtime's first launch is the likely source of 38 522 880 bytes that the pool and the
-allocator's rounding do not explain.
+The Qwen3.8 engine has no call for the size. The process measures the pool once on gfx1151 and declares that constant.
+It refuses the engine when a later measurement is larger than the constant. Decided 2026-10-18. **Open**
+(nagaya-coder-12, 2026-10-18): the declared bytes are the measured device cost, which is 59 800 564 bytes above the
+pool's 263 934 988-byte ask. The HIP runtime's first launch is the likely source of 38 522 880 bytes that the pool and
+the allocator's rounding do not explain.
 
 The wrapper's host buffers also wait for the process crate (the review's note on finding 9).
 
@@ -545,13 +553,13 @@ The wrapper's host buffers also wait for the process crate (the review's note on
 
 Decided 2026-10-20 (reading): these limits stay, and this section records them.
 
-The binding bound `mk_engine_recover_spin_timeouts` and called it with `on = 1` at open (`566446c`). Milestone 15
-step 6 moved the rule into Rust, and the flag went. A pass can stop on a spin-timeout that the watchdog did not ask
-for. Then `host.rs` `run_pass` always poisons the contexts of the pass. Any other stop ends the process. The test knob
-`QWEN38_MUTATE_STALL_BARRIER` can force a real spin-timeout, so a test of it is now possible; none is written.
+The first binding called a C function that turns on recovery from a spin-timeout, with `on = 1` at open (`566446c`).
+Milestone 15 step 6 moved the rule into Rust, and the flag went. A pass can stop on a spin-timeout that the watchdog did
+not ask for. Then `host.rs` `run_pass` always poisons the contexts of the pass. Any other stop ends the process. The
+test knob `QWEN38_MUTATE_STALL_BARRIER` can force a real spin-timeout, so a test of it is now possible; none is written.
 
 Two paths have no test. A forced spin-timeout, and the `-1` to `PassStatus::Poison` path that follows it, need GPU
-contention, so no test in this suite reaches them. The poisoned `set_n` path has no test on real mk, because mk's
+contention, so no test in this suite reaches them. The poisoned `set_n` path has no test on the real engine, because
 `set_n` stops the program on a poisoned context (`context.rs`). A stub binding tests the refusal.
 
 Reason: a test that passes when the code is broken is a defect, so the suite reports these limits instead of a false
@@ -562,8 +570,8 @@ check. A lab hook for the first case is not in v0.
 Decided 2026-10-20 (reading): this limit stays, and this section records it.
 
 The wrapper calls `parts_problem` at open (in the open path of `worker.rs`), and it
-refuses a library with other part sizes before any write. Real mk matches the declared shapes, so the check passes
-in every test.
+refuses a library with other part sizes before any write. The real engine matches the declared shapes, so the check
+passes in every test.
 
 Deleting the call leaves every test green. Only `parts_problem` has a test (in `spec.rs`): it refuses a larger part
 with `a larger part must be a mismatch`. The call at open is not pinned. A fake library would pin it, and this suite
@@ -807,10 +815,10 @@ group of one card: a smaller Gemma, "or probably a qwen and lfm". Since mileston
 embedding engine uses one card. It is in the group of Gemma 4, and it runs on the device thread of its card (spec
 3.2).
 
-**D2. Inputs.** An engine declares tokens, rows, or both. mk needs token ids even when it gets rows. Its per-layer
-embeddings (PLE) hash the token ids, and its PLE history is a fixed part (`engine.h:75`, `ple_rows`). gmk's audio rows
-and diffusion latents have no tokens. Proposed, and Decided 2026-10-28 (Amy, by interview): `inputs = tokens | rows |
-tokens+rows`, declared per engine.
+**D2. Inputs.** An engine declares tokens, rows, or both. The Qwen3.8 engine needs token ids even when it gets rows. Its
+per-layer embeddings (PLE) hash the token ids, and its PLE history is a fixed part (`engine.h:75`, `ple_rows`). gmk's
+audio rows and diffusion latents have no tokens. Proposed, and Decided 2026-10-28 (Amy, by interview):
+`inputs = tokens | rows | tokens+rows`, declared per engine.
 
 Deferred 2026-10-17 (Amy: "sort it out with the first engine"). mkviolet's Gemma 4 is the first port.
 
@@ -819,15 +827,15 @@ Settled the same day: an engine never takes text. The family library in the naga
 
 Settled 2026-10-21 by the code of the first port, as Amy asked. mkviolet takes token ids. It looks up each
 embedding row on the host, scales it, and writes it into card 0's residual (`write_embeddings`,
-`gemma4.rs:1376-1384`). Thus mkviolet declares `inputs = tokens`, as mk does. The embedding stays inside the
-engine. The ABI keeps `rows` and `tokens+rows` for gmk's audio rows and diffusion latents.
+`gemma4.rs:1376-1384`). Thus mkviolet declares `inputs = tokens`, as the Qwen3.8 engine does. The embedding stays inside
+the engine. The ABI keeps `rows` and `tokens+rows` for gmk's audio rows and diffusion latents.
 
 **D3. Snapshots are named by content ids.** Decided 2026-10-17 (Amy: "yeah, 1, cas is awesome"). There are two keys:
 
 - The **content id** names a stored snapshot: the BLAKE3 hash of its sealed bytes (`blake3:<hex>` in council v2).
   When the snapshot is a piece of a chain, the hash also covers its parent's content id. (mkviolet holds only the
-  rows after the parent.) mk stores snapshots whole, so its ids have no parent. Dedup, integrity, pins, and moves of
-  snapshots between machines all use the content id.
+  rows after the parent.) the Qwen3.8 engine stores snapshots whole, so its ids have no parent. Dedup, integrity, pins,
+  and moves of snapshots between machines all use the content id.
 - The **recipe** is a hash that the nagaya computes, also when the engine is not loaded. It covers the identity
   (bit settings included), the inputs and the boundaries. For an engine whose bits depend on slot geometry, it also
   covers `geometry_key`. Spec 6.2 holds the full list of items and the encoding. The store maps a recipe to one or
@@ -855,7 +863,7 @@ Two content ids under one recipe that cover the same positions have two possible
 reproduce its bits, or the recipe misses an input. The nagaya refuses to serve that recipe. It quarantines the
 conflicting entries and reports them. It never picks one. A person clears the refusal after the cause is known.
 
-A BLAKE3 hash of a whole mk snapshot (about 316 MB) takes tens of milliseconds, small next to a pass.
+A BLAKE3 hash of a whole the Qwen3.8 engine snapshot (about 316 MB) takes tens of milliseconds, small next to a pass.
 
 That refusal is a tripwire. It has a meaning only when the engine promises the same bits. Amended 2026-10-17 (Amy:
 "having some tolerance discernment makes sense. yeah go ahead"): each engine declares which promise it makes.
@@ -891,8 +899,8 @@ plus `last_error`. The caller owns the buffers.
 
 **D6. Poison stays fatal.** Decided 2026-10-18. The nagaya frees a poisoned context and never reads it. For a slot
 engine, it marks a poisoned slot dirty until `slot_clear`, `part_write`, or a pass from position 0 resets it. A pass
-that returns a poison status poisons every context or slot in it (mk: "-1, every context poisoned"). The nagaya fails
-those jobs, keeps the others, and runs the canary before more work runs (spec 8.2).
+that returns a poison status poisons every context or slot in it (the Qwen3.8 engine: "-1, every context poisoned"). The
+nagaya fails those jobs, keeps the others, and runs the canary before more work runs (spec 8.2).
 
 **D7. Seal and park are separate calls.** Decided 2026-10-18. Seal runs only at boundaries in the chain, and it can
 change bits. Park uses the `parts` calls to move state between tiers bit for bit, for both contexts and slots. The
@@ -901,8 +909,8 @@ scheduler parks. It never seals to free a slot.
 **D8. Quanta have a declared length bound.** Decided 2026-10-17 (Amy: "a lil head of line blocking is okay in this
 design. max_quantum_ms seems like a good call"). An engine declares `max_quantum_ms` in `limits()`. The engine
 cannot know a pass's time before it runs. Thus it splits long work into chunks whose size it measures to fit the
-bound (mk: 256-token prefill chunks). In v0 there are no yields inside a pass. A quantum still runs to its end, so
-the worst wait behind other work is one quantum.
+bound (the Qwen3.8 engine: 256-token prefill chunks). In v0 there are no yields inside a pass. A quantum still runs to
+its end, so the worst wait behind other work is one quantum.
 
 A watchdog thread reports each quantum that runs past the bound.
 
@@ -945,8 +953,8 @@ because a position changes the bits that later passes read (RoPE). Fit to a slot
 Decided 2026-10-18: name order, 4 KiB data start, shapes, and coverage in the id.
 
 The content id is the BLAKE3 hash of this canonical file. Each engine converts between its layout and the canonical
-form on the way into and out of the store. For mk, that is close to the copy it already does: its copy re-strides
-cells by capacity (`engine.h:169`). For mkviolet, the conversion unrolls each ring into position order.
+form on the way into and out of the store. For the Qwen3.8 engine, that is close to the copy it already does: its copy
+re-strides cells by capacity (`engine.h:169`). For mkviolet, the conversion unrolls each ring into position order.
 
 A park from device memory to host memory can keep the engine's native bytes, if the conversion is too slow for short
 parks. Such a park has no content id. It gets one when it goes into the store. **Open:** measure the conversion on
@@ -1016,8 +1024,9 @@ Decided 2026-10-18. A training engine declares the `train` capability:
 ## Image
 
 Decided 2026-10-18, before any image engine. An image engine used `pass(segments, taps)` with quantum kind `step`. A
-diffusion latent was a fixed part, and each `step` quantum replaced it. mk's painter was the first case (mk
-`docs/painter.md`). mk's `YieldHook` showed that a paused run matched the unpaused one, max pixel difference 0.
+diffusion latent was a fixed part, and each `step` quantum replaced it. The Qwen3.8 engine's painter was the first case
+(the Qwen3.8 engine `docs/painter.md`). The Qwen3.8 engine's `YieldHook` showed that a paused run matched the unpaused
+one, max pixel difference 0.
 
 **The image capability.** Proposed by senpai (Claude Opus 5.5), 2026-10-28, for spec 11.9, and Decided 2026-10-28 (Amy,
 by interview). It replaces the rule of 2026-10-18 above. Reason: SDXL has two text encoders, token weights, a sampler
@@ -1222,9 +1231,9 @@ of a small engine on the waiting card costs the large engine nothing.
 - A quantum of the engine with one device holds only its device. The scheduler ranks it with the stage quanta of
   that device by class and priority (spec 5.3, 5.4).
 
-Reason: an engine opens on one thread and stays on it, because some engines need one thread (mk). A job body moves
-to the stage thread for its quantum, and the engine never moves. The first rule of this list keeps the large engine
-loaded when the small one fits.
+Reason: an engine opens on one thread and stays on it, because some engines need one thread (the Qwen3.8 engine). A job
+body moves to the stage thread for its quantum, and the engine never moves. The first rule of this list keeps the large
+engine loaded when the small one fits.
 
 ## LFM3
 
