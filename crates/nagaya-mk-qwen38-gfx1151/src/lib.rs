@@ -10,6 +10,7 @@
 mod arena;
 mod binding;
 mod context;
+mod control;
 mod dequant;
 mod engine;
 mod gguf;
