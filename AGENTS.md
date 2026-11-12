@@ -359,8 +359,8 @@ Amy, 2026-11-11: "go ahead and rework milestones in whatever order makes sense n
 Fable 5.2, 2026-11-11):
 
 1. Milestone 31 steps 1 and 2 for the Qwen3.8 engine: done on 2026-11-12, and deployed on gfx1151host.
-2. Milestone 34, Qwen3.8 catches up, on gfx1151host. It holds milestone 30 steps 7 to 11. It can run beside the next
-   item.
+2. Milestone 34, Qwen3.8 catches up, on gfx1151host. It holds milestone 30 steps 7 to 11. Its steps 1 to 6 are done. It
+   can run beside the next item.
 3. Milestone 31 steps 1 and 2 for the other engines, on b70host. Then steps 3 to 7: the docs, the machines,
    the build, the license and the review.
 4. Milestone 31 step 8, the publication, when Amy says so.
@@ -397,8 +397,9 @@ These steps are open. Each step ends with the checks green:
 
 Two things from steps 5 and 6 are open too:
 
-- A bound of the barrier wait that counts polls, not time. It waits for a diagnostic that faulted the GPU in 5 of
-  5 stress runs. The patch is on gfx1151host, outside the repository.
+- A bound of the barrier wait that counts polls, not time. Its diagnostic faulted the GPU in 5 of 5 stress runs on
+  2026-11-10. Decided 2026-11-12: do not hunt that fault unless it happens again. The patch is on gfx1151host, outside
+  the repository.
 - 8 contexts give no more tokens each second than 4 (46.6 against 47.3), and 16 give 65.0. Decided 2026-11-12: this
   is not a defect. Each row reads 10 of 512 experts in each layer, so more rows read more weights.
 
@@ -565,48 +566,64 @@ checks green.
 ### Milestone 34: Qwen3.8 catches up
 
 The Qwen3.8 engine on gfx1151host gets what the LFM3 engine has for the lab: a tap, control vectors and latent steps.
-Amy started it on 2026-11-12. The order is by Claude Fable 5.2. She decided these rules on 2026-11-12:
+It started on 2026-11-12. The order is by Claude Fable 5.2. These rules were decided on 2026-11-12:
 
-- **The names came first.** Milestone 31 steps 1 and 2 are done for this engine (`d1d02af`). The table of names is
-  in `docs/history.md`, "Milestone 31".
 - **The residual.** The state between two layers of Qwen3.8 is 4 streams of 2,560 values. `residual` is the 4
-  streams, 10,240 values, for a tap and for a control vector. The output fold of the streams serves the tap `lens`.
-- **The canary.** The build hash leaves the identity digest, as spec 12.1 says. A canary of the Qwen3.8 engine
-  takes its place (spec 8.1). Measure the time that the canary adds to a load, and report it.
-- **The scope of the canary** is the Qwen3.8 engine. The other engines get theirs later.
-- **The J-Lens waits.** A fit of Qwen3.8 needs more memory than gfx1151host has. Amy looks for the hardware.
+  streams, 10,240 values, for a tap and for a control vector. The head's row is a tap of its own, `fold`.
+- **The canary.** The build hash is out of the identity digest (spec 12.1). A canary of the Qwen3.8 engine takes
+  its place (spec 8.1). Its record is a table in the crate. A build with other bits does not open until a commit
+  records its hash. A set with no record refuses the start. The canary runs at each load.
+- **Control vectors.** The op runs on the host first. Then a device op takes its place (step 7).
+- **The GPU fault of 2026-11-10** is closed unless it happens again. A small change of the device code faulted
+  the GPU in 5 of 5 stress runs, and no cause was found. The machine works hard, and the cause can be many
+  things. It does not stop a change of the device code. The stress run stays a gate of each new device op.
+- **No old code beside new code.** A deploy is a flag day ("Milestone 31").
+- **The J-Lens waits** for hardware. A fit of Qwen3.8 needs more memory than gfx1151host has.
 
-A fact that the steps use: the engine build hash depends on the path of the checkout. Two worktrees with the same
-engine source gave two hashes. The canary removes the hash from the digest, so this needs no other repair.
+Steps 1 to 6 are done and deployed on gfx1151host (`1471a00`, 2026-11-12). The results:
 
-Each new op of the device code gets the stress run as a gate: `hip_joined` beside a loop of release builds. A
-small change of the device code faulted the GPU in 5 of 5 such runs on 2026-11-10, and its defect is not known.
+1. **Repairs.** The load route refuses a load that the engine's memory check refuses (spec 3.3b). A reply to an
+   unmarked message holds a head. A second chat turn fed 146 of its 180 prompt tokens before, and 20 of 171 after.
+2. **The canary.** 5 tokens, 300 tokens in two passes, and 8 greedy steps as joined passes of 2 segments. It adds
+   1.2 s to a load of about 30 s on the fast path, and 4.2 s on the exact path. The fast path gave the same bits in
+   5 of 5 processes. Two checkouts now give one identity.
+3. **Docs.** `docs/engine-abi.md`, "The residual of the Qwen3.8 engine".
+4. **Oracle fixture.** `tests/fixtures/oracle/qwen38_residual.json`, and the full rows in `target/qwen38-golden`
+   (`tools/oracle_fixture.py --residual`).
+5. **The taps `residual` and `fold`.** A pass with a tap or a control list runs as launches cut at layer ends. The
+   host reads or changes rows between two launches. No device code changed. On the exact path the rows match
+   the reference to 1.8e-5 of the size of a row.
+6. **Control vectors.** A table of 8 entries, and `add`, `ablate` and `clamp` on the host. A decode step under a
+   list on 48 layers takes 80 ms, where a plain step takes 63 ms. A prefill of 256 tokens takes 1,865 ms, where a
+   plain one takes 499 ms. The cause: each row goes to the host and back at each layer.
 
-Do the steps in this order. Each step ends with the checks green.
+These steps are open. Do them in this order. Each step ends with the checks green.
 
-1. **Repairs.** The load route refuses a load that does not fit; on 2026-11-11 it started the load, and the
-   process stopped. Measure the tokens that a second chat turn feeds on Qwen3.8.
-2. **The canary.** Fixed inputs and their exact outputs: a short prompt, a long prompt and a greedy decode. Its
-   hash is in the identity. The process runs it before the engine is ready, with no tolerance. Then the build
-   facts go into the member `build`, outside the digest. Built on 2026-11-12, on the branch `m34-canary`. The card
-   gates are not run yet.
-   - The engine runs the canary at each load and checks a table in `canary.rs`. `build` is out of the digest.
-   - The canary adds about 1.9 s (fast path) or 4.2 s (exact path) to a load of about 28 s.
-   - Not built: the fatal state of spec 8.2, and the `build` of a store entry.
-   - Not built: the canary of the other engines.
-3. **Docs.** Milestone 30 step 7, with the residual of 4 streams as a rule. The control vectors of Qwen3.8.
-4. **Oracle fixture.** Milestone 30 step 8, and one run with an `add`.
-5. **The tap hook.** Milestone 30 step 9. A tap in a joined pass gives the rows of the pass alone. Written: the host
-   code, with host tests, and the card tests in `tests/hip_tap.rs`. The card gates have not run.
-6. **Control vectors.** The table at `open`, `control_write`, and the op after each layer. `pass` checks
-   `segment.control`. Card gates: a strength of 0 gives the bits of no item, and an `add` matches the oracle. Two
-   lists in one pass each give the bits of the pass alone. Written: the host code, with host tests, and the card
-   tests in `tests/hip_control.rs`. The card gates have not run.
-7. **The lab routes.** A route chooses a model by what its engine declares, not by its kind. `project` and `trace`
-   read the GGUF head and the output fold.
-8. **Latent steps.** Milestone 30 steps 10 and 11.
-9. **Deploy and trial.** The gogi suite, a trial with Amy, and a kaibo review round.
-10. **The J-Lens.** Last, when the hardware is there.
+7. **A device op for the three control ops.** Decided 2026-11-12: it is the right form. The host op is its oracle, and
+   the gate is equal bits. So the device op keeps the order of the sums: 8 lanes by index modulo 8, joined in pairs,
+   with no fused multiply-add. First show that the HIP compiler keeps that order. Two forms, the simpler first: a
+   small kernel of its own that runs at the launch cuts, then an op inside the megakernel. Measure a prefill of 256
+   tokens again.
+8. **The lab routes.** A route chooses a model by what its engine declares, not by its kind. `project` and `trace`
+   read the GGUF head and the output fold. The tap `lens` needs 48 logit rows, and the scratch holds 16.
+9. **Latent steps.** Milestone 30 steps 10 and 11. A latent step reads `fold`. The placeholder of a latent position
+   is the padding token.
+10. **Trial and review.** A steering trial and a latent trial with the owner, and a kaibo review round with a cast
+    of another model family. No review round ran on this milestone yet.
+11. **The J-Lens.** Last, when the hardware is there.
+
+Small things that are open, in no order:
+
+- `crates/nagaya/tests/qwen38_stop.rs` fails with the feature `hip` since 2026-11-01. It reads the gfx1151host profile,
+  where Qwen3.8 is now on demand, with a registry of one kind. Give the test a profile of its own.
+- Not built for the canary: the fatal state of spec 8.2, the `build` of a store entry, and the canary of the
+  other engines.
+- A reply that ends in white space, or that the tokenizer would split another way, holds no head.
+- A tapped pass allocates on the host: about 2 MB for each logit row.
+- `qmmh.h` keeps the buffer-load variants (`P >= 0`) and the field `wbulk`, which only a removed knob chose.
+- The memory check before a swap is built for the Qwen3.8 engine only.
+- The profile of each machine must not name `pin_identity`. b70host must copy its new profile into its store
+  directory at its next deploy, or its unit does not start.
 
 Each stop and start of `nagaya.service` goes into `signoff.md`.
 
