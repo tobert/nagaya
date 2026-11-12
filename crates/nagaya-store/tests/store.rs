@@ -448,6 +448,7 @@ impl Engine for TestEngine {
             plan_table: String::new(),
             bit_settings: Vec::new(),
             canary_hash: String::new(),
+            build: std::collections::BTreeMap::new(),
         }
     }
 

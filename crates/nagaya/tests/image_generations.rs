@@ -283,7 +283,6 @@ impl Fixture {
                 family: toml::Table::new(),
                 lab: toml::Table::new(),
                 share: 1,
-                pin_identity: false,
                 residency,
                 pinned: false,
             }],

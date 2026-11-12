@@ -7,7 +7,7 @@
 #![cfg(feature = "hip")]
 
 use nagaya_abi::{Engine, OutputsWanted, Segment, SegmentInputs, State};
-use nagaya_mk_qwen38_gfx1151::open;
+use nagaya_mk_qwen38_gfx1151::{canary, open};
 
 /// The host's MemAvailable in bytes. The arena is a memfd, so its pages are not available while it lives.
 fn mem_available() -> u64 {
@@ -65,7 +65,14 @@ fn the_last_drop_frees_the_weights_and_the_next_open_gives_the_same_logits() {
     let mut first: Option<Vec<u8>> = None;
     let mut after_drop = Vec::new();
     for round in 0..3 {
+        let runs_before = canary::load_runs();
         let mut engine = open().expect("open the engine");
+        // Each load of the weights runs one canary: the first open and each load after a close (spec 8.1).
+        assert_eq!(
+            canary::load_runs(),
+            runs_before + 1,
+            "round {round}: the open did not run exactly one canary"
+        );
         let (loaded, loaded_gtt) = (own_bytes(), gtt_used());
         let bytes = logits(&mut engine);
         drop(engine);

@@ -76,7 +76,6 @@ fn engine(name: &str, device: u32, bytes: u64, residency: Residency) -> EnginePl
         family: toml::Table::new(),
         lab: toml::Table::new(),
         share: 1,
-        pin_identity: false,
         residency,
         pinned: false,
     }

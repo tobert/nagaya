@@ -99,9 +99,33 @@ no engine. Check the log line "ready with 1 engines" after each start.
 - A new profile that loads or reloads an engine makes the process exit with code 4 and restart (spec 3.3, "Which
   actions run in place", 10.4). systemd counts that start. The unit allows 3 starts in 600 s, so a fourth profile
   swap in 600 s fails and the unit stays down.
-- Exit code 3 is a refusal to start: a bad config, a profile that does not fit, a pinned identity that differs.
+- Exit code 3 is a refusal to start: a bad config, a profile that does not fit, a canary that differs from its record.
   The unit does not restart. Read the log, fix the cause, and run `systemctl --user reset-failed nagaya.service`.
   Then start it.
+
+## The canary of the Qwen3.8 engine
+
+The Qwen3.8 engine runs a canary at each load of its weights (spec 8.1). It runs fixed token ids through the engine and
+hashes the logits. The open fails when the hash differs from the record in the table of `src/canary.rs` of the engine
+crate. At start the process exits with code 3, and the unit does not restart.
+
+The canary adds time to a load. Measured on gfx1151host on 2026-11-12, in 5 processes each: about 1.9 s on the fast path and
+about 4.2 s on the exact path. A load takes about 28 s. The log has one line at each load: the canary hash, its
+milliseconds and the facts of the build.
+
+When the canary refuses an open, for example after an update of ROCm or a change of the kernels:
+
+1. Read the message. It gives the key, the record, the measured hash and the 19 row hashes.
+2. Decide if the change of bits is meant. If it is not, the build or the driver changed the result. Do not serve it.
+3. If it is meant, replace the value in the table in a commit that says that the bits moved. The identity digest then
+   changes, and each held context of the engine fills again once.
+4. A checkpoint or a setting with no record gives an error that names the key. Measure it with the second form of the
+   open: `cargo test -p nagaya-mk-qwen38-gfx1151 --features hip --test hip_canary -- --nocapture`, with `QWEN38_SHARDS`
+   set and `nagaya.service` stopped. Add the line that it prints to the table, in a commit that records the bits of
+   that checkpoint.
+
+The card tests of a deploy open the engine in the checked form, so a deploy finds a mismatch before the service does.
+A mismatch at a swap after the start stops the process, as each failed open of a swap does.
 
 ## The kaijutsu gate
 

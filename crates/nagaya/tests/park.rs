@@ -82,7 +82,6 @@ fn engine(name: &str, kind: &str, devices: &[DeviceId]) -> EnginePlacement {
         family: toml::Table::new(),
         lab: toml::Table::new(),
         share: 1,
-        pin_identity: false,
         residency: Default::default(),
         pinned: false,
     }
@@ -479,6 +478,29 @@ fn the_identity_digest_uses_the_recipe_key_context() {
     add(&mut keyed, 7, &settings);
     add(&mut keyed, 8, identity.canary_hash.as_bytes());
     assert_eq!(digest, *keyed.finalize().as_bytes());
+}
+
+#[test]
+fn two_identities_that_differ_only_in_build_have_one_digest() {
+    // The canary decides if a build changed the bits, so the digest does not cover `build` (spec 12.1).
+    let first = seeded().identity();
+    let mut second = first.clone();
+    second
+        .build
+        .insert("engine_build_sha256".to_owned(), "another build".to_owned());
+    second
+        .build
+        .insert("engine_hip".to_owned(), "another runtime".to_owned());
+    assert_ne!(first, second);
+    assert_eq!(identity_digest(&first), identity_digest(&second));
+}
+
+#[test]
+fn two_identities_that_differ_in_the_canary_hash_have_two_digests() {
+    let first = seeded().identity();
+    let mut second = first.clone();
+    second.canary_hash = format!("{}x", first.canary_hash);
+    assert_ne!(identity_digest(&first), identity_digest(&second));
 }
 
 #[test]

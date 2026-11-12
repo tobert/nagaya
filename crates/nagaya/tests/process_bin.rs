@@ -410,7 +410,7 @@ fn the_log_shows_a_device_that_is_not_ignored_as_active() {
     wait_timeout(&mut child, Duration::from_secs(10));
 }
 
-/// A `PUT` of a profile whose engine changes `pin_identity` is a `reload`. The process answers 202, persists the
+/// A `PUT` of a profile whose engine changes its `family` table is a `reload`. The process answers 202, persists the
 /// profile, and stops with exit 4 (spec 3.3).
 #[test]
 fn a_put_of_a_profile_that_needs_a_restart_exits_four() {
@@ -440,7 +440,9 @@ fn a_put_of_a_profile_that_needs_a_restart_exits_four() {
     assert_eq!(http_status(addr, "/nagaya/v1/profile").unwrap(), "HTTP/1.1 200 OK");
     let path = fixture.store.join("profile.toml");
     let mut profile = nagaya::profile::PlacementProfile::read(&path).unwrap();
-    profile.engines[0].pin_identity = true;
+    profile.engines[0]
+        .family
+        .insert("chat_template".to_owned(), toml::Value::String("x".to_owned()));
     let body = serde_json::to_string(&profile).unwrap();
     let status = http_send(addr, "PUT", "/nagaya/v1/profile", &body).unwrap();
     assert_eq!(status, "HTTP/1.1 202 Accepted");

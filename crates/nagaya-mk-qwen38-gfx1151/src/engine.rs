@@ -8,6 +8,7 @@ use nagaya_abi::{
     WriteResult,
 };
 
+use crate::canary::CanaryCheck;
 use crate::control::{self, TapSet};
 use crate::spec;
 use crate::worker::{Call, ClassReading, PassProblem, PassRequest, Qwen38Error, Qwen38Paths, Worker, start};
@@ -33,8 +34,16 @@ fn worker() -> Result<Arc<Worker>, Qwen38Error> {
 
 /// The identity and the limits of the engine on the shards of `QWEN38_SHARDS`, with no GPU and no load. An open gives
 /// the same facts.
+///
+/// The canary hash of the identity comes from the table of records (spec 8.1). A checkpoint and settings with no line
+/// are an error here, so the description is the checked form. `describe_with` gives the other form.
 pub fn describe() -> Result<(Identity, Limits), Qwen38Error> {
-    crate::worker::describe(&Qwen38Paths::from_env()?)
+    describe_with(CanaryCheck::Record)
+}
+
+/// Like `describe`, with the form of the canary check. With `Measure`, a key with no record gives an empty hash.
+pub fn describe_with(check: CanaryCheck) -> Result<(Identity, Limits), Qwen38Error> {
+    crate::worker::describe(&Qwen38Paths::from_env()?, check)
 }
 
 /// Open the Qwen3.8 engine, or make a new handle on the one that is open.
@@ -42,9 +51,17 @@ pub fn describe() -> Result<(Identity, Limits), Qwen38Error> {
 /// The first call loads the weights, and so does the first call after the last handle dropped. Every call creates a
 /// new context pool for the handle. Every engine call goes to one worker thread, because the HIP device is the calling
 /// thread's current device.
+///
+/// The canary of the load must match its record, or the open is an error (spec 8.1). `open_with` gives the other form.
 pub fn open() -> Result<Qwen38Engine, Qwen38Error> {
+    open_with(CanaryCheck::Record)
+}
+
+/// Like `open`, with the form of the canary check. With `Measure`, the open compares nothing: a person measures the
+/// canary hash of a checkpoint that the table does not hold. The process uses `open`.
+pub fn open_with(check: CanaryCheck) -> Result<Qwen38Engine, Qwen38Error> {
     let worker = worker()?;
-    worker.acquire()?;
+    let load_canary = worker.acquire_checked(check)?;
     let pool = match worker.open_states(&spec::CONTEXT_CLASSES) {
         Ok(pool) => pool,
         Err(error) => {
@@ -54,6 +71,7 @@ pub fn open() -> Result<Qwen38Engine, Qwen38Error> {
     };
     Ok(Qwen38Engine {
         worker,
+        load_canary,
         states: pool.ids.into_iter().map(Some).collect(),
         readings: pool.readings,
         last_error: None,
@@ -67,6 +85,8 @@ pub struct Qwen38Engine {
     states: Vec<Option<u64>>,
     readings: Vec<ClassReading>,
     last_error: Option<String>,
+    /// The canary of the load that this handle's weights came from.
+    load_canary: crate::canary::Report,
 }
 
 impl Qwen38Engine {
@@ -121,6 +141,19 @@ impl Qwen38Engine {
         self.worker.spec().pass_scratch
     }
 
+    /// The canary of the load that this handle's weights came from. The open has checked it (spec 8.1).
+    pub fn load_canary(&self) -> &crate::canary::Report {
+        &self.load_canary
+    }
+
+    /// Run the canary of the engine (spec 8.1) and report its row hashes and its time.
+    ///
+    /// The worker thread runs it in two contexts of its own and frees them. It touches no context of this handle.
+    /// It checks no record: nothing compares the hashes yet. A pass that fails is an error.
+    pub fn canary(&self) -> Result<crate::canary::Report, Qwen38Error> {
+        self.worker.canary()
+    }
+
     /// What each class of contexts took when the engine made it, in the order of `spec::CONTEXT_CLASSES`.
     pub fn pool_readings(&self) -> &[ClassReading] {
         &self.readings
@@ -164,7 +197,7 @@ pub struct Hold {
 /// Hold the engine's weights: load them when no handle or hold has them.
 pub fn hold() -> Result<Hold, Qwen38Error> {
     let worker = worker()?;
-    worker.acquire()?;
+    worker.acquire_checked(CanaryCheck::Record)?;
     Ok(Hold { worker })
 }
 

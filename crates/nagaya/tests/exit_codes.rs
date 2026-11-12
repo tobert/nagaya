@@ -29,12 +29,23 @@ fn a_stall_is_a_crash() {
 }
 
 #[test]
-fn an_open_mismatch_is_a_refusal_to_start() {
+fn a_part_size_mismatch_at_open_is_a_refusal_to_start() {
     let event = Event::OpenFailed {
         group: 0,
         engine: "a".to_owned(),
-        kind: OpenErrorKind::Identity,
+        kind: OpenErrorKind::PartSize,
         message: "no weights".to_owned(),
+    };
+    assert_eq!(event.exit_code(), Some(ExitCode::RefusedStart));
+}
+
+#[test]
+fn a_canary_failure_at_open_is_a_refusal_to_start() {
+    let event = Event::OpenFailed {
+        group: 0,
+        engine: "a".to_owned(),
+        kind: OpenErrorKind::Canary,
+        message: "the canary does not match its record".to_owned(),
     };
     assert_eq!(event.exit_code(), Some(ExitCode::RefusedStart));
 }

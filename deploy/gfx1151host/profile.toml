@@ -13,7 +13,6 @@ name = "qwen38"
 kind = "mk-qwen38-gfx1151"
 devices = [0]
 share = 1
-pin_identity = false
 residency = "on_demand"
 
 # `weights_bytes` is the size of the weight arena of the engine. The engine knows it only after the weights load, and
@@ -35,7 +34,6 @@ name = "qwen-image-fusal"
 kind = "qwenimage21"
 devices = [0]
 share = 1
-pin_identity = false
 
 [engines.config]
 model = "/tank/ml/models/qwen-image-2.1/Qwen-Image-2.1"

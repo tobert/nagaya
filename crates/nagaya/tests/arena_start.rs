@@ -34,7 +34,6 @@ fn engine(name: &str, kind: &str, arena: &str) -> EnginePlacement {
         family: toml::Table::new(),
         lab: toml::Table::new(),
         share: 1,
-        pin_identity: false,
         residency: Default::default(),
         pinned: false,
     }

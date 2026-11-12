@@ -10,7 +10,6 @@ name = "qwen"
 kind = "fake"
 devices = [0]
 share = 1
-pin_identity = true
 pinned = true
 
 [engines.config]
@@ -44,7 +43,6 @@ fn example_profile() -> PlacementProfile {
                 family: toml::Table::new(),
                 lab: toml::Table::new(),
                 share: 1,
-                pin_identity: true,
                 residency: Residency::Resident,
                 pinned: true,
             },
@@ -56,7 +54,6 @@ fn example_profile() -> PlacementProfile {
                 family: toml::Table::new(),
                 lab: toml::Table::new(),
                 share: 3,
-                pin_identity: false,
                 residency: Residency::OnDemand,
                 pinned: false,
             },
@@ -82,7 +79,6 @@ fn the_profile_names_engines_devices_config_and_shares() {
     assert_eq!(profile.engines[0].kind, "fake");
     assert_eq!(profile.engines[0].devices, vec![0]);
     assert_eq!(profile.engines[0].share, 1);
-    assert!(profile.engines[0].pin_identity);
     assert_eq!(profile.engines[0].config.get("slots").unwrap().as_integer(), Some(2));
     assert_eq!(
         profile.budgets[0].tiers,
@@ -132,7 +128,6 @@ fn a_store_section_without_nvme_names_the_key() {
 fn the_optional_engine_fields_have_defaults() {
     let profile = PlacementProfile::parse(EXAMPLE).unwrap();
     assert_eq!(profile.engines[1].config, toml::Table::new());
-    assert!(!profile.engines[1].pin_identity);
     assert_eq!(profile.engines[1].family, toml::Table::new());
     assert_eq!(profile.engines[0].residency, Residency::Resident);
     assert!(!profile.engines[1].pinned);
@@ -157,6 +152,23 @@ fn a_profile_that_names_an_idle_time_is_refused_and_says_the_key_is_gone() {
     assert!(error.contains("`idle_unload_s`"), "{error}");
     assert!(error.contains("the key is gone"), "{error}");
     assert!(error.contains("helper"), "the message names the engine: {error}");
+}
+
+/// The pin of the identity is gone. The canary holds the bits now (spec 8.1). A profile that names the key does not
+/// parse, and the message says that the key is gone, also when the value is `false`.
+#[test]
+fn a_profile_that_names_pin_identity_is_refused_and_says_the_key_is_gone() {
+    for value in ["true", "false"] {
+        let text = EXAMPLE.replace(
+            "share = 3
+",
+            &format!("share = 3\npin_identity = {value}\n"),
+        );
+        let error = PlacementProfile::parse(&text).unwrap_err().to_string();
+        assert!(error.contains("`pin_identity`"), "{error}");
+        assert!(error.contains("the key is gone"), "{error}");
+        assert!(error.contains("helper"), "the message names the engine: {error}");
+    }
 }
 
 #[test]

@@ -185,6 +185,7 @@ impl Qwen3TtsEngine {
             ),
             bit_settings: Vec::new(),
             canary_hash: String::new(),
+            build: std::collections::BTreeMap::new(),
         };
         let mut engine = Self {
             config,

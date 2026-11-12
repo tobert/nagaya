@@ -31,7 +31,6 @@ fn engine(name: &str, kind: &str, devices: &[DeviceId]) -> EnginePlacement {
         family: toml::Table::new(),
         lab: toml::Table::new(),
         share: 1,
-        pin_identity: false,
         residency: Default::default(),
         pinned: false,
     }
@@ -255,8 +254,8 @@ fn a_plain_open_failure_is_a_crash() {
 }
 
 #[test]
-fn an_identity_or_part_size_mismatch_exits_three() {
-    for kind in [OpenErrorKind::Identity, OpenErrorKind::PartSize] {
+fn a_part_size_or_canary_mismatch_exits_three() {
+    for kind in [OpenErrorKind::PartSize, OpenErrorKind::Canary] {
         let directory = tempfile::tempdir().unwrap();
         let mut registry = Registry::new();
         registry.register(

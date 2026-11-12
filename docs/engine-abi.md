@@ -128,6 +128,7 @@ identity() -> {
     tokenizer_hash, template, family, numbers, plan table,   family: toy | qwen38 | gemma4 (spec 11.3)
     bit settings: [{name, value, class}],   class: reference-defining | approx | policy
     canary_hash,
+    build,                       the facts of the build; the identity digest does not cover them (spec 12.1)
 }
 limits() -> {
     capabilities: [...],         which optional calls below this engine has
@@ -487,8 +488,10 @@ the ABI.
   - The weights take 61 GiB. One handle leaves about 51 GB of MemAvailable. Each further handle takes about 12.2 GB.
   - `open` refuses a pool that would leave less than the 12 GiB floor. Thus at most three handles are open at once.
   - A gate of the conformance suite holds at most three handles.
-- **`canary_hash` is empty.** This binding does not run the Qwen3.8 engine's canary. The process does not run it yet
-  (spec 8.1).
+- **`canary_hash` comes from a table of records.** The key is the checkpoint digest, `fast_qmm` and `tiles`. The engine
+  runs its canary at each load, after the scratch probe, and the open fails when the hash differs from the record. A
+  key with no record is an error of `describe` and of `open`. A second form of the open, `open_with(Measure)`, compares
+  nothing: a person uses it to measure a new checkpoint (spec 8.1).
 - **The identity carries `QWEN38_FAST_QMM`, `QWEN38_TILES` and `fused`.** They are `Approx`, `ReferenceDefining` and
   `Approx`. The worker reads `QWEN38_FAST_QMM` at each pass build (`worker.rs` `fast_qmm`). `QWEN38_TILES` chooses the
   tiled or the GGUF layout at load (`worker.rs` `tiles`, `arena.rs` `plan`). The binding has not measured whether
@@ -510,10 +513,10 @@ Reason for all: the code must not guess.
 - The crate links the archive whole, so that each HIP object registers its kernels. The HIP runtime and the C++
   library stay shared.
 - The variable that named the engine library and the pin of its SHA-256 are gone. The build facts take the place of the
-  pin. `numbers` holds `engine_build_sha256`, the SHA-256 of `libqwen38engine.a`. It also holds `engine_compiler` and
-  `engine_hip`, the versions of the compiler and of HIP. No path is in `numbers` (spec 12.1).
-- The build facts stay in the identity digest until the canary runs at each start (spec 12.1). Thus a new build
-  makes the held entries unusable. Amy accepted one refill for this change.
+  pin. `build` holds `engine_build_sha256`, the SHA-256 of `libqwen38engine.a`. It also holds `engine_compiler` and
+  `engine_hip`, the versions of the compiler and of HIP. No path is in `build` (spec 12.1).
+- The build facts are not in the identity digest, because the canary decides (spec 12.1). Thus a new build with the
+  same canary hash keeps the held entries. Before the canary, a new build made them unusable.
 - The compiler writes each object to stdout, and runs in the crate directory. Thus the archive has the same SHA-256
   for each profile and feature set. A path of the build directory in the command would change a HIP symbol name.
 - The SHA-256 differs between two checkouts, because `__FILE__` and the debug information hold the source paths.
@@ -1454,9 +1457,9 @@ the LFM3 engine:
 - The engine declares 8 segments. The weight ops run once over the rows of all segments. Each row has its own
   rotation, attention, convolution and K and V rows, on its own slot.
 - `segments_exact` stays false, because LFM3 has a feed rule (D11 rule 4). Decode segments share a pass by D11 rule 6,
-  because the store keeps no decode row of such a pass (spec 6.14). Other segments run one in a pass. **Proposed**
-  by Claude Opus 5.5, 2026-11-09. Reason: the first text of this rule named `segments_exact`, and D11 rule 4 forbids
-  it here.
+  because the store keeps no decode row of such a pass (spec 6.14). Other segments run one in a pass.
+  Decided 2026-11-12, proposed by Claude Opus 5.5, 2026-11-09. Reason: the first text of this rule named
+  `segments_exact`, and D11 rule 4 forbids it here.
 - A pass joins only segments with equal control lists, at first.
 - Omni's speech frames stay one context in a pass.
 - The change of path gives a new engine identity, so each held context fills again once (12.1).

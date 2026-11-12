@@ -116,6 +116,7 @@ impl EmbeddingGemma2Engine {
             ),
             bit_settings: Vec::new(),
             canary_hash: String::new(),
+            build: std::collections::BTreeMap::new(),
         };
         Ok(Self {
             limits: limits(weights_bytes),

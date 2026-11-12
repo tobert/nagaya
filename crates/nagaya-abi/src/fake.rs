@@ -471,6 +471,7 @@ impl Fake {
             plan_table: "fake".to_owned(),
             bit_settings: Vec::new(),
             canary_hash: "fake:0".to_owned(),
+            build: std::collections::BTreeMap::new(),
         }
     }
 
