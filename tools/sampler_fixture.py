@@ -96,7 +96,7 @@ def main(out_path):
                     }
                 )
     row_table = {name: [float(x) for x in logits] for name, logits in rows()}
-    doc = {"author": AUTHOR, "source": "mk service/sampling.py", "rows": row_table, "cases": cases}
+    doc = {"author": AUTHOR, "source": "reference service/sampling.py", "rows": row_table, "cases": cases}
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     Path(out_path).write_text(json.dumps(doc, separators=(",", ":")) + "\n")
     print(f"wrote {len(cases)} cases to {out_path}")

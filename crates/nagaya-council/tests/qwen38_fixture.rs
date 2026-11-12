@@ -1,10 +1,10 @@
-//! The sampler against fixed outputs of mk's `service/sampling.py` (tools/sampler_fixture.py).
+//! The sampler against fixed outputs of `service/sampling.py` of the reference (tools/sampler_fixture.py).
 //!
 //! Tolerance for probabilities: 1e-12 absolute. Both sides use float64. They differ only in the order of the
 //! summation (numpy's pairwise sum, a plain loop here) and in `exp`. Each differs by a few units of 2^-53
 //! (1.1e-16) for each term. A vocabulary of 1000 terms stays under 1e-13, so 1e-12 leaves room, and still
 //! fails for any change of a filter, the temperature, or the order of the filters.
-//! The entropy `h` is a sum of 1000 terms of size up to a few nats, so it gets 1e-9 (as mk's own test of `h`).
+//! The entropy `h` is a sum of 1000 terms of size up to a few nats, so it gets 1e-9 (as the test of `h` in the reference).
 
 use nagaya_council::sampler::{Settings, pick_with, survivors};
 use serde_json::Value;
@@ -86,7 +86,7 @@ fn the_fixture_has_many_cases_and_varied_survivors() {
 }
 
 #[test]
-fn survivors_and_probabilities_match_mk() {
+fn survivors_and_probabilities_match_the_reference() {
     for c in cases() {
         let got = survivors(&c.logits, &c.settings).unwrap_or_else(|e| panic!("{}: {e}", c.name));
         assert_eq!(got.ids, c.ids, "{}: survivor ids", c.name);
@@ -94,7 +94,7 @@ fn survivors_and_probabilities_match_mk() {
         for (a, b) in got.probs.iter().zip(&c.probs) {
             assert!(
                 (a - b).abs() <= PROB_TOLERANCE,
-                "{}: probability {a} against mk {b}",
+                "{}: probability {a} against the reference {b}",
                 c.name
             );
         }
@@ -110,19 +110,19 @@ fn the_pick_with_mks_uniform_value_gives_mks_token() {
 }
 
 #[test]
-fn p_and_h_match_mk() {
+fn p_and_h_match_the_reference() {
     for c in cases() {
         let got = pick_with(&c.logits, &c.settings, c.uniform).unwrap();
         assert!(
             (got.p - c.p).abs() <= PROB_TOLERANCE,
-            "{}: p {} against mk {}",
+            "{}: p {} against the reference {}",
             c.name,
             got.p,
             c.p
         );
         assert!(
             (got.h - c.h).abs() <= ENTROPY_TOLERANCE,
-            "{}: h {} against mk {}",
+            "{}: h {} against the reference {}",
             c.name,
             got.h,
             c.h

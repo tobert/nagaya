@@ -167,7 +167,7 @@ fn the_pick_uses_the_draw_at_the_position() {
 #[test]
 fn a_uniform_value_on_a_cdf_edge_goes_to_the_next_token() {
     // The probabilities are 0.5 and 0.5, so the CDF is [0.5, 1.0]. The value 0.5 sits on the first edge.
-    // mk searches to the right, so the edge belongs to the token after it.
+    // The reference searches to the right, so the edge belongs to the token after it.
     let s = Settings {
         temperature: 1.0,
         top_p: 1.0,

@@ -1,8 +1,8 @@
 //! The one exit path of the process (spec 10.4, 3.3).
 //!
-//! mk's HIP runtime stops the program in its static destructors ("pure virtual method called"). `exit(3)` runs those
+//! The HIP runtime of the Qwen3.8 engine stops the program in its static destructors ("pure virtual method called"). `exit(3)` runs those
 //! destructors and the `atexit` handlers, so the process must leave without them. The test runs itself again as a
-//! child. The child registers an `atexit` handler that aborts, as mk's runtime does, and then leaves.
+//! child. The child registers an `atexit` handler that aborts, as that runtime does, and then leaves.
 
 use std::process::Command;
 

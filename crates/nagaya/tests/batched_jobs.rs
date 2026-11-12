@@ -223,7 +223,7 @@ fn the_decode_quanta_of_a_batching_engine_share_one_pass_and_each_job_gets_its_r
     }
 }
 
-/// An engine that declares `segments_exact` and no feed rule, as mk does, joins its decode quanta too (spec 5.7,
+/// An engine that declares `segments_exact` and no feed rule, as the Qwen3.8 engine does, joins its decode quanta too (spec 5.7,
 /// "The first joins of an engine with `segments_exact`").
 #[test]
 fn the_decode_quanta_of_an_engine_with_segments_exact_share_one_pass() {
