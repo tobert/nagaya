@@ -73,7 +73,7 @@ fn environment(unit: &str) -> Vec<&str> {
 
 #[test]
 fn the_bootstrap_config_binds_mks_address() {
-    // Amy, 2026-10-18: the nagaya takes mk's address, and kaijutsu's gate config names it.
+    // Amy, 2026-10-18: the nagaya takes the address of the Qwen3.8 engine, and kaijutsu's gate config names it.
     let config = bootstrap();
     assert_eq!(config.http_bind, "198.51.100.20:8090".parse::<SocketAddr>().unwrap());
     assert_eq!(config.gossip_bind.ip(), config.http_bind.ip());
@@ -92,16 +92,21 @@ fn gfx1151host_and_b70host_seed_each_other_for_one_cluster() {
 }
 
 #[test]
-fn the_profile_names_the_mk_engine_and_the_store_budgets() {
+fn the_profile_names_the_qwen38_engine_and_the_store_budgets() {
     let profile = profile();
-    assert_eq!(profile.engines.len(), 2, "mk and Qwen-Image (milestone 22)");
+    assert_eq!(
+        profile.engines.len(),
+        2,
+        "the Qwen3.8 engine and Qwen-Image (milestone 22)"
+    );
     let engine = &profile.engines[0];
-    assert_eq!(engine.name, "mk");
+    assert_eq!(engine.name, "qwen38");
     assert_eq!(engine.kind, "mk-qwen38-gfx1151");
-    // Amy, 2026-11-01: Qwen-Image stays loaded on gfx1151host for a while, and mk swaps in through the API (spec 3.3b).
+    // Amy, 2026-11-01: Qwen-Image stays loaded on gfx1151host for a while, and the Qwen3.8 engine swaps in through the API
+    // (spec 3.3b).
     assert_eq!(engine.residency, Residency::OnDemand);
     assert_eq!(engine.devices, vec![0]);
-    // The mk factory plans from this key (`nagaya::mk`). It refuses any other key.
+    // The factory of the Qwen3.8 engine plans from this key (`nagaya::qwen38`). It refuses any other key.
     let keys: Vec<&String> = engine.config.keys().collect();
     assert_eq!(keys, vec!["weights_bytes"]);
     assert!(engine.config["weights_bytes"].as_integer().unwrap() > 0);
@@ -142,8 +147,8 @@ fn both_engines_and_the_store_fit_the_pool_with_room_for_a_staging_copy() {
         eprintln!("skipped: the Qwen-Image files of the profile are absent");
         return;
     }
-    let mk = profile.engines[0].config["weights_bytes"].as_integer().unwrap() as u64;
-    let mk_terms: u64 = nagaya_mk_qwen38_gfx1151_plan(mk);
+    let qwen38_weights = profile.engines[0].config["weights_bytes"].as_integer().unwrap() as u64;
+    let qwen38_terms: u64 = nagaya_mk_qwen38_gfx1151_plan(qwen38_weights);
     let qwen: u64 = nagaya_mk_qwenimage21_gfx1151::plan::plan(&config)
         .unwrap()
         .memory
@@ -154,8 +159,8 @@ fn both_engines_and_the_store_fit_the_pool_with_room_for_a_staging_copy() {
     let pool = [TierSpec::from(Tier::Device(0)), TierSpec::from(Tier::Host)];
     let budget = profile.budgets.iter().find(|budget| budget.tiers == pool).unwrap();
     let store = profile.store.unwrap().host.unwrap();
-    let room = budget.bytes as i128 - (mk_terms + qwen + store) as i128;
-    eprintln!("mk {mk_terms}, qwen-image {qwen}, store {store}: {room} bytes stay free in the pool");
+    let room = budget.bytes as i128 - (qwen38_terms + qwen + store) as i128;
+    eprintln!("qwen38 {qwen38_terms}, qwen-image {qwen}, store {store}: {room} bytes stay free in the pool");
     // A staging copy of a context of 32,768 tokens is about 1.93 GB (docs/deploy.md, "The memory budgets").
     assert!(
         room >= 1_930_000_000,
@@ -163,8 +168,8 @@ fn both_engines_and_the_store_fit_the_pool_with_room_for_a_staging_copy() {
     );
 }
 
-/// The mandatory terms of the mk engine for its weights: the weights, the pass scratch and the context pool. They are
-/// docs/deploy.md's numbers; the mk crate builds only with the feature `hip`.
+/// The mandatory terms of the Qwen3.8 engine for its weights: the weights, the pass scratch and the context pool. They
+/// are docs/deploy.md's numbers; the engine crate builds only with the feature `hip`.
 fn nagaya_mk_qwen38_gfx1151_plan(weights: u64) -> u64 {
     assert_eq!(
         weights, 65_490_227_200,
@@ -235,29 +240,22 @@ fn the_unit_reads_the_config_in_deploy() {
 }
 
 #[test]
-fn the_unit_names_three_shards_and_no_mk_library() {
+fn the_unit_names_three_shards() {
     let unit = unit();
     let environment: Vec<&str> = unit
         .lines()
         .filter_map(|line| line.strip_prefix("Environment="))
         .collect();
-    // The binary links mk's engine, so the unit names no library and no library pin (AGENTS.md milestone 15).
-    assert!(
-        environment
-            .iter()
-            .all(|value| !value.trim_start_matches('"').starts_with("MK_ENGINE_LIB")),
-        "{environment:?}"
-    );
     let shards = environment
         .iter()
         .find_map(|value| {
             value
-                .strip_prefix("\"MK_SHARDS=")
+                .strip_prefix("\"QWEN38_SHARDS=")
                 .and_then(|rest| rest.strip_suffix('"'))
         })
-        .expect("the unit sets MK_SHARDS in quotes");
+        .expect("the unit sets QWEN38_SHARDS in quotes");
     let paths: Vec<&str> = shards.split(':').collect();
-    assert_eq!(paths.len(), 3, "mk needs three shards, with : between them");
+    assert_eq!(paths.len(), 3, "the unit sets three shards, with : between them");
     for (index, path) in paths.iter().enumerate() {
         assert!(path.ends_with(&format!("-0000{}-of-00003.gguf", index + 1)), "{path}");
     }
@@ -828,7 +826,7 @@ fn the_b70host_unit_reads_its_config_and_the_checkpoint_and_hides_no_card() {
     );
     assert!(
         environment.iter().all(|value| !value.starts_with("MK_")),
-        "b70host has no mk engine"
+        "b70host has no Qwen3.8 engine"
     );
 }
 

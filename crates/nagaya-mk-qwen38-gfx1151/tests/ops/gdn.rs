@@ -1,19 +1,20 @@
 //! The gated DeltaNet core: causal convolution with silu, the gated delta rule, and the gated RMSNorm. It ports
-//! `test_gdn.py` of mk (`ops/gdn.h`, `ops/gdn.hip`).
+//! `test_gdn.py` of the reference (`ops/gdn.h`, `ops/gdn.hip`).
 //!
 //! Head order: every input stays in GGUF (tiled) order. Value head `p` uses the key and query head `p % 16`.
 //!
-//! The tolerance of mk stays: `REL(T) = 4 T 128 2^-24` in relative L2 error. The recurrence of the op and the chunked
-//! algorithm of the reference are the same recurrence with another f32 association. Each decay is at most 0, so the error
-//! grows about linearly in T.
+//! The tolerance of the reference stays: `REL(T) = 4 T 128 2^-24` in relative L2 error. The recurrence of the op and
+//! the chunked algorithm of the reference are the same recurrence with another f32 association. Each decay is at most
+//! 0, so the error grows about linearly in T.
 //!
-//! Changes from mk's test: the weights and the inputs come from the generator, not from layer 0 of the GGUF and numpy.
-//! The reference output is in a fixture. It holds `y` and a corner of the final state of three value heads only, so the
-//! relative error is over those heads. The cases with T = 64 and T = 200 are dropped: the fixture would be over its size.
+//! Changes from the reference's test: the weights and the inputs come from the generator, not from layer 0 of the GGUF
+//! and numpy. The reference output is in a fixture. It holds `y` and a corner of the final state of three value heads
+//! only, so the relative error is over those heads. The cases with T = 64 and T = 200 are dropped: the fixture would be
+//! over its size.
 
 use crate::fixture::Fixture;
 use crate::inputs;
-use crate::mkops::{assert_same, lib, ptr, ptr_mut, relerr, same_bits};
+use crate::ops_lib::{assert_same, lib, ptr, ptr_mut, relerr, same_bits};
 use crate::sym;
 use std::ffi::c_void;
 
@@ -93,7 +94,7 @@ fn run_op(
     };
     let f = sym!(
         lib("gdn"),
-        "mk_gdn",
+        "qwen38_gdn",
         fn(
             *const c_void,
             *const c_void,
@@ -131,7 +132,7 @@ fn run_op(
             grid,
         )
     };
-    assert_eq!(rc, 0, "mk_gdn");
+    assert_eq!(rc, 0, "qwen38_gdn");
     out
 }
 
@@ -283,7 +284,7 @@ fn gdn_repeatable_and_grid_independent() {
 /// nothing spilled.
 #[test]
 fn gdn_core_register_budget() {
-    let f = sym!(lib("gdn"), "mk_gdn_core_resources", fn(*mut i32, *mut i32) -> i32);
+    let f = sym!(lib("gdn"), "qwen38_gdn_core_resources", fn(*mut i32, *mut i32) -> i32);
     let (mut regs, mut scratch) = (0i32, 0i32);
     assert_eq!(unsafe { f(&mut regs, &mut scratch) }, 0);
     eprintln!("k_gdn_core: {regs} VGPRs, {scratch} B/lane scratch");

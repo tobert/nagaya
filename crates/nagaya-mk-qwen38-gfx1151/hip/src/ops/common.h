@@ -3,25 +3,25 @@
 // device code and produce the same bits.
 //
 // - An op is a __device__ function `void op_<name>(const <Name>Args &a, uint32_t wg, uint32_t nwg)`
-//   called by every thread of a kMkBlock-thread workgroup. It splits its work into items and
+//   called by every thread of a kBlockThreads-thread workgroup. It splits its work into items and
 //   takes items wg, wg + nwg, wg + 2*nwg, ... The value of every output element depends only on
 //   its item, never on nwg or on which workgroup ran it: no float atomics, no cross-item
 //   reductions, reduction order fixed by the op's definition. So any grid size gives the same
 //   bits, and a single launch (grid = work items) equals the megakernel (grid = co-resident WGs).
-// - Every op has a wrapper kernel `k_<name>` (<<<grid, kMkBlock>>> calling op_<name>(args,
-//   blockIdx.x, gridDim.x)) and a C ABI entry `mk_<name>(...)` for tests (host pointers in and
+// - Every op has a wrapper kernel `k_<name>` (<<<grid, kBlockThreads>>> calling op_<name>(args,
+//   blockIdx.x, gridDim.x)) and a C ABI entry `qwen38_<name>(...)` for tests (host pointers in and
 //   out; allocates, copies, launches, synchronizes, frees; returns 0 or dies with a message).
 // - Shapes are compile-time constants of this model (model.h); a runtime shape that disagrees
-//   stops the program (MK_DIE), it never falls back.
+//   stops the program (HIP_DIE), it never falls back.
 // - Activations and accumulators are f32. Weights stay in their GGUF block format in memory and
 //   are dequantized exactly into f32 registers (quant.h).
 #pragma once
 #include <hip/hip_runtime.h>
 #include <cstdint>
 
-#include "trap.h"  // MK_TRAP: the ops' traps name themselves (PLAN.md Problems 2026-09-29)
+#include "trap.h"  // HIP_TRAP: the ops' traps name themselves
 
-constexpr uint32_t kMkBlock = 256;  // threads per workgroup: 8 wave32s
+constexpr uint32_t kBlockThreads = 256;  // threads per workgroup: 8 wave32s
 constexpr uint32_t kWave = 32;
 
 // threadIdx.x for ops: the same value, passed through an empty asm so the compiler can't prove it loop-invariant.
@@ -39,7 +39,7 @@ __device__ __attribute__((always_inline)) inline void lds_sync() {
   __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "workgroup", "local");
 }
 
-__device__ __attribute__((always_inline)) inline uint32_t mk_tid() {
+__device__ __attribute__((always_inline)) inline uint32_t thread_id() {
   uint32_t t = threadIdx.x;
   asm volatile("" : "+v"(t));
   return t;
@@ -47,7 +47,7 @@ __device__ __attribute__((always_inline)) inline uint32_t mk_tid() {
 
 // The kernel-wide LDS arena. Each __shared__ array an op declares gets its own space, so a kernel's static
 // LDS is the *sum* over every op it can run, and in the megakernel that sum sets the co-resident grid
-// (PLAN.md Speed: 41 KiB halved the grid to 20; a WGP has 64 KiB, so grid 80 = 4 workgroups per WGP allows
+// (41 KiB halved the grid to 20; a WGP has 64 KiB, so grid 80 = 4 workgroups per WGP allows
 // 16 KiB each, arena included; tests/engine/test_mega_resources.py). Ops whose tiles are
 // large take them from this one arena instead, so those cost the *max*. The arena is only valid inside one
 // op: stages are separated by a grid barrier (every thread of the workgroup passes a __syncthreads) or by a
@@ -65,8 +65,8 @@ __device__ inline float wave_sum(float v) {
   return v;
 }
 
-// Deterministic block-wide sum over kMkBlock threads: wave sums, then wave 0 adds the 8 partials
-// in wave order. Every thread gets the result. `scratch` needs kMkBlock / kWave floats of LDS.
+// Deterministic block-wide sum over kBlockThreads threads: wave sums, then wave 0 adds the 8 partials
+// in wave order. Every thread gets the result. `scratch` needs kBlockThreads / kWave floats of LDS.
 __device__ inline float block_sum(float v, float *scratch) {
   const uint32_t w = threadIdx.x / kWave, l = threadIdx.x % kWave;
   v = wave_sum(v);
@@ -75,7 +75,7 @@ __device__ inline float block_sum(float v, float *scratch) {
   __syncthreads();
   float t = 0.f;
 #pragma unroll
-  for (uint32_t i = 0; i < kMkBlock / kWave; ++i) t += scratch[i];
+  for (uint32_t i = 0; i < kBlockThreads / kWave; ++i) t += scratch[i];
   __syncthreads();
   return t;
 }

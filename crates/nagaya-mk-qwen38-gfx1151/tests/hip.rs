@@ -1,8 +1,8 @@
-//! The mk engine on gfx1151: the binding calls, the write rules, one pass, and the conformance suite.
+//! The Qwen3.8 engine on gfx1151: the binding calls, the write rules, one pass, and the conformance suite.
 //!
 //! Every test calls `open()`. The first call loads the weights; every later call makes a new context pool on the same
 //! engine. A hold keeps the weights for the whole binary, so a dropped handle does not unload them (engine-abi
-//! "close"; `hip_close.rs` tests the unload). All mk calls go to one worker thread. Run with `--test-threads=1`.
+//! "close"; `hip_close.rs` tests the unload). All engine calls go to one worker thread. Run with `--test-threads=1`.
 
 #![cfg(feature = "hip")]
 
@@ -11,14 +11,14 @@ use nagaya_abi::{
     WriteResult,
 };
 use nagaya_conformance::{compare_f32_rows, run_all};
-use nagaya_mk_qwen38_gfx1151::{Hold, MkEngine, MkError, hold};
+use nagaya_mk_qwen38_gfx1151::{Hold, Qwen38Engine, Qwen38Error, hold};
 
-/// The hold of this binary on mk's weights.
+/// The hold of this binary on the engine's weights.
 static HOLD: std::sync::OnceLock<Hold> = std::sync::OnceLock::new();
 
 /// Open a handle, with the weights held for the binary.
-fn open() -> Result<MkEngine, MkError> {
-    HOLD.get_or_init(|| hold().expect("hold mk's weights"));
+fn open() -> Result<Qwen38Engine, Qwen38Error> {
+    HOLD.get_or_init(|| hold().expect("hold the engine's weights"));
     nagaya_mk_qwen38_gfx1151::open()
 }
 
@@ -66,12 +66,12 @@ fn row_len(part: usize) -> usize {
 /// preempt. On 2026-11-10 that gave spin-timeouts and a "Page not present" fault on gfx1151host.
 #[test]
 fn the_weight_arena_is_locked_in_memory() {
-    let _engine = open().expect("open mk");
+    let _engine = open().expect("open the engine");
     let smaps = std::fs::read_to_string("/proc/self/smaps").expect("read /proc/self/smaps");
     let mut lines = smaps.lines();
     let mut found = 0;
     while let Some(line) = lines.next() {
-        if !line.contains("memfd:mk-weights") {
+        if !line.contains("memfd:qwen38-weights") {
             continue;
         }
         let mut size = None;
@@ -103,8 +103,8 @@ fn the_weight_arena_is_locked_in_memory() {
 }
 
 #[test]
-fn the_binding_opens_mk_and_declares_its_parts() {
-    let engine = open().expect("open mk");
+fn the_binding_opens_the_engine_and_declares_its_parts() {
+    let engine = open().expect("open the engine");
     let limits = engine.limits();
     assert_eq!(limits.parts.len(), 7);
     assert_eq!(limits.parts[0].name, "gdn_state");
@@ -122,7 +122,7 @@ fn the_binding_opens_mk_and_declares_its_parts() {
         .iter()
         .find(|term| term.name == "weights")
         .expect("a weights term");
-    assert!(weights.bytes > 0, "mk_engine_arena gave no arena bytes");
+    assert!(weights.bytes > 0, "the weights term has no arena bytes");
     let context = limits
         .memory
         .mandatory
@@ -133,7 +133,7 @@ fn the_binding_opens_mk_and_declares_its_parts() {
     // Each of the 16 contexts adds 4 MiB for the allocator (spec.rs `CONTEXT_ALLOCATION_BYTES`).
     assert_eq!(context.bytes, 12_131_106_816 + 16 * 4_194_304);
     // The device cost of each class is at least its state bytes, and the declared bytes hold it. A cost below the
-    // state bytes would mean that mk made less than the formula says, and the formula would be wrong.
+    // state bytes would mean that the engine made less than the formula says, and the formula would be wrong.
     for reading in engine.pool_readings() {
         let states = u64::from(reading.class.count) * context_bytes_of(reading.class.capacity);
         assert!(
@@ -160,14 +160,14 @@ fn the_binding_opens_mk_and_declares_its_parts() {
         scratch.bytes
     );
 
-    // mk's own byte counts agree with the declared shapes.
+    // The engine's own byte counts agree with the declared shapes.
     assert_eq!(engine.part_bytes(0, 0).expect("part 0"), 113_246_208);
     assert_eq!(engine.part_bytes(1, 0).expect("part 1"), 4_423_680);
     assert_eq!(engine.part_bytes(2, 0).expect("part 2"), 368_640);
     assert_eq!(engine.part_bytes(3, 5).expect("part 3"), 5 * 49_152);
     assert_eq!(engine.part_bytes(4, 5).expect("part 4"), 5 * 6_144);
     assert_eq!(engine.part_bytes(5, 0).expect("part 5"), 8);
-    // Part 6 is derived: mk_ctx_part_bytes would stop the program, so the binding refuses it first.
+    // Part 6 is derived: the context call would stop the program, so the binding refuses it first.
     assert!(engine.part_bytes(6, 0).is_err());
 
     let identity = engine.identity();
@@ -185,7 +185,7 @@ fn the_binding_opens_mk_and_declares_its_parts() {
         identity.checkpoint_digest
     );
     // The identity holds the hash of the tokenizer keys in the first shard, as the text library computes it.
-    let shards = std::env::var("MK_SHARDS").expect("MK_SHARDS");
+    let shards = std::env::var("QWEN38_SHARDS").expect("QWEN38_SHARDS");
     let first = shards.split(':').next().expect("a first shard");
     let metadata = nagaya_text_qwen38::gguf::Metadata::open(std::path::Path::new(first)).expect("the first shard");
     assert_eq!(
@@ -222,7 +222,7 @@ fn the_binding_opens_mk_and_declares_its_parts() {
 
 #[test]
 fn a_fixed_part_round_trips() {
-    let mut engine = open().expect("open mk");
+    let mut engine = open().expect("open the engine");
     let limits = engine.limits();
     let state = State::Slot(0);
     for part in [0usize, 1, 2] {
@@ -245,7 +245,7 @@ fn a_fixed_part_round_trips() {
 
 #[test]
 fn a_cell_part_round_trips_and_sets_n() {
-    let mut engine = open().expect("open mk");
+    let mut engine = open().expect("open the engine");
     let state = State::Slot(0);
     let kv = finite_bytes(2 * 49_152, 1.0);
     let keys = finite_bytes(2 * 6_144, 2.0);
@@ -290,7 +290,7 @@ fn a_cell_part_round_trips_and_sets_n() {
     engine.parts().unwrap().part_read(state, 5, &mut history).unwrap();
     assert_eq!(history, [7, 0, 0, 0, 9, 0, 0, 0]);
 
-    // The write rules refuse what mk stops on.
+    // The write rules refuse what the engine stops on.
     let mut short = vec![0u8; 49_152];
     assert_eq!(
         engine.parts().unwrap().part_read(state, 3, &mut short),
@@ -309,8 +309,8 @@ fn a_cell_part_round_trips_and_sets_n() {
 
 #[test]
 fn a_part_above_32_bits_is_refused_and_is_not_read_as_its_low_bits() {
-    // mk names a part with 32 bits. A cast would read part 2^32 + 5 as part 5 and part 2^32 + 3 as part 3.
-    let mut engine = open().expect("open mk");
+    // The engine names a part with 32 bits. A cast would read part 2^32 + 5 as part 5 and part 2^32 + 3 as part 3.
+    let mut engine = open().expect("open the engine");
     let state = State::Slot(0);
     let high = 1usize << 32;
     let mut history = vec![0u8; 8];
@@ -346,7 +346,7 @@ fn a_part_above_32_bits_is_refused_and_is_not_read_as_its_low_bits() {
 
 #[test]
 fn a_ple_history_must_hold_token_ids() {
-    let mut engine = open().expect("open mk");
+    let mut engine = open().expect("open the engine");
     let state = State::Slot(0);
     let mut before = vec![0u8; 8];
     engine.parts().unwrap().part_read(state, 5, &mut before).unwrap();
@@ -382,7 +382,7 @@ fn a_ple_history_must_hold_token_ids() {
 
 #[test]
 fn a_seal_rounds_the_state_and_refuses_a_non_finite_one() {
-    let mut engine = open().expect("open mk");
+    let mut engine = open().expect("open the engine");
     let state = State::Slot(0);
     let one = 1f32.to_le_bytes();
     let ones: Vec<u8> = one.iter().copied().cycle().take(113_246_208).collect();
@@ -420,7 +420,7 @@ fn segment(state: State, tokens: &[u32], start: u64) -> Segment {
 
 #[test]
 fn a_pass_runs_and_refuses_a_wrong_position() {
-    let mut engine = open().expect("open mk");
+    let mut engine = open().expect("open the engine");
     let state = State::Slot(0);
     let mut wanted = segment(state, &[11, 12, 13], 0);
     wanted.outputs.logit_rows = vec![2];
@@ -436,7 +436,7 @@ fn a_pass_runs_and_refuses_a_wrong_position() {
     let mut fresh = segment(State::Slot(0), &[11, 12, 13], 0);
     fresh.outputs.logit_rows = vec![2];
     let first = floats(&out.outputs[0].bytes);
-    let mut second = open().expect("open mk");
+    let mut second = open().expect("open the engine");
     let other = second.pass(std::slice::from_ref(&fresh), &[]).expect("second pass");
     compare_f32_rows(
         "a_pass_runs_and_refuses_a_wrong_position",
@@ -446,7 +446,7 @@ fn a_pass_runs_and_refuses_a_wrong_position() {
     )
     .unwrap();
     drop(second);
-    let mut third = open().expect("open mk");
+    let mut third = open().expect("open the engine");
     let again = third.pass(std::slice::from_ref(&fresh), &[]).expect("third pass");
     compare_f32_rows(
         "a_pass_runs_and_refuses_a_wrong_position",
@@ -492,36 +492,37 @@ fn a_pass_runs_and_refuses_a_wrong_position() {
     assert_eq!(error.kind, PassErrorKind::Refused, "{:?}", error.kind);
     assert!(!error.message.is_empty());
 
-    // Seventeen segments are past mk's limit, and the wrapper refuses them before the call.
+    // Seventeen segments are past the engine's limit, and the wrapper refuses them before the call.
     let many: Vec<Segment> = (0..17).map(|_| segment(empty, &[1], 0)).collect();
     assert!(engine.pass(&many, &[]).is_err());
 }
 
 #[test]
 fn a_tile_change_after_open_refuses_the_pass() {
-    let mut engine = open().expect("open mk");
+    let mut engine = open().expect("open the engine");
     let state = State::Slot(0);
     let tiles = engine.identity().numbers.get("tiles").cloned().unwrap_or_default();
     let other = if tiles == "0" { "1" } else { "0" };
-    let original = std::env::var_os("MK_TILES");
+    let original = std::env::var_os("QWEN38_TILES");
     // SAFETY: the hip tests run with --test-threads=1, and this test restores the value before it ends.
-    unsafe { std::env::set_var("MK_TILES", other) };
+    unsafe { std::env::set_var("QWEN38_TILES", other) };
     let result = engine.pass(std::slice::from_ref(&segment(state, &[1], 0)), &[]);
     match original {
-        Some(value) => unsafe { std::env::set_var("MK_TILES", value) },
-        None => unsafe { std::env::remove_var("MK_TILES") },
+        Some(value) => unsafe { std::env::set_var("QWEN38_TILES", value) },
+        None => unsafe { std::env::remove_var("QWEN38_TILES") },
     }
     let error = result.expect_err("the pass must refuse a tile change");
-    assert!(error.message.contains("MK_TILES changed"), "{}", error.message);
+    assert!(error.message.contains("QWEN38_TILES changed"), "{}", error.message);
 }
 
 #[test]
-fn the_conformance_suite_passes_on_mk() {
-    let suite = run_all(&mut || open().expect("open mk"));
+fn the_conformance_suite_passes_on_the_engine() {
+    let suite = run_all(&mut || open().expect("open the engine"));
     println!("{suite}");
     assert!(suite.passed(), "{suite}");
     assert_eq!(suite.failures().count(), 0, "{suite}");
-    // mk declares `coverage`, so every gate applies, also `quantum_resume_fit`. mk has no stages and no feed rule.
+    // The engine declares `coverage`, so every gate applies, also `quantum_resume_fit`. The engine has no stages and no
+    // feed rule.
     let not_applicable: Vec<&str> = suite.not_applicable().map(|gate| gate.name).collect();
     assert_eq!(not_applicable, vec!["stage_path_bits", "feed_rule_bits"]);
 }
@@ -534,7 +535,7 @@ fn synthetic_ids(count: usize) -> Vec<u32> {
 /// Feed `ids` to the context in passes of at most `chunk` tokens, and return the logits of the last token.
 ///
 /// Each pass starts at the context's token count. Only the last pass asks for logits.
-fn feed(engine: &mut MkEngine, slot: u32, ids: &[u32], chunk: usize) -> Vec<f32> {
+fn feed(engine: &mut Qwen38Engine, slot: u32, ids: &[u32], chunk: usize) -> Vec<f32> {
     let state = State::Slot(slot);
     let mut logits = Vec::new();
     let mut done = 0;
@@ -575,7 +576,7 @@ fn a_prompt_past_one_pass_runs_in_several_passes_and_matches_the_oracle() {
         prompt.ids.len()
     );
     let path = oracle::QmmPath::from_env();
-    let mut engine = open().expect("open mk");
+    let mut engine = open().expect("open the engine");
 
     // A small context: 4096 tokens. Three passes of 256, 256 and the rest.
     let small = feed(&mut engine, 0, &prompt.ids, 256);
@@ -591,8 +592,8 @@ fn a_prompt_past_one_pass_runs_in_several_passes_and_matches_the_oracle() {
 #[test]
 fn the_pass_size_does_not_change_the_logits() {
     let prompt = longer_prompt();
-    let mut engine = open().expect("open mk");
-    // mk gives the same bits for any split of the tokens into passes (spec 6.13). 100-token passes share no
+    let mut engine = open().expect("open the engine");
+    // The engine gives the same bits for any split of the tokens into passes (spec 6.13). 100-token passes share no
     // boundary with 256-token passes except the start.
     let whole = feed(&mut engine, 0, &prompt.ids, 256);
     let split = feed(&mut engine, 1, &prompt.ids, 100);
@@ -601,7 +602,7 @@ fn the_pass_size_does_not_change_the_logits() {
 
 #[test]
 fn a_small_context_takes_its_capacity_and_refuses_the_next_token() {
-    let mut engine = open().expect("open mk");
+    let mut engine = open().expect("open the engine");
     let state = State::Slot(2);
     let ids = synthetic_ids(4096);
     let logits = feed(&mut engine, 2, &ids, 256);
@@ -615,7 +616,7 @@ fn a_small_context_takes_its_capacity_and_refuses_the_next_token() {
 
 #[test]
 fn a_large_context_takes_more_tokens_than_a_small_one() {
-    let mut engine = open().expect("open mk");
+    let mut engine = open().expect("open the engine");
     let state = State::Slot(LARGE);
     // 5000 tokens are past the small class's 4096 and fill 20 passes.
     let ids = synthetic_ids(5000);
@@ -626,7 +627,7 @@ fn a_large_context_takes_more_tokens_than_a_small_one() {
 
 #[test]
 fn a_slot_counts_its_tokens_and_a_clear_empties_it() {
-    let mut engine = open().expect("open mk");
+    let mut engine = open().expect("open the engine");
     let state = State::Slot(0);
     let ids = synthetic_ids(300);
     let first = feed(&mut engine, 0, &ids, 256);
@@ -643,7 +644,7 @@ fn a_slot_counts_its_tokens_and_a_clear_empties_it() {
     assert_eq!(
         engine.parts().unwrap().cells_read(state, 3, 1, 299, &mut short),
         Err(PartError::Refused),
-        "mk has no range read"
+        "the engine has no range read"
     );
     assert_eq!(
         engine.parts().unwrap().cells_read(state, 3, 0, 299, &mut short),
@@ -675,7 +676,7 @@ fn a_slot_counts_its_tokens_and_a_clear_empties_it() {
 }
 
 /// The bytes of each stored part of a slot, parts 0 to 5. A cells part gives its rows up to the token count.
-fn stored_parts(engine: &mut MkEngine, slot: u32) -> Vec<Vec<u8>> {
+fn stored_parts(engine: &mut Qwen38Engine, slot: u32) -> Vec<Vec<u8>> {
     let state = State::Slot(slot);
     let n = engine.n(state).unwrap() as u32;
     (0..6u32)
@@ -692,7 +693,7 @@ fn stored_parts(engine: &mut MkEngine, slot: u32) -> Vec<Vec<u8>> {
 }
 
 /// Feed `ids` after the rows of the slot, in passes of the given sizes, and return the logits of the last token.
-fn feed_sizes(engine: &mut MkEngine, slot: u32, ids: &[u32], sizes: &[usize]) -> Vec<f32> {
+fn feed_sizes(engine: &mut Qwen38Engine, slot: u32, ids: &[u32], sizes: &[usize]) -> Vec<f32> {
     assert_eq!(
         sizes.iter().sum::<usize>(),
         ids.len(),
@@ -745,7 +746,7 @@ fn an_interval_copy_restores_and_replays_to_the_bits_of_the_live_context() {
     const GRAIN: usize = 256;
     let ids = synthetic_ids(700);
     let at = 2 * GRAIN;
-    let mut engine = open().expect("open mk");
+    let mut engine = open().expect("open the engine");
     let live = State::Slot(0);
     feed(&mut engine, 0, &ids[..at], 256);
 
@@ -796,12 +797,12 @@ fn an_interval_copy_restores_and_replays_to_the_bits_of_the_live_context() {
 
 #[test]
 fn a_restore_past_the_dense_reach_pools_the_keys_and_replays_to_the_bits() {
-    // A pass whose context reaches past 2051 visible cells scores the pooled block keys (mk's indexer). The pooled
-    // keys are derived state: a restore pools them from the written index keys (host.rs pool_context). A restore at
-    // 2304 tokens, then a replay, must give the bits of the live context, so the replay reads the pooled keys.
+    // A pass whose context reaches past 2051 visible cells scores the pooled block keys (the engine's indexer). The
+    // pooled keys are derived state: a restore pools them from the written index keys (host.rs pool_context). A restore
+    // at 2304 tokens, then a replay, must give the bits of the live context, so the replay reads the pooled keys.
     const AT: usize = 9 * 256;
     let ids = synthetic_ids(AT + 120);
-    let mut engine = open().expect("open mk");
+    let mut engine = open().expect("open the engine");
     let live = State::Slot(0);
     feed(&mut engine, 0, &ids[..AT], 256);
     let rows = [(3usize, 0u64, AT as u64), (4, 0, AT as u64)];
@@ -833,7 +834,7 @@ fn a_split_across_256_does_not_change_the_bits_in_either_class() {
         vec![128, 127, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 128, 128, 79],
         vec![255, 2, 254, 89],
     ];
-    let mut engine = open().expect("open mk");
+    let mut engine = open().expect("open the engine");
     let mut first: Option<(Vec<Vec<u8>>, Vec<u32>)> = None;
     for slot in [0u32, LARGE] {
         for (index, sizes) in splits.iter().enumerate() {
@@ -853,40 +854,41 @@ fn a_split_across_256_does_not_change_the_bits_in_either_class() {
 }
 
 #[test]
-fn mk_elide_0_runs_the_stages_in_build_order_with_the_same_bits() {
-    // MK_ELIDE=0 turns the Rust schedule off (src/schedule.rs `pass_plan`): each stage in build order with a grid
+fn elide_0_runs_the_stages_in_build_order_with_the_same_bits() {
+    // QWEN38_ELIDE=0 turns the Rust schedule off (src/schedule.rs `pass_plan`): each stage in build order with a grid
     // barrier after it. The schedule keeps each conflicting pair in order, so the bits and the parts do not change.
     // The passes of 1 and 16 tokens are fused (decode and the fused staging), and the pass of 23 tokens is not.
     let ids = synthetic_ids(40);
     let sizes = [23, 16, 1];
-    let mut engine = open().expect("open mk");
+    let mut engine = open().expect("open the engine");
     let mut run = |elide: Option<&str>| {
-        let original = std::env::var_os("MK_ELIDE");
+        let original = std::env::var_os("QWEN38_ELIDE");
         // SAFETY: the hip tests run with --test-threads=1, and this closure restores the value before it returns.
         match elide {
-            Some(value) => unsafe { std::env::set_var("MK_ELIDE", value) },
-            None => unsafe { std::env::remove_var("MK_ELIDE") },
+            Some(value) => unsafe { std::env::set_var("QWEN38_ELIDE", value) },
+            None => unsafe { std::env::remove_var("QWEN38_ELIDE") },
         }
         assert_eq!(engine.slots().unwrap().slot_clear(0), WriteResult::Ok);
         let logits = bits(&feed_sizes(&mut engine, 0, &ids, &sizes));
         let parts = stored_parts(&mut engine, 0);
         match original {
-            Some(value) => unsafe { std::env::set_var("MK_ELIDE", value) },
-            None => unsafe { std::env::remove_var("MK_ELIDE") },
+            Some(value) => unsafe { std::env::set_var("QWEN38_ELIDE", value) },
+            None => unsafe { std::env::remove_var("QWEN38_ELIDE") },
         }
         (logits, parts)
     };
     let (scheduled, scheduled_parts) = run(None);
     let (plain, plain_parts) = run(Some("0"));
-    assert_parts_equal("MK_ELIDE=0", &scheduled_parts, &plain_parts);
-    assert!(scheduled == plain, "MK_ELIDE=0 changed the logits");
+    assert_parts_equal("QWEN38_ELIDE=0", &scheduled_parts, &plain_parts);
+    assert!(scheduled == plain, "QWEN38_ELIDE=0 changed the logits");
 }
 
-/// The process serves mk on demand from `describe()` before a load, so the description must be the open's facts.
+/// The process serves the engine on demand from `describe()` before a load, so the description must be the open's
+/// facts.
 #[test]
 fn describe_gives_the_identity_and_the_limits_of_the_open() {
-    let (identity, limits) = nagaya_mk_qwen38_gfx1151::describe().expect("describe mk");
-    let engine = open().expect("open mk");
+    let (identity, limits) = nagaya_mk_qwen38_gfx1151::describe().expect("describe the engine");
+    let engine = open().expect("open the engine");
     assert_eq!(identity, engine.identity());
     assert_eq!(limits, engine.limits());
 }

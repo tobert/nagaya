@@ -1,17 +1,19 @@
 //! The block selection of attention, its attend stage, and the attention cell mask. It ports `test_attn_select.py`,
-//! `test_attn_split.py` and `test_attn_mask.py` of mk.
+//! `test_attn_split.py` and `test_attn_mask.py` of the reference.
 //!
 //! - select: the parallel selection (`attn.h` `attn_select_emit`) equals the serial selection that it replaced
-//!   (`attn_select_oracle.h`) bit for bit, and both equal the statement of the definition, which is ported to Rust below.
-//! - split: stage 3 alone (`mk_attn_attend`), against its definition at q = 0 and against its numeric bound in f64.
-//! - mask: `mk_attn_masked` against the f64 reference of mk, which `tools/op_groups/attn_a.py` runs for the fixture.
+//!   (`attn_select_oracle.h`) bit for bit, and both equal the statement of the definition, which is ported to Rust
+//!   below.
+//! - split: stage 3 alone (`qwen38_attn_attend`), against its definition at q = 0 and against its numeric bound in f64.
+//! - mask: `qwen38_attn_masked` against the f64 reference model, which `tools/op_groups/attn_a.py` runs for the
+//!   fixture.
 //!
-//! The inputs come from the stateless generator in `inputs.rs`. mk used numpy's `default_rng`, so the values differ, and the
-//! shapes and the meanings of the inputs are the same.
+//! The inputs come from the stateless generator in `inputs.rs`. The reference used numpy's `default_rng`, so the values
+//! differ, and the shapes and the meanings of the inputs are the same.
 
 use crate::fixture::Fixture;
 use crate::inputs;
-use crate::mkops::{self, all_finite, nbytes, ptr, ptr_mut, relerr, same_bits};
+use crate::ops_lib::{self, all_finite, nbytes, ptr, ptr_mut, relerr, same_bits};
 use crate::sym;
 use sha2::{Digest, Sha256};
 use std::ffi::c_void;
@@ -41,8 +43,8 @@ fn select_run(which: Select, t: usize, p0: usize, scores: &[f32], grid: u32) -> 
     let rc = match which {
         Select::Serial => {
             let f = sym!(
-                mkops::lib("attn_select_oracle"),
-                "mk_attn_select_serial",
+                ops_lib::lib("attn_select_oracle"),
+                "qwen38_attn_select_serial",
                 fn(u32, u32, u32, u32, *const c_void, *mut c_void, *mut c_void, u32) -> i32
             );
             unsafe {
@@ -60,8 +62,8 @@ fn select_run(which: Select, t: usize, p0: usize, scores: &[f32], grid: u32) -> 
         }
         Select::Parallel => {
             let f = sym!(
-                mkops::lib("attn"),
-                "mk_attn_select_emit",
+                ops_lib::lib("attn"),
+                "qwen38_attn_select_emit",
                 fn(u32, u32, u32, u32, *const c_void, *mut c_void, *mut c_void, u32) -> i32
             );
             unsafe {
@@ -289,8 +291,8 @@ fn call_attend(q: &[f32], gate: &[f32], kv: &[f32], sel: &[i32], cnt: &[u32], gr
     let t = cnt.len();
     let mut out = vec![f32::NAN; t * H * HD];
     let f = sym!(
-        mkops::lib("attn"),
-        "mk_attn_attend",
+        ops_lib::lib("attn"),
+        "qwen38_attn_attend",
         fn(
             u32,
             u32,
@@ -318,7 +320,7 @@ fn call_attend(q: &[f32], gate: &[f32], kv: &[f32], sel: &[i32], cnt: &[u32], gr
             grid,
         )
     };
-    assert_eq!(rc, 0, "mk_attn_attend");
+    assert_eq!(rc, 0, "qwen38_attn_attend");
     out
 }
 
@@ -474,7 +476,8 @@ fn bound_case(seed: u64, ns: &[usize], qscale: f32, shape: &str) -> BoundCase {
     BoundCase { q, gate, kv, sel, cnt }
 }
 
-/// The op against the exact f64 softmax of its own f32 inputs, within the bound `E (W_d + |o_d|) sig_d` of mk's design.
+/// The op against the exact f64 softmax of its own f32 inputs, within the bound `E (W_d + |o_d|) sig_d` of the
+/// reference's design.
 #[test]
 fn split_bound() {
     for (shape, qscale, seed) in [
@@ -634,7 +637,7 @@ struct Out {
     ik: Vec<f32>,
 }
 
-/// Run `mk_attn` (`masked` false) or `mk_attn_masked` (true) on a copy of the case.
+/// Run `qwen38_attn` (`masked` false) or `qwen38_attn_masked` (true) on a copy of the case.
 fn call(masked: bool, c: &Case, p0: usize, t: usize, budget: usize, ranges: &[(u32, u32)], grid: u32) -> Out {
     let mut kv = c.kv.clone();
     let mut ik = c.ik.clone();
@@ -648,7 +651,7 @@ fn call(masked: bool, c: &Case, p0: usize, t: usize, budget: usize, ranges: &[(u
     let mut cnt = vec![0u32; t];
     let mut scores = vec![0f32; t * max_nb];
     let mut out = vec![f32::NAN; t * H * HD];
-    let lib = mkops::lib("attn");
+    let lib = ops_lib::lib("attn");
     let rc = if masked {
         let lo: Vec<u32> = if ranges.is_empty() {
             vec![0]
@@ -662,7 +665,7 @@ fn call(masked: bool, c: &Case, p0: usize, t: usize, budget: usize, ranges: &[(u
         };
         let f = sym!(
             lib,
-            "mk_attn_masked",
+            "qwen38_attn_masked",
             fn(
                 u32,
                 u32,
@@ -726,7 +729,7 @@ fn call(masked: bool, c: &Case, p0: usize, t: usize, budget: usize, ranges: &[(u
     } else {
         let f = sym!(
             lib,
-            "mk_attn",
+            "qwen38_attn",
             fn(
                 u32,
                 u32,
@@ -777,7 +780,7 @@ fn call(masked: bool, c: &Case, p0: usize, t: usize, budget: usize, ranges: &[(u
             )
         }
     };
-    assert_eq!(rc, 0, "mk_attn(_masked)");
+    assert_eq!(rc, 0, "qwen38_attn(_masked)");
     Out {
         out,
         sel,

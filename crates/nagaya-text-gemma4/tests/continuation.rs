@@ -160,8 +160,8 @@ fn an_open_message_after_a_tool_result_follows_the_prompt_of_the_template() {
     assert_eq!(text(&r.tokens), format!("{}One file.", text(&prompt)));
 }
 
-/// The check of mk's `prefill`: a field whose first characters merge with the text before it is a 400 that names
-/// `continue`. The thought channel ends with a newline, and a newline after it merges.
+/// The check of the reference's `prefill`: a field whose first characters merge with the text before it is a 400 that
+/// names `continue`. The thought channel ends with a newline, and a newline after it merges.
 #[test]
 fn an_open_field_that_merges_with_the_text_before_it_is_refused_naming_continue() {
     if absent() {

@@ -2,7 +2,7 @@
 // k_stage's register budget (tests/engine/test_mega_resources.py: grid >= 80 and no scratch, for k_mega and k_stage
 // alike) has no room for the expert item's one-step lookahead (qmmh.h: 16 VGPRs of prefetched activations), so this TU,
 // the one that compiles k_stage, runs the ops without it. Both paths give the same bits. Before any ops include.
-#define MK_EXPERT_LOOKAHEAD 0
+#define QWEN38_EXPERT_LOOKAHEAD 0
 #include "engine.h"
 #include "stage_layout.h"
 #include "device.h"
@@ -22,7 +22,7 @@
 
 
 
-namespace mk {
+namespace qwen38 {
 
 using namespace model;
 
@@ -34,9 +34,9 @@ using namespace model;
 // launches drain in microseconds. The first to see the abort word records kAborted at `site` (the stage's index). One
 // thread reads and the workgroup shares the answer, so every thread agrees (run_stage has __syncthreads in it). This stops a
 // long or runaway sequence of stages BETWEEN stages; a stage that hangs inside an op can't be stopped (ops have no polls).
-__global__ void __launch_bounds__(kMkBlock) k_stage(const Stage *__restrict__ s, Control *ctl, uint32_t site) {
+__global__ void __launch_bounds__(kBlockThreads) k_stage(const Stage *__restrict__ s, Control *ctl, uint32_t site) {
   __shared__ uint32_t stop;
-  if (mk_tid() == 0) {
+  if (thread_id() == 0) {
     uint32_t v = 0;
     if (ld_acquire_sys(&ctl->abort) != 0) {
       set_status(ctl, kAborted, site);
@@ -75,7 +75,7 @@ Engine::~Engine() {
 
 void Engine::make_event() {
   if (!launched_ev_) {
-    MK_CHECK(hipEventCreate(&launched_ev_));
+    HIP_CHECK(hipEventCreate(&launched_ev_));
     ++host_stats().events_created;
   }
 }
@@ -94,10 +94,10 @@ LaunchResult Engine::launch_fused(const Stage *ds, uint32_t n, int grid, uint32_
   void *args[] = {&ds, &n, &ctl, &bar, &skip, &ev};
   wd_.begin();
   make_event();
-  launch_coop(mega_kernel(), grid, kMkBlock, args, 0, 0);
-  MK_CHECK(hipEventRecord(launched_ev_, 0));
+  launch_coop(mega_kernel(), grid, kBlockThreads, args, 0, 0);
+  HIP_CHECK(hipEventRecord(launched_ev_, 0));
   wd_.arm(launched_ev_);
-  MK_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipDeviceSynchronize());
   wd_.finish();
   cb_.end_pass();
   return result();
@@ -111,17 +111,17 @@ LaunchResult Engine::launch_each(const Stage *ds, uint32_t n) {
   make_event();
   wd_.begin();
   for (uint32_t i = 0; i < n; ++i) {
-    k_stage<<<kUnfusedGrid, kMkBlock>>>(ds + i, ctl, i);
-    MK_CHECK(hipGetLastError());
+    k_stage<<<kUnfusedGrid, kBlockThreads>>>(ds + i, ctl, i);
+    HIP_CHECK(hipGetLastError());
     // After every launch (the same event, re-recorded): the watchdog's "a kernel is still running" query then looks at
     // the newest launch; armed once, after the first record.
-    MK_CHECK(hipEventRecord(launched_ev_, 0));
+    HIP_CHECK(hipEventRecord(launched_ev_, 0));
     if (i == 0) wd_.arm(launched_ev_);
   }
-  MK_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipDeviceSynchronize());
   wd_.finish();
   cb_.end_pass();
   return result();
 }
 
-}  // namespace mk
+}  // namespace qwen38

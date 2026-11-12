@@ -1,7 +1,7 @@
-//! A stop of the process with the mk engine on gfx1151 parks each state that holds tokens (spec 10.3).
+//! A stop of the process with the Qwen3.8 engine on gfx1151 parks each state that holds tokens (spec 10.3).
 //!
-//! The test opens mk, so it needs the GPU and `MK_SHARDS`. It loads the weights once (about 25 s).
-//! The process holds the only engine handle. The test does not close mk (spec 3.3).
+//! The test opens the engine, so it needs the GPU and `QWEN38_SHARDS`. It loads the weights once (about 25 s).
+//! The process holds the only engine handle. The test does not close the engine (spec 3.3).
 #![cfg(feature = "hip")]
 
 use std::path::Path;
@@ -41,20 +41,20 @@ fn feed(engine: &mut dyn Engine, slot: u32, count: usize) {
 }
 
 #[test]
-fn a_stop_with_mk_parks_the_states_that_hold_tokens_and_is_clean() {
+fn a_stop_with_the_qwen38_engine_parks_the_states_that_hold_tokens_and_is_clean() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let profile = PlacementProfile::read(&repo.join("deploy/gfx1151host").join(PROFILE_FILE)).unwrap();
     let inventory = FileProbe::new("/").probe().expect("the inventory of this machine");
     let store = tempfile::tempdir().unwrap();
     let mut ready = lifecycle::start(
         profile,
-        Registry::with_mk(),
+        Registry::with_qwen38(),
         inventory,
         store.path(),
         None,
         Duration::from_secs(120),
     )
-    .expect("the process starts with mk");
+    .expect("the process starts with the engine");
 
     // Slot 0 is small (4096 tokens) and slot 12 is large (32 768). The other 14 slots stay empty.
     let (done, ran) = mpsc::channel();
@@ -62,7 +62,7 @@ fn a_stop_with_mk_parks_the_states_that_hold_tokens_and_is_clean() {
         let engine = engines[0].as_mut();
         feed(engine, 0, 300);
         feed(engine, 12, 5);
-        let slots = engine.slots().expect("mk has the slots capability");
+        let slots = engine.slots().expect("the engine has the slots capability");
         let _ = done.send((slots.slot_high(0), slots.slot_high(12), slots.slot_high(1)));
     });
     ready.process.submit(0, quantum).unwrap();
@@ -81,7 +81,8 @@ fn a_stop_with_mk_parks_the_states_that_hold_tokens_and_is_clean() {
     assert_eq!(report.parked.entries, 2, "{report:?}");
     // Each state has the fixed parts 0-2 and 5, and the cells parts 3 and 4. `idx_pooled` is derived.
     assert_eq!(report.parked.parts, 12, "{report:?}");
-    // Spec 10.3: the process exits after the park. Do not join the group thread: its drop would free mk's contexts.
+    // Spec 10.3: the process exits after the park. Do not join the group thread: its drop would free the contexts of
+    // the engine.
     std::mem::forget(ready);
 
     let store = Store::open(store.path()).unwrap();

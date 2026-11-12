@@ -1,5 +1,5 @@
-//! The detokenizer against the outputs of mk's Python (`service/chatfmt.py` `Utf8Stream`, `service/common.py`
-//! `piece_text`).
+//! The detokenizer against the outputs of the reference's Python (`service/chatfmt.py` `Utf8Stream`,
+//! `service/common.py` `piece_text`).
 
 mod common;
 
@@ -25,7 +25,7 @@ fn run(chunks: &[Vec<u8>]) -> (Vec<String>, String) {
 }
 
 #[test]
-fn a_stream_of_bytes_gives_the_text_of_mk() {
+fn a_stream_of_bytes_gives_the_text_of_the_reference() {
     let f = fixture("utf8.json");
     let cases = f.get("streams").items();
     assert!(cases.len() >= 36);
@@ -39,7 +39,7 @@ fn a_stream_of_bytes_gives_the_text_of_mk() {
 }
 
 #[test]
-fn a_stream_of_token_pieces_gives_the_text_of_mk() {
+fn a_stream_of_token_pieces_gives_the_text_of_the_reference() {
     if common::absent() {
         return;
     }
@@ -92,7 +92,7 @@ fn flush_reports_an_unfinished_character_once() {
 }
 
 #[test]
-fn piece_text_gives_the_text_of_mk() {
+fn piece_text_gives_the_text_of_the_reference() {
     let f = fixture("utf8.json");
     let cases = f.get("piece_text").items();
     assert!(cases.len() >= 18);

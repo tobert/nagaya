@@ -6,12 +6,12 @@
 #include "qmm.h"
 #include "rt.h"
 
-namespace mk {
+namespace qwen38 {
 
 inline void check_shape(uint32_t type, uint32_t k) {
   const uint32_t bv = q::block_values(type);
-  if (q::block_bytes(type) == 0) MK_DIE("unknown quant type %u", type);
-  if (k % 32 != 0 || k % bv != 0) MK_DIE("K=%u is not a multiple of 32 and of type %u's block (%u)", k, type, bv);
+  if (q::block_bytes(type) == 0) HIP_DIE("unknown quant type %u", type);
+  if (k % 32 != 0 || k % bv != 0) HIP_DIE("K=%u is not a multiple of 32 and of type %u's block (%u)", k, type, bv);
 }
 
 // y[y_row[t], n] = W[n, :] . x[x_row[t], :] (a null map is the identity), with x holding x_rows rows of
@@ -27,14 +27,14 @@ int run_qmm(Launch launch, uint32_t rows_per_item, uint32_t toks_per_item, const
             uint64_t y_bytes, uint32_t y_rows, const uint32_t *y_row_host, uint64_t y_row_bytes, uint32_t ldy,
             uint32_t grid) {
   check_shape(type, k);
-  MK_CHECK_BYTES(op, "w", w_bytes, q::row_bytes(type, k) * n);
-  MK_CHECK_BYTES(op, "x", x_bytes, sizeof(float) * uint64_t(x_rows) * k);
-  MK_CHECK_BYTES(op, "y", y_bytes, sizeof(float) * uint64_t(y_rows) * ldy);
-  MK_CHECK_BYTES(op, "x_row", x_row_bytes, x_row_host ? sizeof(uint32_t) * uint64_t(t) : 0);
-  MK_CHECK_BYTES(op, "y_row", y_row_bytes, y_row_host ? sizeof(uint32_t) * uint64_t(t) : 0);
-  if (!x_row_host && x_rows != t) MK_DIE("qmm: %u x rows for %u tokens without a row map", x_rows, t);
-  if (!y_row_host && y_rows != t) MK_DIE("qmm: %u y rows for %u tokens without a row map", y_rows, t);
-  if (ldy < n) MK_DIE("qmm: ldy %u < n %u", ldy, n);
+  HIP_CHECK_BYTES(op, "w", w_bytes, q::row_bytes(type, k) * n);
+  HIP_CHECK_BYTES(op, "x", x_bytes, sizeof(float) * uint64_t(x_rows) * k);
+  HIP_CHECK_BYTES(op, "y", y_bytes, sizeof(float) * uint64_t(y_rows) * ldy);
+  HIP_CHECK_BYTES(op, "x_row", x_row_bytes, x_row_host ? sizeof(uint32_t) * uint64_t(t) : 0);
+  HIP_CHECK_BYTES(op, "y_row", y_row_bytes, y_row_host ? sizeof(uint32_t) * uint64_t(t) : 0);
+  if (!x_row_host && x_rows != t) HIP_DIE("qmm: %u x rows for %u tokens without a row map", x_rows, t);
+  if (!y_row_host && y_rows != t) HIP_DIE("qmm: %u y rows for %u tokens without a row map", y_rows, t);
+  if (ldy < n) HIP_DIE("qmm: ldy %u < n %u", ldy, n);
   QmmArgs a{};
   a.type = type;
   a.ldw = q::row_bytes(type, k);
@@ -46,24 +46,24 @@ int run_qmm(Launch launch, uint32_t rows_per_item, uint32_t toks_per_item, const
   uint8_t *w;
   float *x, *y;
   uint32_t *xr = nullptr, *yr = nullptr;
-  MK_CHECK(hipMalloc(&w, a.ldw * n));
-  MK_CHECK(hipMalloc(&x, sizeof(float) * uint64_t(x_rows) * k));
-  MK_CHECK(hipMalloc(&y, sizeof(float) * uint64_t(y_rows) * ldy));
-  MK_CHECK(hipMemcpy(w, w_host, a.ldw * n, hipMemcpyHostToDevice));
-  MK_CHECK(hipMemcpy(x, x_host, sizeof(float) * uint64_t(x_rows) * k, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMalloc(&w, a.ldw * n));
+  HIP_CHECK(hipMalloc(&x, sizeof(float) * uint64_t(x_rows) * k));
+  HIP_CHECK(hipMalloc(&y, sizeof(float) * uint64_t(y_rows) * ldy));
+  HIP_CHECK(hipMemcpy(w, w_host, a.ldw * n, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMemcpy(x, x_host, sizeof(float) * uint64_t(x_rows) * k, hipMemcpyHostToDevice));
   if (y_row_host) {
     for (uint32_t i = 0; i < t; ++i)
-      if (y_row_host[i] >= y_rows) MK_DIE("qmm: y_row[%u] = %u >= %u rows", i, y_row_host[i], y_rows);
-    MK_CHECK(hipMalloc(&yr, sizeof(uint32_t) * t));
-    MK_CHECK(hipMemcpy(yr, y_row_host, sizeof(uint32_t) * t, hipMemcpyHostToDevice));
+      if (y_row_host[i] >= y_rows) HIP_DIE("qmm: y_row[%u] = %u >= %u rows", i, y_row_host[i], y_rows);
+    HIP_CHECK(hipMalloc(&yr, sizeof(uint32_t) * t));
+    HIP_CHECK(hipMemcpy(yr, y_row_host, sizeof(uint32_t) * t, hipMemcpyHostToDevice));
   }
   if (x_row_host) {
     for (uint32_t i = 0; i < t; ++i)
-      if (x_row_host[i] >= x_rows) MK_DIE("qmm: x_row[%u] = %u >= %u rows", i, x_row_host[i], x_rows);
-    MK_CHECK(hipMalloc(&xr, sizeof(uint32_t) * t));
-    MK_CHECK(hipMemcpy(xr, x_row_host, sizeof(uint32_t) * t, hipMemcpyHostToDevice));
+      if (x_row_host[i] >= x_rows) HIP_DIE("qmm: x_row[%u] = %u >= %u rows", i, x_row_host[i], x_rows);
+    HIP_CHECK(hipMalloc(&xr, sizeof(uint32_t) * t));
+    HIP_CHECK(hipMemcpy(xr, x_row_host, sizeof(uint32_t) * t, hipMemcpyHostToDevice));
   }
-  MK_CHECK(hipMemset(y, 0xff, sizeof(float) * uint64_t(y_rows) * ldy));  // NaN: unwritten outputs show
+  HIP_CHECK(hipMemset(y, 0xff, sizeof(float) * uint64_t(y_rows) * ldy));  // NaN: unwritten outputs show
   a.w = w;
   a.x = x;
   a.x_row = xr;
@@ -71,14 +71,14 @@ int run_qmm(Launch launch, uint32_t rows_per_item, uint32_t toks_per_item, const
   a.y_row = yr;
   const uint32_t items = ((n + rows_per_item - 1) / rows_per_item) * ((t + toks_per_item - 1) / toks_per_item);
   launch(a, grid ? grid : items);
-  MK_CHECK(hipGetLastError());
-  MK_CHECK(hipDeviceSynchronize());
-  MK_CHECK(hipMemcpy(y_host, y, sizeof(float) * uint64_t(y_rows) * ldy, hipMemcpyDeviceToHost));
-  MK_CHECK(hipFree(w));
-  MK_CHECK(hipFree(x));
-  MK_CHECK(hipFree(y));
-  if (xr) MK_CHECK(hipFree(xr));
-  if (yr) MK_CHECK(hipFree(yr));
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipMemcpy(y_host, y, sizeof(float) * uint64_t(y_rows) * ldy, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipFree(w));
+  HIP_CHECK(hipFree(x));
+  HIP_CHECK(hipFree(y));
+  if (xr) HIP_CHECK(hipFree(xr));
+  if (yr) HIP_CHECK(hipFree(yr));
   return 0;
 }
 
@@ -90,9 +90,9 @@ template <class Launch>
 double bench_qmm(Launch launch, const char *op, uint32_t type, const void *w_host, uint64_t w_bytes, uint32_t n,
                  uint32_t k, const float *x_host, uint64_t x_bytes, uint32_t t, uint32_t grid, uint32_t reps) {
   check_shape(type, k);
-  MK_CHECK_BYTES(op, "w", w_bytes, q::row_bytes(type, k) * n);
-  MK_CHECK_BYTES(op, "x", x_bytes, sizeof(float) * uint64_t(t) * k);
-  if (reps == 0 || grid == 0) MK_DIE("qmm bench: reps %u, grid %u", reps, grid);
+  HIP_CHECK_BYTES(op, "w", w_bytes, q::row_bytes(type, k) * n);
+  HIP_CHECK_BYTES(op, "x", x_bytes, sizeof(float) * uint64_t(t) * k);
+  if (reps == 0 || grid == 0) HIP_DIE("qmm bench: reps %u, grid %u", reps, grid);
   QmmArgs a{};
   a.type = type;
   a.ldw = q::row_bytes(type, k);
@@ -105,32 +105,32 @@ double bench_qmm(Launch launch, const char *op, uint32_t type, const void *w_hos
   const uint64_t copies = (pool_min + wbytes - 1) / wbytes;
   uint8_t *w;
   float *x, *y;
-  MK_CHECK(hipMalloc(&w, wbytes * copies));
-  MK_CHECK(hipMalloc(&x, sizeof(float) * uint64_t(t) * k));
-  MK_CHECK(hipMalloc(&y, sizeof(float) * uint64_t(t) * n));
-  for (uint64_t c = 0; c < copies; ++c) MK_CHECK(hipMemcpy(w + c * wbytes, w_host, wbytes, hipMemcpyHostToDevice));
-  MK_CHECK(hipMemcpy(x, x_host, sizeof(float) * uint64_t(t) * k, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMalloc(&w, wbytes * copies));
+  HIP_CHECK(hipMalloc(&x, sizeof(float) * uint64_t(t) * k));
+  HIP_CHECK(hipMalloc(&y, sizeof(float) * uint64_t(t) * n));
+  for (uint64_t c = 0; c < copies; ++c) HIP_CHECK(hipMemcpy(w + c * wbytes, w_host, wbytes, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMemcpy(x, x_host, sizeof(float) * uint64_t(t) * k, hipMemcpyHostToDevice));
   a.x = x;
   a.y = y;
   hipEvent_t e0, e1;
-  MK_CHECK(hipEventCreate(&e0));
-  MK_CHECK(hipEventCreate(&e1));
+  HIP_CHECK(hipEventCreate(&e0));
+  HIP_CHECK(hipEventCreate(&e1));
   for (uint32_t i = 0; i <= reps; ++i) {
-    if (i == 1) MK_CHECK(hipEventRecord(e0));
+    if (i == 1) HIP_CHECK(hipEventRecord(e0));
     a.w = w + (i % copies) * wbytes;
     launch(a, grid);
   }
-  MK_CHECK(hipEventRecord(e1));
-  MK_CHECK(hipGetLastError());
-  MK_CHECK(hipEventSynchronize(e1));
+  HIP_CHECK(hipEventRecord(e1));
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipEventSynchronize(e1));
   float ms = 0.f;
-  MK_CHECK(hipEventElapsedTime(&ms, e0, e1));
-  MK_CHECK(hipEventDestroy(e0));
-  MK_CHECK(hipEventDestroy(e1));
-  MK_CHECK(hipFree(w));
-  MK_CHECK(hipFree(x));
-  MK_CHECK(hipFree(y));
+  HIP_CHECK(hipEventElapsedTime(&ms, e0, e1));
+  HIP_CHECK(hipEventDestroy(e0));
+  HIP_CHECK(hipEventDestroy(e1));
+  HIP_CHECK(hipFree(w));
+  HIP_CHECK(hipFree(x));
+  HIP_CHECK(hipFree(y));
   return double(ms) / reps;
 }
 
-}  // namespace mk
+}  // namespace qwen38

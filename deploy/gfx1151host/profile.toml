@@ -2,24 +2,25 @@
 # `<store_dir>/profile.toml`, so docs/deploy.md says to copy this file there once. The loader is
 # `crates/nagaya/src/profile.rs`, and `crates/nagaya/tests/deploy.rs` reads this file.
 
-# The mk engine (docs/engine-abi.md "v0 mk binding choices"). The binary links it. Its shards come from the unit's
-# environment (`MK_SHARDS`), and not from this table. The context pool is fixed in the binding
-# (`spec.rs`: `CONTEXT_COUNT`, `CONTEXT_CAPACITY`), so this profile names no context count and no context size.
-# mk is on demand (Amy, 2026-11-01): Qwen-Image stays loaded on gfx1151host for a while, and mk swaps in through the load
-# route for tests and some inference: `POST /nagaya/v1/engines/mk/load` with `{"unload": ["qwen-image-fusal"]}`
-# (spec 3.3b). Both can be loaded on purpose, mk first, but a build beside both can stop mk (docs/deploy.md).
+# The Qwen3.8 engine (docs/engine-abi.md "v0 binding choices"). The binary links it. Its shards come from the unit's
+# environment (`QWEN38_SHARDS`), and not from this table. The context pool is fixed in the binding (`spec.rs`:
+# `CONTEXT_COUNT`, `CONTEXT_CAPACITY`), so this profile names no context count and no context size. The Qwen3.8 engine
+# is on demand (Amy, 2026-11-01): Qwen-Image stays loaded on gfx1151host for a while, and the engine swaps in through the load
+# route for tests and some inference: `POST /nagaya/v1/engines/qwen38/load` with `{"unload": ["qwen-image-fusal"]}` (spec
+# 3.3b). Both can be loaded on purpose, the Qwen3.8 engine first, but a build beside both can stop it (docs/deploy.md).
 [[engines]]
-name = "mk"
+name = "qwen38"
 kind = "mk-qwen38-gfx1151"
 devices = [0]
 share = 1
 pin_identity = false
 residency = "on_demand"
 
-# `weights_bytes` is the size of mk's weight arena. mk knows it only after the weights load, and the plan reads no
-# weights (spec 2.4). The value below is measured: the first start on gfx1151 (2026-10-20, about 23:26) loaded 60.99 GiB and
-# gave this size in its exit-3 message. After a change to mk or its weights, a start exits 3 with the new size. Write
-# that size here and in the copy in the store directory (docs/deploy.md, "The weights size").
+# `weights_bytes` is the size of the weight arena of the engine. The engine knows it only after the weights load, and
+# the plan reads no weights (spec 2.4). The value below is measured: the first start on gfx1151 (2026-10-20, about
+# 23:26) loaded 60.99 GiB and gave this size in its exit-3 message. After a change to the engine or its weights, a start
+# exits 3 with the new size. Write that size here and in the copy in the store directory (docs/deploy.md, "The weights
+# size").
 [engines.config]
 weights_bytes = 65490227200
 
@@ -50,8 +51,9 @@ tiers = ["device(0)", "host"]
 bytes = 120259084288
 
 # The store (spec 4.1a): 2 GiB in host memory and 50 GiB on NVMe. The host budget takes its bytes from the pool above.
-# It was mk's default of 16 GiB until Qwen-Image came (milestone 22); docs/deploy.md "The memory budgets" gives the
-# sum. Objects have their own budget of 200 GiB on the same disk (spec 6.15; Amy, 2026-11-01, as on b70host).
+# It was the default of the old service, 16 GiB, until Qwen-Image came (milestone 22); docs/deploy.md "The memory
+# budgets" gives the sum. Objects have their own budget of 200 GiB on the same disk (spec 6.15; Amy, 2026-11-01, as on
+# b70host).
 [store]
 nvme = 53687091200
 host = 2147483648

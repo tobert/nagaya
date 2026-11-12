@@ -2008,7 +2008,8 @@ impl Engine for Counted {
 
 #[test]
 fn the_suite_holds_at_most_three_engines_at_once() {
-    // An engine with a large pool (mk: 12 GiB each) fits three next to its weights and the host floor, not four.
+    // An engine with a large pool (the Qwen3.8 engine: 12 GiB each) fits three next to its weights and the host floor,
+    // not four.
     let alive = std::rc::Rc::new(std::cell::Cell::new(0usize));
     let most = std::rc::Rc::new(std::cell::Cell::new(0usize));
     let mut make = || {

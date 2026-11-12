@@ -1,4 +1,4 @@
-//! The tokenizer against the outputs of mk's Python (`harness/tokenizer.py`), id for id.
+//! The tokenizer against the outputs of the reference's Python (`harness/tokenizer.py`), id for id.
 
 mod common;
 
@@ -52,7 +52,7 @@ fn the_vocabulary_matches_the_fixture() {
 }
 
 #[test]
-fn pretokenize_splits_like_the_pattern_of_mk() {
+fn pretokenize_splits_like_the_pattern_of_the_reference() {
     let cases = tokenizer_fixture().get("pretok").items();
     assert!(cases.len() > 300);
     for case in cases {
@@ -63,7 +63,7 @@ fn pretokenize_splits_like_the_pattern_of_mk() {
 }
 
 #[test]
-fn encode_gives_the_ids_of_mk() {
+fn encode_gives_the_ids_of_the_reference() {
     if common::absent() {
         return;
     }
@@ -79,7 +79,7 @@ fn encode_gives_the_ids_of_mk() {
     }
 }
 
-/// The error is `Reserved` with the character and the offset that mk names, and its message says them.
+/// The error is `Reserved` with the character and the offset that the reference names, and its message says them.
 fn assert_reserved(name: &str, error: &Error, case: &Json) {
     let want_char = char::from_u32(u32::from_str_radix(case.get("char").str(), 16).unwrap()).unwrap();
     let want_offset = case.get("offset").int() as usize;
@@ -88,7 +88,7 @@ fn assert_reserved(name: &str, error: &Error, case: &Json) {
             assert_eq!(
                 (*ch, *offset),
                 (want_char, want_offset),
-                "case {name}: mk says {:?}",
+                "case {name}: the reference says {:?}",
                 case.get("error").str()
             );
         }
@@ -140,7 +140,7 @@ fn a_noncharacter_error_names_the_character_and_its_offset() {
 }
 
 #[test]
-fn escape_and_unescape_give_the_text_of_mk() {
+fn escape_and_unescape_give_the_text_of_the_reference() {
     if common::absent() {
         return;
     }
@@ -185,7 +185,7 @@ fn each_escape_character_encodes_as_the_text_of_its_special_token() {
 }
 
 #[test]
-fn escape_and_unescape_refuse_what_mk_refuses() {
+fn escape_and_unescape_refuse_what_the_reference_refuses() {
     if common::absent() {
         return;
     }
@@ -211,13 +211,13 @@ fn encode_never_reads_an_escape_character_as_text() {
     if common::absent() {
         return;
     }
-    // mk refuses an escape character in raw text. `encode_escaped` is the only call that reads it.
+    // The reference refuses an escape character in raw text. `encode_escaped` is the only call that reads it.
     assert!(matches!(tokenizer().encode("\u{fdd0}"), Err(Error::Reserved { .. })));
     assert!(tokenizer().encode_escaped("\u{fdd0}").is_ok());
 }
 
 #[test]
-fn decode_gives_the_text_of_mk() {
+fn decode_gives_the_text_of_the_reference() {
     if common::absent() {
         return;
     }
@@ -233,7 +233,7 @@ fn decode_gives_the_text_of_mk() {
 }
 
 #[test]
-fn decode_refuses_what_mk_refuses() {
+fn decode_refuses_what_the_reference_refuses() {
     if common::absent() {
         return;
     }
@@ -243,33 +243,43 @@ fn decode_refuses_what_mk_refuses() {
         let name = case.get("name").str();
         let error = match tokenizer().decode(&case.get("ids").ids()) {
             Err(e) => e,
-            Ok(text) => panic!("case {name} gave {text:?}, and mk says {:?}", case.get("error").str()),
+            Ok(text) => panic!(
+                "case {name} gave {text:?}, and the reference says {:?}",
+                case.get("error").str()
+            ),
         };
-        let mk = case.get("error").str();
+        let said = case.get("error").str();
         match case.get("exception").str() {
             // An id outside the vocabulary: the error names the id and the size of the vocabulary.
             "IndexError" => match error {
                 Error::TokenId { id, count } => {
-                    assert_eq!(id as i128, case.get("bad_id").int(), "case {name}: mk says {mk:?}");
+                    assert_eq!(
+                        id as i128,
+                        case.get("bad_id").int(),
+                        "case {name}: the reference says {said:?}"
+                    );
                     assert_eq!(count, tokenizer().len(), "case {name}");
                 }
-                other => panic!("case {name}: mk says {mk:?}; got {other:?}"),
+                other => panic!("case {name}: the reference says {said:?}; got {other:?}"),
             },
-            // Bytes that are not UTF-8: the message gives the index where mk's error starts.
+            // Bytes that are not UTF-8: the message gives the index where the reference's error starts.
             "UnicodeDecodeError" => match &error {
                 Error::Bytes(m) => {
                     let from = format!("from index {}", case.get("start").int());
-                    assert!(m.contains(&from), "case {name}: mk says {mk:?}; got {m:?}");
+                    assert!(m.contains(&from), "case {name}: the reference says {said:?}; got {m:?}");
                 }
-                other => panic!("case {name}: mk says {mk:?}; got {other:?}"),
+                other => panic!("case {name}: the reference says {said:?}; got {other:?}"),
             },
             // A token with a character outside the byte table: the message names the token.
             "RuntimeError" => match &error {
                 Error::Bytes(m) => {
                     let token = format!("token {} (", case.get("token").int());
-                    assert!(m.contains(&token), "case {name}: mk says {mk:?}; got {m:?}");
+                    assert!(
+                        m.contains(&token),
+                        "case {name}: the reference says {said:?}; got {m:?}"
+                    );
                 }
-                other => panic!("case {name}: mk says {mk:?}; got {other:?}"),
+                other => panic!("case {name}: the reference says {said:?}; got {other:?}"),
             },
             other => panic!("case {name}: the exception {other} is not known"),
         }
@@ -281,7 +291,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 #[test]
-fn token_piece_gives_the_bytes_of_mk() {
+fn token_piece_gives_the_bytes_of_the_reference() {
     if common::absent() {
         return;
     }
@@ -321,7 +331,7 @@ fn token_piece_refuses_an_id_outside_the_vocabulary() {
 }
 
 #[test]
-fn every_piece_of_the_vocabulary_matches_the_digest_of_mk() {
+fn every_piece_of_the_vocabulary_matches_the_digest_of_the_reference() {
     if common::absent() {
         return;
     }
@@ -339,7 +349,7 @@ fn every_piece_of_the_vocabulary_matches_the_digest_of_mk() {
 }
 
 #[test]
-fn encoding_every_vocabulary_text_matches_the_digest_of_mk() {
+fn encoding_every_vocabulary_text_matches_the_digest_of_the_reference() {
     if common::absent() {
         return;
     }

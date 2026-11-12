@@ -18,7 +18,7 @@
 #include "attn.h"
 #include "attn_mask.h"
 
-namespace mk {
+namespace qwen38 {
 
 // Stage::sched: no grid barrier after this stage (only a workgroup one, for the LDS the ops share), and the rotation.
 constexpr uint32_t kSchedNoBarrier = 1u << 31;
@@ -51,7 +51,7 @@ enum StageOp : uint32_t {
   kStAttnPrep,
   kStAttnSelect,
   kStAttnCore,
-  kStQmmH,  // qmm on f16 WMMA (qmmh.h, PLAN.md Speed S2); QmmArgs as kStQmm
+  kStQmmH,  // qmm on f16 WMMA (qmmh.h); QmmArgs as kStQmm
   kStQmmKsum,  // the split-K sum after a kStQmmH stage with ksplit > 1 (qmmh.h op_qmm_ksum); the same QmmArgs
   kStHcCombineRms,  // op_hc_combine_rms: a hc_combine and the rms of its h as one stage (small.h; engine fuse_hc)
   // The indexer's selection with an attention cell mask (attn_mask.h; lab only). Only k_stage (engine.hip) runs it:
@@ -106,7 +106,7 @@ struct Stage {
 
 // Always inlined into its kernel (k_stage, k_mega). Called as a real function, with qmm's 36 KiB LDS tile
 // reachable from it, k_stage never finished even an embed stage on one workgroup; inlined, or with a 9 KiB
-// tile, it ran in ~2 ms (tests/engine/probe_stage1.hip, 2026-09-27; PLAN.md Problems). Likely the compiler's
+// tile, it ran in ~2 ms (tests/engine/probe_stage1.hip, 2026-09-27). Likely the compiler's
 // LDS lowering for callees, and plausibly run 2's k_stage hang too.
 __device__ __attribute__((always_inline)) inline void run_stage(const Stage &s, uint32_t wg, uint32_t nwg) {
   switch (s.op) {
@@ -137,7 +137,7 @@ __device__ __attribute__((always_inline)) inline void run_stage(const Stage &s, 
     case kStAttnCore: op_attn_attend(s.aatt, wg, nwg); break;
     case kStQmmH: op_qmmh(s.qmm, wg, nwg); break;
     case kStQmmKsum: op_qmm_ksum(s.qmm, wg, nwg); break;
-    default: MK_TRAP(kTrapBadOp, kTrapFileStage);
+    default: HIP_TRAP(kTrapBadOp, kTrapFileStage);
   }
 }
 
@@ -145,4 +145,4 @@ __device__ __attribute__((always_inline)) inline void run_stage(const Stage &s, 
 // path, else kStQmm (exact f32). Host side, at pass build.
 inline uint32_t qmm_op(uint32_t type, bool fast) { return fast && qmmh_type(type) ? kStQmmH : kStQmm; }
 
-}  // namespace mk
+}  // namespace qwen38

@@ -523,9 +523,9 @@ isolation.
   work.
 - A start with no CPU sets pins no thread. Only a test starts that way. The binary always makes the sets (below).
 - An engine's own threads keep the mask of the group thread that starts them. Linux gives a new thread the mask of the
-  thread that starts it. mk starts its worker thread (`mk-engine`) in `open`, on the group thread, so the worker runs on
-  the pool set. Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02. Reason: the process crate makes the
-  sets, and the group thread is pinned before it opens an engine. Thus the factory needs no CPU argument.
+  thread that starts it. mk starts its worker thread (`qwen38-engine`) in `open`, on the group thread, so the worker
+  runs on the pool set. Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02. Reason: the process crate
+  makes the sets, and the group thread is pinned before it opens an engine. Thus the factory needs no CPU argument.
 
 The binary reads the online CPUs through the file probe (2.1) and makes the sets before it starts gossip. A probe
 error or a split error is a refusal to start: exit 3 (10.4).
@@ -543,7 +543,7 @@ SMT siblings. A housekeeping CPU can share a physical core with a pool CPU. Reas
 CPU 1 with 17 (`thread_siblings_list`), so the two housekeeping CPUs sit on two physical cores. A rule for other
 machines would only guess before a measurement. The bootstrap config can name the sets later.
 
-**Open:** on gfx1151 on 2026-10-20, two of the four `mk-engine` threads had the mask 0-31. The worker and one other
+**Open:** on gfx1151 on 2026-10-20, two of the four `qwen38-engine` threads had the mask 0-31. The worker and one other
 thread had the pool set, 2-31. The HIP runtime starts the two other threads and sets their masks itself. The nagaya
 does not pin threads that a runtime starts.
 
@@ -1866,13 +1866,13 @@ from mk's archive, with mk's venv (`AGENTS.md`, "Checks").
 
 The fixture holds five prompts of 5 to 596 tokens, with the top 64 logits and the logsumexp of the last position.
 The bench `oracle` in the mk crate compares mk with it.
-mk's exact path (`MK_FAST_QMM=0`) is the gate. Its largest gap was a logit difference of 1.7e-5 on 2026-10-20.
+mk's exact path (`QWEN38_FAST_QMM=0`) is the gate. Its largest gap was a logit difference of 1.7e-5 on 2026-10-20.
 Decided 2026-10-20 (reading).
 
 - On the exact path, the argmax agrees when the reference's top two differ by more than 0.25. The reference's top 8
   are in the engine's top 16. The largest logit difference is at most 1e-3, the KL at most 1e-8, and the logsumexp
   difference at most 1e-3.
-- The fast path (`MK_FAST_QMM` unset) is an approximation (12.1). It keeps only the argmax and top-8 rules, and the
+- The fast path (`QWEN38_FAST_QMM` unset) is an approximation (12.1). It keeps only the argmax and top-8 rules, and the
   bench reports its other numbers. At 249 tokens its largest logit difference was 1.03.
 
 The fixture covers prompts of up to 596 tokens. Past about 640 tokens, the gap between mk and the reference is not
@@ -3013,7 +3013,7 @@ The nagaya does not copy that.
 - An engine whose family has no library is not a served model, and the log says so. This is the rule of 11.7 for
   an unknown kind, now keyed by the family.
 - The key `gguf` of `[engines.family]` names the GGUF file of the `qwen38` family. With no key, the library reads the
-  first shard of `MK_SHARDS`, as before. The `toy` family needs no file and no tokenizer hash.
+  first shard of `QWEN38_SHARDS`, as before. The `toy` family needs no file and no tokenizer hash.
 - The registry of engine factories holds each kind that the build has. The feature `hip` gives `mk-qwen38-gfx1151`
   and `qwenimage21`. `xe` gives `mk-gemma4-bmg`, `qwen3tts-bmg`, `mk-sdxl-bmg` and `mk-embeddinggemma2-bmg`. `fake`
   gives the fake kinds (`crates/nagaya/src/admission.rs:196-219`). A build with no kind refuses the start (exit 3).
@@ -3582,7 +3582,7 @@ has a tailnet address in its code.)
 - The engine registry of 11.3 replaces the first two rules below. The code builds it
   (`crates/nagaya/src/serving.rs`, `FamilyRegistry`).
 - The process serves an opened engine when its kind has a family library. The kind `fake-toy` has the toy family
-  (11.3b). The kind `mk-qwen38-gfx1151` has the Qwen3.8 family, from the first shard of `MK_SHARDS`. The tokenizer
+  (11.3b). The kind `mk-qwen38-gfx1151` has the Qwen3.8 family, from the first shard of `QWEN38_SHARDS`. The tokenizer
   hash of that family must equal the `tokenizer_hash` of the engine identity. Thus the identity selects the library
   (11.3). Another kind is not a served model, and the log says so.
 - The served model is the `model` of the engine identity, as gossip publishes it (2.3). It has no alias and no
@@ -5161,7 +5161,7 @@ The inventories found these items. We correct each one when its code moves. We d
    profile for another host").
 6. The template engine differs from jinja2 on integers past 2^127 and on a float key that is not finite (milestone
    11.5 text step). The chat template uses none of them. Which ones do we match?
-7. How far does mk's fast path (`MK_FAST_QMM` unset) move council decisions? At 249 tokens it moved logits by up to
+7. How far does mk's fast path (`QWEN38_FAST_QMM` unset) move council decisions? At 249 tokens it moved logits by up to
    1.03, and the argmax and the top 8 held (8.3). Amy, 2026-10-20: "we'll measure later".
 8. What causes the oracle gap past about 640 tokens, and how large is it at 2,000 tokens and more? The contexts
    hold 4,096 and 32,768 tokens now, and a long prompt takes several passes. On the exact path, the findings are
@@ -5297,14 +5297,14 @@ before the last one are from 2026-10-20 night.
 
 **In `docs/deploy.md`, section "Decided by senpai 2026-10-20 night"**
 
-- The engine kind in the profile is `mk-qwen38-gfx1151`, and the engine is named `mk`.
+- The engine kind in the profile is `mk-qwen38-gfx1151`, and the engine is named `qwen38`.
 - `TimeoutStopSec` is 60 s.
 - The unit makes the store directory with `ExecStartPre`.
 - The gossip port is 8091, next to the HTTP port 8090.
 - The pool is 112 GiB, the store's host budget is 2 GiB, and its NVMe budget is 50 GiB. The host budget was 16 GiB
   until "Two engines on gfx1151host" (Decided 2026-11-02).
 - `interval_copies` is 0, so the scheduler makes no interval copy.
-- `MK_FAST_QMM` stays unset. Milestone 15 removed the library pin.
+- `QWEN38_FAST_QMM` stays unset. Milestone 15 removed the library pin.
 - The profile is copied into the store directory once, and it is not a link.
 - The release binary is built with `--features hip`.
 - `weights_bytes` is the size of mk's weight arena, and a wrong size exits 3.

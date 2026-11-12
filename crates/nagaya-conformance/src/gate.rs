@@ -1,8 +1,8 @@
 //! The conformance gates: the properties of spec 8.3 that need no GPU.
 //!
-//! A fill writes synthetic bytes into every stored part. An engine with a value rule refuses them, as mk refuses a
-//! PLE history that is not a token id. The gate then starts the state with a one-token pass and reads it back, so
-//! every part holds a value that the engine accepts. Both paths call `set_n` after the parts.
+//! A fill writes synthetic bytes into every stored part. An engine with a value rule refuses them, as the Qwen3.8
+//! engine refuses a PLE history that is not a token id. The gate then starts the state with a one-token pass and reads
+//! it back, so every part holds a value that the engine accepts. Both paths call `set_n` after the parts.
 
 use std::fmt;
 
@@ -778,7 +778,8 @@ fn same_boundaries_inner<E: Engine>(mut first: E, make: &mut dyn FnMut() -> E, l
     seal_state(&mut first, state, gate, "the first engine")?;
     seal_state(&mut second, state, gate, "the second engine")?;
     compare_state(gate, &mut first, &mut second, state, limits, 3)?;
-    // The next check makes two more engines. An engine that holds a large pool (mk: 11 GiB) needs these two freed.
+    // The next check makes two more engines. An engine that holds a large pool (the Qwen3.8 engine: 11 GiB) needs these
+    // two freed.
     drop(first);
     drop(second);
     if limits.bit_dependence.is_empty()

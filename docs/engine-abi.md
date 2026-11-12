@@ -368,19 +368,19 @@ Reason: the fake engine must serve a family with a vocabulary, and the output ro
 
 | ABI | mk (`extern.hip`) | Notes |
 |---|---|---|
-| open / attach | `mk_engine_open(watchdog_deadline_s)`; no attach | no device argument: the HIP device is the calling thread's current one, so the wrapper sets it on the group's thread; the Rust reader parses the three GGUF shards, and the Rust host fills the arena (Proposed notes below); the C++ engine is the runtime layer only: the launches under the control block and the watchdog |
+| open / attach | `qwen38_engine_open(watchdog_deadline_s)`; no attach | no device argument: the HIP device is the calling thread's current one, so the wrapper sets it on the group's thread; the Rust reader parses the three GGUF shards, and the Rust host fills the arena (Proposed notes below); the C++ engine is the runtime layer only: the launches under the control block and the watchdog |
 | plan | none yet | the wrapper computes the terms from the config and mk's fixed shapes |
 | arena | `arena::plan` and `arena::create` in Rust (`arena.rs`) | one sealed memfd in mk's `arena.h` layout; no check of another process's arena yet: milestone 15 step 6 removed the C++ check, which had no call |
-| identity | built in the Python service | moves into the engine; must include `fused` and `MK_FAST_QMM` |
-| contexts | `context::ctx_new`, `ctx_free`, `ctx_n` in Rust (`context.rs`) | over the runtime calls `mk_rt_malloc`, `mk_rt_free` and `mk_rt_memset` of `rt.cpp`; no fork and no copy |
-| parts | `context::state_read`, `state_write`, `cells_write`, `set_n` in Rust | over `mk_rt_memcpy` and `mk_rt_memcpy_2d`; after `set_n` the worker pools the index keys (`host.rs` `pool_context`, through `mk_launch_each`). Parts 0-2 and 5 fixed, 3-4 cells; `idx_pooled` derived. `cells_read` takes only rows 0 to n, the whole part: snapshots are stored whole (about 316 MB at n = 3584, ontology "Part") |
+| identity | built in the Python service | moves into the engine; must include `fused` and `QWEN38_FAST_QMM` |
+| contexts | `context::ctx_new`, `ctx_free`, `ctx_n` in Rust (`context.rs`) | over the runtime calls `hip_rt_malloc`, `hip_rt_free` and `hip_rt_memset` of `rt.cpp`; no fork and no copy |
+| parts | `context::state_read`, `state_write`, `cells_write`, `set_n` in Rust | over `hip_rt_memcpy` and `hip_rt_memcpy_2d`; after `set_n` the worker pools the index keys (`host.rs` `pool_context`, through `qwen38_launch_each`). Parts 0-2 and 5 fixed, 3-4 cells; `idx_pooled` derived. `cells_read` takes only rows 0 to n, the whole part: snapshots are stored whole (about 316 MB at n = 3584, ontology "Part") |
 | slots | `ctx_n`, `ctx_free` then `ctx_new` | `slot_high` is the token count; `slot_clear` makes a new context of the same capacity |
 | coverage | none | rows 0 to n of each cells part; `fits` compares the rows with the slot's capacity |
-| seal | `mk_ctx_round_gdn_bf16` | changes bits in place |
+| seal | `qwen38_ctx_round_gdn_bf16` | changes bits in place |
 | poison / last_error | `MkContext::poisoned`, `mk_last_error` | |
 | part writes | `context::state_write`, `cells_write`, `set_n` | return nothing and stop the program on input they refuse; the wrapper checks every precondition first (part index, bytes, an empty context for parts 3-5, n within `max`, not poisoned) and returns refused; a write to a context that is already poisoned is refused, because this call changes nothing; after the call, the poison flag gives failed (decided 2026-10-18) |
 | close | the drop of the last handle or `Hold` (`engine.rs`) | frees the contexts, then the weights: the arena, the shard maps, the PLE table, the weight table (`worker.rs` `unload`); the next `open` loads them again from the same shards; the HIP runtime, the C++ engine and the pass host stay (see below) |
-| pass_check / pass | `host::segments_problem`, `host::run_pass` in Rust; `mk_launch_fused` | tokens only (PLE needs token ids); the worker refuses a segment count outside 1 to 16, then a problem of `segments_problem`, then a poisoned context, then a bad knob; the host gathers the PLE rows (`ple.rs`), builds the stages (`pass.rs`), and launches them; outputs are logits per segment |
+| pass_check / pass | `host::segments_problem`, `host::run_pass` in Rust; `qwen38_launch_fused` | tokens only (PLE needs token ids); the worker refuses a segment count outside 1 to 16, then a problem of `segments_problem`, then a poisoned context, then a bad knob; the host gathers the PLE rows (`ple.rs`), builds the stages (`pass.rs`), and launches them; outputs are logits per segment |
 | taps | none | milestone 15 step 6 removed the taps (layers, routes, gates), which had no call |
 | telemetry | none | milestone 15 step 6 removed the op times and the event ring of a pass, which had no call |
 | determinism | `always` | `stage.h`: "every op's output bits depend only on its work items"; top-k ties break by index; bit settings in the identity |
@@ -409,7 +409,7 @@ the ABI.
   - `cells_read` takes `from` 0 and `n` equal to the token count. Then it is a whole read. It refuses every other
     range, because mk has no range read.
 
-  **Open:** `context::ctx_new` stops the program when `hipMalloc` fails (`mk_rt_malloc` in `rt.cpp`). Thus a clear
+  **Open:** `context::ctx_new` stops the program when `hipMalloc` fails (`hip_rt_malloc` in `rt.cpp`). Thus a clear
   that cannot allocate ends the process, and the binding never sees a null context. The free comes first, so the
   allocator holds the bytes. mk needs a reset call that keeps the buffers, so that a clear does not allocate.
   - The factory of the process crate gives `plan(config)` (next rule), and this binding fixes the pool.
@@ -420,8 +420,8 @@ the ABI.
   - `plan` returns the limits of the pool with this size in the weights term.
   - `open` loads the weights and compares the real arena with the key. A difference refuses the start (exit 3,
     spec 10.4). The message gives the real size for the profile.
-  - The factory reads `MK_SHARDS` from the environment. The engine is in the binary, so no variable names a library.
-  - `plan` refuses a missing `MK_SHARDS`, or a shard that is not a file. The message names the variable.
+  - The factory reads `QWEN38_SHARDS` from the environment. The engine is in the binary, so no variable names a library.
+  - `plan` refuses a missing `QWEN38_SHARDS`, or a shard that is not a file. The message names the variable.
   - The kind in the profile is `mk-qwen38-gfx1151`. A build with the feature `hip` registers it.
 - **The pool is 12 contexts of 4,096 tokens and 4 of 32,768.** Decided by senpai 2026-10-20 night, accepted by Amy
   2026-11-02. The pool had 16 contexts of 256 tokens (Amy, 2026-10-20: "grow the pool"). A kaijutsu context needs
@@ -447,7 +447,7 @@ the ABI.
   segment whose first position is not n, or whose positions are not contiguous. mk reads no per-token metadata, so
   `meta` must be empty.
 - **A pass is fused.** Milestone 15 step 6 removed the unfused pass, which no call used. The restore's pool stages
-  still run one launch each (`mk_launch_each`). This binding declares no taps.
+  still run one launch each (`qwen38_launch_each`). This binding declares no taps.
 - **The checkpoint digest is a spot check.** The binding hashes each shard's size and its GGUF header, as mk's
   `weight_hash` does. The digest starts with `spot-sha256:`.
 - **`tokenizer_hash` is a hash of the GGUF tokenizer.** mk loads no tokenizer file. The binding hashes the
@@ -479,11 +479,10 @@ the ABI.
   - `open` refuses a pool that would leave less than the 12 GiB floor. Thus at most three handles are open at once.
   - A gate of the conformance suite holds at most three handles.
 - **`canary_hash` is empty.** This binding does not run mk's canary. The process does not run it yet (spec 8.1).
-- **The identity carries `MK_FAST_QMM`, `MK_TILES` and `fused`.** They are `Approx`, `ReferenceDefining` and
-  `Approx`. The worker reads `MK_FAST_QMM` at each pass build (`worker.rs` `fast_qmm`). `MK_TILES` chooses the tiled
-  or the GGUF layout at load (`worker.rs` `tiles`, `arena.rs` `plan`). The binding has not measured whether the two
-  give equal bits. A change after
-  open refuses the pass, as for `MK_FAST_QMM`.
+- **The identity carries `QWEN38_FAST_QMM`, `QWEN38_TILES` and `fused`.** They are `Approx`, `ReferenceDefining` and
+  `Approx`. The worker reads `QWEN38_FAST_QMM` at each pass build (`worker.rs` `fast_qmm`). `QWEN38_TILES` chooses the
+  tiled or the GGUF layout at load (`worker.rs` `tiles`, `arena.rs` `plan`). The binding has not measured whether
+  the two give equal bits. A change after open refuses the pass, as for `QWEN38_FAST_QMM`.
 
 Reason for all: the code must not guess.
 
@@ -518,12 +517,12 @@ compare the build with itself.
 reader (`gguf.rs`), and step 5 moved the stage schedule (`schedule.rs`). Step 6 moved the arena plan, the PLE gather
 and the stage build (`arena.rs`, `ple.rs` and `pass.rs`):
 
-- `mk_engine_open` takes a `mk_weight_table` (`weight_table.h`): each tensor of the arena by name, in its final
+- `qwen38_engine_open` takes a `mk_weight_table` (`weight_table.h`): each tensor of the arena by name, in its final
   layout. The export of the arena (spec 10.2) builds the attach in Rust, from `arena.rs`.
 - Rust mirrors `Stage` and the argument type of each op as `#[repr(C)]` types (`src/stage.rs`). One file holds each
   size, offset and constant of that mirror (`hip/src/engine/stage_layout.def`). Both the C++ build and the Rust build
   check against it, so a change on one side alone stops a build.
-- `MK_ELIDE` and the other knobs of the build are read in Rust at each pass, and a bad value refuses the pass.
+- `QWEN38_ELIDE` and the other knobs of the build are read in Rust at each pass, and a bad value refuses the pass.
 - The C++ extern layer (`hip/src/engine/extern.hip`) holds only the calls that the binding uses. Each call takes C
   types and calls one `Engine` method or reads one field. The binding declares each call of the layer, and a test
   compares the two lists. Step 4 removed the calls that only mk's Python harness and lab used, and step 6
@@ -549,7 +548,7 @@ Decided 2026-10-20 (reading): these limits stay, and this section records them.
 The binding bound `mk_engine_recover_spin_timeouts` and called it with `on = 1` at open (`566446c`). Milestone 15
 step 6 moved the rule into Rust, and the flag went. A pass can stop on a spin-timeout that the watchdog did not ask
 for. Then `host.rs` `run_pass` always poisons the contexts of the pass. Any other stop ends the process. The test knob
-`MK_MUTATE_STALL_BARRIER` can force a real spin-timeout, so a test of that path is now possible; none is written yet.
+`QWEN38_MUTATE_STALL_BARRIER` can force a real spin-timeout, so a test of it is now possible; none is written.
 
 Two paths have no test. A forced spin-timeout, and the `-1` to `PassStatus::Poison` path that follows it, need GPU
 contention, so no test in this suite reaches them. The poisoned `set_n` path has no test on real mk, because mk's

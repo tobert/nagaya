@@ -1,7 +1,7 @@
-//! Benchmark: the gap between mk on gfx1151 and the CPU reference (milestone 11.5, spec 8.3).
+//! Benchmark: the gap between the engine on gfx1151 and the CPU reference (milestone 11.5, spec 8.3).
 //!
-//! The fixture `tests/fixtures/oracle/qwen38.json` holds the token ids and the top-64 logits of the last position
-//! from mk's CPU reference. The bench opens mk once and runs each prompt in its own context, in passes of at most 256
+//! The fixture `tests/fixtures/oracle/qwen38.json` holds the token ids and the top-64 logits of the last position from
+//! the CPU reference. The bench opens the engine once and runs each prompt in its own context, in passes of at most 256
 //! tokens. It prints one row for each prompt and exits with status 1 when a tolerance breaks. The tolerances live in
 //! `tests/support/oracle.rs`, which a test shares.
 //!
@@ -16,7 +16,7 @@ use std::time::Instant;
 use nagaya_abi::{Engine, OutputsWanted, Segment, SegmentInputs, State};
 use sha2::{Digest, Sha256};
 
-/// The most tokens in one pass (mk `kMaxPassTokens`).
+/// The most tokens in one pass (the reference `kMaxPassTokens`).
 const MAX_PASS_TOKENS: usize = 256;
 
 /// The capacity of the small context class, which holds slots 0-11 (`spec.rs` `CONTEXT_CLASSES`).
@@ -71,7 +71,7 @@ fn main() {
         panic!("the fixture is bad: {problem}");
     }
     let path = oracle::QmmPath::from_env();
-    let mut engine = nagaya_mk_qwen38_gfx1151::open().expect("open mk");
+    let mut engine = nagaya_mk_qwen38_gfx1151::open().expect("open the engine");
     println!(
         "oracle: qmm path {}; reference {} layers, transformers {}, reference_sha {}, {} s",
         path.name(),

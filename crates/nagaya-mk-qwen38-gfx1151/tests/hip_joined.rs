@@ -1,26 +1,26 @@
-//! The joined decode of mk on gfx1151 (milestone 30 step 2): a decode row gives the bits that it gives alone, also at
-//! deep positions, in a pass of 16 segments, and beside a long prefill.
+//! The joined decode of the engine on gfx1151 (milestone 30 step 2): a decode row gives the bits that it gives alone,
+//! also at deep positions, in a pass of 16 segments, and beside a long prefill.
 //!
-//! mk declares `segments_exact` (engine-abi D11). The conformance gate `segments_exact_bits` checks it at position 0
-//! with segments of 1 and 2 tokens. This gate checks the decode rows that a joined quantum of the process makes: one
-//! token for each context, after a prefill of thousands of tokens, past the indexer budget of the attention layers.
-//! Run it with `MK_FAST_QMM` unset and with `MK_FAST_QMM=0`, and with `--test-threads=1`.
+//! The engine declares `segments_exact` (engine-abi D11). The conformance gate `segments_exact_bits` checks it at
+//! position 0 with segments of 1 and 2 tokens. This gate checks the decode rows that a joined quantum of the process
+//! makes: one token for each context, after a prefill of thousands of tokens, past the indexer budget of the attention
+//! layers. Run it with `QWEN38_FAST_QMM` unset and with `QWEN38_FAST_QMM=0`, and with `--test-threads=1`.
 
 #![cfg(feature = "hip")]
 
 use nagaya_abi::{Engine, OutputsWanted, Segment, SegmentInputs, State};
-use nagaya_mk_qwen38_gfx1151::{Hold, MkEngine, MkError, hold};
+use nagaya_mk_qwen38_gfx1151::{Hold, Qwen38Engine, Qwen38Error, hold};
 
-/// The hold of this binary on mk's weights.
+/// The hold of this binary on the engine's weights.
 static HOLD: std::sync::OnceLock<Hold> = std::sync::OnceLock::new();
 
 /// Open a handle, with the weights held for the binary. Each open makes a new context pool.
-fn open() -> Result<MkEngine, MkError> {
-    HOLD.get_or_init(|| hold().expect("hold mk's weights"));
+fn open() -> Result<Qwen38Engine, Qwen38Error> {
+    HOLD.get_or_init(|| hold().expect("hold the engine's weights"));
     nagaya_mk_qwen38_gfx1151::open()
 }
 
-/// The slots of mk: 12 small slots of 4096 tokens, then 4 large slots of 32 768 (`spec.rs` `CONTEXT_CLASSES`).
+/// The slots of the engine: 12 small slots of 4096 tokens, then 4 large slots of 32 768 (`spec.rs` `CONTEXT_CLASSES`).
 const SLOTS: u32 = 16;
 /// The first large slot.
 const LARGE: u32 = 12;
@@ -57,7 +57,7 @@ fn beside_tokens() -> Vec<u32> {
 }
 
 /// A segment of `tokens` at the slot's next position, with the logit row of its last token when `logits` is true.
-fn segment(engine: &MkEngine, slot: u32, tokens: &[u32], logits: bool) -> Segment {
+fn segment(engine: &Qwen38Engine, slot: u32, tokens: &[u32], logits: bool) -> Segment {
     let state = State::Slot(slot);
     let start = engine.n(state).expect("the slot's token count");
     let mut outputs = OutputsWanted::default();
@@ -75,7 +75,7 @@ fn segment(engine: &MkEngine, slot: u32, tokens: &[u32], logits: bool) -> Segmen
 }
 
 /// Run one pass, and give the bit patterns of each logit row, in segment order.
-fn run(engine: &mut MkEngine, segments: &[Segment], what: &str) -> Vec<Vec<u32>> {
+fn run(engine: &mut Qwen38Engine, segments: &[Segment], what: &str) -> Vec<Vec<u32>> {
     let out = engine
         .pass(segments, &[])
         .unwrap_or_else(|error| panic!("{what}: the pass failed: {error:?}"));
@@ -90,7 +90,7 @@ fn run(engine: &mut MkEngine, segments: &[Segment], what: &str) -> Vec<Vec<u32>>
 }
 
 /// Feed the prompt of each slot in passes of one segment.
-fn prefill(engine: &mut MkEngine) {
+fn prefill(engine: &mut Qwen38Engine) {
     for slot in 0..SLOTS {
         let ids = prompt(slot);
         for chunk in ids.chunks(PASS) {
@@ -114,7 +114,7 @@ fn plan(step: usize) -> (Vec<u32>, bool) {
 #[test]
 fn a_decode_row_gives_its_bits_alone_and_joined_at_deep_positions() {
     // The reference: each segment alone, in a pass of one segment.
-    let mut alone = open().expect("open mk");
+    let mut alone = open().expect("open the engine");
     prefill(&mut alone);
     let mut wanted: Vec<Vec<Vec<u32>>> = Vec::new();
     for step in 0..STEPS {
@@ -139,7 +139,7 @@ fn a_decode_row_gives_its_bits_alone_and_joined_at_deep_positions() {
     drop(alone);
 
     // The same feeds on a new pool: each step is one pass of all its segments.
-    let mut joined = open().expect("open mk");
+    let mut joined = open().expect("open the engine");
     prefill(&mut joined);
     for (step, rows) in wanted.iter().enumerate() {
         let (slots, beside) = plan(step);

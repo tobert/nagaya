@@ -428,7 +428,7 @@ fn a_quantum_that_blocks_past_the_timeout_stalls_the_group() {
     );
 }
 
-/// An engine whose open takes `open_time`, as mk's open does (spec 7.4).
+/// An engine whose open takes `open_time`, as the open of the Qwen3.8 engine does (spec 7.4).
 struct SlowOpenFactory {
     limits: Limits,
     open_time: Duration,

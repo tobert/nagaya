@@ -3,7 +3,7 @@ import sys
 
 import numpy as np
 
-MK_FILES = ["tests/ops/test_qmm.py", "tests/ops/test_qmmh.py"]
+SOURCE_FILES = ["tests/ops/test_qmm.py", "tests/ops/test_qmmh.py"]
 
 
 def make(g, lib):

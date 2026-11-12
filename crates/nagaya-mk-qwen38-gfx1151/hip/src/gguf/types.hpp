@@ -33,7 +33,7 @@
 #include <cstdint>
 #include <cstring>
 
-namespace mkgguf {
+namespace gguf {
 
 // GGML tensor element type ids, exactly as they appear in a GGUF tensor-info record and in
 // gguf-py's GGMLQuantizationType. Only the ids present in the Qwen3.8-Flash-Next UD-IQ4_XS
@@ -168,4 +168,4 @@ static_assert(sizeof(BlockIq4Xs) == 136, "block_iq4_xs layout drifted from ggml"
 
 #pragma pack(pop)
 
-}  // namespace mkgguf
+}  // namespace gguf

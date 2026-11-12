@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MIT
-// Device traps that say which one fired (PLAN.md Problems 2026-09-29 00:11: "HSA_STATUS_ERROR_EXCEPTION ... which trap
-// unknown"). A trap site calls MK_TRAP(status, file): the lane first records a distinct Status and a site id (the file's
+// Device traps that say which one fired ("HSA_STATUS_ERROR_EXCEPTION ... which trap
+// unknown"). A trap site calls HIP_TRAP(status, file): the lane first records a distinct Status and a site id (the file's
 // TrapFile and the source line) in the process's trap record, then traps as before (never skipped, never recoverable).
 // The trap kills the queue and the HIP runtime aborts the process; the SIGABRT handler installed by trap_sink_install()
 // (rt.cpp) reads the record and writes "device trap: <status> at site <file>:<line> (wg <n>)" to stderr first.
 //
 // How the ops reach the record: one `static __device__` pointer per translation unit (g_trap_ctl below), pointing at a
 // Control in coherent host memory (a Control like the engine's, with its own lifetime: never freed, so no Engine or
-// op-test library can leave a dangling pointer behind). One per shared object, not per process: mkrt is a static
+// op-test library can leave a dangling pointer behind). One per shared object, not per process: the runtime library is a static
 // library linked into the engine and into each op library, so each carries its own record, binders and SIGABRT handler
-// (chained), and each must call trap_sink_install() itself (the Engine constructor; tests/ops/mkops.py lib()). Every
+// (chained), and each must call trap_sink_install() itself (the Engine constructor; the op tests do so when they load a library). Every
 // TU that includes this header registers a binder at static-init time (host pass only); trap_sink_install() runs the
 // binders, which copy the record's address into that TU's g_trap_ctl (hipMemcpyToSymbol). Without an installed sink
 // g_trap_ctl is null and a trap just traps. Kernel arguments are untouched, so k_mega's budget is (nearly) unchanged:
@@ -17,7 +17,7 @@
 #pragma once
 #include "rt.h"
 
-namespace mk {
+namespace qwen38 {
 
 // Which file a trap site is in (the high half of the site id; the low half is the line).
 enum TrapFile : uint32_t {
@@ -53,33 +53,33 @@ static __device__ __attribute__((visibility("default"))) Control *g_trap_ctl = n
   __builtin_amdgcn_fence(__ATOMIC_RELEASE, "");
 }
 
-}  // namespace mk
+}  // namespace qwen38
 
-// A trap that names itself. `status` is a mk::Status (rt.h), `file` a mk::TrapFile.
-#define MK_TRAP(status, file)                                                                          \
+// A trap that names itself. `status` is a qwen38::Status (rt.h), `file` a qwen38::TrapFile.
+#define HIP_TRAP(status, file)                                                                          \
   do {                                                                                                 \
-    ::mk::trap_record((status), (uint32_t(file) << 16) | uint32_t(__LINE__));                          \
+    ::qwen38::trap_record((status), (uint32_t(file) << 16) | uint32_t(__LINE__));                          \
     __builtin_trap();                                                                                  \
   } while (0)
 
-namespace mk {
+namespace qwen38 {
 // Host: the binder of this translation unit. Declared for both the host and the device pass of the compiler: the device
 // pass has to see the host's use of g_trap_ctl (HIP_SYMBOL), or it keeps the variable internal, folds it to null (nothing
 // ever stores to it in device code) and drops every recording. With the use in view, clang externalizes it.
 // rt.cpp keeps the list of binders (trap_register_binder) and runs them from trap_sink_install().
 void trap_register_binder(void (*bind)(Control *));
 [[maybe_unused]] static __host__ void trap_bind_this_tu(Control *c) {
-  MK_CHECK(hipMemcpyToSymbol(HIP_SYMBOL(g_trap_ctl), &c, sizeof c));
+  HIP_CHECK(hipMemcpyToSymbol(HIP_SYMBOL(g_trap_ctl), &c, sizeof c));
 }
-}  // namespace mk
+}  // namespace qwen38
 
-#if !defined(__HIP_DEVICE_COMPILE__) && !defined(MK_TRAP_NO_BINDER)
-namespace mk {
+#if !defined(__HIP_DEVICE_COMPILE__) && !defined(HIP_TRAP_NO_BINDER)
+namespace qwen38 {
 namespace {
 struct TrapBinderRegistration {
   TrapBinderRegistration() { trap_register_binder(&trap_bind_this_tu); }
 };
 [[maybe_unused]] const TrapBinderRegistration g_trap_binder_registration;
 }  // namespace
-}  // namespace mk
+}  // namespace qwen38
 #endif

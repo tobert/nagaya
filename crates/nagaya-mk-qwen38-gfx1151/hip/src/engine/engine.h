@@ -12,10 +12,10 @@
 #include "rt.h"
 #include "stage.h"
 
-namespace mk {
+namespace qwen38 {
 
 // A context: everything a pass continues from. The Rust host makes, reads, writes, builds and advances it
-// (src/context.rs, which mirrors this layout as MkContext; extern.hip states it). round_gdn_bf16 reads it here.
+// (src/context.rs, which mirrors this layout as Qwen38Context; extern.hip states it). round_gdn_bf16 reads it here.
 struct Context {
   uint32_t n = 0;       // tokens so far
   uint32_t max = 0;     // K/V capacity
@@ -55,7 +55,7 @@ struct LaunchResult {
 
 class Engine {
  public:
-  // The watchdog's deadline for each launch sequence, in seconds (the Rust host reads MK_WATCHDOG_DEADLINE_S).
+  // The watchdog's deadline for each launch sequence, in seconds (the Rust host sets it).
   explicit Engine(double watchdog_deadline_s);
   ~Engine();
   // One cooperative launch of the megakernel over the n stages at ds (host memory the device reads), with grid
@@ -80,4 +80,4 @@ class Engine {
   hipEvent_t launched_ev_ = nullptr;  // recorded after each launch (the watchdog's "kernel still runs" query)
 };
 
-}  // namespace mk
+}  // namespace qwen38

@@ -1,4 +1,4 @@
-//! The chat template and the render of messages against the outputs of mk's Python (`service/template.py`,
+//! The chat template and the render of messages against the outputs of the reference's Python (`service/template.py`,
 //! `service/common.py`).
 
 mod common;
@@ -74,7 +74,7 @@ fn the_template_in_the_gguf_is_the_one_that_made_the_fixtures() {
 }
 
 #[test]
-fn render_gives_the_text_and_the_ids_of_mk() {
+fn render_gives_the_text_and_the_ids_of_the_reference() {
     if common::absent() {
         return;
     }
@@ -112,7 +112,7 @@ fn render_gives_the_text_and_the_ids_of_mk() {
 }
 
 #[test]
-fn render_refuses_what_mk_refuses_and_says_why() {
+fn render_refuses_what_the_reference_refuses_and_says_why() {
     if common::absent() {
         return;
     }
@@ -120,26 +120,30 @@ fn render_refuses_what_mk_refuses_and_says_why() {
     assert!(cases.len() >= 59, "{} cases", cases.len());
     for case in cases {
         let name = case.get("name").str();
-        let mk = case.get("error").str();
+        let said = case.get("error").str();
         let result = family().render(case.get("messages"), tools(case), &options(case));
         match (case.get("kind").str(), result) {
             // The message of raise_exception reaches the error.
             ("raise_exception", Err(Error::Template(m))) => {
                 let reason = case.get("reason").str();
-                assert!(m.contains(reason), "case {name}: mk says {reason:?}; got {m:?}");
+                assert!(
+                    m.contains(reason),
+                    "case {name}: the reference says {reason:?}; got {m:?}"
+                );
             }
-            // The noncharacter and its offset in characters are those that mk names.
+            // The noncharacter and its offset in characters are those that the reference names.
             ("reserved", Err(Error::Reserved { ch, offset })) => {
                 let want = char::from_u32(u32::from_str_radix(case.get("char").str(), 16).unwrap()).unwrap();
                 assert_eq!(
                     (ch, offset as i128),
                     (want, case.get("offset").int()),
-                    "case {name}: mk says {mk:?}"
+                    "case {name}: the reference says {said:?}"
                 );
             }
-            // Errors of the engine, and exceptions of Python that mk does not catch, have no message to compare.
+            // Errors of the engine, and exceptions of Python that the reference does not catch, have no message to
+            // compare.
             ("undefined" | "template" | "exception", Err(Error::Template(_))) => {}
-            (kind, other) => panic!("case {name}: mk refuses ({kind}) with {mk:?}; got {other:?}"),
+            (kind, other) => panic!("case {name}: the reference refuses ({kind}) with {said:?}; got {other:?}"),
         }
     }
 }
@@ -228,7 +232,7 @@ fn trim_strips_what_python_strips() {
 }
 
 #[test]
-fn the_template_variables_are_the_ones_of_mk() {
+fn the_template_variables_are_the_ones_of_the_reference() {
     let source = "{{ enable_thinking }}|{{ add_generation_prompt }}|{{ reasoning_effort is undefined }}|\
                   {{ reasoning_effort }}|{{ tools is undefined }}";
     let t = ChatTemplate::from_source(source).unwrap();
@@ -306,7 +310,7 @@ fn an_empty_tools_list_is_no_tools() {
 }
 
 #[test]
-fn block_settings_and_the_trailing_newline_are_the_ones_of_mk() {
+fn block_settings_and_the_trailing_newline_are_the_ones_of_the_reference() {
     let cases = chat_fixture().get("blocks").items();
     assert!(cases.len() >= 8);
     for case in cases {

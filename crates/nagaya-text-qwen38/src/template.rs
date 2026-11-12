@@ -1,4 +1,5 @@
-//! The chat template of Qwen3.8: the Jinja source in the GGUF, run by `nagaya-jinja` with the variables of mk.
+//! The chat template of Qwen3.8: the Jinja source in the GGUF, run by `nagaya-jinja` with the variables of the
+//! reference.
 
 use crate::Error;
 use crate::gguf::{Metadata, Value as MetaValue};
@@ -53,7 +54,7 @@ impl ChatTemplate {
         }
     }
 
-    /// The text for `messages`, a JSON array. `tools` that are empty count as no tools, as in mk.
+    /// The text for `messages`, a JSON array. `tools` that are empty count as no tools, as in the reference.
     pub fn render(&self, messages: &Json, tools: Option<&Json>, options: &RenderOptions) -> Result<String, Error> {
         if !matches!(messages, Json::Array(_)) {
             return Err(Error::Template("the messages must be an array".to_string()));

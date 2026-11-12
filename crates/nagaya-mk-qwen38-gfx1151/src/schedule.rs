@@ -1,4 +1,5 @@
-//! The schedule of a fused pass: fewer grid barriers, the same bits. It was mk's `stage_sched.h` (mk `555a2a3`).
+//! The schedule of a fused pass: fewer grid barriers, the same bits. It was the reference's `stage_sched.h` (reference
+//! commit `555a2a3`).
 //!
 //! The megakernel puts a grid barrier after each stage. Most stages of a decode step are a few microseconds of work,
 //! and a barrier costs about 1.2 to 4.4 us. Two stages need a barrier between them only if one touches what the other
@@ -531,17 +532,17 @@ pub(crate) fn stage_items(s: &Stage) -> u32 {
             cdiv(q.n.into(), QMMH_ROWS) * cdiv(q.t.into(), QMMH_TOKS) * ks
         }
         ST_QMM => cdiv(s.qmm().n.into(), QMM_ROWS) * cdiv(s.qmm().t.into(), QMM_TOKS),
-        ST_QMM_KSUM => cdiv(u64::from(s.qmm().t) * u64::from(s.qmm().n), MK_BLOCK),
+        ST_QMM_KSUM => cdiv(u64::from(s.qmm().t) * u64::from(s.qmm().n), BLOCK_THREADS),
         ST_RMS => s.rms().t * s.rms().n_groups,
-        ST_SILU_SCALE => cdiv(s.silu().n.into(), MK_BLOCK),
-        ST_HC_MIX => cdiv(u64::from(s.mix().t) * u64::from(s.mix().e), MK_BLOCK),
-        ST_HC_COMBINE => cdiv(u64::from(s.comb().t) * 4 * u64::from(s.comb().e), MK_BLOCK),
+        ST_SILU_SCALE => cdiv(s.silu().n.into(), BLOCK_THREADS),
+        ST_HC_MIX => cdiv(u64::from(s.mix().t) * u64::from(s.mix().e), BLOCK_THREADS),
+        ST_HC_COMBINE => cdiv(u64::from(s.comb().t) * 4 * u64::from(s.comb().e), BLOCK_THREADS),
         ST_HC_COMBINE_RMS => s.combrms().c.t * 4,
-        ST_SWIGLU => cdiv(u64::from(s.swiglu().rows) * u64::from(s.swiglu().cols), MK_BLOCK),
+        ST_SWIGLU => cdiv(u64::from(s.swiglu().rows) * u64::from(s.swiglu().cols), BLOCK_THREADS),
         ST_MOE_ROUTER => s.router().t,
-        ST_MOE_COMBINE => cdiv(u64::from(s.mcomb().t) * u64::from(EMBD), MK_BLOCK),
-        ST_GDN_CONV => cdiv(GDN_CONV_DIM.into(), MK_BLOCK),
-        ST_PLE_CONV => cdiv(s.pconv().c.into(), MK_BLOCK),
+        ST_MOE_COMBINE => cdiv(u64::from(s.mcomb().t) * u64::from(EMBD), BLOCK_THREADS),
+        ST_GDN_CONV => cdiv(GDN_CONV_DIM.into(), BLOCK_THREADS),
+        ST_PLE_CONV => cdiv(s.pconv().c.into(), BLOCK_THREADS),
         ST_GDN_CORE => GDN_V_HEADS,
         ST_ATTN_PREP => cdiv(u64::from(s.aprep().t) * u64::from(ATTN_PREP_UNITS), WAVES_PER_BLOCK),
         ST_ATTN_SELECT | ST_ATTN_EMIT => s.asel().t,
@@ -589,7 +590,7 @@ pub(crate) struct Plan {
     pub barriers: u32,
 }
 
-/// The plan with no schedule (`MK_ELIDE=0`): each stage in build order, with a grid barrier after it.
+/// The plan with no schedule (`QWEN38_ELIDE=0`): each stage in build order, with a grid barrier after it.
 pub(crate) fn plain(n: u32) -> Plan {
     Plan {
         order: (0..n).collect(),
@@ -707,7 +708,8 @@ fn kv_reach(s: &Stage, w: &[Stage]) -> u64 {
 }
 
 /// Reorder `stages` by their plan, set the `sched` word of each one, and give the grid barriers of the pass. It is the
-/// form of mk's `schedule_stages`, for the tests. The engine applies the plan itself (`engine.hip` `Engine::build`).
+/// form of the reference's `schedule_stages`, for the tests. The engine applies the plan itself (`engine.hip`
+/// `Engine::build`).
 #[cfg(test)]
 pub(crate) fn schedule_stages(
     stages: &mut Vec<Stage>,

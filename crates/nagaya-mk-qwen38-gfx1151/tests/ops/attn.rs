@@ -1,19 +1,19 @@
 //! QSA attention (`ops/attn.h`, `ops/attn.hip`) against the HF module `Qwen4ExpTextAttention`. It ports `test_attn.py` and
-//! `test_attn_long.py` of mk.
+//! `test_attn_long.py` of the reference.
 //!
-//! mk ran the HF module with the real weights of layer 3 on real embeddings. These tests give the op raw projections that
-//! the generator makes. `tools/op_groups/attn.py` runs the HF module on the same projections, with stand-ins for its
-//! projection layers, and writes the output before `o_proj`, the selected cells and, for the long cases, the block scores.
-//! The expected outputs hold the heads 0, 11, 12 and 23 only, to keep the fixture small. The relative L2 error is over those
-//! heads.
+//! The reference ran the HF module with the real weights of layer 3 on real embeddings. These tests give the op raw
+//! projections that the generator makes. `tools/op_groups/attn.py` runs the HF module on the same projections, with
+//! stand-ins for its projection layers, and writes the output before `o_proj`, the selected cells and, for the long
+//! cases, the block scores. The expected outputs hold the heads 0, 11, 12 and 23 only, to keep the fixture small. The
+//! relative L2 error is over those heads.
 //!
-//! The tolerances are the ones of mk, and mk's text gives their design: `TOL` 5e-4 on `attn_out`, `NEAR_TIE` 1e-4 for the
-//! sparse selection, `KTOL` 1e-4 for the K cells, and 8 * 128 * 2^-24 * S_abs for a block score. The fixture holds the bound
-//! of each block that it names, so the constants of the bound are in `attn.py`.
+//! The tolerances are the ones of the reference, and the reference's text gives their design: `TOL` 5e-4 on `attn_out`,
+//! `NEAR_TIE` 1e-4 for the sparse selection, `KTOL` 1e-4 for the K cells, and 8 * 128 * 2^-24 * S_abs for a block
+//! score. The fixture holds the bound of each block that it names, so the constants of the bound are in `attn.py`.
 
 use crate::fixture::Fixture;
 use crate::inputs::normal_at;
-use crate::mkops::{all_finite, bits, lib, ptr, ptr_mut, relerr};
+use crate::ops_lib::{all_finite, bits, lib, ptr, ptr_mut, relerr};
 use crate::sym;
 use std::ffi::c_void;
 
@@ -96,7 +96,7 @@ fn projections(seed: u64, first: usize, count: usize) -> Projections {
     }
 }
 
-/// What `mk_attn` gives back besides the cache.
+/// What `qwen38_attn` gives back besides the cache.
 #[derive(Clone, PartialEq)]
 struct Out {
     attn_out: Vec<f32>,
@@ -126,7 +126,8 @@ impl Out {
     }
 }
 
-/// `mk_attn`: the port of `call_attn` of `test_attn.py`. The cache holds `p0 + t` cells, and the call writes the last `t`.
+/// `qwen38_attn`: the port of `call_attn` of `test_attn.py`. The cache holds `p0 + t` cells, and the call writes the
+/// last `t`.
 #[allow(clippy::too_many_arguments)]
 fn call_attn(
     t: usize,
@@ -147,7 +148,7 @@ fn call_attn(
     let mut attn_out = vec![f32::NAN; t * H * HD];
     let f = sym!(
         lib("attn"),
-        "mk_attn",
+        "qwen38_attn",
         fn(
             u32,
             u32,
@@ -197,7 +198,7 @@ fn call_attn(
             grid,
         )
     };
-    assert_eq!(rc, 0, "mk_attn");
+    assert_eq!(rc, 0, "qwen38_attn");
     Out {
         attn_out,
         sel,
@@ -549,7 +550,7 @@ fn long_position() {
     }
 }
 
-/// The checks of `test_long_position` of mk, for one case.
+/// The checks of `test_long_position` of the reference, for one case.
 fn check_long(p0: usize, t: usize, p: &Projections, kv: &[f32], ik: &[f32], out: &Out, r: &LongReference) {
     let ttot = p0 + t;
     // prep: the new cells

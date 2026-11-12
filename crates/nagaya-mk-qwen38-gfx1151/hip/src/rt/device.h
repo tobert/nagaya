@@ -4,7 +4,7 @@
 #pragma once
 #include "rt.h"
 
-namespace mk {
+namespace qwen38 {
 
 __device__ inline uint32_t ld_acquire_sys(const uint32_t *p) {
   return __hip_atomic_load(p, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_SYSTEM);
@@ -212,4 +212,4 @@ __device__ inline bool ring_push(Control *c, const EventRingView &r, uint32_t la
   return true;
 }
 
-}  // namespace mk
+}  // namespace qwen38

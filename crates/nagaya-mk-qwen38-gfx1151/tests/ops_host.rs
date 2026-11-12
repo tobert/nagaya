@@ -1,7 +1,7 @@
 //! The host checks of the op tests: no GPU and no feature. They hold the generator and the fixture files.
 //!
 //! The generator in `tests/ops/inputs.rs` must give what `tools/op_fixtures.py` gives, and the fixtures must come from one
-//! run of one revision of mk and stay small.
+//! run of one revision of the reference and stay small.
 
 #[path = "ops/fixture.rs"]
 mod fixture;
@@ -88,14 +88,14 @@ fn the_raw_rows_match_the_python_generator() {
 }
 
 #[test]
-fn all_fixtures_come_from_one_run_of_one_revision_of_mk() {
+fn all_fixtures_come_from_one_run_of_one_revision_of_the_reference() {
     let names = groups();
     let first = Fixture::load(&names[0]);
     let header = &first.json["header"];
-    let rev = header["mk_rev"].as_str().expect("mk_rev");
+    let rev = header["reference_rev"].as_str().expect("reference_rev");
     assert!(
         rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit()),
-        "mk_rev {rev:?} is not a git revision"
+        "reference_rev {rev:?} is not a git revision"
     );
     for name in &names {
         assert_eq!(&Fixture::load(name).json["header"], header, "the header of {name}");
@@ -127,7 +127,8 @@ fn the_groups_on_disk_are_the_groups_that_the_tests_load() {
     );
 }
 
-/// A site that traps without recording would be a silent trap. `MK_TRAP` is the only way to trap (`hip/src/rt/trap.h`).
+/// A site that traps without recording would be a silent trap. `HIP_TRAP` is the only way to trap
+/// (`hip/src/rt/trap.h`).
 #[test]
 fn no_bare_builtin_trap_outside_the_trap_header() {
     fn walk(dir: &std::path::Path, found: &mut Vec<String>) {
@@ -156,32 +157,33 @@ fn no_bare_builtin_trap_outside_the_trap_header() {
     assert!(found.is_empty(), "a bare __builtin_trap: {found:?}");
 }
 
-/// Each group but `gen` names the files of mk that it ports, as paths in mk's `tests/ops`.
+/// Each group but `gen` names the files of the reference that it ports, as paths in the reference's `tests/ops`.
 #[test]
-fn each_group_names_the_mk_files_it_reads() {
+fn each_group_names_the_source_files_it_reads() {
     for name in groups() {
         let files = Fixture::load(&name)
-            .meta("mk_files")
+            .meta("source_files")
             .as_array()
-            .expect("mk_files")
+            .expect("source_files")
             .clone();
         if name == "gen" {
-            assert!(files.is_empty(), "gen reads no file of mk");
+            assert!(files.is_empty(), "gen reads no file of the reference");
             continue;
         }
-        assert!(!files.is_empty(), "the group {name} names no file of mk");
+        assert!(!files.is_empty(), "the group {name} names no file of the reference");
         for file in files {
             let file = file.as_str().unwrap();
             assert!(
                 file.starts_with("tests/ops/") && file.ends_with(".py"),
-                "{name}: {file} is not an op test of mk"
+                "{name}: {file} is not an op test of the reference"
             );
         }
     }
 }
 
-/// The convention of the crates is 1 MB. The op fixtures hold the expected outputs of 20 mk test files, and they were 1.2 MB
-/// before the tiles group. Proposed (Claude Sonnet 5.5, 2026-10-22): 2 MB for this crate. Amy decides.
+/// The convention of the crates is 1 MB. The op fixtures hold the expected outputs of 20 test files of the reference,
+/// and they were 1.2 MB before the tiles group. Proposed (Claude Sonnet 5.5, 2026-10-22): 2 MB for this crate. Amy
+/// decides.
 #[test]
 fn the_fixtures_stay_small() {
     let total: u64 = std::fs::read_dir(fixture::directory())

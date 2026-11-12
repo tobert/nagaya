@@ -604,7 +604,7 @@ fn engine_registry() -> Result<nagaya::admission::Registry, Refusal> {
     if registry.is_empty() {
         return Err(Refusal {
             code: ExitCode::RefusedStart,
-            message: "this build has no engine; build with the feature `hip` for the mk engine, or `xe` for the Gemma 4 engine".to_owned(),
+            message: "this build has no engine; build with the feature `hip` for the Qwen3.8 engine, or `xe` for the Gemma 4 engine".to_owned(),
         });
     }
     Ok(registry)

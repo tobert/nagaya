@@ -1,4 +1,4 @@
-# The tensor table and dequant of mk's C++ copy (gguf.cpp, dequant.cpp). tools/mk_dequant_digests.cpp
+# The tensor table and dequant of the reference C++ copy (gguf.cpp, dequant.cpp). tools/mk_dequant_digests.cpp
 # wrote it. A tensor: index, name, type, n_dims, ne0-ne3, bytes, shard, offset in the shard, the SHA-256
 # of the f32 dequant of every row, and of rows 0, rows/2 and rows-1 (each once).
 shard 0 Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf 10946624 10946624

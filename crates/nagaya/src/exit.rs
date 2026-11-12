@@ -57,11 +57,11 @@ pub fn after_stop(wait_code: ExitCode, stop_code: ExitCode, failed: bool) -> Exi
 
 /// End the process with `code`. Every exit of the binary goes through here, for every code and every build.
 ///
-/// mk's HIP runtime stops the program in its static destructors ("pure virtual method called", spec 3.3). Then a
-/// clean stop exits 134 and writes a core dump. `std::process::exit` runs those destructors and the `atexit`
-/// handlers, so this function calls `_exit(2)`, which runs neither. The fake build takes the same path, so the tests
-/// run the path of the GPU build. Nothing in the process needs a handler: the caller drops the telemetry first, and
-/// this function flushes the Rust and C output streams.
+/// The HIP runtime of the Qwen3.8 engine stops the program in its static destructors ("pure virtual method called",
+/// spec 3.3). Then a clean stop exits 134 and writes a core dump. `std::process::exit` runs those destructors and the
+/// `atexit` handlers, so this function calls `_exit(2)`, which runs neither. The fake build takes the same path, so the
+/// tests run the path of the GPU build. Nothing in the process needs a handler: the caller drops the telemetry first,
+/// and this function flushes the Rust and C output streams.
 pub fn leave(code: ExitCode) -> ! {
     use std::io::Write;
 

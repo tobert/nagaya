@@ -7,7 +7,7 @@ use std::path::Path;
 
 use oracle::{Fixture, Prompt, QmmPath, TOP};
 
-/// The most tokens that a small mk context takes (`spec.rs` `CONTEXT_CLASSES`).
+/// The most tokens that a small engine context takes (`spec.rs` `CONTEXT_CLASSES`).
 const MAX_TOKENS: usize = 4096;
 
 fn real() -> Fixture {
@@ -130,7 +130,7 @@ fn fast(logits: &[f32]) -> Vec<String> {
 }
 
 #[test]
-fn the_path_follows_mk_fast_qmm() {
+fn the_path_follows_the_fast_qmm_variable() {
     assert_eq!(QmmPath::from_setting(None), Ok(QmmPath::Fast));
     assert_eq!(QmmPath::from_setting(Some("1")), Ok(QmmPath::Fast));
     assert_eq!(QmmPath::from_setting(Some("0")), Ok(QmmPath::Exact));

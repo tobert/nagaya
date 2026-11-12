@@ -1,8 +1,8 @@
-//! Build mk's engine from `hip/` into the static library `libmkengine.a`, under the feature `hip`.
+//! Build the engine from `hip/` into the static library `libqwen38engine.a`, under the feature `hip`.
 //!
-//! The commands are the commands of mk's CMake build at mk commit `555a2a3`, from mk's `build/compile_commands.json`.
-//! The flags are part of the model's definition: the conformance gates compare bits. Thus this script calls the
-//! compiler with an exact list of flags, and adds no flag of its own. A build without `hip` compiles nothing and
+//! The commands are the commands of the reference CMake build at commit `555a2a3`, as its `build/compile_commands.json`
+//! lists them. The flags are part of the model's definition: the conformance gates compare bits. Thus this script calls
+//! the compiler with an exact list of flags, and adds no flag of its own. A build without `hip` compiles nothing and
 //! needs no ROCm.
 //!
 //! The script gives the build facts to the crate as environment variables. The identity holds them (spec 12.1).
@@ -13,13 +13,14 @@ use std::process::Command;
 // The op libraries for the op tests (tests/ops). They are not part of the engine.
 pub(crate) mod ops_build;
 
-/// The ROCm install. mk's CMake build names the same path (mk `CMakeLists.txt:4-5`).
+/// The ROCm install. The reference CMake build names the same path (`CMakeLists.txt:4-5`).
 const ROCM: &str = "/opt/rocm";
 
-/// The one device target. mk builds for gfx1151 only.
+/// The one device target. The reference build is for gfx1151 only.
 const OFFLOAD_ARCH: &str = "--offload-arch=gfx1151";
 
-/// The flags that mk's top-level CMake file and its build type `RelWithDebInfo` give to every translation unit.
+/// The flags that the top-level CMake file of the reference and its build type `RelWithDebInfo` give to every
+/// translation unit.
 ///
 /// `-ffp-contract=off -fno-fast-math` keep the float operations of the model's definition. The order is CMake's order.
 const COMMON: &[&str] = &["-O2", "-g", "-DNDEBUG", "-std=gnu++20"];
@@ -37,10 +38,11 @@ const WARNINGS_AND_FLOATS: &[&str] = &[
 /// The definitions that CMake's target `hip::host` gives to each HIP translation unit.
 const HIP_DEFINES: &[&str] = &["-DUSE_PROF_API=1", "-D__HIP_PLATFORM_AMD__=1", "-D__HIP_ROCclr__=1"];
 
-/// The translation units of mk's target `mkengine` (mk `src/engine/CMakeLists.txt:1`).
+/// The translation units of the engine library, as the reference CMake build lists them.
 ///
-/// `extern.hip` is the thin extern layer that took the place of mk's C ABI `capi.hip` in milestone 15 step 4. mk's
-/// `blocks.hip` built the stages of the model's blocks; the Rust pass build (`src/pass.rs`) took its place in step 6.
+/// `extern.hip` is the thin extern layer that took the place of the C ABI `capi.hip` of the reference in milestone 15
+/// step 4. The file `blocks.hip` of the reference built the stages of the model's blocks; the Rust pass build
+/// (`src/pass.rs`) took its place in step 6.
 const ENGINE_UNITS: &[&str] = &["engine.hip", "mega.hip", "extern.hip", "convert.hip", "round.hip"];
 
 /// The compiler writes each object to stdout, and the script writes it to `OUT_DIR`.
@@ -57,15 +59,17 @@ pub(crate) struct Unit {
     pub(crate) arguments: Vec<String>,
 }
 
-/// The compiler of every unit. mk's CMake build calls it directly, not the wrapper hipcc (mk `CMakeLists.txt:4-5`).
+/// The compiler of every unit. The reference CMake build calls it directly, not the wrapper hipcc
+/// (`CMakeLists.txt:4-5`).
 pub(crate) fn compiler() -> PathBuf {
     Path::new(ROCM).join("llvm").join("bin").join("clang++")
 }
 
-/// Every compile of the engine, in the order of mk's targets: the engine units, then `rt.cpp`.
+/// Every compile of the engine, in the order of the reference targets: the engine units, then `rt.cpp`.
 ///
-/// mk's GGUF units (`gguf.cpp`, `dequant.cpp`) are not here. The Rust reader took their place in milestone 15 step 3
-/// (`src/gguf.rs`, `src/dequant.rs`). `src` is the directory `hip/src`, and `out` is the directory of the objects.
+/// The GGUF units of the reference (`gguf.cpp`, `dequant.cpp`) are not here. The Rust reader took their place in
+/// milestone 15 step 3 (`src/gguf.rs`, `src/dequant.rs`). `src` is the directory `hip/src`, and `out` is the directory
+/// of the objects.
 pub(crate) fn units(src: &Path, out: &Path) -> Vec<Unit> {
     let mut units: Vec<Unit> = ENGINE_UNITS.iter().map(|name| engine_unit(src, out, name)).collect();
     units.push(rt_unit(src, out));
@@ -80,17 +84,18 @@ fn include(directory: &Path) -> String {
     format!("-I{}", directory.display())
 }
 
-/// The compile of one engine unit, as mk's `compile_commands.json` gives it for `src/engine/engine.hip`.
+/// The compile of one engine unit, as the reference `compile_commands.json` gives it for `src/engine/engine.hip`.
 fn engine_unit(src: &Path, out: &Path, name: &str) -> Unit {
     let mut arguments = strings(HIP_DEFINES);
-    arguments.push("-Dmkengine_EXPORTS".to_owned());
+    arguments.push("-Dqwen38engine_EXPORTS".to_owned());
     for directory in ["engine", "ops", "rt", "gguf"] {
         arguments.push(include(&src.join(directory)));
     }
     arguments.extend(strings(COMMON));
     arguments.push(OFFLOAD_ARCH.to_owned());
     arguments.extend(strings(WARNINGS_AND_FLOATS));
-    // The engine target adds -O3 after the build type's -O2 (mk `src/engine/CMakeLists.txt:4`). The last -O wins.
+    // The engine target adds -O3 after the build type's -O2 (reference `src/engine/CMakeLists.txt:4`). The last -O
+    // wins.
     arguments.push("-O3".to_owned());
     hip_tail(
         src.join("engine").join(name),
@@ -99,7 +104,7 @@ fn engine_unit(src: &Path, out: &Path, name: &str) -> Unit {
     )
 }
 
-/// The compile of mk's runtime `rt.cpp` as HIP (mk `src/rt/CMakeLists.txt:2`).
+/// The compile of the runtime `rt.cpp` as HIP (reference `src/rt/CMakeLists.txt:2`).
 fn rt_unit(src: &Path, out: &Path) -> Unit {
     let mut arguments = strings(HIP_DEFINES);
     arguments.push(include(&src.join("rt")));
@@ -109,7 +114,7 @@ fn rt_unit(src: &Path, out: &Path) -> Unit {
     hip_tail(src.join("rt").join("rt.cpp"), out.join("rt.rt.cpp.o"), arguments)
 }
 
-/// Add `-o - -x hip -c <source>`, in the order of mk's compile commands.
+/// Add `-o - -x hip -c <source>`, in the order of the reference compile commands.
 fn hip_tail(source: PathBuf, object: PathBuf, mut arguments: Vec<String>) -> Unit {
     arguments.extend(strings(OBJECT_TO_STDOUT));
     arguments.extend(strings(&["-x", "hip", "-c"]));
@@ -174,7 +179,7 @@ fn main() {
     for unit in &units {
         assert!(
             unit.source.is_file(),
-            "the mk source {} is missing",
+            "the source file {} is missing; restore it from the repository",
             unit.source.display()
         );
     }
@@ -194,14 +199,14 @@ fn main() {
         }
     });
 
-    let library = out.join("libmkengine.a");
+    let library = out.join("libqwen38engine.a");
     if library.exists() {
         std::fs::remove_file(&library).unwrap_or_else(|error| panic!("remove {}: {error}", library.display()));
     }
     // llvm-ar writes a deterministic archive by default: no time stamps, owners or modes.
     let mut arguments = vec!["crs".to_owned(), library.display().to_string()];
     arguments.extend(units.iter().map(|unit| unit.object.display().to_string()));
-    run(&archiver, &arguments, &out, "the archive of libmkengine.a");
+    run(&archiver, &arguments, &out, "the archive of libqwen38engine.a");
 
     let bytes = std::fs::read(&library).unwrap_or_else(|error| panic!("read {}: {error}", library.display()));
     let sha256: String = sha2_hex(&bytes);
@@ -214,15 +219,15 @@ fn main() {
         &run(&hipconfig, &["--version".to_owned()], &out, "hipconfig --version"),
         "hipconfig",
     );
-    println!("cargo:rustc-env=MK_ENGINE_BUILD_SHA256={sha256}");
-    println!("cargo:rustc-env=MK_ENGINE_BUILD_COMPILER={compiler_version}");
-    println!("cargo:rustc-env=MK_ENGINE_BUILD_HIP={hip_version}");
+    println!("cargo:rustc-env=QWEN38_BUILD_SHA256={sha256}");
+    println!("cargo:rustc-env=QWEN38_BUILD_COMPILER={compiler_version}");
+    println!("cargo:rustc-env=QWEN38_BUILD_HIP={hip_version}");
 
     // Every object of the archive goes into the binary. Each HIP object registers its kernels from a constructor, and
     // the linker drops an object that no symbol names.
     println!("cargo:rustc-link-search=native={}", out.display());
-    println!("cargo:rustc-link-lib=static:+whole-archive=mkengine");
-    // The HIP runtime and the C++ library stay shared, as for mk's libmkengine.so.
+    println!("cargo:rustc-link-lib=static:+whole-archive=qwen38engine");
+    // The HIP runtime and the C++ library stay shared, as for the shared library of the reference.
     println!("cargo:rustc-link-search=native={}", rocm.join("lib").display());
     println!("cargo:rustc-link-lib=dylib=amdhip64");
     println!("cargo:rustc-link-lib=dylib=stdc++");
@@ -260,18 +265,18 @@ fn stage_layout(manifest: &Path, out: &Path) {
             }
         };
         match (kind, arguments.as_slice()) {
-            ("MK_SIZE", [ty, bytes]) => rust.push_str(&format!(
+            ("STAGE_SIZE", [ty, bytes]) => rust.push_str(&format!(
                 "const _: () = assert!(core::mem::size_of::<{ty}>() == {bytes}, \"{ty}: size\");\n"
             )),
-            ("MK_FIELD", [ty, name, offset]) => rust.push_str(&format!(
+            ("STAGE_FIELD", [ty, name, offset]) => rust.push_str(&format!(
                 "const _: () = assert!(core::mem::offset_of!({ty}, {}) == {offset}, \"{ty}::{name}: offset\");\n",
                 field(name)
             )),
-            ("MK_UNION", [ty, name, mirror, offset]) => rust.push_str(&format!(
+            ("STAGE_UNION", [ty, name, mirror, offset]) => rust.push_str(&format!(
                 "const _: () = assert!(core::mem::offset_of!({ty}, {mirror}) == {offset}, \"{ty}::{name}: offset\");\n"
             )),
-            ("MK_CONST", [cxx, name, value]) => rust.push_str(&format!(
-                "/// `{cxx}` of mk's engine.\npub(crate) const {name}: u32 = {value};\n"
+            ("STAGE_CONST", [cxx, name, value]) => rust.push_str(&format!(
+                "/// `{cxx}` of the engine.\npub(crate) const {name}: u32 = {value};\n"
             )),
             _ => panic!("{}: not a layout line", what()),
         }

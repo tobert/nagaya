@@ -1,21 +1,25 @@
-//! GPU dequant and quantized matmul (`ops/quant.h`, `ops/qmm.h`). It ports `test_qmm.py` and `test_qmmh.py` of mk.
+//! GPU dequant and quantized matmul (`ops/quant.h`, `ops/qmm.h`). It ports `test_qmm.py` and `test_qmmh.py` of the
+//! reference.
 //!
 //! - dequant: bit-identical to gguf-py, with the expected values in a fixture of `tools/op_fixtures.py`.
-//! - qmm: `y = x W^T` against an f64 reference. The weights of the reference come from `mk_dequant`, which the dequant
-//!   test holds to gguf-py. The bound is the one of mk: `K * 2^-24 * sum_k |w_k x_k|` (Higham, recursive summation).
+//! - qmm: `y = x W^T` against an f64 reference. The weights of the reference come from `qwen38_dequant`, which the
+//!   dequant test holds to gguf-py. The bound is the one of the reference: `K * 2^-24 * sum_k |w_k x_k|` (Higham,
+//!   recursive summation).
 //! - the exact kernel equals the oracle kernel bit for bit, for every grid size and every row map.
 //!
-//! mk used real rows of the Qwen3.8 GGUF. These tests use rows that `inputs::raw_rows` makes, with the same types and shapes.
+//! The reference used real rows of the Qwen3.8 GGUF. These tests use rows that `inputs::raw_rows` makes, with the same
+//! types and shapes.
 
 use crate::fixture::Fixture;
 use crate::inputs::{self, Qtype};
-use crate::mkops::{
+use crate::ops_lib::{
     self, Kernel, QmmOptions, all_finite, assert_same, bit_diff, dequant, matmul_f64, qmm, qmm_fast, qmm_oracle,
     qmm_with, same_bits,
 };
 use crate::{child, sym};
 
-/// One weight matrix: the type, the rows, the K, and the seed of its bytes. The label is the tensor of mk's test.
+/// One weight matrix: the type, the rows, the K, and the seed of its bytes. The label is the tensor of the reference's
+/// test.
 #[derive(Clone, Copy)]
 pub struct Case {
     pub label: &'static str,
@@ -31,7 +35,7 @@ impl Case {
     }
 }
 
-/// `CASES` of `test_qmm.py`: one case for each type, and the IQ4_XS case that mk finds in the file.
+/// `CASES` of `test_qmm.py`: one case for each type, and the IQ4_XS case that the reference finds in the file.
 pub const CASES: [Case; 7] = [
     Case {
         label: "blk.0.attn_qkv.weight",
@@ -319,7 +323,7 @@ fn qmm_bit_identical_across_grids() {
 
 #[test]
 fn qmm_edges_bit_identical_to_oracle() {
-    // Shapes of the engine that CASES does not hold (kaibo review of mk, 2026-09-27): row counts that are not a multiple
+    // Shapes of the engine that CASES does not hold (kaibo review, 2026-09-27): row counts that are not a multiple
     // of 8 and below one item (hc_inject is N=4: 7 of 8 waves have no row), K that ends on a whole 32-unit chunk
     // (10240 = 320 units), and K = 320 (10 units). Each runs with grid 1 too, so one workgroup takes every item.
     for (n, case) in FAST_EDGES.iter().enumerate() {
@@ -651,8 +655,8 @@ fn qmm_fast_grid_independent_and_repeatable() {
 #[test]
 fn qmmh_resources() {
     let f = sym!(
-        mkops::lib("qmmh"),
-        "mk_qmmh_resources",
+        ops_lib::lib("qmmh"),
+        "qwen38_qmmh_resources",
         fn(*mut i32, *mut i32, *mut i32) -> i32
     );
     let (mut regs, mut scratch, mut lds) = (0i32, 0i32, 0i32);

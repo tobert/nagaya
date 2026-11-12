@@ -32,7 +32,7 @@
 
 #include "attn.h"
 
-namespace mk {
+namespace qwen38 {
 
 constexpr uint32_t kAttnMaskMax = 4;
 // The selection's row stride for a masked pass (see the count bound above); model::kIdxBudget + kIdxRatio - 1 unmasked.
@@ -71,11 +71,11 @@ __device__ __attribute__((always_inline)) inline bool attn_block_clear(const Att
 // blocks: 256 words) marking the selected clear blocks.
 __device__ __attribute__((always_inline)) inline void attn_select_masked_emit(const AttnSelectArgs &a, const AttnCellMask &m,
                                                                               uint32_t t) {
-  static_assert(kMkBlock == 256, "one histogram bin (and one 8-bit digit value) per thread");
+  static_assert(kBlockThreads == 256, "one histogram bin (and one 8-bit digit value) per thread");
   constexpr uint32_t kBitWords = model::kMaxContext / model::kIdxRatio / 32;
-  static_assert(kBitWords <= kMkBlock, "one selection word per thread to clear");
+  static_assert(kBitWords <= kBlockThreads, "one selection word per thread to clear");
   static_assert((256 + kWavesPerBlock + 8 + kBitWords) * 4 <= kLdsArenaBytes, "the masked selection's LDS must fit the arena");
-  const uint32_t tid = mk_tid();
+  const uint32_t tid = thread_id();
   const uint32_t n_vis = a.p0 + t + 1;
   const uint32_t nb = n_vis / a.ratio;
   const float *scores = a.block_scores + uint64_t(t) * a.max_nb;
@@ -86,10 +86,10 @@ __device__ __attribute__((always_inline)) inline void attn_select_masked_emit(co
   uint32_t *wtot = hist + 256;
   uint32_t *bc = wtot + kWavesPerBlock;
   uint32_t *picked = bc + 8;  // [kBitWords] bit b: clear block b is selected (sparse only)
-  if (nb > kBitWords * 32) MK_TRAP(kTrapAttnSelect, kTrapFileAttn);
+  if (nb > kBitWords * 32) HIP_TRAP(kTrapAttnSelect, kTrapFileAttn);
 
   uint32_t n_clear = 0;
-  for (uint32_t b = tid; b < nb; b += kMkBlock) n_clear += attn_block_clear(m, b, a.ratio) ? 1u : 0u;
+  for (uint32_t b = tid; b < nb; b += kBlockThreads) n_clear += attn_block_clear(m, b, a.ratio) ? 1u : 0u;
   uint32_t total;
   (void)wg_incl_scan(n_clear, wtot, total);
   n_clear = total;
@@ -102,7 +102,7 @@ __device__ __attribute__((always_inline)) inline void attn_select_masked_emit(co
     for (int shift = 24; shift >= 0; shift -= 8) {
       hist[tid] = 0;
       lds_sync();
-      for (uint32_t b = tid; b < nb; b += kMkBlock) {
+      for (uint32_t b = tid; b < nb; b += kBlockThreads) {
         if (!attn_block_clear(m, b, a.ratio)) continue;
         const uint32_t key = attn_score_key(scores[b]);
         if ((key & mask) == prefix) atomicAdd(&hist[(key >> shift) & 255u], 1u);
@@ -123,7 +123,7 @@ __device__ __attribute__((always_inline)) inline void attn_select_masked_emit(co
     }
     const uint32_t K = prefix, R = k;
     uint32_t carry_gt = 0, carry_eq = 0;
-    for (uint32_t c0 = 0; c0 < nb; c0 += kMkBlock) {
+    for (uint32_t c0 = 0; c0 < nb; c0 += kBlockThreads) {
       const uint32_t b = c0 + tid;
       uint32_t gt = 0, eq = 0;
       if (b < nb && attn_block_clear(m, b, a.ratio)) {
@@ -138,14 +138,14 @@ __device__ __attribute__((always_inline)) inline void attn_select_masked_emit(co
       carry_gt += total & 0xffffu;
       carry_eq += total >> 16;
     }
-    if (carry_gt != above || carry_eq < R) MK_TRAP(kTrapAttnSelect, kTrapFileAttn);
+    if (carry_gt != above || carry_eq < R) HIP_TRAP(kTrapAttnSelect, kTrapFileAttn);
     lds_sync();
   }
 
   // Emission: every visible cell in ascending order that is unmasked and either in the tail, in a straddling block, in a
   // selected clear block, or anywhere (dense).
   uint32_t out_n = 0;
-  for (uint32_t c0 = 0; c0 < n_vis; c0 += kMkBlock) {
+  for (uint32_t c0 = 0; c0 < n_vis; c0 += kBlockThreads) {
     const uint32_t c = c0 + tid;
     uint32_t in = 0;
     if (c < n_vis && !attn_cell_masked(m, c)) {
@@ -154,14 +154,14 @@ __device__ __attribute__((always_inline)) inline void attn_select_masked_emit(co
     }
     const uint32_t slot = out_n + wg_incl_scan(in, wtot, total) - in;
     if (in) {
-      if (slot >= a.max_sel) MK_TRAP(kTrapAttnSelect, kTrapFileAttn);
+      if (slot >= a.max_sel) HIP_TRAP(kTrapAttnSelect, kTrapFileAttn);
       sel[slot] = int32_t(c);
     }
     out_n += total;
   }
-  if (out_n == 0) MK_TRAP(kTrapAttnNoSel, kTrapFileAttn);
+  if (out_n == 0) HIP_TRAP(kTrapAttnNoSel, kTrapFileAttn);
   if (tid == 0) a.sel_count[t] = out_n;
-  for (uint32_t k = out_n + tid; k < a.max_sel; k += kMkBlock) sel[k] = -1;
+  for (uint32_t k = out_n + tid; k < a.max_sel; k += kBlockThreads) sel[k] = -1;
   lds_sync();  // picked and the scan words are rewritten by the next token's selection
 }
 
@@ -169,7 +169,7 @@ __device__ __attribute__((always_inline)) inline void attn_select_masked_emit(co
 // scored (its raw keys are never read) and gets -inf in the inspection copy.
 __device__ __attribute__((always_inline)) inline void attn_select_masked_item(const AttnSelectArgs &a, const AttnCellMask &m,
                                                                               uint32_t t) {
-  const uint32_t w = mk_tid() / kWave, lane = mk_tid() % kWave;
+  const uint32_t w = thread_id() / kWave, lane = thread_id() % kWave;
   const uint32_t n_vis = a.p0 + t + 1;
   const uint32_t nb = n_vis / a.ratio;
   float *scores = a.block_scores + uint64_t(t) * a.max_nb;
@@ -214,7 +214,7 @@ __device__ __attribute__((always_inline)) inline void attn_select_masked_item(co
   __syncthreads();
   if (a.block_scores_out) {
     float *out = a.block_scores_out + uint64_t(t) * a.max_nb;
-    for (uint32_t b = mk_tid(); b < nb; b += kMkBlock) out[b] = scores[b];
+    for (uint32_t b = thread_id(); b < nb; b += kBlockThreads) out[b] = scores[b];
   }
   __syncthreads();
   attn_select_masked_emit(a, m, t);
@@ -225,4 +225,4 @@ __device__ __attribute__((always_inline)) inline void op_attn_select_masked(cons
   for (uint32_t t = wg; t < a.s.t; t += nwg) attn_select_masked_item(a.s, a.m, t);
 }
 
-}  // namespace mk
+}  // namespace qwen38

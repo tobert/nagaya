@@ -1,8 +1,8 @@
 //! The `str` methods of Python.
 //!
-//! mk runs the chat template with Python's jinja2, and a template may call any method of a Python string. This module
-//! gives those methods with the results of Python 3.14, character for character. The Unicode tables come from Python
-//! (`unicode_tables.rs`), because the tables of Rust are of another Unicode version.
+//! The reference runs the chat template with Python's jinja2, and a template may call any method of a Python string.
+//! This module gives those methods with the results of Python 3.14, character for character. The Unicode tables come
+//! from Python (`unicode_tables.rs`), because the tables of Rust are of another Unicode version.
 
 use crate::chars;
 use crate::unicode_tables::{LOWER_MANY, LOWER_ONE, TITLE_MANY, TITLE_ONE, UPPER_MANY, UPPER_ONE};

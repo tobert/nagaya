@@ -2,7 +2,7 @@
 """Write tests/fixtures/tojson_keys.json: `tojson` of maps with keys that are not strings.
 
 JSON text has only string keys, so these cases are template sources. Each source runs in jinja2 with the setup of
-mk's `service/template.py` (`ImmutableSandboxedEnvironment`, `tojson` is `json.dumps` with `ensure_ascii=False`).
+`service/template.py` of the reference (`ImmutableSandboxedEnvironment`, `tojson` is `json.dumps` with `ensure_ascii=False`).
 A source that Python refuses has `"error": true`. Run it from the crate directory:
 
     python3 -I tools/make_tojson_keys.py

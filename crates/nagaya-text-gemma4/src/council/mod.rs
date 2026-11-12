@@ -198,8 +198,9 @@ impl Gemma4Family {
             .map_err(refusal)
     }
 
-    /// The seam check of mk's `prefill` (gogi "Continuations"): each open field that is not empty must tokenize on its
-    /// own. The rendering up to the start of the field must be a token prefix of the rendering through its end.
+    /// The seam check of the reference's `prefill` (gogi "Continuations"): each open field that is not empty must
+    /// tokenize on its own. The rendering up to the start of the field must be a token prefix of the rendering through
+    /// its end.
     fn check_seams(&self, before: &[Json], open: &Message, tools: &[Json], thinking: bool) -> Result<(), FamilyError> {
         for seam in gogi_proto::continuation::seams(open) {
             let start = self.run_open(before, &seam.before, tools, thinking)?.tokens;

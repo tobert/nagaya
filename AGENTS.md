@@ -82,7 +82,7 @@ write the name of the thing in the nagaya:
   meaning of `mk` in the nagaya.
 - Each identifier that carries the name of an old project gets a new name, in the C++ and HIP code too. Decided
   2026-11-11: the repository is private and all the code is here, so make the names as good as they can be.
-  Examples are `MK_SHARDS`, `MK_CHECK`, `mk_engine_close`, and the served model `mk` on gfx1151host.
+  Examples are `QWEN38_SHARDS`, `MK_CHECK`, `mk_engine_close`, and the served model `mk` on gfx1151host.
 - Until milestone 31 step 2 changes an identifier, use it as it is, and do not copy the pattern.
 - `docs/history.md` can keep the old names. It is the record of how the code came here.
 
@@ -163,7 +163,7 @@ lock: one thread owns it (3.2).
 The nagaya runs on two machines of Amy's lab today. `docs/deploy.md` tells how to build and deploy on each. The
 profiles are in `deploy/`.
 
-- **gfx1151host** has the gfx1151. Qwen-Image is resident, and Qwen3.8 is on demand under the served name `mk`.
+- **gfx1151host** has the gfx1151. Qwen-Image is resident, and Qwen3.8 is on demand under the engine name `qwen38`.
 - **b70host** has two B70 cards. Its profile is `deploy/b70host/profile.toml`. Its iGPU (gfx1036) drives the
   display: do not run work on it.
 
@@ -193,13 +193,13 @@ An agent may also stop and start the web app on b70host (`python3 tools/nagaya_w
   without `hip` needs no ROCm, so a machine without ROCm builds and tests the workspace.
 - Keep the compile flags, `-ffp-contract=off -fno-fast-math`: the gates compare bits. `tests/build_flags.rs`
   compares the flags with a fixture.
-- The weights are three GGUF shards. GPU tests read them from `MK_SHARDS`, three paths with `:` between them.
+- The weights are three GGUF shards. GPU tests read them from `QWEN38_SHARDS`, three paths with `:` between them.
   Do not put the paths in code. `signoff.md` gives them.
 - The engine has no attach. The export of the arena (spec 10.2) builds it in Rust, from `arena.rs`. For an fd from
   systemd's store, give `/proc/self/fd/<n>`.
 - The context calls (`context.rs`) return nothing. The worker maps the result onto the three write results (ABI
   "Capabilities") through the poison flag of the context.
-- The C++ runtime layer aborts the process on a failed HIP call (`MK_CHECK`), and the Rust host stops it on a
+- The C++ runtime layer aborts the process on a failed HIP call (`HIP_CHECK`), and the Rust host stops it on a
   defect. The extern layer `extern.hip` checks nothing, so the worker checks each rule first.
   `host::segments_problem` runs before each pass.
 - The HIP device is the device that is current on the calling thread. Make every engine call from one thread.
@@ -303,9 +303,9 @@ get ran sometimes, perhaps just a bump in our AGENTS.md"
   `nagaya.service` stopped. An absent oracle file skips a test, as an absent model does.
 - The report of a check names how many tests skipped for a missing model.
 
-On gfx1151host, run the oracle bench with `MK_SHARDS` set and the unit inactive:
+On gfx1151host, run the oracle bench with `QWEN38_SHARDS` set and the unit inactive:
 `cargo bench -p nagaya-mk-qwen38-gfx1151 --features hip --bench oracle`. It exits with 1 when a gate breaks.
-Set `MK_FAST_QMM=0` for the gate: the exact path must match the reference. Leave it unset to measure the fast path.
+Set `QWEN38_FAST_QMM=0` for the gate: the exact path must match the reference. Leave it unset to measure the fast path.
 
 The bench prints the SHA-256 of the logits of each prompt. A port step that keeps the bits keeps each hash.
 
@@ -402,8 +402,9 @@ Make the repository fit for a public post on GitHub. Amy started it on 2026-11-1
 - **License:** MIT, but not now. Step 6 waits for her word.
 - **People and machines:** the docs name her and her machines less. A doc that must name her writes @tobert.
 - **New names of the Qwen3.8 identifiers:** a variable of the engine takes `QWEN38_`, as in `QWEN38_SHARDS`. A
-  variable of the whole process takes `NAGAYA_`, as in `NAGAYA_FAST_QMM`. A macro of the HIP runtime takes `HIP_`,
-  as in `HIP_CHECK`. The served model `mk` becomes `qwen38`. The table of step 1 follows these patterns.
+  variable of the whole process takes `NAGAYA_`, as in `NAGAYA_REQUIRE_MODELS`. Decided 2026-11-12: only the engine
+  reads `FAST_QMM` and `TILES`, so they are `QWEN38_FAST_QMM` and `QWEN38_TILES`. A macro of the HIP runtime takes
+  `HIP_`, as in `HIP_CHECK`. The served model `mk` becomes `qwen38`. The table of step 1 follows these patterns.
 - **The merge came first.** The Qwen work of gfx1151host is on `main` since 2026-11-11, so a rename can start.
 
 The rules of the work:

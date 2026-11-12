@@ -1,16 +1,16 @@
 //! The pass in Rust: the checks of the segments, the scratch pool, the upload, the launch rules and the advance of
 //! each context (milestone 15 step 6).
 //!
-//! mk's `engine.hip` `segments_problem`, `run_pass`, `failed_pass`, `run_stages_now` and the `ScratchPool` held these in
-//! C++ (mk 555a2a3). The C++ engine keeps only the launches under the control block and the watchdog
-//! (`Engine::launch_fused`, `Engine::launch_each`). Every call here runs on the worker thread.
+//! The reference's `engine.hip` `segments_problem`, `run_pass`, `failed_pass`, `run_stages_now` and the `ScratchPool`
+//! held these in C++ (reference commit 555a2a3). The C++ engine keeps only the launches under the control block and the
+//! watchdog (`Engine::launch_fused`, `Engine::launch_each`). Every call here runs on the worker thread.
 
 use std::collections::HashMap;
 use std::ffi::{CStr, c_void};
 use std::time::Instant;
 
-use crate::binding::{Binding, MkLaunch, MkSegment, PassStop};
-use crate::context::{Copy, MkContext};
+use crate::binding::{Binding, PassStop, Qwen38Launch, Qwen38Segment};
+use crate::context::{Copy, Qwen38Context};
 use crate::pass::{self, Builder, Knobs, PassBuffers, Scratch, Seg, Weights};
 use crate::ple;
 use crate::stage::Stage;
@@ -46,7 +46,7 @@ impl Scratch for PoolScratch<'_> {
         }
         let bytes = 4 * floats as u64;
         let p = unsafe { (self.binding.rt_malloc)(bytes) } as *mut f32;
-        assert!(!p.is_null(), "mk_rt_malloc({bytes}) gave no buffer for scratch {name}");
+        assert!(!p.is_null(), "hip_rt_malloc({bytes}) gave no buffer for scratch {name}");
         unsafe { (self.binding.rt_memset)(p.cast(), 0, bytes) };
         self.pool.bufs.insert(name.to_owned(), (p, floats));
         p
@@ -78,7 +78,7 @@ impl Host {
         let head_rows = unsafe { (binding.rt_malloc)(4 * u64::from(pass::MAX_SEGMENTS)) } as *mut u32;
         assert!(
             !tokens.is_null() && !head_rows.is_null(),
-            "mk_rt_malloc gave no pass buffer"
+            "hip_rt_malloc gave no pass buffer"
         );
         Host {
             pool: Pool::default(),
@@ -96,7 +96,7 @@ impl Host {
             let table = pass::inv_freq();
             let bytes = std::mem::size_of_val(&table) as u64;
             let p = unsafe { (binding.rt_malloc)(bytes) } as *mut f32;
-            assert!(!p.is_null(), "mk_rt_malloc gave no rope table");
+            assert!(!p.is_null(), "hip_rt_malloc gave no rope table");
             unsafe { (binding.rt_memcpy)(p.cast(), table.as_ptr().cast(), bytes, Copy::HostToDevice as u32) };
             self.inv_freq = p;
         }
@@ -112,7 +112,7 @@ impl Host {
             self.stage_cap = stages.len();
             let bytes = (std::mem::size_of::<Stage>() * self.stage_cap) as u64;
             self.stages = unsafe { (binding.rt_host_malloc)(bytes) } as *mut Stage;
-            assert!(!self.stages.is_null(), "mk_rt_host_malloc gave no stage list");
+            assert!(!self.stages.is_null(), "hip_rt_host_malloc gave no stage list");
         }
         let bytes = std::mem::size_of_val(stages) as u64;
         unsafe {
@@ -138,7 +138,7 @@ impl Host {
 
 /// The first problem of `segments` as one pass, or `None` (`engine.hip` `segments_problem`): 1 to 16 segments, each of
 /// one or more tokens, 256 in all, each fitting its context's capacity, and no two on one context.
-pub(crate) fn segments_problem(segments: &[MkSegment]) -> Option<String> {
+pub(crate) fn segments_problem(segments: &[Qwen38Segment]) -> Option<String> {
     let n = segments.len();
     if n == 0 || n > pass::MAX_SEGMENTS as usize {
         return Some(format!(
@@ -164,7 +164,7 @@ pub(crate) fn segments_problem(segments: &[MkSegment]) -> Option<String> {
     }
     for (i, s) in segments.iter().enumerate() {
         // SAFETY: the pointer is not null, and the worker gives live contexts of this engine.
-        let c = unsafe { &*(s.context as *const MkContext) };
+        let c = unsafe { &*(s.context as *const Qwen38Context) };
         if u64::from(c.n) + u64::from(s.t) > u64::from(c.max) {
             return Some(format!(
                 "segment {i}: context full: {} + {} tokens past its capacity {}",
@@ -176,8 +176,8 @@ pub(crate) fn segments_problem(segments: &[MkSegment]) -> Option<String> {
         for j in i + 1..n {
             let (a, b) = unsafe {
                 (
-                    &*(segments[i].context as *const MkContext),
-                    &*(segments[j].context as *const MkContext),
+                    &*(segments[i].context as *const Qwen38Context),
+                    &*(segments[j].context as *const Qwen38Context),
                 )
             };
             if a.kv == b.kv || a.idx_keys == b.idx_keys {
@@ -191,17 +191,18 @@ pub(crate) fn segments_problem(segments: &[MkSegment]) -> Option<String> {
 /// The knobs of the launch of a pass (`engine.hip` `run_pass`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct LaunchKnobs {
-    /// `MK_MUTATE_SKIP_BARRIER`: the stage whose grid barrier the kernel skips (a test knob), or none.
+    /// `QWEN38_MUTATE_SKIP_BARRIER`: the stage whose grid barrier the kernel skips (a test knob), or none.
     pub skip: Option<u32>,
-    /// `MK_MUTATE_STALL_BARRIER`: workgroup 0 leaves at the first grid barrier at or after this stage without arriving,
-    /// so the pass stops on a real spin-timeout (a test knob), or none.
+    /// `QWEN38_MUTATE_STALL_BARRIER`: workgroup 0 leaves at the first grid barrier at or after this stage without
+    /// arriving, so the pass stops on a real spin-timeout (a test knob), or none.
     pub stall: Option<u32>,
-    /// `MK_MEGA_GRID`: the workgroups of the launch for an experiment, or the occupancy's.
+    /// `QWEN38_MEGA_GRID`: the workgroups of the launch for an experiment, or the occupancy's.
     pub grid: Option<i32>,
 }
 
 impl LaunchKnobs {
-    /// The knobs from `var`. A value that is not a number is an error that refuses the pass; mk's `atoi` read it as 0.
+    /// The knobs from `var`. A value that is not a number is an error that refuses the pass; the reference's `atoi`
+    /// read it as 0.
     pub(crate) fn from(var: impl Fn(&str) -> Option<String>) -> Result<LaunchKnobs, String> {
         let number = |name: &str| -> Result<Option<u32>, String> {
             var(name)
@@ -213,18 +214,18 @@ impl LaunchKnobs {
                 .transpose()
         };
         let knobs = LaunchKnobs {
-            skip: number("MK_MUTATE_SKIP_BARRIER")?,
-            stall: number("MK_MUTATE_STALL_BARRIER")?,
-            grid: match var("MK_MEGA_GRID") {
+            skip: number("QWEN38_MUTATE_SKIP_BARRIER")?,
+            stall: number("QWEN38_MUTATE_STALL_BARRIER")?,
+            grid: match var("QWEN38_MEGA_GRID") {
                 None => None,
                 Some(value) => match value.parse::<i32>() {
                     Ok(grid) if grid > 0 => Some(grid),
-                    _ => return Err(format!("MK_MEGA_GRID={value}: want a workgroup count above 0")),
+                    _ => return Err(format!("QWEN38_MEGA_GRID={value}: want a workgroup count above 0")),
                 },
             },
         };
         if knobs.skip.is_some() && knobs.stall.is_some() {
-            return Err("MK_MUTATE_STALL_BARRIER: not with MK_MUTATE_SKIP_BARRIER".to_owned());
+            return Err("QWEN38_MUTATE_STALL_BARRIER: not with QWEN38_MUTATE_SKIP_BARRIER".to_owned());
         }
         Ok(knobs)
     }
@@ -236,7 +237,7 @@ impl LaunchKnobs {
             (Some(stage), _) => Ok(stage),
             (None, Some(stage)) if stage < n => Ok(0x8000_0000 | stage),
             (None, Some(stage)) => Err(format!(
-                "MK_MUTATE_STALL_BARRIER={stage}: want a stage in 0..{}",
+                "QWEN38_MUTATE_STALL_BARRIER={stage}: want a stage in 0..{}",
                 n.saturating_sub(1)
             )),
             (None, None) => Ok(u32::MAX),
@@ -246,7 +247,7 @@ impl LaunchKnobs {
 
 /// The pass of `segments` and its parts that the worker gives to `run_pass`.
 pub(crate) struct PassIn<'a> {
-    pub segments: &'a [MkSegment],
+    pub segments: &'a [Qwen38Segment],
     pub ple: &'a [f32],
     pub knobs: Knobs,
     pub launch: LaunchKnobs,
@@ -261,7 +262,7 @@ fn status_name(binding: &Binding, status: u32) -> String {
     unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned()
 }
 
-/// Stop the program: a launch failed in a way that no caller can recover from (`MK_DIE`).
+/// Stop the program: a launch failed in a way that no caller can recover from (`HIP_DIE`).
 fn die(why: &str) -> ! {
     eprintln!("engine: {why}");
     std::process::abort();
@@ -329,7 +330,7 @@ pub(crate) unsafe fn run_pass(
     let segs: Vec<Seg> = segments
         .iter()
         .map(|s| Seg {
-            c: s.context as *mut MkContext,
+            c: s.context as *mut Qwen38Context,
             t: s.t,
         })
         .collect();
@@ -356,7 +357,7 @@ pub(crate) unsafe fn run_pass(
         Some(grid) => grid,
         None => unsafe { (binding.max_coop_grid)() }.min(MAX_FUSED_GRID),
     };
-    let mut result = MkLaunch::default();
+    let mut result = Qwen38Launch::default();
     unsafe { (binding.launch_fused)(engine, stages, n, grid, skip, &mut result) };
     if result.status != 0 {
         let why = format!(
@@ -405,7 +406,7 @@ pub(crate) unsafe fn run_pass(
 
 /// Advance a context by the tokens of a clean pass: the count, the pooled-key watermark (the pass's pool stages wrote
 /// the blocks that it completed), and the PLE history.
-fn advance(c: &mut MkContext, tokens: &[i32]) {
+fn advance(c: &mut Qwen38Context, tokens: &[i32]) {
     let t = tokens.len();
     c.n += t as u32;
     c.pooled_n = c.n / crate::stage::IDX_RATIO;
@@ -427,7 +428,7 @@ pub(crate) unsafe fn pool_context(
     engine: *mut c_void,
     host: &mut Host,
     weights: &Weights,
-    c: &MkContext,
+    c: &Qwen38Context,
 ) {
     if c.n / crate::stage::IDX_RATIO == 0 {
         return;
@@ -456,7 +457,7 @@ pub(crate) unsafe fn pool_context(
     };
     let pool = builder.pool_stages(c, 0);
     let stages = host.upload(binding, &pool);
-    let mut result = MkLaunch::default();
+    let mut result = Qwen38Launch::default();
     unsafe { (binding.launch_each)(engine, stages, pool.len() as u32, &mut result) };
     if result.status != 0 {
         die(&format!(
@@ -473,8 +474,8 @@ pub(crate) unsafe fn pool_context(
 mod tests {
     use super::*;
 
-    fn context(n: u32, max: u32, kv: usize) -> MkContext {
-        MkContext {
+    fn context(n: u32, max: u32, kv: usize) -> Qwen38Context {
+        Qwen38Context {
             n,
             max,
             gdn_state: std::ptr::null_mut(),
@@ -489,9 +490,9 @@ mod tests {
         }
     }
 
-    fn segment(c: &mut MkContext, tokens: &[i32]) -> MkSegment {
-        MkSegment {
-            context: c as *mut MkContext as *mut c_void,
+    fn segment(c: &mut Qwen38Context, tokens: &[i32]) -> Qwen38Segment {
+        Qwen38Segment {
+            context: c as *mut Qwen38Context as *mut c_void,
             tokens: tokens.as_ptr(),
             t: tokens.len() as u32,
         }
@@ -535,14 +536,14 @@ mod tests {
     fn the_launch_knobs_take_numbers_and_refuse_the_rest() {
         let none = LaunchKnobs::from(|_| None).unwrap();
         assert_eq!(none.skip_word(100), Ok(u32::MAX));
-        let stall = LaunchKnobs::from(|name| (name == "MK_MUTATE_STALL_BARRIER").then(|| "5".to_owned())).unwrap();
+        let stall = LaunchKnobs::from(|name| (name == "QWEN38_MUTATE_STALL_BARRIER").then(|| "5".to_owned())).unwrap();
         assert_eq!(stall.skip_word(100), Ok(0x8000_0005));
         assert!(stall.skip_word(5).unwrap_err().contains("want a stage in 0..4"));
-        let both = LaunchKnobs::from(|name| name.starts_with("MK_MUTATE").then(|| "1".to_owned()));
-        assert!(both.unwrap_err().contains("not with MK_MUTATE_SKIP_BARRIER"));
-        let grid = LaunchKnobs::from(|name| (name == "MK_MEGA_GRID").then(|| "abc".to_owned()));
-        assert!(grid.unwrap_err().starts_with("MK_MEGA_GRID=abc"));
-        let grid = LaunchKnobs::from(|name| (name == "MK_MEGA_GRID").then(|| "40".to_owned())).unwrap();
+        let both = LaunchKnobs::from(|name| name.starts_with("QWEN38_MUTATE").then(|| "1".to_owned()));
+        assert!(both.unwrap_err().contains("not with QWEN38_MUTATE_SKIP_BARRIER"));
+        let grid = LaunchKnobs::from(|name| (name == "QWEN38_MEGA_GRID").then(|| "abc".to_owned()));
+        assert!(grid.unwrap_err().starts_with("QWEN38_MEGA_GRID=abc"));
+        let grid = LaunchKnobs::from(|name| (name == "QWEN38_MEGA_GRID").then(|| "40".to_owned())).unwrap();
         assert_eq!(grid.grid, Some(40));
     }
 }

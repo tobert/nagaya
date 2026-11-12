@@ -395,7 +395,7 @@ mod tests {
         let view = view(vec![
             own("host-a"),
             node("host-b", 2, "gemma", "ready", &[gossip_entry("gemma-4", &["gemma"])]),
-            node("host-c", 3, "mk", "fatal", &[gossip_entry("qwen", &[])]),
+            node("host-c", 3, "qwen38", "fatal", &[gossip_entry("qwen", &[])]),
             node("host-d", 4, "x", "loading", &[gossip_entry("x-1", &[])]),
         ]);
         let state = ClusterState::observe(&ClusterState::default(), &view, "host-a", &[]);

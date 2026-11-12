@@ -172,7 +172,7 @@ impl FamilyRegistry {
     }
 }
 
-/// The Qwen3.8 family from the GGUF in the key `gguf` of the table, or from the first shard of `MK_SHARDS`.
+/// The Qwen3.8 family from the GGUF in the key `gguf` of the table, or from the first shard of `QWEN38_SHARDS`.
 #[cfg(feature = "hip")]
 fn open_qwen38(identity: &Identity, table: &toml::Table) -> Result<OpenedFamily, String> {
     let shard = match table.get("gguf") {
@@ -181,12 +181,12 @@ fn open_qwen38(identity: &Identity, table: &toml::Table) -> Result<OpenedFamily,
                 .as_str()
                 .ok_or_else(|| "the key `gguf` of `[engines.family]` is not a string; write a path".to_owned())?,
         ),
-        None => nagaya_mk_qwen38_gfx1151::MkPaths::from_env()
+        None => nagaya_mk_qwen38_gfx1151::Qwen38Paths::from_env()
             .map_err(|error| error.message().to_owned())?
             .shards
             .into_iter()
             .next()
-            .ok_or_else(|| "MK_SHARDS names no shard; give the three GGUF shards of the model".to_owned())?,
+            .ok_or_else(|| "QWEN38_SHARDS names no shard; give the three GGUF shards of the model".to_owned())?,
     };
     let _ = identity;
     let metadata = nagaya_text_qwen38::gguf::Metadata::open(&shard)

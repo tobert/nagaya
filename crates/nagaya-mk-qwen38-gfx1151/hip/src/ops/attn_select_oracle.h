@@ -11,10 +11,10 @@
 #pragma once
 #include "attn.h"
 
-namespace mk::oracle {
+namespace qwen38::oracle {
 
 __device__ inline void attn_select_emit_serial(const AttnSelectArgs &a, uint32_t t) {
-  if (mk_tid() != 0) return;
+  if (thread_id() != 0) return;
   const uint32_t n_vis = a.p0 + t + 1;
   const uint32_t nb = n_vis / a.ratio;
   float *scores = a.block_scores + uint64_t(t) * a.max_nb;
@@ -63,4 +63,4 @@ __device__ inline void attn_select_emit_serial(const AttnSelectArgs &a, uint32_t
   for (uint32_t k = out_n; k < a.max_sel; ++k) sel[k] = -1;
 }
 
-}  // namespace mk::oracle
+}  // namespace qwen38::oracle

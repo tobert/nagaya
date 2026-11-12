@@ -1,18 +1,19 @@
 //! The stage list of a pass, built in Rust (milestone 15 step 6).
 //!
-//! mk's `engine.hip` `build`, `build_stages`, `split_k`, `fuse_prologues`, `fuse_hc` and `fuse_hc_mix`, and
-//! `blocks.hip` `add_gdn`, `add_attn`, `add_moe` and `pool_stages` built the stages in C++ (mk 555a2a3). This module
-//! builds the same stages, field for field. The schedule (`schedule.rs`) then orders them. The stages name device
-//! buffers: the weights in the arena, the context buffers, and the named scratch buffers of the pass.
+//! The reference's `engine.hip` `build`, `build_stages`, `split_k`, `fuse_prologues`, `fuse_hc` and `fuse_hc_mix`, and
+//! `blocks.hip` `add_gdn`, `add_attn`, `add_moe` and `pool_stages` built the stages in C++ (reference commit 555a2a3).
+//! This module builds the same stages, field for field. The schedule (`schedule.rs`) then orders them. The stages name
+//! device buffers: the weights in the arena, the context buffers, and the named scratch buffers of the pass.
 
-// The port keeps mk's argument lists and its comparisons, so that each line reads as the C++ line it replaces.
+// The port keeps the reference's argument lists and its comparisons, so that each line reads as the C++ line it
+// replaces.
 #![allow(clippy::too_many_arguments, clippy::int_plus_one, clippy::ptr_eq)]
 // A build without the feature hip runs no pass, so the rope table has no reader there.
 #![cfg_attr(not(feature = "hip"), allow(dead_code))]
 
 use std::collections::HashMap;
 
-use crate::context::MkContext;
+use crate::context::Qwen38Context;
 use crate::schedule::{self, call::pass_plan};
 use crate::stage::*;
 
@@ -200,12 +201,12 @@ pub(crate) trait Scratch {
 /// One segment of a pass: `t` tokens that continue the context `c`.
 #[derive(Clone, Copy)]
 pub(crate) struct Seg {
-    pub c: *mut MkContext,
+    pub c: *mut Qwen38Context,
     pub t: u32,
 }
 
 impl Seg {
-    fn ctx(&self) -> &MkContext {
+    fn ctx(&self) -> &Qwen38Context {
         // SAFETY: the worker gives live contexts of this engine.
         unsafe { &*self.c }
     }
@@ -215,17 +216,17 @@ impl Seg {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Knobs {
     pub fast_qmm: bool,
-    /// `MK_FUSE`: the fused staging and the fused hc_post + norm at decode.
+    /// `QWEN38_FUSE`: the fused staging and the fused hc_post + norm at decode.
     pub fuse: bool,
-    /// `MK_FUSE_HC`: the combine + rms fusion; needs `fuse`.
+    /// `QWEN38_FUSE_HC`: the combine + rms fusion; needs `fuse`.
     pub fuse_hc: bool,
-    /// `MK_FUSE_HCMIX`: the hc up + hc_mix fusion; needs `fuse`.
+    /// `QWEN38_FUSE_HCMIX`: the hc up + hc_mix fusion; needs `fuse`.
     pub fuse_hcmix: bool,
-    /// `MK_ELIDE`: the barrier schedule.
+    /// `QWEN38_ELIDE`: the barrier schedule.
     pub elide: bool,
-    /// `MK_TAIL`: the barrier tail.
+    /// `QWEN38_TAIL`: the barrier tail.
     pub tail: bool,
-    /// `MK_DEBUG_LAYERS`: build the first n layers and no head (bring-up), or 0 for all of them.
+    /// `QWEN38_DEBUG_LAYERS`: build the first n layers and no head (bring-up), or 0 for all of them.
     pub debug_layers: u32,
 }
 
@@ -242,20 +243,20 @@ impl Knobs {
     /// The knobs from `var`, one environment lookup. A bad value is an error that refuses the pass.
     pub(crate) fn from(fast_qmm: bool, var: impl Fn(&str) -> Option<String>) -> Result<Knobs, String> {
         let on = |name: &str| switch(name, var(name).as_deref());
-        let debug_layers = match var("MK_DEBUG_LAYERS") {
+        let debug_layers = match var("QWEN38_DEBUG_LAYERS") {
             None => 0,
             Some(value) => match value.parse::<u32>() {
                 Ok(n) if (1..=LAYERS).contains(&n) => n,
-                _ => return Err(format!("MK_DEBUG_LAYERS={value} out of 1..{LAYERS}")),
+                _ => return Err(format!("QWEN38_DEBUG_LAYERS={value} out of 1..{LAYERS}")),
             },
         };
         Ok(Knobs {
             fast_qmm,
-            fuse: on("MK_FUSE")?,
-            fuse_hc: on("MK_FUSE_HC")?,
-            fuse_hcmix: on("MK_FUSE_HCMIX")?,
-            elide: on("MK_ELIDE")?,
-            tail: on("MK_TAIL")?,
+            fuse: on("QWEN38_FUSE")?,
+            fuse_hc: on("QWEN38_FUSE_HC")?,
+            fuse_hcmix: on("QWEN38_FUSE_HCMIX")?,
+            elide: on("QWEN38_ELIDE")?,
+            tail: on("QWEN38_TAIL")?,
             debug_layers,
         })
     }
@@ -451,7 +452,7 @@ impl Builder<'_> {
                 fuse_hc(&mut s, &mut ends);
             }
         }
-        // The fold lives in the f16 matmul's epilogue (qmmh.h); the exact engine (MK_FAST_QMM=0) has only kStQmm
+        // The fold lives in the f16 matmul's epilogue (qmmh.h); the exact engine (QWEN38_FAST_QMM=0) has only kStQmm
         // stages, so its passes keep their hc_mix stages.
         if self.knobs.fuse && self.knobs.fuse_hcmix && self.knobs.fast_qmm {
             fuse_hc_mix(&mut s, &mut ends);
@@ -558,9 +559,9 @@ impl Builder<'_> {
         let n_layers = if self.knobs.debug_layers > 0 {
             assert!(
                 !want_logits,
-                "MK_DEBUG_LAYERS builds no head; ask for layers, not logits"
+                "QWEN38_DEBUG_LAYERS builds no head; ask for layers, not logits"
             );
-            eprintln!("engine: MK_DEBUG_LAYERS={} (bring-up)", self.knobs.debug_layers);
+            eprintln!("engine: QWEN38_DEBUG_LAYERS={} (bring-up)", self.knobs.debug_layers);
             self.knobs.debug_layers
         } else {
             LAYERS
@@ -973,7 +974,7 @@ impl Builder<'_> {
 
     /// `blocks.hip` `pool_stages`: one pool stage for each attention layer that brings the context's pooled-key cache
     /// from block `b0` up to its `n / 4` (the restore of a context).
-    pub(crate) fn pool_stages(&self, c: &MkContext, b0: u32) -> Vec<Stage> {
+    pub(crate) fn pool_stages(&self, c: &Qwen38Context, b0: u32) -> Vec<Stage> {
         let max_nb = c.max / IDX_RATIO;
         assert!(
             b0 <= c.n / IDX_RATIO,
@@ -1206,8 +1207,10 @@ fn fuse_hc_mix(s: &mut Vec<Stage>, ends: &mut [u32]) {
     let mut producer_of: Vec<Option<usize>> = vec![None; n];
     let mut dropped = vec![false; n];
     let overlaps = |alo: u64, ahi: u64, blo: u64, bhi: u64| alo < bhi && blo < ahi;
-    let footprint =
-        |stage: &Stage| schedule::stage_footprint(stage, 0).unwrap_or_else(|error| panic!("mk's pass build: {error}"));
+    let footprint = |stage: &Stage| {
+        schedule::stage_footprint(stage, 0)
+            .unwrap_or_else(|error| panic!("the schedule of the test stages failed: {error}"))
+    };
     for m in 0..n {
         if s[m].op != ST_HC_MIX {
             continue;
@@ -1220,7 +1223,7 @@ fn fuse_hc_mix(s: &mut Vec<Stage>, ends: &mut [u32]) {
         let u = *s[j].qmm();
         assert!(
             s[j].op == ST_QMM_H,
-            "fuse_hc_mix: hc_mix stage {m}: its up matmul is an exact qmm (op {}); MK_FUSE_HCMIX=0 for that",
+            "fuse_hc_mix: hc_mix stage {m}: its up matmul is an exact qmm (op {}); QWEN38_FUSE_HCMIX=0 for that",
             s[j].op
         );
         assert!(
@@ -1348,25 +1351,25 @@ mod tests {
 
     #[test]
     fn a_knob_takes_0_or_1_and_refuses_the_rest() {
-        assert_eq!(switch("MK_FUSE", None), Ok(true));
-        assert_eq!(switch("MK_FUSE", Some("1")), Ok(true));
-        assert_eq!(switch("MK_FUSE", Some("0")), Ok(false));
+        assert_eq!(switch("QWEN38_FUSE", None), Ok(true));
+        assert_eq!(switch("QWEN38_FUSE", Some("1")), Ok(true));
+        assert_eq!(switch("QWEN38_FUSE", Some("0")), Ok(false));
         assert_eq!(
-            switch("MK_FUSE", Some("yes")),
-            Err("MK_FUSE=yes: want 0 or 1".to_owned())
+            switch("QWEN38_FUSE", Some("yes")),
+            Err("QWEN38_FUSE=yes: want 0 or 1".to_owned())
         );
-        let knobs = Knobs::from(true, |name| (name == "MK_ELIDE").then(|| "0".to_owned())).unwrap();
+        let knobs = Knobs::from(true, |name| (name == "QWEN38_ELIDE").then(|| "0".to_owned())).unwrap();
         assert!(!knobs.elide && knobs.fuse && knobs.tail && knobs.debug_layers == 0);
         for bad in ["0", "49", "3x"] {
-            let error = Knobs::from(true, |name| (name == "MK_DEBUG_LAYERS").then(|| bad.to_owned())).unwrap_err();
+            let error = Knobs::from(true, |name| (name == "QWEN38_DEBUG_LAYERS").then(|| bad.to_owned())).unwrap_err();
             assert!(error.contains("out of 1..48"), "{error}");
         }
-        let error = Knobs::from(true, |name| (name == "MK_TAIL").then(|| "2".to_owned())).unwrap_err();
-        assert_eq!(error, "MK_TAIL=2: want 0 or 1");
+        let error = Knobs::from(true, |name| (name == "QWEN38_TAIL").then(|| "2".to_owned())).unwrap_err();
+        assert_eq!(error, "QWEN38_TAIL=2: want 0 or 1");
     }
 
     #[test]
-    fn the_rope_table_is_mk_table() {
+    fn the_rope_table_is_the_table_of_the_reference() {
         let table = inv_freq();
         assert_eq!(table[0], 1.0);
         assert_eq!(table[1], 1.0 / 1e7f32.powf(2.0 / 64.0));

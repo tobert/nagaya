@@ -1,9 +1,9 @@
-"""The group `attn`: the expected values of the HF attention module for the op `mk_attn`, on generator inputs.
+"""The group `attn`: the expected values of the HF attention module for the op `qwen38_attn`, on generator inputs.
 
-mk's `test_attn.py` and `test_attn_long.py` run the HF module `Qwen4ExpTextAttention` with the real weights of layer 3 on
+The reference's `test_attn.py` and `test_attn_long.py` run the HF module `Qwen4ExpTextAttention` with the real weights of layer 3 on
 real embeddings. Here the module has stand-ins for its projection layers: they return the raw projections of the
 generator, so no weight is needed. The norms take the generator's gammas. The rest of the module is HF's own code,
-and the runs follow mk's `run_reference` and `reference_tail`.
+and the runs follow the reference's `run_reference` and `reference_tail`.
 
 A sequence of seed S has, for token i, the raw projections that the generator makes at index i * width of the streams
 S * 10 + 1 (q, width 12288), + 2 (k, 512), + 3 (v, 512), + 4 (index q, 512) and + 5 (index k, 128). The gammas are stored
@@ -18,7 +18,7 @@ import sys
 
 import numpy as np
 
-MK_FILES = ["tests/ops/test_attn.py", "tests/ops/test_attn_long.py"]
+SOURCE_FILES = ["tests/ops/test_attn.py", "tests/ops/test_attn_long.py"]
 
 H, KVH, HD, IH, ID = 24, 2, 256, 4, 128
 HEADS = [0, 11, 12, 23]
@@ -33,7 +33,7 @@ SEL_WIDTH = {"dense": DENSE_T, "sparse": SPARSE_BUDGET + 3}
 
 
 def make(g, lib):
-    sys.path.insert(0, str(lib.MK))
+    sys.path.insert(0, str(lib.REFERENCE))
     import torch
     from torch import nn
     from harness import reference

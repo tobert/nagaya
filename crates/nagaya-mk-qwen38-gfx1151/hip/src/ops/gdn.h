@@ -16,11 +16,11 @@
 // causal_conv1d_fn's F.conv1d is cross-correlation). The new conv_state_out is the window's last
 // 3 taps: a copy, never an arithmetic result, so it is exact (no rounding at all).
 //
-// op_gdn_core: item = value head p (0..47), one workgroup (kMkBlock = 256 threads) per item. The head's
+// op_gdn_core: item = value head p (0..47), one workgroup (kBlockThreads = 256 threads) per item. The head's
 // [128 (k), 128 (v)] recurrent state lives in registers, 64 floats per thread: thread t owns columns
 // c = t / 4 and c + 64, and within them the k-slice k = 4i + j (i = 0..31, j = t % 4), so the 4 lanes of a
 // quad together hold two whole columns. (Run 2's kernel gave each thread a whole column, 128 floats; that
-// op alone set the megakernel's registers to 256 with 1.3 KiB/lane of spills, PLAN.md Speed.)
+// op alone set the megakernel's registers to 256 with 1.3 KiB/lane of spills.)
 // Per token, in the op's fixed order: l2norm q,k (over the whole 128-dim head vector: threads 0..127
 // square q's components, 128..255 k's, each a wave xor-butterfly, then the half's 4 waves added in order,
 // eps 1e-6, exactly like the reference's l2norm) and scale q by 1/sqrt(128); beta = sigmoid(b);
@@ -37,7 +37,7 @@
 #include "model.h"
 #include "small.h"  // sigmoidf_, siluf_
 
-namespace mk {
+namespace qwen38 {
 
 static_assert(model::kGdnKDim == 128 && model::kGdnVDim == 128, "gdn.h assumes 128-wide K/V heads");
 static_assert(model::kGdnKHeads == 16 && model::kGdnVHeads == 48, "gdn.h assumes 16 K-heads / 48 V-heads");
@@ -73,7 +73,7 @@ __device__ inline void gdn_conv_item(const GdnConvArgs &a, uint32_t c) {
 }
 
 __device__ inline void op_gdn_conv(const GdnConvArgs &a, uint32_t wg, uint32_t nwg) {
-  for (uint32_t c = wg * kMkBlock + mk_tid(); c < model::kGdnConvDim; c += nwg * kMkBlock) gdn_conv_item(a, c);
+  for (uint32_t c = wg * kBlockThreads + thread_id(); c < model::kGdnConvDim; c += nwg * kBlockThreads) gdn_conv_item(a, c);
 }
 
 // ---- stage 2/3/4: l2norm + the gated delta rule + the gated RMSNorm, fused per value head ----
@@ -98,8 +98,8 @@ __device__ inline float gdn_softplus(float x) { return x > 20.f ? x : log1pf(exp
 constexpr uint32_t kGdnQuad = 4;                                 // lanes per pair of S columns
 constexpr uint32_t kGdnKPerLane = model::kGdnKDim / kGdnQuad;    // 32 state rows per lane and column
 constexpr uint32_t kGdnColHalf = model::kGdnVDim / 2;            // a thread's columns: c and c + 64
-static_assert(kMkBlock == kGdnQuad * kGdnColHalf, "gdn core: one head per 256-thread workgroup");
-static_assert(kMkBlock == 2 * model::kGdnKDim, "gdn core: threads 0..127 take q's l2norm, 128..255 k's");
+static_assert(kBlockThreads == kGdnQuad * kGdnColHalf, "gdn core: one head per 256-thread workgroup");
+static_assert(kBlockThreads == 2 * model::kGdnKDim, "gdn core: threads 0..127 take q's l2norm, 128..255 k's");
 
 // (x0 + x1) + (x2 + x3) over a quad; every lane of the quad gets the same bits.
 __device__ inline float gdn_quad_sum(float x) {
@@ -110,10 +110,10 @@ __device__ inline float gdn_quad_sum(float x) {
 
 __device__ inline void gdn_core_item(const GdnCoreArgs &a, uint32_t p) {
   __shared__ float qkL[2][model::kGdnKDim];   // [0] = normalized, scaled q; [1] = normalized k
-  __shared__ float red_qk[kMkBlock / kWave];  // per-wave sums of squares: waves 0..3 q, 4..7 k
-  __shared__ float red_o[kMkBlock / kWave];   // per-wave sums of o^2
+  __shared__ float red_qk[kBlockThreads / kWave];  // per-wave sums of squares: waves 0..3 q, 4..7 k
+  __shared__ float red_o[kBlockThreads / kWave];   // per-wave sums of o^2
 
-  const uint32_t tid = mk_tid(), w = tid / kWave;
+  const uint32_t tid = thread_id(), w = tid / kWave;
   const uint32_t j = tid % kGdnQuad, c = tid / kGdnQuad;
   const uint32_t half = tid / model::kGdnKDim, comp = tid % model::kGdnKDim;  // l2norm role
   const uint32_t col = c + (j & 1) * kGdnColHalf;  // the column this lane writes y for (lanes j = 0, 1)
@@ -184,7 +184,7 @@ __device__ inline void gdn_core_item(const GdnCoreArgs &a, uint32_t p) {
     __syncthreads();
     float tot = 0.f;
 #pragma unroll
-    for (uint32_t i = 0; i < kMkBlock / kWave; ++i) tot += red_o[i];
+    for (uint32_t i = 0; i < kBlockThreads / kWave; ++i) tot += red_o[i];
     if (j < 2) {
       const float o = j ? o1 : o0;
       const float rms = o * rsqrtf(tot / float(model::kGdnVDim) + model::kRmsEps);
@@ -201,22 +201,11 @@ __device__ inline void gdn_core_item(const GdnCoreArgs &a, uint32_t p) {
   }
 }
 
-// Timing experiment only (PLAN.md "Speed", GDN register pressure): MK_GDN_CORE_EXPERIMENT 1 skips the
-// core and writes y = 0; 2 runs the core and then overwrites y with 0. Both give the same bits downstream
-// (the state feeds only y), so the pair isolates what the core's code costs the rest of the kernel.
-// Never set in a real build: the output is wrong on purpose.
-#ifndef MK_GDN_CORE_EXPERIMENT
-#define MK_GDN_CORE_EXPERIMENT 0
-#endif
-
 // Item = one value head.
 __device__ inline void op_gdn_core(const GdnCoreArgs &a, uint32_t wg, uint32_t nwg) {
   for (uint32_t p = wg; p < model::kGdnVHeads; p += nwg) {
-    if (MK_GDN_CORE_EXPERIMENT != 1) gdn_core_item(a, p);
-    if (MK_GDN_CORE_EXPERIMENT != 0 && mk_tid() < model::kGdnVDim)
-      for (uint32_t t = 0; t < a.t; ++t)
-        a.y[uint64_t(t) * model::kGdnValDim + uint64_t(p) * model::kGdnVDim + mk_tid()] = 0.f;
+    gdn_core_item(a, p);
   }
 }
 
-}  // namespace mk
+}  // namespace qwen38

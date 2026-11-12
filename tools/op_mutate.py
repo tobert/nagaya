@@ -3,7 +3,7 @@
 
 The tool copies `hip/src` of nagaya-mk-qwen38-gfx1151 into a work directory, replaces one exact text in one file,
 builds the op libraries from the copy with the flags of `ops_build.rs`, and runs the test target `ops` with
-`MK_OPS_LIBDIR` set to the copy. It never changes the sources of the repository, so several runs can go at the same time.
+`QWEN38_OPS_LIBDIR` set to the copy. It never changes the sources of the repository, so several runs can go at the same time.
 
     python3 tools/op_mutate.py LABEL FILE OLD NEW [--tests FILTER] [--work DIR]
 
@@ -48,7 +48,7 @@ def build(src: Path, out: Path):
         if name == "rt":
             cmd = [CXX, *HIP_DEFINES, f"-I{src / 'rt'}", *FLAGS, "-o", out / "rt.o", "-x", "hip", "-c", src / "rt/rt.cpp"]
         else:
-            cmd = [CXX, *HIP_DEFINES, f"-Dmk_{name}_EXPORTS", f"-I{src / 'ops'}", f"-I{src / 'rt'}", *FLAGS, "-O3", "-o",
+            cmd = [CXX, *HIP_DEFINES, f"-Dqwen38_{name}_EXPORTS", f"-I{src / 'ops'}", f"-I{src / 'rt'}", *FLAGS, "-O3", "-o",
                    out / f"{name}.o", "-x", "hip", "-c", src / "ops" / f"{name}.hip"]
         run(cmd, f"compile {name}")
 
@@ -56,7 +56,7 @@ def build(src: Path, out: Path):
         list(pool.map(compile_one, ["rt", *names]))
 
     def link_one(name):
-        run([CXX, *LINK, f"-Wl,-soname,libmk_{name}.so", "-o", out / f"libmk_{name}.so", out / f"{name}.o", out / "rt.o",
+        run([CXX, *LINK, f"-Wl,-soname,libqwen38_{name}.so", "-o", out / f"libqwen38_{name}.so", out / f"{name}.o", out / "rt.o",
              ROCM / "lib/libamdhip64.so", builtins], f"link {name}")
 
     with concurrent.futures.ThreadPoolExecutor(len(names)) as pool:
@@ -92,7 +92,7 @@ def main():
     lock = os.environ.get("GPU_LOCK")
     if lock:
         cmd = ["flock", lock, *cmd]
-    r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, env={**os.environ, "MK_OPS_LIBDIR": str(work / "lib")})
+    r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, env={**os.environ, "QWEN38_OPS_LIBDIR": str(work / "lib")})
     text = r.stdout + r.stderr
     if "could not compile" in text:
         sys.exit("the tests did not compile:\n" + text[-2000:])

@@ -1,18 +1,20 @@
-//! The MoE block and its router. It ports `test_moe.py` and `test_moe_route.py` of mk.
+//! The MoE block and its router. It ports `test_moe.py` and `test_moe_route.py` of the reference.
 //!
-//! - Route: the router's top-10 and the grouping stage (`mk_moe_route`) give exact answers. A fixture of
+//! - Route: the router's top-10 and the grouping stage (`qwen38_moe_route`) give exact answers. A fixture of
 //!   `tools/op_groups/moe.py` holds SHA-256 digests of the integer answers and the f32 weights.
-//! - Block: `mk_moe` against a float64 reference in the same fixture, on two synthetic layers. mk compared against the HF
-//!   module with the real weights of layers 0 and 3. The HF module needs many GB of dense expert weights, so the
-//!   reference here is numpy with the maths of that module. The tolerances are the ones of mk.
-//! - Block: the same bits for every grid size and over repeats, and with the expert lookahead off (`libmk_moe_nolook`).
+//! - Block: `qwen38_moe` against a float64 reference in the same fixture, on two synthetic layers. The reference
+//!   compared against the HF module with the real weights of layers 0 and 3. The HF module needs many GB of dense
+//!   expert weights, so the check here is numpy with the maths of that module. The tolerances are the ones of the
+//!   reference.
+//! - Block: the same bits for every grid size and over repeats, and with the expert lookahead off
+//!   (`libqwen38_moe_nolook`).
 //!
 //! The synthetic pools of a layer have the byte sizes of the real tensors: 512 experts of IQ3_S gate and up (640 rows of
 //! K = 2560), IQ4_NL down (2560 rows of K = 640), Q8_0 shared experts, and an F32 router. A pool takes about 1.2 GB.
 
 use crate::fixture::Fixture;
 use crate::inputs::{self, Qtype};
-use crate::mkops::{self, assert_same, lib, nbytes, ptr, ptr_mut, same_bits};
+use crate::ops_lib::{self, assert_same, lib, nbytes, ptr, ptr_mut, same_bits};
 use crate::sym;
 use sha2::{Digest, Sha256};
 use std::ffi::c_void;
@@ -22,7 +24,7 @@ const E: usize = 512;
 const K: usize = 10;
 const ROUTE_TS: [usize; 8] = [1, 7, 16, 17, 80, 81, 160, 256];
 
-/// What `mk_moe_route` gives for one call.
+/// What `qwen38_moe_route` gives for one call.
 struct Route {
     idx: Vec<i32>,
     w: Vec<f32>,
@@ -48,7 +50,7 @@ fn route(logits: &[f32], fast: u32, grid: u32) -> Route {
     };
     let f = sym!(
         lib("moe"),
-        "mk_moe_route",
+        "qwen38_moe_route",
         fn(
             *const c_void,
             u32,
@@ -80,7 +82,7 @@ fn route(logits: &[f32], fast: u32, grid: u32) -> Route {
             ptr_mut(&mut r.idn),
         )
     };
-    assert_eq!(rc, 0, "mk_moe_route");
+    assert_eq!(rc, 0, "qwen38_moe_route");
     r
 }
 
@@ -232,7 +234,7 @@ struct BlockOut {
     idx: Vec<i32>,
 }
 
-/// `mk_moe` on `x` of `t` tokens, from the library `moe` (lookahead on) or `moe_nolook`.
+/// `qwen38_moe` on `x` of `t` tokens, from the library `moe` (lookahead on) or `moe_nolook`.
 fn block(pool: &Pool, x: &[f32], grid: u32, fast: u32, look: bool) -> BlockOut {
     let t = x.len() / 2560;
     let mut out = vec![0f32; t * 2560];
@@ -240,7 +242,7 @@ fn block(pool: &Pool, x: &[f32], grid: u32, fast: u32, look: bool) -> BlockOut {
     let mut w = vec![0f32; t * K];
     let f = sym!(
         lib(if look { "moe" } else { "moe_nolook" }),
-        "mk_moe",
+        "qwen38_moe",
         fn(
             *const c_void,
             u64,
@@ -308,7 +310,7 @@ fn block(pool: &Pool, x: &[f32], grid: u32, fast: u32, look: bool) -> BlockOut {
             fast,
         )
     };
-    assert_eq!(rc, 0, "mk_moe");
+    assert_eq!(rc, 0, "qwen38_moe");
     BlockOut { out, idx }
 }
 
@@ -354,7 +356,7 @@ fn moe_matches_reference() {
             );
             let rows =
                 |v: &[f32]| -> Vec<f32> { ok.iter().flat_map(|&r| v[r * 2560..(r + 1) * 2560].to_vec()).collect() };
-            let e = mkops::relerr(&rows(&got.out), &rows(&want));
+            let e = ops_lib::relerr(&rows(&got.out), &rows(&want));
             let tol = if fast == 1 { TOL_FAST } else { TOL };
             eprintln!(
                 "pool {name} fast={fast} MoE relerr {e:.2e} over {} tokens (tol {tol:.0e})",
@@ -392,8 +394,9 @@ fn moe_grid_independent() {
     }
 }
 
-/// The one-step lookahead of the expert item only moves loads. The build without it (`libmk_moe_nolook`, the path of
-/// `k_stage`) gives the same bits as the one with it, on the f16 path, for a decode step, a partial token block and a pass.
+/// The one-step lookahead of the expert item only moves loads. The build without it (`libqwen38_moe_nolook`, the path
+/// of `k_stage`) gives the same bits as the one with it, on the f16 path, for a decode step, a partial token block and
+/// a pass.
 #[test]
 fn moe_lookahead_off_same_bits() {
     let pool = &*POOL_A;

@@ -19,8 +19,6 @@ pub mod inventory;
 pub mod jobs;
 pub mod lfm3;
 pub mod lifecycle;
-#[cfg(feature = "hip")]
-pub mod mk;
 pub mod node;
 pub mod notify;
 pub mod park;
@@ -28,6 +26,8 @@ pub mod placement;
 pub mod probe;
 pub mod process;
 pub mod profile;
+#[cfg(feature = "hip")]
+pub mod qwen38;
 pub mod qwen3tts;
 pub mod qwenimage21;
 pub mod reprofile;

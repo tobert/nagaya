@@ -19,7 +19,8 @@
 //! Condition 6 needs a lab-only state that changes bits. The suite cannot see such a state, so no gate checks it.
 //! The scheduler owns condition 5 between two stages of one block; the gate checks one pass against another state.
 //!
-//! Each gate takes the engine. `run_all` makes a fresh engine for each gate. Milestone 8 calls it on mk.
+//! Each gate takes the engine. `run_all` makes a fresh engine for each gate. Milestone 8 calls it on the Qwen3.8
+//! engine.
 
 mod compare;
 mod gate;

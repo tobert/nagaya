@@ -1,8 +1,8 @@
 //! The character classes of the pre-tokenizer pattern.
 //!
-//! mk's pattern uses `\p{L}`, `\p{M}`, `\p{N}` and `\s` of Python's `regex` module. Rust's own tables are of an older
-//! Unicode version, so this module holds the tables of that module (`unicode_tables.rs`). A test compares each class
-//! with the fixture for every code point.
+//! The pattern of the reference uses `\p{L}`, `\p{M}`, `\p{N}` and `\s` of Python's `regex` module. Rust's own tables
+//! are of an older Unicode version, so this module holds the tables of that module (`unicode_tables.rs`). A test
+//! compares each class with the fixture for every code point.
 
 use crate::unicode_tables::{
     LETTER, MARK, NUMBER, PYTHON_ALPHA, PYTHON_CASE_IGNORABLE, PYTHON_CASED, PYTHON_DIGIT, PYTHON_PRINTABLE,

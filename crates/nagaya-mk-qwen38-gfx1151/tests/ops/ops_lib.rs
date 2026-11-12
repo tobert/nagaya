@@ -1,4 +1,5 @@
-//! The loader of the op libraries and the calls that most op tests share. It ports `tests/ops/mkops.py` of mk.
+//! The loader of the op libraries and the calls that most op tests share. It ports `tests/ops/mkops.py` of the
+//! reference.
 
 #![allow(dead_code)]
 
@@ -9,14 +10,16 @@ use std::ffi::c_void;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-/// The directory of the op libraries. `MK_OPS_LIBDIR` selects another build, for a mutation build of an op.
+/// The directory of the op libraries. `QWEN38_OPS_LIBDIR` selects another build, for a mutation build of an op.
 pub fn libdir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("MK_OPS_LIBDIR") {
+    if let Some(dir) = std::env::var_os("QWEN38_OPS_LIBDIR") {
         return PathBuf::from(dir);
     }
     match option_env!("NAGAYA_MK_OPS_DIR") {
         Some(dir) => PathBuf::from(dir),
-        None => panic!("build.rs did not build the op libraries. Build with the feature hip, or set MK_OPS_LIBDIR."),
+        None => {
+            panic!("build.rs did not build the op libraries. Build with the feature hip, or set QWEN38_OPS_LIBDIR.")
+        }
     }
 }
 
@@ -27,13 +30,13 @@ struct Loaded {
 
 static LIBRARIES: Mutex<Option<HashMap<String, Loaded>>> = Mutex::new(None);
 
-/// The library `libmk_<op>.so`. The first call loads it. With `trap_sink` the library reports its device traps
+/// The library `libqwen38_<op>.so`. The first call loads it. With `trap_sink` the library reports its device traps
 /// (`rt/trap.h`): the call installs the trap record and the SIGABRT handler. That touches the GPU.
 pub fn lib_with(op: &str, trap_sink: bool) -> &'static Library {
     let mut guard = LIBRARIES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let map = guard.get_or_insert_with(HashMap::new);
     let entry = map.entry(op.to_owned()).or_insert_with(|| {
-        let path = libdir().join(format!("libmk_{op}.so"));
+        let path = libdir().join(format!("libqwen38_{op}.so"));
         let library = unsafe { Library::new(&path) }.unwrap_or_else(|error| panic!("load {}: {error}", path.display()));
         Loaded {
             library: Box::leak(Box::new(library)),
@@ -42,15 +45,15 @@ pub fn lib_with(op: &str, trap_sink: bool) -> &'static Library {
     });
     if trap_sink && !entry.sunk {
         let install: libloading::Symbol<unsafe extern "C" fn() -> i32> =
-            unsafe { entry.library.get(b"mk_trap_sink_install\0") }.expect("mk_trap_sink_install");
+            unsafe { entry.library.get(b"hip_trap_sink_install\0") }.expect("hip_trap_sink_install");
         assert_eq!(unsafe { install() }, 0, "the trap sink of {op} did not install");
         entry.sunk = true;
     }
     entry.library
 }
 
-/// The library `libmk_<op>.so`, loaded as a raw load leaves it: with no trap sink, and marked so that `lib` does not
-/// install the sink later. It is the state of a library that a program loads with no knowledge of the sink.
+/// The library `libqwen38_<op>.so`, loaded as a raw load leaves it: with no trap sink, and marked so that `lib` does
+/// not install the sink later. It is the state of a library that a program loads with no knowledge of the sink.
 pub fn lib_raw(op: &str) -> &'static Library {
     let library = lib_with(op, false);
     let mut guard = LIBRARIES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -58,7 +61,7 @@ pub fn lib_raw(op: &str) -> &'static Library {
     library
 }
 
-/// The library `libmk_<op>.so`, with its trap sink.
+/// The library `libqwen38_<op>.so`, with its trap sink.
 pub fn lib(op: &str) -> &'static Library {
     lib_with(op, true)
 }
@@ -148,12 +151,12 @@ pub fn tcode(qtype: Qtype) -> u32 {
     qtype as u32
 }
 
-/// The dequantized values of `rows` rows of `k` values: `mk_dequant`.
+/// The dequantized values of `rows` rows of `k` values: `qwen38_dequant`.
 pub fn dequant(qtype: Qtype, raw: &[u8], rows: usize, k: usize) -> Vec<f32> {
     let mut out = vec![0f32; rows * k];
     let f = sym!(
         lib("qmm"),
-        "mk_dequant",
+        "qwen38_dequant",
         fn(u32, *const c_void, u64, u32, u32, *mut c_void, u64) -> i32
     );
     let rc = unsafe {
@@ -167,18 +170,18 @@ pub fn dequant(qtype: Qtype, raw: &[u8], rows: usize, k: usize) -> Vec<f32> {
             nbytes(&out),
         )
     };
-    assert_eq!(rc, 0, "mk_dequant");
+    assert_eq!(rc, 0, "qwen38_dequant");
     out
 }
 
 /// Which kernel `qmm` calls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kernel {
-    /// `mk_qmm`: the exact f32 kernel of the engine.
+    /// `qwen38_qmm`: the exact f32 kernel of the engine.
     Exact,
-    /// `mk_qmm_oracle`: the kernel of run 2, which is the oracle of the exact kernel.
+    /// `qwen38_qmm_oracle`: the kernel of run 2, which is the oracle of the exact kernel.
     Oracle,
-    /// `mk_qmmh`: the f16 WMMA kernel of the engine.
+    /// `qwen38_qmmh`: the f16 WMMA kernel of the engine.
     Fast,
 }
 
@@ -216,15 +219,15 @@ pub fn qmm_with(
     let ldy = options.ldy.unwrap_or(n);
     let mut y = vec![f32::NAN; y_rows * ldy];
     let (library, name) = match kernel {
-        Kernel::Exact => ("qmm", "mk_qmm"),
-        Kernel::Oracle => ("qmm_oracle", "mk_qmm_oracle"),
-        Kernel::Fast => ("qmmh", "mk_qmmh"),
+        Kernel::Exact => ("qmm", "qwen38_qmm"),
+        Kernel::Oracle => ("qmm_oracle", "qwen38_qmm_oracle"),
+        Kernel::Fast => ("qmmh", "qwen38_qmmh"),
     };
     let lib = lib(library);
     let f = match kernel {
         Kernel::Exact => sym!(
             lib,
-            "mk_qmm",
+            "qwen38_qmm",
             fn(
                 u32,
                 *const c_void,
@@ -248,7 +251,7 @@ pub fn qmm_with(
         ),
         Kernel::Oracle => sym!(
             lib,
-            "mk_qmm_oracle",
+            "qwen38_qmm_oracle",
             fn(
                 u32,
                 *const c_void,
@@ -272,7 +275,7 @@ pub fn qmm_with(
         ),
         Kernel::Fast => sym!(
             lib,
-            "mk_qmmh",
+            "qwen38_qmmh",
             fn(
                 u32,
                 *const c_void,

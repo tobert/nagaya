@@ -1,9 +1,9 @@
 //! The weight arena: the plan of every uploaded tensor, and the sealed memfd that holds them (milestone 15 step 6).
 //!
-//! mk's `engine.hip` planned and filled the arena in C++. This module does it in Rust, byte for byte: the header, the
-//! manifest and the tensor data are mk's `arena.h` layout. `examples/arena_digest` gives the arena's SHA-256, and the
-//! digest of the copy must equal mk's. The kernels read the arena where it is mapped. The engine is never closed, so
-//! the arena stays mapped and registered for the life of the process.
+//! The reference's `engine.hip` planned and filled the arena in C++. This module does it in Rust, byte for byte: the
+//! header, the manifest and the tensor data are the reference's `arena.h` layout. `examples/arena_digest` gives the
+//! arena's SHA-256, and the digest of the copy must equal the reference's. The kernels read the arena where it is
+//! mapped. The engine is never closed, so the arena stays mapped and registered for the life of the process.
 
 use std::ffi::c_void;
 use std::path::Path;
@@ -50,7 +50,7 @@ const Q8_0_TILE: u64 = 1088;
 const Q6_K_TILE: u64 = 3360;
 const IQ4_NL_TILE: u64 = 1152;
 
-/// A tensor's read-once tile layout (`tiles.h`), or none. The value is the id that `mk_relayout` takes.
+/// A tensor's read-once tile layout (`tiles.h`), or none. The value is the id that `qwen38_relayout` takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub(crate) enum Tile {
@@ -112,9 +112,9 @@ fn round_up(x: u64, a: u64) -> u64 {
     x.div_ceil(a) * a
 }
 
-/// The tile of one tensor, from its name and type (`engine.hip` `plan`, mk 555a2a3). The IQ3_S expert gate and up
-/// matrices, the IQ4_NL expert down matrices, every Q8_0 matrix but the token embedding table and the expert matrices,
-/// and the Q6_K output head take tiles.
+/// The tile of one tensor, from its name and type (`engine.hip` `plan`, reference commit 555a2a3). The IQ3_S expert
+/// gate and up matrices, the IQ4_NL expert down matrices, every Q8_0 matrix but the token embedding table and the
+/// expert matrices, and the Q6_K output head take tiles.
 fn tile_of(name: &str, kind: GgmlType) -> Result<Tile, String> {
     let long = name.len() > 20;
     let expert_gu = long && (name.contains(".ffn_gate_exps.weight") || name.contains(".ffn_up_exps.weight"));
@@ -331,9 +331,9 @@ fn os_error(what: &str) -> String {
     format!("{what}: {}", std::io::Error::last_os_error())
 }
 
-/// Fill a new arena (`engine.hip` `create_arena`, mk 555a2a3). The CPU copies each tensor out of the GGUF map
-/// straight into place, or through a pinned scratch buffer and the relayout kernel for a tiled one. The file pages of
-/// each copied chunk leave the page cache. Then the header and the manifest go in, and the seals.
+/// Fill a new arena (`engine.hip` `create_arena`, reference commit 555a2a3). The CPU copies each tensor out of the GGUF
+/// map straight into place, or through a pinned scratch buffer and the relayout kernel for a tiled one. The file pages
+/// of each copied chunk leave the page cache. Then the header and the manifest go in, and the seals.
 ///
 /// # Safety
 ///
@@ -351,7 +351,7 @@ pub(crate) unsafe fn create(
         return Err(format!("{} shards, the arena records {MAX_SHARDS}", shards.len()));
     }
     let len = usize::try_from(bytes).map_err(|_| format!("an arena of {bytes} bytes is past the address space"))?;
-    let fd = unsafe { libc::memfd_create(c"mk-weights".as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING) };
+    let fd = unsafe { libc::memfd_create(c"qwen38-weights".as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING) };
     if fd < 0 {
         return Err(os_error("memfd_create"));
     }
@@ -543,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn the_header_and_an_entry_have_mk_layout() {
+    fn the_header_and_an_entry_have_the_reference_layout() {
         let (planned, bytes) = plan(&model_like(), true).unwrap();
         let mut shard = [0u8; SHARD_ID_BYTES];
         shard[0] = 7;

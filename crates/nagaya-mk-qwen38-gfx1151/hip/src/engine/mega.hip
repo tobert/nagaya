@@ -4,11 +4,11 @@
 #include "device.h"
 #include "stage.h"
 
-namespace mk {
+namespace qwen38 {
 
 // skip_barrier: the mutation test's knob (M4 check) — the barrier after that stage is left out,
 // which must show up as a bit difference. UINT32_MAX in every real pass. With its top bit set it is the stall knob
-// instead (MK_MUTATE_STALL_BARRIER, below).
+// instead (the stall knob, below).
 // stages: __restrict__ is a promise that nothing writes the stage list during the pass (the host uploads it
 // before launch; no op's output points into it). Without it the compiler can't rule out an op's store
 // aliasing the list, so it loads every op's arguments with vector loads into VGPRs: with it, scalar loads
@@ -18,13 +18,13 @@ namespace mk {
 // the grid barrier) in its lane. The outputs don't depend on it.
 // amdgpu_waves_per_eu(8): the grid-80 design target (4 workgroups of 8 waves per WGP) given to the compiler, so
 // it schedules the whole kernel for <= 192 VGPRs; left to itself it took 201 with the f16 qmm inlined.
-__global__ void __launch_bounds__(kMkBlock) __attribute__((amdgpu_waves_per_eu(8))) k_mega(const Stage *__restrict__ stages, uint32_t n, Control *ctl, Barrier *bar,
+__global__ void __launch_bounds__(kBlockThreads) __attribute__((amdgpu_waves_per_eu(8))) k_mega(const Stage *__restrict__ stages, uint32_t n, Control *ctl, Barrier *bar,
                                                    uint32_t skip_barrier, EventRingView ev) {
   const bool events = ev.records != nullptr;
   // The barrier tail (docs/narrow.md N3, stage.h kSchedTail): when stage i + 1 carries the bit, the grid barrier after stage i
   // is only its first half (grid_arrive_hold): the last arriver is the runner (1), the rest waiters (2). Stage i + 1 then runs
   // on the runner alone, as (wg 0, nwg 1), and the barrier after it is the second half (grid_tail_release). 0 = no tail in
-  // flight (a skipped barrier, the single-stage launch of MK_MEGA_PER_STAGE: the stage runs as any other).
+  // flight (a skipped barrier, the launch of a single stage: the stage runs as any other).
   uint32_t tail_role = 0;
   for (uint32_t i = 0; i < n; ++i) {
     const uint64_t t_begin = events ? uint64_t(wall_clock64()) : 0;
@@ -64,7 +64,7 @@ __global__ void __launch_bounds__(kMkBlock) __attribute__((amdgpu_waves_per_eu(8
       lds_sync();
       continue;
     }
-    // MK_MUTATE_STALL_BARRIER (engine.hip, a test knob): skip_barrier = 0x80000000 | s makes workgroup 0 leave at the first
+    // The stall knob (a test knob): skip_barrier = 0x80000000 | s makes workgroup 0 leave at the first
     // grid barrier at or after stage s without arriving, so the rest wait out their bounded spin: a real spin-timeout.
     if (skip_barrier != UINT32_MAX && (skip_barrier & 0x80000000u) && i >= (skip_barrier & 0x7fffffffu) && blockIdx.x == 0) return;
     if (i + 1 < n && (stages[i + 1].sched & kSchedTail)) {  // the barrier is the next stage's tail: arrive, don't release
@@ -78,4 +78,4 @@ __global__ void __launch_bounds__(kMkBlock) __attribute__((amdgpu_waves_per_eu(8
 
 const void *mega_kernel() { return reinterpret_cast<const void *>(&k_mega); }
 
-}  // namespace mk
+}  // namespace qwen38

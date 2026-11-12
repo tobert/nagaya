@@ -10,5 +10,5 @@ pub(crate) fn pass_plan(stages: &[Stage], window_starts: &[u32], elide: bool, ta
     if !elide {
         return plain(stages.len() as u32);
     }
-    plan(stages, window_starts, tail).unwrap_or_else(|error| panic!("mk's pass build: {error}"))
+    plan(stages, window_starts, tail).unwrap_or_else(|error| panic!("the schedule of the test stages failed: {error}"))
 }

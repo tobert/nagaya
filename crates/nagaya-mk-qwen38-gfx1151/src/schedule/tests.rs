@@ -1,11 +1,13 @@
-//! The cases of mk's `tests/engine/test_sched.hip` and `test_sched.py` (mk `555a2a3`), in the same order.
+//! The cases of the reference's `tests/engine/test_sched.hip` and `test_sched.py` (reference commit `555a2a3`), in the
+//! same order.
 //!
-//! The stages lie in two fake arenas. The schedule compares addresses only, so nothing reads through them. mk ran the
-//! five cases that stop the program in child processes. Here the schedule gives an error, and the test reads it.
+//! The stages lie in two fake arenas. The schedule compares addresses only, so nothing reads through them. The
+//! reference ran the five cases that stop the program in child processes. Here the schedule gives an error, and the
+//! test reads it.
 
 use super::*;
 
-/// The fake arenas `A` and `B` of mk's test: 1 << 22 floats each.
+/// The fake arenas `A` and `B` of the reference's test: 1 << 22 floats each.
 const ARENA_A: usize = 0x1000_0000;
 const ARENA_B: usize = ARENA_A + (1 << 22) * 4;
 
@@ -640,8 +642,8 @@ fn sibling_state_stages_share_a_level() {
     );
 }
 
-/// Not in mk's suite: the K/V reach of a segment's attend is the cells `[0, p0 + t)` of its prep. The mutation
-/// `cells = p0` survived mk's cases.
+/// Not in the reference's suite: the K/V reach of a segment's attend is the cells `[0, p0 + t)` of its prep. The
+/// mutation `cells = p0` survived the reference's cases.
 #[test]
 fn a_segments_attend_reads_the_kv_cells_of_its_prep() {
     let kv = b(700_000);
@@ -958,7 +960,7 @@ fn a_one_token_moe_group_alone_in_its_level_is_a_tail() {
 
 // ---- test_sched.py: the siblings that touch the same bytes stop the schedule ----
 
-/// The error of one case of mk's `die_case`. A schedule that succeeds fails the test.
+/// The error of one case of the reference's `die_case`. A schedule that succeeds fails the test.
 fn die_case(stages: Vec<Stage>) -> String {
     let mut stages = stages;
     match schedule_stages(&mut stages, &[], false) {
@@ -1001,7 +1003,8 @@ fn siblings_that_touch_the_same_bytes_stop_the_schedule() {
 
 #[test]
 fn with_no_schedule_each_stage_runs_in_build_order_with_a_barrier_after_it() {
-    // MK_ELIDE=0: a reorder and a tail stay as they were built. A (x -> y), B (y -> out), C (x -> w), E (reads out).
+    // QWEN38_ELIDE=0: a reorder and a tail stay as they were built. A (x -> y), B (y -> out), C (x -> w), E (reads
+    // out).
     let stages = vec![
         silu(a(0), a(1000), 100),
         silu(a(1000), a(200_000), 2560),

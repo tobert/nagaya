@@ -9,7 +9,7 @@
 // A work item is 8 rows x 8 tokens: wave w of the workgroup takes row 8 * rg + w. Optional row
 // maps gather x rows (x_row[t]) and scatter y rows (y_row[t]) for the MoE.
 //
-// This is run 2's kernel, same as qmm_oracle.h (PLAN.md "Speed" S1). Attempt 2 (commit 6ee7d17: 32 rows x 8
+// This is run 2's kernel, same as qmm_oracle.h . Attempt 2 (commit 6ee7d17: 32 rows x 8
 // tokens, activations staged in LDS) made the unfused read 1.5x faster but the megakernel read 22% slower, so
 // the engine keeps this one until attempt 3 (double-buffered staging) wins in the megakernel.
 #pragma once
@@ -17,7 +17,7 @@
 #include "quant.h"
 #include "tiles.h"
 
-namespace mk {
+namespace qwen38 {
 
 struct QmmArgs {
   uint32_t type;
@@ -53,7 +53,7 @@ struct QmmArgs {
 constexpr uint32_t kXinPlain = 0, kXinSiluSum = 1, kXinSwigluSum = 2;
 constexpr uint32_t kYoutPlain = 0, kYoutHcMix = 1;
 
-constexpr uint32_t kQmmRows = kMkBlock / kWave;  // 8
+constexpr uint32_t kQmmRows = kBlockThreads / kWave;  // 8
 constexpr uint32_t kQmmToks = 8;
 
 
@@ -135,11 +135,11 @@ template <uint32_t T>
 __device__ inline void qmm_item(const QmmArgs &a, uint32_t item) {
   const uint32_t n_rg = (a.n + kQmmRows - 1) / kQmmRows;
   const uint32_t rg = item % n_rg, tt = item / n_rg;
-  const uint32_t n = rg * kQmmRows + mk_tid() / kWave;
-  const uint32_t lane = mk_tid() % kWave;
+  const uint32_t n = rg * kQmmRows + thread_id() / kWave;
+  const uint32_t lane = thread_id() % kWave;
   const uint32_t t0 = tt * kQmmToks;
   const uint32_t nt = min(kQmmToks, a.t - t0);
-  if (a.xin != kXinPlain) MK_TRAP(kTrapBadArgs, kTrapFileQmm);  // fused staging is the f16 path's (the engine fuses only there)
+  if (a.xin != kXinPlain) HIP_TRAP(kTrapBadArgs, kTrapFileQmm);  // fused staging is the f16 path's (the engine fuses only there)
   if (n >= a.n) return;
   const uint8_t *wrow = a.w + uint64_t(n) * a.ldw;
   const float *xr[kQmmToks];
@@ -153,7 +153,7 @@ __device__ inline void qmm_item(const QmmArgs &a, uint32_t item) {
       const uint32_t units = a.k / 32, nu = (units + kWave - 1) / kWave;
       if (nu == 3 || nu == 10) {  // the engine's K = 2560 and 10240
         const float *x = xr[0];
-        if ((reinterpret_cast<uintptr_t>(x) | reinterpret_cast<uintptr_t>(wrow)) & 15) MK_TRAP(kTrapBadArgs, kTrapFileQmm);  // wide loads
+        if ((reinterpret_cast<uintptr_t>(x) | reinterpret_cast<uintptr_t>(wrow)) & 15) HIP_TRAP(kTrapBadArgs, kTrapFileQmm);  // wide loads
         const float s = wave_sum(nu == 3 ? qmm_narrow_sum<T, 3>(wrow, x, units, lane) : qmm_narrow_sum<T, 10>(wrow, x, units, lane));
         if (lane == 0) a.y[uint64_t(a.y_row ? a.y_row[t0] : t0) * a.ldy + n] = s;
         return;
@@ -230,8 +230,8 @@ __device__ inline void op_qmm(const QmmArgs &a, uint32_t wg, uint32_t nwg) {
     case q::IQ3_S: op_qmm_t<q::IQ3_S>(a, wg, nwg); break;
     case q::F32: op_qmm_t<q::F32>(a, wg, nwg); break;
     case q::BF16: op_qmm_t<q::BF16>(a, wg, nwg); break;
-    default: MK_TRAP(kTrapBadOp, kTrapFileQmm);
+    default: HIP_TRAP(kTrapBadOp, kTrapFileQmm);
   }
 }
 
-}  // namespace mk
+}  // namespace qwen38

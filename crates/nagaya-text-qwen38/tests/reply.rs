@@ -1,5 +1,5 @@
-//! The reply parser against the outputs of mk's Python (`service/chatfmt.py` `ReplyTracker`, and the token loop of
-//! `service/generate.py`). The fixture is `tests/fixtures/reply.json`, made by `tools/reply_fixture.py`.
+//! The reply parser against the outputs of the reference's Python (`service/chatfmt.py` `ReplyTracker`, and the token
+//! loop of `service/generate.py`). The fixture is `tests/fixtures/reply.json`, made by `tools/reply_fixture.py`.
 
 mod common;
 
@@ -7,12 +7,12 @@ use common::{JsonExt, fixture, tokenizer};
 use nagaya_text_qwen38::json::Json;
 use nagaya_text_qwen38::reply::{Ending, Finish, Phase, Reply, ReplyParser, TokenEvent, ToolCall};
 
-fn phase_of(mk: &str) -> Phase {
-    match mk {
+fn phase_of(name: &str) -> Phase {
+    match name {
         "think" => Phase::Reasoning,
         "answer" => Phase::Content,
         "tool" => Phase::Call,
-        other => panic!("mk has no phase {other:?}"),
+        other => panic!("The reference has no phase {other:?}"),
     }
 }
 
@@ -34,7 +34,7 @@ fn toolset(fixture: &Json, name: &Json) -> Option<Json> {
     }
 }
 
-/// Run one case the way mk's loop does. The stop token is not pushed.
+/// Run one case the way the reference's loop does. The stop token is not pushed.
 fn run(f: &Json, case: &Json) -> (Vec<TokenEvent>, Reply) {
     let tools = toolset(f, case.get("tools"));
     let thinking = matches!(case.get("thinking"), Json::Bool(true));
@@ -48,7 +48,7 @@ fn run(f: &Json, case: &Json) -> (Vec<TokenEvent>, Reply) {
     let ending = match case.get("finish").str() {
         "stop" => Ending::StopToken,
         "length" => Ending::MaxTokens,
-        other => panic!("mk has no finish {other:?}"),
+        other => panic!("The reference has no finish {other:?}"),
     };
     (events, parser.finish(ending))
 }
@@ -76,12 +76,18 @@ fn same_error(got: &str, want: &str) {
 fn same_call(got: &ToolCall, want: &Json, name: &str) {
     match got {
         ToolCall::Parsed { name: n, input, .. } => {
-            assert!(!want.has("error"), "{name}: parsed a call that mk refused: {want:?}");
+            assert!(
+                !want.has("error"),
+                "{name}: parsed a call that the reference refused: {want:?}"
+            );
             assert_eq!(n, want.get("name").str(), "name in {name}");
             assert_eq!(input, want.get("arguments"), "input in {name}");
         }
         ToolCall::Malformed { name: n, raw, error } => {
-            assert!(want.has("error"), "{name}: refused a call that mk parsed: {want:?}");
+            assert!(
+                want.has("error"),
+                "{name}: refused a call that the reference parsed: {want:?}"
+            );
             match want.get("name") {
                 Json::Null => assert_eq!(n, &None, "name in {name}"),
                 s => assert_eq!(n.as_deref(), Some(s.str()), "name in {name}"),
@@ -121,7 +127,7 @@ fn the_fixture_holds_many_kinds_of_reply() {
 }
 
 #[test]
-fn each_token_has_the_phase_and_the_piece_of_mk() {
+fn each_token_has_the_phase_and_the_piece_of_the_reference() {
     if common::absent() {
         return;
     }
@@ -142,7 +148,7 @@ fn each_token_has_the_phase_and_the_piece_of_mk() {
 }
 
 #[test]
-fn the_reply_is_the_reply_of_mk() {
+fn the_reply_is_the_reply_of_the_reference() {
     if common::absent() {
         return;
     }
@@ -283,11 +289,11 @@ fn tools_error(tools: &str) -> String {
 }
 
 #[test]
-fn a_tool_list_that_mk_refuses_is_an_error() {
+fn a_tool_list_that_the_reference_refuses_is_an_error() {
     if common::absent() {
         return;
     }
-    // Each text is a ValueError in mk's `_specs` or `_types_of`.
+    // Each text is a ValueError in the reference's `_specs` or `_types_of`.
     assert!(tools_error(r#"[1]"#).contains("needs a function with a name"));
     assert!(tools_error(r#"[{"function":{"name":3}}]"#).contains("needs a function with a name"));
     assert!(tools_error(r#"[{"function":{}}]"#).contains("needs a function with a name"));
@@ -297,7 +303,7 @@ fn a_tool_list_that_mk_refuses_is_an_error() {
         tools_error(r#"[{"name":"a","parameters":{"properties":{"p":{"anyOf":[{"type":"float"}]}}}}]"#)
             .contains("float")
     );
-    // The nagaya is stricter than mk where mk would crash or iterate by accident.
+    // The nagaya is stricter than the reference where the reference would crash or iterate by accident.
     assert!(tools_error(r#"{"name":"a"}"#).contains("array"));
     assert!(tools_error(r#"[{"name":"a","parameters":5}]"#).contains("parameters"));
     assert!(tools_error(r#"[{"name":"a","parameters":{"required":"p"}}]"#).contains("required"));

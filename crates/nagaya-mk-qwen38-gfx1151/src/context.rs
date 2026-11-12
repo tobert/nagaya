@@ -1,11 +1,11 @@
-//! mk's contexts in Rust: the device buffers of one context, and its parts to and from host memory (milestone 15
-//! step 6).
+//! The engine's contexts in Rust: the device buffers of one context, and its parts to and from host memory (milestone
+//! 15 step 6).
 //!
-//! mk's `engine.hip` held `new_context`, `free_context`, `state_read`, `state_write`, `state_write_cells` and
-//! `restore_n` in C++ (mk 555a2a3). They are here now, over the thin runtime calls `mk_rt_*` of `rt.cpp`. The pass
-//! still reads and advances a context in C++, so `MkContext` is `struct Context` of `engine.h`, field for field. The
-//! layout test (`layout.rs`) compares the two. The checks of each call are in the worker (`worker.rs`), as before.
-//! A call here that gets input that the worker refuses is a defect, so it stops the program.
+//! The reference's `engine.hip` held `new_context`, `free_context`, `state_read`, `state_write`, `state_write_cells`
+//! and `restore_n` in C++ (reference commit 555a2a3). They are here now, over the thin runtime calls `hip_rt_*` of
+//! `rt.cpp`. The pass still reads and advances a context in C++, so `Qwen38Context` is `struct Context` of `engine.h`,
+//! field for field. The layout test (`layout.rs`) compares the two. The checks of each call are in the worker
+//! (`worker.rs`), as before. A call here that gets input that the worker refuses is a defect, so it stops the program.
 //!
 //! The functions have the C types of the binding's calls (`binding.rs`), so the stub binding of the tests stays.
 
@@ -24,7 +24,7 @@ const IDX_RATIO: u32 = 4;
 /// `struct Context` of `engine.h`: everything that a pass continues from.
 #[repr(C)]
 #[derive(Debug)]
-pub(crate) struct MkContext {
+pub(crate) struct Qwen38Context {
     /// The tokens so far.
     pub n: u32,
     /// The K/V capacity in tokens.
@@ -98,9 +98,9 @@ fn fixed_bytes_of(part: u32) -> u64 {
 }
 
 /// The context at `c`, which `ctx_new` made.
-unsafe fn context<'a>(c: *mut c_void) -> &'a mut MkContext {
+unsafe fn context<'a>(c: *mut c_void) -> &'a mut Qwen38Context {
     assert!(!c.is_null(), "a context call got no context");
-    unsafe { &mut *(c as *mut MkContext) }
+    unsafe { &mut *(c as *mut Qwen38Context) }
 }
 
 pub(crate) unsafe extern "C" fn ctx_n(c: *mut c_void) -> u32 {
@@ -127,15 +127,15 @@ pub(crate) use linked::*;
 mod linked {
     use std::ffi::c_void;
 
-    use super::{ATTENTION_LAYERS, Copy, IDX_RATIO, MkContext, cell_bytes, context, part_bytes};
+    use super::{ATTENTION_LAYERS, Copy, IDX_RATIO, Qwen38Context, cell_bytes, context, part_bytes};
     use crate::binding::rt;
     use crate::ple::PLE_EOS;
     use crate::spec;
 
     /// A new device buffer of `bytes`.
     unsafe fn device(bytes: u64) -> *mut f32 {
-        let p = unsafe { rt::mk_rt_malloc(bytes) };
-        assert!(!p.is_null(), "mk_rt_malloc({bytes}) gave no buffer");
+        let p = unsafe { rt::hip_rt_malloc(bytes) };
+        assert!(!p.is_null(), "hip_rt_malloc({bytes}) gave no buffer");
         p as *mut f32
     }
 
@@ -152,7 +152,7 @@ mod linked {
         let max = u64::from(max_tokens);
         let pooled_bytes = u64::from(max_tokens / IDX_RATIO) * spec::IDX_ROW_BYTES;
         let c = unsafe {
-            MkContext {
+            Qwen38Context {
                 n: 0,
                 max: max_tokens,
                 gdn_state: device(spec::GDN_STATE_BYTES),
@@ -167,10 +167,10 @@ mod linked {
             }
         };
         unsafe {
-            rt::mk_rt_memset(c.idx_pooled.cast(), 0xff, pooled_bytes);
-            rt::mk_rt_memset(c.gdn_state.cast(), 0, spec::GDN_STATE_BYTES);
-            rt::mk_rt_memset(c.gdn_conv.cast(), 0, spec::GDN_CONV_BYTES);
-            rt::mk_rt_memset(c.ple_conv.cast(), 0, spec::PLE_CONV_BYTES);
+            rt::hip_rt_memset(c.idx_pooled.cast(), 0xff, pooled_bytes);
+            rt::hip_rt_memset(c.gdn_state.cast(), 0, spec::GDN_STATE_BYTES);
+            rt::hip_rt_memset(c.gdn_conv.cast(), 0, spec::GDN_CONV_BYTES);
+            rt::hip_rt_memset(c.ple_conv.cast(), 0, spec::PLE_CONV_BYTES);
         }
         Box::into_raw(Box::new(c)) as *mut c_void
     }
@@ -180,14 +180,14 @@ mod linked {
         if c.is_null() {
             return;
         }
-        let c = unsafe { Box::from_raw(c as *mut MkContext) };
+        let c = unsafe { Box::from_raw(c as *mut Qwen38Context) };
         for p in [c.gdn_state, c.gdn_conv, c.ple_conv, c.kv, c.idx_keys, c.idx_pooled] {
-            unsafe { rt::mk_rt_free(p.cast()) };
+            unsafe { rt::hip_rt_free(p.cast()) };
         }
     }
 
     /// The device buffer of a fixed part: 0 gdn_state, 1 gdn_conv, 2 ple_conv.
-    fn fixed(c: &MkContext, part: u32) -> *mut f32 {
+    fn fixed(c: &Qwen38Context, part: u32) -> *mut f32 {
         match part {
             0 => c.gdn_state,
             1 => c.gdn_conv,
@@ -210,7 +210,7 @@ mod linked {
                 let src = if part == 3 { c.kv } else { c.idx_keys };
                 let (n, max) = (u64::from(c.n), u64::from(c.max));
                 unsafe {
-                    rt::mk_rt_memcpy_2d(
+                    rt::hip_rt_memcpy_2d(
                         dst,
                         cell * n,
                         src.cast(),
@@ -223,7 +223,7 @@ mod linked {
             }
             5 => unsafe { std::ptr::copy_nonoverlapping(c.ple_hist.as_ptr(), dst as *mut i32, 2) },
             _ => unsafe {
-                rt::mk_rt_memcpy(
+                rt::hip_rt_memcpy(
                     dst,
                     fixed(c, part).cast(),
                     part_bytes(part, 0),
@@ -244,7 +244,7 @@ mod linked {
                 unsafe { std::ptr::copy_nonoverlapping(src as *const i32, c.ple_hist.as_mut_ptr(), 2) };
             }
             _ => unsafe {
-                rt::mk_rt_memcpy(
+                rt::hip_rt_memcpy(
                     fixed(c, part).cast(),
                     src,
                     part_bytes(part, 0),
@@ -274,7 +274,7 @@ mod linked {
         let dst = if part == 3 { c.kv } else { c.idx_keys };
         let (n, max) = (u64::from(n), u64::from(c.max));
         unsafe {
-            rt::mk_rt_memcpy_2d(
+            rt::hip_rt_memcpy_2d(
                 dst.cast(),
                 cell * max,
                 src,

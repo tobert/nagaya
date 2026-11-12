@@ -183,7 +183,7 @@ stage.
 engine's `max_quantum_ms` (D8), and it runs to its end. The nagaya changes what runs only between quanta. Other work
 between quanta gives the same bits as a run without it, when all of these conditions hold:
 
-1. the same engine identity, which includes the arithmetic path (mk `fused`, `MK_FAST_QMM`);
+1. the same engine identity, which includes the arithmetic path (mk `fused`, `QWEN38_FAST_QMM`);
 2. the same boundaries, so the same seals;
 3. state that leaves a slot is parked bit for bit, not sealed;
 4. on resume, a slot that the parked state's coverage fits;
