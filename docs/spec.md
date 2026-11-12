@@ -3525,8 +3525,8 @@ Tests that can fail (all built, in `crates/nagaya/tests/extensions.rs` and `exte
 
 - `detokenize(render.tokens)` equals `render.text`, for each fixture of the family.
 - `tokenize` with `special` on, applied to a `render.text` with no `control_text`, gives `render.tokens`.
-- The same call, applied to a text with `control_text`, gives other tokens. This pins the first Qwen3.8 engine behavior
-  in its OpenAPI text.
+- The same call, applied to a text with `control_text`, gives other tokens. This pins the behavior of the first Qwen3.8
+  engine in its OpenAPI text.
 - A noncharacter, an id past the vocabulary, and a split character each give a 400 with the `param`.
 
 **11.4e Model and health.** The first set has no `model` route and no `health` route. Both existed in the first Qwen3.8
