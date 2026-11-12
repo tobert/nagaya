@@ -2,8 +2,8 @@
 
 This doc has one term for each thing that the nagaya needs. The nagaya is an exokernel for megakernels: one process
 owns a machine, and each engine keeps its own abstractions. Each entry gives the definition, then where the thing
-came from in mk or mkviolet. A term in bold inside an entry is defined there. The spec (`docs/spec.md`) and the ABI
-(`docs/engine-abi.md`) hold the rules and the details.
+came from in the first Qwen3.8 engine or mkviolet. A term in bold inside an entry is defined there. The spec
+(`docs/spec.md`) and the ABI (`docs/engine-abi.md`) hold the rules and the details.
 
 The terms are in four groups: places, things, time and holding. Places are where things are, and things are what is
 held. Time is what runs, and holding is who keeps what, and until when. `docs/reviews.md` records how the terms
@@ -11,13 +11,11 @@ changed.
 
 ## The other projects
 
-The docs name four other projects. Each one is defined here and nowhere else. A file path after "mk" or "mkviolet"
-in a doc names the source of a copy or of a measurement. It is not a place that a reader must go.
+The docs name four other projects. Each one is defined here and nowhere else. A file path after "the first Qwen3.8
+engine" or "mkviolet" in a doc names the source of a copy or of a measurement. It is not a place that a reader must go.
 
-**mk.** Our first megakernel: Qwen3.8 on one AMD gfx1151, with HIP kernels, a C++ host and a Python service. It
-served `/mk/v1` on gfx1151host until the cutover of 2026-10-21. Milestone 15 copied its engine into
-`nagaya-mk-qwen38-gfx1151`, from mk `555a2a3` (`AGENTS.md`). mk's repository is an archive now, and no rule of these
-docs needs it.
+**The first Qwen3.8 engine.** The practice project that became the Qwen3.8 engine of `nagaya-mk-qwen38-gfx1151`.
+`docs/history.md` keeps its story.
 
 **mkviolet.** Our second megakernel: Gemma 4 on two Intel Arc Pro B70 cards, with OpenCL C kernels and a Rust
 host. It served council v2 on b70host until 2026-10-21. Milestone 15s copied its engine into
@@ -79,11 +77,12 @@ library per family and selects it by the engine identity. An engine never sees t
 **Plan table.** An engine's record of its free evaluation choices, such as the GEMM algorithm for each shape. Each
 choice is valid, but different choices give different bits, so the table is part of the identity. The table is
 append-only: the engine times a new shape once and keeps its pick. A new library, driver or device starts a new
-**lineage**, which is a new identity (`docs/engine-abi.md` D3). mk has no library GEMMs and needs no plan table.
+**lineage**, which is a new identity (`docs/engine-abi.md` D3). The Qwen3.8 engine has no library GEMMs and needs no
+plan table.
 
 **Arena.** The memory that holds an engine's weights and can outlive the process: a set of named file descriptors.
-An arena records how strong its check is: mk has one arena, with a full check (`mk_arena_check`). The nagaya's mk
-engine has no check of a stored arena yet (`docs/engine-abi.md`, "How mk maps"). mkviolet had 30
+An arena records how strong its check is: the first Qwen3.8 engine had one arena, with a full check. The nagaya's
+Qwen3.8 engine has no check of a stored arena yet (`docs/engine-abi.md`, "How the Qwen3.8 engine maps"). mkviolet had 30
 DMA-BUF slabs, one for each layer, with a spot check of the first and last 64 bytes of each tensor
 (`gemma4.rs:284-287`). The nagaya's Gemma 4 engine has 31: the head has a slab too (`docs/spec.md` 10.2). An
 inference engine opens its arena read-only, and a training engine writes it.
@@ -92,27 +91,28 @@ inference engine opens its arena read-only, and a training engine writes it.
 
 - **weights**: fixed parts only, with no inputs. Inference reads them, and training writes them.
 - a **context**: what passes run on and extend.
-- a **snapshot**: a context sealed at a boundary. Reads run on a copy (mk `fork`), or load it into a slot (mkviolet
-  `load_kv`).
+- a **snapshot**: a context sealed at a boundary. Reads run on a copy (`fork` of the first Qwen3.8 engine), or load it
+  into a slot (mkviolet `load_kv`).
 
 **Part.** One named piece of a state object. There are four kinds:
 
 | Kind | What it is | Examples |
 |---|---|---|
-| fixed | a constant-size block that each pass replaces whole | mk GDN recurrent state, GDN conv, PLE history (`engine.h:63-75`); a diffusion latent |
-| cells | rows indexed by position, only appended | mk KV and index keys; mkviolet KV on global layers |
+| fixed | a constant-size block that each pass replaces whole | Qwen3.8 GDN recurrent state, GDN conv, PLE history (`engine.h:63-75`); a diffusion latent |
+| cells | rows indexed by position, only appended | Qwen3.8 KV and index keys; mkviolet KV on global layers |
 | ring | rows in a window that wraps: new rows overwrite the oldest | mkviolet sliding layers (`KV_RING_ROWS` 4096, `gemma4.rs:30-46`) |
-| derived | rebuilt from other parts, never stored | mk pooled index keys (`idx_pooled`) |
+| derived | rebuilt from other parts, never stored | Qwen3.8 pooled index keys (`idx_pooled`) |
 
 **Chain.** The history of how a context was made: its inputs and boundaries, in order. The store can keep a
-snapshot as pieces of its chain, and each piece names its parent's content id. mk stores its snapshots whole, about
-316 MB at n = 3584. mkviolet stores chains and joins them for a slot (`KvSnapshot::join`, `gemma4.rs:941-979`).
+snapshot as pieces of its chain, and each piece names its parent's content id. The Qwen3.8 engine stores its snapshots
+whole, about 316 MB at n = 3584. mkviolet stores chains and joins them for a slot (`KvSnapshot::join`,
+`gemma4.rs:941-979`).
 
 **Boundary.** A position in a chain where a context may be sealed. Clients mark boundaries: council's `snap: true`
 messages and spec layers.
 
-**Seal.** The engine's rule at a boundary. It may change bits: mk rounds the GDN recurrent state to bf16 in place
-(`round_gdn_bf16`, `engine.h:189-193`). mkviolet's seal changes nothing.
+**Seal.** The engine's rule at a boundary. It may change bits: the Qwen3.8 engine rounds the GDN recurrent state to bf16
+in place (`round_gdn_bf16`, `engine.h:189-193`). mkviolet's seal changes nothing.
 
 **Park.** A move of a state object to another tier, bit for bit. A park never seals. Thus when the scheduler parks a
 context to free its slot, later results do not change (`docs/engine-abi.md` D7).
@@ -160,8 +160,8 @@ and on NVMe, with budgets from the ledger (`docs/spec.md` section 6).
   so one owner cannot evict another owner's entries.
 
 **Slot.** Device memory that an engine reserves for one live context. mkviolet fixes its slots and their sizes at
-load (`new_slots`, `gemma4.rs:445-475`). mk allocates contexts on demand (`new_context`). An engine's limits say how
-many fit.
+load (`new_slots`, `gemma4.rs:445-475`). The Qwen3.8 engine allocates contexts on demand (`ctx_new`). An engine's limits
+say how many fit.
 
 A slot's **geometry** is its size and its ring rows. Geometry changes coverage: a small slot keeps every row, and a
 large one keeps a ring's worth (`gemma4.rs:44-63`). It changes bits only for an engine that declares a geometry key.
@@ -169,37 +169,39 @@ large one keeps a ring's worth (`gemma4.rs:44-63`). It changes bits only for an 
 ## Time
 
 **Op.** A step inside one pass, private to the engine. The nagaya never sees ops. mkviolet's ops are 64-byte task
-descriptors (`protocol.rs`). mk's ops are the entries of a pass's stage list: "A stage is one op with its
-arguments" (`stage.h`). mk's word "stage" names an op, not a stage in the sense below.
+descriptors (`protocol.rs`). The ops of the Qwen3.8 engine are the entries of a pass's stage list: "A stage is one op
+with its arguments" (`stage.h`). Its word "stage" names an op, not a stage in the sense below.
 
-**Pass.** One run of an engine over a set of segments. mk: one cooperative launch over all 48 layers. mkviolet: one
-block through both cards.
+**Pass.** One run of an engine over a set of segments. Qwen3.8 engine: one cooperative launch over all 48 layers.
+mkviolet: one block through both cards.
 
 **Stage.** The part of a pass that runs on one device. mkviolet has two: layers 0-14 on card 0, and layers 15-29 and
-the head on card 1 (`gemma4.rs:84`). The rows that one stage hands to the next are the **residual**. mk has one
-stage.
+the head on card 1 (`gemma4.rs:84`). The rows that one stage hands to the next are the **residual**. The Qwen3.8 engine
+has one stage.
 
 **Quantum.** The unit that the nagaya schedules: one pass, or one stage of a pass. It is not longer than the
 engine's `max_quantum_ms` (D8), and it runs to its end. The nagaya changes what runs only between quanta. Other work
 between quanta gives the same bits as a run without it, when all of these conditions hold:
 
-1. the same engine identity, which includes the arithmetic path (mk `fused`, `QWEN38_FAST_QMM`);
+1. the same engine identity, which includes the arithmetic path (`fused` and `QWEN38_FAST_QMM` of the Qwen3.8 engine);
 2. the same boundaries, so the same seals;
 3. state that leaves a slot is parked bit for bit, not sealed;
 4. on resume, a slot that the parked state's coverage fits;
 5. no other job's quantum writes the slot between two stages of one block;
-6. lab-only state that changes bits (mk's attention cell mask) counts as an input;
+6. lab-only state that changes bits (the attention cell mask of the Qwen3.8 engine) counts as an input;
 7. engine history that feeds arithmetic is the same. This fails for an engine that declares `bit_dependence`.
 
-mk's `YieldHook` (`lab/paint/yieldhook.py`) showed this for diffusion: a paused run matched the run without a pause.
+The `YieldHook` of the first Qwen3.8 engine showed this for diffusion: a paused run matched the run without a pause.
 
 **Kind.** What a quantum does: `read`, `prefill`, `decode`, `embed`, `copy`, `step` (an image step), or `train` (a
-micro-batch). Metrics and the cost model use kinds. A kind does not set urgency; a class does (mk `mk.gpu.kind`).
+micro-batch). Metrics and the cost model use kinds. A kind does not set urgency; a class does (the first Qwen3.8 engine
+did the same).
 
 **Segment.** One job's share of a pass: a context, its new inputs, where they go, and which outputs it wants. A pass
-carries segments of one class, from one or more jobs. Each segment gets the bits that a pass of it alone would give
-(mk `engine.h` `Segment`, up to 16 per pass). mkviolet's branch block is not a segment. It puts a prefix and its
-branches in one slot, and the next forward overwrites the branch rows (`branch_block`, `gemma4.rs:1521-1554`).
+carries segments of one class, from one or more jobs. Each segment gets the bits that a pass of it alone would give.
+The Qwen3.8 engine takes up to 16 segments in a pass (`Segment` in `engine.h`). mkviolet's branch block is not a
+segment. It puts a prefix and its branches in one slot, and the next forward overwrites the branch rows (`branch_block`,
+`gemma4.rs:1521-1554`).
 
 **Job.** The quanta of one request, in order, with a class. A council decision is prefill quanta, then read quanta.
 A generation is prefill, then one decode quantum per token. An image is encode, steps, decode. Training is
