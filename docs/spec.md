@@ -5114,10 +5114,9 @@ identity labels them as spot checks until we replace them.
 
 ## 13. Taps, lenses and composition
 
-**13.1 Taps.** An engine declares its taps in `limits()`, with the conditions that each tap needs (the Qwen3.8 engine:
-unfused, one segment). A tap gives one of these outputs: a residual at a layer (rows), routes, or gates. The store keeps
-large tap outputs as content-addressed artifacts, with an owner and a budget. (The Qwen3.8 engine keeps traces as
-per-layer `.npy` files.)
+**13.1 Taps.** An engine declares its taps in `limits()`, with the conditions that each tap needs. A tap gives one of
+these outputs: a residual at a layer (rows), routes, or gates. The store keeps large tap outputs as content-addressed
+artifacts, with an owner and a budget. (The Qwen3.8 engine keeps traces as per-layer `.npy` files.)
 
 **mkviolet's taps, for later.** These taps are not in the first port. They are noted here so that the port does not
 close a door.

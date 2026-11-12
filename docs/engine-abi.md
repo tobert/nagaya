@@ -148,7 +148,7 @@ limits() -> {
     checkpoint_grain: tokens?,   the scheduler makes an interval copy at each multiple (spec 6.13)
     feed: {block: tokens}?,      the feed rule (D11): each span between boundaries goes in passes of `block`
     determinism: always | pinned | per-process,   and bit_dependence: [residency, ...] (D3)
-    taps: [...], with the conditions each needs (the Qwen3.8 engine: unfused, one segment)
+    taps: [...], with the conditions each needs
 }
 pass(segments, taps) -> status, ms, outputs
     segment = {state, inputs, positions, meta, outputs wanted}
@@ -384,7 +384,7 @@ Reason: the fake engine must serve a family with a vocabulary, and the output ro
 | part writes | `context::state_write`, `cells_write`, `set_n` | return nothing and stop the program on input they refuse; the wrapper checks every precondition first (part index, bytes, an empty context for parts 3-5, n within `max`, not poisoned) and returns refused; a write to a context that is already poisoned is refused, because this call changes nothing; after the call, the poison flag gives failed (decided 2026-10-18) |
 | close | the drop of the last handle or `Hold` (`engine.rs`) | frees the contexts, then the weights: the arena, the shard maps, the PLE table, the weight table (`worker.rs` `unload`); the next `open` loads them again from the same shards; the HIP runtime, the C++ engine and the pass host stay (see below) |
 | pass_check / pass | `host::segments_problem`, `host::run_pass` in Rust; `qwen38_launch_fused` | tokens only (PLE needs token ids); the worker refuses a segment count outside 1 to 16, then a problem of `segments_problem`, then a poisoned context, then a bad knob; the host gathers the PLE rows (`ple.rs`), builds the stages (`pass.rs`), and launches them; outputs are logits per segment |
-| taps | none | milestone 15 step 6 removed the taps (layers, routes, gates), which had no call |
+| taps | none | milestone 15 step 6 removed the taps (layers, routes, gates), which had no call; milestone 34 adds `residual` and `fold` ("The residual of the Qwen3.8 engine") |
 | telemetry | none | milestone 15 step 6 removed the op times and the event ring of a pass, which had no call |
 | determinism | `always` | `stage.h`: "every op's output bits depend only on its work items"; top-k ties break by index; bit settings in the identity |
 
@@ -453,7 +453,8 @@ the ABI.
   refuses a segment whose first position is not n, or whose positions are not contiguous. The Qwen3.8 engine reads no
   per-token metadata, so `meta` must be empty.
 - **A pass is fused.** Milestone 15 step 6 removed the unfused pass, which no call used. The restore's pool stages
-  still run one launch each (`qwen38_launch_each`). This binding declares no taps.
+  still run one launch each (`qwen38_launch_each`). This binding declares no taps yet. Milestone 34 adds taps
+  ("The residual of the Qwen3.8 engine").
 - **The checkpoint digest is a spot check.** The binding hashes each shard's size and its GGUF header, as the Qwen3.8
   engine's `weight_hash` does. The digest starts with `spot-sha256:`.
 - **`tokenizer_hash` is a hash of the GGUF tokenizer.** The Qwen3.8 engine loads no tokenizer file. The binding hashes
@@ -579,6 +580,12 @@ has none.
 
 Reason: a test that passes when the code is broken is a defect. A person must see this limit before trusting the
 check.
+
+### The residual of the Qwen3.8 engine
+
+Decided 2026-11-12 (the owner: "4 streams for residual and control"). The state between two layers of the Qwen3.8
+engine is 4 streams of 2,560 values each. The residual of a token is the 4 streams in stream order: 10,240 `f32`
+values. The tap `residual` and a control vector have this width.
 
 ## How mkviolet maps
 
