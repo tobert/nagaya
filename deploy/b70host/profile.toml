@@ -11,7 +11,6 @@ name = "gemma"
 kind = "mk-gemma4-bmg"
 devices = [0, 1]
 share = 1
-pin_identity = false
 # Amy, 2026-11-06 (milestone 24): Gemma 4 goes on demand, and it loads only through the load routes (spec 3.3b). Its
 # load names the engines that it must unload.
 residency = "on_demand"
@@ -33,7 +32,6 @@ name = "voice"
 kind = "qwen3tts-bmg"
 devices = [1]
 share = 1
-pin_identity = false
 residency = "on_demand"
 
 # Two requests at once, each of at most 1,500 frames (120 s of audio) after a prompt of at most 512 positions. One
@@ -55,7 +53,6 @@ name = "sdxl-0"
 kind = "mk-sdxl-bmg"
 devices = [0]
 share = 1
-pin_identity = false
 residency = "on_demand"
 
 [[engines]]
@@ -63,7 +60,6 @@ name = "sdxl-1"
 kind = "mk-sdxl-bmg"
 devices = [1]
 share = 1
-pin_identity = false
 residency = "on_demand"
 
 # Pony Diffusion V6 XL on card 0 and AutismMix (its Pony merge) on card 1, each a single file from Civitai (Amy,
@@ -76,7 +72,6 @@ name = "pony-0"
 kind = "mk-sdxl-bmg"
 devices = [0]
 share = 1
-pin_identity = false
 residency = "on_demand"
 
 [engines.config]
@@ -87,7 +82,6 @@ name = "autismmix-1"
 kind = "mk-sdxl-bmg"
 devices = [1]
 share = 1
-pin_identity = false
 residency = "on_demand"
 
 [engines.config]
@@ -101,7 +95,6 @@ name = "lightning-0"
 kind = "mk-sdxl-bmg"
 devices = [0]
 share = 1
-pin_identity = false
 residency = "on_demand"
 
 [engines.config]
@@ -117,7 +110,6 @@ name = "embeddinggemma-2"
 kind = "mk-embeddinggemma2-bmg"
 devices = [1]
 share = 1
-pin_identity = false
 pinned = true
 
 # The SDXL inpainting UNet with 9 input channels on card 1 (milestone 20, docs/spec.md 11.9b), the served image model
@@ -130,7 +122,6 @@ name = "inpaint-0"
 kind = "mk-sdxl-bmg"
 devices = [1]
 share = 1
-pin_identity = false
 residency = "on_demand"
 
 [engines.config]
@@ -145,7 +136,6 @@ name = "lfm3-omni"
 kind = "mk-lfm3-bmg"
 devices = [0]
 share = 1
-pin_identity = false
 
 [engines.config]
 model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-Omni-2B/snapshots/21d75123f86c1f7ffb4bef1ea202710c4e7ebe67"
@@ -159,7 +149,6 @@ name = "lfm3"
 kind = "mk-lfm3-bmg"
 devices = [0]
 share = 1
-pin_identity = false
 
 [engines.config]
 model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-1.7B/snapshots/0dc4268b561499c648c7ba7c9466bf3d8d01517a"
@@ -183,7 +172,6 @@ name = "lfm3-1"
 kind = "mk-lfm3-bmg"
 devices = [1]
 share = 1
-pin_identity = false
 
 [engines.config]
 model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-1.7B/snapshots/0dc4268b561499c648c7ba7c9466bf3d8d01517a"

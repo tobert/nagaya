@@ -32,7 +32,7 @@ pub enum Action {
     Load,
     /// The entry is gone.
     Unload,
-    /// `kind`, `devices`, `config`, `family` or `pin_identity` changes.
+    /// `kind`, `devices`, `config`, `family` or `lab` changes.
     Reload,
 }
 
@@ -95,8 +95,7 @@ fn compare(old: &EnginePlacement, new: &EnginePlacement) -> Action {
         && old.devices == new.devices
         && old.config == new.config
         && old.family == new.family
-        && old.lab == new.lab
-        && old.pin_identity == new.pin_identity;
+        && old.lab == new.lab;
     if !opens_the_same {
         Action::Reload
     } else if old.residency != new.residency || old.pinned != new.pinned {

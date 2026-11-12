@@ -258,6 +258,16 @@ On gfx1151host, after a change to `nagaya-mk-hip`, also run this, with `nagaya.s
 cargo test -p nagaya-mk-hip --features hip --tests -- --test-threads=1
 ```
 
+On gfx1151host, run this before each commit that changes `crates/nagaya`, a profile of `deploy/`, or the Qwen3.8 crate.
+The test file compiles only with the feature `hip`, so no check of the first list runs it. It opens no engine:
+
+```
+cargo test -p nagaya --features hip --test qwen38_wire
+```
+
+`crates/nagaya/tests/qwen38_stop.rs` opens the engine, and it needs `QWEN38_SHARDS`. Run it only with `nagaya.service`
+stopped. Do not run `cargo test -p nagaya --features hip --tests` with the unit active, because it runs that file too.
+
 After a change to `nagaya-mk-qwenimage21-gfx1151`, also run its `hip` tests with the model variables set:
 
 ```
@@ -582,7 +592,7 @@ Do the steps in this order. Each step ends with the checks green.
    gates are not run yet.
    - The engine runs the canary at each load and checks a table in `canary.rs`. `build` is out of the digest.
    - The canary adds about 1.9 s (fast path) or 4.2 s (exact path) to a load of about 28 s.
-   - Not built: the fatal state of spec 8.2, the `build` of a store entry, and the check of `pin_identity`.
+   - Not built: the fatal state of spec 8.2, and the `build` of a store entry.
    - Not built: the canary of the other engines.
 3. **Docs.** Milestone 30 step 7, with the residual of 4 streams as a rule. The control vectors of Qwen3.8.
 4. **Oracle fixture.** Milestone 30 step 8, and one run with an `add`.

@@ -15,7 +15,6 @@ fn engine(name: &str, kind: &str, share: u64) -> EnginePlacement {
         family: toml::Table::new(),
         lab: toml::Table::new(),
         share,
-        pin_identity: false,
         residency: Default::default(),
         pinned: false,
     }

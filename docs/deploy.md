@@ -99,7 +99,7 @@ no engine. Check the log line "ready with 1 engines" after each start.
 - A new profile that loads or reloads an engine makes the process exit with code 4 and restart (spec 3.3, "Which
   actions run in place", 10.4). systemd counts that start. The unit allows 3 starts in 600 s, so a fourth profile
   swap in 600 s fails and the unit stays down.
-- Exit code 3 is a refusal to start: a bad config, a profile that does not fit, a pinned identity that differs.
+- Exit code 3 is a refusal to start: a bad config, a profile that does not fit, a canary that differs from its record.
   The unit does not restart. Read the log, fix the cause, and run `systemctl --user reset-failed nagaya.service`.
   Then start it.
 

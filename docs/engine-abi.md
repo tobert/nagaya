@@ -1409,9 +1409,9 @@ the LFM3 engine:
 - The engine declares 8 segments. The weight ops run once over the rows of all segments. Each row has its own
   rotation, attention, convolution and K and V rows, on its own slot.
 - `segments_exact` stays false, because LFM3 has a feed rule (D11 rule 4). Decode segments share a pass by D11 rule 6,
-  because the store keeps no decode row of such a pass (spec 6.14). Other segments run one in a pass. **Proposed**
-  by Claude Opus 5.5, 2026-11-09. Reason: the first text of this rule named `segments_exact`, and D11 rule 4 forbids
-  it here.
+  because the store keeps no decode row of such a pass (spec 6.14). Other segments run one in a pass.
+  Decided 2026-11-12, proposed by Claude Opus 5.5, 2026-11-09. Reason: the first text of this rule named
+  `segments_exact`, and D11 rule 4 forbids it here.
 - A pass joins only segments with equal control lists, at first.
 - Omni's speech frames stay one context in a pass.
 - The change of path gives a new engine identity, so each held context fills again once (12.1).
