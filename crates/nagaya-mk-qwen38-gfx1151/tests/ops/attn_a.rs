@@ -3,8 +3,8 @@
 //!
 //! - select: the parallel selection (`attn.h` `attn_select_emit`) equals the serial selection that it replaced
 //!   (`attn_select_oracle.h`) bit for bit, and both equal the statement of the definition, which is ported to Rust below.
-//! - split: stage 3 alone (`mk_attn_attend`), against its definition at q = 0 and against its numeric bound in f64.
-//! - mask: `mk_attn_masked` against the f64 reference of mk, which `tools/op_groups/attn_a.py` runs for the fixture.
+//! - split: stage 3 alone (`qwen38_attn_attend`), against its definition at q = 0 and against its numeric bound in f64.
+//! - mask: `qwen38_attn_masked` against the f64 reference of mk, which `tools/op_groups/attn_a.py` runs for the fixture.
 //!
 //! The inputs come from the stateless generator in `inputs.rs`. mk used numpy's `default_rng`, so the values differ, and the
 //! shapes and the meanings of the inputs are the same.
@@ -42,7 +42,7 @@ fn select_run(which: Select, t: usize, p0: usize, scores: &[f32], grid: u32) -> 
         Select::Serial => {
             let f = sym!(
                 ops_lib::lib("attn_select_oracle"),
-                "mk_attn_select_serial",
+                "qwen38_attn_select_serial",
                 fn(u32, u32, u32, u32, *const c_void, *mut c_void, *mut c_void, u32) -> i32
             );
             unsafe {
@@ -61,7 +61,7 @@ fn select_run(which: Select, t: usize, p0: usize, scores: &[f32], grid: u32) -> 
         Select::Parallel => {
             let f = sym!(
                 ops_lib::lib("attn"),
-                "mk_attn_select_emit",
+                "qwen38_attn_select_emit",
                 fn(u32, u32, u32, u32, *const c_void, *mut c_void, *mut c_void, u32) -> i32
             );
             unsafe {
@@ -290,7 +290,7 @@ fn call_attend(q: &[f32], gate: &[f32], kv: &[f32], sel: &[i32], cnt: &[u32], gr
     let mut out = vec![f32::NAN; t * H * HD];
     let f = sym!(
         ops_lib::lib("attn"),
-        "mk_attn_attend",
+        "qwen38_attn_attend",
         fn(
             u32,
             u32,
@@ -318,7 +318,7 @@ fn call_attend(q: &[f32], gate: &[f32], kv: &[f32], sel: &[i32], cnt: &[u32], gr
             grid,
         )
     };
-    assert_eq!(rc, 0, "mk_attn_attend");
+    assert_eq!(rc, 0, "qwen38_attn_attend");
     out
 }
 
@@ -634,7 +634,7 @@ struct Out {
     ik: Vec<f32>,
 }
 
-/// Run `mk_attn` (`masked` false) or `mk_attn_masked` (true) on a copy of the case.
+/// Run `qwen38_attn` (`masked` false) or `qwen38_attn_masked` (true) on a copy of the case.
 fn call(masked: bool, c: &Case, p0: usize, t: usize, budget: usize, ranges: &[(u32, u32)], grid: u32) -> Out {
     let mut kv = c.kv.clone();
     let mut ik = c.ik.clone();
@@ -662,7 +662,7 @@ fn call(masked: bool, c: &Case, p0: usize, t: usize, budget: usize, ranges: &[(u
         };
         let f = sym!(
             lib,
-            "mk_attn_masked",
+            "qwen38_attn_masked",
             fn(
                 u32,
                 u32,
@@ -726,7 +726,7 @@ fn call(masked: bool, c: &Case, p0: usize, t: usize, budget: usize, ranges: &[(u
     } else {
         let f = sym!(
             lib,
-            "mk_attn",
+            "qwen38_attn",
             fn(
                 u32,
                 u32,
@@ -777,7 +777,7 @@ fn call(masked: bool, c: &Case, p0: usize, t: usize, budget: usize, ranges: &[(u
             )
         }
     };
-    assert_eq!(rc, 0, "mk_attn(_masked)");
+    assert_eq!(rc, 0, "qwen38_attn(_masked)");
     Out {
         out,
         sel,

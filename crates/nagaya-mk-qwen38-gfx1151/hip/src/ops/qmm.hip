@@ -29,12 +29,12 @@ __global__ void __launch_bounds__(kMkBlock) k_dequant(const uint8_t *w, uint64_t
 
 using namespace mk;
 
-extern "C" int mk_dequant(uint32_t type, const void *w_host, uint64_t w_bytes, uint32_t rows, uint32_t k, float *out_host,
+extern "C" int qwen38_dequant(uint32_t type, const void *w_host, uint64_t w_bytes, uint32_t rows, uint32_t k, float *out_host,
                           uint64_t out_bytes) {
   check_shape(type, k);
   const uint64_t ldw = q::row_bytes(type, k);
-  MK_CHECK_BYTES("mk_dequant", "w", w_bytes, ldw * rows);
-  MK_CHECK_BYTES("mk_dequant", "out", out_bytes, sizeof(float) * uint64_t(rows) * k);
+  MK_CHECK_BYTES("qwen38_dequant", "w", w_bytes, ldw * rows);
+  MK_CHECK_BYTES("qwen38_dequant", "out", out_bytes, sizeof(float) * uint64_t(rows) * k);
   uint8_t *w;
   float *out;
   MK_CHECK(hipMalloc(&w, ldw * rows));
@@ -61,15 +61,15 @@ extern "C" int mk_dequant(uint32_t type, const void *w_host, uint64_t w_bytes, u
 
 static void launch_qmm(const QmmArgs &a, uint32_t grid) { k_qmm<<<grid, kMkBlock>>>(a); }
 
-extern "C" int mk_qmm(uint32_t type, const void *w_host, uint64_t w_bytes, uint32_t n, uint32_t k, const float *x_host,
+extern "C" int qwen38_qmm(uint32_t type, const void *w_host, uint64_t w_bytes, uint32_t n, uint32_t k, const float *x_host,
                       uint64_t x_bytes, uint32_t x_rows, const uint32_t *x_row_host, uint64_t x_row_bytes, uint32_t t,
                       float *y_host, uint64_t y_bytes, uint32_t y_rows, const uint32_t *y_row_host, uint64_t y_row_bytes,
                       uint32_t ldy, uint32_t grid) {
-  return run_qmm(launch_qmm, kQmmRows, kQmmToks, "mk_qmm", type, w_host, w_bytes, n, k, x_host, x_bytes, x_rows, x_row_host,
+  return run_qmm(launch_qmm, kQmmRows, kQmmToks, "qwen38_qmm", type, w_host, w_bytes, n, k, x_host, x_bytes, x_rows, x_row_host,
                  x_row_bytes, t, y_host, y_bytes, y_rows, y_row_host, y_row_bytes, ldy, grid);
 }
 
-extern "C" double mk_qmm_bench(uint32_t type, const void *w_host, uint64_t w_bytes, uint32_t n, uint32_t k,
+extern "C" double qwen38_qmm_bench(uint32_t type, const void *w_host, uint64_t w_bytes, uint32_t n, uint32_t k,
                                const float *x_host, uint64_t x_bytes, uint32_t t, uint32_t grid, uint32_t reps) {
-  return bench_qmm(launch_qmm, "mk_qmm_bench", type, w_host, w_bytes, n, k, x_host, x_bytes, t, grid, reps);
+  return bench_qmm(launch_qmm, "qwen38_qmm_bench", type, w_host, w_bytes, n, k, x_host, x_bytes, t, grid, reps);
 }

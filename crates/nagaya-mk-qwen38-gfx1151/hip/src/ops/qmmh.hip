@@ -34,24 +34,24 @@ using namespace mk;
 
 static void launch_qmmh(const QmmArgs &a, uint32_t grid) { k_qmmh<<<grid, kMkBlock>>>(a, 0); }
 
-// Same C ABI as mk_qmm (qmm.hip); quantized types only.
-extern "C" int mk_qmmh(uint32_t type, const void *w_host, uint64_t w_bytes, uint32_t n, uint32_t k, const float *x_host,
+// Same C ABI as qwen38_qmm (qmm.hip); quantized types only.
+extern "C" int qwen38_qmmh(uint32_t type, const void *w_host, uint64_t w_bytes, uint32_t n, uint32_t k, const float *x_host,
                        uint64_t x_bytes, uint32_t x_rows, const uint32_t *x_row_host, uint64_t x_row_bytes, uint32_t t,
                        float *y_host, uint64_t y_bytes, uint32_t y_rows, const uint32_t *y_row_host,
                        uint64_t y_row_bytes, uint32_t ldy, uint32_t grid) {
-  if (!qmmh_type(type)) MK_DIE("mk_qmmh: type %u has no f16 path", type);
-  return run_qmm(launch_qmmh, kQmmhRows, kQmmhToks, "mk_qmmh", type, w_host, w_bytes, n, k, x_host, x_bytes, x_rows,
+  if (!qmmh_type(type)) MK_DIE("qwen38_qmmh: type %u has no f16 path", type);
+  return run_qmm(launch_qmmh, kQmmhRows, kQmmhToks, "qwen38_qmmh", type, w_host, w_bytes, n, k, x_host, x_bytes, x_rows,
                  x_row_host, x_row_bytes, t, y_host, y_bytes, y_rows, y_row_host, y_row_bytes, ldy, grid);
 }
 
-extern "C" double mk_qmmh_bench(uint32_t type, const void *w_host, uint64_t w_bytes, uint32_t n, uint32_t k,
+extern "C" double qwen38_qmmh_bench(uint32_t type, const void *w_host, uint64_t w_bytes, uint32_t n, uint32_t k,
                                 const float *x_host, uint64_t x_bytes, uint32_t t, uint32_t grid, uint32_t reps) {
-  if (!qmmh_type(type)) MK_DIE("mk_qmmh_bench: type %u has no f16 path", type);
-  return bench_qmm(launch_qmmh, "mk_qmmh_bench", type, w_host, w_bytes, n, k, x_host, x_bytes, t, grid, reps);
+  if (!qmmh_type(type)) MK_DIE("qwen38_qmmh_bench: type %u has no f16 path", type);
+  return bench_qmm(launch_qmmh, "qwen38_qmmh_bench", type, w_host, w_bytes, n, k, x_host, x_bytes, t, grid, reps);
 }
 
 // k_qmmh's registers, scratch (bytes per lane) and static LDS, for the resource test.
-extern "C" int mk_qmmh_resources(int *regs, int *scratch, int *lds) {
+extern "C" int qwen38_qmmh_resources(int *regs, int *scratch, int *lds) {
   hipFuncAttributes fa{};
   MK_CHECK(hipFuncGetAttributes(&fa, reinterpret_cast<const void *>(&k_qmmh)));
   *regs = fa.numRegs;
@@ -62,16 +62,16 @@ extern "C" int mk_qmmh_resources(int *regs, int *scratch, int *lds) {
 
 // Split-K (qmmh.h): y [t, n] = W x for x [t, k], the matmul in `ksplit` K slices and then their sum, both kernels
 // on `grid` workgroups (0: 1024). For tests/ops/test_qmmh_split.py.
-extern "C" int mk_qmmh_split(uint32_t type, const void *w_host, uint64_t w_bytes, uint32_t n, uint32_t k,
+extern "C" int qwen38_qmmh_split(uint32_t type, const void *w_host, uint64_t w_bytes, uint32_t n, uint32_t k,
                              const float *x_host, uint64_t x_bytes, uint32_t t, float *y_host, uint64_t y_bytes,
                              uint32_t ksplit, uint32_t grid) {
-  if (!qmmh_type(type)) MK_DIE("mk_qmmh_split: type %u has no f16 path", type);
-  if (!qmmh_ksplit_ok(k, ksplit)) MK_DIE("mk_qmmh_split: ksplit %u leaves an empty slice of K=%u", ksplit, k);
-  if (ksplit > kMaxKsplit) MK_DIE("mk_qmmh_split: ksplit %u > %u", ksplit, kMaxKsplit);
+  if (!qmmh_type(type)) MK_DIE("qwen38_qmmh_split: type %u has no f16 path", type);
+  if (!qmmh_ksplit_ok(k, ksplit)) MK_DIE("qwen38_qmmh_split: ksplit %u leaves an empty slice of K=%u", ksplit, k);
+  if (ksplit > kMaxKsplit) MK_DIE("qwen38_qmmh_split: ksplit %u > %u", ksplit, kMaxKsplit);
   const uint64_t ldw = q::row_bytes(type, k);
-  MK_CHECK_BYTES("mk_qmmh_split", "w", w_bytes, ldw * n);
-  MK_CHECK_BYTES("mk_qmmh_split", "x", x_bytes, sizeof(float) * uint64_t(t) * k);
-  MK_CHECK_BYTES("mk_qmmh_split", "y", y_bytes, sizeof(float) * uint64_t(t) * n);
+  MK_CHECK_BYTES("qwen38_qmmh_split", "w", w_bytes, ldw * n);
+  MK_CHECK_BYTES("qwen38_qmmh_split", "x", x_bytes, sizeof(float) * uint64_t(t) * k);
+  MK_CHECK_BYTES("qwen38_qmmh_split", "y", y_bytes, sizeof(float) * uint64_t(t) * n);
   uint8_t *w;
   float *x, *y, *part = nullptr;
   MK_CHECK(hipMalloc(&w, ldw * n));
@@ -97,29 +97,29 @@ extern "C" int mk_qmmh_split(uint32_t type, const void *w_host, uint64_t w_bytes
 }
 
 // The engine's split policy (qmmh_ksplit): a function of the matrix shape alone.
-extern "C" uint32_t mk_qmmh_ksplit(uint32_t n, uint32_t k) { return qmmh_ksplit(n, k); }
+extern "C" uint32_t qwen38_qmmh_ksplit(uint32_t n, uint32_t k) { return qmmh_ksplit(n, k); }
 
 // Fused staging (QmmArgs::xin) against the stages it replaces. parts (and parts2 for swiglu): [xks][t][k] split-K
 // partials of the matrices producing x. y_fused: the f16 matmul staging x = silu(scale * sum parts) (kind 1) or
 // silu(sum parts) * sum parts2 (kind 2) itself; y_ref: op_qmm_ksum, then op_silu_scale or op_swiglu, then the plain
 // matmul. W is `type` rows (Q8_0 or Q8_0 tiles). x_fused / x_ref: the f32 x each computes, before staging to f16.
-extern "C" int mk_qmmh_xin(uint32_t type, const void *w_host, uint64_t w_bytes, uint32_t n, uint32_t k, uint32_t t,
+extern "C" int qwen38_qmmh_xin(uint32_t type, const void *w_host, uint64_t w_bytes, uint32_t n, uint32_t k, uint32_t t,
                            const float *parts_host, uint64_t parts_bytes, const float *parts2_host, uint64_t parts2_bytes,
                            uint32_t xks, uint32_t kind, float scale, float *y_fused_host, uint64_t y_fused_bytes,
                            float *y_ref_host, uint64_t y_ref_bytes, float *x_fused_host, uint64_t x_fused_bytes,
                            float *x_ref_host, uint64_t x_ref_bytes, uint32_t grid) {
-  if (!qmmh_type(type)) MK_DIE("mk_qmmh_xin: type %u has no f16 path", type);
-  if (kind != kXinSiluSum && kind != kXinSwigluSum) MK_DIE("mk_qmmh_xin: kind %u", kind);
-  if (xks < 2 || xks > kMaxKsplit) MK_DIE("mk_qmmh_xin: xks %u", xks);
-  if (t == 0 || k % 64 || n % 16) MK_DIE("mk_qmmh_xin: shape %u x %u, t %u", n, k, t);
+  if (!qmmh_type(type)) MK_DIE("qwen38_qmmh_xin: type %u has no f16 path", type);
+  if (kind != kXinSiluSum && kind != kXinSwigluSum) MK_DIE("qwen38_qmmh_xin: kind %u", kind);
+  if (xks < 2 || xks > kMaxKsplit) MK_DIE("qwen38_qmmh_xin: xks %u", xks);
+  if (t == 0 || k % 64 || n % 16) MK_DIE("qwen38_qmmh_xin: shape %u x %u, t %u", n, k, t);
   const uint64_t ldw = q::row_bytes(type, k), pn = uint64_t(xks) * t * k;
-  MK_CHECK_BYTES("mk_qmmh_xin", "w", w_bytes, ldw * n);
-  MK_CHECK_BYTES("mk_qmmh_xin", "parts", parts_bytes, sizeof(float) * pn);
-  MK_CHECK_BYTES("mk_qmmh_xin", "parts2", parts2_bytes, kind == kXinSwigluSum ? sizeof(float) * pn : 0);
-  MK_CHECK_BYTES("mk_qmmh_xin", "y_fused", y_fused_bytes, sizeof(float) * uint64_t(t) * n);
-  MK_CHECK_BYTES("mk_qmmh_xin", "y_ref", y_ref_bytes, sizeof(float) * uint64_t(t) * n);
-  MK_CHECK_BYTES("mk_qmmh_xin", "x_fused", x_fused_bytes, sizeof(float) * uint64_t(t) * k);
-  MK_CHECK_BYTES("mk_qmmh_xin", "x_ref", x_ref_bytes, sizeof(float) * uint64_t(t) * k);
+  MK_CHECK_BYTES("qwen38_qmmh_xin", "w", w_bytes, ldw * n);
+  MK_CHECK_BYTES("qwen38_qmmh_xin", "parts", parts_bytes, sizeof(float) * pn);
+  MK_CHECK_BYTES("qwen38_qmmh_xin", "parts2", parts2_bytes, kind == kXinSwigluSum ? sizeof(float) * pn : 0);
+  MK_CHECK_BYTES("qwen38_qmmh_xin", "y_fused", y_fused_bytes, sizeof(float) * uint64_t(t) * n);
+  MK_CHECK_BYTES("qwen38_qmmh_xin", "y_ref", y_ref_bytes, sizeof(float) * uint64_t(t) * n);
+  MK_CHECK_BYTES("qwen38_qmmh_xin", "x_fused", x_fused_bytes, sizeof(float) * uint64_t(t) * k);
+  MK_CHECK_BYTES("qwen38_qmmh_xin", "x_ref", x_ref_bytes, sizeof(float) * uint64_t(t) * k);
   uint8_t *w;
   float *p, *p2 = nullptr, *g, *u = nullptr, *x, *y;
   MK_CHECK(hipMalloc(&w, ldw * n));
@@ -178,26 +178,26 @@ extern "C" int mk_qmmh_xin(uint32_t type, const void *w_host, uint64_t w_bytes, 
 // kXinSiluSum with `scale`, and x null); xn [t, 4e]; z [t, 4] or null. mixed_f / inject_f: the fused stage's outputs;
 // mixed_r / inject_r: the plain matmul into `up`, then op_hc_mix. Outputs the caller pre-fills with NaN stay NaN where
 // the stage doesn't write (inject without z).
-extern "C" int mk_qmmh_hcmix(uint32_t type, const void *w_host, uint64_t w_bytes, uint32_t k, uint32_t e, uint32_t t,
+extern "C" int qwen38_qmmh_hcmix(uint32_t type, const void *w_host, uint64_t w_bytes, uint32_t k, uint32_t e, uint32_t t,
                              const float *x_host, uint64_t x_bytes, const float *parts_host, uint64_t parts_bytes,
                              uint32_t xks, float scale, const float *xn_host, uint64_t xn_bytes, const float *z_host,
                              uint64_t z_bytes, float *mixed_f_host, uint64_t mixed_f_bytes, float *inject_f_host,
                              uint64_t inject_f_bytes, float *mixed_r_host, uint64_t mixed_r_bytes, float *inject_r_host,
                              uint64_t inject_r_bytes, uint32_t grid) {
-  if (type != q::Q8_0 && type != q::Q8_0_TILES) MK_DIE("mk_qmmh_hcmix: type %u (Q8_0 or Q8_0 tiles only)", type);
-  if (t == 0 || e == 0 || e % 16 || k % 64) MK_DIE("mk_qmmh_hcmix: shape e=%u k=%u t=%u", e, k, t);
+  if (type != q::Q8_0 && type != q::Q8_0_TILES) MK_DIE("qwen38_qmmh_hcmix: type %u (Q8_0 or Q8_0 tiles only)", type);
+  if (t == 0 || e == 0 || e % 16 || k % 64) MK_DIE("qwen38_qmmh_hcmix: shape e=%u k=%u t=%u", e, k, t);
   const bool xin = parts_host != nullptr;
   const uint64_t n = 4ull * e, ldw = q::row_bytes(type, k), tk = uint64_t(t) * k, pn = uint64_t(xks) * tk;
-  MK_CHECK_BYTES("mk_qmmh_hcmix", "w", w_bytes, ldw * n);
-  MK_CHECK_BYTES("mk_qmmh_hcmix", "x", x_bytes, xin ? 0 : sizeof(float) * tk);
-  MK_CHECK_BYTES("mk_qmmh_hcmix", "parts", parts_bytes, xin ? sizeof(float) * pn : 0);
-  if (xin && (xks < 2 || xks > kMaxKsplit)) MK_DIE("mk_qmmh_hcmix: xks %u", xks);
-  MK_CHECK_BYTES("mk_qmmh_hcmix", "xn", xn_bytes, sizeof(float) * t * n);
-  MK_CHECK_BYTES("mk_qmmh_hcmix", "z", z_bytes, z_host ? sizeof(float) * 4 * t : 0);
-  MK_CHECK_BYTES("mk_qmmh_hcmix", "mixed_f", mixed_f_bytes, sizeof(float) * t * e);
-  MK_CHECK_BYTES("mk_qmmh_hcmix", "mixed_r", mixed_r_bytes, sizeof(float) * t * e);
-  MK_CHECK_BYTES("mk_qmmh_hcmix", "inject_f", inject_f_bytes, sizeof(float) * 4 * t);
-  MK_CHECK_BYTES("mk_qmmh_hcmix", "inject_r", inject_r_bytes, sizeof(float) * 4 * t);
+  MK_CHECK_BYTES("qwen38_qmmh_hcmix", "w", w_bytes, ldw * n);
+  MK_CHECK_BYTES("qwen38_qmmh_hcmix", "x", x_bytes, xin ? 0 : sizeof(float) * tk);
+  MK_CHECK_BYTES("qwen38_qmmh_hcmix", "parts", parts_bytes, xin ? sizeof(float) * pn : 0);
+  if (xin && (xks < 2 || xks > kMaxKsplit)) MK_DIE("qwen38_qmmh_hcmix: xks %u", xks);
+  MK_CHECK_BYTES("qwen38_qmmh_hcmix", "xn", xn_bytes, sizeof(float) * t * n);
+  MK_CHECK_BYTES("qwen38_qmmh_hcmix", "z", z_bytes, z_host ? sizeof(float) * 4 * t : 0);
+  MK_CHECK_BYTES("qwen38_qmmh_hcmix", "mixed_f", mixed_f_bytes, sizeof(float) * t * e);
+  MK_CHECK_BYTES("qwen38_qmmh_hcmix", "mixed_r", mixed_r_bytes, sizeof(float) * t * e);
+  MK_CHECK_BYTES("qwen38_qmmh_hcmix", "inject_f", inject_f_bytes, sizeof(float) * 4 * t);
+  MK_CHECK_BYTES("qwen38_qmmh_hcmix", "inject_r", inject_r_bytes, sizeof(float) * 4 * t);
   uint8_t *w;
   float *x = nullptr, *p = nullptr, *g = nullptr, *xn, *z = nullptr, *up, *mf, *jf, *mr, *jr;
   MK_CHECK(hipMalloc(&w, ldw * n));

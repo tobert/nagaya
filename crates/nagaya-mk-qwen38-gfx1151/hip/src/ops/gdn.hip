@@ -35,12 +35,12 @@ using namespace mk;
 // tiled (GGUF) order throughout (see gdn.h). `grid` 0 means one workgroup per item for each
 // kernel (conv: ceil(10240 / kMkBlock); core: 48); tests pass other sizes to show the result
 // doesn't depend on the grid.
-extern "C" int mk_gdn(const float *qkv_host, const float *z_host, const float *a_host, const float *b_host,
+extern "C" int qwen38_gdn(const float *qkv_host, const float *z_host, const float *a_host, const float *b_host,
                       uint32_t t, const float *conv_state_in_host, const float *conv_w_host,
                       const float *ssm_a_host, const float *dt_bias_host, const float *gamma_host,
                       const float *state_in_host, float *y_out_host, float *conv_state_out_host,
                       float *state_out_host, uint32_t grid) {
-  if (t == 0 || t > model::kMaxPassTokens) MK_DIE("mk_gdn: T=%u out of range (1..%u)", t, model::kMaxPassTokens);
+  if (t == 0 || t > model::kMaxPassTokens) MK_DIE("qwen38_gdn: T=%u out of range (1..%u)", t, model::kMaxPassTokens);
 
   const uint32_t C = model::kGdnConvDim, K = model::kGdnConv, VH = model::kGdnVHeads;
   const uint32_t VDIM = model::kGdnValDim, KD = model::kGdnKDim, VD = model::kGdnVDim;
@@ -82,7 +82,7 @@ extern "C" int mk_gdn(const float *qkv_host, const float *z_host, const float *a
 }
 
 // k_gdn_core's register count and scratch (bytes per lane), for the register-budget test.
-extern "C" int mk_gdn_core_resources(int *regs, int *scratch) {
+extern "C" int qwen38_gdn_core_resources(int *regs, int *scratch) {
   hipFuncAttributes fa{};
   MK_CHECK(hipFuncGetAttributes(&fa, reinterpret_cast<const void *>(&k_gdn_core)));
   *regs = fa.numRegs;

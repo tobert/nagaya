@@ -73,13 +73,13 @@ const SPLIT_CASES: [Narrow; 5] = [
     },
 ];
 
-/// `y [t, n] = W x` in `ksplit` K slices and then their sum: `mk_qmmh_split`.
+/// `y [t, n] = W x` in `ksplit` K slices and then their sum: `qwen38_qmmh_split`.
 fn split(case: &Narrow, raw: &[u8], x: &[f32], ksplit: u32, grid: u32) -> Vec<f32> {
     let t = x.len() / case.k;
     let mut y = vec![0f32; t * case.rows];
     let f = sym!(
         lib("qmmh"),
-        "mk_qmmh_split",
+        "qwen38_qmmh_split",
         fn(u32, *const c_void, u64, u32, u32, *const c_void, u64, u32, *mut c_void, u64, u32, u32) -> i32
     );
     let rc = unsafe {
@@ -98,13 +98,13 @@ fn split(case: &Narrow, raw: &[u8], x: &[f32], ksplit: u32, grid: u32) -> Vec<f3
             grid,
         )
     };
-    assert_eq!(rc, 0, "mk_qmmh_split");
+    assert_eq!(rc, 0, "qwen38_qmmh_split");
     y
 }
 
-/// The split of the engine for a matrix shape: `mk_qmmh_ksplit`.
+/// The split of the engine for a matrix shape: `qwen38_qmmh_ksplit`.
 fn ksplit_of(n: usize, k: usize) -> u32 {
-    let f = sym!(lib("qmmh"), "mk_qmmh_ksplit", fn(u32, u32) -> u32);
+    let f = sym!(lib("qmmh"), "qwen38_qmmh_ksplit", fn(u32, u32) -> u32);
     unsafe { f(n as u32, k as u32) }
 }
 
@@ -208,7 +208,7 @@ fn a_bad_ksplit_is_refused_before_running() {
     let output = child::run("hc::child_bad_ksplit", &[]);
     let stderr = child::stderr(&output);
     assert!(
-        !output.status.success() && stderr.contains("mk_qmmh_split: ksplit 3 leaves an empty slice of K=64"),
+        !output.status.success() && stderr.contains("qwen38_qmmh_split: ksplit 3 leaves an empty slice of K=64"),
         "no refusal naming ksplit: {:?} {stderr}",
         output.status
     );
@@ -232,13 +232,13 @@ fn child_bad_ksplit() {
 
 // ---- Q8_0 tiles, for the next two groups ----
 
-/// Q8_0 rows of the GGUF as the tiles of `mk_relayout_q8`. The output starts as 0xAB, so a byte that the kernel does not
+/// Q8_0 rows of the GGUF as the tiles of `qwen38_relayout_q8`. The output starts as 0xAB, so a byte that the kernel does not
 /// write shows.
 fn relayout_q8(raw: &[u8], rows: usize, k: usize) -> Vec<u8> {
     let mut out = vec![0xABu8; raw.len()];
     let f = sym!(
         lib("tiles"),
-        "mk_relayout_q8",
+        "qwen38_relayout_q8",
         fn(*const c_void, u64, u32, u32, *mut c_void, u64) -> i32
     );
     let rc = unsafe {
@@ -251,7 +251,7 @@ fn relayout_q8(raw: &[u8], rows: usize, k: usize) -> Vec<u8> {
             nbytes(&out),
         )
     };
-    assert_eq!(rc, 0, "mk_relayout_q8");
+    assert_eq!(rc, 0, "qwen38_relayout_q8");
     out
 }
 
@@ -285,7 +285,7 @@ struct Xin<'a> {
     grid: u32,
 }
 
-/// The fused stage and the stages it replaces, on the same partials: `mk_qmmh_xin`. It returns the two outputs. The staged
+/// The fused stage and the stages it replaces, on the same partials: `qwen38_qmmh_xin`. It returns the two outputs. The staged
 /// x of both must be equal in f32, before the f16 staging could hide a rounding that differs.
 fn xin(a: &Xin) -> (Vec<f32>, Vec<f32>) {
     let t = a.parts.len() / (a.xks as usize * a.k);
@@ -293,7 +293,7 @@ fn xin(a: &Xin) -> (Vec<f32>, Vec<f32>) {
     let (mut xf, mut xr) = (vec![f32::NAN; t * a.k], vec![f32::NAN; t * a.k]);
     let f = sym!(
         lib("qmmh"),
-        "mk_qmmh_xin",
+        "qwen38_qmmh_xin",
         fn(
             u32,
             *const c_void,
@@ -345,7 +345,7 @@ fn xin(a: &Xin) -> (Vec<f32>, Vec<f32>) {
             a.grid,
         )
     };
-    assert_eq!(rc, 0, "mk_qmmh_xin");
+    assert_eq!(rc, 0, "qwen38_qmmh_xin");
     assert!(all_finite(&xr), "the staged x of the stages is not finite");
     assert_same(&xf, &xr, "the staged x: fused values against the stages they replace");
     (yf, yr)
@@ -424,7 +424,7 @@ struct HcMix<'a> {
     grid: u32,
 }
 
-/// The fused stage and the matmul then `op_hc_mix`: `mk_qmmh_hcmix`. The outputs start as NaN, so an element that the
+/// The fused stage and the matmul then `op_hc_mix`: `qwen38_qmmh_hcmix`. The outputs start as NaN, so an element that the
 /// fused stage does not write fails the comparison. It returns `(mixed_f, inject_f, mixed_r, inject_r)`.
 fn hcmix(a: &HcMix) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
     let (e, t) = (a.e, a.t);
@@ -433,7 +433,7 @@ fn hcmix(a: &HcMix) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
     let parts = a.parts.map(|p| p.0);
     let f = sym!(
         lib("qmmh"),
-        "mk_qmmh_hcmix",
+        "qwen38_qmmh_hcmix",
         fn(
             u32,
             *const c_void,
@@ -491,7 +491,7 @@ fn hcmix(a: &HcMix) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
             a.grid,
         )
     };
-    assert_eq!(rc, 0, "mk_qmmh_hcmix");
+    assert_eq!(rc, 0, "qwen38_qmmh_hcmix");
     (mf, jf, mr, jr)
 }
 
@@ -577,7 +577,7 @@ fn fused_hc_up_mix_with_xin_silu_sum_from_split_k_partials() {
 
 // ---- test_hc_fused.py ----
 
-/// `mk_hc_combine_rms`: `h += out x inject`, then the RMS norm of `h` by groups of `e`. `fused` runs the one fused stage.
+/// `qwen38_hc_combine_rms`: `h += out x inject`, then the RMS norm of `h` by groups of `e`. `fused` runs the one fused stage.
 fn combine_rms(
     h: &[f32],
     out: &[f32],
@@ -591,7 +591,7 @@ fn combine_rms(
     let (mut h_out, mut xn) = (vec![0f32; h.len()], vec![0f32; h.len()]);
     let f = sym!(
         lib("small"),
-        "mk_hc_combine_rms",
+        "qwen38_hc_combine_rms",
         fn(
             *const c_void,
             *const c_void,
@@ -619,7 +619,7 @@ fn combine_rms(
             ptr_mut(&mut xn),
         )
     };
-    assert_eq!(rc, 0, "mk_hc_combine_rms");
+    assert_eq!(rc, 0, "qwen38_hc_combine_rms");
     (h_out, xn)
 }
 
@@ -698,7 +698,7 @@ fn hc_pre_matches_reference() {
     let (mut mixed, mut inj, mut xn) = (vec![0f32; t * E], vec![0f32; t * 4], vec![0f32; t * D4]);
     let f = sym!(
         lib("small"),
-        "mk_hc_pre",
+        "qwen38_hc_pre",
         fn(
             *const c_void,
             u32,
@@ -728,7 +728,7 @@ fn hc_pre_matches_reference() {
             ptr_mut(&mut xn),
         )
     };
-    assert_eq!(rc, 0, "mk_hc_pre");
+    assert_eq!(rc, 0, "qwen38_hc_pre");
     let (e_mix, e_inj) = (
         ops_lib::relerr(&mixed, &fixture.f32_flat("pre_mixed")),
         ops_lib::relerr(&inj, &fixture.f32_flat("pre_inject")),
@@ -751,7 +751,7 @@ fn hc_combine_exact() {
     let inj = inputs::normals(712, t * 4);
     let f = sym!(
         lib("small"),
-        "mk_hc_combine",
+        "qwen38_hc_combine",
         fn(*mut c_void, *const c_void, *const c_void, u32, u32) -> i32
     );
     assert_eq!(

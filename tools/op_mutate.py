@@ -48,7 +48,7 @@ def build(src: Path, out: Path):
         if name == "rt":
             cmd = [CXX, *HIP_DEFINES, f"-I{src / 'rt'}", *FLAGS, "-o", out / "rt.o", "-x", "hip", "-c", src / "rt/rt.cpp"]
         else:
-            cmd = [CXX, *HIP_DEFINES, f"-Dmk_{name}_EXPORTS", f"-I{src / 'ops'}", f"-I{src / 'rt'}", *FLAGS, "-O3", "-o",
+            cmd = [CXX, *HIP_DEFINES, f"-Dqwen38_{name}_EXPORTS", f"-I{src / 'ops'}", f"-I{src / 'rt'}", *FLAGS, "-O3", "-o",
                    out / f"{name}.o", "-x", "hip", "-c", src / "ops" / f"{name}.hip"]
         run(cmd, f"compile {name}")
 
@@ -56,7 +56,7 @@ def build(src: Path, out: Path):
         list(pool.map(compile_one, ["rt", *names]))
 
     def link_one(name):
-        run([CXX, *LINK, f"-Wl,-soname,libmk_{name}.so", "-o", out / f"libmk_{name}.so", out / f"{name}.o", out / "rt.o",
+        run([CXX, *LINK, f"-Wl,-soname,libqwen38_{name}.so", "-o", out / f"libqwen38_{name}.so", out / f"{name}.o", out / "rt.o",
              ROCM / "lib/libamdhip64.so", builtins], f"link {name}")
 
     with concurrent.futures.ThreadPoolExecutor(len(names)) as pool:

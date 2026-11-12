@@ -27,7 +27,7 @@ def main() -> None:
     compiles = [{"file": e["file"], "command": e["command"]} for e in commands if "/src/ops/" in e["file"]]
     ninja = (build / "build.ninja").read_text()
     links = []
-    for match in re.finditer(r"^build src/ops/(libmk_\w+\.so): HIP_SHARED_LIBRARY_LINKER__\w+ (.*)\n((?:  .*\n)+)", ninja, re.M):
+    for match in re.finditer(r"^build src/ops/(libqwen38_\w+\.so): HIP_SHARED_LIBRARY_LINKER__\w+ (.*)\n((?:  .*\n)+)", ninja, re.M):
         fields = dict(line.strip().split(" = ", 1) for line in match.group(3).splitlines())
         links.append({"library": match.group(1), "language_flags": fields["LANGUAGE_COMPILE_FLAGS"],
                       "link_flags": fields["LINK_FLAGS"], "soname": fields["SONAME"]})

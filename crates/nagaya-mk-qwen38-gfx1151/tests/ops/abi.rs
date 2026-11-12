@@ -209,7 +209,7 @@ type QmmFn = unsafe extern "C" fn(
     u32,
 ) -> i32;
 
-/// The call of `mk_qmm`, `mk_qmmh` and `mk_qmm_oracle` on Q8_0, with row maps or without.
+/// The call of `qwen38_qmm`, `qwen38_qmmh` and `qwen38_qmm_oracle` on Q8_0, with row maps or without.
 fn qmm_case(library: &'static str, symbol: &'static str, maps: bool) -> Case {
     Case {
         symbol,
@@ -299,7 +299,7 @@ fn bench_case(library: &'static str, symbol: &'static str) -> Case {
 
 fn split_case() -> Case {
     Case {
-        symbol: "mk_qmmh_split",
+        symbol: "qwen38_qmmh_split",
         build: Box::new(|s, call| {
             let (n, k, t) = (16usize, 256usize, 2usize);
             let w = vec![0u8; row_bytes(Qtype::Q8_0, k) * n];
@@ -310,7 +310,7 @@ fn split_case() -> Case {
             call.then(|| {
                 let f = sym!(
                     nosink("qmmh"),
-                    "mk_qmmh_split",
+                    "qwen38_qmmh_split",
                     fn(u32, *const c_void, u64, u32, u32, *const c_void, u64, u32, *mut c_void, u64, u32, u32) -> i32
                 );
                 f64::from(unsafe {
@@ -361,7 +361,7 @@ type XinFn = unsafe extern "C" fn(
 
 fn xin_case(kind: u32) -> Case {
     Case {
-        symbol: "mk_qmmh_xin",
+        symbol: "qwen38_qmmh_xin",
         build: Box::new(move |s, call| {
             let (n, k, t, xks) = (16usize, 64usize, 2usize, 2usize);
             let w = vec![0u8; row_bytes(Qtype::Q8_0, k) * n];
@@ -377,7 +377,7 @@ fn xin_case(kind: u32) -> Case {
             let x_fused_bytes = s.size("x_fused", 4 * x_fused.len());
             let x_ref_bytes = s.size("x_ref", 4 * x_ref.len());
             call.then(|| {
-                let f: libloading::Symbol<XinFn> = unsafe { nosink("qmmh").get(b"mk_qmmh_xin\0") }.unwrap();
+                let f: libloading::Symbol<XinFn> = unsafe { nosink("qmmh").get(b"qwen38_qmmh_xin\0") }.unwrap();
                 let parts2_ptr = if kind == 2 { ptr(&parts2) } else { std::ptr::null() };
                 f64::from(unsafe {
                     f(
@@ -455,7 +455,11 @@ fn moe_counts() -> Vec<u32> {
 
 fn moe_down_case(reps: bool) -> Case {
     Case {
-        symbol: if reps { "mk_moe_down_bench" } else { "mk_moe_down" },
+        symbol: if reps {
+            "qwen38_moe_down_bench"
+        } else {
+            "qwen38_moe_down"
+        },
         build: Box::new(move |s, call| {
             let qtype = Qtype::Iq4Nl;
             let counts = moe_counts();
@@ -473,7 +477,8 @@ fn moe_down_case(reps: bool) -> Case {
             call.then(|| {
                 let library = nosink("moe");
                 if reps {
-                    let f: libloading::Symbol<MoeDownBenchFn> = unsafe { library.get(b"mk_moe_down_bench\0") }.unwrap();
+                    let f: libloading::Symbol<MoeDownBenchFn> =
+                        unsafe { library.get(b"qwen38_moe_down_bench\0") }.unwrap();
                     unsafe {
                         f(
                             tcode(qtype),
@@ -493,7 +498,7 @@ fn moe_down_case(reps: bool) -> Case {
                         )
                     }
                 } else {
-                    let f: libloading::Symbol<MoeDownFn> = unsafe { library.get(b"mk_moe_down\0") }.unwrap();
+                    let f: libloading::Symbol<MoeDownFn> = unsafe { library.get(b"qwen38_moe_down\0") }.unwrap();
                     f64::from(unsafe {
                         f(
                             tcode(qtype),
@@ -547,7 +552,7 @@ type MoeGuBenchFn = unsafe extern "C" fn(
 
 fn moe_gu_case(reps: bool) -> Case {
     Case {
-        symbol: if reps { "mk_moe_gu_bench" } else { "mk_moe_gu" },
+        symbol: if reps { "qwen38_moe_gu_bench" } else { "qwen38_moe_gu" },
         build: Box::new(move |s, call| {
             let counts = moe_counts();
             let a: usize = counts.iter().map(|&c| c as usize).sum();
@@ -561,7 +566,7 @@ fn moe_gu_case(reps: bool) -> Case {
             call.then(|| {
                 let library = nosink("moe");
                 if reps {
-                    let f: libloading::Symbol<MoeGuBenchFn> = unsafe { library.get(b"mk_moe_gu_bench\0") }.unwrap();
+                    let f: libloading::Symbol<MoeGuBenchFn> = unsafe { library.get(b"qwen38_moe_gu_bench\0") }.unwrap();
                     unsafe {
                         f(
                             ptr(&raw),
@@ -579,7 +584,7 @@ fn moe_gu_case(reps: bool) -> Case {
                         )
                     }
                 } else {
-                    let f: libloading::Symbol<MoeGuFn> = unsafe { library.get(b"mk_moe_gu\0") }.unwrap();
+                    let f: libloading::Symbol<MoeGuFn> = unsafe { library.get(b"qwen38_moe_gu\0") }.unwrap();
                     f64::from(unsafe {
                         f(
                             ptr(&raw),
@@ -636,7 +641,7 @@ type MoeFn = unsafe extern "C" fn(
 
 fn moe_case() -> Case {
     Case {
-        symbol: "mk_moe",
+        symbol: "qwen38_moe",
         build: Box::new(|s, call| {
             let (t, top) = (2usize, 10usize);
             let x = vec![0f32; t * EMB];
@@ -664,7 +669,7 @@ fn moe_case() -> Case {
             let idx_bytes = s.size("topk_idx", 4 * idx.len());
             let w_bytes = s.size("topk_w", 4 * w.len());
             call.then(|| {
-                let f: libloading::Symbol<MoeFn> = unsafe { nosink("moe").get(b"mk_moe\0") }.unwrap();
+                let f: libloading::Symbol<MoeFn> = unsafe { nosink("moe").get(b"qwen38_moe\0") }.unwrap();
                 f64::from(unsafe {
                     f(
                         ptr(&x),
@@ -708,14 +713,14 @@ type DequantFn = unsafe extern "C" fn(u32, *const c_void, u64, u32, u32, *mut c_
 
 fn plain_dequant_case() -> Case {
     Case {
-        symbol: "mk_dequant",
+        symbol: "qwen38_dequant",
         build: Box::new(|s, call| {
             let (n, k) = (4usize, 64usize);
             let w = vec![0u8; row_bytes(Qtype::Q8_0, k) * n];
             let mut out = vec![0f32; n * k];
             let (w_bytes, out_bytes) = (s.size("w", w.len()), s.size("out", 4 * out.len()));
             call.then(|| {
-                let f: libloading::Symbol<DequantFn> = unsafe { nosink("qmm").get(b"mk_dequant\0") }.unwrap();
+                let f: libloading::Symbol<DequantFn> = unsafe { nosink("qmm").get(b"qwen38_dequant\0") }.unwrap();
                 f64::from(unsafe {
                     f(
                         tcode(Qtype::Q8_0),
@@ -752,12 +757,12 @@ fn cases() -> BTreeMap<String, Case> {
     let leak = |text: String| -> &'static str { Box::leak(text.into_boxed_str()) };
     for (qtype, short, tiled) in tiled_types {
         map.insert(
-            format!("mk_relayout_{short}"),
-            relayout_case(leak(format!("mk_relayout_{short}")), qtype, tiled),
+            format!("qwen38_relayout_{short}"),
+            relayout_case(leak(format!("qwen38_relayout_{short}")), qtype, tiled),
         );
         map.insert(
-            format!("mk_tile_dequant_{short}"),
-            dequant_case(leak(format!("mk_tile_dequant_{short}")), tiled),
+            format!("qwen38_tile_dequant_{short}"),
+            dequant_case(leak(format!("qwen38_tile_dequant_{short}")), tiled),
         );
     }
     for (qtype, short, ksplit) in [
@@ -766,30 +771,34 @@ fn cases() -> BTreeMap<String, Case> {
         (Qtype::Q6K, "q6", true),
     ] {
         map.insert(
-            format!("mk_tile_qmm_{short}"),
-            tile_qmm_case(leak(format!("mk_tile_qmm_{short}")), qtype, ksplit),
+            format!("qwen38_tile_qmm_{short}"),
+            tile_qmm_case(leak(format!("qwen38_tile_qmm_{short}")), qtype, ksplit),
         );
     }
-    map.insert("mk_dequant".to_owned(), plain_dequant_case());
-    for (library, symbol) in [("qmm", "mk_qmm"), ("qmmh", "mk_qmmh"), ("qmm_oracle", "mk_qmm_oracle")] {
+    map.insert("qwen38_dequant".to_owned(), plain_dequant_case());
+    for (library, symbol) in [
+        ("qmm", "qwen38_qmm"),
+        ("qmmh", "qwen38_qmmh"),
+        ("qmm_oracle", "qwen38_qmm_oracle"),
+    ] {
         map.insert(symbol.to_owned(), qmm_case(library, symbol, false));
         map.insert(format!("{symbol}_maps"), qmm_case(library, symbol, true));
     }
     for (library, symbol) in [
-        ("qmm", "mk_qmm_bench"),
-        ("qmmh", "mk_qmmh_bench"),
-        ("qmm_oracle", "mk_qmm_oracle_bench"),
+        ("qmm", "qwen38_qmm_bench"),
+        ("qmmh", "qwen38_qmmh_bench"),
+        ("qmm_oracle", "qwen38_qmm_oracle_bench"),
     ] {
         map.insert(symbol.to_owned(), bench_case(library, symbol));
     }
-    map.insert("mk_qmmh_split".to_owned(), split_case());
+    map.insert("qwen38_qmmh_split".to_owned(), split_case());
     map.insert("mk_qmmh_xin_silu".to_owned(), xin_case(1));
     map.insert("mk_qmmh_xin_swiglu".to_owned(), xin_case(2));
-    map.insert("mk_moe_down".to_owned(), moe_down_case(false));
-    map.insert("mk_moe_down_bench".to_owned(), moe_down_case(true));
-    map.insert("mk_moe_gu".to_owned(), moe_gu_case(false));
-    map.insert("mk_moe_gu_bench".to_owned(), moe_gu_case(true));
-    map.insert("mk_moe".to_owned(), moe_case());
+    map.insert("qwen38_moe_down".to_owned(), moe_down_case(false));
+    map.insert("qwen38_moe_down_bench".to_owned(), moe_down_case(true));
+    map.insert("qwen38_moe_gu".to_owned(), moe_gu_case(false));
+    map.insert("qwen38_moe_gu_bench".to_owned(), moe_gu_case(true));
+    map.insert("qwen38_moe".to_owned(), moe_case());
     map
 }
 
@@ -912,7 +921,7 @@ fn tail(text: &str) -> String {
 /// of the tiles, and wrote past it. The pool of 16 rows and one superblock is 1792 bytes, and 110 bytes make 1760.
 #[test]
 fn iq3s_tile_pool_at_110_bytes_is_refused() {
-    let output = run_child("mk_relayout_iq3s", "tiled_out", 110 * 16 - 112 * 16);
+    let output = run_child("qwen38_relayout_iq3s", "tiled_out", 110 * 16 - 112 * 16);
     assert_eq!(child::signal(&output), Some(6), "{}", tail(&child::stderr(&output)));
     let stderr = child::stderr(&output);
     assert!(
@@ -1106,7 +1115,7 @@ fn child_moe_route_nan() {
     let (mut assign, mut token) = (vec![0u32; t * 10], vec![0u32; t * 10]);
     let f = sym!(
         lib("moe"),
-        "mk_moe_route",
+        "qwen38_moe_route",
         fn(
             *const c_void,
             u32,
@@ -1162,7 +1171,7 @@ fn child_attn_select_nan() {
     let mut count = vec![0u32; t];
     let f = sym!(
         lib("attn"),
-        "mk_attn_select_emit",
+        "qwen38_attn_select_emit",
         fn(u32, u32, u32, u32, *const c_void, *mut c_void, *mut c_void, u32) -> i32
     );
     unsafe {

@@ -96,7 +96,7 @@ fn projections(seed: u64, first: usize, count: usize) -> Projections {
     }
 }
 
-/// What `mk_attn` gives back besides the cache.
+/// What `qwen38_attn` gives back besides the cache.
 #[derive(Clone, PartialEq)]
 struct Out {
     attn_out: Vec<f32>,
@@ -126,7 +126,7 @@ impl Out {
     }
 }
 
-/// `mk_attn`: the port of `call_attn` of `test_attn.py`. The cache holds `p0 + t` cells, and the call writes the last `t`.
+/// `qwen38_attn`: the port of `call_attn` of `test_attn.py`. The cache holds `p0 + t` cells, and the call writes the last `t`.
 #[allow(clippy::too_many_arguments)]
 fn call_attn(
     t: usize,
@@ -147,7 +147,7 @@ fn call_attn(
     let mut attn_out = vec![f32::NAN; t * H * HD];
     let f = sym!(
         lib("attn"),
-        "mk_attn",
+        "qwen38_attn",
         fn(
             u32,
             u32,
@@ -197,7 +197,7 @@ fn call_attn(
             grid,
         )
     };
-    assert_eq!(rc, 0, "mk_attn");
+    assert_eq!(rc, 0, "qwen38_attn");
     Out {
         attn_out,
         sel,

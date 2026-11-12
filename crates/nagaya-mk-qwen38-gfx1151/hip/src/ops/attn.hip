@@ -34,15 +34,15 @@ using namespace mk;
 
 // Test C ABI: host pointers in (including the prior cache contents and p0) and out. `grid`
 // overrides every stage's launch grid (0 = one workgroup per item), for grid-independence tests.
-extern "C" int mk_attn(uint32_t t, uint32_t p0, const float *q_raw, const float *k_raw, const float *v_raw,
+extern "C" int qwen38_attn(uint32_t t, uint32_t p0, const float *q_raw, const float *k_raw, const float *v_raw,
                        const float *iq_raw, const float *ik_raw, const float *q_gamma, const float *k_gamma,
                        const float *idxq_gamma, const float *idxk_gamma, const float *inv_freq, float *kv_cache,
                        float *ik_cache, uint32_t budget, uint32_t ratio, int32_t *sel_out, uint32_t *sel_count_out,
                        float *block_scores_out, float *attn_out, uint32_t grid) {
-  if (t == 0) MK_DIE("mk_attn: T must be >= 1");
-  if (ratio == 0 || budget < ratio) MK_DIE("mk_attn: budget (%u) must be >= ratio (%u) >= 1", budget, ratio);
+  if (t == 0) MK_DIE("qwen38_attn: T must be >= 1");
+  if (ratio == 0 || budget < ratio) MK_DIE("qwen38_attn: budget (%u) must be >= ratio (%u) >= 1", budget, ratio);
   // attn.h pools and expands blocks of exactly 4 cells (kaibo M2 review): any other ratio dies.
-  if (ratio != model::kIdxRatio) MK_DIE("mk_attn: ratio %u, but the op is specialized to %u", ratio, model::kIdxRatio);
+  if (ratio != model::kIdxRatio) MK_DIE("qwen38_attn: ratio %u, but the op is specialized to %u", ratio, model::kIdxRatio);
   const uint32_t cap = p0 + t;
   const uint32_t max_nb = cap / ratio;
   const uint32_t max_sel = budget + ratio - 1;
@@ -110,18 +110,18 @@ extern "C" int mk_attn(uint32_t t, uint32_t p0, const float *q_raw, const float 
 }
 
 // Test C ABI for the selection alone (tests/ops/test_attn_select.py): token t's block scores in, its sel/sel_count
-// out, the same shapes as mk_attn (max_nb = (p0 + t) / ratio, max_sel = budget + ratio - 1). Same signature as the
-// serial oracle's mk_attn_select_serial. Unwritten sel cells come back as 0x5a5a5a5a.
+// out, the same shapes as qwen38_attn (max_nb = (p0 + t) / ratio, max_sel = budget + ratio - 1). Same signature as the
+// serial oracle's qwen38_attn_select_serial. Unwritten sel cells come back as 0x5a5a5a5a.
 namespace mk {
 __global__ void __launch_bounds__(kMkBlock) k_attn_select_emit(AttnSelectArgs a) {
   for (uint32_t t = blockIdx.x; t < a.t; t += gridDim.x) attn_select_emit(a, t);
 }
 }  // namespace mk
 
-extern "C" int mk_attn_select_emit(uint32_t t, uint32_t p0, uint32_t budget, uint32_t ratio, const float *scores,
+extern "C" int qwen38_attn_select_emit(uint32_t t, uint32_t p0, uint32_t budget, uint32_t ratio, const float *scores,
                                    int32_t *sel_out, uint32_t *sel_count_out, uint32_t grid) {
-  if (t == 0) MK_DIE("mk_attn_select_emit: T must be >= 1");
-  if (ratio != model::kIdxRatio || budget < ratio) MK_DIE("mk_attn_select_emit: budget %u ratio %u", budget, ratio);
+  if (t == 0) MK_DIE("qwen38_attn_select_emit: T must be >= 1");
+  if (ratio != model::kIdxRatio || budget < ratio) MK_DIE("qwen38_attn_select_emit: budget %u ratio %u", budget, ratio);
   const uint32_t max_nb = (p0 + t) / ratio, max_sel = budget + ratio - 1;
   const size_t ns = size_t(t) * (max_nb ? max_nb : 1);
   float *dscores = up<float>(nullptr, ns);
@@ -152,15 +152,15 @@ extern "C" int mk_attn_select_emit(uint32_t t, uint32_t p0, uint32_t budget, uin
 
 // Test C ABI for stage 3 alone (tests/ops/test_attn_split.py): q_out, gate [T][24][256], kv [n_cells][2][2][256],
 // sel [T][max_sel] (cells < n_cells), sel_count [T] in; attn_out [T][24][256] out. `grid` 0 = one workgroup per item.
-extern "C" int mk_attn_attend(uint32_t t, uint32_t n_cells, uint32_t max_sel, const float *q_out, const float *gate,
+extern "C" int qwen38_attn_attend(uint32_t t, uint32_t n_cells, uint32_t max_sel, const float *q_out, const float *gate,
                               const float *kv, const int32_t *sel, const uint32_t *sel_count, float *attn_out,
                               uint32_t grid) {
-  if (t == 0 || n_cells == 0) MK_DIE("mk_attn_attend: T %u, %u cells", t, n_cells);
+  if (t == 0 || n_cells == 0) MK_DIE("qwen38_attn_attend: T %u, %u cells", t, n_cells);
   for (uint32_t i = 0; i < t; ++i) {
-    if (sel_count[i] == 0 || sel_count[i] > max_sel) MK_DIE("mk_attn_attend: token %u selects %u of %u", i, sel_count[i], max_sel);
+    if (sel_count[i] == 0 || sel_count[i] > max_sel) MK_DIE("qwen38_attn_attend: token %u selects %u of %u", i, sel_count[i], max_sel);
     for (uint32_t k = 0; k < sel_count[i]; ++k)
       if (sel[size_t(i) * max_sel + k] < 0 || uint32_t(sel[size_t(i) * max_sel + k]) >= n_cells)
-        MK_DIE("mk_attn_attend: token %u slot %u: cell %d of %u", i, k, sel[size_t(i) * max_sel + k], n_cells);
+        MK_DIE("qwen38_attn_attend: token %u slot %u: cell %d of %u", i, k, sel[size_t(i) * max_sel + k], n_cells);
   }
   const size_t nq = size_t(t) * model::kHeads * model::kHeadDim;
   float *dq = up(q_out, nq), *dg = up(gate, nq);
@@ -178,27 +178,27 @@ extern "C" int mk_attn_attend(uint32_t t, uint32_t n_cells, uint32_t max_sel, co
   return 0;
 }
 
-// Test C ABI for the masked selection (attn_mask.h; tests/ops/test_attn_mask.py): mk_attn with the attention cell mask,
+// Test C ABI for the masked selection (attn_mask.h; tests/ops/test_attn_mask.py): qwen38_attn with the attention cell mask,
 // n_mask ranges [mask_lo[i], mask_hi[i]) (the engine's rules: <= kAttnMaskMax, lo < hi, ascending, disjoint, hi <= p0), and
 // the masked selection stage in place of the unmasked one, n_mask = 0 included. sel_out is [T][attn_max_sel_masked(budget,
 // ratio)]; kv_bytes / ik_bytes are the caches' sizes, checked against (p0 + T) cells.
-extern "C" int mk_attn_masked(uint32_t t, uint32_t p0, const float *q_raw, const float *k_raw, const float *v_raw,
+extern "C" int qwen38_attn_masked(uint32_t t, uint32_t p0, const float *q_raw, const float *k_raw, const float *v_raw,
                               const float *iq_raw, const float *ik_raw, const float *q_gamma, const float *k_gamma,
                               const float *idxq_gamma, const float *idxk_gamma, const float *inv_freq, float *kv_cache,
                               uint64_t kv_bytes, float *ik_cache, uint64_t ik_bytes, uint32_t budget, uint32_t ratio,
                               uint32_t n_mask, const uint32_t *mask_lo, const uint32_t *mask_hi, int32_t *sel_out,
                               uint32_t *sel_count_out, float *block_scores_out, float *attn_out, uint32_t grid) {
-  if (t == 0) MK_DIE("mk_attn_masked: T must be >= 1");
-  if (ratio != model::kIdxRatio || budget < ratio) MK_DIE("mk_attn_masked: budget %u ratio %u", budget, ratio);
+  if (t == 0) MK_DIE("qwen38_attn_masked: T must be >= 1");
+  if (ratio != model::kIdxRatio || budget < ratio) MK_DIE("qwen38_attn_masked: budget %u ratio %u", budget, ratio);
   const uint32_t cap = p0 + t;
-  MK_CHECK_BYTES("mk_attn_masked", "kv_cache", kv_bytes, sizeof(float) * size_t(cap) * 2 * model::kKvHeads * model::kHeadDim);
-  MK_CHECK_BYTES("mk_attn_masked", "ik_cache", ik_bytes, sizeof(float) * size_t(cap) * model::kIdxDim);
-  if (n_mask > kAttnMaskMax) MK_DIE("mk_attn_masked: %u ranges, at most %u", n_mask, kAttnMaskMax);
+  MK_CHECK_BYTES("qwen38_attn_masked", "kv_cache", kv_bytes, sizeof(float) * size_t(cap) * 2 * model::kKvHeads * model::kHeadDim);
+  MK_CHECK_BYTES("qwen38_attn_masked", "ik_cache", ik_bytes, sizeof(float) * size_t(cap) * model::kIdxDim);
+  if (n_mask > kAttnMaskMax) MK_DIE("qwen38_attn_masked: %u ranges, at most %u", n_mask, kAttnMaskMax);
   AttnCellMask m{};
   m.n = n_mask;
   for (uint32_t i = 0; i < n_mask; ++i) {
     if (mask_lo[i] >= mask_hi[i] || mask_hi[i] > p0 || (i && mask_lo[i] < mask_hi[i - 1]))
-      MK_DIE("mk_attn_masked: range %u [%u, %u) breaks the mask's rules (p0 %u)", i, mask_lo[i], mask_hi[i], p0);
+      MK_DIE("qwen38_attn_masked: range %u [%u, %u) breaks the mask's rules (p0 %u)", i, mask_lo[i], mask_hi[i], p0);
     m.lo[i] = mask_lo[i];
     m.hi[i] = mask_hi[i];
   }
