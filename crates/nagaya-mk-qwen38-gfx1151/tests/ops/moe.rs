@@ -12,7 +12,7 @@
 
 use crate::fixture::Fixture;
 use crate::inputs::{self, Qtype};
-use crate::mkops::{self, assert_same, lib, nbytes, ptr, ptr_mut, same_bits};
+use crate::ops_lib::{self, assert_same, lib, nbytes, ptr, ptr_mut, same_bits};
 use crate::sym;
 use sha2::{Digest, Sha256};
 use std::ffi::c_void;
@@ -354,7 +354,7 @@ fn moe_matches_reference() {
             );
             let rows =
                 |v: &[f32]| -> Vec<f32> { ok.iter().flat_map(|&r| v[r * 2560..(r + 1) * 2560].to_vec()).collect() };
-            let e = mkops::relerr(&rows(&got.out), &rows(&want));
+            let e = ops_lib::relerr(&rows(&got.out), &rows(&want));
             let tol = if fast == 1 { TOL_FAST } else { TOL };
             eprintln!(
                 "pool {name} fast={fast} MoE relerr {e:.2e} over {} tokens (tol {tol:.0e})",

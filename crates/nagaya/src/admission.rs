@@ -198,7 +198,7 @@ impl Registry {
     #[cfg(feature = "hip")]
     pub fn with_qwen38() -> Self {
         let mut registry = Self::new();
-        registry.register(crate::mk::KIND, Box::new(crate::mk::Qwen38Factory));
+        registry.register(crate::qwen38::KIND, Box::new(crate::qwen38::Qwen38Factory));
         registry
     }
 
@@ -209,7 +209,7 @@ impl Registry {
         #[allow(unused_mut)]
         let mut registry = Self::new();
         #[cfg(feature = "hip")]
-        registry.register(crate::mk::KIND, Box::new(crate::mk::Qwen38Factory));
+        registry.register(crate::qwen38::KIND, Box::new(crate::qwen38::Qwen38Factory));
         #[cfg(feature = "hip")]
         registry.register(
             crate::qwenimage21::KIND,

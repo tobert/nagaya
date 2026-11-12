@@ -6,7 +6,7 @@
 
 use crate::fixture::Fixture;
 use crate::inputs::{self, Qtype};
-use crate::mkops::{
+use crate::ops_lib::{
     self, all_finite, assert_same, dequant, lib, matmul_f64, nbytes, opt_nbytes, opt_ptr, ptr, ptr_mut, qmm_fast,
     same_bits,
 };
@@ -730,8 +730,8 @@ fn hc_pre_matches_reference() {
     };
     assert_eq!(rc, 0, "mk_hc_pre");
     let (e_mix, e_inj) = (
-        mkops::relerr(&mixed, &fixture.f32_flat("pre_mixed")),
-        mkops::relerr(&inj, &fixture.f32_flat("pre_inject")),
+        ops_lib::relerr(&mixed, &fixture.f32_flat("pre_mixed")),
+        ops_lib::relerr(&inj, &fixture.f32_flat("pre_inject")),
     );
     eprintln!("mixed relerr {e_mix:.2e}, inject relerr {e_inj:.2e}");
     assert!(

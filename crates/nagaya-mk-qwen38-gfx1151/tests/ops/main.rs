@@ -8,7 +8,7 @@
 
 mod fixture;
 mod inputs;
-mod mkops;
+mod ops_lib;
 
 mod child;
 

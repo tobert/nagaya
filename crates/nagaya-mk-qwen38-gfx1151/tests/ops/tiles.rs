@@ -12,7 +12,7 @@
 
 use crate::fixture::Fixture;
 use crate::inputs::{self, Qtype};
-use crate::mkops::{self, all_finite, assert_same, nbytes, ptr, ptr_mut};
+use crate::ops_lib::{self, all_finite, assert_same, nbytes, ptr, ptr_mut};
 use libloading::Library;
 use std::ffi::c_void;
 use std::sync::LazyLock;
@@ -75,7 +75,7 @@ type TileQmmIq3s =
 fn relayout(fmt: Fmt, raw: &[u8], rows: usize, k: usize, fill: u8) -> Vec<u8> {
     let mut out = vec![fill; fmt.tiled_bytes(rows, k)];
     let name = format!("mk_relayout_{}\0", fmt.symbol());
-    let library: &Library = mkops::lib("tiles");
+    let library: &Library = ops_lib::lib("tiles");
     let f = unsafe { library.get::<Relayout>(name.as_bytes()) }.expect("the relayout symbol");
     let rc = unsafe {
         f(
@@ -95,7 +95,7 @@ fn relayout(fmt: Fmt, raw: &[u8], rows: usize, k: usize, fill: u8) -> Vec<u8> {
 fn tile_dequant(fmt: Fmt, tiled: &[u8], rows: usize, k: usize) -> Vec<f32> {
     let mut out = vec![f32::NAN; rows * k];
     let name = format!("mk_tile_dequant_{}\0", fmt.symbol());
-    let library: &Library = mkops::lib("tiles");
+    let library: &Library = ops_lib::lib("tiles");
     let f = unsafe { library.get::<TileDequant>(name.as_bytes()) }.expect("the dequant symbol");
     let rc = unsafe {
         f(
@@ -151,7 +151,7 @@ fn tile_qmm(fmt: Fmt, raw: &[u8], rows: usize, k: usize, x: &[f32], run: Run) ->
     let mut y = vec![f32::NAN; t * rows];
     let name = format!("mk_tile_qmm_{}\0", fmt.symbol());
     let rc = if fmt == Fmt::Iq3s {
-        let library: &Library = mkops::lib(if run.look { "tiles" } else { "tiles_nolook" });
+        let library: &Library = ops_lib::lib(if run.look { "tiles" } else { "tiles_nolook" });
         let f = unsafe { library.get::<TileQmmIq3s>(name.as_bytes()) }.expect("the tile qmm symbol");
         assert_eq!(run.ksplit, 1, "IQ3_S has no split");
         unsafe {
@@ -170,7 +170,7 @@ fn tile_qmm(fmt: Fmt, raw: &[u8], rows: usize, k: usize, x: &[f32], run: Run) ->
             )
         }
     } else {
-        let library: &Library = mkops::lib("tiles");
+        let library: &Library = ops_lib::lib("tiles");
         let f = unsafe { library.get::<TileQmm>(name.as_bytes()) }.expect("the tile qmm symbol");
         unsafe {
             f(
@@ -195,7 +195,7 @@ fn tile_qmm(fmt: Fmt, raw: &[u8], rows: usize, k: usize, x: &[f32], run: Run) ->
 
 /// The split-K slices that the engine uses for a matrix of this shape.
 fn ksplit_of(rows: usize, k: usize) -> u32 {
-    let f = crate::sym!(mkops::lib("qmmh"), "mk_qmmh_ksplit", fn(u32, u32) -> u32);
+    let f = crate::sym!(ops_lib::lib("qmmh"), "mk_qmmh_ksplit", fn(u32, u32) -> u32);
     unsafe { f(rows as u32, k as u32) }
 }
 
@@ -649,7 +649,7 @@ fn moe_down(ty: u32, raw: &[u8], counts: &[u32], assign: &[u32], h: &[f32], mode
     );
     let mut y = vec![f32::NAN; assign.len() * DOWN_ROWS];
     let f = crate::sym!(
-        mkops::lib("moe"),
+        ops_lib::lib("moe"),
         "mk_moe_down",
         fn(
             u32,
@@ -760,7 +760,7 @@ fn down_matmul_sees_the_weights() {
     let y = moe_down(IQ4_NL, pool, &counts, &[0, 1], &h, 1, 0);
     let swapped = moe_down(IQ4_NL, pool, &counts, &[1, 0], &h, 1, 0);
     assert!(
-        !mkops::same_bits(&y, &swapped),
+        !ops_lib::same_bits(&y, &swapped),
         "swapping the rows did not change the output"
     );
     let mut other = counts.clone();
@@ -769,7 +769,7 @@ fn down_matmul_sees_the_weights() {
     other[5] = 1;
     other[6] = 1;
     let moved = moe_down(IQ4_NL, pool, &other, &[0, 1], &h, 1, 0);
-    assert!(!mkops::same_bits(&y, &moved), "other experts gave the same output");
+    assert!(!ops_lib::same_bits(&y, &moved), "other experts gave the same output");
 }
 
 /// `op_moe_gu` over the pool: expert `e < 256` takes `counts[e]` rows of `x` (grouped by expert, in expert order). The result
@@ -779,7 +779,7 @@ fn moe_gu(raw: &[u8], counts: &[u32], x: &[f32], mode: u32, grid: u32, look: boo
     assert_eq!(x.len(), total as usize * GU_K);
     assert!(counts[256..].iter().all(|&c| c == 0), "an up matrix is routed");
     let mut gu = vec![f32::NAN; total as usize * 2 * GU_ROWS];
-    let library = mkops::lib(if look { "moe" } else { "moe_nolook" });
+    let library = ops_lib::lib(if look { "moe" } else { "moe_nolook" });
     let f = crate::sym!(
         library,
         "mk_moe_gu",
@@ -883,12 +883,12 @@ fn gu_matmul_sees_the_weights() {
         gu.chunks(width).flat_map(|row| row[..GU_ROWS].to_vec()).collect(),
         gu.chunks(width).flat_map(|row| row[GU_ROWS..].to_vec()).collect(),
     );
-    assert!(!mkops::same_bits(&gate, &up), "the gate and the up columns are equal");
+    assert!(!ops_lib::same_bits(&gate, &up), "the gate and the up columns are equal");
     let mut other = vec![0u32; 512];
     other[5] = 1;
     other[4] = 1;
     assert!(
-        !mkops::same_bits(&gu, &moe_gu(pool, &other, &x, 1, 0, true)),
+        !ops_lib::same_bits(&gu, &moe_gu(pool, &other, &x, 1, 0, true)),
         "other experts gave the same output"
     );
 }

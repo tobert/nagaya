@@ -13,7 +13,7 @@
 
 use crate::fixture::Fixture;
 use crate::inputs::normal_at;
-use crate::mkops::{all_finite, bits, lib, ptr, ptr_mut, relerr};
+use crate::ops_lib::{all_finite, bits, lib, ptr, ptr_mut, relerr};
 use crate::sym;
 use std::ffi::c_void;
 

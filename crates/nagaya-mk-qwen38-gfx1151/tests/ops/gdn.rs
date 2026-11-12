@@ -13,7 +13,7 @@
 
 use crate::fixture::Fixture;
 use crate::inputs;
-use crate::mkops::{assert_same, lib, ptr, ptr_mut, relerr, same_bits};
+use crate::ops_lib::{assert_same, lib, ptr, ptr_mut, relerr, same_bits};
 use crate::sym;
 use std::ffi::c_void;
 

@@ -11,7 +11,7 @@
 
 use crate::fixture::Fixture;
 use crate::inputs;
-use crate::mkops::{self, all_finite, nbytes, ptr, ptr_mut, relerr, same_bits};
+use crate::ops_lib::{self, all_finite, nbytes, ptr, ptr_mut, relerr, same_bits};
 use crate::sym;
 use sha2::{Digest, Sha256};
 use std::ffi::c_void;
@@ -41,7 +41,7 @@ fn select_run(which: Select, t: usize, p0: usize, scores: &[f32], grid: u32) -> 
     let rc = match which {
         Select::Serial => {
             let f = sym!(
-                mkops::lib("attn_select_oracle"),
+                ops_lib::lib("attn_select_oracle"),
                 "mk_attn_select_serial",
                 fn(u32, u32, u32, u32, *const c_void, *mut c_void, *mut c_void, u32) -> i32
             );
@@ -60,7 +60,7 @@ fn select_run(which: Select, t: usize, p0: usize, scores: &[f32], grid: u32) -> 
         }
         Select::Parallel => {
             let f = sym!(
-                mkops::lib("attn"),
+                ops_lib::lib("attn"),
                 "mk_attn_select_emit",
                 fn(u32, u32, u32, u32, *const c_void, *mut c_void, *mut c_void, u32) -> i32
             );
@@ -289,7 +289,7 @@ fn call_attend(q: &[f32], gate: &[f32], kv: &[f32], sel: &[i32], cnt: &[u32], gr
     let t = cnt.len();
     let mut out = vec![f32::NAN; t * H * HD];
     let f = sym!(
-        mkops::lib("attn"),
+        ops_lib::lib("attn"),
         "mk_attn_attend",
         fn(
             u32,
@@ -648,7 +648,7 @@ fn call(masked: bool, c: &Case, p0: usize, t: usize, budget: usize, ranges: &[(u
     let mut cnt = vec![0u32; t];
     let mut scores = vec![0f32; t * max_nb];
     let mut out = vec![f32::NAN; t * H * HD];
-    let lib = mkops::lib("attn");
+    let lib = ops_lib::lib("attn");
     let rc = if masked {
         let lo: Vec<u32> = if ranges.is_empty() {
             vec![0]

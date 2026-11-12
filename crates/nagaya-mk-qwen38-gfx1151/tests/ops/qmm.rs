@@ -9,7 +9,7 @@
 
 use crate::fixture::Fixture;
 use crate::inputs::{self, Qtype};
-use crate::mkops::{
+use crate::ops_lib::{
     self, Kernel, QmmOptions, all_finite, assert_same, bit_diff, dequant, matmul_f64, qmm, qmm_fast, qmm_oracle,
     qmm_with, same_bits,
 };
@@ -651,7 +651,7 @@ fn qmm_fast_grid_independent_and_repeatable() {
 #[test]
 fn qmmh_resources() {
     let f = sym!(
-        mkops::lib("qmmh"),
+        ops_lib::lib("qmmh"),
         "mk_qmmh_resources",
         fn(*mut i32, *mut i32, *mut i32) -> i32
     );

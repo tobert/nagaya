@@ -12,9 +12,9 @@ use nagaya::admission::{Factory, GroupDevice, OpenErrorKind, Registry, admit};
 use nagaya::exit::ExitCode;
 use nagaya::inventory::{Device, Inventory, Probe};
 use nagaya::lifecycle;
-use nagaya::mk::{self, Qwen38Factory};
 use nagaya::probe::FileProbe;
 use nagaya::profile::{PROFILE_FILE, PlacementProfile};
+use nagaya::qwen38::{self, Qwen38Factory};
 use nagaya_abi::Tier;
 use nagaya_ledger::Ledger;
 use nagaya_mk_qwen38_gfx1151::Qwen38Error;
@@ -76,9 +76,9 @@ impl Install {
 fn a_hip_build_registers_the_mk_kind() {
     let registry = Registry::with_qwen38();
     assert!(
-        registry.factory(mk::KIND).is_some(),
+        registry.factory(qwen38::KIND).is_some(),
         "the registry has no factory for `{}`",
-        mk::KIND
+        qwen38::KIND
     );
     assert!(
         registry.factory("fake").is_none(),
@@ -89,7 +89,7 @@ fn a_hip_build_registers_the_mk_kind() {
 #[test]
 fn the_registered_kind_is_the_kind_in_the_gfx1151host_profile() {
     let profile = PlacementProfile::read(&repo().join("deploy/gfx1151host").join(PROFILE_FILE)).unwrap();
-    assert_eq!(profile.engines[0].kind, mk::KIND);
+    assert_eq!(profile.engines[0].kind, qwen38::KIND);
     let registry = Registry::with_qwen38();
     for engine in &profile.engines {
         assert!(
@@ -190,7 +190,7 @@ fn plan_refuses_a_config_without_a_usable_weights_size_or_with_an_unknown_key() 
 #[test]
 fn an_open_error_of_the_mk_binding_is_a_crash() {
     // The engine is linked into the binary, so no library pin can refuse the start (AGENTS.md milestone 15).
-    let other = mk::open_error(Qwen38Error::new("mk_engine_open returned no engine"));
+    let other = qwen38::open_error(Qwen38Error::new("mk_engine_open returned no engine"));
     assert_eq!(other.kind, OpenErrorKind::Other);
     assert!(!other.kind.refuses_start());
 }
@@ -199,9 +199,9 @@ fn an_open_error_of_the_mk_binding_is_a_crash() {
 fn an_arena_that_differs_from_the_plan_refuses_the_start_and_gives_the_real_size() {
     // The ledger admitted `weights_bytes`. A real arena of another size means the ledger holds the wrong bytes.
     let planned = nagaya_mk_qwen38_gfx1151::plan(65_498_251_264);
-    assert_eq!(mk::weights_problem(&planned, &planned), Ok(()));
+    assert_eq!(qwen38::weights_problem(&planned, &planned), Ok(()));
     let opened = nagaya_mk_qwen38_gfx1151::plan(65_000_000_000);
-    let error = mk::weights_problem(&planned, &opened).unwrap_err();
+    let error = qwen38::weights_problem(&planned, &opened).unwrap_err();
     assert_eq!(error.kind, OpenErrorKind::PartSize);
     assert!(error.kind.refuses_start());
     assert!(

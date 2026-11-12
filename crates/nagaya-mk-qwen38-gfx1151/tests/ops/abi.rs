@@ -10,7 +10,7 @@
 
 use crate::child;
 use crate::inputs::Qtype;
-use crate::mkops::{lib, lib_raw, lib_with, ptr, ptr_mut, tcode};
+use crate::ops_lib::{lib, lib_raw, lib_with, ptr, ptr_mut, tcode};
 use crate::sym;
 use libloading::Library;
 use std::collections::BTreeMap;
@@ -1048,7 +1048,7 @@ fn qmm_fast_with_activation(position: usize, value: f32, rows: usize) {
     let raw = crate::inputs::raw_rows(Qtype::Q8_0, 71, 16, 2560);
     let mut x = vec![0f32; rows * 2560];
     x[position] = value;
-    let _ = crate::mkops::qmm_fast(Qtype::Q8_0, &raw, 16, 2560, &x, 0);
+    let _ = crate::ops_lib::qmm_fast(Qtype::Q8_0, &raw, 16, 2560, &x, 0);
     println!("NO TRAP");
 }
 
@@ -1219,6 +1219,6 @@ fn a_library_first_loaded_without_the_sink_gets_it_when_asked_later() {
 #[test]
 #[ignore = "child of a_library_first_loaded_without_the_sink_gets_it_when_asked_later"]
 fn child_late_sink() {
-    let _ = crate::mkops::lib_with("qmmh", false);
+    let _ = crate::ops_lib::lib_with("qmmh", false);
     qmm_fast_with_activation(2560 + 7, 70000.0, 2);
 }
