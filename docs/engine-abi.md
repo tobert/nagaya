@@ -383,8 +383,9 @@ Reason: the fake engine must serve a family with a vocabulary, and the output ro
 | poison / last_error | `Qwen38Context::poisoned` (`context.rs`); `last_error` of the handle (`engine.rs`) | |
 | part writes | `context::state_write`, `cells_write`, `set_n` | return nothing and stop the program on input they refuse; the wrapper checks every precondition first (part index, bytes, an empty context for parts 3-5, n within `max`, not poisoned) and returns refused; a write to a context that is already poisoned is refused, because this call changes nothing; after the call, the poison flag gives failed (decided 2026-10-18) |
 | close | the drop of the last handle or `Hold` (`engine.rs`) | frees the contexts, then the weights: the arena, the shard maps, the PLE table, the weight table (`worker.rs` `unload`); the next `open` loads them again from the same shards; the HIP runtime, the C++ engine and the pass host stay (see below) |
-| pass_check / pass | `host::segments_problem`, `host::run_pass` in Rust; `qwen38_launch_fused` | tokens only (PLE needs token ids); the worker refuses a segment count outside 1 to 16, then a problem of `segments_problem`, then a poisoned context, then a bad knob; the host gathers the PLE rows (`ple.rs`), builds the stages (`pass.rs`), and launches them; outputs are logits per segment |
-| taps | none | milestone 15 step 6 removed the taps (layers, routes, gates), which had no call; milestone 34 adds `residual` and `fold` ("The residual of the Qwen3.8 engine") |
+| pass_check / pass | `host::segments_problem`, `host::run_pass` in Rust; `qwen38_launch_fused` | tokens only (PLE needs token ids); the worker refuses a segment count outside 1 to 16, then a problem of `segments_problem`, then a poisoned context, then a bad knob; the host gathers the PLE rows (`ple.rs`), builds the stages (`pass.rs`), and launches them; outputs are logits per segment, then the tap outputs; a pass with a tap or a control item runs as several launches (see below) |
+| taps | `limits().taps`: `residual` and `fold` | `cuts.rs`; a pass with `residual` runs as 49 launches, cut after each layer, and the host copies the last row of `h` of each logit row with `hip_rt_memcpy`; `fold` is the row of `mixed` that the head reads, copied after the last launch; the rules are in "The residual of the Qwen3.8 engine" and are still Proposed |
+| control | `control()`, `limits().control`, the term `control` | `cuts.rs` `ControlTable`: one device allocation of 15,728,640 bytes at open, after the scratch probe; `control_write` is one copy to the entry; the host op reads the vector of a layer from the device, applies the items to the rows of its segment at the cuts, and writes the rows back; no device code changes; the rules are Proposed |
 | telemetry | none | milestone 15 step 6 removed the op times and the event ring of a pass, which had no call |
 | determinism | `always` | `stage.h`: "every op's output bits depend only on its work items"; top-k ties break by index; bit settings in the identity |
 
@@ -453,8 +454,9 @@ the ABI.
   refuses a segment whose first position is not n, or whose positions are not contiguous. The Qwen3.8 engine reads no
   per-token metadata, so `meta` must be empty.
 - **A pass is fused.** Milestone 15 step 6 removed the unfused pass, which no call used. The restore's pool stages
-  still run one launch each (`qwen38_launch_each`). This binding declares no taps yet. Milestone 34 adds taps
-  ("The residual of the Qwen3.8 engine").
+  still run one launch each (`qwen38_launch_each`). This binding declares the taps `residual` and `fold`, and a table
+  of control vectors ("The residual of the Qwen3.8 engine"). A pass with a tap or a control item runs as several
+  launches of the same kernel, cut at layer ends. A pass with neither runs as one launch.
 - **The checkpoint digest is a spot check.** The binding hashes each shard's size and its GGUF header, as the Qwen3.8
   engine's `weight_hash` does. The digest starts with `spot-sha256:`.
 - **`tokenizer_hash` is a hash of the GGUF tokenizer.** The Qwen3.8 engine loads no tokenizer file. The binding hashes
