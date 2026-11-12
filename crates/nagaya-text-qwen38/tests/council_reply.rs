@@ -1,6 +1,6 @@
 //! The reply parser of the council family (spec 11.3), through the `ReplyParser` trait of `nagaya-council`.
 //!
-//! The cases are `tests/fixtures/reply.json`, the outputs of mk's Python. The raw parser has its own tests in
+//! The cases are `tests/fixtures/reply.json`, the outputs of the reference's Python. The raw parser has its own tests in
 //! `tests/reply.rs`. These tests check the adapter: the stop token, the phase and piece of each step, the tail, the
 //! calls and the tool list.
 
@@ -14,7 +14,7 @@ use nagaya_text_qwen38::Qwen38Family;
 use serde_json::{Value, json};
 use std::sync::OnceLock;
 
-/// `<|im_end|>`, the first stop id of mk (`STOP_IDS` in `service/generate.py`).
+/// `<|im_end|>`, the first stop id of the reference (`STOP_IDS` in `service/generate.py`).
 const IM_END: u32 = 248046;
 /// `<|endoftext|>`, the second.
 const END_OF_TEXT: u32 = 248044;
@@ -49,16 +49,16 @@ fn tools_of(name: &str) -> Vec<Tool> {
     })
 }
 
-fn phase_of(mk: &str) -> Phase {
-    match mk {
+fn phase_of(name: &str) -> Phase {
+    match name {
         "think" => Phase::Reasoning,
         "answer" => Phase::Content,
         "tool" => Phase::Call,
-        other => panic!("mk has no phase {other:?}"),
+        other => panic!("The reference has no phase {other:?}"),
     }
 }
 
-/// The ids of a case, then a stop token when mk stopped. mk's loop does not feed the stop token to its tracker.
+/// The ids of a case, then a stop token when the reference stopped. The reference's loop does not feed the stop token to its tracker.
 fn ids_of(case: &Value) -> Vec<u32> {
     let mut ids: Vec<u32> = case["ids"]
         .as_array()
@@ -95,7 +95,7 @@ fn cases() -> &'static Vec<Value> {
     fixture()["cases"].as_array().expect("cases")
 }
 
-/// The steps that mk's released text gives for one token: the phase of the token, and the text released in that
+/// The steps that the reference's released text gives for one token: the phase of the token, and the text released in that
 /// phase. The end of thinking is not part of the reasoning.
 fn want_step(event: &Value) -> ReplyStep {
     let phase = phase_of(event[0].as_str().expect("a phase"));
@@ -114,7 +114,7 @@ fn want_step(event: &Value) -> ReplyStep {
 }
 
 #[test]
-fn each_token_has_the_phase_and_the_released_text_of_mk() {
+fn each_token_has_the_phase_and_the_released_text_of_the_reference() {
     if common::absent() {
         return;
     }
@@ -122,7 +122,7 @@ fn each_token_has_the_phase_and_the_released_text_of_mk() {
         let name = &case["name"];
         let (steps, _) = run(case);
         let events = case["events"].as_array().expect("events");
-        // The last step is the stop token, which mk does not feed. It releases nothing.
+        // The last step is the stop token, which the reference does not feed. It releases nothing.
         let stop = usize::from(case["finish"] == "stop");
         assert_eq!(steps.len(), events.len() + stop, "token count of {name}");
         for (n, (got, event)) in steps.iter().zip(events).enumerate() {
@@ -190,7 +190,7 @@ fn same_call(got: &ReplyCall, want: &Value, name: &Value) {
         ReplyCall::Parsed { name: n, input } => {
             assert!(
                 want.get("error").is_none(),
-                "{name}: parsed a call that mk refused: {want}"
+                "{name}: parsed a call that the reference refused: {want}"
             );
             assert_eq!(n, want["name"].as_str().unwrap(), "name in {name}");
             // The input keeps the order of the text, so compare the text of the object.
@@ -221,7 +221,7 @@ fn same_call(got: &ReplyCall, want: &Value, name: &Value) {
 }
 
 #[test]
-fn the_reply_is_the_reply_of_mk() {
+fn the_reply_is_the_reply_of_the_reference() {
     if common::absent() {
         return;
     }
@@ -246,7 +246,7 @@ fn the_reply_is_the_reply_of_mk() {
 }
 
 #[test]
-fn the_tail_is_the_text_mk_held_back() {
+fn the_tail_is_the_text_the_reference_held_back() {
     if common::absent() {
         return;
     }

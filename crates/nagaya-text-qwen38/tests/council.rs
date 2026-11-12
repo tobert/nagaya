@@ -18,7 +18,7 @@ fn context(v: Value) -> Context {
     serde_json::from_value(v).expect("the test context is valid")
 }
 
-/// The fixture of `tools/make_council_fixture.py`: renders that mk's Python front-end and the layout of the port gave.
+/// The fixture of `tools/make_council_fixture.py`: renders that the reference's Python front-end and the layout of the port gave.
 fn fixture() -> &'static Value {
     static F: OnceLock<Value> = OnceLock::new();
     F.get_or_init(|| {
@@ -373,9 +373,9 @@ fn a_context_with_a_noncharacter_is_a_client_error_and_one_with_no_message_too()
 }
 
 /// A change to the rendering of a context changes one of these: its text, its token count, the digest of its ids,
-/// or its boundaries. The expected values are from mk's Python (`render_messages`).
+/// or its boundaries. The expected values are from the reference's Python (`render_messages`).
 #[test]
-fn contexts_render_to_the_tokens_of_mks_python() {
+fn contexts_render_to_the_tokens_of_the_reference_python() {
     if common::absent() {
         return;
     }
@@ -760,7 +760,7 @@ fn all_asked(spec: &Spec) -> Vec<Asked> {
         .collect()
 }
 
-/// The plain reads of the fixture: the tokens of the case and of each question suffix, from mk's tokenizer.
+/// The plain reads of the fixture: the tokens of the case and of each question suffix, from the reference's tokenizer.
 #[test]
 fn a_plain_read_has_the_tokens_of_the_layout_of_mkviolet() {
     if common::absent() {
@@ -1051,7 +1051,7 @@ fn queue_plan(c: &Context, spec: &Spec, case: &str, asked: &[Asked]) -> Result<B
     plan_for(Some((c, &r)), spec, case, asked)
 }
 
-/// The queue read of the fixture: the tokens after the context and after each step, from mk's tokenizer.
+/// The queue read of the fixture: the tokens after the context and after each step, from the reference's tokenizer.
 #[test]
 fn a_queue_read_has_the_tokens_of_the_call_that_the_template_writes() {
     if common::absent() {

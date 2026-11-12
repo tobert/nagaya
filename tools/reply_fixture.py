@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Write the reply-parser fixture of nagaya-text-qwen38 from mk's Python (milestone 12, step 4).
+"""Write the reply-parser fixture of nagaya-text-qwen38 from the reference's Python (milestone 12, step 4).
 
-The fixture holds replies as token ids. For each reply it holds what mk's `service/generate.py` gives for each token
+The fixture holds replies as token ids. For each reply it holds what the reference's `service/generate.py` gives for each token
 (the piece of text and the phase) and what `ReplyTracker.finish()` gives at the end. The tool runs no service and uses
-no GPU. It reads mk, and the GGUF file for the tokenizer. It never writes into mk.
+no GPU. It reads the reference, and the GGUF file for the tokenizer. It never writes into reference.
 
     PYTHONDONTWRITEBYTECODE=1 ~/src/megakernel-qwen38-flashnext-strixhalo/.venv/bin/python -I \
-        tools/reply_fixture.py [--mk MK] [--gguf GGUF] [--out OUT]
+        tools/reply_fixture.py [--reference REFERENCE] [--gguf GGUF] [--out OUT]
 
-The loop below copies the token loop of `Generation._loop` in mk's `service/generate.py`: `Utf8Stream.push` of the
+The loop below copies the token loop of `Generation._loop` in the reference's `service/generate.py`: `Utf8Stream.push` of the
 token's bytes, then `ReplyTracker.feed`. The phase of a token is the phase of the last released segment, or the phase
 of the tracker when nothing was released. At the end the loop flushes the UTF-8 stream into the tracker.
 """
@@ -24,16 +24,16 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 
-DEFAULT_MK = Path.home() / "src/megakernel-qwen38-flashnext-strixhalo"
+DEFAULT_REFERENCE = Path.home() / "src/megakernel-qwen38-flashnext-strixhalo"
 DEFAULT_GGUF = ("/tank/ml/models/llama.cpp/Qwen3.8-Flash-Next-GGUF/UD-IQ4_XS/"
                 "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf")
 DEFAULT_OUT = Path(__file__).resolve().parent.parent / "crates/nagaya-text-qwen38/tests/fixtures/reply.json"
 
-# The tool sets. "mk" is the set of mk's own tests (tests/svc/test_chatfmt.py): one tool with every type, a tool with
+# The tool sets. "reference" is the set of the reference's own tests (tests/svc/test_chatfmt.py): one tool with every type, a tool with
 # no parameters, and a tool with a required parameter.
 TOOLSETS = {
     "none": None,
-    "mk": [
+    "reference": [
         {"type": "function", "function": {"name": "f", "description": "d", "parameters": {"type": "object", "properties": {
             "n": {"type": "integer"}, "x": {"type": "number"}, "flag": {"type": "boolean"}, "obj": {"type": "object"},
             "arr": {"type": "array"}, "s": {"type": "string"}, "any": {}, "either": {"type": ["string", "integer"]},
@@ -54,8 +54,8 @@ def call(name, **args):
     return f"<tool_call>\n<function={name}>\n{body}</function>\n</tool_call>"
 
 
-def git(mk: Path, *args: str) -> str:
-    return subprocess.run(["git", "-C", str(mk), *args], check=True, capture_output=True, text=True).stdout.strip()
+def git(reference: Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(reference), *args], check=True, capture_output=True, text=True).stdout.strip()
 
 
 # Each reply: (name, thinking, toolset, text, ending). The text is the reply without the stop token.
@@ -68,104 +68,104 @@ def replies() -> list[tuple]:
 
     # content only
     add("plain", False, "none", "Hello, world.")
-    add("plain_padded", False, "mk", "\n\n  hi there \n")
+    add("plain_padded", False, "reference", "\n\n  hi there \n")
     add("plain_empty", False, "none", "")
     add("plain_whitespace_only", False, "none", " \n\t \x1c ")
-    add("plain_think_end_is_text", False, "mk", "a </think> b")
+    add("plain_think_end_is_text", False, "reference", "a </think> b")
     add("plain_tool_marker_without_tools", False, "none", "a <tool_call> b")
     add("plain_tool_marker_with_empty_tools", False, "empty", "a <tool_call> b")
-    add("plain_false_marker", False, "mk", "x<tool_cal y<tool_c")
-    add("plain_ends_in_marker_prefix", False, "mk", "abc<tool_c")
-    add("plain_length", False, "mk", "the answer is cut off, so", "length")
+    add("plain_false_marker", False, "reference", "x<tool_cal y<tool_c")
+    add("plain_ends_in_marker_prefix", False, "reference", "abc<tool_c")
+    add("plain_length", False, "reference", "the answer is cut off, so", "length")
 
     # thinking
-    add("think_then_content", True, "mk", "let me think\n</think>\n\nThe answer is 4.")
-    add("think_empty", True, "mk", "\n</think>\n\nanswer")
-    add("think_empty_tight", True, "mk", "</think>answer")
-    add("think_only_marker", True, "mk", "</think>")
-    add("think_no_content", True, "mk", "just thinking\n</think>\n\n")
+    add("think_then_content", True, "reference", "let me think\n</think>\n\nThe answer is 4.")
+    add("think_empty", True, "reference", "\n</think>\n\nanswer")
+    add("think_empty_tight", True, "reference", "</think>answer")
+    add("think_only_marker", True, "reference", "</think>")
+    add("think_no_content", True, "reference", "just thinking\n</think>\n\n")
     add("think_padded", True, "none", "  \nsome plan  \n\n</think>\n\n  answer here \n")
     add("think_second_marker_is_content", True, "none", "a</think>b</think>c")
-    add("think_cut", True, "mk", "hmm, let me think about", "length")
-    add("think_cut_in_marker", True, "mk", "plan</thi", "length")
-    add("think_cut_with_call_text", True, "mk", "hmm <tool_call> still thinking", "length")
-    add("think_cut_empty", True, "mk", "", "length")
+    add("think_cut", True, "reference", "hmm, let me think about", "length")
+    add("think_cut_in_marker", True, "reference", "plan</thi", "length")
+    add("think_cut_with_call_text", True, "reference", "hmm <tool_call> still thinking", "length")
+    add("think_cut_empty", True, "reference", "", "length")
     add("think_false_marker", True, "none", "x</thi")
     add("think_false_marker_continued", True, "none", "x</thinkx>y</th")
     add("think_without_tools_tool_text", True, "none", "plan</think>ok <tool_call> not a call")
 
     # calls
     g, f, h = call("g"), call("f", n=3, s="x"), call("h", a="v")
-    add("call_one", False, "mk", g)
-    add("call_one_thinking", True, "mk", "plan\n</think>\n\n" + g)
-    add("call_content_then_call", True, "mk", "plan\n</think>\n\nSure, calling\n\n" + f)
-    add("call_several", True, "mk", "plan\n</think>\n\nI will call three tools.\n\n" + f + "\n" + g + "\n" + h)
-    add("call_several_tight", False, "mk", g + g + h)
-    add("call_types", False, "mk", call(
+    add("call_one", False, "reference", g)
+    add("call_one_thinking", True, "reference", "plan\n</think>\n\n" + g)
+    add("call_content_then_call", True, "reference", "plan\n</think>\n\nSure, calling\n\n" + f)
+    add("call_several", True, "reference", "plan\n</think>\n\nI will call three tools.\n\n" + f + "\n" + g + "\n" + h)
+    add("call_several_tight", False, "reference", g + g + h)
+    add("call_types", False, "reference", call(
         "f", n=3, x=1.5, flag=True, obj={"z": 1, "a": [1, 2, {"m": None, "b": 2}]}, arr=[3, "x", None], s="multi\nline",
         **{"any": "text", "either": "5", "nul": None, "one": 7}))
-    add("call_order_kept", False, "mk", call("f", s="1", n=2, flag=False, x=-0.5, obj={"k": 1, "j": 2}))
-    add("call_numbers", False, "mk", call("f", n=-12, x=2, **{"any": "1e3"}))
-    add("call_either_json_wins", False, "mk", call("f", either="42") + call("f", either="forty") + call("f", either="[1]"))
-    add("call_any_raw_or_json", False, "mk", call("f", **{"any": "plain words"}) + call("f", **{"any": '{"a": 1}'}) +
+    add("call_order_kept", False, "reference", call("f", s="1", n=2, flag=False, x=-0.5, obj={"k": 1, "j": 2}))
+    add("call_numbers", False, "reference", call("f", n=-12, x=2, **{"any": "1e3"}))
+    add("call_either_json_wins", False, "reference", call("f", either="42") + call("f", either="forty") + call("f", either="[1]"))
+    add("call_any_raw_or_json", False, "reference", call("f", **{"any": "plain words"}) + call("f", **{"any": '{"a": 1}'}) +
         call("f", **{"any": "  7  "}))
-    add("call_string_stays_string", False, "mk", call("f", s="123") + call("f", s='{"a": 1}') + call("f", s="null"))
-    add("call_one_null", False, "mk", call("f", one="null") + call("f", one="5"))
-    add("call_value_has_close_tag", False, "mk", call("h", a="x\n</parameter>\ny") + call("h", a="q\n</parameter>"))
-    add("call_value_unicode", False, "mk", call("h", a="héllo 世界 \U0001f600") + call("g"))
-    add("call_value_empty", False, "mk", call("h", a=""))
-    add("call_value_spaces", False, "mk", call("h", a="  padded  \n\n"))
-    add("call_obj_duplicate_key", False, "mk",
+    add("call_string_stays_string", False, "reference", call("f", s="123") + call("f", s='{"a": 1}') + call("f", s="null"))
+    add("call_one_null", False, "reference", call("f", one="null") + call("f", one="5"))
+    add("call_value_has_close_tag", False, "reference", call("h", a="x\n</parameter>\ny") + call("h", a="q\n</parameter>"))
+    add("call_value_unicode", False, "reference", call("h", a="héllo 世界 \U0001f600") + call("g"))
+    add("call_value_empty", False, "reference", call("h", a=""))
+    add("call_value_spaces", False, "reference", call("h", a="  padded  \n\n"))
+    add("call_obj_duplicate_key", False, "reference",
         '<tool_call>\n<function=f>\n<parameter=obj>\n{"a":1,"b":2,"a":3}\n</parameter>\n</function>\n</tool_call>')
     add("call_bare_tool", False, "bare", call("w", q="a b", k=3))
-    add("call_extra_whitespace", False, "mk",
+    add("call_extra_whitespace", False, "reference",
         "<tool_call>\n  <function=h>\n\n<parameter=a>\nv\n</parameter>\n\n  </function>\n  </tool_call>  \n\n" + g)
-    add("call_with_text_around", True, "mk", "t</think>before <tool_call> middle " + g + " after text")
-    add("call_name_with_space", False, "mk", "<tool_call>\n<function=my tool>\n</function>\n</tool_call>")
+    add("call_with_text_around", True, "reference", "t</think>before <tool_call> middle " + g + " after text")
+    add("call_name_with_space", False, "reference", "<tool_call>\n<function=my tool>\n</function>\n</tool_call>")
 
     # malformed calls
-    add("bad_no_function", False, "mk", "<tool_call>\nhello\n</tool_call>")
-    add("bad_function_no_newline", False, "mk", "<tool_call>\n<function=g></function>\n</tool_call>")
-    add("bad_unclosed_call", False, "mk", "<tool_call>\n<function=g>\n</function>\n")
-    add("bad_unclosed_function", False, "mk", "<tool_call>\n<function=g>\n</tool_call>")
-    add("bad_param_unclosed", False, "mk", "<tool_call>\n<function=h>\n<parameter=a>\nv\n</function>\n</tool_call>")
-    add("bad_param_syntax", False, "mk", "<tool_call>\n<function=h>\njunk\n</function>\n</tool_call>")
-    add("bad_unknown_function", False, "mk", call("nope", a="1"))
-    add("bad_undeclared_param", False, "mk", call("h", a="1", b="2"))
-    add("bad_repeated_param", False, "mk", call("h", a="1") .replace("</function>", "<parameter=a>\n2\n</parameter>\n</function>"))
-    add("bad_missing_required", False, "mk", call("h"))
-    add("bad_type_integer", False, "mk", call("f", n="abc"))
-    add("bad_type_integer_got_float", False, "mk", call("f", n="1.5"))
-    add("bad_type_integer_got_bool", False, "mk", call("f", n="true"))
-    add("bad_type_boolean", False, "mk", call("f", flag="yes"))
-    add("bad_type_number_nan", False, "mk", call("f", x="NaN"))
-    add("bad_type_number_big", False, "mk", call("f", x="1e999"))
-    add("bad_type_object_got_array", False, "mk", call("f", obj="[1]"))
-    add("bad_type_either_array", False, "mk", call("f", nul="0"))
-    add("bad_prose_between", False, "mk", g + "\nsome words\n" + g)
-    add("bad_prose_after", True, "mk", "t</think>c" + g + " trailing")
-    add("bad_then_good", False, "mk", "<tool_call>\n<function=zz\n" + g + call("h", a="ok"))
-    add("bad_good_between_bad", False, "mk", call("nope") + g + call("f", n="x"))
-    add("bad_open_twice", False, "mk", "<tool_call>\n<tool_call>\n<function=g>\n</function>\n</tool_call>")
-    add("bad_close_only", False, "mk", "text </tool_call> more")
-    add("bad_function_name_quote", False, "mk", "<tool_call>\n<function=it's>\n</function>\n</tool_call>")
-    add("bad_unknown_quoted_name", False, "mk", call("it's \"x\"é"))
-    add("bad_type_value_quoted", False, "mk", call("f", n="it's\n\"q\" é\t\\"))
+    add("bad_no_function", False, "reference", "<tool_call>\nhello\n</tool_call>")
+    add("bad_function_no_newline", False, "reference", "<tool_call>\n<function=g></function>\n</tool_call>")
+    add("bad_unclosed_call", False, "reference", "<tool_call>\n<function=g>\n</function>\n")
+    add("bad_unclosed_function", False, "reference", "<tool_call>\n<function=g>\n</tool_call>")
+    add("bad_param_unclosed", False, "reference", "<tool_call>\n<function=h>\n<parameter=a>\nv\n</function>\n</tool_call>")
+    add("bad_param_syntax", False, "reference", "<tool_call>\n<function=h>\njunk\n</function>\n</tool_call>")
+    add("bad_unknown_function", False, "reference", call("nope", a="1"))
+    add("bad_undeclared_param", False, "reference", call("h", a="1", b="2"))
+    add("bad_repeated_param", False, "reference", call("h", a="1") .replace("</function>", "<parameter=a>\n2\n</parameter>\n</function>"))
+    add("bad_missing_required", False, "reference", call("h"))
+    add("bad_type_integer", False, "reference", call("f", n="abc"))
+    add("bad_type_integer_got_float", False, "reference", call("f", n="1.5"))
+    add("bad_type_integer_got_bool", False, "reference", call("f", n="true"))
+    add("bad_type_boolean", False, "reference", call("f", flag="yes"))
+    add("bad_type_number_nan", False, "reference", call("f", x="NaN"))
+    add("bad_type_number_big", False, "reference", call("f", x="1e999"))
+    add("bad_type_object_got_array", False, "reference", call("f", obj="[1]"))
+    add("bad_type_either_array", False, "reference", call("f", nul="0"))
+    add("bad_prose_between", False, "reference", g + "\nsome words\n" + g)
+    add("bad_prose_after", True, "reference", "t</think>c" + g + " trailing")
+    add("bad_then_good", False, "reference", "<tool_call>\n<function=zz\n" + g + call("h", a="ok"))
+    add("bad_good_between_bad", False, "reference", call("nope") + g + call("f", n="x"))
+    add("bad_open_twice", False, "reference", "<tool_call>\n<tool_call>\n<function=g>\n</function>\n</tool_call>")
+    add("bad_close_only", False, "reference", "text </tool_call> more")
+    add("bad_function_name_quote", False, "reference", "<tool_call>\n<function=it's>\n</function>\n</tool_call>")
+    add("bad_unknown_quoted_name", False, "reference", call("it's \"x\"é"))
+    add("bad_type_value_quoted", False, "reference", call("f", n="it's\n\"q\" é\t\\"))
 
     # cut calls
-    add("cut_in_call_open", False, "mk", "ok<tool_ca", "length")
-    add("cut_after_call_open", False, "mk", "ok<tool_call>", "length")
-    add("cut_in_function", False, "mk", "ok<tool_call>\n<function=f>\n<parameter=n>\n3", "length")
-    add("cut_after_good_call", False, "mk", g + "\n<tool_call>\n<function=h>", "length")
-    add("cut_whole_call_no_close", False, "mk", g[:-len("</tool_call>")], "length")
-    add("cut_thinking_call", True, "mk", "plan\n</think>\n\nx" + f[:20], "length")
+    add("cut_in_call_open", False, "reference", "ok<tool_ca", "length")
+    add("cut_after_call_open", False, "reference", "ok<tool_call>", "length")
+    add("cut_in_function", False, "reference", "ok<tool_call>\n<function=f>\n<parameter=n>\n3", "length")
+    add("cut_after_good_call", False, "reference", g + "\n<tool_call>\n<function=h>", "length")
+    add("cut_whole_call_no_close", False, "reference", g[:-len("</tool_call>")], "length")
+    add("cut_thinking_call", True, "reference", "plan\n</think>\n\nx" + f[:20], "length")
 
     # multi-byte characters
     add("utf8_two_byte", False, "none", "café naïve")
     add("utf8_three_byte", False, "none", "今日はいい天気")
     add("utf8_four_byte", False, "none", "ok \U0001f600\U0001f680 done")
-    add("utf8_in_thinking", True, "mk", "考える \U0001f914\n</think>\n\n答え \U0001f600")
-    add("utf8_in_call", False, "mk", call("h", a="世界 \U0001f600") + "é")
+    add("utf8_in_thinking", True, "reference", "考える \U0001f914\n</think>\n\n答え \U0001f600")
+    add("utf8_in_call", False, "reference", call("h", a="世界 \U0001f600") + "é")
     add("utf8_cut_two", False, "none", "café", "length")
     add("utf8_cut_four", False, "none", "ok \U0001f600", "length")
     add("utf8_cut_in_thinking", True, "none", "x 世", "length")
@@ -188,7 +188,7 @@ def make_token_ids(tok, text: str, mode: str, rnd: random.Random) -> list[int]:
 
 
 def run_mk(chatfmt, tok, thinking: bool, tools, ids: list[int], ending: str) -> dict:
-    """The token loop of mk's Generation._loop, with the ids given. `released` is what `feed` gave for the token."""
+    """The token loop of the reference's Generation._loop, with the ids given. `released` is what `feed` gave for the token."""
     tracker = chatfmt.ReplyTracker(thinking, tools)
     utf8 = chatfmt.Utf8Stream()
     events = []
@@ -225,15 +225,15 @@ def check_rule(case: dict) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mk", type=Path, default=DEFAULT_MK)
+    ap.add_argument("--reference", type=Path, default=DEFAULT_REFERENCE)
     ap.add_argument("--gguf", type=Path, default=Path(DEFAULT_GGUF))
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--report-rule", action="store_true", help="print the cases that break gogi's piece rule")
     args = ap.parse_args()
-    mk = args.mk.resolve()
-    if git(mk, "status", "--porcelain"):
-        sys.exit(f"{mk} has local changes. Commit or stash them first, so that the recorded revision is exact.")
-    sys.path.insert(0, str(mk))
+    reference = args.reference.resolve()
+    if git(reference, "status", "--porcelain"):
+        sys.exit(f"{reference} has local changes. Commit or stash them first, so that the recorded revision is exact.")
+    sys.path.insert(0, str(reference))
     from harness.tokenizer import Tokenizer
     from service import chatfmt
 
@@ -269,7 +269,7 @@ def main() -> None:
         cases.append(case)
 
     header = {
-        "reference_rev": git(mk, "rev-parse", "HEAD"),
+        "reference_rev": git(reference, "rev-parse", "HEAD"),
         "source_files": ["service/chatfmt.py", "service/generate.py", "harness/tokenizer.py"],
         "gguf": args.gguf.name,
         "python": platform.python_version(),

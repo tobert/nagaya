@@ -25,7 +25,7 @@ pub(crate) fn reply_parser(
     start: ReplyStart,
     tools: &[Tool],
 ) -> Result<Box<dyn ReplyParser>, FamilyError> {
-    // A tool list that mk's parser refuses is the client's: the same tools made the context.
+    // A tool list that the reference's parser refuses is the client's: the same tools made the context.
     let raw = Raw::new(family.shared_tokenizer(), start.thinking, tools_json(tools).as_ref()).map_err(refusal)?;
     Ok(Box::new(Qwen38ReplyParser {
         raw,
@@ -185,7 +185,7 @@ fn value_of(json: &Json) -> Result<Value, String> {
 }
 
 impl Qwen38Family {
-    /// The ids of the tokens that end a reply: `<|im_end|>` and `<|endoftext|>` (mk `STOP_IDS`).
+    /// The ids of the tokens that end a reply: `<|im_end|>` and `<|endoftext|>` (the reference `STOP_IDS`).
     pub(crate) fn stop_ids(&self) -> &[u32] {
         &self.stop
     }

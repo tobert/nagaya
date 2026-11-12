@@ -1,8 +1,8 @@
 //! The tokenizer hash: the identity of the tokenizer that a GGUF file holds.
 //!
-//! The engine identity carries this hash in `tokenizer_hash` (engine ABI "Identity"). The mk binding and this
+//! The engine identity carries this hash in `tokenizer_hash` (engine ABI "Identity"). The binding of the Qwen3.8 engine and this
 //! library call the one function below, so they cannot compute two hashes for one file. The function lives in this
-//! crate because this crate owns the GGUF reader and reads the same keys. The mk crate depends on this crate. This
+//! crate because this crate owns the GGUF reader and reads the same keys. The crate of the Qwen3.8 engine depends on this crate. This
 //! crate does not depend on any engine crate, so the dependency has no cycle.
 
 use sha2::{Digest, Sha256};

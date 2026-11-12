@@ -171,8 +171,8 @@ fn the_open_rendering_begins_the_closed_rendering_unless_the_template_trims_or_m
     assert!(!prefix(open(Some("plan\n\n"), None), true));
 }
 
-/// mk's prefix check at the seam (`service/generate.py`, `_with_prefill`): a field whose first characters merge
-/// with the text before it is a 400 that names `continue`. mk's example is a newline after the template's last
+/// The reference's prefix check at the seam (`service/generate.py`, `_with_prefill`): a field whose first characters merge
+/// with the text before it is a 400 that names `continue`. The reference's example is a newline after the template's last
 /// newline.
 #[test]
 fn an_open_field_that_merges_with_the_text_before_it_is_refused_naming_continue() {

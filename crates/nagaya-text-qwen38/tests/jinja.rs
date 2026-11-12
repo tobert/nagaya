@@ -1,5 +1,5 @@
 //! The behavior of Python's jinja2 that the chat template can reach: the methods of strings, the tests and the
-//! undefined value. The fixtures are the outputs of mk's `service/template.py`.
+//! undefined value. The fixtures are the outputs of the reference's `service/template.py`.
 
 mod common;
 
@@ -45,13 +45,19 @@ fn check(cases: &[Json]) -> Vec<String> {
         let shown = format!("{source} with {messages:?}");
         match (result, case.has("out")) {
             (Ok(got), true) if got == case.get("out").str() => {}
-            (Ok(got), true) => wrong.push(format!("{shown}: got {got:?}, mk gives {:?}", case.get("out").str())),
+            (Ok(got), true) => wrong.push(format!(
+                "{shown}: got {got:?}, the reference gives {:?}",
+                case.get("out").str()
+            )),
             (Ok(got), false) => wrong.push(format!(
-                "{shown}: got {got:?}, mk refuses with {}: {}",
+                "{shown}: got {got:?}, the reference refuses with {}: {}",
                 case.get("x").str(),
                 case.get("error").str()
             )),
-            (Err(e), true) => wrong.push(format!("{shown}: refused ({e}), mk gives {:?}", case.get("out").str())),
+            (Err(e), true) => wrong.push(format!(
+                "{shown}: refused ({e}), the reference gives {:?}",
+                case.get("out").str()
+            )),
             (Err(Error::Template(m)), false) => {
                 let method = case.get("m").str();
                 if !["direct", "join", "format", "test", "undefined"].contains(&method) && !m.contains(method) {
@@ -72,7 +78,7 @@ fn check(cases: &[Json]) -> Vec<String> {
 fn assert_none_wrong(wrong: Vec<String>, total: usize) {
     assert!(
         wrong.is_empty(),
-        "{} of {total} cases differ from mk. The first {}:\n{}",
+        "{} of {total} cases differ from the reference. The first {}:\n{}",
         wrong.len(),
         wrong.len().min(400),
         wrong[..wrong.len().min(400)].join("\n")

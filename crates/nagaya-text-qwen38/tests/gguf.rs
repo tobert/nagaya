@@ -102,7 +102,7 @@ fn iterates_the_entries_in_file_order() {
 
 #[test]
 fn stops_after_the_last_entry() {
-    // The mk reader reads the tensor records that follow the metadata, from the bytes that this reader leaves.
+    // The reference reader reads the tensor records that follow the metadata, from the bytes that this reader leaves.
     let mut file = built_file();
     let metadata_bytes = file.len();
     file.extend_from_slice(b"tensor records");
