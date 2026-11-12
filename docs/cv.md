@@ -217,6 +217,51 @@ Not tried: latent steps, then a `</think>` that the request writes. The route pu
 feed a token after them. The raw replies of these trials are in `target/trials-2026-11-11/` on b70host, which
 git does not hold.
 
+**Soft inputs** (`docs/lab.md`, "Soft inputs in a request"), 2026-11-12, the build of `9367f8c`. Each row is 24
+replies of `lfm3` at temperature 1.0, with the seeds 0 to 23. Thus the rows of one prompt are paired by seed. The
+share is the mean weight of the rows other than the token (`mean_share`).
+
+With thinking on and `span: "think"`, for 600 tokens at most:
+
+| Row | 17 times 23: thinking | Share | Rabbits: thinking | Share |
+|---|---|---|---|---|
+| no `soft` | 86 | 0 | 212.5 | 0 |
+| `moi`, `beta` 1 | 86 | 0.0044 | 213 | 0.0018 |
+| `moi`, `beta` 0.25 | 91 | 0.0071 | 214.5 | 0.0030 |
+| `moi`, `beta` 4 | 88.5 | 0.0018 | 212.5 | 0.0008 |
+| `gumbel`, `tau` 0.5 | 92.5 | 0.0473 | 227 | 0.0225 |
+
+- Each of the 10 rows had 24 of 24 right answers. "Rabbits" asks for the rabbits of 35 heads and 94 legs.
+- The median length of the thinking did not change. As with latent steps, these tasks are too easy to show a gain.
+- `moi` mixes little here: thinking about easy math has a low entropy, and `moi` divides the entropy by the log of
+  the vocabulary size.
+
+With thinking off and `span: "all"`, for 200 tokens at most:
+
+| Row | Owl story: share | Distinct pairs | Ended | Sea poem: share | Distinct pairs | Ended |
+|---|---|---|---|---|---|---|
+| no `soft` | 0 | 0.770 | 23 | 0 | 0.840 | 24 |
+| `moi`, `beta` 1 | 0.053 | 0.786 | 23 | 0.071 | 0.828 | 24 |
+| `moi`, `beta` 0.25 | 0.083 | 0.760 | 24 | 0.114 | 0.842 | 24 |
+| `gumbel`, `tau` 0.5 | 0.193 | 0.760 | 21 | 0.198 | 0.783 | 24 |
+| `gumbel`, `tau` 0.9 | 0.349 | 0.776 | 24 | 0.372 | 0.834 | 24 |
+
+- "Distinct pairs" is the count of distinct word pairs over all pairs of the 24 replies. "Ended" counts the replies
+  that ended before the limit.
+- The counts do not show the main result. At a share of 0.2 and more, words break inside the reply: for example
+  "scrainkets", "whereumbling" and "peruck". Two replies of each `gumbel` row show it, at `tau` 0.5 and more at 0.9.
+  Two replies of `moi` with `beta` 0.25, a share near 0.1, read as plain text.
+- The cause: the reply holds the token, but the next pass reads the mix. Then the model continues the mix, not
+  the token, and the text of the reply leaves what the model read. Soft Thinking and Stochastic Soft Thinking mix
+  only the reasoning, and they decode the answer as tokens. These trials show why.
+- A count of words that are not one token of the tokenizer did not find the breaks. Plain replies gave 14% to 15%
+  of such words, and `gumbel` with `tau` 0.9 gave 11% to 13%. A broken piece is often a token too. A count of the
+  right kind needs the log probability of each token of a reply with no soft input. No route gives that now.
+
+Thus the next trials are these. Use a harder task for the reasoning. Give a creative reply its soft inputs in its
+reasoning, then decode the reply as tokens. The raw counts are in `target/trials-2026-11-12/`, which git does not
+hold.
+
 ## Open questions
 
 1. Does the op run before or after the norm of the next layer? Arditi et al. change the residual, so the first
