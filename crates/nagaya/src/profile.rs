@@ -119,8 +119,6 @@ pub struct EnginePlacement {
     pub lab: toml::Table,
     /// The engine's share of the spare memory (D9).
     pub share: u64,
-    /// True when the profile pins the engine's identity (spec 12.1).
-    pub pin_identity: bool,
     /// When the engine is loaded (spec 3.3a). The default is `resident`, and a resident entry writes no key.
     #[serde(skip_serializing_if = "Residency::is_resident")]
     pub residency: Residency,
@@ -146,14 +144,15 @@ struct PlacementInput {
     lab: toml::Table,
     share: u64,
     #[serde(default)]
-    pin_identity: bool,
-    #[serde(default)]
     residency: Residency,
     #[serde(default)]
     pinned: bool,
     /// A key that is gone (spec 3.3a, "Explicit layout"). A profile that names it does not parse.
     #[serde(default)]
     idle_unload_s: Option<serde::de::IgnoredAny>,
+    /// A key that is gone (spec 12.1). The canary holds the bits of an engine now (spec 8.1).
+    #[serde(default)]
+    pin_identity: Option<serde::de::IgnoredAny>,
 }
 
 impl TryFrom<PlacementInput> for EnginePlacement {
@@ -167,6 +166,13 @@ impl TryFrom<PlacementInput> for EnginePlacement {
                 input.name
             ));
         }
+        if input.pin_identity.is_some() {
+            return Err(format!(
+                "engine `{}` names `pin_identity`, and the key is gone: the canary of the engine checks its bits (spec \
+                 8.1); remove the key from the profile",
+                input.name
+            ));
+        }
         Ok(EnginePlacement {
             name: input.name,
             kind: input.kind,
@@ -175,7 +181,6 @@ impl TryFrom<PlacementInput> for EnginePlacement {
             family: input.family,
             lab: input.lab,
             share: input.share,
-            pin_identity: input.pin_identity,
             residency: input.residency,
             pinned: input.pinned,
         })

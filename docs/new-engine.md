@@ -321,7 +321,7 @@ A machine with one card keeps the pool set. Measure the masks of the threads tha
 (spec 15 items 14 and 17).
 
 **The profile** (spec 2.4) has three tables. Each `[[engines]]` entry has `name`, `kind`, `devices` (machine device
-ids), `config`, `share` and `pin_identity`. Each `[[budgets]]` entry has the tiers of one pool and its bytes. The
+ids), `config` and `share`. Each `[[budgets]]` entry has the tiers of one pool and its bytes. The
 `[store]` table has the store's budgets.
 
 A machine with unified memory pools `device(0)` and `host` in one budget. A machine with discrete cards has one

@@ -385,10 +385,13 @@ adds the entries does not count a pooled budget twice. On gfx1151host, `device(0
 2026-10-20 (reading).
 
 The placement profile is one TOML file. Each `[[engines]]` entry has `name`, `kind`, `devices`, `config`, an optional
-`family` table (11.3), `share` and `pin_identity`. An entry can also have `residency` and `pinned` (3.3a).
+`family` table (11.3) and `share`. An entry can also have `residency` and `pinned` (3.3a).
 Each `[[budgets]]` entry has `tiers` and `bytes`, and a tier is
 `host` or `device(i)`. The `[store]` table has `nvme`, an optional `host` (4.1a), an optional `interval_copies`
 (6.13), 0 by default, and an optional `objects` (6.15). Decided 2026-10-20 (reading).
+
+The key `pin_identity` is gone. A profile that names it does not parse, because the canary holds the bits of an engine
+(8.1). Decided 2026-11-12.
 
 **One name for each device.** Decided 2026-10-22 (Amy: "all good"). The spec names a device in four places.
 Each place uses one of two names, and this map joins them.
@@ -630,7 +633,6 @@ Reason: a client needs a fixed shape for the change of 3.3, and for a read of th
 - A profile equal to the active profile is a 200, with the action `keep` for each engine.
 - An accepted profile is a 202 with `{"actions": [{"engine", "action"}], "restart"}`. With `restart` true, the
   process persists the profile and stops with exit 4.
-- A change of `pin_identity` is a `reload`, because the pin checks the identity at the open (12.1).
 - A change of `[[budgets]]` runs in place: the ledger admits the loaded engines with the new budgets.
 - An engine that unloads in place stays in its group as a retired engine until the next start. A load of it is a 404,
   and its served model stays in identity with the status `unloaded`.
@@ -1220,8 +1222,8 @@ that they are the same state.
   put carries them, because one store serves every engine. The tripwire (6.7) and the chain checks read them from
   the entry. Decided 2026-10-20.
 
-The index also holds two kinds of record that are not entries. They are the expected identity of each engine
-(12.1), and the cost curve of each engine identity (5.11). Decided 2026-10-20.
+The index also holds a record that is not an entry: the cost curve of each engine identity (5.11). Decided
+2026-10-20. It once planned a second record, the expected identity of each engine. That record is not built (12.1).
 
 **One `Check` enum.** The store's `Check` is `full | spot | none`, the same enum that the ABI uses for arenas and
 store entries (engine-abi "Capabilities"). Decided 2026-10-18.
@@ -2609,13 +2611,13 @@ needs no new dependency. A later step can use a signal stream from `tokio` inste
 |---|---|---|
 | 0 | a clean stop | no restart |
 | 1 | a crash | restart |
-| 3 | a refusal to start: a bad bootstrap config (2.1), a probe error (2.1), a profile that does not fit, a canary mismatch at start, a mismatch of a pinned identity (12.1), of a part size or of the weight arena size, a store that does not open, a gossip bind or an HTTP bind that fails, or a council service that does not attach (11.7) | `RestartPreventExitStatus=3` |
+| 3 | a refusal to start: a bad bootstrap config (2.1), a probe error (2.1), a profile that does not fit, a canary mismatch at start, a mismatch of a part size or of the weight arena size, a store that does not open, a gossip bind or an HTTP bind that fails, or a council service that does not attach (11.7) | `RestartPreventExitStatus=3` |
 | 4 | a planned restart: a new profile (2.3, 3.3) | `RestartForceExitStatus=4` |
 
 The restart policy follows the Qwen3.8 engine's unit: `Restart=on-failure`, `RestartSec=30`, and at most 3 starts in 600
 s. systemd counts each start against that limit, also a start after code 4. Thus a fourth profile swap in 600 s fails.
 
-An engine that does not open at start stops the process. A mismatch of a pinned identity (12.1), a part size or the
+An engine that does not open at start stops the process. A mismatch of a part size or the
 weight arena size is a refusal to start: exit 3. Any other failure to open is a crash. The process exits 1, and
 systemd restarts it within its start limit. A message on stderr names the engine and the reason. Decided 2026-10-20
 (reading).
@@ -5087,9 +5089,8 @@ speech model is in `crates/nagaya/tests/speech_context.rs`.
 - the bit settings, each with its class (`docs/prior-art.md` 1);
 - the canary hash.
 
-The nagaya keeps each engine's expected identity in the store's index. At start, it compares the identity from
-`identity()` with the expected one. A mismatch makes the old entries of that engine unusable. It is a refusal to
-start only when the profile pins the identity.
+The identity digest names each entry of the store (6.2). An engine with a new identity digest thus cannot read the
+old entries of the old digest. The profile has no key that pins an identity: the canary checks the bits (8.1).
 
 **The canary decides for a new build.** Decided by senpai 2026-10-22, accepted by Amy 2026-11-02. This replaces the note
 "A GPU binary in the identity" of 2026-10-21. That note put the compiler and the driver in the identity digest. Then
@@ -5120,11 +5121,10 @@ that it runs, so its inputs must run each path that the limits allow.
 
 Not built yet, though the canary of the Qwen3.8 engine is built (2026-11-12).
 
-- The expected identity in the index of the store, and the compare of it at start.
-- The check of `pin_identity` of the profile. The profile parses the key, and no code compares it.
 - The `build` of an entry. An entry does not yet record the build that made it.
+- The fatal state of 8.2.
 
-Reason: the canary needs none of the three. Each one is a larger change, so it is a later step.
+Reason: the canary needs neither. Each one is a larger change, so it is a later step.
 
 **The plan table of a HIP engine.** Amy decided on 2026-10-31 that hipBLASLt does the large bf16 matrix multiplies of
 Qwen-Image (11.9c). Amy: "hipBLASLt for GEMMs but we let it ride with changes over time, ok with some change in behavior
