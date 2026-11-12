@@ -229,6 +229,7 @@ fn identity_of(checkpoint_digest: &str, tokenizer_hash: &str, lineage: &Lineage,
             class: BitClass::ReferenceDefining,
         }],
         canary_hash: String::new(),
+        build: std::collections::BTreeMap::new(),
     }
 }
 

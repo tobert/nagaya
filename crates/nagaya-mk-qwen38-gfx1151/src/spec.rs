@@ -519,11 +519,12 @@ pub(crate) fn identity(
     canary_hash: &str,
 ) -> Identity {
     let mut numbers = BTreeMap::new();
-    // The build facts stay in the numbers, and thus in the identity digest, until the canary runs at each start
-    // (spec 12.1). A file path is not a number, so no path is here.
-    numbers.insert("engine_build_sha256".to_owned(), build.library_sha256.to_owned());
-    numbers.insert("engine_compiler".to_owned(), build.compiler.to_owned());
-    numbers.insert("engine_hip".to_owned(), build.hip.to_owned());
+    // The build facts leave the identity digest (spec 12.1): the canary decides if a build changed the bits. A file path
+    // is not a fact of the build, so no path is here.
+    let mut facts = BTreeMap::new();
+    facts.insert("engine_build_sha256".to_owned(), build.library_sha256.to_owned());
+    facts.insert("engine_compiler".to_owned(), build.compiler.to_owned());
+    facts.insert("engine_hip".to_owned(), build.hip.to_owned());
     numbers.insert("fast_qmm".to_owned(), u8::from(fast_qmm).to_string());
     numbers.insert("tiles".to_owned(), u8::from(tiles).to_string());
     numbers.insert("fused".to_owned(), "1".to_owned());
@@ -559,6 +560,7 @@ pub(crate) fn identity(
             },
         ],
         canary_hash: canary_hash.to_owned(),
+        build: facts,
     }
 }
 
@@ -879,23 +881,30 @@ mod tests {
     }
 
     #[test]
-    fn the_identity_holds_the_build_facts_and_no_file_path() {
+    fn the_build_facts_are_in_build_and_not_in_numbers_and_no_file_path() {
         let shards = vec![PathBuf::from("/models/Qwen-00001-of-00003.gguf")];
         let one = identity(&shards, &build("aa"), true, true, "spot", &keys("sha256:t", "t"), "");
-        let number = |key: &str| one.numbers.get(key).map(String::as_str);
-        assert_eq!(number("engine_build_sha256"), Some("aa"));
-        assert_eq!(number("engine_compiler"), Some("AMD clang version 22.0.0git"));
-        assert_eq!(number("engine_hip"), Some("7.2.53211-9999"));
-        // A file path is not a number (spec 12.1).
-        assert_eq!(number("engine_lib"), None);
+        let fact = |key: &str| one.build.get(key).map(String::as_str);
+        assert_eq!(fact("engine_build_sha256"), Some("aa"));
+        assert_eq!(fact("engine_compiler"), Some("AMD clang version 22.0.0git"));
+        assert_eq!(fact("engine_hip"), Some("7.2.53211-9999"));
+        assert_eq!(one.build.len(), 3, "{:?}", one.build);
+        // No build fact stays in the numbers, which the digest covers (spec 12.1).
         assert!(
-            one.numbers.values().all(|value| !value.starts_with('/')),
+            one.numbers.keys().all(|key| !key.starts_with("engine_")),
             "{:?}",
             one.numbers
         );
-        // Until the canary runs at each start, the build facts stay in the identity digest (spec 12.1).
+        // A file path is not a fact of the build.
+        assert!(
+            one.build.values().all(|value| !value.starts_with('/')),
+            "{:?}",
+            one.build
+        );
+        // A new build is another identity as a value, but the digest does not cover it (nagaya `identity_digest`).
         let other = identity(&shards, &build("bb"), true, true, "spot", &keys("sha256:t", "t"), "");
         assert_ne!(one, other);
+        assert_eq!(one.numbers, other.numbers);
     }
 
     #[test]

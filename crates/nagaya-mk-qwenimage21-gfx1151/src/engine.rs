@@ -177,6 +177,7 @@ impl QwenImageEngine {
             plan_table: lineage,
             bit_settings: Vec::new(),
             canary_hash: String::new(),
+            build: std::collections::BTreeMap::new(),
         };
         eprintln!(
             "qwenimage21: open in {:.1} s, {:.2} GiB of weights",

@@ -656,6 +656,7 @@ impl Engine for CellsOnlyConstantRead {
             plan_table: "cells-only".to_owned(),
             bit_settings: Vec::new(),
             canary_hash: "cells-only:0".to_owned(),
+            build: std::collections::BTreeMap::new(),
         }
     }
 
@@ -1385,6 +1386,7 @@ impl Engine for NanAfterAPass {
             plan_table: String::new(),
             bit_settings: Vec::new(),
             canary_hash: String::new(),
+            build: std::collections::BTreeMap::new(),
         }
     }
 

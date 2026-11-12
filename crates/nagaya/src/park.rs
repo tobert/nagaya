@@ -335,6 +335,9 @@ pub fn park_recipe(identity: &[u8; 32], content: &ContentId) -> RecipeId {
 const RECIPE_KEY_CONTEXT: &str = "nagaya recipe v1";
 
 /// The digest of an engine identity (spec 6.2, 12.1).
+///
+/// It does not cover `build`, the facts of the build: the canary hash decides if a build changed the bits. A new build
+/// with the same canary hash has the same digest.
 pub fn identity_digest(identity: &Identity) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new_derive_key(RECIPE_KEY_CONTEXT);
     add(&mut hasher, 1, identity.model.as_bytes());

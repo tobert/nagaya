@@ -135,7 +135,7 @@ fn check_install() -> Result<(), PlanError> {
 fn log_load_canary(engine: &nagaya_mk_qwen38_gfx1151::Qwen38Engine) {
     let report = engine.load_canary();
     let identity = engine.identity();
-    let fact = |key: &str| identity.numbers.get(key).map_or("", String::as_str);
+    let fact = |key: &str| identity.build.get(key).map_or("", String::as_str);
     tracing::info!(
         canary_hash = %nagaya_mk_qwen38_gfx1151::canary::hex(&report.canary_hash),
         canary_ms = report.total_ms.round() as u64,
