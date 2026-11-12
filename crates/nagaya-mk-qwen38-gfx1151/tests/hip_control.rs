@@ -22,9 +22,10 @@ use oracle::{Prompt, QmmPath};
 
 /// The gate of the gap of a tapped row from the reference: `max|e - r| / rms(r)`.
 ///
-/// measured on (not yet): fill after the first card run. Until then the value is loose, and each test prints the gap of
-/// each layer, so the first run gives the numbers.
-const RESIDUAL_GATE: f64 = 0.5;
+/// Measured on 2026-11-12, on the exact path, against the reference on the CPU: the largest gap of a layer was 1.8e-5
+/// (the run `plain`, layer 46), and the largest gap of a fold row was 2.7e-5 (the run with the `add`). The gate is
+/// about 10 times that. A tap of the wrong layer or of the wrong buffer gives a gap near 1.
+const RESIDUAL_GATE: f64 = 3.0e-4;
 
 /// The formula of the vector of the oracle, as the tool writes it in the fixture.
 const FORMULA: &str = "v[l][j] = (((31*j + 17*l) mod 257) - 128) / 256";
