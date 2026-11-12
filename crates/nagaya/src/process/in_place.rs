@@ -115,6 +115,18 @@ pub(super) fn take(ledger: &Sender<LedgerMessage>, load: Vec<String>, unload: Ve
     answer.recv().expect("the ledger thread stopped")
 }
 
+/// The most bytes that the unload of an engine can return to the machine: its mandatory terms and the minimum of its
+/// elastic terms, in every tier. It is an upper bound, so a check that adds it never refuses a load that would work.
+fn held_bytes(limits: &Limits) -> u64 {
+    let mandatory = limits.memory.mandatory.iter().map(|term| term.bytes);
+    let elastic = limits
+        .memory
+        .elastic
+        .iter()
+        .map(|term| term.unit_bytes.saturating_mul(term.minimum));
+    mandatory.chain(elastic).fold(0, u64::saturating_add)
+}
+
 /// Plan the swap that loads `target` after it unloads the engines of `named` (spec 3.3a, "Explicit layout").
 ///
 /// The group unloads only the engines that the load names, and each other engine stays loaded (spec 3.3a, "No
@@ -165,6 +177,27 @@ pub(super) fn plan(
                 pinned: Vec::new(),
             });
         }
+    }
+    // The engine checks the free memory of the machine at its open. The ledger holds byte targets, so it cannot know
+    // this. The check runs before the ledger takes the swap, so a refusal changes nothing (spec 3.3b).
+    let freed: u64 = unload.iter().map(|index| held_bytes(&members[*index].job.limits)).sum();
+    let job = &members[target].job;
+    if let Some(problem) = job.factory.open_problem(&job.placement.config, &job.devices, freed) {
+        let staying = stays(&unload);
+        return Err(LoadError::InTheWay {
+            engine: name(&target),
+            shortfall: problem,
+            in_the_way: staying
+                .iter()
+                .filter(|index| !members[**index].pinned())
+                .map(name)
+                .collect(),
+            pinned: staying
+                .iter()
+                .filter(|index| members[**index].pinned())
+                .map(name)
+                .collect(),
+        });
     }
     match take(ledger, vec![name(&target)], unload.iter().map(name).collect()) {
         Ok(()) => Ok(Plan {

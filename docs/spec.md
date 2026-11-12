@@ -798,6 +798,21 @@ on demand" of 2026-10-24.
   a loaded engine. Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30. Reason: a repeat crashed the
   ledger thread, and a loaded engine hid a bad list behind a 200.
 - A load that does not fit is a 409 that names the shortfall, the engines in the way and the pins (3.3a).
+- **The memory check of an open.** **Proposed** by Claude Sonnet 5.5, 2026-11-12. The ledger holds byte targets of the
+  profile, not a measurement (4.1). An engine can also check the free memory of the machine at its open. A load that
+  such a check refuses is a 409 of the same kind, and the group answers it before the swap starts.
+  - The factory of an engine kind can answer "the problem of an open now, if any". It gets the bytes that the unload
+    list frees. The default answer is none.
+  - The group asks it on its own thread, before it gives the swap to the ledger. A problem is a refusal that
+    changes nothing. It names the bytes needed, the bytes available, the floor and the engines in the way.
+  - The freed bytes are the sum of the mandatory terms and the minimum elastic terms of the engines that unload,
+    in every tier. The group cannot know the real bytes that an unload returns to the machine.
+  - The sum is an upper bound, so the check never refuses a load that would have worked. A load can pass the
+    check and still fail at its open, for example when another process takes memory in between. That open still
+    panics (8.5), because a silent fallback after an unload would hide a corrupt state.
+  - Reason: on 2026-11-11 a load with an empty `unload` list opened the Qwen3.8 engine beside a resident
+    engine. The open found 90,237,583,360 bytes available, and it needed 93,682,584,224 bytes with its floor. The
+    process exited, and systemd started it again.
 - `POST /nagaya/v1/engines/{name}/unload` unloads a loaded engine that is not pinned, resident or on demand. No other
   engine loads. An engine that is not loaded gives a 200. Decided 2026-10-30 (Amy, by interview).
 - An unknown name is a 404 `not_found` that names `name`. A pinned engine, or an engine without `close`, is a 409 that

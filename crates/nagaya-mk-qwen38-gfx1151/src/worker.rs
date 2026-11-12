@@ -635,6 +635,34 @@ fn check_memory(needed: u64) -> Result<(), Qwen38Error> {
     memory_problem("the shards", mem_available()?, needed).map_err(Qwen38Error::new)
 }
 
+/// Refuse an open that the free memory cannot hold, before it starts (spec 3.3b, "The memory check of an open").
+///
+/// `freed` is the memory that an unload before the open returns, at most. It counts as available. The rule is the one
+/// of `check_memory`, which the open runs.
+fn open_memory_problem(needed: u64, available: u64, freed: u64) -> Result<(), String> {
+    if available.saturating_add(freed) >= needed.saturating_add(MEMORY_FLOOR) {
+        return Ok(());
+    }
+    Err(format!(
+        "the shards take {needed} bytes in memory, but only {available} bytes are available, the unload frees at most \
+         {freed} bytes, and the floor is {MEMORY_FLOOR} bytes; name the loaded engines of the group in `unload`, or \
+         free memory"
+    ))
+}
+
+/// The problem that an open of the engine on `paths` would meet now, or `None`. It reads the sizes of the shards and
+/// the free memory, as the open does.
+pub(crate) fn open_problem(paths: &Qwen38Paths, freed: u64) -> Option<String> {
+    let needed: u64 = match paths.validate() {
+        Ok(headers) => headers.iter().map(|header| header.size).sum(),
+        Err(error) => return Some(error.to_string()),
+    };
+    match mem_available() {
+        Ok(available) => open_memory_problem(needed, available, freed).err(),
+        Err(error) => Some(error.to_string()),
+    }
+}
+
 /// The device bytes that `what` took: the free bytes before minus the free bytes after.
 ///
 /// Free memory that grew is an error with both readings. A saturating difference would read 0 bytes, and the class
@@ -1578,8 +1606,8 @@ mod tests {
     use crate::binding::stub::{self, StubContext};
 
     use super::{
-        Aligned, Call, Context, ThreadState, Word, fast_qmm_from, memory_problem, open_contexts, parse_shards,
-        probe_shapes, remake_context, rounds_to_finite, taken_bytes, tiles_from,
+        Aligned, Call, Context, MEMORY_FLOOR, ThreadState, Word, fast_qmm_from, memory_problem, open_contexts,
+        open_memory_problem, parse_shards, probe_shapes, remake_context, rounds_to_finite, taken_bytes, tiles_from,
     };
 
     /// A worker state with one stub context, id 1.
@@ -1861,5 +1889,43 @@ mod tests {
         assert_eq!(fast_qmm_from(Some("1")), Ok(true));
         assert_eq!(fast_qmm_from(Some("0")), Ok(false));
         assert!(fast_qmm_from(Some("2")).is_err());
+    }
+
+    const GIB: u64 = 1 << 30;
+
+    /// The event of 2026-11-11: 90,237,583,360 bytes were available, and the shards needed 93,682,584,224 with the
+    /// floor.
+    #[test]
+    fn an_open_that_the_free_memory_cannot_hold_is_a_problem_with_the_numbers() {
+        let needed = 93_682_584_224 - MEMORY_FLOOR;
+        let problem = open_memory_problem(needed, 90_237_583_360, 0).unwrap_err();
+        for text in ["80797682336", "90237583360", "12884901888", "`unload`"] {
+            assert!(problem.contains(text), "{text} is not in: {problem}");
+        }
+        assert!(
+            memory_problem("the shards", 90_237_583_360, needed).is_err(),
+            "the open refuses it too"
+        );
+    }
+
+    #[test]
+    fn the_bytes_of_an_unload_count_as_available() {
+        let needed = 80 * GIB;
+        assert!(open_memory_problem(needed, 90 * GIB, 0).is_err());
+        assert!(open_memory_problem(needed, 90 * GIB, 3 * GIB).is_ok());
+        // The limit is the floor: 92 GiB of 80 GiB and the 12 GiB floor holds.
+        assert!(open_memory_problem(needed, 90 * GIB, 2 * GIB).is_ok());
+        assert!(open_memory_problem(needed, 90 * GIB, 2 * GIB - 1).is_err());
+    }
+
+    #[test]
+    fn the_check_of_the_open_and_the_check_before_it_agree() {
+        for available in [0, 12 * GIB, 92 * GIB - 1, 92 * GIB, 200 * GIB] {
+            assert_eq!(
+                open_memory_problem(80 * GIB, available, 0).is_ok(),
+                memory_problem("the shards", available, 80 * GIB).is_ok(),
+                "available {available}"
+            );
+        }
     }
 }
