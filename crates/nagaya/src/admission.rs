@@ -35,6 +35,9 @@ pub enum OpenErrorKind {
     Identity,
     /// A part size differs from the admitted plan.
     PartSize,
+    /// The canary of the engine does not match its record, or the record is missing (spec 8.1). A restart gives the
+    /// same result.
+    Canary,
     /// Any other open failure.
     Other,
 }
@@ -42,7 +45,7 @@ pub enum OpenErrorKind {
 impl OpenErrorKind {
     /// True when the failure refuses the start (spec 10.4 row 3).
     pub fn refuses_start(self) -> bool {
-        matches!(self, Self::Identity | Self::PartSize)
+        matches!(self, Self::Identity | Self::PartSize | Self::Canary)
     }
 }
 

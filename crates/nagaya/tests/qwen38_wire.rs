@@ -196,6 +196,14 @@ fn an_open_error_of_the_qwen38_binding_is_a_crash() {
 }
 
 #[test]
+fn a_canary_error_of_the_qwen38_binding_refuses_the_start() {
+    let canary = qwen38::open_error(Qwen38Error::canary("the canary does not match its record"));
+    assert_eq!(canary.kind, OpenErrorKind::Canary);
+    assert!(canary.kind.refuses_start());
+    assert_eq!(canary.message, "the canary does not match its record");
+}
+
+#[test]
 fn an_arena_that_differs_from_the_plan_refuses_the_start_and_gives_the_real_size() {
     // The ledger admitted `weights_bytes`. A real arena of another size means the ledger holds the wrong bytes.
     let planned = nagaya_mk_qwen38_gfx1151::plan(65_498_251_264);

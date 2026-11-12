@@ -516,6 +516,7 @@ pub(crate) fn identity(
     tiles: bool,
     checkpoint_digest: &str,
     text: &crate::gguf::TextKeys,
+    canary_hash: &str,
 ) -> Identity {
     let mut numbers = BTreeMap::new();
     // The build facts stay in the numbers, and thus in the identity digest, until the canary runs at each start
@@ -530,7 +531,6 @@ pub(crate) fn identity(
     numbers.insert("shards".to_owned(), shards.len().to_string());
     numbers.insert("max_context".to_owned(), MAX_CONTEXT.to_string());
     numbers.insert("max_pass_tokens".to_owned(), MAX_PASS_TOKENS.to_string());
-    numbers.insert("canary".to_owned(), "not run".to_owned());
     Identity {
         model: model_name(shards.first().map(std::path::PathBuf::as_path)),
         family: "qwen38".to_owned(),
@@ -558,7 +558,7 @@ pub(crate) fn identity(
                 class: BitClass::Approx,
             },
         ],
-        canary_hash: String::new(),
+        canary_hash: canary_hash.to_owned(),
     }
 }
 
@@ -881,7 +881,7 @@ mod tests {
     #[test]
     fn the_identity_holds_the_build_facts_and_no_file_path() {
         let shards = vec![PathBuf::from("/models/Qwen-00001-of-00003.gguf")];
-        let one = identity(&shards, &build("aa"), true, true, "spot", &keys("sha256:t", "t"));
+        let one = identity(&shards, &build("aa"), true, true, "spot", &keys("sha256:t", "t"), "");
         let number = |key: &str| one.numbers.get(key).map(String::as_str);
         assert_eq!(number("engine_build_sha256"), Some("aa"));
         assert_eq!(number("engine_compiler"), Some("AMD clang version 22.0.0git"));
@@ -894,7 +894,33 @@ mod tests {
             one.numbers
         );
         // Until the canary runs at each start, the build facts stay in the identity digest (spec 12.1).
-        let other = identity(&shards, &build("bb"), true, true, "spot", &keys("sha256:t", "t"));
+        let other = identity(&shards, &build("bb"), true, true, "spot", &keys("sha256:t", "t"), "");
+        assert_ne!(one, other);
+    }
+
+    #[test]
+    fn the_identity_has_the_canary_hash_that_it_is_given_and_no_canary_number() {
+        let shards = vec![PathBuf::from("/models/Qwen-00001-of-00003.gguf")];
+        let one = identity(
+            &shards,
+            &build("aa"),
+            true,
+            true,
+            "spot",
+            &keys("sha256:t", "t"),
+            "abcd",
+        );
+        assert_eq!(one.canary_hash, "abcd");
+        assert!(!one.numbers.contains_key("canary"), "{:?}", one.numbers);
+        let other = identity(
+            &shards,
+            &build("aa"),
+            true,
+            true,
+            "spot",
+            &keys("sha256:t", "t"),
+            "abce",
+        );
         assert_ne!(one, other);
     }
 
@@ -902,8 +928,8 @@ mod tests {
     fn the_identity_carries_the_template() {
         let shards = vec![PathBuf::from("/models/Qwen-00001-of-00003.gguf")];
         let facts = &build("sha");
-        let first = identity(&shards, facts, true, true, "spot", &keys("sha256:t", "one"));
-        let second = identity(&shards, facts, true, true, "spot", &keys("sha256:t", "two"));
+        let first = identity(&shards, facts, true, true, "spot", &keys("sha256:t", "one"), "");
+        let second = identity(&shards, facts, true, true, "spot", &keys("sha256:t", "two"), "");
         assert_eq!(first.template, "one");
         assert_ne!(first, second);
     }
@@ -912,8 +938,8 @@ mod tests {
     fn the_identity_records_the_tile_setting() {
         let shards = vec![PathBuf::from("/models/Qwen-00001-of-00003.gguf")];
         let facts = &build("sha");
-        let on = identity(&shards, facts, true, true, "spot", &keys("sha256:t", "t"));
-        let off = identity(&shards, facts, true, false, "spot", &keys("sha256:t", "t"));
+        let on = identity(&shards, facts, true, true, "spot", &keys("sha256:t", "t"), "");
+        let off = identity(&shards, facts, true, false, "spot", &keys("sha256:t", "t"), "");
         assert_eq!(on.numbers.get("tiles").map(String::as_str), Some("1"));
         assert_eq!(off.numbers.get("tiles").map(String::as_str), Some("0"));
         assert_ne!(on, off);
@@ -925,8 +951,8 @@ mod tests {
     fn the_identity_carries_the_tokenizer_hash() {
         let shards = vec![PathBuf::from("/models/Qwen-00001-of-00003.gguf")];
         let facts = &build("sha");
-        let first = identity(&shards, facts, true, true, "spot", &keys("sha256:one", "t"));
-        let second = identity(&shards, facts, true, true, "spot", &keys("sha256:two", "t"));
+        let first = identity(&shards, facts, true, true, "spot", &keys("sha256:one", "t"), "");
+        let second = identity(&shards, facts, true, true, "spot", &keys("sha256:two", "t"), "");
         assert_eq!(first.tokenizer_hash, "sha256:one");
         assert_ne!(first, second);
     }

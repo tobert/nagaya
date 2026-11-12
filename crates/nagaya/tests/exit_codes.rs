@@ -40,6 +40,17 @@ fn an_open_mismatch_is_a_refusal_to_start() {
 }
 
 #[test]
+fn a_canary_failure_at_open_is_a_refusal_to_start() {
+    let event = Event::OpenFailed {
+        group: 0,
+        engine: "a".to_owned(),
+        kind: OpenErrorKind::Canary,
+        message: "the canary does not match its record".to_owned(),
+    };
+    assert_eq!(event.exit_code(), Some(ExitCode::RefusedStart));
+}
+
+#[test]
 fn another_open_failure_is_a_crash() {
     let event = Event::OpenFailed {
         group: 0,

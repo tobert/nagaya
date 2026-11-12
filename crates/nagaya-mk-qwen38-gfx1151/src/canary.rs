@@ -28,6 +28,7 @@ use std::time::Instant;
 use sha2::{Digest, Sha256};
 
 use crate::spec;
+use crate::worker::Qwen38Error;
 
 /// The text tag that opens the canary hash. A change of the content of the canary changes the version in the tag.
 pub const TAG: &[u8] = b"nagaya qwen38 canary v1";
@@ -62,6 +63,158 @@ pub const LONG_IDS: [i32; 300] = [
     1891, 369, 3154, 264, 491, 69650, 3618, 494, 264, 2424, 314, 38486, 13, 1216, 10633, 424, 440, 1564, 56845, 1396,
     2342, 4276, 321, 20541, 310, 18022, 13, 17539, 562, 1384, 449, 79364, 16724, 704, 264, 13964,
 ];
+
+/// How the open treats the canary (spec 8.1). The canary runs at each load in both forms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CanaryCheck {
+    /// Compare the canary hash with the record. A mismatch or a missing record is an error. The process uses this form.
+    Record,
+    /// Run the canary and report it, but compare nothing. A person measures a new checkpoint with this form.
+    Measure,
+}
+
+/// The key of a record: the checkpoint and the two settings that change bits by choice.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Key {
+    /// The checkpoint digest as the identity writes it, with the `spot-sha256:` prefix.
+    pub checkpoint: String,
+    /// The value of `QWEN38_FAST_QMM`: true when unset or 1.
+    pub fast_qmm: bool,
+    /// The value of `QWEN38_TILES`: true when unset or 1.
+    pub tiles: bool,
+}
+
+impl Key {
+    /// The three key values as text, for a message.
+    pub fn describe(&self) -> String {
+        format!(
+            "checkpoint {}, QWEN38_FAST_QMM={}, QWEN38_TILES={}",
+            self.checkpoint,
+            u8::from(self.fast_qmm),
+            u8::from(self.tiles)
+        )
+    }
+}
+
+/// One line of the table of records.
+struct Record {
+    checkpoint: &'static str,
+    fast_qmm: bool,
+    tiles: bool,
+    canary_hash: &'static str,
+}
+
+/// The table of records (spec 8.1). A build that gives other bits does not open until a commit changes its line.
+///
+/// To record a new checkpoint, measure it with the test `hip_canary` and add a line. The commit says that it records
+/// the bits of that checkpoint. To change a line, the commit says that the bits moved. The hashes were measured on the
+/// card on 2026-11-12, in 5 separate processes for each line, and all five were equal.
+const RECORDS: &[Record] = &[
+    Record {
+        checkpoint: "spot-sha256:0e25ef0d3240134fc2ba763e69a4d5e273bbd5bdf7a8d3386834f90bf2f59c37",
+        fast_qmm: true,
+        tiles: true,
+        canary_hash: "8e05c9ab8c16459c412c0164ec5d3e86abf1d78e6e9ec93e79330552d1881a1c",
+    },
+    Record {
+        checkpoint: "spot-sha256:0e25ef0d3240134fc2ba763e69a4d5e273bbd5bdf7a8d3386834f90bf2f59c37",
+        fast_qmm: false,
+        tiles: true,
+        canary_hash: "9017e7aa37fb9b132dd27226b41bc695e50eab149d5fb1f2dbd15ee97e829602",
+    },
+];
+
+/// The recorded canary hash of `key`, or `None` when the table has no line for all three key values.
+pub fn record(key: &Key) -> Option<&'static str> {
+    lookup(RECORDS, key)
+}
+
+fn lookup(table: &[Record], key: &Key) -> Option<&'static str> {
+    table
+        .iter()
+        .find(|line| line.checkpoint == key.checkpoint && line.fast_qmm == key.fast_qmm && line.tiles == key.tiles)
+        .map(|line| line.canary_hash)
+}
+
+/// The command that measures a canary hash on the card.
+const MEASURE_COMMAND: &str = "cargo test -p nagaya-mk-qwen38-gfx1151 --features hip --test hip_canary -- --nocapture";
+
+/// The error for a key with no record. `measured` is the hash of this load, when a load ran.
+fn no_record_error(key: &Key, measured: Option<&str>) -> Qwen38Error {
+    let found = match measured {
+        Some(hash) => format!(" This load measured the canary hash {hash}."),
+        None => String::new(),
+    };
+    Qwen38Error::canary(format!(
+        "this checkpoint and these settings have no canary record ({}).{found} Measure it with `{MEASURE_COMMAND}`,          with QWEN38_SHARDS set and no other GPU client. Then add the line to the table in `src/canary.rs`. The commit          must say that it records the bits of this checkpoint.",
+        key.describe()
+    ))
+}
+
+/// The canary hash for the identity. It comes from the table, so a description needs no GPU.
+///
+/// With `Record`, a key with no line is an error. With `Measure`, it gives an empty hash, and the identity of that
+/// engine cannot match a description that a process serves.
+pub fn identity_hash(check: CanaryCheck, key: &Key) -> Result<String, Qwen38Error> {
+    match (record(key), check) {
+        (Some(hash), _) => Ok(hash.to_owned()),
+        (None, CanaryCheck::Measure) => Ok(String::new()),
+        (None, CanaryCheck::Record) => Err(no_record_error(key, None)),
+    }
+}
+
+/// The error for a canary hash that differs from its record.
+fn mismatch_error(key: &Key, recorded: &str, report: &Report) -> Qwen38Error {
+    let rows: Vec<String> = report.row_hashes.iter().map(hex).collect();
+    Qwen38Error::canary(format!(
+        "the canary of this build does not match its record ({}). The record is {recorded}. This load measured {}.          The 19 row hashes are: {}. The bits of this build differ from the record. If the change of bits is meant,          replace the value in the table in `src/canary.rs` in a commit that says that the bits moved. If it is not          meant, the build or the driver changed the result, so do not serve it.",
+        key.describe(),
+        hex(&report.canary_hash),
+        rows.join(" ")
+    ))
+}
+
+/// Decide the open from the canary of a load. `run` is what the load gave: a report, or why the canary did not run.
+///
+/// A canary that did not run is an ordinary error with its cause, with either form. With `Record`, the report must
+/// equal the record.
+pub fn verify(check: CanaryCheck, key: &Key, run: &Result<Report, String>) -> Result<(), Qwen38Error> {
+    let report = run
+        .as_ref()
+        .map_err(|cause| Qwen38Error::new(format!("the canary did not finish: {cause}")))?;
+    if check == CanaryCheck::Measure {
+        return Ok(());
+    }
+    match record(key) {
+        None => Err(no_record_error(key, Some(&hex(&report.canary_hash)))),
+        Some(recorded) if recorded == hex(&report.canary_hash) => Ok(()),
+        Some(recorded) => Err(mismatch_error(key, recorded, report)),
+    }
+}
+
+/// The line to add to the table for a measured report, for a person to paste.
+pub fn table_line(key: &Key, hash: &[u8; 32]) -> String {
+    format!(
+        "Record {{ checkpoint: \"{}\", fast_qmm: {}, tiles: {}, canary_hash: \"{}\" }}",
+        key.checkpoint,
+        key.fast_qmm,
+        key.tiles,
+        hex(hash)
+    )
+}
+
+/// The count of canaries that loads ran in this process. A test reads it to see that a load ran one.
+static LOAD_RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Count one canary run of a load.
+pub(crate) fn count_load_run() {
+    LOAD_RUNS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// The count of canaries that loads ran in this process.
+pub fn load_runs() -> u64 {
+    LOAD_RUNS.load(std::sync::atomic::Ordering::SeqCst)
+}
 
 /// One of the two contexts of the canary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -434,6 +587,163 @@ mod tests {
                 .all(|id| (0..spec::VOCAB as i32).contains(id))
         );
         assert_eq!(fixture["vocab"].as_u64(), Some(u64::from(spec::VOCAB)));
+    }
+
+    fn key(checkpoint: &str, fast_qmm: bool, tiles: bool) -> Key {
+        Key {
+            checkpoint: checkpoint.to_owned(),
+            fast_qmm,
+            tiles,
+        }
+    }
+
+    const CHECKPOINT: &str = "spot-sha256:0e25ef0d3240134fc2ba763e69a4d5e273bbd5bdf7a8d3386834f90bf2f59c37";
+
+    /// A report with made-up row hashes and the given canary hash.
+    fn report(canary_hash: [u8; 32]) -> Report {
+        Report {
+            row_hashes: (0..ROWS).map(|row| [row as u8; 32]).collect(),
+            canary_hash,
+            sampled_short: Vec::new(),
+            sampled_long: Vec::new(),
+            short_ms: 0.0,
+            long_ms: 0.0,
+            decode_ms: 0.0,
+            total_ms: 0.0,
+        }
+    }
+
+    #[test]
+    fn the_table_holds_the_two_measured_records_and_no_other() {
+        assert_eq!(
+            record(&key(CHECKPOINT, true, true)),
+            Some("8e05c9ab8c16459c412c0164ec5d3e86abf1d78e6e9ec93e79330552d1881a1c")
+        );
+        assert_eq!(
+            record(&key(CHECKPOINT, false, true)),
+            Some("9017e7aa37fb9b132dd27226b41bc695e50eab149d5fb1f2dbd15ee97e829602")
+        );
+        // No value is measured for tiles = 0, so the table has no line for it.
+        assert_eq!(record(&key(CHECKPOINT, true, false)), None);
+        assert_eq!(record(&key(CHECKPOINT, false, false)), None);
+        assert_eq!(record(&key("spot-sha256:other", true, true)), None);
+    }
+
+    #[test]
+    fn a_lookup_with_another_value_of_each_key_part_finds_no_record() {
+        for line in RECORDS {
+            let found =
+                |checkpoint: &str, fast_qmm: bool, tiles: bool| lookup(RECORDS, &key(checkpoint, fast_qmm, tiles));
+            assert_eq!(
+                found(line.checkpoint, line.fast_qmm, line.tiles),
+                Some(line.canary_hash)
+            );
+            assert_eq!(found(line.checkpoint, !line.fast_qmm, !line.tiles), None);
+            assert_ne!(
+                found(line.checkpoint, !line.fast_qmm, line.tiles),
+                Some(line.canary_hash)
+            );
+            assert_ne!(
+                found(line.checkpoint, line.fast_qmm, !line.tiles),
+                Some(line.canary_hash)
+            );
+            assert_eq!(found("spot-sha256:other", line.fast_qmm, line.tiles), None);
+        }
+    }
+
+    #[test]
+    fn the_checked_description_of_a_key_with_no_record_names_the_key_and_the_command() {
+        let error = identity_hash(CanaryCheck::Record, &key("spot-sha256:abc", true, false)).unwrap_err();
+        assert_eq!(error.kind(), crate::worker::Qwen38ErrorKind::Canary);
+        let message = error.message();
+        for needle in [
+            "spot-sha256:abc",
+            "QWEN38_FAST_QMM=1",
+            "QWEN38_TILES=0",
+            "cargo test -p nagaya-mk-qwen38-gfx1151 --features hip --test hip_canary -- --nocapture",
+            "QWEN38_SHARDS",
+            "src/canary.rs",
+            "records the bits of this checkpoint",
+        ] {
+            assert!(message.contains(needle), "`{needle}` is not in `{message}`");
+        }
+    }
+
+    #[test]
+    fn the_measured_description_of_a_key_with_no_record_has_an_empty_hash() {
+        assert_eq!(
+            identity_hash(CanaryCheck::Measure, &key("spot-sha256:abc", true, false)),
+            Ok(String::new())
+        );
+        // A key with a record gives the record's value in both forms.
+        for check in [CanaryCheck::Record, CanaryCheck::Measure] {
+            assert_eq!(
+                identity_hash(check, &key(CHECKPOINT, true, true)),
+                Ok("8e05c9ab8c16459c412c0164ec5d3e86abf1d78e6e9ec93e79330552d1881a1c".to_owned())
+            );
+        }
+    }
+
+    #[test]
+    fn the_check_passes_for_the_recorded_hash_and_fails_with_the_mismatch_for_another() {
+        let key = key(CHECKPOINT, true, true);
+        let recorded = unhex(record(&key).unwrap());
+        assert_eq!(verify(CanaryCheck::Record, &key, &Ok(report(recorded))), Ok(()));
+        let mut other = recorded;
+        other[31] ^= 1;
+        let error = verify(CanaryCheck::Record, &key, &Ok(report(other))).unwrap_err();
+        assert_eq!(error.kind(), crate::worker::Qwen38ErrorKind::Canary);
+        let message = error.message();
+        assert!(message.contains("does not match its record"), "{message}");
+        assert!(message.contains(&hex(&recorded)), "the record is missing: {message}");
+        assert!(
+            message.contains(&hex(&other)),
+            "the measured hash is missing: {message}"
+        );
+        assert!(message.contains("QWEN38_FAST_QMM=1"), "{message}");
+        assert!(message.contains("that says that the bits moved"), "{message}");
+        for row in 0..ROWS {
+            assert!(
+                message.contains(&hex(&[row as u8; 32])),
+                "row {row} is missing: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_measure_form_compares_nothing() {
+        let key = key(CHECKPOINT, true, true);
+        assert_eq!(verify(CanaryCheck::Measure, &key, &Ok(report([7; 32]))), Ok(()));
+    }
+
+    #[test]
+    fn a_check_of_a_key_with_no_record_gives_the_measured_hash() {
+        let key = key("spot-sha256:abc", true, true);
+        let error = verify(CanaryCheck::Record, &key, &Ok(report([7; 32]))).unwrap_err();
+        assert_eq!(error.kind(), crate::worker::Qwen38ErrorKind::Canary);
+        assert!(error.message().contains(&hex(&[7; 32])), "{}", error.message());
+    }
+
+    #[test]
+    fn a_canary_that_did_not_finish_is_an_ordinary_error_in_both_forms() {
+        let key = key(CHECKPOINT, true, true);
+        for check in [CanaryCheck::Record, CanaryCheck::Measure] {
+            let error = verify(check, &key, &Err("a canary pass stopped on the spin bound".to_owned())).unwrap_err();
+            assert_eq!(error.kind(), crate::worker::Qwen38ErrorKind::Other);
+            assert!(error.message().contains("spin bound"), "{}", error.message());
+        }
+    }
+
+    #[test]
+    fn the_table_line_is_the_text_of_a_record() {
+        let line = table_line(&key("spot-sha256:abc", false, true), &[0xab; 32]);
+        assert_eq!(
+            line,
+            format!(
+                "Record {{ checkpoint: \"spot-sha256:abc\", fast_qmm: false, tiles: true, canary_hash: \"{}\" }}",
+                "ab".repeat(32)
+            )
+        );
     }
 
     #[test]

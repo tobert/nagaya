@@ -204,7 +204,9 @@ fn the_binding_opens_the_engine_and_declares_its_parts() {
         }
         other => panic!("the first shard has no string chat template: {other:?}"),
     }
-    assert_eq!(identity.canary_hash, "");
+    // The canary hash comes from the table of records (spec 8.1), and the open has checked the load against it.
+    assert_eq!(identity.canary_hash.len(), 64, "{}", identity.canary_hash);
+    assert!(!identity.numbers.contains_key("canary"), "{:?}", identity.numbers);
     assert_eq!(identity.numbers.get("fused").map(String::as_str), Some("1"));
     assert_eq!(identity.numbers.get("fast_qmm").map(String::as_str), Some("1"));
 
@@ -956,4 +958,20 @@ fn the_canary_leaves_the_pool_and_the_device_memory_as_it_found_them() {
         gtt_before, gtt_after,
         "the canary changed the GTT use from {gtt_before} to {gtt_after} bytes"
     );
+}
+
+/// An open succeeds only when the canary of its load equals the record. So the canary of the open, and a canary that
+/// runs again now, both give the hash that the identity holds (spec 8.1).
+#[test]
+fn an_open_gives_the_canary_hash_of_the_identity() {
+    use nagaya_mk_qwen38_gfx1151::canary;
+    let engine = open().expect("open the engine");
+    let recorded = engine.identity().canary_hash;
+    assert_eq!(
+        canary::hex(&engine.load_canary().canary_hash),
+        recorded,
+        "the canary of the load"
+    );
+    let again = engine.canary().expect("run the canary again");
+    assert_eq!(canary::hex(&again.canary_hash), recorded, "the canary of a run now");
 }

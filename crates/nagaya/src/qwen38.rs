@@ -4,7 +4,7 @@
 //! `QWEN38_SHARDS` from the environment, as the unit sets it. It opens no device until `open`.
 
 use nagaya_abi::{Engine, Identity, Limits};
-use nagaya_mk_qwen38_gfx1151::{Qwen38Error, Qwen38Paths};
+use nagaya_mk_qwen38_gfx1151::{Qwen38Error, Qwen38ErrorKind, Qwen38Paths};
 
 use crate::admission::{Factory, GroupDevice, OpenError, OpenErrorKind, PlanError};
 
@@ -37,6 +37,7 @@ impl Factory for Qwen38Factory {
             message: error.message,
         })?);
         let engine = nagaya_mk_qwen38_gfx1151::open().map_err(open_error)?;
+        log_load_canary(&engine);
         weights_problem(&planned, &engine.limits())?;
         // The council may serve this engine from its description (spec 11.1). Another identity would give the
         // council's recipes the wrong root, so it is an error.
@@ -130,10 +131,30 @@ fn check_install() -> Result<(), PlanError> {
     Ok(())
 }
 
-/// Map an error of the engine binding to an open error. Each one is a crash (spec 10.4): the binding has no refusal.
+/// Log the canary of the load that an open used (spec 8.1): its hash, its time and the build facts.
+fn log_load_canary(engine: &nagaya_mk_qwen38_gfx1151::Qwen38Engine) {
+    let report = engine.load_canary();
+    let identity = engine.identity();
+    let fact = |key: &str| identity.numbers.get(key).map_or("", String::as_str);
+    tracing::info!(
+        canary_hash = %nagaya_mk_qwen38_gfx1151::canary::hex(&report.canary_hash),
+        canary_ms = report.total_ms.round() as u64,
+        engine_build_sha256 = fact("engine_build_sha256"),
+        engine_compiler = fact("engine_compiler"),
+        engine_hip = fact("engine_hip"),
+        "the Qwen3.8 engine passed its canary at load"
+    );
+}
+
+/// Map an error of the engine binding to an open error (spec 10.4). A canary failure refuses the start: a restart gives
+/// the same bits. Any other error is a crash: the binding has no refusal.
 pub fn open_error(error: Qwen38Error) -> OpenError {
+    let kind = match error.kind() {
+        Qwen38ErrorKind::Canary => OpenErrorKind::Canary,
+        Qwen38ErrorKind::Other => OpenErrorKind::Other,
+    };
     OpenError {
-        kind: OpenErrorKind::Other,
+        kind,
         message: error.message().to_owned(),
     }
 }
