@@ -8,7 +8,7 @@ use std::path::Path;
 
 use nagaya_abi::{
     BitClass, BitSetting, Capability, ChainLimits, CoverageSpan, Determinism, Dtype, ElasticTerm, Identity, Inputs,
-    Kind, Lifetime, Limits, MandatoryTerm, MemoryLimits, PartKind, PartLimits, SlotLimit, Stage, Tier,
+    Kind, Lifetime, Limits, MandatoryTerm, MemoryLimits, PartKind, PartLimits, SlotLimit, Stage, TapLimit, Tier,
 };
 
 /// The vocabulary size (the reference `kVocab`).
@@ -467,7 +467,16 @@ pub fn limits(arena_bytes: u64) -> Limits {
         segments_exact: true,
         determinism: Determinism::Always,
         bit_dependence: Vec::new(),
-        taps: Vec::new(),
+        taps: vec![
+            TapLimit {
+                name: crate::control::RESIDUAL_TAP.to_owned(),
+                conditions: Vec::new(),
+            },
+            TapLimit {
+                name: crate::control::FOLD_TAP.to_owned(),
+                conditions: Vec::new(),
+            },
+        ],
         checkpoint_grain: Some(CHECKPOINT_GRAIN),
         feed: None,
         residual_row_bytes: 0,
@@ -944,6 +953,18 @@ mod tests {
         assert_eq!(term.bytes, PASS_SCRATCH_BYTES);
         assert_eq!(term.lifetime, Lifetime::Engine);
         assert_eq!(term.kinds, vec![Kind::Prefill, Kind::Decode]);
+    }
+
+    #[test]
+    fn the_limits_declare_the_taps_residual_and_fold_with_no_conditions() {
+        let limits = limits(94);
+        let taps: Vec<(&str, &[String])> = limits
+            .taps
+            .iter()
+            .map(|tap| (tap.name.as_str(), tap.conditions.as_slice()))
+            .collect();
+        assert_eq!(taps, [("residual", &[][..]), ("fold", &[][..])]);
+        limits.check().expect("the limits pass the check of the ABI");
     }
 
     #[test]

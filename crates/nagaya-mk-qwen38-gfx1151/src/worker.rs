@@ -15,6 +15,8 @@ use nagaya_abi::{Identity, Limits};
 
 use crate::arena::{self, Arena};
 use crate::binding::{self, Binding, PassStop, Qwen38Segment};
+use crate::control::{SegmentShape, TapSet};
+use crate::cuts::Cuts;
 use crate::gguf;
 use crate::host::{self, Host, LaunchKnobs, PassIn};
 use crate::pass::{self, Knobs, Weights};
@@ -143,6 +145,10 @@ pub(crate) struct PassRequest {
     pub tokens: Vec<i32>,
     /// True when the caller wants one logits row for each segment.
     pub want_logits: bool,
+    /// True for each segment that asks for its logit row.
+    pub wants: Vec<bool>,
+    /// The taps that the pass names.
+    pub taps: TapSet,
 }
 
 /// The result of a pass that ran.
@@ -152,6 +158,8 @@ pub(crate) struct PassReply {
     pub ms: f64,
     /// The logits, `[segments][vocab]` f32 little-endian, when asked.
     pub logits: Option<Vec<u8>>,
+    /// The tap outputs in the order of the layout (`control::tap_layout`): the name and the f32 little-endian bytes.
+    pub taps: Vec<(&'static str, Vec<u8>)>,
 }
 
 /// The worker thread's engine and its contexts.
@@ -1427,10 +1435,11 @@ impl ThreadState {
         // The binding runs the segment check of the engine first, because the engine stops the program on a bad
         // segment.
         let segments = binding::segments(&pointers, &request.lens, &request.tokens);
+        let mut cuts = self.plan_cuts(&request).map_err(problem)?;
         let rows = if request.want_logits { count } else { 0 };
         let mut logits = vec![0f32; rows * spec::VOCAB as usize];
         let buffer = request.want_logits.then_some(logits.as_mut_slice());
-        let ms = match self.run_pass(&segments, buffer) {
+        let ms = match self.run_pass_cut(&segments, buffer, cuts.as_mut()) {
             Ok(ms) => ms,
             Err(PassStop::Refused(message)) => return Err(problem(message)),
             Err(PassStop::Stopped(message)) => return Err(PassProblem { message, poison: true }),
@@ -1438,11 +1447,35 @@ impl ThreadState {
         let logits = request
             .want_logits
             .then(|| logits.iter().flat_map(|value| value.to_le_bytes()).collect());
-        Ok(PassReply { ms, logits })
+        // The pass ran, so a tap output of the wrong size is a fault of the engine: the contexts have advanced.
+        let taps = match cuts.map(Cuts::into_outputs).transpose() {
+            Ok(taps) => taps.unwrap_or_default(),
+            Err(message) => return Err(PassProblem { message, poison: true }),
+        };
+        Ok(PassReply { ms, logits, taps })
     }
 }
 
 impl ThreadState {
+    /// The cuts of a pass: `None` for a plain pass. The plan refuses a tap with no logit row (`control::plan_cuts`).
+    fn plan_cuts(&self, request: &PassRequest) -> Result<Option<Cuts>, String> {
+        let count = request.contexts.len();
+        if request.wants.len() != count {
+            return Err("the segment and logit-row counts differ".to_owned());
+        }
+        if !request.taps.any() {
+            return Ok(None);
+        }
+        let shapes: Vec<SegmentShape> = (0..count)
+            .map(|i| SegmentShape {
+                rows: request.lens[i] as usize,
+                logit_row: request.wants[i],
+                control: &[],
+            })
+            .collect();
+        Cuts::new(&shapes, request.taps).map(Some)
+    }
+
     /// The knobs of the pass build from the environment. A bad value refuses the pass.
     fn knobs(&self, want_logits: bool) -> Result<Knobs, String> {
         let knobs = Knobs::from(self.fast_qmm, env_text)?;
@@ -1452,9 +1485,20 @@ impl ThreadState {
         Ok(knobs)
     }
 
-    /// One pass of `segments` (`host.rs` `run_pass`), after the checks that refuse it: the segments, the poison, the
-    /// knobs and the PLE rows. `logits` takes one row of `VOCAB` values for each segment.
+    /// One pass of `segments` with no cut (`run_pass_cut`).
     fn run_pass(&mut self, segments: &[Qwen38Segment], logits: Option<&mut [f32]>) -> Result<f64, PassStop> {
+        self.run_pass_cut(segments, logits, None)
+    }
+
+    /// One pass of `segments` (`host.rs` `run_pass`), after the checks that refuse it: the segments, the poison, the
+    /// knobs and the PLE rows. `logits` takes one row of `VOCAB` values for each segment. `cuts` is the plan of a pass
+    /// with a tap or a control item.
+    fn run_pass_cut(
+        &mut self,
+        segments: &[Qwen38Segment],
+        logits: Option<&mut [f32]>,
+        cuts: Option<&mut Cuts>,
+    ) -> Result<f64, PassStop> {
         if let Some(problem) = host::segments_problem(segments) {
             return Err(PassStop::Refused(problem));
         }
@@ -1483,7 +1527,7 @@ impl ThreadState {
             ple: &ple,
             knobs,
             launch,
-            cuts: None,
+            cuts,
         };
         unsafe { host::run_pass(&self.binding, self.engine, host, weights, input, logits) }
     }
@@ -1637,6 +1681,58 @@ mod tests {
             tiles: false,
             reload: None,
         }
+    }
+
+    /// A request for one segment of 2 tokens at context 1, with the taps `taps`.
+    fn tapped_request(taps: crate::control::TapSet, wants: bool) -> super::PassRequest {
+        super::PassRequest {
+            contexts: vec![1],
+            lens: vec![2],
+            tokens: vec![10, 11],
+            want_logits: wants,
+            wants: vec![wants],
+            taps,
+        }
+    }
+
+    #[test]
+    fn a_plain_request_plans_no_cut_and_a_request_with_a_tap_does() {
+        let context = StubContext::new(false);
+        let state = stub_state(&context);
+        let none = crate::control::TapSet::default();
+        assert!(state.plan_cuts(&tapped_request(none, true)).unwrap().is_none());
+        let residual = crate::control::TapSet {
+            residual: true,
+            fold: false,
+        };
+        let cuts = state
+            .plan_cuts(&tapped_request(residual, true))
+            .unwrap()
+            .expect("a tap makes cuts");
+        assert_eq!(cuts.layers().len(), 48, "the tap residual cuts at each layer");
+        assert!(!cuts.fuse_hc_off(), "a tap keeps the fused combine");
+        // The tap fold makes no cut: it reads after the last launch.
+        let fold = crate::control::TapSet {
+            residual: false,
+            fold: true,
+        };
+        let cuts = state.plan_cuts(&tapped_request(fold, true)).unwrap().expect("a plan");
+        assert!(cuts.layers().is_empty());
+        // A tap with no logit row is refused, and so are counts that differ.
+        let error = state
+            .plan_cuts(&tapped_request(residual, false))
+            .err()
+            .expect("no logit row");
+        assert!(error.contains("no segment asks for a logit row"), "{error}");
+        let mut bad = tapped_request(residual, true);
+        bad.wants = vec![true, false];
+        assert!(
+            state
+                .plan_cuts(&bad)
+                .err()
+                .expect("counts differ")
+                .contains("counts differ")
+        );
     }
 
     #[test]

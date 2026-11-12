@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use crate::binding::{Binding, PassStop, Qwen38Launch, Qwen38Segment};
 use crate::context::{Copy, Qwen38Context};
-use crate::cuts::Cuts;
+use crate::cuts::{CutDevice, Cuts};
 use crate::pass::{self, Builder, Knobs, PassBuffers, Scratch, Seg, Weights};
 use crate::ple;
 use crate::stage::Stage;
@@ -408,6 +408,8 @@ pub(crate) unsafe fn run_pass(
         Some(grid) => grid,
         None => unsafe { (binding.max_coop_grid)() }.min(MAX_FUSED_GRID),
     };
+    let device_h = host.scratch(binding, "h", pass::MAX_PASS_TOKENS as usize * pass::HC_DIM as usize);
+    let device_mixed = host.scratch(binding, "mixed", pass::MAX_PASS_TOKENS as usize * pass::EMBD as usize);
     for (index, range) in ranges.iter().enumerate() {
         let mut result = Qwen38Launch::default();
         // SAFETY: the range is inside the uploaded list, which holds `n` stages.
@@ -439,12 +441,19 @@ pub(crate) unsafe fn run_pass(
         }
         if let Some(cuts) = cuts.as_deref_mut()
             && index < cut_layers.len()
-            && let Err(error) = cuts.at_cut(cut_layers[index])
         {
-            return Err(poison(
-                &segs,
-                &format!("the host step after layer {} failed: {error}", cut_layers[index]),
-            ));
+            let device = CutDevice {
+                binding,
+                h: device_h,
+                mixed: device_mixed,
+            };
+            // SAFETY: `h` and `mixed` are scratch buffers of the pool, and the launch has ended.
+            if let Err(error) = unsafe { cuts.at_cut(&device, cut_layers[index]) } {
+                return Err(poison(
+                    &segs,
+                    &format!("the host step after layer {} failed: {error}", cut_layers[index]),
+                ));
+            }
         }
     }
     if let Some(logits) = logits {
@@ -463,13 +472,19 @@ pub(crate) unsafe fn run_pass(
             )
         };
     }
-    if let Some(cuts) = cuts
-        && let Err(error) = cuts.finish()
-    {
-        return Err(poison(
-            &segs,
-            &format!("the host step after the last launch failed: {error}"),
-        ));
+    if let Some(cuts) = cuts {
+        let device = CutDevice {
+            binding,
+            h: device_h,
+            mixed: device_mixed,
+        };
+        // SAFETY: as above; the last launch has ended.
+        if let Err(error) = unsafe { cuts.finish(&device) } {
+            return Err(poison(
+                &segs,
+                &format!("the host step after the last launch failed: {error}"),
+            ));
+        }
     }
     for (s, segment) in segs.iter().zip(segments) {
         // SAFETY: a live context of this engine, and `t` readable tokens.

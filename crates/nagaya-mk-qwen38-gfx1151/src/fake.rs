@@ -181,6 +181,16 @@ pub(crate) struct Launch {
     pub skip: u32,
 }
 
+/// One copy that the fake device saw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CopyRecord {
+    pub dst: usize,
+    pub src: usize,
+    pub bytes: u64,
+    /// 1: host to device. 2: device to host.
+    pub kind: u32,
+}
+
 /// What a hook says about a launch: the result that the launch returns.
 pub(crate) type LaunchHook = Box<dyn FnMut(usize, &Launch) -> Qwen38Launch>;
 
@@ -188,6 +198,7 @@ pub(crate) type LaunchHook = Box<dyn FnMut(usize, &Launch) -> Qwen38Launch>;
 struct Device {
     allocations: Vec<(*mut u8, Layout)>,
     launches: Vec<Launch>,
+    copies: Vec<CopyRecord>,
     hook: Option<LaunchHook>,
 }
 
@@ -208,11 +219,17 @@ pub(crate) fn launches() -> Vec<Launch> {
     DEVICE.with(|d| d.borrow().launches.clone())
 }
 
-/// Forget the launches. The buffers stay.
+/// The copies since the last `reset`, in order.
+pub(crate) fn copies() -> Vec<CopyRecord> {
+    DEVICE.with(|d| d.borrow().copies.clone())
+}
+
+/// Forget the launches and the copies. The buffers stay.
 pub(crate) fn reset() {
     DEVICE.with(|d| {
         let mut d = d.borrow_mut();
         d.launches.clear();
+        d.copies.clear();
     });
 }
 
@@ -253,7 +270,15 @@ unsafe extern "C" fn rt_memset(pointer: *mut c_void, value: i32, bytes: u64) {
     unsafe { std::ptr::write_bytes(pointer.cast::<u8>(), value as u8, bytes as usize) };
 }
 
-unsafe extern "C" fn rt_memcpy(dst: *mut c_void, src: *const c_void, bytes: u64, _kind: u32) {
+unsafe extern "C" fn rt_memcpy(dst: *mut c_void, src: *const c_void, bytes: u64, kind: u32) {
+    DEVICE.with(|d| {
+        d.borrow_mut().copies.push(CopyRecord {
+            dst: dst as usize,
+            src: src as usize,
+            bytes,
+            kind,
+        })
+    });
     unsafe { std::ptr::copy_nonoverlapping(src.cast::<u8>(), dst.cast::<u8>(), bytes as usize) };
 }
 
@@ -271,7 +296,7 @@ unsafe extern "C" fn launch_fused(
         grid,
         skip,
     };
-    // Take the hook out while it runs: it may call `launches()`.
+    // Take the hook out while it runs: it may call `copies()` or `launches()`.
     let (index, hook) = DEVICE.with(|d| {
         let mut d = d.borrow_mut();
         d.launches.push(launch.clone());
@@ -403,6 +428,15 @@ impl Rig {
             &self.binding,
             "h",
             crate::pass::MAX_PASS_TOKENS as usize * crate::pass::HC_DIM as usize,
+        )
+    }
+
+    /// The device scratch `mixed`.
+    pub(crate) fn mixed(&mut self) -> *mut f32 {
+        self.host.scratch(
+            &self.binding,
+            "mixed",
+            crate::pass::MAX_PASS_TOKENS as usize * crate::pass::EMBD as usize,
         )
     }
 

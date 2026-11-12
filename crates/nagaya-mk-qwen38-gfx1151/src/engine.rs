@@ -8,6 +8,7 @@ use nagaya_abi::{
     WriteResult,
 };
 
+use crate::control::{self, TapSet};
 use crate::spec;
 use crate::worker::{Call, ClassReading, PassProblem, PassRequest, Qwen38Error, Qwen38Paths, Worker, start};
 
@@ -203,6 +204,42 @@ fn logit_outputs(bytes: &[u8], wants: &[bool], row: usize) -> Result<Vec<Output>
     Ok(outputs)
 }
 
+/// Build the tap outputs from the bytes of the worker, in the order of the layout (`control::tap_layout`). The pass ran
+/// before this call, so a count or a size that differs from the layout is a fault. The error says `Poison`, as for the
+/// logits.
+fn tap_outputs(bytes: Vec<(&'static str, Vec<u8>)>, wants: &[bool], taps: TapSet) -> Result<Vec<Output>, PassError> {
+    let fault = |message: String| PassError {
+        kind: PassErrorKind::Ran(PassStatus::Poison),
+        message,
+    };
+    let layout = control::tap_layout(wants, taps).map_err(fault)?;
+    if bytes.len() != layout.len() {
+        return Err(fault(format!(
+            "the Qwen3.8 engine returned {} tap outputs, but the pass asks for {}",
+            bytes.len(),
+            layout.len()
+        )));
+    }
+    let mut outputs = Vec::with_capacity(layout.len());
+    for (want, (name, bytes)) in layout.iter().zip(bytes) {
+        if name != want.name || bytes.len() != want.bytes {
+            return Err(fault(format!(
+                "the Qwen3.8 engine returned the tap `{name}` of {} bytes, but segment {} needs the tap `{}` of {} bytes",
+                bytes.len(),
+                want.segment,
+                want.name,
+                want.bytes
+            )));
+        }
+        outputs.push(Output {
+            name: name.to_owned(),
+            dtype: Dtype::F32,
+            bytes,
+        });
+    }
+    Ok(outputs)
+}
+
 /// The context of one segment: its worker id and its token count.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct SegmentContext {
@@ -223,6 +260,8 @@ struct PassPlan {
     tokens: Vec<i32>,
     /// True for each segment that wants its logit row.
     wants: Vec<bool>,
+    /// The taps that the pass names.
+    taps: TapSet,
 }
 
 impl PassPlan {
@@ -244,17 +283,16 @@ fn refused(message: String) -> PassError {
 ///
 /// Every check here runs before the binding calls the engine. Thus a refused pass changes no context.
 ///
-/// This build has no tap and no control table. The ABI says that an engine without `control` refuses a segment with a
-/// control list, so the refusal is here and not in the process.
+/// The engine gives the taps `residual` and `fold` (engine-abi "The residual of the Qwen3.8 engine"). An unknown tap and
+/// a tap with no logit row are refused. This build has no control table yet. The ABI says that an engine without
+/// `control` refuses a segment with a control list, so the refusal is here and not in the process.
 fn plan_pass(segments: &[Segment], taps: &[Tap], contexts: &[SegmentContext]) -> Result<PassPlan, PassError> {
     assert_eq!(segments.len(), contexts.len(), "every segment needs its context");
-    if let Some(tap) = taps.first() {
-        return Err(refused(format!(
-            "the pass names the tap `{}`, but this build gives no tap yet; the engine will give the taps `residual` and `fold`: send the pass with no tap",
-            tap.name
-        )));
-    }
-    let mut plan = PassPlan::default();
+    let tap_set = control::tap_set(taps).map_err(refused)?;
+    let mut plan = PassPlan {
+        taps: tap_set,
+        ..PassPlan::default()
+    };
     for (index, segment) in segments.iter().enumerate() {
         let context = contexts[index];
         if !segment.control.is_empty() {
@@ -322,6 +360,7 @@ fn plan_pass(segments: &[Segment], taps: &[Tap], contexts: &[SegmentContext]) ->
         plan.tokens.extend(segment_tokens.iter().map(|token| *token as i32));
         plan.wants.push(want_logits);
     }
+    control::tap_layout(&plan.wants, plan.taps).map_err(refused)?;
     if plan.tokens.len() > spec::MAX_PASS_TOKENS as usize {
         return Err(refused(format!(
             "the pass holds {} tokens, but the Qwen3.8 engine takes at most {}; split the pass",
@@ -374,6 +413,8 @@ impl Engine for Qwen38Engine {
             lens: plan.lens,
             tokens: plan.tokens,
             want_logits,
+            wants: plan.wants.clone(),
+            taps: plan.taps,
         }) {
             Ok(reply) => reply,
             Err(PassProblem { message, poison }) => {
@@ -398,6 +439,13 @@ impl Engine for Qwen38Engine {
                     self.last_error = Some(error.message.clone());
                     return Err(error);
                 }
+            }
+        }
+        match tap_outputs(reply.taps, &plan.wants, plan.taps) {
+            Ok(found) => outputs.extend(found),
+            Err(error) => {
+                self.last_error = Some(error.message.clone());
+                return Err(error);
             }
         }
         Ok(PassOut {
@@ -599,10 +647,11 @@ impl Seal for Qwen38Engine {
 #[cfg(test)]
 mod tests {
     use nagaya_abi::{
-        ControlItem, ControlOp, OutputsWanted, PassErrorKind, PassStatus, Segment, SegmentInputs, State, Tap,
+        ControlItem, ControlOp, Dtype, OutputsWanted, PassErrorKind, PassStatus, Segment, SegmentInputs, State, Tap,
     };
 
-    use super::{SegmentContext, logit_outputs, plan_pass, write_from};
+    use super::{SegmentContext, logit_outputs, plan_pass, tap_outputs, write_from};
+    use crate::control::TapSet;
     use crate::spec;
 
     #[test]
@@ -696,13 +745,20 @@ mod tests {
         );
     }
 
+    /// A segment of one token that asks for its logit row.
+    fn logit_segment(token: u32, start: u64) -> Segment {
+        let mut segment = token_segment(&[token], start);
+        segment.outputs.logit_rows = vec![start];
+        segment
+    }
+
     #[test]
-    fn a_pass_that_names_a_tap_is_refused_and_the_message_names_the_taps_of_the_engine() {
+    fn a_pass_that_names_an_unknown_tap_is_refused_and_the_message_names_the_taps_of_the_engine() {
         let contexts = [SegmentContext { id: 7, n: 3 }];
-        let segments = [token_segment(&[11], 3)];
-        for name in ["residual", "fold", "lens"] {
+        let segments = [logit_segment(11, 3)];
+        for name in ["lens", "logits", ""] {
             let taps = [Tap { name: name.to_owned() }];
-            let error = plan_pass(&segments, &taps, &contexts).expect_err("this build has no tap");
+            let error = plan_pass(&segments, &taps, &contexts).expect_err("the engine has no such tap");
             assert_eq!(error.kind, PassErrorKind::Refused, "a refused pass did not run");
             assert!(
                 error.message.contains(&format!("names the tap `{name}`")),
@@ -710,8 +766,74 @@ mod tests {
                 error.message
             );
             assert!(error.message.contains("`residual` and `fold`"), "{}", error.message);
-            assert!(error.message.contains("this build gives no tap"), "{}", error.message);
-            assert!(error.message.contains("send the pass with no tap"), "{}", error.message);
+            assert!(error.message.contains("name one of them"), "{}", error.message);
+        }
+    }
+
+    #[test]
+    fn the_two_taps_of_the_engine_are_accepted_with_a_logit_row_and_refused_without() {
+        let contexts = [SegmentContext { id: 7, n: 3 }];
+        let both = [
+            Tap {
+                name: "residual".to_owned(),
+            },
+            Tap {
+                name: "fold".to_owned(),
+            },
+        ];
+        let plan = plan_pass(&[logit_segment(11, 3)], &both, &contexts).expect("both taps, one logit row");
+        assert!(plan.taps.residual && plan.taps.fold);
+        // A tap with no logit row would give nothing, so the pass is refused before it runs.
+        let error = plan_pass(&[token_segment(&[11], 3)], &both, &contexts).expect_err("no logit row");
+        assert_eq!(error.kind, PassErrorKind::Refused);
+        assert!(
+            error.message.contains("no segment asks for a logit row"),
+            "{}",
+            error.message
+        );
+        // The same tap twice.
+        let twice = [both[0].clone(), both[0].clone()];
+        let error = plan_pass(&[logit_segment(11, 3)], &twice, &contexts).expect_err("a tap comes twice");
+        assert!(error.message.contains("twice"), "{}", error.message);
+    }
+
+    #[test]
+    fn the_tap_outputs_have_the_names_the_dtype_the_count_and_the_sizes_of_the_layout() {
+        let taps = TapSet {
+            residual: true,
+            fold: true,
+        };
+        // Segments 0 and 2 ask for a logit row, so each tap has 2 outputs: all `residual`, then all `fold`.
+        let wants = [true, false, true];
+        let bytes = |name: &'static str, size: usize, fill: u8| (name, vec![fill; size]);
+        let given = vec![
+            bytes("residual", 1_966_080, 1),
+            bytes("residual", 1_966_080, 2),
+            bytes("fold", 10_240, 3),
+            bytes("fold", 10_240, 4),
+        ];
+        let outputs = tap_outputs(given.clone(), &wants, taps).expect("the bytes follow the layout");
+        let names: Vec<&str> = outputs.iter().map(|o| o.name.as_str()).collect();
+        assert_eq!(names, ["residual", "residual", "fold", "fold"]);
+        assert!(outputs.iter().all(|o| o.dtype == Dtype::F32));
+        let sizes: Vec<usize> = outputs.iter().map(|o| o.bytes.len()).collect();
+        assert_eq!(sizes, [1_966_080, 1_966_080, 10_240, 10_240]);
+        assert_eq!(outputs[1].bytes[0], 2, "the outputs keep the order of the rows");
+        // A pass with no tap gives no output.
+        assert!(tap_outputs(Vec::new(), &wants, TapSet::default()).unwrap().is_empty());
+        // One output short, one of the wrong size and one of the wrong name are faults after the pass.
+        for broken in [
+            given[..3].to_vec(),
+            vec![
+                bytes("residual", 100, 1),
+                given[1].clone(),
+                given[2].clone(),
+                given[3].clone(),
+            ],
+            vec![given[2].clone(), given[1].clone(), given[0].clone(), given[3].clone()],
+        ] {
+            let error = tap_outputs(broken, &wants, taps).expect_err("the bytes break the layout");
+            assert_eq!(error.kind, PassErrorKind::Ran(PassStatus::Poison));
         }
     }
 
