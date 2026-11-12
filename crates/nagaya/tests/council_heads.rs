@@ -147,6 +147,52 @@ fn a_reply_cut_inside_its_thinking_and_sent_back_closed_starts_from_its_head() {
     assert_eq!((dry.from, dry.usage.kept), (Some(head), head_tokens), "{:?}", dry.usage);
 }
 
+/// Measured live on the Qwen3.8 engine: every reply had `head: null`, and the second turn of a chat kept 34 of its 180
+/// prompt tokens. The chat client marks no message. The engine declares a seal, a grain of 256, `segments_exact`,
+/// 16 segments and no feed rule. The state of the prompt still holds a seal at the end of the user message.
+#[test]
+fn a_reply_to_an_unmarked_message_holds_a_head_on_an_engine_like_the_qwen38_engine() {
+    if qwen_model::absent() {
+        return;
+    }
+    let family = qwen();
+    let script = Script::default();
+    let factory = TermFactory {
+        script: script.clone(),
+        vocab: Some(family.vocab_size()),
+        slots: vec![SlotLimit {
+            bytes: 8 * 32768,
+            count: 2,
+            tokens: 32768,
+        }],
+        grain: Some(256),
+        segments: 16,
+        ..TermFactory::toy()
+    };
+    let mut config = ServiceConfig::new("qwen", council_support::ENGINE);
+    config.context_tokens = 32768;
+    let f = Fixture::with_family(factory, family.clone(), 1 << 28, None, config);
+    let system = json!({"role": "system", "content": "Be brief."});
+    let user = json!({"role": "user", "content": "What is 17*3?"});
+    let value = json!({"thinking": false, "messages": [system, user]});
+    let prompt = family.render(&context(&value), true).unwrap().tokens.len();
+    let mut tokens = family.tokenize_special("17*3 is 51.").unwrap();
+    tokens.push(family.tokenize_special("<|im_end|>").unwrap()[0]);
+    script.set(prompt, tokens);
+    let done = generate(&f, &value, 50);
+    assert_eq!(done.finish, Finish::EndTurn);
+    let head = done
+        .head
+        .clone()
+        .expect("a reply to an unmarked message holds its head");
+    let head_tokens = done.snapshots.last().unwrap().tokens;
+    let reply = serde_json::to_value(done.as_message().unwrap()).unwrap();
+    let next = json!({"thinking": false, "messages": [system, user, reply, {"role": "user", "content": "And 18*3?"}]});
+    let built = f.service.build(&context(&next), false, Default::default()).unwrap();
+    assert_eq!(built.from, Some(head), "the next turn starts from the head");
+    assert_eq!(built.usage.kept, head_tokens as u64, "{:?}", built.usage);
+}
+
 /// kaibo job-5 (cost): a request renders its context once. The cuts come from the store's index, not from a second
 /// render with every message marked. Each generation, read and decision renders once more for its own work.
 #[test]

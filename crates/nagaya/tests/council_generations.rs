@@ -162,6 +162,44 @@ fn the_next_request_starts_from_the_head_of_the_reply_and_keeps_its_boundary() {
     assert_ne!(without.head, built.head);
 }
 
+/// The user message of a chat client has no mark. The prompt still seals at the end of its last message, so the
+/// state holds that seal, and the head after the reply must keep it (spec 6.14). Measured live on the Qwen3.8 engine:
+/// the second turn kept 34 of 180 prompt tokens and fed 146.
+fn unmarked() -> Vec<Value> {
+    vec![
+        json!({"role": "system", "content": "You are a coding agent. Use the shell tool."}),
+        json!({"role": "user", "content": "Delete the build directory, then rebuild."}),
+    ]
+}
+
+#[test]
+fn a_reply_to_an_unmarked_message_holds_a_head_and_the_next_turn_feeds_only_its_message() {
+    let (f, script) = scripted();
+    let value = ctx(false, unmarked());
+    let mut reply = bytes("ok");
+    reply.push(gogi_toy::END);
+    script.set(prompt(&value), reply);
+    let done = generate(&f, &value, 50, json!({"temperature": 0}));
+    let head = done
+        .head
+        .clone()
+        .expect("a reply to an unmarked message holds its head");
+    assert_eq!(done.snapshots.last().unwrap().id, head);
+    let head_tokens = done.snapshots.last().unwrap().tokens;
+    let mut messages = unmarked();
+    messages.push(serde_json::to_value(done.as_message().unwrap()).unwrap());
+    messages.push(json!({"role": "user", "content": "Now list what is left."}));
+    let next = ctx(false, messages);
+    let built = f.service.build(&context(&next), false, Default::default()).unwrap();
+    assert_eq!(built.from, Some(head), "the build starts from the held head");
+    assert_eq!(
+        built.usage.kept, head_tokens as u64,
+        "the next turn keeps the whole reply: {:?}",
+        built.usage
+    );
+    assert_eq!(built.usage.fed, built.usage.prompt - head_tokens as u64);
+}
+
 #[test]
 fn a_generation_that_starts_from_a_cut_holds_its_head_and_a_dry_run_reports_the_cut() {
     let (f, script) = scripted();
