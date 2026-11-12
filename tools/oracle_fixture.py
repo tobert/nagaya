@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: MIT
 """Make the oracle fixture for the Qwen3.8 family (spec 8.3, milestone 11.5 spike).
 
-The tool runs mk's reference on the CPU. The reference is the model's own transformers code, which streams one layer
+The tool runs the reference on the CPU. The reference is the model's own transformers code, which streams one layer
 at a time over the GGUF weights. For each fixed prompt the tool records the token ids and, for the last position, the
 top-64 logits (ids and f32 values) and the logsumexp over the whole vocabulary.
 
-The tool imports only from mk's repository, by an explicit path, and it never writes there. Run it with mk's venv:
+The tool imports only from the reference's repository, by an explicit path, and it never writes there. Run it with the reference's venv:
 
     PYTHONDONTWRITEBYTECODE=1 nice -n 19 ionice -c3 \
         ~/src/megakernel-qwen38-flashnext-strixhalo/.venv/bin/python -I tools/oracle_fixture.py OUT.json [--layers N]
@@ -20,11 +20,11 @@ import sys
 import time
 from pathlib import Path
 
-MK = Path(os.environ.get("QWEN38_REFERENCE_REPO", Path.home() / "src/megakernel-qwen38-flashnext-strixhalo"))
+REFERENCE = Path(os.environ.get("QWEN38_REFERENCE_REPO", Path.home() / "src/megakernel-qwen38-flashnext-strixhalo"))
 TOP = 64
 
-# The most tokens that the mk binding takes in one context of the small class: 4096 (spec.rs CONTEXT_CLASSES). A prompt
-# longer than 256 tokens (mk kMaxPassTokens) takes several passes.
+# The most tokens that the engine binding takes in one context of the small class: 4096 (spec.rs CONTEXT_CLASSES). A prompt
+# longer than 256 tokens (engine kMaxPassTokens) takes several passes.
 MAX_TOKENS = 4096
 
 AUTHOR = "written by Claude Sonnet 5.5 for this tool, 2026-10-20"
@@ -36,7 +36,7 @@ LONG = (
     'The harbour master works in a narrow room above the customs shed. On his desk lie a brass barometer, a ledger of arrivals and a mug of tea that has gone cold. He writes down each vessel by name, by tonnage and by the hour of its mooring. When the weather turns, he rings the bell on the pier, and the boats still at sea make for the shelter of the breakwater. In winter the storms can last for days. The waves climb the sea wall and break over the road, and the town waits, with its lamps lit and its doors barred, until the wind drops.'
 )
 
-# Five paragraphs, 596 tokens: three passes of mk (256, 256 and 84). A sixth paragraph makes 721 tokens, and there mk
+# Five paragraphs, 596 tokens: three passes of the engine (256, 256 and 84). A sixth paragraph makes 721 tokens, and there the engine
 # and the reference disagree by 0.23 in a logit. The break is between 630 and 655 tokens (spec 15, question 8).
 LONGER = (
     'The railway workshop stands at the end of the line, where the tracks fan out into sidings and the grass grows between the sleepers. Before dawn the lamps are lit in the long iron shed, and the first shift of fitters walks in out of the cold with their tin boxes under their arms. They hang their coats on the hooks beside the tool racks, and each man checks that his own spanners are where he left them. A locomotive waits on the pit road with its fire dropped and its boiler still warm, and a boy climbs along its frames with a can of oil, feeding every joint in turn.\n\n'
@@ -61,7 +61,7 @@ def main() -> None:
     parser.add_argument("--layers", type=int, default=None)
     args = parser.parse_args()
 
-    sys.path.insert(0, str(MK))
+    sys.path.insert(0, str(REFERENCE))
     import torch
     from harness import reference
     from harness.paths import SHARDS
@@ -73,7 +73,7 @@ def main() -> None:
     ids = [tokenizer.encode(text) for _, text, _ in PROMPTS]
     for (name, _, _), row in zip(PROMPTS, ids):
         if len(row) > MAX_TOKENS:
-            sys.exit(f"prompt {name} has {len(row)} tokens; the mk binding takes {MAX_TOKENS}")
+            sys.exit(f"prompt {name} has {len(row)} tokens; the engine binding takes {MAX_TOKENS}")
     model = reference.GGUFModel()
     started = time.time()
 
@@ -102,7 +102,7 @@ def main() -> None:
         "layers": args.layers if args.layers is not None else model.config.num_hidden_layers,
         "vocab": int(logits.shape[0]),
         "transformers": transformers.__version__,
-        "reference_sha": hashlib.sha256((MK / "harness" / "reference.py").read_bytes()).hexdigest()[:16],
+        "reference_sha": hashlib.sha256((REFERENCE / "harness" / "reference.py").read_bytes()).hexdigest()[:16],
         "seconds": round(time.time() - started),
         "prompts": entries,
     }

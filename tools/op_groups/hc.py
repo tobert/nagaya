@@ -1,7 +1,7 @@
-"""The group `hc`: the hyper-connection ops against torch (test_hc.py of mk).
+"""The group `hc`: the hyper-connection ops against torch (test_hc.py of the reference).
 
-`hc_pre` runs the HF module `Qwen4ExpTextGatedResidual` of mk's transformers with SYNTHETIC weights that the generator
-makes at the real shapes (mk used the real weights of layer 0). The Rust test remakes the weights and calls `qwen38_hc_pre`.
+`hc_pre` runs the HF module `Qwen4ExpTextGatedResidual` of the reference's transformers with SYNTHETIC weights that the generator
+makes at the real shapes (the reference used the real weights of layer 0). The Rust test remakes the weights and calls `qwen38_hc_pre`.
 `hc_combine` is `h + out x inject` in torch, which must match the op bit for bit.
 """
 import sys

@@ -1,9 +1,9 @@
 """The group `moe`: the expected outputs of the MoE router and of the whole MoE block (test_moe_route.py, test_moe.py).
 
-Route: for each logit maker and token count, the exact answers of mk's `expected` function. The integer arrays are
+Route: for each logit maker and token count, the exact answers of the reference's `expected` function. The integer arrays are
 stored as SHA-256 digests of their little-endian bytes, and the weights as f32 values.
 
-Block: the MoE block in float64 from the dequantized weights of two synthetic layers. mk compares against the HF module
+Block: the MoE block in float64 from the dequantized weights of two synthetic layers. The reference compares against the HF module
 `Qwen4ExpTextSparseMoeBlock` with the real weights of layers 0 and 3. The HF module needs the 512 experts as dense float
 tensors, so this group follows the same maths in numpy: a softmax router, the top 10 renormalized, SwiGLU experts, and a
 shared expert with a sigmoid gate. Only the experts that the router selects are dequantized.
