@@ -877,3 +877,147 @@ This is the text of `AGENTS.md` on gfx1151host for this milestone, as it was on 
     - step 2, the gate `1d02ac5`;
     - steps 3 and 4, the note `5a2f50f` and the join `2f40184`;
     - step 5, `38e1dfa`, the lock `4e31aae` and its record `f7d9ea9`.
+
+## Milestone 31, the names of the Qwen3.8 engine
+
+Steps 1 and 2 of milestone 31 ran for the Qwen3.8 engine on 2026-11-12, on gfx1151host. The merge is `d1d02af`. The old
+practice project had the name mk, and this section is the record of its names. A reader of the code does not need
+them.
+
+The rules, decided on 2026-11-12:
+
+- A name goes when it points at the old project. `mk` stays where it means the kind "megakernel engine".
+- No old name works beside a new one. The code has no guard for an old variable.
+- Old code goes. Two build knobs that no build set went with their branches.
+
+| Old name | New name |
+|---|---|
+| `MK_SHARDS`, `MK_FAST_QMM`, `MK_TILES`, `MK_ELIDE`, `MK_FUSE*`, `MK_TAIL` | the same names with `QWEN38_` |
+| `MK_DEBUG_LAYERS`, `MK_MEGA_GRID`, `MK_MUTATE_*`, `MK_WATCHDOG_DEADLINE_S` | the same names with `QWEN38_` |
+| `MK_CHECK`, `MK_DIE`, `MK_CHECK_BYTES`, `MK_TRAP` | `HIP_CHECK`, `HIP_DIE`, `HIP_CHECK_BYTES`, `HIP_TRAP` |
+| `MK_FIELD`, `MK_SIZE`, `MK_CONST`, `MK_UNION` | `STAGE_FIELD`, `STAGE_SIZE`, `STAGE_CONST`, `STAGE_UNION` |
+| `kMkBlock`, `MK_BLOCK` | `kBlockThreads`, `BLOCK_THREADS` |
+| `MK_EXPERT_LOOKAHEAD` | `QWEN38_EXPERT_LOOKAHEAD` |
+| `MK_ENGINE_BUILD_SHA256`, `_COMPILER`, `_HIP` | `QWEN38_BUILD_SHA256`, `_COMPILER`, `_HIP` |
+| `namespace mk`, `mkgguf` | `namespace qwen38`, `gguf` |
+| `mk_engine_open`, `mk_relayout`, `mk_launch_fused`, `mk_launch_each` | the same names with `qwen38_` |
+| `mk_ctx_round_gdn_bf16`, `mk_max_coop_grid`, `mk_status_name` | the same names with `qwen38_` |
+| `mk_rt_*`, `mk_trap_sink_install`, `mk_trap_format` | `hip_rt_*`, `hip_trap_sink_install`, `hip_trap_format` |
+| `mk_tid` | `thread_id` |
+| the op wrappers `mk_qmm`, `mk_qmmh`, `mk_moe`, `mk_attn`, `mk_gdn`, `mk_tile_*`, `mk_hc_*` | `qwen38_*` |
+| `libmkengine.a`, `libmk_<op>.so` | `libqwen38engine.a`, `libqwen38_<op>.so` |
+| `MkEngine`, `MkError`, `MkContext`, `MkPaths`, `MkLaunch`, `MkSegment`, `MkFactory` | `Qwen38Engine` and so on |
+| `crates/nagaya/src/mk.rs`, `tests/mk_wire.rs`, `tests/mk_stop.rs` | `qwen38.rs`, `qwen38_wire.rs`, `qwen38_stop.rs` |
+| the engine name `mk` of the gfx1151host profile | `qwen38` |
+| the memfd `mk-weights`, the thread `mk-engine` | `qwen38-weights`, `qwen38-engine` |
+| the fixture keys `mk_rev`, `mk_files`, `mk_src`, and the toolset `mk` | `reference_rev`, `source_files`, `reference_src`, `reference` |
+| `MK_REPO`, `MK_REF_THREADS`, `MK_OPS_LIBDIR` | `QWEN38_REFERENCE_REPO`, `QWEN38_REFERENCE_THREADS`, `QWEN38_OPS_LIBDIR` |
+
+These went with no new name:
+
+- the build knobs `MK_WEIGHT_POLICY` and `MK_GDN_CORE_EXPERIMENT`;
+- the list of seven refused knobs: `MK_ATTACH_WAIT_S`, `MK_MEGA_EVENTS`, `MK_MEGA_PER_STAGE`, `MK_SCRATCH_WARMUP`,
+  `MK_STAGE_TIMING`, `MK_STAGE_TIMING_PRINT` and `MK_UNFUSED_GRID`;
+- `src/table.rs`, which no module named.
+
+The gates. The `hip` suite of the engine gave 274 passed, 0 failed and 10 ignored on the card. The oracle bench on
+the exact path gave the five logit hashes of 2026-10-31. Thus the rename changed no bit. The engine identity
+changed, because the build hash and the names of two bit settings are in it. Each held context filled again once.
+
+The two sections below came out of `docs/deploy.md` on 2026-11-12. They tell how the nagaya took the place of the
+old service on gfx1151host, on 2026-10-21. The old service is gone, so nobody can do these steps now.
+
+### Cut over from mk
+
+Do these steps in this order. Stop at the first step that fails, and do the rollback below.
+
+1. Check that nothing else is a GPU client (spec 3.1). The nagaya is the only client.
+
+   ```
+   systemctl --user is-active megakernel.service
+   fuser -v /dev/kfd /dev/dri/renderD* 2>&1
+   ```
+
+   The first command says `active` while mk runs. The second command lists the processes that hold the GPU. Stop any
+   job of ours that it lists. Do not stop a process that you do not know.
+
+2. Stop and disable mk. The stop frees mk's weights and its GPU queues.
+
+   ```
+   systemctl --user stop megakernel.service
+   systemctl --user disable megakernel.service
+   ```
+
+3. Enable and start the nagaya.
+
+   ```
+   systemctl --user enable --now nagaya.service
+   ```
+
+   The command returns when the process sends `READY=1`, or when `TimeoutStartSec` (300 s) ends. While mk opens, the
+   process sends `EXTEND_TIMEOUT_USEC=` every 5 s, so a slow load does not time the start out. The process ends a
+   hung open itself after 300 s and exits 1.
+
+4. Check the state of the unit and its log.
+
+   ```
+   systemctl --user status nagaya.service
+   journalctl --user -u nagaya.service -b --no-pager | tail -40
+   journalctl --user -u nagaya.service -f
+   ```
+
+   `status` shows `Active: active (running)` and a `Status:` line with the state of each engine. The log has the
+   line "ready with 1 engines". Use `journalctl -f` to follow the log. Stop it with Ctrl-C.
+
+5. Ask for the identity of the served models.
+
+   ```
+   curl -s http://198.51.100.20:8090/council/v2/identity
+   ```
+
+   The reply is JSON. It lists the served model with its identity, limits, capabilities and status.
+
+6. Run gogi's conformance suite against the process. It needs no restart.
+
+   ```
+   cd ~/src/gogi
+   nice -n 10 cargo run --release -p gogi-conformance -- http://198.51.100.20:8090
+   ```
+
+   The last line counts the checks. On 2026-10-21 it was `215 ok, 0 FAIL, 5 skip`. Each `FAIL` line names a check. Add
+   `--model <name>` to check one served model. The flag `--allow-restart <cmd>` also checks a restart: since
+   `47f2191`, a pinned snapshot stays through a clean restart (spec 6.11). b70host ran the check on 2026-10-23, and
+   on gfx1151host each restart loads the weights again ("Arenas through a restart").
+
+7. Look for GPU errors in the kernel log.
+
+   ```
+   journalctl -k -b --no-pager | grep -i -E 'amdgpu|kfd' | tail -20
+   ```
+
+   Any `amdgpu` error after the start is a failed gate. Do the rollback.
+
+### Roll back to mk
+
+Use this when a gate fails, or when Amy asks for mk. mk is an archive since milestone 15 (`docs/ontology.md`). The
+rollback needs its unit file and its built library, which the archive keeps.
+
+```
+systemctl --user disable --now nagaya.service
+cmp ~/src/megakernel-qwen38-flashnext-strixhalo/deploy/megakernel.service ~/.config/systemd/user/megakernel.service
+systemctl --user enable --now megakernel.service
+systemctl --user is-active megakernel.service
+curl -s http://198.51.100.20:8090/mk/v1/health
+```
+
+`systemctl --user disable` removes a unit that is a link into a repository. The cutover removed mk's link that way
+(seen on 2026-10-21). Thus mk's unit in `~/.config/systemd/user/` is now a copy of the file in mk's repository, and
+`is-enabled` says `disabled`. The second line checks that the copy is the same as mk's file. If `cmp` reports a
+difference, copy mk's file again and run `systemctl --user daemon-reload`.
+
+The third line starts mk, which loads its weights. The fourth line says `active`. The `curl` answers when
+the load ends. mk serves its own route, `/mk/v1`, on port 8090. Its answer proves that mk is back.
+
+To go back to the nagaya later, link its unit again first, as in "Install".
+
+Nothing in the store directory needs a change for the rollback. The nagaya leaves its store and its profile there.
