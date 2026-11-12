@@ -419,15 +419,42 @@ or creative text. LFM3 is both, so these trials are new.
 - **Errors.** An unknown `map` is a 400 that names `soft.map`. A member of the other map, or an unknown member, is a
   400 that names `soft.<member>`. A value out of range is a 400 that names its member.
 
-**Proposed**, later: a stop for steps that do not end by themselves. Amy, 2026-11-12: "I think detecting </think> or
-other end tokens would be helpful so the model isn't trapped in a loop it has no use for."
+**Proposed**: a stop for steps that do not end by themselves. Amy, 2026-11-12: "I think detecting </think> or
+other end tokens would be helpful so the model isn't trapped in a loop it has no use for." She accepted the build
+of `latent.stop` on the same day. `soft.cold` is later.
 
 - **`latent.stop`.** With `true`, the latent steps end at the first step whose top token ends the reasoning or the
-  turn. The reply starts after that step. The response gives `latent.ran`, the steps that ran.
+  turn. The reply starts after that step, from its logit row. `steps` is then the most steps.
+- **The end of a step.** The family's reply parser decides it. Push the top token into a new parser at the start of
+  the reply. The step ends the steps when the parser then ends the reply, or leaves the reasoning. Thus with thinking
+  off, only a token that ends the turn stops the steps.
+- **The response.** `latent` also gives `ran`, the steps that ran, when the request sends `stop`.
+- **One context.** `stop` takes one context, as `soft` does, and the ensemble runs it as a generation. Reason: the
+  contexts of an ensemble share one step count. Another count is a 400 that names `latent.stop`.
 - **`soft.cold`.** This is "Cold Stop" of Soft Thinking: `{"entropy": 0.05, "run": 128}`. After `run` tokens in a row
   with an entropy below `entropy`, the reply takes the token that ends the reasoning. It needs `span: "think"`.
 
 The trials of these rules are in `docs/cv.md`, "The stream of thought". The paper files are not in git.
+
+### The score of a text
+
+**Proposed** (Claude Opus 5.5, 2026-11-12). The trials of soft inputs found broken words that no counter saw
+(`docs/cv.md`). Amy accepted a measure: the log probability of each token of a reply, with no soft input.
+
+```json
+"force": "The owl collected buttons."
+-> "stats": {"content": {"tokens": 6, "mean_logprob": -1.92, "min_logprob": -5.1, …}}
+```
+
+- **`force`** is a member of `ensemble`: a text that the reply takes in place of the samples. The family tokenizes
+  it, and each token goes into the reply as if the sampler had picked it.
+- **The score** is `stats` of the response, as gogi gives it for a generation. Each token gives its untempered
+  probability in the logit row before it. Thus a generation and the force of its own text give the same `stats`.
+- **The response** of `ensemble` gives `stats` for each request now, with `force` or without it.
+- **The end.** The reply ends after the last token of the text, or before it when the parser ends the reply.
+- **Errors.** An empty text is a 400 that names `force`. `force` with `max_tokens` is a 400 that names
+  `max_tokens`, because the text gives the count. `force` with `soft` is a 400 that names `force`, because the score
+  reads plain inputs.
 
 ## `latent` and `merge`: the parts of a swarm
 
