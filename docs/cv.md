@@ -318,6 +318,35 @@ tokens cut most owl stories inside their reasoning, so the owl story ran again w
 Thus `moi` with a low `beta` in the reasoning is the first setting that gives a measured gain. It is small, and two
 prompts hold it. Trial it on more prompts before the web app gets a field for it.
 
+**Ten more prompts**, the same day and build: no `soft` against `moi` with `beta` 0.25 and `span: "think"`, thinking
+on, 1500 tokens at most, the seeds 0 to 23. Five prompts ran on `lfm3`, and five on `lfm3-1`.
+
+| Prompt | Median thinking | Ended of 24 | Score | Share |
+|---|---|---|---|---|
+| Dialogue: a robot and a cat | 1034 -> 745.5 | 18 -> 23 | -2.36 -> -2.27 | 0.072 |
+| Letter of a grandmother | 922 -> 681.5 | 11 -> 17 | -1.99 -> -1.87 | 0.069 |
+| Advertisement of a time machine | 939.5 -> 773 | 14 -> 17 | -1.92 -> -1.83 | 0.077 |
+| A night market on clouds | 530.5 -> 476.5 | 23 -> 24 | -1.90 -> -1.87 | 0.058 |
+| A lighthouse keeper | 1500 -> 1436 | 6 -> 9 | -1.98 -> -2.05 | 0.039 |
+| A myth of the moon | 1500 -> 1500 | 0 -> 4 | -2.27 -> -2.26 | 0.090 |
+| A folk song of a river | 1500 -> 1500 | 1 -> 1 | -1.97 -> -2.01 | 0.089 |
+| Three haiku | 1500 -> 1500 | 0 -> 0 | none | 0.028 |
+| A recipe of a dragon | 1500 -> 1500 | 0 -> 0 | -1.80 -> -1.57 | 0.079 |
+| A sonnet of a city | 1500 -> 1500 | 0 -> 0 | none | 0.048 |
+
+- Each arrow goes from no `soft` to `moi`. A score is the mean of the replies that ended. A reply cut at the limit
+  that has content gets a score too.
+- In no prompt did fewer replies end with `moi`. Over the ten prompts, 73 of 240 ended with no `soft`, and 95 with
+  `moi`.
+- Four prompts had a median reasoning below the limit: the dialogue, the letter, the advertisement and the market.
+  In each, `moi` cut the median reasoning by 10% to 28%, and the score rose by 0.03 to 0.12.
+- Five prompts reasoned past 1500 tokens in most replies, with either setting. Haiku and the sonnet never ended.
+  The first 400 characters of their reasoning count syllables and rhymes. Nobody read the rest, so a loop is a guess.
+  A loop is the trap that Amy named on 2026-11-12. A stop of the kind of Cold Stop is the tool for it.
+
+Thus `moi` with `beta` 0.25 in the reasoning gains over twelve creative prompts. The reasoning is shorter, more
+replies end, and the score stays. The gain is not large, but no prompt went against it.
+
 ## Open questions
 
 1. Does the op run before or after the norm of the next layer? Arditi et al. change the residual, so the first
