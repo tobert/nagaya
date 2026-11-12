@@ -17,9 +17,9 @@ The nagaya is three things:
 - **The council v2 API.** Clients speak council v2 to the nagaya. The contract is gogi, and the nagaya serves it for
   every engine of the cluster (`docs/spec.md` 11). Its own routes are under `/nagaya/v1`.
 
-An engine is a model's code and weights. The first two engines came from our learning projects, mk and mkviolet.
-`docs/ontology.md` defines mk, mkviolet, gogi and kaijutsu once, for every doc. Later engines are lfm and gmk's
-instruments.
+An engine is a model's code and weights. The first two engines came from our learning projects, the first Qwen3.8 engine
+and mkviolet. `docs/ontology.md` defines the first Qwen3.8 engine, mkviolet, gogi and kaijutsu once, for every doc.
+Later engines are lfm and gmk's instruments.
 
 v0 covers three kinds of work: inference, image batch, and training as filler. Amy chose all three for v0 on
 2026-10-17.
@@ -27,11 +27,12 @@ v0 covers three kinds of work: inference, image batch, and training as filler. A
 ## Status
 
 The design came on 2026-10-17 from a conversation with Amy. It began with renting a GPU for a weekend and ended with
-a common host for our megakernels. The code began with mk's engine on 2026-10-18.
+a common host for our megakernels. The code began with the first Qwen3.8 engine on 2026-10-18.
 
 - Since 00:24 on 2026-10-21, `nagaya.service` serves council v2 on `198.51.100.20:8090` on gfx1151host's gfx1151.
-  `megakernel.service` is stopped and disabled. Since 2026-10-23, mk's engine is the nagaya's own copy. Since
-  2026-11-01, `qwen-image-fusal` is resident, and mk is on demand (`docs/deploy.md`, "The layout of gfx1151host").
+  Since 2026-10-23, the engine of Qwen3.8 is the nagaya's own copy. Since
+  2026-11-01, `qwen-image-fusal` is resident, and the Qwen3.8 engine is on demand (`docs/deploy.md`, "The layout of
+  gfx1151host").
 - Since 11:01 on 2026-10-23, `nagaya.service` serves council v2 on `198.51.100.10:8091` on b70host's two B70 cards.
   `gemma` and `embeddinggemma-2` are resident. `voice`, `sdxl-0`, `sdxl-1`, `pony-0`, `autismmix-1`, `lightning-0`
   and `inpaint-0` are on demand (`deploy/b70host/profile.toml`).
@@ -46,21 +47,22 @@ tempted to come up with a new name and port all the code into a fresh repo and c
 - mkviolet is the seed. It is Rust, and one process owns both B70 cards. It served council v2 and kept its weights
   alive across restarts through systemd's file-descriptor store. Its engine is now `nagaya-mk-gemma4-bmg`
   (milestone 15s): copied in, and cleaned as it moved.
-- mk joined first, through its C ABI (`libmkengine`). Milestone 15 copied its engine in, HIP kernels and all. Its
+- The first Qwen3.8 engine joined first, through its C ABI. Milestone 15 copied its engine in, HIP kernels and all. Its
   host code is Rust now, so the nagaya owns both engines (Amy, 2026-10-19: "copy code in, we own all of it 100%").
 - One nagaya process per machine (Amy: "we'd do 1 process per host that owns the gpus").
 - Engines we build give the same bits for the same identity and inputs: `always` or `pinned` (`docs/engine-abi.md`
   D3). Engines we borrow declare what they promise instead.
 
-Milestones 15 and 15s are done, so mk and mkviolet are archives (Amy, 2026-10-22: "they were our learning projects
-for this and their megakernels live on"). The docs name them only as the source of a copy or of a measurement.
+Milestones 15 and 15s are done, so the first Qwen3.8 engine and mkviolet are archives (Amy, 2026-10-22: "they were our
+learning projects for this and their megakernels live on"). The docs name them only as the source of a copy or of a
+measurement.
 
 ## Documents
 
 - `docs/spec.md`: the spec. Read it after this file.
 - `docs/ontology.md`: the nouns, defined once, and the four other projects that the docs name.
-- `docs/engine-abi.md`: the engine ABI v0, how mk and mkviolet map onto it, the image, embedding and speech calls, and
-  its decisions D1-D11.
+- `docs/engine-abi.md`: the engine ABI v0, how the Qwen3.8 engine and mkviolet map onto it, the image, embedding and
+  speech calls, and its decisions D1-D11.
 - `docs/deploy.md`: how to build the nagaya, install its unit on gfx1151host and on b70host, cut over, and roll back.
 - `docs/history.md`: the finished milestones, with what each one built, and the merges where the run recorded them.
 - `docs/new-engine.md`: the checklist for the next engine, family, card or machine, from the first two ports.
@@ -95,10 +97,10 @@ split is practical. Neither is worth it while gfx1151host and sm121host each hol
 
 The first pass keeps three doors open:
 
-1. Engines load and unload while the nagaya runs. Weight arenas are file descriptors that we can export (mk's
-   arena, mkviolet's DMA-BUF slabs). Thus with an arena staged in host memory or on NVMe, a swap is a copy between
-   tiers. Milestone 16 built the swap in place, with a cold load (`docs/spec.md` 3.3a). An arena staged for a swap
-   is not built.
+1. Engines load and unload while the nagaya runs. Weight arenas are file descriptors that we can export (the
+   arena of the Qwen3.8 engine, mkviolet's DMA-BUF slabs). Thus with an arena staged in host memory or on NVMe, a swap
+   is a copy between tiers. Milestone 16 built the swap in place, with a cold load (`docs/spec.md` 3.3a). An arena
+   staged for a swap is not built.
 2. Placement is live cluster data. The nagaya processes gossip their probed hardware, active profiles, and loaded
    engine identities through `chitchat` (`docs/spec.md` 2.3). Any machine can receive a request, tokenize it locally,
    and coordinate or proxy it (`docs/spec.md` 11.1).
