@@ -1851,6 +1851,26 @@ process continues with its other engines.
 Not built. The process runs no canary, and the Qwen3.8 binding gives an empty `canary_hash` (engine-abi "v0 binding
 choices"). A start checks no canary.
 
+**Proposed** (Claude Fable 5.2, 2026-11-12): the Qwen3.8 engine runs its canary itself. It runs on the engine's worker
+thread, in two contexts that it makes and frees, and it uses the same pass path as a client. The host takes the argmax
+of each row. Reason: the engine crate holds the worker thread, the passes and the fixed token ids, and it needs no
+tokenizer. The form through the `Engine` trait comes with the canary of the other engines.
+
+Not built: the record of the hashes and the check at open.
+Today the engine only runs the canary and reports the hashes.
+
+**Proposed** (Claude Fable 5.2, 2026-11-12): the content of the canary of the Qwen3.8 engine is fixed.
+
+- Context A takes 5 tokens in one pass. Context B takes 300 tokens in two passes of 256 and 44 tokens.
+- Then 8 greedy steps follow. Each step is one joined pass of 2 segments, A then B, with 1 token each.
+- Each pass gives the logits row of each segment. That makes 19 rows: 1, then 2, then 16.
+- A row hash is the SHA-256 of the row's f32 values as little-endian bytes, with no change to a value.
+- The canary hash covers a text tag, the input ids and the 19 row hashes (`canary.rs` gives the byte layout).
+- The canary does not reach the indexer path. That path starts past 2051 cells, and it needs about 2,300 tokens.
+
+Reason: this content covers a short prefill, a long prefill in two passes and a joined decode, in about 3 s. The card
+gates keep the cases that it does not cover.
+
 **8.2 Pass failures.** A pass returns ok, poison (D6), or timeout. The nagaya treats outputs that are not finite as
 poison. After a poison or a timeout, the nagaya does these steps:
 
