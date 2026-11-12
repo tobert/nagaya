@@ -14,7 +14,7 @@ use nagaya_telemetry::EngineState;
 
 use super::build::{ContextBody, Finished, Got, Then, Want};
 use super::error::ServiceError;
-use super::generations::{GenerateThen, Latent};
+use super::generations::{GenerateThen, Latent, Soft};
 use super::{Charge, Schedule, Service, submit};
 use crate::jobs::{JobBody, Ran};
 
@@ -371,7 +371,11 @@ impl Service {
         rule: Combine,
         weights: Vec<f64>,
         latent: Option<Latent>,
+        soft: Option<Soft>,
     ) -> Result<Ensembled, ServiceError> {
+        if let Some(soft) = soft {
+            return self.soft_generation(requests, &weights, latent, soft);
+        }
         let count = requests.len();
         let limits = &self.shared.limits;
         // Forks join in batched passes by the rule of the scheduler's joins.
@@ -471,6 +475,50 @@ impl Service {
         Ok(Ensembled {
             done: self.answer(finished, &facts).0,
             read,
+            soft: None,
+        })
+    }
+
+    /// An ensemble with soft inputs: one context with the weight 1, which runs as a generation (docs/lab.md, "Soft
+    /// inputs in a request"). Its rows share no pass, so it needs none of the steps of the ensemble.
+    fn soft_generation(
+        &self,
+        requests: &[GenerationRequest],
+        weights: &[f64],
+        latent: Option<Latent>,
+        soft: Soft,
+    ) -> Result<Ensembled, ServiceError> {
+        let [request] = requests else {
+            return Err(Invalid::param(
+                "soft",
+                format!(
+                    "nothing ran: soft inputs take one context, and the request has {}; send one context",
+                    requests.len()
+                ),
+            )
+            .into());
+        };
+        if weights != [1.0] {
+            return Err(Invalid::param(
+                "weights",
+                "nothing ran: soft inputs take one context with the weight 1; send no weights",
+            )
+            .into());
+        }
+        self.takes_soft(soft.width)?;
+        let (finished, facts) = self.run_soft(request, latent, soft)?;
+        let read = match finished.then.latent_read() {
+            Some(ids) => Some(ids.iter().copied().zip(self.family.pieces(ids)?).collect()),
+            None => None,
+        };
+        let soft = finished.then.soft_stats();
+        // An ensemble holds the record of its context, and it names none (docs/lab.md, "Context records in the lab
+        // routes").
+        self.hold_record(&request.context)?;
+        Ok(Ensembled {
+            done: self.answer(finished, &facts).0,
+            read,
+            soft,
         })
     }
 }
@@ -480,4 +528,6 @@ impl Service {
 pub(crate) struct Ensembled {
     pub(crate) done: GenerationDone,
     pub(crate) read: Option<Vec<(u32, String)>>,
+    /// The count of soft rows and their mean share, when the request asked for soft inputs.
+    pub(crate) soft: Option<(usize, f64)>,
 }
