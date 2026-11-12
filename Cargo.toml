@@ -29,12 +29,13 @@ members = [
 ]
 resolver = "3"
 
-# gogi is not pushed yet. Senpai changes the URL later. A path dependency breaks in a worktree.
+# gogi comes from a local clone of github.com/tobert/gogi. Milestone 31 step 5 changes this to its GitHub URL. A path
+# dependency breaks in a worktree.
 [workspace.dependencies]
-gogi-proto = { git = "file:///home/atobey/src/gogi", rev = "16cea61fcc12313cbc73a5c76f645355525cc890" }
-gogi-fake = { git = "file:///home/atobey/src/gogi", rev = "16cea61fcc12313cbc73a5c76f645355525cc890" }
-gogi-toy = { git = "file:///home/atobey/src/gogi", rev = "16cea61fcc12313cbc73a5c76f645355525cc890" }
-gogi-conformance = { git = "file:///home/atobey/src/gogi", rev = "16cea61fcc12313cbc73a5c76f645355525cc890" }
+gogi-proto = { git = "file:///home/atobey/src/gogi", rev = "8830357260086202c76feda1ccce672d70921140" }
+gogi-fake = { git = "file:///home/atobey/src/gogi", rev = "8830357260086202c76feda1ccce672d70921140" }
+gogi-toy = { git = "file:///home/atobey/src/gogi", rev = "8830357260086202c76feda1ccce672d70921140" }
+gogi-conformance = { git = "file:///home/atobey/src/gogi", rev = "8830357260086202c76feda1ccce672d70921140" }
 
 [profile.dev]
 debug = "line-tables-only"
