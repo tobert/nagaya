@@ -258,6 +258,16 @@ On gfx1151host, after a change to `nagaya-mk-hip`, also run this, with `nagaya.s
 cargo test -p nagaya-mk-hip --features hip --tests -- --test-threads=1
 ```
 
+On gfx1151host, run this before each commit that changes `crates/nagaya`, a profile of `deploy/`, or the Qwen3.8 crate.
+The test file compiles only with the feature `hip`, so no check of the first list runs it. It opens no engine:
+
+```
+cargo test -p nagaya --features hip --test qwen38_wire
+```
+
+`crates/nagaya/tests/qwen38_stop.rs` opens the engine, and it needs `QWEN38_SHARDS`. Run it only with `nagaya.service`
+stopped. Do not run `cargo test -p nagaya --features hip --tests` with the unit active, because it runs that file too.
+
 After a change to `nagaya-mk-qwenimage21-gfx1151`, also run its `hip` tests with the model variables set:
 
 ```
