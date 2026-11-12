@@ -163,7 +163,7 @@ lock: one thread owns it (3.2).
 The nagaya runs on two machines of Amy's lab today. `docs/deploy.md` tells how to build and deploy on each. The
 profiles are in `deploy/`.
 
-- **gfx1151host** has the gfx1151. Qwen-Image is resident, and Qwen3.8 is on demand under the served name `mk`.
+- **gfx1151host** has the gfx1151. Qwen-Image is resident, and Qwen3.8 is on demand under the engine name `qwen38`.
 - **b70host** has two B70 cards. Its profile is `deploy/b70host/profile.toml`. Its iGPU (gfx1036) drives the
   display: do not run work on it.
 

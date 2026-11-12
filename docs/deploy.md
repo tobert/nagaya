@@ -263,8 +263,8 @@ below leave no room for the old store budget.
 demand. Amy: "current goal for nagaya is to have loaded what it's instructed to have loaded. so if we load both on
 gfx1151host, it's intentional. if we can't do it we can't do it, and only one stays". The API manages the swaps.
 
-- The start loads `qwen-image-fusal` only. A client swaps to mk with `POST /nagaya/v1/engines/mk/load` and the body
-  `{"unload": ["qwen-image-fusal"]}`, and back in the same way.
+- The start loads `qwen-image-fusal` only. A client swaps to Qwen3.8 with `POST /nagaya/v1/engines/qwen38/load` and the
+  body `{"unload": ["qwen-image-fusal"]}`, and back in the same way.
 - mk's open needs the bytes of its shards and its floor in MemAvailable: 93.68 GB and 12.88 GB. With Qwen-Image
   loaded, gfx1151host has less, so a load of mk beside it fails. Load mk first to have both.
 - With both loaded, MemAvailable is about 16 GiB. mk stops a pass below 12 GiB, and KFD stops mk's queues when the
@@ -306,7 +306,7 @@ stores its fds. The unit file has a comment at that place.
 
 These rules fill gaps in the spec. Each one is the simplest choice that works.
 
-- The engine kind in the profile is `mk-qwen38-gfx1151`, the name of the engine crate. The engine is named `mk`.
+- The engine kind in the profile is `mk-qwen38-gfx1151`, the name of the engine crate. The engine is named `qwen38`.
 - `TimeoutStopSec` is 60 s. A running quantum takes at most 10 s (`max_quantum_ms`), and the park takes 10 s.
 - The unit makes the store directory with `ExecStartPre`. The process reads its profile from there before it opens
   the store.

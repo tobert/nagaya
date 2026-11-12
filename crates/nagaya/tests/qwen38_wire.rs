@@ -229,7 +229,7 @@ fn the_gfx1151host_profile_admits_on_the_probed_gfx1151host_with_the_qwen38_fact
         .unwrap();
     let admitted = admit(&profile, &Registry::with_qwen38(), &inventory, &mut Ledger::new()).expect("gfx1151host admits");
     assert_eq!(admitted.engines.len(), 1);
-    assert_eq!(admitted.engines[0].name, "mk");
+    assert_eq!(admitted.engines[0].name, "qwen38");
 }
 
 fn gfx1151host_device() -> GroupDevice {

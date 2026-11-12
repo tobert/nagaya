@@ -6,10 +6,10 @@
 # environment (`QWEN38_SHARDS`), and not from this table. The context pool is fixed in the binding (`spec.rs`:
 # `CONTEXT_COUNT`, `CONTEXT_CAPACITY`), so this profile names no context count and no context size. The Qwen3.8 engine
 # is on demand (Amy, 2026-11-01): Qwen-Image stays loaded on gfx1151host for a while, and the engine swaps in through the load
-# route for tests and some inference: `POST /nagaya/v1/engines/mk/load` with `{"unload": ["qwen-image-fusal"]}` (spec
+# route for tests and some inference: `POST /nagaya/v1/engines/qwen38/load` with `{"unload": ["qwen-image-fusal"]}` (spec
 # 3.3b). Both can be loaded on purpose, the Qwen3.8 engine first, but a build beside both can stop it (docs/deploy.md).
 [[engines]]
-name = "mk"
+name = "qwen38"
 kind = "mk-qwen38-gfx1151"
 devices = [0]
 share = 1

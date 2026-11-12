@@ -5297,7 +5297,7 @@ before the last one are from 2026-10-20 night.
 
 **In `docs/deploy.md`, section "Decided by senpai 2026-10-20 night"**
 
-- The engine kind in the profile is `mk-qwen38-gfx1151`, and the engine is named `mk`.
+- The engine kind in the profile is `mk-qwen38-gfx1151`, and the engine is named `qwen38`.
 - `TimeoutStopSec` is 60 s.
 - The unit makes the store directory with `ExecStartPre`.
 - The gossip port is 8091, next to the HTTP port 8090.

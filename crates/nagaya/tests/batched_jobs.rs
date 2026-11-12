@@ -229,7 +229,7 @@ fn the_decode_quanta_of_a_batching_engine_share_one_pass_and_each_job_gets_its_r
 fn the_decode_quanta_of_an_engine_with_segments_exact_share_one_pass() {
     let passes = Passes::default();
     let mut engines: Vec<Box<dyn Engine>> = vec![Box::new(Rows::new(false, true, 16, &passes))];
-    let mut jobs = GroupJobs::new(0, ["mk"]);
+    let mut jobs = GroupJobs::new(0, ["qwen38"]);
     let mut seen = Vec::new();
     for slot in 0..3 {
         let (body, s) = decoder(slot, 4, true, None);

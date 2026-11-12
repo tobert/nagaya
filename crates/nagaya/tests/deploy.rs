@@ -100,7 +100,7 @@ fn the_profile_names_the_qwen38_engine_and_the_store_budgets() {
         "the Qwen3.8 engine and Qwen-Image (milestone 22)"
     );
     let engine = &profile.engines[0];
-    assert_eq!(engine.name, "mk");
+    assert_eq!(engine.name, "qwen38");
     assert_eq!(engine.kind, "mk-qwen38-gfx1151");
     // Amy, 2026-11-01: Qwen-Image stays loaded on gfx1151host for a while, and the Qwen3.8 engine swaps in through the API
     // (spec 3.3b).
