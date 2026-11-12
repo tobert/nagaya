@@ -471,7 +471,7 @@ pub(crate) fn start(paths: Qwen38Paths) -> Result<Arc<Worker>, Qwen38Error> {
     let (ready, first) = mpsc::channel();
     let thread_paths = paths.clone();
     std::thread::Builder::new()
-        .name("mk-engine".to_owned())
+        .name("qwen38-engine".to_owned())
         .spawn(move || match ThreadState::open(&thread_paths) {
             Ok((state, spec)) => {
                 if ready.send(Ok(spec)).is_ok() {

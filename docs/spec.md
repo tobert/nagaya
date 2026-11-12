@@ -523,8 +523,8 @@ isolation.
   work.
 - A start with no CPU sets pins no thread. Only a test starts that way. The binary always makes the sets (below).
 - An engine's own threads keep the mask of the group thread that starts them. Linux gives a new thread the mask of the
-  thread that starts it. mk starts its worker thread (`mk-engine`) in `open`, on the group thread, so the worker runs on
-  the pool set. Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02. Reason: the process crate makes the
+  thread that starts it. mk starts its worker thread (`qwen38-engine`) in `open`, on the group thread, so the worker
+  runs on the pool set. Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02. Reason: the process crate makes the
   sets, and the group thread is pinned before it opens an engine. Thus the factory needs no CPU argument.
 
 The binary reads the online CPUs through the file probe (2.1) and makes the sets before it starts gossip. A probe
@@ -543,7 +543,7 @@ SMT siblings. A housekeeping CPU can share a physical core with a pool CPU. Reas
 CPU 1 with 17 (`thread_siblings_list`), so the two housekeeping CPUs sit on two physical cores. A rule for other
 machines would only guess before a measurement. The bootstrap config can name the sets later.
 
-**Open:** on gfx1151 on 2026-10-20, two of the four `mk-engine` threads had the mask 0-31. The worker and one other
+**Open:** on gfx1151 on 2026-10-20, two of the four `qwen38-engine` threads had the mask 0-31. The worker and one other
 thread had the pool set, 2-31. The HIP runtime starts the two other threads and sets their masks itself. The nagaya
 does not pin threads that a runtime starts.
 

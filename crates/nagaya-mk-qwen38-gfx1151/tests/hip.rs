@@ -71,7 +71,7 @@ fn the_weight_arena_is_locked_in_memory() {
     let mut lines = smaps.lines();
     let mut found = 0;
     while let Some(line) = lines.next() {
-        if !line.contains("memfd:mk-weights") {
+        if !line.contains("memfd:qwen38-weights") {
             continue;
         }
         let mut size = None;

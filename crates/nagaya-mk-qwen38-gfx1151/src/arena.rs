@@ -351,7 +351,7 @@ pub(crate) unsafe fn create(
         return Err(format!("{} shards, the arena records {MAX_SHARDS}", shards.len()));
     }
     let len = usize::try_from(bytes).map_err(|_| format!("an arena of {bytes} bytes is past the address space"))?;
-    let fd = unsafe { libc::memfd_create(c"mk-weights".as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING) };
+    let fd = unsafe { libc::memfd_create(c"qwen38-weights".as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING) };
     if fd < 0 {
         return Err(os_error("memfd_create"));
     }
