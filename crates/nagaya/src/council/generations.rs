@@ -104,6 +104,8 @@ pub(crate) struct Latent {
     pub steps: usize,
     /// True when the generation keeps the top token of the logit row of each step.
     pub read: bool,
+    /// True when the steps end at the first step whose top token ends the reasoning or the turn.
+    pub stop: bool,
     /// The map from the residual tap to the next input row.
     pub map: Arc<LatentMap>,
 }
@@ -236,6 +238,8 @@ pub(crate) struct GenerateThen {
     latent: Option<LatentRun>,
     /// The soft inputs of the reply, when the request asks for them.
     soft: Option<SoftRun>,
+    /// The tokens of the reply when the request forces a text, in place of the samples.
+    forced: Option<Vec<u32>>,
 }
 
 impl GenerateThen {
@@ -263,9 +267,33 @@ impl GenerateThen {
         })
     }
 
-    /// The latent rows that the slot holds before the reply.
+    /// The latent rows that the slot holds before the reply. A stop can end the steps before the count of the plan.
     fn latent_steps(&self) -> usize {
-        self.latent.as_ref().map_or(0, |run| run.plan.steps)
+        self.latent.as_ref().map_or(0, |run| run.fed)
+    }
+
+    /// The steps that ran, when the plan has a stop.
+    pub(crate) fn latent_ran(&self) -> Option<usize> {
+        self.latent.as_ref().filter(|run| run.plan.stop).map(|run| run.fed)
+    }
+
+    /// True when `token`, as the first token of the reply, ends the reply or leaves the reasoning. The family's reply
+    /// parser decides (docs/lab.md, "The end of a step").
+    fn ends_steps(&self, token: u32) -> Result<bool, ServiceError> {
+        let mut probe = self
+            .family
+            .reply_parser(ReplyStart::of(&self.context), &self.context.tools)?;
+        let reasoning = probe.phase() == Phase::Reasoning;
+        // A token that the parser refuses at the start of a reply ends nothing: the reply would not start with it.
+        if probe.push(token).is_err() {
+            return Ok(false);
+        }
+        Ok(probe.ended() || (reasoning && probe.phase() != Phase::Reasoning))
+    }
+
+    /// Take the given tokens as the reply, in place of the samples (docs/lab.md, "The score of a text").
+    pub(crate) fn force(&mut self, tokens: Vec<u32>) {
+        self.forced = Some(tokens);
     }
 
     /// One latent step after a tapped pass: read its logit row, then feed the next row (docs/lab.md, "Latent steps in a
@@ -276,10 +304,21 @@ impl GenerateThen {
             .latent
             .as_mut()
             .expect("a generation in its latent stage has latent steps");
-        if run.fed > 0 && run.plan.read {
-            run.read
-                .push(top(row).ok_or_else(|| ServiceError::internal("a latent step gave an empty logit row"))?);
+        if run.fed > 0 {
+            let token = top(row).ok_or_else(|| ServiceError::internal("a latent step gave an empty logit row"))?;
+            if run.plan.read {
+                run.read.push(token);
+            }
+            if run.plan.stop && self.ends_steps(token)? {
+                // The reply starts from the row of this step.
+                self.stage = Stage::Sampling;
+                return self.sample(row);
+            }
         }
+        let run = self
+            .latent
+            .as_mut()
+            .expect("a generation in its latent stage has latent steps");
         let next = run
             .plan
             .map
@@ -368,32 +407,41 @@ impl GenerateThen {
                 .as_ref()
                 .is_some_and(|parser| parser.phase() == Phase::Reasoning),
         });
-        let (chosen, mix) = match self.soft.as_ref().filter(|_| in_span) {
-            Some(run) => {
-                let plan = run.soft.plan;
-                let survivors = survivors_except(row, &self.settings, &self.dropped).map_err(failed)?;
-                let mix = match plan.map {
-                    SoftMap::Moi { beta } => {
-                        let chosen =
-                            pick_except(row, &self.settings, position as u64, &self.dropped).map_err(failed)?;
-                        soft::moi(&survivors, chosen.token, row.len(), plan.top, beta)
-                    }
-                    SoftMap::Gumbel { tau } => {
-                        soft::gumbel(&survivors, plan.top, tau, self.settings.seed, position as u64)
-                    }
-                };
-                let (p, h) = token_stats(row, mix.token()).map_err(failed)?;
-                let chosen = nagaya_council::sampler::Pick {
-                    token: mix.token(),
-                    p,
-                    h,
-                };
-                (chosen, Some(mix))
+        let (chosen, mix) = match (&self.forced, self.soft.as_ref().filter(|_| in_span)) {
+            (Some(forced), _) => {
+                let token = *forced
+                    .get(self.sampled.len())
+                    .ok_or_else(|| ServiceError::internal("a forced reply sampled past its text"))?;
+                let (p, h) = token_stats(row, token).map_err(failed)?;
+                (nagaya_council::sampler::Pick { token, p, h }, None)
             }
-            None => (
-                pick_except(row, &self.settings, position as u64, &self.dropped).map_err(failed)?,
-                None,
-            ),
+            (None, soft) => match soft {
+                Some(run) => {
+                    let plan = run.soft.plan;
+                    let survivors = survivors_except(row, &self.settings, &self.dropped).map_err(failed)?;
+                    let mix = match plan.map {
+                        SoftMap::Moi { beta } => {
+                            let chosen =
+                                pick_except(row, &self.settings, position as u64, &self.dropped).map_err(failed)?;
+                            soft::moi(&survivors, chosen.token, row.len(), plan.top, beta)
+                        }
+                        SoftMap::Gumbel { tau } => {
+                            soft::gumbel(&survivors, plan.top, tau, self.settings.seed, position as u64)
+                        }
+                    };
+                    let (p, h) = token_stats(row, mix.token()).map_err(failed)?;
+                    let chosen = nagaya_council::sampler::Pick {
+                        token: mix.token(),
+                        p,
+                        h,
+                    };
+                    (chosen, Some(mix))
+                }
+                None => (
+                    pick_except(row, &self.settings, position as u64, &self.dropped).map_err(failed)?,
+                    None,
+                ),
+            },
         };
         if let Some(tracing) = &mut self.tracing {
             let residual = tracing
@@ -993,16 +1041,22 @@ impl Service {
         Ok(())
     }
 
-    /// Run a generation with soft inputs, and give the finished job and the facts of its response (docs/lab.md, "Soft
-    /// inputs in a request").
-    pub(crate) fn run_soft(
+    /// Run the one context of an ensemble as a generation, with its soft inputs, its forced text, or the stop of its
+    /// latent steps. Give the finished job and the facts of its response (docs/lab.md, "Soft inputs in a request").
+    pub(crate) fn run_single(
         &self,
         request: &GenerationRequest,
         latent: Option<Latent>,
-        soft: Soft,
+        soft: Option<Soft>,
+        forced: Option<Vec<u32>>,
     ) -> Result<(Finished<GenerateThen>, Facts), ServiceError> {
         let Prepared { mut then, parts, facts } = self.prepare(request, None, None, latent)?;
-        then.soften(soft);
+        if let Some(soft) = soft {
+            then.soften(soft);
+        }
+        if let Some(tokens) = forced {
+            then.force(tokens);
+        }
         let schedule = Schedule::of(request.class, request.priority);
         let _claim = self.claim(&parts.recipes);
         let finished = self.run_context(|tx| parts.body(then, tx), schedule, None)?;
@@ -1024,6 +1078,22 @@ impl Service {
             .into());
         }
         Ok(())
+    }
+
+    /// The tokens of a text in the family of the model. A text that the family refuses is a 400 that names `force`.
+    pub(crate) fn tokens_of(&self, text: &str) -> Result<Vec<u32>, ServiceError> {
+        let tokens = self.family.tokenize(text).map_err(|error| match error {
+            FamilyError::Client(invalid) => Invalid::param("force", format!("nothing ran: {invalid}")).into(),
+            other => ServiceError::from(other),
+        })?;
+        if tokens.is_empty() {
+            return Err(Invalid::param(
+                "force",
+                "nothing ran: the text gives no token; send a text that is not empty",
+            )
+            .into());
+        }
+        Ok(tokens)
     }
 
     /// Check a generation request, render its context, and plan its job (spec 11.3c). The work of the job is a
@@ -1157,6 +1227,7 @@ impl Service {
                 read: Vec::new(),
             }),
             soft: None,
+            forced: None,
         };
         let parts = JobParts {
             shared: Arc::clone(&self.shared),
