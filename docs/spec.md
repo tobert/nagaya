@@ -798,9 +798,9 @@ on demand" of 2026-10-24.
   a loaded engine. Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30. Reason: a repeat crashed the
   ledger thread, and a loaded engine hid a bad list behind a 200.
 - A load that does not fit is a 409 that names the shortfall, the engines in the way and the pins (3.3a).
-- **The memory check of an open.** **Proposed** by Claude Sonnet 5.5, 2026-11-12. The ledger holds byte targets of the
-  profile, not a measurement (4.1). An engine can also check the free memory of the machine at its open. A load that
-  such a check refuses is a 409 of the same kind, and the group answers it before the swap starts.
+- **The memory check of an open.** Decided 2026-11-12, proposed by Claude Sonnet 5.5. The ledger holds byte targets of
+  the profile, not a measurement (4.1). An engine can also check the free memory of the machine at its open. A load
+  that such a check refuses is a 409 of the same kind, and the group answers it before the swap starts.
   - The factory of an engine kind can answer "the problem of an open now, if any". It gets the bytes that the unload
     list frees. The default answer is none.
   - The group asks it on its own thread, before it gives the swap to the ledger. A problem is a refusal that
@@ -1052,8 +1052,8 @@ changes them adds the key (2.1). Decided 2026-10-20 (reading).
 An engine with a feed rule (6.14) declares no `segments_exact`. The scheduler joins its segments only when no
 segment writes rows that the store keeps, as for reads and branch blocks. Decided 2026-10-21 (engine-abi D11).
 
-**The first joins of an engine with `segments_exact`.** **Proposed** by Claude Opus 5.5, 2026-11-10, for milestone
-30 step 3. The process joins only the decode quanta of such an engine at first, as it does for a feed rule
+**The first joins of an engine with `segments_exact`.** Decided 2026-11-12, proposed by Claude Opus 5.5, 2026-11-10, for
+milestone 30 step 3. The process joins only the decode quanta of such an engine at first, as it does for a feed rule
 (engine-abi "Batched passes"):
 
 - A decode segment is one token with its logit row, no media and no tap. Other segments run one in a pass.
@@ -1848,20 +1848,19 @@ The nagaya runs the canary again before the engine is ready, with no tolerance. 
 nagaya exit with code 3, "do not restart" (10.4). After start, a mismatch marks the engine fatal (8.2), and the
 process continues with its other engines.
 
-Built for the Qwen3.8 engine only, and the notes below are **Proposed**. The engine runs its canary at each load and
+Built for the Qwen3.8 engine only. The notes below are Decided 2026-11-12. The engine runs its canary at each load and
 compares it with a table of records. Any other engine gives an empty `canary_hash` and runs no canary. The process
 runs no canary through the `Engine` trait.
 
 The canary adds time to each load. The measure of 2026-11-12 used 5 processes for each path. The canary took about
 1.9 s on the fast path and about 4.2 s on the exact path. A load took about 28 s.
 
-**Proposed** (Claude Fable 5.2, 2026-11-12): the Qwen3.8 engine runs its canary itself. It runs on the engine's worker
-thread, in two contexts that it makes and frees, and it uses the same pass path as a client. The host takes the argmax
-of each row. Reason: the engine crate holds the worker thread, the passes and the fixed token ids, and it needs no
-tokenizer. The form through the `Engine` trait comes with the canary of the other engines.
+Decided 2026-11-12 (proposed by Claude Fable 5.2): the Qwen3.8 engine runs its canary itself. It runs on the engine's
+worker thread, in two contexts that it makes and frees, and it uses the same pass path as a client. The host takes the
+argmax of each row. Reason: the engine crate holds the worker thread, the passes and the fixed token ids, and it needs
+no tokenizer. The form through the `Engine` trait comes with the canary of the other engines.
 
-
-**Proposed** (Claude Fable 5.2, 2026-11-12): the content of the canary of the Qwen3.8 engine is fixed.
+Decided 2026-11-12 (proposed by Claude Fable 5.2): the content of the canary of the Qwen3.8 engine is fixed.
 
 - Context A takes 5 tokens in one pass. Context B takes 300 tokens in two passes of 256 and 44 tokens.
 - Then 8 greedy steps follow. Each step is one joined pass of 2 segments, A then B, with 1 token each.
@@ -1873,7 +1872,7 @@ tokenizer. The form through the `Engine` trait comes with the canary of the othe
 Reason: this content covers a short prefill, a long prefill in two passes and a joined decode, in about 3 s. The card
 gates keep the cases that it does not cover.
 
-**Proposed** (Claude Fable 5.2, 2026-11-12): the record of a canary is a table in the crate of the Qwen3.8 engine.
+Decided 2026-11-12 (proposed by Claude Fable 5.2): the record of a canary is a table in the crate of the Qwen3.8 engine.
 
 - The key of an entry is the checkpoint digest, `fast_qmm` and `tiles`. The value is the canary hash.
 - The identity takes `canary_hash` from the table. Thus a description gives it with no GPU and no load.
@@ -1882,7 +1881,7 @@ gates keep the cases that it does not cover.
 Reason: the council takes the digest and the root recipe of an engine on demand from its description, before any
 load (11.1). A canary hash that only an open measures would come too late for that.
 
-**Proposed** (Claude Fable 5.2, 2026-11-12): a mismatch of the canary refuses the open, with no tolerance.
+Decided 2026-11-12 (proposed by Claude Fable 5.2): a mismatch of the canary refuses the open, with no tolerance.
 
 - The engine runs the canary at each load of its weights, after the scratch probe. It compares the canary hash with
   the table.
@@ -1896,10 +1895,10 @@ load (11.1). A canary hash that only an open measures would come too late for th
 - Not built: the fatal state and the run after a pass failure of 8.2.
 - Built: the table, the check at each load, the exit code 3 at start, and the second form of the open.
 
-Reason: a build that gives other bits must not serve under the old digest. The owner said that a load is rare, so a
-check at each load can cost its time.
+Reason: a build that gives other bits must not serve under the old digest. A load is rare, so a check at each load
+can cost its time. The measure of 2026-11-12 in the release build: the canary took 1.2 s of a swap of about 30 s.
 
-**Proposed** (Claude Fable 5.2, 2026-11-12): a checkpoint that the table does not hold.
+Decided 2026-11-12 (proposed by Claude Fable 5.2): a checkpoint that the table does not hold.
 
 - A set of key values with no entry is an error in the description and in the open. The start refuses with exit 3, as
   each other error of a description does.
@@ -1907,8 +1906,8 @@ check at each load can cost its time.
   the canary, reports it and compares nothing. The test `hip_canary` uses that form and prints the measured hash.
 - The person adds one line to the table, in a commit that records the bits of that checkpoint.
 - The process always uses the checked form. A card test of a deploy opens the engine in the checked form too.
-- Another choice for later: the start goes on without that engine, and its first load fails with the measured hash.
-- A key of the profile that gives the hash is also a later choice of the owner.
+- Not chosen: the start goes on without that engine, and its first load fails with the measured hash.
+- Not chosen now: a key of the profile that gives the hash.
 
 Reason: the table is the simplest record that needs no new file. A stranger needs one line for each checkpoint.
 
@@ -5119,7 +5118,7 @@ different most of the time."
 Reason: the bits decide if a build changed the numbers, not the facts of the build. A canary covers only the paths
 that it runs, so its inputs must run each path that the limits allow.
 
-**Proposed** (Claude Fable 5.2, 2026-11-12): not built yet, when the canary of the Qwen3.8 engine is.
+Not built yet, though the canary of the Qwen3.8 engine is built (2026-11-12).
 
 - The expected identity in the index of the store, and the compare of it at start.
 - The check of `pin_identity` of the profile. The profile parses the key, and no code compares it.
