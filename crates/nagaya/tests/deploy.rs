@@ -143,7 +143,7 @@ fn both_engines_and_the_store_fit_the_pool_with_room_for_a_staging_copy() {
         return;
     }
     let mk = profile.engines[0].config["weights_bytes"].as_integer().unwrap() as u64;
-    let mk_terms: u64 = nagaya_mk_qwen38_gfx1151_plan(mk);
+    let qwen38_terms: u64 = nagaya_mk_qwen38_gfx1151_plan(mk);
     let qwen: u64 = nagaya_mk_qwenimage21_gfx1151::plan::plan(&config)
         .unwrap()
         .memory
@@ -154,8 +154,8 @@ fn both_engines_and_the_store_fit_the_pool_with_room_for_a_staging_copy() {
     let pool = [TierSpec::from(Tier::Device(0)), TierSpec::from(Tier::Host)];
     let budget = profile.budgets.iter().find(|budget| budget.tiers == pool).unwrap();
     let store = profile.store.unwrap().host.unwrap();
-    let room = budget.bytes as i128 - (mk_terms + qwen + store) as i128;
-    eprintln!("mk {mk_terms}, qwen-image {qwen}, store {store}: {room} bytes stay free in the pool");
+    let room = budget.bytes as i128 - (qwen38_terms + qwen + store) as i128;
+    eprintln!("mk {qwen38_terms}, qwen-image {qwen}, store {store}: {room} bytes stay free in the pool");
     // A staging copy of a context of 32,768 tokens is about 1.93 GB (docs/deploy.md, "The memory budgets").
     assert!(
         room >= 1_930_000_000,

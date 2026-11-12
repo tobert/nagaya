@@ -3,7 +3,7 @@
 //!
 //! mk's `engine.hip` held `new_context`, `free_context`, `state_read`, `state_write`, `state_write_cells` and
 //! `restore_n` in C++ (mk 555a2a3). They are here now, over the thin runtime calls `mk_rt_*` of `rt.cpp`. The pass
-//! still reads and advances a context in C++, so `MkContext` is `struct Context` of `engine.h`, field for field. The
+//! still reads and advances a context in C++, so `Qwen38Context` is `struct Context` of `engine.h`, field for field. The
 //! layout test (`layout.rs`) compares the two. The checks of each call are in the worker (`worker.rs`), as before.
 //! A call here that gets input that the worker refuses is a defect, so it stops the program.
 //!
@@ -24,7 +24,7 @@ const IDX_RATIO: u32 = 4;
 /// `struct Context` of `engine.h`: everything that a pass continues from.
 #[repr(C)]
 #[derive(Debug)]
-pub(crate) struct MkContext {
+pub(crate) struct Qwen38Context {
     /// The tokens so far.
     pub n: u32,
     /// The K/V capacity in tokens.
@@ -98,9 +98,9 @@ fn fixed_bytes_of(part: u32) -> u64 {
 }
 
 /// The context at `c`, which `ctx_new` made.
-unsafe fn context<'a>(c: *mut c_void) -> &'a mut MkContext {
+unsafe fn context<'a>(c: *mut c_void) -> &'a mut Qwen38Context {
     assert!(!c.is_null(), "a context call got no context");
-    unsafe { &mut *(c as *mut MkContext) }
+    unsafe { &mut *(c as *mut Qwen38Context) }
 }
 
 pub(crate) unsafe extern "C" fn ctx_n(c: *mut c_void) -> u32 {
@@ -127,7 +127,7 @@ pub(crate) use linked::*;
 mod linked {
     use std::ffi::c_void;
 
-    use super::{ATTENTION_LAYERS, Copy, IDX_RATIO, MkContext, cell_bytes, context, part_bytes};
+    use super::{ATTENTION_LAYERS, Copy, IDX_RATIO, Qwen38Context, cell_bytes, context, part_bytes};
     use crate::binding::rt;
     use crate::ple::PLE_EOS;
     use crate::spec;
@@ -152,7 +152,7 @@ mod linked {
         let max = u64::from(max_tokens);
         let pooled_bytes = u64::from(max_tokens / IDX_RATIO) * spec::IDX_ROW_BYTES;
         let c = unsafe {
-            MkContext {
+            Qwen38Context {
                 n: 0,
                 max: max_tokens,
                 gdn_state: device(spec::GDN_STATE_BYTES),
@@ -180,14 +180,14 @@ mod linked {
         if c.is_null() {
             return;
         }
-        let c = unsafe { Box::from_raw(c as *mut MkContext) };
+        let c = unsafe { Box::from_raw(c as *mut Qwen38Context) };
         for p in [c.gdn_state, c.gdn_conv, c.ple_conv, c.kv, c.idx_keys, c.idx_pooled] {
             unsafe { rt::mk_rt_free(p.cast()) };
         }
     }
 
     /// The device buffer of a fixed part: 0 gdn_state, 1 gdn_conv, 2 ple_conv.
-    fn fixed(c: &MkContext, part: u32) -> *mut f32 {
+    fn fixed(c: &Qwen38Context, part: u32) -> *mut f32 {
         match part {
             0 => c.gdn_state,
             1 => c.gdn_conv,

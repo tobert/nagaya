@@ -7,8 +7,8 @@
 use std::mem::{offset_of, size_of};
 use std::path::Path;
 
-use crate::binding::MkLaunch;
-use crate::context::MkContext;
+use crate::binding::Qwen38Launch;
+use crate::context::Qwen38Context;
 use crate::spec;
 
 /// The `static_assert(<expression> == <number>, "<note>");` lines of `text`, as (expression, number).
@@ -66,28 +66,28 @@ fn the_context_the_launch_result_and_the_buffer_numbers_are_those_of_extern_hip(
         "extern.hip",
         &[
             ("sizeof(bool)", size_of::<bool>()),
-            ("sizeof(Context)", size_of::<MkContext>()),
-            ("offsetof(Context, n)", offset_of!(MkContext, n)),
-            ("offsetof(Context, max)", offset_of!(MkContext, max)),
-            ("offsetof(Context, gdn_state)", offset_of!(MkContext, gdn_state)),
-            ("offsetof(Context, gdn_conv)", offset_of!(MkContext, gdn_conv)),
-            ("offsetof(Context, ple_conv)", offset_of!(MkContext, ple_conv)),
-            ("offsetof(Context, kv)", offset_of!(MkContext, kv)),
-            ("offsetof(Context, idx_keys)", offset_of!(MkContext, idx_keys)),
-            ("offsetof(Context, idx_pooled)", offset_of!(MkContext, idx_pooled)),
-            ("offsetof(Context, pooled_n)", offset_of!(MkContext, pooled_n)),
-            ("offsetof(Context, ple_hist)", offset_of!(MkContext, ple_hist)),
-            ("offsetof(Context, poisoned)", offset_of!(MkContext, poisoned)),
+            ("sizeof(Context)", size_of::<Qwen38Context>()),
+            ("offsetof(Context, n)", offset_of!(Qwen38Context, n)),
+            ("offsetof(Context, max)", offset_of!(Qwen38Context, max)),
+            ("offsetof(Context, gdn_state)", offset_of!(Qwen38Context, gdn_state)),
+            ("offsetof(Context, gdn_conv)", offset_of!(Qwen38Context, gdn_conv)),
+            ("offsetof(Context, ple_conv)", offset_of!(Qwen38Context, ple_conv)),
+            ("offsetof(Context, kv)", offset_of!(Qwen38Context, kv)),
+            ("offsetof(Context, idx_keys)", offset_of!(Qwen38Context, idx_keys)),
+            ("offsetof(Context, idx_pooled)", offset_of!(Qwen38Context, idx_pooled)),
+            ("offsetof(Context, pooled_n)", offset_of!(Qwen38Context, pooled_n)),
+            ("offsetof(Context, ple_hist)", offset_of!(Qwen38Context, ple_hist)),
+            ("offsetof(Context, poisoned)", offset_of!(Qwen38Context, poisoned)),
             ("model::kVocab", spec::VOCAB as usize),
             ("model::kMaxPassTokens", spec::MAX_PASS_TOKENS as usize),
             ("model::kMaxContext", spec::MAX_CONTEXT as usize),
-            ("sizeof(LaunchResult)", size_of::<MkLaunch>()),
-            ("offsetof(LaunchResult, status)", offset_of!(MkLaunch, status)),
-            ("offsetof(LaunchResult, site)", offset_of!(MkLaunch, site)),
-            ("offsetof(LaunchResult, wg)", offset_of!(MkLaunch, wg)),
+            ("sizeof(LaunchResult)", size_of::<Qwen38Launch>()),
+            ("offsetof(LaunchResult, status)", offset_of!(Qwen38Launch, status)),
+            ("offsetof(LaunchResult, site)", offset_of!(Qwen38Launch, site)),
+            ("offsetof(LaunchResult, wg)", offset_of!(Qwen38Launch, wg)),
             (
                 "offsetof(LaunchResult, watchdog_stopped)",
-                offset_of!(MkLaunch, watchdog_stopped),
+                offset_of!(Qwen38Launch, watchdog_stopped),
             ),
         ],
     );

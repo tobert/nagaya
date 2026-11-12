@@ -181,7 +181,7 @@ fn open_qwen38(identity: &Identity, table: &toml::Table) -> Result<OpenedFamily,
                 .as_str()
                 .ok_or_else(|| "the key `gguf` of `[engines.family]` is not a string; write a path".to_owned())?,
         ),
-        None => nagaya_mk_qwen38_gfx1151::MkPaths::from_env()
+        None => nagaya_mk_qwen38_gfx1151::Qwen38Paths::from_env()
             .map_err(|error| error.message().to_owned())?
             .shards
             .into_iter()

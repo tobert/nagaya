@@ -9,29 +9,29 @@ use nagaya_abi::{
 };
 
 use crate::spec;
-use crate::worker::{Call, ClassReading, MkError, MkPaths, PassProblem, PassRequest, Worker, start};
+use crate::worker::{Call, ClassReading, PassProblem, PassRequest, Qwen38Error, Qwen38Paths, Worker, start};
 
 /// The one worker in this process. Its HIP runtime and C++ engine stay until the process exits, because HIP teardown
 /// stops the process (spec 3.3). The weights come and go with the handles (engine-abi "close").
-static WORKER: OnceLock<Result<Arc<Worker>, MkError>> = OnceLock::new();
+static WORKER: OnceLock<Result<Arc<Worker>, Qwen38Error>> = OnceLock::new();
 
 /// The worker, started on the first call. The shards must be the ones of the first call.
-fn worker() -> Result<Arc<Worker>, MkError> {
-    let paths = MkPaths::from_env()?;
+fn worker() -> Result<Arc<Worker>, Qwen38Error> {
+    let paths = Qwen38Paths::from_env()?;
     let worker = match WORKER.get_or_init(|| start(paths.clone())) {
         Ok(worker) => Arc::clone(worker),
         Err(error) => return Err(error.clone()),
     };
     if worker.paths() != &paths {
-        return Err(MkError::new("MK_SHARDS changed after the engine opened".to_owned()));
+        return Err(Qwen38Error::new("MK_SHARDS changed after the engine opened".to_owned()));
     }
     Ok(worker)
 }
 
 /// The identity and the limits of the engine on the shards of `MK_SHARDS`, with no GPU and no load. An open gives the
 /// same facts.
-pub fn describe() -> Result<(Identity, Limits), MkError> {
-    crate::worker::describe(&MkPaths::from_env()?)
+pub fn describe() -> Result<(Identity, Limits), Qwen38Error> {
+    crate::worker::describe(&Qwen38Paths::from_env()?)
 }
 
 /// Open the mk engine, or make a new handle on the one that is open.
@@ -39,7 +39,7 @@ pub fn describe() -> Result<(Identity, Limits), MkError> {
 /// The first call loads the weights, and so does the first call after the last handle dropped. Every call creates a
 /// new context pool for the handle. Every mk call goes to one worker thread, because the HIP device is the calling
 /// thread's current device.
-pub fn open() -> Result<MkEngine, MkError> {
+pub fn open() -> Result<Qwen38Engine, Qwen38Error> {
     let worker = worker()?;
     worker.acquire()?;
     let pool = match worker.open_states(&spec::CONTEXT_CLASSES) {
@@ -49,7 +49,7 @@ pub fn open() -> Result<MkEngine, MkError> {
             return Err(error);
         }
     };
-    Ok(MkEngine {
+    Ok(Qwen38Engine {
         worker,
         states: pool.ids.into_iter().map(Some).collect(),
         readings: pool.readings,
@@ -58,7 +58,7 @@ pub fn open() -> Result<MkEngine, MkError> {
 }
 
 /// The mk engine: a context pool, the engine's declared facts, and the last error.
-pub struct MkEngine {
+pub struct Qwen38Engine {
     worker: Arc<Worker>,
     /// The context id of each slot. A slot whose clear failed has no context.
     states: Vec<Option<u64>>,
@@ -66,7 +66,7 @@ pub struct MkEngine {
     last_error: Option<String>,
 }
 
-impl MkEngine {
+impl Qwen38Engine {
     /// The context id for one state.
     fn context(&self, state: State) -> Option<u64> {
         let State::Slot(slot) = state;
@@ -74,43 +74,43 @@ impl MkEngine {
     }
 
     /// The context's token count.
-    pub fn n(&self, state: State) -> Result<u64, MkError> {
+    pub fn n(&self, state: State) -> Result<u64, Qwen38Error> {
         let id = self
             .context(state)
-            .ok_or_else(|| MkError::new(format!("{state:?} is not in this engine")))?;
+            .ok_or_else(|| Qwen38Error::new(format!("{state:?} is not in this engine")))?;
         self.worker.n(id).map(u64::from)
     }
 
     /// The context's capacity in tokens.
-    pub fn capacity(&self, state: State) -> Result<u64, MkError> {
+    pub fn capacity(&self, state: State) -> Result<u64, Qwen38Error> {
         let id = self
             .context(state)
-            .ok_or_else(|| MkError::new(format!("{state:?} is not in this engine")))?;
+            .ok_or_else(|| Qwen38Error::new(format!("{state:?} is not in this engine")))?;
         self.worker.max(id).map(u64::from)
     }
 
     /// True when the context is poisoned.
-    pub fn poisoned(&self, state: State) -> Result<bool, MkError> {
+    pub fn poisoned(&self, state: State) -> Result<bool, Qwen38Error> {
         let id = self
             .context(state)
-            .ok_or_else(|| MkError::new(format!("{state:?} is not in this engine")))?;
+            .ok_or_else(|| Qwen38Error::new(format!("{state:?} is not in this engine")))?;
         self.worker.poisoned(id)
     }
 
     /// True when the context owns its K/V. A fork does not.
-    pub fn owns_kv(&self, state: State) -> Result<bool, MkError> {
+    pub fn owns_kv(&self, state: State) -> Result<bool, Qwen38Error> {
         let id = self
             .context(state)
-            .ok_or_else(|| MkError::new(format!("{state:?} is not in this engine")))?;
+            .ok_or_else(|| Qwen38Error::new(format!("{state:?} is not in this engine")))?;
         self.worker.owns_kv(id)
     }
 
     /// mk's byte count for one stored part and token count.
-    pub fn part_bytes(&self, part: u32, n: u32) -> Result<u64, MkError> {
+    pub fn part_bytes(&self, part: u32, n: u32) -> Result<u64, Qwen38Error> {
         spec::stored_part(part)?;
         self.worker
             .part_bytes(part, n)
-            .ok_or_else(|| MkError::new("the mk worker stopped"))
+            .ok_or_else(|| Qwen38Error::new("the mk worker stopped"))
     }
 
     /// The pass scratch that the probe measured at open, in bytes (milestone 9c).
@@ -143,7 +143,7 @@ fn write_from(from: u64) -> Result<(), String> {
 }
 
 /// The close of mk (engine-abi "close"): the handle frees its contexts, and the last handle or hold frees the weights.
-impl Drop for MkEngine {
+impl Drop for Qwen38Engine {
     fn drop(&mut self) {
         let ids = std::mem::take(&mut self.states).into_iter().flatten().collect();
         self.worker.free_states(ids);
@@ -158,7 +158,7 @@ pub struct Hold {
 }
 
 /// Hold mk's weights: load them when no handle or hold has them.
-pub fn hold() -> Result<Hold, MkError> {
+pub fn hold() -> Result<Hold, Qwen38Error> {
     let worker = worker()?;
     worker.acquire()?;
     Ok(Hold { worker })
@@ -308,7 +308,7 @@ fn plan_pass(segments: &[Segment], contexts: &[SegmentContext]) -> Result<PassPl
     Ok(plan)
 }
 
-impl Engine for MkEngine {
+impl Engine for Qwen38Engine {
     fn identity(&self) -> Identity {
         self.worker.spec().identity.clone()
     }
@@ -407,7 +407,7 @@ impl Engine for MkEngine {
     }
 }
 
-impl MkEngine {
+impl Qwen38Engine {
     /// Map one worker call onto a `WriteResult`.
     fn write_result(&mut self, call: Call) -> WriteResult {
         match call {
@@ -424,7 +424,7 @@ impl MkEngine {
     }
 }
 
-impl Parts for MkEngine {
+impl Parts for Qwen38Engine {
     fn part_read(&mut self, state: State, part: usize, out: &mut [u8]) -> Result<(), PartError> {
         let Some(id) = self.context(state) else {
             self.last_error = Some(format!("{state:?} is not in this engine"));
@@ -509,7 +509,7 @@ impl Parts for MkEngine {
 }
 
 /// mk's contexts are the slots of v0 (engine-abi "v0 mk binding choices").
-impl Slots for MkEngine {
+impl Slots for Qwen38Engine {
     /// The context's token count: the rows of each cells part. A slot with no context holds no row.
     ///
     /// A worker that stopped cannot answer, and the trait has no error, so this panics (spec 8.5).
@@ -541,7 +541,7 @@ impl Slots for MkEngine {
 }
 
 /// mk holds the rows of each cells part from position 0. The bytes give the row count.
-impl Coverage for MkEngine {
+impl Coverage for Qwen38Engine {
     fn coverage(&self, _state: State, part: PartId, bytes: &[u8]) -> CoverageSpan {
         spec::coverage_of(part, bytes.len())
     }
@@ -551,7 +551,7 @@ impl Coverage for MkEngine {
     }
 }
 
-impl Seal for MkEngine {
+impl Seal for Qwen38Engine {
     fn seal(&mut self, state: State) -> Result<(), SealError> {
         let Some(id) = self.context(state) else {
             self.last_error = Some(format!("{state:?} is not in this engine"));

@@ -13,10 +13,10 @@ use std::ffi::{c_char, c_int, c_void};
 
 use crate::stage::Stage;
 
-/// One segment of a pass: `t` tokens at `tokens` that continue the context `context` (`context.rs` `MkContext`).
+/// One segment of a pass: `t` tokens at `tokens` that continue the context `context` (`context.rs` `Qwen38Context`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct MkSegment {
+pub(crate) struct Qwen38Segment {
     pub context: *mut c_void,
     pub tokens: *const i32,
     pub t: u32,
@@ -25,7 +25,7 @@ pub(crate) struct MkSegment {
 /// `struct LaunchResult` of `engine.h`: how a launch sequence ended.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct MkLaunch {
+pub(crate) struct Qwen38Launch {
     /// The control block's status (`rt.h` `Status`), 0 when the launch was clean.
     pub status: u32,
     pub site: u32,
@@ -62,10 +62,10 @@ pub(crate) type RtMemset = unsafe extern "C" fn(*mut c_void, i32, u64);
 pub(crate) type RtMemcpy = unsafe extern "C" fn(*mut c_void, *const c_void, u64, u32);
 
 /// `void mk_launch_fused(void *e, const Stage *ds, uint32_t n, int grid, uint32_t skip, LaunchResult *out)`.
-pub(crate) type LaunchFused = unsafe extern "C" fn(*mut c_void, *const Stage, u32, i32, u32, *mut MkLaunch);
+pub(crate) type LaunchFused = unsafe extern "C" fn(*mut c_void, *const Stage, u32, i32, u32, *mut Qwen38Launch);
 
 /// `void mk_launch_each(void *e, const Stage *ds, uint32_t n, LaunchResult *out)`.
-pub(crate) type LaunchEach = unsafe extern "C" fn(*mut c_void, *const Stage, u32, *mut MkLaunch);
+pub(crate) type LaunchEach = unsafe extern "C" fn(*mut c_void, *const Stage, u32, *mut Qwen38Launch);
 
 /// `int mk_max_coop_grid()`.
 pub(crate) type MaxCoopGrid = unsafe extern "C" fn() -> i32;
@@ -158,7 +158,7 @@ pub(crate) enum PassStop {
 /// The segments of a pass: `lens[i]` tokens of `tokens` continue `contexts[i]`, in order.
 ///
 /// A count that differs is a defect of the caller, so it stops the program.
-pub(crate) fn segments(contexts: &[*mut c_void], lens: &[u32], tokens: &[i32]) -> Vec<MkSegment> {
+pub(crate) fn segments(contexts: &[*mut c_void], lens: &[u32], tokens: &[i32]) -> Vec<Qwen38Segment> {
     assert_eq!(contexts.len(), lens.len(), "a pass needs one length for each context");
     let total: usize = lens.iter().map(|len| *len as usize).sum();
     assert_eq!(total, tokens.len(), "the lengths of a pass must add to its token count");
@@ -167,7 +167,7 @@ pub(crate) fn segments(contexts: &[*mut c_void], lens: &[u32], tokens: &[i32]) -
         .iter()
         .zip(lens)
         .map(|(context, len)| {
-            let segment = MkSegment {
+            let segment = Qwen38Segment {
                 context: *context,
                 tokens: tokens[start..].as_ptr(),
                 t: *len,
@@ -200,7 +200,7 @@ pub(crate) mod rt {
 mod linked {
     use std::ffi::{c_char, c_int, c_void};
 
-    use super::MkLaunch;
+    use super::Qwen38Launch;
     use crate::stage::Stage;
 
     // The calls of the extern layer `hip/src/engine/extern.hip`, the runtime calls `mk_rt_*` of
@@ -215,9 +215,9 @@ mod linked {
             n: u32,
             grid: i32,
             skip: u32,
-            out: *mut MkLaunch,
+            out: *mut Qwen38Launch,
         );
-        pub(super) fn mk_launch_each(e: *mut c_void, ds: *const Stage, n: u32, out: *mut MkLaunch);
+        pub(super) fn mk_launch_each(e: *mut c_void, ds: *const Stage, n: u32, out: *mut Qwen38Launch);
         pub(super) fn mk_max_coop_grid() -> i32;
         pub(super) fn mk_status_name(status: u32) -> *const c_char;
         pub(super) fn mk_rt_host_register(p: *mut c_void, n: u64);

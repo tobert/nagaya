@@ -4,7 +4,7 @@
 //! `MK_SHARDS` from the environment, as the unit sets it. It opens no device until `open`.
 
 use nagaya_abi::{Engine, Identity, Limits};
-use nagaya_mk_qwen38_gfx1151::{MkError, MkPaths};
+use nagaya_mk_qwen38_gfx1151::{Qwen38Error, Qwen38Paths};
 
 use crate::admission::{Factory, GroupDevice, OpenError, OpenErrorKind, PlanError};
 
@@ -18,9 +18,9 @@ pub const KIND: &str = "mk-qwen38-gfx1151";
 pub const WEIGHTS_KEY: &str = "weights_bytes";
 
 /// The factory of the mk engine.
-pub struct MkFactory;
+pub struct Qwen38Factory;
 
-impl Factory for MkFactory {
+impl Factory for Qwen38Factory {
     fn plan(&self, config: &toml::Table, devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         check_devices(devices)?;
         check_install()?;
@@ -109,7 +109,7 @@ fn weights_bytes(config: &toml::Table) -> Result<u64, PlanError> {
 /// A start that fails here is a refusal: exit 3 (spec 10.4). A failure inside `open` for a missing file would be a
 /// crash, and systemd would start the process again.
 fn check_install() -> Result<(), PlanError> {
-    let paths = MkPaths::from_env().map_err(|error| PlanError {
+    let paths = Qwen38Paths::from_env().map_err(|error| PlanError {
         message: error.message().to_owned(),
     })?;
     for shard in &paths.shards {
@@ -126,7 +126,7 @@ fn check_install() -> Result<(), PlanError> {
 }
 
 /// Map an error of the mk binding to an open error. Each one is a crash (spec 10.4): the binding has no refusal.
-pub fn open_error(error: MkError) -> OpenError {
+pub fn open_error(error: Qwen38Error) -> OpenError {
     OpenError {
         kind: OpenErrorKind::Other,
         message: error.message().to_owned(),

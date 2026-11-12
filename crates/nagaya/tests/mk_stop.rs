@@ -48,7 +48,7 @@ fn a_stop_with_mk_parks_the_states_that_hold_tokens_and_is_clean() {
     let store = tempfile::tempdir().unwrap();
     let mut ready = lifecycle::start(
         profile,
-        Registry::with_mk(),
+        Registry::with_qwen38(),
         inventory,
         store.path(),
         None,

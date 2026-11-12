@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use nagaya_abi::{Identity, Limits};
 
 use crate::arena::{self, Arena};
-use crate::binding::{self, Binding, MkSegment, PassStop};
+use crate::binding::{self, Binding, PassStop, Qwen38Segment};
 use crate::gguf;
 use crate::host::{self, Host, LaunchKnobs, PassIn};
 use crate::pass::{self, Knobs, Weights};
@@ -23,11 +23,11 @@ use crate::spec;
 
 /// An error from the mk binding. The message says what failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MkError {
+pub struct Qwen38Error {
     message: String,
 }
 
-impl MkError {
+impl Qwen38Error {
     /// Make an error with a message.
     pub fn new(message: impl Into<String>) -> Self {
         Self {
@@ -41,15 +41,15 @@ impl MkError {
     }
 }
 
-impl fmt::Display for MkError {
+impl fmt::Display for Qwen38Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.message)
     }
 }
 
-impl std::error::Error for MkError {}
+impl std::error::Error for Qwen38Error {}
 
-impl From<String> for MkError {
+impl From<String> for Qwen38Error {
     fn from(message: String) -> Self {
         Self::new(message)
     }
@@ -57,19 +57,19 @@ impl From<String> for MkError {
 
 /// Where the three weight shards are.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MkPaths {
+pub struct Qwen38Paths {
     /// The three shard paths (`MK_SHARDS`, with `:` between them).
     pub shards: Vec<PathBuf>,
 }
 
 /// Split `MK_SHARDS` on `:` as raw bytes, so a path that is not UTF-8 stays the same path.
-fn parse_shards(raw: &[u8]) -> Result<Vec<PathBuf>, MkError> {
+fn parse_shards(raw: &[u8]) -> Result<Vec<PathBuf>, Qwen38Error> {
     let shards: Vec<PathBuf> = raw
         .split(|byte| *byte == b':')
         .map(|part| PathBuf::from(std::ffi::OsString::from_vec(part.to_vec())))
         .collect();
     if shards.len() != 3 || shards.iter().any(|path| path.as_os_str().is_empty()) {
-        return Err(MkError::new(format!(
+        return Err(Qwen38Error::new(format!(
             "MK_SHARDS has {} paths; mk needs three, with : between them",
             shards.len()
         )));
@@ -77,21 +77,21 @@ fn parse_shards(raw: &[u8]) -> Result<Vec<PathBuf>, MkError> {
     Ok(shards)
 }
 
-impl MkPaths {
+impl Qwen38Paths {
     /// Read the paths from `MK_SHARDS`.
-    pub fn from_env() -> Result<Self, MkError> {
+    pub fn from_env() -> Result<Self, Qwen38Error> {
         let shards = std::env::var_os("MK_SHARDS")
-            .ok_or_else(|| MkError::new("MK_SHARDS is not set; give three GGUF paths with : between them"))?;
+            .ok_or_else(|| Qwen38Error::new("MK_SHARDS is not set; give three GGUF paths with : between them"))?;
         let shards = parse_shards(shards.as_os_str().as_bytes())?;
         Ok(Self { shards })
     }
 
     /// Check that every path exists and every shard has a GGUF v3 header.
-    fn validate(&self) -> Result<Vec<gguf::ShardHeader>, MkError> {
+    fn validate(&self) -> Result<Vec<gguf::ShardHeader>, Qwen38Error> {
         let mut headers = Vec::new();
         for path in &self.shards {
             if !path.is_file() {
-                return Err(MkError::new(format!("the shard {} is missing", path.display())));
+                return Err(Qwen38Error::new(format!("the shard {} is missing", path.display())));
             }
             headers.push(gguf::read_header(path)?);
         }
@@ -177,7 +177,7 @@ struct ThreadState {
 
 /// The facts of the first load, which a later load must give again.
 struct Reload {
-    paths: MkPaths,
+    paths: Qwen38Paths,
     digest: String,
     arena_bytes: u64,
 }
@@ -296,7 +296,7 @@ enum Command {
 pub(crate) struct Worker {
     sender: Mutex<mpsc::Sender<Command>>,
     spec: Spec,
-    paths: MkPaths,
+    paths: Qwen38Paths,
     /// The handles and holds that use the weights. The last one to go unloads them; the first one loads them again.
     handles: Mutex<usize>,
 }
@@ -308,7 +308,7 @@ impl Worker {
     }
 
     /// The paths that the engine was opened with.
-    pub fn paths(&self) -> &MkPaths {
+    pub fn paths(&self) -> &Qwen38Paths {
         &self.paths
     }
 
@@ -322,12 +322,12 @@ impl Worker {
     }
 
     /// Count one more user of the weights. The first user after an unload loads them again.
-    pub fn acquire(&self) -> Result<(), MkError> {
+    pub fn acquire(&self) -> Result<(), Qwen38Error> {
         let mut handles = self.handles.lock().expect("the lock of the mk handles is poisoned");
         if *handles == 0 {
             self.ask(|reply| Command::Load { reply })
                 .unwrap_or_else(|| Err("the mk worker stopped".to_owned()))
-                .map_err(MkError::from)?;
+                .map_err(Qwen38Error::from)?;
         }
         *handles += 1;
         Ok(())
@@ -346,11 +346,11 @@ impl Worker {
     }
 
     /// Create a context pool for one handle. The ids follow the order of the classes.
-    pub fn open_states(&self, classes: &[spec::ContextClass]) -> Result<Pool, MkError> {
+    pub fn open_states(&self, classes: &[spec::ContextClass]) -> Result<Pool, Qwen38Error> {
         let classes = classes.to_vec();
         self.ask(|reply| Command::Open { classes, reply })
             .unwrap_or_else(|| Err("the mk worker stopped".to_owned()))
-            .map_err(MkError::from)
+            .map_err(Qwen38Error::from)
     }
 
     /// Free a handle's contexts.
@@ -362,31 +362,31 @@ impl Worker {
     }
 
     /// The context's token count.
-    pub fn n(&self, id: u64) -> Result<u32, MkError> {
+    pub fn n(&self, id: u64) -> Result<u32, Qwen38Error> {
         self.ask(|reply| Command::N { id, reply })
             .unwrap_or_else(|| Err("the mk worker stopped".to_owned()))
-            .map_err(MkError::from)
+            .map_err(Qwen38Error::from)
     }
 
     /// The context's capacity.
-    pub fn max(&self, id: u64) -> Result<u32, MkError> {
+    pub fn max(&self, id: u64) -> Result<u32, Qwen38Error> {
         self.ask(|reply| Command::Max { id, reply })
             .unwrap_or_else(|| Err("the mk worker stopped".to_owned()))
-            .map_err(MkError::from)
+            .map_err(Qwen38Error::from)
     }
 
     /// True when the context owns its K/V.
-    pub fn owns_kv(&self, id: u64) -> Result<bool, MkError> {
+    pub fn owns_kv(&self, id: u64) -> Result<bool, Qwen38Error> {
         self.ask(|reply| Command::OwnsKv { id, reply })
             .unwrap_or_else(|| Err("the mk worker stopped".to_owned()))
-            .map_err(MkError::from)
+            .map_err(Qwen38Error::from)
     }
 
     /// True when the context is poisoned.
-    pub fn poisoned(&self, id: u64) -> Result<bool, MkError> {
+    pub fn poisoned(&self, id: u64) -> Result<bool, Qwen38Error> {
         self.ask(|reply| Command::Poisoned { id, reply })
             .unwrap_or_else(|| Err("the mk worker stopped".to_owned()))
-            .map_err(MkError::from)
+            .map_err(Qwen38Error::from)
     }
 
     /// Read one whole part into a new buffer of `len` bytes.
@@ -462,7 +462,7 @@ fn part_id(part: usize) -> Result<u32, Call> {
 }
 
 /// Start the worker thread and open the engine on it.
-pub(crate) fn start(paths: MkPaths) -> Result<Arc<Worker>, MkError> {
+pub(crate) fn start(paths: Qwen38Paths) -> Result<Arc<Worker>, Qwen38Error> {
     let headers = paths.validate()?;
     let total: u64 = headers.iter().map(|header| header.size).sum();
     check_memory(total)?;
@@ -482,11 +482,11 @@ pub(crate) fn start(paths: MkPaths) -> Result<Arc<Worker>, MkError> {
                 let _ = ready.send(Err(error));
             }
         })
-        .map_err(|error| MkError::new(format!("start the mk worker: {error}")))?;
+        .map_err(|error| Qwen38Error::new(format!("start the mk worker: {error}")))?;
 
     let spec = first
         .recv()
-        .map_err(|error| MkError::new(format!("the mk worker did not answer: {error}")))??;
+        .map_err(|error| Qwen38Error::new(format!("the mk worker did not answer: {error}")))??;
     Ok(Arc::new(Worker {
         sender: Mutex::new(sender),
         spec,
@@ -497,13 +497,13 @@ pub(crate) fn start(paths: MkPaths) -> Result<Arc<Worker>, MkError> {
 
 /// The identity and the limits of the engine on `paths`, with no GPU and no weights in memory: the facts that `open`
 /// gives after the load. The process serves an engine on demand from them before it loads (spec 11.1).
-pub(crate) fn describe(paths: &MkPaths) -> Result<(Identity, Limits), MkError> {
+pub(crate) fn describe(paths: &Qwen38Paths) -> Result<(Identity, Limits), Qwen38Error> {
     removed_knob_problem(|knob| std::env::var_os(knob).is_some())?;
     paths.validate()?;
     let digest = gguf::spot_digest(&paths.shards)?;
     let fast_qmm = fast_qmm()?;
     let tiles = tiles()?;
-    let (_, build) = binding::linked().map_err(MkError::new)?;
+    let (_, build) = binding::linked().map_err(Qwen38Error::new)?;
     let text = gguf::text_keys(&paths.shards[0])?;
     let model = gguf::Model::open(&paths.shards)?;
     let (_, arena_bytes) = arena::plan(model.tensors(), tiles)?;
@@ -517,9 +517,9 @@ pub(crate) fn describe(paths: &MkPaths) -> Result<(Identity, Limits), MkError> {
 /// weight table.
 fn load_weights(
     binding: &Binding,
-    paths: &MkPaths,
+    paths: &Qwen38Paths,
     tiles: bool,
-) -> Result<(gguf::Model, PleTable, Arena, Weights), MkError> {
+) -> Result<(gguf::Model, PleTable, Arena, Weights), Qwen38Error> {
     let model = gguf::Model::open(&paths.shards)?;
     let ple = PleTable::new(&model)?;
     let (planned, arena_bytes) = arena::plan(model.tensors(), tiles)?;
@@ -541,39 +541,39 @@ fn load_weights(
 }
 
 /// Read `MK_FAST_QMM` as mk reads it: unset or 1 is fast, 0 is exact, and any other value stops mk.
-fn fast_qmm() -> Result<bool, MkError> {
+fn fast_qmm() -> Result<bool, Qwen38Error> {
     match std::env::var("MK_FAST_QMM") {
         Ok(value) => fast_qmm_from(Some(&value)),
         Err(std::env::VarError::NotPresent) => fast_qmm_from(None),
-        Err(error) => Err(MkError::new(format!("MK_FAST_QMM: {error}"))),
+        Err(error) => Err(Qwen38Error::new(format!("MK_FAST_QMM: {error}"))),
     }
 }
 
 /// Read `MK_TILES` as mk reads it: unset or 1 is tiled, 0 is the GGUF layout, and any other value stops mk.
-fn tiles() -> Result<bool, MkError> {
+fn tiles() -> Result<bool, Qwen38Error> {
     match std::env::var("MK_TILES") {
         Ok(value) => tiles_from(Some(&value)),
         Err(std::env::VarError::NotPresent) => tiles_from(None),
-        Err(error) => Err(MkError::new(format!("MK_TILES: {error}"))),
+        Err(error) => Err(Qwen38Error::new(format!("MK_TILES: {error}"))),
     }
 }
 
 /// The value of one `MK_TILES` string.
-fn tiles_from(value: Option<&str>) -> Result<bool, MkError> {
+fn tiles_from(value: Option<&str>) -> Result<bool, Qwen38Error> {
     match value {
         Some("1") => Ok(true),
         Some("0") => Ok(false),
-        Some(other) => Err(MkError::new(format!("MK_TILES={other}: want 0 or 1"))),
+        Some(other) => Err(Qwen38Error::new(format!("MK_TILES={other}: want 0 or 1"))),
         None => Ok(true),
     }
 }
 
 /// The value of one `MK_FAST_QMM` string.
-fn fast_qmm_from(value: Option<&str>) -> Result<bool, MkError> {
+fn fast_qmm_from(value: Option<&str>) -> Result<bool, Qwen38Error> {
     match value {
         Some("1") => Ok(true),
         Some("0") => Ok(false),
-        Some(other) => Err(MkError::new(format!("MK_FAST_QMM={other}: want 0 or 1"))),
+        Some(other) => Err(Qwen38Error::new(format!("MK_FAST_QMM={other}: want 0 or 1"))),
         None => Ok(true),
     }
 }
@@ -591,9 +591,9 @@ const REMOVED_KNOBS: [&str; 7] = [
 ];
 
 /// Refuse a removed knob that `is_set` finds in the environment.
-fn removed_knob_problem(is_set: impl Fn(&str) -> bool) -> Result<(), MkError> {
+fn removed_knob_problem(is_set: impl Fn(&str) -> bool) -> Result<(), Qwen38Error> {
     match REMOVED_KNOBS.iter().find(|knob| is_set(knob)) {
-        Some(knob) => Err(MkError::new(format!(
+        Some(knob) => Err(Qwen38Error::new(format!(
             "{knob} is set, and this engine has no such knob since milestone 15; unset it"
         ))),
         None => Ok(()),
@@ -607,13 +607,13 @@ fn env_text(name: &str) -> Option<String> {
 
 /// The watchdog's deadline for each launch sequence: 10 s, or `MK_WATCHDOG_DEADLINE_S` (a test knob) in (0, 3600].
 /// The longest pass is a bit over a second (mk PLAN.md).
-fn watchdog_deadline(value: Option<&str>) -> Result<f64, MkError> {
+fn watchdog_deadline(value: Option<&str>) -> Result<f64, Qwen38Error> {
     let Some(value) = value else {
         return Ok(10.0);
     };
     match value.parse::<f64>() {
         Ok(seconds) if seconds > 0.0 && seconds <= 3600.0 => Ok(seconds),
-        _ => Err(MkError::new(format!(
+        _ => Err(Qwen38Error::new(format!(
             "MK_WATCHDOG_DEADLINE_S={value}: want seconds in (0, 3600]"
         ))),
     }
@@ -634,20 +634,20 @@ fn memory_problem(what: &str, available: u64, needed: u64) -> Result<(), String>
 }
 
 /// The host's MemAvailable in bytes.
-fn mem_available() -> Result<u64, MkError> {
-    let text =
-        std::fs::read_to_string("/proc/meminfo").map_err(|error| MkError::new(format!("/proc/meminfo: {error}")))?;
+fn mem_available() -> Result<u64, Qwen38Error> {
+    let text = std::fs::read_to_string("/proc/meminfo")
+        .map_err(|error| Qwen38Error::new(format!("/proc/meminfo: {error}")))?;
     text.lines()
         .find_map(|line| line.strip_prefix("MemAvailable:"))
         .and_then(|rest| rest.split_whitespace().next())
         .and_then(|value| value.parse::<u64>().ok())
         .map(|kilobytes| kilobytes * 1024)
-        .ok_or_else(|| MkError::new("/proc/meminfo has no MemAvailable"))
+        .ok_or_else(|| Qwen38Error::new("/proc/meminfo has no MemAvailable"))
 }
 
 /// Refuse a load that cannot fit in the free memory. mk allocates the weight arena in full, and the floor stays free.
-fn check_memory(needed: u64) -> Result<(), MkError> {
-    memory_problem("the shards", mem_available()?, needed).map_err(MkError::new)
+fn check_memory(needed: u64) -> Result<(), Qwen38Error> {
+    memory_problem("the shards", mem_available()?, needed).map_err(Qwen38Error::new)
 }
 
 /// The device bytes that `what` took: the free bytes before minus the free bytes after.
@@ -724,18 +724,18 @@ fn probe_shapes(capacity: u32) -> [(u32, bool); 2] {
 
 impl ThreadState {
     /// Bind the linked engine and open it. This runs on the worker thread.
-    fn open(paths: &MkPaths) -> Result<(Self, Spec), MkError> {
+    fn open(paths: &Qwen38Paths) -> Result<(Self, Spec), Qwen38Error> {
         removed_knob_problem(|knob| std::env::var_os(knob).is_some())?;
         let digest = gguf::spot_digest(&paths.shards)?;
         let fast_qmm = fast_qmm()?;
         let tiles = tiles()?;
-        let (binding, build) = binding::linked().map_err(MkError::new)?;
+        let (binding, build) = binding::linked().map_err(Qwen38Error::new)?;
         // Refuse a library whose parts are not the declared size, before it writes past a Rust buffer.
         if let Some(problem) = spec::parts_problem(
             |part| unsafe { (binding.state_bytes)(part) },
             |part, n| unsafe { (binding.part_bytes)(part, n) },
         ) {
-            return Err(MkError::new(problem));
+            return Err(Qwen38Error::new(problem));
         }
 
         // The tokenizer is in the first shard. Hash it before the weights load, so a shard with no tokenizer fails fast.
@@ -746,7 +746,7 @@ impl ThreadState {
         let deadline = watchdog_deadline(env_text("MK_WATCHDOG_DEADLINE_S").as_deref())?;
         let engine = unsafe { (binding.engine_open)(deadline) };
         if engine.is_null() {
-            return Err(MkError::new("mk_engine_open returned no engine"));
+            return Err(Qwen38Error::new("mk_engine_open returned no engine"));
         }
         // The fixed buffers of a pass, as mk's wire made them at load: before the scratch probe.
         let host = unsafe { Host::new(&binding) };
@@ -771,8 +771,8 @@ impl ThreadState {
         };
         // mk has no call for the pool's size. Measure it here, before a caller's pass, so a larger pool is an open
         // error and the ledger's term is what the engine holds.
-        let pass_scratch = state.measure_pass_scratch().map_err(MkError::new)?;
-        spec::scratch_problem(pass_scratch).map_err(MkError::new)?;
+        let pass_scratch = state.measure_pass_scratch().map_err(Qwen38Error::new)?;
+        spec::scratch_problem(pass_scratch).map_err(Qwen38Error::new)?;
 
         let identity = spec::identity(&paths.shards, &build, fast_qmm, tiles, &digest, &text);
         let limits = spec::limits(arena_bytes);
@@ -1262,7 +1262,7 @@ impl ThreadState {
         unsafe { (self.binding.set_n)(self.engine, ptr, n) };
         // The pooled keys are derived state: pool every complete block of the written index keys.
         if let (Some(host), Some(weights)) = (self.host.as_mut(), self.weights.as_ref()) {
-            let context = unsafe { &*(ptr as *const crate::context::MkContext) };
+            let context = unsafe { &*(ptr as *const crate::context::Qwen38Context) };
             unsafe { host::pool_context(&self.binding, self.engine, host, weights, context) };
         }
         // mk returns nothing here. A call that left the context poisoned is a failure (spec 6.8), so check first.
@@ -1429,7 +1429,7 @@ impl ThreadState {
 
     /// One pass of `segments` (`host.rs` `run_pass`), after the checks that refuse it: the segments, the poison, the
     /// knobs and the PLE rows. `logits` takes one row of `VOCAB` values for each segment.
-    fn run_pass(&mut self, segments: &[MkSegment], logits: Option<&mut [f32]>) -> Result<f64, PassStop> {
+    fn run_pass(&mut self, segments: &[Qwen38Segment], logits: Option<&mut [f32]>) -> Result<f64, PassStop> {
         if let Some(problem) = host::segments_problem(segments) {
             return Err(PassStop::Refused(problem));
         }
@@ -1465,7 +1465,7 @@ impl ThreadState {
     /// The PLE rows of a pass, segment after segment: each segment's tokens after its context's PLE history.
     ///
     /// mk stops the program on a read of a poisoned context, so a poisoned one is an error here.
-    fn ple_rows(&self, segments: &[MkSegment]) -> Result<Vec<f32>, String> {
+    fn ple_rows(&self, segments: &[Qwen38Segment]) -> Result<Vec<f32>, String> {
         let (Some(model), Some(table)) = (&self.model, &self.ple) else {
             return Err("this engine has no PLE table".to_owned());
         };

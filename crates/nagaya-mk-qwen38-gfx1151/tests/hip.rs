@@ -11,13 +11,13 @@ use nagaya_abi::{
     WriteResult,
 };
 use nagaya_conformance::{compare_f32_rows, run_all};
-use nagaya_mk_qwen38_gfx1151::{Hold, MkEngine, MkError, hold};
+use nagaya_mk_qwen38_gfx1151::{Hold, Qwen38Engine, Qwen38Error, hold};
 
 /// The hold of this binary on mk's weights.
 static HOLD: std::sync::OnceLock<Hold> = std::sync::OnceLock::new();
 
 /// Open a handle, with the weights held for the binary.
-fn open() -> Result<MkEngine, MkError> {
+fn open() -> Result<Qwen38Engine, Qwen38Error> {
     HOLD.get_or_init(|| hold().expect("hold mk's weights"));
     nagaya_mk_qwen38_gfx1151::open()
 }
@@ -534,7 +534,7 @@ fn synthetic_ids(count: usize) -> Vec<u32> {
 /// Feed `ids` to the context in passes of at most `chunk` tokens, and return the logits of the last token.
 ///
 /// Each pass starts at the context's token count. Only the last pass asks for logits.
-fn feed(engine: &mut MkEngine, slot: u32, ids: &[u32], chunk: usize) -> Vec<f32> {
+fn feed(engine: &mut Qwen38Engine, slot: u32, ids: &[u32], chunk: usize) -> Vec<f32> {
     let state = State::Slot(slot);
     let mut logits = Vec::new();
     let mut done = 0;
@@ -675,7 +675,7 @@ fn a_slot_counts_its_tokens_and_a_clear_empties_it() {
 }
 
 /// The bytes of each stored part of a slot, parts 0 to 5. A cells part gives its rows up to the token count.
-fn stored_parts(engine: &mut MkEngine, slot: u32) -> Vec<Vec<u8>> {
+fn stored_parts(engine: &mut Qwen38Engine, slot: u32) -> Vec<Vec<u8>> {
     let state = State::Slot(slot);
     let n = engine.n(state).unwrap() as u32;
     (0..6u32)
@@ -692,7 +692,7 @@ fn stored_parts(engine: &mut MkEngine, slot: u32) -> Vec<Vec<u8>> {
 }
 
 /// Feed `ids` after the rows of the slot, in passes of the given sizes, and return the logits of the last token.
-fn feed_sizes(engine: &mut MkEngine, slot: u32, ids: &[u32], sizes: &[usize]) -> Vec<f32> {
+fn feed_sizes(engine: &mut Qwen38Engine, slot: u32, ids: &[u32], sizes: &[usize]) -> Vec<f32> {
     assert_eq!(
         sizes.iter().sum::<usize>(),
         ids.len(),

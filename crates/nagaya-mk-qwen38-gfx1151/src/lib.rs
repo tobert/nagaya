@@ -25,9 +25,9 @@ mod spec;
 mod stage;
 mod worker;
 
-pub use engine::{Hold, MkEngine, describe, hold, open};
+pub use engine::{Hold, Qwen38Engine, describe, hold, open};
 pub use spec::{CONTEXT_CLASSES, ContextClass, MAX_CONTEXT};
-pub use worker::{ClassReading, MkError, MkPaths};
+pub use worker::{ClassReading, Qwen38Error, Qwen38Paths};
 
 /// The limits that `open` gives for an arena of `weights_bytes`. It reads no weights and opens no device.
 ///

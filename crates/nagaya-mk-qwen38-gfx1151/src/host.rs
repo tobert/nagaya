@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::ffi::{CStr, c_void};
 use std::time::Instant;
 
-use crate::binding::{Binding, MkLaunch, MkSegment, PassStop};
-use crate::context::{Copy, MkContext};
+use crate::binding::{Binding, PassStop, Qwen38Launch, Qwen38Segment};
+use crate::context::{Copy, Qwen38Context};
 use crate::pass::{self, Builder, Knobs, PassBuffers, Scratch, Seg, Weights};
 use crate::ple;
 use crate::stage::Stage;
@@ -138,7 +138,7 @@ impl Host {
 
 /// The first problem of `segments` as one pass, or `None` (`engine.hip` `segments_problem`): 1 to 16 segments, each of
 /// one or more tokens, 256 in all, each fitting its context's capacity, and no two on one context.
-pub(crate) fn segments_problem(segments: &[MkSegment]) -> Option<String> {
+pub(crate) fn segments_problem(segments: &[Qwen38Segment]) -> Option<String> {
     let n = segments.len();
     if n == 0 || n > pass::MAX_SEGMENTS as usize {
         return Some(format!(
@@ -164,7 +164,7 @@ pub(crate) fn segments_problem(segments: &[MkSegment]) -> Option<String> {
     }
     for (i, s) in segments.iter().enumerate() {
         // SAFETY: the pointer is not null, and the worker gives live contexts of this engine.
-        let c = unsafe { &*(s.context as *const MkContext) };
+        let c = unsafe { &*(s.context as *const Qwen38Context) };
         if u64::from(c.n) + u64::from(s.t) > u64::from(c.max) {
             return Some(format!(
                 "segment {i}: context full: {} + {} tokens past its capacity {}",
@@ -176,8 +176,8 @@ pub(crate) fn segments_problem(segments: &[MkSegment]) -> Option<String> {
         for j in i + 1..n {
             let (a, b) = unsafe {
                 (
-                    &*(segments[i].context as *const MkContext),
-                    &*(segments[j].context as *const MkContext),
+                    &*(segments[i].context as *const Qwen38Context),
+                    &*(segments[j].context as *const Qwen38Context),
                 )
             };
             if a.kv == b.kv || a.idx_keys == b.idx_keys {
@@ -246,7 +246,7 @@ impl LaunchKnobs {
 
 /// The pass of `segments` and its parts that the worker gives to `run_pass`.
 pub(crate) struct PassIn<'a> {
-    pub segments: &'a [MkSegment],
+    pub segments: &'a [Qwen38Segment],
     pub ple: &'a [f32],
     pub knobs: Knobs,
     pub launch: LaunchKnobs,
@@ -329,7 +329,7 @@ pub(crate) unsafe fn run_pass(
     let segs: Vec<Seg> = segments
         .iter()
         .map(|s| Seg {
-            c: s.context as *mut MkContext,
+            c: s.context as *mut Qwen38Context,
             t: s.t,
         })
         .collect();
@@ -356,7 +356,7 @@ pub(crate) unsafe fn run_pass(
         Some(grid) => grid,
         None => unsafe { (binding.max_coop_grid)() }.min(MAX_FUSED_GRID),
     };
-    let mut result = MkLaunch::default();
+    let mut result = Qwen38Launch::default();
     unsafe { (binding.launch_fused)(engine, stages, n, grid, skip, &mut result) };
     if result.status != 0 {
         let why = format!(
@@ -405,7 +405,7 @@ pub(crate) unsafe fn run_pass(
 
 /// Advance a context by the tokens of a clean pass: the count, the pooled-key watermark (the pass's pool stages wrote
 /// the blocks that it completed), and the PLE history.
-fn advance(c: &mut MkContext, tokens: &[i32]) {
+fn advance(c: &mut Qwen38Context, tokens: &[i32]) {
     let t = tokens.len();
     c.n += t as u32;
     c.pooled_n = c.n / crate::stage::IDX_RATIO;
@@ -427,7 +427,7 @@ pub(crate) unsafe fn pool_context(
     engine: *mut c_void,
     host: &mut Host,
     weights: &Weights,
-    c: &MkContext,
+    c: &Qwen38Context,
 ) {
     if c.n / crate::stage::IDX_RATIO == 0 {
         return;
@@ -456,7 +456,7 @@ pub(crate) unsafe fn pool_context(
     };
     let pool = builder.pool_stages(c, 0);
     let stages = host.upload(binding, &pool);
-    let mut result = MkLaunch::default();
+    let mut result = Qwen38Launch::default();
     unsafe { (binding.launch_each)(engine, stages, pool.len() as u32, &mut result) };
     if result.status != 0 {
         die(&format!(
@@ -473,8 +473,8 @@ pub(crate) unsafe fn pool_context(
 mod tests {
     use super::*;
 
-    fn context(n: u32, max: u32, kv: usize) -> MkContext {
-        MkContext {
+    fn context(n: u32, max: u32, kv: usize) -> Qwen38Context {
+        Qwen38Context {
             n,
             max,
             gdn_state: std::ptr::null_mut(),
@@ -489,9 +489,9 @@ mod tests {
         }
     }
 
-    fn segment(c: &mut MkContext, tokens: &[i32]) -> MkSegment {
-        MkSegment {
-            context: c as *mut MkContext as *mut c_void,
+    fn segment(c: &mut Qwen38Context, tokens: &[i32]) -> Qwen38Segment {
+        Qwen38Segment {
+            context: c as *mut Qwen38Context as *mut c_void,
             tokens: tokens.as_ptr(),
             t: tokens.len() as u32,
         }

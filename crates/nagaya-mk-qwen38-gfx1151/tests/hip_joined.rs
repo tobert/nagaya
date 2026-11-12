@@ -9,13 +9,13 @@
 #![cfg(feature = "hip")]
 
 use nagaya_abi::{Engine, OutputsWanted, Segment, SegmentInputs, State};
-use nagaya_mk_qwen38_gfx1151::{Hold, MkEngine, MkError, hold};
+use nagaya_mk_qwen38_gfx1151::{Hold, Qwen38Engine, Qwen38Error, hold};
 
 /// The hold of this binary on mk's weights.
 static HOLD: std::sync::OnceLock<Hold> = std::sync::OnceLock::new();
 
 /// Open a handle, with the weights held for the binary. Each open makes a new context pool.
-fn open() -> Result<MkEngine, MkError> {
+fn open() -> Result<Qwen38Engine, Qwen38Error> {
     HOLD.get_or_init(|| hold().expect("hold mk's weights"));
     nagaya_mk_qwen38_gfx1151::open()
 }
@@ -57,7 +57,7 @@ fn beside_tokens() -> Vec<u32> {
 }
 
 /// A segment of `tokens` at the slot's next position, with the logit row of its last token when `logits` is true.
-fn segment(engine: &MkEngine, slot: u32, tokens: &[u32], logits: bool) -> Segment {
+fn segment(engine: &Qwen38Engine, slot: u32, tokens: &[u32], logits: bool) -> Segment {
     let state = State::Slot(slot);
     let start = engine.n(state).expect("the slot's token count");
     let mut outputs = OutputsWanted::default();
@@ -75,7 +75,7 @@ fn segment(engine: &MkEngine, slot: u32, tokens: &[u32], logits: bool) -> Segmen
 }
 
 /// Run one pass, and give the bit patterns of each logit row, in segment order.
-fn run(engine: &mut MkEngine, segments: &[Segment], what: &str) -> Vec<Vec<u32>> {
+fn run(engine: &mut Qwen38Engine, segments: &[Segment], what: &str) -> Vec<Vec<u32>> {
     let out = engine
         .pass(segments, &[])
         .unwrap_or_else(|error| panic!("{what}: the pass failed: {error:?}"));
@@ -90,7 +90,7 @@ fn run(engine: &mut MkEngine, segments: &[Segment], what: &str) -> Vec<Vec<u32>>
 }
 
 /// Feed the prompt of each slot in passes of one segment.
-fn prefill(engine: &mut MkEngine) {
+fn prefill(engine: &mut Qwen38Engine) {
     for slot in 0..SLOTS {
         let ids = prompt(slot);
         for chunk in ids.chunks(PASS) {

@@ -480,7 +480,7 @@ fn declared_bytes(part: &PartLimits) -> u64 {
 /// The reason that mk's part byte counts do not match the declared shapes, or `None` when they agree.
 ///
 /// A library with a larger part would write past the Rust buffer, so open must refuse it.
-pub fn parts_problem(mk_state_bytes: impl Fn(u32) -> u64, mk_part_bytes: impl Fn(u32, u32) -> u64) -> Option<String> {
+pub fn parts_problem(state_bytes: impl Fn(u32) -> u64, part_bytes: impl Fn(u32, u32) -> u64) -> Option<String> {
     for (index, part) in parts().iter().enumerate() {
         if !part.is_stored() {
             continue;
@@ -488,9 +488,9 @@ pub fn parts_problem(mk_state_bytes: impl Fn(u32) -> u64, mk_part_bytes: impl Fn
         let index = index as u32;
         let declared = declared_bytes(part);
         let actual = if part.is_row() {
-            mk_part_bytes(index, 1)
+            part_bytes(index, 1)
         } else {
-            mk_state_bytes(index)
+            state_bytes(index)
         };
         if actual != declared {
             return Some(format!(

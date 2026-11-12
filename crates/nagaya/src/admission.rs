@@ -196,9 +196,9 @@ impl Registry {
 
     /// Make a registry with the mk engine only. The tests of the mk engine use it.
     #[cfg(feature = "hip")]
-    pub fn with_mk() -> Self {
+    pub fn with_qwen38() -> Self {
         let mut registry = Self::new();
-        registry.register(crate::mk::KIND, Box::new(crate::mk::MkFactory));
+        registry.register(crate::mk::KIND, Box::new(crate::mk::Qwen38Factory));
         registry
     }
 
@@ -209,7 +209,7 @@ impl Registry {
         #[allow(unused_mut)]
         let mut registry = Self::new();
         #[cfg(feature = "hip")]
-        registry.register(crate::mk::KIND, Box::new(crate::mk::MkFactory));
+        registry.register(crate::mk::KIND, Box::new(crate::mk::Qwen38Factory));
         #[cfg(feature = "hip")]
         registry.register(
             crate::qwenimage21::KIND,

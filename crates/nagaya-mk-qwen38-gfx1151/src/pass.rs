@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use crate::context::MkContext;
+use crate::context::Qwen38Context;
 use crate::schedule::{self, call::pass_plan};
 use crate::stage::*;
 
@@ -200,12 +200,12 @@ pub(crate) trait Scratch {
 /// One segment of a pass: `t` tokens that continue the context `c`.
 #[derive(Clone, Copy)]
 pub(crate) struct Seg {
-    pub c: *mut MkContext,
+    pub c: *mut Qwen38Context,
     pub t: u32,
 }
 
 impl Seg {
-    fn ctx(&self) -> &MkContext {
+    fn ctx(&self) -> &Qwen38Context {
         // SAFETY: the worker gives live contexts of this engine.
         unsafe { &*self.c }
     }
@@ -973,7 +973,7 @@ impl Builder<'_> {
 
     /// `blocks.hip` `pool_stages`: one pool stage for each attention layer that brings the context's pooled-key cache
     /// from block `b0` up to its `n / 4` (the restore of a context).
-    pub(crate) fn pool_stages(&self, c: &MkContext, b0: u32) -> Vec<Stage> {
+    pub(crate) fn pool_stages(&self, c: &Qwen38Context, b0: u32) -> Vec<Stage> {
         let max_nb = c.max / IDX_RATIO;
         assert!(
             b0 <= c.n / IDX_RATIO,
