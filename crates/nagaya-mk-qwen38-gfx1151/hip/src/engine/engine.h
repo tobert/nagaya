@@ -15,7 +15,7 @@
 namespace qwen38 {
 
 // A context: everything a pass continues from. The Rust host makes, reads, writes, builds and advances it
-// (src/context.rs, which mirrors this layout as MkContext; extern.hip states it). round_gdn_bf16 reads it here.
+// (src/context.rs, which mirrors this layout as Qwen38Context; extern.hip states it). round_gdn_bf16 reads it here.
 struct Context {
   uint32_t n = 0;       // tokens so far
   uint32_t max = 0;     // K/V capacity
